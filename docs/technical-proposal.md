@@ -1,10 +1,10 @@
 # CodeAtelier 技术与权限方案
 
-日期：2026-09-07。状态：模型服务方向已确认；以下技术选型与权限细则为推荐方案，尚未实现。
+日期：2026-09-07。状态：模型服务、默认模型与 pnpm 已确认；其余技术选型与权限细则为推荐方案，尚未实现。
 
 ## 已确认的模型服务
 
-使用用户自建的 Responses API server，预留其他提供商接口。接入前需提供 base URL、模型标识、认证方式及可用的接口说明或脱敏请求示例；密钥通过本地配置提供，不写入仓库。
+使用用户自建的 Responses API server，预留其他提供商接口。完整端点为 http://jp.harryshan.com:4141/v1/responses；SDK baseURL 配置为 http://jp.harryshan.com:4141/v1，避免重复拼接 /responses。开发默认模型标识为 5.6-luna，保持用户提供的原始名称。用户已提供 API key，其值不记录在文档或 Git 中，接入时通过后端本地配置提供；认证头格式与接口兼容性待实测。
 
 建议使用 OpenAI 官方 TypeScript SDK，通过自定义 baseURL 接入。先验证文本流式输出、工具调用参数、call_id 与 function_call_output 回传、完成/失败事件、取消和错误响应。具体兼容性以自建服务实测为准。
 
@@ -14,7 +14,7 @@
 
 | 部分 | 推荐 | 理由 |
 | --- | --- | --- |
-| 运行时 | Node.js 24 LTS、TypeScript strict、npm | 跨平台、安装路径简单；使用锁文件固定依赖 |
+| 运行时 | Node.js 24 LTS、TypeScript strict、pnpm | 跨平台、安装路径简单；使用锁文件固定依赖 |
 | 前端 | React + Vite + CSS Modules | 本地单页界面，按职责拆分组件，不需要 SSR |
 | 后端 | Fastify | 承担 HTTP、输入校验、静态资源和事件传输，不参与 agent 编排 |
 | 通信 | HTTP 请求 + SSE | 请求用于创建/取消/审批，SSE 展示流式输出与工具状态 |
@@ -53,7 +53,7 @@ UI/API 仅回环监听，校验 Host/Origin 和本机会话凭据，不开放任
 - 工具结果送入模型的默认上限 32 KiB/次，明确标记截断；完整输出仅在受控大小内存储。上下文预算按实际模型配置，不凭模型名称猜容量；到限明确提示，不静默丢弃关键历史。
 - 默认 INFO；日志文件按 10 MiB 轮转、最多保留 5 份。调试等级仍脱敏限长，工具历史与诊断日志分别管理。
 - 文档中文优先，代码标识符与 commit 使用英文。短功能分支开发，通过相关检查后合入 main；按已有约定间隔批量 push。PR 用于较大的改动，初版不强制每项变更都建 PR。
-- 先从源码安装运行，提供 npm 安装/构建/启动指引，暂不做安装包。建议验收 Windows 11、受 Node.js 24 支持的 macOS、Ubuntu 24.04；CPU 架构与精确系统最低版本在 CI 和依赖选定后明确。
+- 先从源码安装运行，提供 pnpm 安装/构建/启动指引，暂不做安装包。建议验收 Windows 11、受 Node.js 24 支持的 macOS、Ubuntu 24.04；CPU 架构与精确系统最低版本在 CI 和依赖选定后明确。
 - 浏览器目标为发布时稳定版 Chrome、Edge、Firefox、Safari；CI 使用 Chromium/Firefox/WebKit，Safari 仍需真实 macOS 冒烟验证，不把 WebKit 测试等同于 Safari 全覆盖。
 - 仓库保持私有，公开分发前再确定许可证。
 

@@ -121,3 +121,11 @@
 - 决定：首个模型服务使用用户自建 Responses API server；权限细则与其他技术选择由开发 agent 给出建议。
 - 原因：用户明确指定模型服务，并要求权限建议及其他技术推荐。
 - 影响：更新 R9 和 AGENTS.md；新增 technical-proposal.md，技术栈和权限细则仍为推荐方案，不冒充用户已确认。接入所需地址、认证方式、模型标识与协议兼容性尚待提供或验证。
+
+## D016：pnpm 与开发模型配置
+
+- 日期：2026-09-07
+- 状态：用户已确认
+- 决定：使用 pnpm 替代 npm；开发 Responses 端点为 http://jp.harryshan.com:4141/v1/responses，默认模型标识为 5.6-luna。
+- 原因：用户明确指定包管理器并提供服务端点、API key 与默认模型。
+- 影响：新增 R19，更新 R9、AGENTS.md 和技术方案；SDK baseURL 使用 http://jp.harryshan.com:4141/v1。API key 不记录在仓库中，后续接入通过后端本地配置提供。本次不调用模型服务，不宣称兼容性已验证，其余推荐方案状态不变。
