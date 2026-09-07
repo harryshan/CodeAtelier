@@ -4,7 +4,7 @@
 
 ## 已确认的模型服务
 
-使用用户自建的 Responses API server，预留其他提供商接口。完整端点为 http://jp.harryshan.com:4141/v1/responses；SDK baseURL 配置为 http://jp.harryshan.com:4141/v1，避免重复拼接 /responses。开发默认模型标识为 5.6-luna，保持用户提供的原始名称。用户已提供 API key，其值不记录在文档或 Git 中，接入时通过后端本地配置提供；认证头格式与接口兼容性待实测。
+使用用户自建的 Responses API server，预留其他提供商接口。完整端点为 http://jp.harryshan.com:4141/v1/responses；SDK baseURL 配置为 http://jp.harryshan.com:4141/v1，避免重复拼接 /responses。用户指定的 5.6-luna 在服务中实际公布为 codex/gpt-5.6-luna，已使用完整标识验证工具往返。用户已提供 API key，其值不记录在文档或 Git 中，接入时通过后端本地配置提供；已验证 Bearer 认证与流式工具往返。
 
 建议使用 OpenAI 官方 TypeScript SDK，通过自定义 baseURL 接入。先验证文本流式输出、工具调用参数、call_id 与 function_call_output 回传、完成/失败事件、取消和错误响应。具体兼容性以自建服务实测为准。
 

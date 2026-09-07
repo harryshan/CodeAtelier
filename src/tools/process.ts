@@ -49,8 +49,10 @@ export async function executeProcess(
       stop();
     }, timeoutMs);
     signal.addEventListener("abort", stop, { once: true });
-    const append = (chunk: Buffer) => {
-      const text = chunk.toString("utf8");
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    const append = (chunk: string) => {
+      const text = chunk;
       size += text.length;
       const accepted = text.slice(0, Math.max(0, outputLimit - output.length));
       output += accepted;

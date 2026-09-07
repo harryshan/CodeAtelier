@@ -26,7 +26,7 @@ export function Timeline({
   );
   const streaming = new Map<string, string>();
   for (const e of data.events)
-    if (e.type === "delta" && e.taskId === active?.id) {
+    if (e.type === "delta") {
       const key = e.taskId + ":" + e.data.step;
       streaming.set(key, (streaming.get(key) || "") + e.data.text);
     }
@@ -115,7 +115,10 @@ export function Timeline({
       {[...streaming].map(([key, text]) => (
         <article key={key} className={s.assistantMessage}>
           <div className={s.messageLabel}>
-            ✳ CodeAtelier <span className={s.pulse}>生成中</span>
+            ✳ CodeAtelier{" "}
+            <span className={s.pulse}>
+              {active ? "生成中" : "未完成的回复"}
+            </span>
           </div>
           <div className={s.prose}>{text}</div>
         </article>

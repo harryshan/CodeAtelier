@@ -57,6 +57,7 @@ export class Config {
       },
       ...saved,
     });
+    this.normalize();
   }
   normalize() {
     this.settings.baseUrl = this.settings.baseUrl
