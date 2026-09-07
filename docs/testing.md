@@ -33,6 +33,7 @@
 | 模型设置 | config.test.ts、regressions.test.ts | 环境/磁盘优先级、端点与模型规范化、参数边界、失败更新保持原状态、密钥内存存储、损坏配置不覆盖 |
 | 日志 | logging.test.ts、core.test.ts | 级别过滤、上下文字段、凭据脱敏、轮转、存储故障降级 |
 | 本机 HTTP API | server.test.ts、core.test.ts | 会话/任务接口、参数校验、Host/Origin/cookie/token、配置更新互斥、取消与恢复 |
+| 服务关闭 | shutdown.test.ts、e2e/app.spec.ts | 关闭授权与确认、正在执行命令的中断保存、SSE 结束、端口释放、重复清理、实际入口进程退出、关闭页面与失败反馈 |
 | Web UI | e2e/app.spec.ts | 建会话、任务与 diff、历史续聊及隔离、审批与取消、设置、人工恢复、重试文本隔离、SSE 失效重连 |
 
 ## 本轮复现并修复的缺陷

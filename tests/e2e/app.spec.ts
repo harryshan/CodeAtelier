@@ -158,3 +158,54 @@ test("continues a historical conversation while keeping another session isolated
   await page.getByRole("button", { name: "独立会话" }).click();
   await expect(page.getByText("任务完成，已检查工具结果。")).toHaveCount(0);
 });
+
+test("shutdown requires confirmation and displays restart instructions", async ({
+  page,
+}) => {
+  let requested = 0;
+  await page.route("**/api/server/shutdown", async (route) => {
+    requested++;
+    expect(route.request().postDataJSON()).toEqual({ confirm: true });
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: '{"ok":true}',
+    });
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "关闭服务", exact: true }).click();
+  await expect(
+    page.getByRole("dialog", { name: "关闭服务确认" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "暂不关闭" }).click();
+  expect(requested).toBe(0);
+  await page.getByRole("button", { name: "关闭服务", exact: true }).click();
+  await page.getByRole("button", { name: "确认关闭服务" }).click();
+  await expect(page.getByRole("heading", { name: "服务已关闭" })).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "重新连接", exact: true }),
+  ).toBeVisible();
+  expect(requested).toBe(1);
+});
+
+test("shutdown request failure reports uncertainty and keeps the interface usable", async ({
+  page,
+}) => {
+  await page.route("**/api/server/shutdown", (route) =>
+    route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: '{"error":"unavailable"}',
+    }),
+  );
+  await page.goto("/");
+  await page.getByRole("button", { name: "关闭服务", exact: true }).click();
+  await page.getByRole("button", { name: "确认关闭服务" }).click();
+  await expect(page.getByRole("alert")).toContainText("未能确认关闭结果");
+  await expect(
+    page.getByRole("button", { name: "关闭服务", exact: true }),
+  ).toBeEnabled();
+  await expect(page.getByRole("heading", { name: "服务已关闭" })).toHaveCount(
+    0,
+  );
+});

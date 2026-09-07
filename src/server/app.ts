@@ -14,6 +14,7 @@ export async function createApp(
   config: Config,
   log: Logger,
   providerFactory?: () => ModelProvider,
+  onStopped?: () => void,
 ) {
   const app = Fastify({
     loggerInstance: log,
@@ -23,6 +24,16 @@ export async function createApp(
   const store = new Store(path.join(config.directory, "history.sqlite"));
   const engine = new Engine(store, config, log, providerFactory);
   const streams = new Set<import("node:http").ServerResponse>();
+  let stopping = false;
+  let shutdownPromise: Promise<void> | undefined;
+  const shutdown = () => {
+    stopping = true;
+    shutdownPromise ??= app.close().then(() => {
+      log.info({ event: "server.stopped", module: "server" });
+      onStopped?.();
+    });
+    return shutdownPromise;
+  };
   const token = randomBytes(32).toString("hex");
   const compare = (value: string) => {
     const a = Buffer.from(value);
@@ -65,6 +76,34 @@ export async function createApp(
       )
         return reply.code(403).send({ error: "会话校验失败，请刷新页面。" });
     }
+  });
+  app.addHook("preHandler", async (req, reply) => {
+    if (stopping && req.url !== "/api/server/shutdown")
+      return reply.code(503).send({ error: "服务正在关闭。" });
+  });
+  app.post("/api/server/shutdown", async (req, reply) => {
+    z.object({ confirm: z.literal(true) })
+      .strict()
+      .parse(req.body);
+    stopping = true;
+    log.info({ event: "server.stopping", module: "server", source: "web" });
+    const finish = () => {
+      setImmediate(
+        () =>
+          void shutdown().catch((error) => {
+            log.error({
+              event: "server.shutdown_failed",
+              module: "server",
+              errorName: error?.name,
+            });
+          }),
+      );
+    };
+    // Close even when the requester disconnects before receiving the acknowledgement.
+    reply.raw.once("finish", finish);
+    reply.raw.once("close", finish);
+    await engine.close();
+    return { ok: true };
   });
   app.setErrorHandler((error, req, reply) => {
     const validation = error instanceof z.ZodError;
@@ -177,11 +216,13 @@ export async function createApp(
         ),
     );
   app.addHook("preClose", async () => {
+    stopping = true;
+    await engine.close();
     for (const stream of streams) stream.end();
   });
   app.addHook("onClose", async () => {
     await engine.close();
     store.close();
   });
-  return { app, engine, store };
+  return { app, engine, store, shutdown };
 }

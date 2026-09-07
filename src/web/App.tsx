@@ -17,6 +17,10 @@ export default function App() {
   const [prompt, setPrompt] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [showShutdown, setShowShutdown] = useState(false);
+  const [serverState, setServerState] = useState<
+    "running" | "stopping" | "stopped"
+  >("running");
   const [connected, setConnected] = useState(true);
   const bottom = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -30,7 +34,7 @@ export default function App() {
       .catch((e) => setError(e.message));
   }, []);
   useEffect(() => {
-    if (!selected) {
+    if (!selected || serverState !== "running") {
       setData(undefined);
       return;
     }
@@ -88,7 +92,7 @@ export default function App() {
       clearTimeout(reconnect);
       stream?.close();
     };
-  }, [selected]);
+  }, [selected, serverState]);
   useEffect(() => {
     bottom.current?.scrollIntoView({ behavior: "smooth" });
   }, [data?.events.length, data?.approvals.length]);
@@ -109,6 +113,20 @@ export default function App() {
       setError((e as Error).message);
     } finally {
       setBusy(false);
+    }
+  };
+  const stopServer = async () => {
+    setServerState("stopping");
+    setError("");
+    try {
+      await api("/server/shutdown", { confirm: true });
+      setServerState("stopped");
+    } catch {
+      setServerState("running");
+      setShowShutdown(false);
+      setError(
+        "未能确认关闭结果。服务可能已停止，请检查启动终端；可刷新页面确认连接状态。",
+      );
     }
   };
   const create = async (e: React.FormEvent) => {
@@ -145,6 +163,19 @@ export default function App() {
       setBusy(false);
     }
   };
+  if (serverState === "stopped")
+    return (
+      <main className={s.welcome}>
+        <h1>服务已关闭</h1>
+        <p>历史对话已保存。未完成任务可在重新启动后恢复。</p>
+        <p>
+          在项目目录运行 <code>pnpm start</code> 后刷新页面。
+        </p>
+        <button className={s.primary} onClick={() => window.location.reload()}>
+          重新连接
+        </button>
+      </main>
+    );
   return (
     <div className={s.app}>
       <aside className={s.sidebar}>
@@ -186,6 +217,7 @@ export default function App() {
           )}
         </nav>
         <div className={s.sideFooter}>
+          <button onClick={() => setShowShutdown(true)}>关闭服务</button>
           <div>
             <span className={s.greenDot} /> 仅本机访问{" "}
             <span className={s.version}>v0.1</span>
@@ -348,6 +380,37 @@ export default function App() {
           </footer>
         )}
       </main>
+      {showShutdown && (
+        <div className={s.overlay}>
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-label="关闭服务确认"
+            className={s.modal}
+          >
+            <h2>关闭 CodeAtelier 服务？</h2>
+            <p>
+              所有页面将断开连接。正在执行的任务会停止并保存为可恢复的中断状态，已修改的文件不会撤销。
+            </p>
+            <p>重新启动需在项目目录运行 pnpm start。</p>
+            <div className={s.actions}>
+              <button
+                disabled={serverState === "stopping"}
+                onClick={() => setShowShutdown(false)}
+              >
+                暂不关闭
+              </button>
+              <button
+                className={s.primary}
+                disabled={serverState === "stopping"}
+                onClick={() => void stopServer()}
+              >
+                {serverState === "stopping" ? "正在关闭…" : "确认关闭服务"}
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
       {showSettings && settings && (
         <SettingsPanel
           settings={settings}
