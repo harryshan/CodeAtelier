@@ -57,8 +57,14 @@ test("command approval survives refresh and can be denied or cancelled", async (
   await page.getByRole("button", { name: "开始执行" }).click();
   await expect(page.getByText("允许这次操作？")).toBeVisible();
   await page.getByRole("button", { name: "停止任务" }).click();
-  await expect(page.getByText("任务已取消。")).toBeVisible();
+  await expect(page.getByRole("button", { name: "恢复任务" })).toBeVisible();
   await expect(page.getByText("允许这次操作？")).toHaveCount(0);
+  await page.reload();
+  await page.getByRole("button", { name: "权限验收" }).click();
+  await page.getByRole("button", { name: "恢复任务" }).click();
+  await expect(page.getByText("允许这次操作？")).toBeVisible();
+  await page.getByRole("button", { name: "拒绝", exact: true }).click();
+  await expect(page.getByRole("button", { name: "恢复任务" })).toHaveCount(0);
 });
 test("settings validates and saves without exposing key", async ({ page }) => {
   await page.goto("/");
@@ -68,4 +74,58 @@ test("settings validates and saves without exposing key", async ({ page }) => {
   await expect(page.getByRole("dialog")).toHaveCount(0);
   const response = await page.request.get("/api/settings");
   expect(await response.text()).not.toContain("ui-test-secret");
+});
+
+test("model retries keep incomplete text separate from the successful response", async ({
+  page,
+}) => {
+  const workspace = await realpath(
+    await mkdtemp(path.join(tmpdir(), "codeatelier-e2e-")),
+  );
+  await page.goto("/");
+  await page.getByRole("button", { name: "新建会话" }).click();
+  await page.getByLabel("项目目录").fill(workspace);
+  await page.getByLabel("会话名称").fill("重试验收");
+  await page.getByRole("button", { name: "创建会话" }).click();
+  await page.getByLabel("任务描述").fill("模型重试");
+  await page.getByRole("button", { name: "开始执行" }).click();
+  await expect(page.getByText("任务完成，已检查工具结果。")).toBeVisible();
+  await expect(page.getByText("第一次尝试的部分回复")).toBeVisible();
+  await expect(page.getByText("未完成的回复")).toBeVisible();
+  await expect(
+    page.getByRole("status").filter({ hasText: "后重试" }),
+  ).toBeVisible();
+});
+
+test("reconnects after an expired SSE session without resubmitting a task", async ({
+  page,
+}) => {
+  const workspace = await realpath(
+    await mkdtemp(path.join(tmpdir(), "codeatelier-e2e-")),
+  );
+  let connections = 0;
+  await page.route("**/api/sessions/*/events", async (route) => {
+    if (++connections === 1)
+      await route.fulfill({
+        status: 401,
+        contentType: "application/json",
+        body: '{"error":"expired"}',
+      });
+    else await route.continue();
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "新建会话" }).click();
+  await page.getByLabel("项目目录").fill(workspace);
+  await page.getByLabel("会话名称").fill("重连验收");
+  await page.getByRole("button", { name: "创建会话" }).click();
+  await expect.poll(() => connections).toBeGreaterThan(1);
+  await expect(page.getByText("就绪", { exact: true })).toBeVisible();
+  const sessions = await (await page.request.get("/api/sessions")).json();
+  const session = sessions.find(
+    (s: { title: string }) => s.title === "重连验收",
+  );
+  const snapshot = await (
+    await page.request.get("/api/sessions/" + session.id)
+  ).json();
+  expect(snapshot.tasks).toHaveLength(0);
 });

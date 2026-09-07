@@ -18,6 +18,17 @@ export class Store {
       )
       .run();
   }
+  transaction<T>(work: () => T): T {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const value = work();
+      this.db.exec("COMMIT");
+      return value;
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
   list() {
     return this.db
       .prepare("SELECT * FROM sessions ORDER BY updatedAt DESC")
@@ -38,8 +49,15 @@ export class Store {
   }
   tasks(sessionId: string) {
     return this.db
-      .prepare("SELECT * FROM tasks WHERE sessionId=? ORDER BY createdAt")
+      .prepare(
+        "SELECT * FROM tasks WHERE sessionId=? ORDER BY createdAt, rowid",
+      )
       .all(sessionId) as unknown as Task[];
+  }
+  task(id: string) {
+    return this.db
+      .prepare("SELECT * FROM tasks WHERE id=?")
+      .get(id) as unknown as Task | undefined;
   }
   createTask(sessionId: string) {
     const task = {

@@ -122,6 +122,12 @@ export async function createApp(
       .parse(req.body);
     return engine.start(id, prompt);
   });
+  app.post("/api/tasks/:id/resume", async (req) => {
+    const { instruction } = z
+      .object({ instruction: z.string().max(40000).default("") })
+      .parse(req.body);
+    return engine.resume((req.params as { id: string }).id, instruction);
+  });
   app.post("/api/tasks/:id/cancel", async (req) => {
     engine.cancel((req.params as { id: string }).id);
     return { ok: true };

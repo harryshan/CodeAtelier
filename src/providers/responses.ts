@@ -1,4 +1,5 @@
 import OpenAI from "openai";
+import { ModelError, modelError } from "./recovery.js";
 import type { Settings } from "../shared/types.js";
 export interface ModelResult {
   output: any[];
@@ -25,7 +26,8 @@ export class ResponsesProvider implements ModelProvider {
     signal: AbortSignal,
     onDelta: (text: string) => void,
   ): Promise<ModelResult> {
-    if (!this.key) throw new Error("请先在设置中输入 API key。");
+    if (!this.key)
+      throw new ModelError("请先在设置中输入 API key。", false, "missing_key");
     const client = new OpenAI({
       baseURL: this.settings.baseUrl,
       apiKey: this.key,
@@ -37,14 +39,20 @@ export class ResponsesProvider implements ModelProvider {
     signal.addEventListener("abort", abort, { once: true });
     if (signal.aborted) abort();
     const total = setTimeout(
-      () => controller.abort(new Error("模型请求超时")),
+      () =>
+        controller.abort(
+          new ModelError("模型请求超时", true, "request_timeout"),
+        ),
       this.settings.requestTimeoutMs,
     );
     let idle: ReturnType<typeof setTimeout>;
     const reset = () => {
       clearTimeout(idle);
       idle = setTimeout(
-        () => controller.abort(new Error("模型流长时间无响应")),
+        () =>
+          controller.abort(
+            new ModelError("模型流长时间无响应", true, "idle_timeout"),
+          ),
         this.settings.idleTimeoutMs,
       );
     };
@@ -70,21 +78,58 @@ export class ResponsesProvider implements ModelProvider {
           text += event.delta;
           if (text.length > 1000000) {
             controller.abort();
-            throw new Error("模型输出超过单次上限。");
+            throw new ModelError(
+              "模型输出超过单次上限。",
+              false,
+              "output_limit",
+            );
           }
           onDelta(event.delta);
         }
         if (event.type === "response.output_item.done")
           items.set(event.output_index, event.item);
-        if (event.type === "response.completed") result = event.response;
+        if (event.type === "response.completed") {
+          result = event.response;
+          break;
+        }
         if (
           event.type === "response.failed" ||
           event.type === "response.incomplete" ||
           event.type === "error"
-        )
-          throw new Error("模型响应失败或不完整，请检查模型配置及服务状态。");
+        ) {
+          const detail = event as any;
+          const code =
+            detail.response?.error?.code ||
+            detail.error?.code ||
+            detail.code ||
+            detail.response?.incomplete_details?.reason ||
+            "stream_failed";
+          const retryable = [
+            "server_error",
+            "rate_limit_exceeded",
+            "stream_failed",
+          ].includes(code);
+          throw new ModelError(
+            "模型响应失败或不完整，请检查模型配置及服务状态。",
+            retryable,
+            [
+              "server_error",
+              "rate_limit_exceeded",
+              "stream_failed",
+              "max_output_tokens",
+              "content_filter",
+            ].includes(code)
+              ? code
+              : "response_failed",
+          );
+        }
       }
-      if (!result) throw new Error("模型连接结束但未收到完成事件。");
+      if (!result)
+        throw new ModelError(
+          "模型连接结束但未收到完成事件。",
+          true,
+          "stream_disconnected",
+        );
       const output = result.output?.length
         ? result.output
         : [...items.entries()]
@@ -96,7 +141,18 @@ export class ResponsesProvider implements ModelProvider {
         .filter((i: any) => i.type === "output_text")
         .map((i: any) => i.text)
         .join("");
+      if (!output.length && !text)
+        throw new ModelError(
+          "模型返回空响应，可尝试重试。",
+          true,
+          "empty_response",
+        );
       return { output, text: finalText || text };
+    } catch (error) {
+      if (signal.aborted) throw signal.reason;
+      if (controller.signal.reason instanceof ModelError)
+        throw controller.signal.reason;
+      throw modelError(error);
     } finally {
       clearTimeout(total);
       clearTimeout(idle!);

@@ -1,3 +1,4 @@
+import { retryModel } from "../providers/recovery.js";
 import { EventEmitter } from "node:events";
 import { readFile } from "node:fs/promises";
 
@@ -48,25 +49,74 @@ export class Engine {
     this.events.emit("event", event);
     this.events.emit("change", task.sessionId);
   }
-  start(sessionId: string, prompt: string) {
+  start(
+    sessionId: string,
+    prompt: string,
+    recovery?: { sourceTaskId: string; originalPrompt: string },
+  ) {
     if (this.active) throw new Error("已有任务运行，请等待或取消。");
     const session = this.store.get(sessionId);
     if (!session) throw new Error("会话不存在");
-    const task = this.store.createTask(sessionId);
+    const task = this.store.transaction(() => {
+      const created = this.store.createTask(sessionId);
+      this.emit(created, "user", { text: prompt });
+      if (recovery) this.emit(created, "recovery", recovery);
+      return created;
+    });
     const controller = new AbortController();
     this.active = { task, controller, done: Promise.resolve() };
-    this.emit(task, "user", { text: prompt });
-    this.active.done = this.run(task, prompt, controller.signal).finally(() => {
-      this.active = undefined;
-      this.events.emit("change", sessionId);
-    });
+    this.active.done = this.run(task, prompt, controller.signal)
+      .catch((error) => {
+        this.log.error({
+          event: "task.persistence_failed",
+          taskId: task.id,
+          errorName: error?.name,
+        });
+        try {
+          this.store.status(
+            task.id,
+            "failed",
+            "任务持久化异常，请检查存储空间和权限后恢复。",
+          );
+        } catch {
+          /* Next boot marks unfinished tasks interrupted. */
+        }
+      })
+      .finally(() => {
+        this.active = undefined;
+        this.events.emit("change", sessionId);
+      });
     return task;
+  }
+  resume(id: string, instruction = "") {
+    if (this.active) throw new Error("已有任务运行，请等待或取消。");
+    const task = this.store.task(id);
+    if (!task || !["failed", "cancelled", "interrupted"].includes(task.status))
+      throw new Error("该任务不可恢复。");
+    if (this.store.tasks(task.sessionId).at(-1)?.id !== id)
+      throw new Error("只能恢复会话的最后一个任务；请在当前会话继续提问。");
+    const events = this.store.events(task.sessionId);
+    const prompt =
+      events.find((e) => e.taskId === id && e.type === "recovery")?.data
+        .originalPrompt ||
+      events.find((e) => e.taskId === id && e.type === "user")?.data.text;
+    if (!prompt) throw new Error("缺少原任务描述，请在当前会话重新说明任务。");
+    return this.start(
+      task.sessionId,
+      "恢复上次任务。原任务要求：\n" +
+        prompt +
+        "\n保留已完成的进度；先核实当前文件和不确定操作的状态，不要盲目重放命令。\n" +
+        instruction,
+      { sourceTaskId: id, originalPrompt: prompt },
+    );
   }
   cancel(id: string) {
     if (this.active?.task.id === id) this.active.controller.abort();
   }
   async close() {
-    this.active?.controller.abort();
+    this.active?.controller.abort(
+      new Error("服务关闭，任务中断，可手动恢复。"),
+    );
     await this.active?.done;
   }
   private async run(task: Task, prompt: string, signal: AbortSignal) {
@@ -81,43 +131,51 @@ export class Engine {
     let status: TaskStatus = "completed";
     let failure: string | undefined;
     const emit = (type: string, data: any) => this.emit(task, type, data);
-    const input = this.store.context(session.id);
-    // A crash may leave function calls without outputs. Never replay their side effects.
-    const answered = new Set(
-      input
-        .filter((i) => i.type === "function_call_output")
-        .map((i) => i.call_id),
-    );
-    for (const item of [...input])
-      if (item.type === "function_call" && !answered.has(item.call_id))
-        input.push({
-          type: "function_call_output",
-          call_id: item.call_id,
-          output:
-            "上次任务中断，执行结果未知。必须先检查当前文件状态，不可自动重放。",
-        });
-    input.push({ role: "user", content: prompt });
-    this.store.saveContext(session.id, input);
-    const runner = new ToolRunner({
-      root: session.workspace,
-      sessionId: session.id,
-      taskId: task.id,
-      signal,
-      settings,
-      approvals: this.approvals,
-      emit,
-    });
     let step = 0;
+    let attempt = 1;
     let buffer = "";
     let lastFlush = 0;
     const flush = () => {
       if (buffer) {
-        emit("delta", { text: buffer, step });
+        emit("delta", { text: buffer, step, attempt });
         buffer = "";
         lastFlush = Date.now();
       }
     };
     try {
+      const input = this.store.context(session.id);
+      // A crash may leave function calls without outputs. Never replay their side effects.
+      const answered = new Set(
+        input
+          .filter((i) => i.type === "function_call_output")
+          .map((i) => i.call_id),
+      );
+      const results = new Map(
+        this.store
+          .events(session.id)
+          .filter((e) => e.type === "tool_result")
+          .map((e) => [e.data.callId, e.data.result]),
+      );
+      for (const item of [...input])
+        if (item.type === "function_call" && !answered.has(item.call_id))
+          input.push({
+            type: "function_call_output",
+            call_id: item.call_id,
+            output: results.has(item.call_id)
+              ? JSON.stringify(results.get(item.call_id))
+              : "上次任务中断，执行结果未知（也可能尚未执行）。必须先检查当前文件状态，不可自动重放。",
+          });
+      input.push({ role: "user", content: prompt });
+      this.store.saveContext(session.id, input);
+      const runner = new ToolRunner({
+        root: session.workspace,
+        sessionId: session.id,
+        taskId: task.id,
+        signal,
+        settings,
+        approvals: this.approvals,
+        emit,
+      });
       let projectRules = "";
       const rules = await resolveTarget(session.workspace, "AGENTS.md");
       if (!rules.outside) {
@@ -143,21 +201,49 @@ ${projectRules}`;
           throw new Error("上下文已达到配置上限，请新建会话或提高上下文限制。");
         lastFlush = Date.now();
         log.debug({ event: "model.started", step });
-        const response = await provider.run(
-          input,
-          instructions,
-          definitions,
+        const response = await retryModel(
+          async (currentAttempt) => {
+            attempt = currentAttempt;
+            return provider.run(
+              input,
+              instructions,
+              definitions,
+              signal,
+              (delta) => {
+                buffer += delta;
+                if (Date.now() - lastFlush > 100 || buffer.length > 1000)
+                  flush();
+              },
+            );
+          },
           signal,
-          (delta) => {
-            buffer += delta;
-            if (Date.now() - lastFlush > 100 || buffer.length > 1000) flush();
+          (error, failedAttempt, delayMs) => {
+            flush();
+            emit("notice", {
+              text: `${error.message} ${delayMs} ms 后重试（${failedAttempt}/2）。`,
+              code: error.code,
+              step,
+              attempt,
+            });
+            log.warn({
+              event: "model.retry",
+              step,
+              attempt,
+              delayMs,
+              code: error.code,
+              status: error.status,
+              requestId: error.requestId
+                ? redactText(error.requestId, [this.config.apiKey])
+                : undefined,
+            });
           },
         );
         flush();
         signal.throwIfAborted();
         input.push(...response.output);
         this.store.saveContext(session.id, input);
-        if (response.text) emit("assistant", { text: response.text, step });
+        if (response.text)
+          emit("assistant", { text: response.text, step, attempt });
         const calls = response.output.filter((i) => i.type === "function_call");
         log.info({ event: "model.completed", step, toolCount: calls.length });
         if (!calls.length) {
@@ -188,40 +274,52 @@ ${projectRules}`;
               text: output.slice(0, settings.outputChars),
             });
           output = redactText(output, [this.config.apiKey]);
-          emit("tool_result", {
-            name: call.name,
-            callId: call.call_id,
-            result: JSON.parse(output),
-            durationMs: Date.now() - started,
+          this.store.transaction(() => {
+            emit("tool_result", {
+              name: call.name,
+              callId: call.call_id,
+              result: JSON.parse(output),
+              durationMs: Date.now() - started,
+            });
+            input.push({
+              type: "function_call_output",
+              call_id: call.call_id,
+              output,
+            });
+            this.store.saveContext(session.id, input);
           });
-          input.push({
-            type: "function_call_output",
-            call_id: call.call_id,
-            output,
-          });
-          this.store.saveContext(session.id, input);
           log.info({
             event: "tool.completed",
             tool: call.name,
             toolCallId: call.call_id,
             durationMs: Date.now() - started,
-            ok: !result?.error,
+            ok:
+              !result?.error &&
+              (result?.exitCode === undefined || result.exitCode === 0),
           });
         }
       }
       throw new Error("已达到最大模型调用次数，任务停止。");
     } catch (error: any) {
       flush();
-      status = signal.aborted ? "cancelled" : "failed";
+      status = signal.aborted
+        ? signal.reason?.message?.startsWith("服务关闭")
+          ? "interrupted"
+          : "cancelled"
+        : "failed";
       failure = signal.aborted
-        ? "任务已取消。"
-        : redactText(String(error.message || "任务失败").slice(0, 2000), [
+        ? status === "interrupted"
+          ? "服务关闭，任务中断，可手动恢复。"
+          : "任务已取消，可手动恢复。"
+        : redactText(String(error?.message || "任务失败").slice(0, 2000), [
             this.config.apiKey,
           ]);
       emit("notice", { text: failure, status });
-      log[status === "cancelled" ? "info" : "error"]({
+      log[status === "failed" ? "error" : "info"]({
         event: "task." + status,
-        errorName: error.name,
+        errorName: error?.name,
+        code: error?.code,
+        message: failure,
       });
     } finally {
       this.store.status(task.id, status, failure);

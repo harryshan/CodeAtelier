@@ -112,6 +112,28 @@ export function SettingsPanel({
                 }
               />
             </label>
+            {(
+              [
+                ["requestTimeoutMs", "模型请求超时（秒）"],
+                ["idleTimeoutMs", "模型空闲超时（秒）"],
+              ] as const
+            ).map(([field, label]) => (
+              <label key={field}>
+                {label}
+                <input
+                  type="number"
+                  min="1"
+                  max={field === "idleTimeoutMs" ? 300 : 600}
+                  value={value[field] / 1000}
+                  onChange={(e) =>
+                    setValue({
+                      ...value,
+                      [field]: Number(e.target.value) * 1000,
+                    })
+                  }
+                />
+              </label>
+            ))}
             <label>
               上下文字符上限
               <input

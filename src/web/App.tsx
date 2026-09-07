@@ -57,13 +57,36 @@ export default function App() {
       }
     };
     void refresh();
-    const stream = new EventSource("/api/sessions/" + selected + "/events");
-    stream.addEventListener("refresh", () => void refresh());
-    stream.onopen = () => setConnected(true);
-    stream.onerror = () => setConnected(false);
+    let stream: EventSource | undefined;
+    let reconnect: ReturnType<typeof setTimeout>;
+    const retryConnection = () => {
+      if (disposed) return;
+      setConnected(false);
+      stream?.close();
+      clearTimeout(reconnect);
+      reconnect = setTimeout(() => void connect(), 2000);
+    };
+    const connect = async () => {
+      try {
+        const v = await bootstrap();
+        if (disposed) return;
+        setSettings(v.settings);
+        setHasKey(v.hasApiKey);
+        await refresh();
+        if (disposed) return;
+        stream = new EventSource("/api/sessions/" + selected + "/events");
+        stream.addEventListener("refresh", () => void refresh());
+        stream.onopen = () => setConnected(true);
+        stream.onerror = retryConnection;
+      } catch {
+        retryConnection();
+      }
+    };
+    void connect();
     return () => {
       disposed = true;
-      stream.close();
+      clearTimeout(reconnect);
+      stream?.close();
     };
   }, [selected]);
   useEffect(() => {
@@ -72,6 +95,22 @@ export default function App() {
   const active = data?.tasks.find((t) =>
     ["running", "waiting"].includes(t.status),
   );
+  const recoverable = data?.tasks.at(-1);
+  const resume = async () => {
+    if (!recoverable) return;
+    setBusy(true);
+    try {
+      await api("/tasks/" + recoverable.id + "/resume", {
+        instruction: prompt,
+      });
+      setPrompt("");
+      setData(await snapshot(selected));
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
   const create = async (e: React.FormEvent) => {
     e.preventDefault();
     setBusy(true);
@@ -246,6 +285,24 @@ export default function App() {
         </div>
         {selected && (
           <footer className={s.composerWrap}>
+            {!active &&
+              recoverable &&
+              ["failed", "cancelled", "interrupted"].includes(
+                recoverable.status,
+              ) && (
+                <div className={s.notice}>
+                  <p>
+                    {recoverable.error || "任务中断"}{" "}
+                    可在下方填写恢复说明，或直接恢复。
+                  </p>
+                  <button
+                    disabled={busy || !hasKey}
+                    onClick={() => void resume()}
+                  >
+                    恢复任务
+                  </button>
+                </div>
+              )}
             <div className={s.composer}>
               <textarea
                 aria-label="任务描述"

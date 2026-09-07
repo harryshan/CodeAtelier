@@ -4,6 +4,7 @@ export async function api<T>(
   url: string,
   body?: unknown,
   method = body === undefined ? "GET" : "POST",
+  refreshed = false,
 ): Promise<T> {
   const response = await fetch("/api" + url, {
     method,
@@ -13,6 +14,10 @@ export async function api<T>(
     },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
+  if (response.status === 401 && url !== "/bootstrap" && !refreshed) {
+    await bootstrap();
+    return api<T>(url, body, method, true);
+  }
   const result = await response.json();
   if (!response.ok) throw new Error(result.error || "请求失败");
   return result;

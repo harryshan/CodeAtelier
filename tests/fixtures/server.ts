@@ -1,3 +1,4 @@
+import { ModelError } from "../../src/providers/recovery.js";
 import { mkdtemp, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -30,6 +31,10 @@ const { app, engine } = await createApp(
           ],
           text: "",
         });
+        if (step === 1 && lastUser.includes("模型重试")) {
+          onDelta("第一次尝试的部分回复");
+          throw new ModelError("模拟断流", true, "stream_disconnected");
+        }
         if (step === 1 && lastUser.includes("命令"))
           return tool("run_command", {
             command: process.execPath,

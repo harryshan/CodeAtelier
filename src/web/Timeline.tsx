@@ -27,11 +27,14 @@ export function Timeline({
   const streaming = new Map<string, string>();
   for (const e of data.events)
     if (e.type === "delta") {
-      const key = e.taskId + ":" + e.data.step;
+      const key = e.taskId + ":" + e.data.step + ":" + (e.data.attempt || 1);
       streaming.set(key, (streaming.get(key) || "") + e.data.text);
     }
   for (const e of data.events)
-    if (e.type === "assistant") streaming.delete(e.taskId + ":" + e.data.step);
+    if (e.type === "assistant")
+      streaming.delete(
+        e.taskId + ":" + e.data.step + ":" + (e.data.attempt || 1),
+      );
   return (
     <div className={s.timeline}>
       {data.events.map((e) => {
@@ -117,7 +120,16 @@ export function Timeline({
           <div className={s.messageLabel}>
             ✳ CodeAtelier{" "}
             <span className={s.pulse}>
-              {active ? "生成中" : "未完成的回复"}
+              {active &&
+              key.startsWith(active.id + ":") &&
+              !data.events.some(
+                (e) =>
+                  e.type === "notice" &&
+                  key ===
+                    e.taskId + ":" + e.data.step + ":" + (e.data.attempt || 1),
+              )
+                ? "生成中"
+                : "未完成的回复"}
             </span>
           </div>
           <div className={s.prose}>{text}</div>
