@@ -10,6 +10,7 @@ import { Store } from "../sessions/store.js";
 import { Engine } from "../agent/engine.js";
 import type { ModelProvider } from "../providers/responses.js";
 import { workspacePath } from "../tools/paths.js";
+
 export async function createApp(
   config: Config,
   log: Logger,
@@ -26,39 +27,54 @@ export async function createApp(
   const streams = new Set<import("node:http").ServerResponse>();
   let stopping = false;
   let shutdownPromise: Promise<void> | undefined;
+  // Web 请求和进程信号共用这一个关闭 Promise，避免重复释放资源。
   const shutdown = () => {
     stopping = true;
     shutdownPromise ??= app.close().then(() => {
       log.info({ event: "server.stopped", module: "server" });
       onStopped?.();
     });
+
     return shutdownPromise;
   };
+
   const token = randomBytes(32).toString("hex");
   const compare = (value: string) => {
     const a = Buffer.from(value);
     const b = Buffer.from(token);
+
     return a.length === b.length && timingSafeEqual(a, b);
   };
+
+  // 来源校验先于业务路由执行；写操作还需验证本机会话 token。
   app.addHook("onRequest", async (req, reply) => {
     const host = req.headers.host || "";
-    if (!/^(127\.0\.0\.1|localhost|\[::1\])(?::\d+)?$/.test(host))
+
+    if (!/^(127\.0\.0\.1|localhost|\[::1\])(?::\d+)?$/.test(host)) {
       return reply.code(403).send({ error: "仅允许本机访问。" });
+    }
+
     const origin = req.headers.origin;
+
     if (origin) {
       let url: URL;
+
       try {
         url = new URL(origin);
       } catch {
         return reply.code(403).send({ error: "无效来源" });
       }
+
       const allowed =
         url.host === host ||
         (process.env.NODE_ENV !== "production" &&
           ["127.0.0.1:5173", "localhost:5173"].includes(url.host));
-      if (!allowed || !["http:", "https:"].includes(url.protocol))
+
+      if (!allowed || !["http:", "https:"].includes(url.protocol)) {
         return reply.code(403).send({ error: "拒绝跨站请求。" });
+      }
     }
+
     reply.header("Cache-Control", "no-store");
     reply.header("X-Content-Type-Options", "nosniff");
     if (req.url.startsWith("/api/") && !req.url.startsWith("/api/bootstrap")) {
@@ -68,18 +84,23 @@ export async function createApp(
           .map((v) => v.trim())
           .find((v) => v.startsWith("ca_session="))
           ?.slice(11) || "";
-      if (!compare(cookie))
+
+      if (!compare(cookie)) {
         return reply.code(401).send({ error: "请刷新页面建立本机会话。" });
+      }
+
       if (
         !["GET", "HEAD"].includes(req.method) &&
         !compare(String(req.headers["x-codeatelier-token"] || ""))
-      )
+      ) {
         return reply.code(403).send({ error: "会话校验失败，请刷新页面。" });
+      }
     }
   });
   app.addHook("preHandler", async (req, reply) => {
-    if (stopping && req.url !== "/api/server/shutdown")
+    if (stopping && req.url !== "/api/server/shutdown") {
       return reply.code(503).send({ error: "服务正在关闭。" });
+    }
   });
   app.post("/api/server/shutdown", async (req, reply) => {
     z.object({ confirm: z.literal(true) })
@@ -99,14 +120,17 @@ export async function createApp(
           }),
       );
     };
+
     // Close even when the requester disconnects before receiving the acknowledgement.
     reply.raw.once("finish", finish);
     reply.raw.once("close", finish);
     await engine.close();
+
     return { ok: true };
   });
   app.setErrorHandler((error, req, reply) => {
     const validation = error instanceof z.ZodError;
+
     log.warn({
       event: "request.failed",
       module: "server",
@@ -126,6 +150,7 @@ export async function createApp(
       "Set-Cookie",
       `ca_session=${token}; HttpOnly; SameSite=Strict; Path=/`,
     );
+
     return {
       token,
       ...config.publicValue(),
@@ -134,9 +159,13 @@ export async function createApp(
   });
   app.get("/api/settings", async () => config.publicValue());
   app.put("/api/settings", async (req) => {
-    if (engine.active) throw new Error("请等待当前任务结束后再修改设置。");
+    if (engine.active) {
+      throw new Error("请等待当前任务结束后再修改设置。");
+    }
+
     config.update(req.body);
     log.level = config.settings.logLevel;
+
     return config.publicValue();
   });
   app.get("/api/sessions", async () => store.list());
@@ -147,11 +176,16 @@ export async function createApp(
         title: z.string().min(1).max(100),
       })
       .parse(req.body);
+
     return store.create(await workspacePath(data.workspace), data.title);
   });
   app.get("/api/sessions/:id", async (req, reply) => {
     const { id } = req.params as { id: string };
-    if (!store.get(id)) return reply.code(404).send({ error: "会话不存在" });
+
+    if (!store.get(id)) {
+      return reply.code(404).send({ error: "会话不存在" });
+    }
+
     return engine.snapshot(id);
   });
   app.post("/api/sessions/:id/tasks", async (req) => {
@@ -159,28 +193,38 @@ export async function createApp(
     const { prompt } = z
       .object({ prompt: z.string().trim().min(1).max(40000) })
       .parse(req.body);
+
     return engine.start(id, prompt);
   });
   app.post("/api/tasks/:id/resume", async (req) => {
     const { instruction } = z
       .object({ instruction: z.string().max(40000).default("") })
       .parse(req.body);
+
     return engine.resume((req.params as { id: string }).id, instruction);
   });
   app.post("/api/tasks/:id/cancel", async (req) => {
     engine.cancel((req.params as { id: string }).id);
+
     return { ok: true };
   });
   app.post("/api/approvals/:id", async (req) => {
     const { decision } = z
       .object({ decision: z.enum(["once", "session", "deny"]) })
       .parse(req.body);
+
     engine.approvals.decide((req.params as { id: string }).id, decision);
+
     return { ok: true };
   });
+  // SSE 只通知客户端刷新；持久化快照才是页面状态的来源。
   app.get("/api/sessions/:id/events", async (req, reply) => {
     const { id } = req.params as { id: string };
-    if (!store.get(id)) return reply.code(404).send({ error: "会话不存在" });
+
+    if (!store.get(id)) {
+      return reply.code(404).send({ error: "会话不存在" });
+    }
+
     reply.hijack();
     streams.add(reply.raw);
     reply.raw.writeHead(200, {
@@ -190,14 +234,21 @@ export async function createApp(
       "X-Accel-Buffering": "no",
     });
     const send = () => {
-      if (!reply.raw.destroyed) reply.raw.write("event: refresh\ndata: {}\n\n");
+      if (!reply.raw.destroyed) {
+        reply.raw.write("event: refresh\ndata: {}\n\n");
+      }
     };
+
     const listener = (sessionId: string) => {
-      if (sessionId === id) send();
+      if (sessionId === id) {
+        send();
+      }
     };
+
     engine.events.on("change", listener);
     send();
     const timer = setInterval(() => reply.raw.write(": keepalive\n\n"), 15000);
+
     reply.raw.on("close", () => {
       streams.delete(reply.raw);
       clearInterval(timer);
@@ -205,9 +256,10 @@ export async function createApp(
     });
   });
   const web = path.resolve("dist/web");
-  if (existsSync(web))
+
+  if (existsSync(web)) {
     await app.register(staticPlugin, { root: web, prefix: "/" });
-  else
+  } else {
     app.get("/", async (_req, reply) =>
       reply
         .type("text/html")
@@ -215,14 +267,19 @@ export async function createApp(
           "<h1>CodeAtelier</h1><p>开发界面：运行 pnpm dev:web，打开 http://127.0.0.1:5173</p>",
         ),
     );
+  }
+
   app.addHook("preClose", async () => {
     stopping = true;
     await engine.close();
-    for (const stream of streams) stream.end();
+    for (const stream of streams) {
+      stream.end();
+    }
   });
   app.addHook("onClose", async () => {
     await engine.close();
     store.close();
   });
+
   return { app, engine, store, shutdown };
 }

@@ -18,16 +18,23 @@ import { Engine } from "../src/agent/engine.js";
 import { createApp } from "../src/server/app.js";
 import pino from "pino";
 import { redactText } from "../src/logging/logger.js";
+
 const cleanup: string[] = [];
+
 async function temp() {
   const p = await mkdtemp(path.join(tmpdir(), "codeatelier-"));
+
   cleanup.push(p);
+
   return realpath(p);
 }
+
 afterEach(async () => {
-  for (const p of cleanup.splice(0))
+  for (const p of cleanup.splice(0)) {
     await rm(p, { recursive: true, force: true });
+  }
 });
+
 function runner(
   root: string,
   config: Config,
@@ -44,12 +51,15 @@ function runner(
     emit: () => {},
   });
 }
+
 describe("files and permissions", () => {
   it("requires reading existing files and rejects concurrent changes", async () => {
     const root = await temp();
     const config = new Config(await temp());
+
     await writeFile(path.join(root, "a.txt"), "old");
     const tools = runner(root, config);
+
     await expect(
       tools.execute("edit_file", {
         path: "a.txt",
@@ -63,6 +73,7 @@ describe("files and permissions", () => {
       endLine: 10,
     });
     await writeFile(path.join(root, "a.txt"), "other");
+
     await expect(
       tools.execute("edit_file", {
         path: "a.txt",
@@ -74,32 +85,37 @@ describe("files and permissions", () => {
   it("writes exact replacement and reports diff", async () => {
     const root = await temp();
     const tools = runner(root, new Config(await temp()));
+
     await tools.execute("write_file", { path: "a.txt", content: "abc" });
     const result = await tools.execute("edit_file", {
       path: "a.txt",
       oldText: "b",
       newText: "B",
     });
+
     expect(await readFile(path.join(root, "a.txt"), "utf8")).toBe("aBc");
     expect(result.diff).toContain("+aBc");
   });
   it("blocks external writes until approval and denial leaves file absent", async () => {
-    const root = await temp(),
-      outside = await temp();
+    const root = await temp();
+    const outside = await temp();
     const approvals = new ApprovalManager(() => {});
     const tools = runner(root, new Config(await temp()), approvals);
     const pending = tools.execute("write_file", {
       path: path.join(outside, "x.txt"),
       content: "no",
     });
+
     await waitFor(() => approvals.list().length === 1);
     approvals.decide(approvals.list()[0].id, "deny");
+
     await expect(pending).rejects.toThrow("拒绝");
     await expect(readFile(path.join(outside, "x.txt"))).rejects.toThrow();
   });
   it("recognizes directory links escaping workspace", async () => {
-    const root = await temp(),
-      outside = await temp();
+    const root = await temp();
+    const outside = await temp();
+
     await writeFile(path.join(outside, "secret.txt"), "outside");
     await symlink(
       outside,
@@ -113,8 +129,10 @@ describe("files and permissions", () => {
       startLine: 1,
       endLine: 10,
     });
+
     await waitFor(() => approvals.list().length === 1);
     approvals.decide(approvals.list()[0].id, "deny");
+
     await expect(pending).rejects.toThrow("拒绝");
   });
   it("cancels a pending approval", async () => {
@@ -124,21 +142,30 @@ describe("files and permissions", () => {
       { sessionId: "s", taskId: "t", tool: "run_command", description: "test" },
       controller.signal,
     );
+
     controller.abort();
+
     await expect(pending).rejects.toThrow("取消");
     expect(approvals.list()).toEqual([]);
   });
 });
+
 export async function waitFor(check: () => boolean) {
   for (let i = 0; i < 200; i++) {
-    if (check()) return;
+    if (check()) {
+      return;
+    }
+
     await new Promise((r) => setTimeout(r, 10));
   }
+
   throw new Error("condition timeout");
 }
+
 describe("execution and persistence", () => {
   it("terminates timed out commands", async () => {
     const root = await temp();
+
     await expect(
       executeProcess(
         process.execPath,
@@ -162,6 +189,7 @@ describe("execution and persistence", () => {
       100,
       () => {},
     );
+
     expect(result.output.length).toBe(100);
     expect(result.truncated).toBe(true);
     expect(result.exitCode).toBe(3);
@@ -172,9 +200,11 @@ describe("execution and persistence", () => {
     const first = new Store(file);
     const session = first.create(root, "test");
     const task = first.createTask(session.id);
+
     first.event(session.id, task.id, "user", { text: "hello" });
     first.close();
     const second = new Store(file);
+
     expect(second.events(session.id)[0].data.text).toBe("hello");
     expect(second.tasks(session.id)[0].status).toBe("interrupted");
     second.close();
@@ -189,6 +219,7 @@ describe("execution and persistence", () => {
       async run() {
         calls++;
         await new Promise((r) => setTimeout(r, 5));
+
         return calls === 1
           ? {
               output: [
@@ -216,9 +247,12 @@ describe("execution and persistence", () => {
             };
       },
     }));
+
     engine.start(session.id, "write");
+
     expect(() => engine.start(session.id, "second")).toThrow("已有任务");
     await engine.active!.done;
+
     expect(await readFile(path.join(root, "hello.txt"), "utf8")).toBe("hello");
     expect(store.tasks(session.id)[0].status).toBe("completed");
     expect(
@@ -227,11 +261,14 @@ describe("execution and persistence", () => {
     store.close();
   });
 });
+
 describe("server security and configuration", () => {
   it("rejects foreign origins, hosts and missing tokens; never exposes key", async () => {
     const config = new Config(await temp());
+
     config.apiKey = "test-secret-key";
     const { app } = await createApp(config, pino({ enabled: false }));
+
     try {
       expect(
         (
@@ -261,8 +298,10 @@ describe("server security and configuration", () => {
         url: "/api/bootstrap",
         headers: { host: "127.0.0.1" },
       });
+
       expect(result.body).not.toContain("test-secret-key");
       const token = result.json().token;
+
       expect(
         (
           await app.inject({
@@ -279,7 +318,9 @@ describe("server security and configuration", () => {
   });
   it("keeps API key out of settings file", async () => {
     const config = new Config(await temp());
+
     config.update({ settings: config.settings, apiKey: "do-not-persist" });
+
     expect(
       await readFile(path.join(config.directory, "settings.json"), "utf8"),
     ).not.toContain("do-not-persist");

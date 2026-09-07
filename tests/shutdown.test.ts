@@ -7,17 +7,20 @@ import { createApp } from "../src/server/app.js";
 import { Config } from "../src/config/settings.js";
 import { Store } from "../src/sessions/store.js";
 import { temp } from "./fixtures/helpers.js";
+
 it("rejects unauthenticated, forged and unconfirmed shutdown requests", async () => {
   const { app } = await createApp(
     new Config(await temp()),
     pino({ enabled: false }),
   );
+
   try {
     const auth = await app.inject({
       url: "/api/bootstrap",
       headers: { host: "127.0.0.1" },
     });
     const token = auth.json().token;
+
     for (const [headers, payload, status] of [
       [{ host: "127.0.0.1" }, { confirm: true }, 401],
       [
@@ -38,7 +41,7 @@ it("rejects unauthenticated, forged and unconfirmed shutdown requests", async ()
         { confirm: false },
         400,
       ],
-    ] as const)
+    ] as const) {
       expect(
         (
           await app.inject({
@@ -49,6 +52,8 @@ it("rejects unauthenticated, forged and unconfirmed shutdown requests", async ()
           })
         ).statusCode,
       ).toBe(status);
+    }
+
     expect(
       (
         await app.inject({
@@ -61,10 +66,11 @@ it("rejects unauthenticated, forged and unconfirmed shutdown requests", async ()
     await app.close();
   }
 });
+
 it("shutdown acknowledges a running task, closes SSE, releases the port and persists interruption", async () => {
   const config = new Config(await temp());
   let stopped = 0;
-  const f = await createApp(
+  const fixture = await createApp(
     config,
     pino({ enabled: false }),
     () => ({
@@ -90,8 +96,9 @@ it("shutdown acknowledges a running task, closes SSE, releases the port and pers
       stopped++;
     },
   );
-  const url = await f.app.listen({ host: "127.0.0.1", port: 0 });
+  const url = await fixture.app.listen({ host: "127.0.0.1", port: 0 });
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+
   try {
     const auth = await (await fetch(url + "/api/bootstrap")).json();
     const headers = {
@@ -99,13 +106,18 @@ it("shutdown acknowledges a running task, closes SSE, releases the port and pers
       "x-codeatelier-token": auth.token,
       "content-type": "application/json",
     };
-    const session = f.store.create(await temp(), "shutdown");
-    const task = f.engine.start(session.id, "run");
-    await expect.poll(() => f.engine.approvals.list().length).toBe(1);
-    f.engine.approvals.decide(f.engine.approvals.list()[0].id, "once");
+    const session = fixture.store.create(await temp(), "shutdown");
+    const task = fixture.engine.start(session.id, "run");
+
+    await expect.poll(() => fixture.engine.approvals.list().length).toBe(1);
+    fixture.engine.approvals.decide(
+      fixture.engine.approvals.list()[0].id,
+      "once",
+    );
+
     await expect
       .poll(() =>
-        f.store
+        fixture.store
           .events(session.id)
           .some(
             (e) => e.type === "command_output" && e.data.text.includes("ready"),
@@ -115,6 +127,7 @@ it("shutdown acknowledges a running task, closes SSE, releases the port and pers
     const stream = await fetch(url + `/api/sessions/${session.id}/events`, {
       headers,
     });
+
     reader = stream.body!.getReader();
     await reader.read();
     const response = await fetch(url + "/api/server/shutdown", {
@@ -122,15 +135,19 @@ it("shutdown acknowledges a running task, closes SSE, releases the port and pers
       headers,
       body: JSON.stringify({ confirm: true }),
     });
+
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ ok: true });
     await expect.poll(() => stopped).toBe(1);
     let chunk;
+
     do {
       chunk = await reader.read();
     } while (!chunk.done);
+
     await expect(fetch(url + "/api/bootstrap")).rejects.toThrow();
     const saved = new Store(path.join(config.directory, "history.sqlite"));
+
     try {
       expect(saved.task(task.id)?.status).toBe("interrupted");
       expect(
@@ -139,13 +156,16 @@ it("shutdown acknowledges a running task, closes SSE, releases the port and pers
     } finally {
       saved.close();
     }
-    await f.shutdown();
+
+    await fixture.shutdown();
+
     expect(stopped).toBe(1);
   } finally {
     await reader?.cancel();
-    await f.shutdown();
+    await fixture.shutdown();
   }
 });
+
 it("the production entry point exits successfully after authenticated shutdown", async () => {
   const directory = await temp();
   const child = spawn(
@@ -165,6 +185,7 @@ it("the production entry point exits successfully after authenticated shutdown",
   );
   const exit = once(child, "exit");
   let output = "";
+
   child.stdout.setEncoding("utf8");
   child.stdout.on("data", (chunk) => (output += chunk));
   child.stderr.resume();
@@ -189,6 +210,7 @@ it("the production entry point exits successfully after authenticated shutdown",
       },
       body: '{"confirm":true}',
     });
+
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ ok: true });
     await expect.poll(() => child.exitCode, { timeout: 10000 }).toBe(0);

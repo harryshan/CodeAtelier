@@ -1,6 +1,7 @@
 import type { Snapshot, Event } from "../shared/types";
 import { api } from "./api";
 import s from "./app.module.css";
+
 const labels: Record<string, string> = {
   list_files: "浏览目录",
   read_file: "读取文件",
@@ -9,11 +10,13 @@ const labels: Record<string, string> = {
   write_file: "写入文件",
   run_command: "执行命令",
 };
+
 function textResult(event: Event) {
   return typeof event.data.result === "string"
     ? event.data.result
     : JSON.stringify(event.data.result, null, 2);
 }
+
 export function Timeline({
   data,
   onError,
@@ -24,21 +27,29 @@ export function Timeline({
   const active = data.tasks.find(
     (t) => t.status === "running" || t.status === "waiting",
   );
+  // 按任务、步骤和尝试次数隔离部分回复，避免把失败重试拼进成功文本。
   const streaming = new Map<string, string>();
-  for (const e of data.events)
+
+  for (const e of data.events) {
     if (e.type === "delta") {
       const key = e.taskId + ":" + e.data.step + ":" + (e.data.attempt || 1);
+
       streaming.set(key, (streaming.get(key) || "") + e.data.text);
     }
-  for (const e of data.events)
-    if (e.type === "assistant")
+  }
+
+  for (const e of data.events) {
+    if (e.type === "assistant") {
       streaming.delete(
         e.taskId + ":" + e.data.step + ":" + (e.data.attempt || 1),
       );
+    }
+  }
+
   return (
     <div className={s.timeline}>
       {data.events.map((e) => {
-        if (e.type === "user" || e.type === "assistant")
+        if (e.type === "user" || e.type === "assistant") {
           return (
             <article
               key={e.id}
@@ -56,7 +67,9 @@ export function Timeline({
               <div className={s.prose}>{e.data.text}</div>
             </article>
           );
-        if (e.type === "tool_start")
+        }
+
+        if (e.type === "tool_start") {
           return (
             <details className={s.tool} key={e.id}>
               <summary>
@@ -67,7 +80,9 @@ export function Timeline({
               <pre>{JSON.stringify(e.data.args, null, 2)}</pre>
             </details>
           );
-        if (e.type === "tool_result")
+        }
+
+        if (e.type === "tool_result") {
           return (
             <details className={s.toolResult} key={e.id}>
               <summary>
@@ -77,7 +92,9 @@ export function Timeline({
               <pre>{textResult(e)}</pre>
             </details>
           );
-        if (e.type === "diff")
+        }
+
+        if (e.type === "diff") {
           return (
             <details open className={s.diff} key={e.id}>
               <summary>
@@ -101,18 +118,24 @@ export function Timeline({
               </pre>
             </details>
           );
-        if (e.type === "command_output" && e.taskId === active?.id)
+        }
+
+        if (e.type === "command_output" && e.taskId === active?.id) {
           return (
             <pre className={s.toolResult} key={e.id}>
               {e.data.text}
             </pre>
           );
-        if (e.type === "notice")
+        }
+
+        if (e.type === "notice") {
           return (
             <div role="status" key={e.id} className={s.notice}>
               {e.data.text}
             </div>
           );
+        }
+
         return null;
       })}
       {[...streaming].map(([key, text]) => (

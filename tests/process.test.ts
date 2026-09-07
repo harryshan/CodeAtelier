@@ -1,7 +1,9 @@
 import { it, expect, vi, afterEach } from "vitest";
 import { executeProcess } from "../src/tools/process.js";
 import { temp } from "./fixtures/helpers.js";
+
 afterEach(() => vi.unstubAllEnvs());
+
 it("reports missing executable and releases its timeout", async () => {
   await expect(
     executeProcess(
@@ -15,6 +17,7 @@ it("reports missing executable and releases its timeout", async () => {
     ),
   ).rejects.toThrow("无法启动");
 });
+
 it("preserves split UTF-8 output and does not inherit the model API key", async () => {
   vi.stubEnv("CODEATELIER_API_KEY", "do-not-inherit");
   const chunks: string[] = [];
@@ -29,12 +32,15 @@ it("preserves split UTF-8 output and does not inherit the model API key", async 
     2000,
     (s) => chunks.push(s),
   );
+
   expect(result.output).toContain("中文KEY_ABSENT");
   expect(chunks.join("")).toBe(result.output);
   expect(result.exitCode).toBe(0);
 });
+
 it("cancels a running process after receiving output", async () => {
   const controller = new AbortController();
+
   await expect(
     executeProcess(
       process.execPath,

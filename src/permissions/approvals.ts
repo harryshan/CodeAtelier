@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Approval } from "../shared/types.js";
+
+/** 授权仅驻留内存，按会话与内容指纹隔离；模型不能自行授予权限。 */
 export class ApprovalManager {
   private pending = new Map<
     string,
@@ -10,6 +12,7 @@ export class ApprovalManager {
       grantKey?: string;
     }
   >();
+
   private grants = new Set<string>();
   constructor(private changed: () => void) {}
   list(sessionId?: string) {
@@ -17,6 +20,7 @@ export class ApprovalManager {
       .map((p) => p.approval)
       .filter((a) => !sessionId || a.sessionId === sessionId);
   }
+
   async request(
     data: Omit<Approval, "id" | "repeatable">,
     signal: AbortSignal,
@@ -24,7 +28,11 @@ export class ApprovalManager {
   ): Promise<boolean> {
     signal.throwIfAborted();
     const key = grantKey ? data.sessionId + ":" + grantKey : undefined;
-    if (key && this.grants.has(key)) return true;
+
+    if (key && this.grants.has(key)) {
+      return true;
+    }
+
     return new Promise<boolean>((resolve, reject) => {
       const id = randomUUID();
       const abort = () => {
@@ -32,7 +40,9 @@ export class ApprovalManager {
         this.changed();
         reject(new Error("任务已取消"));
       };
+
       const cleanup = () => signal.removeEventListener("abort", abort);
+
       this.pending.set(id, {
         approval: { ...data, id, repeatable: !!key },
         resolve,
@@ -43,14 +53,24 @@ export class ApprovalManager {
       this.changed();
     });
   }
+
   decide(id: string, decision: "once" | "session" | "deny") {
     const p = this.pending.get(id);
-    if (!p) throw new Error("审批已失效");
-    if (decision === "session" && !p.grantKey)
+
+    if (!p) {
+      throw new Error("审批已失效");
+    }
+
+    if (decision === "session" && !p.grantKey) {
       throw new Error("此操作不支持会话授权");
+    }
+
     this.pending.delete(id);
     p.cleanup();
-    if (decision === "session") this.grants.add(p.grantKey!);
+    if (decision === "session") {
+      this.grants.add(p.grantKey!);
+    }
+
     p.resolve(decision !== "deny");
     this.changed();
   }

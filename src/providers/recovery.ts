@@ -14,8 +14,12 @@ export class ModelError extends Error {
     this.name = "ModelError";
   }
 }
+
 export function modelError(error: unknown): ModelError {
-  if (error instanceof ModelError) return error;
+  if (error instanceof ModelError) {
+    return error;
+  }
+
   const e = error as {
     status?: number;
     name?: string;
@@ -43,6 +47,7 @@ export function modelError(error: unknown): ModelError {
     : retryable
       ? "connection"
       : "model_error";
+
   // Never copy arbitrary server bodies (which can contain prompts or credentials).
   return new ModelError(
     status
@@ -57,6 +62,7 @@ export function modelError(error: unknown): ModelError {
     e?.requestID?.slice(0, 128),
   );
 }
+
 export async function retryModel<T>(
   run: (attempt: number) => Promise<T>,
   signal: AbortSignal,
@@ -70,7 +76,12 @@ export async function retryModel<T>(
     } catch (error) {
       signal.throwIfAborted();
       const failure = modelError(error);
-      if (!failure.retryable || attempt > options.retries) throw failure;
+
+      if (!failure.retryable || attempt > options.retries) {
+        throw failure;
+      }
+
+      // 优先参考服务端退避提示，同时限制本地等待时间，避免无界重试。
       const wait = Math.min(
         30000,
         Math.max(
@@ -79,6 +90,7 @@ export async function retryModel<T>(
           options.baseDelayMs * 2 ** (attempt - 1) * (1 + Math.random() * 0.2),
         ),
       );
+
       onRetry(failure, attempt, Math.round(wait));
       await delay(wait, undefined, { signal });
     }

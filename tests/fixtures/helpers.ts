@@ -5,18 +5,25 @@ import path from "node:path";
 import { Config } from "../../src/config/settings.js";
 import { ToolRunner } from "../../src/tools/registry.js";
 import { ApprovalManager } from "../../src/permissions/approvals.js";
+
 const directories: string[] = [];
+
 export async function temp() {
   const directory = await realpath(
     await mkdtemp(path.join(tmpdir(), "ca-test-")),
   );
+
   directories.push(directory);
+
   return directory;
 }
+
 afterEach(async () => {
-  for (const directory of directories.splice(0))
+  for (const directory of directories.splice(0)) {
     await rm(directory, { recursive: true, force: true });
+  }
 });
+
 export async function fileFixture() {
   const root = await temp();
   const config = new Config(await temp());
@@ -32,5 +39,6 @@ export async function fileFixture() {
     approvals,
     emit: (type, data) => events.push({ type, data }),
   });
+
   return { root, config, controller, approvals, events, runner };
 }

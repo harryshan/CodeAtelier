@@ -4,6 +4,7 @@ import { api, bootstrap, sessions, snapshot } from "./api";
 import { SettingsPanel } from "./SettingsPanel";
 import { Timeline } from "./Timeline";
 import s from "./app.module.css";
+
 export default function App() {
   const [list, setList] = useState<Session[]>([]);
   const [selected, setSelected] = useState("");
@@ -23,61 +24,87 @@ export default function App() {
   >("running");
   const [connected, setConnected] = useState(true);
   const bottom = useRef<HTMLDivElement>(null);
+
   useEffect(() => {
     bootstrap()
       .then((v) => {
         setSettings(v.settings);
         setHasKey(v.hasApiKey);
+
         return sessions();
       })
       .then(setList)
       .catch((e) => setError(e.message));
   }, []);
+
   useEffect(() => {
     if (!selected || serverState !== "running") {
       setData(undefined);
+
       return;
     }
+
+    // 合并连续刷新通知，并在切换会话或关闭服务时丢弃过期响应。
     let disposed = false;
-    let running = false;
-    let again = false;
+    let refreshInProgress = false;
+    let refreshQueued = false;
     const refresh = async () => {
-      if (running) {
-        again = true;
+      if (refreshInProgress) {
+        refreshQueued = true;
+
         return;
       }
-      running = true;
+
+      refreshInProgress = true;
       try {
         const v = await snapshot(selected);
-        if (!disposed) setData(v);
+
+        if (!disposed) {
+          setData(v);
+        }
       } catch (e) {
-        if (!disposed) setError((e as Error).message);
+        if (!disposed) {
+          setError((e as Error).message);
+        }
       } finally {
-        running = false;
-        if (again && !disposed) {
-          again = false;
+        refreshInProgress = false;
+        if (refreshQueued && !disposed) {
+          refreshQueued = false;
           void refresh();
         }
       }
     };
+
     void refresh();
     let stream: EventSource | undefined;
     let reconnect: ReturnType<typeof setTimeout>;
     const retryConnection = () => {
-      if (disposed) return;
+      if (disposed) {
+        return;
+      }
+
       setConnected(false);
       stream?.close();
       clearTimeout(reconnect);
       reconnect = setTimeout(() => void connect(), 2000);
     };
+
+    // 后端重启会更换会话凭据，重连前重新获取，而不是反复使用旧 token。
     const connect = async () => {
       try {
         const v = await bootstrap();
-        if (disposed) return;
+
+        if (disposed) {
+          return;
+        }
+
         setSettings(v.settings);
         setHasKey(v.hasApiKey);
         await refresh();
-        if (disposed) return;
+        if (disposed) {
+          return;
+        }
+
         stream = new EventSource("/api/sessions/" + selected + "/events");
         stream.addEventListener("refresh", () => void refresh());
         stream.onopen = () => setConnected(true);
@@ -86,22 +113,29 @@ export default function App() {
         retryConnection();
       }
     };
+
     void connect();
+
     return () => {
       disposed = true;
       clearTimeout(reconnect);
       stream?.close();
     };
   }, [selected, serverState]);
+
   useEffect(() => {
     bottom.current?.scrollIntoView({ behavior: "smooth" });
   }, [data?.events.length, data?.approvals.length]);
+
   const active = data?.tasks.find((t) =>
     ["running", "waiting"].includes(t.status),
   );
   const recoverable = data?.tasks.at(-1);
   const resume = async () => {
-    if (!recoverable) return;
+    if (!recoverable) {
+      return;
+    }
+
     setBusy(true);
     try {
       await api("/tasks/" + recoverable.id + "/resume", {
@@ -115,6 +149,7 @@ export default function App() {
       setBusy(false);
     }
   };
+
   const stopServer = async () => {
     setServerState("stopping");
     setError("");
@@ -129,6 +164,7 @@ export default function App() {
       );
     }
   };
+
   const create = async (e: React.FormEvent) => {
     e.preventDefault();
     setBusy(true);
@@ -139,6 +175,7 @@ export default function App() {
         title:
           title || workspace.split(/[\\/]/).filter(Boolean).pop() || "新项目",
       });
+
       setList(await sessions());
       setSelected(session.id);
       setShowNew(false);
@@ -149,8 +186,12 @@ export default function App() {
       setBusy(false);
     }
   };
+
   const send = async () => {
-    if (!prompt.trim() || !selected) return;
+    if (!prompt.trim() || !selected) {
+      return;
+    }
+
     setBusy(true);
     setError("");
     try {
@@ -163,7 +204,8 @@ export default function App() {
       setBusy(false);
     }
   };
-  if (serverState === "stopped")
+
+  if (serverState === "stopped") {
     return (
       <main className={s.welcome}>
         <h1>服务已关闭</h1>
@@ -176,6 +218,8 @@ export default function App() {
         </button>
       </main>
     );
+  }
+
   return (
     <div className={s.app}>
       <aside className={s.sidebar}>
@@ -348,7 +392,9 @@ export default function App() {
                     !e.nativeEvent.isComposing
                   ) {
                     e.preventDefault();
-                    if (!active && !busy) void send();
+                    if (!active && !busy) {
+                      void send();
+                    }
                   }
                 }}
               />

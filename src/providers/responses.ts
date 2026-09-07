@@ -1,10 +1,12 @@
 import OpenAI from "openai";
 import { ModelError, modelError } from "./recovery.js";
 import type { Settings } from "../shared/types.js";
+
 export interface ModelResult {
   output: any[];
   text: string;
 }
+
 export interface ModelProvider {
   run(
     input: any[],
@@ -14,11 +16,13 @@ export interface ModelProvider {
     onDelta: (text: string) => void,
   ): Promise<ModelResult>;
 }
+
 export class ResponsesProvider implements ModelProvider {
   constructor(
     private settings: Settings,
     private key: string,
   ) {}
+
   async run(
     input: any[],
     instructions: string,
@@ -26,8 +30,10 @@ export class ResponsesProvider implements ModelProvider {
     signal: AbortSignal,
     onDelta: (text: string) => void,
   ): Promise<ModelResult> {
-    if (!this.key)
+    if (!this.key) {
       throw new ModelError("请先在设置中输入 API key。", false, "missing_key");
+    }
+
     const client = new OpenAI({
       baseURL: this.settings.baseUrl,
       apiKey: this.key,
@@ -36,8 +42,12 @@ export class ResponsesProvider implements ModelProvider {
     });
     const controller = new AbortController();
     const abort = () => controller.abort(signal.reason);
+
     signal.addEventListener("abort", abort, { once: true });
-    if (signal.aborted) abort();
+    if (signal.aborted) {
+      abort();
+    }
+
     const total = setTimeout(
       () =>
         controller.abort(
@@ -56,10 +66,13 @@ export class ResponsesProvider implements ModelProvider {
         this.settings.idleTimeoutMs,
       );
     };
+
     reset();
     let text = "";
-    let result: any;
-    const items = new Map<number, any>();
+    let completedResponse: any;
+    // 兼容 completed.output 为空的服务：先收集 item.done，完成后统一提交。
+    const completedItemsByIndex = new Map<number, any>();
+
     try {
       const stream = await client.responses.create(
         {
@@ -72,6 +85,7 @@ export class ResponsesProvider implements ModelProvider {
         },
         { signal: controller.signal },
       );
+
       for await (const event of stream) {
         reset();
         if (event.type === "response.output_text.delta") {
@@ -84,14 +98,19 @@ export class ResponsesProvider implements ModelProvider {
               "output_limit",
             );
           }
+
           onDelta(event.delta);
         }
-        if (event.type === "response.output_item.done")
-          items.set(event.output_index, event.item);
+
+        if (event.type === "response.output_item.done") {
+          completedItemsByIndex.set(event.output_index, event.item);
+        }
+
         if (event.type === "response.completed") {
-          result = event.response;
+          completedResponse = event.response;
           break;
         }
+
         if (
           event.type === "response.failed" ||
           event.type === "response.incomplete" ||
@@ -109,6 +128,7 @@ export class ResponsesProvider implements ModelProvider {
             "rate_limit_exceeded",
             "stream_failed",
           ].includes(code);
+
           throw new ModelError(
             "模型响应失败或不完整，请检查模型配置及服务状态。",
             retryable,
@@ -124,15 +144,18 @@ export class ResponsesProvider implements ModelProvider {
           );
         }
       }
-      if (!result)
+
+      if (!completedResponse) {
         throw new ModelError(
           "模型连接结束但未收到完成事件。",
           true,
           "stream_disconnected",
         );
-      const output = result.output?.length
-        ? result.output
-        : [...items.entries()]
+      }
+
+      const output = completedResponse.output?.length
+        ? completedResponse.output
+        : [...completedItemsByIndex.entries()]
             .sort((a, b) => a[0] - b[0])
             .map(([, item]) => item);
       const finalText = output
@@ -141,17 +164,25 @@ export class ResponsesProvider implements ModelProvider {
         .filter((i: any) => i.type === "output_text")
         .map((i: any) => i.text)
         .join("");
-      if (!output.length && !text)
+
+      if (!output.length && !text) {
         throw new ModelError(
           "模型返回空响应，可尝试重试。",
           true,
           "empty_response",
         );
+      }
+
       return { output, text: finalText || text };
     } catch (error) {
-      if (signal.aborted) throw signal.reason;
-      if (controller.signal.reason instanceof ModelError)
+      if (signal.aborted) {
+        throw signal.reason;
+      }
+
+      if (controller.signal.reason instanceof ModelError) {
         throw controller.signal.reason;
+      }
+
       throw modelError(error);
     } finally {
       clearTimeout(total);

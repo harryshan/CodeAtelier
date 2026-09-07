@@ -1,5 +1,6 @@
 export type TaskStatus =
   "running" | "waiting" | "completed" | "failed" | "cancelled" | "interrupted";
+
 export interface Session {
   id: string;
   title: string;
@@ -7,6 +8,7 @@ export interface Session {
   createdAt: string;
   updatedAt: string;
 }
+
 export interface Task {
   id: string;
   sessionId: string;
@@ -14,6 +16,7 @@ export interface Task {
   createdAt: string;
   error?: string;
 }
+
 export interface Event {
   id: number;
   sessionId: string;
@@ -22,6 +25,7 @@ export interface Event {
   data: any;
   createdAt: string;
 }
+
 export interface Approval {
   id: string;
   sessionId: string;
@@ -30,6 +34,7 @@ export interface Approval {
   description: string;
   repeatable: boolean;
 }
+
 export interface Settings {
   baseUrl: string;
   model: string;
@@ -41,6 +46,7 @@ export interface Settings {
   outputChars: number;
   logLevel: string;
 }
+
 export interface Snapshot {
   session: Session;
   events: Event[];

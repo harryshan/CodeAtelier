@@ -7,7 +7,7 @@
 1. 明确功能正常行为、关键失败路径、边界条件；选择能够验证行为的最小测试层次。
 2. 修复缺陷先增加能失败的复现用例，再修复，确认该用例通过。
 3. 每完成一个可验证增量就运行相关测试。开发时可使用 `pnpm test:watch`，或 `pnpm test -- tests/files.test.ts` 定向验证。
-4. 提交前运行 `pnpm check`（类型、lint、单元/集成回归、构建）。UI、API、SSE 变更额外运行 `pnpm test:e2e`。
+4. 提交前运行 `pnpm check`（类型、lint、格式、单元/集成回归、构建）。UI、API、SSE 变更额外运行 `pnpm test:e2e`。
 5. 新增行为同步维护下表与验证记录；说明平台跳过、外部依赖和未验证范围。CI 在 Windows、macOS、Linux 跑核心检查，在 Linux Chromium 跑 UI 验收。
 
 ## 测试分层

@@ -7,6 +7,7 @@ import { Store } from "../src/sessions/store.js";
 import { Config } from "../src/config/settings.js";
 import type { ModelProvider } from "../src/providers/responses.js";
 import { temp } from "./fixtures/helpers.js";
+
 const done = {
   output: [
     {
@@ -17,7 +18,8 @@ const done = {
   ],
   text: "done",
 };
-async function fixture(provider: ModelProvider) {
+
+async function createFixture(provider: ModelProvider) {
   const root = await temp();
   const config = new Config(await temp());
   const store = new Store(path.join(config.directory, "db"));
@@ -28,13 +30,16 @@ async function fixture(provider: ModelProvider) {
     pino({ enabled: false }),
     () => provider,
   );
+
   return { root, config, store, session, engine };
 }
+
 it("enforces step budget after saving completed tool results", async () => {
   let calls = 0;
-  const f = await fixture({
+  const fixture = await createFixture({
     async run() {
       calls++;
+
       return {
         output: [
           {
@@ -48,51 +53,60 @@ it("enforces step budget after saving completed tool results", async () => {
       };
     },
   });
+
   try {
-    f.config.settings.maxSteps = 1;
-    f.engine.start(f.session.id, "list");
-    await f.engine.active?.done;
+    fixture.config.settings.maxSteps = 1;
+    fixture.engine.start(fixture.session.id, "list");
+    await fixture.engine.active?.done;
+
     expect(calls).toBe(1);
-    expect(f.store.tasks(f.session.id)[0]).toMatchObject({
+    expect(fixture.store.tasks(fixture.session.id)[0]).toMatchObject({
       status: "failed",
       error: expect.stringContaining("最大模型调用"),
     });
     expect(
-      f.store
-        .context(f.session.id)
+      fixture.store
+        .context(fixture.session.id)
         .some((i) => i.type === "function_call_output"),
     ).toBe(true);
-    expect(f.engine.active).toBeUndefined();
+    expect(fixture.engine.active).toBeUndefined();
   } finally {
-    await f.engine.close();
-    f.store.close();
+    await fixture.engine.close();
+    fixture.store.close();
   }
 });
+
 it("fails an over-budget context before calling the provider", async () => {
   let calls = 0;
-  const f = await fixture({
+  const fixture = await createFixture({
     async run() {
       calls++;
+
       return done;
     },
   });
+
   try {
-    f.config.settings.contextChars = 10000;
-    f.engine.start(f.session.id, "x".repeat(11000));
-    await f.engine.active?.done;
+    fixture.config.settings.contextChars = 10000;
+    fixture.engine.start(fixture.session.id, "x".repeat(11000));
+    await fixture.engine.active?.done;
+
     expect(calls).toBe(0);
-    expect(f.store.tasks(f.session.id)[0].error).toContain("上下文");
+    expect(fixture.store.tasks(fixture.session.id)[0].error).toContain(
+      "上下文",
+    );
   } finally {
-    await f.engine.close();
-    f.store.close();
+    await fixture.engine.close();
+    fixture.store.close();
   }
 });
+
 it("returns invalid tool arguments as model feedback without mutating files", async () => {
   let calls = 0;
   let feedback = "";
-  const f = await fixture({
+  const fixture = await createFixture({
     async run(input) {
-      if (++calls === 1)
+      if (++calls === 1) {
         return {
           output: [
             {
@@ -104,28 +118,34 @@ it("returns invalid tool arguments as model feedback without mutating files", as
           ],
           text: "",
         };
+      }
+
       feedback = input.find((i) => i.type === "function_call_output").output;
+
       return done;
     },
   });
+
   try {
-    f.engine.start(f.session.id, "test");
-    await f.engine.active?.done;
+    fixture.engine.start(fixture.session.id, "test");
+    await fixture.engine.active?.done;
+
     expect(JSON.parse(feedback).error).toBeTruthy();
-    expect(f.store.tasks(f.session.id)[0].status).toBe("completed");
+    expect(fixture.store.tasks(fixture.session.id)[0].status).toBe("completed");
   } finally {
-    await f.engine.close();
-    f.store.close();
+    await fixture.engine.close();
+    fixture.store.close();
   }
 });
+
 it("loads project guidance and bounds large tool feedback", async () => {
   let calls = 0;
   let guidance = "";
   let result: any;
-  const f = await fixture({
+  const fixture = await createFixture({
     async run(input, instructions) {
       guidance = instructions;
-      if (++calls === 1)
+      if (++calls === 1) {
         return {
           output: [
             {
@@ -141,35 +161,41 @@ it("loads project guidance and bounds large tool feedback", async () => {
           ],
           text: "",
         };
+      }
+
       result = JSON.parse(
         input.find((i) => i.type === "function_call_output").output,
       );
+
       return done;
     },
   });
+
   try {
-    f.config.settings.outputChars = 1000;
+    fixture.config.settings.outputChars = 1000;
     await writeFile(
-      path.join(f.root, "AGENTS.md"),
+      path.join(fixture.root, "AGENTS.md"),
       "Project convention: use meaningful tests.",
     );
-    await writeFile(path.join(f.root, "long.txt"), "x".repeat(5000));
-    f.engine.start(f.session.id, "read");
-    await f.engine.active?.done;
+    await writeFile(path.join(fixture.root, "long.txt"), "x".repeat(5000));
+    fixture.engine.start(fixture.session.id, "read");
+    await fixture.engine.active?.done;
+
     expect(guidance).toContain("Project convention");
     expect(result.truncated).toBe(true);
     expect(result.text.length).toBe(1000);
   } finally {
-    await f.engine.close();
-    f.store.close();
+    await fixture.engine.close();
+    fixture.store.close();
   }
 });
+
 it("requires a fresh read in a later task even when history contains an earlier read", async () => {
   let calls = 0;
-  const f = await fixture({
+  const fixture = await createFixture({
     async run() {
       calls++;
-      if (calls === 1)
+      if (calls === 1) {
         return {
           output: [
             {
@@ -185,7 +211,9 @@ it("requires a fresh read in a later task even when history contains an earlier 
           ],
           text: "",
         };
-      if (calls === 3)
+      }
+
+      if (calls === 3) {
         return {
           output: [
             {
@@ -201,19 +229,25 @@ it("requires a fresh read in a later task even when history contains an earlier 
           ],
           text: "",
         };
+      }
+
       return done;
     },
   });
+
   try {
-    await writeFile(path.join(f.root, "a.txt"), "old");
-    f.engine.start(f.session.id, "read");
-    await f.engine.active?.done;
-    f.engine.start(f.session.id, "edit");
-    await f.engine.active?.done;
-    expect(await readFile(path.join(f.root, "a.txt"), "utf8")).toBe("old");
+    await writeFile(path.join(fixture.root, "a.txt"), "old");
+    fixture.engine.start(fixture.session.id, "read");
+    await fixture.engine.active?.done;
+    fixture.engine.start(fixture.session.id, "edit");
+    await fixture.engine.active?.done;
+
+    expect(await readFile(path.join(fixture.root, "a.txt"), "utf8")).toBe(
+      "old",
+    );
     expect(
-      f.store
-        .events(f.session.id)
+      fixture.store
+        .events(fixture.session.id)
         .some(
           (e) =>
             e.type === "tool_result" &&
@@ -221,7 +255,7 @@ it("requires a fresh read in a later task even when history contains an earlier 
         ),
     ).toBe(true);
   } finally {
-    await f.engine.close();
-    f.store.close();
+    await fixture.engine.close();
+    fixture.store.close();
   }
 });

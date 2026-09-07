@@ -5,15 +5,19 @@ import path from "node:path";
 import pino from "pino";
 import { Config } from "../../src/config/settings.js";
 import { createApp } from "../../src/server/app.js";
+
 const config = new Config(
   await realpath(await mkdtemp(path.join(tmpdir(), "codeatelier-ui-"))),
 );
+
 config.apiKey = "test-key";
+
 const { app, engine } = await createApp(
   config,
   pino({ enabled: false }),
   () => {
     let step = 0;
+
     return {
       async run(input, _instructions, _tools, signal, onDelta) {
         signal.throwIfAborted();
@@ -31,26 +35,34 @@ const { app, engine } = await createApp(
           ],
           text: "",
         });
+
         if (step === 1 && lastUser.includes("模型重试")) {
           onDelta("第一次尝试的部分回复");
           throw new ModelError("模拟断流", true, "stream_disconnected");
         }
-        if (step === 1 && lastUser.includes("命令"))
+
+        if (step === 1 && lastUser.includes("命令")) {
           return tool("run_command", {
             command: process.execPath,
             args: ["-e", 'console.log("VERIFIED")'],
             cwd: ".",
           });
-        if (step === 1 && lastUser.includes("修改"))
+        }
+
+        if (step === 1 && lastUser.includes("修改")) {
           return tool("write_file", {
             path: "result.txt",
             content: "CodeAtelier verified\n",
           });
+        }
+
         const text = "任务完成，已检查工具结果。";
+
         for (const part of ["任务完成，", "已检查工具结果。"]) {
           onDelta(part);
           await new Promise((r) => setTimeout(r, 100));
         }
+
         return {
           output: [
             {
@@ -65,7 +77,9 @@ const { app, engine } = await createApp(
     };
   },
 );
+
 await app.listen({ host: "127.0.0.1", port: 4143 });
+
 process.on("SIGTERM", async () => {
   await engine.close();
   await app.close();

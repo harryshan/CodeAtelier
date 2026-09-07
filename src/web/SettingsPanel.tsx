@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { Settings } from "../shared/types";
 import { api } from "./api";
 import s from "./app.module.css";
+
 export function SettingsPanel({
   settings,
   hasKey,
@@ -17,6 +18,7 @@ export function SettingsPanel({
   const [key, setKey] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+
   return (
     <div className={s.overlay}>
       <section
@@ -47,6 +49,7 @@ export function SettingsPanel({
                 { settings: value, ...(key ? { apiKey: key } : {}) },
                 "PUT",
               );
+
               setKey("");
               onSaved(result);
               onClose();

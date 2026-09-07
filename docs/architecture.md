@@ -16,11 +16,11 @@ server (Fastify)
 ```
 
 - `src/shared` 仅存浏览器和后端共享的数据契约，前端不能导入文件、进程或密钥实现。
-- `src/agent` 管理单任务锁、模型循环、停止条件、工具结果回传。上下文预算目前在循环中判断，尚无单独 context 模块。
+- `src/agent/engine.ts` 管理单任务锁、模型循环、停止条件与工具结果回传；`context.ts` 负责上下文恢复，`instructions.ts` 负责根规则与模型指令构建。上下文预算仍在循环中判断。
 - `src/providers` 将 Responses 输出映射为输出项和文本。自建服务需同时收集 output_item.done；completed.output 有内容时优先使用，不能只依赖 completed。
 - `src/tools` 定义 Zod 参数及对应 JSON Schema，提供目录、读取、搜索、写入、精确编辑和命令工具。
 - `src/permissions` 在后端等待用户批准，取消会释放待审批 Promise。模型无法自行同意审批。
-- `src/sessions` 保存 sessions、tasks、events、context，启动时将 running/waiting 任务标为 interrupted。
+- `src/sessions/store.ts` 保存 sessions、tasks、events、context；初始数据库结构位于 `schema.ts`。启动时将 running/waiting 任务标为 interrupted。
 - `src/config` 管理非敏感设置、内存密钥和平台数据目录。
 - `src/logging` 输出结构化 JSON，按级别筛选、脱敏并轮转文件。
 

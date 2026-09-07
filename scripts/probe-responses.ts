@@ -1,6 +1,11 @@
 import OpenAI from "openai";
+
 const key = process.env.CODEATELIER_API_KEY;
-if (!key) throw new Error("Set CODEATELIER_API_KEY locally.");
+
+if (!key) {
+  throw new Error("Set CODEATELIER_API_KEY locally.");
+}
+
 const client = new OpenAI({
   apiKey: key,
   baseURL:
@@ -8,7 +13,9 @@ const client = new OpenAI({
   maxRetries: 0,
   timeout: 60000,
 });
+
 const model = process.env.CODEATELIER_MODEL || "codex/gpt-5.6-luna";
+
 const tools = [
   {
     type: "function" as const,
@@ -23,8 +30,11 @@ const tools = [
     },
   },
 ];
+
 let output: any[] = [];
+
 const types = new Set<string>();
+
 try {
   const stream = await client.responses.create(
     {
@@ -42,13 +52,20 @@ try {
     },
     { signal: AbortSignal.timeout(60000) },
   );
+
   for await (const e of stream) {
     types.add(e.type);
-    if (e.type === "response.output_item.done") output.push(e.item);
-    if (e.type === "response.completed" && e.response.output?.length)
+    if (e.type === "response.output_item.done") {
+      output.push(e.item);
+    }
+
+    if (e.type === "response.completed" && e.response.output?.length) {
       output = e.response.output;
+    }
   }
+
   const call = output.find((i) => i.type === "function_call");
+
   console.log(
     JSON.stringify({
       stage: "stream",
@@ -56,7 +73,10 @@ try {
       toolCall: call?.name || null,
     }),
   );
-  if (!call) throw new Error("No tool call received.");
+  if (!call) {
+    throw new Error("No tool call received.");
+  }
+
   const follow = await client.responses.create(
     {
       model,
@@ -80,8 +100,13 @@ try {
     { signal: AbortSignal.timeout(60000) },
   );
   let text = "";
-  for await (const e of follow)
-    if (e.type === "response.output_text.delta") text += e.delta;
+
+  for await (const e of follow) {
+    if (e.type === "response.output_text.delta") {
+      text += e.delta;
+    }
+  }
+
   console.log(JSON.stringify({ stage: "tool_result", text }));
 } catch (error: any) {
   console.error(

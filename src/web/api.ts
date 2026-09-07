@@ -1,5 +1,7 @@
 import type { Settings, Session, Snapshot } from "../shared/types";
+
 let token = "";
+
 export async function api<T>(
   url: string,
   body?: unknown,
@@ -14,22 +16,35 @@ export async function api<T>(
     },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
+
+  // 401 表示服务端尚未执行此操作；网络结果未知时不能自动重放写请求。
   if (response.status === 401 && url !== "/bootstrap" && !refreshed) {
     await bootstrap();
+
     return api<T>(url, body, method, true);
   }
+
   const result = await response.json();
-  if (!response.ok) throw new Error(result.error || "请求失败");
+
+  if (!response.ok) {
+    throw new Error(result.error || "请求失败");
+  }
+
   return result;
 }
+
 export async function bootstrap() {
   const value = await api<{
     token: string;
     settings: Settings;
     hasApiKey: boolean;
   }>("/bootstrap");
+
   token = value.token;
+
   return value;
 }
+
 export const sessions = () => api<Session[]>("/sessions");
+
 export const snapshot = (id: string) => api<Snapshot>("/sessions/" + id);

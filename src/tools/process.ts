@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+
 export async function executeProcess(
   command: string,
   args: string[],
@@ -9,6 +10,7 @@ export async function executeProcess(
   onOutput: (s: string) => void,
 ) {
   signal.throwIfAborted();
+
   return new Promise<{
     output: string;
     exitCode: number | null;
@@ -26,16 +28,20 @@ export async function executeProcess(
     let stopped = false;
     let timedOut = false;
     let finished = false;
+    // 终止整棵进程树，避免任务结束后测试或构建子进程仍继续运行。
     const stop = () => {
-      if (stopped) return;
+      if (stopped) {
+        return;
+      }
+
       stopped = true;
       if (child.pid) {
-        if (process.platform === "win32")
+        if (process.platform === "win32") {
           spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], {
             windowsHide: true,
             stdio: "ignore",
           }).on("error", () => child.kill());
-        else {
+        } else {
           try {
             process.kill(-child.pid, "SIGKILL");
           } catch {
@@ -44,20 +50,28 @@ export async function executeProcess(
         }
       }
     };
+
     const timer = setTimeout(() => {
       timedOut = true;
       stop();
     }, timeoutMs);
+
     signal.addEventListener("abort", stop, { once: true });
+    // 使用流解码器保留跨 chunk 的 UTF-8 字符，不能单独转换每个 Buffer。
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
     const append = (chunk: string) => {
       const text = chunk;
+
       size += text.length;
       const accepted = text.slice(0, Math.max(0, outputLimit - output.length));
+
       output += accepted;
-      if (accepted) onOutput(accepted);
+      if (accepted) {
+        onOutput(accepted);
+      }
     };
+
     child.stdout.on("data", append);
     child.stderr.on("data", append);
     const cleanup = () => {
@@ -65,17 +79,28 @@ export async function executeProcess(
       clearTimeout(timer);
       signal.removeEventListener("abort", stop);
     };
+
     child.on("error", () => {
-      if (finished) return;
+      if (finished) {
+        return;
+      }
+
       cleanup();
       reject(new Error("无法启动命令，请检查可执行文件或 shell 路径。"));
     });
     child.on("close", (code) => {
-      if (finished) return;
+      if (finished) {
+        return;
+      }
+
       cleanup();
-      if (signal.aborted) reject(new Error("任务已取消"));
-      else if (timedOut) reject(new Error("命令超时，已终止进程树。"));
-      else resolve({ output, exitCode: code, truncated: size > outputLimit });
+      if (signal.aborted) {
+        reject(new Error("任务已取消"));
+      } else if (timedOut) {
+        reject(new Error("命令超时，已终止进程树。"));
+      } else {
+        resolve({ output, exitCode: code, truncated: size > outputLimit });
+      }
     });
   });
 }
