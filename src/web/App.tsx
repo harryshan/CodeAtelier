@@ -1,0 +1,357 @@
+import { useEffect, useRef, useState } from "react";
+import type { Session, Settings, Snapshot } from "../shared/types";
+import { api, bootstrap, sessions, snapshot } from "./api";
+import { SettingsPanel } from "./SettingsPanel";
+import { Timeline } from "./Timeline";
+import s from "./app.module.css";
+export default function App() {
+  const [list, setList] = useState<Session[]>([]);
+  const [selected, setSelected] = useState("");
+  const [data, setData] = useState<Snapshot>();
+  const [settings, setSettings] = useState<Settings>();
+  const [hasKey, setHasKey] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  const [showNew, setShowNew] = useState(false);
+  const [workspace, setWorkspace] = useState("");
+  const [title, setTitle] = useState("");
+  const [prompt, setPrompt] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [connected, setConnected] = useState(true);
+  const bottom = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    bootstrap()
+      .then((v) => {
+        setSettings(v.settings);
+        setHasKey(v.hasApiKey);
+        return sessions();
+      })
+      .then(setList)
+      .catch((e) => setError(e.message));
+  }, []);
+  useEffect(() => {
+    if (!selected) {
+      setData(undefined);
+      return;
+    }
+    let disposed = false;
+    let running = false;
+    let again = false;
+    const refresh = async () => {
+      if (running) {
+        again = true;
+        return;
+      }
+      running = true;
+      try {
+        const v = await snapshot(selected);
+        if (!disposed) setData(v);
+      } catch (e) {
+        if (!disposed) setError((e as Error).message);
+      } finally {
+        running = false;
+        if (again && !disposed) {
+          again = false;
+          void refresh();
+        }
+      }
+    };
+    void refresh();
+    const stream = new EventSource("/api/sessions/" + selected + "/events");
+    stream.addEventListener("refresh", () => void refresh());
+    stream.onopen = () => setConnected(true);
+    stream.onerror = () => setConnected(false);
+    return () => {
+      disposed = true;
+      stream.close();
+    };
+  }, [selected]);
+  useEffect(() => {
+    bottom.current?.scrollIntoView({ behavior: "smooth" });
+  }, [data?.events.length, data?.approvals.length]);
+  const active = data?.tasks.find((t) =>
+    ["running", "waiting"].includes(t.status),
+  );
+  const create = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    setError("");
+    try {
+      const session = await api<Session>("/sessions", {
+        workspace,
+        title:
+          title || workspace.split(/[\\/]/).filter(Boolean).pop() || "新项目",
+      });
+      setList(await sessions());
+      setSelected(session.id);
+      setShowNew(false);
+      setTitle("");
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const send = async () => {
+    if (!prompt.trim() || !selected) return;
+    setBusy(true);
+    setError("");
+    try {
+      await api("/sessions/" + selected + "/tasks", { prompt });
+      setPrompt("");
+      setList(await sessions());
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className={s.app}>
+      <aside className={s.sidebar}>
+        <a className={s.brand} href="/">
+          <span className={s.logo}>✳</span>
+          <span>
+            CodeAtelier<small>YOUR LOCAL CODING STUDIO</small>
+          </span>
+        </a>
+        <button className={s.newButton} onClick={() => setShowNew(true)}>
+          <span>＋</span> 新建会话 <kbd>N</kbd>
+        </button>
+        <div className={s.sectionLabel}>
+          工作记录 <span>{list.length}</span>
+        </div>
+        <nav className={s.sessionList}>
+          {list.map((item) => (
+            <button
+              key={item.id}
+              className={selected === item.id ? s.selected : ""}
+              onClick={() => {
+                setSelected(item.id);
+                setError("");
+              }}
+            >
+              <span className={s.sessionIcon}>⌘</span>
+              <span>
+                <strong>{item.title}</strong>
+                <small>{item.workspace}</small>
+              </span>
+            </button>
+          ))}
+          {!list.length && (
+            <p className={s.emptyList}>
+              你的项目与对话
+              <br />
+              将在这里保存。
+            </p>
+          )}
+        </nav>
+        <div className={s.sideFooter}>
+          <div>
+            <span className={s.greenDot} /> 仅本机访问{" "}
+            <span className={s.version}>v0.1</span>
+          </div>
+          <button onClick={() => setShowSettings(true)}>
+            ⚙ 模型与设置 <span>↗</span>
+          </button>
+        </div>
+      </aside>
+      <main className={s.main}>
+        <header className={s.header}>
+          <div>
+            <span className={s.breadcrumb}>工作台 / </span>
+            {data?.session.title || "开始创作"}
+          </div>
+          <div className={s.headerRight}>
+            <span className={s.modelBadge}>{settings?.model || "连接中"}</span>
+            <span className={s.status}>
+              {active
+                ? active.status === "waiting"
+                  ? "等待确认"
+                  : "执行中"
+                : connected
+                  ? "就绪"
+                  : "重新连接中"}
+            </span>
+          </div>
+        </header>
+        {error && (
+          <div role="alert" className={s.errorBanner}>
+            {error}
+            <button onClick={() => setError("")}>×</button>
+          </div>
+        )}
+        {!hasKey && settings && (
+          <div className={s.keyBanner}>
+            配置模型密钥后，即可开始编码任务。
+            <button onClick={() => setShowSettings(true)}>打开设置 →</button>
+          </div>
+        )}
+        <div className={s.scrollArea}>
+          {!selected ? (
+            <section className={s.welcome}>
+              <div className={s.eyebrow}>IDEAS INTO WORKING CODE</div>
+              <h1>
+                让想法，
+                <br />
+                <span>在代码中成形。</span>
+              </h1>
+              <p>
+                连接一个本地项目，一起阅读、修改和验证代码。
+                <br />
+                每一步执行清晰可见，每一次对话留在本机。
+              </p>
+              <button className={s.primary} onClick={() => setShowNew(true)}>
+                打开你的第一个项目 <span>↗</span>
+              </button>
+              <div className={s.cards}>
+                <article>
+                  <span>01 / UNDERSTAND</span>
+                  <h3>理解项目</h3>
+                  <p>阅读目录、搜索代码，找到问题所在。</p>
+                </article>
+                <article>
+                  <span>02 / BUILD</span>
+                  <h3>精确修改</h3>
+                  <p>小步调整代码，清楚查看每一处差异。</p>
+                </article>
+                <article>
+                  <span>03 / VERIFY</span>
+                  <h3>验证结果</h3>
+                  <p>运行测试与构建，让结果有据可查。</p>
+                </article>
+              </div>
+              <div className={s.welcomeFoot}>
+                本地工作区 <i /> 单任务执行 <i /> 操作按需确认
+              </div>
+            </section>
+          ) : (
+            <>
+              <div className={s.projectBar}>
+                <span>⌁</span>
+                <code>{data?.session.workspace}</code>
+                <span>本地项目</span>
+              </div>
+              {data && <Timeline data={data} onError={setError} />}
+              {data && !data.events.length && (
+                <div className={s.sessionEmpty}>
+                  <span>✳</span>
+                  <h2>从一个具体的任务开始</h2>
+                  <p>例如：解释项目结构，或修复一个 bug 并补充测试。</p>
+                </div>
+              )}
+              <div ref={bottom} />
+            </>
+          )}
+        </div>
+        {selected && (
+          <footer className={s.composerWrap}>
+            <div className={s.composer}>
+              <textarea
+                aria-label="任务描述"
+                placeholder="描述你想完成的任务…"
+                value={prompt}
+                onChange={(e) => setPrompt(e.target.value)}
+                onKeyDown={(e) => {
+                  if (
+                    e.key === "Enter" &&
+                    !e.shiftKey &&
+                    !e.nativeEvent.isComposing
+                  ) {
+                    e.preventDefault();
+                    if (!active && !busy) void send();
+                  }
+                }}
+              />
+              <div>
+                <span>↵ 发送 · Shift + ↵ 换行</span>
+                {active ? (
+                  <button
+                    className={s.stop}
+                    onClick={() =>
+                      api("/tasks/" + active.id + "/cancel", {}).catch((e) =>
+                        setError(e.message),
+                      )
+                    }
+                  >
+                    ■ 停止任务
+                  </button>
+                ) : (
+                  <button
+                    className={s.primary}
+                    disabled={busy || !prompt.trim() || !hasKey}
+                    onClick={() => void send()}
+                  >
+                    开始执行 ↑
+                  </button>
+                )}
+              </div>
+            </div>
+            <p>普通文件修改自动执行 · 命令运行前由你确认</p>
+          </footer>
+        )}
+      </main>
+      {showSettings && settings && (
+        <SettingsPanel
+          settings={settings}
+          hasKey={hasKey}
+          onClose={() => setShowSettings(false)}
+          onSaved={(v) => {
+            setSettings(v.settings);
+            setHasKey(v.hasApiKey);
+          }}
+        />
+      )}
+      {showNew && (
+        <div className={s.overlay}>
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-label="新建会话"
+            className={s.modal}
+          >
+            <div className={s.modalHeading}>
+              <div>
+                <small>NEW SESSION</small>
+                <h2>连接本地项目</h2>
+              </div>
+              <button
+                aria-label="关闭新建会话"
+                onClick={() => setShowNew(false)}
+              >
+                ✕
+              </button>
+            </div>
+            <form onSubmit={create}>
+              <label>
+                项目目录
+                <input
+                  autoFocus
+                  required
+                  value={workspace}
+                  placeholder="例如 G:\\projects\\my-app 或 /Users/me/my-app"
+                  onChange={(e) => setWorkspace(e.target.value)}
+                />
+              </label>
+              <label>
+                会话名称
+                <input
+                  value={title}
+                  placeholder="可选，默认使用目录名"
+                  onChange={(e) => setTitle(e.target.value)}
+                />
+              </label>
+              <p className={s.muted}>
+                CodeAtelier 将直接在这个目录中工作。请选择你信任的项目。
+              </p>
+              {error && <p className={s.error}>{error}</p>}
+              <button disabled={busy} className={s.primary}>
+                {busy ? "连接中…" : "创建会话 →"}
+              </button>
+            </form>
+          </section>
+        </div>
+      )}
+    </div>
+  );
+}

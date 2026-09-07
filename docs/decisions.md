@@ -129,3 +129,11 @@
 - 决定：使用 pnpm 替代 npm；开发 Responses 端点为 http://jp.harryshan.com:4141/v1/responses，默认模型标识为 5.6-luna。
 - 原因：用户明确指定包管理器并提供服务端点、API key 与默认模型。
 - 影响：新增 R19，更新 R9、AGENTS.md 和技术方案；SDK baseURL 使用 http://jp.harryshan.com:4141/v1。API key 不记录在仓库中，后续接入通过后端本地配置提供。本次不调用模型服务，不宣称兼容性已验证，其余推荐方案状态不变。
+
+## D017：开始实现初版及服务模型标识校正
+
+- 日期：2026-09-07
+- 状态：用户已授权实现；兼容性已实测
+- 决定：按已讨论方案开始构建 Node.js 24 + pnpm + React/Vite + Fastify + SQLite + Pino 初版，SQLite 使用 Node.js 内置接口。
+- 原因：用户明确要求“开始”。5.6-luna 简称在真实服务返回 400，/v1/models 公布完整标识 codex/gpt-5.6-luna，使用此同名模型完成验证。
+- 影响：更新默认模型为 codex/gpt-5.6-luna；保留简称规范化。服务 completed.output 可为空，从 output_item.done 收集完整工具项。真实工具往返与修复/补测试/验证闭环已通过。执行范围仍受已确认的初版需求限制。

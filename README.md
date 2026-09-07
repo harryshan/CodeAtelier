@@ -1,17 +1,57 @@
 # CodeAtelier
 
-CodeAtelier 是使用 TypeScript、尽量从零构建的个人 coding agent，计划通过 Web UI 交互，支持 Windows、macOS 和 Linux。
+本机浏览器中的个人 coding agent。TypeScript 实现，自研 agent 循环、上下文和工具调度，通过用户自建 Responses API 服务完成代码阅读、精确修改与验证。
 
-部署形态为本机后端 + 本机浏览器，仅支持本机访问。
+## 快速开始
 
-初版通过对话完成本地项目的代码阅读、修改和验证；保存历史消息与工具记录，支持旧会话续聊。采用单 agent、单任务执行。
+需要 Node.js 24 和 pnpm 11.22.0。
 
-**当前状态：初版功能边界已确认，技术方案待设计，尚无可运行实现。**
+```sh
+pnpm install --frozen-lockfile
+pnpm build
+pnpm start
+```
 
-## 文档入口
+打开 [http://127.0.0.1:4142](http://127.0.0.1:4142)，在「模型与设置」输入 API key，然后新建会话并输入本机项目目录。
 
-- [AGENTS.md](AGENTS.md)：参与本仓库工作的 agent 必须遵守的约定。
-- [需求说明](docs/requirements.md)：已确认的初版范围、验收标准和技术开放问题。
-- [决策记录](docs/decisions.md)：已确认的项目决定。
+默认模型为服务公布的 `codex/gpt-5.6-luna`，对应用户指定的 5.6-luna。默认 API Base URL 为 `http://jp.harryshan.com:4141/v1`。本机访问限制仅针对 UI/API，模型请求会发送到配置的服务。
 
-后续随实现补充安装、运行、配置、架构、开发和排错文档。当前不提供尚不可执行的安装或运行命令。
+也可复制 `.env.example` 为本地 `.env`，填写 `CODEATELIER_API_KEY`；该文件被 Git 忽略。不要将密钥写入源码或提交记录。UI 输入的密钥仅保留在后端内存。
+
+## 初版能力
+
+- 多轮会话、流式回复、历史消息与工具结果持久化。
+- 列目录、读取文件、代码搜索、新建文件和精确替换，展示 diff。
+- 命令执行前审批，支持取消、超时、输出限制和单任务并发保护。
+- 后端运行时关闭页面不停止任务；重启后未完成任务标为中断，不自动重放。
+- 可配置模型、步骤和上下文限制；结构化分级日志。
+
+当前为初版实现。真实模型已在隔离示例项目完成修复 bug、补充测试和运行验证。详细验证范围见 [验证记录](docs/verification.md)。
+
+## 开发
+
+```sh
+pnpm dev
+# 另一个终端
+pnpm dev:web
+```
+
+开发界面地址：[http://127.0.0.1:5173](http://127.0.0.1:5173)。
+
+```sh
+pnpm check
+pnpm exec playwright install chromium
+pnpm test:e2e
+```
+
+初版使用应用层审批，不提供操作系统沙箱；获准命令以本机用户权限运行，适用于你信任的项目。Git 自动提交/推送是本项目的开发流程，不是产品的自动能力。
+
+## 文档
+
+- [AGENTS.md](AGENTS.md)：开发 agent 的工作约定。
+- [需求与范围](docs/requirements.md)
+- [架构](docs/architecture.md)
+- [开发、配置与排错](docs/development.md)
+- [验证记录](docs/verification.md)
+- [技术与权限方案](docs/technical-proposal.md)
+- [决策记录](docs/decisions.md)
