@@ -55,3 +55,5 @@ pnpm test:e2e
 - [验证记录](docs/verification.md)
 - [技术与权限方案](docs/technical-proposal.md)
 - [决策记录](docs/decisions.md)
+
+开发必须配套单元/回归测试并随增量验证，命令与功能覆盖清单见 [测试约定](docs/testing.md)。

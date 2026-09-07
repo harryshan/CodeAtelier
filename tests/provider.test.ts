@@ -84,3 +84,60 @@ it("does not treat failed/incomplete events as successful completion", async () 
       ).rejects.toThrow("失败或不完整");
     });
 });
+
+it("prefers completed output over fallback items and preserves final message text", async () => {
+  const message = {
+    type: "message",
+    role: "assistant",
+    content: [{ type: "output_text", text: "final" }],
+  };
+  await withServer(
+    [
+      {
+        type: "response.output_item.done",
+        output_index: 0,
+        item: {
+          type: "message",
+          content: [{ type: "output_text", text: "fallback" }],
+        },
+      },
+      { type: "response.completed", response: { output: [message] } },
+    ],
+    async (baseUrl) => {
+      const result = await new ResponsesProvider(
+        { ...settings, baseUrl },
+        "key",
+      ).run([], "", [], new AbortController().signal, () => {});
+      expect(result).toEqual({ output: [message], text: "final" });
+    },
+  );
+});
+it("classifies empty completion as retryable and explicit output limit as permanent", async () => {
+  for (const [event, code, retryable] of [
+    [
+      { type: "response.completed", response: { output: [] } },
+      "empty_response",
+      true,
+    ],
+    [
+      {
+        type: "response.incomplete",
+        response: { incomplete_details: { reason: "max_output_tokens" } },
+      },
+      "max_output_tokens",
+      false,
+    ],
+  ] as const) {
+    await withServer([event], async (baseUrl) => {
+      await expect(
+        new ResponsesProvider({ ...settings, baseUrl }, "key").run(
+          [],
+          "",
+          [],
+          new AbortController().signal,
+          () => {},
+        ),
+      ).rejects.toMatchObject({ code, retryable });
+    });
+  }
+});

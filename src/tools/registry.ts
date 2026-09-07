@@ -159,6 +159,8 @@ export class ToolRunner {
     const schema = schemas[name as keyof typeof schemas];
     if (!schema) throw new Error("未知工具");
     const args: any = schema.parse(raw);
+    if (name === "read_file" && args.endLine < args.startLine)
+      throw new Error("endLine 不能小于 startLine。");
     if (name === "run_command") {
       const cwd = await this.access(args.cwd);
       const grant = await this.commandGrant(args.command, args.args, cwd);
@@ -241,6 +243,7 @@ export class ToolRunner {
             path: path.relative(this.ctx.root, name),
             kind: "filename",
           });
+        if (matches.length >= 100) break;
         try {
           await regularFile(name, 512 * 1024);
           const text = await readFile(name, "utf8");

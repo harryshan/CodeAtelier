@@ -129,3 +129,32 @@ test("reconnects after an expired SSE session without resubmitting a task", asyn
   ).json();
   expect(snapshot.tasks).toHaveLength(0);
 });
+
+test("continues a historical conversation while keeping another session isolated", async ({
+  page,
+}) => {
+  const workspace = await realpath(
+    await mkdtemp(path.join(tmpdir(), "codeatelier-e2e-")),
+  );
+  await page.goto("/");
+  for (const title of ["续聊会话", "独立会话"]) {
+    await page.getByRole("button", { name: "新建会话" }).click();
+    await page.getByLabel("项目目录").fill(workspace);
+    await page.getByLabel("会话名称").fill(title);
+    await page.getByRole("button", { name: "创建会话" }).click();
+    if (title === "续聊会话") {
+      await page.getByLabel("任务描述").fill("说明项目");
+      await page.getByRole("button", { name: "开始执行" }).click();
+      await expect(page.getByText("任务完成，已检查工具结果。")).toBeVisible();
+    }
+  }
+  await expect(page.getByText("任务完成，已检查工具结果。")).toHaveCount(0);
+  await page.reload();
+  await page.getByRole("button", { name: "续聊会话" }).click();
+  await expect(page.getByText("任务完成，已检查工具结果。")).toHaveCount(1);
+  await page.getByLabel("任务描述").fill("继续说明");
+  await page.getByRole("button", { name: "开始执行" }).click();
+  await expect(page.getByText("任务完成，已检查工具结果。")).toHaveCount(2);
+  await page.getByRole("button", { name: "独立会话" }).click();
+  await expect(page.getByText("任务完成，已检查工具结果。")).toHaveCount(0);
+});
