@@ -4,8 +4,9 @@
 
 ## 工作方式
 
-每次正常模型请求前计算 JSON 序列化后的 input、instructions 和 tools 字符总数。
-沿用 settings.contextChars（默认 180000），这是字符预算，不是 token 容量。
+每个任务先发现服务公开的模型容量。具备已支持的 tokenizer 时，使用 token 输入预算；
+否则沿用 settings.contextChars（默认 180000）作为备用字符预算。两种方式均包含 input、instructions、tools。
+服务实测数据、预留量和校准规则见 [model-tokens.md](model-tokens.md)。
 达到 80% 时尝试整理较早记录，只有压缩后不超过预算 60%，且至少缩小 10%，才提交。
 未到 80% 不增加摘要模型调用。
 
@@ -24,7 +25,7 @@
 
 摘要请求把每条旧记录投影为带索引的摘录：不超过 2000 字符的记录完整保留，
 大记录保留开头 1200 字符和末尾 800 字符，并明确标注省略。
-各摘要请求的序列化输入与固定指令不超过配置字符预算 70%，为摘要输出留出余量。
+各摘要请求的输入与固定指令不超过当前计量方式下输入预算的 70%，为摘要输出留出余量。
 按顺序分块摘要；一项任务最多 12 次摘要请求（包含瞬态重试），超额停止尝试。
 摘要文本最多接受 8000 字符，拒绝非 JSON、结构不符、越界来源和工具调用输出。
 
@@ -62,19 +63,19 @@ SQLite 新增 context_snapshots 表，通过 CREATE TABLE IF NOT EXISTS 兼容�
 
 ## 操作与诊断
 
-不需要新增配置或模型密钥。启动方式不变：
+复用现有模型密钥；新增 maxOutputTokens 配置（默认 16384）。启动方式不变：
 
 ```sh
 pnpm build
 pnpm start
 ```
 
-Web UI 原有“模型与设置”中的“上下文字符上限”控制预算。示例值 180000 是字符数，
-不是服务承诺的 token 容量。整理时通过既有 notice 事件显示进度和前后字符数；
+Web UI“模型与设置”提供“备用上下文字符上限”和“最大输出 token”。字符备用值 180000
+不是服务承诺的 token 容量。整理时通过既有 notice 事件显示进度和当前单位的前后大小；
 原对话和工具记录继续显示，刷新后仍能查看。内部摘要不作为用户可见的 agent 正式答复。
 
 日志事件：context.compaction_started、context.compaction_completed（INFO）、
-context.compaction_failed（WARN），继承 sessionId/taskId，包含字符数和调用数。
+context.compaction_failed（WARN），继承 sessionId/taskId，包含计量单位、前后大小和调用数。
 不输出摘要正文、历史原文或密钥。现有工具日志记录历史读取工具名与调用 ID。
 
 ## 模块和验证

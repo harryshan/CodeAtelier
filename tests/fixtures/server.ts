@@ -19,6 +19,15 @@ const { app, engine } = await createApp(
     let step = 0;
 
     return {
+      async getCapabilities() {
+        return {
+          tokenizer: "o200k_base",
+          limits: {
+            max_context_window_tokens: 372000,
+            max_output_tokens: 128000,
+          },
+        };
+      },
       async run(input, _instructions, _tools, signal, onDelta) {
         signal.throwIfAborted();
         if (!_tools.length) {
@@ -50,7 +59,12 @@ const { app, engine } = await createApp(
 
         if (step === 1 && lastUser === "准备上下文压缩") {
           return {
-            output: [{ role: "assistant", content: "历史材料".repeat(38000) }],
+            output: [
+              {
+                role: "assistant",
+                content: "历史材料 const value = 123;\n".repeat(40000),
+              },
+            ],
             text: "已准备长历史。",
           };
         }
@@ -91,6 +105,7 @@ const { app, engine } = await createApp(
             },
           ],
           text,
+          usage: { input_tokens: 100, output_tokens: 20, total_tokens: 120 },
         };
       },
     };

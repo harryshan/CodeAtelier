@@ -33,12 +33,15 @@ export function safeCuts(input: any[]): number[] {
   return [...new Set(cuts)];
 }
 
-export function chooseCut(input: any[], limit: number): number | undefined {
+export function chooseCut(
+  input: any[],
+  limit: number,
+  measure = contextSize,
+): number | undefined {
   const cuts = safeCuts(input);
 
   return (
-    cuts.find(
-      (cut) => JSON.stringify(input.slice(cut)).length <= limit * 0.25,
-    ) ?? cuts.at(-1)
+    cuts.find((cut) => measure(input.slice(cut), "", []) <= limit * 0.25) ??
+    cuts.at(-1)
   );
 }

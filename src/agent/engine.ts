@@ -1,3 +1,8 @@
+import { createBudget } from "../context/token-budget.js";
+import type {
+  ModelCapabilities,
+  ModelUsage,
+} from "../providers/model-metadata.js";
 import { ContextManager } from "../context/context-manager.js";
 import { historyDefinition, readContextHistory } from "../context/history.js";
 import { prepareTaskContext } from "./context.js";
@@ -203,18 +208,67 @@ export class Engine {
       const provider =
         this.factory?.() || new ResponsesProvider(settings, this.config.apiKey);
 
+      let capabilities: ModelCapabilities | undefined;
+      try {
+        capabilities = await provider.getCapabilities?.(signal);
+      } catch {
+        signal.throwIfAborted();
+        log.warn({ event: "model.capabilities_unavailable" });
+      }
+
+      const budget = createBudget(
+        capabilities,
+        settings.contextChars,
+        settings.maxOutputTokens,
+      );
+      emit("context_budget", {
+        model: settings.model,
+        unit: budget.unit,
+        inputLimit: budget.limit,
+        contextWindowTokens: capabilities?.limits.max_context_window_tokens,
+        modelMaxOutputTokens: capabilities?.limits.max_output_tokens,
+        outputTokens: budget.outputTokens,
+        safetyTokens: budget.safetyTokens,
+        tokenizer: budget.tokenizer,
+      });
+      log.info({
+        event: "context.budget_selected",
+        unit: budget.unit,
+        inputLimit: budget.limit,
+      });
+      const recordUsage = (
+        usage: ModelUsage,
+        purpose: "task" | "compaction",
+      ) => {
+        emit("model_usage", {
+          ...usage,
+          purpose,
+          step,
+          attempt: purpose === "task" ? attempt : undefined,
+        });
+        log.info({ event: "model.usage", purpose, step, ...usage });
+      };
+
       const tools = [...definitions, historyDefinition];
       const context = new ContextManager({
         store: this.store,
         sessionId: session.id,
         model: settings.model,
-        limit: settings.contextChars,
+        limit: budget.limit,
+        measure: budget.measure,
+        unit: budget.unit,
+        maxOutputTokens: budget.outputTokens,
+        onUsage: (usage) => recordUsage(usage, "compaction"),
         provider,
         signal,
         clean: (text) => redactJson(text, [this.config.apiKey]),
         notice: (text) => emit("notice", { text }),
         report: (event, data) => {
-          log[event.endsWith("failed") ? "warn" : "info"]({ event, ...data });
+          log[event.endsWith("failed") ? "warn" : "info"]({
+            event,
+            unit: budget.unit,
+            ...data,
+          });
         },
       });
       let overflowRetried = false;
@@ -232,6 +286,14 @@ export class Engine {
             async (currentAttempt) => {
               attempt = attemptOffset + currentAttempt;
 
+              emit("context_estimate", {
+                unit: budget.unit,
+                input: budget.measure(input, instructions, tools),
+                limit: budget.limit,
+                step,
+                attempt,
+              });
+
               return provider.run(
                 input,
                 instructions,
@@ -243,6 +305,7 @@ export class Engine {
                     flush();
                   }
                 },
+                { maxOutputTokens: budget.outputTokens },
               );
             },
             signal,
@@ -284,6 +347,16 @@ export class Engine {
 
         flush();
         signal.throwIfAborted();
+        if (response.usage) {
+          budget.observeUsage?.(
+            response.usage.input_tokens,
+            input,
+            instructions,
+            tools,
+          );
+          recordUsage(response.usage, "task");
+        }
+
         input.push(...response.output);
         this.store.saveContext(session.id, input);
         if (response.text) {

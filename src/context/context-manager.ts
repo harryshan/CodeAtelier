@@ -1,3 +1,4 @@
+import type { ModelUsage } from "../providers/model-metadata.js";
 import { createHash, randomUUID } from "node:crypto";
 import { chooseCut, contextSize } from "./budget.js";
 import { summarize, summaryChunks } from "./compactor.js";
@@ -11,6 +12,10 @@ interface Options {
   sessionId: string;
   model: string;
   limit: number;
+  measure?: typeof contextSize;
+  unit?: "tokens" | "characters";
+  maxOutputTokens?: number;
+  onUsage?: (usage: ModelUsage) => void;
   provider: ModelProvider;
   signal: AbortSignal;
   clean: (text: string) => string;
@@ -37,6 +42,9 @@ export class ContextManager {
 
   constructor(private options: Options) {}
 
+  private measure = (input: any[], instructions: string, tools: any[]) =>
+    (this.options.measure ?? contextSize)(input, instructions, tools);
+
   async prepare(
     input: any[],
     instructions: string,
@@ -45,7 +53,7 @@ export class ContextManager {
   ): Promise<any[]> {
     const options = this.options;
     options.signal.throwIfAborted();
-    const before = contextSize(input, instructions, tools);
+    const before = this.measure(input, instructions, tools);
     if (!force && before < options.limit * 0.8) {
       return input;
     }
@@ -56,7 +64,7 @@ export class ContextManager {
     let compacted: Compaction | undefined;
     if (plan) {
       options.notice("正在整理上下文，已保存的历史对话不会删除。");
-      options.report("context.compaction_started", { beforeChars: before });
+      options.report("context.compaction_started", { beforeAmount: before });
       try {
         compacted = await this.compact(input, plan, instructions, tools);
       } catch {
@@ -66,7 +74,7 @@ export class ContextManager {
           "上下文整理未完成，保留原上下文；达到容量上限时可人工恢复。",
         );
         options.report("context.compaction_failed", {
-          beforeChars: before,
+          beforeAmount: before,
           calls: this.calls,
         });
       }
@@ -76,11 +84,11 @@ export class ContextManager {
     if (compacted) {
       const snapshot = compacted.snapshot;
       options.notice(
-        `上下文已整理：${before} → ${snapshot.afterChars} 字符；历史记录仍可查看。`,
+        `上下文已整理：${before} → ${snapshot.budget?.after ?? snapshot.afterChars} ${options.unit === "tokens" ? "token（估算）" : "字符"}；历史记录仍可查看。`,
       );
       options.report("context.compaction_completed", {
-        beforeChars: before,
-        afterChars: snapshot.afterChars,
+        beforeAmount: before,
+        afterAmount: snapshot.budget?.after ?? snapshot.afterChars,
         snapshotId: snapshot.id,
         calls: this.calls,
       });
@@ -102,7 +110,7 @@ export class ContextManager {
     instructions: string,
     tools: any[],
   ): Plan | undefined {
-    const cut = chooseCut(input, this.options.limit);
+    const cut = chooseCut(input, this.options.limit, this.measure);
     if (cut === undefined) {
       return undefined;
     }
@@ -112,7 +120,7 @@ export class ContextManager {
     const tail = input.slice(cut);
     // 用户原文和当前规则不能靠压缩消失。
     if (
-      contextSize([...anchors, ...tail], instructions, tools) >=
+      this.measure([...anchors, ...tail], instructions, tools) >=
       this.options.limit * 0.6
     ) {
       return undefined;
@@ -134,7 +142,7 @@ export class ContextManager {
       options.store.events(options.sessionId),
       previous,
     );
-    const chunks = summaryChunks(plan.prefix, options.limit);
+    const chunks = summaryChunks(plan.prefix, options.limit, this.measure);
     if (chunks.length > 12 - this.calls) {
       throw new Error("上下文压缩调用预算不足。");
     }
@@ -154,6 +162,8 @@ export class ContextManager {
 
             this.calls++;
           },
+          options.onUsage,
+          options.maxOutputTokens,
         ),
       );
     }
@@ -166,8 +176,8 @@ export class ContextManager {
         options.clean(JSON.stringify({ snapshotId: id, summaries, ledger })),
     };
     const next = [...plan.anchors, summaryItem, ...plan.tail];
-    const before = contextSize(input, instructions, tools);
-    const after = contextSize(next, instructions, tools);
+    const before = this.measure(input, instructions, tools);
+    const after = this.measure(next, instructions, tools);
     if (after > options.limit * 0.6 || after >= before * 0.9) {
       throw new Error("摘要未达到压缩目标。");
     }
@@ -182,8 +192,14 @@ export class ContextManager {
         .digest("hex"),
       model: options.model,
       createdAt: new Date().toISOString(),
-      beforeChars: before,
-      afterChars: after,
+      beforeChars: contextSize(input, instructions, tools),
+      afterChars: contextSize(next, instructions, tools),
+      budget: {
+        unit: options.unit ?? "characters",
+        limit: options.limit,
+        before,
+        after,
+      },
       cut: plan.cut,
       source: input,
       summaries,

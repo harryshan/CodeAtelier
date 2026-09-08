@@ -157,3 +157,87 @@ it("classifies empty completion as retryable and explicit output limit as perman
     });
   }
 });
+
+it("parses model limits and completed usage while forwarding the output cap", async () => {
+  let requestedLimit: unknown;
+  const server = createServer(async (req, res) => {
+    if (req.url === "/v1/models") {
+      res.setHeader("content-type", "application/json");
+      res.end(
+        JSON.stringify({
+          data: [
+            {
+              id: "test",
+              capabilities: {
+                limits: {
+                  max_context_window_tokens: 372000,
+                  max_output_tokens: 128000,
+                },
+                tokenizer: "o200k_base",
+              },
+            },
+          ],
+        }),
+      );
+
+      return;
+    }
+
+    let body = "";
+    for await (const chunk of req) {
+      body += chunk.toString();
+    }
+
+    requestedLimit = JSON.parse(body).max_output_tokens;
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    res.end(
+      "data: " +
+        JSON.stringify({
+          type: "response.completed",
+          response: {
+            output: [
+              {
+                type: "message",
+                content: [{ type: "output_text", text: "ok" }],
+              },
+            ],
+            usage: {
+              input_tokens: 10,
+              output_tokens: 5,
+              total_tokens: 15,
+              attribution: { private: "ignored" },
+            },
+          },
+        }) +
+        "\n\n",
+    );
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const port = (server.address() as { port: number }).port;
+    const provider = new ResponsesProvider(
+      { ...settings, baseUrl: "http://127.0.0.1:" + port + "/v1" },
+      "key",
+    );
+    expect(
+      (await provider.getCapabilities(new AbortController().signal))?.limits
+        .max_context_window_tokens,
+    ).toBe(372000);
+    const result = await provider.run(
+      [],
+      "",
+      [],
+      new AbortController().signal,
+      () => {},
+      { maxOutputTokens: 16384 },
+    );
+    expect(requestedLimit).toBe(16384);
+    expect(result.usage).toEqual({
+      input_tokens: 10,
+      output_tokens: 5,
+      total_tokens: 15,
+    });
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});

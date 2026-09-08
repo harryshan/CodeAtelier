@@ -273,3 +273,37 @@ test("context compression notice and original history survive refresh", async ({
   await expect(page.getByText("已准备长历史。", { exact: true })).toBeVisible();
   await expect(page.getByText(/上下文已整理：/)).toBeVisible();
 });
+
+test("shows discovered token budget and persisted actual usage", async ({
+  page,
+}) => {
+  const workspace = await realpath(
+    await mkdtemp(path.join(tmpdir(), "codeatelier-e2e-")),
+  );
+  await page.goto("/");
+  await page.getByRole("button", { name: "新建会话" }).click();
+  await page.getByLabel("项目目录").fill(workspace);
+  await page.getByLabel("会话名称").fill("Token 验收");
+  await page.getByRole("button", { name: "创建会话" }).click();
+  await page.getByLabel("任务描述").fill("说明项目");
+  await page.getByRole("button", { name: "开始执行" }).click();
+  await expect(
+    page.getByText("上下文预算：token 模式", { exact: true }),
+  ).toBeVisible();
+  await page.getByText("上下文预算：token 模式", { exact: true }).click();
+  await expect(
+    page.getByText("服务公布窗口：372000 token", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("模型用量（服务实报）：输入 100 / 输出 20 token", {
+      exact: true,
+    }),
+  ).toBeVisible();
+  await page.reload();
+  await page.getByRole("button", { name: "Token 验收" }).click();
+  await expect(
+    page.getByText("模型用量（服务实报）：输入 100 / 输出 20 token", {
+      exact: true,
+    }),
+  ).toBeVisible();
+});

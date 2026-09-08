@@ -29,6 +29,12 @@ export interface ContextSnapshot {
   createdAt: string;
   beforeChars: number;
   afterChars: number;
+  budget?: {
+    unit: "tokens" | "characters";
+    limit: number;
+    before: number;
+    after: number;
+  };
   cut: number;
   source: any[];
   summaries: ContextSummary[];

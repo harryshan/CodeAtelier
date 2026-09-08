@@ -138,7 +138,7 @@ export function SettingsPanel({
               </label>
             ))}
             <label>
-              上下文字符上限
+              备用上下文字符上限
               <input
                 type="number"
                 min="10000"
@@ -146,6 +146,21 @@ export function SettingsPanel({
                 value={value.contextChars}
                 onChange={(e) =>
                   setValue({ ...value, contextChars: Number(e.target.value) })
+                }
+              />
+            </label>
+            <label>
+              最大输出 token
+              <input
+                type="number"
+                min="1"
+                max="2000000"
+                value={value.maxOutputTokens ?? 16384}
+                onChange={(e) =>
+                  setValue({
+                    ...value,
+                    maxOutputTokens: Number(e.target.value),
+                  })
                 }
               />
             </label>

@@ -128,6 +128,70 @@ export function Timeline({
           );
         }
 
+        if (e.type === "context_budget") {
+          return (
+            <details className={s.toolResult} key={e.id}>
+              <summary>
+                上下文预算：
+                {e.data.unit === "tokens" ? "token 模式" : "字符备用模式"}
+              </summary>
+              <p>
+                {e.data.contextWindowTokens
+                  ? "服务公布窗口：" + e.data.contextWindowTokens + " token"
+                  : "服务未提供窗口容量"}
+              </p>
+              <p>
+                输入预算：{e.data.inputLimit}{" "}
+                {e.data.unit === "tokens" ? "token（本地估算）" : "字符"}
+              </p>
+              {e.data.outputTokens && (
+                <p>
+                  输出预留：{e.data.outputTokens} token；安全余量：
+                  {e.data.safetyTokens} token
+                </p>
+              )}
+            </details>
+          );
+        }
+
+        if (e.type === "context_estimate") {
+          return (
+            <details className={s.toolResult} key={e.id}>
+              <summary>
+                输入{e.data.unit === "tokens" ? "估算" : "字符数"}：
+                {e.data.input} / {e.data.limit}
+              </summary>
+              <p>
+                {e.data.unit === "tokens"
+                  ? "本地 tokenizer 估算，包含指令和工具定义，不是服务实报值。"
+                  : "模型容量或 tokenizer 不可用，使用备用字符限制。"}
+              </p>
+            </details>
+          );
+        }
+
+        if (e.type === "model_usage") {
+          return (
+            <details className={s.toolResult} key={e.id}>
+              <summary>
+                模型用量（服务实报）：输入 {e.data.input_tokens} / 输出{" "}
+                {e.data.output_tokens} token
+              </summary>
+              <p>
+                用途：
+                {e.data.purpose === "compaction" ? "上下文摘要" : "任务执行"}
+                ；本次合计：{e.data.total_tokens} token
+              </p>
+              <p>
+                缓存输入：
+                {e.data.input_tokens_details?.cached_tokens ?? "未提供"}
+                ；推理输出：
+                {e.data.output_tokens_details?.reasoning_tokens ?? "未提供"}
+              </p>
+            </details>
+          );
+        }
+
         if (e.type === "notice") {
           return (
             <div role="status" key={e.id} className={s.notice}>

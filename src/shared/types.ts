@@ -42,6 +42,7 @@ export interface Settings {
   commandTimeoutMs: number;
   requestTimeoutMs: number;
   idleTimeoutMs: number;
+  maxOutputTokens?: number;
   contextChars: number;
   outputChars: number;
   logLevel: string;

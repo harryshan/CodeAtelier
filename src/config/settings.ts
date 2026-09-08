@@ -10,6 +10,7 @@ export const settingsSchema = z.object({
   commandTimeoutMs: z.number().int().min(1000).max(600000),
   requestTimeoutMs: z.number().int().min(1000).max(600000),
   idleTimeoutMs: z.number().int().min(1000).max(300000),
+  maxOutputTokens: z.number().int().min(1).max(2000000).default(16384),
   contextChars: z.number().int().min(10000).max(2000000),
   outputChars: z.number().int().min(1000).max(100000),
   logLevel: z.enum(["trace", "debug", "info", "warn", "error"]),

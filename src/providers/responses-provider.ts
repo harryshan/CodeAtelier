@@ -1,3 +1,4 @@
+import { capabilitiesSchema, parseUsage } from "./model-metadata.js";
 import OpenAI from "openai";
 import { ModelError, modelError } from "./model-error.js";
 import type { Settings } from "../shared/types.js";
@@ -9,12 +10,27 @@ export class ResponsesProvider implements ModelProvider {
     private key: string,
   ) {}
 
+  async getCapabilities(signal: AbortSignal) {
+    const client = new OpenAI({
+      baseURL: this.settings.baseUrl,
+      apiKey: this.key,
+      maxRetries: 0,
+      timeout: Math.min(10000, this.settings.requestTimeoutMs),
+    });
+    const models = await client.models.list({ signal });
+    const model = models.data.find((entry) => entry.id === this.settings.model);
+    const parsed = capabilitiesSchema.safeParse((model as any)?.capabilities);
+
+    return parsed.success ? parsed.data : undefined;
+  }
+
   async run(
     input: any[],
     instructions: string,
     tools: any[],
     signal: AbortSignal,
     onDelta: (text: string) => void,
+    options?: { maxOutputTokens?: number },
   ): Promise<ModelResult> {
     if (!this.key) {
       throw new ModelError("请先在设置中输入 API key。", false, "missing_key");
@@ -68,6 +84,9 @@ export class ResponsesProvider implements ModelProvider {
           tools,
           stream: true,
           store: false,
+          ...(options?.maxOutputTokens
+            ? { max_output_tokens: options.maxOutputTokens }
+            : {}),
         },
         { signal: controller.signal },
       );
@@ -160,7 +179,11 @@ export class ResponsesProvider implements ModelProvider {
         );
       }
 
-      return { output, text: finalText || text };
+      return {
+        output,
+        text: finalText || text,
+        usage: parseUsage(completedResponse.usage),
+      };
     } catch (error) {
       if (signal.aborted) {
         throw signal.reason;
