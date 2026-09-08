@@ -10,7 +10,7 @@ import { ResponsesProvider } from "../providers/responses-provider.js";
 import { type ModelProvider } from "../providers/model-provider.js";
 import { ToolRunner } from "../tools/tool-runner.js";
 import { definitions } from "../tools/registry.js";
-import { redactText } from "../logging/redact.js";
+import { redactJson, redactText } from "../logging/redact.js";
 import type { Task, TaskStatus } from "../shared/types.js";
 
 export class Engine {
@@ -46,7 +46,7 @@ export class Engine {
 
   private emit(task: Task, type: string, data: any) {
     const clean = JSON.parse(
-      redactText(JSON.stringify(data), [this.config.apiKey]),
+      redactJson(JSON.stringify(data), [this.config.apiKey]),
     );
     const event = this.store.event(task.sessionId, task.id, type, clean);
 
@@ -304,7 +304,7 @@ export class Engine {
             });
           }
 
-          output = redactText(output, [this.config.apiKey]);
+          output = redactJson(output, [this.config.apiKey]);
           // 工具已产生的副作用不能回滚；结果与上下文必须一起保存。
           this.store.transaction(() => {
             emit("tool_result", {

@@ -259,3 +259,54 @@ it("requires a fresh read in a later task even when history contains an earlier 
     fixture.store.close();
   }
 });
+
+it("reads credential-related source without corrupting tool-result JSON", async () => {
+  let calls = 0;
+  const fixture = await createFixture({
+    async run(input) {
+      if (calls++ === 0) {
+        return {
+          output: [
+            {
+              type: "function_call",
+              call_id: "source",
+              name: "read_file",
+              arguments: JSON.stringify({
+                path: "example.ts",
+                startLine: 1,
+                endLine: 20,
+              }),
+            },
+          ],
+          text: "",
+        };
+      }
+
+      const output = input.find((item) => item.type === "function_call_output");
+      expect(JSON.parse(output.output).text).toContain("const result = 42;");
+      expect(output.output).not.toContain("known-runtime-secret");
+
+      return done;
+    },
+  });
+
+  try {
+    fixture.config.apiKey = "known-runtime-secret";
+    await writeFile(
+      path.join(fixture.root, "example.ts"),
+      'const config = { apiKey: "example-key" };\nconst secret = "known-runtime-secret";\nconst result = 42;\n',
+    );
+    fixture.engine.start(fixture.session.id, "read source");
+    await fixture.engine.active?.done;
+
+    expect(fixture.store.tasks(fixture.session.id)[0].status).toBe("completed");
+    expect(calls).toBe(2);
+    const result = fixture.store
+      .events(fixture.session.id)
+      .find((event) => event.type === "tool_result");
+    expect(result?.data.result.text).toContain("const result = 42;");
+  } finally {
+    await fixture.engine.close();
+    fixture.store.close();
+  }
+});

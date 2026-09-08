@@ -87,3 +87,24 @@ it("log storage failure does not crash the task or expose the original payload",
   expect(() => log.error({ message: "sensitive-payload" })).not.toThrow();
   expect(errors).toHaveBeenCalledWith("CodeAtelier: log output unavailable\n");
 });
+
+it("keeps JSON logs valid when messages contain quoted credential assignments", async () => {
+  vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+  const root = await temp();
+  const secret = 'a"b\\c';
+  const log = createLogger(root, "info", () => [secret]);
+
+  log.info({
+    event: "source",
+    message: 'const options = { apiKey: "demo" };',
+    secretText: secret,
+    token: "credential",
+  });
+  const saved = JSON.parse(
+    await readFile(path.join(root, "logs/app.log"), "utf8"),
+  );
+
+  expect(saved.event).toBe("source");
+  expect(saved.secretText).toBe("[REDACTED]");
+  expect(saved.token).toBe("[REDACTED]");
+});

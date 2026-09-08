@@ -230,7 +230,7 @@ try {
     'this.settings.model = "5.6-luna";',
   );
   let addedTestDetectsRegression = false;
-  if (mutant !== repairedSource) {
+  if (final.passed && independent.passed && mutant !== repairedSource) {
     await writeFile(path.join(workspace, sourcePath), mutant);
     try {
       const mutation = verify("constructor mutation");

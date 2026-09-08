@@ -85,3 +85,5 @@ Web 侧栏的“关闭服务”需确认。`POST /api/server/shutdown` 接受 `{
 ## 自举开发验证
 
 `pnpm exec tsx scripts/bootstrap-agent.ts --prepare-only` 只准备隔离源码副本并复现缺陷；移除该参数后使用环境变量密钥执行真实模型任务。数据发送范围、审批限制和证据判定见 [bootstrap.md](bootstrap.md)。
+
+结构化事件、工具结果和日志先解析 JSON，对字段值脱敏后重新序列化；不直接用正则替换 JSON 转义文本。纯文本诊断仍通过统一脱敏函数处理。

@@ -47,3 +47,5 @@
 ## 自举验收
 
 `tests/bootstrap.test.ts` 覆盖固定测试命令的精确审批及错误路径、参数、shell、非命令请求拒绝。真实源码任务使用独立的手动脚本，不依赖默认 CI 密钥；准备模式不调用模型。运行与判定见 [bootstrap.md](bootstrap.md)。脚本也纳入 TypeScript 检查。
+
+自举实测回归：engine.test.ts 验证读取带引号的凭据赋值源码后工具 JSON、上下文与任务完成仍有效；logging.test.ts 验证同类日志可解析，含引号/反斜杠的已知密钥与结构化字段保持脱敏。先在旧实现复现失败，再验证修复。

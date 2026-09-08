@@ -9,7 +9,7 @@ import {
   appendFileSync,
 } from "node:fs";
 import path from "node:path";
-import { redactText } from "./redact.js";
+import { redactJson } from "./redact.js";
 
 export function createLogger(
   directory: string,
@@ -38,7 +38,7 @@ export function createLogger(
           renameSync(file, file + ".1");
         }
 
-        const line = redactText(String(chunk), getSecrets());
+        const line = redactJson(String(chunk), getSecrets()) + "\n";
 
         appendFileSync(file, line, { mode: 0o600 });
         process.stdout.write(line);
