@@ -4,8 +4,8 @@ import path from "node:path";
 import pino from "pino";
 import { Engine } from "../src/agent/engine.js";
 import { Store } from "../src/sessions/store.js";
-import { Config } from "../src/config/settings.js";
-import type { ModelProvider } from "../src/providers/responses.js";
+import { Config } from "../src/config/config.js";
+import type { ModelProvider } from "../src/providers/model-provider.js";
 import { temp } from "./fixtures/helpers.js";
 
 const done = {

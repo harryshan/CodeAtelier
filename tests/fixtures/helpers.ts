@@ -2,9 +2,9 @@ import { afterEach } from "vitest";
 import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { Config } from "../../src/config/settings.js";
-import { ToolRunner } from "../../src/tools/registry.js";
-import { ApprovalManager } from "../../src/permissions/approvals.js";
+import { Config } from "../../src/config/config.js";
+import { ToolRunner } from "../../src/tools/tool-runner.js";
+import { ApprovalManager } from "../../src/permissions/approval-manager.js";
 
 const directories: string[] = [];
 

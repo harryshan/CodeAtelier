@@ -1,17 +1,16 @@
 import { prepareTaskContext } from "./context.js";
 import { createInstructions } from "./instructions.js";
-import { retryModel } from "../providers/recovery.js";
+import { retryModel } from "../providers/retry.js";
 import { EventEmitter } from "node:events";
 import type { Logger } from "pino";
 import { Store } from "../sessions/store.js";
-import { Config } from "../config/settings.js";
-import { ApprovalManager } from "../permissions/approvals.js";
-import {
-  ResponsesProvider,
-  type ModelProvider,
-} from "../providers/responses.js";
-import { ToolRunner, definitions } from "../tools/registry.js";
-import { redactText } from "../logging/logger.js";
+import { Config } from "../config/config.js";
+import { ApprovalManager } from "../permissions/approval-manager.js";
+import { ResponsesProvider } from "../providers/responses-provider.js";
+import { type ModelProvider } from "../providers/model-provider.js";
+import { ToolRunner } from "../tools/tool-runner.js";
+import { definitions } from "../tools/registry.js";
+import { redactText } from "../logging/redact.js";
 import type { Task, TaskStatus } from "../shared/types.js";
 
 export class Engine {

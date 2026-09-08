@@ -1,21 +1,7 @@
 import OpenAI from "openai";
-import { ModelError, modelError } from "./recovery.js";
+import { ModelError, modelError } from "./model-error.js";
 import type { Settings } from "../shared/types.js";
-
-export interface ModelResult {
-  output: any[];
-  text: string;
-}
-
-export interface ModelProvider {
-  run(
-    input: any[],
-    instructions: string,
-    tools: any[],
-    signal: AbortSignal,
-    onDelta: (text: string) => void,
-  ): Promise<ModelResult>;
-}
+import type { ModelProvider, ModelResult } from "./model-provider.js";
 
 export class ResponsesProvider implements ModelProvider {
   constructor(

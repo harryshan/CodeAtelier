@@ -1,7 +1,8 @@
 import { it, expect, vi, afterEach } from "vitest";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { Config, dataDirectory } from "../src/config/settings.js";
+import { Config } from "../src/config/config.js";
+import { dataDirectory } from "../src/config/data-directory.js";
 import { temp } from "./fixtures/helpers.js";
 
 afterEach(() => vi.unstubAllEnvs());

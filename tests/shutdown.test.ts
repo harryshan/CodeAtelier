@@ -4,7 +4,7 @@ import { spawn } from "node:child_process";
 import { once } from "node:events";
 import path from "node:path";
 import { createApp } from "../src/server/app.js";
-import { Config } from "../src/config/settings.js";
+import { Config } from "../src/config/config.js";
 import { Store } from "../src/sessions/store.js";
 import { temp } from "./fixtures/helpers.js";
 

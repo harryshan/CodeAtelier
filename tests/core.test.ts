@@ -9,15 +9,15 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { ApprovalManager } from "../src/permissions/approvals.js";
-import { ToolRunner } from "../src/tools/registry.js";
-import { Config } from "../src/config/settings.js";
+import { ApprovalManager } from "../src/permissions/approval-manager.js";
+import { ToolRunner } from "../src/tools/tool-runner.js";
+import { Config } from "../src/config/config.js";
 import { Store } from "../src/sessions/store.js";
 import { executeProcess } from "../src/tools/process.js";
 import { Engine } from "../src/agent/engine.js";
 import { createApp } from "../src/server/app.js";
 import pino from "pino";
-import { redactText } from "../src/logging/logger.js";
+import { redactText } from "../src/logging/redact.js";
 
 const cleanup: string[] = [];
 

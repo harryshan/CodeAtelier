@@ -1,6 +1,6 @@
 import { it, expect } from "vitest";
 import pino from "pino";
-import { Config } from "../src/config/settings.js";
+import { Config } from "../src/config/config.js";
 import { createApp } from "../src/server/app.js";
 import { temp } from "./fixtures/helpers.js";
 

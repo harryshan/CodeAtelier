@@ -1,6 +1,6 @@
 import { it, expect } from "vitest";
 import { createServer } from "node:http";
-import { ResponsesProvider } from "../src/providers/responses.js";
+import { ResponsesProvider } from "../src/providers/responses-provider.js";
 import type { Settings } from "../src/shared/types.js";
 
 const settings: Settings = {

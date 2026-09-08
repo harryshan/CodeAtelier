@@ -4,18 +4,13 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { createServer } from "node:http";
 import pino from "pino";
-import { Config } from "../src/config/settings.js";
+import { Config } from "../src/config/config.js";
 import { Store } from "../src/sessions/store.js";
 import { Engine } from "../src/agent/engine.js";
-import {
-  ResponsesProvider,
-  type ModelProvider,
-} from "../src/providers/responses.js";
-import {
-  ModelError,
-  modelError,
-  retryModel,
-} from "../src/providers/recovery.js";
+import { ResponsesProvider } from "../src/providers/responses-provider.js";
+import { type ModelProvider } from "../src/providers/model-provider.js";
+import { ModelError, modelError } from "../src/providers/model-error.js";
+import { retryModel } from "../src/providers/retry.js";
 
 const dirs: string[] = [];
 

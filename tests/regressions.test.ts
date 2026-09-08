@@ -11,9 +11,9 @@ import {
 } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
-import { Config } from "../src/config/settings.js";
-import { ToolRunner } from "../src/tools/registry.js";
-import { ApprovalManager } from "../src/permissions/approvals.js";
+import { Config } from "../src/config/config.js";
+import { ToolRunner } from "../src/tools/tool-runner.js";
+import { ApprovalManager } from "../src/permissions/approval-manager.js";
 
 it("normalizes saved endpoint and shorthand model on startup", async () => {
   const root = await realpath(await mkdtemp(path.join(tmpdir(), "ca-config-")));

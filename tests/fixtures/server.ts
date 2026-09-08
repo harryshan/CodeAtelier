@@ -1,9 +1,9 @@
-import { ModelError } from "../../src/providers/recovery.js";
+import { ModelError } from "../../src/providers/model-error.js";
 import { mkdtemp, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import pino from "pino";
-import { Config } from "../../src/config/settings.js";
+import { Config } from "../../src/config/config.js";
 import { createApp } from "../../src/server/app.js";
 
 const config = new Config(

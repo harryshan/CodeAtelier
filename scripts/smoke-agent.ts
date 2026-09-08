@@ -7,7 +7,7 @@ import {
 } from "node:fs/promises";
 import path from "node:path";
 import pino from "pino";
-import { Config } from "../src/config/settings.js";
+import { Config } from "../src/config/config.js";
 import { Store } from "../src/sessions/store.js";
 import { Engine } from "../src/agent/engine.js";
 

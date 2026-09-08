@@ -1,7 +1,7 @@
 import { it, expect } from "vitest";
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
-import { ApprovalManager } from "../src/permissions/approvals.js";
+import { ApprovalManager } from "../src/permissions/approval-manager.js";
 import { fileFixture } from "./fixtures/helpers.js";
 
 const data = {

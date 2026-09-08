@@ -1,5 +1,6 @@
+import { useSessionConnection } from "./useSessionConnection";
 import { useEffect, useRef, useState } from "react";
-import type { Session, Settings, Snapshot } from "../shared/types";
+import type { Session, Settings } from "../shared/types";
 import { api, bootstrap, sessions, snapshot } from "./api";
 import { SettingsPanel } from "./SettingsPanel";
 import { Timeline } from "./Timeline";
@@ -8,7 +9,6 @@ import s from "./app.module.css";
 export default function App() {
   const [list, setList] = useState<Session[]>([]);
   const [selected, setSelected] = useState("");
-  const [data, setData] = useState<Snapshot>();
   const [settings, setSettings] = useState<Settings>();
   const [hasKey, setHasKey] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -22,7 +22,13 @@ export default function App() {
   const [serverState, setServerState] = useState<
     "running" | "stopping" | "stopped"
   >("running");
-  const [connected, setConnected] = useState(true);
+  const { data, setData, connected } = useSessionConnection(
+    selected,
+    serverState === "running",
+    setSettings,
+    setHasKey,
+    setError,
+  );
   const bottom = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -36,92 +42,6 @@ export default function App() {
       .then(setList)
       .catch((e) => setError(e.message));
   }, []);
-
-  useEffect(() => {
-    if (!selected || serverState !== "running") {
-      setData(undefined);
-
-      return;
-    }
-
-    // 合并连续刷新通知，并在切换会话或关闭服务时丢弃过期响应。
-    let disposed = false;
-    let refreshInProgress = false;
-    let refreshQueued = false;
-    const refresh = async () => {
-      if (refreshInProgress) {
-        refreshQueued = true;
-
-        return;
-      }
-
-      refreshInProgress = true;
-      try {
-        const v = await snapshot(selected);
-
-        if (!disposed) {
-          setData(v);
-        }
-      } catch (e) {
-        if (!disposed) {
-          setError((e as Error).message);
-        }
-      } finally {
-        refreshInProgress = false;
-        if (refreshQueued && !disposed) {
-          refreshQueued = false;
-          void refresh();
-        }
-      }
-    };
-
-    void refresh();
-    let stream: EventSource | undefined;
-    let reconnect: ReturnType<typeof setTimeout>;
-    const retryConnection = () => {
-      if (disposed) {
-        return;
-      }
-
-      setConnected(false);
-      stream?.close();
-      clearTimeout(reconnect);
-      reconnect = setTimeout(() => void connect(), 2000);
-    };
-
-    // 后端重启会更换会话凭据，重连前重新获取，而不是反复使用旧 token。
-    const connect = async () => {
-      try {
-        const v = await bootstrap();
-
-        if (disposed) {
-          return;
-        }
-
-        setSettings(v.settings);
-        setHasKey(v.hasApiKey);
-        await refresh();
-        if (disposed) {
-          return;
-        }
-
-        stream = new EventSource("/api/sessions/" + selected + "/events");
-        stream.addEventListener("refresh", () => void refresh());
-        stream.onopen = () => setConnected(true);
-        stream.onerror = retryConnection;
-      } catch {
-        retryConnection();
-      }
-    };
-
-    void connect();
-
-    return () => {
-      disposed = true;
-      clearTimeout(reconnect);
-      stream?.close();
-    };
-  }, [selected, serverState]);
 
   useEffect(() => {
     bottom.current?.scrollIntoView({ behavior: "smooth" });

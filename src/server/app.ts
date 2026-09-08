@@ -1,14 +1,15 @@
 import Fastify, { LogController } from "fastify";
 import staticPlugin from "@fastify/static";
-import { randomBytes, timingSafeEqual } from "node:crypto";
+import { registerLocalSecurity } from "./local-security.js";
+import { registerSessionEvents } from "./session-events.js";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import type { Logger } from "pino";
-import { Config } from "../config/settings.js";
+import { Config } from "../config/config.js";
 import { Store } from "../sessions/store.js";
 import { Engine } from "../agent/engine.js";
-import type { ModelProvider } from "../providers/responses.js";
+import type { ModelProvider } from "../providers/model-provider.js";
 import { workspacePath } from "../tools/paths.js";
 
 export async function createApp(
@@ -24,7 +25,6 @@ export async function createApp(
   });
   const store = new Store(path.join(config.directory, "history.sqlite"));
   const engine = new Engine(store, config, log, providerFactory);
-  const streams = new Set<import("node:http").ServerResponse>();
   let stopping = false;
   let shutdownPromise: Promise<void> | undefined;
   // Web 请求和进程信号共用这一个关闭 Promise，避免重复释放资源。
@@ -38,65 +38,8 @@ export async function createApp(
     return shutdownPromise;
   };
 
-  const token = randomBytes(32).toString("hex");
-  const compare = (value: string) => {
-    const a = Buffer.from(value);
-    const b = Buffer.from(token);
+  const token = registerLocalSecurity(app);
 
-    return a.length === b.length && timingSafeEqual(a, b);
-  };
-
-  // 来源校验先于业务路由执行；写操作还需验证本机会话 token。
-  app.addHook("onRequest", async (req, reply) => {
-    const host = req.headers.host || "";
-
-    if (!/^(127\.0\.0\.1|localhost|\[::1\])(?::\d+)?$/.test(host)) {
-      return reply.code(403).send({ error: "仅允许本机访问。" });
-    }
-
-    const origin = req.headers.origin;
-
-    if (origin) {
-      let url: URL;
-
-      try {
-        url = new URL(origin);
-      } catch {
-        return reply.code(403).send({ error: "无效来源" });
-      }
-
-      const allowed =
-        url.host === host ||
-        (process.env.NODE_ENV !== "production" &&
-          ["127.0.0.1:5173", "localhost:5173"].includes(url.host));
-
-      if (!allowed || !["http:", "https:"].includes(url.protocol)) {
-        return reply.code(403).send({ error: "拒绝跨站请求。" });
-      }
-    }
-
-    reply.header("Cache-Control", "no-store");
-    reply.header("X-Content-Type-Options", "nosniff");
-    if (req.url.startsWith("/api/") && !req.url.startsWith("/api/bootstrap")) {
-      const cookie =
-        (req.headers.cookie || "")
-          .split(";")
-          .map((v) => v.trim())
-          .find((v) => v.startsWith("ca_session="))
-          ?.slice(11) || "";
-
-      if (!compare(cookie)) {
-        return reply.code(401).send({ error: "请刷新页面建立本机会话。" });
-      }
-
-      if (
-        !["GET", "HEAD"].includes(req.method) &&
-        !compare(String(req.headers["x-codeatelier-token"] || ""))
-      ) {
-        return reply.code(403).send({ error: "会话校验失败，请刷新页面。" });
-      }
-    }
-  });
   app.addHook("preHandler", async (req, reply) => {
     if (stopping && req.url !== "/api/server/shutdown") {
       return reply.code(503).send({ error: "服务正在关闭。" });
@@ -217,44 +160,8 @@ export async function createApp(
 
     return { ok: true };
   });
-  // SSE 只通知客户端刷新；持久化快照才是页面状态的来源。
-  app.get("/api/sessions/:id/events", async (req, reply) => {
-    const { id } = req.params as { id: string };
+  const closeSessionStreams = registerSessionEvents(app, engine, store);
 
-    if (!store.get(id)) {
-      return reply.code(404).send({ error: "会话不存在" });
-    }
-
-    reply.hijack();
-    streams.add(reply.raw);
-    reply.raw.writeHead(200, {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
-      Connection: "keep-alive",
-      "X-Accel-Buffering": "no",
-    });
-    const send = () => {
-      if (!reply.raw.destroyed) {
-        reply.raw.write("event: refresh\ndata: {}\n\n");
-      }
-    };
-
-    const listener = (sessionId: string) => {
-      if (sessionId === id) {
-        send();
-      }
-    };
-
-    engine.events.on("change", listener);
-    send();
-    const timer = setInterval(() => reply.raw.write(": keepalive\n\n"), 15000);
-
-    reply.raw.on("close", () => {
-      streams.delete(reply.raw);
-      clearInterval(timer);
-      engine.events.off("change", listener);
-    });
-  });
   const web = path.resolve("dist/web");
 
   if (existsSync(web)) {
@@ -272,9 +179,7 @@ export async function createApp(
   app.addHook("preClose", async () => {
     stopping = true;
     await engine.close();
-    for (const stream of streams) {
-      stream.end();
-    }
+    closeSessionStreams();
   });
   app.addHook("onClose", async () => {
     await engine.close();

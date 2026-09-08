@@ -9,8 +9,8 @@ web (React)
   → HTTP 操作 / SSE 变更通知
 server (Fastify)
   → agent/engine
-      → providers/responses (官方 OpenAI SDK)
-      → tools/registry → permissions/approvals
+      → providers/model-provider ← providers/responses-provider (官方 OpenAI SDK)
+      → tools/tool-runner → tools/registry + permissions/approval-manager
       → sessions/store (SQLite)
   → logging (Pino)
 ```
@@ -24,6 +24,26 @@ server (Fastify)
 - `src/config` 管理非敏感设置、内存密钥和平台数据目录。
 - `src/logging` 输出结构化 JSON，按级别筛选、脱敏并轮转文件。
 
+## 文件职责与定位
+
+| 模块 | 职责 |
+| --- | --- |
+| tools/registry.ts | 工具参数 schema、描述和模型可见定义 |
+| tools/tool-runner.ts | ToolRunner：校验、审批、文件与命令执行 |
+| tools/paths.ts / process.ts | 路径边界与进程生命周期 |
+| providers/model-provider.ts | 与具体服务无关的模型接口和结果契约 |
+| providers/responses-provider.ts | ResponsesProvider：Responses 协议实现 |
+| providers/model-error.ts / retry.ts | 错误分类与有界重试策略 |
+| config/settings.ts / config.ts / data-directory.ts | 参数 schema、配置持久化、平台数据目录 |
+| logging/logger.ts / redact.ts | 日志创建与轮转、纯文本脱敏 |
+| permissions/approval-manager.ts | ApprovalManager：授权等待与取消 |
+| server/app.ts | 服务组装、业务路由与关闭顺序 |
+| server/local-security.ts / session-events.ts | 本机请求防护、SSE 连接管理与清理 |
+| server/http-server.ts | 保留 Pino 日志类型的 HTTP 服务类型 |
+| web/App.tsx / useSessionConnection.ts | 页面交互与布局、快照和 SSE 重连生命周期 |
+
+本次全库审查将原 registry.ts 中的 ToolRunner 移出；paths.ts 原本就是路径函数模块。Engine、Store 及其上下文/schema 辅助模块、共享数据契约、测试和开发脚本继续按各自职责组织，不为每个小函数增加文件。
+
 ## 一次任务
 
 1. Web UI 创建绑定真实工作目录的会话，然后提交用户文本。
@@ -35,7 +55,7 @@ server (Fastify)
 
 ## 历史与恢复
 
-上下文完整存储在本机；不依赖 previous_response_id 或服务端持久化。中断后旧对话可继续提问。先用已持久化工具结果修补缺失输出；没有记录的调用补充“执行结果未知”，不重放它。新任务必须重新读取文件。模型请求由 providers/recovery 实施有界重试；人工恢复创建带来源记录的新任务，仅允许恢复会话最后一个失败、取消或中断任务。任务创建与用户消息、工具结果与上下文分别以 SQLite 事务保存。详情见 [恢复机制](recovery.md)。
+上下文完整存储在本机；不依赖 previous_response_id 或服务端持久化。中断后旧对话可继续提问。先用已持久化工具结果修补缺失输出；没有记录的调用补充“执行结果未知”，不重放它。新任务必须重新读取文件。模型请求由 providers/retry 实施有界重试；人工恢复创建带来源记录的新任务，仅允许恢复会话最后一个失败、取消或中断任务。任务创建与用户消息、工具结果与上下文分别以 SQLite 事务保存。详情见 [恢复机制](recovery.md)。
 
 UI 历史包含消息、工具调用、受限工具结果和修改 diff。长内容带截断提示，历史不是无限容量的终端录制。
 

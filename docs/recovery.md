@@ -26,8 +26,8 @@
 
 ## 实现与验证
 
-- `src/providers/recovery.ts`：可重试错误分类、有限退避、取消。
-- `src/providers/responses.ts`：独立请求/空闲超时、终结事件检查、SDK 错误归一化。SDK 自带重试关闭，避免多层叠加。
+- `src/providers/model-error.ts`：错误归一化与可重试分类；`src/providers/retry.ts`：有限退避与取消。
+- `src/providers/responses-provider.ts`：独立请求/空闲超时、终结事件检查、SDK 错误归一化。SDK 自带重试关闭，避免多层叠加。
 - `src/agent/engine.ts`：每步模型重试、恢复来源、持久化故障兜底；`src/agent/context.ts`：缺失工具结果修补和新任务上下文保存。
 - `POST /api/tasks/:id/resume`：请求体 `{ "instruction": "可选恢复说明" }`；沿用本机身份与写请求 token 校验。
 - 重试流式文本按 taskId/step/attempt 分开显示；失败尝试保留为未完成回复，不与成功回复拼接。
