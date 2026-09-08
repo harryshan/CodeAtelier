@@ -1,3 +1,4 @@
+import type { ContextSnapshot } from "../context/types.js";
 import { SCHEMA_SQL } from "./schema.js";
 import { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
@@ -135,6 +136,36 @@ export class Store {
         "INSERT INTO context VALUES(?,?) ON CONFLICT(sessionId) DO UPDATE SET items=excluded.items",
       )
       .run(id, JSON.stringify(items));
+  }
+
+  latestContextSnapshot(sessionId: string): ContextSnapshot | undefined {
+    const row = this.db
+      .prepare(
+        "SELECT data FROM context_snapshots WHERE sessionId=? ORDER BY rowid DESC LIMIT 1",
+      )
+      .get(sessionId);
+
+    return row ? JSON.parse(String(row.data)) : undefined;
+  }
+
+  contextSnapshot(sessionId: string, id: string): ContextSnapshot | undefined {
+    const row = this.db
+      .prepare("SELECT data FROM context_snapshots WHERE sessionId=? AND id=?")
+      .get(sessionId, id);
+
+    return row ? JSON.parse(String(row.data)) : undefined;
+  }
+
+  /** 快照和活动上下文一起提交；失败后继续使用原来的完整输入。 */
+  compactContext(snapshot: ContextSnapshot, input: any[]) {
+    this.transaction(() => {
+      this.db
+        .prepare(
+          "INSERT INTO context_snapshots(id,sessionId,data) VALUES(?,?,?)",
+        )
+        .run(snapshot.id, snapshot.sessionId, JSON.stringify(snapshot));
+      this.saveContext(snapshot.sessionId, input);
+    });
   }
 
   close() {

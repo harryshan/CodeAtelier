@@ -35,5 +35,12 @@ export const SCHEMA_SQL = `
 
   CREATE INDEX IF NOT EXISTS events_session ON events(sessionId, id);
 
+  CREATE TABLE IF NOT EXISTS context_snapshots (
+    id TEXT PRIMARY KEY,
+    sessionId TEXT NOT NULL REFERENCES sessions(id),
+    data TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS context_snapshots_session ON context_snapshots(sessionId);
+
   PRAGMA user_version = 1;
 `;

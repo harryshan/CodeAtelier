@@ -40,11 +40,14 @@ export function modelError(error: unknown): ModelError {
       ? Number(header) * 1000
       : Date.parse(header) - Date.now()
     : undefined;
-  const code = status
-    ? `http_${status}`
-    : retryable
-      ? "connection"
-      : "model_error";
+  const code =
+    e?.code === "context_length_exceeded"
+      ? "context_length_exceeded"
+      : status
+        ? `http_${status}`
+        : retryable
+          ? "connection"
+          : "model_error";
 
   // Never copy arbitrary server bodies (which can contain prompts or credentials).
   return new ModelError(

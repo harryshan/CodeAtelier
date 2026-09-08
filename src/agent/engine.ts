@@ -1,3 +1,5 @@
+import { ContextManager } from "../context/context-manager.js";
+import { historyDefinition, readContextHistory } from "../context/history.js";
 import { prepareTaskContext } from "./context.js";
 import { createInstructions } from "./instructions.js";
 import { retryModel } from "../providers/retry.js";
@@ -185,7 +187,7 @@ export class Engine {
     };
 
     try {
-      const input = prepareTaskContext(this.store, session.id, prompt);
+      let input = prepareTaskContext(this.store, session.id, prompt);
 
       const runner = new ToolRunner({
         root: session.workspace,
@@ -201,57 +203,84 @@ export class Engine {
       const provider =
         this.factory?.() || new ResponsesProvider(settings, this.config.apiKey);
 
+      const tools = [...definitions, historyDefinition];
+      const context = new ContextManager({
+        store: this.store,
+        sessionId: session.id,
+        model: settings.model,
+        limit: settings.contextChars,
+        provider,
+        signal,
+        clean: (text) => redactJson(text, [this.config.apiKey]),
+        notice: (text) => emit("notice", { text }),
+        report: (event, data) => {
+          log[event.endsWith("failed") ? "warn" : "info"]({ event, ...data });
+        },
+      });
+      let overflowRetried = false;
+
       for (step = 1; step <= settings.maxSteps; step++) {
         signal.throwIfAborted();
-        if (
-          JSON.stringify(input).length + instructions.length >
-          settings.contextChars
-        ) {
-          throw new Error("上下文已达到配置上限，请新建会话或提高上下文限制。");
-        }
+        input = await context.prepare(input, instructions, tools);
 
         lastFlush = Date.now();
         log.debug({ event: "model.started", step });
         // 仅重试模型请求；完整响应保存后才允许进入工具执行阶段。
-        const response = await retryModel(
-          async (currentAttempt) => {
-            attempt = currentAttempt;
+        let attemptOffset = 0;
+        const requestModel = () =>
+          retryModel(
+            async (currentAttempt) => {
+              attempt = attemptOffset + currentAttempt;
 
-            return provider.run(
-              input,
-              instructions,
-              definitions,
-              signal,
-              (delta) => {
-                buffer += delta;
-                if (Date.now() - lastFlush > 100 || buffer.length > 1000) {
-                  flush();
-                }
-              },
-            );
-          },
-          signal,
-          (error, failedAttempt, delayMs) => {
-            flush();
-            emit("notice", {
-              text: `${error.message} ${delayMs} ms 后重试（${failedAttempt}/2）。`,
-              code: error.code,
-              step,
-              attempt,
-            });
-            log.warn({
-              event: "model.retry",
-              step,
-              attempt,
-              delayMs,
-              code: error.code,
-              status: error.status,
-              requestId: error.requestId
-                ? redactText(error.requestId, [this.config.apiKey])
-                : undefined,
-            });
-          },
-        );
+              return provider.run(
+                input,
+                instructions,
+                tools,
+                signal,
+                (delta) => {
+                  buffer += delta;
+                  if (Date.now() - lastFlush > 100 || buffer.length > 1000) {
+                    flush();
+                  }
+                },
+              );
+            },
+            signal,
+            (error, failedAttempt, delayMs) => {
+              flush();
+              emit("notice", {
+                text: `${error.message} ${delayMs} ms 后重试（${failedAttempt}/2）。`,
+                code: error.code,
+                step,
+                attempt,
+              });
+              log.warn({
+                event: "model.retry",
+                step,
+                attempt,
+                delayMs,
+                code: error.code,
+                status: error.status,
+                requestId: error.requestId
+                  ? redactText(error.requestId, [this.config.apiKey])
+                  : undefined,
+              });
+            },
+          );
+        const response = await requestModel().catch(async (error) => {
+          if (error?.code !== "context_length_exceeded" || overflowRetried) {
+            throw error;
+          }
+
+          // 部分失败文本留在原 attempt；压缩和再次请求不能混入它的流。
+          flush();
+          attemptOffset = attempt;
+          lastFlush = Date.now();
+          overflowRetried = true;
+          input = await context.prepare(input, instructions, tools, true);
+
+          return requestModel();
+        });
 
         flush();
         signal.throwIfAborted();
@@ -281,7 +310,15 @@ export class Engine {
             const args = JSON.parse(call.arguments);
 
             emit("tool_start", { name: call.name, callId: call.call_id, args });
-            result = await runner.execute(call.name, args);
+            result =
+              call.name === historyDefinition.name
+                ? readContextHistory(
+                    this.store,
+                    session.id,
+                    args,
+                    settings.outputChars,
+                  )
+                : await runner.execute(call.name, args);
           } catch (error: any) {
             if (signal.aborted) {
               throw error;

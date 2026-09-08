@@ -124,6 +124,7 @@ export class ResponsesProvider implements ModelProvider {
               "stream_failed",
               "max_output_tokens",
               "content_filter",
+              "context_length_exceeded",
             ].includes(code)
               ? code
               : "response_failed",

@@ -246,3 +246,30 @@ test("shutdown request failure reports uncertainty and keeps the interface usabl
     0,
   );
 });
+
+test("context compression notice and original history survive refresh", async ({
+  page,
+}) => {
+  const workspace = await realpath(
+    await mkdtemp(path.join(tmpdir(), "codeatelier-e2e-")),
+  );
+  await page.goto("/");
+  await page.getByRole("button", { name: "新建会话" }).click();
+  await page.getByLabel("项目目录").fill(workspace);
+  await page.getByLabel("会话名称").fill("压缩验收");
+  await page.getByRole("button", { name: "创建会话" }).click();
+  await page.getByLabel("任务描述").fill("准备上下文压缩");
+  await page.getByRole("button", { name: "开始执行" }).click();
+  await expect(page.getByText("已准备长历史。", { exact: true })).toBeVisible();
+  await page.getByLabel("任务描述").fill("继续，保持原任务要求");
+  await page.getByRole("button", { name: "开始执行" }).click();
+  await expect(page.getByText(/上下文已整理：/)).toBeVisible();
+  await expect(
+    page.getByText("任务完成，已检查工具结果。", { exact: true }),
+  ).toBeVisible();
+  await page.reload();
+  await page.getByRole("button", { name: "压缩验收" }).click();
+  await expect(page.getByText("准备上下文压缩", { exact: true })).toBeVisible();
+  await expect(page.getByText("已准备长历史。", { exact: true })).toBeVisible();
+  await expect(page.getByText(/上下文已整理：/)).toBeVisible();
+});

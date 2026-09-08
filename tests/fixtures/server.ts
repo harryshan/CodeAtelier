@@ -21,6 +21,18 @@ const { app, engine } = await createApp(
     return {
       async run(input, _instructions, _tools, signal, onDelta) {
         signal.throwIfAborted();
+        if (!_tools.length) {
+          return {
+            output: [],
+            text: JSON.stringify({
+              completed: [],
+              conclusions: [],
+              verification: [],
+              pending: [],
+            }),
+          };
+        }
+
         step++;
         const lastUser =
           [...input].reverse().find((i) => i.role === "user")?.content || "";
@@ -35,6 +47,13 @@ const { app, engine } = await createApp(
           ],
           text: "",
         });
+
+        if (step === 1 && lastUser === "准备上下文压缩") {
+          return {
+            output: [{ role: "assistant", content: "历史材料".repeat(38000) }],
+            text: "已准备长历史。",
+          };
+        }
 
         if (step === 1 && lastUser.includes("模型重试")) {
           onDelta("第一次尝试的部分回复");
