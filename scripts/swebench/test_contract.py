@@ -59,6 +59,43 @@ class ContractTests(unittest.TestCase):
             )
             container.remove.assert_called_once_with(force=True)
 
+    def test_prepared_image_bypasses_registry_and_spec_download(self):
+        client = Mock()
+        client.images.get.return_value.id = "prepared-id"
+        client.containers.create.return_value.start.side_effect = KeyboardInterrupt
+        client.containers.create.return_value.get_archive.side_effect = RuntimeError(
+            "no artifacts"
+        )
+        module = SimpleNamespace(
+            make_test_spec=Mock(
+                side_effect=AssertionError("Unexpected network spec lookup")
+            )
+        )
+        args = SimpleNamespace(
+            prepared_images={
+                "a__b-1": {
+                    "preparedImage": "local-ready",
+                    "preparedImageId": "prepared-id",
+                    "baseImageId": "base-id",
+                }
+            }
+        )
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.dict("sys.modules", {"swebench.harness.test_spec.test_spec": module}),
+        ):
+            with self.assertRaises(KeyboardInterrupt):
+                run_trial(
+                    client,
+                    {"instance_id": "a__b-1"},
+                    Path(directory),
+                    Path("unused"),
+                    args,
+                )
+            report = json.loads((Path(directory) / "trial.json").read_text())
+            self.assertEqual(report["imageId"], "prepared-id")
+            client.images.pull.assert_not_called()
+
     def test_manifest_has_twenty_unique_instances(self):
         manifest = load_manifest(Path("evals/swebench/subset.json"))
         self.assertEqual(len(manifest["instance_ids"]), 20)

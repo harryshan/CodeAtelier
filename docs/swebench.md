@@ -87,3 +87,13 @@ pnpm eval:test
 JSON 包含逐题详细指标及运行配置、子集修订和分组汇总；Markdown 提供概览和完整明细。无样本/缺失数据为 null，分布带 samples；已知 token 小计另列，整套 totalTokens 只在全部任务用量完整时填写。
 
 本轮每题一次，不能估计多次运行稳定性或 pass@k；没有价格数据不猜美元费用，没有覆盖率仪器不声称代码覆盖率，不生成混合维度的能力总分。比较版本时固定题目、模型、预算和环境。
+
+## 大陆网络与准备镜像
+
+2026-09-12 实测：毫秒镜像 `docker.1ms.run` 下载前三题成功，逐一与官方 Registry 摘要核对；GHProxy/jsDelivr 可获取固定提交文件；npm 使用 registry.npmmirror.com，Python 使用阿里云 PyPI 镜像，公开数据使用 hf-mirror.com 并核验官方 SHA256。服务可用性会变化，不修改全局 Docker/pip/Git 配置，不向加速服务发送模型密钥。
+
+当前机器的准备记录在 `.local/swebench/prepared-environments.json`，离线运行包在 `.local/swebench/codeatelier-runtime.tar.gz`。官方镜像额外创建了构建提交，准备镜像在独立容器内 `git reset --hard base_commit` 后保存，官方原镜像保持不变。三题均已检查 HEAD、Python、Node、pnpm 和运行依赖导入，未执行 agent 或测试。
+
+手动预测可显式传 `--prepared-environments .local/swebench/prepared-environments.json`。清单要求 instance_id、preparedImage、preparedImageId、baseImageId、bundleSha256；所选题目必须全部覆盖，运行包摘要必须一致，本地镜像 ID 必须匹配。该路径跳过远程规格查询、镜像拉取及安装，但仍检查仓库 HEAD；未指定时保留标准流程。运行报告记录清单摘要及实际镜像 ID，旧运行包不可冒充新版本。
+
+当前三题的本机手动入口：WSL 内运行 `.local/swebench-venv/bin/python .local/swebench/run-three.py predict` 或 `grade`。它显式使用哈希核验的数据副本、准备镜像、固定 URL 配置缓存；此本地入口不提交 Git，不自动执行。公开配置缓存仅影响该命令及其评分子进程，不更改系统代理。修改生产代码后须重建运行包和准备镜像。

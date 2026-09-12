@@ -52,17 +52,25 @@ def save_artifacts(container, output: Path) -> None:
 def run_trial(client, row: dict, output: Path, bundle: Path, args) -> dict:
     from swebench.harness.test_spec.test_spec import make_test_spec
 
-    spec = make_test_spec(row, namespace="swebench", arch="x86_64")
     container = None
     metadata = {
         "instance_id": row["instance_id"],
-        "image": spec.instance_image_key,
         "status": "setup_failed",
     }
     started = time.monotonic()
     patch = ""
     try:
-        image = client.images.pull(spec.instance_image_key)
+        prepared = getattr(args, "prepared_images", {}).get(row["instance_id"])
+        if prepared:
+            image = client.images.get(prepared["preparedImage"])
+            if image.id != prepared["preparedImageId"]:
+                raise ValueError("Prepared image ID changed")
+            metadata["image"] = prepared["preparedImage"]
+            metadata["baseImageId"] = prepared["baseImageId"]
+        else:
+            spec = make_test_spec(row, namespace="swebench", arch="x86_64")
+            metadata["image"] = spec.instance_image_key
+            image = client.images.pull(spec.instance_image_key)
         metadata["imageId"] = image.id
         container = client.containers.create(
             image.id,
@@ -75,16 +83,19 @@ def run_trial(client, row: dict, output: Path, bundle: Path, args) -> dict:
         )
         container.start()
         execute(container, ["mkdir", "-p", "/installed-agent", "/evaluation"])
-        upload(container, "/installed-agent/codeatelier.tar.gz", bundle.read_bytes())
-        upload(
-            container,
-            "/installed-agent/codeatelier-install.sh",
-            Path(__file__).with_name("install.sh").read_bytes(),
-        )
-        execute(
-            container,
-            ["timeout", "600", "bash", "/installed-agent/codeatelier-install.sh"],
-        )
+        if not prepared:
+            upload(
+                container, "/installed-agent/codeatelier.tar.gz", bundle.read_bytes()
+            )
+            upload(
+                container,
+                "/installed-agent/codeatelier-install.sh",
+                Path(__file__).with_name("install.sh").read_bytes(),
+            )
+            execute(
+                container,
+                ["timeout", "600", "bash", "/installed-agent/codeatelier-install.sh"],
+            )
         # Ensure the published image really contains the task's intended starting revision.
         head = (
             execute(container, ["git", "rev-parse", "HEAD"], workdir="/testbed")
@@ -165,6 +176,7 @@ def main() -> None:
         "--bundle", type=Path, default=Path(".local/swebench/codeatelier.tar.gz")
     )
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--prepared-environments", type=Path)
     parser.add_argument("--max-total-tokens", type=int, default=500000)
     parser.add_argument("--max-model-calls", type=int, default=60)
     parser.add_argument("--max-steps", type=int, default=30)
@@ -184,6 +196,19 @@ def main() -> None:
         parser.error("timeout-ms must be at least 100")
     manifest = load_manifest(args.subset)
     bundle_hash = hashlib.sha256(args.bundle.read_bytes()).hexdigest()
+    args.prepared_images = {}
+    if args.prepared_environments:
+        prepared = json.loads(args.prepared_environments.read_text(encoding="utf-8"))
+        entries = prepared["environments"]
+        if len({entry["instance_id"] for entry in entries}) != len(entries):
+            raise ValueError("Duplicate prepared environment IDs")
+        args.prepared_images = {entry["instance_id"]: entry for entry in entries}
+        for instance_id in manifest["instance_ids"]:
+            entry = args.prepared_images.get(instance_id)
+            if entry is None or entry["bundleSha256"] != bundle_hash:
+                raise ValueError(
+                    "Prepared environment missing or runtime bundle changed"
+                )
     rows = load_subset(manifest)
     args.output.mkdir(parents=True, exist_ok=False)
     (args.output / "subset.json").write_text(json.dumps(manifest, indent=2) + "\n")
@@ -191,6 +216,11 @@ def main() -> None:
         json.dumps(
             {
                 "bundleSha256": bundle_hash,
+                "preparedEnvironmentsSha256": hashlib.sha256(
+                    args.prepared_environments.read_bytes()
+                ).hexdigest()
+                if args.prepared_environments
+                else None,
                 "model": os.environ.get("CODEATELIER_MODEL", "codex/gpt-5.6-luna"),
                 "limits": {
                     key: value
