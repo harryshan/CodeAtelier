@@ -85,13 +85,24 @@ test("command approval survives refresh and can be denied or cancelled", async (
 test("settings validates and saves without exposing key", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("button", { name: "模型与设置" }).click();
+  await expect(page.getByLabel("思考等级")).toHaveValue("high");
+  await page.getByLabel("思考等级").selectOption("medium");
   await page.getByLabel("API key", { exact: true }).fill("ui-test-secret");
   await page.getByRole("button", { name: "保存设置" }).click();
 
   await expect(page.getByRole("dialog")).toHaveCount(0);
   const response = await page.request.get("/api/settings");
 
-  expect(await response.text()).not.toContain("ui-test-secret");
+  const saved = await response.text();
+  expect(saved).not.toContain("ui-test-secret");
+  expect(JSON.parse(saved).settings.reasoningEffort).toBe("medium");
+  await page.reload();
+  await page.getByRole("button", { name: "模型与设置" }).click();
+  await expect(page.getByLabel("思考等级")).toHaveValue("medium");
+  await page.screenshot({ path: "test-results/settings.png", fullPage: true });
+  await page.getByLabel("思考等级").selectOption("high");
+  await page.getByRole("button", { name: "保存设置" }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
 });
 
 test("model retries keep incomplete text separate from the successful response", async ({

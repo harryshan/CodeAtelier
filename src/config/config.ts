@@ -25,6 +25,7 @@ export class Config {
         baseUrl:
           process.env.CODEATELIER_BASE_URL || "http://jp.harryshan.com:4141/v1",
         model: process.env.CODEATELIER_MODEL || "codex/gpt-5.6-luna",
+        reasoningEffort: process.env.CODEATELIER_REASONING_EFFORT || "high",
         maxSteps: 30,
         commandTimeoutMs: 120000,
         requestTimeoutMs: 300000,

@@ -53,6 +53,7 @@ it.each([
   { contextChars: 9999 },
   { baseUrl: "file:///tmp/a" },
   { logLevel: "invalid" },
+  { reasoningEffort: "invalid" },
 ])("rejects invalid settings atomically: %j", async (invalid) => {
   const root = await temp();
   const config = new Config(root);
@@ -90,4 +91,23 @@ it("reports malformed saved settings without silently overwriting them", async (
   expect(await readFile(path.join(root, "settings.json"), "utf8")).toBe(
     "broken-json",
   );
+});
+
+it("defaults legacy settings to high and persists effort over environment defaults", async () => {
+  vi.stubEnv("CODEATELIER_REASONING_EFFORT", "");
+  const root = await temp();
+  await writeFile(
+    path.join(root, "settings.json"),
+    JSON.stringify({ model: "legacy" }),
+  );
+  const config = new Config(root);
+
+  expect(config.settings.reasoningEffort).toBe("high");
+  vi.stubEnv("CODEATELIER_REASONING_EFFORT", "low");
+  expect(new Config(root).settings.reasoningEffort).toBe("low");
+
+  for (const reasoningEffort of ["low", "medium", "high"] as const) {
+    config.update({ settings: { ...config.settings, reasoningEffort } });
+    expect(new Config(root).settings.reasoningEffort).toBe(reasoningEffort);
+  }
 });

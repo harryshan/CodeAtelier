@@ -79,6 +79,7 @@ export class ResponsesProvider implements ModelProvider {
       const stream = await client.responses.create(
         {
           model: this.settings.model,
+          reasoning: { effort: this.settings.reasoningEffort ?? "high" },
           input,
           instructions,
           tools,

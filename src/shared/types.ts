@@ -38,6 +38,7 @@ export interface Approval {
 export interface Settings {
   baseUrl: string;
   model: string;
+  reasoningEffort?: "low" | "medium" | "high";
   maxSteps: number;
   commandTimeoutMs: number;
   requestTimeoutMs: number;

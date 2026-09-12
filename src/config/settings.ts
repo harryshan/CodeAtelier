@@ -6,6 +6,7 @@ export const settingsSchema = z.object({
     .url()
     .refine((v) => ["http:", "https:"].includes(new URL(v).protocol)),
   model: z.string().min(1).max(200),
+  reasoningEffort: z.enum(["low", "medium", "high"]).default("high"),
   maxSteps: z.number().int().min(1).max(100),
   commandTimeoutMs: z.number().int().min(1000).max(600000),
   requestTimeoutMs: z.number().int().min(1000).max(600000),

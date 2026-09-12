@@ -75,6 +75,23 @@ export function SettingsPanel({
             />
           </label>
           <label>
+            思考等级
+            <select
+              value={value.reasoningEffort ?? "high"}
+              onChange={(e) =>
+                setValue({
+                  ...value,
+                  reasoningEffort: e.target
+                    .value as Settings["reasoningEffort"],
+                })
+              }
+            >
+              <option value="low">低（low）</option>
+              <option value="medium">中（medium）</option>
+              <option value="high">高（high，默认）</option>
+            </select>
+          </label>
+          <label>
             API key
             <input
               type="password"

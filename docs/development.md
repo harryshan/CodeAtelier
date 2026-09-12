@@ -27,12 +27,15 @@ Node.js 24，pnpm 11.22.0（packageManager 固定）。提交 pnpm-lock.yaml，�
 | --- | --- |
 | CODEATELIER_BASE_URL | http://jp.harryshan.com:4141/v1 |
 | CODEATELIER_MODEL | codex/gpt-5.6-luna |
+| CODEATELIER_REASONING_EFFORT | high；可选 low、medium、high |
 | CODEATELIER_API_KEY | 无默认值 |
 | CODEATELIER_DATA_DIR | 平台用户数据目录 |
 | CODEATELIER_PORT | 4142 |
 | CODEATELIER_LOG_LEVEL | info |
 
 非敏感设置保存为 settings.json。已保存设置优先于环境变量默认值；通过 UI 修改。密钥始终来自环境或当前进程内存，不写 settings.json。任务运行时禁止修改配置。
+
+思考等级在“模型与设置”中选择，保存为 reasoningEffort，每次 Responses 请求显式发送 reasoning.effort，主任务和上下文摘要共用。默认 high，旧配置缺少字段时采用环境默认值或 high。例如 .env 中设置 CODEATELIER_REASONING_EFFORT=high；已保存设置优先，保存后用于后续调用。服务或模型不支持所选等级时按现有错误流程报告，不静默降级。
 
 默认限制：30 次模型调用、命令 120 秒、模型请求总计 300 秒、流空闲 60 秒、上下文 180000 字符、单工具输出 32000 字符。这是可配置字符预算，不是精确 token 计量。发现服务容量和支持的 tokenizer 后改用 token 预算，contextChars 仅备用；maxOutputTokens 默认 16384。输入预算扣除输出与安全余量后，达到 80% 时尝试压缩至 60% 以内。失败保留原历史，超过硬上限则停止。实测值和用量展示见 [model-tokens.md](model-tokens.md)。详见 [上下文管理](context-management.md)。高级字段可在停机时编辑 settings.json 或通过设置 API 更新。
 
