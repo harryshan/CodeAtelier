@@ -1,8 +1,10 @@
 # 文件作用：读取固定修订的 SWE-bench 子集并构建不含参考答案的任务提示。
-# 代码结构：依次校验清单、按固定修订加载子集、提取 issue 提示；本模块不执行评测任务。
+# 代码结构：依次校验清单、校验本地 Parquet 或按固定修订在线加载子集、提取 issue 提示；本模块不执行评测任务。
 
 """Load the explicit, revision-pinned development subset; never execute tasks."""
 
+import hashlib
+import os
 import json
 import re
 from pathlib import Path
@@ -23,11 +25,20 @@ def load_manifest(path: Path) -> dict:
 
 
 def load_subset(manifest: dict) -> list[dict]:
-    from datasets import load_dataset
+    local = os.environ.get("CODEATELIER_SWEBENCH_PARQUET")
+    if local:
+        import pyarrow.parquet as pq
 
-    rows = load_dataset(
-        manifest["dataset"], revision=manifest["revision"], split=manifest["split"]
-    )
+        path = Path(local)
+        if hashlib.sha256(path.read_bytes()).hexdigest() != manifest["parquetSha256"]:
+            raise ValueError("Pinned dataset SHA256 mismatch")
+        rows = pq.read_table(path).to_pylist()
+    else:
+        from datasets import load_dataset
+
+        rows = load_dataset(
+            manifest["dataset"], revision=manifest["revision"], split=manifest["split"]
+        )
     selected = {
         row["instance_id"]: dict(row)
         for row in rows

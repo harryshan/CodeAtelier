@@ -97,3 +97,28 @@ JSON 包含逐题详细指标及运行配置、子集修订和分组汇总；Mar
 手动预测可显式传 `--prepared-environments .local/swebench/prepared-environments.json`。清单要求 instance_id、preparedImage、preparedImageId、baseImageId、bundleSha256；所选题目必须全部覆盖，运行包摘要必须一致，本地镜像 ID 必须匹配。该路径跳过远程规格查询、镜像拉取及安装，但仍检查仓库 HEAD；未指定时保留标准流程。运行报告记录清单摘要及实际镜像 ID，旧运行包不可冒充新版本。
 
 当前三题的本机手动入口：WSL 内运行 `.local/swebench-venv/bin/python .local/swebench/run-three.py predict` 或 `grade`。它显式使用哈希核验的数据副本、准备镜像、固定 URL 配置缓存；此本地入口不提交 Git，不自动执行。公开配置缓存仅影响该命令及其评分子进程，不更改系统代理。修改生产代码后须重建运行包和准备镜像。
+
+## 一键刷新并运行前三题（当前 Windows/WSL 机器）
+
+在 PowerShell 手动执行：
+
+```powershell
+cd G:\codeagent
+powershell -ExecutionPolicy Bypass -File scripts/swebench/run-three.ps1
+```
+
+仅编译、打包和刷新镜像，不调用模型或评分：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/swebench/run-three.ps1 -PrepareOnly
+```
+
+默认 WSL 发行版为 Ubuntu-26.04，可传 `-Distribution` 指定。需要该发行版的 Docker 服务已启动、现有 `.local/swebench-venv`、已核验的 `.local/swebench-verified.parquet`、初始 `prepared-environments.json` 和其中的本地镜像。运行评测还需要 `.local/swebench/cn-python/sitecustomize.py` 及 `network-cache`（先前大陆环境准备产物），以及环境变量或仓库 `.env` 中的 CODEATELIER_API_KEY。此脚本刷新当前机器已准备的环境，不负责首次安装 WSL、Docker 或下载题目镜像。
+
+脚本依次编译后端、打包当前 JS/依赖清单、选取固定 20 题清单的前三题，再基于原准备镜像清除容器内旧应用目录、解包新代码，使用 npm 大陆镜像和冻结 lockfile 安装生产依赖。逐文件 SHA256 和 runner 导入验证成功后才提交新镜像。沿用已有 Node/pnpm 和题目环境，不读取旧 codeatelier-runtime.tar.gz。
+
+每次准备保存到 `.local/swebench/preparations/时间戳-随机标识/`；全部镜像完成后才写入本次准备清单。不会覆盖初始镜像清单或旧报告。随后调用现有 predict.py 和 grade.py，输出到 `.local/swebench/runs/first-three-时间戳-随机标识/report.md`。失败停止后续阶段，保留已有产物；Ctrl+C 取消，刷新中的临时容器会清理，已提交的缓存镜像保留。
+
+本地 Parquet 通过 CODEATELIER_SWEBENCH_PARQUET 显式传入，预测和评分均校验固定 SHA256，校验失败不回退到其他数据。Python 原始入口也可使用该变量；未设置时沿用固定修订的在线加载方式。
+
+这个入口只在手动执行时运行，不接入服务启动、CI、钩子或默认 test/check。实现阶段仅静态检查，未运行真实刷新或评测；手动回归 test_refresh.py 亦保留独立入口。
