@@ -21,6 +21,9 @@ export type ContextSummary = z.infer<typeof summarySchema>;
 
 export interface ContextSnapshot {
   version: 1;
+  stage?: "deduplicate" | "archive" | "summary";
+  note?: string;
+  projections?: { index: number; output: string }[];
   id: string;
   sessionId: string;
   parentId: string | null;

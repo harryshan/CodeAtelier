@@ -72,3 +72,5 @@ UI 历史包含消息、工具调用、受限工具结果和修改 diff。长内
 模型元数据与实际 usage 由 providers/model-metadata.ts 校验，context/token-budget.ts 计算本地 token 估算和输入预算，UI 区分估算与实报；详见 [model-tokens.md](model-tokens.md)。
 
 上下文压缩的触发、持久化、失败边界与模块职责见 [context-management.md](context-management.md)。活动上下文可为摘要与最近原文的组合；压缩前完整输入另存快照，不删除事件历史。
+
+压缩按读取去重、文件归档、完整分块摘要逐级执行；read-projection.ts 负责确定性的读取投影，ContextManager 负责阶段选择与原子提交。快照记录精确投影以在后续摘要前还原全文，保留已验证来源的旧摘要原文。
