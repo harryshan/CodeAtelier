@@ -89,3 +89,20 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(
             (result["samples"], result["median"], result["p95"]), (3, 2, 9)
         )
+
+    def test_list_tool_results_are_valid(self):
+        events = [
+            {
+                "type": "tool_result",
+                "data": {
+                    "name": "list_files",
+                    "callId": "1",
+                    "result": [{"name": "src"}],
+                    "durationMs": 3,
+                },
+            }
+        ]
+        result = process_metrics(events)
+        self.assertEqual(result["toolResults"], 1)
+        self.assertEqual(result["toolFailures"], 0)
+        self.assertEqual(result["truncatedToolResults"], 0)

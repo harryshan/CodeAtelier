@@ -61,6 +61,12 @@ def patch_metrics(patch):
     }
 
 
+def result_fields(item):
+    # Read/list/search tools may return arrays or text rather than command metadata.
+    result = item.get("result")
+    return result if isinstance(result, dict) else {}
+
+
 def process_metrics(events):
     if events is None:
         return None
@@ -68,8 +74,8 @@ def process_metrics(events):
     results = [event["data"] for event in events if event["type"] == "tool_result"]
     by_id = {item.get("callId"): item for item in results}
     failures = sum(
-        bool(item.get("result", {}).get("error"))
-        or ("exitCode" in item.get("result", {}) and item["result"]["exitCode"] != 0)
+        bool(result_fields(item).get("error"))
+        or ("exitCode" in result_fields(item) and item["result"]["exitCode"] != 0)
         for item in results
     )
     test_calls = []
@@ -88,7 +94,7 @@ def process_metrics(events):
                 command,
             ):
                 test_calls.append(
-                    by_id.get(item.get("callId"), {}).get("result", {}).get("exitCode")
+                    result_fields(by_id.get(item.get("callId"), {})).get("exitCode")
                 )
     purpose = Counter()
     steps = set()
@@ -107,7 +113,7 @@ def process_metrics(events):
         "toolCallsByName": dict(Counter(item["name"] for item in starts)),
         "toolDurationMs": distribution(item.get("durationMs") for item in results),
         "truncatedToolResults": sum(
-            bool(item.get("result", {}).get("truncated")) for item in results
+            bool(result_fields(item).get("truncated")) for item in results
         ),
         "repeatedReadArguments": sum(count - 1 for count in signatures.values()),
         "testCommandsHeuristic": len(test_calls),

@@ -19,22 +19,22 @@
 
 ## 已有功能覆盖
 
-| 功能 | 主要测试 | 核心行为 |
-| --- | --- | --- |
-| 目录与搜索 | files.test.ts | 文件类型、依赖/敏感文件过滤、字面与大小写匹配、二进制跳过、100 条边界 |
-| 文件读取 | files.test.ts、core.test.ts | 行号/范围/2000 行限制、无效范围、文件大小、二进制、链接越界 |
-| 新建与精确编辑 | files.test.ts、regressions.test.ts | 嵌套创建、替换唯一性、字面替换、任务内读取前置条件、并发修改、覆盖拒绝、临时文件清理、POSIX 模式 |
-| 路径与工作区 | paths.test.ts、core.test.ts | 路径前缀隔离、父目录越界、新建路径规范化、敏感组件、真实目录要求、Windows ADS |
-| 权限 | permissions.test.ts、core.test.ts | 单次/会话授权、失效请求、跨会话隔离、内容变化后重新审批、取消、敏感文件/AGENTS.md、Git 写入与提权限制 |
-| 命令执行 | process.test.ts、core.test.ts | 不存在的命令、输出与退出码、截断、UTF-8 分块、API key 不继承、取消和超时 |
-| 模型协议与重试 | provider.test.ts、recovery.test.ts | item.done 回退、失败/不完整事件、断流、超时、重试次数、HTTP 分类、取消退避 |
-| agent 循环 | engine.test.ts、core.test.ts、recovery.test.ts | 工具往返、单任务锁、步骤/上下文预算、参数错误反馈、根规则、输出预算、跨任务重新读取、不重放副作用 |
-| 会话存储 | store.test.ts、recovery.test.ts | 隔离、事件顺序与游标、上下文、事务回滚、终态保留、重启中断和恢复 |
-| 模型设置 | config.test.ts、regressions.test.ts | 环境/磁盘优先级、端点与模型规范化、参数边界、失败更新保持原状态、密钥内存存储、损坏配置不覆盖 |
-| 日志 | logging.test.ts、core.test.ts | 级别过滤、上下文字段、凭据脱敏、轮转、存储故障降级 |
-| 本机 HTTP API | server.test.ts、core.test.ts | 会话/任务接口、参数校验、Host/Origin/cookie/token、配置更新互斥、取消与恢复 |
-| 服务关闭 | shutdown.test.ts、e2e/app.spec.ts | 关闭授权与确认、正在执行命令的中断保存、SSE 结束、端口释放、重复清理、实际入口进程退出、关闭页面与失败反馈 |
-| Web UI | e2e/app.spec.ts | 建会话、任务与 diff、历史续聊及隔离、审批与取消、设置、人工恢复、重试文本隔离、SSE 失效重连 |
+| 功能           | 主要测试                                       | 核心行为                                                                                                   |
+| -------------- | ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| 目录与搜索     | files.test.ts                                  | 文件类型、依赖/敏感文件过滤、字面与大小写匹配、二进制跳过、100 条边界                                      |
+| 文件读取       | files.test.ts、core.test.ts                    | 行号/范围/2000 行限制、无效范围、文件大小、二进制、链接越界                                                |
+| 新建与精确编辑 | files.test.ts、regressions.test.ts             | 嵌套创建、替换唯一性、字面替换、任务内读取前置条件、并发修改、覆盖拒绝、临时文件清理、POSIX 模式           |
+| 路径与工作区   | paths.test.ts、core.test.ts                    | 路径前缀隔离、父目录越界、新建路径规范化、敏感组件、真实目录要求、Windows ADS                              |
+| 权限           | permissions.test.ts、core.test.ts              | 单次/会话授权、失效请求、跨会话隔离、内容变化后重新审批、取消、敏感文件/AGENTS.md、Git 写入与提权限制      |
+| 命令执行       | process.test.ts、core.test.ts                  | 不存在的命令、输出与退出码、截断、UTF-8 分块、API key 不继承、取消和超时                                   |
+| 模型协议与重试 | provider.test.ts、recovery.test.ts             | item.done 回退、失败/不完整事件、断流、超时、重试次数、HTTP 分类、取消退避                                 |
+| agent 循环     | engine.test.ts、core.test.ts、recovery.test.ts | 工具往返、单任务锁、步骤/上下文预算、参数错误反馈、根规则、输出预算、跨任务重新读取、不重放副作用          |
+| 会话存储       | store.test.ts、recovery.test.ts                | 隔离、事件顺序与游标、上下文、事务回滚、终态保留、重启中断和恢复                                           |
+| 模型设置       | config.test.ts、regressions.test.ts            | 环境/磁盘优先级、端点与模型规范化、参数边界、失败更新保持原状态、密钥内存存储、损坏配置不覆盖              |
+| 日志           | logging.test.ts、core.test.ts                  | 级别过滤、上下文字段、凭据脱敏、轮转、存储故障降级                                                         |
+| 本机 HTTP API  | server.test.ts、core.test.ts                   | 会话/任务接口、参数校验、Host/Origin/cookie/token、配置更新互斥、取消与恢复                                |
+| 服务关闭       | shutdown.test.ts、e2e/app.spec.ts              | 关闭授权与确认、正在执行命令的中断保存、SSE 结束、端口释放、重复清理、实际入口进程退出、关闭页面与失败反馈 |
+| Web UI         | e2e/app.spec.ts                                | 建会话、任务与 diff、历史续聊及隔离、审批与取消、设置、人工恢复、重试文本隔离、SSE 失效重连                |
 
 ## 本轮复现并修复的缺陷
 
@@ -76,6 +76,6 @@ context-stages.test.ts 先复现旧实现遗漏长记录中间材料，再验证
 
 mechanical-input.test.ts 覆盖精确结果/跨路径正文引用、逐字还原、引用幂等性、版本差异、失败/截断/歧义记录保护、小内容与 token 增长回退，以及低于阈值时每次重试和新工具轮次重新整理、实际请求计量和原历史保留。该文件属于普通功能回归，不启动 Evaluation。
 
-评测报告手动回归 `scripts/swebench/test_report.py` 覆盖缺失数据不当作零或失败、官方回归测试失败、补丁头排除、缺失工具结果、非零测试退出和分位数样本口径。该套件不进入默认 test/check，当前未执行。
+评测报告手动回归 `scripts/swebench/test_report.py` 覆盖缺失数据不当作零或失败、官方回归测试失败、补丁头排除、缺失工具结果、非零测试退出和分位数样本口径。该套件不进入默认 test/check。另覆盖 list_files 数组形式的工具结果；2026-09-12 用户授权三题评测期间，报告回归 6 项通过。
 
 准备镜像的手动契约用例验证：使用固定 image ID 后不访问 registry 或远程 task spec。仍通过独立手动测试入口执行，不加入默认检查。
