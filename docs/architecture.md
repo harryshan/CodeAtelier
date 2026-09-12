@@ -82,3 +82,7 @@ UI 历史包含消息、工具调用、受限工具结果和修改 diff。长内
 每次主任务模型请求前由 context/mechanical-input.ts 生成无损请求视图，重复只读结果与相同正文采用向前引用。Engine 的估算与 usage 校准使用该视图，持久化和有损压缩继续使用原始输入；此阶段独立于容量阈值。
 
 最终报告由 scripts/swebench/report.py 从运行和官方评分产物聚合；predict.py/grade.py 仅在用户手动运行结束时调用。报告可单独离线重建，分开正确性、效率、过程和数据完整性；不引入模型评分或额外评测运行。
+
+### 辅助模型配置与摘要路由
+
+`config/auxiliary-model.ts` 的 `auxiliarySettings` 为辅助调用创建独立配置副本；Engine 保持主任务提供商不变，并通过 ContextManager 的惰性 `summaryModel` 回调为摘要提供独立模型及预算。后续标题生成或辅助审批可复用配置选择函数，当前未实现这两条模型调用流程，权限规则仍独立执行。

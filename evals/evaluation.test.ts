@@ -7,7 +7,7 @@
  * 代码结构与阅读顺序：
  * 1. 先定义固定 usage 和工具响应，验证生产读写工具及导出记录可独立检查。
  * 2. 命令默认拒绝且无副作用，token、调用次数及超时分别触发停止。
- * 3. MeteredProvider 场景覆盖摘要计量、缺失 usage 和下一次调用阻断。
+ * 3. MeteredProvider 场景覆盖主/辅助模型共享计量、缺失 usage 和下一次调用阻断。
  * 4. 目录重叠、非法预算与审批作用域验证在运行前或审批时拒绝。
  *
  * 维护注意事项：
@@ -289,3 +289,34 @@ it.runIf(process.platform !== "linux")(
     ).rejects.toThrow("Docker");
   },
 );
+
+it("shares call and token accounting across auxiliary provider views", async () => {
+  const meter = new MeteredProvider(
+    {
+      async run() {
+        return final;
+      },
+    },
+    { maxTotalTokens: 1000, maxModelCalls: 2 },
+    () => {},
+  );
+  const auxiliary = meter.forProvider({
+    async run() {
+      return { ...final, text: "summary" };
+    },
+  });
+  const signal = new AbortController().signal;
+  await meter.run([], "task", [], signal, () => {});
+  const result = await auxiliary.run([], "summary", [], signal, () => {});
+  expect(result.text).toBe("summary");
+  expect(meter.usage).toMatchObject({
+    calls: 2,
+    measuredCalls: 2,
+    totalTokens: 50,
+    unmeasuredCalls: 0,
+  });
+  await expect(meter.run([], "task", [], signal, () => {})).rejects.toThrow(
+    "call_budget",
+  );
+  expect(meter.usage.calls).toBe(2);
+});

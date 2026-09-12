@@ -52,6 +52,9 @@ export class Config {
         baseUrl: process.env.CODEATELIER_BASE_URL,
         model: process.env.CODEATELIER_MODEL,
         reasoningEffort: process.env.CODEATELIER_REASONING_EFFORT || "high",
+        auxiliaryModel: process.env.CODEATELIER_AUXILIARY_MODEL || "",
+        auxiliaryReasoningEffort:
+          process.env.CODEATELIER_AUXILIARY_REASONING_EFFORT || "low",
         maxSteps: 30,
         commandTimeoutMs: 120000,
         requestTimeoutMs: 300000,

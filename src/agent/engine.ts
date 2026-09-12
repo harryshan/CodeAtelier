@@ -8,7 +8,7 @@
  * 1. 构造器连接 ApprovalManager 与任务等待状态；snapshot/emit 提供会话视图和脱敏事件写入。
  * 2. start 校验全局单任务约束，事务保存任务及用户消息，建立 AbortController 和完成 Promise。
  * 3. resume 仅恢复会话最后一个可恢复任务，沿用原始要求；cancel/close 分别处理用户取消与服务中断。
- * 4. run 准备历史、工作区规则、工具和模型容量，创建 ContextManager 并记录预算及 usage。
+ * 4. run 准备历史、工作区规则、工具和模型容量，创建 ContextManager，按需选择辅助摘要模型及独立容量，并记录预算及 usage。
  * 5. 每个步骤先处理上下文，再在 retryModel 的每次尝试中生成请求视图；完整模型输出保存后才执行工具。
  * 6. 工具按顺序运行，结果与新上下文在事务内保存；finally 写入终态并发出 task_end。
  *
@@ -16,6 +16,8 @@
  * 模型重试不能重放已完成工具；工具副作用无法随数据库回滚，持久化失败须停止并保留恢复线索。
  */
 
+import { auxiliarySettings } from "../config/auxiliary-model.js";
+import type { Settings } from "../shared/types.js";
 import { createBudget } from "../context/token-budget.js";
 import type {
   ModelCapabilities,
@@ -47,7 +49,10 @@ export class Engine {
     public store: Store,
     public config: Config,
     private log: Logger,
-    private factory?: () => ModelProvider,
+    private factory?: (
+      settings: Settings,
+      purpose: "task" | "auxiliary",
+    ) => ModelProvider,
   ) {
     this.approvals = new ApprovalManager(() => {
       if (this.active) {
@@ -224,7 +229,8 @@ export class Engine {
       const instructions = await createInstructions(session.workspace);
 
       const provider =
-        this.factory?.() || new ResponsesProvider(settings, this.config.apiKey);
+        this.factory?.(settings, "task") ||
+        new ResponsesProvider(settings, this.config.apiKey);
 
       let capabilities: ModelCapabilities | undefined;
       try {
@@ -278,6 +284,42 @@ export class Engine {
         maxOutputTokens: budget.outputTokens,
         onUsage: (usage) => recordUsage(usage, "compaction"),
         provider,
+        summaryModel: settings.auxiliaryModel
+          ? async () => {
+              const selected = auxiliarySettings(settings);
+              const auxiliary =
+                this.factory?.(selected, "auxiliary") ??
+                new ResponsesProvider(selected, this.config.apiKey);
+              let metadata: ModelCapabilities | undefined;
+              try {
+                metadata = await auxiliary.getCapabilities?.(signal);
+              } catch {
+                signal.throwIfAborted();
+                log.warn({
+                  event: "model.capabilities_unavailable",
+                  purpose: "compaction",
+                });
+              }
+
+              const summaryBudget = createBudget(
+                metadata,
+                settings.contextChars,
+                settings.maxOutputTokens,
+              );
+              log.info({
+                event: "context.summary_model_selected",
+                model: selected.model,
+                unit: summaryBudget.unit,
+                inputLimit: summaryBudget.limit,
+              });
+
+              return {
+                provider: auxiliary,
+                model: selected.model,
+                budget: summaryBudget,
+              };
+            }
+          : undefined,
         signal,
         clean: (text) => redactJson(text, [this.config.apiKey]),
         notice: (text) => emit("notice", { text }),

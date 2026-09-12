@@ -9,7 +9,7 @@
  * 2. request 独立调用 mechanicalInput，按实际预算度量比较前后收益；无收益时返回原始输入。
  * 3. prepare 检查容量门槛、取消及禁用状态；低于上限的压缩失败保留原历史，无法容纳时明确停止。
  * 4. plan 选择完整工具批次切点，并确认用户原文与近期内容能留在目标预算内。
- * 5. compact 依次尝试去重、文件归档、完整分块摘要；达到目标即停止，摘要调用数单独受限。
+ * 5. compact 依次尝试去重、文件归档、完整分块摘要（按需获取摘要模型独立预算）；达到目标即停止，摘要调用数单独受限。
  * 6. 生成含原文、来源哈希、预算和执行清单的快照，与活动上下文一起提交。
  * 7. restoreHistory 沿父快照展开旧投影，仅保留数据库可核对的旧摘要作为既有说明。
  *
@@ -17,6 +17,7 @@
  * 请求级引用不写回历史；摘要不是授权来源；事务提交后的通知失败不能让调用方退回旧上下文。
  */
 
+import type { ContextBudget } from "./token-budget.js";
 import type { ModelUsage } from "../providers/model-metadata.js";
 import { createHash, randomUUID } from "node:crypto";
 import { chooseCut, contextSize } from "./budget.js";
@@ -38,6 +39,11 @@ interface Options {
   maxOutputTokens?: number;
   onUsage?: (usage: ModelUsage) => void;
   provider: ModelProvider;
+  summaryModel?: () => Promise<{
+    provider: ModelProvider;
+    model: string;
+    budget: ContextBudget;
+  }>;
   signal: AbortSignal;
   clean: (text: string) => string;
   notice: (text: string) => void;
@@ -196,6 +202,7 @@ export class ContextManager {
       return amount <= options.limit * 0.6 && amount < beforeAmount * 0.9;
     };
 
+    let summaryModel: string | undefined;
     let stage: ContextSnapshot["stage"] = "deduplicate";
     let next = [
       ...projectReads(plan.prefix, id, events, "deduplicate"),
@@ -234,10 +241,13 @@ export class ContextManager {
       }
 
       // 对原始输入做摘要，不能把前两级的摘录当作完整证据。
+      const auxiliary = await options.summaryModel?.();
+      options.signal.throwIfAborted();
+      summaryModel = auxiliary?.model;
       const chunks = summaryChunks(
         expanded,
-        options.limit,
-        this.measure,
+        auxiliary?.budget.limit ?? options.limit,
+        auxiliary?.budget.measure ?? this.measure,
         excluded,
       );
       if (chunks.length > 12 - this.calls) {
@@ -248,7 +258,7 @@ export class ContextManager {
       for (const chunk of chunks) {
         summaries.push(
           await summarize(
-            options.provider,
+            auxiliary?.provider ?? options.provider,
             chunk,
             options.signal,
             options.clean,
@@ -260,7 +270,7 @@ export class ContextManager {
               this.calls++;
             },
             options.onUsage,
-            options.maxOutputTokens,
+            auxiliary ? auxiliary.budget.outputTokens : options.maxOutputTokens,
           ),
         );
       }
@@ -298,7 +308,7 @@ export class ContextManager {
       sourceHash: createHash("sha256")
         .update(JSON.stringify(input))
         .digest("hex"),
-      model: options.model,
+      model: summaryModel ?? options.model,
       createdAt: new Date().toISOString(),
       beforeChars: contextSize(input, instructions, tools),
       afterChars: contextSize(next, instructions, tools),

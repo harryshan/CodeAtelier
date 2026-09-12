@@ -54,6 +54,8 @@ export interface Settings {
   baseUrl: string;
   model: string;
   reasoningEffort?: "low" | "medium" | "high";
+  auxiliaryModel?: string;
+  auxiliaryReasoningEffort?: "low" | "medium" | "high";
   maxSteps: number;
   commandTimeoutMs: number;
   requestTimeoutMs: number;

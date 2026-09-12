@@ -5,7 +5,7 @@
  * 被 Config 在初始化及更新时调用，为外部输入提供运行时校验；共享 Settings 类型用于跨模块传递。
  *
  * 代码结构与执行顺序：
- * 1. 连接字段描述 baseUrl、model 与 reasoningEffort，兼容旧配置缺失的默认值。
+ * 1. 连接字段描述 baseUrl、主模型与辅助模型及各自 reasoningEffort，兼容旧配置缺失的默认值。
  * 2. 执行字段限制步数、命令与模型超时，以及上下文、输出预算。
  * 3. 日志字段限定可用级别，整个对象由 Zod 解析后才交给运行时。
  *
@@ -22,6 +22,8 @@ export const settingsSchema = z.object({
     .refine((v) => ["http:", "https:"].includes(new URL(v).protocol)),
   model: z.string().min(1).max(200),
   reasoningEffort: z.enum(["low", "medium", "high"]).default("high"),
+  auxiliaryModel: z.string().trim().max(200).default(""),
+  auxiliaryReasoningEffort: z.enum(["low", "medium", "high"]).default("low"),
   maxSteps: z.number().int().min(1).max(100),
   commandTimeoutMs: z.number().int().min(1000).max(600000),
   requestTimeoutMs: z.number().int().min(1000).max(600000),

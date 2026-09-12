@@ -91,3 +91,16 @@ Web 侧栏的“关闭服务”需确认。`POST /api/server/shutdown` 接受 `{
 `pnpm exec tsx scripts/bootstrap-agent.ts --prepare-only` 只准备隔离源码副本并复现缺陷；移除该参数后使用环境变量密钥执行真实模型任务。数据发送范围、审批限制和证据判定见 [bootstrap.md](bootstrap.md)。
 
 结构化事件、工具结果和日志先解析 JSON，对字段值脱敏后重新序列化；不直接用正则替换 JSON 转义文本。纯文本诊断仍通过统一脱敏函数处理。
+
+## 可选低成本辅助模型
+
+设置界面提供“辅助模型（低成本，可选）”与“辅助模型推理强度”；保存后重启仍保留。也可在本地 `.env` 设置（模型 ID 为占位值，须替换为服务实际提供的 ID）：
+
+```dotenv
+CODEATELIER_AUXILIARY_MODEL=your-low-cost-model-id
+CODEATELIER_AUXILIARY_REASONING_EFFORT=low
+```
+
+辅助模型共用主模型的 API 地址与密钥，默认不指定模型；空值沿用主模型及其思考等级。已保存设置优先于环境默认值，在 UI 清空即可恢复沿用。推理强度可选 low/medium/high，指定辅助模型时默认 low；程序不推断价格或自动选择模型。
+
+当前接入上下文摘要；标题仍由用户输入，工具审批仍遵守规则和人工确认，未启用模型自动授权。后续辅助任务可复用 `auxiliarySettings`。配置不意味着服务兼容性已经实测。

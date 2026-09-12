@@ -6,7 +6,7 @@
  *
  * 代码结构与执行顺序：
  * 1. EvaluationUsage 区分已计量与未知调用，timings 保存首段文本和总耗时。
- * 2. getCapabilities 透明转发可选能力查询；run 在调用前检查未知用量、累计 token 和次数限制。
+ * 2. forProvider 创建共享计量状态的辅助模型视图；getCapabilities 转发对应模型查询，run/runWithProvider 共用预算检查。
  * 3. 发请求前先登记未知用量并 checkpoint，成功收到有效 usage 后再转为已计量。
  * 4. 包装 onDelta 记录首次文本时间，finally 无论成功失败都保存耗时与 checkpoint。
  *
@@ -65,7 +65,23 @@ export class MeteredProvider implements ModelProvider {
     );
   }
 
+  /** 不创建新计数器，主任务和辅助请求共享未知用量与总预算。 */
+  forProvider(provider: ModelProvider): ModelProvider {
+    return {
+      getCapabilities: (signal) =>
+        provider.getCapabilities?.(signal) ?? Promise.resolve(undefined),
+      run: (...args) => this.runWithProvider(provider, ...args),
+    };
+  }
+
   async run(...args: Parameters<ModelProvider["run"]>): Promise<ModelResult> {
+    return this.runWithProvider(this.provider, ...args);
+  }
+
+  private async runWithProvider(
+    provider: ModelProvider,
+    ...args: Parameters<ModelProvider["run"]>
+  ): Promise<ModelResult> {
     if (this.usage.unmeasuredCalls) {
       this.stopReason = "usage_unavailable";
     } else if (this.usage.totalTokens >= this.limits.maxTotalTokens) {
@@ -100,7 +116,7 @@ export class MeteredProvider implements ModelProvider {
     };
 
     try {
-      const result = await this.provider.run(...args);
+      const result = await provider.run(...args);
       failed = false;
       const usage = parseUsage(result.usage);
       if (usage) {

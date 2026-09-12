@@ -165,3 +165,7 @@
 
 - 复现 PowerShell 经 WSL 默认 shell 传入 G:\codeagent 后反斜杠丢失的问题。入口改用 --exec 直接传参，并将 Windows 路径转换为正斜杠；Python 入口也使用 --exec 保留含空格参数。
 - 实际 WSL 路径转换验证通过：G:/codeagent 和含空格路径均完整返回 Linux 路径。未启动镜像刷新或 Evaluation。
+
+## 2026-09-12 辅助模型配置
+
+新增可选辅助模型和独立思考等级，并接入上下文摘要。Windows 本机 `pnpm check` 通过（137 passed / 1 skipped），`pnpm test:e2e` 通过（10 项 Chromium）。验证覆盖配置持久化、独立摘要预算、路由及失败保留原始历史；使用模拟服务，未验证真实辅助模型质量、价格或其他操作系统。Evaluation 未运行，相关路由仅静态检查。

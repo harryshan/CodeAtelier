@@ -7,7 +7,7 @@
  * 代码结构与执行顺序：
  * 1. 先复制表单状态并单独保存待输入密钥，避免要求后端返回原密钥。
  * 2. 提交处理组织 settings 与可选 apiKey，等待保存结果并显示失败。
- * 3. 表单按模型连接、思考等级和执行参数组织，按钮处理保存及取消。
+ * 3. 表单按模型连接、主/辅助模型思考等级和执行参数组织，按钮处理保存及取消。
  *
  * 关键约束：
  * 后端仍负责最终校验和运行中禁止修改；界面“已有密钥”不代表持有密钥原文。
@@ -106,6 +106,37 @@ export function SettingsPanel({
               <option value="high">高（high，默认）</option>
             </select>
           </label>
+          <label>
+            辅助模型（低成本，可选）
+            <input
+              value={value.auxiliaryModel ?? ""}
+              placeholder="留空沿用主模型"
+              onChange={(e) =>
+                setValue({ ...value, auxiliaryModel: e.target.value })
+              }
+            />
+          </label>
+          <label>
+            辅助模型推理强度
+            <select
+              value={value.auxiliaryReasoningEffort ?? "low"}
+              onChange={(e) =>
+                setValue({
+                  ...value,
+                  auxiliaryReasoningEffort: e.target
+                    .value as Settings["auxiliaryReasoningEffort"],
+                })
+              }
+            >
+              <option value="low">低（low，默认）</option>
+              <option value="medium">中（medium）</option>
+              <option value="high">高（high）</option>
+            </select>
+          </label>
+          <p className={s.muted}>
+            辅助模型共用 API
+            地址和密钥，目前用于上下文摘要。留空时沿用主模型及其思考等级。
+          </p>
           <label>
             API key
             <input

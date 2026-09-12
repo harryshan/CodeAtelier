@@ -7,7 +7,7 @@
  * 代码结构与执行顺序：
  * 1. approveEvaluationCommand 检查审批类型、参数和工作区目录；writeJson 负责脱敏及临时文件替换。
  * 2. runEvaluation 校验工作区与输出互不包含，要求新建 data 目录以避免继承旧试验状态。
- * 3. 组装 Config、Store、MeteredProvider 和 Engine，挂接逐项审批与外部取消。
+ * 3. 组装 Config、Store、共享主/辅助模型计量的 MeteredProvider 和 Engine，挂接逐项审批与外部取消。
  * 4. 等待任务完成或超时，汇总状态、用量、耗时及审批次数，导出记录并释放引擎和数据库。
  *
  * 关键约束：
@@ -121,7 +121,14 @@ export async function runEvaluation(
     options,
     checkpoint,
   );
-  const engine = new Engine(store, config, log, () => meter);
+  const engine = new Engine(store, config, log, (selected, purpose) =>
+    purpose === "auxiliary"
+      ? meter.forProvider(
+          dependencies.provider ??
+            new ResponsesProvider(selected, config.apiKey),
+        )
+      : meter,
+  );
   const decideApprovals = () => {
     // Decide one at a time: deciding emits another change event synchronously.
     const approval = engine.approvals.list(session.id)[0];
