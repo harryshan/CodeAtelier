@@ -80,3 +80,5 @@ UI 历史包含消息、工具调用、受限工具结果和修改 diff。长内
 `src/evaluation/` 保留生产 Engine/Store 的无界面入口、预算、审批和执行记录。`scripts/swebench/dataset.py` 校验固定子集并仅生成 issue 提示词；`predict.py` 在官方任务镜像中运行 agent 并提取补丁；`grade.py` 在独立干净环境调用官方评分器；`prepare.py` 打包白名单运行文件。详见 [swebench.md](swebench.md)。
 
 每次主任务模型请求前由 context/mechanical-input.ts 生成无损请求视图，重复只读结果与相同正文采用向前引用。Engine 的估算与 usage 校准使用该视图，持久化和有损压缩继续使用原始输入；此阶段独立于容量阈值。
+
+最终报告由 scripts/swebench/report.py 从运行和官方评分产物聚合；predict.py/grade.py 仅在用户手动运行结束时调用。报告可单独离线重建，分开正确性、效率、过程和数据完整性；不引入模型评分或额外评测运行。

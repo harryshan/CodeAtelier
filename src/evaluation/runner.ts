@@ -170,6 +170,7 @@ export async function runEvaluation(
       },
       approvals: { allowed: approvalsAllowed, denied: approvalsDenied },
       usage: meter.usage,
+      modelTimings: meter.timings,
     };
     writeJson(path.join(outputDir, "report.json"), report, config.apiKey);
     writeJson(

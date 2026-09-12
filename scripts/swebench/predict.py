@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import signal
+import time
 import tarfile
 import uuid
 from pathlib import Path
@@ -58,6 +59,7 @@ def run_trial(client, row: dict, output: Path, bundle: Path, args) -> dict:
         "image": spec.instance_image_key,
         "status": "setup_failed",
     }
+    started = time.monotonic()
     patch = ""
     try:
         image = client.images.pull(spec.instance_image_key)
@@ -110,6 +112,7 @@ def run_trial(client, row: dict, output: Path, bundle: Path, args) -> dict:
             )
             if key in os.environ
         }
+        metadata["setupMs"] = (time.monotonic() - started) * 1000
         metadata["status"] = "agent_failed"
         result = container.exec_run(
             ["timeout", str(args.timeout_ms // 1000 + 30), *command],
@@ -141,6 +144,7 @@ def run_trial(client, row: dict, output: Path, bundle: Path, args) -> dict:
             metadata["cleanupFailed"] = True
             raise
         finally:
+            metadata["wallMs"] = (time.monotonic() - started) * 1000
             (output / "trial.json").write_text(json.dumps(metadata, indent=2) + "\n")
     return {
         "instance_id": row["instance_id"],
@@ -214,6 +218,9 @@ def main() -> None:
                 logging.info("event=trial.saved instanceId=%s", row["instance_id"])
     finally:
         client.close()
+        from report import write_report
+
+        write_report(args.output)
 
 
 if __name__ == "__main__":

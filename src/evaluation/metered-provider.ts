@@ -29,6 +29,12 @@ export class MeteredProvider implements ModelProvider {
     cachedUsageComplete: true,
   };
 
+  readonly timings: {
+    durationMs: number;
+    firstDeltaMs: number | null;
+    failed: boolean;
+  }[] = [];
+
   stopReason?: "token_budget" | "call_budget" | "usage_unavailable";
 
   constructor(
@@ -65,8 +71,21 @@ export class MeteredProvider implements ModelProvider {
     // Count an in-flight/failed request as unknown until a valid response arrives.
     this.usage.unmeasuredCalls++;
     this.checkpoint();
+    const started = performance.now();
+    let firstDeltaMs: number | null = null;
+    let failed = true;
+    const onDelta = args[4];
+    args[4] = (text) => {
+      if (text && firstDeltaMs === null) {
+        firstDeltaMs = performance.now() - started;
+      }
+
+      onDelta(text);
+    };
+
     try {
       const result = await this.provider.run(...args);
+      failed = false;
       const usage = parseUsage(result.usage);
       if (usage) {
         this.usage.unmeasuredCalls--;
@@ -82,6 +101,11 @@ export class MeteredProvider implements ModelProvider {
 
       return result;
     } finally {
+      this.timings.push({
+        durationMs: performance.now() - started,
+        firstDeltaMs,
+        failed,
+      });
       this.checkpoint();
     }
   }
