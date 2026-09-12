@@ -1,4 +1,4 @@
-# 文件作用：从 PowerShell 手动编译并刷新前三题评测环境，可继续运行预测和评分。
+﻿# 文件作用：从 PowerShell 手动编译并刷新前三题评测环境，可继续运行预测和评分。
 #
 # 使用场景与输入输出：
 # Windows 用户手动入口，使用指定 WSL 发行版中的评测 Python 环境，把当前仓库交给 refresh_run.py。
@@ -24,12 +24,14 @@ try {
     & pnpm eval:build
     if ($LASTEXITCODE -ne 0) { throw 'Evaluation build failed.' }
 
-    $linuxRoot = & wsl -d $Distribution -u root -- wslpath -a $projectRoot
+    # Direct execution preserves argument boundaries; forward slashes avoid Windows path escaping.
+    $wslInputPath = $projectRoot.Replace('\', '/')
+    $linuxRoot = & wsl -d $Distribution -u root --exec wslpath -a $wslInputPath
     if ($LASTEXITCODE -ne 0) { throw 'Cannot resolve repository path in WSL.' }
     $linuxRoot = $linuxRoot.Trim()
     $pythonArguments = @("$linuxRoot/scripts/swebench/refresh_run.py", '--root', $linuxRoot)
     if ($PrepareOnly) { $pythonArguments += '--prepare-only' }
-    & wsl -d $Distribution -u root -- "$linuxRoot/.local/swebench-venv/bin/python" @pythonArguments
+    & wsl -d $Distribution -u root --exec "$linuxRoot/.local/swebench-venv/bin/python" @pythonArguments
     if ($LASTEXITCODE -ne 0) { throw 'Refresh/evaluation failed; see the stage output and preserved artifacts.' }
 }
 finally {

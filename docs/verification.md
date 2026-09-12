@@ -160,3 +160,8 @@
 - 新增 PowerShell 编译入口及 Python 镜像刷新流程，支持 PrepareOnly。独立运行包、镜像清单和报告目录避免旧代码混用；容器内逐文件哈希核验后才提交镜像，失败清理临时容器并停止后续阶段。
 - 本地数据加载先校验固定 Parquet SHA256，预测与评分共享该入口。新增独立手动刷新回归用例，按约定未执行。
 - pnpm check 通过：19 文件、129 项通过、1 项平台跳过；Python Ruff 和 PowerShell 语法解析通过。未运行真实镜像刷新、模型或官方评分，新入口端到端仍待手动验收。
+
+## 2026-09-12：WSL 路径参数修复
+
+- 复现 PowerShell 经 WSL 默认 shell 传入 G:\codeagent 后反斜杠丢失的问题。入口改用 --exec 直接传参，并将 Windows 路径转换为正斜杠；Python 入口也使用 --exec 保留含空格参数。
+- 实际 WSL 路径转换验证通过：G:/codeagent 和含空格路径均完整返回 Linux 路径。未启动镜像刷新或 Evaluation。
