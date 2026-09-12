@@ -1,6 +1,16 @@
 /**
  * 文件作用：向 agent 提供有界、仅限当前会话的历史快照读取工具。
- * 代码结构：先定义参数校验和模型工具契约，再读取指定快照记录并限制返回片段。
+ *
+ * 模块协作与输入输出：
+ * Engine 将 historyDefinition 加入工具列表，并把 read_context_history 调用转交本模块。
+ *
+ * 代码结构与执行顺序：
+ * 1. schema 校验 snapshotId、记录 index 和字符 offset，historyDefinition 生成模型可见工具契约。
+ * 2. readContextHistory 通过 sessionId 与 snapshotId 共同查找快照，再定位 source 中的记录。
+ * 3. 序列化原始记录并按输出预算切片，返回 text、nextOffset 与 totalChars。
+ *
+ * 关键约束：
+ * 历史工具不访问当前磁盘文件；分页预留 JSON 转义空间，越界偏移或跨会话记录直接拒绝。
  */
 
 import { z } from "zod";

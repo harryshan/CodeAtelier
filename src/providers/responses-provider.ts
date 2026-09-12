@@ -1,6 +1,18 @@
 /**
  * 文件作用：将通用模型接口适配到自建 Responses API 服务。
- * 代码结构：ResponsesProvider 先查询模型元数据，再在 run 中组装请求、管理取消与超时、收集流式事件并归一化完成结果和错误。
+ *
+ * 模块协作与输入输出：
+ * 实现 ModelProvider，使用 OpenAI SDK 访问已配置的 Responses 服务；Engine 和摘要请求共用此适配器。
+ *
+ * 代码结构与执行顺序：
+ * 1. getCapabilities 查询模型列表，按准确模型 ID 选择并验证 capabilities。
+ * 2. run 校验密钥并创建禁用 SDK 自动重试的客户端，连接外部取消、总超时和空闲超时。
+ * 3. 请求显式发送 reasoning.effort、stream 和可选输出上限；delta 用于展示，item.done 暂存完整项目。
+ * 4. 必须收到 completed 才整理输出，优先采用 completed.output，空缺时按索引回收 item.done。
+ * 5. 失败流与连接异常转换为 ModelError，finally 清除计时器和外部监听。
+ *
+ * 关键约束：
+ * 部分文本或工具参数不能被当成成功；重试由上层统一负责，避免 SDK 和引擎叠加次数。
  */
 
 import { capabilitiesSchema, parseUsage } from "./model-metadata.js";

@@ -1,6 +1,17 @@
 /**
  * 文件作用：复用生产 Engine 执行单次手动评测并导出可核对的记录。
- * 代码结构：先定义工作区命令审批和脱敏 JSON 写入，再校验目录、组装隔离会话及计量提供商、执行任务并保存结果和清理资源。
+ *
+ * 模块协作与输入输出：
+ * 无界面复用生产 Engine、ToolRunner 和 Store，输出 report.json、events.json 及持续更新的 usage.json。
+ *
+ * 代码结构与执行顺序：
+ * 1. approveEvaluationCommand 检查审批类型、参数和工作区目录；writeJson 负责脱敏及临时文件替换。
+ * 2. runEvaluation 校验工作区与输出互不包含，要求新建 data 目录以避免继承旧试验状态。
+ * 3. 组装 Config、Store、MeteredProvider 和 Engine，挂接逐项审批与外部取消。
+ * 4. 等待任务完成或超时，汇总状态、用量、耗时及审批次数，导出记录并释放引擎和数据库。
+ *
+ * 关键约束：
+ * 自动命令审批仅在显式 Docker 条件下启用，该检查不是沙箱证明；verification 固定为 external，评分由独立脚本完成。
  */
 
 import { existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs";

@@ -1,6 +1,16 @@
 /**
  * 文件作用：封装浏览器对本机后端的 JSON 请求和会话凭据初始化。
- * 代码结构：api 统一请求头、序列化及错误处理，bootstrap 更新凭据，末尾提供会话列表和快照读取函数。
+ *
+ * 模块协作与输入输出：
+ * 为 App、SettingsPanel、Timeline 和连接 Hook 提供浏览器 HTTP 调用，统一 /api 路由前缀和凭据处理。
+ *
+ * 代码结构与执行顺序：
+ * 1. api 设置方法、JSON body 与 token；收到明确未执行的 401 后重新 bootstrap 并最多重试一次，再解析响应或抛出错误。
+ * 2. bootstrap 获取后端公开配置，同时更新模块内 token。
+ * 3. sessions 和 snapshot 封装常用只读端点，返回共享类型数据。
+ *
+ * 关键约束：
+ * 网络错误导致写请求结果未知时不能自动重放；401 才允许一次凭据刷新重试。模块不存储模型 API 密钥。
  */
 
 import type { Settings, Session, Snapshot } from "../shared/types";

@@ -1,6 +1,16 @@
 /**
  * 文件作用：构建每次任务使用的基础规则和当前工作区指导。
- * 代码结构：createInstructions 读取并限长处理工作区 AGENTS.md，再与工具使用、安全和验证规则组装。
+ *
+ * 模块协作与输入输出：
+ * 由 Engine 为每个任务调用，输入真实工作区路径，输出发送给模型的 instructions 字符串。
+ *
+ * 代码结构与执行顺序：
+ * 1. resolveTarget 检查根目录 AGENTS.md 是否仍在工作区内，regularFile 限制可读取规则文件大小。
+ * 2. behavior 集中描述重新读取、精确编辑、验证、授权和历史摘要使用要求。
+ * 3. 将工作目录、操作系统、基础规则及项目指导拼接成最终 instructions。
+ *
+ * 关键约束：
+ * 缺失或无法读取规则文件时使用基础规则；项目内容不能放宽应用权限，嵌套 AGENTS.md 由模型按规则读取。
  */
 
 import { readFile } from "node:fs/promises";

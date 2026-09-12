@@ -1,6 +1,17 @@
 /**
  * 文件作用：组织 CodeAtelier 会话主界面和用户操作。
- * 代码结构：App 先维护页面状态和会话连接，再定义恢复、关闭、新建与发送操作，最后渲染侧栏、时间线、输入区及弹窗。
+ *
+ * 模块协作与输入输出：
+ * React 页面总入口，通过 api 操作后端，通过 useSessionConnection 获取当前会话快照，组合 Timeline 和 SettingsPanel。
+ *
+ * 代码结构与执行顺序：
+ * 1. useState 管理会话选择、表单、弹窗、忙碌状态与服务状态，effects 负责启动加载及滚动。
+ * 2. resume、stopServer、create 和 send 分别封装用户操作，统一更新错误与忙碌反馈。
+ * 3. 服务已关闭时展示重启指引；正常布局包含侧栏、项目状态、欢迎页或时间线和输入区。
+ * 4. 末尾弹窗收集新会话、设置和关闭确认，不在浏览器执行文件工具。
+ *
+ * 关键约束：
+ * 关闭请求失败只能报告结果不确定；切换会话与重连不能自动重新提交任务。
  */
 
 import { useSessionConnection } from "./useSessionConnection";

@@ -1,5 +1,16 @@
 # 文件作用：在一次性 SWE-bench 容器中逐题手动生成补丁。
-# 代码结构：先定义容器上传、命令执行和记录提取，再由 run_trial 管理单题生命周期，main 解析参数并顺序运行子集。
+#
+# 使用场景与输入输出：
+# 手动读取固定子集，在一次性 Docker 环境中执行生产无界面 agent，收集预测补丁和运行记录。
+#
+# 代码结构与阅读顺序：
+# 1. upload/execute/save_artifacts 封装归档上传、容器命令和记录提取。
+# 2. run_trial 准备单题镜像与工作目录，安装 agent 并传入仅含 issue 的提示。
+# 3. 单题结束提取工作树补丁及用量，失败或取消也记录状态并清理容器。
+# 4. main 解析参数、加载清单与 bundle，逐题执行并写入预测和汇总记录。
+#
+# 维护注意事项：
+# 参考答案不传给 agent；此脚本生成补丁，官方正确性由 grade.py 单独确定。
 
 """Manually generate patches in disposable SWE-bench containers, one task at a time."""
 

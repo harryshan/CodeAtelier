@@ -1,5 +1,17 @@
 # 文件作用：从 PowerShell 手动编译并刷新前三题评测环境，可继续运行预测和评分。
-# 代码结构：解析仅准备选项、编译后端、转换 WSL 路径，再交给 Python 执行刷新与运行。
+#
+# 使用场景与输入输出：
+# Windows 用户手动入口，使用指定 WSL 发行版中的评测 Python 环境，把当前仓库交给 refresh_run.py。
+#
+# 代码结构与阅读顺序：
+# 1. param 声明 PrepareOnly 与 Distribution，随后定位仓库并保存调用前工作目录。
+# 2. 先运行 pnpm eval:build，编译失败立即停止。
+# 3. 通过 WSL wslpath 转换仓库路径，组装 Python 脚本及可选 prepare-only 参数。
+# 4. 在指定发行版中执行脚本，检查退出码；finally 恢复 PowerShell 工作目录。
+#
+# 维护注意事项：
+# 会启动 WSL 中的手动镜像刷新及可选评测，不属于普通检查；PrepareOnly 仍执行构建和镜像刷新。
+
 param(
     [switch]$PrepareOnly,
     [string]$Distribution = 'Ubuntu-26.04'

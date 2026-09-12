@@ -1,6 +1,16 @@
 /**
  * 文件作用：定义上下文摘要的运行时校验和持久化快照结构。
- * 代码结构：先定义带来源的事实及摘要 schema，再声明摘要类型与包含原文、投影、预算和执行清单的快照接口。
+ *
+ * 模块协作与输入输出：
+ * 连接摘要模型输出校验、ContextManager 和 Store 的快照持久化，统一来源追溯数据形状。
+ *
+ * 代码结构与执行顺序：
+ * 1. fact 为每条结论绑定来源索引，summarySchema 组织 completed、conclusions、verification 和 pending。
+ * 2. ContextSummary 从运行时 schema 推导，减少静态类型与解析规则不一致。
+ * 3. ContextSnapshot 保存版本、父快照、原始 source、切点、投影、摘要、预算与执行 ledger。
+ *
+ * 关键约束：
+ * 新增快照字段需考虑旧记录兼容；来源和 ledger 必须保留，不能只存最终摘要文字。
  */
 
 import { z } from "zod";

@@ -1,5 +1,16 @@
 # 文件作用：仅从已有评测记录汇总质量、用量、耗时和诊断报告。
-# 代码结构：先定义读取和统计函数，再解析补丁、工具及官方评分结果，build_report 聚合指标，write_report 与命令入口写出报告；不调用模型、网络或容器。
+#
+# 使用场景与输入输出：
+# 读取既有运行目录，在不调用模型、网络或容器的条件下产出离线报告。
+#
+# 代码结构与阅读顺序：
+# 1. read_json、ratio、distribution、elapsed 提供缺失值友好的读取与统计。
+# 2. patch_metrics、process_metrics 和 diagnostic_metrics 分别解析补丁规模、工具轨迹及诊断记录。
+# 3. official_result 读取官方评分证据，build_report 将逐题记录汇总为质量、用量与耗时指标。
+# 4. write_report 写出结果，命令入口仅接收现有运行目录。
+#
+# 维护注意事项：
+# 未知用量或缺失评分不能当作零消耗或失败判定；报告不能替代尚未运行的官方评分。
 
 """Aggregate existing artifacts only: no model, container, network or grading calls."""
 

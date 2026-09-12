@@ -1,5 +1,15 @@
 # 文件作用：在 GitHub 上自动验证常规代码与浏览器交互。
-# 代码结构：先声明 push 和 PR 触发条件，再定义跨平台 core 检查及独立浏览器任务；不运行 Evaluation。
+#
+# 使用场景与输入输出：
+# GitHub Actions 对 main 的 push 和 pull_request 执行常规验证，读取仓库锁定的包管理器配置。
+#
+# 代码结构与阅读顺序：
+# 1. core 在 Linux、Windows 和 macOS 矩阵中安装 Node 24 及锁定依赖，再运行 pnpm check。
+# 2. browser 在 Ubuntu 构建前端，安装 Chromium 及系统依赖，再运行 Playwright。
+# 3. 矩阵关闭 fail-fast，以保留各平台检查结果。
+#
+# 维护注意事项：
+# 不运行 Evaluation；某个平台的 CI 定义存在不等于当前提交已在该平台验证成功。
 
 name: Checks
 on:

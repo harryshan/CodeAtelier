@@ -1,6 +1,17 @@
 /**
  * 文件作用：验证 Responses 流事件适配和请求参数传递。
- * 代码结构：先定义设置与本机 SSE 模拟服务，再覆盖结果回收、未完成及失败流、最终输出优先级、错误分类和思考等级。
+ *
+ * 使用场景与输入输出：
+ * withServer 提供本机 HTTP/SSE 响应，将合成事件交给真实 ResponsesProvider 解析。
+ *
+ * 代码结构与阅读顺序：
+ * 1. 先验证 completed.output 为空时回收 item.done，并保留完整工具调用。
+ * 2. 覆盖流式文本、缺少完成事件及 failed/incomplete/error 的失败分类。
+ * 3. 完整 completed.output 应优先于回收项，最终消息正文优先于暂存文本。
+ * 4. 空响应、输出上限和 reasoningEffort 参数分别通过响应或请求内容核对。
+ *
+ * 维护注意事项：
+ * 没有 completed 的部分流不能产生成功结果；只验证协议兼容，不发真实模型请求。
  */
 
 import { it, expect } from "vitest";

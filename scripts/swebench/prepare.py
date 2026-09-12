@@ -1,5 +1,15 @@
 # 文件作用：为手动 SWE-bench 运行打包构建后的后端和依赖清单。
-# 代码结构：prepare 校验构建目录并生成有限文件集合的归档及元数据，命令入口解析仓库和输出参数后调用它。
+#
+# 使用场景与输入输出：
+# 手动构建之后生成供容器安装的压缩包，以及描述包内文件与整体 SHA256 的旁侧 JSON。
+#
+# 代码结构与阅读顺序：
+# 1. prepare 确认 dist/server/evaluation/main.js 存在，收集 package.json、锁文件和后端 JavaScript。
+# 2. 逐文件拒绝链接或仓库外输入，计算哈希并以仓库相对路径写 tar.gz。
+# 3. 写入归档哈希及文件清单，CLI 解析 root/output 后打印生成位置。
+#
+# 维护注意事项：
+# 不打包 .env、Git、历史、源码映射或测试；只打包已构建结果，不在此启动编译或评测。
 
 """Package only built runtime files and dependency manifests for SWE-bench."""
 

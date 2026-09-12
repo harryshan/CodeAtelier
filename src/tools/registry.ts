@@ -1,6 +1,16 @@
 /**
  * 文件作用：定义模型可调用的文件和命令工具契约。
- * 代码结构：先声明 Zod 参数 schema，再配置工具说明，最后生成 Responses 所需的工具定义；实际执行由 ToolRunner 负责。
+ *
+ * 模块协作与输入输出：
+ * 由 Engine 构建模型工具列表，同时被 ToolRunner 用来验证模型传入的参数。
+ *
+ * 代码结构与执行顺序：
+ * 1. schemas 按 list_files、read_file、search、write_file、edit_file 和 run_command 定义参数。
+ * 2. descriptions 说明模型调用方式及使用限制。
+ * 3. definitions 遍历 schema 生成 JSON Schema 与 Responses function 工具声明。
+ *
+ * 关键约束：
+ * 工具契约不执行任何副作用；新增工具必须同时实现执行分支与相应权限检查。
  */
 
 import { z } from "zod";

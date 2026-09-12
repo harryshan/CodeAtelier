@@ -1,6 +1,17 @@
 /**
  * 文件作用：落实本机 HTTP 请求的 Host、Origin 和会话凭据校验。
- * 代码结构：registerLocalSecurity 创建会话令牌并注册请求检查钩子，最后返回令牌供 bootstrap 接口使用。
+ *
+ * 模块协作与输入输出：
+ * 由 createApp 在业务路由前注册；返回新生成的 token，供 bootstrap 同步设置 Cookie 和浏览器写请求凭据。
+ *
+ * 代码结构与执行顺序：
+ * 1. 生成随机令牌，compare 先检查长度再使用 timingSafeEqual。
+ * 2. onRequest 验证 Host 为回环名称，解析 Origin 并检查同源或开发服务器例外。
+ * 3. API 除 bootstrap 外要求有效 ca_session Cookie，非 GET/HEAD 请求额外要求 x-codeatelier-token。
+ * 4. 设置 no-store 与 nosniff 响应头，校验失败直接返回 401/403。
+ *
+ * 关键约束：
+ * 服务重启生成新凭据，客户端需要重新 bootstrap；这些 HTTP 检查不替代工具执行审批。
  */
 
 import type { HttpServer } from "./http-server.js";

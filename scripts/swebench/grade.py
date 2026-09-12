@@ -1,5 +1,16 @@
 # 文件作用：手动调用官方评分器，在新容器中验证已保存的预测补丁。
-# 代码结构：main 解析运行目录，核对清单及预测实例，准备评分输入并调用官方 harness，保存评分过程记录。
+#
+# 使用场景与输入输出：
+# 在显式手动评分阶段读取已有 predictions.jsonl，调用官方 harness 并让 report 模块汇总结果。
+#
+# 代码结构与阅读顺序：
+# 1. main 解析运行目录，检查每个子集实例恰好有一个预测。
+# 2. 新建 grading 目录并写入固定数据集，避免复用旧评分缓存。
+# 3. 使用当前 Python 启动官方 harness，指定顺序 worker、运行 ID 与超时。
+# 4. finally 保存评分耗时和是否完成，再生成离线报告。
+#
+# 维护注意事项：
+# 会启动官方评分和容器，不能自动触发；预测任务完成不等于评分成功，失败也保留时间记录。
 
 """Manually grade saved predictions with the official harness in fresh containers."""
 

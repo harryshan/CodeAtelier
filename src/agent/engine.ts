@@ -1,6 +1,19 @@
 /**
  * 文件作用：实现 CodeAtelier 单任务 agent 循环，串联模型、工具、审批和历史存储。
- * 代码结构：Engine 先提供快照、事件和任务生命周期入口，再由 run 组织预算、模型重试、串行工具执行及终态持久化。
+ *
+ * 模块协作与输入输出：
+ * 由 HTTP 应用或手动评测入口组装，依赖 Config、Store、模型接口和 ToolRunner；通过事件通知 UI，实际历史写入 Store。
+ *
+ * 代码结构与执行顺序：
+ * 1. 构造器连接 ApprovalManager 与任务等待状态；snapshot/emit 提供会话视图和脱敏事件写入。
+ * 2. start 校验全局单任务约束，事务保存任务及用户消息，建立 AbortController 和完成 Promise。
+ * 3. resume 仅恢复会话最后一个可恢复任务，沿用原始要求；cancel/close 分别处理用户取消与服务中断。
+ * 4. run 准备历史、工作区规则、工具和模型容量，创建 ContextManager 并记录预算及 usage。
+ * 5. 每个步骤先处理上下文，再在 retryModel 的每次尝试中生成请求视图；完整模型输出保存后才执行工具。
+ * 6. 工具按顺序运行，结果与新上下文在事务内保存；finally 写入终态并发出 task_end。
+ *
+ * 关键约束：
+ * 模型重试不能重放已完成工具；工具副作用无法随数据库回滚，持久化失败须停止并保留恢复线索。
  */
 
 import { createBudget } from "../context/token-budget.js";

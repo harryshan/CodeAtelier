@@ -1,6 +1,16 @@
 /**
  * 文件作用：根据服务公开容量创建 token 预算，并保留字符预算后备模式。
- * 代码结构：先定义计量接口，createBudget 校验编码能力、预留输出和安全空间，再提供估算与实际 usage 的单向校准。
+ *
+ * 模块协作与输入输出：
+ * Engine 根据模型元数据创建预算，ContextManager 使用 measure，完成请求后通过 observeUsage 校准估算。
+ *
+ * 代码结构与执行顺序：
+ * 1. ContextBudget 统一字符与 token 模式，并暴露输入上限、输出预留和可选校准函数。
+ * 2. createBudget 只接受本地支持的 o200k_base，计算上下文窗口、提示上限、输出预留和安全余量。
+ * 3. 编码器延迟初始化，测量整个请求包装；observeUsage 根据实际输入 usage 只上调本任务估算比例。
+ *
+ * 关键约束：
+ * 能力缺失或预算无效时回退字符模式；累计消耗不等于单次上下文大小，特殊 token 字面量按普通文本编码。
  */
 
 import { Tiktoken } from "js-tiktoken/lite";

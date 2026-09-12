@@ -1,5 +1,15 @@
 # 文件作用：读取固定修订的 SWE-bench 子集并构建不含参考答案的任务提示。
-# 代码结构：依次校验清单、校验本地 Parquet 或按固定修订在线加载子集、提取 issue 提示；本模块不执行评测任务。
+#
+# 使用场景与输入输出：
+# 供 predict、grade 和契约测试共享，输入固定子集清单，按清单顺序返回数据行或单题提示。
+#
+# 代码结构与阅读顺序：
+# 1. load_manifest 校验实例 ID 非空且唯一、ID 格式和修订 SHA。
+# 2. load_subset 校验本地 Parquet 哈希或在线加载指定修订，核对选中实例齐全并按清单重排。
+# 3. prompt_for 仅提取 problem_statement，加上工作目录和测试环境说明。
+#
+# 维护注意事项：
+# 加载数据可能访问网络；参考补丁、隐藏测试和 hints 不进入 agent 提示，模块本身不运行任务。
 
 """Load the explicit, revision-pinned development subset; never execute tasks."""
 

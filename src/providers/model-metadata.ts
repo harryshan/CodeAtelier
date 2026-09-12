@@ -1,6 +1,16 @@
 /**
  * 文件作用：校验服务公开的模型容量和实际 token 使用量。
- * 代码结构：先定义数值约束、usage 和能力 schema 及类型，再通过 parseUsage 安全解析可用用量。
+ *
+ * 模块协作与输入输出：
+ * 由 ResponsesProvider 解析服务数据，token-budget 与评测计量读取已校验结果。
+ *
+ * 代码结构与执行顺序：
+ * 1. tokenCount 与 positiveLimit 约束计数和容量的合法范围。
+ * 2. usageSchema 描述输入、输出、总量及可选细分，capabilitiesSchema 描述 tokenizer 和模型上限。
+ * 3. parseUsage 用安全解析返回可用数据，非法或缺失内容返回 undefined。
+ *
+ * 关键约束：
+ * 未知字段不能作为可信容量或计费结论；没有数据和数值零具有不同含义。
  */
 
 import { z } from "zod";

@@ -1,7 +1,17 @@
 <!doctype html>
 <!--
 文件作用：提供 CodeAtelier Web UI 的 HTML 文档入口。
-代码结构：head 声明编码、视口和标题，body 提供 React root 容器并加载前端模块入口。
+
+使用场景与输入输出：
+由浏览器读取并由 Vite 作为前端构建入口，给 src/web/main.tsx 提供挂载位置。
+
+代码结构与阅读顺序：
+1. doctype 保持标准模式，html 指定界面语言。
+2. head 声明 UTF-8、移动视口和页面标题。
+3. body 的 root 元素由 React 接管，module 脚本加载主入口。
+
+维护注意事项：
+root ID 必须与 main.tsx 一致；页面中不嵌入模型凭据或后端文件访问逻辑。
 -->
 <html lang="zh-CN">
   <head>

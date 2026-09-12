@@ -1,6 +1,17 @@
 /**
  * 文件作用：为评测包装生产模型接口，累计实际用量并限制调用预算。
- * 代码结构：先定义统计结构，再由 MeteredProvider 转发能力查询，在 run 中检查预算并记录成功或未知用量。
+ *
+ * 模块协作与输入输出：
+ * 包装任意 ModelProvider，Engine 的主任务、摘要和重试均经过同一计量实例。
+ *
+ * 代码结构与执行顺序：
+ * 1. EvaluationUsage 区分已计量与未知调用，timings 保存首段文本和总耗时。
+ * 2. getCapabilities 透明转发可选能力查询；run 在调用前检查未知用量、累计 token 和次数限制。
+ * 3. 发请求前先登记未知用量并 checkpoint，成功收到有效 usage 后再转为已计量。
+ * 4. 包装 onDelta 记录首次文本时间，finally 无论成功失败都保存耗时与 checkpoint。
+ *
+ * 关键约束：
+ * 预算是下一次调用前的停止门槛，单次调用可能越过累计阈值；缺失 usage 不能当成零消耗。
  */
 
 import type {
