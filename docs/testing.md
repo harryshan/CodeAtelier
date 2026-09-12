@@ -66,11 +66,11 @@ tokens.test.ts 覆盖容量预留、备用模式、中文/代码/工具与特殊
 
 context-stages.test.ts 先复现旧实现遗漏长记录中间材料，再验证全文连续覆盖、完全相同读取零模型调用、文件归档与中间诊断行、不同文件版本不合并、命令/失败/未知输出不投影、归档后再次摘要还原全文、旧摘要原文与来源不漂移。既有 context.test.ts 继续覆盖事务回滚、取消和恢复。
 
-## Harbor 评测
+## SWE-bench 评测（仅手动）
 
-`evals/evaluation.test.ts` 覆盖生产读写工具、独立产物、默认拒绝命令、累计 token/调用预算、计量缺失、超时、目录隔离和宿主误执行保护。`scripts/harbor/test_adapter.py` 使用固定 Harbor 包覆盖提示词安全传输、参数引用、失败时计量回填及打包白名单。容器契约测试使用模拟 Responses 服务和独立 verifier；真实模型任务与完整 benchmark 另行由用户手动运行，默认 CI 不包含评测。运行方式与边界见 [harbor.md](harbor.md)。
+`evals/evaluation.test.ts` 保留生产工具、预算、用量缺失、超时和目录隔离测试。`scripts/swebench/test_contract.py` 覆盖固定清单合法性、提示词不泄露答案、打包白名单。所有评测测试只在用户要求后执行；不加入默认 test/check、CI 或钩子。
 
-用户要求所有 Evaluation 仅手动执行：`pnpm eval:test` 通过独立 vitest.evaluation.config.ts 运行评测回归；默认 `pnpm test`/`pnpm check` 不包含该套件。Python 契约检查和 Harbor 容器任务也只提供手动命令，不配置 CI、定时或钩子自动运行。
+手动入口：`pnpm eval:test` 和 `python -m unittest discover -s scripts/swebench -p 'test_*.py'`。评分使用官方 harness，不以 agent completed 或本地测试退出码冒充解决率。运行说明见 [swebench.md](swebench.md)。
 
 ## 每请求机械压缩覆盖
 

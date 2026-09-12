@@ -90,7 +90,7 @@ export async function runEvaluation(
     dependencies.log ??
     createLogger(dataDir, config.settings.logLevel, () => [config.apiKey]);
   const store = new Store(path.join(dataDir, "history.sqlite"));
-  const session = store.create(workspace, "Harbor evaluation");
+  const session = store.create(workspace, "Coding evaluation");
   const startedAt = new Date().toISOString();
   let stopReason: string | undefined;
   let approvalsAllowed = 0;

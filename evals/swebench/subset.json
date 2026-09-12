@@ -1,0 +1,30 @@
+{
+  "name": "verified-20-v1",
+  "dataset": "SWE-bench/SWE-bench_Verified",
+  "revision": "78f471bf655a3137b2e8a75af1501690ec009ec3",
+  "split": "test",
+  "parquetSha256": "030cfd7f2a704c4c0226e7f104c725a3b41230b1d3517f9c915ad7ea5be3fa25",
+  "selection": "Repository round-robin; within repo SHA256(codeatelier-v1:instance_id) ascending; first 20. No outcome filtering.",
+  "instance_ids": [
+    "astropy__astropy-14182",
+    "django__django-11885",
+    "matplotlib__matplotlib-20676",
+    "mwaskom__seaborn-3069",
+    "pallets__flask-5014",
+    "psf__requests-5414",
+    "pydata__xarray-2905",
+    "pylint-dev__pylint-7080",
+    "pytest-dev__pytest-7432",
+    "scikit-learn__scikit-learn-10297",
+    "sphinx-doc__sphinx-8721",
+    "sympy__sympy-20428",
+    "astropy__astropy-13579",
+    "django__django-14311",
+    "matplotlib__matplotlib-24637",
+    "mwaskom__seaborn-3187",
+    "psf__requests-2317",
+    "pydata__xarray-4687",
+    "pylint-dev__pylint-7277",
+    "pytest-dev__pytest-7205"
+  ]
+}

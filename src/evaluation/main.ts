@@ -41,7 +41,7 @@ try {
   );
   process.exitCode = report.task.status === "completed" ? 0 : 1;
 } catch {
-  // Do not echo untrusted config/arguments or credentials to Harbor's command log.
+  // Do not echo untrusted config/arguments or credentials to the evaluation command log.
   process.stderr.write(
     "CodeAtelier evaluation failed. Check arguments and trial artifacts.\n",
   );

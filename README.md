@@ -53,7 +53,7 @@ pnpm test:e2e
 - [架构](docs/architecture.md)
 - [上下文压缩与历史追溯](docs/context-management.md)
 - [模型容量与 token 用量](docs/model-tokens.md)
-- [Harbor 编码任务评测](docs/harbor.md)
+- [SWE-bench 子集评测](docs/swebench.md)
 - [开发、配置与排错](docs/development.md)
 - [验证记录](docs/verification.md)
 - [技术与权限方案](docs/technical-proposal.md)

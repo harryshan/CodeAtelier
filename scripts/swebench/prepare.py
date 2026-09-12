@@ -1,4 +1,4 @@
-"""Package only built runtime files and dependency manifests for Harbor."""
+"""Package only built runtime files and dependency manifests for SWE-bench."""
 
 import argparse
 import hashlib
@@ -43,7 +43,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=Path.cwd())
     parser.add_argument(
-        "--output", type=Path, default=Path(".local/harbor/codeatelier.tar.gz")
+        "--output", type=Path, default=Path(".local/swebench/codeatelier.tar.gz")
     )
     args = parser.parse_args()
     result = prepare(args.root, args.output)

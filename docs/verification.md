@@ -118,16 +118,6 @@
 - 工作区 pnpm test:e2e：Windows Chromium 10 项全部通过，包含整理提示、续聊和刷新历史。
 - 未调用真实模型评测摘要语义质量，未进行其他操作系统实测。文件摘录仍有损，旧摘要累积仍可触顶；不承诺无限上下文或自动识别所有重要代码。
 
-## 2026-09-12：Harbor 手动评测接入
-
-- 新增无界面入口、复用生产 Engine 的 runner、包含摘要/重试的计量包装、Harbor 0.23.0 InstalledAgent 适配器、打包脚本、独立 smoke verifier/oracle 和使用文档。
-- 用户要求所有 Evaluation 仅在需要时由用户手动执行：已停止运行中的评测，移除 Harbor workflow，评测回归移至 evals/evaluation.test.ts，由独立 pnpm eval:test 启动；默认 test/check 不运行该套件。
-- 该要求之前，Windows 9 项评测入口回归通过，Harbor Python 契约测试在 Windows Python 3.12 与 WSL Python 3.14 各 4 项通过；Ruff 检查通过。移动套件后只做类型/格式等静态验证，未再次执行评测。
-- 普通工程检查：pnpm check 通过（119 项核心测试通过、1 项平台跳过，类型/lint/格式/构建通过）；此前 Windows Chromium 10 项 UI 回归通过。
-- WSL Ubuntu-26.04 中安装 Docker 29.1.3、Compose 2.40.3、Buildx 0.30.1。Harbor 0.23.0 Linux venv 位于 .local/harbor-linux-venv；Windows venv 位于 .local/harbor-venv。
-- 在用户要求停止前，真实 Harbor/Docker 独立 verifier 已验证原始缺陷 reward=0、oracle 参考修复 reward=1，均无 trial exception。记录保留在 .local/harbor/jobs/baseline-local 和 oracle-local。
-- CodeAtelier + 模拟 Responses 的 Harbor 容器全流程未完成验收；按用户要求不再启动。未运行真实模型，也未产生 Terminal-Bench 成绩。当前进程环境未配置 API key。
-- Docker Hub 层下载 EOF，改从 ECR Docker Official Images 获取相同版本 Node 24.19.0 镜像；Harbor 使用已下载的官方 wheel，Linux 依赖通过阿里云 PyPI 镜像安装。未修改全局 pip 源。上述机器准备不代表其他平台或全部 benchmark 环境已验证。
 
 ## 2026-09-12：每请求无损机械整理
 
@@ -135,3 +125,11 @@
 - 新增 5 项普通功能回归：逐字还原、幂等、版本/失败/截断/歧义保护、小内容与 token 增长回退、低阈值重试及新工具轮次每次整理、估算等于实际请求和历史不变。旧去重测试相应验证无需创建快照即可降低输入。
 - pnpm check 通过：19 个测试文件，124 项通过、1 项平台跳过；类型、ESLint、Prettier、生产构建均通过。pnpm test:e2e：Windows Chromium 10 项通过。
 - 未运行 Evaluation 或真实模型请求。无损指可精确还原内容，不保证模型理解引用与展开全文具有相同表现；当前仅识别明确的只读结果与正文重复，不删除源码空白、用户要求或近似内容。
+
+## 2026-09-12：SWE-bench 固定子集替换
+
+- 移除原评测框架适配、任务、依赖、文档及本地专用环境/缓存/容器；保留通用 TypeScript 生产引擎评测入口。
+- 新增 Verified 固定 20 题清单，覆盖 12 个仓库；固定数据修订，Parquet 文件 SHA256 与官方 LFS 元数据一致。模型不接收 gold/test patch 或 hints。
+- 新增直接 Docker 补丁生成、官方 swebench 4.1.0 独立评分入口、手动契约回归和使用文档。输出目录不复用，取消清理当前容器，环境错误和 agent 失败分别记录。
+- 静态验证：Python Ruff 格式/lint 通过；pnpm check 通过（19 文件、124 项普通测试通过、1 项平台跳过，类型/lint/格式/构建通过）。
+- 未启动 Evaluation、Python 评测契约测试、任务容器或真实模型调用。新 SWE-bench 全流程仍待用户手动验收；默认检查不包含评测。
