@@ -1,3 +1,8 @@
+/**
+ * 文件作用：通过浏览器验证用户可观察的完整会话交互。
+ * 代码结构：用例依次覆盖编辑与历史、审批、设置、重试与重连、多会话、服务关闭、压缩通知及 token 用量展示。
+ */
+
 import { test, expect } from "@playwright/test";
 import { mkdtemp, readFile, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";

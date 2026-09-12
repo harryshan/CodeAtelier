@@ -1,3 +1,8 @@
+/**
+ * 文件作用：把可核实的旧文件读取转换为去重引用或归档摘录。
+ * 代码结构：projectReads 验证调用、事件和正文后生成快照引用；preview 提供保留诊断行的有界摘录，未知及有副作用结果保持原样。
+ */
+
 import { createHash } from "node:crypto";
 import type { Event } from "../shared/types.js";
 

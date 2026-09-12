@@ -1,3 +1,8 @@
+/**
+ * 文件作用：验证手动 Evaluation 适配器的生产工具复用和预算边界。
+ * 代码结构：先定义模拟用量与工具响应，再覆盖记录导出、命令拒绝、token 和调用上限、超时、审批及输出目录限制；仅通过独立评测测试入口运行。
+ */
+
 import { it, expect } from "vitest";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";

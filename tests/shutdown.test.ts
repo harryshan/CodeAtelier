@@ -1,3 +1,8 @@
+/**
+ * 文件作用：验证关闭服务的鉴权、连接释放、状态保存和进程退出。
+ * 代码结构：用例从未授权关闭开始，再验证运行中任务和 SSE 的清理，最后启动生产入口检查实际退出。
+ */
+
 import { it, expect } from "vitest";
 import pino from "pino";
 import { spawn } from "node:child_process";

@@ -1,3 +1,8 @@
+/**
+ * 文件作用：验证 Responses 流事件适配和请求参数传递。
+ * 代码结构：先定义设置与本机 SSE 模拟服务，再覆盖结果回收、未完成及失败流、最终输出优先级、错误分类和思考等级。
+ */
+
 import { it, expect } from "vitest";
 import { createServer } from "node:http";
 import { ResponsesProvider } from "../src/providers/responses-provider.js";

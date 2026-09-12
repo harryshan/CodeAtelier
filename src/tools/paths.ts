@@ -1,3 +1,8 @@
+/**
+ * 文件作用：集中处理工作区路径规范化、越界判断和文件访问前置校验。
+ * 代码结构：依次提供目录包含关系、真实路径解析、敏感路径识别、目标解析、普通文件限制和工作区目录验证。
+ */
+
 import { realpath, lstat, stat } from "node:fs/promises";
 import path from "node:path";
 

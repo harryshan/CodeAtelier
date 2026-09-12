@@ -1,3 +1,8 @@
+/**
+ * 文件作用：在临时仓库副本中手动验收真实模型修复与中断恢复。
+ * 代码结构：先检查配置并复制 Git 文件、注入回归和验证基线，再执行受限审批的任务及恢复，最后独立复验、检查变更范围并保存报告。
+ */
+
 import { approveTestCommand } from "./bootstrap/approval.js";
 import { execFileSync } from "node:child_process";
 import {

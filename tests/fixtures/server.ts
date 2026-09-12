@@ -1,3 +1,8 @@
+/**
+ * 文件作用：为 Playwright 提供使用模拟模型的本机测试服务器。
+ * 代码结构：先创建临时配置，再按测试提示模拟模型能力、文本及工具响应，随后注册测试辅助接口并启动服务。
+ */
+
 import { ModelError } from "../../src/providers/model-error.js";
 import { mkdtemp, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";

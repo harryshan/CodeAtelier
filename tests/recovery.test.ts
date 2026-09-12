@@ -1,3 +1,8 @@
+/**
+ * 文件作用：验证模型重试、取消及持久化中断后的人工恢复。
+ * 代码结构：先建立临时资源与清理，再覆盖退避和流断连、超时分类、编辑后续行、重启未知调用、关闭及防止重放。
+ */
+
 import { it, expect, afterEach } from "vitest";
 import { mkdtemp, realpath, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";

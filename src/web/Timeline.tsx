@@ -1,3 +1,8 @@
+/**
+ * 文件作用：把持久化事件和待审批操作展示为会话时间线。
+ * 代码结构：先定义工具标签及结果文本转换，再在 Timeline 中整理流式与完成消息，渲染工具、diff、通知、用量和审批操作。
+ */
+
 import type { Snapshot, Event } from "../shared/types";
 import { api } from "./api";
 import s from "./app.module.css";

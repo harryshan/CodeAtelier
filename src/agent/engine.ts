@@ -1,3 +1,8 @@
+/**
+ * 文件作用：实现 CodeAtelier 单任务 agent 循环，串联模型、工具、审批和历史存储。
+ * 代码结构：Engine 先提供快照、事件和任务生命周期入口，再由 run 组织预算、模型重试、串行工具执行及终态持久化。
+ */
+
 import { createBudget } from "../context/token-budget.js";
 import type {
   ModelCapabilities,

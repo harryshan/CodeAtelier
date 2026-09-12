@@ -1,3 +1,8 @@
+/**
+ * 文件作用：将通用模型接口适配到自建 Responses API 服务。
+ * 代码结构：ResponsesProvider 先查询模型元数据，再在 run 中组装请求、管理取消与超时、收集流式事件并归一化完成结果和错误。
+ */
+
 import { capabilitiesSchema, parseUsage } from "./model-metadata.js";
 import OpenAI from "openai";
 import { ModelError, modelError } from "./model-error.js";

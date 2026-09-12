@@ -1,3 +1,8 @@
+/**
+ * 文件作用：确定本机配置、日志和历史数据的存放目录。
+ * 代码结构：dataDirectory 优先使用显式环境配置，再按 Windows、macOS 和 Linux 选择平台目录。
+ */
+
 import path from "node:path";
 import { homedir } from "node:os";
 

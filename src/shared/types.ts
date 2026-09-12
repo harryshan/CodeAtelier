@@ -1,3 +1,8 @@
+/**
+ * 文件作用：定义前后端共享的会话和任务数据契约。
+ * 代码结构：依次声明任务状态、会话、任务、事件、审批、设置及组合快照类型，供 API 与 UI 共用。
+ */
+
 export type TaskStatus =
   "running" | "waiting" | "completed" | "failed" | "cancelled" | "interrupted";
 

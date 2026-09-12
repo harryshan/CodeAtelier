@@ -1,3 +1,8 @@
+/**
+ * 文件作用：提供不依赖日志运行时的文本和 JSON 凭据脱敏函数。
+ * 代码结构：redactText 处理已知密钥和常见凭据形式，redactJson 对结构化内容脱敏并保留可解析的 JSON。
+ */
+
 export function redactText(value: string, secrets: string[] = []): string {
   let text = value;
 

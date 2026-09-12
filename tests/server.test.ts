@@ -1,3 +1,8 @@
+/**
+ * 文件作用：验证本机 HTTP API 的会话隔离、任务状态和写请求鉴权。
+ * 代码结构：先创建带阻塞模型与凭据的应用夹具，再测试输入校验、并发互斥及取消恢复，最后覆盖伪造请求。
+ */
+
 import { it, expect } from "vitest";
 import pino from "pino";
 import { Config } from "../src/config/config.js";

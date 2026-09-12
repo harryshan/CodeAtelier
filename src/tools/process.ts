@@ -1,3 +1,8 @@
+/**
+ * 文件作用：执行受控命令并收集有界输出、退出状态和取消结果。
+ * 代码结构：executeProcess 启动无 shell 子进程，设置跨平台进程树终止与超时，再解码输出并在错误或退出时清理监听和计时器。
+ */
+
 import { spawn } from "node:child_process";
 
 export async function executeProcess(

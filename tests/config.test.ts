@@ -1,3 +1,8 @@
+/**
+ * 文件作用：验证配置优先级、规范化、持久化及密钥处理。
+ * 代码结构：环境清理与公共配置之后，依次覆盖加载、更新、密钥保留或清除、损坏文件和思考等级兼容。
+ */
+
 import { it, expect, vi, afterEach } from "vitest";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";

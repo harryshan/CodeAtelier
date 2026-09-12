@@ -1,3 +1,6 @@
+# 文件作用：验证离线评测报告对缺失数据和实际评分记录的处理。
+# 代码结构：ReportTests 使用临时记录覆盖未知值、官方结果、补丁计数、工具失败及统计分布；末尾保留手动 unittest 入口。
+
 """Manual-only report regression cases; never launch a model or grader."""
 
 import json

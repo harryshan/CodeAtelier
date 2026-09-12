@@ -1,3 +1,8 @@
+/**
+ * 文件作用：管理当前会话的快照同步与 SSE 连接生命周期。
+ * 代码结构：Hook 初始化快照和连接状态，再在 effect 内合并刷新、更新凭据及重连，切换会话或停止服务时清理连接并丢弃过期响应。
+ */
+
 import { useEffect, useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import type { Settings, Snapshot } from "../shared/types";

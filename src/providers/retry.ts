@@ -1,3 +1,8 @@
+/**
+ * 文件作用：为模型调用提供有界、可取消的自动重试。
+ * 代码结构：retryModel 按尝试次数执行请求，归一化错误并判断是否重试，在通知后等待退避或响应取消。
+ */
+
 import { setTimeout as delay } from "node:timers/promises";
 import { ModelError, modelError } from "./model-error.js";
 

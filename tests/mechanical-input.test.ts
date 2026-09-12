@@ -1,3 +1,8 @@
+/**
+ * 文件作用：验证每请求无损整理的可还原性和引擎接入行为。
+ * 代码结构：先构造读取记录，再测试重复提取与保守跳过、还原和幂等性，最后覆盖重试后的请求视图及负收益回退。
+ */
+
 import { expect, it } from "vitest";
 import { mechanicalInput } from "../src/context/mechanical-input.js";
 import path from "node:path";

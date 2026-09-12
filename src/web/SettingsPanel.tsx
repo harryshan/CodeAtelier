@@ -1,3 +1,8 @@
+/**
+ * 文件作用：提供模型连接、思考等级和执行参数的设置表单。
+ * 代码结构：SettingsPanel 初始化表单状态，处理保存和错误反馈，再渲染参数输入与操作按钮。
+ */
+
 import { useState } from "react";
 import type { Settings } from "../shared/types";
 import { api } from "./api";

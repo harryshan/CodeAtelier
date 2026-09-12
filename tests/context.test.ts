@@ -1,3 +1,8 @@
+/**
+ * 文件作用：回归验证上下文压缩、历史读取和未知执行状态边界。
+ * 代码结构：先定义模拟摘要与历史夹具，再覆盖切分、持久化、失败回滚和取消，最后验证引擎续行、预算上限及错误来源。
+ */
+
 import { ModelError, modelError } from "../src/providers/model-error.js";
 import { expect, it, vi } from "vitest";
 import path from "node:path";

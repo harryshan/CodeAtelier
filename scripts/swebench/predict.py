@@ -1,3 +1,6 @@
+# 文件作用：在一次性 SWE-bench 容器中逐题手动生成补丁。
+# 代码结构：先定义容器上传、命令执行和记录提取，再由 run_trial 管理单题生命周期，main 解析参数并顺序运行子集。
+
 """Manually generate patches in disposable SWE-bench containers, one task at a time."""
 
 import argparse

@@ -1,3 +1,8 @@
+/**
+ * 文件作用：验证审批的消费、作用域、取消和内容变化失效规则。
+ * 代码结构：先定义通用审批请求，再覆盖一次性与会话授权、不可复用请求、取消信号和命令指纹边界。
+ */
+
 import { it, expect } from "vitest";
 import { writeFile } from "node:fs/promises";
 import path from "node:path";

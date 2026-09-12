@@ -1,2 +1,5 @@
+# 文件作用：限定 pnpm 安装期间允许执行构建脚本的依赖。
+# 代码结构：allowBuilds 当前仅允许 esbuild，供依赖安装读取。
+
 allowBuilds:
   esbuild: true

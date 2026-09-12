@@ -1,3 +1,8 @@
+/**
+ * 文件作用：手动验证真实 Responses 服务的流式工具调用往返。
+ * 代码结构：先配置 SDK 与 echo 工具，再收集首轮流事件、提交工具结果并读取后续文本，末尾报告错误。
+ */
+
 import OpenAI from "openai";
 
 const key = process.env.CODEATELIER_API_KEY;

@@ -1,3 +1,8 @@
+/**
+ * 文件作用：创建统一的 Pino 诊断日志入口。
+ * 代码结构：createLogger 准备日志目录和输出流，在写入时轮转、脱敏并处理存储故障，最后配置日志级别与结构化字段脱敏。
+ */
+
 import pino from "pino";
 import { Writable } from "node:stream";
 import {

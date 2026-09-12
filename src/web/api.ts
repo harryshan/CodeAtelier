@@ -1,3 +1,8 @@
+/**
+ * 文件作用：封装浏览器对本机后端的 JSON 请求和会话凭据初始化。
+ * 代码结构：api 统一请求头、序列化及错误处理，bootstrap 更新凭据，末尾提供会话列表和快照读取函数。
+ */
+
 import type { Settings, Session, Snapshot } from "../shared/types";
 
 let token = "";

@@ -1,3 +1,8 @@
+/**
+ * 文件作用：根据服务公开容量创建 token 预算，并保留字符预算后备模式。
+ * 代码结构：先定义计量接口，createBudget 校验编码能力、预留输出和安全空间，再提供估算与实际 usage 的单向校准。
+ */
+
 import { Tiktoken } from "js-tiktoken/lite";
 import o200k from "js-tiktoken/ranks/o200k_base";
 import type { ModelCapabilities } from "../providers/model-metadata.js";

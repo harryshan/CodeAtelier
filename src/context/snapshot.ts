@@ -1,3 +1,8 @@
+/**
+ * 文件作用：根据持久化工具事件生成压缩快照的执行状态清单。
+ * 代码结构：executionLedger 继承旧清单，逐项匹配调用与唯一结果，记录已知诊断或保守标记未知状态。
+ */
+
 import type { ContextSnapshot } from "./types.js";
 import type { Event } from "../shared/types.js";
 

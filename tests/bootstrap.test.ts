@@ -1,3 +1,8 @@
+/**
+ * 文件作用：验证自举脚本的精确命令预授权边界。
+ * 代码结构：先测试正确命令及参数匹配，再覆盖格式损坏和非命令审批的拒绝；不执行真实模型评测。
+ */
+
 import { expect, it } from "vitest";
 import { approveTestCommand } from "../scripts/bootstrap/approval.js";
 

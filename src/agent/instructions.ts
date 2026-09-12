@@ -1,3 +1,8 @@
+/**
+ * 文件作用：构建每次任务使用的基础规则和当前工作区指导。
+ * 代码结构：createInstructions 读取并限长处理工作区 AGENTS.md，再与工具使用、安全和验证规则组装。
+ */
+
 import { readFile } from "node:fs/promises";
 import { resolveTarget, regularFile } from "../tools/paths.js";
 

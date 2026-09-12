@@ -1,3 +1,8 @@
+/**
+ * 文件作用：复用生产 Engine 执行单次手动评测并导出可核对的记录。
+ * 代码结构：先定义工作区命令审批和脱敏 JSON 写入，再校验目录、组装隔离会话及计量提供商、执行任务并保存结果和清理资源。
+ */
+
 import { existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { realpath } from "node:fs/promises";
 import path from "node:path";

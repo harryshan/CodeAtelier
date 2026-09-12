@@ -1,3 +1,8 @@
+/**
+ * 文件作用：管理待审批操作和限定会话及内容指纹的授权。
+ * 代码结构：ApprovalManager 保存待处理请求与授权，依次提供列表、可取消的请求等待和一次性、会话级或拒绝决定。
+ */
+
 import { randomUUID } from "node:crypto";
 import type { Approval } from "../shared/types.js";
 

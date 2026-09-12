@@ -1,3 +1,8 @@
+/**
+ * 文件作用：落实本机 HTTP 请求的 Host、Origin 和会话凭据校验。
+ * 代码结构：registerLocalSecurity 创建会话令牌并注册请求检查钩子，最后返回令牌供 bootstrap 接口使用。
+ */
+
 import type { HttpServer } from "./http-server.js";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 

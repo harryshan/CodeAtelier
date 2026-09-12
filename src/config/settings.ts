@@ -1,3 +1,8 @@
+/**
+ * 文件作用：集中定义模型连接、执行限制和日志设置的校验契约。
+ * 代码结构：settingsSchema 按配置字段声明类型、取值范围与兼容默认值，供配置加载和更新共用。
+ */
+
 import { z } from "zod";
 
 export const settingsSchema = z.object({

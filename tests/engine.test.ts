@@ -1,3 +1,8 @@
+/**
+ * 文件作用：验证生产 Engine 的任务约束和模型工具反馈行为。
+ * 代码结构：先定义模拟结果与引擎夹具，再覆盖步数和容量、参数失败、项目规则、跨任务重新读取及凭据相关源码的 JSON 完整性。
+ */
+
 import { it, expect } from "vitest";
 import { writeFile, readFile } from "node:fs/promises";
 import path from "node:path";

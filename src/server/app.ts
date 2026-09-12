@@ -1,3 +1,8 @@
+/**
+ * 文件作用：组装本机 HTTP 应用及配置、任务、审批和历史接口。
+ * 代码结构：createApp 初始化存储和引擎，设置鉴权与关闭流程，注册 API、SSE 和静态页面，最后挂接资源清理钩子。
+ */
+
 import Fastify, { LogController } from "fastify";
 import staticPlugin from "@fastify/static";
 import { registerLocalSecurity } from "./local-security.js";

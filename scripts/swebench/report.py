@@ -1,3 +1,6 @@
+# 文件作用：仅从已有评测记录汇总质量、用量、耗时和诊断报告。
+# 代码结构：先定义读取和统计函数，再解析补丁、工具及官方评分结果，build_report 聚合指标，write_report 与命令入口写出报告；不调用模型、网络或容器。
+
 """Aggregate existing artifacts only: no model, container, network or grading calls."""
 
 import argparse

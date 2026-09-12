@@ -1,3 +1,8 @@
+/**
+ * 文件作用：封装会话、任务、事件和上下文的 SQLite 持久化。
+ * 代码结构：Store 先初始化数据库和重启中断状态，再提供会话任务操作、事件游标、上下文及快照事务，最后提供关闭入口。
+ */
+
 import type { ContextSnapshot } from "../context/types.js";
 import { SCHEMA_SQL } from "./schema.js";
 import { DatabaseSync } from "node:sqlite";

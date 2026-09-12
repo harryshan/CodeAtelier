@@ -1,3 +1,8 @@
+/**
+ * 文件作用：定义本地 SQLite 历史存储的初始化结构。
+ * 代码结构：SCHEMA_SQL 集中声明会话、任务、事件及上下文快照表和相关索引，由 Store 初始化时执行。
+ */
+
 /** 会话数据库的初始结构。字段顺序与 Store 的位置参数 INSERT 语句对应。 */
 export const SCHEMA_SQL = `
   PRAGMA journal_mode = WAL;

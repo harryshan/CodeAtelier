@@ -1,3 +1,8 @@
+/**
+ * 文件作用：手动探测真实服务的容量、usage 和 token 预算兼容性。
+ * 代码结构：先检查本地密钥与探测配置，再查询模型能力并发送探测请求，汇总服务返回与预算信息。
+ */
+
 import pino from "pino";
 import OpenAI from "openai";
 import { ResponsesProvider } from "../src/providers/responses-provider.js";

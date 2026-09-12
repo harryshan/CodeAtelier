@@ -1,3 +1,6 @@
+# 文件作用：验证 SWE-bench 数据、提示、打包及容器生命周期契约。
+# 代码结构：导入脚本并准备测试替身后，ContractTests 覆盖失败和取消清理、镜像复用、清单校验、提示隔离与打包范围；仅手动运行。
+
 """Manual-only contract tests; no model calls, Docker or dataset downloads."""
 
 import json

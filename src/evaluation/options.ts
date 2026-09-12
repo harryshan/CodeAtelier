@@ -1,3 +1,8 @@
+/**
+ * 文件作用：定义手动评测的工作目录、输出位置和预算参数契约。
+ * 代码结构：evaluationOptionsSchema 集中校验输入并设置默认值，随后导出推导出的参数类型。
+ */
+
 import { z } from "zod";
 
 export const evaluationOptionsSchema = z.object({

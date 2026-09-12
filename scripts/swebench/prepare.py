@@ -1,3 +1,6 @@
+# 文件作用：为手动 SWE-bench 运行打包构建后的后端和依赖清单。
+# 代码结构：prepare 校验构建目录并生成有限文件集合的归档及元数据，命令入口解析仓库和输出参数后调用它。
+
 """Package only built runtime files and dependency manifests for SWE-bench."""
 
 import argparse

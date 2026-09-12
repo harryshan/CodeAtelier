@@ -1,3 +1,8 @@
+/**
+ * 文件作用：组织 CodeAtelier 会话主界面和用户操作。
+ * 代码结构：App 先维护页面状态和会话连接，再定义恢复、关闭、新建与发送操作，最后渲染侧栏、时间线、输入区及弹窗。
+ */
+
 import { useSessionConnection } from "./useSessionConnection";
 import { useEffect, useRef, useState } from "react";
 import type { Session, Settings } from "../shared/types";

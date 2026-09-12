@@ -1,3 +1,6 @@
+# 文件作用：手动调用官方评分器，在新容器中验证已保存的预测补丁。
+# 代码结构：main 解析运行目录，核对清单及预测实例，准备评分输入并调用官方 harness，保存评分过程记录。
+
 """Manually grade saved predictions with the official harness in fresh containers."""
 
 import argparse

@@ -1,3 +1,8 @@
+/**
+ * 文件作用：为测试提供隔离的临时目录和文件工具环境。
+ * 代码结构：先管理临时目录及自动清理，再由 fileFixture 组装配置、审批管理器和工具执行器。
+ */
+
 import { afterEach } from "vitest";
 import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";

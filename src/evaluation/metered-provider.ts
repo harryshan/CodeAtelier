@@ -1,3 +1,8 @@
+/**
+ * 文件作用：为评测包装生产模型接口，累计实际用量并限制调用预算。
+ * 代码结构：先定义统计结构，再由 MeteredProvider 转发能力查询，在 run 中检查预算并记录成功或未知用量。
+ */
+
 import type {
   ModelProvider,
   ModelResult,

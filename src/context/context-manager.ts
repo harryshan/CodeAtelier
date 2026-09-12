@@ -1,3 +1,8 @@
+/**
+ * 文件作用：协调请求级无损整理与有容量门槛的历史压缩。
+ * 代码结构：先定义配置和计划类型；ContextManager 依次提供请求视图、触发检查、切分计划、三级压缩与历史展开，快照和新上下文一起落盘。
+ */
+
 import type { ModelUsage } from "../providers/model-metadata.js";
 import { createHash, randomUUID } from "node:crypto";
 import { chooseCut, contextSize } from "./budget.js";

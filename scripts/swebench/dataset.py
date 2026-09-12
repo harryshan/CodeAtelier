@@ -1,3 +1,6 @@
+# 文件作用：读取固定修订的 SWE-bench 子集并构建不含参考答案的任务提示。
+# 代码结构：依次校验清单、按固定修订加载子集、提取 issue 提示；本模块不执行评测任务。
+
 """Load the explicit, revision-pinned development subset; never execute tasks."""
 
 import json

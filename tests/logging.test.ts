@@ -1,3 +1,8 @@
+/**
+ * 文件作用：验证诊断日志的级别、脱敏、轮转和故障隔离。
+ * 代码结构：先注册测试替身清理钩子，再分别覆盖结构化字段、归档数量、不可写输出和含引号凭据的 JSON 完整性。
+ */
+
 import { it, expect, vi, afterEach } from "vitest";
 import {
   readFile,

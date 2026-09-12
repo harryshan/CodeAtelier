@@ -1,3 +1,8 @@
+/**
+ * 文件作用：验证模型容量、token 估算及实际 usage 的完整接入。
+ * 代码结构：先定义服务能力样例，再覆盖预算和编码、usage 校验、压缩计量、持久化、能力查询降级和估算校准。
+ */
+
 import { expect, it } from "vitest";
 import { createBudget } from "../src/context/token-budget.js";
 import {

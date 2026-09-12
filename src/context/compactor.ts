@@ -1,3 +1,8 @@
+/**
+ * 文件作用：将完整历史分块交给摘要模型，并校验摘要内容及来源。
+ * 代码结构：先定义摘要规则，summaryChunks 按容量完整分块，summarize 负责请求、解析、校验和脱敏。
+ */
+
 import type { ModelUsage } from "../providers/model-metadata.js";
 import { summarySchema, type ContextSummary } from "./types.js";
 import { contextSize } from "./budget.js";

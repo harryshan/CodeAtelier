@@ -1,3 +1,8 @@
+/**
+ * 文件作用：验证 SQLite 历史存储的隔离、事务和重启行为。
+ * 代码结构：依次测试会话事件游标、失败时任务与事件一起回滚，以及重启仅中断未完成任务并保留上下文。
+ */
+
 import { it, expect } from "vitest";
 import path from "node:path";
 import { Store } from "../src/sessions/store.js";

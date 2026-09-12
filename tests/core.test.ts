@@ -1,3 +1,8 @@
+/**
+ * 文件作用：验证文件权限、任务闭环、持久化及本机服务安全的基础行为。
+ * 代码结构：先定义临时目录和工具夹具，再按文件权限、执行存储、服务配置三个测试组组织用例，中间提供异步等待辅助函数。
+ */
+
 import { describe, it, expect, afterEach } from "vitest";
 import {
   realpath,

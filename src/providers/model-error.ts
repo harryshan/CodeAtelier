@@ -1,3 +1,8 @@
+/**
+ * 文件作用：把模型及传输异常归一化为可判断重试行为的错误。
+ * 代码结构：先定义带错误码和重试属性的 ModelError，再由 modelError 分类协议、HTTP 与连接异常。
+ */
+
 /** 模型错误分类，保留重试决策所需信息，不传播服务端敏感正文。 */
 export class ModelError extends Error {
   constructor(

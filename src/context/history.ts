@@ -1,3 +1,8 @@
+/**
+ * 文件作用：向 agent 提供有界、仅限当前会话的历史快照读取工具。
+ * 代码结构：先定义参数校验和模型工具契约，再读取指定快照记录并限制返回片段。
+ */
+
 import { z } from "zod";
 import type { Store } from "../sessions/store.js";
 

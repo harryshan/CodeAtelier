@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# 文件作用：在评测容器的独立前缀中准备 CodeAtelier 运行环境。
+# 代码结构：先选用或安装固定 Node 版本，再设置运行路径并安装应用依赖；由手动评测的容器准备流程调用。
+
 set -euo pipefail
 
 # A private prefix leaves the task's system Node installation unchanged.

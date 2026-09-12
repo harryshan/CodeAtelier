@@ -1,3 +1,8 @@
+/**
+ * 文件作用：配置使用本机模拟服务的浏览器端到端测试。
+ * 代码结构：按测试目录和串行执行、浏览器参数、测试服务器启动及 Chromium 项目组织配置。
+ */
+
 import { defineConfig } from "@playwright/test";
 
 export default defineConfig({

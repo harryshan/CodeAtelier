@@ -1,3 +1,8 @@
+/**
+ * 文件作用：验证命令执行的启动失败、输出解码、密钥隔离和取消。
+ * 代码结构：先设置环境恢复钩子，再分别构造不存在的命令、分块 UTF-8 输出和运行中取消场景。
+ */
+
 import { it, expect, vi, afterEach } from "vitest";
 import { executeProcess } from "../src/tools/process.js";
 import { temp } from "./fixtures/helpers.js";

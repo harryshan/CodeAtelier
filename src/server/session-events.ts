@@ -1,3 +1,8 @@
+/**
+ * 文件作用：通过 SSE 通知浏览器刷新指定会话，并管理流连接生命周期。
+ * 代码结构：registerSessionEvents 注册会话事件路由、变更监听与心跳，处理断连清理并返回服务关闭时的统一清理入口。
+ */
+
 import type { HttpServer } from "./http-server.js";
 import type { ServerResponse } from "node:http";
 import type { Engine } from "../agent/engine.js";

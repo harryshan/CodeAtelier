@@ -1,3 +1,8 @@
+/**
+ * 文件作用：验证三级压缩的完整来源覆盖和逐级停止行为。
+ * 代码结构：先检查长记录分块并建立夹具，再覆盖读取去重、归档后展开、不可投影结果及旧摘要保留。
+ */
+
 import { expect, it } from "vitest";
 import { summaryChunks } from "../src/context/compactor.js";
 import path from "node:path";

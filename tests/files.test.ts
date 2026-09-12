@@ -1,3 +1,8 @@
+/**
+ * 文件作用：验证文件工具的读取、搜索、修改和审批边界。
+ * 代码结构：用例从目录与搜索、行号和大小限制开始，再覆盖精确替换、新建、覆盖审批、并发变化与非法参数。
+ */
+
 import { it, expect } from "vitest";
 import { writeFile, mkdir, readFile, readdir } from "node:fs/promises";
 import path from "node:path";

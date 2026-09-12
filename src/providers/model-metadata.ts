@@ -1,3 +1,8 @@
+/**
+ * 文件作用：校验服务公开的模型容量和实际 token 使用量。
+ * 代码结构：先定义数值约束、usage 和能力 schema 及类型，再通过 parseUsage 安全解析可用用量。
+ */
+
 import { z } from "zod";
 
 const tokenCount = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);

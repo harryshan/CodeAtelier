@@ -1,3 +1,8 @@
+/**
+ * 文件作用：验证工作区路径规范化和敏感文件识别。
+ * 代码结构：用例依次覆盖同前缀目录、新建路径与父级越界、敏感名称以及工作区必须是真实目录。
+ */
+
 import { it, expect } from "vitest";
 import { writeFile, mkdir } from "node:fs/promises";
 import path from "node:path";

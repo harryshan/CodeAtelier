@@ -1,3 +1,6 @@
+# 文件作用：在 GitHub 上自动验证常规代码与浏览器交互。
+# 代码结构：先声明 push 和 PR 触发条件，再定义跨平台 core 检查及独立浏览器任务；不运行 Evaluation。
+
 name: Checks
 on:
   push:
