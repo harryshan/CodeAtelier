@@ -117,3 +117,14 @@
 - 工作区最终 pnpm check 被并发新增、与本次无关的 evaluation 文件格式错误阻断。保留并发文件，在 .local 隔离副本执行本次交付的全部 check 检查项：类型、ESLint、Prettier、18 个测试文件（119 通过、1 项平台跳过）和生产构建均通过。
 - 工作区 pnpm test:e2e：Windows Chromium 10 项全部通过，包含整理提示、续聊和刷新历史。
 - 未调用真实模型评测摘要语义质量，未进行其他操作系统实测。文件摘录仍有损，旧摘要累积仍可触顶；不承诺无限上下文或自动识别所有重要代码。
+
+## 2026-09-12：Harbor 手动评测接入
+
+- 新增无界面入口、复用生产 Engine 的 runner、包含摘要/重试的计量包装、Harbor 0.23.0 InstalledAgent 适配器、打包脚本、独立 smoke verifier/oracle 和使用文档。
+- 用户要求所有 Evaluation 仅在需要时由用户手动执行：已停止运行中的评测，移除 Harbor workflow，评测回归移至 evals/evaluation.test.ts，由独立 pnpm eval:test 启动；默认 test/check 不运行该套件。
+- 该要求之前，Windows 9 项评测入口回归通过，Harbor Python 契约测试在 Windows Python 3.12 与 WSL Python 3.14 各 4 项通过；Ruff 检查通过。移动套件后只做类型/格式等静态验证，未再次执行评测。
+- 普通工程检查：pnpm check 通过（119 项核心测试通过、1 项平台跳过，类型/lint/格式/构建通过）；此前 Windows Chromium 10 项 UI 回归通过。
+- WSL Ubuntu-26.04 中安装 Docker 29.1.3、Compose 2.40.3、Buildx 0.30.1。Harbor 0.23.0 Linux venv 位于 .local/harbor-linux-venv；Windows venv 位于 .local/harbor-venv。
+- 在用户要求停止前，真实 Harbor/Docker 独立 verifier 已验证原始缺陷 reward=0、oracle 参考修复 reward=1，均无 trial exception。记录保留在 .local/harbor/jobs/baseline-local 和 oracle-local。
+- CodeAtelier + 模拟 Responses 的 Harbor 容器全流程未完成验收；按用户要求不再启动。未运行真实模型，也未产生 Terminal-Bench 成绩。当前进程环境未配置 API key。
+- Docker Hub 层下载 EOF，改从 ECR Docker Official Images 获取相同版本 Node 24.19.0 镜像；Harbor 使用已下载的官方 wheel，Linux 依赖通过阿里云 PyPI 镜像安装。未修改全局 pip 源。上述机器准备不代表其他平台或全部 benchmark 环境已验证。

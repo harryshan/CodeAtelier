@@ -15,11 +15,14 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:e2e": "playwright test",
-    "lint": "eslint src tests scripts *.config.ts eslint.config.js",
-    "format": "prettier --write src tests scripts *.config.ts eslint.config.js",
+    "lint": "eslint src tests scripts evals/evaluation.test.ts *.config.ts eslint.config.js",
+    "format": "prettier --write src tests scripts evals/evaluation.test.ts *.config.ts eslint.config.js",
     "check": "pnpm typecheck && pnpm lint && pnpm format:check && pnpm test && pnpm build",
     "test:watch": "vitest",
-    "format:check": "prettier --check src tests scripts *.config.ts eslint.config.js"
+    "format:check": "prettier --check src tests scripts evals/evaluation.test.ts *.config.ts eslint.config.js",
+    "eval": "tsx src/evaluation/main.ts",
+    "eval:build": "tsc -p tsconfig.server.json",
+    "eval:test": "vitest run --config vitest.evaluation.config.ts"
   },
   "dependencies": {
     "@fastify/static": "^8.0.0",

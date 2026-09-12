@@ -9,10 +9,7 @@
     "jsx": "react-jsx",
     "resolveJsonModule": true,
     "noEmit": true,
-    "types": [
-      "node",
-      "vite/client"
-    ]
+    "types": ["node", "vite/client"]
   },
   "include": [
     "src",
@@ -20,6 +17,8 @@
     "vite.config.ts",
     "vitest.config.ts",
     "playwright.config.ts",
-    "scripts"
+    "scripts",
+    "evals/evaluation.test.ts",
+    "vitest.evaluation.config.ts"
   ]
 }

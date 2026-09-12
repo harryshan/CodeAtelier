@@ -74,3 +74,7 @@ UI 历史包含消息、工具调用、受限工具结果和修改 diff。长内
 上下文压缩的触发、持久化、失败边界与模块职责见 [context-management.md](context-management.md)。活动上下文可为摘要与最近原文的组合；压缩前完整输入另存快照，不删除事件历史。
 
 压缩按读取去重、文件归档、完整分块摘要逐级执行；read-projection.ts 负责确定性的读取投影，ContextManager 负责阶段选择与原子提交。快照记录精确投影以在后续摘要前还原全文，保留已验证来源的旧摘要原文。
+
+## 外部 Harbor 评测
+
+`src/evaluation/main.ts` 解析参数；`runner.ts` 组装生产 Engine/Store、处理审批与产物；`metered-provider.ts` 统计所有模型调用并执行请求间预算；`options.ts` 校验 trial 配置。`scripts/harbor/codeatelier.py` 对接固定 Harbor InstalledAgent 接口，`prepare.py` 打包运行代码，`run.py` 提供导入入口。`evals/harbor/smoke-add` 提供独立 verifier 和 oracle。Harbor 不进入生产依赖，评测输出保存在独立目录，细节见 [harbor.md](harbor.md)。
