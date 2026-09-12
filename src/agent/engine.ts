@@ -281,21 +281,37 @@ export class Engine {
         log.debug({ event: "model.started", step });
         // 仅重试模型请求；完整响应保存后才允许进入工具执行阶段。
         let attemptOffset = 0;
+        let requestInput = input;
         const requestModel = () =>
           retryModel(
             async (currentAttempt) => {
               attempt = attemptOffset + currentAttempt;
 
+              const request = context.request(input, instructions, tools);
+              requestInput = request.input;
+              if (request.after < request.before) {
+                log.debug({
+                  event: "context.mechanical",
+                  step,
+                  attempt,
+                  before: request.before,
+                  after: request.after,
+                  unit: budget.unit,
+                });
+              }
+
               emit("context_estimate", {
                 unit: budget.unit,
-                input: budget.measure(input, instructions, tools),
+                input: request.after,
+                beforeMechanical: request.before,
+                mechanicalSaved: request.before - request.after,
                 limit: budget.limit,
                 step,
                 attempt,
               });
 
               return provider.run(
-                input,
+                requestInput,
                 instructions,
                 tools,
                 signal,
@@ -350,7 +366,7 @@ export class Engine {
         if (response.usage) {
           budget.observeUsage?.(
             response.usage.input_tokens,
-            input,
+            requestInput,
             instructions,
             tools,
           );

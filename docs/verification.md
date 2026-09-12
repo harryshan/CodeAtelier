@@ -128,3 +128,10 @@
 - 在用户要求停止前，真实 Harbor/Docker 独立 verifier 已验证原始缺陷 reward=0、oracle 参考修复 reward=1，均无 trial exception。记录保留在 .local/harbor/jobs/baseline-local 和 oracle-local。
 - CodeAtelier + 模拟 Responses 的 Harbor 容器全流程未完成验收；按用户要求不再启动。未运行真实模型，也未产生 Terminal-Bench 成绩。当前进程环境未配置 API key。
 - Docker Hub 层下载 EOF，改从 ECR Docker Official Images 获取相同版本 Node 24.19.0 镜像；Harbor 使用已下载的官方 wheel，Linux 依赖通过阿里云 PyPI 镜像安装。未修改全局 pip 源。上述机器准备不代表其他平台或全部 benchmark 环境已验证。
+
+## 2026-09-12：每请求无损机械整理
+
+- 在每次主任务请求和重试前精确引用重复只读结果与相同文件正文，保留完整来源和不同路径/元数据；请求视图不写入原始历史。预算触发、输入估算和实际 usage 校准统一使用请求视图。
+- 新增 5 项普通功能回归：逐字还原、幂等、版本/失败/截断/歧义保护、小内容与 token 增长回退、低阈值重试及新工具轮次每次整理、估算等于实际请求和历史不变。旧去重测试相应验证无需创建快照即可降低输入。
+- pnpm check 通过：19 个测试文件，124 项通过、1 项平台跳过；类型、ESLint、Prettier、生产构建均通过。pnpm test:e2e：Windows Chromium 10 项通过。
+- 未运行 Evaluation 或真实模型请求。无损指可精确还原内容，不保证模型理解引用与展开全文具有相同表现；当前仅识别明确的只读结果与正文重复，不删除源码空白、用户要求或近似内容。

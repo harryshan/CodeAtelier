@@ -2,6 +2,7 @@ import type { ModelUsage } from "../providers/model-metadata.js";
 import { createHash, randomUUID } from "node:crypto";
 import { chooseCut, contextSize } from "./budget.js";
 import { summarize, summaryChunks } from "./compactor.js";
+import { mechanicalInput } from "./mechanical-input.js";
 import { projectReads } from "./read-projection.js";
 import { executionLedger } from "./snapshot.js";
 import type { ContextSnapshot } from "./types.js";
@@ -43,8 +44,21 @@ export class ContextManager {
 
   constructor(private options: Options) {}
 
+  /** 每次请求独立生成；原始历史供恢复和有损压缩使用，引用不进入持久化上下文。 */
+  request(input: any[], instructions: string, tools: any[]) {
+    const measure = this.options.measure ?? contextSize;
+    const before = measure(input, instructions, tools);
+    const candidate = mechanicalInput(input);
+    const after =
+      candidate === input ? before : measure(candidate, instructions, tools);
+
+    return after < before
+      ? { input: candidate, before, after }
+      : { input, before, after: before };
+  }
+
   private measure = (input: any[], instructions: string, tools: any[]) =>
-    (this.options.measure ?? contextSize)(input, instructions, tools);
+    this.request(input, instructions, tools).after;
 
   async prepare(
     input: any[],

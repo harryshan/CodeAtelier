@@ -100,14 +100,15 @@ it("deduplicates identical historical reads without model calls and preserves pr
       { role: "user", content: "next" },
     ];
     const next = await f.manager.prepare(source, "", []);
-    const snapshot = f.store.latestContextSnapshot(f.session.id)!;
-    expect(snapshot.stage).toBe("deduplicate");
+    const request = f.manager.request(next, "", []);
+    expect(f.store.latestContextSnapshot(f.session.id)).toBeUndefined();
+    expect(next).toBe(source);
     expect(f.requests).toHaveLength(0);
     expect(next.map((item) => item.call_id)).toEqual(
       source.map((item) => ("call_id" in item ? item.call_id : undefined)),
     );
-    expect(snapshot.source).toEqual(source);
-    expect(contextSize(next, "", [])).toBeLessThan(7200);
+    expect(contextSize(request.input, "", [])).toBeLessThan(7200);
+    expect(request.after).toBeLessThan(request.before);
   } finally {
     f.store.close();
   }

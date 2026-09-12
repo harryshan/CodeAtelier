@@ -71,3 +71,7 @@ context-stages.test.ts 先复现旧实现遗漏长记录中间材料，再验证
 `evals/evaluation.test.ts` 覆盖生产读写工具、独立产物、默认拒绝命令、累计 token/调用预算、计量缺失、超时、目录隔离和宿主误执行保护。`scripts/harbor/test_adapter.py` 使用固定 Harbor 包覆盖提示词安全传输、参数引用、失败时计量回填及打包白名单。容器契约测试使用模拟 Responses 服务和独立 verifier；真实模型任务与完整 benchmark 另行由用户手动运行，默认 CI 不包含评测。运行方式与边界见 [harbor.md](harbor.md)。
 
 用户要求所有 Evaluation 仅手动执行：`pnpm eval:test` 通过独立 vitest.evaluation.config.ts 运行评测回归；默认 `pnpm test`/`pnpm check` 不包含该套件。Python 契约检查和 Harbor 容器任务也只提供手动命令，不配置 CI、定时或钩子自动运行。
+
+## 每请求机械压缩覆盖
+
+mechanical-input.test.ts 覆盖精确结果/跨路径正文引用、逐字还原、引用幂等性、版本差异、失败/截断/歧义记录保护、小内容与 token 增长回退，以及低于阈值时每次重试和新工具轮次重新整理、实际请求计量和原历史保留。该文件属于普通功能回归，不启动 Evaluation。

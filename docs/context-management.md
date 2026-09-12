@@ -7,6 +7,7 @@
 每个任务先发现服务公开的模型容量。具备已支持的 tokenizer 时，使用 token 输入预算；
 否则沿用 settings.contextChars（默认 180000）作为备用字符预算。两种方式均包含 input、instructions、tools。
 服务实测数据、预留量和校准规则见 [model-tokens.md](model-tokens.md)。
+每次主任务模型请求（包括瞬态重试）前先生成无损机械压缩视图，下面的阈值按此实际请求视图计算。
 达到 80% 时尝试整理较早记录，只有压缩后不超过预算 60%，且至少缩小 10%，才提交。
 未到 80% 不增加摘要模型调用。
 
@@ -20,6 +21,28 @@
 模型响应中的 reasoning 等协议项随其所在分组保留或归档。
 当前批次仍在执行、等待授权或响应接收中不会压缩。恢复任务先使用原有流程补齐已知结果，
 没有记录的调用仍标为结果未知，然后才整理上下文。
+
+## 每请求无损机械压缩
+
+机械整理独立于容量阈值和摘要是否失败，每次重新扫描当前输入，不调用模型，不创建快照。
+目前识别两种机会：
+
+1. read_file、search、list_files 的工具名、参数字符串、结果字符串完全相同：保留首次结果，后续使用 exact-output-v1 引用。
+2. read_file 的 text 完全相同，即使路径或其他元数据不同：保留一份正文，后续使用 exact-text-v1，仅替换 text，其他字段保留。不会据此合并文件或推断版本一致。
+
+引用的 inputIndex 是本次请求 input 的零基索引，附原 callId；引用只指向更早的结果，
+不依赖快照查询或额外工具调用。exact-text-v1 的 value.text 使用 null 占位，sameTextAs 指定正文来源；
+替换正文后可重建相同 JSON。用户消息、调用参数、调用/结果位置、行号、缩进、换行和其他元数据均不删除或改写。
+请求视图不写回活动上下文和事件历史，后续有损压缩仍读取原始材料，故不存在归档后悬空的机械引用。
+
+仅处理可按 JSON 原样重序列化的只读结果；错误、截断、已有归档/编码、歧义 callId 和非 JSON 保留原样。
+不整理命令/写操作，不把未知执行状态变成成功。结构包装导致字符数不降时直接跳过，
+再使用当前 tokenizer 或备用字符计量比较整个请求，只有变小才采用；没有固定 2000 字符门槛或 10% 收益门槛。
+不压缩源码空白、不删除重复用户要求、不根据相似度去重。
+
+context_estimate 保存 beforeMechanical、mechanicalSaved 与实际发送视图的 input，
+实际 usage 校准同一视图。仅在有收益时输出 DEBUG context.mechanical 数值日志，避免每轮刷整理通知。
+这保证内容可精确还原，不保证模型对引用格式的理解与展开全文完全等价；本轮未运行 Evaluation。
 
 ## 大输出、来源和执行状态
 
@@ -102,6 +125,7 @@ context.compaction_failed（WARN），继承 sessionId/taskId，包含前后大�
 - src/context/context-manager.ts：触发、调用预算、压缩编排与提交。
 - src/context/budget.ts：字符预算、保守分组切分。
 - src/context/compactor.ts：完整预算分块、摘要模型调用和结构/来源校验。
+- src/context/mechanical-input.ts：每请求精确工具结果/正文引用，不改变持久化输入。
 - src/context/read-projection.ts：可核对的文件读取去重、诊断摘录与归档引用。
 - src/context/snapshot.ts、types.ts：执行账本与快照契约。
 - src/context/history.ts：会话隔离的有界原文读取工具。
