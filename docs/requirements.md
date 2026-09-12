@@ -16,7 +16,7 @@
 | R6 | 完善且持续更新的文档 | AGENTS.md 提供工作入口，需求与设计随开发同步维护 |
 | R7 | 先共同完善需求 | 需求已固化，2026-09-07 用户授权开始实现 |
 | R8 | 第一版使用 Web UI | 替代此前的 CLI 方向，优先把读代码、修改和验证闭环做扎实 |
-| R9 | 使用用户自建 Responses API server | 预留其他提供商接口；端点 http://jp.harryshan.com:4141/v1/responses；用户指定 5.6-luna，实际服务标识 codex/gpt-5.6-luna；Bearer API key 通过本地配置提供，工具往返已验证 |
+| R9 | 使用用户自建 Responses API server | 预留其他提供商接口；端点、完整模型标识与 Bearer API key 通过本地 .env 提供，源码与文档不保留具体部署值；工具往返已验证 |
 | R10 | 工作区内自动修改 | 危险操作和外部写入需要确认；具体规则见 development.md |
 | R11 | 允许使用模型官方 SDK | SDK 用于模型 API 调用；agent 循环、工具调度、上下文管理和权限控制自行实现 |
 | R12 | 支持全平台 | 桌面开发环境覆盖 Windows、macOS、Linux；具体系统版本、CPU 架构和浏览器支持矩阵待定 |
@@ -126,7 +126,7 @@ README.md
 ## 6. 实现决定与后续范围
 
 - 采用 Node.js 24、pnpm 11.22.0、React/Vite、Fastify、Node 内置 SQLite、Pino。接口与目录职责见 architecture.md。
-- 使用用户自建服务及 Bearer key；完整模型标识 codex/gpt-5.6-luna 已通过真实流式工具往返验证。
+- 使用用户自建服务及 Bearer key；本地配置的模型已通过真实流式工具往返验证。
 - 权限规则、历史存储、输出限制、日志轮转、配置优先级和启动方式见 development.md。
 - 文档中文优先；commit 使用英文；按已有规则间隔批量 push，不自动执行产品 Git 写操作。
 - 操作系统和浏览器的实际验证范围见 verification.md；未验证的版本不宣称支持已验证。

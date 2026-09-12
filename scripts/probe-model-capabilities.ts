@@ -29,9 +29,8 @@ if (!key) {
   process.exitCode = 1;
 } else {
   const settings = settingsSchema.parse({
-    baseUrl:
-      process.env.CODEATELIER_BASE_URL || "http://jp.harryshan.com:4141/v1",
-    model: process.env.CODEATELIER_MODEL || "codex/gpt-5.6-luna",
+    baseUrl: process.env.CODEATELIER_BASE_URL,
+    model: process.env.CODEATELIER_MODEL,
     maxSteps: 1,
     commandTimeoutMs: 1000,
     requestTimeoutMs: 45000,

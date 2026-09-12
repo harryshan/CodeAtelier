@@ -6,8 +6,9 @@
  *
  * 代码结构与阅读顺序：
  * 1. 先验证显式数据目录、环境默认值和保存设置的优先级。
- * 2. 更新场景核对端点规范化、模型简写、磁盘内容以及内存密钥。
+ * 2. 更新场景核对端点规范化、原样模型标识、磁盘内容以及内存密钥。
  * 3. 分别测试省略密钥、显式清空、损坏保存文件和思考等级的兼容默认值。
+ * 4. 检查环境连接值原样读取、缺少连接配置时报错及无环境值时重载保存配置。
  *
  * 维护注意事项：
  * 断言涵盖实际保存内容与重启读取，不能仅检查内存值；测试后恢复环境避免影响其他用例。
@@ -45,13 +46,13 @@ it("normalizes updated settings, persists across restart and keeps key in memory
     settings: {
       ...config.settings,
       baseUrl: "http://localhost:8888/v1/responses/",
-      model: "5.6-luna",
+      model: "custom/model-id",
     },
     apiKey: "test-memory-secret",
   });
 
   expect(config.settings.baseUrl).toBe("http://localhost:8888/v1");
-  expect(config.settings.model).toBe("codex/gpt-5.6-luna");
+  expect(config.settings.model).toBe("custom/model-id");
   expect(JSON.stringify(config.publicValue())).not.toContain(
     "test-memory-secret",
   );
@@ -125,4 +126,33 @@ it("defaults legacy settings to high and persists effort over environment defaul
     config.update({ settings: { ...config.settings, reasoningEffort } });
     expect(new Config(root).settings.reasoningEffort).toBe(reasoningEffort);
   }
+});
+
+it("uses the configured endpoint and model verbatim except endpoint suffix", async () => {
+  vi.stubEnv("CODEATELIER_BASE_URL", "https://api.example.com/v1/responses/");
+  vi.stubEnv("CODEATELIER_MODEL", "custom/model-id");
+  const config = new Config(await temp());
+
+  expect(config.settings.baseUrl).toBe("https://api.example.com/v1");
+  expect(config.settings.model).toBe("custom/model-id");
+});
+
+it.each(["CODEATELIER_BASE_URL", "CODEATELIER_MODEL"])(
+  "requires %s when no saved value exists",
+  async (name) => {
+    vi.stubEnv(name, "");
+    const root = await temp();
+
+    expect(() => new Config(root)).toThrow(name);
+  },
+);
+
+it("loads complete saved settings without environment connection values", async () => {
+  const root = await temp();
+  const config = new Config(root);
+  config.update({ settings: config.settings });
+  vi.stubEnv("CODEATELIER_BASE_URL", "");
+  vi.stubEnv("CODEATELIER_MODEL", "");
+
+  expect(new Config(root).settings).toEqual(config.settings);
 });

@@ -26,8 +26,8 @@ docker info
 
 ```sh
 export CODEATELIER_API_KEY='YOUR_API_KEY'
-export CODEATELIER_BASE_URL='http://jp.harryshan.com:4141/v1'
-export CODEATELIER_MODEL='codex/gpt-5.6-luna'
+export CODEATELIER_BASE_URL='https://api.example.com/v1'
+export CODEATELIER_MODEL='YOUR_MODEL_ID'
 .local/swebench-venv/bin/python scripts/swebench/predict.py \
   --output .local/swebench/runs/verified-20-v1-run1
 ```

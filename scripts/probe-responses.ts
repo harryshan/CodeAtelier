@@ -22,15 +22,20 @@ if (!key) {
   throw new Error("Set CODEATELIER_API_KEY locally.");
 }
 
+const baseURL = process.env.CODEATELIER_BASE_URL;
+const model = process.env.CODEATELIER_MODEL;
+if (!baseURL || !model) {
+  throw new Error(
+    "Set CODEATELIER_BASE_URL and CODEATELIER_MODEL in .env or the environment.",
+  );
+}
+
 const client = new OpenAI({
   apiKey: key,
-  baseURL:
-    process.env.CODEATELIER_BASE_URL || "http://jp.harryshan.com:4141/v1",
+  baseURL,
   maxRetries: 0,
   timeout: 60000,
 });
-
-const model = process.env.CODEATELIER_MODEL || "codex/gpt-5.6-luna";
 
 const tools = [
   {

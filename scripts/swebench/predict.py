@@ -7,7 +7,7 @@
 # 1. upload/execute/save_artifacts 封装归档上传、容器命令和记录提取。
 # 2. run_trial 准备单题镜像与工作目录，安装 agent 并传入仅含 issue 的提示。
 # 3. 单题结束提取工作树补丁及用量，失败或取消也记录状态并清理容器。
-# 4. main 解析参数、加载清单与 bundle，逐题执行并写入预测和汇总记录。
+# 4. main 校验平台与必需连接环境变量、解析参数、加载清单与 bundle，逐题执行并写入预测和汇总记录。
 #
 # 维护注意事项：
 # 参考答案不传给 agent；此脚本生成补丁，官方正确性由 grade.py 单独确定。
@@ -196,8 +196,14 @@ def main() -> None:
     parser.add_argument("--max-steps", type=int, default=30)
     parser.add_argument("--timeout-ms", type=int, default=600000)
     args = parser.parse_args()
-    if os.name != "posix" or not os.environ.get("CODEATELIER_API_KEY"):
-        parser.error("Use Linux/WSL and set CODEATELIER_API_KEY in the environment")
+    if os.name != "posix" or not all(
+        os.environ.get(key)
+        for key in ("CODEATELIER_API_KEY", "CODEATELIER_BASE_URL", "CODEATELIER_MODEL")
+    ):
+        parser.error(
+            "Use Linux/WSL and set CODEATELIER_API_KEY, CODEATELIER_BASE_URL "
+            "and CODEATELIER_MODEL in the environment"
+        )
     for value, maximum in (
         (args.max_total_tokens, 100000000),
         (args.max_model_calls, 1000),
@@ -235,7 +241,7 @@ def main() -> None:
                 ).hexdigest()
                 if args.prepared_environments
                 else None,
-                "model": os.environ.get("CODEATELIER_MODEL", "codex/gpt-5.6-luna"),
+                "model": os.environ["CODEATELIER_MODEL"],
                 "limits": {
                     key: value
                     for key, value in vars(args).items()

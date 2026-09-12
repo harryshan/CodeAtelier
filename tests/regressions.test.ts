@@ -30,7 +30,7 @@ import { Config } from "../src/config/config.js";
 import { ToolRunner } from "../src/tools/tool-runner.js";
 import { ApprovalManager } from "../src/permissions/approval-manager.js";
 
-it("normalizes saved endpoint and shorthand model on startup", async () => {
+it("normalizes saved endpoint and preserves model ID on startup", async () => {
   const root = await realpath(await mkdtemp(path.join(tmpdir(), "ca-config-")));
 
   try {
@@ -38,13 +38,13 @@ it("normalizes saved endpoint and shorthand model on startup", async () => {
       path.join(root, "settings.json"),
       JSON.stringify({
         baseUrl: "http://localhost:1234/v1/responses",
-        model: "5.6-luna",
+        model: "custom/model-id",
       }),
     );
     const config = new Config(root);
 
     expect(config.settings.baseUrl).toBe("http://localhost:1234/v1");
-    expect(config.settings.model).toBe("codex/gpt-5.6-luna");
+    expect(config.settings.model).toBe("custom/model-id");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

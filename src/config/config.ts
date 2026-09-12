@@ -5,8 +5,8 @@
  * 由服务及开发入口创建，向 Engine 提供设置和内存密钥，并向 API 提供不含密钥正文的配置视图。
  *
  * 代码结构与执行顺序：
- * 1. 构造器创建数据目录，将保存的 settings.json 覆盖环境默认值，再通过 settingsSchema 校验。
- * 2. normalize 去除端点的 responses 后缀和尾斜杠，并把已知模型简写转为完整标识。
+ * 1. 构造器创建数据目录，将保存的 settings.json 覆盖环境默认值，缺少连接配置时报错，再通过 settingsSchema 校验。
+ * 2. normalize 去除端点的 responses 后缀和尾斜杠，模型标识按配置原样保留。
  * 3. update 校验新设置，先写临时文件并重命名，成功后才替换内存设置及可选密钥。
  * 4. publicValue 返回 settings 与 hasApiKey，供浏览器显示配置状态。
  *
@@ -36,11 +36,21 @@ export class Config {
       ? JSON.parse(readFileSync(file, "utf8"))
       : {};
 
+    for (const [field, variable] of [
+      ["baseUrl", "CODEATELIER_BASE_URL"],
+      ["model", "CODEATELIER_MODEL"],
+    ] as const) {
+      if (!(saved[field] ?? process.env[variable])) {
+        throw new Error(
+          `Set ${variable} in .env or the environment before startup.`,
+        );
+      }
+    }
+
     this.settings = settingsSchema.parse({
       ...{
-        baseUrl:
-          process.env.CODEATELIER_BASE_URL || "http://jp.harryshan.com:4141/v1",
-        model: process.env.CODEATELIER_MODEL || "codex/gpt-5.6-luna",
+        baseUrl: process.env.CODEATELIER_BASE_URL,
+        model: process.env.CODEATELIER_MODEL,
         reasoningEffort: process.env.CODEATELIER_REASONING_EFFORT || "high",
         maxSteps: 30,
         commandTimeoutMs: 120000,
@@ -59,9 +69,6 @@ export class Config {
     this.settings.baseUrl = this.settings.baseUrl
       .replace(/\/responses\/?$/, "")
       .replace(/\/$/, "");
-    if (this.settings.model === "5.6-luna") {
-      this.settings.model = "codex/gpt-5.6-luna";
-    }
   }
 
   update(value: unknown) {
@@ -75,9 +82,6 @@ export class Config {
     parsed.settings.baseUrl = parsed.settings.baseUrl
       .replace(/\/responses\/?$/, "")
       .replace(/\/$/, "");
-    if (parsed.settings.model === "5.6-luna") {
-      parsed.settings.model = "codex/gpt-5.6-luna";
-    }
 
     const file = path.join(this.directory, "settings.json");
 

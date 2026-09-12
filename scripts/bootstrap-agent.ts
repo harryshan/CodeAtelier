@@ -97,8 +97,8 @@ const docPath = "docs/development.md";
 const originalTests = await readFile(path.join(workspace, testPath), "utf8");
 const originalSource = await readFile(path.join(workspace, sourcePath), "utf8");
 const broken = originalSource.replace(
-  'parsed.settings.model = "codex/gpt-5.6-luna";',
-  'parsed.settings.model = "5.6-luna";',
+  "parsed.settings.baseUrl = parsed.settings.baseUrl",
+  'parsed.settings.baseUrl = ""',
 );
 if (broken === originalSource) {
   throw new Error("Regression injection no longer matches the source");
@@ -133,7 +133,7 @@ function verify(label: string) {
 
 const baseline = verify("injected regression");
 await writeFile(path.join(root, "baseline.txt"), baseline.output);
-if (baseline.passed || !baseline.output.includes("codex/gpt-5.6-luna")) {
+if (baseline.passed || !baseline.output.includes("http://localhost:8888/v1")) {
   throw new Error("Baseline did not reproduce the intended regression");
 }
 
@@ -207,7 +207,7 @@ try {
   observe(engine, true);
   const task = engine.start(
     session.id,
-    `这是 CodeAtelier 自己源码的隔离验收副本。遵循 AGENTS.md 和文档约定，但本次不提交或推送代码；不需要安装依赖或启动服务。配置更新存在回归：model 输入 5.6-luna 后没有规范化为 codex/gpt-5.6-luna。请先读相关代码和测试并运行测试复现，然后修复，保留全部已有测试，追加构造函数从环境变量读取简称并规范化的测试，更新 docs/development.md 的相关说明。仅修改 ${[...allowedFiles].join("、")}，使用 edit_file。唯一预授权命令的 command=${JSON.stringify(process.execPath)}，args=${JSON.stringify(testArgs)}，cwd="."；不要运行其他命令。完成后根据实际测试结果报告。`,
+    `这是 CodeAtelier 自己源码的隔离验收副本。遵循 AGENTS.md 和文档约定，但本次不提交或推送代码；不需要安装依赖或启动服务。配置更新存在回归：baseUrl 输入 http://localhost:8888/v1/responses/ 后没有规范化为 http://localhost:8888/v1。请先读相关代码和测试并运行测试复现，然后修复，保留全部已有测试，追加构造函数从环境变量读取带 responses 后缀端点并规范化的测试，更新 docs/development.md 的相关说明。仅修改 ${[...allowedFiles].join("、")}，使用 edit_file。唯一预授权命令的 command=${JSON.stringify(process.execPath)}，args=${JSON.stringify(testArgs)}，cwd="."；不要运行其他命令。完成后根据实际测试结果报告。`,
   );
   await wait();
   const firstStatus = store.task(task.id)?.status;
@@ -243,8 +243,8 @@ try {
     "utf8",
   );
   const mutant = repairedSource.replace(
-    'this.settings.model = "codex/gpt-5.6-luna";',
-    'this.settings.model = "5.6-luna";',
+    "this.settings.baseUrl = this.settings.baseUrl",
+    'this.settings.baseUrl = ""',
   );
   let addedTestDetectsRegression = false;
   if (final.passed && independent.passed && mutant !== repairedSource) {
@@ -253,7 +253,7 @@ try {
       const mutation = verify("constructor mutation");
       await writeFile(path.join(root, "mutation-tests.txt"), mutation.output);
       addedTestDetectsRegression =
-        !mutation.passed && mutation.output.includes("codex/gpt-5.6-luna");
+        !mutation.passed && mutation.output.includes("api.example.com/v1");
     } finally {
       await writeFile(path.join(workspace, sourcePath), repairedSource);
     }

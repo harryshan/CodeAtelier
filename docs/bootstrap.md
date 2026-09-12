@@ -9,14 +9,14 @@
 pnpm exec tsx scripts/bootstrap-agent.ts --prepare-only
 
 # 已配置 CODEATELIER_API_KEY 后，执行真实模型验收
-pnpm exec tsx scripts/bootstrap-agent.ts
+node --env-file=.env --import tsx scripts/bootstrap-agent.ts
 ```
 
 脚本从当前 HEAD 复制跟踪文件，不复制真实 .env、历史、日志或 Git 元数据。结果保留在 .local/bootstrap-*/，不自动合并回主工作区。node_modules 链接到本机依赖，测试与工具仍具有进程权限；副本不是操作系统沙箱。只适用于可信的本项目源码。
 
 ## 固定任务与判定
 
-1. 在副本中注入配置更新的模型简称规范化错误，先由原有测试确认失败。
+1. 在副本中注入配置更新的端点后缀规范化错误，先由原有测试确认失败。
 2. 要求 CodeAtelier 阅读约定、复现、修复，追加构造函数环境变量规范化测试，并更新开发文档。
 3. 第一次 edit_file 成功后取消任务，关闭引擎和 SQLite，再重新打开历史并人工恢复。每阶段最多等待十分钟，不循环重启。
 4. 只预授权副本中指定 Node 可执行文件运行固定配置测试命令；其他审批全部拒绝。允许修改范围为配置实现、配置测试和开发文档，结束时审查其他改动和新增文件。

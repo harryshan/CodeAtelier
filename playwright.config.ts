@@ -7,7 +7,7 @@
  * 代码结构与阅读顺序：
  * 1. 测试运行配置关闭并发并固定单 worker、超时。
  * 2. use 指定本机 baseURL、视口及失败保留 trace。
- * 3. webServer 启动测试夹具且不复用已有服务，projects 指定 Chromium。
+ * 3. webServer 注入独立测试模型配置并启动测试夹具且不复用已有服务，projects 指定 Chromium。
  *
  * 维护注意事项：
  * 测试必须使用夹具端口，避免连上用户正在运行的生产会话；浏览器安装由环境准备负责。
@@ -27,6 +27,10 @@ export default defineConfig({
   },
   webServer: {
     command: "pnpm exec tsx tests/fixtures/server.ts",
+    env: {
+      CODEATELIER_BASE_URL: "http://127.0.0.1:9999/v1",
+      CODEATELIER_MODEL: "test-model",
+    },
     url: "http://127.0.0.1:4143",
     reuseExistingServer: false,
     timeout: 30000,

@@ -6,7 +6,8 @@
  *
  * 代码结构与阅读顺序：
  * 1. 导入 defineConfig 并导出 test 配置。
- * 2. include 仅匹配 tests 下的 .test.ts，testTimeout 为异步文件、进程及服务场景设置等待上限。
+ * 2. 使用独立测试端点和模型环境值，不读取个人 .env。
+ * 3. include 仅匹配 tests 下的 .test.ts，testTimeout 为异步文件、进程及服务场景设置等待上限。
  *
  * 维护注意事项：
  * 浏览器 .spec.ts 由 Playwright 执行；evals 使用独立配置，不能扩展默认 glob 把 Evaluation 纳入。
@@ -15,5 +16,12 @@
 import { defineConfig } from "vitest/config";
 
 export default defineConfig({
-  test: { include: ["tests/**/*.test.ts"], testTimeout: 15000 },
+  test: {
+    env: {
+      CODEATELIER_BASE_URL: "http://127.0.0.1:9999/v1",
+      CODEATELIER_MODEL: "test-model",
+    },
+    include: ["tests/**/*.test.ts"],
+    testTimeout: 15000,
+  },
 });

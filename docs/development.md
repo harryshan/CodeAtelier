@@ -14,19 +14,19 @@ Node.js 24，pnpm 11.22.0（packageManager 固定）。提交 pnpm-lock.yaml，�
 | pnpm check | 类型、lint、核心测试、生产构建 |
 | pnpm test:e2e | 启动独立模拟服务并验证浏览器交互 |
 | node --env-file=.env --import tsx scripts/probe-model-capabilities.ts | 检查模型窗口、计数接口及真实 usage（少量模型调用） |
-| pnpm exec tsx scripts/probe-responses.ts | 使用环境变量密钥测试真实服务工具往返 |
-| pnpm exec tsx scripts/smoke-agent.ts | 在 .local 下创建隔离项目，真实模型修复并运行测试 |
+| node --env-file=.env --import tsx scripts/probe-responses.ts | 使用环境变量密钥测试真实服务工具往返 |
+| node --env-file=.env --import tsx scripts/smoke-agent.ts | 在 .local 下创建隔离项目，真实模型修复并运行测试 |
 
 脚本只接受环境变量密钥，不内置真实凭据；真实验证会消耗配置服务的模型额度。smoke-agent 只自动批准它自己创建的示例项目内固定 node --test 命令。
 
 ## 配置
 
-后端启动时读取可选的 .env。推荐通过 Web UI 输入密钥或使用环境变量；本地 .env 仅供开发使用，不提交 Git。
+后端启动时读取本地 .env。无已保存连接配置时，必须在 .env 或环境变量提供 API 地址和模型标识，否则启动明确报错。推荐通过 Web UI 输入密钥或使用环境变量；本地 .env 仅供开发使用，不提交 Git。
 
 | 环境变量 | 默认 / 用途 |
 | --- | --- |
-| CODEATELIER_BASE_URL | http://jp.harryshan.com:4141/v1 |
-| CODEATELIER_MODEL | codex/gpt-5.6-luna |
+| CODEATELIER_BASE_URL | 无默认值；在 .env 填写实际 API Base URL |
+| CODEATELIER_MODEL | 无默认值；在 .env 填写服务公布的完整模型标识 |
 | CODEATELIER_REASONING_EFFORT | high；可选 low、medium、high |
 | CODEATELIER_API_KEY | 无默认值 |
 | CODEATELIER_DATA_DIR | 平台用户数据目录 |
@@ -57,7 +57,7 @@ Node.js 24，pnpm 11.22.0（packageManager 固定）。提交 pnpm-lock.yaml，�
 
 ## 常见问题
 
-- 5.6-luna 返回“不支持 Responses”：服务公布的完整标识是 codex/gpt-5.6-luna；设置页会规范化该简称。
+- 模型返回“不支持 Responses”：核对服务公布的完整模型标识；配置原样传递，不自动转换简称。
 - 请求结束但无结果：检查服务是否发送完成事件。适配器支持从 output_item.done 收集结果。
 - 找不到 pnpm 命令：Windows 命令脚本应显式使用 cmd.exe /d /s /c；UI 会展示完整请求。
 - 文件已变化：重新读取后再编辑；不要关闭并发修改检测。
