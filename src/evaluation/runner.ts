@@ -1,17 +1,14 @@
 /**
- * 文件作用：复用生产 Engine 执行单次手动评测并导出可核对的记录。
+ * 用生产 Engine 执行一次手动评测，保存任务报告、事件和持续更新的模型用量。
+ * 命令行入口传入工作区、提示和预算，结果写入 report.json、events.json 和 usage.json。
  *
- * 模块协作与输入输出：
- * 无界面复用生产 Engine、ToolRunner 和 Store，输出 report.json、events.json 及持续更新的 usage.json。
+ * 1. approveEvaluationCommand 检查命令审批请求；writeJson 脱敏后通过临时文件保存记录。
+ * 2. runEvaluation 检查工作区和输出目录互不包含，并新建 data 目录，避免带入上次任务状态。
+ * 3. 创建 Config、Store、MeteredProvider 和 Engine，接好审批及取消回调。
+ * 4. 等待任务完成或超时，导出状态、用量、耗时和审批次数，最后关闭引擎和数据库。
  *
- * 代码结构与执行顺序：
- * 1. approveEvaluationCommand 检查审批类型、参数和工作区目录；writeJson 负责脱敏及临时文件替换。
- * 2. runEvaluation 校验工作区与输出互不包含，要求新建 data 目录以避免继承旧试验状态。
- * 3. 组装 Config、Store、共享主/辅助模型计量的 MeteredProvider 和 Engine，挂接逐项审批与外部取消。
- * 4. 等待任务完成或超时，汇总状态、用量、耗时及审批次数，导出记录并释放引擎和数据库。
- *
- * 关键约束：
- * 自动命令审批仅在显式 Docker 条件下启用，该检查不是沙箱证明；verification 固定为 external，评分由独立脚本完成。
+ * 只有显式满足 Docker 条件才启用自动命令审批，这项检查本身不提供操作系统隔离。
+ * 报告中的 verification 固定为 external，补丁是否正确由后续评分脚本判断。
  */
 
 import { existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
@@ -65,7 +62,7 @@ function writeJson(file: string, value: unknown, key: string) {
   renameSync(file + ".tmp", file);
 }
 
-/** One fresh trial, with production tools and persistence. No benchmark grading here. */
+/** 用生产工具和独立数据库运行一次评测；补丁评分由外部脚本完成。 */
 export async function runEvaluation(
   rawOptions: unknown,
   dependencies: {
@@ -84,7 +81,7 @@ export async function runEvaluation(
     );
   }
 
-  // This is an accidental-host-execution guard, not proof of sandbox security.
+  // 这项检查用于防止误在宿主机执行，并不能证明容器已经安全隔离。
   if (
     options.allowWorkspaceCommands &&
     (process.platform !== "linux" || !existsSync("/.dockerenv"))
@@ -130,7 +127,7 @@ export async function runEvaluation(
       : meter,
   );
   const decideApprovals = () => {
-    // Decide one at a time: deciding emits another change event synchronously.
+    // 每次只处理一项，因为 decide 会同步触发下一次 change 通知。
     const approval = engine.approvals.list(session.id)[0];
     if (!approval) {
       return;
@@ -183,7 +180,7 @@ export async function runEvaluation(
       finishedAt: new Date().toISOString(),
       task: result,
       stopReason: stopReason ?? meter.stopReason ?? result.status,
-      // Agent completion is not a verifier reward or a claim of task correctness.
+      // agent 结束不代表修复正确，评分仍由外部验证器完成。
       verification: "external",
       limits: {
         maxTotalTokens: options.maxTotalTokens,

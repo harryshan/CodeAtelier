@@ -1,16 +1,13 @@
 /**
- * 文件作用：构建每次任务使用的基础规则和当前工作区指导。
+ * 为 Engine 生成本轮任务的模型指令，包括基础规则、运行环境和项目 AGENTS.md。
+ * 输入是工作区的真实路径，返回值是可以直接用于模型请求的 instructions 字符串。
  *
- * 模块协作与输入输出：
- * 由 Engine 为每个任务调用，输入真实工作区路径，输出发送给模型的 instructions 字符串。
+ * 1. 用 resolveTarget 和 regularFile 检查根目录 AGENTS.md 的位置、类型及大小，再读取内容。
+ * 2. behavior 定义读文件、编辑、验证和审批的基本要求，并说明如何使用历史摘要。
+ * 3. 把工作目录、操作系统、基础规则和项目说明合并返回。
  *
- * 代码结构与执行顺序：
- * 1. resolveTarget 检查根目录 AGENTS.md 是否仍在工作区内，regularFile 限制可读取规则文件大小。
- * 2. behavior 集中描述重新读取、精确编辑、验证、授权和历史摘要使用要求。
- * 3. 将工作目录、操作系统、基础规则及项目指导拼接成最终 instructions。
- *
- * 关键约束：
- * 缺失或无法读取规则文件时使用基础规则；项目内容不能放宽应用权限，嵌套 AGENTS.md 由模型按规则读取。
+ * AGENTS.md 缺失或无法读取时仍使用基础规则。项目说明不能放宽应用的权限限制；
+ * 子目录里的 AGENTS.md 由模型在处理相关文件时按规则读取。
  */
 
 import { readFile } from "node:fs/promises";
@@ -26,7 +23,7 @@ export async function createInstructions(workspace: string): Promise<string> {
       await regularFile(rules.path, 32000);
       projectRules = await readFile(rules.path, "utf8");
     } catch {
-      /* No root rules is valid. */
+      /* 项目可以没有根目录规则文件。 */
     }
   }
 

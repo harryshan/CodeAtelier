@@ -1,16 +1,12 @@
-﻿# 文件作用：从 PowerShell 手动编译并刷新前三题评测环境，可继续运行预测和评分。
+# Windows 下手动运行前三题评测的入口，将构建后的后端交给 WSL 中的 refresh_run.py。
+# 可选择只准备镜像，或继续生成补丁并评分。
 #
-# 使用场景与输入输出：
-# Windows 用户手动入口，使用指定 WSL 发行版中的评测 Python 环境，把当前仓库交给 refresh_run.py。
+# 1. 读取 PrepareOnly 和 Distribution，定位仓库并记住当前目录。
+# 2. 运行 pnpm eval:build，编译失败就停止。
+# 3. 用 wslpath 转换路径，准备 Python 命令及可选的 prepare-only 参数。
+# 4. 在指定 WSL 发行版中执行，检查退出码，最后恢复原工作目录。
 #
-# 代码结构与阅读顺序：
-# 1. param 声明 PrepareOnly 与 Distribution，随后定位仓库并保存调用前工作目录。
-# 2. 先运行 pnpm eval:build，编译失败立即停止。
-# 3. 通过 WSL wslpath 转换仓库路径，组装 Python 脚本及可选 prepare-only 参数。
-# 4. 在指定发行版中执行脚本，检查退出码；finally 恢复 PowerShell 工作目录。
-#
-# 维护注意事项：
-# 会启动 WSL 中的手动镜像刷新及可选评测，不属于普通检查；PrepareOnly 仍执行构建和镜像刷新。
+# PrepareOnly 也会构建和刷新 Docker 镜像；整个入口只由用户手动执行。
 
 param(
     [switch]$PrepareOnly,
@@ -24,7 +20,7 @@ try {
     & pnpm eval:build
     if ($LASTEXITCODE -ne 0) { throw 'Evaluation build failed.' }
 
-    # Direct execution preserves argument boundaries; forward slashes avoid Windows path escaping.
+    # 直接传参数，避免 shell 再次拆分；路径使用正斜杠，避免 Windows 反斜杠转义。
     $wslInputPath = $projectRoot.Replace('\', '/')
     $linuxRoot = & wsl -d $Distribution -u root --exec wslpath -a $wslInputPath
     if ($LASTEXITCODE -ne 0) { throw 'Cannot resolve repository path in WSL.' }

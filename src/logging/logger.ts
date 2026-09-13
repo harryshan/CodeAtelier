@@ -1,16 +1,13 @@
 /**
- * 文件作用：创建统一的 Pino 诊断日志入口。
+ * 创建各模块共用的 Pino 日志，将诊断信息写到本机日志文件和标准输出。
+ * 服务和评测入口调用 createLogger，再为具体模块创建子日志。
  *
- * 模块协作与输入输出：
- * 由服务与评测入口创建 Pino 实例，输出到本机日志文件和标准输出，供各模块创建关联子日志。
+ * 1. createLogger 准备 logs 目录和 Writable 输出流。
+ * 2. 写入时检查 app.log 大小，按数量上限轮转旧文件，并使用当前密钥列表脱敏。
+ * 3. Pino 统一设置应用标识、最低日志级别和需要遮盖的凭据字段。
  *
- * 代码结构与执行顺序：
- * 1. createLogger 创建 logs 目录并定义 Writable 输出流。
- * 2. 每次写入先检查大小并轮转 app.log 及有限归档，再用当前密钥集合脱敏。
- * 3. Pino 配置统一 app 字段、最低级别和结构化凭据字段遮盖。
- *
- * 关键约束：
- * 日志写入失败仅输出固定降级提示，不抛出原始载荷中断任务；历史会话不使用该日志文件保存。
+ * 日志写失败时只输出固定提示，不能把原始内容带出来，也不能因此中断任务。
+ * 会话历史另存于 Store，不从日志恢复。
  */
 
 import pino from "pino";
@@ -35,7 +32,7 @@ export function createLogger(
 
   mkdirSync(folder, { recursive: true });
   const file = path.join(folder, "app.log");
-  // 日志失败不能中断编码任务；降级提示不携带原始日志载荷。
+  // 日志写失败也要让任务继续，错误提示不能带出原始日志内容。
   const output = new Writable({
     write(chunk, _encoding, done) {
       try {

@@ -1,22 +1,18 @@
 /**
- * 文件作用：把可核实的旧文件读取转换为去重引用或归档摘录。
+ * 把旧的文件读取结果改成引用或短摘录，完整正文保存在可回查的历史快照中。
+ * ContextManager 在去重和归档阶段调用 projectReads。
  *
- * 模块协作与输入输出：
- * 被 ContextManager 的前两级压缩使用，将长文件读取链接到可通过历史工具回查的快照。
+ * 1. 核对 read_file 调用及已保存的 tool_result，要求唯一匹配，且结果没有失败或截断。
+ * 2. 根据参数和结果的指纹识别重复读取；去重时只替换重复项，归档时将正文换成摘录。
+ * 3. contextArchive 记录快照 ID、原记录位置和指纹；preview 选取首尾及中间的诊断行。
  *
- * 代码结构与执行顺序：
- * 1. projectReads 核对唯一 read_file 调用与完全匹配的持久化 tool_result，排除错误和截断。
- * 2. 对参数及结果计算指纹，去重阶段只替换重复项，归档阶段用有界摘录替换正文。
- * 3. contextArchive 保存快照 ID、原记录位置和指纹；preview 保留首尾及中间诊断行。
- *
- * 关键约束：
- * 摘录并非连续原文，不能直接作为全文证据；命令、写入及未知结果保持原样。
+ * 摘录包含不连续的片段，不能当作完整正文。命令、写操作和结果未知的记录保持原样。
  */
 
 import { createHash } from "node:crypto";
 import type { Event } from "../shared/types.js";
 
-/** 只投影可核实的历史文件读取；写操作、命令、错误及未知结果保持原样。 */
+/** 只替换能核对原始结果的文件读取；写操作、命令、错误和未知结果不动。 */
 export function projectReads(
   source: any[],
   snapshotId: string,
@@ -93,7 +89,7 @@ export function projectReads(
   });
 }
 
-/** 摘录只用于定位，不能替代全文；保留首尾及中部诊断行的有界片段。 */
+/** 在长度限制内保留首尾和中间的诊断行，帮助定位；需要全文时仍要读快照。 */
 function preview(text: string): string {
   const fragments = [text.slice(0, 400)];
   const diagnostic = /error|fail|exception|panic|todo|fixme|错误|失败|异常/i;

@@ -1,20 +1,18 @@
 /**
- * 文件作用：协调请求级无损整理与有容量门槛的历史压缩。
+ * 控制发给模型的上下文大小：每次请求先去掉可还原的重复内容，历史接近上限时再压缩。
+ * Engine 为每个任务创建一个 ContextManager，传入预算、摘要模型和 Store。
+ * 返回的是本次请求使用的内容，或已经保存的压缩历史。
  *
- * 模块协作与输入输出：
- * 每个任务独立持有一个实例，连接预算函数、摘要提供商和 Store；向 Engine 返回请求视图或压缩后的活动历史。
+ * 1. Options 接收依赖和通知回调；Plan 记录待压缩的旧历史、必须保留的用户原文和近期内容。
+ * 2. request 调用 mechanicalInput 整理重复内容，重新计量后确实更小时才采用，不写回历史。
+ * 3. prepare 检查容量和取消状态。压缩失败时，原历史还能放下就继续，否则停止并报错。
+ * 4. plan 找到不会拆散工具调用和结果的切点，确认保留内容仍能放进目标预算。
+ * 5. compact 依次尝试去重、归档文件正文和分块摘要；达到目标就停止。摘要有单独的调用上限，
+ *    使用辅助模型时也按它自己的容量计算预算。
+ * 6. 将原文、来源哈希、预算和工具执行记录存成快照，与新的活动上下文一起提交。
+ * 7. restoreHistory 沿父快照找回旧正文，已有摘要只有能在数据库中核对时才保留。
  *
- * 代码结构与执行顺序：
- * 1. Options 描述外部依赖与通知回调，Plan 划分旧前缀、用户原文锚点和近期尾部。
- * 2. request 独立调用 mechanicalInput，按实际预算度量比较前后收益；无收益时返回原始输入。
- * 3. prepare 检查容量门槛、取消及禁用状态；低于上限的压缩失败保留原历史，无法容纳时明确停止。
- * 4. plan 选择完整工具批次切点，并确认用户原文与近期内容能留在目标预算内。
- * 5. compact 依次尝试去重、文件归档、完整分块摘要（按需获取摘要模型独立预算）；达到目标即停止，摘要调用数单独受限。
- * 6. 生成含原文、来源哈希、预算和执行清单的快照，与活动上下文一起提交。
- * 7. restoreHistory 沿父快照展开旧投影，仅保留数据库可核对的旧摘要作为既有说明。
- *
- * 关键约束：
- * 请求级引用不写回历史；摘要不是授权来源；事务提交后的通知失败不能让调用方退回旧上下文。
+ * 摘要不能授予权限。数据库已经提交后，即使界面通知失败，也不能退回旧上下文继续执行。
  */
 
 import type { ContextBudget } from "./token-budget.js";
@@ -62,14 +60,14 @@ interface Compaction {
   snapshot: ContextSnapshot;
 }
 
-/** 每个任务一个实例；压缩调用与正常 agent 步数分别有界。 */
+/** 每个任务单独管理上下文，摘要调用次数与任务步数分别限制。 */
 export class ContextManager {
   private calls = 0;
   private disabled = false;
 
   constructor(private options: Options) {}
 
-  /** 每次请求独立生成；原始历史供恢复和有损压缩使用，引用不进入持久化上下文。 */
+  /** 只整理本次请求；数据库保留原始历史，供恢复和后续压缩使用。 */
   request(input: any[], instructions: string, tools: any[]) {
     const measure = this.options.measure ?? contextSize;
     const before = measure(input, instructions, tools);
@@ -126,7 +124,7 @@ export class ContextManager {
       }
     }
 
-    // 提交后的通知失败不能退回旧输入；外层按持久化故障停止任务。
+    // 新上下文已经提交，通知失败也不能退回旧输入；让外层停止任务。
     if (compacted) {
       const snapshot = compacted.snapshot;
       options.notice(
@@ -165,7 +163,7 @@ export class ContextManager {
     const prefix = input.slice(0, cut);
     const anchors = prefix.filter((item) => item.role === "user");
     const tail = input.slice(cut);
-    // 用户原文和当前规则不能靠压缩消失。
+    // 用户原话和当前规则必须保留；放不下时不能靠删掉它们继续。
     if (
       this.measure([...anchors, ...tail], instructions, tools) >=
       this.options.limit * 0.6
@@ -240,7 +238,7 @@ export class ContextManager {
         throw new Error("保留的用户要求与历史摘要已超出压缩目标。");
       }
 
-      // 对原始输入做摘要，不能把前两级的摘录当作完整证据。
+      // 摘要要读取完整原文，不能只看前面去重、归档留下的摘录。
       const auxiliary = await options.summaryModel?.();
       options.signal.throwIfAborted();
       summaryModel = auxiliary?.model;
@@ -330,7 +328,7 @@ export class ContextManager {
   }
 
   private restoreHistory(prefix: any[], previous?: ContextSnapshot) {
-    // 仅识别本会话数据库实际生成的摘要，不信任模型自行写出的类似标记。
+    // 只认本会话数据库中存在的摘要，模型写出相似标记也不能冒充已存快照。
     const trustedNotes = new Set<string>();
     const expanded = prefix.map((item) => ({ ...item }));
     let ancestor = previous;

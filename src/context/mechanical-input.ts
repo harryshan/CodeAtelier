@@ -1,17 +1,14 @@
 /**
- * 文件作用：为模型请求提取重复只读结果和文件正文，保留原始持久化历史。
+ * 缩短单次模型请求中的重复只读结果，不改数据库里的原始历史。
+ * ContextManager 在每次主任务请求及重试前调用，传入协议记录，得到用引用替代重复内容的副本。
  *
- * 模块协作与输入输出：
- * 由 ContextManager 在每次主任务请求和重试时调用；输入历史协议数组，输出仅供当前请求使用的无损引用视图。
+ * 1. 统计调用和结果的数量，跳过重复 call_id 或无法唯一配对的记录。
+ * 2. 只处理能逐字节还原的标准 JSON，跳过失败、截断和已经被替换过的结果。
+ * 3. outputs 查找工具、参数和结果都相同的记录；bodies 另行查找 read_file 中相同的正文。
+ * 4. 用指向前面 inputIndex 的引用替换重复部分，包装后字符数没有减少就保留原记录。
  *
- * 代码结构与执行顺序：
- * 1. 先统计调用和输出次数，排除重复 call_id 或无法唯一配对的协议项。
- * 2. 检查只读工具结果是否为可逐字节还原的标准 JSON，跳过错误、截断和既有投影。
- * 3. outputs 复用相同工具、参数及完整结果；bodies 单独复用 read_file 的相同正文。
- * 4. 生成指向前方 inputIndex 的完整结果或正文字段引用，只有字符包装更短时才替换对应项。
- *
- * 关键约束：
- * 不删调用或改变协议位置，不修改原数组；是否真正节省 token 由调用方再次计量。
+ * 不删除工具调用，不改变记录顺序，也不修改传入数组。字符变少不一定省 token，
+ * ContextManager 还会按实际使用的预算重新测量。
  */
 
 const readTools = new Set(["read_file", "search", "list_files"]);
@@ -23,7 +20,7 @@ interface SourceRef {
   callId: string;
 }
 
-/** 仅构建请求视图，不修改历史。引用始终向前，保留每次调用及结果的位置。 */
+/** 返回本次请求的副本，引用只指向前面的记录，原历史和调用顺序不变。 */
 export function mechanicalInput(input: any[]): any[] {
   const calls = new Map<string, any[]>();
   const outputCounts = new Map<string, number>();
@@ -61,7 +58,7 @@ export function mechanicalInput(input: any[]): any[] {
       return item;
     }
 
-    // 不经 JSON 规范化改变原始数字、空白或重复键；不引用错误与既有投影。
+    // JSON 重新序列化可能改变数字、空白或重复键，这类内容不能替换；错误和已有引用也跳过。
     if (
       !value ||
       typeof value !== "object" ||
@@ -93,7 +90,7 @@ export function mechanicalInput(input: any[]): any[] {
         note,
       });
     } else if (sameTextAs) {
-      // null 占位保留字段位置；替换回原文后可重建逐字节相同的 JSON。
+      // 先用 null 占住正文字段的位置，回填原文后仍能得到完全相同的 JSON。
       output = JSON.stringify({
         contextEncoding: "exact-text-v1",
         value: { ...value, text: null },
@@ -114,7 +111,7 @@ export function mechanicalInput(input: any[]): any[] {
       bodies.set(value.text, ref);
     }
 
-    // 小重复也扫描，但包装引用不能比原文更长；整体 token 收益由请求入口复核。
+    // 短内容也可能重复，但换成引用后必须更短；是否省 token 再由调用方检查。
     if (output.length >= item.output.length) {
       return item;
     }

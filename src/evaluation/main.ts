@@ -1,16 +1,12 @@
 /**
- * 文件作用：提供手动运行 Evaluation 的无界面命令入口。
+ * 手动评测的命令行入口：读取参数和提示文件，调用 runEvaluation，并设置进程退出码。
+ * 它复用后端引擎，不需要启动 Web UI。
  *
- * 模块协作与输入输出：
- * 供显式手动命令调用，不经过 Web UI；从命令行及 prompt 文件构造 runEvaluation 参数。
+ * 1. 将 SIGINT、SIGTERM 接到取消信号，再解析工作目录、预算和命令审批选项。
+ * 2. 检查必填参数、读取提示文件，把数值参数交给运行器继续校验。
+ * 3. 根据任务结果设置退出码；异常时输出固定提示，最后移除信号监听。
  *
- * 代码结构与执行顺序：
- * 1. 注册 SIGINT/SIGTERM 到 AbortController，再用 parseArgs 读取目录、预算及命令审批开关。
- * 2. 检查必要参数并读取提示文件，将字符串预算转为数值交给运行器继续校验。
- * 3. 根据任务终态设置进程退出码，异常时输出固定诊断，finally 移除信号监听。
- *
- * 关键约束：
- * 不回显可能含凭据的命令参数或异常；退出成功仅代表 agent 完成，不代表补丁通过官方评分。
+ * 只在用户要求时运行。错误提示不回显可能含密钥的参数；agent 正常完成仍需另行评分补丁。
  */
 
 import { readFile } from "node:fs/promises";
@@ -56,7 +52,7 @@ try {
   );
   process.exitCode = report.task.status === "completed" ? 0 : 1;
 } catch {
-  // Do not echo untrusted config/arguments or credentials to the evaluation command log.
+  // 配置和参数可能含密钥，错误日志不能原样输出。
   process.stderr.write(
     "CodeAtelier evaluation failed. Check arguments and trial artifacts.\n",
   );

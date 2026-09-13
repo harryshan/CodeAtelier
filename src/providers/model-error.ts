@@ -1,18 +1,13 @@
 /**
- * 文件作用：把模型及传输异常归一化为可判断重试行为的错误。
+ * 把 SDK 和网络异常转换为统一的 ModelError，供 ResponsesProvider 和重试逻辑使用。
  *
- * 模块协作与输入输出：
- * 供 ResponsesProvider 和 retryModel 共用，将 SDK/网络异常转换成稳定错误码与重试判断。
+ * 1. ModelError 保存错误消息、错误码、能否重试，以及可选的 HTTP 状态和请求 ID。
+ * 2. modelError 保留已有 ModelError；其他异常按协议错误码、HTTP 状态和连接错误分类。
  *
- * 代码结构与执行顺序：
- * 1. ModelError 保存用户可见消息、retryable、code，以及可选 HTTP 状态和请求 ID。
- * 2. modelError 保留已归一化错误，并按明确协议码、HTTP 状态与连接故障进行分类。
- *
- * 关键约束：
- * 不能把任意错误文本猜成上下文溢出；永久参数或认证错误不应进入瞬态重试。
+ * 认证或参数错误不能当作临时故障反复重试。上下文超限必须有明确错误码，不能只根据报错文字猜测。
  */
 
-/** 模型错误分类，保留重试决策所需信息，不传播服务端敏感正文。 */
+/** 保存判断重试所需的错误信息，不带出服务端可能含敏感内容的正文。 */
 export class ModelError extends Error {
   constructor(
     message: string,
@@ -63,7 +58,7 @@ export function modelError(error: unknown): ModelError {
           ? "connection"
           : "model_error";
 
-  // Never copy arbitrary server bodies (which can contain prompts or credentials).
+  // 服务端错误正文可能包含提示词或凭据，不能原样带出。
   return new ModelError(
     status
       ? `模型服务返回 HTTP ${status}。${retryable ? "可尝试重试。" : "请检查密钥、模型、请求参数或服务配置后恢复。"}`

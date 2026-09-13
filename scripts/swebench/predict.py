@@ -1,16 +1,12 @@
-# 文件作用：在一次性 SWE-bench 容器中逐题手动生成补丁。
+# 手动在一次性 Docker 容器中逐题运行 agent，收集补丁、模型用量和执行记录。
+# 使用固定子集和已打包的生产后端，不经过 Web UI。
 #
-# 使用场景与输入输出：
-# 手动读取固定子集，在一次性 Docker 环境中执行生产无界面 agent，收集预测补丁和运行记录。
+# 1. upload、execute、save_artifacts 负责上传归档、运行容器命令和取回记录。
+# 2. run_trial 准备单题镜像与工作目录，安装 agent，再传入不含参考答案的题目提示。
+# 3. 单题结束后提取工作区补丁和用量；失败或取消也保存状态并清理容器。
+# 4. main 检查平台和连接配置，读取清单与应用包，按顺序运行并写入预测和汇总记录。
 #
-# 代码结构与阅读顺序：
-# 1. upload/execute/save_artifacts 封装归档上传、容器命令和记录提取。
-# 2. run_trial 准备单题镜像与工作目录，安装 agent 并传入仅含 issue 的提示。
-# 3. 单题结束提取工作树补丁及用量，失败或取消也记录状态并清理容器。
-# 4. main 校验平台与必需连接环境变量、解析参数、加载清单与 bundle，逐题执行并写入预测和汇总记录。
-#
-# 维护注意事项：
-# 参考答案不传给 agent；此脚本生成补丁，官方正确性由 grade.py 单独确定。
+# 这里生成补丁，是否正确由 grade.py 单独评分；参考答案不能传给 agent。
 
 """Manually generate patches in disposable SWE-bench containers, one task at a time."""
 
@@ -42,7 +38,7 @@ def upload(container, path: str, content: bytes) -> None:
 def execute(container, command, **kwargs) -> bytes:
     result = container.exec_run(command, **kwargs)
     if result.exit_code:
-        # Command output may contain credentials or task data; keep it out of host errors.
+        # 命令输出可能含凭据或题目数据，不能原样写进宿主机错误日志。
         raise RuntimeError(
             f"Container command failed with exit code {result.exit_code}"
         )
@@ -50,7 +46,7 @@ def execute(container, command, **kwargs) -> bytes:
 
 
 def save_artifacts(container, output: Path) -> None:
-    # Copy only regular files under this exact prefix; reject links and traversal.
+    # 只取指定目录下的普通文件，拒绝链接和越界路径。
     stream, _ = container.get_archive("/evaluation/output")
     with tarfile.open(fileobj=io.BytesIO(b"".join(stream))) as archive:
         for entry in archive:
@@ -110,7 +106,7 @@ def run_trial(client, row: dict, output: Path, bundle: Path, args) -> dict:
                 container,
                 ["timeout", "600", "bash", "/installed-agent/codeatelier-install.sh"],
             )
-        # Ensure the published image really contains the task's intended starting revision.
+        # 核对镜像中的代码版本，确保题目从指定提交开始。
         head = (
             execute(container, ["git", "rev-parse", "HEAD"], workdir="/testbed")
             .decode()
@@ -147,7 +143,7 @@ def run_trial(client, row: dict, output: Path, bundle: Path, args) -> dict:
             status="completed" if result.exit_code == 0 else "agent_failed",
             exitCode=result.exit_code,
         )
-        # Include new, non-ignored files without changing the commit. Hidden tests are applied only by the grader.
+        # 将未被忽略的新文件也计入补丁，不修改提交；隐藏测试只由评分器加入。
         execute(container, ["git", "add", "-N", "."], workdir="/testbed")
         patch = execute(
             container, ["git", "diff", "--binary", "HEAD"], workdir="/testbed"

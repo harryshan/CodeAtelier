@@ -1,16 +1,12 @@
 /**
- * 文件作用：提供不依赖日志运行时的文本和 JSON 凭据脱敏函数。
+ * 从文本和 JSON 中遮盖凭据，供日志、Engine 事件保存和评测报告共用。
+ * 输入输出都是字符串，不读写文件，也不依赖日志实例。
  *
- * 模块协作与输入输出：
- * 被日志、Engine 事件保存和评测导出复用，输入文本或 JSON 字符串，返回脱敏后的字符串。
+ * 1. redactText 先替换调用方给出的密钥，再处理 Bearer 和常见凭据字段。
+ * 2. redactJson 解析 JSON，用 visit 递归处理字符串、数组和对象中的敏感值。
+ * 3. 重新序列化 JSON，保留合法的引号和转义。
  *
- * 代码结构与执行顺序：
- * 1. redactText 先替换显式 secret，再处理 Bearer、凭据赋值和常见 JSON 字段形式。
- * 2. redactJson 先解析 JSON，通过 visit 递归处理字符串、数组及对象中的敏感键。
- * 3. 最后重新序列化结构，避免正则替换破坏引号和转义。
- *
- * 关键约束：
- * 这是纯转换模块，无文件或日志副作用；redactJson 要求输入有效 JSON，不能用它解析任意源码。
+ * redactJson 只接受有效 JSON；不能靠正则直接替换序列化文本，否则可能破坏格式。
  */
 
 export function redactText(value: string, secrets: string[] = []): string {
@@ -34,7 +30,7 @@ export function redactText(value: string, secrets: string[] = []): string {
     );
 }
 
-/** 在字符串值中脱敏，再序列化；不能用正则修改 JSON 的转义语法。 */
+/** 先解析再遮盖敏感值，最后重新序列化，避免破坏 JSON 转义。 */
 export function redactJson(value: string, secrets: string[] = []): string {
   function visit(item: unknown): unknown {
     if (typeof item === "string") {

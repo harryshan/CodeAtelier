@@ -1,15 +1,11 @@
-# 文件作用：读取固定修订的 SWE-bench 子集并构建不含参考答案的任务提示。
+# 读取指定版本的 SWE-bench 子集，为预测和评分脚本提供同一批题目。
+# 返回顺序与清单一致的记录，并为 agent 生成不含参考答案的提示。
 #
-# 使用场景与输入输出：
-# 供 predict、grade 和契约测试共享，输入固定子集清单，按清单顺序返回数据行或单题提示。
+# 1. load_manifest 检查实例 ID 非空、唯一且格式正确，并检查版本 SHA。
+# 2. load_subset 校验本地 Parquet 哈希，或下载指定版本；确认题目齐全后按清单排序。
+# 3. prompt_for 只取 problem_statement，再补上工作目录和测试环境说明。
 #
-# 代码结构与阅读顺序：
-# 1. load_manifest 校验实例 ID 非空且唯一、ID 格式和修订 SHA。
-# 2. load_subset 校验本地 Parquet 哈希或在线加载指定修订，核对选中实例齐全并按清单重排。
-# 3. prompt_for 仅提取 problem_statement，加上工作目录和测试环境说明。
-#
-# 维护注意事项：
-# 加载数据可能访问网络；参考补丁、隐藏测试和 hints 不进入 agent 提示，模块本身不运行任务。
+# 加载数据可能联网，但不会执行题目。参考补丁、隐藏测试和 hints 不能进入 agent 提示。
 
 """Load the explicit, revision-pinned development subset; never execute tasks."""
 
@@ -61,7 +57,7 @@ def load_subset(manifest: dict) -> list[dict]:
 
 
 def prompt_for(row: dict) -> str:
-    # Do not expose gold patches, test patches, hints or grading criteria to the agent.
+    # 提示中不能包含参考补丁、测试补丁、解题提示或评分条件。
     return (
         "Fix the following issue in /testbed. Read the repository and run relevant "
         "tests. Leave your changes in the working tree; do not commit them. "

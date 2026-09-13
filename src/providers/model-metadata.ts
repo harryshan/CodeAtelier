@@ -1,16 +1,11 @@
 /**
- * 文件作用：校验服务公开的模型容量和实际 token 使用量。
+ * 校验服务返回的模型容量和 token 用量，供 ResponsesProvider、预算计算和评测统计使用。
  *
- * 模块协作与输入输出：
- * 由 ResponsesProvider 解析服务数据，token-budget 与评测计量读取已校验结果。
+ * 1. tokenCount 和 positiveLimit 约束计数及容量的数值范围。
+ * 2. usageSchema 校验输入、输出、总用量及可选明细；capabilitiesSchema 校验 tokenizer 和容量上限。
+ * 3. parseUsage 返回校验后的用量，缺失或不合法时返回 undefined。
  *
- * 代码结构与执行顺序：
- * 1. tokenCount 与 positiveLimit 约束计数和容量的合法范围。
- * 2. usageSchema 描述输入、输出、总量及可选细分，capabilitiesSchema 描述 tokenizer 和模型上限。
- * 3. parseUsage 用安全解析返回可用数据，非法或缺失内容返回 undefined。
- *
- * 关键约束：
- * 未知字段不能作为可信容量或计费结论；没有数据和数值零具有不同含义。
+ * 未识别的扩展字段不用于容量判断或用量统计。没有返回数据与实际用量为零是两种情况。
  */
 
 import { z } from "zod";
@@ -43,7 +38,7 @@ export const capabilitiesSchema = z.object({
 
 export type ModelCapabilities = z.infer<typeof capabilitiesSchema>;
 
-/** 只保留数值用量；不持久化 attribution 等可能包含内容或标识的扩展字段。 */
+/** 只保留支持的用量字段；attribution 等扩展内容可能包含敏感信息，不予保存。 */
 export function parseUsage(value: unknown): ModelUsage | undefined {
   const parsed = usageSchema.safeParse(value);
   if (!parsed.success) {

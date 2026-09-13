@@ -1,15 +1,10 @@
 /**
- * 文件作用：将 React 主应用挂载到 HTML 页面入口。
+ * 浏览器加载的 React 入口，由 index.html 引用，Vite 从这里构建前端。
  *
- * 模块协作与输入输出：
- * 由 index.html 的 module 脚本加载，是 Vite 构建的前端入口。
+ * 1. 引入 React、createRoot 和主页面 App。
+ * 2. 找到 HTML 中的 root 容器，在 StrictMode 下渲染 App。
  *
- * 代码结构与执行顺序：
- * 1. 导入 React、createRoot 和顶层 App 组件。
- * 2. 查找页面约定的 root 元素，创建 React 根并在 StrictMode 下渲染 App。
- *
- * 关键约束：
- * HTML 必须提供匹配容器；会话状态和后端连接由 App 及其 Hook 管理。
+ * root 的 ID 要与 index.html 一致；会话加载和后端连接由 App 负责。
  */
 
 import React from "react";

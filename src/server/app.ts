@@ -1,18 +1,14 @@
 /**
- * 文件作用：组装本机 HTTP 应用及配置、任务、审批和历史接口。
+ * 创建本机 Fastify 应用，接入会话、任务、设置、审批和历史接口。
+ * 服务入口和测试服务都调用 createApp，得到 app、engine、store 及 shutdown。
  *
- * 模块协作与输入输出：
- * 供生产 main.ts 与测试夹具创建完整本机应用，返回 app、engine、store 和 shutdown。
+ * 1. 创建 Fastify、Store 和 Engine，准备关闭状态和可复用的关闭 Promise。
+ * 2. 先注册来源与凭据检查、关闭接口和错误处理，再注册 bootstrap、设置接口。
+ * 3. 会话和任务路由校验请求，调用 Engine 启动、恢复、取消任务或传递审批决定。
+ * 4. 接入 SSE，并提供构建后的网页；没有前端产物时显示开发提示。
+ * 5. preClose 中断任务并结束 SSE，onClose 关闭数据库。
  *
- * 代码结构与执行顺序：
- * 1. 初始化 Fastify、Store、Engine，建立可复用的关闭 Promise 和停止接收任务的状态。
- * 2. 注册来源/凭据检查、关闭接口及统一错误处理，再暴露 bootstrap 和设置接口。
- * 3. 会话与任务路由负责输入验证、创建/读取、启动/恢复/取消，以及转交审批决定。
- * 4. 注册会话 SSE，并选择已构建静态页面或开发提示页面。
- * 5. preClose 先中断任务并结束 SSE，onClose 释放 Store。
- *
- * 关键约束：
- * 关闭请求先确认任务中断再结束服务；页面状态依赖持久化快照，不在路由中复制 agent 循环。
+ * 关闭时要先确认任务已经中断，再结束服务。页面从保存的会话快照读取状态，任务循环由 Engine 执行。
  */
 
 import Fastify, { LogController } from "fastify";
@@ -81,7 +77,7 @@ export async function createApp(
       );
     };
 
-    // Close even when the requester disconnects before receiving the acknowledgement.
+    // 即使浏览器没等到响应就断开，也要继续关闭服务。
     reply.raw.once("finish", finish);
     reply.raw.once("close", finish);
     await engine.close();

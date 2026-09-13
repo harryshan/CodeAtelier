@@ -1,16 +1,13 @@
 /**
- * 文件作用：根据服务公开容量创建 token 预算，并保留字符预算后备模式。
+ * 根据服务返回的模型容量，为 Engine 和 ContextManager 计算上下文预算。
+ * 容量或 tokenizer 信息不可用时，继续使用字符预算。
  *
- * 模块协作与输入输出：
- * Engine 根据模型元数据创建预算，ContextManager 使用 measure，完成请求后通过 observeUsage 校准估算。
+ * 1. ContextBudget 提供统一的大小计量、输入上限和输出预留，可选支持实际用量校准。
+ * 2. createBudget 检查本地是否支持 o200k_base，再结合上下文窗口、输入上限和安全余量计算预算。
+ * 3. 首次计量时加载编码器，计算完整请求的大小；observeUsage 根据服务返回的输入用量，
+ *    必要时上调当前任务的估算比例。
  *
- * 代码结构与执行顺序：
- * 1. ContextBudget 统一字符与 token 模式，并暴露输入上限、输出预留和可选校准函数。
- * 2. createBudget 只接受本地支持的 o200k_base，计算上下文窗口、提示上限、输出预留和安全余量。
- * 3. 编码器延迟初始化，测量整个请求包装；observeUsage 根据实际输入 usage 只上调本任务估算比例。
- *
- * 关键约束：
- * 能力缺失或预算无效时回退字符模式；累计消耗不等于单次上下文大小，特殊 token 字面量按普通文本编码。
+ * 累计用量不是当前上下文大小。源码中的特殊 token 字面量按普通文本处理，不能让编码器误当控制标记。
  */
 
 import { Tiktoken } from "js-tiktoken/lite";
@@ -41,7 +38,7 @@ export interface ContextBudget {
   ) => void;
 }
 
-/** 只接受服务公布且本地明确支持的编码；不根据模型别名猜测 tokenizer。 */
+/** 使用服务明确返回、本地也支持的 tokenizer；不能根据模型名字猜编码。 */
 export function createBudget(
   capabilities: ModelCapabilities | undefined,
   fallbackChars: number,
@@ -80,10 +77,10 @@ export function createBudget(
     contextWindowTokens: window,
     safetyTokens,
     tokenizer: capabilities.tokenizer,
-    // 协议包装与隐藏开销无法精确复刻。特殊 token 字面量按普通文本处理。
+    // 本地无法精确计算服务端的额外开销。源码里的特殊 token 字面量按普通文本计数。
     measure: (input, instructions, tools) =>
       Math.ceil(rawMeasure(input, instructions, tools) * correction),
-    // 只上调本任务估算；不能因一次低用量就缩小安全边界。
+    // 只上调当前任务的估算比例，不能因为一次用量较低就减少预留。
     observeUsage: (actualInput, input, instructions, tools) => {
       correction = Math.max(
         correction,

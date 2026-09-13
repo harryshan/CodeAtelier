@@ -1,16 +1,12 @@
-# 文件作用：仅从已有评测记录汇总质量、用量、耗时和诊断报告。
+# 读取已有评测目录，汇总补丁结果、模型用量、耗时和诊断信息。
+# 只处理本地记录，不调用模型、网络、容器或评分器。
 #
-# 使用场景与输入输出：
-# 读取既有运行目录，在不调用模型、网络或容器的条件下产出离线报告。
+# 1. read_json、ratio、distribution、elapsed 读取记录并计算统计值，保留缺失值。
+# 2. patch_metrics、process_metrics、diagnostic_metrics 分别分析补丁、工具执行和诊断记录。
+# 3. official_result 读取官方评分结果，build_report 汇总各题指标。
+# 4. write_report 写出报告，命令行入口接收已有运行目录。
 #
-# 代码结构与阅读顺序：
-# 1. read_json、ratio、distribution、elapsed 提供缺失值友好的读取与统计。
-# 2. patch_metrics、process_metrics 和 diagnostic_metrics 分别解析补丁规模、工具轨迹及诊断记录。
-# 3. official_result 读取官方评分证据，build_report 将逐题记录汇总为质量、用量与耗时指标。
-# 4. write_report 写出结果，命令入口仅接收现有运行目录。
-#
-# 维护注意事项：
-# 未知用量或缺失评分不能当作零消耗或失败判定；报告不能替代尚未运行的官方评分。
+# 没有 usage 不能按零用量计算，没有评分记录也不能直接判失败。
 
 """Aggregate existing artifacts only: no model, container, network or grading calls."""
 
@@ -76,7 +72,7 @@ def patch_metrics(patch):
 
 
 def result_fields(item):
-    # Read/list/search tools may return arrays or text rather than command metadata.
+    # 读取、列目录和搜索可能返回数组或文本，不能按命令结果解析。
     result = item.get("result")
     return result if isinstance(result, dict) else {}
 
@@ -102,7 +98,7 @@ def process_metrics(events):
             command = (
                 str(args.get("command", "")) + " " + " ".join(args.get("args", []))
             )
-            # A command-name heuristic only; exit zero does not prove tests ran or covered the issue.
+            # 这里只根据命令名猜测是否运行了测试；退出码为零不代表测试确实执行或覆盖了问题。
             if re.search(
                 r"\b(pytest|unittest|vitest|jest|ctest|tox)\b|\b(npm|pnpm|yarn|cargo|go|node)\b.*(?:\btest\b|--test)",
                 command,
@@ -165,7 +161,7 @@ def official_result(run, instance_id):
         / "report.json"
     )
     report = read_json(path, {})
-    # Fixed v4.1.0 per-instance report; never infer verdict from agent exit status.
+    # 读取固定 v4.1.0 格式的单题评分报告，不根据 agent 退出状态猜测是否通过。
     result = report.get(instance_id)
     if not isinstance(result, dict):
         return None

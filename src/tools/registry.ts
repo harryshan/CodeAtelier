@@ -1,16 +1,11 @@
 /**
- * 文件作用：定义模型可调用的文件和命令工具契约。
+ * 声明模型可以调用的文件和命令工具，供 Engine 生成工具列表、ToolRunner 校验参数。
  *
- * 模块协作与输入输出：
- * 由 Engine 构建模型工具列表，同时被 ToolRunner 用来验证模型传入的参数。
+ * 1. schemas 定义列目录、读文件、搜索、写文件、精确编辑和执行命令的参数。
+ * 2. descriptions 向模型说明各工具的用途和限制。
+ * 3. definitions 将 schema 转成 Responses API 需要的函数工具声明。
  *
- * 代码结构与执行顺序：
- * 1. schemas 按 list_files、read_file、search、write_file、edit_file 和 run_command 定义参数。
- * 2. descriptions 说明模型调用方式及使用限制。
- * 3. definitions 遍历 schema 生成 JSON Schema 与 Responses function 工具声明。
- *
- * 关键约束：
- * 工具契约不执行任何副作用；新增工具必须同时实现执行分支与相应权限检查。
+ * 这里只有定义，没有执行逻辑。增加工具时，还要在 ToolRunner 中补上实现和权限检查。
  */
 
 import { z } from "zod";

@@ -1,21 +1,17 @@
 /**
- * 文件作用：定义 agent 与具体模型服务之间的通用接口。
+ * 定义 Engine 和 ContextManager 调用模型时使用的接口。
+ * ResponsesProvider、测试用的模拟模型和评测计量包装都实现这个接口。
  *
- * 模块协作与输入输出：
- * 作为 Engine/ContextManager 与 ResponsesProvider、测试替身、MeteredProvider 之间的依赖边界。
+ * 1. ModelResult 返回完整协议记录 output、展示文本 text 和可选的实际 usage。
+ * 2. ModelProvider.run 接收历史、指令、工具、取消信号和文本回调；getCapabilities 可选提供容量查询。
+ * 3. 请求选项中的 maxOutputTokens 用于限制本次输出。
  *
- * 代码结构与执行顺序：
- * 1. ModelResult 携带完整协议 output、展示 text 和可选实际 usage。
- * 2. ModelProvider 的可选 getCapabilities 负责公开容量查询，run 接收历史、规则、工具、取消信号和文本回调。
- * 3. 可选请求参数传递 maxOutputTokens，便于具体服务适配。
- *
- * 关键约束：
- * 流式文本回调仅供展示；工具调度必须等待完整结果，本接口不承担执行工具或持久化历史。
+ * 流式回调只负责展示。调用方必须等完整结果返回后再执行工具；历史保存也由调用方负责。
  */
 
 import type { ModelCapabilities, ModelUsage } from "./model-metadata.js";
 
-/** 不依赖具体服务商的模型调用契约。 */
+/** 调用方只依赖这个接口，不需要知道具体服务商。 */
 export interface ModelResult {
   output: any[];
   text: string;

@@ -1,16 +1,10 @@
 /**
- * 文件作用：确定本机配置、日志和历史数据的存放目录。
+ * 为 Config 选择配置、日志和 SQLite 历史的存放目录。
+ * 读取环境变量和系统信息，返回目录路径；创建目录由后续写入模块负责。
  *
- * 模块协作与输入输出：
- * 供 Config 决定默认数据根目录；配置、日志和 SQLite 历史随后在该目录下各自组织。
- *
- * 代码结构与执行顺序：
- * 1. 显式 CODEATELIER_DATA_DIR 先转为绝对路径并直接返回。
- * 2. Windows 使用 LOCALAPPDATA，macOS 使用 Application Support，Linux 使用 XDG_DATA_HOME 或用户默认路径。
- * 3. 未显式指定时在平台基础目录下追加 CodeAtelier。
- *
- * 关键约束：
- * 这里只计算路径，不创建目录或读写数据；具体文件权限由写入模块负责。
+ * 1. 设置了 CODEATELIER_DATA_DIR 时，将它转成绝对路径并返回。
+ * 2. 否则按平台选择 LOCALAPPDATA、Application Support 或 XDG_DATA_HOME 等默认位置。
+ * 3. 在默认位置下使用 CodeAtelier 子目录。
  */
 
 import path from "node:path";

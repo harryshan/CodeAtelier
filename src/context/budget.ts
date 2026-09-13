@@ -1,19 +1,15 @@
 /**
- * 文件作用：提供字符容量估算和保持工具批次完整的历史切分逻辑。
+ * 帮助 ContextManager 找到适合压缩的旧历史，同时保持工具调用和结果成对出现。
+ * 默认按字符数估算大小，也接受调用方提供的 token 计量函数。
  *
- * 模块协作与输入输出：
- * 供 ContextManager 选择可压缩的旧历史前缀，支持默认字符度量或调用方传入的 token 度量。
+ * 1. contextSize 计算 instructions、tools 和 input 序列化后的总字符数。
+ * 2. safeCuts 跟踪尚未配齐结果的工具调用，只返回可以安全切开历史的位置。
+ * 3. chooseCut 优先保留小于预算四分之一的近期历史；没有这样的切点时取最后一个安全位置。
  *
- * 代码结构与执行顺序：
- * 1. contextSize 统计 instructions、tools 和 input 整体 JSON 的字符数。
- * 2. safeCuts 用 pending 集合跟踪调用与结果，只暴露不拆开未完成工具批次的切点。
- * 3. chooseCut 优先选择近期尾部低于预算四分之一的切点，否则取最后一个安全位置。
- *
- * 关键约束：
- * 返回 undefined 表示没有安全切点；保留用户原文和是否值得压缩由 ContextManager 进一步判断。
+ * 返回 undefined 表示不能安全切分。是否值得压缩、怎样保留用户原文，由 ContextManager 决定。
  */
 
-/** 字符预算含指令、工具定义和输入的 JSON 包装，不代表模型 token 容量。 */
+/** 计算整个请求 JSON 的字符数，包括指令和工具定义；这不是 token 数。 */
 export function contextSize(
   input: any[],
   instructions: string,
@@ -22,7 +18,7 @@ export function contextSize(
   return JSON.stringify({ input, instructions, tools }).length;
 }
 
-/** 只在用户消息之前或整批工具结果之后切分，保守地保留响应协议项。 */
+/** 只在用户消息前或一批工具结果收齐后切开历史，避免拆散调用和结果。 */
 export function safeCuts(input: any[]): number[] {
   const pending = new Set<string>();
   const cuts: number[] = [];
@@ -44,7 +40,7 @@ export function safeCuts(input: any[]): number[] {
     }
   }
 
-  // 被覆盖的用户消息由管理器逐条原文保留，不参与摘要改写。
+  // 切点之前的用户消息由 ContextManager 另行保留原文，不交给摘要改写。
   return [...new Set(cuts)];
 }
 

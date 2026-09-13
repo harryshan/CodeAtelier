@@ -1,18 +1,14 @@
 /**
- * 文件作用：在临时仓库副本中手动验收真实模型修复与中断恢复。
+ * 在临时仓库副本中放入一个已知错误，用真实模型检查修复和中断恢复。
+ * 手动执行时复用生产 Engine 和 Store，最终保存验收报告及测试输出。
  *
- * 使用场景与输入输出：
- * 显式手动真实模型验收，基于当前 Git 修订复制隔离工作区，复用生产 Engine 与 Store。
+ * 1. 检查环境和 prepare-only 选项，复制 Git 管理的文件并接入开发依赖。
+ * 2. 在配置代码中注入错误，先用独立测试确认能够复现。
+ * 3. 只批准指定测试命令，观察任务事件；按条件中断后，重建存储并恢复任务。
+ * 4. 运行模型生成的测试和原有独立测试，再通过变异检查及改动文件列表核对修复。
+ * 5. 导出结果，最后关闭引擎和数据库。
  *
- * 代码结构与阅读顺序：
- * 1. 检查环境和 prepare-only 选项，复制受版本管理文件并连接开发依赖。
- * 2. 在配置源码中注入固定回归，先运行独立测试确认故障可复现。
- * 3. 安装精确命令审批与事件观察，执行修复任务并按观察条件中断、重建存储后人工恢复。
- * 4. 分别运行生成测试及原始独立测试，再用变异检查和文件清单核对修复质量与范围。
- * 5. 导出报告和测试输出，finally 关闭引擎与存储。
- *
- * 维护注意事项：
- * 会修改临时副本并可能调用真实模型、消耗用量；仅显式手动运行，不能接入默认检查。
+ * 会修改临时副本并可能消耗真实模型用量，只能手动运行，不能放进默认检查。
  */
 
 import { approveTestCommand } from "./bootstrap/approval.js";
@@ -85,7 +81,7 @@ for (const file of files) {
   await writeFile(target, content);
 }
 
-// 依赖仅供受限测试命令使用；这不是操作系统沙箱。
+// 复用依赖供指定测试命令运行；临时副本本身不提供操作系统隔离。
 await symlink(
   path.join(repository, "node_modules"),
   path.join(workspace, "node_modules"),
@@ -227,7 +223,7 @@ try {
   const generatedTests = await readFile(path.join(workspace, testPath), "utf8");
   const final = verify("agent tests");
   await writeFile(path.join(root, "agent-tests.txt"), final.output);
-  // 使用原始测试独立复验，防止模型通过削弱断言获得绿灯。
+  // 再跑一次原始测试，防止模型改弱了测试却被误认为修复成功。
   await writeFile(path.join(workspace, testPath), originalTests);
   let independent;
   try {
@@ -237,7 +233,7 @@ try {
   }
 
   await writeFile(path.join(root, "independent-tests.txt"), independent.output);
-  // 新增测试必须能杀死构造路径的变异，而不只是增加文件长度。
+  // 把构造器改错后，新增测试应当失败，才能说明它确实检查了这条路径。
   const repairedSource = await readFile(
     path.join(workspace, sourcePath),
     "utf8",

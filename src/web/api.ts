@@ -1,16 +1,13 @@
 /**
- * 文件作用：封装浏览器对本机后端的 JSON 请求和会话凭据初始化。
+ * 封装浏览器到本机后端的 JSON 请求，供页面、设置表单、时间线和连接 Hook 共用。
+ * 统一补上 /api 前缀，并保存 bootstrap 返回的本机会话令牌。
  *
- * 模块协作与输入输出：
- * 为 App、SettingsPanel、Timeline 和连接 Hook 提供浏览器 HTTP 调用，统一 /api 路由前缀和凭据处理。
+ * 1. api 组装方法、请求体和令牌，解析响应或抛出错误；收到 401 时刷新凭据并最多重试一次。
+ * 2. bootstrap 获取公开配置，同时更新模块内的令牌。
+ * 3. sessions 和 snapshot 提供带类型的会话列表、快照读取函数。
  *
- * 代码结构与执行顺序：
- * 1. api 设置方法、JSON body 与 token；收到明确未执行的 401 后重新 bootstrap 并最多重试一次，再解析响应或抛出错误。
- * 2. bootstrap 获取后端公开配置，同时更新模块内 token。
- * 3. sessions 和 snapshot 封装常用只读端点，返回共享类型数据。
- *
- * 关键约束：
- * 网络错误导致写请求结果未知时不能自动重放；401 才允许一次凭据刷新重试。模块不存储模型 API 密钥。
+ * 401 表示请求在鉴权时已被拒绝，因此可以重试。网络错误无法确定写操作是否执行，不能自动重发。
+ * 这里保存的是本机会话令牌，不是模型 API 密钥。
  */
 
 import type { Settings, Session, Snapshot } from "../shared/types";
@@ -32,7 +29,7 @@ export async function api<T>(
     body: body === undefined ? undefined : JSON.stringify(body),
   });
 
-  // 401 表示服务端尚未执行此操作；网络结果未知时不能自动重放写请求。
+  // 401 说明请求已被鉴权拒绝，可以刷新凭据后重试；网络错误则无法确定操作是否执行。
   if (response.status === 401 && url !== "/bootstrap" && !refreshed) {
     await bootstrap();
 

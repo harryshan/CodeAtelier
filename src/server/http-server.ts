@@ -1,15 +1,10 @@
 /**
- * 文件作用：统一服务模块使用的 Fastify HTTP 实例类型。
+ * 为 local-security 和 session-events 提供与 createApp 一致的 HTTP 服务类型。
  *
- * 模块协作与输入输出：
- * 让 local-security 与 session-events 使用和 createApp 相容的服务类型，不重复声明泛型组合。
+ * 1. 引入 Node HTTP、Fastify 和 Pino 的类型。
+ * 2. 将它们组合为 HttpServer，供路由注册函数声明参数使用。
  *
- * 代码结构与执行顺序：
- * 1. 导入 Node HTTP 请求/响应、FastifyInstance 和 Pino Logger 类型。
- * 2. HttpServer 将这些类型组合成统一导出，供独立注册函数签名使用。
- *
- * 关键约束：
- * 本文件仅提供编译期类型，不创建服务器、不监听端口，也不引入运行时状态。
+ * 这里只导出类型，不创建服务器或监听端口。
  */
 
 import type { FastifyInstance } from "fastify";

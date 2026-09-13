@@ -1,21 +1,16 @@
 /**
- * 文件作用：提供仅手动调用的 Evaluation 回归测试配置。
+ * pnpm eval:test 使用的独立评测回归配置，只在用户要求时运行。
  *
- * 使用场景与输入输出：
- * 只供显式 pnpm eval:test 入口使用，和默认 Vitest 配置分开维护。
+ * 1. 设置测试端点和模型，避免依赖个人 .env。
+ * 2. include 仅收集 evals 下的 .test.ts。
+ * 3. 设置异步测试超时。
  *
- * 代码结构与阅读顺序：
- * 1. 导入 defineConfig，声明仅收集 evals 下的 .test.ts。
- * 2. 使用独立测试端点和模型环境值，不读取个人 .env。
- * 3. 为评测适配器的异步回归设置超时，保持文件内 opt-in 提示。
- *
- * 维护注意事项：
- * 不得在 CI、默认 check 或服务启动时引用此配置；本次注释更新不运行该套件。
+ * 不能从 CI、默认 check 或服务启动流程调用此配置。
  */
 
 import { defineConfig } from "vitest/config";
 
-// Opt-in only: this suite is excluded from the default test/check commands.
+// 仅供手动运行，不属于默认 test/check。
 export default defineConfig({
   test: {
     env: {

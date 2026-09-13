@@ -1,17 +1,14 @@
 /**
- * 文件作用：为评测包装生产模型接口，累计实际用量并限制调用预算。
+ * 为手动评测统计模型用量和耗时，并在下一次请求前检查总预算。
+ * 它包装 ModelProvider，主任务、摘要和重试共用同一份计量状态。
  *
- * 模块协作与输入输出：
- * 包装任意 ModelProvider，Engine 的主任务、摘要和重试均经过同一计量实例。
+ * 1. EvaluationUsage 分开记录已知和未知用量；timings 保存首次文本和整次调用耗时。
+ * 2. forProvider 给辅助模型创建共享计量的包装；能力查询仍转发给对应模型。
+ * 3. run/runWithProvider 发请求前检查预算，先将本次调用记为用量未知并保存检查点，
+ *    收到合法 usage 后再更新为已知用量。
+ * 4. onDelta 记录首次文本时间；无论成功还是失败，finally 都保存耗时和检查点。
  *
- * 代码结构与执行顺序：
- * 1. EvaluationUsage 区分已计量与未知调用，timings 保存首段文本和总耗时。
- * 2. forProvider 创建共享计量状态的辅助模型视图；getCapabilities 转发对应模型查询，run/runWithProvider 共用预算检查。
- * 3. 发请求前先登记未知用量并 checkpoint，成功收到有效 usage 后再转为已计量。
- * 4. 包装 onDelta 记录首次文本时间，finally 无论成功失败都保存耗时与 checkpoint。
- *
- * 关键约束：
- * 预算是下一次调用前的停止门槛，单次调用可能越过累计阈值；缺失 usage 不能当成零消耗。
+ * 检查只能阻止下一次调用，当前请求仍可能让总用量超过上限。服务没返回 usage 时不能按零计算。
  */
 
 import type {
@@ -32,7 +29,7 @@ export interface EvaluationUsage {
   cachedUsageComplete: boolean;
 }
 
-/** Wrap all model calls, including compaction and retries, without changing Engine. */
+/** 在模型接口外统计全部调用，包括摘要和重试，不必修改 Engine。 */
 export class MeteredProvider implements ModelProvider {
   readonly usage: EvaluationUsage = {
     calls: 0,
@@ -65,7 +62,7 @@ export class MeteredProvider implements ModelProvider {
     );
   }
 
-  /** 不创建新计数器，主任务和辅助请求共享未知用量与总预算。 */
+  /** 辅助模型沿用同一份计数，和主任务共用总预算及未知用量记录。 */
   forProvider(provider: ModelProvider): ModelProvider {
     return {
       getCapabilities: (signal) =>
@@ -100,7 +97,7 @@ export class MeteredProvider implements ModelProvider {
     }
 
     this.usage.calls++;
-    // Count an in-flight/failed request as unknown until a valid response arrives.
+    // 请求发出后可能已产生费用；拿到有效 usage 前，进行中或失败的请求都记为用量未知。
     this.usage.unmeasuredCalls++;
     this.checkpoint();
     const started = performance.now();

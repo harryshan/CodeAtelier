@@ -1,21 +1,17 @@
 /**
- * 文件作用：为新任务恢复已保存的模型协议上下文。
+ * 为新任务或恢复的任务接上已有对话。Engine 传入 Store、会话 ID 和本轮用户消息，
+ * 得到可以继续发给模型的历史记录。
  *
- * 模块协作与输入输出：
- * 由 Engine 在启动或恢复任务时调用，输入 Store、会话 ID 和当前用户消息，返回可继续发送给模型的协议项数组。
+ * 1. 读取已保存的上下文，找出缺少结果的 function_call。
+ * 2. 从 tool_result 事件补回已知结果；找不到记录时，明确标为“执行结果未知”。
+ * 3. 追加本轮用户消息并保存，供当前任务和下次恢复使用。
  *
- * 代码结构与执行顺序：
- * 1. 从保存的上下文建立已回答调用集合，并从 tool_result 事件索引已保存结果。
- * 2. 逐个补齐尚无输出的 function_call：有记录则引用结果，无记录则写明执行结果未知。
- * 3. 追加当前用户消息并保存上下文，让本轮任务和后续恢复共享同一历史。
- *
- * 关键约束：
- * 这里只修复协议配对，不重新执行工具；历史读取不能替代修改前读取当前文件。
+ * 这里只补齐协议要求的调用与结果，不会重跑工具。修改文件前仍须读取磁盘上的当前内容。
  */
 
 import type { Store } from "../sessions/store.js";
 
-/** 为新任务恢复协议上下文；保存的历史不代表磁盘上的最新代码。 */
+/** 补齐缺失的工具结果，再追加本轮用户消息。不会重新执行工具。 */
 export function prepareTaskContext(
   store: Store,
   sessionId: string,
@@ -23,7 +19,7 @@ export function prepareTaskContext(
 ): any[] {
   const input = store.context(sessionId);
 
-  // 崩溃可能留下尚未写入结果的调用。优先补齐已知结果，不重新执行副作用。
+  // 崩溃前工具可能已经执行过，只是结果没写全；先找已有记录，不能直接重跑。
   const answeredCallIds = new Set(
     input
       .filter((i) => i.type === "function_call_output")

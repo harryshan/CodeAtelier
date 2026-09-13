@@ -1,16 +1,12 @@
 /**
- * 文件作用：启动 CodeAtelier 本机后端并协调进程退出。
+ * 后端进程入口，由 pnpm dev 或 pnpm start 启动。
+ * 这里准备配置、日志和 HTTP 应用，并在收到退出信号时关闭服务。
  *
- * 模块协作与输入输出：
- * 生产后端进程入口，由 dev/start 脚本启动；负责配置与资源组装，不实现具体 API。
+ * 1. 尝试加载可选的 .env，再创建 Config 和能读取最新密钥的日志实例。
+ * 2. 调用 createApp，按 CODEATELIER_PORT 在 127.0.0.1 上监听，并记录访问地址。
+ * 3. SIGINT 和 SIGTERM 都调用 stop，由 shutdown 保存中断状态并释放资源；关闭失败时设置非零退出码。
  *
- * 代码结构与执行顺序：
- * 1. 尝试加载可选 .env，再创建 Config 和能动态读取密钥的日志实例。
- * 2. 调用 createApp，读取 CODEATELIER_PORT 并监听 127.0.0.1，记录可访问地址。
- * 3. SIGINT/SIGTERM 共用 stop，交由 shutdown 释放资源，失败时设置非零退出状态。
- *
- * 关键约束：
- * 只监听回环地址；关闭的状态持久化与连接清理由应用层统一处理。
+ * 服务只监听回环地址，具体的任务和连接清理由 app.ts 统一处理。
  */
 
 import { Config } from "../config/config.js";
@@ -20,7 +16,7 @@ import { createApp } from "./app.js";
 try {
   process.loadEnvFile();
 } catch {
-  /* .env is optional. */
+  /* .env 可选，也可以只用环境变量配置。 */
 }
 
 const config = new Config();

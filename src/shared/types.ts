@@ -1,16 +1,12 @@
 /**
- * 文件作用：定义前后端共享的会话和任务数据契约。
+ * 定义 server、agent 和 web 共用的数据类型，使 API 两端使用一致的字段。
+ * 这里不依赖后端的文件或数据库实现。
  *
- * 模块协作与输入输出：
- * 被 server、agent 和 web 共同导入，表达 API 传输的领域数据，不依赖后端文件或数据库实现。
+ * 1. TaskStatus 列出任务状态，Session 和 Task 描述会话及其中的任务。
+ * 2. Event 表示有顺序的历史条目，Approval 表示待审批操作。
+ * 3. Settings 描述公开配置，Snapshot 汇总页面需要的会话、事件、任务和审批。
  *
- * 代码结构与执行顺序：
- * 1. TaskStatus 定义任务生命周期，Session 和 Task 描述会话归属及执行记录。
- * 2. Event 描述有序历史条目，Approval 描述待批准操作及是否可复用。
- * 3. Settings 声明可传输配置，Snapshot 聚合页面需要的会话、事件、任务及审批。
- *
- * 关键约束：
- * 类型本身不验证不可信请求；API 和 Config 的运行时校验必须与这里同步，密钥不属于公开 Settings。
+ * 类型不会在运行时校验请求，相关检查仍由 API 和 Config 完成。公开 Settings 不包含密钥。
  */
 
 export type TaskStatus =

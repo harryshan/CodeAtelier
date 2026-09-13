@@ -1,15 +1,10 @@
 /**
- * 文件作用：配置 React Web UI 的开发服务和生产构建。
+ * 配置 React 开发服务和前端构建，由 pnpm dev:web 和 pnpm build 使用。
  *
- * 使用场景与输入输出：
- * 由 dev:web 和 build 使用，连接 React 转换、静态资源输出及开发期后端代理。
+ * 1. plugins 启用 React 转换，build 将网页产物写入 dist/web。
+ * 2. server 指定开发端口，把 /api 请求代理到本机后端。
  *
- * 代码结构与阅读顺序：
- * 1. plugins 启用 React，build 将前端产物写入 dist/web。
- * 2. server 固定开发端口，并把 /api 代理给本机生产后端端口。
- *
- * 维护注意事项：
- * 代理只用于开发，生产静态文件由 Fastify 提供；启动命令另行约束监听回环地址。
+ * 代理只在开发时使用；生产网页由 Fastify 提供。开发启动命令负责指定回环监听地址。
  */
 
 import { defineConfig } from "vite";

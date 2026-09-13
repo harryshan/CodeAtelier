@@ -1,16 +1,12 @@
 /**
- * 文件作用：向 agent 提供有界、仅限当前会话的历史快照读取工具。
+ * 提供 read_context_history 工具，让模型分段读回当前会话压缩前的历史。
+ * Engine 将 historyDefinition 放进工具列表，再把调用交给 readContextHistory。
  *
- * 模块协作与输入输出：
- * Engine 将 historyDefinition 加入工具列表，并把 read_context_history 调用转交本模块。
+ * 1. schema 校验快照 ID、记录编号和字符偏移；historyDefinition 描述模型可用的参数。
+ * 2. readContextHistory 同时核对会话和快照 ID，找到 source 中对应的原始记录。
+ * 3. 按输出预算截取序列化后的内容，返回正文、下一段偏移和总字符数。
  *
- * 代码结构与执行顺序：
- * 1. schema 校验 snapshotId、记录 index 和字符 offset，historyDefinition 生成模型可见工具契约。
- * 2. readContextHistory 通过 sessionId 与 snapshotId 共同查找快照，再定位 source 中的记录。
- * 3. 序列化原始记录并按输出预算切片，返回 text、nextOffset 与 totalChars。
- *
- * 关键约束：
- * 历史工具不访问当前磁盘文件；分页预留 JSON 转义空间，越界偏移或跨会话记录直接拒绝。
+ * 分页时要为 JSON 转义留出空间。跨会话读取和越界偏移会被拒绝；历史记录也不能代替当前文件。
  */
 
 import { z } from "zod";
@@ -51,7 +47,7 @@ export function readContextHistory(
     throw new Error("历史读取偏移超出记录范围。");
   }
 
-  // 预留 JSON 转义及元数据空间，避免外层截断破坏分页游标。
+  // 给 JSON 转义和分页字段留出空间，避免外层截断后丢掉下一页的位置。
   const page = text.slice(
     query.offset,
     query.offset + Math.max(1, Math.floor((outputChars - 300) / 6)),

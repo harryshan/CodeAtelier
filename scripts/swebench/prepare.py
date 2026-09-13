@@ -1,15 +1,11 @@
-# 文件作用：为手动 SWE-bench 运行打包构建后的后端和依赖清单。
+# 将已构建的后端打包，供手动评测时安装到容器。
+# 生成 tar.gz 和配套 JSON，后者记录文件清单及 SHA256。
 #
-# 使用场景与输入输出：
-# 手动构建之后生成供容器安装的压缩包，以及描述包内文件与整体 SHA256 的旁侧 JSON。
+# 1. prepare 确认评测入口已构建，收集 package.json、锁文件和后端 JavaScript。
+# 2. 拒绝符号链接和仓库外文件，计算哈希，再按仓库相对路径写入压缩包。
+# 3. 保存整包哈希和文件清单；命令行入口读取 root、output 并打印结果路径。
 #
-# 代码结构与阅读顺序：
-# 1. prepare 确认 dist/server/evaluation/main.js 存在，收集 package.json、锁文件和后端 JavaScript。
-# 2. 逐文件拒绝链接或仓库外输入，计算哈希并以仓库相对路径写 tar.gz。
-# 3. 写入归档哈希及文件清单，CLI 解析 root/output 后打印生成位置。
-#
-# 维护注意事项：
-# 不打包 .env、Git、历史、源码映射或测试；只打包已构建结果，不在此启动编译或评测。
+# 不会启动编译或评测，也不打包 .env、Git 数据、会话历史、源码映射或测试。
 
 """Package only built runtime files and dependency manifests for SWE-bench."""
 
@@ -37,7 +33,7 @@ def prepare(root: Path, output: Path) -> dict:
         ).hexdigest()
 
     output.parent.mkdir(parents=True, exist_ok=True)
-    # Excludes .env, Git, history, tests, source maps and all local data.
+    # 不打包 .env、Git 数据、历史、测试、源码映射和本地运行数据。
     with tarfile.open(output, "w:gz") as archive:
         for file in files:
             archive.add(file, arcname=file.relative_to(root).as_posix())

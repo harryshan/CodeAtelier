@@ -1,19 +1,16 @@
 /**
- * 文件作用：实现 CodeAtelier 单任务 agent 循环，串联模型、工具、审批和历史存储。
+ * CodeAtelier 的任务执行入口，把模型请求、工具执行、审批和历史保存串起来。
+ * HTTP 服务和手动评测都会创建 Engine；任务记录写入 Store，界面通过事件获知变化。
  *
- * 模块协作与输入输出：
- * 由 HTTP 应用或手动评测入口组装，依赖 Config、Store、模型接口和 ToolRunner；通过事件通知 UI，实际历史写入 Store。
+ * 1. 构造器接好审批通知；snapshot 读取会话状态，emit 脱敏并保存事件。
+ * 2. start 确保同一时间只有一个任务，保存用户消息，并准备取消信号和完成通知。
+ * 3. resume 继续最后一个可恢复任务；cancel 处理用户取消，close 处理服务关闭。
+ * 4. run 读取历史和项目规则，准备工具及上下文预算；摘要可使用单独配置的辅助模型。
+ * 5. 每轮先整理上下文，再请求模型。只有完整响应保存成功后，才按顺序执行工具。
+ * 6. 工具结果和更新后的上下文一起提交到数据库；退出时保存最终状态并发出 task_end。
  *
- * 代码结构与执行顺序：
- * 1. 构造器连接 ApprovalManager 与任务等待状态；snapshot/emit 提供会话视图和脱敏事件写入。
- * 2. start 校验全局单任务约束，事务保存任务及用户消息，建立 AbortController 和完成 Promise。
- * 3. resume 仅恢复会话最后一个可恢复任务，沿用原始要求；cancel/close 分别处理用户取消与服务中断。
- * 4. run 准备历史、工作区规则、工具和模型容量，创建 ContextManager，按需选择辅助摘要模型及独立容量，并记录预算及 usage。
- * 5. 每个步骤先处理上下文，再在 retryModel 的每次尝试中生成请求视图；完整模型输出保存后才执行工具。
- * 6. 工具按顺序运行，结果与新上下文在事务内保存；finally 写入终态并发出 task_end。
- *
- * 关键约束：
- * 模型重试不能重放已完成工具；工具副作用无法随数据库回滚，持久化失败须停止并保留恢复线索。
+ * 模型请求可以重试，但已经执行的工具不能跟着重跑。数据库回滚也撤销不了文件修改或
+ * 已启动的命令，所以保存失败时必须停止任务，并留下足够的记录供后续恢复。
  */
 
 import { auxiliarySettings } from "../config/auxiliary-model.js";
@@ -99,7 +96,7 @@ export class Engine {
       throw new Error("会话不存在");
     }
 
-    // 任务与首条消息一起落盘，避免留下没有原始要求的孤立任务。
+    // 任务和用户消息一起保存，避免恢复时找不到用户原本要求做什么。
     const task = this.store.transaction(() => {
       const created = this.store.createTask(sessionId);
 
@@ -127,7 +124,7 @@ export class Engine {
             "任务持久化异常，请检查存储空间和权限后恢复。",
           );
         } catch {
-          /* Next boot marks unfinished tasks interrupted. */
+          /* 下次启动时会将未完成任务标为中断。 */
         }
       })
       .finally(() => {
@@ -339,7 +336,7 @@ export class Engine {
 
         lastFlush = Date.now();
         log.debug({ event: "model.started", step });
-        // 仅重试模型请求；完整响应保存后才允许进入工具执行阶段。
+        // 这里只重试模型请求。完整响应保存成功后，才能执行其中的工具调用。
         let attemptOffset = 0;
         let requestInput = input;
         const requestModel = () =>
@@ -411,7 +408,7 @@ export class Engine {
             throw error;
           }
 
-          // 部分失败文本留在原 attempt；压缩和再次请求不能混入它的流。
+          // 失败前收到的文本留在原 attempt 中，不能和下一次请求的回复拼在一起。
           flush();
           attemptOffset = attempt;
           lastFlush = Date.now();
@@ -491,7 +488,7 @@ export class Engine {
           }
 
           output = redactJson(output, [this.config.apiKey]);
-          // 工具已产生的副作用不能回滚；结果与上下文必须一起保存。
+          // 文件修改或命令执行已经发生，数据库回滚也撤销不了；结果和上下文要一起保存。
           this.store.transaction(() => {
             emit("tool_result", {
               name: call.name,

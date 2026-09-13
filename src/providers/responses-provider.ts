@@ -1,18 +1,14 @@
 /**
- * 文件作用：将通用模型接口适配到自建 Responses API 服务。
+ * 通过 OpenAI SDK 调用已配置的 Responses 服务，实现通用的 ModelProvider 接口。
+ * Engine 的主任务和上下文摘要都从这里发送模型请求。
  *
- * 模块协作与输入输出：
- * 实现 ModelProvider，使用 OpenAI SDK 访问已配置的 Responses 服务；Engine 和摘要请求共用此适配器。
+ * 1. getCapabilities 查询模型列表，按完整模型 ID 查找并校验容量信息。
+ * 2. run 检查密钥，创建关闭 SDK 重试的客户端，并接上取消、总超时和空闲超时。
+ * 3. 请求带上思考等级、流式选项和可选输出上限；文本 delta 交给界面，item.done 暂存完整输出项。
+ * 4. 收到 completed 后才返回结果。优先使用 completed.output，服务未填时按索引收集 item.done。
+ * 5. 将流错误和连接异常转成 ModelError，最后清理计时器和监听。
  *
- * 代码结构与执行顺序：
- * 1. getCapabilities 查询模型列表，按准确模型 ID 选择并验证 capabilities。
- * 2. run 校验密钥并创建禁用 SDK 自动重试的客户端，连接外部取消、总超时和空闲超时。
- * 3. 请求显式发送 reasoning.effort、stream 和可选输出上限；delta 用于展示，item.done 暂存完整项目。
- * 4. 必须收到 completed 才整理输出，优先采用 completed.output，空缺时按索引回收 item.done。
- * 5. 失败流与连接异常转换为 ModelError，finally 清除计时器和外部监听。
- *
- * 关键约束：
- * 部分文本或工具参数不能被当成成功；重试由上层统一负责，避免 SDK 和引擎叠加次数。
+ * 半截文本和未收齐的工具参数不能算成功响应。重试统一交给上层，避免 SDK 与 Engine 重复重试。
  */
 
 import { capabilitiesSchema, parseUsage } from "./model-metadata.js";
@@ -89,7 +85,7 @@ export class ResponsesProvider implements ModelProvider {
     reset();
     let text = "";
     let completedResponse: any;
-    // 兼容 completed.output 为空的服务：先收集 item.done，完成后统一提交。
+    // 有些服务的 completed.output 为空，先暂存 item.done，收到完成事件后再组装结果。
     const completedItemsByIndex = new Map<number, any>();
 
     try {

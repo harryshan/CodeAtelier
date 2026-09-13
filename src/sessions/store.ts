@@ -1,18 +1,13 @@
 /**
- * 文件作用：封装会话、任务、事件和上下文的 SQLite 持久化。
+ * 用 SQLite 保存会话、任务、事件和模型上下文，供 Engine、HTTP 接口和 ContextManager 使用。
  *
- * 模块协作与输入输出：
- * 被 Engine、HTTP 路由和 ContextManager 使用，将会话运行状态保存在 Node SQLite 数据库中。
+ * 1. 构造器初始化数据库，把重启前未完成的任务标为 interrupted；transaction 包装提交和回滚。
+ * 2. list/get/create 读写会话，tasks/task/createTask/status 读写任务及其状态。
+ * 3. event/events 保存和分页读取事件；context/saveContext 读写当前模型历史。
+ * 4. 快照按会话查询，compactContext 在同一事务中保存原始快照并替换活动上下文。
+ * 5. close 由应用退出流程调用，关闭数据库连接。
  *
- * 代码结构与执行顺序：
- * 1. 构造器初始化 schema，并把重启前的活动任务标记为 interrupted；transaction 提供提交/回滚边界。
- * 2. list/get/create 管理会话，tasks/task/createTask/status 管理任务与终态。
- * 3. event/events 保存并按游标读取历史，context/saveContext 管理发送模型的活动协议项。
- * 4. 快照查询按会话隔离；compactContext 在同一事务里插入来源快照并替换活动上下文。
- * 5. close 释放数据库连接，交由应用关闭流程调用。
- *
- * 关键约束：
- * 数据库事务不能回滚已执行的文件或进程副作用；不得删除恢复所需的未知状态与原始来源。
+ * 事务只能回滚数据库，不能撤销文件修改或命令执行。恢复需要的未知状态和原始记录必须保留。
  */
 
 import type { ContextSnapshot } from "../context/types.js";

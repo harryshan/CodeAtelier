@@ -1,16 +1,12 @@
 /**
- * 文件作用：定义手动评测的工作目录、输出位置和预算参数契约。
+ * 校验 runEvaluation 的参数，命令行入口和直接调用都使用同一套规则。
+ * EvaluationOptions 从 schema 推导，避免类型与校验要求不一致。
  *
- * 模块协作与输入输出：
- * 供 runEvaluation 校验来自 CLI 或直接调用的参数；类型 EvaluationOptions 从同一 schema 推导。
+ * 1. 目录和提示字段指定工作区、任务内容和报告位置。
+ * 2. 预算字段分别限制总 token、模型调用次数、任务步数和总时长。
+ * 3. allowWorkspaceCommands 默认关闭；开启后仍须通过 runner.ts 的环境和目录检查。
  *
- * 代码结构与执行顺序：
- * 1. 目录和提示字段明确任务输入与记录输出位置。
- * 2. maxTotalTokens、maxModelCalls、maxSteps 和 timeoutMs 分别约束用量、调用、任务步数和时长。
- * 3. allowWorkspaceCommands 默认关闭，实际审批还要经过运行器的环境和目录检查。
- *
- * 关键约束：
- * schema 只验证参数形状；真实路径分离与 Docker 运行条件由 runner.ts 校验。
+ * 这里只检查参数格式，真实路径是否重叠、是否满足 Docker 运行条件由运行器检查。
  */
 
 import { z } from "zod";

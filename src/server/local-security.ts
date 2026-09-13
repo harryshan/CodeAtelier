@@ -1,17 +1,13 @@
 /**
- * 文件作用：落实本机 HTTP 请求的 Host、Origin 和会话凭据校验。
+ * 在业务路由执行前检查请求来源和会话凭据，防止其他网站借本机服务发起操作。
+ * createApp 调用注册函数，得到 bootstrap 要发给浏览器的令牌。
  *
- * 模块协作与输入输出：
- * 由 createApp 在业务路由前注册；返回新生成的 token，供 bootstrap 同步设置 Cookie 和浏览器写请求凭据。
+ * 1. 生成随机令牌；compare 先核对长度，再用 timingSafeEqual 比较。
+ * 2. onRequest 检查 Host 是否指向本机，以及 Origin 是否同源或属于允许的开发服务器。
+ * 3. 除 bootstrap 外，API 都要求 ca_session Cookie；写请求还必须携带 x-codeatelier-token。
+ * 4. 设置 no-store 和 nosniff 响应头，不合法的请求直接返回 401 或 403。
  *
- * 代码结构与执行顺序：
- * 1. 生成随机令牌，compare 先检查长度再使用 timingSafeEqual。
- * 2. onRequest 验证 Host 为回环名称，解析 Origin 并检查同源或开发服务器例外。
- * 3. API 除 bootstrap 外要求有效 ca_session Cookie，非 GET/HEAD 请求额外要求 x-codeatelier-token。
- * 4. 设置 no-store 与 nosniff 响应头，校验失败直接返回 401/403。
- *
- * 关键约束：
- * 服务重启生成新凭据，客户端需要重新 bootstrap；这些 HTTP 检查不替代工具执行审批。
+ * 服务重启后令牌会变，浏览器需要重新 bootstrap。通过 HTTP 校验后，工具执行仍须遵守审批规则。
  */
 
 import type { HttpServer } from "./http-server.js";

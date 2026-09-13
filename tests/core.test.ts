@@ -1,16 +1,12 @@
 /**
- * 文件作用：验证文件权限、任务闭环、持久化及本机服务安全的基础行为。
+ * 覆盖文件权限、模型调用工具、历史保存和本机 HTTP 安全的基础流程。
+ * 测试使用临时目录、真实数据库和模拟模型。
  *
- * 使用场景与输入输出：
- * 以临时目录、真实存储和受控模型覆盖跨模块基础闭环，作为文件权限、执行和服务安全的综合回归。
+ * 1. temp/runner 准备测试资源；files and permissions 检查先读后写、精确替换、越界和取消。
+ * 2. waitFor 等待任务结束；execution and persistence 检查超时、输出限制、重启和工具执行。
+ * 3. server security and configuration 检查请求来源、凭据、配置保存和脱敏。
  *
- * 代码结构与阅读顺序：
- * 1. temp/runner 提供隔离资源，files and permissions 分组验证先读后写、精确替换、越界及取消。
- * 2. waitFor 为异步任务提供有界等待，execution and persistence 分组覆盖超时、输出限制、历史重启和工具循环。
- * 3. server security and configuration 分组覆盖来源、凭据、配置保存和脱敏。
- *
- * 维护注意事项：
- * 综合测试不能替代平台实测；条件不支持的链接用例保持明确跳过，不能弱化权限断言。
+ * 需要特定平台能力的链接测试会明确跳过，不能把一次平台上的通过当作全平台验证。
  */
 
 import { describe, it, expect, afterEach } from "vitest";

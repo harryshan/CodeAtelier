@@ -1,22 +1,18 @@
 /**
- * 文件作用：根据持久化工具事件生成压缩快照的执行状态清单。
+ * 为压缩快照整理工具执行记录，供后续恢复时判断哪些结果已经保存、哪些仍然未知。
+ * ContextManager 传入旧协议记录、数据库事件和可选的父快照，得到 ledger。
  *
- * 模块协作与输入输出：
- * 由 ContextManager 在压缩时生成 ledger，输入待处理协议项、持久化事件和可选父快照。
+ * 1. 继承父快照中的执行记录，再检查本次待压缩历史中的 function_call。
+ * 2. 核对工具名、调用 ID、结果数量和正文，防止把别的任务中同名 ID 的结果配过来。
+ * 3. 唯一匹配时保留错误、退出码和截断标记等信息，否则记为 unknown。
  *
- * 代码结构与执行顺序：
- * 1. 先继承上一快照的执行清单，再扫描前缀中的 function_call。
- * 2. 同时核对工具名、调用 ID、唯一输出及输出内容，避免把其他任务复用 ID 的结果算到当前调用。
- * 3. 有唯一记录时保留 error、exitCode 和 truncated 等有限诊断，否则标为 unknown。
- *
- * 关键约束：
- * recorded 仅表示存在匹配记录，不表示执行成功；状态由事件证据确定，不能由摘要推断。
+ * recorded 只表示找到了匹配记录，不代表工具执行成功。这个判断必须来自保存的事件，不能靠摘要猜。
  */
 
 import type { ContextSnapshot } from "./types.js";
 import type { Event } from "../shared/types.js";
 
-/** 执行状态来自工具事件，不由摘要模型判断；丢失记录一律按未知处理。 */
+/** 根据已保存的工具事件判断状态；找不到记录就保留未知，不让摘要模型猜。 */
 export function executionLedger(
   prefix: any[],
   events: Event[],
@@ -31,8 +27,8 @@ export function executionLedger(
         record.type === "function_call_output" &&
         record.call_id === item.call_id,
     );
-    // 不能只按 call_id 查最后一个事件：自建服务可能跨任务复用 ID。
-    // 输出不一致或存在歧义时保守标为未知，绝不借旧任务的成功记录推断本次成功。
+    // 服务可能在不同任务中重复使用 call_id，不能只取这个 ID 最后一次出现的结果。
+    // 结果不一致或无法唯一匹配时记为未知，不能把旧任务的成功算到本次调用上。
     const matches = events.filter(
       (event) =>
         event.type === "tool_result" &&

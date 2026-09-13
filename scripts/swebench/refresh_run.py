@@ -1,18 +1,15 @@
-# 文件作用：仅手动刷新当前机器的三题准备镜像，并按需运行预测和官方评分。
+# 把当前后端安装进已准备好的前三题镜像，再按需运行预测和官方评分。
+# 由 PowerShell 入口或 Python 命令手动调用，输出新镜像清单和本次运行记录。
 #
-# 使用场景与输入输出：
-# 由手动 PowerShell 入口或 Python 命令调用，读取前三题清单、已准备镜像及构建产物，输出刷新镜像清单和可选评测运行目录。
+# 1. refresh_image 从旧镜像启动临时容器，核对题目的 base_commit，再替换应用、安装依赖，
+#    检查文件哈希并尝试导入运行时模块。
+# 2. 检查通过后保存新镜像，返回镜像 ID、包哈希和检查记录；最后删除临时容器。
+# 3. run_stage 调用后续 Python 脚本并检查退出码。
+# 4. main 检查本地数据、准备镜像及密钥和缓存配置，为本次运行建目录并打包后端。
+# 5. 逐题刷新并保存进度，全部成功后才更新镜像清单；prepare-only 到此结束，否则继续预测和评分。
+# 6. 命令入口配置日志和取消信号，用退出码报告取消。
 #
-# 代码结构与阅读顺序：
-# 1. refresh_image 从已有镜像启动临时容器，先核对任务 base_commit，再替换容器内应用、安装依赖并验证文件哈希和运行时导入。
-# 2. 校验通过后提交带新标识的镜像，返回镜像 ID、包哈希及检查记录，finally 删除临时容器。
-# 3. run_stage 统一调用后续 Python 脚本并检查退出状态。
-# 4. main 校验本地数据、准备镜像及可选密钥/cache 配置，为本次运行创建独立目录并打包后端。
-# 5. 顺序刷新每题并保留部分进度，全部成功才写出新镜像清单；prepare-only 在此返回，否则依次预测和官方评分。
-# 6. 命令入口设置日志和信号取消，取消以明确退出码结束。
-#
-# 维护注意事项：
-# 会修改容器应用、安装依赖并创建 Docker 镜像，仅显式手动执行；部分刷新不能发布为完整活动清单。
+# 会安装依赖并创建 Docker 镜像，只能手动执行。只刷新部分题目时，不能把结果写成完整可用的清单。
 
 import argparse
 import hashlib
@@ -46,7 +43,7 @@ def refresh_image(client, entry, row, bundle, metadata, token):
         if head.decode().strip() != row["base_commit"]:
             raise ValueError("Prepared image base_commit mismatch")
         upload(container, "/installed-agent/codeatelier.tar.gz", bundle.read_bytes())
-        # This fixed container-only directory contains the old application, never the task.
+        # 这个固定的容器目录只放旧版应用，不包含题目代码。
         execute(container, ["rm", "-rf", "/opt/codeatelier/app"])
         execute(container, ["mkdir", "-p", "/opt/codeatelier/app"])
         execute(
@@ -179,7 +176,7 @@ def main():
             )
     finally:
         client.close()
-        # Partial preparation is diagnostic only; never publish it as the active manifest.
+        # 部分完成的记录只用于排错，不能更新为正式使用的镜像清单。
         (preparation / "progress.json").write_text(
             json.dumps(refreshed, indent=2), encoding="utf-8"
         )

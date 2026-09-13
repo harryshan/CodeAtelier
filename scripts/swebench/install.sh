@@ -1,27 +1,22 @@
 #!/usr/bin/env bash
-# 文件作用：在评测容器的独立前缀中准备 CodeAtelier 运行环境。
+# 为手动评测容器安装 CodeAtelier，把运行时和应用放在 /opt/codeatelier。
 #
-# 使用场景与输入输出：
-# 由手动容器试验准备流程调用，把运行时和打包应用安装到 /opt/codeatelier。
+# 1. 创建 runtime 和 app 目录；已有 Node 版本完全匹配时直接复用。
+# 2. 否则下载对应架构的 Node，核对校验和后解包。
+# 3. 解开 /installed-agent 下的应用包，设置 PATH 并安装指定版本的 pnpm。
+# 4. 按锁文件安装生产依赖，跳过依赖脚本，设置读取权限并打印 Node 版本。
 #
-# 代码结构与阅读顺序：
-# 1. 保留 Bash shebang 并启用严格错误处理，创建 runtime 和 app 目录。
-# 2. 精确版本 Node 已存在则复用，否则补齐下载工具、选择架构、下载并验证校验和后解包。
-# 3. 展开 /installed-agent 下的应用归档，设置 PATH 并安装固定 pnpm。
-# 4. 按锁文件安装生产依赖且跳过依赖脚本，设置读取权限并打印 Node 版本。
-#
-# 维护注意事项：
-# 会安装软件和联网下载，仅用于明确启动的评测容器；独立前缀避免替换任务原有 Node。
+# 会联网和安装软件，只用于评测容器。独立安装目录避免替换题目原有的 Node。
 
 set -euo pipefail
 
-# A private prefix leaves the task's system Node installation unchanged.
+# 单独安装，避免覆盖题目原有的 Node。
 prefix=/opt/codeatelier
 node_version=24.19.0
 mkdir -p "$prefix/runtime/bin" "$prefix/app"
 
 if command -v node >/dev/null && command -v npm >/dev/null && [ "$(node --version)" = "v${node_version}" ]; then
-    # Reuse an exact-version task runtime to avoid downloading it for every trial.
+    # 版本完全一致就直接复用，避免每题都重新下载。
     ln -sf "$(command -v node)" "$prefix/runtime/bin/node"
 else
     if ! command -v curl >/dev/null || ! command -v xz >/dev/null; then
