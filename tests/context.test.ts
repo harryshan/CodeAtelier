@@ -17,9 +17,14 @@ import path from "node:path";
 import pino from "pino";
 import { ContextManager } from "../src/context/context-manager.js";
 import { contextSize, safeCuts } from "../src/context/budget.js";
-import { readContextHistory } from "../src/context/history.js";
+import {
+  historyDefinition,
+  readContextHistory,
+} from "../src/context/history.js";
 import { Store } from "../src/sessions/store.js";
 import { Engine } from "../src/agent/engine.js";
+import { createInstructions } from "../src/agent/instructions.js";
+import { definitions } from "../src/tools/registry.js";
 import { Config } from "../src/config/config.js";
 import type { ModelProvider } from "../src/providers/model-provider.js";
 import { temp } from "./fixtures/helpers.js";
@@ -292,9 +297,16 @@ it("rejects oversized current requirements without calling the summary model", a
 
 it("continues an engine task after compression and exposes archived history as a bounded tool", async () => {
   const config = new Config(await temp());
-  config.settings.contextChars = 18000;
   const store = new Store(path.join(await temp(), "db"));
   const session = store.create(await temp(), "integration");
+  // 工具声明和指令不可压缩；按实际固定开销预留空间，仍强制历史超过触发阈值。
+  const instructions = await createInstructions(session.workspace);
+  const tools = [...definitions, historyDefinition];
+  const overhead = contextSize([], instructions, tools);
+  config.settings.contextChars = Math.ceil((overhead + 3000) / 0.6);
+  expect(
+    contextSize(history().slice(0, 2), instructions, tools),
+  ).toBeGreaterThan(config.settings.contextChars * 0.8);
   store.saveContext(session.id, history().slice(0, 2));
   let turns = 0;
   const engine = new Engine(store, config, pino({ enabled: false }), () => ({
@@ -339,7 +351,10 @@ it("continues an engine task after compression and exposes archived history as a
   try {
     engine.start(session.id, "continue");
     await engine.active?.done;
-    expect(store.tasks(session.id)[0].status).toBe("completed");
+    expect(
+      store.tasks(session.id)[0].status,
+      store.tasks(session.id)[0].error,
+    ).toBe("completed");
     expect(
       store
         .events(session.id)

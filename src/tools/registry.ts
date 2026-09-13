@@ -1,7 +1,7 @@
 /**
  * 声明模型可以调用的文件和命令工具，供 Engine 生成工具列表、ToolRunner 校验参数。
  *
- * 1. schemas 定义列目录、读文件、搜索、写文件、单文件多处精确编辑、命令和受限 Git 操作的参数。
+ * 1. schemas 定义列目录、读文件、搜索、写文件、单文件/多文件快照精确编辑、命令和受限 Git 操作的参数。
  * 2. descriptions 向模型说明各工具的用途和限制。
  * 3. definitions 将 schema 转成 Responses API 需要的函数工具声明。
  *
@@ -12,6 +12,26 @@ import { z } from "zod";
 
 /** 单次读取的硬行数上限，避免一次工具结果占满模型上下文。 */
 export const MAX_READ_LINES = 500;
+
+/** null 表示不用行号；default 兼容本地旧调用，模型 strict schema 仍要求显式字段。 */
+const fileEditSchema = z
+  .object({
+    path: z.string().min(1),
+    edits: z
+      .array(
+        z
+          .object({
+            oldText: z.string().min(1),
+            newText: z.string().max(500000),
+            startLine: z.number().int().min(1).nullable().default(null),
+            endLine: z.number().int().min(1).nullable().default(null),
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(100),
+  })
+  .strict();
 
 /** 模型可见的工具契约；执行器负责权限检查与副作用。 */
 export const schemas = {
@@ -27,21 +47,9 @@ export const schemas = {
   write_file: z
     .object({ path: z.string(), content: z.string().max(500000) })
     .strict(),
-  edit_file: z
-    .object({
-      path: z.string(),
-      edits: z
-        .array(
-          z
-            .object({
-              oldText: z.string().min(1),
-              newText: z.string().max(500000),
-            })
-            .strict(),
-        )
-        .min(1)
-        .max(100),
-    })
+  edit_file: fileEditSchema,
+  edit_files: z
+    .object({ files: z.array(fileEditSchema).min(1).max(20) })
     .strict(),
   run_command: z
     .object({
@@ -71,7 +79,9 @@ const descriptions: Record<string, string> = {
   write_file:
     "Create or replace a UTF-8 text file. Existing files must have been read in this task. Prefer edit_file for changes.",
   edit_file:
-    "Apply 1-100 edits to one previously read UTF-8 file. Merge all known changes to this file into one call. Edits run in array order against the evolving text; each oldText must match exactly once at that stage. All edits are validated in memory before a single write; any invalid edit leaves the file unchanged. Fails if the file changed externally since reading or the last successful write. Batch independent calls for distinct files in one response.",
+    "Apply 1-100 non-overlapping edits to one previously read file, all located in the ORIGINAL snapshot. Never target text produced by another edit. Supply startLine/endLine as a pair of 1-based inclusive lines, or both null for unique exact-text matching. With lines, oldText must equal the entire range excluding the final line ending (internal line endings remain exact); no fuzzy matching. All edits validate before writing. Use edit_files for a logical change spanning multiple files.",
+  edit_files:
+    "Edit 1-20 distinct previously read files in one call. Each entry uses edit_file semantics: all ranges refer to that file's ORIGINAL snapshot; startLine/endLine are both integers or both null. Validate permissions, versions and all edits before any write. Files write sequentially, NOT as a cross-file transaction. On failure inspect per-file statuses and current contents; never blindly replay the batch. Merge all changes to the same real path in one entry. Existing files only; use write_file to create files.",
   run_command:
     "Execute a program with an argument array, after user approval. No shell expansion. To use a shell specify its executable and arguments explicitly. On Windows use cmd.exe /d /s /c for pnpm.cmd. Do not use direct Git commands, elevation, or destructive system operations.",
   git_status:

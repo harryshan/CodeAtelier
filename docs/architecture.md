@@ -30,6 +30,8 @@ server (Fastify)
 | --- | --- |
 | tools/registry.ts | 工具参数 schema、描述和模型可见定义 |
 | tools/tool-runner.ts | ToolRunner：校验、审批、文件与普通命令执行，并分流专用 Git 工具 |
+| tools/file-editor.ts | FileEditor：整批预检、逐文件写入和进度，复用 ToolRunner 的权限与读取哈希 |
+| tools/edit-plan.ts | 基于原始快照的行号/文本定位、重叠校验与纯文本转换 |
 | tools/git.ts | GitToolRunner：固定 status/diff/commit/push 参数、提交路径复核与逐次审批 |
 | tools/paths.ts / process.ts | 路径边界与进程生命周期 |
 | providers/model-provider.ts | 与具体服务无关的模型接口和结果契约 |

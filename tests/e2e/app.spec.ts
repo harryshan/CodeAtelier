@@ -6,13 +6,13 @@
  * 2. 检查重试文本分开显示、凭据失效后重新连接，以及会话切换后的数据隔离。
  * 3. 检查关闭服务成功和请求失败时的不同提示。
  * 4. 检查压缩通知、原始历史及模型用量在刷新后仍能显示。
- * 5. 从项目分组新建对话，验证目录预填、独立历史和刷新后分组保留。
+ * 5. 验证多文件编辑的状态、diff 和刷新后的历史；从项目分组新建对话，验证目录预填、独立历史和刷新后分组保留。
  *
  * 页面刷新或重连不能重新提交任务。这里不调用真实模型。
  */
 
 import { test, expect } from "@playwright/test";
-import { mkdtemp, readFile, realpath } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -374,4 +374,42 @@ test("creates another conversation from its project and preserves separate histo
     path: "test-results/project-conversations.png",
     fullPage: true,
   });
+});
+
+test("shows multi-file edit progress and retains it after reload", async ({
+  page,
+}) => {
+  const workspace = await realpath(
+    await mkdtemp(path.join(tmpdir(), "codeatelier-batch-")),
+  );
+  try {
+    for (const name of ["a.txt", "b.txt"]) {
+      await writeFile(path.join(workspace, name), "old");
+    }
+
+    await page.goto("/");
+    await page.getByRole("button", { name: "新建会话" }).click();
+    await page.getByLabel("项目目录").fill(workspace);
+    await page.getByRole("button", { name: "创建会话" }).click();
+    await page.getByLabel("任务描述").fill("批量编辑文件");
+    await page.getByRole("button", { name: "开始执行" }).click();
+    await expect(page.getByText("任务完成，已检查工具结果。")).toBeVisible();
+    await expect(page.getByText("批量编辑进度", { exact: true })).toBeVisible();
+    await expect(page.getByText("：已写入", { exact: false })).toHaveCount(2);
+    await expect(page.getByText("修改预览", { exact: false })).toHaveCount(2);
+    for (const name of ["a.txt", "b.txt"]) {
+      expect(await readFile(path.join(workspace, name), "utf8")).toBe("new");
+    }
+
+    await page.reload();
+    await page
+      .getByRole("button", { name: "批量编辑文件", exact: true })
+      .click();
+    await expect(page.getByText("：已写入", { exact: false })).toHaveCount(2);
+    await expect(
+      page.getByText("写入中或结果未知", { exact: false }),
+    ).toHaveCount(0);
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
 });

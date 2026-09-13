@@ -106,4 +106,4 @@ mechanical-input.test.ts 覆盖精确结果/跨路径正文引用、逐字还原
 
 - tests/tool-schema.test.ts 检查所有生产工具的 strict 对象声明：属性均列入 required，禁止额外属性；git_diff 必须显式传 staged，true/false 均有效。此回归防止工具 schema 导致整轮模型请求被拒绝，不连接真实服务。
 
-单文件批量编辑：`files.test.ts` 覆盖多处顺序替换、后项使用前项结果、美元符号原样替换、后项缺失/歧义时整批不写入、空批次拒绝以及成功/失败后读取状态复用；现有 core 测试继续覆盖未读取和外部变化拒绝。
+单/多文件批量编辑：`files.test.ts` 覆盖同快照多处替换和读取状态复用；`multi-file-edit.test.ts` 覆盖整批预检、重复真实路径、外部修改、审批拒绝、行号消歧、重叠拒绝、CRLF、取消与写入故障后的部分完成/未知状态。`tool-schema.test.ts` 递归检查 strict 契约；`engine.test.ts` 验证单次多文件调用及逐文件进度持久化；`e2e/app.spec.ts` 检查进度、diff 和刷新历史。已有 core 测试继续覆盖未读取及外部变化拒绝。

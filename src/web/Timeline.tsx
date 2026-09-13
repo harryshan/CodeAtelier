@@ -4,7 +4,7 @@
  *
  * 1. labels 和 textResult 处理工具名称及结果的显示格式。
  * 2. 按任务、步骤和尝试次数合并流式文本；已有完整 assistant 事件时，去掉对应的临时文本。
- * 3. 按事件类型显示消息、工具参数与结果、diff、命令输出，以及上下文预算和用量通知。
+ * 3. 合并同一编辑批次的逐文件最新状态；按事件类型显示消息、工具参数与结果、diff、命令输出，以及上下文预算和用量通知。
  * 4. 显示仍在接收的文本和待审批按钮，把用户选择发给后端。
  *
  * 失败尝试的半截文本不能拼进重试后的回复。命令有输出不代表成功，退出码和错误信息要保留。
@@ -19,6 +19,7 @@ const labels: Record<string, string> = {
   read_file: "读取文件",
   search: "搜索代码",
   edit_file: "精确修改",
+  edit_files: "批量修改文件",
   write_file: "写入文件",
   run_command: "执行命令",
   git_status: "Git 状态",
@@ -60,6 +61,27 @@ export function Timeline({
         e.taskId + ":" + e.data.step + ":" + (e.data.attempt || 1),
       );
     }
+  }
+
+  const editBatches = new Map<
+    string,
+    { lastId: number; files: Map<string, string> }
+  >();
+  for (const event of data.events) {
+    if (event.type !== "edit_progress") {
+      continue;
+    }
+
+    const batch = editBatches.get(event.data.batchId) ?? {
+      lastId: event.id,
+      files: new Map<string, string>(),
+    };
+    for (const file of event.data.files ?? [event.data]) {
+      batch.files.set(file.path, file.status);
+    }
+
+    batch.lastId = event.id;
+    editBatches.set(event.data.batchId, batch);
   }
 
   return (
@@ -111,6 +133,30 @@ export function Timeline({
                 <span>{e.data.durationMs} ms</span>
               </summary>
               <pre>{textResult(e)}</pre>
+            </details>
+          );
+        }
+
+        if (e.type === "edit_progress") {
+          const batch = editBatches.get(e.data.batchId);
+          if (!batch || batch.lastId !== e.id) {
+            return null;
+          }
+
+          const statuses: Record<string, string> = {
+            not_attempted: "尚未执行",
+            unknown: "写入中或结果未知，请核实文件",
+            written: "已写入",
+          };
+
+          return (
+            <details open className={s.toolResult} key={e.id}>
+              <summary>批量编辑进度</summary>
+              {Array.from(batch.files, ([file, status]) => (
+                <div key={file}>
+                  <code>{file}</code>：{statuses[status] || status}
+                </div>
+              ))}
             </details>
           );
         }

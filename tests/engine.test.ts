@@ -5,7 +5,7 @@
  * 1. 检查达到步数或上下文上限时会停止，已经完成的工具结果仍然保存。
  * 2. 传入非法工具参数，确认错误返回模型且文件没有变化。
  * 3. 检查项目规则加载、大输出限制，以及多项互不冲突的工具调用会在同一轮全部执行。
- * 4. 检查新任务必须重新读文件，以及含凭据相关源码的工具结果仍是合法 JSON。
+ * 4. 检查多文件调用的逐文件进度及结果持久化、新任务必须重新读文件，以及含凭据相关源码的工具结果仍是合法 JSON。
  *
  * 只模拟模型响应，文件操作、审批和保存使用实际实现。
  */
@@ -375,6 +375,92 @@ it("reads credential-related source without corrupting tool-result JSON", async 
       .events(fixture.session.id)
       .find((event) => event.type === "tool_result");
     expect(result?.data.result.text).toContain("const result = 42;");
+  } finally {
+    await fixture.engine.close();
+    fixture.store.close();
+  }
+});
+
+it("persists multi-file progress with the call id and returns one batch result", async () => {
+  let calls = 0;
+  let result: any;
+  const fixture = await createFixture({
+    async run(input) {
+      calls++;
+      if (calls === 1) {
+        return {
+          text: "",
+          output: ["a.txt", "b.txt"].map((name) => ({
+            type: "function_call",
+            name: "read_file",
+            call_id: name,
+            arguments: JSON.stringify({ path: name, startLine: 1, endLine: 1 }),
+          })),
+        };
+      }
+
+      if (calls === 2) {
+        return {
+          text: "",
+          output: [
+            {
+              type: "function_call",
+              name: "edit_files",
+              call_id: "batch-edit",
+              arguments: JSON.stringify({
+                files: ["a.txt", "b.txt"].map((name) => ({
+                  path: name,
+                  edits: [
+                    {
+                      oldText: "old",
+                      newText: "new",
+                      startLine: 1,
+                      endLine: 1,
+                    },
+                  ],
+                })),
+              }),
+            },
+          ],
+        };
+      }
+
+      result = JSON.parse(
+        input.find(
+          (item) =>
+            item.type === "function_call_output" &&
+            item.call_id === "batch-edit",
+        ).output,
+      );
+
+      return done;
+    },
+  });
+  try {
+    for (const name of ["a.txt", "b.txt"]) {
+      await writeFile(path.join(fixture.root, name), "old");
+    }
+
+    fixture.engine.start(fixture.session.id, "edit both files");
+    await fixture.engine.active?.done;
+    expect(calls).toBe(3);
+    expect(result.files.map((file: any) => file.status)).toEqual([
+      "written",
+      "written",
+    ]);
+    const progress = fixture.store
+      .events(fixture.session.id)
+      .filter(
+        (event) =>
+          event.type === "edit_progress" && event.data.status === "written",
+      );
+    expect(progress).toHaveLength(2);
+    expect(progress.every((event) => event.data.callId === "batch-edit")).toBe(
+      true,
+    );
+    for (const name of ["a.txt", "b.txt"]) {
+      expect(await readFile(path.join(fixture.root, name), "utf8")).toBe("new");
+    }
   } finally {
     await fixture.engine.close();
     fixture.store.close();

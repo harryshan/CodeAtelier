@@ -32,3 +32,8 @@
 - `POST /api/tasks/:id/resume`：请求体 `{ "instruction": "可选恢复说明" }`；沿用本机身份与写请求 token 校验。
 - 重试流式文本按 taskId/step/attempt 分开显示；失败尝试保留为未完成回复，不与成功回复拼接。
 - 故障注入测试见 `tests/recovery.test.ts`，UI 恢复入口见 `tests/e2e/app.spec.ts`。使用可控服务制造断流和超时，无需真实 API key。
+
+
+## 多文件编辑
+
+`edit_files` 先校验整个批次，再依次写入。`edit_progress` 以 batchId 和 callId 关联记录，写入前记 unknown、成功后记 written；未开始文件为 not_attempted。UI 合并展示各文件最新状态。取消、写入故障或崩溃可能留下部分完成，已写文件不回滚。整次工具结果未保存时，恢复仍将该调用标为未知，不把进度记录当作完整成功结果；先重新读取现场，不自动重放整个批次。文件重命名与进度事件不能组成同一事务，因此不能保证断电时最后一个文件的结果已记录。

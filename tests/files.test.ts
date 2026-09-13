@@ -4,7 +4,7 @@
  *
  * 1. 检查目录过滤、字面搜索、结果数量限制和带行号、分页元数据的分段读取。
  * 2. 检查模型可见的定位/小范围读取契约，以及反向行区间、二进制文件和过大文件被拒绝。
- * 3. 检查多处顺序替换、整批失败不写入、成功后复用读取状态、创建父目录、美元符号按原文替换，以及整文件覆盖需要审批。
+ * 3. 检查多处快照替换、整批失败不写入、成功后复用读取状态、创建父目录、美元符号按原文替换，以及整文件覆盖需要审批。
  * 4. 在等待审批时修改文件，并检查规则文件、敏感文件和非法工具参数的处理。
  *
  * 拒绝或校验失败后，原文件必须保持不变，不能只检查是否弹出了审批。
@@ -243,7 +243,7 @@ it("rejects unknown tools and invalid arguments before any side effects", async 
   expect(approvals.list()).toEqual([]);
 });
 
-it("applies multiple edits in order and allows another edit without rereading", async () => {
+it("applies multiple edits from one snapshot and allows another edit without rereading", async () => {
   const { root, runner } = await fileFixture();
   await runner.execute("write_file", {
     path: "a.txt",
@@ -252,9 +252,8 @@ it("applies multiple edits in order and allows another edit without rereading", 
   await runner.execute("edit_file", {
     path: "a.txt",
     edits: [
-      { oldText: "alpha", newText: "first" },
+      { oldText: "alpha", newText: "$&" },
       { oldText: "omega", newText: "last" },
-      { oldText: "first", newText: "$&" },
     ],
   });
   expect(await readFile(path.join(root, "a.txt"), "utf8")).toBe(
