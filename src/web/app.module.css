@@ -108,27 +108,12 @@
   font-size: 37px;
   color: #95d9bc;
 }
-.newButton {
+.addProjectButton {
   margin: 36px 3px 26px;
-  display: flex;
-  align-items: center;
-  gap: 9px;
   text-align: left;
-  background: #283532;
+  background: transparent;
   border-color: #41534b;
-  color: #d7efdf;
-}
-.newButton span {
-  font-size: 20px;
-  line-height: 16px;
-}
-.newButton kbd {
-  margin-left: auto;
-  color: #8baca0;
-  border: 1px solid #526159;
-  border-radius: 3px;
-  padding: 1px 5px;
-  font-size: 10px;
+  color: #b7c9c1;
 }
 .sectionLabel {
   display: flex;
@@ -150,6 +135,35 @@
 .projectHeading {
   padding: 8px 10px;
   overflow-wrap: anywhere;
+}
+.projectTitle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.projectTitle strong {
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sessionList .projectNewButton {
+  width: 26px;
+  min-width: 26px;
+  height: 26px;
+  margin: 0;
+  margin-left: auto;
+  padding: 0;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #4a5b5d;
+  border-radius: 50%;
+  color: #a9d7be;
+  font-size: 18px;
+  line-height: 1;
+}
+.sessionList .projectNewButton:hover {
+  background: #30443e;
 }
 .sessionList button {
   border: 0;
@@ -293,6 +307,26 @@
   font-size: 14px;
   line-height: 2;
   margin-bottom: 27px;
+}
+.projectForm {
+  max-width: 560px;
+  padding: 18px;
+  border: 1px solid #37474d;
+  border-radius: 10px;
+  background: #192428;
+}
+.projectForm label {
+  display: block;
+  color: #b3c5cc;
+  font-size: 12px;
+}
+.projectForm input {
+  margin-top: 9px;
+}
+.projectForm > div {
+  display: flex;
+  gap: 10px;
+  margin-top: 14px;
 }
 .primary {
   background: #b2e6c9 !important;
@@ -717,18 +751,14 @@
   }
   .brand > span:last-child,
   .sectionLabel,
-  .newButton kbd,
+  .addProjectButton,
   .sessionList button > span:last-child,
   .emptyList,
   .sideFooter {
     display: none;
   }
-  .newButton {
-    font-size: 0;
-    margin: 25px 0;
-  }
-  .newButton span {
-    font-size: 23px;
+  .sessionList .projectNewButton > span {
+    display: block;
   }
   .sessionList button {
     justify-content: center;

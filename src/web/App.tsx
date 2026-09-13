@@ -3,10 +3,10 @@
  * 通过 api 请求后端，通过 useSessionConnection 同步会话，再交给 Timeline 和 SettingsPanel 展示。
  *
  * 1. 状态和 effects 管理当前会话、表单、弹窗、加载状态、服务状态及自动滚动。
- * 2. 按服务端返回的工作区路径分组展示会话；openNew 可预填项目目录，首条 prompt 自动命名独立历史。
- * 3. resume、stopServer、create 和 send 处理恢复、关闭服务、新建会话和发送消息，并显示操作结果。
- * 4. 服务关闭后显示重启说明；正常页面由侧栏、项目栏、时间线或欢迎页、输入框组成。
- * 5. 末尾渲染新会话、设置和关闭确认弹窗。
+ * 2. 按服务端返回的工作区路径分组展示会话；项目标题右侧的加号直接创建同项目的独立对话。
+ * 3. resume、stopServer、createProject、createConversation 和 send 处理恢复、关闭服务、连接项目、新建会话和发送消息，并显示操作结果。
+ * 4. 服务关闭后显示重启说明；正常页面由侧栏、项目栏、时间线或项目连接页、输入框组成。
+ * 5. 末尾仅渲染设置和关闭确认弹窗，项目连接不使用弹窗。
  *
  * 关闭请求失败时不能断言服务已经关闭。切换会话和断线重连都只更新显示，不能重新提交任务。
  */
@@ -25,7 +25,7 @@ export default function App() {
   const [settings, setSettings] = useState<Settings>();
   const [hasKey, setHasKey] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
-  const [showNew, setShowNew] = useState(false);
+  const [addingProject, setAddingProject] = useState(false);
   const [workspace, setWorkspace] = useState("");
   const [prompt, setPrompt] = useState("");
   const [error, setError] = useState("");
@@ -80,10 +80,10 @@ export default function App() {
     projects.set(session.workspace, conversations);
   }
 
-  const openNew = (projectWorkspace = "") => {
-    setWorkspace(projectWorkspace);
+  const openProjectForm = () => {
+    setWorkspace("");
     setError("");
-    setShowNew(true);
+    setAddingProject(true);
   };
 
   const active = data?.tasks.find((t) =>
@@ -124,21 +124,27 @@ export default function App() {
     }
   };
 
-  const create = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const createConversation = async (projectWorkspace: string) => {
     setBusy(true);
     setError("");
     try {
-      const session = await api<Session>("/sessions", { workspace });
+      const session = await api<Session>("/sessions", {
+        workspace: projectWorkspace,
+      });
 
       setList(await sessions());
       setSelected(session.id);
-      setShowNew(false);
+      setAddingProject(false);
     } catch (e) {
       setError((e as Error).message);
     } finally {
       setBusy(false);
     }
+  };
+
+  const createProject = async (e: React.FormEvent) => {
+    e.preventDefault();
+    await createConversation(workspace);
   };
 
   const send = async () => {
@@ -183,8 +189,8 @@ export default function App() {
             CodeAtelier<small>YOUR LOCAL CODING STUDIO</small>
           </span>
         </a>
-        <button className={s.newButton} onClick={() => openNew()}>
-          <span>＋</span> 新建会话 <kbd>N</kbd>
+        <button className={s.addProjectButton} onClick={openProjectForm}>
+          添加项目
         </button>
         <div className={s.sectionLabel}>
           工作记录 <span>{list.length}</span>
@@ -198,21 +204,24 @@ export default function App() {
               className={s.projectGroup}
             >
               <div className={s.projectHeading} title={projectWorkspace}>
-                <strong>
-                  {projectWorkspace.split(/[\\/]/).filter(Boolean).pop() ||
-                    projectWorkspace}
-                </strong>
+                <div className={s.projectTitle}>
+                  <strong>
+                    {projectWorkspace.split(/[\\/]/).filter(Boolean).pop() ||
+                      projectWorkspace}
+                  </strong>
+                  <button
+                    className={s.projectNewButton}
+                    disabled={busy}
+                    onClick={() => void createConversation(projectWorkspace)}
+                    aria-label="新建对话"
+                    title="在此项目中新建对话"
+                  >
+                    <span>＋</span>
+                  </button>
+                </div>
                 <small>{projectWorkspace}</small>
                 <small>{conversations.length} 个对话</small>
               </div>
-              <button
-                onClick={() => openNew(projectWorkspace)}
-                aria-label="新建对话"
-                title="在此项目中新建对话"
-              >
-                <span>＋</span>
-                <span>新建对话</span>
-              </button>
               {conversations.map((item) => (
                 <button
                   key={item.id}
@@ -284,7 +293,7 @@ export default function App() {
           </div>
         )}
         <div className={s.scrollArea}>
-          {!selected ? (
+          {addingProject || !selected ? (
             <section className={s.welcome}>
               <div className={s.eyebrow}>IDEAS INTO WORKING CODE</div>
               <h1>
@@ -297,9 +306,32 @@ export default function App() {
                 <br />
                 每一步执行清晰可见，每一次对话留在本机。
               </p>
-              <button className={s.primary} onClick={() => openNew()}>
-                打开你的第一个项目 <span>↗</span>
-              </button>
+              <form className={s.projectForm} onSubmit={createProject}>
+                <label>
+                  项目目录
+                  <input
+                    autoFocus
+                    required
+                    value={workspace}
+                    placeholder="例如 G:\\projects\\my-app 或 /Users/me/my-app"
+                    onChange={(e) => setWorkspace(e.target.value)}
+                  />
+                </label>
+                <div>
+                  <button disabled={busy} className={s.primary}>
+                    {busy ? "连接中…" : "连接项目并新建对话"}
+                  </button>
+                  {list.length > 0 && (
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => setAddingProject(false)}
+                    >
+                      取消
+                    </button>
+                  )}
+                </div>
+              </form>
               <div className={s.cards}>
                 <article>
                   <span>01 / UNDERSTAND</span>
@@ -448,49 +480,6 @@ export default function App() {
             setHasKey(v.hasApiKey);
           }}
         />
-      )}
-      {showNew && (
-        <div className={s.overlay}>
-          <section
-            role="dialog"
-            aria-modal="true"
-            aria-label="新建会话"
-            className={s.modal}
-          >
-            <div className={s.modalHeading}>
-              <div>
-                <small>NEW SESSION</small>
-                <h2>新建项目对话</h2>
-              </div>
-              <button
-                aria-label="关闭新建会话"
-                onClick={() => setShowNew(false)}
-              >
-                ✕
-              </button>
-            </div>
-            <form onSubmit={create}>
-              <label>
-                项目目录
-                <input
-                  autoFocus
-                  required
-                  value={workspace}
-                  placeholder="例如 G:\\projects\\my-app 或 /Users/me/my-app"
-                  onChange={(e) => setWorkspace(e.target.value)}
-                />
-              </label>
-              <p className={s.muted}>
-                同一项目可以建立多个对话，各自保存消息和执行记录，共用项目文件。发送第一条消息后，
-                CodeAtelier 会使用低成本辅助模型自动生成会话标题。
-              </p>
-              {error && <p className={s.error}>{error}</p>}
-              <button disabled={busy} className={s.primary}>
-                {busy ? "连接中…" : "创建会话 →"}
-              </button>
-            </form>
-          </section>
-        </div>
       )}
     </div>
   );

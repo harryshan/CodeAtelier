@@ -6,15 +6,20 @@
  * 2. 检查重试文本分开显示、凭据失效后重新连接，以及会话切换后的数据隔离。
  * 3. 检查关闭服务成功和请求失败时的不同提示。
  * 4. 检查压缩通知、原始历史及模型用量在刷新后仍能显示。
- * 5. 验证多文件编辑的状态、diff 和刷新后的历史；从项目分组新建对话，验证目录预填、独立历史和刷新后分组保留。
+ * 5. 验证多文件编辑的状态、diff 和刷新后的历史；通过页面内项目目录连接首个项目，再从项目标题右侧加号新建对话并检查历史隔离。
  *
  * 页面刷新或重连不能重新提交任务。这里不调用真实模型。
  */
 
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 import { mkdtemp, readFile, realpath, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+
+async function createInitialConversation(page: Page, workspace: string) {
+  await page.getByLabel("项目目录").fill(workspace);
+  await page.getByRole("button", { name: "连接项目并新建对话" }).click();
+}
 
 test("create a session, edit a file, inspect diff and reload history", async ({
   page,
@@ -30,9 +35,7 @@ test("create a session, edit a file, inspect diff and reload history", async ({
 
   await expect(page.getByText("让想法，")).toBeVisible();
   await page.screenshot({ path: "test-results/welcome.png", fullPage: true });
-  await page.getByRole("button", { name: "新建会话" }).click();
-  await page.getByLabel("项目目录").fill(workspace);
-  await page.getByRole("button", { name: "创建会话" }).click();
+  await createInitialConversation(page, workspace);
   await page.getByLabel("任务描述").fill("修改文件");
   await page.getByRole("button", { name: "开始执行" }).click();
 
@@ -61,9 +64,7 @@ test("command approval survives refresh and can be denied or cancelled", async (
   );
 
   await page.goto("/");
-  await page.getByRole("button", { name: "新建会话" }).click();
-  await page.getByLabel("项目目录").fill(workspace);
-  await page.getByRole("button", { name: "创建会话" }).click();
+  await createInitialConversation(page, workspace);
   await page.getByLabel("任务描述").fill("执行命令");
   await page.getByRole("button", { name: "开始执行" }).click();
 
@@ -132,9 +133,7 @@ test("model retries keep incomplete text separate from the successful response",
   );
 
   await page.goto("/");
-  await page.getByRole("button", { name: "新建会话" }).click();
-  await page.getByLabel("项目目录").fill(workspace);
-  await page.getByRole("button", { name: "创建会话" }).click();
+  await createInitialConversation(page, workspace);
   await page.getByLabel("任务描述").fill("模型重试");
   await page.getByRole("button", { name: "开始执行" }).click();
 
@@ -166,9 +165,7 @@ test("reconnects after an expired SSE session without resubmitting a task", asyn
     }
   });
   await page.goto("/");
-  await page.getByRole("button", { name: "新建会话" }).click();
-  await page.getByLabel("项目目录").fill(workspace);
-  await page.getByRole("button", { name: "创建会话" }).click();
+  await createInitialConversation(page, workspace);
 
   await expect.poll(() => connections).toBeGreaterThan(1);
   await expect(page.getByText("就绪", { exact: true })).toBeVisible();
@@ -191,16 +188,15 @@ test("continues a historical conversation while keeping another session isolated
   );
 
   await page.goto("/");
-  await page.getByRole("button", { name: "新建会话" }).click();
-  await page.getByLabel("项目目录").fill(workspace);
-  await page.getByRole("button", { name: "创建会话" }).click();
+  await createInitialConversation(page, workspace);
   await page.getByLabel("任务描述").fill("说明历史项目");
   await page.getByRole("button", { name: "开始执行" }).click();
 
   await expect(page.getByText("任务完成，已检查工具结果。")).toBeVisible();
-  await page.getByRole("button", { name: "新建会话" }).click();
-  await page.getByLabel("项目目录").fill(workspace);
-  await page.getByRole("button", { name: "创建会话" }).click();
+  await page
+    .getByRole("group", { name: workspace, exact: true })
+    .getByRole("button", { name: "新建对话", exact: true })
+    .click();
 
   await expect(page.getByText("任务完成，已检查工具结果。")).toHaveCount(0);
   await page.reload();
@@ -283,9 +279,7 @@ test("context compression notice and original history survive refresh", async ({
     await mkdtemp(path.join(tmpdir(), "codeatelier-e2e-")),
   );
   await page.goto("/");
-  await page.getByRole("button", { name: "新建会话" }).click();
-  await page.getByLabel("项目目录").fill(workspace);
-  await page.getByRole("button", { name: "创建会话" }).click();
+  await createInitialConversation(page, workspace);
   await page.getByLabel("任务描述").fill("准备上下文压缩");
   await page.getByRole("button", { name: "开始执行" }).click();
   await expect(page.getByText("已准备长历史。", { exact: true })).toBeVisible();
@@ -311,9 +305,7 @@ test("shows discovered token budget and persisted actual usage", async ({
     await mkdtemp(path.join(tmpdir(), "codeatelier-e2e-")),
   );
   await page.goto("/");
-  await page.getByRole("button", { name: "新建会话" }).click();
-  await page.getByLabel("项目目录").fill(workspace);
-  await page.getByRole("button", { name: "创建会话" }).click();
+  await createInitialConversation(page, workspace);
   await page.getByLabel("任务描述").fill("检查 token 用量");
   await page.getByRole("button", { name: "开始执行" }).click();
   await expect(
@@ -344,17 +336,14 @@ test("creates another conversation from its project and preserves separate histo
     await mkdtemp(path.join(tmpdir(), "codeatelier-project-")),
   );
   await page.goto("/");
-  await page.getByRole("button", { name: "新建会话" }).click();
-  await page.getByLabel("项目目录").fill(workspace);
-  await page.getByRole("button", { name: "创建会话" }).click();
+  await createInitialConversation(page, workspace);
   await page.getByLabel("任务描述").fill("项目对话一任务");
   await page.getByRole("button", { name: "开始执行" }).click();
   await expect(page.getByText("任务完成，已检查工具结果。")).toBeVisible();
 
   const project = page.getByRole("group", { name: workspace, exact: true });
   await project.getByRole("button", { name: "新建对话", exact: true }).click();
-  await expect(page.getByLabel("项目目录")).toHaveValue(workspace);
-  await page.getByRole("button", { name: "创建会话" }).click();
+  await expect(page.getByRole("dialog", { name: "新建会话" })).toHaveCount(0);
   await expect(
     project.getByRole("button", { name: "项目对话一任务" }),
   ).toBeVisible();
@@ -388,9 +377,7 @@ test("shows multi-file edit progress and retains it after reload", async ({
     }
 
     await page.goto("/");
-    await page.getByRole("button", { name: "新建会话" }).click();
-    await page.getByLabel("项目目录").fill(workspace);
-    await page.getByRole("button", { name: "创建会话" }).click();
+    await createInitialConversation(page, workspace);
     await page.getByLabel("任务描述").fill("批量编辑文件");
     await page.getByRole("button", { name: "开始执行" }).click();
     await expect(page.getByText("任务完成，已检查工具结果。")).toBeVisible();

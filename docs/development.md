@@ -12,7 +12,7 @@ Node.js 24，pnpm 11.22.0（packageManager 固定）。提交 pnpm-lock.yaml，�
 | pnpm start | 运行构建后的本机服务 |
 | pnpm typecheck / lint / test | 类型、静态规则、核心测试 |
 | pnpm check | 类型、lint、核心测试、生产构建 |
-| pnpm test:e2e | 启动独立模拟服务并验证浏览器交互 |
+| pnpm test:e2e | 先编译后端和前端，再启动独立模拟服务验证浏览器交互 |
 | node --env-file=.env --import tsx scripts/probe-model-capabilities.ts | 检查模型窗口、计数接口及真实 usage（少量模型调用） |
 | node --env-file=.env --import tsx scripts/probe-responses.ts | 使用环境变量密钥测试真实服务工具往返 |
 | node --env-file=.env --import tsx scripts/smoke-agent.ts | 在 .local 下创建隔离项目，真实模型修复并运行测试 |

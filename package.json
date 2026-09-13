@@ -14,7 +14,7 @@
     "start": "node --env-file-if-exists=.env dist/server/server/main.js",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:e2e": "playwright test",
+    "test:e2e": "pnpm build && playwright test",
     "lint": "eslint src tests scripts evals/evaluation.test.ts *.config.ts eslint.config.js",
     "format": "prettier --write src tests scripts evals/evaluation.test.ts *.config.ts eslint.config.js",
     "check": "pnpm typecheck && pnpm lint && pnpm format:check && pnpm test && pnpm build",
