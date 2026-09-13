@@ -5,7 +5,7 @@
  * 1. read 创建包含调用 ID、路径和正文的读取记录。
  * 2. 检查完整结果相同、只有正文相同、版本变化、错误、截断和非标准 JSON。
  * 3. 根据引用还原结果，确认再次整理不会继续变化，传入的原数组也没有被修改。
- * 4. 观察重试和后续轮次的实际请求，确认 Store 仍存原文；整理后预算更大时应放弃替换。
+ * 4. 观察重试和后续轮次的实际请求，确认 Store 仍存原文且不保存输入估算事件；整理后预算更大时应放弃替换。
  *
  * 正文相同不代表路径或文件版本相同；是否采用替换，要按当前预算重新计量。
  */
@@ -16,7 +16,6 @@ import path from "node:path";
 import { writeFile } from "node:fs/promises";
 import pino from "pino";
 import { ContextManager } from "../src/context/context-manager.js";
-import { contextSize } from "../src/context/budget.js";
 import { Engine } from "../src/agent/engine.js";
 import { Config } from "../src/config/config.js";
 import { Store } from "../src/sessions/store.js";
@@ -145,11 +144,9 @@ it("uses the compact view below threshold on every retry and new tool round whil
   ];
   store.saveContext(session.id, source);
   const requests: any[][] = [];
-  const sizes: number[] = [];
   const engine = new Engine(store, config, pino({ enabled: false }), () => ({
-    async run(input, instructions, tools) {
+    async run(input) {
       requests.push(structuredClone(input));
-      sizes.push(contextSize(input, instructions, tools));
       if (requests.length === 1) {
         throw new ModelError("temporary", true, "stream_disconnected");
       }
@@ -188,13 +185,11 @@ it("uses the compact view below threshold on every retry and new tool round whil
     expect(JSON.parse(requests[2].at(-1).output).sameTextAs.inputIndex).toBe(2);
     expect(store.context(session.id).slice(0, source.length)).toEqual(source);
     expect(store.latestContextSnapshot(session.id)).toBeUndefined();
-    const estimates = store
-      .events(session.id)
-      .filter((event) => event.type === "context_estimate");
-    expect(estimates.map((event) => event.data.input)).toEqual(sizes);
-    expect(estimates.every((event) => event.data.mechanicalSaved > 0)).toBe(
-      true,
-    );
+    expect(
+      store
+        .events(session.id)
+        .some((event) => event.type === "context_estimate"),
+    ).toBe(false);
   } finally {
     await engine.close();
     store.close();

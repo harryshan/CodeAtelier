@@ -357,16 +357,6 @@ export class Engine {
                 });
               }
 
-              emit("context_estimate", {
-                unit: budget.unit,
-                input: request.after,
-                beforeMechanical: request.before,
-                mechanicalSaved: request.before - request.after,
-                limit: budget.limit,
-                step,
-                attempt,
-              });
-
               return provider.run(
                 requestInput,
                 instructions,

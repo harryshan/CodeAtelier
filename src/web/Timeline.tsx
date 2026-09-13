@@ -164,32 +164,13 @@ export function Timeline({
                   ? "服务公布窗口：" + e.data.contextWindowTokens + " token"
                   : "服务未提供窗口容量"}
               </p>
-              <p>
-                输入预算：{e.data.inputLimit}{" "}
-                {e.data.unit === "tokens" ? "token（本地估算）" : "字符"}
-              </p>
+              <p>输入预算：{e.data.inputLimit}</p>
               {e.data.outputTokens && (
                 <p>
                   输出预留：{e.data.outputTokens} token；安全余量：
                   {e.data.safetyTokens} token
                 </p>
               )}
-            </details>
-          );
-        }
-
-        if (e.type === "context_estimate") {
-          return (
-            <details className={s.toolResult} key={e.id}>
-              <summary>
-                输入{e.data.unit === "tokens" ? "估算" : "字符数"}：
-                {e.data.input} / {e.data.limit}
-              </summary>
-              <p>
-                {e.data.unit === "tokens"
-                  ? "本地 tokenizer 估算，包含指令和工具定义，不是服务实报值。"
-                  : "模型容量或 tokenizer 不可用，使用备用字符限制。"}
-              </p>
             </details>
           );
         }

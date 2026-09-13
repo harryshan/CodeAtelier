@@ -40,8 +40,8 @@
 再使用当前 tokenizer 或备用字符计量比较整个请求，只有变小才采用；没有固定 2000 字符门槛或 10% 收益门槛。
 不压缩源码空白、不删除重复用户要求、不根据相似度去重。
 
-context_estimate 保存 beforeMechanical、mechanicalSaved 与实际发送视图的 input，
-实际 usage 校准同一视图。仅在有收益时输出 DEBUG context.mechanical 数值日志，避免每轮刷整理通知。
+实际发送视图的本地计量用于预算和实际 usage 校准，但不保存为会话事件或在界面显示。
+仅在有收益时输出 DEBUG context.mechanical 数值日志，避免每轮刷整理通知。
 这保证内容可精确还原，不保证模型对引用格式的理解与展开全文完全等价；本轮未运行 Evaluation。
 
 ## 大输出、来源和执行状态
