@@ -21,6 +21,10 @@ const labels: Record<string, string> = {
   edit_file: "精确修改",
   write_file: "写入文件",
   run_command: "执行命令",
+  git_status: "Git 状态",
+  git_diff: "Git 差异",
+  git_commit: "Git 提交",
+  git_push: "Git 推送",
 };
 
 function textResult(event: Event) {
@@ -87,7 +91,12 @@ export function Timeline({
               <summary>
                 <span className={s.toolDot} />
                 {labels[e.data.name] || e.data.name}
-                <code>{e.data.args?.path || e.data.args?.command || ""}</code>
+                <code>
+                  {e.data.args?.path ||
+                    e.data.args?.command ||
+                    e.data.args?.message ||
+                    ""}
+                </code>
               </summary>
               <pre>{JSON.stringify(e.data.args, null, 2)}</pre>
             </details>
@@ -132,7 +141,10 @@ export function Timeline({
           );
         }
 
-        if (e.type === "command_output" && e.taskId === active?.id) {
+        if (
+          (e.type === "command_output" || e.type === "git_output") &&
+          e.taskId === active?.id
+        ) {
           return (
             <pre className={s.toolResult} key={e.id}>
               {e.data.text}

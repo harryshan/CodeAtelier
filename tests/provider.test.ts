@@ -5,7 +5,7 @@
  * 1. completed.output 为空时，从 item.done 收集完整工具调用。
  * 2. 检查文本流、缺失完成事件，以及 failed、incomplete 和 error 的错误分类。
  * 3. completed.output 有内容时应优先使用，最终消息正文也优先于暂存文本。
- * 4. 检查空响应处理，以及 maxOutputTokens 和 reasoningEffort 是否正确发出。
+ * 4. 检查空响应处理，以及 maxOutputTokens、reasoningEffort 和并行工具调用偏好是否正确发出。
  *
  * 只收到部分流不能算成功，必须等 completed。
  */
@@ -171,10 +171,11 @@ it("classifies empty completion as retryable and explicit output limit as perman
 });
 
 it.each([undefined, "low", "medium", "high"] as const)(
-  "forwards effort %s, output cap and parses model metadata",
+  "forwards effort %s, output cap, parallel tool preference and parses model metadata",
   async (reasoningEffort) => {
     let requestedLimit: unknown;
     let requestedReasoning: unknown;
+    let requestedParallelToolCalls: unknown;
     const server = createServer(async (req, res) => {
       if (req.url === "/v1/models") {
         res.setHeader("content-type", "application/json");
@@ -203,8 +204,10 @@ it.each([undefined, "low", "medium", "high"] as const)(
         body += chunk.toString();
       }
 
-      requestedLimit = JSON.parse(body).max_output_tokens;
-      requestedReasoning = JSON.parse(body).reasoning;
+      const request = JSON.parse(body);
+      requestedLimit = request.max_output_tokens;
+      requestedReasoning = request.reasoning;
+      requestedParallelToolCalls = request.parallel_tool_calls;
       res.writeHead(200, { "content-type": "text/event-stream" });
       res.end(
         "data: " +
@@ -255,6 +258,7 @@ it.each([undefined, "low", "medium", "high"] as const)(
       );
       expect(requestedLimit).toBe(16384);
       expect(requestedReasoning).toEqual({ effort: reasoningEffort ?? "high" });
+      expect(requestedParallelToolCalls).toBe(true);
       expect(result.usage).toEqual({
         input_tokens: 10,
         output_tokens: 5,

@@ -2,7 +2,7 @@
  * 覆盖文件权限、模型调用工具、历史保存和本机 HTTP 安全的基础流程。
  * 测试使用临时目录、真实数据库和模拟模型。
  *
- * 1. temp/runner 准备测试资源；files and permissions 检查先读后写、精确替换、越界和取消。
+ * 1. temp/runner 准备测试资源；files and permissions 检查渐进式阅读指令、先读后写、精确替换、越界和取消。
  * 2. waitFor 等待任务结束；execution and persistence 检查超时、输出限制、重启和工具执行。
  * 3. server security and configuration 检查请求来源、凭据、配置保存和脱敏。
  *
@@ -26,6 +26,7 @@ import { Config } from "../src/config/config.js";
 import { Store } from "../src/sessions/store.js";
 import { executeProcess } from "../src/tools/process.js";
 import { Engine } from "../src/agent/engine.js";
+import { createInstructions } from "../src/agent/instructions.js";
 import { createApp } from "../src/server/app.js";
 import pino from "pino";
 import { redactText } from "../src/logging/redact.js";
@@ -64,6 +65,14 @@ function runner(
 }
 
 describe("files and permissions", () => {
+  it("instructs the model to locate code before expanding file reads", async () => {
+    const instructions = await createInstructions(await temp());
+
+    expect(instructions).toContain("Use progressive code reading");
+    expect(instructions).toContain("start with 80-200 lines");
+    expect(instructions).toContain("Read complete files only");
+  });
+
   it("requires reading existing files and rejects concurrent changes", async () => {
     const root = await temp();
     const config = new Config(await temp());

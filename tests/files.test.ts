@@ -2,8 +2,8 @@
  * 通过 fileFixture 调用真实 ToolRunner，检查文件工具的结果和磁盘上的变化。
  * 所有文件都建在临时目录，审批由用例明确处理。
  *
- * 1. 检查目录过滤、字面搜索、结果数量限制和带行号的分段读取。
- * 2. 检查反向行区间、二进制文件和过大文件被拒绝。
+ * 1. 检查目录过滤、字面搜索、结果数量限制和带行号、分页元数据的分段读取。
+ * 2. 检查模型可见的定位/小范围读取契约，以及反向行区间、二进制文件和过大文件被拒绝。
  * 3. 检查唯一替换、创建父目录、美元符号按原文替换，以及整文件覆盖需要审批。
  * 4. 在等待审批时修改文件，并检查规则文件、敏感文件和非法工具参数的处理。
  *
@@ -13,6 +13,7 @@
 import { it, expect } from "vitest";
 import { writeFile, mkdir, readFile, readdir } from "node:fs/promises";
 import path from "node:path";
+import { definitions } from "../src/tools/registry.js";
 import { fileFixture } from "./fixtures/helpers.js";
 
 it("lists usable immediate entries without dependency, build or sensitive files", async () => {
@@ -70,12 +71,12 @@ it("never exceeds the search result limit when a filename fills the last slot", 
   expect(result.truncated).toBe(true);
 });
 
-it("reads requested numbered lines and caps a large range at 2000 lines", async () => {
+it("reads focused numbered lines and describes pagination when a request reaches the cap", async () => {
   const { root, runner } = await fileFixture();
 
   await writeFile(
     path.join(root, "lines.txt"),
-    Array.from({ length: 2100 }, (_, i) => `line${i + 1}`).join("\n"),
+    Array.from({ length: 600 }, (_, i) => `line${i + 1}`).join("\n"),
   );
 
   expect(
@@ -87,15 +88,44 @@ it("reads requested numbered lines and caps a large range at 2000 lines", async 
       })
     ).text,
   ).toBe("2: line2\n3: line3");
-  expect(
-    (
-      await runner.execute("read_file", {
-        path: "lines.txt",
-        startLine: 1,
-        endLine: 2100,
-      })
-    ).text.split("\n"),
-  ).toHaveLength(2000);
+
+  const capped = await runner.execute("read_file", {
+    path: "lines.txt",
+    startLine: 1,
+    endLine: 600,
+  });
+
+  expect(capped.text.split("\n")).toHaveLength(500);
+  expect(capped).toMatchObject({
+    totalLines: 600,
+    returnedEndLine: 500,
+    truncated: true,
+    hasMore: true,
+    nextStartLine: 501,
+  });
+
+  const finalPage = await runner.execute("read_file", {
+    path: "lines.txt",
+    startLine: 501,
+    endLine: 600,
+  });
+
+  expect(finalPage).toMatchObject({
+    returnedEndLine: 600,
+    truncated: false,
+    hasMore: false,
+    nextStartLine: null,
+  });
+});
+
+it("tells the model to locate content before using a focused file range", () => {
+  const readFile = definitions.find(
+    (definition) => definition.name === "read_file",
+  );
+
+  expect(readFile?.description).toContain("Use search to locate");
+  expect(readFile?.description).toContain("normally request 80-200 lines");
+  expect(readFile?.description).toContain("Maximum 500 lines");
 });
 
 it("rejects reversed line ranges instead of claiming a successful empty read", async () => {

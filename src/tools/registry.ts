@@ -1,7 +1,7 @@
 /**
  * 声明模型可以调用的文件和命令工具，供 Engine 生成工具列表、ToolRunner 校验参数。
  *
- * 1. schemas 定义列目录、读文件、搜索、写文件、精确编辑和执行命令的参数。
+ * 1. schemas 定义列目录、读文件、搜索、写文件、精确编辑、命令和受限 Git 操作的参数。
  * 2. descriptions 向模型说明各工具的用途和限制。
  * 3. definitions 将 schema 转成 Responses API 需要的函数工具声明。
  *
@@ -9,6 +9,9 @@
  */
 
 import { z } from "zod";
+
+/** 单次读取的硬行数上限，避免一次工具结果占满模型上下文。 */
+export const MAX_READ_LINES = 500;
 
 /** 模型可见的工具契约；执行器负责权限检查与副作用。 */
 export const schemas = {
@@ -38,13 +41,22 @@ export const schemas = {
       cwd: z.string(),
     })
     .strict(),
+  git_status: z.object({}).strict(),
+  // strict 工具要求所有属性均列入 required；用 false 显式选择未暂存差异。
+  git_diff: z.object({ staged: z.boolean() }).strict(),
+  git_commit: z
+    .object({
+      message: z.string().min(1).max(500),
+      paths: z.array(z.string().min(1)).min(1).max(100),
+    })
+    .strict(),
+  git_push: z.object({}).strict(),
 };
 
 const descriptions: Record<string, string> = {
   list_files:
     "List immediate directory entries. Use paths relative to the workspace.",
-  read_file:
-    "Read text with line numbers. Read AGENTS.md and applicable nested AGENTS.md before edits. Maximum 2000 lines.",
+  read_file: `Read text with line numbers. Read AGENTS.md and applicable nested AGENTS.md before edits. Use search to locate symbols or error text, then read a focused range around the matching line; normally request 80-200 lines and expand only when needed. Avoid repeating ranges already read. Full-file reading is for short files, project instructions, or necessary whole-file analysis. Maximum ${MAX_READ_LINES} lines per call. Results report whether more lines remain or the requested range was truncated.`,
   search:
     "Search file names and text literally (not regex), recursively. Ignores dependency and build directories.",
   write_file:
@@ -52,7 +64,15 @@ const descriptions: Record<string, string> = {
   edit_file:
     "Replace exactly one occurrence of oldText in a previously read UTF-8 file. Fails if the file changed since reading.",
   run_command:
-    "Execute a program with an argument array, after user approval. No shell expansion. To use a shell specify its executable and arguments explicitly. On Windows use cmd.exe /d /s /c for pnpm.cmd. Do not use Git mutations, elevation, or destructive system operations.",
+    "Execute a program with an argument array, after user approval. No shell expansion. To use a shell specify its executable and arguments explicitly. On Windows use cmd.exe /d /s /c for pnpm.cmd. Do not use direct Git commands, elevation, or destructive system operations.",
+  git_status:
+    "Show the current repository branch and concise working-tree status. This read-only tool runs in the session workspace.",
+  git_diff:
+    "Show the unstaged diff by default, or the staged diff when staged is true. This read-only tool never invokes an external diff program.",
+  git_commit:
+    "Stage and commit only the listed workspace paths with the supplied message, after explicit user approval. Inspect git_status and git_diff first. Do not include sensitive files or .git paths.",
+  git_push:
+    "Push the current branch only to its configured upstream, after explicit user approval. This tool accepts no remote, branch, force, or other Git options.",
 };
 
 export const definitions = Object.entries(schemas).map(([name, schema]) => ({

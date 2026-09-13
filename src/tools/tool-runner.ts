@@ -4,8 +4,9 @@
  *
  * 1. ignored 列出遍历时跳过的目录；ToolContext 定义依赖，readHashes 记住本任务读过的文件版本。
  * 2. access 解析路径并申请必要的权限；entries 限量遍历，commandGrant 为可复用命令计算指纹。
- * 3. execute 先校验参数。命令分支先拒绝禁止的操作，再申请审批并调用 executeProcess。
- * 4. 只读分支处理列目录、读取和搜索；读文件时记录内容哈希，供后续修改核对。
+ * 3. execute 先校验参数。专用 Git 调用分流给 GitToolRunner；普通命令拒绝直接 Git、
+ *    再申请审批并调用 executeProcess。
+ * 4. 只读分支处理列目录、读取和搜索；读文件按 500 行分页并记录内容哈希，供后续修改核对。
  * 5. 修改已有文件前要求本任务已经读过，且内容没有变化；精确替换只能匹配一处，整文件覆盖另需审批。
  * 6. 写入前再次核对路径和正文，再用同目录临时文件替换目标、保留权限，更新哈希并发出 diff。
  *
@@ -24,11 +25,12 @@ import {
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { createTwoFilesPatch } from "diff";
-import { schemas } from "./registry.js";
+import { MAX_READ_LINES, schemas } from "./registry.js";
 import type { Settings } from "../shared/types.js";
 import { ApprovalManager } from "../permissions/approval-manager.js";
 import { resolveTarget, regularFile, sensitive, inside } from "./paths.js";
 import { executeProcess } from "./process.js";
+import { GitToolRunner, isGitExecutable, isGitTool } from "./git.js";
 
 const ignored = new Set([
   ".git",
@@ -51,7 +53,12 @@ export interface ToolContext {
 
 export class ToolRunner {
   private readHashes = new Map<string, string>();
-  constructor(private ctx: ToolContext) {}
+  private git: GitToolRunner;
+
+  constructor(private ctx: ToolContext) {
+    this.git = new GitToolRunner(ctx);
+  }
+
   private hash(value: string) {
     return createHash("sha256").update(value).digest("hex");
   }
@@ -170,6 +177,10 @@ export class ToolRunner {
 
     const args: any = schema.parse(raw);
 
+    if (isGitTool(name)) {
+      return this.git.execute(name, args);
+    }
+
     if (name === "read_file" && args.endLine < args.startLine) {
       throw new Error("endLine 不能小于 startLine。");
     }
@@ -182,15 +193,10 @@ export class ToolRunner {
         throw new Error("初版不支持提权命令。");
       }
 
-      if (
-        path.basename(args.command).replace(/\.exe$/i, "") === "git" &&
-        args.args.some((a: string) =>
-          ["commit", "push", "reset", "clean", "checkout", "restore"].includes(
-            a,
-          ),
-        )
-      ) {
-        throw new Error("初版不提供 Git 写操作工具。");
+      if (isGitExecutable(args.command)) {
+        throw new Error(
+          "请使用受限的 git_status、git_diff、git_commit 或 git_push 工具。",
+        );
       }
 
       const allowed = await this.ctx.approvals.request(
@@ -252,13 +258,24 @@ export class ToolRunner {
 
       this.readHashes.set(file, this.hash(text));
       const lines = text.split("\n");
-      const end = Math.min(args.endLine, args.startLine + 1999);
+      // 区分文件自然结束和行数上限，模型才能安全地按 nextStartLine 继续读取。
+      const requestedEndLine = Math.min(args.endLine, lines.length);
+      const returnedEndLine = Math.min(
+        requestedEndLine,
+        args.startLine + MAX_READ_LINES - 1,
+      );
+      const truncated = returnedEndLine < requestedEndLine;
+      const hasMore = returnedEndLine < lines.length;
 
       return {
         path: file,
         totalLines: lines.length,
+        returnedEndLine,
+        truncated,
+        hasMore,
+        nextStartLine: hasMore ? returnedEndLine + 1 : null,
         text: lines
-          .slice(args.startLine - 1, end)
+          .slice(args.startLine - 1, returnedEndLine)
           .map((l, i) => `${args.startLine + i}: ${l}`)
           .join("\n"),
       };

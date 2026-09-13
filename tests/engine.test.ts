@@ -4,7 +4,7 @@
  *
  * 1. 检查达到步数或上下文上限时会停止，已经完成的工具结果仍然保存。
  * 2. 传入非法工具参数，确认错误返回模型且文件没有变化。
- * 3. 检查项目规则加载和大输出限制。
+ * 3. 检查项目规则加载、大输出限制，以及多项互不冲突的工具调用会在同一轮全部执行。
  * 4. 检查新任务必须重新读文件，以及含凭据相关源码的工具结果仍是合法 JSON。
  *
  * 只模拟模型响应，文件操作、审批和保存使用实际实现。
@@ -88,6 +88,63 @@ it("enforces step budget after saving completed tool results", async () => {
   }
 });
 
+it("executes every independent tool call returned in one model response", async () => {
+  let calls = 0;
+  const fixture = await createFixture({
+    async run() {
+      if (++calls === 1) {
+        return {
+          output: [
+            {
+              type: "function_call",
+              call_id: "first-write",
+              name: "write_file",
+              arguments: JSON.stringify({
+                path: "first.txt",
+                content: "first file\n",
+              }),
+            },
+            {
+              type: "function_call",
+              call_id: "second-write",
+              name: "write_file",
+              arguments: JSON.stringify({
+                path: "second.txt",
+                content: "second file\n",
+              }),
+            },
+          ],
+          text: "",
+        };
+      }
+
+      return done;
+    },
+  });
+
+  try {
+    fixture.engine.start(fixture.session.id, "create both files");
+    await fixture.engine.active?.done;
+
+    expect(calls).toBe(2);
+    expect(await readFile(path.join(fixture.root, "first.txt"), "utf8")).toBe(
+      "first file\n",
+    );
+    expect(await readFile(path.join(fixture.root, "second.txt"), "utf8")).toBe(
+      "second file\n",
+    );
+    expect(
+      fixture.store
+        .events(fixture.session.id)
+        .filter((event) => event.type === "tool_result"),
+    ).toHaveLength(2);
+    expect(fixture.store.tasks(fixture.session.id)[0].status).toBe("completed");
+  } finally {
+    await fixture.engine.close();
+    fixture.store.close();
+  }
+});
+
 it("fails an over-budget context before calling the provider", async () => {
   let calls = 0;
   const fixture = await createFixture({
@@ -150,7 +207,7 @@ it("returns invalid tool arguments as model feedback without mutating files", as
   }
 });
 
-it("loads project guidance and bounds large tool feedback", async () => {
+it("loads project guidance, encourages independent batches, and bounds large tool feedback", async () => {
   let calls = 0;
   let guidance = "";
   let result: any;
@@ -194,6 +251,8 @@ it("loads project guidance and bounds large tool feedback", async () => {
     await fixture.engine.active?.done;
 
     expect(guidance).toContain("Project convention");
+    expect(guidance).toContain("Complete the user's whole request");
+    expect(guidance).toContain("multiple independent tool calls");
     expect(result.truncated).toBe(true);
     expect(result.text.length).toBe(1000);
   } finally {

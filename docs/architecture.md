@@ -17,8 +17,8 @@ server (Fastify)
 
 - `src/shared` 仅存浏览器和后端共享的数据契约，前端不能导入文件、进程或密钥实现。
 - `src/agent/engine.ts` 管理单任务锁、模型循环、停止条件与工具结果回传；`context.ts` 负责上下文恢复，`instructions.ts` 负责根规则与模型指令构建。src/context/ 负责预算、摘要压缩、快照契约与历史原文读取，循环在完整工具批次完成后接入。
-- `src/providers` 将 Responses 输出映射为输出项和文本。自建服务需同时收集 output_item.done；completed.output 有内容时优先使用，不能只依赖 completed。
-- `src/tools` 定义 Zod 参数及对应 JSON Schema，提供目录、读取、搜索、写入、精确编辑和命令工具。
+- `src/providers` 将 Responses 输出映射为输出项和文本。主任务请求显式声明 `parallel_tool_calls: true`，让兼容服务可在一次响应中返回多个独立调用；自建服务需同时收集 output_item.done；completed.output 有内容时优先使用，不能只依赖 completed。
+- `src/tools` 定义 Zod 参数及对应 JSON Schema，提供目录、读取、搜索、写入、精确编辑、命令和受限 Git 工具。模型先由目录和搜索定位，`read_file` 再按行读取；单次硬上限为 500 行，并返回分页/截断状态。
 - `src/permissions` 在后端等待用户批准，取消会释放待审批 Promise。模型无法自行同意审批。
 - `src/sessions/store.ts` 保存 sessions、tasks、events、context；初始数据库结构位于 `schema.ts`。启动时将 running/waiting 任务标为 interrupted。
 - `src/config` 管理非敏感设置、内存密钥和平台数据目录。
@@ -29,7 +29,8 @@ server (Fastify)
 | 模块 | 职责 |
 | --- | --- |
 | tools/registry.ts | 工具参数 schema、描述和模型可见定义 |
-| tools/tool-runner.ts | ToolRunner：校验、审批、文件与命令执行 |
+| tools/tool-runner.ts | ToolRunner：校验、审批、文件与普通命令执行，并分流专用 Git 工具 |
+| tools/git.ts | GitToolRunner：固定 status/diff/commit/push 参数、提交路径复核与逐次审批 |
 | tools/paths.ts / process.ts | 路径边界与进程生命周期 |
 | providers/model-provider.ts | 与具体服务无关的模型接口和结果契约 |
 | providers/responses-provider.ts | ResponsesProvider：Responses 协议实现 |
@@ -48,8 +49,8 @@ server (Fastify)
 
 1. Web UI 创建绑定真实工作目录的会话，然后提交用户文本。
 2. 后端拒绝同时启动第二个任务，记录用户消息，加载本地上下文与根 AGENTS.md。
-3. 模型请求包含当前指令、上下文与工具定义，接收文本及完整输出项。
-4. 自研循环检查工具参数和权限，执行工具，记录工具事件与 diff，再将 function_call_output 回传模型。
+3. 模型请求包含当前指令、上下文与工具定义，并请求服务允许多个独立工具调用；接收文本及完整输出项。
+4. 自研循环检查工具参数和权限，按模型返回顺序执行完整工具批次，记录工具事件与 diff，再将 function_call_output 回传模型。并行调用偏好不改变本地的顺序执行、审批或文件一致性校验。
 5. 没有工具调用且收到完成文本时任务结束；超时、取消、失败或超过步骤上限时明确停止。
 6. 前端通过 SSE 得知状态变化，重新读取带事件 ID 的快照；重新连接只读状态，不会再次启动任务。
 
@@ -63,7 +64,7 @@ UI 历史包含消息、工具调用、受限工具结果和修改 diff。长内
 
 文件操作解析真实路径，考虑符号链接与 Windows junction；工作区外或敏感路径询问用户。现存文件须先读取，精确修改时比对内容哈希，拒绝覆盖外部并发修改。完整覆盖现有文件另行审批；临时文件写入后重命名并保留原文件模式。
 
-命令使用参数数组和 shell:false，显式 shell 也必须审批。对少量固定验证命令允许会话授权；绑定参数、cwd 及受限扫描得到的项目内容指纹。超大项目无法计算指纹时退回单次审批。此机制不等同于系统隔离；命令的实际副作用由获准程序决定。
+命令使用参数数组和 shell:false，显式 shell 也必须审批。对少量固定验证命令允许会话授权；绑定参数、cwd 及受限扫描得到的项目内容指纹。超大项目无法计算指纹时退回单次审批。直接 Git 程序调用被拒绝，改由 `git.ts` 提供固定子集：状态/差异只读，提交仅处理审批中明确的非敏感工作区路径，推送仅使用当前 upstream；提交与推送不提供会话授权。此机制不等同于系统隔离；命令的实际副作用由获准程序决定。
 
 ## 本机 HTTP 边界
 
