@@ -30,12 +30,12 @@
 | 命令执行       | process.test.ts、core.test.ts                  | 不存在的命令、输出与退出码、截断、UTF-8 分块、API key 不继承、取消和超时                                   |
 | 模型协议与重试 | provider.test.ts、recovery.test.ts             | item.done 回退、失败/不完整事件、断流、超时、重试次数、HTTP 分类、取消退避、并行工具调用请求参数           |
 | agent 循环     | engine.test.ts、core.test.ts、recovery.test.ts | 工具往返、同轮多项独立调用、单任务锁、步骤/上下文预算、参数错误反馈、根规则、输出预算、跨任务重新读取、不重放副作用 |
-| 会话存储       | store.test.ts、recovery.test.ts                | 隔离、事件顺序与游标、上下文、事务回滚、终态保留、重启中断和恢复                                           |
+| 会话存储与标题 | store.test.ts、recovery.test.ts、title-generation.test.ts | 隔离、事件顺序与游标、上下文、事务回滚、终态保留、重启中断、标题状态迁移和恢复 |
 | 模型设置       | config.test.ts、regressions.test.ts            | 环境/磁盘优先级、端点与模型规范化、参数边界、失败更新保持原状态、密钥内存存储、损坏配置不覆盖              |
 | 日志           | logging.test.ts、core.test.ts                  | 级别过滤、上下文字段、凭据脱敏、轮转、存储故障降级                                                         |
 | 本机 HTTP API  | server.test.ts、core.test.ts                   | 会话/任务接口、参数校验、Host/Origin/cookie/token、配置更新互斥、取消与恢复                                |
 | 服务关闭       | shutdown.test.ts、e2e/app.spec.ts              | 关闭授权与确认、正在执行命令的中断保存、SSE 结束、端口释放、重复清理、实际入口进程退出、关闭页面与失败反馈 |
-| Web UI         | e2e/app.spec.ts                                | 建会话、任务与 diff、历史续聊及隔离、审批与取消、设置、人工恢复、重试文本隔离、SSE 失效重连                |
+| Web UI         | e2e/app.spec.ts                                | 建会话、首条消息标题更新、任务与 diff、历史续聊及隔离、审批与取消、设置、人工恢复、重试文本隔离、SSE 失效重连 |
 
 ## 本轮复现并修复的缺陷
 
@@ -92,13 +92,14 @@ mechanical-input.test.ts 覆盖精确结果/跨路径正文引用、逐字还原
 ### 辅助模型
 
 - `tests/auxiliary-model.test.ts`：旧配置兼容、主模型继承、环境默认值、保存/重载/清空、非法输入拒绝；生产 Engine 路由、辅助模型独立预算、完整摘要来源、摘要失败保留历史。使用模拟模型，不访问真实服务。
-- `tests/e2e/app.spec.ts`：辅助模型表单保存、刷新回显与清空。
+- `tests/title-generation.test.ts`：首条 prompt 只调用一次辅助模型、输入分隔和输出清理、主任务不受标题失败影响、取消结束标题状态，以及旧 SQLite 标题迁移。
+- `tests/e2e/app.spec.ts`：辅助模型表单保存、刷新回显与清空；首条 prompt 完成后在侧栏显示并在刷新后保留自动标题。
 
 评测包装器的辅助模型路由与主模型共用累计用量和调用上限；本次仅静态检查评测改动，未运行 Evaluation。
 
 ## 项目内多个对话
 
-- `tests/e2e/app.spec.ts`：从项目分组新建第二个对话，验证目录预填、名称重置、两段历史隔离及刷新后仍可在同一项目下切换。
+- `tests/e2e/app.spec.ts`：从项目分组新建第二个对话，验证目录预填、自动标题、两段历史隔离及刷新后仍可在同一项目下切换。
 - 原有跨会话续聊回归保留；使用临时目录和模拟模型，不调用真实服务。
 
 ## 严格工具契约

@@ -32,12 +32,12 @@ test("create a session, edit a file, inspect diff and reload history", async ({
   await page.screenshot({ path: "test-results/welcome.png", fullPage: true });
   await page.getByRole("button", { name: "新建会话" }).click();
   await page.getByLabel("项目目录").fill(workspace);
-  await page.getByLabel("会话名称").fill("文件修改验收");
   await page.getByRole("button", { name: "创建会话" }).click();
   await page.getByLabel("任务描述").fill("修改文件");
   await page.getByRole("button", { name: "开始执行" }).click();
 
   await expect(page.getByText("任务完成，已检查工具结果。")).toBeVisible();
+  await expect(page.getByRole("button", { name: "修改文件" })).toBeVisible();
   await expect(page.getByText("修改预览")).toBeVisible();
   expect(await readFile(path.join(workspace, "result.txt"), "utf8")).toContain(
     "CodeAtelier verified",
@@ -47,7 +47,7 @@ test("create a session, edit a file, inspect diff and reload history", async ({
     fullPage: true,
   });
   await page.reload();
-  await page.getByRole("button", { name: "文件修改验收" }).click();
+  await page.getByRole("button", { name: "修改文件" }).click();
 
   await expect(page.getByText("任务完成，已检查工具结果。")).toBeVisible();
   expect(errors).toEqual([]);
@@ -63,7 +63,6 @@ test("command approval survives refresh and can be denied or cancelled", async (
   await page.goto("/");
   await page.getByRole("button", { name: "新建会话" }).click();
   await page.getByLabel("项目目录").fill(workspace);
-  await page.getByLabel("会话名称").fill("权限验收");
   await page.getByRole("button", { name: "创建会话" }).click();
   await page.getByLabel("任务描述").fill("执行命令");
   await page.getByRole("button", { name: "开始执行" }).click();
@@ -71,7 +70,7 @@ test("command approval survives refresh and can be denied or cancelled", async (
   await expect(page.getByText("允许这次操作？")).toBeVisible();
   await page.screenshot({ path: "test-results/approval.png", fullPage: true });
   await page.reload();
-  await page.getByRole("button", { name: "权限验收" }).click();
+  await page.getByRole("button", { name: "执行命令" }).click();
 
   await expect(page.getByText("允许这次操作？")).toBeVisible();
   await page.getByRole("button", { name: "拒绝", exact: true }).click();
@@ -86,7 +85,7 @@ test("command approval survives refresh and can be denied or cancelled", async (
   await expect(page.getByRole("button", { name: "恢复任务" })).toBeVisible();
   await expect(page.getByText("允许这次操作？")).toHaveCount(0);
   await page.reload();
-  await page.getByRole("button", { name: "权限验收" }).click();
+  await page.getByRole("button", { name: "执行命令" }).click();
   await page.getByRole("button", { name: "恢复任务" }).click();
 
   await expect(page.getByText("允许这次操作？")).toBeVisible();
@@ -135,7 +134,6 @@ test("model retries keep incomplete text separate from the successful response",
   await page.goto("/");
   await page.getByRole("button", { name: "新建会话" }).click();
   await page.getByLabel("项目目录").fill(workspace);
-  await page.getByLabel("会话名称").fill("重试验收");
   await page.getByRole("button", { name: "创建会话" }).click();
   await page.getByLabel("任务描述").fill("模型重试");
   await page.getByRole("button", { name: "开始执行" }).click();
@@ -170,14 +168,13 @@ test("reconnects after an expired SSE session without resubmitting a task", asyn
   await page.goto("/");
   await page.getByRole("button", { name: "新建会话" }).click();
   await page.getByLabel("项目目录").fill(workspace);
-  await page.getByLabel("会话名称").fill("重连验收");
   await page.getByRole("button", { name: "创建会话" }).click();
 
   await expect.poll(() => connections).toBeGreaterThan(1);
   await expect(page.getByText("就绪", { exact: true })).toBeVisible();
   const sessions = await (await page.request.get("/api/sessions")).json();
   const session = sessions.find(
-    (s: { title: string }) => s.title === "重连验收",
+    (s: { workspace: string }) => s.workspace === workspace,
   );
   const snapshot = await (
     await page.request.get("/api/sessions/" + session.id)
@@ -194,29 +191,30 @@ test("continues a historical conversation while keeping another session isolated
   );
 
   await page.goto("/");
-  for (const title of ["续聊会话", "独立会话"]) {
-    await page.getByRole("button", { name: "新建会话" }).click();
-    await page.getByLabel("项目目录").fill(workspace);
-    await page.getByLabel("会话名称").fill(title);
-    await page.getByRole("button", { name: "创建会话" }).click();
-    if (title === "续聊会话") {
-      await page.getByLabel("任务描述").fill("说明项目");
-      await page.getByRole("button", { name: "开始执行" }).click();
+  await page.getByRole("button", { name: "新建会话" }).click();
+  await page.getByLabel("项目目录").fill(workspace);
+  await page.getByRole("button", { name: "创建会话" }).click();
+  await page.getByLabel("任务描述").fill("说明历史项目");
+  await page.getByRole("button", { name: "开始执行" }).click();
 
-      await expect(page.getByText("任务完成，已检查工具结果。")).toBeVisible();
-    }
-  }
+  await expect(page.getByText("任务完成，已检查工具结果。")).toBeVisible();
+  await page.getByRole("button", { name: "新建会话" }).click();
+  await page.getByLabel("项目目录").fill(workspace);
+  await page.getByRole("button", { name: "创建会话" }).click();
 
   await expect(page.getByText("任务完成，已检查工具结果。")).toHaveCount(0);
   await page.reload();
-  await page.getByRole("button", { name: "续聊会话" }).click();
+  await page.getByRole("button", { name: "说明历史项目" }).click();
 
   await expect(page.getByText("任务完成，已检查工具结果。")).toHaveCount(1);
   await page.getByLabel("任务描述").fill("继续说明");
   await page.getByRole("button", { name: "开始执行" }).click();
 
   await expect(page.getByText("任务完成，已检查工具结果。")).toHaveCount(2);
-  await page.getByRole("button", { name: "独立会话" }).click();
+  await page
+    .getByRole("group", { name: workspace, exact: true })
+    .getByRole("button", { name: "新对话" })
+    .click();
 
   await expect(page.getByText("任务完成，已检查工具结果。")).toHaveCount(0);
 });
@@ -287,7 +285,6 @@ test("context compression notice and original history survive refresh", async ({
   await page.goto("/");
   await page.getByRole("button", { name: "新建会话" }).click();
   await page.getByLabel("项目目录").fill(workspace);
-  await page.getByLabel("会话名称").fill("压缩验收");
   await page.getByRole("button", { name: "创建会话" }).click();
   await page.getByLabel("任务描述").fill("准备上下文压缩");
   await page.getByRole("button", { name: "开始执行" }).click();
@@ -299,8 +296,10 @@ test("context compression notice and original history survive refresh", async ({
     page.getByText("任务完成，已检查工具结果。", { exact: true }),
   ).toBeVisible();
   await page.reload();
-  await page.getByRole("button", { name: "压缩验收" }).click();
-  await expect(page.getByText("准备上下文压缩", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "准备上下文压缩" }).click();
+  await expect(
+    page.getByRole("main").getByText("准备上下文压缩", { exact: true }),
+  ).toBeVisible();
   await expect(page.getByText("已准备长历史。", { exact: true })).toBeVisible();
   await expect(page.getByText(/上下文已整理：/)).toBeVisible();
 });
@@ -314,9 +313,8 @@ test("shows discovered token budget and persisted actual usage", async ({
   await page.goto("/");
   await page.getByRole("button", { name: "新建会话" }).click();
   await page.getByLabel("项目目录").fill(workspace);
-  await page.getByLabel("会话名称").fill("Token 验收");
   await page.getByRole("button", { name: "创建会话" }).click();
-  await page.getByLabel("任务描述").fill("说明项目");
+  await page.getByLabel("任务描述").fill("检查 token 用量");
   await page.getByRole("button", { name: "开始执行" }).click();
   await expect(
     page.getByText("上下文预算：token 模式", { exact: true }),
@@ -331,7 +329,7 @@ test("shows discovered token budget and persisted actual usage", async ({
     }),
   ).toBeVisible();
   await page.reload();
-  await page.getByRole("button", { name: "Token 验收" }).click();
+  await page.getByRole("button", { name: "检查 token 用量" }).click();
   await expect(
     page.getByText("模型用量（服务实报）：输入 100 / 输出 20 token", {
       exact: true,
@@ -348,30 +346,30 @@ test("creates another conversation from its project and preserves separate histo
   await page.goto("/");
   await page.getByRole("button", { name: "新建会话" }).click();
   await page.getByLabel("项目目录").fill(workspace);
-  await page.getByLabel("会话名称").fill("项目对话一");
   await page.getByRole("button", { name: "创建会话" }).click();
-  await page.getByLabel("任务描述").fill("说明项目");
+  await page.getByLabel("任务描述").fill("项目对话一任务");
   await page.getByRole("button", { name: "开始执行" }).click();
   await expect(page.getByText("任务完成，已检查工具结果。")).toBeVisible();
 
   const project = page.getByRole("group", { name: workspace, exact: true });
   await project.getByRole("button", { name: "新建对话", exact: true }).click();
   await expect(page.getByLabel("项目目录")).toHaveValue(workspace);
-  await expect(page.getByLabel("会话名称")).toHaveValue("");
-  await page.getByLabel("会话名称").fill("项目对话二");
   await page.getByRole("button", { name: "创建会话" }).click();
   await expect(
-    project.getByRole("button", { name: "项目对话一" }),
+    project.getByRole("button", { name: "项目对话一任务" }),
   ).toBeVisible();
-  await expect(
-    project.getByRole("button", { name: "项目对话二" }),
-  ).toBeVisible();
-  await expect(page.getByText("任务完成，已检查工具结果。")).toHaveCount(0);
-  await page.reload();
-  await project.getByRole("button", { name: "项目对话一" }).click();
+  await expect(project.getByRole("button", { name: "新对话" })).toBeVisible();
+  await page.getByLabel("任务描述").fill("项目对话二任务");
+  await page.getByRole("button", { name: "开始执行" }).click();
   await expect(page.getByText("任务完成，已检查工具结果。")).toBeVisible();
-  await project.getByRole("button", { name: "项目对话二" }).click();
-  await expect(page.getByText("任务完成，已检查工具结果。")).toHaveCount(0);
+  await expect(
+    project.getByRole("button", { name: "项目对话二任务" }),
+  ).toBeVisible();
+  await page.reload();
+  await project.getByRole("button", { name: "项目对话一任务" }).click();
+  await expect(page.getByText("任务完成，已检查工具结果。")).toBeVisible();
+  await project.getByRole("button", { name: "项目对话二任务" }).click();
+  await expect(page.getByText("任务完成，已检查工具结果。")).toBeVisible();
   await page.screenshot({
     path: "test-results/project-conversations.png",
     fullPage: true,

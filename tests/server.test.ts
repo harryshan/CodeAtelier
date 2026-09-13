@@ -57,7 +57,7 @@ it("creates isolated sessions and validates missing sessions and bad payloads", 
       method: "POST",
       url: "/api/sessions",
       headers: fixture.headers,
-      payload: { workspace: await temp(), title: "api test" },
+      payload: { workspace: await temp() },
     });
 
     expect(created.statusCode).toBe(200);
@@ -70,7 +70,11 @@ it("creates isolated sessions and validates missing sessions and bad payloads", 
           headers: fixture.headers,
         })
       ).json(),
-    ).toMatchObject({ session: { title: "api test" }, tasks: [], events: [] });
+    ).toMatchObject({
+      session: { title: "新对话", titleState: "pending" },
+      tasks: [],
+      events: [],
+    });
     expect(
       (
         await fixture.app.inject({

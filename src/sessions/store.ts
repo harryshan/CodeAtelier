@@ -2,9 +2,9 @@
  * 用 SQLite 保存会话、任务、事件和模型上下文，供 Engine、HTTP 接口和 ContextManager 使用。
  *
  * 1. 构造器初始化数据库，把重启前未完成的任务标为 interrupted；transaction 包装提交和回滚。
- * 2. list/get/create 读写会话，tasks/task/createTask/status 读写任务及其状态。
- * 3. event/events 保存和分页读取事件；context/saveContext 读写当前模型历史。
- * 4. 快照按会话查询，compactContext 在同一事务中保存原始快照并替换活动上下文。
+ * 2. list/get/create 读写会话；标题状态的领取、完成或失败保证首条 prompt 只生成一次标题。
+ * 3. tasks/task/createTask/status 读写任务状态；event/events 保存和分页读取事件。
+ * 4. context/saveContext 读写当前模型历史；快照按会话查询，compactContext 原子替换活动上下文。
  * 5. close 由应用退出流程调用，关闭数据库连接。
  *
  * 事务只能回滚数据库，不能撤销文件修改或命令执行。恢复需要的未知状态和原始记录必须保留。
@@ -22,12 +22,26 @@ export class Store {
   constructor(file: string) {
     this.db = new DatabaseSync(file);
     this.db.exec(SCHEMA_SQL);
+    this.migrate();
     // 进程重启只能确认任务已中断，不能断言先前的命令是否执行成功。
     this.db
       .prepare(
         "UPDATE tasks SET status='interrupted',error='服务已重启，任务中断；未重放命令。' WHERE status IN ('running','waiting')",
       )
       .run();
+  }
+
+  /** 将历史会话标为完成，避免升级后用旧消息意外覆盖用户原有标题。 */
+  private migrate() {
+    const columns = this.db
+      .prepare("PRAGMA table_info(sessions)")
+      .all() as Array<{ name: string }>;
+
+    if (!columns.some((column) => column.name === "titleState")) {
+      this.db.exec(
+        "ALTER TABLE sessions ADD COLUMN titleState TEXT NOT NULL DEFAULT 'completed'",
+      );
+    }
   }
 
   /** 回调必须同步完成，不能在事务中等待网络或其他异步操作。 */
@@ -57,15 +71,53 @@ export class Store {
       .get(id) as unknown as Session | undefined;
   }
 
-  create(workspace: string, title: string) {
+  /** 未提供标题的新会话等待其首条 prompt；显式标题只供内部固定用途，不会被模型覆盖。 */
+  create(workspace: string, title?: string) {
     const date = new Date().toISOString();
     const id = randomUUID();
+    const manualTitle = title?.trim();
+    const titleState = manualTitle ? "manual" : "pending";
 
     this.db
-      .prepare("INSERT INTO sessions VALUES(?,?,?,?,?)")
-      .run(id, title, workspace, date, date);
+      .prepare(
+        "INSERT INTO sessions(id,title,workspace,createdAt,updatedAt,titleState) VALUES(?,?,?,?,?,?)",
+      )
+      .run(id, manualTitle || "新对话", workspace, date, date, titleState);
 
     return this.get(id)!;
+  }
+
+  /** 以条件更新领取标题任务，避免重试、恢复或并发调用使用后续 prompt 覆盖首条消息。 */
+  startTitleGeneration(sessionId: string) {
+    const result = this.db
+      .prepare(
+        "UPDATE sessions SET titleState='generating' WHERE id=? AND titleState='pending'",
+      )
+      .run(sessionId);
+
+    return result.changes === 1;
+  }
+
+  /** 标题成功后与更新时间一起持久化，供会话列表和当前快照刷新。 */
+  completeTitleGeneration(sessionId: string, title: string) {
+    const updatedAt = new Date().toISOString();
+
+    this.db
+      .prepare(
+        "UPDATE sessions SET title=?,titleState='completed',updatedAt=? WHERE id=? AND titleState='generating'",
+      )
+      .run(title, updatedAt, sessionId);
+
+    return this.get(sessionId)!;
+  }
+
+  /** 辅助模型失败不影响编码任务，但标记终态以避免自动重试时使用后续 prompt。 */
+  failTitleGeneration(sessionId: string) {
+    this.db
+      .prepare(
+        "UPDATE sessions SET titleState='failed' WHERE id=? AND titleState='generating'",
+      )
+      .run(sessionId);
   }
 
   tasks(sessionId: string) {

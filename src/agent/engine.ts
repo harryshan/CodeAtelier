@@ -5,7 +5,7 @@
  * 1. 构造器接好审批通知；snapshot 读取会话状态，emit 脱敏并保存事件。
  * 2. start 确保同一时间只有一个任务，保存用户消息，并准备取消信号和完成通知。
  * 3. resume 继续最后一个可恢复任务；cancel 处理用户取消，close 处理服务关闭。
- * 4. run 读取历史和项目规则，准备工具及上下文预算；摘要可使用单独配置的辅助模型。
+ * 4. 首条 prompt 先用辅助模型生成标题；run 再读取历史和项目规则，准备工具及上下文预算。
  * 5. 每轮先整理上下文，再请求模型。只有完整响应保存成功后，才按顺序执行工具。
  * 6. 工具结果和更新后的上下文一起提交到数据库；退出时保存最终状态并发出 task_end。
  *
@@ -28,6 +28,7 @@ import { retryModel } from "../providers/retry.js";
 import { EventEmitter } from "node:events";
 import type { Logger } from "pino";
 import { Store } from "../sessions/store.js";
+import { generateConversationTitle } from "../sessions/title-generator.js";
 import { Config } from "../config/config.js";
 import { ApprovalManager } from "../permissions/approval-manager.js";
 import { ResponsesProvider } from "../providers/responses-provider.js";
@@ -97,20 +98,28 @@ export class Engine {
     }
 
     // 任务和用户消息一起保存，避免恢复时找不到用户原本要求做什么。
-    const task = this.store.transaction(() => {
+    // 标题领取和首条消息同一事务提交，恢复或后续追问不能拿来覆盖原标题。
+    const { task, generateTitle } = this.store.transaction(() => {
       const created = this.store.createTask(sessionId);
+      const firstPrompt =
+        session.titleState === "pending" &&
+        !this.store.events(sessionId).some((event) => event.type === "user");
 
       this.emit(created, "user", { text: prompt });
       if (recovery) {
         this.emit(created, "recovery", recovery);
       }
 
-      return created;
+      return {
+        task: created,
+        generateTitle:
+          firstPrompt && this.store.startTitleGeneration(sessionId),
+      };
     });
     const controller = new AbortController();
 
     this.active = { task, controller, done: Promise.resolve() };
-    this.active.done = this.run(task, prompt, controller.signal)
+    this.active.done = this.run(task, prompt, controller.signal, generateTitle)
       .catch((error) => {
         this.log.error({
           event: "task.persistence_failed",
@@ -186,7 +195,66 @@ export class Engine {
     await this.active?.done;
   }
 
-  private async run(task: Task, prompt: string, signal: AbortSignal) {
+  /** 生成标题失败时保留占位值；只有取消需要中止主任务，避免辅助能力降低可用性。 */
+  private async generateTitle(
+    sessionId: string,
+    prompt: string,
+    settings: Settings,
+    signal: AbortSignal,
+    log: Logger,
+  ) {
+    const selected = auxiliarySettings(settings);
+    const provider =
+      this.factory?.(selected, "auxiliary") ??
+      new ResponsesProvider(selected, this.config.apiKey);
+
+    try {
+      const title = await retryModel(
+        () => generateConversationTitle(provider, prompt, signal),
+        signal,
+        (error, attempt, delayMs) => {
+          log.warn({
+            event: "session.title_generation_retry",
+            model: selected.model,
+            attempt,
+            delayMs,
+            code: error.code,
+          });
+        },
+      );
+
+      this.store.completeTitleGeneration(sessionId, title);
+      this.events.emit("change", sessionId);
+      log.info({
+        event: "session.title_generated",
+        model: selected.model,
+        titleLength: title.length,
+      });
+    } catch (error: any) {
+      if (signal.aborted) {
+        // 取消后的请求不会返回结果；结束标题状态，防止恢复任务永久卡在 generating。
+        this.store.failTitleGeneration(sessionId);
+        this.events.emit("change", sessionId);
+        throw signal.reason;
+      }
+
+      this.store.failTitleGeneration(sessionId);
+      this.events.emit("change", sessionId);
+      log.warn({
+        event: "session.title_generation_failed",
+        model: selected.model,
+        errorName: error?.name,
+        code: error?.code,
+      });
+    }
+  }
+
+  private async run(
+    task: Task,
+    prompt: string,
+    signal: AbortSignal,
+    generateTitle: boolean,
+  ) {
     const session = this.store.get(task.sessionId)!;
     const settings = { ...this.config.settings };
     const log = this.log.child({
@@ -212,6 +280,10 @@ export class Engine {
     };
 
     try {
+      if (generateTitle) {
+        await this.generateTitle(session.id, prompt, settings, signal, log);
+      }
+
       let input = prepareTaskContext(this.store, session.id, prompt);
 
       const runner = new ToolRunner({

@@ -3,7 +3,7 @@
  * 通过 api 请求后端，通过 useSessionConnection 同步会话，再交给 Timeline 和 SettingsPanel 展示。
  *
  * 1. 状态和 effects 管理当前会话、表单、弹窗、加载状态、服务状态及自动滚动。
- * 2. 按服务端返回的工作区路径分组展示会话；openNew 可预填项目目录，创建独立历史。
+ * 2. 按服务端返回的工作区路径分组展示会话；openNew 可预填项目目录，首条 prompt 自动命名独立历史。
  * 3. resume、stopServer、create 和 send 处理恢复、关闭服务、新建会话和发送消息，并显示操作结果。
  * 4. 服务关闭后显示重启说明；正常页面由侧栏、项目栏、时间线或欢迎页、输入框组成。
  * 5. 末尾渲染新会话、设置和关闭确认弹窗。
@@ -27,7 +27,6 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [showNew, setShowNew] = useState(false);
   const [workspace, setWorkspace] = useState("");
-  const [title, setTitle] = useState("");
   const [prompt, setPrompt] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -60,6 +59,19 @@ export default function App() {
     bottom.current?.scrollIntoView({ behavior: "smooth" });
   }, [data?.events.length, data?.approvals.length]);
 
+  // SSE 刷新的快照含标题生成后的 Session；同步侧栏副本才能即时显示新标题。
+  useEffect(() => {
+    if (!data?.session) {
+      return;
+    }
+
+    setList((current) =>
+      current.map((session) =>
+        session.id === data.session.id ? data.session : session,
+      ),
+    );
+  }, [data?.session]);
+
   // 路径已由后端解析为真实目录；不在浏览器按操作系统猜测路径大小写。
   const projects = new Map<string, Session[]>();
   for (const session of list) {
@@ -70,7 +82,6 @@ export default function App() {
 
   const openNew = (projectWorkspace = "") => {
     setWorkspace(projectWorkspace);
-    setTitle("");
     setError("");
     setShowNew(true);
   };
@@ -118,16 +129,11 @@ export default function App() {
     setBusy(true);
     setError("");
     try {
-      const session = await api<Session>("/sessions", {
-        workspace,
-        title:
-          title || workspace.split(/[\\/]/).filter(Boolean).pop() || "新项目",
-      });
+      const session = await api<Session>("/sessions", { workspace });
 
       setList(await sessions());
       setSelected(session.id);
       setShowNew(false);
-      setTitle("");
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -474,17 +480,9 @@ export default function App() {
                   onChange={(e) => setWorkspace(e.target.value)}
                 />
               </label>
-              <label>
-                会话名称
-                <input
-                  value={title}
-                  placeholder="可选，默认使用目录名"
-                  onChange={(e) => setTitle(e.target.value)}
-                />
-              </label>
               <p className={s.muted}>
-                同一项目可以建立多个对话，各自保存消息和执行记录，共用项目文件。CodeAtelier
-                将直接在这个目录中工作。
+                同一项目可以建立多个对话，各自保存消息和执行记录，共用项目文件。发送第一条消息后，
+                CodeAtelier 会使用低成本辅助模型自动生成会话标题。
               </p>
               {error && <p className={s.error}>{error}</p>}
               <button disabled={busy} className={s.primary}>

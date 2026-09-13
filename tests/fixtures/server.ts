@@ -2,7 +2,7 @@
  * Playwright 使用的本机测试服务器，复用生产 createApp 和页面接口。
  * 配置保存在临时目录，模型使用固定响应，不连接外部服务。
  *
- * 1. 模拟模型提供固定容量，按提示和步骤返回工具调用、文本或断流错误。
+ * 1. 模拟模型提供固定容量，按用途、提示和步骤返回标题、工具调用、文本或断流错误。
  * 2. 长历史用例生成足以触发压缩的内容，摘要请求返回符合格式要求的模拟摘要。
  * 3. 文件和命令请求交给真实 ToolRunner；普通回复分段输出并带固定 usage。
  * 4. 启动测试端口，收到 SIGTERM 后关闭引擎和应用。
@@ -17,12 +17,14 @@ import path from "node:path";
 import pino from "pino";
 import { Config } from "../../src/config/config.js";
 import { createApp } from "../../src/server/app.js";
+import { TITLE_INSTRUCTIONS } from "../../src/sessions/title-generator.js";
 
 const config = new Config(
   await realpath(await mkdtemp(path.join(tmpdir(), "codeatelier-ui-"))),
 );
 
 config.apiKey = "test-key";
+config.settings.auxiliaryModel = "test-low-cost-model";
 
 const { app, engine } = await createApp(
   config,
@@ -40,9 +42,17 @@ const { app, engine } = await createApp(
           },
         };
       },
-      async run(input, _instructions, _tools, signal, onDelta) {
+      async run(input, instructions, tools, signal, onDelta) {
         signal.throwIfAborted();
-        if (!_tools.length) {
+        if (instructions.includes(TITLE_INSTRUCTIONS)) {
+          const title = (input[0]?.content || "新对话")
+            .replace(/^<user_prompt>\r?\n?/, "")
+            .replace(/\r?\n?<\/user_prompt>$/, "");
+
+          return { output: [], text: title };
+        }
+
+        if (!tools.length) {
           return {
             output: [],
             text: JSON.stringify({

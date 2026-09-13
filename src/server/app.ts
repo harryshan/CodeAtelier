@@ -4,7 +4,7 @@
  *
  * 1. 创建 Fastify、Store 和 Engine，准备关闭状态和可复用的关闭 Promise。
  * 2. 先注册来源与凭据检查、关闭接口和错误处理，再注册 bootstrap、设置接口。
- * 3. 会话和任务路由校验请求，调用 Engine 启动、恢复、取消任务或传递审批决定。
+ * 3. 会话和任务路由校验请求，创建待生成标题的会话，调用 Engine 启动、恢复、取消任务或传递审批决定。
  * 4. 接入 SSE，并提供构建后的网页；没有前端产物时显示开发提示。
  * 5. preClose 中断任务并结束 SSE，onClose 关闭数据库。
  *
@@ -19,6 +19,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import type { Logger } from "pino";
+import type { Settings } from "../shared/types.js";
 import { Config } from "../config/config.js";
 import { Store } from "../sessions/store.js";
 import { Engine } from "../agent/engine.js";
@@ -28,7 +29,10 @@ import { workspacePath } from "../tools/paths.js";
 export async function createApp(
   config: Config,
   log: Logger,
-  providerFactory?: () => ModelProvider,
+  providerFactory?: (
+    settings: Settings,
+    purpose: "task" | "auxiliary",
+  ) => ModelProvider,
   onStopped?: () => void,
 ) {
   const app = Fastify({
@@ -127,13 +131,11 @@ export async function createApp(
   app.get("/api/sessions", async () => store.list());
   app.post("/api/sessions", async (req) => {
     const data = z
-      .object({
-        workspace: z.string().min(1),
-        title: z.string().min(1).max(100),
-      })
+      .object({ workspace: z.string().min(1) })
+      .strict()
       .parse(req.body);
 
-    return store.create(await workspacePath(data.workspace), data.title);
+    return store.create(await workspacePath(data.workspace));
   });
   app.get("/api/sessions/:id", async (req, reply) => {
     const { id } = req.params as { id: string };
