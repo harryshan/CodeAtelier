@@ -1,7 +1,7 @@
 /**
  * 声明模型可以调用的文件和命令工具，供 Engine 生成工具列表、ToolRunner 校验参数。
  *
- * 1. schemas 定义列目录、读文件、搜索、写文件、精确编辑、命令和受限 Git 操作的参数。
+ * 1. schemas 定义列目录、读文件、搜索、写文件、单文件多处精确编辑、命令和受限 Git 操作的参数。
  * 2. descriptions 向模型说明各工具的用途和限制。
  * 3. definitions 将 schema 转成 Responses API 需要的函数工具声明。
  *
@@ -30,8 +30,17 @@ export const schemas = {
   edit_file: z
     .object({
       path: z.string(),
-      oldText: z.string().min(1),
-      newText: z.string().max(500000),
+      edits: z
+        .array(
+          z
+            .object({
+              oldText: z.string().min(1),
+              newText: z.string().max(500000),
+            })
+            .strict(),
+        )
+        .min(1)
+        .max(100),
     })
     .strict(),
   run_command: z
@@ -62,7 +71,7 @@ const descriptions: Record<string, string> = {
   write_file:
     "Create or replace a UTF-8 text file. Existing files must have been read in this task. Prefer edit_file for changes.",
   edit_file:
-    "Replace exactly one occurrence of oldText in a previously read UTF-8 file. Fails if the file changed since reading.",
+    "Apply 1-100 edits to one previously read UTF-8 file. Merge all known changes to this file into one call. Edits run in array order against the evolving text; each oldText must match exactly once at that stage. All edits are validated in memory before a single write; any invalid edit leaves the file unchanged. Fails if the file changed externally since reading or the last successful write. Batch independent calls for distinct files in one response.",
   run_command:
     "Execute a program with an argument array, after user approval. No shell expansion. To use a shell specify its executable and arguments explicitly. On Windows use cmd.exe /d /s /c for pnpm.cmd. Do not use direct Git commands, elevation, or destructive system operations.",
   git_status:

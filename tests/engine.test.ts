@@ -293,8 +293,7 @@ it("requires a fresh read in a later task even when history contains an earlier 
               name: "edit_file",
               arguments: JSON.stringify({
                 path: "a.txt",
-                oldText: "old",
-                newText: "new",
+                edits: [{ oldText: "old", newText: "new" }],
               }),
             },
           ],

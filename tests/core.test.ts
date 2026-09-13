@@ -83,8 +83,7 @@ describe("files and permissions", () => {
     await expect(
       tools.execute("edit_file", {
         path: "a.txt",
-        oldText: "old",
-        newText: "new",
+        edits: [{ oldText: "old", newText: "new" }],
       }),
     ).rejects.toThrow("未读取");
     await tools.execute("read_file", {
@@ -97,8 +96,7 @@ describe("files and permissions", () => {
     await expect(
       tools.execute("edit_file", {
         path: "a.txt",
-        oldText: "old",
-        newText: "new",
+        edits: [{ oldText: "old", newText: "new" }],
       }),
     ).rejects.toThrow("已变化");
   });
@@ -109,8 +107,7 @@ describe("files and permissions", () => {
     await tools.execute("write_file", { path: "a.txt", content: "abc" });
     const result = await tools.execute("edit_file", {
       path: "a.txt",
-      oldText: "b",
-      newText: "B",
+      edits: [{ oldText: "b", newText: "B" }],
     });
 
     expect(await readFile(path.join(root, "a.txt"), "utf8")).toBe("aBc");

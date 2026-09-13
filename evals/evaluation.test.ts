@@ -65,8 +65,7 @@ it("runs production read/edit tools and exports independently verifiable artifac
 
         return tool("edit_file", {
           path: "math.js",
-          oldText: "a - b",
-          newText: "a + b",
+          edits: [{ oldText: "a - b", newText: "a + b" }],
         });
       }
 

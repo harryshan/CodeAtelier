@@ -4,7 +4,7 @@
  *
  * 1. 检查目录过滤、字面搜索、结果数量限制和带行号、分页元数据的分段读取。
  * 2. 检查模型可见的定位/小范围读取契约，以及反向行区间、二进制文件和过大文件被拒绝。
- * 3. 检查唯一替换、创建父目录、美元符号按原文替换，以及整文件覆盖需要审批。
+ * 3. 检查多处顺序替换、整批失败不写入、成功后复用读取状态、创建父目录、美元符号按原文替换，以及整文件覆盖需要审批。
  * 4. 在等待审批时修改文件，并检查规则文件、敏感文件和非法工具参数的处理。
  *
  * 拒绝或校验失败后，原文件必须保持不变，不能只检查是否弹出了审批。
@@ -159,7 +159,10 @@ it("rejects missing or ambiguous replacement targets without changing the file",
   await runner.execute("write_file", { path: "a.txt", content: "same same" });
   for (const oldText of ["absent", "same"]) {
     await expect(
-      runner.execute("edit_file", { path: "a.txt", oldText, newText: "new" }),
+      runner.execute("edit_file", {
+        path: "a.txt",
+        edits: [{ oldText, newText: "new" }],
+      }),
     ).rejects.toThrow("精确匹配一次");
   }
 
@@ -172,8 +175,7 @@ it("creates nested files and treats replacement dollar sequences literally", asy
   await runner.execute("write_file", { path: "src/a.txt", content: "before" });
   await runner.execute("edit_file", {
     path: "src/a.txt",
-    oldText: "before",
-    newText: "$&-$1",
+    edits: [{ oldText: "before", newText: "$&-$1" }],
   });
 
   expect(await readFile(path.join(root, "src/a.txt"), "utf8")).toBe("$&-$1");
@@ -239,4 +241,62 @@ it("rejects unknown tools and invalid arguments before any side effects", async 
   ).rejects.toThrow();
   expect(await readdir(root)).toEqual([]);
   expect(approvals.list()).toEqual([]);
+});
+
+it("applies multiple edits in order and allows another edit without rereading", async () => {
+  const { root, runner } = await fileFixture();
+  await runner.execute("write_file", {
+    path: "a.txt",
+    content: "alpha middle omega",
+  });
+  await runner.execute("edit_file", {
+    path: "a.txt",
+    edits: [
+      { oldText: "alpha", newText: "first" },
+      { oldText: "omega", newText: "last" },
+      { oldText: "first", newText: "$&" },
+    ],
+  });
+  expect(await readFile(path.join(root, "a.txt"), "utf8")).toBe(
+    "$& middle last",
+  );
+  await runner.execute("edit_file", {
+    path: "a.txt",
+    edits: [{ oldText: "middle", newText: "center" }],
+  });
+  expect(await readFile(path.join(root, "a.txt"), "utf8")).toBe(
+    "$& center last",
+  );
+});
+
+it("leaves the file and read state intact when a later edit fails", async () => {
+  const { root, runner } = await fileFixture();
+  await runner.execute("write_file", {
+    path: "a.txt",
+    content: "alpha same same",
+  });
+  for (const oldText of ["absent", "same"]) {
+    await expect(
+      runner.execute("edit_file", {
+        path: "a.txt",
+        edits: [
+          { oldText: "alpha", newText: "changed" },
+          { oldText, newText: "x" },
+        ],
+      }),
+    ).rejects.toThrow("精确匹配一次");
+    expect(await readFile(path.join(root, "a.txt"), "utf8")).toBe(
+      "alpha same same",
+    );
+  }
+
+  await expect(
+    runner.execute("edit_file", { path: "a.txt", edits: [] }),
+  ).rejects.toThrow();
+  await runner.execute("edit_file", {
+    path: "a.txt",
+    edits: [{ oldText: "alpha", newText: "ok" }],
+  });
+  expect(await readFile(path.join(root, "a.txt"), "utf8")).toBe("ok same same");
+  expect(await readdir(root)).toEqual(["a.txt"]);
 });

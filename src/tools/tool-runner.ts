@@ -7,7 +7,7 @@
  * 3. execute 先校验参数。专用 Git 调用分流给 GitToolRunner；普通命令拒绝直接 Git、
  *    再申请审批并调用 executeProcess。
  * 4. 只读分支处理列目录、读取和搜索；读文件按 500 行分页并记录内容哈希，供后续修改核对。
- * 5. 修改已有文件前要求本任务已经读过，且内容没有变化；精确替换只能匹配一处，整文件覆盖另需审批。
+ * 5. 修改已有文件前要求本任务已经读过，且内容没有变化；多处替换按顺序在内存校验，每项唯一匹配，全部成功才写入；整文件覆盖另需审批。
  * 6. 写入前再次核对路径和正文，再用同目录临时文件替换目标、保留权限，更新哈希并发出 diff。
  *
  * 用户审批期间文件仍可能变化，所以批准后也要复核。新任务必须重新读文件，不能沿用上次任务的哈希。
@@ -358,11 +358,17 @@ export class ToolRunner {
         throw new Error("文件不存在");
       }
 
-      if (before.split(args.oldText).length !== 2) {
-        throw new Error("oldText 必须在文件中精确匹配一次。");
-      }
+      after = before;
+      // 每项基于前一项的内存结果匹配；中途失败时尚未触碰磁盘或更新读取哈希。
+      for (const [index, edit] of args.edits.entries()) {
+        if (after.split(edit.oldText).length !== 2) {
+          throw new Error(
+            `第 ${index + 1} 项 oldText 必须在文件中精确匹配一次。`,
+          );
+        }
 
-      after = before.replace(args.oldText, () => args.newText);
+        after = after.replace(edit.oldText, () => edit.newText);
+      }
     }
 
     if (exists && name === "write_file") {
