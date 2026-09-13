@@ -3,9 +3,10 @@
  * 通过 api 请求后端，通过 useSessionConnection 同步会话，再交给 Timeline 和 SettingsPanel 展示。
  *
  * 1. 状态和 effects 管理当前会话、表单、弹窗、加载状态、服务状态及自动滚动。
- * 2. resume、stopServer、create 和 send 处理恢复、关闭服务、新建会话和发送消息，并显示操作结果。
- * 3. 服务关闭后显示重启说明；正常页面由侧栏、项目栏、时间线或欢迎页、输入框组成。
- * 4. 末尾渲染新会话、设置和关闭确认弹窗。
+ * 2. 按服务端返回的工作区路径分组展示会话；openNew 可预填项目目录，创建独立历史。
+ * 3. resume、stopServer、create 和 send 处理恢复、关闭服务、新建会话和发送消息，并显示操作结果。
+ * 4. 服务关闭后显示重启说明；正常页面由侧栏、项目栏、时间线或欢迎页、输入框组成。
+ * 5. 末尾渲染新会话、设置和关闭确认弹窗。
  *
  * 关闭请求失败时不能断言服务已经关闭。切换会话和断线重连都只更新显示，不能重新提交任务。
  */
@@ -58,6 +59,21 @@ export default function App() {
   useEffect(() => {
     bottom.current?.scrollIntoView({ behavior: "smooth" });
   }, [data?.events.length, data?.approvals.length]);
+
+  // 路径已由后端解析为真实目录；不在浏览器按操作系统猜测路径大小写。
+  const projects = new Map<string, Session[]>();
+  for (const session of list) {
+    const conversations = projects.get(session.workspace) ?? [];
+    conversations.push(session);
+    projects.set(session.workspace, conversations);
+  }
+
+  const openNew = (projectWorkspace = "") => {
+    setWorkspace(projectWorkspace);
+    setTitle("");
+    setError("");
+    setShowNew(true);
+  };
 
   const active = data?.tasks.find((t) =>
     ["running", "waiting"].includes(t.status),
@@ -161,28 +177,55 @@ export default function App() {
             CodeAtelier<small>YOUR LOCAL CODING STUDIO</small>
           </span>
         </a>
-        <button className={s.newButton} onClick={() => setShowNew(true)}>
+        <button className={s.newButton} onClick={() => openNew()}>
           <span>＋</span> 新建会话 <kbd>N</kbd>
         </button>
         <div className={s.sectionLabel}>
           工作记录 <span>{list.length}</span>
         </div>
         <nav className={s.sessionList}>
-          {list.map((item) => (
-            <button
-              key={item.id}
-              className={selected === item.id ? s.selected : ""}
-              onClick={() => {
-                setSelected(item.id);
-                setError("");
-              }}
+          {[...projects].map(([projectWorkspace, conversations]) => (
+            <section
+              key={projectWorkspace}
+              role="group"
+              aria-label={projectWorkspace}
+              className={s.projectGroup}
             >
-              <span className={s.sessionIcon}>⌘</span>
-              <span>
-                <strong>{item.title}</strong>
-                <small>{item.workspace}</small>
-              </span>
-            </button>
+              <div className={s.projectHeading} title={projectWorkspace}>
+                <strong>
+                  {projectWorkspace.split(/[\\/]/).filter(Boolean).pop() ||
+                    projectWorkspace}
+                </strong>
+                <small>{projectWorkspace}</small>
+                <small>{conversations.length} 个对话</small>
+              </div>
+              <button
+                onClick={() => openNew(projectWorkspace)}
+                aria-label="新建对话"
+                title="在此项目中新建对话"
+              >
+                <span>＋</span>
+                <span>新建对话</span>
+              </button>
+              {conversations.map((item) => (
+                <button
+                  key={item.id}
+                  aria-label={item.title}
+                  title={item.title}
+                  aria-current={selected === item.id ? "page" : undefined}
+                  className={selected === item.id ? s.selected : ""}
+                  onClick={() => {
+                    setSelected(item.id);
+                    setError("");
+                  }}
+                >
+                  <span className={s.sessionIcon}>⌘</span>
+                  <span>
+                    <strong>{item.title}</strong>
+                  </span>
+                </button>
+              ))}
+            </section>
           ))}
           {!list.length && (
             <p className={s.emptyList}>
@@ -248,7 +291,7 @@ export default function App() {
                 <br />
                 每一步执行清晰可见，每一次对话留在本机。
               </p>
-              <button className={s.primary} onClick={() => setShowNew(true)}>
+              <button className={s.primary} onClick={() => openNew()}>
                 打开你的第一个项目 <span>↗</span>
               </button>
               <div className={s.cards}>
@@ -411,7 +454,7 @@ export default function App() {
             <div className={s.modalHeading}>
               <div>
                 <small>NEW SESSION</small>
-                <h2>连接本地项目</h2>
+                <h2>新建项目对话</h2>
               </div>
               <button
                 aria-label="关闭新建会话"
@@ -440,7 +483,8 @@ export default function App() {
                 />
               </label>
               <p className={s.muted}>
-                CodeAtelier 将直接在这个目录中工作。请选择你信任的项目。
+                同一项目可以建立多个对话，各自保存消息和执行记录，共用项目文件。CodeAtelier
+                将直接在这个目录中工作。
               </p>
               {error && <p className={s.error}>{error}</p>}
               <button disabled={busy} className={s.primary}>

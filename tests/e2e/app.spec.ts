@@ -6,6 +6,7 @@
  * 2. 检查重试文本分开显示、凭据失效后重新连接，以及会话切换后的数据隔离。
  * 3. 检查关闭服务成功和请求失败时的不同提示。
  * 4. 检查压缩通知、原始历史及模型用量在刷新后仍能显示。
+ * 5. 从项目分组新建对话，验证目录预填、独立历史和刷新后分组保留。
  *
  * 页面刷新或重连不能重新提交任务。这里不调用真实模型。
  */
@@ -336,4 +337,43 @@ test("shows discovered token budget and persisted actual usage", async ({
       exact: true,
     }),
   ).toBeVisible();
+});
+
+test("creates another conversation from its project and preserves separate history", async ({
+  page,
+}) => {
+  const workspace = await realpath(
+    await mkdtemp(path.join(tmpdir(), "codeatelier-project-")),
+  );
+  await page.goto("/");
+  await page.getByRole("button", { name: "新建会话" }).click();
+  await page.getByLabel("项目目录").fill(workspace);
+  await page.getByLabel("会话名称").fill("项目对话一");
+  await page.getByRole("button", { name: "创建会话" }).click();
+  await page.getByLabel("任务描述").fill("说明项目");
+  await page.getByRole("button", { name: "开始执行" }).click();
+  await expect(page.getByText("任务完成，已检查工具结果。")).toBeVisible();
+
+  const project = page.getByRole("group", { name: workspace, exact: true });
+  await project.getByRole("button", { name: "新建对话", exact: true }).click();
+  await expect(page.getByLabel("项目目录")).toHaveValue(workspace);
+  await expect(page.getByLabel("会话名称")).toHaveValue("");
+  await page.getByLabel("会话名称").fill("项目对话二");
+  await page.getByRole("button", { name: "创建会话" }).click();
+  await expect(
+    project.getByRole("button", { name: "项目对话一" }),
+  ).toBeVisible();
+  await expect(
+    project.getByRole("button", { name: "项目对话二" }),
+  ).toBeVisible();
+  await expect(page.getByText("任务完成，已检查工具结果。")).toHaveCount(0);
+  await page.reload();
+  await project.getByRole("button", { name: "项目对话一" }).click();
+  await expect(page.getByText("任务完成，已检查工具结果。")).toBeVisible();
+  await project.getByRole("button", { name: "项目对话二" }).click();
+  await expect(page.getByText("任务完成，已检查工具结果。")).toHaveCount(0);
+  await page.screenshot({
+    path: "test-results/project-conversations.png",
+    fullPage: true,
+  });
 });

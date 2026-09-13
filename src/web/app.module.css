@@ -2,7 +2,7 @@
  * 主页面、时间线和弹窗共用的 CSS Module，由各 React 组件引用。
  *
  * 1. 开头设置颜色、字体和基础控件样式，再定义双栏布局、侧栏和标题区。
- * 2. 随后是欢迎页、项目栏、对话消息、工具结果、diff 和通知。
+ * 2. 项目分组标题与会话按钮展示一项目多对话；随后是欢迎页、项目栏、对话消息、工具结果、diff 和通知。
  * 3. 审批按钮、输入区、弹窗和字段网格对应页面中的操作与表单。
  * 4. 末尾通过媒体查询调整窄屏间距和排列。
  *
@@ -141,6 +141,15 @@
 .sessionList {
   overflow: auto;
   flex: 1;
+}
+.projectGroup {
+  border-bottom: 1px solid #303a3e;
+  padding-bottom: 8px;
+  margin-bottom: 12px;
+}
+.projectHeading {
+  padding: 8px 10px;
+  overflow-wrap: anywhere;
 }
 .sessionList button {
   border: 0;

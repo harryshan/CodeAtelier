@@ -86,3 +86,7 @@ UI 历史包含消息、工具调用、受限工具结果和修改 diff。长内
 ### 辅助模型配置与摘要路由
 
 `config/auxiliary-model.ts` 的 `auxiliarySettings` 为辅助调用创建独立配置副本；Engine 保持主任务提供商不变，并通过 ContextManager 的惰性 `summaryModel` 回调为摘要提供独立模型及预算。后续标题生成或辅助审批可复用配置选择函数，当前未实现这两条模型调用流程，权限规则仍独立执行。
+
+### 项目与对话展示
+
+`src/web/App.tsx` 按服务端保存的真实 `workspace` 路径分组已有会话，展示项目目录、对话数量和独立会话列表。项目内新建入口预填目录，继续使用 `POST /api/sessions` 创建独立记录，不引入新的项目表或跨会话上下文共享。
