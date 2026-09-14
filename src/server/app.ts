@@ -3,7 +3,7 @@
  * 服务入口和测试服务都调用 createApp，得到 app、engine、store 及 shutdown。
  *
  * 1. 创建 Fastify、Store 和 Engine，准备关闭状态和可复用的关闭 Promise。
- * 2. 先注册来源与凭据检查、关闭接口和错误处理，再注册 bootstrap、设置接口。
+ * 2. 先注册来源与凭据检查、关闭/受监督重载接口和错误处理，再注册 bootstrap、设置接口。
  * 3. 会话和任务路由校验请求，创建待生成标题的会话，调用 Engine 启动、恢复、取消任务或传递审批决定。
  * 4. 接入 SSE，并提供构建后的网页；没有前端产物时显示开发提示。
  * 5. preClose 中断任务并结束 SSE，onClose 关闭数据库。
@@ -34,6 +34,7 @@ export async function createApp(
     purpose: "task" | "auxiliary",
   ) => ModelProvider,
   onStopped?: () => void,
+  onReload?: () => void,
 ) {
   const app = Fastify({
     loggerInstance: log,
@@ -45,11 +46,15 @@ export async function createApp(
   let stopping = false;
   let shutdownPromise: Promise<void> | undefined;
   // Web 请求和进程信号共用这一个关闭 Promise，避免重复释放资源。
-  const shutdown = () => {
+  const shutdown = (reason: "shutdown" | "reload" = "shutdown") => {
     stopping = true;
     shutdownPromise ??= app.close().then(() => {
-      log.info({ event: "server.stopped", module: "server" });
-      onStopped?.();
+      log.info({ event: "server.stopped", module: "server", reason });
+      if (reason === "reload") {
+        onReload?.();
+      } else {
+        onStopped?.();
+      }
     });
 
     return shutdownPromise;
@@ -58,7 +63,10 @@ export async function createApp(
   const token = registerLocalSecurity(app);
 
   app.addHook("preHandler", async (req, reply) => {
-    if (stopping && req.url !== "/api/server/shutdown") {
+    if (
+      stopping &&
+      !["/api/server/shutdown", "/api/server/reload"].includes(req.url)
+    ) {
       return reply.code(503).send({ error: "服务正在关闭。" });
     }
   });
@@ -82,6 +90,38 @@ export async function createApp(
     };
 
     // 即使浏览器没等到响应就断开，也要继续关闭服务。
+    reply.raw.once("finish", finish);
+    reply.raw.once("close", finish);
+    await engine.close();
+
+    return { ok: true };
+  });
+  app.post("/api/server/reload", async (req, reply) => {
+    z.object({ confirm: z.literal(true) })
+      .strict()
+      .parse(req.body);
+    if (!onReload) {
+      return reply.code(409).send({
+        error: "当前启动方式不支持服务重载，请在终端重新启动服务。",
+      });
+    }
+
+    stopping = true;
+    log.info({ event: "server.reloading", module: "server", source: "web" });
+    const finish = () => {
+      setImmediate(
+        () =>
+          void shutdown("reload").catch((error) => {
+            log.error({
+              event: "server.reload_failed",
+              module: "server",
+              errorName: error?.name,
+            });
+          }),
+      );
+    };
+
+    // 浏览器收到确认即可等待替代进程；即使响应连接提前结束，也必须继续释放旧端口。
     reply.raw.once("finish", finish);
     reply.raw.once("close", finish);
     await engine.close();

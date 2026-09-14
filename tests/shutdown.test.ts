@@ -4,7 +4,7 @@
  *
  * 1. 拒绝没有凭据、凭据伪造或缺少 confirm 的关闭请求。
  * 2. 启动任务并连接 SSE，关闭后检查流结束、端口释放及 SQLite 中的中断记录。
- * 3. 启动 main.ts 子进程，发送合法关闭请求，确认进程正常退出。
+ * 3. 启动 launcher.ts 父进程，确认它能在认证后的重载请求后替换后端子进程，并在关闭后正常退出。
  *
  * 收到关闭响应还不够，必须确认资源确实释放；测试负责清理自己启动的进程。
  */
@@ -13,6 +13,7 @@ import { it, expect } from "vitest";
 import pino from "pino";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
+import { createServer, type AddressInfo } from "node:net";
 import path from "node:path";
 import { createApp } from "../src/server/app.js";
 import { Config } from "../src/config/config.js";
@@ -65,6 +66,21 @@ it("rejects unauthenticated, forged and unconfirmed shutdown requests", async ()
       ).toBe(status);
     }
 
+    const unsupportedReload = await app.inject({
+      method: "POST",
+      url: "/api/server/reload",
+      headers: {
+        host: "127.0.0.1",
+        cookie: "ca_session=" + token,
+        "x-codeatelier-token": token,
+      },
+      payload: { confirm: true },
+    });
+
+    expect(unsupportedReload.statusCode).toBe(409);
+    expect(JSON.parse(unsupportedReload.body)).toEqual({
+      error: "当前启动方式不支持服务重载，请在终端重新启动服务。",
+    });
     expect(
       (
         await app.inject({
@@ -177,18 +193,38 @@ it("shutdown acknowledges a running task, closes SSE, releases the port and pers
   }
 });
 
-it("the production entry point exits successfully after authenticated shutdown", async () => {
+async function availablePort() {
+  const server = createServer();
+
+  server.listen({ host: "127.0.0.1", port: 0 });
+  await once(server, "listening");
+  const port = (server.address() as AddressInfo).port;
+
+  server.close();
+  await once(server, "close");
+
+  return port;
+}
+
+function listeningUrls(output: string) {
+  return [
+    ...output.matchAll(/Server listening at (http:\/\/127\.0\.0\.1:\d+)/g),
+  ].map((match) => match[1]);
+}
+
+it("the production launcher replaces the backend after authenticated reload and exits after shutdown", async () => {
   const directory = await temp();
+  const port = await availablePort();
   const child = spawn(
     process.execPath,
-    ["--import", "tsx", path.resolve("src/server/main.ts")],
+    ["--import", "tsx", path.resolve("src/server/launcher.ts")],
     {
       cwd: process.cwd(),
       windowsHide: true,
       env: {
         ...process.env,
         CODEATELIER_DATA_DIR: directory,
-        CODEATELIER_PORT: "0",
+        CODEATELIER_PORT: String(port),
         CODEATELIER_API_KEY: "",
       },
       stdio: ["ignore", "pipe", "pipe"],
@@ -202,28 +238,41 @@ it("the production entry point exits successfully after authenticated shutdown",
   child.stderr.resume();
   try {
     await expect
-      .poll(
-        () =>
-          output.match(/Server listening at (http:\/\/127\.0\.0\.1:\d+)/)?.[1],
-        { timeout: 10000 },
-      )
-      .toBeTruthy();
-    const url = output.match(
-      /Server listening at (http:\/\/127\.0\.0\.1:\d+)/,
-    )![1];
+      .poll(() => listeningUrls(output).length, { timeout: 10000 })
+      .toBe(1);
+    const url = listeningUrls(output)[0];
     const auth = await (await fetch(url + "/api/bootstrap")).json();
-    const response = await fetch(url + "/api/server/shutdown", {
+    const headers = {
+      cookie: "ca_session=" + auth.token,
+      "x-codeatelier-token": auth.token,
+      "content-type": "application/json",
+    };
+    const reload = await fetch(url + "/api/server/reload", {
+      method: "POST",
+      headers,
+      body: '{"confirm":true}',
+    });
+
+    expect(reload.status).toBe(200);
+    expect(await reload.json()).toEqual({ ok: true });
+    await expect
+      .poll(() => listeningUrls(output).length, { timeout: 10000 })
+      .toBe(2);
+    expect(listeningUrls(output)[1]).toBe(url);
+
+    const replacement = await (await fetch(url + "/api/bootstrap")).json();
+    const shutdown = await fetch(url + "/api/server/shutdown", {
       method: "POST",
       headers: {
-        cookie: "ca_session=" + auth.token,
-        "x-codeatelier-token": auth.token,
+        cookie: "ca_session=" + replacement.token,
+        "x-codeatelier-token": replacement.token,
         "content-type": "application/json",
       },
       body: '{"confirm":true}',
     });
 
-    expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ ok: true });
+    expect(shutdown.status).toBe(200);
+    expect(await shutdown.json()).toEqual({ ok: true });
     await expect.poll(() => child.exitCode, { timeout: 10000 }).toBe(0);
     await exit;
   } finally {

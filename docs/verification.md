@@ -182,3 +182,9 @@
 - Windows 本机执行 `pnpm test:e2e` 通过：生产构建成功，Chromium 共 13 项通过；新增浏览器用例确认点击入口后页面重新请求 bootstrap，且入口仍可操作。
 - Windows 本机 `pnpm check` 通过：类型、ESLint、Prettier、24 个测试文件的 171 项通过（1 项跳过）及生产构建均成功。
 - 未在本轮实际修改源码后启动 `tsx watch` 与 Vite 并观察跨进程 HMR 时序；该入口的职责仅是加载监视器已经更新的代码，后端进程重启和前端模块更新仍分别由开发监视器负责。
+
+## 2026-09-14：受监督构建服务重载
+
+- `pnpm start` 已改为 launcher 监督实际后端子进程；确认重载会保存任务中断、关闭旧子进程，之后由固定 IPC 在相同端口启动新的构建产物，UI 以新 token 确认后刷新。
+- Windows 本机 `pnpm check` 通过：类型检查、ESLint、Prettier、24 个测试文件的 171 项通过（1 项跳过）和生产构建均成功；其中 launcher 回归验证认证重载后在相同端口启动替代子进程，并能继续认证关闭。
+- Windows 本机 `pnpm test:e2e` 通过：生产构建成功，Chromium 共 13 项通过；重载浏览器用例验证取消时不发送请求、确认时发送 `{ "confirm": true }`，并等待不同 token 的替代服务后刷新。一次先前运行在无关的 `page.goto` 出现 `ERR_NO_BUFFER_SPACE`，立即完整重跑后 13 项均通过。未将开发 HMR 时序或真实模型调用作为该功能的验证范围。

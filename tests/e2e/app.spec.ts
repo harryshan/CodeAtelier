@@ -4,7 +4,7 @@
  *
  * 1. 创建会话、写文件、查看 diff、刷新历史，再检查审批、取消和设置保存。
  * 2. 检查重试文本分开显示、凭据失效后重新连接，以及会话切换后的数据隔离。
- * 3. 检查重载服务入口会完整刷新页面，以及关闭服务成功和请求失败时的不同提示。
+ * 3. 检查受确认的重载服务入口会等待替代服务、完整刷新页面，以及关闭服务成功和请求失败时的不同提示。
  * 4. 检查压缩通知、原始历史及模型用量在刷新后仍能显示。
  * 5. 验证多文件编辑的状态、diff 和刷新后的历史；通过页面内项目目录连接首个项目，再从项目标题右侧加号新建对话并检查历史隔离。
  *
@@ -215,19 +215,56 @@ test("continues a historical conversation while keeping another session isolated
   await expect(page.getByText("任务完成，已检查工具结果。")).toHaveCount(0);
 });
 
-test("reload service reloads the page and reconnects to the current backend", async ({
+test("reload service requires confirmation and reconnects after a replacement starts", async ({
   page,
 }) => {
+  let reloadRequested = 0;
+  let replacementStarted = false;
+  let replacementBootstrapRequests = 0;
+
+  await page.route("**/api/bootstrap", async (route) => {
+    if (!replacementStarted) {
+      await route.continue();
+
+      return;
+    }
+
+    const response = await route.fetch();
+    const body = await response.json();
+
+    replacementBootstrapRequests++;
+    if (replacementBootstrapRequests === 1) {
+      body.token = "replacement-session-token";
+    }
+
+    await route.fulfill({ response, json: body });
+  });
+  await page.route("**/api/server/reload", async (route) => {
+    reloadRequested++;
+    replacementStarted = true;
+    expect(route.request().postDataJSON()).toEqual({ confirm: true });
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: '{"ok":true}',
+    });
+  });
   await page.goto("/");
-  const bootstrapRequest = page.waitForResponse(
-    (response) =>
-      new URL(response.url()).pathname === "/api/bootstrap" &&
-      response.request().method() === "GET",
-  );
+  await page.getByRole("button", { name: "重载服务", exact: true }).click();
+
+  await expect(
+    page.getByRole("dialog", { name: "重载服务确认" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "暂不重载" }).click();
+  expect(reloadRequested).toBe(0);
 
   await page.getByRole("button", { name: "重载服务", exact: true }).click();
-  await bootstrapRequest;
+  await page.getByRole("button", { name: "确认重载服务" }).click();
 
+  await expect.poll(() => reloadRequested).toBe(1);
+  await expect
+    .poll(() => replacementBootstrapRequests)
+    .toBeGreaterThanOrEqual(2);
   await expect(
     page.getByRole("button", { name: "重载服务", exact: true }),
   ).toBeVisible();

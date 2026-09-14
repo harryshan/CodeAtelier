@@ -4,9 +4,9 @@
  *
  * 1. 状态和 effects 管理当前会话、表单、弹窗、加载状态、服务状态及自动滚动。
  * 2. 按服务端返回的工作区路径分组展示会话；项目标题右侧的加号直接创建同项目的独立对话。
- * 3. resume、reloadService、stopServer、createProject、createConversation 和 send 处理恢复、重载页面、关闭服务、连接项目、新建会话和发送消息，并显示操作结果。
+ * 3. resume、reloadService、stopServer、createProject、createConversation 和 send 处理恢复、受确认的服务重载、关闭服务、连接项目、新建会话和发送消息，并显示操作结果。
  * 4. 服务关闭后显示重启说明；正常页面由侧栏、项目栏、时间线或项目连接页、输入框组成。
- * 5. 末尾仅渲染设置和关闭确认弹窗，项目连接不使用弹窗。
+ * 5. 末尾仅渲染设置、重载和关闭确认弹窗，项目连接不使用弹窗。
  *
  * 关闭请求失败时不能断言服务已经关闭。切换会话和断线重连都只更新显示，不能重新提交任务。
  */
@@ -31,8 +31,9 @@ export default function App() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [showShutdown, setShowShutdown] = useState(false);
+  const [showReload, setShowReload] = useState(false);
   const [serverState, setServerState] = useState<
-    "running" | "stopping" | "stopped"
+    "running" | "reloading" | "stopping" | "stopped"
   >("running");
   const { data, setData, connected } = useSessionConnection(
     selected,
@@ -109,9 +110,39 @@ export default function App() {
     }
   };
 
-  // 开发监视器已更新后，用完整刷新丢弃旧的 React 模块和 SSE 连接，并重新请求当前后端。
-  const reloadService = () => {
-    window.location.reload();
+  const waitForReplacement = async (previousToken: string) => {
+    const deadline = Date.now() + 15000;
+
+    while (Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      try {
+        const replacement = await bootstrap();
+
+        if (replacement.token !== previousToken) {
+          return;
+        }
+      } catch {
+        // 旧进程释放端口和替代进程开始监听之间会短暂断开，继续等待即可。
+      }
+    }
+
+    throw new Error("服务未在 15 秒内重新启动，请检查启动终端。");
+  };
+
+  const reloadService = async () => {
+    setServerState("reloading");
+    setError("");
+    try {
+      const current = await bootstrap();
+
+      await api("/server/reload", { confirm: true });
+      await waitForReplacement(current.token);
+      window.location.reload();
+    } catch (error) {
+      setServerState("running");
+      setShowReload(false);
+      setError((error as Error).message);
+    }
   };
 
   const stopServer = async () => {
@@ -258,8 +289,8 @@ export default function App() {
         <div className={s.sideFooter}>
           <button
             disabled={serverState !== "running"}
-            onClick={reloadService}
-            title="重新加载已由开发监视器更新的服务和页面"
+            onClick={() => setShowReload(true)}
+            title="重启构建后的本机服务并重新加载页面"
           >
             重载服务
           </button>
@@ -451,6 +482,37 @@ export default function App() {
           </footer>
         )}
       </main>
+      {showReload && (
+        <div className={s.overlay}>
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-label="重载服务确认"
+            className={s.modal}
+          >
+            <h2>重载 CodeAtelier 服务？</h2>
+            <p>
+              服务会停止当前任务并保存为可恢复的中断状态，然后重新启动并重新加载此页面。已修改的文件不会撤销。
+            </p>
+            <p>重载只载入已构建的产物；源码变更请先执行 pnpm build。</p>
+            <div className={s.actions}>
+              <button
+                disabled={serverState === "reloading"}
+                onClick={() => setShowReload(false)}
+              >
+                暂不重载
+              </button>
+              <button
+                className={s.primary}
+                disabled={serverState === "reloading"}
+                onClick={() => void reloadService()}
+              >
+                {serverState === "reloading" ? "正在重载…" : "确认重载服务"}
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
       {showShutdown && (
         <div className={s.overlay}>
           <section

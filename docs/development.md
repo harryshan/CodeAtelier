@@ -9,7 +9,7 @@ Node.js 24，pnpm 11.22.0（packageManager 固定）。提交 pnpm-lock.yaml，�
 | pnpm dev | 后端源码监听，4142 端口；tsx watch 在源码更新后重启后端 |
 | pnpm dev:web | Vite 前端，5173 端口；Vite HMR 更新前端模块 |
 | pnpm build | 编译后端和前端 |
-| pnpm start | 运行构建后的本机服务 |
+| pnpm start | 运行构建后的本机服务；由监督进程支持 UI 确认后的后端重载 |
 | pnpm typecheck / lint / test | 类型、静态规则、核心测试 |
 | pnpm check | 类型、lint、核心测试、生产构建 |
 | pnpm test:e2e | 先编译后端和前端，再启动独立模拟服务验证浏览器交互 |
@@ -113,7 +113,9 @@ Web 侧栏的“关闭服务”需确认。`POST /api/server/shutdown` 接受 `{
 
 ## 开发服务重载
 
-同时运行 `pnpm dev` 和 `pnpm dev:web` 时，tsx watch 负责后端源码变化后的进程重启，Vite HMR 负责前端模块更新。若要丢弃浏览器中可能残留的模块状态和 SSE 连接，可点击侧栏的“重载服务”：它只调用 `window.location.reload()`，在页面重新加载时获取当前后端的本机会话和页面资源。该操作不调用关闭 API、不停止任务，也不负责启动或重启服务进程；生产模式的源码变更仍须先 `pnpm build` 并重启 `pnpm start`。
+`pnpm start` 先运行常驻的 `launcher.ts`，它 fork 实际提供 HTTP 服务的子进程。侧栏的“重载服务”必须在确认框选择“确认重载服务”，随后以与关闭相同的任务中断持久化和资源清理流程停止旧子进程；旧进程通过固定 IPC 请求 launcher 在端口释放后 fork 新子进程。UI 通过新生成的本机会话 token 确认替代服务已监听，才完整刷新页面。请求沿用 cookie/token 与 `{ "confirm": true }` 校验；无监督启动时接口返回 409，不自行生成游离进程。重载保留历史和已修改文件，但当前任务须从恢复入口继续。
+
+重载只重新执行已有构建产物，不会编译源码。生产模式修改后先执行 `pnpm build`，再点击入口即可替换 `pnpm start` 当前的服务；若服务已经关闭仍须在终端重新运行 `pnpm start`。同时运行 `pnpm dev` 和 `pnpm dev:web` 时，tsx watch 负责后端源码变化后的进程重启，Vite HMR 负责前端模块更新；重载入口可在需要完整重建本机会话时使用。
 
 ## 代码阅读与审核
 
