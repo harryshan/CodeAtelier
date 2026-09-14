@@ -1,9 +1,9 @@
 /**
  * 为 FileEditor 计算原始文本上的精确修改，不读取文件、不写盘，也不授予权限。
  * 1. TextEdit/FileEdit 是 registry 校验后的内部参数；行号为 null 时使用唯一文本匹配。
- * 2. planEdits 将行范围或唯一文本转换为原始快照字符区间，拒绝错配和重叠。
+ * 2. planEdits 在指定行范围或全文中唯一匹配旧文本，转换为原始快照字符区间，拒绝错配和重叠。
  * 3. 从后向前应用已定位区间，保持其他区间坐标与未修改的换行符不变，返回完整新文本。
- * 行范围包含完整首尾行正文但不含最后一行的换行符；内部 CRLF 必须精确匹配。
+ * 行范围包含首尾行及末行换行符；只替换实际匹配片段，CRLF 必须精确匹配，不向范围外回退。
  */
 
 export interface TextEdit {
@@ -50,18 +50,26 @@ export function planEdits(before: string, edits: TextEdit[]): string {
           return fail("行号范围无效或超出文件。");
         }
 
-        start = starts[edit.startLine - 1];
-        end =
-          edit.endLine < starts.length
-            ? starts[edit.endLine] - 1
-            : before.length;
-        if (edit.endLine < starts.length && before[end - 1] === "\r") {
-          end--;
+        const rangeStart = starts[edit.startLine - 1];
+        const rangeEnd =
+          edit.endLine < starts.length ? starts[edit.endLine] : before.length;
+        const scope = before.slice(rangeStart, rangeEnd);
+        const match = scope.indexOf(edit.oldText);
+        if (match < 0) {
+          fail(
+            `第 ${edit.startLine}-${edit.endLine} 行内未找到精确匹配的 oldText；请核对行号和原文（包括换行符）。`,
+          );
         }
 
-        if (before.slice(start, end) !== edit.oldText) {
-          fail("行号范围与 oldText 不一致。");
+        if (scope.indexOf(edit.oldText, match + 1) >= 0) {
+          fail(
+            `第 ${edit.startLine}-${edit.endLine} 行内 oldText 匹配不唯一，请缩小范围或增加上下文。`,
+          );
         }
+
+        // 行号只限定搜索窗口；重叠检查与替换使用实际匹配片段的坐标。
+        start = rangeStart + match;
+        end = start + edit.oldText.length;
       }
 
       return { start, end, replacement: edit.newText };

@@ -1,7 +1,7 @@
 /**
  * 使用真实 ToolRunner 和临时文件验证多文件编辑，不访问模型或用户项目。
  * 1. 整批成功、后项校验失败、重复路径以及读取版本检查通过磁盘内容验证。
- * 2. 行号定位覆盖重复文本、原始快照偏移、重叠和 CRLF 边界。
+ * 2. 行号限定搜索窗口，覆盖行内/跨行片段、重复文本、原始快照偏移、范围越界、重叠和 CRLF 边界。
  * 3. 后续故障用例检查逐文件进度、取消及部分写入，不假设跨文件原子性。
  */
 
@@ -320,4 +320,121 @@ it("stops before the next file if saving a completed progress event fails", asyn
   );
   expect(await readFile(path.join(root, "a.txt"), "utf8")).toBe("new");
   expect(await readFile(path.join(root, "b.txt"), "utf8")).toBe("old");
+});
+
+it("uses line ranges as search windows and preserves surrounding text", async () => {
+  const { runner, root } = await fileFixture();
+  await runner.execute("write_file", {
+    path: "a.txt",
+    content: "  const timeout = 1000;\n  const retry = 1000;\n",
+  });
+  await runner.execute("edit_file", {
+    path: "a.txt",
+    edits: [
+      { oldText: "1000", newText: "2000", startLine: 1, endLine: 1 },
+      { oldText: "retry", newText: "attempts", startLine: 2, endLine: 2 },
+    ],
+  });
+  expect(await readFile(path.join(root, "a.txt"), "utf8")).toBe(
+    "  const timeout = 2000;\n  const attempts = 1000;\n",
+  );
+});
+
+it("accepts exact snippets with or without the final line ending", async () => {
+  const { runner, root } = await fileFixture();
+  for (const newline of ["\n", "\r\n"]) {
+    const name = newline.length === 1 ? "lf.txt" : "crlf.txt";
+    await runner.execute("write_file", {
+      path: name,
+      content: `prefix first${newline}second suffix${newline}tail`,
+    });
+    await runner.execute("edit_file", {
+      path: name,
+      edits: [
+        {
+          oldText: `first${newline}second`,
+          newText: "joined",
+          startLine: 1,
+          endLine: 2,
+        },
+        {
+          oldText: ` suffix${newline}`,
+          newText: newline,
+          startLine: 2,
+          endLine: 2,
+        },
+      ],
+    });
+    expect(await readFile(path.join(root, name), "utf8")).toBe(
+      `prefix joined${newline}tail`,
+    );
+  }
+});
+
+it("rejects missing, ambiguous, out-of-range and overlapping matches without fallback", async () => {
+  const { runner, root } = await fileFixture();
+  const original = "outside\naaa value value\nlast";
+  await runner.execute("write_file", { path: "a.txt", content: original });
+  for (const edits of [
+    [{ oldText: "outside", newText: "x", startLine: 2, endLine: 2 }],
+    [{ oldText: "value", newText: "x", startLine: 2, endLine: 2 }],
+    [{ oldText: "aa", newText: "x", startLine: 2, endLine: 2 }],
+    [{ oldText: "value\nlast", newText: "x", startLine: 2, endLine: 2 }],
+    [
+      { oldText: "aaa", newText: "x", startLine: 2, endLine: 2 },
+      { oldText: "aaa value", newText: "y", startLine: 1, endLine: 3 },
+    ],
+  ]) {
+    await expect(
+      runner.execute("edit_file", { path: "a.txt", edits }),
+    ).rejects.toThrow();
+    expect(await readFile(path.join(root, "a.txt"), "utf8")).toBe(original);
+  }
+});
+
+it("applies scoped snippets across files and keeps exact newline matching", async () => {
+  const { runner, root } = await fileFixture();
+  for (const name of ["a.txt", "b.txt"]) {
+    await runner.execute("write_file", {
+      path: name,
+      content: "prefix one\r\ntwo suffix",
+    });
+  }
+
+  const rejected = await runner.execute("edit_files", {
+    files: [
+      {
+        path: "a.txt",
+        edits: [
+          { oldText: "prefix", newText: "new", startLine: 1, endLine: 1 },
+        ],
+      },
+      {
+        path: "b.txt",
+        edits: [
+          { oldText: "one\ntwo", newText: "joined", startLine: 1, endLine: 2 },
+        ],
+      },
+    ],
+  });
+  expect(rejected.error).toBeTruthy();
+  expect(await readFile(path.join(root, "a.txt"), "utf8")).toBe(
+    "prefix one\r\ntwo suffix",
+  );
+  const result = await runner.execute("edit_files", {
+    files: ["a.txt", "b.txt"].map((name) => ({
+      path: name,
+      edits: [
+        { oldText: "one\r\ntwo", newText: "joined", startLine: 1, endLine: 2 },
+      ],
+    })),
+  });
+  expect(result.files.every((file: any) => file.status === "written")).toBe(
+    true,
+  );
+  for (const name of ["a.txt", "b.txt"]) {
+    expect(await readFile(path.join(root, name), "utf8")).toBe(
+      "prefix joined suffix",
+    );
+  }
 });

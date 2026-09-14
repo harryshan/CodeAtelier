@@ -3,7 +3,7 @@
  * 使用临时 Config、Store 和模拟模型，不连接真实服务。
  *
  * 1. 检查默认值、环境变量、配置重载和非法输入。
- * 2. 用长历史触发摘要，核对主任务与摘要使用的模型和预算。
+ * 2. 按真实工具/指令开销设置预算，用长历史触发摘要，核对主任务与摘要模型。
  * 3. 模拟摘要失败，确认原始历史仍然保留。
  */
 import { afterEach, expect, it, vi } from "vitest";
@@ -12,6 +12,10 @@ import pino from "pino";
 import { Config } from "../src/config/config.js";
 import { auxiliarySettings } from "../src/config/auxiliary-model.js";
 import { Engine } from "../src/agent/engine.js";
+import { createInstructions } from "../src/agent/instructions.js";
+import { definitions } from "../src/tools/registry.js";
+import { historyDefinition } from "../src/context/history.js";
+import { contextSize } from "../src/context/budget.js";
 import { Store } from "../src/sessions/store.js";
 import { createBudget } from "../src/context/token-budget.js";
 import { temp } from "./fixtures/helpers.js";
@@ -70,7 +74,6 @@ it.each([false, true])(
     const config = new Config(await temp());
     config.settings.auxiliaryModel = "small";
     config.settings.auxiliaryReasoningEffort = "low";
-    config.settings.contextChars = 20000;
     const store = new Store(path.join(config.directory, "test.db"));
     const session = store.create(await temp(), "test");
     const source = [
@@ -78,6 +81,15 @@ it.each([false, true])(
       { role: "assistant", content: "historical analysis ".repeat(1600) },
       { role: "user", content: "Continue carefully" },
     ];
+    // 固定规则不可被摘要：为真实开销留出空间，同时确保原历史超限，失败分支仍须停止。
+    const instructions = await createInstructions(session.workspace);
+    const tools = [...definitions, historyDefinition];
+    config.settings.contextChars = Math.ceil(
+      (contextSize([], instructions, tools) + 3000) / 0.6,
+    );
+    expect(contextSize(source, instructions, tools)).toBeGreaterThan(
+      config.settings.contextChars,
+    );
     store.saveContext(session.id, source);
     const chunks: any[] = [];
     const models: string[] = [];

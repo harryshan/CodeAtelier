@@ -59,7 +59,7 @@ Node.js 24，pnpm 11.22.0（packageManager 固定）。提交 pnpm-lock.yaml，�
 
 `edit_file` 参数为 `{ path, edits: [{ oldText, newText, startLine, endLine }] }`，每次接受 1～100 项。`edit_files` 接受 `{ files: [{ path, edits }] }`，一次编辑 1～20 个已有文件，重复的真实路径会拒绝。新文件仍使用 `write_file`。原文和修改后文件各不超过 2 MiB，整批原文与结果合计不超过 16 MiB。
 
-两种工具的每项修改都基于**调用前的原始文件快照**，不能引用同一调用前项生成的新文本。可不使用行号（模型 strict 协议显式传 `startLine: null, endLine: null`；本地旧调用省略时默认 null），此时 `oldText` 必须在原文中精确匹配一次，包括重叠出现也视为歧义。提供行号时必须同时提供两个正整数，以 1 起算、首尾均包含；该完整行范围的正文必须与 `oldText` 一致，排除最后一行的换行符，范围内部换行（包括 CRLF）仍须逐字一致。无模糊匹配或自动修正行号。重叠区间拒绝；从后向前应用已定位区间，因此插入行不会移动其他修改的位置。
+两种工具的每项修改都基于**调用前的原始文件快照**，不能引用同一调用前项生成的新文本。可不使用行号（模型 strict 协议显式传 `startLine: null, endLine: null`；本地旧调用省略时默认 null），此时 `oldText` 必须在原文中精确匹配一次，包括重叠出现也视为歧义。提供行号时必须同时提供两个正整数，以 1 起算、首尾均包含；行号只限定搜索范围（包含末行换行符），`oldText` 可为行内片段或跨行片段，但必须完整位于范围内且精确匹配一次。仅替换匹配片段，保留周围内容。空白和换行（包括 CRLF）仍须逐字一致，不包含读取结果显示的行号前缀。未匹配或匹配多处时明确拒绝，不向范围外搜索，不做模糊匹配或自动修正行号。重叠区间拒绝；从后向前应用已定位区间，因此插入行不会移动其他修改的位置。
 
 多文件工具先完成全部路径审批、读取哈希和编辑校验，再复核所有快照，随后逐文件写入。每次写入前也复核路径和正文，成功后更新读取哈希并发出 diff。预检失败不写任何文件；实际写入期间失败或取消，保留已完成文件，不回滚、不自动重放。返回逐文件状态：`written` 已写入、`not_attempted` 未开始、`unknown` 曾进入写入阶段但结果需核实。历史 `edit_progress` 在写入前记录 unknown，成功后记录 written，UI 合并显示最新状态；进程崩溃后必须结合当前文件核实。跨文件没有事务保证，权限/路径复核也不是操作系统级沙箱。
 
@@ -68,7 +68,7 @@ Node.js 24，pnpm 11.22.0（packageManager 固定）。提交 pnpm-lock.yaml，�
 ```json
 {
   "files": [
-    { "path": "src/a.ts", "edits": [{ "oldText": "const a = 1;", "newText": "const a = 2;", "startLine": 1, "endLine": 1 }] },
+    { "path": "src/a.ts", "edits": [{ "oldText": "1", "newText": "2", "startLine": 1, "endLine": 1 }] },
     { "path": "src/b.ts", "edits": [{ "oldText": "oldName", "newText": "newName", "startLine": null, "endLine": null }] }
   ]
 }
