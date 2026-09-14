@@ -43,7 +43,7 @@ server (Fastify)
 | server/app.ts | 服务组装、业务路由与关闭顺序 |
 | server/local-security.ts / session-events.ts | 本机请求防护、SSE 连接管理与清理 |
 | server/http-server.ts | 保留 Pino 日志类型的 HTTP 服务类型 |
-| web/App.tsx / useSessionConnection.ts | 页面交互与布局、快照和 SSE 重连生命周期 |
+| web/App.tsx / useSessionConnection.ts | 页面交互与布局、开发服务完整页面重载，以及快照和 SSE 重连生命周期 |
 
 本次全库审查将原 registry.ts 中的 ToolRunner 移出；paths.ts 原本就是路径函数模块。Engine、Store 及其上下文/schema 辅助模块、共享数据契约、测试和开发脚本继续按各自职责组织，不为每个小函数增加文件。
 
@@ -71,6 +71,8 @@ UI 历史包含消息、工具调用、受限工具结果和修改 diff。长内
 ## 本机 HTTP 边界
 
 服务仅监听 127.0.0.1。校验 Host/Origin，使用 HttpOnly、SameSite=Strict cookie 及写请求 token，不开放任意来源 CORS。启动时重新生成本机会话 token。设置接口不返回 API key；浏览器提交密钥后不持久化它。
+
+开发时，`App.tsx` 的“重载服务”入口只进行浏览器完整刷新，使页面在 `tsx watch` 重启后重新建立本机会话和 SSE 并读取当前后端；它不提供服务器进程重启 API，也不改变任务状态。Vite HMR 仍独立负责正常的前端模块更新。
 
 模型元数据与实际 usage 由 providers/model-metadata.ts 校验，context/token-budget.ts 计算本地 token 估算和输入预算，UI 区分估算与实报；详见 [model-tokens.md](model-tokens.md)。
 

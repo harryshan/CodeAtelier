@@ -4,7 +4,7 @@
  *
  * 1. 创建会话、写文件、查看 diff、刷新历史，再检查审批、取消和设置保存。
  * 2. 检查重试文本分开显示、凭据失效后重新连接，以及会话切换后的数据隔离。
- * 3. 检查关闭服务成功和请求失败时的不同提示。
+ * 3. 检查重载服务入口会完整刷新页面，以及关闭服务成功和请求失败时的不同提示。
  * 4. 检查压缩通知、原始历史及模型用量在刷新后仍能显示。
  * 5. 验证多文件编辑的状态、diff 和刷新后的历史；通过页面内项目目录连接首个项目，再从项目标题右侧加号新建对话并检查历史隔离。
  *
@@ -213,6 +213,24 @@ test("continues a historical conversation while keeping another session isolated
     .click();
 
   await expect(page.getByText("任务完成，已检查工具结果。")).toHaveCount(0);
+});
+
+test("reload service reloads the page and reconnects to the current backend", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const bootstrapRequest = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === "/api/bootstrap" &&
+      response.request().method() === "GET",
+  );
+
+  await page.getByRole("button", { name: "重载服务", exact: true }).click();
+  await bootstrapRequest;
+
+  await expect(
+    page.getByRole("button", { name: "重载服务", exact: true }),
+  ).toBeVisible();
 });
 
 test("shutdown requires confirmation and displays restart instructions", async ({

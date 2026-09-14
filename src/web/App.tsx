@@ -4,7 +4,7 @@
  *
  * 1. 状态和 effects 管理当前会话、表单、弹窗、加载状态、服务状态及自动滚动。
  * 2. 按服务端返回的工作区路径分组展示会话；项目标题右侧的加号直接创建同项目的独立对话。
- * 3. resume、stopServer、createProject、createConversation 和 send 处理恢复、关闭服务、连接项目、新建会话和发送消息，并显示操作结果。
+ * 3. resume、reloadService、stopServer、createProject、createConversation 和 send 处理恢复、重载页面、关闭服务、连接项目、新建会话和发送消息，并显示操作结果。
  * 4. 服务关闭后显示重启说明；正常页面由侧栏、项目栏、时间线或项目连接页、输入框组成。
  * 5. 末尾仅渲染设置和关闭确认弹窗，项目连接不使用弹窗。
  *
@@ -107,6 +107,11 @@ export default function App() {
     } finally {
       setBusy(false);
     }
+  };
+
+  // 开发监视器已更新后，用完整刷新丢弃旧的 React 模块和 SSE 连接，并重新请求当前后端。
+  const reloadService = () => {
+    window.location.reload();
   };
 
   const stopServer = async () => {
@@ -251,6 +256,13 @@ export default function App() {
           )}
         </nav>
         <div className={s.sideFooter}>
+          <button
+            disabled={serverState !== "running"}
+            onClick={reloadService}
+            title="重新加载已由开发监视器更新的服务和页面"
+          >
+            重载服务
+          </button>
           <button onClick={() => setShowShutdown(true)}>关闭服务</button>
           <div>
             <span className={s.greenDot} /> 仅本机访问{" "}

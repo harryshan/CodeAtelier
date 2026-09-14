@@ -6,8 +6,8 @@ Node.js 24，pnpm 11.22.0（packageManager 固定）。提交 pnpm-lock.yaml，�
 
 | 命令 | 用途 |
 | --- | --- |
-| pnpm dev | 后端源码监听，4142 端口 |
-| pnpm dev:web | Vite 前端，5173 端口 |
+| pnpm dev | 后端源码监听，4142 端口；tsx watch 在源码更新后重启后端 |
+| pnpm dev:web | Vite 前端，5173 端口；Vite HMR 更新前端模块 |
 | pnpm build | 编译后端和前端 |
 | pnpm start | 运行构建后的本机服务 |
 | pnpm typecheck / lint / test | 类型、静态规则、核心测试 |
@@ -110,6 +110,10 @@ CI 使用 GitHub 托管的 Windows、Linux、macOS runner 执行 pnpm check，Li
 Web 侧栏的“关闭服务”需确认。`POST /api/server/shutdown` 接受 `{ "confirm": true }`，沿用 cookie/token 校验。关闭期间拒绝新业务请求，先停止模型/命令并记录任务中断，响应确认后关闭 SSE、HTTP 和 SQLite。请求方提前断开时仍继续清理。生命周期关闭操作幂等；日志事件为 server.stopping/server.stopped，异常为 server.shutdown_failed。
 
 `Ctrl+C`、SIGTERM 调用同一个 shutdown。开发模式还需退出 tsx watch 监视器时，在启动终端按 Ctrl+C。
+
+## 开发服务重载
+
+同时运行 `pnpm dev` 和 `pnpm dev:web` 时，tsx watch 负责后端源码变化后的进程重启，Vite HMR 负责前端模块更新。若要丢弃浏览器中可能残留的模块状态和 SSE 连接，可点击侧栏的“重载服务”：它只调用 `window.location.reload()`，在页面重新加载时获取当前后端的本机会话和页面资源。该操作不调用关闭 API、不停止任务，也不负责启动或重启服务进程；生产模式的源码变更仍须先 `pnpm build` 并重启 `pnpm start`。
 
 ## 代码阅读与审核
 
