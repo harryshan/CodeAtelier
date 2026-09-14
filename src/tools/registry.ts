@@ -83,7 +83,7 @@ const descriptions: Record<string, string> = {
   edit_files:
     "Edit 1-20 distinct previously read files in one call. Each entry uses edit_file semantics: all ranges refer to that file's ORIGINAL snapshot; startLine/endLine are both integers or both null. Validate permissions, versions and all edits before any write. Files write sequentially, NOT as a cross-file transaction. On failure inspect per-file statuses and current contents; never blindly replay the batch. Merge all changes to the same real path in one entry. Existing files only; use write_file to create files.",
   run_command:
-    "Execute a program with an argument array, after user approval. No shell expansion. To use a shell specify its executable and arguments explicitly. On Windows use cmd.exe /d /s /c for pnpm.cmd. Do not use direct Git commands, elevation, or destructive system operations.",
+    "Execute a program with an argument array, after user approval. No shell expansion. To use a shell specify its executable and arguments explicitly. On Windows prefer pwsh, then powershell, then cmd.exe; use pwsh/powershell with -NoLogo -NoProfile -NonInteractive -Command, or cmd.exe with /d /s /c. When independent commands can be safely chained, place them in one shell call and print your own unique CODEATELIER_STEP marker before each command so their plain-text output remains distinguishable; do not chain commands whose later arguments depend on earlier output. Command output disables colors and removes terminal control sequences. Do not use direct Git commands, elevation, or destructive system operations.",
   git_status:
     "Show the current repository branch and concise working-tree status. This read-only tool runs in the session workspace.",
   git_diff:

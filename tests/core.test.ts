@@ -71,6 +71,8 @@ describe("files and permissions", () => {
     expect(instructions).toContain("Use progressive code reading");
     expect(instructions).toContain("start with 80-200 lines");
     expect(instructions).toContain("Read complete files only");
+    expect(instructions).toContain("prefer pwsh");
+    expect(instructions).toContain("CODEATELIER_STEP");
   });
 
   it("requires reading existing files and rejects concurrent changes", async () => {

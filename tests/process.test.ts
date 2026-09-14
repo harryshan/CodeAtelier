@@ -2,7 +2,7 @@
  * 用短时运行的 Node 子进程检查 executeProcess 的输出、错误和取消行为。
  *
  * 1. 启动不存在的程序，检查错误返回及超时资源清理。
- * 2. 分两次输出一个 UTF-8 字符，检查解码完整，并检查子进程没有继承模型密钥。
+ * 2. 分两次输出一个 UTF-8 字符，检查解码完整、颜色控制符跨 chunk 清理、子进程颜色环境和模型密钥隔离。
  * 3. 收到输出后取消进程，确认以取消错误结束。
  *
  * 用例结束后恢复环境变量；程序和参数直接传给执行器，不经过 shell 拼接。
@@ -46,6 +46,23 @@ it("preserves split UTF-8 output and does not inherit the model API key", async 
   expect(result.output).toContain("中文KEY_ABSENT");
   expect(chunks.join("")).toBe(result.output);
   expect(result.exitCode).toBe(0);
+});
+
+it("removes split terminal controls and sets no-color child environment", async () => {
+  const script =
+    'process.stdout.write("\\u001b[");setTimeout(()=>{process.stdout.write("31mRED\\u001b[0m\\u001b]0;title\\u0007");console.log(process.env.NO_COLOR + process.env.FORCE_COLOR + process.env.CLICOLOR + process.env.CLICOLOR_FORCE + process.env.TERM)},10)';
+  const result = await executeProcess(
+    process.execPath,
+    ["-e", script],
+    await temp(),
+    new AbortController().signal,
+    5000,
+    2000,
+    () => {},
+  );
+
+  expect(result.output).toContain("RED1000dumb");
+  expect(result.output).not.toMatch(/[\u001b\u009b\u009d]/);
 });
 
 it("cancels a running process after receiving output", async () => {
