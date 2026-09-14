@@ -93,7 +93,7 @@ mechanical-input.test.ts 覆盖精确结果/跨路径正文引用、逐字还原
 ### 辅助模型
 
 - `tests/auxiliary-model.test.ts`：旧配置兼容、主模型继承、环境默认值、保存/重载/清空、非法输入拒绝；生产 Engine 路由、辅助模型独立预算、完整摘要来源、摘要失败保留历史。使用模拟模型，不访问真实服务。
-- `tests/title-generation.test.ts`：首条 prompt 只调用一次辅助模型、输入分隔和输出清理、主任务不受标题失败影响、取消结束标题状态，以及旧 SQLite 标题迁移。
+- `tests/title-generation.test.ts`：首条 prompt 选择辅助模型、输入分隔和输出清理、未知标题模型故障最多额外重试 3 次、永久失败不阻断主任务、取消结束标题状态，以及旧 SQLite 标题迁移。
 - `tests/e2e/app.spec.ts`：辅助模型表单保存、刷新回显与清空；首条 prompt 完成后在侧栏显示并在刷新后保留自动标题。
 
 评测包装器的辅助模型路由与主模型共用累计用量和调用上限；本次仅静态检查评测改动，未运行 Evaluation。

@@ -38,6 +38,9 @@ import { definitions } from "../tools/registry.js";
 import { redactJson, redactText } from "../logging/redact.js";
 import type { Task, TaskStatus } from "../shared/types.js";
 
+// 标题请求没有工具或文件副作用；服务未提供可分类原因时，允许比主任务多一次诊断性重试。
+const titleRetryOptions = { retries: 3, retryUnknownErrors: true };
+
 export class Engine {
   events = new EventEmitter();
   approvals: ApprovalManager;
@@ -221,6 +224,7 @@ export class Engine {
             code: error.code,
           });
         },
+        titleRetryOptions,
       );
 
       this.store.completeTitleGeneration(sessionId, title);

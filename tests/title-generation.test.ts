@@ -4,13 +4,13 @@
  *
  * 1. 新会话从 pending 占位标题开始；首个任务选择 auxiliaryModel，清理并保存模型返回的标题。
  * 2. 后续任务不会再次调用标题模型，避免用后续 prompt 覆盖首条消息的摘要。
- * 3. 标题模型失败或首任务取消时保留占位标题，并结束标题状态而不让恢复永久卡住。
+ * 3. 标题模型对未知故障最多额外重试三次；耗尽或首任务取消时保留占位标题并结束标题状态。
  * 4. 用旧版 sessions 表启动 Store，确认迁移保留已有手填标题而不重新生成。
  *
  * 标题输出和模型调用只用于断言；测试不记录真实 prompt、密钥或外部服务数据。
  */
 
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import path from "node:path";
 import pino from "pino";
 import { DatabaseSync } from "node:sqlite";
@@ -18,6 +18,7 @@ import { Engine } from "../src/agent/engine.js";
 import { Config } from "../src/config/config.js";
 import { Store } from "../src/sessions/store.js";
 import { TITLE_INSTRUCTIONS } from "../src/sessions/title-generator.js";
+import { ModelError } from "../src/providers/model-error.js";
 import { temp } from "./fixtures/helpers.js";
 
 const completedTask = {
@@ -99,7 +100,57 @@ it("generates and persists one title from the first prompt with the auxiliary mo
   }
 });
 
-it("keeps the placeholder title when generation fails without failing the coding task", async () => {
+it("retries unknown title failures up to three times before completing the coding task", async () => {
+  vi.useFakeTimers();
+  const config = new Config(await temp());
+  const store = new Store(path.join(config.directory, "history.sqlite"));
+  const session = store.create(await temp());
+  let titleCalls = 0;
+  let taskCalls = 0;
+  const engine = new Engine(
+    store,
+    config,
+    pino({ enabled: false }),
+    (_settings, purpose) =>
+      purpose === "auxiliary"
+        ? {
+            async run() {
+              titleCalls++;
+              if (titleCalls <= 3) {
+                throw new Error("title service temporarily unavailable");
+              }
+
+              return { output: [], text: "构建失败排查" };
+            },
+          }
+        : {
+            async run() {
+              taskCalls++;
+
+              return completedTask;
+            },
+          },
+  );
+
+  try {
+    engine.start(session.id, "检查构建失败");
+    await vi.runAllTimersAsync();
+    await engine.active?.done;
+
+    expect(titleCalls).toBe(4);
+    expect(taskCalls).toBe(1);
+    expect(store.get(session.id)).toMatchObject({
+      title: "构建失败排查",
+      titleState: "completed",
+    });
+  } finally {
+    vi.useRealTimers();
+    await engine.close();
+    store.close();
+  }
+});
+
+it("keeps the placeholder title when permanent generation failure does not fail the coding task", async () => {
   const config = new Config(await temp());
   const store = new Store(path.join(config.directory, "history.sqlite"));
   const session = store.create(await temp());
@@ -112,7 +163,11 @@ it("keeps the placeholder title when generation fails without failing the coding
       purpose === "auxiliary"
         ? {
             async run() {
-              throw new Error("title service unavailable");
+              throw new ModelError(
+                "title model is unavailable",
+                false,
+                "http_400",
+              );
             },
           }
         : {
