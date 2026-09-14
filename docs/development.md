@@ -57,7 +57,9 @@ Node.js 24，pnpm 11.22.0（packageManager 固定）。提交 pnpm-lock.yaml，�
 
 模型已被要求在信息充分且操作互不依赖时，在一次 Responses 请求中返回多个工具调用，例如不同文件的读取、搜索或已读取文件的精确编辑。请求显式发送 `parallel_tool_calls: true`；这只是服务端的调用批次偏好，本机仍按模型返回顺序逐项校验、审批和执行。同一路径的多处修改合并为一个 `edit_file` 调用；不同文件的独立修改优先使用一个 `edit_files` 调用。完成一个可验证的逻辑改动后统一验证；需要前一步结果才能确定的操作仍须分轮，不为凑批次扩大范围。
 
-多个彼此独立、可以共用一次审批的命令应尽量在一个 shell 型 `run_command` 调用内串联，而不是拆成多次工具调用；模型必须在每条命令前自行输出唯一的 `CODEATELIER_STEP:<id>` 分隔标记，使合并后的纯文本输出可定位到具体步骤。后续命令的参数、安全判断或是否执行依赖前一步输出时不得串联。Windows 使用 shell 时依次优先 `pwsh`、`powershell`、`cmd.exe`：前两者传入 `-NoLogo -NoProfile -NonInteractive -Command`，`cmd.exe` 传入 `/d /s /c`。`pwsh` 不可启动后才尝试 `powershell`，两者均不可用后才使用 `cmd.exe`。
+服务在 Windows 创建任务时自行检查 `PATH`、`SystemRoot` 和 `ComSpec`，按 `pwsh`、`powershell`、`cmd.exe` 的优先级选取第一个真实存在的 shell，并把解析后的可执行文件绝对路径及固定参数注入该任务的模型 instructions。模型不得探测、选择或回退 shell；检测不到时须报告无法使用 shell。`pwsh`/`powershell` 的固定前导参数是 `-NoLogo -NoProfile -NonInteractive -Command`，`cmd.exe` 是 `/d /s /c`。
+
+只要完整复合命令可在执行前一并审批，模型应尽量用一个 shell 型 `run_command` 调用减少工具往返；这包括顺序命令、管道和具有流式生产者/消费者关系的命令，而不局限于可并行命令。模型必须在每个可独立报告的阶段前自行输出唯一的 `CODEATELIER_STEP:<id>` 分隔标记；管道的标记写入 stderr，以免改变管道输入。仅当需要工具结果来构造下一条命令或申请进一步审批时才拆分调用。
 
 `edit_file` 参数为 `{ path, edits: [{ oldText, newText, startLine, endLine }] }`，每次接受 1～100 项。`edit_files` 接受 `{ files: [{ path, edits }] }`，一次编辑 1～20 个已有文件，重复的真实路径会拒绝。新文件仍使用 `write_file`。原文和修改后文件各不超过 2 MiB，整批原文与结果合计不超过 16 MiB。
 
@@ -82,7 +84,7 @@ Node.js 24，pnpm 11.22.0（packageManager 固定）。提交 pnpm-lock.yaml，�
 
 普通工作区文件操作自动执行。工作区外访问、敏感文件、修改 AGENTS.md、完整覆盖已有文件需确认；直接修改 .git 被拒绝。外部读取当前采用逐次确认，尚未提供额外只读目录授权管理界面。
 
-命令均首次确认；简单 pnpm/npm 的 test/build/lint/typecheck 或 node --test 在可计算项目指纹时可授予本次会话重复执行。复杂 shell 不支持会话放行。Windows shell 调用按上述优先级显式指定，且始终按单次审批处理。子进程环境设置 `NO_COLOR=1`、`FORCE_COLOR=0`、`CLICOLOR=0`、`CLICOLOR_FORCE=0` 和 `TERM=dumb` 请求工具禁用颜色；执行器还会跨输出分块移除 ANSI、OSC 等控制序列，只保存、展示和回传纯文本。没有系统沙箱、回滚或提权工具。请只操作可信项目。
+命令均首次确认；简单 pnpm/npm 的 test/build/lint/typecheck 或 node --test 在可计算项目指纹时可授予本次会话重复执行。复杂 shell 不支持会话放行。Windows 由服务检测并在 instructions 中指定 shell，复合 shell 调用始终按单次审批处理。子进程环境设置 `NO_COLOR=1`、`FORCE_COLOR=0`、`CLICOLOR=0`、`CLICOLOR_FORCE=0` 和 `TERM=dumb` 请求工具禁用颜色；执行器还会跨输出分块移除 ANSI、OSC 等控制序列，只保存、展示和回传纯文本。没有系统沙箱、回滚或提权工具。请只操作可信项目。
 
 Git 不经 `run_command` 执行，而使用固定的专用工具：`git_status` 显示分支和工作区状态，`git_diff` 显示未暂存或暂存差异，二者只读。`git_commit` 必须提供提交消息和明确路径，并自动仅对这些路径执行 `git add` 与无 hooks、无 GPG 签名的提交；不提交敏感文件、`.git` 或工作区外路径。`git_push` 自动只执行到当前分支已配置的 upstream，不接受 remote、branch、force 或其他参数。提交或推送中断时结果可能未知，恢复前必须重新检查状态和差异，不自动重放。
 
@@ -90,7 +92,7 @@ Git 不经 `run_command` 执行，而使用固定的专用工具：`git_status` 
 
 - 模型返回“不支持 Responses”：核对服务公布的完整模型标识；配置原样传递，不自动转换简称。
 - 请求结束但无结果：检查服务是否发送完成事件。适配器支持从 output_item.done 收集结果。
-- 找不到 Windows shell：先确认 `pwsh`，不可用再使用 `powershell`，最后才使用 `cmd.exe /d /s /c`；UI 会展示完整请求。pnpm 的 `.cmd` 脚本使用最后一种方式时仍按单次审批处理。
+- 找不到 Windows shell：服务会按 `pwsh`、`powershell`、`cmd.exe` 检查环境并在任务 instructions 注入结果；若三者均不可用，模型会报告 shell 不可用而不会自行猜测。使用检测到的 `cmd.exe` 运行 pnpm 的 `.cmd` 脚本时仍按单次审批处理。
 - 文件已变化：重新读取后再编辑；不要关闭并发修改检测。
 - 刷新后需要重新认证：服务重启会轮换本机会话 token，刷新页面。
 - 任务中断：在会话底部点击“恢复任务”，可先填写恢复说明。密钥或模型配置错误先到设置修正，超时可调整模型请求/空闲超时。模型自动重试记录 model.retry（含步骤、尝试次数、错误分类、HTTP 状态、等待时间）；耗尽后保留失败状态。详见 [恢复机制](recovery.md)。

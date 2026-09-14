@@ -26,7 +26,10 @@ import { Config } from "../src/config/config.js";
 import { Store } from "../src/sessions/store.js";
 import { executeProcess } from "../src/tools/process.js";
 import { Engine } from "../src/agent/engine.js";
-import { createInstructions } from "../src/agent/instructions.js";
+import {
+  createInstructions,
+  detectWindowsShell,
+} from "../src/agent/instructions.js";
 import { createApp } from "../src/server/app.js";
 import pino from "pino";
 import { redactText } from "../src/logging/redact.js";
@@ -65,14 +68,60 @@ function runner(
 }
 
 describe("files and permissions", () => {
-  it("instructs the model to locate code before expanding file reads", async () => {
-    const instructions = await createInstructions(await temp());
+  it("detects a Windows shell before injecting it into model instructions", async () => {
+    const environment = {
+      Path: "C:\\Tools;C:\\Windows\\System32\\WindowsPowerShell\\v1.0",
+      ComSpec: "C:\\Windows\\System32\\cmd.exe",
+    };
+    const shell = detectWindowsShell(
+      environment,
+      (candidate) => candidate === "C:\\Tools\\pwsh.exe",
+      "win32",
+    );
+    const instructions = await createInstructions(await temp(), shell);
 
+    expect(shell).toEqual({
+      command: "C:\\Tools\\pwsh.exe",
+      args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"],
+    });
     expect(instructions).toContain("Use progressive code reading");
     expect(instructions).toContain("start with 80-200 lines");
     expect(instructions).toContain("Read complete files only");
-    expect(instructions).toContain("prefer pwsh");
+    expect(instructions).toContain(
+      "CodeAtelier selected the Windows shell executable",
+    );
+    expect(instructions).toContain("C:\\\\Tools\\\\pwsh.exe");
+    expect(instructions).toContain("do not choose, probe, or fall back");
     expect(instructions).toContain("CODEATELIER_STEP");
+    expect(instructions).toContain("streaming producer/consumer commands");
+  });
+
+  it("falls back to powershell when pwsh is unavailable", () => {
+    const shell = detectWindowsShell(
+      { SystemRoot: "C:\\Windows" },
+      (candidate) =>
+        candidate ===
+        "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+      "win32",
+    );
+
+    expect(shell).toEqual({
+      command: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+      args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"],
+    });
+  });
+
+  it("falls back to cmd only when higher-priority shells are unavailable", () => {
+    const shell = detectWindowsShell(
+      { ComSpec: "C:\\Windows\\System32\\cmd.exe" },
+      (candidate) => candidate === "C:\\Windows\\System32\\cmd.exe",
+      "win32",
+    );
+
+    expect(shell).toEqual({
+      command: "C:\\Windows\\System32\\cmd.exe",
+      args: ["/d", "/s", "/c"],
+    });
   });
 
   it("requires reading existing files and rejects concurrent changes", async () => {
