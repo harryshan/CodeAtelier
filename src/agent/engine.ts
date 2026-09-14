@@ -126,8 +126,9 @@ export class Engine {
       .catch((error) => {
         this.log.error({
           event: "task.persistence_failed",
+          module: "agent",
           taskId: task.id,
-          errorName: error?.name,
+          err: error,
         });
         try {
           this.store.status(
@@ -247,8 +248,8 @@ export class Engine {
       log.warn({
         event: "session.title_generation_failed",
         model: selected.model,
-        errorName: error?.name,
         code: error?.code,
+        err: error,
       });
     }
   }
@@ -315,9 +316,9 @@ export class Engine {
       let capabilities: ModelCapabilities | undefined;
       try {
         capabilities = await provider.getCapabilities?.(signal);
-      } catch {
+      } catch (error) {
         signal.throwIfAborted();
-        log.warn({ event: "model.capabilities_unavailable" });
+        log.warn({ event: "model.capabilities_unavailable", err: error });
       }
 
       const budget = createBudget(
@@ -373,11 +374,12 @@ export class Engine {
               let metadata: ModelCapabilities | undefined;
               try {
                 metadata = await auxiliary.getCapabilities?.(signal);
-              } catch {
+              } catch (error) {
                 signal.throwIfAborted();
                 log.warn({
                   event: "model.capabilities_unavailable",
                   purpose: "compaction",
+                  err: error,
                 });
               }
 
@@ -473,6 +475,7 @@ export class Engine {
                 requestId: error.requestId
                   ? redactText(error.requestId, [this.config.apiKey])
                   : undefined,
+                err: error,
               });
             },
           );
@@ -549,6 +552,7 @@ export class Engine {
               event: "tool.failed",
               tool: call.name,
               toolCallId: call.call_id,
+              err: error,
             });
           }
 
@@ -607,9 +611,9 @@ export class Engine {
       emit("notice", { text: failure, status });
       log[status === "failed" ? "error" : "info"]({
         event: "task." + status,
-        errorName: error?.name,
         code: error?.code,
         message: failure,
+        ...(status === "failed" ? { err: error } : {}),
       });
     } finally {
       this.store.status(task.id, status, failure);

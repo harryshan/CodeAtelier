@@ -22,7 +22,7 @@ server (Fastify)
 - `src/permissions` 在后端等待用户批准，取消会释放待审批 Promise。模型无法自行同意审批。
 - `src/sessions/store.ts` 保存 sessions、tasks、events、context；初始数据库结构位于 `schema.ts`。启动时将 running/waiting 任务标为 interrupted。
 - `src/config` 管理非敏感设置、内存密钥和平台数据目录。
-- `src/logging` 输出结构化 JSON，按级别筛选、脱敏并轮转文件。
+- `src/logging` 在 Pino 内部按字段脱敏后输出紧凑格式化纯文本，按级别筛选、保留受控错误详情并轮转文件。
 
 ## 文件职责与定位
 
@@ -38,7 +38,7 @@ server (Fastify)
 | providers/responses-provider.ts | ResponsesProvider：Responses 协议实现 |
 | providers/model-error.ts / retry.ts | 错误分类与有界重试策略 |
 | config/settings.ts / config.ts / data-directory.ts | 参数 schema、配置持久化、平台数据目录 |
-| logging/logger.ts / redact.ts | 日志创建与轮转、纯文本脱敏 |
+| logging/logger.ts / redact.ts | 日志创建、错误详情序列化、格式化输出与轮转、纯文本脱敏 |
 | permissions/approval-manager.ts | ApprovalManager：授权等待与取消 |
 | server/app.ts | 服务组装、业务路由与关闭顺序 |
 | server/local-security.ts / session-events.ts | 本机请求防护、SSE 连接管理与清理 |

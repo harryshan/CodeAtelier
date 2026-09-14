@@ -2,10 +2,10 @@
  * 检查日志级别、凭据脱敏、文件轮转，以及日志写失败时的处理。
  * 使用真实 createLogger 和临时目录，通过模拟标准输出及文件操作核对结果。
  *
- * 1. 检查日志过滤、关联字段和凭据遮盖；afterEach 恢复模拟对象。
- * 2. 增大已有日志以触发轮转，核对新文件和归档数量。
- * 3. 让日志目标无法写入，确认只出现固定提示，任务没有崩溃、原始内容没有泄露。
- * 4. 用包含引号的密钥检查脱敏后的每条日志仍是合法 JSON。
+ * 1. 检查日志过滤、紧凑纯文本关联字段和凭据遮盖；afterEach 恢复模拟对象。
+ * 2. 记录带错误码、原因链和堆栈的 Error，确认诊断细节保留但不泄露凭据。
+ * 3. 增大已有日志以触发轮转，核对新文件和归档数量。
+ * 4. 让日志目标无法写入，确认只出现固定提示，任务没有崩溃、原始内容没有泄露。
  */
 
 import { it, expect, vi, afterEach } from "vitest";
@@ -44,17 +44,44 @@ it("filters levels, retains diagnostic context and redacts structured credential
   expect(text).not.toContain("other-password");
   expect(text).not.toContain("nested-token");
   expect(text).not.toContain("quoted-");
-  expect(JSON.parse(text)).toMatchObject({
-    event: "visible",
-    taskId: "task-1",
-    level: 30,
-  });
+  expect(text).toMatch(/INFO\s+app visible/);
+  expect(text).toContain("task=task-1");
+  expect(text).not.toContain('"level":30');
   log.level = "debug";
   log.debug({ event: "now-visible" });
+  log.info("Server listening at http://127.0.0.1:4142");
+  const saved = await readFile(path.join(root, "logs/app.log"), "utf8");
 
-  expect(await readFile(path.join(root, "logs/app.log"), "utf8")).toContain(
-    "now-visible",
-  );
+  expect(saved).toContain("now-visible");
+  expect([...saved.matchAll(/Server listening at/g)]).toHaveLength(1);
+});
+
+it("keeps detailed error metadata and stack traces in redacted plain text", async () => {
+  vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+  const root = await temp();
+  const secret = "known-secret";
+  const cause = new Error(`socket rejected ${secret}`);
+  const error = Object.assign(new Error(`cannot persist ${secret}`), {
+    code: "SQLITE_FULL",
+    cause,
+  });
+  const log = createLogger(root, "info", () => [secret]);
+
+  log.error({
+    event: "task.persistence_failed",
+    module: "agent",
+    taskId: "task-1",
+    err: error,
+  });
+  const text = await readFile(path.join(root, "logs/app.log"), "utf8");
+
+  expect(text).toMatch(/ERROR\s+agent task\.persistence_failed/);
+  expect(text).toContain('error=Error: "cannot persist [REDACTED]"');
+  expect(text).toContain("code=SQLITE_FULL");
+  expect(text).toContain('cause=Error: "socket rejected [REDACTED]"');
+  expect(text).toContain("stack:");
+  expect(text).not.toContain(secret);
+  expect(text).not.toContain('{"level"');
 });
 
 it("rotates oversized logs and retains only four archives", async () => {
@@ -81,7 +108,7 @@ it("rotates oversized logs and retains only four archives", async () => {
     "app.log.4",
   ]);
   expect(await readFile(file + ".4", "utf8")).toBe("archive3");
-  expect(JSON.parse(await readFile(file, "utf8")).event).toBe("new");
+  expect(await readFile(file, "utf8")).toMatch(/INFO\s+app new/);
 });
 
 it("log storage failure does not crash the task or expose the original payload", async () => {
@@ -98,7 +125,7 @@ it("log storage failure does not crash the task or expose the original payload",
   expect(errors).toHaveBeenCalledWith("CodeAtelier: log output unavailable\n");
 });
 
-it("keeps JSON logs valid when messages contain quoted credential assignments", async () => {
+it("redacts quoted credential assignments in formatted logs", async () => {
   vi.spyOn(process.stdout, "write").mockImplementation(() => true);
   const root = await temp();
   const secret = 'a"b\\c';
@@ -110,11 +137,10 @@ it("keeps JSON logs valid when messages contain quoted credential assignments", 
     secretText: secret,
     token: "credential",
   });
-  const saved = JSON.parse(
-    await readFile(path.join(root, "logs/app.log"), "utf8"),
-  );
+  const saved = await readFile(path.join(root, "logs/app.log"), "utf8");
 
-  expect(saved.event).toBe("source");
-  expect(saved.secretText).toBe("[REDACTED]");
-  expect(saved.token).toBe("[REDACTED]");
+  expect(saved).toMatch(/INFO\s+app source/);
+  expect(saved).toContain("secretText=[REDACTED]");
+  expect(saved).toContain("token=[REDACTED]");
+  expect(saved).not.toContain(secret);
 });

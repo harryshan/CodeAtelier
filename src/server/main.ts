@@ -41,7 +41,7 @@ const requestReload = () => {
         log.error({
           event: "server.reload_failed",
           module: "server",
-          errorName: error.name,
+          err: error,
         });
         process.exit(1);
       }
@@ -52,7 +52,7 @@ const requestReload = () => {
     log.error({
       event: "server.reload_failed",
       module: "server",
-      errorName: error instanceof Error ? error.name : "Unknown",
+      err: error,
     });
     process.exit(1);
   }
@@ -81,7 +81,7 @@ const stop = () => {
     log.error({
       event: "server.shutdown_failed",
       module: "server",
-      errorName: error?.name,
+      err: error,
     });
     process.exitCode = 1;
   });

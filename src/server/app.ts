@@ -83,7 +83,7 @@ export async function createApp(
             log.error({
               event: "server.shutdown_failed",
               module: "server",
-              errorName: error?.name,
+              err: error,
             });
           }),
       );
@@ -115,7 +115,7 @@ export async function createApp(
             log.error({
               event: "server.reload_failed",
               module: "server",
-              errorName: error?.name,
+              err: error,
             });
           }),
       );
@@ -135,7 +135,7 @@ export async function createApp(
       event: "request.failed",
       module: "server",
       method: req.method,
-      errorName: error instanceof Error ? error.name : "Unknown",
+      err: error,
     });
     reply.code(validation ? 400 : 409).send({
       error: validation

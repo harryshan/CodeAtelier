@@ -47,7 +47,7 @@ Node.js 24，pnpm 11.22.0（packageManager 固定）。提交 pnpm-lock.yaml，�
 
 目录包含 history.sqlite（及 SQLite WAL 文件）、settings.json、logs/app.log。历史会话与运行日志分开保存，不写入用户代码项目。
 
-日志支持 trace/debug/info/warn/error，默认 info。每条带时间、模块和事件；任务日志带 sessionId/taskId，工具日志包含 toolCallId、耗时和成功状态。日志按约 10 MiB 轮转，共最多 5 个文件。DEBUG 可查看模型步骤；不将完整源码、提示词或原始响应作为常规诊断日志输出。已知密钥和认证信息脱敏。
+日志支持 trace/debug/info/warn/error，默认 info。文件和终端均为紧凑纯文本，例如 `2026-09-15T12:00:00.000Z INFO  agent task.started | session=… task=…`，不输出 JSON；固定的应用、进程和主机字段不重复写入。任务日志带 sessionId/taskId，工具日志包含 toolCallId、耗时和成功状态。错误记录保留脱敏且限长的名称、消息、受控错误码/状态、原因链和堆栈，不能只写 errorName；模型服务响应正文、完整源码、提示词和原始响应仍不记录。日志按约 10 MiB 轮转，共最多 5 个文件；DEBUG 可查看模型步骤。已知密钥和认证信息在格式化前脱敏。
 
 ## 代码阅读策略
 
@@ -129,7 +129,7 @@ Web 侧栏的“关闭服务”需确认。`POST /api/server/shutdown` 接受 `{
 
 `pnpm exec tsx scripts/bootstrap-agent.ts --prepare-only` 只准备隔离源码副本并复现缺陷；移除该参数后使用环境变量密钥执行真实模型任务。数据发送范围、审批限制和证据判定见 [bootstrap.md](bootstrap.md)。
 
-结构化事件、工具结果和日志先解析 JSON，对字段值脱敏后重新序列化；不直接用正则替换 JSON 转义文本。纯文本诊断仍通过统一脱敏函数处理。
+结构化事件和工具结果先解析 JSON，对字段值脱敏后重新序列化；不直接用正则替换 JSON 转义文本。Pino 内部记录同样先按字段脱敏，再格式化为纯文本日志；格式化后的诊断文字继续通过统一脱敏函数处理。
 
 ## 可选低成本辅助模型
 
