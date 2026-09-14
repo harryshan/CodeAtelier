@@ -6,7 +6,7 @@
  * 2. 检查重试文本分开显示、凭据失效后重新连接，以及会话切换后的数据隔离。
  * 3. 检查受确认的重载服务入口会等待替代服务、完整刷新页面，以及关闭服务成功和请求失败时的不同提示。
  * 4. 检查压缩通知、原始历史及模型用量在刷新后仍能显示。
- * 5. 验证多文件编辑的状态、diff 和刷新后的历史；通过页面内项目目录连接首个项目，再从项目标题右侧加号新建对话并检查历史隔离。
+ * 5. 验证多文件编辑的状态、diff 和刷新后的历史；通过页面内项目目录连接首个项目，再从项目标题右侧加号新建对话并检查历史隔离、折叠与最近记录限制。
  *
  * 页面刷新或重连不能重新提交任务。这里不调用真实模型。
  */
@@ -418,6 +418,66 @@ test("creates another conversation from its project and preserves separate histo
     path: "test-results/project-conversations.png",
     fullPage: true,
   });
+});
+
+test("folds a project's older conversations and keeps full titles available", async ({
+  page,
+}) => {
+  const workspace = await realpath(
+    await mkdtemp(path.join(tmpdir(), "codeatelier-project-folding-")),
+  );
+  const projectName = path.basename(workspace);
+  const longTitle =
+    "这是一个用于检查侧边栏单行截断和完整悬浮标题的很长对话标题";
+
+  await page.goto("/");
+  await createInitialConversation(page, workspace);
+  await page.getByLabel("任务描述").fill(longTitle);
+  await page.getByRole("button", { name: "开始执行" }).click();
+  await expect(
+    page.getByRole("button", { name: longTitle, exact: true }),
+  ).toBeVisible();
+
+  const project = page.getByRole("group", { name: workspace, exact: true });
+  for (let count = 1; count <= 5; count++) {
+    await project
+      .getByRole("button", { name: "新建对话", exact: true })
+      .click();
+  }
+
+  // updatedAt 在同一毫秒内相同的记录不承诺二级排序，因此只验证确有一条较早记录被折叠。
+  await project
+    .getByRole("button", { name: "展开其他 1 个对话", exact: true })
+    .click();
+  const longConversation = project.getByRole("button", {
+    name: longTitle,
+    exact: true,
+  });
+  await expect(longConversation).toBeVisible();
+  await expect(longConversation).toHaveAttribute("title", longTitle);
+  await expect(longConversation.locator("strong")).toHaveCSS(
+    "white-space",
+    "nowrap",
+  );
+  await expect(longConversation.locator("strong")).toHaveCSS(
+    "text-overflow",
+    "ellipsis",
+  );
+
+  await project
+    .getByRole("button", { name: `折叠 ${projectName} 的对话`, exact: true })
+    .click();
+  await expect(longConversation).toBeHidden();
+  await expect(
+    project.getByRole("button", {
+      name: `展开 ${projectName} 的对话`,
+      exact: true,
+    }),
+  ).toBeVisible();
+  await project
+    .getByRole("button", { name: `展开 ${projectName} 的对话`, exact: true })
+    .click();
+  await expect(longConversation).toBeVisible();
 });
 
 test("shows multi-file edit progress and retains it after reload", async ({

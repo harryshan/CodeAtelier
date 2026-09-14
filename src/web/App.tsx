@@ -3,7 +3,7 @@
  * 通过 api 请求后端，通过 useSessionConnection 同步会话，再交给 Timeline 和 SettingsPanel 展示。
  *
  * 1. 状态和 effects 管理当前会话、表单、弹窗、加载状态、服务状态及自动滚动。
- * 2. 按服务端返回的工作区路径分组展示会话；项目标题右侧的加号直接创建同项目的独立对话。
+ * 2. 按服务端返回的工作区路径分组展示会话；项目可独立折叠，展开时默认仅显示最近五个对话，并可按需显示更早记录。
  * 3. resume、reloadService、stopServer、createProject、createConversation 和 send 处理恢复、受确认的服务重载、关闭服务、连接项目、新建会话和发送消息，并显示操作结果。
  * 4. 服务关闭后显示重启说明；正常页面由侧栏、项目栏、时间线或项目连接页、输入框组成。
  * 5. 末尾仅渲染设置、重载和关闭确认弹窗，项目连接不使用弹窗。
@@ -19,6 +19,8 @@ import { SettingsPanel } from "./SettingsPanel";
 import { Timeline } from "./Timeline";
 import s from "./app.module.css";
 
+const RECENT_CONVERSATION_LIMIT = 5;
+
 export default function App() {
   const [list, setList] = useState<Session[]>([]);
   const [selected, setSelected] = useState("");
@@ -26,6 +28,12 @@ export default function App() {
   const [hasKey, setHasKey] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [addingProject, setAddingProject] = useState(false);
+  const [expandedProjectHistories, setExpandedProjectHistories] = useState<
+    Set<string>
+  >(() => new Set());
+  const [collapsedProjectHistories, setCollapsedProjectHistories] = useState<
+    Set<string>
+  >(() => new Set());
   const [workspace, setWorkspace] = useState("");
   const [prompt, setPrompt] = useState("");
   const [error, setError] = useState("");
@@ -80,6 +88,34 @@ export default function App() {
     conversations.push(session);
     projects.set(session.workspace, conversations);
   }
+
+  const toggleProjectHistory = (projectWorkspace: string) => {
+    setCollapsedProjectHistories((current) => {
+      const next = new Set(current);
+
+      if (next.has(projectWorkspace)) {
+        next.delete(projectWorkspace);
+      } else {
+        next.add(projectWorkspace);
+      }
+
+      return next;
+    });
+  };
+
+  const toggleOlderConversations = (projectWorkspace: string) => {
+    setExpandedProjectHistories((current) => {
+      const next = new Set(current);
+
+      if (next.has(projectWorkspace)) {
+        next.delete(projectWorkspace);
+      } else {
+        next.add(projectWorkspace);
+      }
+
+      return next;
+    });
+  };
 
   const openProjectForm = () => {
     setWorkspace("");
@@ -232,52 +268,102 @@ export default function App() {
           工作记录 <span>{list.length}</span>
         </div>
         <nav className={s.sessionList}>
-          {[...projects].map(([projectWorkspace, conversations]) => (
-            <section
-              key={projectWorkspace}
-              role="group"
-              aria-label={projectWorkspace}
-              className={s.projectGroup}
-            >
-              <div className={s.projectHeading} title={projectWorkspace}>
-                <div className={s.projectTitle}>
-                  <strong>
-                    {projectWorkspace.split(/[\\/]/).filter(Boolean).pop() ||
-                      projectWorkspace}
-                  </strong>
-                  <button
-                    className={s.projectNewButton}
-                    disabled={busy}
-                    onClick={() => void createConversation(projectWorkspace)}
-                    aria-label="新建对话"
-                    title="在此项目中新建对话"
+          {[...projects].map(([projectWorkspace, conversations]) => {
+            const projectName =
+              projectWorkspace.split(/[\\/]/).filter(Boolean).pop() ||
+              projectWorkspace;
+            const projectCollapsed =
+              collapsedProjectHistories.has(projectWorkspace);
+            const showOlderConversations =
+              expandedProjectHistories.has(projectWorkspace);
+            const visibleConversations = showOlderConversations
+              ? conversations
+              : conversations.slice(0, RECENT_CONVERSATION_LIMIT);
+            const hiddenConversationCount =
+              conversations.length - RECENT_CONVERSATION_LIMIT;
+
+            return (
+              <section
+                key={projectWorkspace}
+                role="group"
+                aria-label={projectWorkspace}
+                className={s.projectGroup}
+              >
+                <div className={s.projectHeading}>
+                  <div className={s.projectTitle}>
+                    <button
+                      className={s.projectCollapseButton}
+                      aria-label={`${projectCollapsed ? "展开" : "折叠"} ${projectName} 的对话`}
+                      aria-expanded={!projectCollapsed}
+                      onClick={() => toggleProjectHistory(projectWorkspace)}
+                      title={`${projectCollapsed ? "展开" : "折叠"}此项目的全部对话`}
+                    >
+                      <span aria-hidden="true">
+                        {projectCollapsed ? "›" : "⌄"}
+                      </span>
+                    </button>
+                    <strong title={projectWorkspace}>{projectName}</strong>
+                    <span className={s.projectCount}>
+                      {conversations.length}
+                    </span>
+                    <button
+                      className={s.projectNewButton}
+                      disabled={busy}
+                      onClick={() => void createConversation(projectWorkspace)}
+                      aria-label="新建对话"
+                      title="在此项目中新建对话"
+                    >
+                      <span>＋</span>
+                    </button>
+                  </div>
+                  <small
+                    className={s.projectWorkspace}
+                    title={projectWorkspace}
                   >
-                    <span>＋</span>
-                  </button>
+                    {projectWorkspace}
+                  </small>
                 </div>
-                <small>{projectWorkspace}</small>
-                <small>{conversations.length} 个对话</small>
-              </div>
-              {conversations.map((item) => (
-                <button
-                  key={item.id}
-                  aria-label={item.title}
-                  title={item.title}
-                  aria-current={selected === item.id ? "page" : undefined}
-                  className={selected === item.id ? s.selected : ""}
-                  onClick={() => {
-                    setSelected(item.id);
-                    setError("");
-                  }}
-                >
-                  <span className={s.sessionIcon}>⌘</span>
-                  <span>
-                    <strong>{item.title}</strong>
-                  </span>
-                </button>
-              ))}
-            </section>
-          ))}
+                {!projectCollapsed && (
+                  <>
+                    {visibleConversations.map((item) => (
+                      <button
+                        key={item.id}
+                        aria-label={item.title}
+                        title={item.title}
+                        aria-current={selected === item.id ? "page" : undefined}
+                        className={
+                          selected === item.id
+                            ? `${s.conversationButton} ${s.selected}`
+                            : s.conversationButton
+                        }
+                        onClick={() => {
+                          setSelected(item.id);
+                          setError("");
+                        }}
+                      >
+                        <span className={s.sessionIcon}>⌘</span>
+                        <span className={s.conversationTitle}>
+                          <strong>{item.title}</strong>
+                        </span>
+                      </button>
+                    ))}
+                    {hiddenConversationCount > 0 && (
+                      <button
+                        className={s.conversationLimitButton}
+                        onClick={() =>
+                          toggleOlderConversations(projectWorkspace)
+                        }
+                      >
+                        {showOlderConversations
+                          ? "收起其他对话"
+                          : `展开其他 ${hiddenConversationCount} 个对话`}
+                      </button>
+                    )}
+                  </>
+                )}
+              </section>
+            );
+          })}
           {!list.length && (
             <p className={s.emptyList}>
               你的项目与对话
