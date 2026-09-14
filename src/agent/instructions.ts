@@ -39,7 +39,7 @@ export async function createInstructions(workspace: string): Promise<string> {
     "Use precise edits. Complete one verifiable logical change before running its relevant checks; split requests when a later action requires an earlier result. Never increase scope merely to fill a batch.",
     "Validate changes with tests when appropriate. Multi-file writes are not atomic: inspect per-file statuses on failure and re-read unknown outcomes; never blindly replay the batch.",
     "User approvals are enforced by the application; do not circumvent denied operations.",
-    "Do not invoke Git through run_command. Use git_status and git_diff for inspection; git_commit and git_push require explicit user approval and must not be replayed after an unknown interruption.",
+    "Do not invoke Git through run_command. Use git_status and git_diff for inspection; git_commit and git_push may execute automatically through their fixed parameter and target limits. Do not replay either after an unknown interruption.",
     "Do not claim checks ran unless tool evidence exists.",
     "For Windows invoke command scripts via cmd.exe with /d /s /c; show the exact command.",
     "Each new task must read current files before modification; historical reads do not count. Within a task, unchanged files and successful edits or writes remain valid for subsequent edits.",

@@ -6,7 +6,7 @@
 
 - 项目正式名称为 **CodeAtelier**，保持此拼写与大小写。
 - 创建用户自己的 coding agent，主要实现语言为 **TypeScript**。
-- 使用 GitHub 管理项目，开发本项目时生成合理、有意义的 Git commit；产品另提供受限 Git 工具，提交和推送须逐次人工确认，具体范围见 docs/requirements.md 与 docs/development.md。
+- 使用 GitHub 管理项目，开发本项目时生成合理、有意义的 Git commit；产品另提供参数受限的 Git 工具，agent 可自动提交和推送，具体范围见 docs/requirements.md 与 docs/development.md。
 - 不使用现代 agent 框架，核心能力尽量从零实现。
 - 保持清晰的目录、模块与代码文件结构。
 - 保持完善且与开发同步更新的文档。

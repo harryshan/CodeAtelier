@@ -32,7 +32,7 @@ server (Fastify)
 | tools/tool-runner.ts | ToolRunner：校验、审批、文件与普通命令执行，并分流专用 Git 工具 |
 | tools/file-editor.ts | FileEditor：整批预检、逐文件写入和进度，复用 ToolRunner 的权限与读取哈希 |
 | tools/edit-plan.ts | 基于原始快照的行号/文本定位、重叠校验与纯文本转换 |
-| tools/git.ts | GitToolRunner：固定 status/diff/commit/push 参数、提交路径复核与逐次审批 |
+| tools/git.ts | GitToolRunner：固定 status/diff/commit/push 参数、提交路径复核与自动执行 |
 | tools/paths.ts / process.ts | 路径边界与进程生命周期 |
 | providers/model-provider.ts | 与具体服务无关的模型接口和结果契约 |
 | providers/responses-provider.ts | ResponsesProvider：Responses 协议实现 |
@@ -66,7 +66,7 @@ UI 历史包含消息、工具调用、受限工具结果和修改 diff。长内
 
 文件操作解析真实路径，考虑符号链接与 Windows junction；工作区外或敏感路径询问用户。现存文件须先读取，精确修改时比对内容哈希，拒绝覆盖外部并发修改。完整覆盖现有文件另行审批；临时文件写入后重命名并保留原文件模式。
 
-命令使用参数数组和 shell:false，显式 shell 也必须审批。对少量固定验证命令允许会话授权；绑定参数、cwd 及受限扫描得到的项目内容指纹。超大项目无法计算指纹时退回单次审批。直接 Git 程序调用被拒绝，改由 `git.ts` 提供固定子集：状态/差异只读，提交仅处理审批中明确的非敏感工作区路径，推送仅使用当前 upstream；提交与推送不提供会话授权。此机制不等同于系统隔离；命令的实际副作用由获准程序决定。
+命令使用参数数组和 shell:false，显式 shell 也必须审批。对少量固定验证命令允许会话授权；绑定参数、cwd 及受限扫描得到的项目内容指纹。超大项目无法计算指纹时退回单次审批。直接 Git 程序调用被拒绝，改由 `git.ts` 提供固定子集：状态/差异只读，提交自动仅处理模型明确提供的非敏感工作区路径，推送自动仅使用当前 upstream；自动化不接受额外 Git 参数或目标。此机制不等同于系统隔离；命令的实际副作用由获准程序决定。
 
 ## 本机 HTTP 边界
 

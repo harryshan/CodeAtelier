@@ -82,7 +82,7 @@ Node.js 24，pnpm 11.22.0（packageManager 固定）。提交 pnpm-lock.yaml，�
 
 命令均首次确认；简单 pnpm/npm 的 test/build/lint/typecheck 或 node --test 在可计算项目指纹时可授予本次会话重复执行。复杂 shell 不支持会话放行。Windows 的 pnpm.cmd 应显式通过 cmd.exe 调用，因此按单次审批处理。没有系统沙箱、回滚或提权工具。请只操作可信项目。
 
-Git 不经 `run_command` 执行，而使用固定的专用工具：`git_status` 显示分支和工作区状态，`git_diff` 显示未暂存或暂存差异，二者只读。`git_commit` 必须提供提交消息和明确路径，在显示这些内容后逐次确认；仅对这些路径执行 `git add` 与无 hooks、无 GPG 签名的提交，不提交敏感文件、`.git` 或工作区外路径。`git_push` 每次确认后只执行到当前分支已配置的 upstream，不接受 remote、branch、force 或其他参数。提交或推送中断时结果可能未知，恢复前必须重新检查状态和差异，不自动重放。
+Git 不经 `run_command` 执行，而使用固定的专用工具：`git_status` 显示分支和工作区状态，`git_diff` 显示未暂存或暂存差异，二者只读。`git_commit` 必须提供提交消息和明确路径，并自动仅对这些路径执行 `git add` 与无 hooks、无 GPG 签名的提交；不提交敏感文件、`.git` 或工作区外路径。`git_push` 自动只执行到当前分支已配置的 upstream，不接受 remote、branch、force 或其他参数。提交或推送中断时结果可能未知，恢复前必须重新检查状态和差异，不自动重放。
 
 ## 常见问题
 

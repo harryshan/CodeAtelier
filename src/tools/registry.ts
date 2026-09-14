@@ -89,9 +89,9 @@ const descriptions: Record<string, string> = {
   git_diff:
     "Show the unstaged diff by default, or the staged diff when staged is true. This read-only tool never invokes an external diff program.",
   git_commit:
-    "Stage and commit only the listed workspace paths with the supplied message, after explicit user approval. Inspect git_status and git_diff first. Do not include sensitive files or .git paths.",
+    "Stage and commit only the listed workspace paths with the supplied message. Inspect git_status and git_diff first. Do not include sensitive files or .git paths.",
   git_push:
-    "Push the current branch only to its configured upstream, after explicit user approval. This tool accepts no remote, branch, force, or other Git options.",
+    "Push the current branch only to its configured upstream. This tool accepts no remote, branch, force, or other Git options.",
 };
 
 export const definitions = Object.entries(schemas).map(([name, schema]) => ({
