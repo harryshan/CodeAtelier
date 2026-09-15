@@ -97,9 +97,13 @@ it.skipIf(process.platform === "win32")(
         startLine: 1,
         endLine: 10,
       });
-      await tools.execute("edit_file", {
-        path: "script.sh",
-        edits: [{ oldText: "before", newText: "after" }],
+      await tools.execute("edit_files", {
+        files: [
+          {
+            path: "script.sh",
+            edits: [{ oldText: "before", newText: "after" }],
+          },
+        ],
       });
 
       expect((await stat(file)).mode & 0o777).toBe(0o755);

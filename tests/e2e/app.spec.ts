@@ -509,7 +509,7 @@ test("folds a project's older conversations and keeps full titles available", as
   await expect(longConversation).toBeVisible();
 });
 
-test("shows multi-file edit progress and retains it after reload", async ({
+test("shows unified file-edit progress and retains it after reload", async ({
   page,
 }) => {
   const workspace = await realpath(
@@ -525,7 +525,7 @@ test("shows multi-file edit progress and retains it after reload", async ({
     await page.getByLabel("任务描述").fill("批量编辑文件");
     await page.getByRole("button", { name: "开始执行" }).click();
     await expect(page.getByText("任务完成，已检查工具结果。")).toBeVisible();
-    await expect(page.getByText("批量编辑进度", { exact: true })).toBeVisible();
+    await expect(page.getByText("文件编辑进度", { exact: true })).toBeVisible();
     await expect(page.getByText("：已写入", { exact: false })).toHaveCount(2);
     await expect(page.getByText("修改预览", { exact: false })).toHaveCount(2);
     for (const name of ["a.txt", "b.txt"]) {

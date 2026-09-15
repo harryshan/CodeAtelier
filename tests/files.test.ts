@@ -14,7 +14,21 @@ import { it, expect } from "vitest";
 import { writeFile, mkdir, readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { definitions } from "../src/tools/registry.js";
+import type { ToolRunner } from "../src/tools/tool-runner.js";
 import { fileFixture } from "./fixtures/helpers.js";
+
+/** 将单文件场景包装为唯一 edit_files 工具所需的 files 数组。 */
+async function editSingleFile(runner: ToolRunner, path: string, edits: any[]) {
+  const result = await runner.execute("edit_files", {
+    files: [{ path, edits }],
+  });
+
+  if (result.error) {
+    throw new Error(result.error);
+  }
+
+  return result;
+}
 
 it("lists usable immediate entries without dependency, build or sensitive files", async () => {
   const { root, runner } = await fileFixture();
@@ -159,10 +173,7 @@ it("rejects missing or ambiguous replacement targets without changing the file",
   await runner.execute("write_file", { path: "a.txt", content: "same same" });
   for (const oldText of ["absent", "same"]) {
     await expect(
-      runner.execute("edit_file", {
-        path: "a.txt",
-        edits: [{ oldText, newText: "new" }],
-      }),
+      editSingleFile(runner, "a.txt", [{ oldText, newText: "new" }]),
     ).rejects.toThrow("精确匹配一次");
   }
 
@@ -173,10 +184,9 @@ it("creates nested files and treats replacement dollar sequences literally", asy
   const { root, runner } = await fileFixture();
 
   await runner.execute("write_file", { path: "src/a.txt", content: "before" });
-  await runner.execute("edit_file", {
-    path: "src/a.txt",
-    edits: [{ oldText: "before", newText: "$&-$1" }],
-  });
+  await editSingleFile(runner, "src/a.txt", [
+    { oldText: "before", newText: "$&-$1" },
+  ]);
 
   expect(await readFile(path.join(root, "src/a.txt"), "utf8")).toBe("$&-$1");
   expect(await readdir(path.join(root, "src"))).toEqual(["a.txt"]);
@@ -249,20 +259,16 @@ it("applies multiple edits from one snapshot and allows another edit without rer
     path: "a.txt",
     content: "alpha middle omega",
   });
-  await runner.execute("edit_file", {
-    path: "a.txt",
-    edits: [
-      { oldText: "alpha", newText: "$&" },
-      { oldText: "omega", newText: "last" },
-    ],
-  });
+  await editSingleFile(runner, "a.txt", [
+    { oldText: "alpha", newText: "$&" },
+    { oldText: "omega", newText: "last" },
+  ]);
   expect(await readFile(path.join(root, "a.txt"), "utf8")).toBe(
     "$& middle last",
   );
-  await runner.execute("edit_file", {
-    path: "a.txt",
-    edits: [{ oldText: "middle", newText: "center" }],
-  });
+  await editSingleFile(runner, "a.txt", [
+    { oldText: "middle", newText: "center" },
+  ]);
   expect(await readFile(path.join(root, "a.txt"), "utf8")).toBe(
     "$& center last",
   );
@@ -276,13 +282,10 @@ it("leaves the file and read state intact when a later edit fails", async () => 
   });
   for (const oldText of ["absent", "same"]) {
     await expect(
-      runner.execute("edit_file", {
-        path: "a.txt",
-        edits: [
-          { oldText: "alpha", newText: "changed" },
-          { oldText, newText: "x" },
-        ],
-      }),
+      editSingleFile(runner, "a.txt", [
+        { oldText: "alpha", newText: "changed" },
+        { oldText, newText: "x" },
+      ]),
     ).rejects.toThrow("精确匹配一次");
     expect(await readFile(path.join(root, "a.txt"), "utf8")).toBe(
       "alpha same same",
@@ -290,12 +293,9 @@ it("leaves the file and read state intact when a later edit fails", async () => 
   }
 
   await expect(
-    runner.execute("edit_file", { path: "a.txt", edits: [] }),
+    runner.execute("edit_files", { files: [{ path: "a.txt", edits: [] }] }),
   ).rejects.toThrow();
-  await runner.execute("edit_file", {
-    path: "a.txt",
-    edits: [{ oldText: "alpha", newText: "ok" }],
-  });
+  await editSingleFile(runner, "a.txt", [{ oldText: "alpha", newText: "ok" }]);
   expect(await readFile(path.join(root, "a.txt"), "utf8")).toBe("ok same same");
   expect(await readdir(root)).toEqual(["a.txt"]);
 });

@@ -3,7 +3,7 @@
  * 使用生产 definitions 和 schemas，不调用模型服务，也不执行文件或 Git 操作。
  *
  * 1. 检查根节点为 object、禁止 oneOf，再递归遍历工具定义及数组项，核对 strict 对象的属性均为必填且禁止额外属性。
- * 2. 检查 run_command 只向模型公开 command 字符串，以及单一 git 工具的 discriminated action 契约。
+ * 2. 检查唯一 edit_files 工具的 files 包装、run_command 的单一 command 字符串，以及单一 git 工具的 discriminated action 契约。
  *    每个 action 只接受自身所需字段，不能混入任意选项。
  */
 
@@ -47,6 +47,36 @@ it("declares every property as required for strict function tools", () => {
 
     check(parameters);
   }
+});
+
+it("exposes only edit_files and requires its files wrapper", () => {
+  expect(schemas).not.toHaveProperty("edit_file");
+  expect(definitions.map((definition) => definition.name)).not.toContain(
+    "edit_file",
+  );
+  expect(
+    schemas.edit_files.parse({
+      files: [
+        {
+          path: "src/app.ts",
+          edits: [
+            {
+              oldText: "old",
+              newText: "new",
+              startLine: null,
+              endLine: null,
+            },
+          ],
+        },
+      ],
+    }),
+  ).toMatchObject({ files: [{ path: "src/app.ts" }] });
+  expect(
+    schemas.edit_files.safeParse({
+      path: "src/app.ts",
+      edits: [],
+    }).success,
+  ).toBe(false);
 });
 
 it("accepts only one command string for run_command", () => {

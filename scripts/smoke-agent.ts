@@ -95,7 +95,7 @@ engine.events.on("event", (e) => {
 
 const task = engine.start(
   session.id,
-  "请修复 math.mjs 的 add 函数，并在 math.test.mjs 精确增加一个负数相加的测试。使用 read_file 和 edit_file，不要覆盖整个文件。然后使用 run_command 运行测试：只传 command 字段，值必须为 node --test。根据真实测试结果报告。不要运行其他命令。",
+  "请修复 math.mjs 的 add 函数，并在 math.test.mjs 精确增加一个负数相加的测试。使用 read_file 和 edit_files（单文件修改也传一个 files 条目），不要覆盖整个文件。然后使用 run_command 运行测试：只传 command 字段，值必须为 node --test。根据真实测试结果报告。不要运行其他命令。",
 );
 
 const timeout = setTimeout(() => engine.cancel(task.id), 240000);

@@ -18,8 +18,9 @@ const labels: Record<string, string> = {
   list_files: "浏览目录",
   read_file: "读取文件",
   search: "搜索代码",
-  edit_file: "精确修改",
-  edit_files: "批量修改文件",
+  // 旧会话的 edit_file 仅用于历史展示；新版模型契约只公开 edit_files。
+  edit_file: "精确修改（旧记录）",
+  edit_files: "精确修改文件",
   write_file: "写入文件",
   run_command: "执行命令",
   git: "Git 操作",
@@ -256,7 +257,7 @@ export function Timeline({
 
           return (
             <details open className={s.toolResult} key={e.id}>
-              <summary>批量编辑进度</summary>
+              <summary>文件编辑进度</summary>
               {Array.from(batch.files, ([file, status]) => (
                 <div key={file}>
                   <code>{file}</code>：{statuses[status] || status}

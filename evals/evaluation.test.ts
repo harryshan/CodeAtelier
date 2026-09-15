@@ -63,9 +63,13 @@ it("runs production read/edit tools and exports independently verifiable artifac
       if (calls === 2) {
         expect(input.at(-1).output).toContain("a - b");
 
-        return tool("edit_file", {
-          path: "math.js",
-          edits: [{ oldText: "a - b", newText: "a + b" }],
+        return tool("edit_files", {
+          files: [
+            {
+              path: "math.js",
+              edits: [{ oldText: "a - b", newText: "a + b" }],
+            },
+          ],
         });
       }
 

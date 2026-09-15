@@ -1,9 +1,9 @@
 /**
- * FileEditor 执行 ToolRunner 分流的单文件与多文件编辑，共享其审批回调和读取哈希。
+ * FileEditor 执行 ToolRunner 分流的统一多文件编辑，共享其审批回调和读取哈希。
  * 1. prepare 逐文件审批、核对读取版本、用 planEdits 定位原始快照并限制内存规模。
  * 2. verify 在整批审批后和每次写入前复核路径及原文，避免审批等待期间的变化被覆盖。
  * 3. commit 用同目录临时文件替换单个目标，保留权限并更新读取哈希；不提供跨文件事务。
- * 4. editOne 保持单文件 diff/异常契约；editMany 先校验全批，再记录逐文件执行状态。
+ * 4. editMany 同时处理单文件和多文件调用：先校验全批，再记录逐文件执行状态。
  * edit_progress 经 Engine 保存到历史，写入前标 unknown、成功后标 written；断电或持久化失败
  * 仍可能留下未知结果，恢复必须检查现场，不自动回滚或重放。参数/错误的脱敏由 Engine 负责。
  */
@@ -96,14 +96,6 @@ export class FileEditor {
     this.ctx.emit("diff", { path: edit.path, diff: diff.slice(0, 100000) });
 
     return { path: edit.path, changed: edit.before !== edit.after, diff };
-  }
-
-  async editOne(input: FileEdit) {
-    const edit = await this.prepare(input);
-    await this.verify(edit);
-    await this.commit(edit);
-
-    return this.reportDiff(edit);
   }
 
   async editMany(inputs: FileEdit[]) {

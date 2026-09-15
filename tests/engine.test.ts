@@ -290,10 +290,14 @@ it("requires a fresh read in a later task even when history contains an earlier 
             {
               type: "function_call",
               call_id: "edit",
-              name: "edit_file",
+              name: "edit_files",
               arguments: JSON.stringify({
-                path: "a.txt",
-                edits: [{ oldText: "old", newText: "new" }],
+                files: [
+                  {
+                    path: "a.txt",
+                    edits: [{ oldText: "old", newText: "new" }],
+                  },
+                ],
               }),
             },
           ],

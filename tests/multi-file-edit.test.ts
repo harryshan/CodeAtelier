@@ -1,6 +1,6 @@
 /**
- * 使用真实 ToolRunner 和临时文件验证多文件编辑，不访问模型或用户项目。
- * 1. 整批成功、后项校验失败、重复路径以及读取版本检查通过磁盘内容验证。
+ * 使用真实 ToolRunner 和临时文件验证统一文件编辑工具，不访问模型或用户项目。
+ * 1. 单/多文件条目成功、后项校验失败、重复路径以及读取版本检查通过磁盘内容验证。
  * 2. 行号限定搜索窗口，覆盖行内/跨行片段、重复文本、原始快照偏移、范围越界、重叠和 CRLF 边界。
  * 3. 后续故障用例检查逐文件进度、取消及部分写入，不假设跨文件原子性。
  */
@@ -18,6 +18,19 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 
   return { ...original, rename: vi.fn(original.rename) };
 });
+
+/** 用统一工具的一个 files 条目覆盖单文件场景，并将预检失败恢复为测试断言需要的异常。 */
+async function editSingleFile(runner: ToolRunner, path: string, edits: any[]) {
+  const result = await runner.execute("edit_files", {
+    files: [{ path, edits }],
+  });
+
+  if (result.error) {
+    throw new Error(result.error);
+  }
+
+  return result;
+}
 
 it("edits two files in one call and reports each completed file", async () => {
   const { root, runner, events } = await fileFixture();
@@ -74,13 +87,10 @@ it("uses original line ranges to disambiguate repeated text despite earlier inse
     path: "a.txt",
     content: "same\nsame\ntail\n",
   });
-  await runner.execute("edit_file", {
-    path: "a.txt",
-    edits: [
-      { oldText: "same", newText: "first\nextra", startLine: 1, endLine: 1 },
-      { oldText: "same", newText: "second", startLine: 2, endLine: 2 },
-    ],
-  });
+  await editSingleFile(runner, "a.txt", [
+    { oldText: "same", newText: "first\nextra", startLine: 1, endLine: 1 },
+    { oldText: "same", newText: "second", startLine: 2, endLine: 2 },
+  ]);
   expect(await readFile(path.join(root, "a.txt"), "utf8")).toBe(
     "first\nextra\nsecond\ntail\n",
   );
@@ -97,9 +107,7 @@ it("rejects wrong lines and overlapping replacements without changing content", 
       { oldText: "lph", newText: "y" },
     ],
   ]) {
-    await expect(
-      runner.execute("edit_file", { path: "a.txt", edits }),
-    ).rejects.toThrow();
+    await expect(editSingleFile(runner, "a.txt", edits)).rejects.toThrow();
     expect(await readFile(path.join(root, "a.txt"), "utf8")).toBe(
       "alpha\nbeta",
     );
@@ -253,13 +261,10 @@ it("matches complete CRLF ranges and preserves the terminal newline", async () =
     path: "a.txt",
     content: "one\r\ntwo\r\nthree\r\n",
   });
-  await runner.execute("edit_file", {
-    path: "a.txt",
-    edits: [
-      { oldText: "one\r\ntwo", newText: "first", startLine: 1, endLine: 2 },
-      { oldText: "three", newText: "last", startLine: 3, endLine: 3 },
-    ],
-  });
+  await editSingleFile(runner, "a.txt", [
+    { oldText: "one\r\ntwo", newText: "first", startLine: 1, endLine: 2 },
+    { oldText: "three", newText: "last", startLine: 3, endLine: 3 },
+  ]);
   expect(await readFile(path.join(root, "a.txt"), "utf8")).toBe(
     "first\r\nlast\r\n",
   );
@@ -276,9 +281,7 @@ it("rejects cascade targets and overlapping textual occurrences in the original 
     [{ oldText: "aa", newText: "x" }],
     [{ oldText: "aaa", newText: "x", startLine: 1, endLine: 2 }],
   ]) {
-    await expect(
-      runner.execute("edit_file", { path: "a.txt", edits }),
-    ).rejects.toThrow();
+    await expect(editSingleFile(runner, "a.txt", edits)).rejects.toThrow();
     expect(await readFile(path.join(root, "a.txt"), "utf8")).toBe("aaa alpha");
   }
 });
@@ -328,13 +331,10 @@ it("uses line ranges as search windows and preserves surrounding text", async ()
     path: "a.txt",
     content: "  const timeout = 1000;\n  const retry = 1000;\n",
   });
-  await runner.execute("edit_file", {
-    path: "a.txt",
-    edits: [
-      { oldText: "1000", newText: "2000", startLine: 1, endLine: 1 },
-      { oldText: "retry", newText: "attempts", startLine: 2, endLine: 2 },
-    ],
-  });
+  await editSingleFile(runner, "a.txt", [
+    { oldText: "1000", newText: "2000", startLine: 1, endLine: 1 },
+    { oldText: "retry", newText: "attempts", startLine: 2, endLine: 2 },
+  ]);
   expect(await readFile(path.join(root, "a.txt"), "utf8")).toBe(
     "  const timeout = 2000;\n  const attempts = 1000;\n",
   );
@@ -348,23 +348,20 @@ it("accepts exact snippets with or without the final line ending", async () => {
       path: name,
       content: `prefix first${newline}second suffix${newline}tail`,
     });
-    await runner.execute("edit_file", {
-      path: name,
-      edits: [
-        {
-          oldText: `first${newline}second`,
-          newText: "joined",
-          startLine: 1,
-          endLine: 2,
-        },
-        {
-          oldText: ` suffix${newline}`,
-          newText: newline,
-          startLine: 2,
-          endLine: 2,
-        },
-      ],
-    });
+    await editSingleFile(runner, name, [
+      {
+        oldText: `first${newline}second`,
+        newText: "joined",
+        startLine: 1,
+        endLine: 2,
+      },
+      {
+        oldText: ` suffix${newline}`,
+        newText: newline,
+        startLine: 2,
+        endLine: 2,
+      },
+    ]);
     expect(await readFile(path.join(root, name), "utf8")).toBe(
       `prefix joined${newline}tail`,
     );
@@ -385,9 +382,7 @@ it("rejects missing, ambiguous, out-of-range and overlapping matches without fal
       { oldText: "aaa value", newText: "y", startLine: 1, endLine: 3 },
     ],
   ]) {
-    await expect(
-      runner.execute("edit_file", { path: "a.txt", edits }),
-    ).rejects.toThrow();
+    await expect(editSingleFile(runner, "a.txt", edits)).rejects.toThrow();
     expect(await readFile(path.join(root, "a.txt"), "utf8")).toBe(original);
   }
 });

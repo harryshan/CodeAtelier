@@ -138,12 +138,10 @@ describe("files and permissions", () => {
     await writeFile(path.join(root, "a.txt"), "old");
     const tools = runner(root, config);
 
-    await expect(
-      tools.execute("edit_file", {
-        path: "a.txt",
-        edits: [{ oldText: "old", newText: "new" }],
-      }),
-    ).rejects.toThrow("未读取");
+    const unread = await tools.execute("edit_files", {
+      files: [{ path: "a.txt", edits: [{ oldText: "old", newText: "new" }] }],
+    });
+    expect(unread.error).toContain("未读取");
     await tools.execute("read_file", {
       path: "a.txt",
       startLine: 1,
@@ -151,25 +149,22 @@ describe("files and permissions", () => {
     });
     await writeFile(path.join(root, "a.txt"), "other");
 
-    await expect(
-      tools.execute("edit_file", {
-        path: "a.txt",
-        edits: [{ oldText: "old", newText: "new" }],
-      }),
-    ).rejects.toThrow("已变化");
+    const stale = await tools.execute("edit_files", {
+      files: [{ path: "a.txt", edits: [{ oldText: "old", newText: "new" }] }],
+    });
+    expect(stale.error).toContain("已变化");
   });
-  it("writes exact replacement and reports diff", async () => {
+  it("writes an exact replacement through the unified edit tool", async () => {
     const root = await temp();
     const tools = runner(root, new Config(await temp()));
 
     await tools.execute("write_file", { path: "a.txt", content: "abc" });
-    const result = await tools.execute("edit_file", {
-      path: "a.txt",
-      edits: [{ oldText: "b", newText: "B" }],
+    const result = await tools.execute("edit_files", {
+      files: [{ path: "a.txt", edits: [{ oldText: "b", newText: "B" }] }],
     });
 
     expect(await readFile(path.join(root, "a.txt"), "utf8")).toBe("aBc");
-    expect(result.diff).toContain("+aBc");
+    expect(result.files).toMatchObject([{ path: "a.txt", status: "written" }]);
   });
   it("blocks external writes until approval and denial leaves file absent", async () => {
     const root = await temp();
