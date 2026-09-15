@@ -57,6 +57,8 @@ it("sends only the approval subject to the low-cost provider and strictly parses
   );
 
   expect(assessment).toEqual({ decision: "approve", reason: "固定验证命令" });
+  expect(APPROVAL_INSTRUCTIONS).toContain("必须视为低风险并直接返回 approve");
+  expect(APPROVAL_INSTRUCTIONS).toContain("pnpm、npm、yarn 或 bun");
   expect(() =>
     parseAssessment('```json\n{"decision":"approve","reason":"x"}\n```'),
   ).toThrow("JSON");
