@@ -2,14 +2,14 @@
  * 使用真实 ToolRunner 和临时文件验证统一文件编辑工具，不访问模型或用户项目。
  * 1. 单/多文件条目成功、后项校验失败、重复路径以及读取版本检查通过磁盘内容验证。
  * 2. 行号限定搜索窗口，覆盖行内/跨行片段、重复文本、原始快照偏移、范围越界、重叠和 CRLF 边界。
- * 3. 后续故障用例检查逐文件进度、取消及部分写入，不假设跨文件原子性。
+ * 3. 后续故障用例检查逐文件失败仍继续、聚合错误、取消及部分写入，不假设跨文件原子性。
  */
 
 import { expect, it, vi, afterEach } from "vitest";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import * as fs from "node:fs/promises";
-import { writeFileSync } from "node:fs";
+import { writeFileSync, renameSync } from "node:fs";
 import { ToolRunner } from "../src/tools/tool-runner.js";
 import { fileFixture } from "./fixtures/helpers.js";
 
@@ -19,7 +19,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
   return { ...original, rename: vi.fn(original.rename) };
 });
 
-/** 用统一工具的一个 files 条目覆盖单文件场景，并将预检失败恢复为测试断言需要的异常。 */
+/** 用统一工具的一个 files 条目覆盖单文件场景，并将该文件的失败恢复为测试断言需要的异常。 */
 async function editSingleFile(runner: ToolRunner, path: string, edits: any[]) {
   const result = await runner.execute("edit_files", {
     files: [{ path, edits }],
@@ -60,7 +60,7 @@ it("edits two files in one call and reports each completed file", async () => {
   ).toHaveLength(2);
 });
 
-it("does not write any file when a later file fails preflight", async () => {
+it("writes valid files when a later file fails preflight", async () => {
   const { root, runner } = await fileFixture();
   for (const name of ["a.txt", "b.txt"]) {
     await runner.execute("write_file", { path: name, content: "old" });
@@ -72,13 +72,40 @@ it("does not write any file when a later file fails preflight", async () => {
       { path: "b.txt", edits: [{ oldText: "missing", newText: "new" }] },
     ],
   });
+  expect(result.error).toContain("b.txt");
   expect(result.error).toContain("精确匹配一次");
-  expect(
-    result.files.every((file: any) => file.status === "not_attempted"),
-  ).toBe(true);
-  for (const name of ["a.txt", "b.txt"]) {
-    expect(await readFile(path.join(root, name), "utf8")).toBe("old");
+  expect(result.files).toMatchObject([
+    { path: "a.txt", status: "written" },
+    { path: "b.txt", status: "failed" },
+  ]);
+  expect(await readFile(path.join(root, "a.txt"), "utf8")).toBe("new");
+  expect(await readFile(path.join(root, "b.txt"), "utf8")).toBe("old");
+});
+
+it("reports every preflight failure while writing independent valid files", async () => {
+  const { root, runner } = await fileFixture();
+  for (const name of ["a.txt", "b.txt", "c.txt"]) {
+    await runner.execute("write_file", { path: name, content: "old" });
   }
+
+  const result = await runner.execute("edit_files", {
+    files: [
+      { path: "a.txt", edits: [{ oldText: "old", newText: "new" }] },
+      { path: "b.txt", edits: [{ oldText: "missing-b", newText: "new" }] },
+      { path: "c.txt", edits: [{ oldText: "missing-c", newText: "new" }] },
+    ],
+  });
+
+  expect(result.error).toContain("b.txt");
+  expect(result.error).toContain("c.txt");
+  expect(result.files.map((file: any) => file.status)).toEqual([
+    "written",
+    "failed",
+    "failed",
+  ]);
+  expect(await readFile(path.join(root, "a.txt"), "utf8")).toBe("new");
+  expect(await readFile(path.join(root, "b.txt"), "utf8")).toBe("old");
+  expect(await readFile(path.join(root, "c.txt"), "utf8")).toBe("old");
 });
 
 it("uses original line ranges to disambiguate repeated text despite earlier inserted lines", async () => {
@@ -170,22 +197,23 @@ const threeFiles = {
   })),
 };
 
-it("preserves completed files and stops when another file changes during the batch", async () => {
+it("preserves completed files and continues when another file changes during the batch", async () => {
   const { runner, root } = await hookedFixture((event, directory) => {
     if (event.path === "a.txt" && event.status === "written") {
       writeFileSync(path.join(directory, "b.txt"), "external");
     }
   });
   const result = await runner.execute("edit_files", threeFiles);
+  expect(result.error).toContain("b.txt");
   expect(result.error).toContain("已变化");
   expect(result.files.map((file: any) => file.status)).toEqual([
     "written",
-    "not_attempted",
-    "not_attempted",
+    "failed",
+    "written",
   ]);
   expect(await readFile(path.join(root, "a.txt"), "utf8")).toBe("new");
   expect(await readFile(path.join(root, "b.txt"), "utf8")).toBe("external");
-  expect(await readFile(path.join(root, "c.txt"), "utf8")).toBe("old");
+  expect(await readFile(path.join(root, "c.txt"), "utf8")).toBe("new");
 });
 
 it("keeps per-file progress and stops after cancellation", async () => {
@@ -214,10 +242,14 @@ it("keeps per-file progress and stops after cancellation", async () => {
   ).toBe(true);
 });
 
-it("reports uncertainty after a write error without replaying or rolling back", async () => {
+it("reports uncertainty after a write error while continuing other files", async () => {
   const { runner, root } = await hookedFixture((event) => {
-    if (event.path === "b.txt" && event.status === "unknown") {
-      vi.spyOn(fs, "rename").mockRejectedValueOnce(new Error("disk failure"));
+    if (event.path === "b.txt" && event.status === "unknown" && !event.error) {
+      vi.spyOn(fs, "rename")
+        .mockRejectedValueOnce(new Error("disk failure"))
+        .mockImplementation(async (source, target) => {
+          renameSync(source, target);
+        });
     }
   });
   const result = await runner.execute("edit_files", threeFiles);
@@ -225,15 +257,16 @@ it("reports uncertainty after a write error without replaying or rolling back", 
   expect(result.files.map((file: any) => file.status)).toEqual([
     "written",
     "unknown",
-    "not_attempted",
+    "written",
   ]);
+  expect(result.error).toContain("b.txt");
   expect(await readFile(path.join(root, "a.txt"), "utf8")).toBe("new");
   expect(await readFile(path.join(root, "b.txt"), "utf8")).toBe("old");
-  expect(await readFile(path.join(root, "c.txt"), "utf8")).toBe("old");
+  expect(await readFile(path.join(root, "c.txt"), "utf8")).toBe("new");
   expect((await fs.readdir(root)).sort()).toEqual(["a.txt", "b.txt", "c.txt"]);
 });
 
-it("does not write earlier files when protected-file approval is denied", async () => {
+it("writes ordinary files when protected-file approval is denied", async () => {
   const { runner, root, approvals } = await fileFixture();
   await runner.execute("write_file", { path: "a.txt", content: "old" });
   await writeFile(path.join(root, "AGENTS.md"), "rules");
@@ -250,8 +283,14 @@ it("does not write earlier files when protected-file approval is denied", async 
   });
   await expect.poll(() => approvals.list().length).toBe(1);
   approvals.decide(approvals.list()[0].id, "deny");
-  expect((await pending).error).toContain("拒绝");
-  expect(await readFile(path.join(root, "a.txt"), "utf8")).toBe("old");
+  const result = await pending;
+  expect(result.error).toContain("AGENTS.md");
+  expect(result.error).toContain("拒绝");
+  expect(result.files.map((file: any) => file.status)).toEqual([
+    "written",
+    "failed",
+  ]);
+  expect(await readFile(path.join(root, "a.txt"), "utf8")).toBe("new");
   expect(await readFile(path.join(root, "AGENTS.md"), "utf8")).toBe("rules");
 });
 
@@ -305,11 +344,13 @@ it("rechecks earlier snapshots after a later approval completes", async () => {
   await writeFile(path.join(root, "a.txt"), "external");
   approvals.decide(approvals.list()[0].id, "once");
   const result = await pending;
+  expect(result.error).toContain("a.txt");
   expect(result.error).toContain("已变化");
-  expect(
-    result.files.every((file: any) => file.status === "not_attempted"),
-  ).toBe(true);
-  expect(await readFile(path.join(root, "AGENTS.md"), "utf8")).toBe("rules");
+  expect(result.files.map((file: any) => file.status)).toEqual([
+    "failed",
+    "written",
+  ]);
+  expect(await readFile(path.join(root, "AGENTS.md"), "utf8")).toBe("changed");
 });
 
 it("stops before the next file if saving a completed progress event fails", async () => {
@@ -412,9 +453,13 @@ it("applies scoped snippets across files and keeps exact newline matching", asyn
       },
     ],
   });
-  expect(rejected.error).toBeTruthy();
+  expect(rejected.error).toContain("b.txt");
+  expect(rejected.files.map((file: any) => file.status)).toEqual([
+    "written",
+    "failed",
+  ]);
   expect(await readFile(path.join(root, "a.txt"), "utf8")).toBe(
-    "prefix one\r\ntwo suffix",
+    "new one\r\ntwo suffix",
   );
   const result = await runner.execute("edit_files", {
     files: ["a.txt", "b.txt"].map((name) => ({
@@ -427,9 +472,10 @@ it("applies scoped snippets across files and keeps exact newline matching", asyn
   expect(result.files.every((file: any) => file.status === "written")).toBe(
     true,
   );
-  for (const name of ["a.txt", "b.txt"]) {
-    expect(await readFile(path.join(root, name), "utf8")).toBe(
-      "prefix joined suffix",
-    );
-  }
+  expect(await readFile(path.join(root, "a.txt"), "utf8")).toBe(
+    "new joined suffix",
+  );
+  expect(await readFile(path.join(root, "b.txt"), "utf8")).toBe(
+    "prefix joined suffix",
+  );
 });

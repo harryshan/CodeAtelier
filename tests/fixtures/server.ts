@@ -106,7 +106,9 @@ const { app, engine } = await createApp(
           return tool("git", { action: "status" });
         }
 
-        if (lastUser === "批量编辑文件") {
+        const batchEdit =
+          lastUser === "批量编辑文件" || lastUser === "批量编辑部分失败";
+        if (batchEdit) {
           if (step <= 2) {
             return tool("read_file", {
               path: step === 1 ? "a.txt" : "b.txt",
@@ -120,7 +122,15 @@ const { app, engine } = await createApp(
               files: ["a.txt", "b.txt"].map((name) => ({
                 path: name,
                 edits: [
-                  { oldText: "old", newText: "new", startLine: 1, endLine: 1 },
+                  {
+                    oldText:
+                      lastUser === "批量编辑部分失败" && name === "b.txt"
+                        ? "missing"
+                        : "old",
+                    newText: "new",
+                    startLine: 1,
+                    endLine: 1,
+                  },
                 ],
               })),
             });

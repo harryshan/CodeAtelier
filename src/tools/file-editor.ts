@@ -1,9 +1,9 @@
 /**
  * FileEditor 执行 ToolRunner 分流的统一多文件编辑，共享其审批回调和读取哈希。
- * 1. prepare 逐文件审批、核对读取版本、用 planEdits 定位原始快照并限制内存规模。
- * 2. verify 在整批审批后和每次写入前复核路径及原文，避免审批等待期间的变化被覆盖。
+ * 1. prepare 逐文件审批、核对读取版本、用 planEdits 定位原始快照并限制内存规模；某项失败不阻塞独立文件。
+ * 2. verify 在预检结束和每次写入前复核路径及原文，避免审批等待期间的变化被覆盖；失败逐项记录后继续。
  * 3. commit 用同目录临时文件替换单个目标，保留权限并更新读取哈希；不提供跨文件事务。
- * 4. editMany 同时处理单文件和多文件调用：先校验全批，再通知 Engine 计时开始并记录逐文件执行状态。
+ * 4. editMany 同时处理单文件和多文件调用：汇总所有逐文件失败，仍写入可安全执行的条目，并记录逐文件状态。
  * edit_progress 经 Engine 保存到历史，写入前标 unknown、成功后标 written；断电或持久化失败
  * 仍可能留下未知结果，恢复必须检查现场，不自动回滚或重放。参数/错误的脱敏由 Engine 负责。
  */
@@ -30,7 +30,18 @@ interface PreparedEdit {
   mode: number;
 }
 
-type FileStatus = "not_attempted" | "unknown" | "written";
+type FileStatus = "not_attempted" | "failed" | "unknown" | "written";
+
+interface FileResult {
+  path: string;
+  status: FileStatus;
+  error?: string;
+}
+
+interface PreparedFile {
+  edit: PreparedEdit;
+  bytes: number;
+}
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
 const MAX_BATCH_BYTES = 16 * 1024 * 1024;
@@ -100,49 +111,124 @@ export class FileEditor {
 
   async editMany(inputs: FileEdit[], onExecutionStart?: () => void) {
     const batchId = randomUUID();
-    const files = inputs.map((input) => ({
+    const files: FileResult[] = inputs.map((input) => ({
       path: input.path,
-      status: "not_attempted" as FileStatus,
+      status: "not_attempted",
     }));
-    const prepared: PreparedEdit[] = [];
-    const paths = new Set<string>();
+    const prepared = new Map<number, PreparedFile>();
+    const paths = new Map<string, number>();
     let bytes = 0;
 
-    try {
-      for (const input of inputs) {
-        const edit = await this.prepare(input);
-        if (paths.has(edit.file)) {
-          throw new Error("批次包含重复的真实文件路径，请合并修改。");
-        }
+    const messageFor = (error: unknown) =>
+      error instanceof Error ? error.message : String(error ?? "未知错误");
+    const markFailure = (
+      index: number,
+      error: unknown,
+      status: FileStatus = "failed",
+    ) => {
+      files[index].status = status;
+      files[index].error = messageFor(error);
+    };
 
-        paths.add(edit.file);
-        bytes += Buffer.byteLength(edit.before) + Buffer.byteLength(edit.after);
-        if (bytes > MAX_BATCH_BYTES) {
-          throw new Error("批次原文和结果合计超过 16 MiB，请拆分批次。");
-        }
-
-        prepared.push(edit);
+    const result = (stopped?: unknown) => {
+      const failures = files
+        .filter((file) => file.error)
+        .map((file) => `${file.path}：${file.error}`);
+      const messages = failures.length
+        ? [`以下文件修改失败或结果未知：${failures.join("；")}`]
+        : [];
+      if (stopped) {
+        messages.push(`批次已停止：${messageFor(stopped)}`);
       }
 
-      // 所有审批完成后再次检查全批，避免第一份快照在后续审批期间失效。
-      for (const edit of prepared) {
-        await this.verify(edit);
+      return messages.length
+        ? { batchId, files, error: messages.join("；") }
+        : { batchId, files };
+    };
+
+    for (const [index, input] of inputs.entries()) {
+      let edit: PreparedEdit;
+      try {
+        edit = await this.prepare(input);
+      } catch (error) {
+        if (this.ctx.signal.aborted) {
+          return result(error);
+        }
+
+        markFailure(index, error);
+        continue;
       }
-    } catch (error: any) {
-      return { batchId, files, error: error.message };
+
+      const duplicate = paths.get(edit.file);
+      if (duplicate !== undefined) {
+        const error = new Error("批次包含重复的真实文件路径，请合并修改。");
+        const earlier = prepared.get(duplicate);
+        if (earlier) {
+          bytes -= earlier.bytes;
+          prepared.delete(duplicate);
+        }
+
+        markFailure(duplicate, error);
+        markFailure(index, error);
+        continue;
+      }
+
+      const fileBytes =
+        Buffer.byteLength(edit.before) + Buffer.byteLength(edit.after);
+      if (bytes + fileBytes > MAX_BATCH_BYTES) {
+        markFailure(
+          index,
+          new Error("批次原文和结果合计超过 16 MiB，请拆分批次。"),
+        );
+        continue;
+      }
+
+      paths.set(edit.file, index);
+      bytes += fileBytes;
+      prepared.set(index, { edit, bytes: fileBytes });
     }
 
-    // 所有路径审批和快照复核结束后，下一步才会开始写入文件。
+    // 审批可能等待很久，所以逐项复核；一项变化不能使已核实的其他文件失去写入机会。
+    for (const [index, preparedFile] of prepared) {
+      try {
+        await this.verify(preparedFile.edit);
+      } catch (error) {
+        if (this.ctx.signal.aborted) {
+          return result(error);
+        }
+
+        prepared.delete(index);
+        markFailure(index, error);
+      }
+    }
+
+    if (!prepared.size) {
+      this.ctx.emit("edit_progress", {
+        batchId,
+        files: files.map((file) => ({ ...file })),
+      });
+
+      return result();
+    }
+
+    // 全部可写条目已完成审批和快照复核，下一步才开始记录写入耗时。
     onExecutionStart?.();
     this.ctx.emit("edit_progress", {
       batchId,
       files: files.map((file) => ({ ...file })),
     });
-    for (const [index, edit] of prepared.entries()) {
+    for (const [index, preparedFile] of prepared) {
+      const edit = preparedFile.edit;
       try {
         await this.verify(edit);
-      } catch (error: any) {
-        return { batchId, files, error: error.message };
+      } catch (error) {
+        if (this.ctx.signal.aborted) {
+          return result(error);
+        }
+
+        markFailure(index, error);
+        this.ctx.emit("edit_progress", { batchId, ...files[index] });
+        continue;
       }
 
       // 先记录未知，写入后再记录成功；事件保存失败时不能继续执行下一文件。
@@ -150,8 +236,14 @@ export class FileEditor {
       this.ctx.emit("edit_progress", { batchId, ...files[index] });
       try {
         await this.commit(edit);
-      } catch (error: any) {
-        return { batchId, files, error: error.message };
+      } catch (error) {
+        if (this.ctx.signal.aborted) {
+          return result(error);
+        }
+
+        markFailure(index, error, "unknown");
+        this.ctx.emit("edit_progress", { batchId, ...files[index] });
+        continue;
       }
 
       files[index].status = "written";
@@ -159,6 +251,6 @@ export class FileEditor {
       this.reportDiff(edit);
     }
 
-    return { batchId, files };
+    return result();
   }
 }

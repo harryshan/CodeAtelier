@@ -184,7 +184,7 @@ export function Timeline({
 
   const editBatches = new Map<
     string,
-    { lastId: number; files: Map<string, string> }
+    { lastId: number; files: Map<string, { status: string; error?: string }> }
   >();
   for (const event of data.events) {
     if (event.type !== "edit_progress") {
@@ -193,10 +193,10 @@ export function Timeline({
 
     const batch = editBatches.get(event.data.batchId) ?? {
       lastId: event.id,
-      files: new Map<string, string>(),
+      files: new Map<string, { status: string; error?: string }>(),
     };
     for (const file of event.data.files ?? [event.data]) {
-      batch.files.set(file.path, file.status);
+      batch.files.set(file.path, { status: file.status, error: file.error });
     }
 
     batch.lastId = event.id;
@@ -278,6 +278,7 @@ export function Timeline({
 
           const statuses: Record<string, string> = {
             not_attempted: "尚未执行",
+            failed: "未写入",
             unknown: "写入中或结果未知，请核实文件",
             written: "已写入",
           };
@@ -285,9 +286,10 @@ export function Timeline({
           return (
             <details open className={s.toolResult} key={e.id}>
               <summary>文件编辑进度</summary>
-              {Array.from(batch.files, ([file, status]) => (
+              {Array.from(batch.files, ([file, state]) => (
                 <div key={file}>
-                  <code>{file}</code>：{statuses[status] || status}
+                  <code>{file}</code>：{statuses[state.status] || state.status}
+                  {state.error && `；错误：${state.error}`}
                 </div>
               ))}
             </details>

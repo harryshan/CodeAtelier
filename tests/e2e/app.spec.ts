@@ -6,7 +6,7 @@
  * 2. 检查重试文本分开显示、凭据失效后重新连接，以及会话切换后的数据隔离。
  * 3. 检查受确认的重载服务入口会等待替代服务、完整刷新页面，以及关闭服务成功和请求失败时的不同提示。
  * 4. 检查压缩通知、原始历史及模型用量在刷新后仍能显示。
- * 5. 验证多文件编辑的状态、diff 和刷新后的历史；命令和 Git 的流式输出、结果与历史重载聚合在同一卡片。
+ * 5. 验证多文件编辑的成功/失败状态、错误、diff 和刷新后的历史；命令和 Git 的流式输出、结果与历史重载聚合在同一卡片。
  * 6. 通过页面内项目目录连接首个项目，再从项目标题右侧加号新建对话并检查历史隔离、折叠与最近记录限制。
  *
  * 页面刷新或重连不能重新提交任务。这里不调用真实模型。
@@ -582,6 +582,46 @@ test("shows unified file-edit progress and retains it after reload", async ({
     await expect(
       page.getByText("写入中或结果未知", { exact: false }),
     ).toHaveCount(0);
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
+test("shows every failed file while retaining successful batch edits", async ({
+  page,
+}) => {
+  const workspace = await realpath(
+    await mkdtemp(path.join(tmpdir(), "codeatelier-batch-failure-")),
+  );
+  try {
+    for (const name of ["a.txt", "b.txt"]) {
+      await writeFile(path.join(workspace, name), "old");
+    }
+
+    await page.goto("/");
+    await createInitialConversation(page, workspace);
+    await page.getByLabel("任务描述").fill("批量编辑部分失败");
+    await page.getByRole("button", { name: "开始执行" }).click();
+    await expect(page.getByText("任务完成，已检查工具结果。")).toBeVisible();
+    await expect(
+      page.getByText("a.txt：已写入", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByText("b.txt：未写入；错误：", { exact: false }),
+    ).toBeVisible();
+    expect(await readFile(path.join(workspace, "a.txt"), "utf8")).toBe("new");
+    expect(await readFile(path.join(workspace, "b.txt"), "utf8")).toBe("old");
+
+    await page.reload();
+    await page
+      .getByRole("button", { name: "批量编辑部分失败", exact: true })
+      .click();
+    await expect(
+      page.getByText("a.txt：已写入", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByText("b.txt：未写入；错误：", { exact: false }),
+    ).toBeVisible();
   } finally {
     await rm(workspace, { recursive: true, force: true });
   }
