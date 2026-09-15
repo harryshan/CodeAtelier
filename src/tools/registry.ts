@@ -2,8 +2,9 @@
  * 声明模型可以调用的文件和命令工具，供 Engine 生成工具列表、ToolRunner 校验参数。
  *
  * 1. schemas 定义列目录、读文件、搜索、写文件、单文件/多文件快照精确编辑、命令和单一受限 Git 操作的参数。
- * 2. descriptions 向模型说明各工具的用途和限制。
- * 3. definitions 将 schema 转成 Responses API 需要的函数工具声明。
+ * 2. gitRequestSchema 用 request 包裹各 action 的普通联合，适配模型 strict schema；parseToolArguments 同时兼容历史扁平参数。
+ * 3. descriptions 向模型说明各工具的用途和限制。
+ * 4. definitions 将 schema 转成 Responses API 需要的函数工具声明。
  *
  * 这里只有定义，没有执行逻辑。增加工具时，还要在 ToolRunner 中补上实现和权限检查。
  */
@@ -97,6 +98,25 @@ export const schemas = {
   ]),
 };
 
+/** 模型函数根节点必须是 object；嵌套普通 union 输出 anyOf，避免 discriminatedUnion 的 oneOf。 */
+export const gitRequestSchema = z
+  .object({ request: z.union(schemas.git.options) })
+  .strict();
+
+/** 历史扁平调用仍走原校验；新包装也必须严格验证，不能丢弃多余字段。 */
+export function parseToolArguments(name: string, raw: unknown) {
+  if (name === "git" && raw && typeof raw === "object" && "request" in raw) {
+    return gitRequestSchema.parse(raw).request;
+  }
+
+  const schema = schemas[name as keyof typeof schemas];
+  if (!schema) {
+    throw new Error("未知工具");
+  }
+
+  return schema.parse(raw);
+}
+
 const descriptions: Record<string, string> = {
   list_files:
     "List immediate directory entries. Use paths relative to the workspace.",
@@ -111,13 +131,13 @@ const descriptions: Record<string, string> = {
     "Edit 1-20 distinct previously read files in one call. Each entry uses edit_file semantics: all ranges refer to that file's ORIGINAL snapshot; startLine/endLine are both integers or both null. Validate permissions, versions and all edits before any write. Files write sequentially, NOT as a cross-file transaction. On failure inspect per-file statuses and current contents; never blindly replay the batch. Merge all changes to the same real path in one entry. Existing files only; use write_file to create files.",
   run_command:
     "Execute one command string in the session workspace after user approval. Provide only command: CodeAtelier selects the platform shell, fixed noninteractive arguments, and workspace directory internally. When a complete compound command can be approved up front, put sequential commands, pipelines, and safe independent checks into this one command whenever it reduces tool round trips; do not add artificial output separators. Split calls only when a prior result is needed to construct the next command or request further approval. Command output disables colors and removes terminal control sequences. Do not use direct Git commands, elevation, or destructive system operations.",
-  git: "Perform one safe Git action in the session workspace. Actions: status; diff (explicit staged, paths, contextLines); log (revision, paths, limit); show (revision and explicit paths); branch; add (paths); commit (message and paths); push. This tool automatically validates that the workspace is the repository root, permits only safe paths/revisions and a configured HTTPS/SSH upstream, and disables hooks, GPG signing, external diff/text conversion and interactive prompts. Use it proactively for Git work; do not invoke Git through run_command. It accepts no arbitrary subcommand, option, remote, branch target, force, reset, clean, checkout, merge, rebase, tag, stash, clone, or PR operation. Inspect status/diff/log before writes and do not replay an interrupted add, commit, or push without rechecking.",
+  git: "Put the action and its fields inside the request object, e.g. {request:{action:status}}. Perform one safe Git action in the session workspace. Actions: status; diff (explicit staged, paths, contextLines); log (revision, paths, limit); show (revision and explicit paths); branch; add (paths); commit (message and paths); push. This tool automatically validates that the workspace is the repository root, permits only safe paths/revisions and a configured HTTPS/SSH upstream, and disables hooks, GPG signing, external diff/text conversion and interactive prompts. Use it proactively for Git work; do not invoke Git through run_command. It accepts no arbitrary subcommand, option, remote, branch target, force, reset, clean, checkout, merge, rebase, tag, stash, clone, or PR operation. Inspect status/diff/log before writes and do not replay an interrupted add, commit, or push without rechecking.",
 };
 
 export const definitions = Object.entries(schemas).map(([name, schema]) => ({
   type: "function" as const,
   name,
   description: descriptions[name],
-  parameters: z.toJSONSchema(schema),
+  parameters: z.toJSONSchema(name === "git" ? gitRequestSchema : schema),
   strict: true,
 }));

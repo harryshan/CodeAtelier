@@ -4,7 +4,7 @@
  *
  * 1. ignored 列出遍历时跳过的目录；ToolContext 定义依赖，readHashes 记住本任务读过的文件版本。
  * 2. access 解析路径并申请必要的权限；entries 限量遍历，commandGrant 为可复用命令计算指纹。
- * 3. execute 先校验参数。精确编辑分流给共享读取哈希的 FileEditor，单一专用 Git 工具分流给 GitToolRunner；普通命令只接受
+ * 3. execute 先通过 parseToolArguments 校验参数并解开 Git 的 request 包装（兼容历史扁平调用）。精确编辑分流给共享读取哈希的 FileEditor，单一专用 Git 工具分流给 GitToolRunner；普通命令只接受
  *    一条命令文本，内部选择 shell、拒绝直接 Git，再申请审批并调用 executeProcess。
  * 4. 只读分支处理列目录、读取和搜索；读文件按 500 行分页并记录内容哈希，供后续修改核对。
  * 5. write_file 修改已有文件前要求本任务已经读过且内容没有变化，整文件覆盖另需审批。
@@ -25,7 +25,7 @@ import {
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { createTwoFilesPatch } from "diff";
-import { MAX_READ_LINES, schemas } from "./registry.js";
+import { MAX_READ_LINES, parseToolArguments } from "./registry.js";
 import type { Settings } from "../shared/types.js";
 import { ApprovalManager } from "../permissions/approval-manager.js";
 import { resolveTarget, regularFile, sensitive, inside } from "./paths.js";
@@ -176,13 +176,7 @@ export class ToolRunner {
 
   async execute(name: string, raw: unknown): Promise<any> {
     this.ctx.signal.throwIfAborted();
-    const schema = schemas[name as keyof typeof schemas];
-
-    if (!schema) {
-      throw new Error("未知工具");
-    }
-
-    const args: any = schema.parse(raw);
+    const args: any = parseToolArguments(name, raw);
 
     if (name === "edit_file") {
       return this.editor.editOne(args);

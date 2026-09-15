@@ -115,3 +115,8 @@ mechanical-input.test.ts 覆盖精确结果/跨路径正文引用、逐字还原
 
 - `tests/shutdown.test.ts`：验证未受 launcher 监督的后端以 409 拒绝重载；并以 `launcher.ts` 启动隔离后端，认证并确认重载，验证旧子进程退出后相同端口出现第二次监听记录、替代进程可取得新会话，随后确认关闭时 launcher 也正常退出。
 - `tests/e2e/app.spec.ts`：验证重载需先确认；模拟替代服务使用不同本机会话 token，验证页面等待它后完整刷新。浏览器用例不运行真实编译或长期常驻的生产服务，进程替换由前一条回归覆盖。
+
+
+### Git 模型参数兼容性
+
+模型侧 `git` 参数采用 `{ "request": { "action": "status" } }`，其他 action 的字段也放在 request 内。根节点为严格 object，request 使用嵌套 anyOf；避免服务拒绝根级 oneOf。执行前严格验证各 action 字段，再解包交给原 Git 执行器；历史扁平参数继续受原校验约束。tool-schema.test.ts 覆盖根节点、oneOf 禁用、包装解包、历史兼容和额外/非法字段拒绝。
