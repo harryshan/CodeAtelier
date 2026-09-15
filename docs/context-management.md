@@ -51,7 +51,7 @@
 | 级别 | 方法 | 范围与代价 |
 | --- | --- | --- |
 | 一级 deduplicate | 重复读取引用与过期读取正文归档 | 完全重复项保留首份全文；同一路径全文哈希与当前文件不同时归档旧正文，保留版本、协议位置和历史回读引用；零模型调用 |
-| 二级 archive | 大文件读取归档，留下路径、行数、首尾和诊断行摘录及来源 | 只处理有已保存成功结果、未截断的 read_file；正文超过 2000 字符才处理；有损活动视图、完整快照可回读；零模型调用 |
+| 二级 archive | 按工具契约归档大段正文 | 文件、搜索、目录、命令、只读 Git 与写入 diff 分别投影，保留调用和执行事实；有损活动视图、完整快照可回读；零模型调用 |
 | 三级 summary | 完整分块的结构化摘要 | 对旧原始记录分块，不先丢掉中间；此前归档投影按数据库记录匹配并展开全文，再送摘要模型 |
 
 read_file 返回全文字节的 SHA-256 contentHash，局部行读取也携带全文版本。达到压缩阈值后，
@@ -64,7 +64,22 @@ ToolRunner 仅对工作区内非敏感、大小不超过 2 MiB 的普通文件�
 未达阈值不因文件变化改写请求历史；集中压缩仍可能影响前缀缓存，没有缓存命中保证。
 哈希仅说明检查时的内容版本，检查后文件仍可能变化，编辑前的新鲜读取与并发核对继续独立执行。
 
-前两级保留调用与结果的协议位置；不投影命令、写操作、失败或未知结果。
+前两级保留调用与结果的协议位置。第二级仅处理能唯一核对持久化来源的已保存结果：
+
+| 工具 | 可省略的正文 | 保留内容 |
+| --- | --- | --- |
+| read_file | 大于等于 2000 字符的正文换成摘录；过期版本沿用第一级去掉正文 | 路径、行数、哈希等元数据；失败或截断读取仍不投影 |
+| search | 去掉 matches 中的 text | 全部命中路径、行号、类型及原 truncated；查询参数保留在调用中 |
+| list_files | 超过 40 条时只留前后各 20 条 | 条目原名和类型、原结果条数及省略条数；不声称是磁盘完整目录 |
+| run_command | 大于等于 2000 字符的合并 output 换成摘录 | 明确整数 exitCode、error、truncated、取消/超时等原始元数据及完整调用 |
+| git | status/diff/log/show/branch 的长 output 换成摘录 | action 与参数、退出码等元数据；add/commit/push 的全部结果保持原样，保护操作结果标识 |
+| write_file / 历史 edit_file | 长 diff 换成摘录 | 路径、changed、error 和其他字段 |
+| edit_files | 历史结果 files 条目中的长 diff 换成摘录 | batchId、顶层错误与全部逐文件路径/状态；当前工具结果本就不带 diff，通常不变 |
+
+非零退出码、原输出截断和多文件部分成功不阻止正文归档，但状态绝不覆盖或推断。
+命令缺少明确退出码、没有已保存结果或格式不支持、来源歧义、已有归档/编码时保持原样。
+原输出截断与归档省略分别表示：回读只能得到原来已经保存的部分，不能找回从未保存的日志。
+第二级新投影以 contextArchive.fields 列出省略字段；仅单条变小且整体通过既有收益验收时提交。
 二级摘录包含首尾各 400 字符及最多 1000 字符的诊断行片段，显式标注省略；
 它是定位线索，不能保证识别所有重要代码或错误。关键词命中不代表程序执行失败。
 引用包含 snapshotId、index、offset 与参数/输出的 SHA-256 指纹；回读工具仍按快照索引读取。
@@ -87,7 +102,7 @@ read_context_history(snapshotId, index, offset) 只读工具，从当前会话�
 历史阅读不满足文件编辑所要求的本任务内实际文件读取。
 
 工具执行账本由已保存 tool_result 事件生成，不由摘要模型推断。匹配调用 ID、工具名及完整已保存输出；ID 重用、结果不一致或匹配歧义时保守标为未知。
-recorded 只表示存在结果记录，保留 error、exitCode、truncated；unknown 必须先检查现状，
+recorded 只表示存在结果记录，保留 error、exitCode、truncated 及取消/超时状态；多文件批次保留 batchId 和各文件 path/status/changed/error，Git 保留嵌套阶段状态及完整 commit 阶段结果。状态 JSON 不再截成固定 500 字符；过大时由正常预算规则拒绝压缩，不能牺牲恢复事实。unknown 必须先检查现状，
 不能推断操作尚未执行，也不能自动重放。连续压缩会继承此前账本。
 摘要不会改变 ApprovalManager 或 ToolRunner 的授权与新鲜读取检查。
 
@@ -97,7 +112,7 @@ SQLite 新增 context_snapshots 表，通过 CREATE TABLE IF NOT EXISTS 兼容�
 原 events 和 context 表不迁移、不删除；数据库初始化版本标记维持现有值。
 每份快照带格式 version=1、父快照 ID、完整压缩前输入、摘要、执行账本、切分索引、
 输入 SHA-256、模型、创建时间和压缩前后字符数。新增可选 stage、note、projections 字段，
-分别记录提交级别、可核对的摘要原文和可展开的文件投影，兼容旧版快照。
+分别记录提交级别、可核对的摘要原文和可展开的工具结果投影，兼容旧版快照。
 快照和新的活动 context 在同一事务提交；重启可沿父快照追溯之前的摘要来源。
 
 这里的原文是此前已经保存的内容。工具输出原先可能受 outputChars 截断，
@@ -136,7 +151,9 @@ context.compaction_failed（WARN），继承 sessionId/taskId，包含前后大�
 - src/context/budget.ts：字符预算、保守分组切分。
 - src/context/compactor.ts：完整预算分块、摘要模型调用和结构/来源校验。
 - src/context/mechanical-input.ts：每请求精确工具结果/正文引用，不改变持久化输入。
-- src/context/read-projection.ts：可核对的文件读取去重、诊断摘录与归档引用。
+- src/context/read-projection.ts：可核对的文件读取去重、过期版本归档与正文摘录。
+- src/context/tool-projection.ts：第二级搜索、目录、命令、只读 Git 和写入 diff 归档。
+- src/context/tool-result.ts：共享的唯一来源匹配和诊断摘录，供两类投影复用。
 - src/context/snapshot.ts、types.ts：执行账本与快照契约。
 - src/context/history.ts：会话隔离的有界原文读取工具。
 - src/sessions/store.ts：快照查询和原子保存。

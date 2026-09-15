@@ -7,7 +7,7 @@
  * 2. request 调用 mechanicalInput 整理重复内容，重新计量后确实更小时才采用，不写回历史。
  * 3. prepare 检查容量和取消状态。压缩失败时，原历史还能放下就继续，否则停止并报错。
  * 4. plan 找到不会拆散工具调用和结果的切点，确认保留内容仍能放进目标预算。
- * 5. compact 达阈值后探测历史文件的当前哈希，依次尝试去重与过期读取归档、归档文件正文和分块摘要；达到目标就停止。摘要有单独的调用上限，
+ * 5. compact 达阈值后探测历史文件的当前哈希，依次尝试去重与过期读取归档、归档工具正文和分块摘要；达到目标就停止。摘要有单独的调用上限，
  *    使用辅助模型时也按它自己的容量计算预算。
  * 6. 将原文、来源哈希、预算和工具执行记录存成快照，与新的活动上下文一起提交。
  * 7. restoreHistory 沿父快照找回旧正文，已有摘要只有能在数据库中核对时才保留。
@@ -22,6 +22,7 @@ import { chooseCut, contextSize } from "./budget.js";
 import { summarize, summaryChunks } from "./compactor.js";
 import { mechanicalInput } from "./mechanical-input.js";
 import { currentReadHashes, projectReads } from "./read-projection.js";
+import { projectToolResults } from "./tool-projection.js";
 import { executionLedger } from "./snapshot.js";
 import type { ContextSnapshot } from "./types.js";
 import type { Store } from "../sessions/store.js";
@@ -129,7 +130,7 @@ export class ContextManager {
     if (compacted) {
       const snapshot = compacted.snapshot;
       options.notice(
-        `上下文已整理：${before} → ${snapshot.budget?.after ?? snapshot.afterChars} ${options.unit === "tokens" ? "token（估算）" : "字符"}；${snapshot.stage === "deduplicate" ? "一级去重与过期读取归档" : snapshot.stage === "archive" ? "二级文件归档" : "三级结构化摘要"}，历史记录仍可查看。`,
+        `上下文已整理：${before} → ${snapshot.budget?.after ?? snapshot.afterChars} ${options.unit === "tokens" ? "token（估算）" : "字符"}；${snapshot.stage === "deduplicate" ? "一级去重与过期读取归档" : snapshot.stage === "archive" ? "二级工具结果归档" : "三级结构化摘要"}，历史记录仍可查看。`,
       );
       options.report("context.compaction_completed", {
         beforeAmount: before,
@@ -218,7 +219,11 @@ export class ContextManager {
     if (!acceptable(next)) {
       stage = "archive";
       next = [
-        ...projectReads(plan.prefix, id, events, "archive", currentHashes),
+        ...projectToolResults(
+          projectReads(plan.prefix, id, events, "archive", currentHashes),
+          id,
+          events,
+        ),
         ...plan.tail,
       ];
     }

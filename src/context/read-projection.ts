@@ -5,48 +5,23 @@
  * 1. 核对 read_file 调用及已保存的 tool_result，要求唯一匹配，且结果没有失败或截断。
  * 2. currentReadHashes 仅为唯一匹配的成功读取探测当前文件版本，同一路径每次压缩只探测一次；无法核实则跳过。
  * 3. 根据参数和结果的指纹识别重复读取；第一级替换重复项和全文哈希已过期的正文，第二级将其他正文换成摘录。
- * 4. contextArchive 记录快照 ID、原记录位置和指纹；preview 选取首尾及中间的诊断行。
+ * 4. contextArchive 记录快照 ID、原记录位置和指纹；共享 previewOutput 选取首尾及中间的诊断行。
  *
  * 摘录包含不连续的片段，不能当作完整正文。命令、写操作和结果未知的记录保持原样。
  */
 
 import { createHash } from "node:crypto";
 import type { Event } from "../shared/types.js";
+import { savedToolResult, previewOutput } from "./tool-result.js";
 
 /** 历史结果必须唯一匹配持久化事件；编码、失败或截断记录不参与版本归档。 */
 function savedRead(source: any[], item: any, events: Event[]) {
-  if (item.type !== "function_call_output" || typeof item.output !== "string") {
+  const saved = savedToolResult(source, item, events);
+  if (!saved || saved.call.name !== "read_file") {
     return undefined;
   }
 
-  const calls = source.filter(
-    (record) =>
-      record.type === "function_call" && record.call_id === item.call_id,
-  );
-  const outputs = source.filter(
-    (record) =>
-      record.type === "function_call_output" && record.call_id === item.call_id,
-  );
-  if (
-    calls.length !== 1 ||
-    outputs.length !== 1 ||
-    calls[0].name !== "read_file"
-  ) {
-    return undefined;
-  }
-
-  const matches = events.filter(
-    (event) =>
-      event.type === "tool_result" &&
-      event.data.callId === item.call_id &&
-      event.data.name === "read_file" &&
-      JSON.stringify(event.data.result) === item.output,
-  );
-  if (matches.length !== 1) {
-    return undefined;
-  }
-
-  const result = matches[0].data.result;
+  const { call, result } = saved;
   if (
     !result ||
     result.error !== undefined ||
@@ -58,7 +33,7 @@ function savedRead(source: any[], item: any, events: Event[]) {
     return undefined;
   }
 
-  return { call: calls[0], result };
+  return { call, result };
 }
 
 /** 只在阈值压缩中调用；结果仅是检查时的版本，不证明任何写操作成功。 */
@@ -149,7 +124,8 @@ export function projectReads(
 
     const output = JSON.stringify({
       ...result,
-      text: stage === "archive" && !stale ? preview(result.text) : undefined,
+      text:
+        stage === "archive" && !stale ? previewOutput(result.text) : undefined,
       contextArchive: {
         snapshotId,
         index,
@@ -168,22 +144,4 @@ export function projectReads(
 
     return output.length < item.output.length ? { ...item, output } : item;
   });
-}
-
-/** 在长度限制内保留首尾和中间的诊断行，帮助定位；需要全文时仍要读快照。 */
-function preview(text: string): string {
-  const fragments = [text.slice(0, 400)];
-  const diagnostic = /error|fail|exception|panic|todo|fixme|错误|失败|异常/i;
-  let remaining = 1000;
-  for (const line of text.split("\n")) {
-    if (diagnostic.test(line) && remaining > 0) {
-      const fragment = line.slice(0, Math.min(300, remaining));
-      fragments.push(fragment);
-      remaining -= fragment.length;
-    }
-  }
-
-  fragments.push(text.slice(-400));
-
-  return fragments.join("\n[摘录，非连续原文]\n");
 }
