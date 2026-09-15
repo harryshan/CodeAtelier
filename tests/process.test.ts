@@ -1,7 +1,7 @@
 /**
  * 用短时运行的 Node 子进程检查 executeProcess 的输出、错误和取消行为。
  *
- * 1. 启动不存在的程序，检查错误返回及超时资源清理。
+ * 1. 启动不存在的程序，检查错误包含子进程实际报错及超时资源清理。
  * 2. 分两次输出一个 UTF-8 字符，检查解码完整、颜色控制符跨 chunk 清理、子进程颜色环境和模型密钥隔离。
  * 3. 收到输出后取消进程，确认以取消错误结束。
  *
@@ -14,9 +14,9 @@ import { temp } from "./fixtures/helpers.js";
 
 afterEach(() => vi.unstubAllEnvs());
 
-it("reports missing executable and releases its timeout", async () => {
-  await expect(
-    executeProcess(
+it("reports the actual missing-executable error and releases its timeout", async () => {
+  try {
+    await executeProcess(
       "codeatelier-nonexistent-executable",
       [],
       await temp(),
@@ -24,8 +24,14 @@ it("reports missing executable and releases its timeout", async () => {
       3000,
       1000,
       () => {},
-    ),
-  ).rejects.toThrow("无法启动");
+    );
+    throw new Error("expected the nonexistent executable to fail");
+  } catch (error) {
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toMatch(
+      /^无法启动命令，请检查可执行文件或 shell 路径。实际错误：.+/,
+    );
+  }
 });
 
 it("preserves split UTF-8 output and does not inherit the model API key", async () => {

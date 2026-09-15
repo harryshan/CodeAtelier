@@ -47,7 +47,7 @@ Node.js 24，pnpm 11.22.0（packageManager 固定）。提交 pnpm-lock.yaml，�
 
 目录包含 history.sqlite（及 SQLite WAL 文件）、settings.json、logs/app.log。历史会话与运行日志分开保存，不写入用户代码项目。
 
-日志支持 trace/debug/info/warn/error，默认 info。文件和终端均为紧凑纯文本，例如 `2026-09-15T12:00:00.000Z INFO  agent task.started | session=… task=…`，不输出 JSON；固定的应用、进程和主机字段不重复写入。任务日志带 sessionId/taskId，工具日志包含 toolCallId、耗时和成功状态。错误记录保留脱敏且限长的名称、消息、受控错误码/状态、原因链和堆栈，不能只写 errorName；模型服务响应正文、完整源码、提示词和原始响应仍不记录。日志按约 10 MiB 轮转，共最多 5 个文件；DEBUG 可查看模型步骤。已知密钥和认证信息在格式化前脱敏。
+日志支持 trace/debug/info/warn/error，默认 info。文件和终端均为紧凑纯文本，例如 `2026-09-15T12:00:00.000Z INFO  agent task.started | session=… task=…`，不输出 JSON；固定的应用、进程和主机字段不重复写入。任务日志带 sessionId/taskId，工具日志包含 toolCallId、耗时和成功状态。错误记录保留脱敏且限长的名称、实际错误消息、受控错误码/状态、原因链和堆栈，不能只写 errorName；模型服务只提取协议错误对象的 message/reason/code，命令保留 shell 的 stdout/stderr，均不记录完整响应正文、完整源码或提示词。日志按约 10 MiB 轮转，共最多 5 个文件；DEBUG 可查看模型步骤。已知密钥和认证信息在格式化前脱敏。
 
 ## 代码阅读策略
 
@@ -92,7 +92,8 @@ Git 不经 `run_command` 执行，而使用单一 `git` 工具；模型可以主
 
 ## 常见问题
 
-- 模型返回“不支持 Responses”：核对服务公布的完整模型标识；配置原样传递，不自动转换简称。
+- 模型返回“不支持 Responses”：核对服务公布的完整模型标识；配置原样传递，不自动转换简称。任务通知会显示服务实际返回的错误 message/reason/code（脱敏、最多 1200 个字符）；服务未给出细节时明确提示，避免猜测原因。
+- 命令无法启动：工具结果会包含子进程实际错误；非零退出码的 shell stderr 已在同一命令输出卡片中保留。
 - 请求结束但无结果：检查服务是否发送完成事件。适配器支持从 output_item.done 收集结果。
 - 找不到 Windows shell：服务会按 `pwsh`、`powershell`、`cmd.exe` 检查环境；若三者均不可用，`run_command` 会明确失败。模型无需也不得提供、探测或回退 shell；使用内部检测到的 `cmd.exe` 运行 pnpm 的 `.cmd` 脚本仍按单次审批处理。
 - 文件已变化：重新读取后再编辑；不要关闭并发修改检测。

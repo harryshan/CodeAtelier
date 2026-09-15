@@ -6,7 +6,7 @@
  * 2. 传入非法工具参数，确认错误返回模型且文件没有变化。
  * 3. 检查项目规则加载、大输出限制，以及多项互不冲突的工具调用会在同一轮全部执行。
  * 4. 检查多文件调用的逐文件进度及结果持久化、新任务必须重新读文件，以及含凭据相关源码的工具结果仍是合法 JSON。
- * 5. 对需要批准的命令，确认保存的工具耗时只从真正执行开始计算，不包含审批等待。
+ * 5. 检查模型实际错误会进入任务失败记录和通知，对需要批准的命令确认保存的工具耗时只从真正执行开始计算，不包含审批等待。
  *
  * 只模拟模型响应，文件操作、审批和保存使用实际实现。
  */
@@ -19,6 +19,7 @@ import { Engine } from "../src/agent/engine.js";
 import { Store } from "../src/sessions/store.js";
 import { Config } from "../src/config/config.js";
 import type { ModelProvider } from "../src/providers/model-provider.js";
+import { ModelError } from "../src/providers/model-error.js";
 import { temp } from "./fixtures/helpers.js";
 
 const done = {
@@ -214,6 +215,41 @@ it("fails an over-budget context before calling the provider", async () => {
     expect(fixture.store.tasks(fixture.session.id)[0].error).toContain(
       "上下文",
     );
+  } finally {
+    await fixture.engine.close();
+    fixture.store.close();
+  }
+});
+
+it("persists the actual model error in the failed task and user notice", async () => {
+  const fixture = await createFixture({
+    async run() {
+      throw new ModelError(
+        "模型服务返回 HTTP 400。实际错误：该模型不支持 reasoning。",
+        false,
+        "http_400",
+        400,
+      );
+    },
+  });
+
+  try {
+    fixture.engine.start(fixture.session.id, "run the task");
+    await fixture.engine.active?.done;
+
+    expect(fixture.store.tasks(fixture.session.id)[0]).toMatchObject({
+      status: "failed",
+      error: expect.stringContaining("该模型不支持 reasoning"),
+    });
+    expect(
+      fixture.store
+        .events(fixture.session.id)
+        .some(
+          (event) =>
+            event.type === "notice" &&
+            event.data.text.includes("该模型不支持 reasoning"),
+        ),
+    ).toBe(true);
   } finally {
     await fixture.engine.close();
     fixture.store.close();

@@ -3,7 +3,7 @@
  * withServer 提供服务及清理，不连接外部模型。
  *
  * 1. completed.output 为空时，从 item.done 收集完整工具调用。
- * 2. 检查文本流、缺失完成事件，以及 failed、incomplete 和 error 的错误分类。
+ * 2. 检查文本流、缺失完成事件，以及 failed、incomplete 和 error 的错误分类与服务实际错误信息。
  * 3. completed.output 有内容时应优先使用，最终消息正文也优先于暂存文本。
  * 4. 检查空响应处理，以及 maxOutputTokens、reasoningEffort 和并行工具调用偏好是否正确发出。
  *
@@ -108,6 +108,42 @@ it("does not treat failed/incomplete events as successful completion", async () 
       ).rejects.toThrow("失败或不完整");
     });
   }
+});
+
+it("keeps a model service error message while redacting the configured key", async () => {
+  await withServer(
+    [
+      {
+        type: "response.failed",
+        response: {
+          error: {
+            code: "invalid_request_error",
+            message: "该模型不支持 reasoning；API key actual-api-key 无效。",
+          },
+        },
+      },
+    ],
+    async (baseUrl) => {
+      await expect(
+        new ResponsesProvider({ ...settings, baseUrl }, "actual-api-key").run(
+          [],
+          "",
+          [],
+          new AbortController().signal,
+          () => {},
+        ),
+      ).rejects.toThrow("该模型不支持 reasoning");
+      await expect(
+        new ResponsesProvider({ ...settings, baseUrl }, "actual-api-key").run(
+          [],
+          "",
+          [],
+          new AbortController().signal,
+          () => {},
+        ),
+      ).rejects.not.toThrow("actual-api-key");
+    },
+  );
 });
 
 it("prefers completed output over fallback items and preserves final message text", async () => {

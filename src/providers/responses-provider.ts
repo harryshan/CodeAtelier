@@ -13,7 +13,7 @@
 
 import { capabilitiesSchema, parseUsage } from "./model-metadata.js";
 import OpenAI from "openai";
-import { ModelError, modelError } from "./model-error.js";
+import { ModelError, modelError, modelErrorMessage } from "./model-error.js";
 import type { Settings } from "../shared/types.js";
 import type { ModelProvider, ModelResult } from "./model-provider.js";
 
@@ -151,7 +151,11 @@ export class ResponsesProvider implements ModelProvider {
           ].includes(code);
 
           throw new ModelError(
-            "模型响应失败或不完整，请检查模型配置及服务状态。",
+            modelErrorMessage(
+              "模型响应失败或不完整，请检查模型配置及服务状态。",
+              detail,
+              [this.key],
+            ),
             retryable,
             [
               "server_error",
@@ -209,7 +213,7 @@ export class ResponsesProvider implements ModelProvider {
         throw controller.signal.reason;
       }
 
-      throw modelError(error);
+      throw modelError(error, [this.key]);
     } finally {
       clearTimeout(total);
       clearTimeout(idle!);

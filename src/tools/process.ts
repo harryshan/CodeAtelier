@@ -7,9 +7,9 @@
  * 2. spawn 不经过 shell，隐藏 Windows 窗口，并从子进程环境中移除模型密钥；调用方可追加受限环境变量。
  * 3. stop 在 Windows 使用 taskkill，在 Unix 使用进程组终止子进程树；超时和取消都走这里。
  * 4. stdout、stderr 按 UTF-8 流式解码，append 保留限额内的可见内容并通知调用方。
- * 5. error 和 close 清理计时器及监听，返回结果或抛出取消、超时等错误。
+ * 5. error 和 close 清理计时器及监听，返回结果或抛出取消、超时等错误；启动失败会保留子进程实际报错。
  *
- * 输出太长时只截断保存内容。非零退出码照实返回，命令是否获准由执行前的审批负责。
+ * 输出太长时只截断保存内容。非零退出码及 shell 写入 stderr 的实际错误照实返回，命令是否获准由执行前的审批负责。
  */
 
 import { spawn } from "node:child_process";
@@ -165,13 +165,22 @@ export async function executeProcess(
       signal.removeEventListener("abort", stop);
     };
 
-    child.on("error", () => {
+    child.on("error", (error) => {
       if (finished) {
         return;
       }
 
       cleanup();
-      reject(new Error("无法启动命令，请检查可执行文件或 shell 路径。"));
+      const detail =
+        error instanceof Error && error.message
+          ? error.message
+          : "子进程未提供详细错误信息。";
+
+      reject(
+        new Error(
+          `无法启动命令，请检查可执行文件或 shell 路径。实际错误：${detail}`,
+        ),
+      );
     });
     child.on("close", (code) => {
       if (finished) {
