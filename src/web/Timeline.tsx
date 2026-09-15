@@ -4,7 +4,7 @@
  *
  * 1. labels 和 textResult 处理工具名称及结果的显示格式。
  * 2. 按任务、步骤和尝试次数合并流式文本；已有完整 assistant 事件时，去掉对应的临时文本。
- * 3. 合并同一编辑批次的逐文件最新状态；按调用 ID 聚合 run_command、git 的流式输出和最终结果，再显示其余工具、diff、预算和用量通知。
+ * 3. 合并同一编辑批次的逐文件最新状态；按调用 ID 聚合 run_command、git 的流式输出和最终结果，再显示其余工具、diff、预算和各类模型用量通知。
  * 4. 显示仍在接收的文本和待审批按钮，把用户选择发给后端。
  *
  * 失败尝试的半截文本不能拼进重试后的回复。命令有输出不代表成功，退出码和错误信息要保留。
@@ -37,6 +37,13 @@ function textResult(event: Event) {
     ? event.data.result
     : JSON.stringify(event.data.result, null, 2);
 }
+
+const modelUsagePurposeLabels: Record<string, string> = {
+  task: "任务执行",
+  compaction: "上下文摘要",
+  title: "会话标题",
+  approval: "工具审批",
+};
 
 const streamedToolOutputTypes: Record<string, string> = {
   run_command: "command_output",
@@ -366,7 +373,7 @@ export function Timeline({
               </summary>
               <p>
                 用途：
-                {e.data.purpose === "compaction" ? "上下文摘要" : "任务执行"}
+                {modelUsagePurposeLabels[e.data.purpose] || "任务执行"}
                 ；本次合计：{e.data.total_tokens} token
               </p>
               <p>

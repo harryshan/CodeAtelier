@@ -4,7 +4,7 @@
  *
  * 1. instructions 规定摘要字段、来源编号，以及不能把摘要当作新授权的要求。
  * 2. summaryChunks 按预算分配记录；单条记录太长时按连续字符分块，完整保留中间内容。
- * 3. summarize 发送不带工具的模型请求，解析返回值，校验格式和来源后进行脱敏。
+ * 3. summarize 发送不带工具的模型请求，在每次实际尝试时通知调用方，解析返回值，校验格式和来源后进行脱敏。
  *
  * 每块材料合起来必须覆盖全部待摘要历史。摘要模型不能运行工具，也不能把未知结果写成成功。
  */
@@ -110,12 +110,14 @@ export async function summarize(
   signal: AbortSignal,
   clean: (text: string) => string,
   retry: () => void,
+  onRequest?: () => void,
   onUsage?: (usage: ModelUsage) => void,
   maxOutputTokens?: number,
 ): Promise<ContextSummary> {
   const result = await retryModel(
     async () => {
       retry();
+      onRequest?.();
 
       return provider.run(chunk, instructions, [], signal, () => {}, {
         maxOutputTokens,

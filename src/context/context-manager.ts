@@ -37,6 +37,7 @@ interface Options {
   measure?: typeof contextSize;
   unit?: "tokens" | "characters";
   maxOutputTokens?: number;
+  onModelRequest?: () => void;
   onUsage?: (usage: ModelUsage) => void;
   provider: ModelProvider;
   summaryModel?: () => Promise<{
@@ -289,6 +290,7 @@ export class ContextManager {
 
               this.calls++;
             },
+            options.onModelRequest,
             options.onUsage,
             auxiliary ? auxiliary.budget.outputTokens : options.maxOutputTokens,
           ),

@@ -6,7 +6,7 @@
  * 2. start 确保同一时间只有一个任务，保存用户消息，并准备取消信号和完成通知。
  * 3. resume 继续最后一个可恢复任务；cancel 处理用户取消，close 处理服务关闭。
  * 4. 首条 prompt 先用辅助模型生成标题；run 再读取历史和项目规则，准备工具及上下文预算。
- * 5. 为压缩提供 ToolRunner 的安全文件哈希探测；每轮先整理上下文，再请求模型。只有完整响应保存成功后，才按顺序执行工具。
+ * 5. 为压缩提供 ToolRunner 的安全文件哈希探测；每轮先整理上下文，再记录实际模型请求和服务实报用量。只有完整响应保存成功后，才按顺序执行工具。
  * 6. 低成本模型先把所有待审批工具分为自动通过、人工确认或拒绝；模型故障和无效输出保守降级为人工确认，并持久化可审计的决定。
  * 7. 多文件编辑进度附带 callId 逐项保存；ToolRunner 确认实际执行开始后才记录工具耗时，工具结果和更新后的上下文一起提交到数据库；退出时保存最终状态并发出 task_end。
  *
@@ -49,6 +49,8 @@ import type { Task, TaskStatus } from "../shared/types.js";
 
 // 标题请求没有工具或文件副作用；服务未提供可分类原因时，允许比主任务多一次诊断性重试。
 const titleRetryOptions = { retries: 3, retryUnknownErrors: true };
+
+type ModelUsagePurpose = "task" | "compaction" | "title" | "approval";
 
 export class Engine {
   events = new EventEmitter();
@@ -106,7 +108,21 @@ export class Engine {
       new ResponsesProvider(selected, this.config.apiKey);
 
     try {
-      const assessment = await assessApproval(provider, subject, signal);
+      const task = this.active?.task;
+      if (task) {
+        this.emit(task, "model_request", { purpose: "approval" });
+      }
+
+      const assessment = await assessApproval(
+        provider,
+        subject,
+        signal,
+        (usage) => {
+          if (task) {
+            this.recordModelUsage(task, usage, "approval");
+          }
+        },
+      );
       this.log.info({
         event: "approval.assessed",
         module: "permissions",
@@ -154,6 +170,17 @@ export class Engine {
 
     this.events.emit("event", event);
     this.events.emit("change", task.sessionId);
+  }
+
+  /** 每次得到服务实报 usage 都随会话保存；缺失 usage 不补零，调用次数由 model_request 独立记录。 */
+  private recordModelUsage(
+    task: Task,
+    usage: ModelUsage,
+    purpose: ModelUsagePurpose,
+    details: { step?: number; attempt?: number } = {},
+  ) {
+    this.emit(task, "model_usage", { ...usage, purpose, ...details });
+    this.log.info({ event: "model.usage", purpose, ...details, ...usage });
   }
 
   start(
@@ -272,7 +299,7 @@ export class Engine {
 
   /** 生成标题失败时保留占位值；只有取消需要中止主任务，避免辅助能力降低可用性。 */
   private async generateTitle(
-    sessionId: string,
+    task: Task,
     prompt: string,
     settings: Settings,
     signal: AbortSignal,
@@ -285,7 +312,13 @@ export class Engine {
 
     try {
       const title = await retryModel(
-        () => generateConversationTitle(provider, prompt, signal),
+        (attempt) => {
+          this.emit(task, "model_request", { purpose: "title", attempt });
+
+          return generateConversationTitle(provider, prompt, signal, (usage) =>
+            this.recordModelUsage(task, usage, "title", { attempt }),
+          );
+        },
         signal,
         (error, attempt, delayMs) => {
           log.warn({
@@ -299,8 +332,8 @@ export class Engine {
         titleRetryOptions,
       );
 
-      this.store.completeTitleGeneration(sessionId, title);
-      this.events.emit("change", sessionId);
+      this.store.completeTitleGeneration(task.sessionId, title);
+      this.events.emit("change", task.sessionId);
       log.info({
         event: "session.title_generated",
         model: selected.model,
@@ -309,13 +342,13 @@ export class Engine {
     } catch (error: any) {
       if (signal.aborted) {
         // 取消后的请求不会返回结果；结束标题状态，防止恢复任务永久卡在 generating。
-        this.store.failTitleGeneration(sessionId);
-        this.events.emit("change", sessionId);
+        this.store.failTitleGeneration(task.sessionId);
+        this.events.emit("change", task.sessionId);
         throw signal.reason;
       }
 
-      this.store.failTitleGeneration(sessionId);
-      this.events.emit("change", sessionId);
+      this.store.failTitleGeneration(task.sessionId);
+      this.events.emit("change", task.sessionId);
       log.warn({
         event: "session.title_generation_failed",
         model: selected.model,
@@ -357,7 +390,7 @@ export class Engine {
 
     try {
       if (generateTitle) {
-        await this.generateTitle(session.id, prompt, settings, signal, log);
+        await this.generateTitle(task, prompt, settings, signal, log);
       }
 
       let input = await prepareTaskContext(this.store, session.id, prompt);
@@ -416,13 +449,10 @@ export class Engine {
         usage: ModelUsage,
         purpose: "task" | "compaction",
       ) => {
-        emit("model_usage", {
-          ...usage,
-          purpose,
+        this.recordModelUsage(task, usage, purpose, {
           step,
           attempt: purpose === "task" ? attempt : undefined,
         });
-        log.info({ event: "model.usage", purpose, step, ...usage });
       };
 
       const tools = [...definitions, historyDefinition];
@@ -435,6 +465,8 @@ export class Engine {
         measure: budget.measure,
         unit: budget.unit,
         maxOutputTokens: budget.outputTokens,
+        onModelRequest: () =>
+          emit("model_request", { purpose: "compaction", step }),
         onUsage: (usage) => recordUsage(usage, "compaction"),
         provider,
         summaryModel: settings.auxiliaryModel
@@ -513,6 +545,8 @@ export class Engine {
                   unit: budget.unit,
                 });
               }
+
+              emit("model_request", { purpose: "task", step, attempt });
 
               return provider.run(
                 requestInput,

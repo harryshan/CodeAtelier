@@ -5,7 +5,7 @@
  * 1. 检查输出预留、安全余量、未知编码回退，以及中文、代码和特殊字面量的计数。
  * 2. 检查 usage 校验拒绝非法数值，保留支持的明细。
  * 3. 在 ContextManager 中区分 token 预算和按字符记录的归档信息。
- * 4. 在 Engine 中核对输出限制参数、usage 保存和容量查询失败后的回退。
+ * 4. 在 Engine 中核对输出限制参数、实际模型请求/usage 保存和容量查询失败后的回退。
  * 5. 检查实际输入用量只会上调当前任务的估算比例，不会被当成累计上下文大小。
  *
  * 缺少容量或用量时应使用对应的回退逻辑，不能编造零值。
@@ -204,6 +204,10 @@ it("persists service usage and exposes the discovered capacity while sending the
         ?.data,
     ).toMatchObject({ unit: "tokens", contextWindowTokens: 372000 });
     expect(
+      store.events(session.id).find((event) => event.type === "model_request")
+        ?.data,
+    ).toMatchObject({ purpose: "task", step: 1, attempt: 1 });
+    expect(
       store.events(session.id).find((event) => event.type === "model_usage")
         ?.data,
     ).toMatchObject({ input_tokens: 10, output_tokens: 5, purpose: "task" });
@@ -242,6 +246,10 @@ it("metadata failure falls back without blocking the task", async () => {
       store.events(session.id).find((event) => event.type === "context_budget")
         ?.data.unit,
     ).toBe("characters");
+    expect(
+      store.events(session.id).find((event) => event.type === "model_request")
+        ?.data,
+    ).toMatchObject({ purpose: "task", step: 1, attempt: 1 });
     expect(
       store.events(session.id).filter((event) => event.type === "model_usage"),
     ).toEqual([]);

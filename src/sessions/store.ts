@@ -1,7 +1,7 @@
 /**
  * 用 SQLite 保存会话、任务、事件和模型上下文，供 Engine、HTTP 接口和 ContextManager 使用。
  *
- * 1. 构造器初始化数据库，把重启前未完成的任务标为 interrupted；transaction 包装提交和回滚。
+ * 1. 构造器初始化数据库，把重启前未完成的任务标为 interrupted 并记录结束时间；transaction 包装提交和回滚。
  * 2. list/get/create 读写会话；标题状态的领取、完成或失败保证首条 prompt 只生成一次标题。
  * 3. tasks/task/createTask/status 读写任务状态；event/events 保存和分页读取事件，hasEvent/taskEvent 避免为小判断解析全量事件。
  * 4. context/saveContext 读写当前模型历史；较大的 context、events 和快照可交给 store-worker 在线程外解析或原子写入，避免阻塞 HTTP 主线程。
@@ -27,9 +27,9 @@ export class Store {
     // 进程重启只能确认任务已中断，不能断言先前的命令是否执行成功。
     this.db
       .prepare(
-        "UPDATE tasks SET status='interrupted',error='服务已重启，任务中断；未重放命令。' WHERE status IN ('running','waiting')",
+        "UPDATE tasks SET status='interrupted',error='服务已重启，任务中断；未重放命令。',finishedAt=COALESCE(finishedAt,?) WHERE status IN ('running','waiting')",
       )
-      .run();
+      .run(new Date().toISOString());
   }
 
   /** 将历史会话标为完成，避免升级后用旧消息意外覆盖用户原有标题。 */
@@ -42,6 +42,13 @@ export class Store {
       this.db.exec(
         "ALTER TABLE sessions ADD COLUMN titleState TEXT NOT NULL DEFAULT 'completed'",
       );
+    }
+
+    const taskColumns = this.db
+      .prepare("PRAGMA table_info(tasks)")
+      .all() as Array<{ name: string }>;
+    if (!taskColumns.some((column) => column.name === "finishedAt")) {
+      this.db.exec("ALTER TABLE tasks ADD COLUMN finishedAt TEXT");
     }
   }
 
@@ -172,10 +179,21 @@ export class Store {
     return task;
   }
 
+  /** 终态只在任务真正结束时记录，供历史会话统计累计运行时间；等待审批不会提前结束计时。 */
   status(id: string, status: TaskStatus, error?: string) {
+    const finished = [
+      "completed",
+      "failed",
+      "cancelled",
+      "interrupted",
+    ].includes(status);
+    const finishedAt = finished ? new Date().toISOString() : null;
+
     this.db
-      .prepare("UPDATE tasks SET status=?,error=? WHERE id=?")
-      .run(status, error || null, id);
+      .prepare(
+        "UPDATE tasks SET status=?,error=?,finishedAt=COALESCE(?,finishedAt) WHERE id=?",
+      )
+      .run(status, error || null, finishedAt, id);
   }
 
   event(sessionId: string, taskId: string, type: string, data: unknown): Event {

@@ -54,10 +54,11 @@ ModelResult 返回可选 usage：input_tokens、output_tokens、total_tokens，
 
 事件：
 - context_budget：本任务模式、窗口、输入预算、输出预留、安全余量。
-- model_usage：服务实报，用 purpose 区分任务与摘要。
+- model_request：每次实际发起的模型请求，用 purpose 区分任务、摘要、标题和审批；即使服务最终未提供 usage，也能正确统计调用次数与任务轮次。
+- model_usage：服务实报，用 purpose 区分任务、摘要、标题和审批。
 
-这些事件通过既有 SQLite 历史和 SSE 保存/展示，刷新或重启后可查看。
-每次请求的本地输入计量只用于预算、压缩和实报校准，不再保存或显示；界面只展示服务实报用量，避免将本地估算误作实际消耗或窗口占用。
+这些事件通过既有 SQLite 历史和 SSE 保存/展示，刷新或重启后可查看。当前会话右上角的统计默认折叠；展开后汇总实报输入、输出和合计 token，以及缓存/非缓存输入、LLM 请求与任务轮次、工具成功率和累计运行时间。
+每次请求的本地输入计量只用于预算、压缩和实报校准，不再保存或显示；界面只展示服务实报用量，避免将本地估算误作实际消耗或窗口占用。若任一实报缺少 cached_tokens，统计会明确标记缓存/非缓存明细不完整，不能假定缓存为零；这不是按模型价格计算的费用统计。
 缓存 token 是输入的子集，推理 token 是输出的子集，不能再次相加。
 摘要输出结构不合格时，若已有合法完成用量，也会记录已发生的消耗；
 缺少完成事件的失败请求不虚构其用量。
@@ -77,5 +78,5 @@ node --env-file=.env --import tsx scripts/probe-model-capabilities.ts
 原始响应、attribution 或错误正文。每次复测会产生少量模型用量。
 
 实现：providers/model-metadata.ts、responses-provider.ts、context/token-budget.ts。
-回归：tokens.test.ts、provider.test.ts 与 e2e/app.spec.ts。
+回归：tokens.test.ts、session-statistics.test.ts、provider.test.ts 与 e2e/app.spec.ts。
 真实探测证明当前接口兼容，不等于真实摘要语义质量、窗口极限或全平台都已验证。

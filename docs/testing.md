@@ -31,6 +31,7 @@
 | 模型协议与重试 | provider.test.ts、recovery.test.ts             | item.done 回退、失败/不完整事件、服务实际错误 message/reason/code 的脱敏保留、断流、超时、重试次数、HTTP 分类、取消退避、并行工具调用请求参数           |
 | agent 循环     | engine.test.ts、core.test.ts、recovery.test.ts | 工具往返、同轮多项独立调用、单任务锁、步骤/上下文预算、参数错误反馈、根规则、输出预算、跨任务重新读取、不重放副作用、工具耗时排除审批等待 |
 | 会话存储与标题 | store.test.ts、recovery.test.ts、title-generation.test.ts | 隔离、事件顺序与游标、上下文、事务回滚、终态保留、重启中断、标题状态迁移和恢复，以及大 JSON 的 Worker 读取 |
+| 会话统计       | session-statistics.test.ts、e2e/app.spec.ts     | 服务实报 token 的缓存/非缓存完整性、LLM 请求与任务轮次、工具成功率、任务累计运行时间、旧 usage 历史回退及默认折叠/展开展示 |
 | 模型设置       | config.test.ts、regressions.test.ts            | 环境/磁盘优先级、端点与模型规范化、参数边界、失败更新保持原状态、密钥内存存储、损坏配置不覆盖              |
 | 日志           | logging.test.ts、core.test.ts                  | 级别过滤、紧凑纯文本格式、上下文字段、错误元数据/原因链/堆栈、凭据脱敏、轮转、存储故障降级                 |
 | 本机 HTTP API  | server.test.ts、core.test.ts                   | 会话/任务接口、参数校验、Host/Origin/cookie/token、配置更新互斥、取消与恢复                                |
@@ -62,7 +63,7 @@ e2e/app.spec.ts 验证整理提示、续聊完成和刷新后的原历史。测�
 
 ## token 容量与用量
 
-tokens.test.ts 覆盖容量预留、备用模式、中文/代码/工具与特殊 token 字面量、usage 校验、压缩计量一致性、输出预留传参、用量重启持久化和实报校准。provider.test.ts 用本机 HTTP/SSE 验证模型容量和 usage 提取。e2e/app.spec.ts 覆盖预算模式、服务实报用量及刷新保留。真实服务最小探测见 model-tokens.md。
+tokens.test.ts 覆盖容量预留、备用模式、中文/代码/工具与特殊 token 字面量、usage 校验、压缩计量一致性、输出预留传参、用量重启持久化和实报校准。session-statistics.test.ts 覆盖 model_request、实报缓存/非缓存聚合、旧 usage 回退、工具成功率和运行时长；e2e/app.spec.ts 覆盖统计默认折叠、展开后 token/LLM/工具展示、预算模式、服务实报用量及刷新保留。provider.test.ts 用本机 HTTP/SSE 验证模型容量和 usage 提取。真实服务最小探测见 model-tokens.md。
 
 ## 渐进压缩覆盖
 

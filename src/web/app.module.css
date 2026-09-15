@@ -2,7 +2,7 @@
  * 主页面、时间线和弹窗共用的 CSS Module，由各 React 组件引用。
  *
  * 1. 开头设置颜色、字体和基础控件样式，再定义双栏布局、侧栏和标题区。
- * 2. 项目分组标题、折叠控件、最近会话限制与会话按钮展示一项目多对话；随后是欢迎页、项目栏、对话消息、工具结果、diff 和通知。
+ * 2. 项目分组标题、折叠控件、最近会话限制与会话按钮展示一项目多对话；随后是欢迎页、项目栏、右上角可折叠会话统计、对话消息、工具结果、diff 和通知。
  * 3. 审批按钮、输入区、弹窗和字段网格对应页面中的操作与表单。
  * 4. 末尾通过媒体查询调整窄屏间距和排列。
  *
@@ -291,6 +291,7 @@
   float: right;
 }
 .main {
+  position: relative;
   flex: 1;
   min-width: 0;
   display: flex;
@@ -327,6 +328,142 @@
 .status {
   color: #98c2ae;
   font-size: 11px;
+}
+.sessionStatistics {
+  position: absolute;
+  z-index: 3;
+  top: 88px;
+  right: 28px;
+  width: min(360px, calc(100% - 56px));
+  color: #c6d7db;
+}
+.statisticsToggle {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-left: auto;
+  padding: 7px 10px;
+  border-color: #3d555a;
+  border-radius: 18px;
+  background: #1b292d;
+  color: #a9c4c9;
+  font-size: 11px;
+  box-shadow: 0 7px 20px #0004;
+}
+.statisticsToggle strong {
+  color: #d4e7df;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.statisticsPanel {
+  margin-top: 8px;
+  padding: 15px;
+  border: 1px solid #476068;
+  border-radius: 10px;
+  background: #19262bcc;
+  box-shadow: 0 14px 35px #0008;
+  backdrop-filter: blur(10px);
+}
+.statisticsHeading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #31434a;
+}
+.statisticsHeading small,
+.statisticsGrid dt,
+.statisticsTokens dt {
+  color: #7f9aa2;
+  font-size: 10px;
+}
+.statisticsHeading h2 {
+  margin: 3px 0 0;
+  color: #e0ebe7;
+  font-size: 15px;
+  font-weight: 550;
+}
+.statisticsHeading > span {
+  color: #91a9af;
+  font-size: 10px;
+}
+.statisticsLive {
+  color: #9dd9b7 !important;
+}
+.statisticsLive::before {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 5px;
+  border-radius: 50%;
+  background: #86ceaa;
+  content: "";
+}
+.statisticsGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px 16px;
+  margin: 14px 0;
+}
+.statisticsGrid div,
+.statisticsTokens dl div {
+  min-width: 0;
+}
+.statisticsGrid dt,
+.statisticsGrid dd,
+.statisticsTokens dt,
+.statisticsTokens dd {
+  margin: 0;
+}
+.statisticsGrid dd {
+  margin-top: 4px;
+  color: #d8e5e7;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.statisticsGrid small {
+  display: block;
+  margin-top: 3px;
+  overflow: hidden;
+  color: #839ba1;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.statisticsTokens {
+  padding-top: 12px;
+  border-top: 1px solid #31434a;
+}
+.statisticsTokens h3 {
+  margin: 0 0 9px;
+  color: #b5cec7;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+}
+.statisticsTokens dl {
+  display: grid;
+  grid-template-columns: auto auto;
+  gap: 7px 12px;
+  margin: 0;
+}
+.statisticsTokens dl div:last-child {
+  grid-column: 1 / -1;
+}
+.statisticsTokens dd {
+  margin-top: 2px;
+  color: #d3e2df;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.statisticsTools {
+  margin: 12px 0 0;
+  overflow: hidden;
+  color: #809aa0;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .scrollArea {
   flex: 1;
@@ -817,6 +954,10 @@
   .timeline {
     padding: 0 23px 20px;
   }
+  .sessionStatistics {
+    right: 20px;
+    width: min(340px, calc(100% - 40px));
+  }
 }
 @media (max-width: 650px) {
   .app {
@@ -889,6 +1030,14 @@
   }
   .projectBar {
     margin: 20px 15px;
+  }
+  .sessionStatistics {
+    top: 74px;
+    right: 12px;
+    width: min(330px, calc(100% - 24px));
+  }
+  .statisticsPanel {
+    padding: 13px;
   }
   .composerWrap {
     padding: 10px 12px;

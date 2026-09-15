@@ -4,7 +4,7 @@
  * 等待人工确认或拒绝。本模块只依赖通用 ModelProvider，不接触文件、命令、SQLite 或 HTTP。
  *
  * 1. APPROVAL_INSTRUCTIONS 把待评估工具参数标记为不可信数据，并限定三个可返回的决定和理由格式。
- * 2. assessApproval 将工具名和描述编码为 JSON，发出没有工具、没有流式输出的低额度模型请求。
+ * 2. assessApproval 将工具名和描述编码为 JSON，发出没有工具、没有流式输出的低额度模型请求，并可将服务实报用量交给调用方记账。
  * 3. parseAssessment 严格校验模型输出，压缩可展示理由；无效输出由调用方降级为人工确认，而不能放行。
  *
  * 此处的评估不是操作系统沙箱，也不能替代 ToolRunner 的路径、Git、提权及并发校验。模型不会获得
@@ -13,6 +13,7 @@
 
 import { z } from "zod";
 import type { ModelProvider } from "../providers/model-provider.js";
+import type { ModelUsage } from "../providers/model-metadata.js";
 
 export type ApprovalDecision = "approve" | "human review" | "reject";
 
@@ -41,6 +42,7 @@ export async function assessApproval(
   provider: ModelProvider,
   subject: ApprovalSubject,
   signal: AbortSignal,
+  onUsage?: (usage: ModelUsage) => void,
 ): Promise<ApprovalAssessment> {
   const response = await provider.run(
     [
@@ -61,6 +63,10 @@ export async function assessApproval(
     () => {},
     { maxOutputTokens: 256 },
   );
+
+  if (response.usage) {
+    onUsage?.(response.usage);
+  }
 
   return parseAssessment(response.text);
 }

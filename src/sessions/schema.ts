@@ -1,7 +1,7 @@
 /**
  * 定义 Store 初始化 SQLite 数据库时执行的 SQL，保存会话历史和任务恢复信息。
  *
- * 1. 开启 WAL 和外键检查；sessions 保存会话、工作区及标题生成状态，tasks 保存执行状态和错误。
+ * 1. 开启 WAL 和外键检查；sessions 保存会话、工作区及标题生成状态，tasks 保存执行状态、结束时间和错误。
  * 2. events 保存按顺序读取的对话与工具事件；context 保存每个会话当前使用的模型协议记录。
  * 3. context_snapshots 保存压缩前的历史，索引支持按会话和顺序查询，末尾设置 user_version。
  *
@@ -27,6 +27,7 @@ export const SCHEMA_SQL = `
     sessionId TEXT NOT NULL REFERENCES sessions(id),
     status TEXT NOT NULL,
     createdAt TEXT NOT NULL,
+    finishedAt TEXT,
     error TEXT
   );
 
@@ -53,5 +54,5 @@ export const SCHEMA_SQL = `
   );
   CREATE INDEX IF NOT EXISTS context_snapshots_session ON context_snapshots(sessionId);
 
-  PRAGMA user_version = 2;
+  PRAGMA user_version = 3;
 `;
