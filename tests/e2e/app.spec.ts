@@ -463,8 +463,26 @@ test("creates another conversation from its project and preserves separate histo
     project.getByRole("button", { name: "项目对话二任务" }),
   ).toBeVisible();
   await page.reload();
+  let delayedSnapshot = false;
+  await page.route("**/api/sessions/*", async (route) => {
+    const request = route.request();
+    if (
+      !delayedSnapshot &&
+      request.method() === "GET" &&
+      !request.url().endsWith("/events")
+    ) {
+      delayedSnapshot = true;
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    }
+
+    await route.continue();
+  });
   await project.getByRole("button", { name: "项目对话一任务" }).click();
+  await expect(
+    page.getByRole("heading", { name: "正在打开对话…" }),
+  ).toBeVisible();
   await expect(page.getByText("任务完成，已检查工具结果。")).toBeVisible();
+  await page.unroute("**/api/sessions/*");
   await project.getByRole("button", { name: "项目对话二任务" }).click();
   await expect(page.getByText("任务完成，已检查工具结果。")).toBeVisible();
   await page.screenshot({

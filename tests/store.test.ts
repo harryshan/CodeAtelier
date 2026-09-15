@@ -5,6 +5,7 @@
  * 1. 创建两个会话，核对各自事件、读取游标和上下文。
  * 2. 在保存任务和事件的事务中制造失败，确认整笔事务回滚。
  * 3. 保存不同状态的任务后重启，确认只有未完成任务变为 interrupted。
+ * 4. 大于同步阈值的事件和上下文由 Worker 读取，验证结果与同步接口相同且数据库可正常关闭。
  *
  * 重启要保留已有终态和上下文，不能把其他会话的数据混进来。
  */
@@ -68,6 +69,28 @@ it("rolls back task creation and events together when persistence fails", async 
     );
 
     expect(store.context(session.id)[0].content).toBe("committed");
+  } finally {
+    store.close();
+  }
+});
+
+it("reads large persisted JSON through a worker without changing its data", async () => {
+  const root = await temp();
+  const store = new Store(path.join(root, "db"));
+
+  try {
+    const session = store.create(root, "large");
+    const task = store.createTask(session.id);
+    const content = "x".repeat(70 * 1024);
+    store.event(session.id, task.id, "tool_result", { content });
+    store.saveContext(session.id, [{ role: "user", content }]);
+
+    await expect(store.eventsAsync(session.id)).resolves.toMatchObject([
+      { data: { content } },
+    ]);
+    await expect(store.contextAsync(session.id)).resolves.toEqual([
+      { role: "user", content },
+    ]);
   } finally {
     store.close();
   }

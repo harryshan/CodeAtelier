@@ -2,7 +2,7 @@
  * 为新任务或恢复的任务接上已有对话。Engine 传入 Store、会话 ID 和本轮用户消息，
  * 得到可以继续发给模型的历史记录。
  *
- * 1. 读取已保存的上下文，找出缺少结果的 function_call。
+ * 1. 在线程外读取已保存的上下文和事件，找出缺少结果的 function_call，避免长历史阻塞 API 主线程。
  * 2. 从 tool_result 事件补回已知结果；找不到记录时，明确标为“执行结果未知”。
  * 3. 追加本轮用户消息并保存，供当前任务和下次恢复使用。
  *
@@ -12,12 +12,15 @@
 import type { Store } from "../sessions/store.js";
 
 /** 补齐缺失的工具结果，再追加本轮用户消息。不会重新执行工具。 */
-export function prepareTaskContext(
+export async function prepareTaskContext(
   store: Store,
   sessionId: string,
   prompt: string,
-): any[] {
-  const input = store.context(sessionId);
+): Promise<any[]> {
+  const [input, events] = await Promise.all([
+    store.contextAsync(sessionId),
+    store.eventsAsync(sessionId),
+  ]);
 
   // 崩溃前工具可能已经执行过，只是结果没写全；先找已有记录，不能直接重跑。
   const answeredCallIds = new Set(
@@ -26,8 +29,7 @@ export function prepareTaskContext(
       .map((i) => i.call_id),
   );
   const savedResultsByCallId = new Map(
-    store
-      .events(sessionId)
+    events
       .filter((e) => e.type === "tool_result")
       .map((e) => [e.data.callId, e.data.result]),
   );

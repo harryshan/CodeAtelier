@@ -62,6 +62,11 @@ interface Compaction {
   snapshot: ContextSnapshot;
 }
 
+/** 让已到达的 HTTP/SSE 回调在压缩阶段之间运行；不能把长任务当作同步临界区。 */
+function yieldToServer() {
+  return new Promise<void>((resolve) => setImmediate(resolve));
+}
+
 /** 每个任务单独管理上下文，摘要调用次数与任务步数分别限制。 */
 export class ContextManager {
   private calls = 0;
@@ -103,6 +108,7 @@ export class ContextManager {
       : this.plan(input, instructions, tools);
     let compacted: Compaction | undefined;
     if (plan) {
+      await yieldToServer();
       options.notice("正在整理上下文，已保存的历史对话不会删除。");
       options.report("context.compaction_started", { beforeAmount: before });
       try {
@@ -184,12 +190,15 @@ export class ContextManager {
     beforeAmount: number,
   ): Promise<Compaction> {
     const options = this.options;
-    const previous = options.store.latestContextSnapshot(options.sessionId);
-    const { expanded, trustedNotes } = this.restoreHistory(
+    const [previous, events] = await Promise.all([
+      options.store.latestContextSnapshotAsync(options.sessionId),
+      options.store.eventsAsync(options.sessionId),
+    ]);
+    const { expanded, trustedNotes } = await this.restoreHistory(
       plan.prefix,
       previous,
     );
-    const events = options.store.events(options.sessionId);
+    await yieldToServer();
     const ledger = executionLedger(expanded, events, previous);
     const id = randomUUID();
     const acceptable = (candidate: any[]) => {
@@ -216,6 +225,7 @@ export class ContextManager {
     ];
     let summaries: ContextSnapshot["summaries"] = [];
     let note: string | undefined;
+    await yieldToServer();
     if (!acceptable(next)) {
       stage = "archive";
       next = [
@@ -334,12 +344,12 @@ export class ContextManager {
       ledger,
     };
     options.signal.throwIfAborted();
-    options.store.compactContext(snapshot, next);
+    await options.store.compactContextAsync(snapshot, next);
 
     return { input: next, snapshot };
   }
 
-  private restoreHistory(prefix: any[], previous?: ContextSnapshot) {
+  private async restoreHistory(prefix: any[], previous?: ContextSnapshot) {
     // 只认本会话数据库中存在的摘要，模型写出相似标记也不能冒充已存快照。
     const trustedNotes = new Set<string>();
     const expanded = prefix.map((item) => ({ ...item }));
@@ -363,11 +373,12 @@ export class ContextManager {
       }
 
       ancestor = ancestor.parentId
-        ? this.options.store.contextSnapshot(
+        ? await this.options.store.contextSnapshotAsync(
             this.options.sessionId,
             ancestor.parentId,
           )
         : undefined;
+      await yieldToServer();
     }
 
     return { expanded, trustedNotes };

@@ -3,9 +3,9 @@
  *
  * 1. 构造器初始化数据库，把重启前未完成的任务标为 interrupted；transaction 包装提交和回滚。
  * 2. list/get/create 读写会话；标题状态的领取、完成或失败保证首条 prompt 只生成一次标题。
- * 3. tasks/task/createTask/status 读写任务状态；event/events 保存和分页读取事件。
- * 4. context/saveContext 读写当前模型历史；快照按会话查询，compactContext 原子替换活动上下文。
- * 5. close 由应用退出流程调用，关闭数据库连接。
+ * 3. tasks/task/createTask/status 读写任务状态；event/events 保存和分页读取事件，hasEvent/taskEvent 避免为小判断解析全量事件。
+ * 4. context/saveContext 读写当前模型历史；较大的 context、events 和快照可交给 store-worker 在线程外解析或原子写入，避免阻塞 HTTP 主线程。
+ * 5. close 由应用退出流程调用，关闭数据库连接；Worker 自己打开短生命周期的 WAL 连接，不持有 Store 的连接。
  *
  * 事务只能回滚数据库，不能撤销文件修改或命令执行。恢复需要的未知状态和原始记录必须保留。
  */
@@ -14,12 +14,13 @@ import type { ContextSnapshot } from "../context/types.js";
 import { SCHEMA_SQL } from "./schema.js";
 import { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
+import { Worker } from "node:worker_threads";
 import type { Session, Task, TaskStatus, Event } from "../shared/types.js";
 
 export class Store {
   db: DatabaseSync;
 
-  constructor(file: string) {
+  constructor(private file: string) {
     this.db = new DatabaseSync(file);
     this.db.exec(SCHEMA_SQL);
     this.migrate();
@@ -128,6 +129,26 @@ export class Store {
       .all(sessionId) as unknown as Task[];
   }
 
+  /** 首条消息判断只需要存在性，不能为此把长工具输出逐条 JSON.parse 到主线程。 */
+  hasEvent(sessionId: string, type: string) {
+    return Boolean(
+      this.db
+        .prepare("SELECT 1 FROM events WHERE sessionId=? AND type=? LIMIT 1")
+        .get(sessionId, type),
+    );
+  }
+
+  /** 恢复只读取目标任务的一条已知事件；大历史继续通过 eventsAsync 在线程外读取。 */
+  taskEvent(taskId: string, type: string) {
+    const row = this.db
+      .prepare(
+        "SELECT data FROM events WHERE taskId=? AND type=? ORDER BY id LIMIT 1",
+      )
+      .get(taskId, type) as { data: string } | undefined;
+
+    return row ? JSON.parse(row.data) : undefined;
+  }
+
   task(id: string) {
     return this.db
       .prepare("SELECT * FROM tasks WHERE id=?")
@@ -186,12 +207,26 @@ export class Store {
       .map((r) => ({ ...r, data: JSON.parse(String(r.data)) })) as Event[];
   }
 
+  /** 为 HTTP 快照和压缩准备读取全量事件；小会话直接读以免 Worker 启动延迟，长 JSON 才在线程外解析。 */
+  async eventsAsync(sessionId: string): Promise<Event[]> {
+    return this.serializedSize("events", sessionId) < 64 * 1024
+      ? this.events(sessionId)
+      : this.runWorker<Event[]>({ operation: "events", sessionId });
+  }
+
   context(id: string): any[] {
     const row = this.db
       .prepare("SELECT items FROM context WHERE sessionId=?")
       .get(id);
 
     return row ? JSON.parse(String(row.items)) : [];
+  }
+
+  /** 新任务读取活动上下文时在线程外 JSON.parse；空或短上下文直接读取以避免无意义的 Worker 启动。 */
+  async contextAsync(id: string): Promise<any[]> {
+    return this.serializedSize("context", id) < 64 * 1024
+      ? this.context(id)
+      : this.runWorker<any[]>({ operation: "context", sessionId: id });
   }
 
   saveContext(id: string, items: any[]) {
@@ -220,15 +255,112 @@ export class Store {
     return row ? JSON.parse(String(row.data)) : undefined;
   }
 
-  /** 快照和活动上下文一起提交；失败后继续使用原来的完整输入。 */
-  compactContext(snapshot: ContextSnapshot, input: any[]) {
-    this.transaction(() => {
-      this.db
+  /** 压缩链路读取父快照时在线程外解析完整原文；不存在或短快照无需启动 Worker。 */
+  async latestContextSnapshotAsync(sessionId: string) {
+    return this.serializedSize("latestSnapshot", sessionId) < 64 * 1024
+      ? this.latestContextSnapshot(sessionId)
+      : this.runWorker<ContextSnapshot | undefined>({
+          operation: "latestSnapshot",
+          sessionId,
+        });
+  }
+
+  /** 历史回读和连续压缩按会话读取快照；大 source 不在 API 主线程 JSON.parse。 */
+  async contextSnapshotAsync(sessionId: string, id: string) {
+    return this.serializedSize("snapshot", sessionId, id) < 64 * 1024
+      ? this.contextSnapshot(sessionId, id)
+      : this.runWorker<ContextSnapshot | undefined>({
+          operation: "snapshot",
+          sessionId,
+          snapshotId: id,
+        });
+  }
+
+  /** 长度聚合只扫描 SQLite 元数据，不读取 JSON 内容；64 KiB 以下的同步解析有界且避免短请求的线程创建开销。 */
+  private serializedSize(
+    source: "events" | "context" | "latestSnapshot" | "snapshot",
+    sessionId: string,
+    snapshotId?: string,
+  ) {
+    if (source === "events") {
+      const row = this.db
         .prepare(
-          "INSERT INTO context_snapshots(id,sessionId,data) VALUES(?,?,?)",
+          "SELECT COALESCE(SUM(length(data)), 0) AS size FROM events WHERE sessionId=?",
         )
-        .run(snapshot.id, snapshot.sessionId, JSON.stringify(snapshot));
-      this.saveContext(snapshot.sessionId, input);
+        .get(sessionId) as { size: number };
+
+      return row.size;
+    }
+
+    if (source === "context") {
+      const row = this.db
+        .prepare("SELECT length(items) AS size FROM context WHERE sessionId=?")
+        .get(sessionId) as { size: number | null } | undefined;
+
+      return row?.size ?? 0;
+    }
+
+    const row = this.db
+      .prepare(
+        source === "latestSnapshot"
+          ? "SELECT length(data) AS size FROM context_snapshots WHERE sessionId=? ORDER BY rowid DESC LIMIT 1"
+          : "SELECT length(data) AS size FROM context_snapshots WHERE sessionId=? AND id=?",
+      )
+      .get(...(snapshotId ? [sessionId, snapshotId] : [sessionId])) as
+      { size: number | null } | undefined;
+
+    return row?.size ?? 0;
+  }
+
+  /** 快照和活动上下文在线程外序列化并在同一事务提交；主线程不会因大 JSON 或磁盘等待失去 API 响应。 */
+  async compactContextAsync(snapshot: ContextSnapshot, input: any[]) {
+    await this.runWorker<void>({
+      operation: "compact",
+      sessionId: snapshot.sessionId,
+      snapshot,
+      input,
+    });
+  }
+
+  /** Worker 只接受固定 operation 和本 Store 数据库路径，不能成为通用 SQL 或命令执行入口。 */
+  private async runWorker<T>(request: {
+    operation: "context" | "events" | "latestSnapshot" | "snapshot" | "compact";
+    sessionId: string;
+    snapshotId?: string;
+    snapshot?: unknown;
+    input?: unknown;
+  }): Promise<T> {
+    const source = import.meta.url.endsWith(".ts")
+      ? new URL("./store-worker.ts", import.meta.url)
+      : new URL("./store-worker.js", import.meta.url);
+    const worker = new Worker(source, {
+      execArgv: source.pathname.endsWith(".ts")
+        ? ["--import", "tsx"]
+        : undefined,
+    });
+    worker.unref();
+
+    return new Promise<T>((resolve, reject) => {
+      const cleanup = () => {
+        void worker.terminate();
+      };
+
+      worker.once("error", (error) => {
+        cleanup();
+        reject(error);
+      });
+      worker.once(
+        "message",
+        (message: { ok: boolean; value?: T; error?: string }) => {
+          cleanup();
+          if (message.ok) {
+            resolve(message.value as T);
+          } else {
+            reject(new Error(message.error || "Store Worker 执行失败。"));
+          }
+        },
+      );
+      worker.postMessage({ ...request, file: this.file });
     });
   }
 

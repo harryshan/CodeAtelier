@@ -3,7 +3,7 @@
  * Engine 将 historyDefinition 放进工具列表，再把调用交给 readContextHistory。
  *
  * 1. schema 校验快照 ID、记录编号和字符偏移；historyDefinition 描述模型可用的参数。
- * 2. readContextHistory 同时核对会话和快照 ID，找到 source 中对应的原始记录。
+ * 2. readContextHistory 和 readContextHistoryAsync 同时核对会话和快照 ID，找到 source 中对应的原始记录；Engine 使用异步版本，避免大快照 JSON.parse 阻塞主线程。
  * 3. 按输出预算截取序列化后的内容，返回正文、下一段偏移和总字符数。
  *
  * 分页时要为 JSON 转义留出空间。跨会话读取和越界偏移会被拒绝；历史记录也不能代替当前文件。
@@ -37,6 +37,31 @@ export function readContextHistory(
 ) {
   const query = schema.parse(args);
   const snapshot = store.contextSnapshot(sessionId, query.snapshotId);
+
+  return pageSnapshot(snapshot, query, outputChars);
+}
+
+/** Engine 调用此版本；Store 在 Worker 中解析大型快照，调用期间 HTTP 服务仍可处理其它请求。 */
+export async function readContextHistoryAsync(
+  store: Store,
+  sessionId: string,
+  args: unknown,
+  outputChars: number,
+) {
+  const query = schema.parse(args);
+  const snapshot = await store.contextSnapshotAsync(
+    sessionId,
+    query.snapshotId,
+  );
+
+  return pageSnapshot(snapshot, query, outputChars);
+}
+
+function pageSnapshot(
+  snapshot: { source: any[] } | undefined,
+  query: { snapshotId: string; index: number; offset: number },
+  outputChars: number,
+) {
   const item = snapshot?.source[query.index];
   if (item === undefined) {
     throw new Error("历史记录不存在或不属于当前会话。");

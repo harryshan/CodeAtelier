@@ -30,13 +30,13 @@
 | 命令执行       | process.test.ts、core.test.ts、permissions.test.ts、tool-schema.test.ts | 不存在的命令及子进程实际错误、输出与退出码、截断、UTF-8/ANSI 分块、颜色环境与控制符清理、API key 不继承、内部 Windows/POSIX shell 选择、单一 command 契约、复合命令合并、直接 Git/提权拒绝、取消和超时 |
 | 模型协议与重试 | provider.test.ts、recovery.test.ts             | item.done 回退、失败/不完整事件、服务实际错误 message/reason/code 的脱敏保留、断流、超时、重试次数、HTTP 分类、取消退避、并行工具调用请求参数           |
 | agent 循环     | engine.test.ts、core.test.ts、recovery.test.ts | 工具往返、同轮多项独立调用、单任务锁、步骤/上下文预算、参数错误反馈、根规则、输出预算、跨任务重新读取、不重放副作用、工具耗时排除审批等待 |
-| 会话存储与标题 | store.test.ts、recovery.test.ts、title-generation.test.ts | 隔离、事件顺序与游标、上下文、事务回滚、终态保留、重启中断、标题状态迁移和恢复 |
+| 会话存储与标题 | store.test.ts、recovery.test.ts、title-generation.test.ts | 隔离、事件顺序与游标、上下文、事务回滚、终态保留、重启中断、标题状态迁移和恢复，以及大 JSON 的 Worker 读取 |
 | 模型设置       | config.test.ts、regressions.test.ts            | 环境/磁盘优先级、端点与模型规范化、参数边界、失败更新保持原状态、密钥内存存储、损坏配置不覆盖              |
 | 日志           | logging.test.ts、core.test.ts                  | 级别过滤、紧凑纯文本格式、上下文字段、错误元数据/原因链/堆栈、凭据脱敏、轮转、存储故障降级                 |
 | 本机 HTTP API  | server.test.ts、core.test.ts                   | 会话/任务接口、参数校验、Host/Origin/cookie/token、配置更新互斥、取消与恢复                                |
 | 服务关闭       | shutdown.test.ts、e2e/app.spec.ts              | 关闭授权与确认、正在执行命令的中断保存、SSE 结束、端口释放、重复清理、实际入口进程退出、关闭页面与失败反馈 |
 | 开发服务重载   | e2e/app.spec.ts                                | 从侧栏完整刷新页面，重新请求 bootstrap 并恢复可操作的本机界面；不把页面刷新误作服务器进程重启 |
-| Web UI         | e2e/app.spec.ts                                | 建会话、首条消息标题更新、任务与 diff、历史续聊及隔离、项目内折叠和最近记录限制、审批与取消、有流式输出工具的卡片聚合与历史重载、设置、人工恢复、重试文本隔离、SSE 失效重连 |
+| Web UI         | e2e/app.spec.ts                                | 建会话、首条消息标题更新、任务与 diff、历史续聊及隔离、项目内折叠和最近记录限制、审批与取消、有流式输出工具的卡片聚合与历史重载、设置、人工恢复、重试文本隔离、SSE 失效重连及切换会话时的加载反馈 |
 
 ## 本轮复现并修复的缺陷
 
@@ -58,7 +58,7 @@ context.test.ts 覆盖包含工具定义的预算、完整调用批次、用户�
 归档分页和会话隔离、重启加载、多次压缩保留未知操作、无效摘要、事务回滚、
 取消、不可压缩输入、摘要调用上限、历史工具集成及服务端容量错误只恢复一次。
 e2e/app.spec.ts 验证整理提示、续聊完成和刷新后的原历史。测试使用模拟模型；
-摘要语义质量、真实模型容量与长期压力仍需单独评估。
+摘要语义质量、真实模型容量与长期压力仍需单独评估。Store 的 Worker 回归使用超过 64 KiB 的真实 SQLite JSON，验证线程外读取不改变数据；尚未以压力测试证明任意负载下的响应延迟上界。
 
 ## token 容量与用量
 

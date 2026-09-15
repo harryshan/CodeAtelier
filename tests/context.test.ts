@@ -240,9 +240,9 @@ it("rolls back archive creation if replacing active context fails", async () => 
   try {
     const source = history();
     f.store.saveContext(f.session.id, source);
-    const save = vi.spyOn(f.store, "saveContext").mockImplementation(() => {
-      throw new Error("disk failure");
-    });
+    const save = vi
+      .spyOn(f.store, "compactContextAsync")
+      .mockRejectedValue(new Error("disk failure"));
     await expect(f.manager.prepare(source, "", [])).rejects.toThrow("上下文");
     save.mockRestore();
     expect(f.store.context(f.session.id)).toEqual(source);

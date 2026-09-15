@@ -21,7 +21,10 @@ import type {
   ModelUsage,
 } from "../providers/model-metadata.js";
 import { ContextManager } from "../context/context-manager.js";
-import { historyDefinition, readContextHistory } from "../context/history.js";
+import {
+  historyDefinition,
+  readContextHistoryAsync,
+} from "../context/history.js";
 import { prepareTaskContext } from "./context.js";
 import { createInstructions } from "./instructions.js";
 import { retryModel } from "../providers/retry.js";
@@ -66,10 +69,13 @@ export class Engine {
     });
   }
 
-  snapshot(id: string) {
+  /** HTTP 快照在 Worker 中解析长事件 JSON；任务状态和审批仍从主线程的小索引查询取得。 */
+  async snapshot(id: string) {
+    const events = await this.store.eventsAsync(id);
+
     return {
       session: this.store.get(id),
-      events: this.store.events(id),
+      events,
       tasks: this.store.tasks(id),
       approvals: this.approvals.list(id),
     };
@@ -106,7 +112,7 @@ export class Engine {
       const created = this.store.createTask(sessionId);
       const firstPrompt =
         session.titleState === "pending" &&
-        !this.store.events(sessionId).some((event) => event.type === "user");
+        !this.store.hasEvent(sessionId, "user");
 
       this.emit(created, "user", { text: prompt });
       if (recovery) {
@@ -166,11 +172,11 @@ export class Engine {
       throw new Error("只能恢复会话的最后一个任务；请在当前会话继续提问。");
     }
 
-    const events = this.store.events(task.sessionId);
-    const prompt =
-      events.find((e) => e.taskId === id && e.type === "recovery")?.data
-        .originalPrompt ||
-      events.find((e) => e.taskId === id && e.type === "user")?.data.text;
+    const recovery = this.store.taskEvent(id, "recovery") as
+      { originalPrompt?: string } | undefined;
+    const user = this.store.taskEvent(id, "user") as
+      { text?: string } | undefined;
+    const prompt = recovery?.originalPrompt || user?.text;
 
     if (!prompt) {
       throw new Error("缺少原任务描述，请在当前会话重新说明任务。");
@@ -289,7 +295,7 @@ export class Engine {
         await this.generateTitle(session.id, prompt, settings, signal, log);
       }
 
-      let input = prepareTaskContext(this.store, session.id, prompt);
+      let input = await prepareTaskContext(this.store, session.id, prompt);
 
       let currentToolCallId: string | undefined;
       const runner = new ToolRunner({
@@ -537,7 +543,7 @@ export class Engine {
             emit("tool_start", { name: call.name, callId: call.call_id, args });
             if (call.name === historyDefinition.name) {
               executionStartedAt = Date.now();
-              result = readContextHistory(
+              result = await readContextHistoryAsync(
                 this.store,
                 session.id,
                 args,

@@ -43,7 +43,7 @@ export default function App() {
   const [serverState, setServerState] = useState<
     "running" | "reloading" | "stopping" | "stopped"
   >("running");
-  const { data, setData, connected } = useSessionConnection(
+  const { data, setData, connected, loading } = useSessionConnection(
     selected,
     serverState === "running",
     setSettings,
@@ -123,6 +123,7 @@ export default function App() {
     setAddingProject(true);
   };
 
+  const selectedSession = list.find((session) => session.id === selected);
   const active = data?.tasks.find((t) =>
     ["running", "waiting"].includes(t.status),
   );
@@ -394,7 +395,9 @@ export default function App() {
         <header className={s.header}>
           <div>
             <span className={s.breadcrumb}>工作台 / </span>
-            {data?.session.title || "开始创作"}
+            {loading
+              ? selectedSession?.title || "正在打开对话…"
+              : data?.session.title || "开始创作"}
           </div>
           <div className={s.headerRight}>
             <span className={s.modelBadge}>{settings?.model || "连接中"}</span>
@@ -482,6 +485,16 @@ export default function App() {
                 本地工作区 <i /> 单任务执行 <i /> 操作按需确认
               </div>
             </section>
+          ) : loading ? (
+            <section
+              className={s.sessionEmpty}
+              role="status"
+              aria-live="polite"
+            >
+              <span>⌘</span>
+              <h2>正在打开对话…</h2>
+              <p>正在读取这段对话的本地历史；当前任务不会被重新提交。</p>
+            </section>
           ) : (
             <>
               <div className={s.projectBar}>
@@ -501,7 +514,7 @@ export default function App() {
             </>
           )}
         </div>
-        {selected && (
+        {selected && !loading && (
           <footer className={s.composerWrap}>
             {!active &&
               recoverable &&

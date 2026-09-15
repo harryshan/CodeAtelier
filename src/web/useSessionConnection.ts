@@ -2,7 +2,7 @@
  * 为 App 同步当前会话快照，并管理 SSE 连接和断线重试。
  * 接收会话 ID、连接开关及状态回调，返回快照 data、setData 和连接状态 connected。
  *
- * 1. effect 在选中会话后启动；refresh 合并连续通知，读取最新快照。
+ * 1. effect 在选中会话后先清除旧快照并标记 loading；refresh 合并连续通知，读取最新快照。
  * 2. connect 先 bootstrap 更新凭据和配置，再建立当前会话的 EventSource。
  * 3. 收到 refresh 就读快照，连接失败则关闭旧流并安排重试。
  * 4. 清理时标记 disposed、清除定时器并关闭连接；晚到的异步响应会被丢弃，避免覆盖新会话。
@@ -25,14 +25,19 @@ export function useSessionConnection(
 ) {
   const [data, setData] = useState<Snapshot>();
   const [connected, setConnected] = useState(true);
+  const [loading, setLoading] = useState(false);
 
   useEffect(() => {
     if (!selected || !enabled) {
       setData(undefined);
+      setLoading(false);
 
       return;
     }
 
+    // 不能在新快照抵达前继续展示旧会话；否则侧栏已切换但主区域看似卡住。
+    setData(undefined);
+    setLoading(true);
     // 合并连续刷新通知，并在切换会话或关闭服务时丢弃过期响应。
     let disposed = false;
     let refreshInProgress = false;
@@ -50,9 +55,11 @@ export function useSessionConnection(
 
         if (!disposed) {
           setData(v);
+          setLoading(false);
         }
       } catch (e) {
         if (!disposed) {
+          setLoading(false);
           setError((e as Error).message);
         }
       } finally {
@@ -112,5 +119,5 @@ export function useSessionConnection(
     };
   }, [selected, enabled, setSettings, setHasKey, setError]);
 
-  return { data, setData, connected };
+  return { data, setData, connected, loading };
 }

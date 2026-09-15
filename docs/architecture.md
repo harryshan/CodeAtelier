@@ -16,11 +16,11 @@ server (Fastify)
 ```
 
 - `src/shared` 仅存浏览器和后端共享的数据契约，前端不能导入文件、进程或密钥实现。
-- `src/agent/engine.ts` 管理单任务锁、模型循环、停止条件与工具结果回传；`context.ts` 负责上下文恢复，`instructions.ts` 负责根规则与模型指令构建。src/context/ 负责预算、摘要压缩、快照契约与历史原文读取，循环在完整工具批次完成后接入。
+- `src/agent/engine.ts` 管理单任务锁、模型循环、停止条件与工具结果回传；`context.ts` 负责上下文恢复，`instructions.ts` 负责根规则与模型指令构建。src/context/ 负责预算、摘要压缩、快照契约与历史原文读取，循环在完整工具批次完成后接入；压缩阶段之间让出事件循环。
 - `src/providers` 将 Responses 输出映射为输出项和文本。主任务请求显式声明 `parallel_tool_calls: true`，让兼容服务可在一次响应中返回多个独立调用；自建服务需同时收集 output_item.done；completed.output 有内容时优先使用，不能只依赖 completed。
 - `src/tools` 定义 Zod 参数及对应 JSON Schema，提供目录、读取、搜索、写入、精确编辑、命令和单一受限 `git` 工具。`search` 对目录递归搜索文件名与正文，也可指定一个文件仅搜索其文件名和正文；`run_command` 只向模型公开一条命令文本，`command-shell.ts` 在执行器内部选择平台 shell；模型先由目录和搜索定位，`read_file` 再按行读取；单次硬上限为 500 行，并返回分页/截断状态。
 - `src/permissions` 在后端等待用户批准，取消会释放待审批 Promise。模型无法自行同意审批。
-- `src/sessions/store.ts` 保存 sessions、tasks、events、context；初始数据库结构位于 `schema.ts`。启动时将 running/waiting 任务标为 interrupted。
+- `src/sessions/store.ts` 保存 sessions、tasks、events、context；初始数据库结构位于 `schema.ts`。大于 64 KiB 的 events、活动上下文和历史快照由 `store-worker.ts` 在独立 Worker 线程解析或事务写入，小记录避免线程创建开销而同步读取。启动时将 running/waiting 任务标为 interrupted。
 - `src/config` 管理非敏感设置、内存密钥和平台数据目录。
 - `src/logging` 在 Pino 内部按字段脱敏后输出紧凑格式化纯文本，按级别筛选、保留受控错误详情并轮转文件。
 
@@ -43,7 +43,7 @@ server (Fastify)
 | server/app.ts | 服务组装、业务路由与关闭顺序 |
 | server/local-security.ts / session-events.ts | 本机请求防护、SSE 连接管理与清理 |
 | server/http-server.ts | 保留 Pino 日志类型的 HTTP 服务类型 |
-| web/App.tsx / useSessionConnection.ts | 页面交互与布局、开发服务完整页面重载，以及快照和 SSE 重连生命周期 |
+| web/App.tsx / useSessionConnection.ts | 页面交互与布局、开发服务完整页面重载，以及快照和 SSE 重连生命周期；切换会话时先清除旧快照并显示本地历史加载提示 |
 
 本次全库审查将原 registry.ts 中的 ToolRunner 移出；paths.ts 原本就是路径函数模块。Engine、Store 及其上下文/schema 辅助模块、共享数据契约、测试和开发脚本继续按各自职责组织，不为每个小函数增加文件。
 
@@ -54,7 +54,7 @@ server (Fastify)
 3. 已领取的首条消息先由低成本辅助模型生成无工具的简短标题；该请求有界重试，失败保留占位标题并不阻断主编码任务，取消则中止任务。
 4. 主任务加载本地上下文与根 AGENTS.md，模型请求包含当前指令、上下文与工具定义，并请求服务允许多个独立工具调用；接收文本及完整输出项。
 5. 自研循环检查工具参数和权限，按模型返回顺序执行完整工具批次，记录工具事件与 diff，再将 function_call_output 回传模型。工具调用提出后若需审批会停留在 waiting，ToolRunner 仅在真正开始读取、写入或启动进程时通知 Engine 开始耗时统计，因此审批等待不计入工具耗时。并行调用偏好不改变本地的顺序执行、审批或文件一致性校验。
-6. 没有工具调用且收到完成文本时任务结束；超时、取消、失败或超过步骤上限时明确停止。前端通过 SSE 得知标题或任务状态变化，重新读取带事件 ID 的快照；重新连接只读状态，不会再次启动任务。
+6. 没有工具调用且收到完成文本时任务结束；超时、取消、失败或超过步骤上限时明确停止。前端通过 SSE 得知标题或任务状态变化，重新读取带事件 ID 的快照；切换时立即显示“正在打开对话”，不把旧会话内容误当成新会话；重新连接只读状态，不会再次启动任务。
 
 ## 历史与恢复
 
