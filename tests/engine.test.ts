@@ -6,11 +6,12 @@
  * 2. 传入非法工具参数，确认错误返回模型且文件没有变化。
  * 3. 检查项目规则加载、大输出限制，以及多项互不冲突的工具调用会在同一轮全部执行。
  * 4. 检查多文件调用的逐文件进度及结果持久化、新任务必须重新读文件，以及含凭据相关源码的工具结果仍是合法 JSON。
+ * 5. 对需要批准的命令，确认保存的工具耗时只从真正执行开始计算，不包含审批等待。
  *
  * 只模拟模型响应，文件操作、审批和保存使用实际实现。
  */
 
-import { it, expect } from "vitest";
+import { it, expect, vi } from "vitest";
 import { writeFile, readFile } from "node:fs/promises";
 import path from "node:path";
 import pino from "pino";
@@ -140,6 +141,55 @@ it("executes every independent tool call returned in one model response", async 
     ).toHaveLength(2);
     expect(fixture.store.tasks(fixture.session.id)[0].status).toBe("completed");
   } finally {
+    await fixture.engine.close();
+    fixture.store.close();
+  }
+});
+
+it("starts tool duration after command approval instead of when the call is requested", async () => {
+  let calls = 0;
+  let now = 1_000;
+  const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+  const fixture = await createFixture({
+    async run() {
+      if (++calls === 1) {
+        return {
+          output: [
+            {
+              type: "function_call",
+              call_id: "approved-command",
+              name: "run_command",
+              arguments: JSON.stringify({
+                command: 'node -e "process.exit(0)"',
+              }),
+            },
+          ],
+          text: "",
+        };
+      }
+
+      return done;
+    },
+  });
+
+  try {
+    fixture.engine.start(fixture.session.id, "run the command");
+    await expect.poll(() => fixture.engine.approvals.list()).toHaveLength(1);
+
+    // 模拟用户在审批界面停留十秒；命令获准后时间才应开始累计。
+    now += 10_000;
+    fixture.engine.approvals.decide(
+      fixture.engine.approvals.list()[0].id,
+      "once",
+    );
+    await fixture.engine.active?.done;
+
+    const result = fixture.store
+      .events(fixture.session.id)
+      .find((event) => event.type === "tool_result");
+    expect(result?.data.durationMs).toBe(0);
+  } finally {
+    clock.mockRestore();
     await fixture.engine.close();
     fixture.store.close();
   }

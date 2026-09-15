@@ -29,7 +29,7 @@
 | Git 工具        | git-tools.test.ts、tool-schema.test.ts、e2e/app.spec.ts | 单一 action 契约、固定 status/diff/log/show/branch 参数、add/提交/推送自动执行、worktree/upstream/revision/敏感目录校验、暂存失败不提交、禁止额外选项，以及流式输出与退出状态的卡片聚合 |
 | 命令执行       | process.test.ts、core.test.ts、permissions.test.ts、tool-schema.test.ts | 不存在的命令、输出与退出码、截断、UTF-8/ANSI 分块、颜色环境与控制符清理、API key 不继承、内部 Windows/POSIX shell 选择、单一 command 契约、复合命令合并、直接 Git/提权拒绝、取消和超时 |
 | 模型协议与重试 | provider.test.ts、recovery.test.ts             | item.done 回退、失败/不完整事件、断流、超时、重试次数、HTTP 分类、取消退避、并行工具调用请求参数           |
-| agent 循环     | engine.test.ts、core.test.ts、recovery.test.ts | 工具往返、同轮多项独立调用、单任务锁、步骤/上下文预算、参数错误反馈、根规则、输出预算、跨任务重新读取、不重放副作用 |
+| agent 循环     | engine.test.ts、core.test.ts、recovery.test.ts | 工具往返、同轮多项独立调用、单任务锁、步骤/上下文预算、参数错误反馈、根规则、输出预算、跨任务重新读取、不重放副作用、工具耗时排除审批等待 |
 | 会话存储与标题 | store.test.ts、recovery.test.ts、title-generation.test.ts | 隔离、事件顺序与游标、上下文、事务回滚、终态保留、重启中断、标题状态迁移和恢复 |
 | 模型设置       | config.test.ts、regressions.test.ts            | 环境/磁盘优先级、端点与模型规范化、参数边界、失败更新保持原状态、密钥内存存储、损坏配置不覆盖              |
 | 日志           | logging.test.ts、core.test.ts                  | 级别过滤、紧凑纯文本格式、上下文字段、错误元数据/原因链/堆栈、凭据脱敏、轮转、存储故障降级                 |

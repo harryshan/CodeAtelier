@@ -4,7 +4,7 @@
  *
  * 1. ignored 列出遍历时跳过的目录；ToolContext 定义依赖，readHashes 记住本任务读过的文件版本。
  * 2. access 解析路径并申请必要的权限；entries 限量遍历，commandGrant 为可复用命令计算指纹。
- * 3. execute 先通过 parseToolArguments 校验参数并解开 Git 的 request 包装（兼容历史扁平调用）。统一的精确编辑分流给共享读取哈希的 FileEditor，单一专用 Git 工具分流给 GitToolRunner；普通命令只接受
+ * 3. execute 先通过 parseToolArguments 校验参数并解开 Git 的 request 包装（兼容历史扁平调用）。它在每次调用实际开始产生工具副作用或读取前回调 Engine，因此耗时不计入审批等待；统一的精确编辑分流给共享读取哈希的 FileEditor，单一专用 Git 工具分流给 GitToolRunner；普通命令只接受
  *    一条命令文本，内部选择 shell、拒绝直接 Git，再申请审批并调用 executeProcess。
  * 4. 只读分支处理列目录、读取和搜索；读文件按 500 行分页并记录内容哈希，供后续修改核对。
  * 5. write_file 修改已有文件前要求本任务已经读过且内容没有变化，整文件覆盖另需审批。
@@ -174,16 +174,27 @@ export class ToolRunner {
     return hash.digest("hex");
   }
 
-  async execute(name: string, raw: unknown): Promise<any> {
+  async execute(
+    name: string,
+    raw: unknown,
+    onExecutionStart?: () => void,
+  ): Promise<any> {
     this.ctx.signal.throwIfAborted();
     const args: any = parseToolArguments(name, raw);
+    let executionStarted = false;
+    const startExecution = () => {
+      if (!executionStarted) {
+        executionStarted = true;
+        onExecutionStart?.();
+      }
+    };
 
     if (name === "edit_files") {
-      return this.editor.editMany(args.files);
+      return this.editor.editMany(args.files, startExecution);
     }
 
     if (name === "git") {
-      return this.git.execute(args);
+      return this.git.execute(args, startExecution);
     }
 
     if (name === "read_file" && args.endLine < args.startLine) {
@@ -222,6 +233,9 @@ export class ToolRunner {
         throw new Error("用户拒绝执行命令。");
       }
 
+      // 命令授权结束才开始计时；授权等待和命令指纹计算均不是命令执行。
+      startExecution();
+
       return executeProcess(
         shell.command,
         [...shell.args, args.command],
@@ -236,6 +250,8 @@ export class ToolRunner {
     const file = await this.access(args.path, name === "write_file");
 
     if (name === "list_files") {
+      startExecution();
+
       return (await readdir(file, { withFileTypes: true }))
         .filter((e) => !ignored.has(e.name) && !sensitive(e.name))
         .slice(0, 300)
@@ -250,6 +266,7 @@ export class ToolRunner {
     }
 
     if (name === "read_file") {
+      startExecution();
       await regularFile(file, 2 * 1024 * 1024);
       const text = await readFile(file, "utf8");
 
@@ -283,6 +300,7 @@ export class ToolRunner {
     }
 
     if (name === "search") {
+      startExecution();
       const { files, truncated } = await this.entries(file);
       const matches: any[] = [];
 
@@ -382,6 +400,8 @@ export class ToolRunner {
     }
 
     this.ctx.signal.throwIfAborted();
+    // 完整覆盖的审批和路径/并发复核完成后，才进入实际写入阶段。
+    startExecution();
     await mkdir(path.dirname(file), { recursive: true });
     // 在同一目录写临时文件后重命名，避免读者看到半写入内容。
     const temp = file + ".codeatelier-" + randomUUID() + ".tmp";

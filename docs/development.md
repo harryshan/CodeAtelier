@@ -59,7 +59,7 @@ Node.js 24，pnpm 11.22.0（packageManager 固定）。提交 pnpm-lock.yaml，�
 
 `run_command` 的模型参数只有 `{ command }`，工作目录固定为会话工作区。服务内部在 Windows 检查 `PATH`、`SystemRoot` 和 `ComSpec`，按 `pwsh`、`powershell`、`cmd.exe` 的优先级选择第一个真实存在的 shell；macOS 和 Linux 使用已验证的 `/bin/sh`。执行器追加固定的非交互参数（PowerShell 为 `-NoLogo -NoProfile -NonInteractive -Command`，cmd 为 `/d /s /c`，POSIX shell 为 `-c`），模型既不提供也不探测这些细节。完整复合命令仍作为一次副作用审批；不要求或保存命令间的人工分隔标记。
 
-`run_command` 和 `git` 的每次流式输出都以工具调用 ID 保存。Web UI 将有流式输出工具的开始、所有输出分块和退出状态聚合在同一可展开卡片中，任务完成或刷新历史后仍可查看。
+`run_command` 和 `git` 的每次流式输出都以工具调用 ID 保存。Web UI 将有流式输出工具的开始、所有输出分块和退出状态聚合在同一可展开卡片中，任务完成或刷新历史后仍可查看。工具结果和诊断日志的耗时从执行器真正开始读取、写入或启动子进程时计算，不包含用户在审批界面的等待时间；因拒绝或预检失败而未实际执行的调用显示为 0 ms。
 
 `edit_files` 是唯一的精确编辑工具，参数为 `{ files: [{ path, edits: [{ oldText, newText, startLine, endLine }] }] }`；一次编辑 1～20 个已有文件，每个文件条目接受 1～100 项修改，重复的真实路径会拒绝。单文件修改同样使用一个文件条目。新文件仍使用 `write_file`。原文和修改后文件各不超过 2 MiB，整批原文与结果合计不超过 16 MiB。
 

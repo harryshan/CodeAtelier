@@ -5,7 +5,7 @@
  *
  * 1. GitRequest 描述 status、diff、log、show、branch、add、commit 和 push 的互斥参数组合；
  *    isGitExecutable 和 containsGitCommand 继续阻止 run_command 绕过本模块。
- * 2. execute 在每项动作前验证会话工作区恰好是 Git worktree 根目录，再分派固定参数的子命令。
+ * 2. execute 在每项动作前通知 Engine 开始计时，验证会话工作区恰好是 Git worktree 根目录，再分派固定参数的子命令。
  * 3. workspacePaths 解析真实路径、拒绝敏感/.git/绝对或选项式路径，并递归检查目录，防止一次路径
  *    规范把敏感子文件一并暂存或读取。
  * 4. diff/show/log 仅接受安全 revision 和受校验路径；全量 diff 先核对变更路径，避免输出敏感文件内容。
@@ -138,8 +138,12 @@ export class GitToolRunner {
       ),
   ) {}
 
-  async execute(request: GitRequest): Promise<any> {
+  async execute(
+    request: GitRequest,
+    onExecutionStart?: () => void,
+  ): Promise<any> {
     this.ctx.signal.throwIfAborted();
+    onExecutionStart?.();
     await this.ensureRepository();
 
     switch (request.action) {

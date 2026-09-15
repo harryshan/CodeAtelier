@@ -7,7 +7,7 @@
  * 3. resume 继续最后一个可恢复任务；cancel 处理用户取消，close 处理服务关闭。
  * 4. 首条 prompt 先用辅助模型生成标题；run 再读取历史和项目规则，准备工具及上下文预算。
  * 5. 每轮先整理上下文，再请求模型。只有完整响应保存成功后，才按顺序执行工具。
- * 6. 多文件编辑进度附带 callId 逐项保存；工具结果和更新后的上下文一起提交到数据库；退出时保存最终状态并发出 task_end。
+ * 6. 多文件编辑进度附带 callId 逐项保存；ToolRunner 确认实际执行开始后才记录工具耗时，工具结果和更新后的上下文一起提交到数据库；退出时保存最终状态并发出 task_end。
  *
  * 模型请求可以重试，但已经执行的工具不能跟着重跑。数据库回滚也撤销不了文件修改或
  * 已启动的命令，所以保存失败时必须停止任务，并留下足够的记录供后续恢复。
@@ -525,7 +525,8 @@ export class Engine {
 
         for (const call of calls) {
           signal.throwIfAborted();
-          const started = Date.now();
+          // tool_start 表示模型已提出调用，可能随后等待审批；耗时只能从执行器实际开始操作后计算。
+          let executionStartedAt: number | undefined;
           let result: any;
 
           try {
@@ -533,15 +534,19 @@ export class Engine {
             currentToolCallId = call.call_id;
 
             emit("tool_start", { name: call.name, callId: call.call_id, args });
-            result =
-              call.name === historyDefinition.name
-                ? readContextHistory(
-                    this.store,
-                    session.id,
-                    args,
-                    settings.outputChars,
-                  )
-                : await runner.execute(call.name, args);
+            if (call.name === historyDefinition.name) {
+              executionStartedAt = Date.now();
+              result = readContextHistory(
+                this.store,
+                session.id,
+                args,
+                settings.outputChars,
+              );
+            } else {
+              result = await runner.execute(call.name, args, () => {
+                executionStartedAt = Date.now();
+              });
+            }
           } catch (error: any) {
             if (signal.aborted) {
               throw error;
@@ -572,7 +577,10 @@ export class Engine {
               name: call.name,
               callId: call.call_id,
               result: JSON.parse(output),
-              durationMs: Date.now() - started,
+              durationMs:
+                executionStartedAt === undefined
+                  ? 0
+                  : Date.now() - executionStartedAt,
             });
             input.push({
               type: "function_call_output",
@@ -585,7 +593,10 @@ export class Engine {
             event: "tool.completed",
             tool: call.name,
             toolCallId: call.call_id,
-            durationMs: Date.now() - started,
+            durationMs:
+              executionStartedAt === undefined
+                ? 0
+                : Date.now() - executionStartedAt,
             ok:
               !result?.error &&
               (result?.exitCode === undefined || result.exitCode === 0),

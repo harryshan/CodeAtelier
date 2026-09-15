@@ -3,7 +3,7 @@
  * 1. prepare 逐文件审批、核对读取版本、用 planEdits 定位原始快照并限制内存规模。
  * 2. verify 在整批审批后和每次写入前复核路径及原文，避免审批等待期间的变化被覆盖。
  * 3. commit 用同目录临时文件替换单个目标，保留权限并更新读取哈希；不提供跨文件事务。
- * 4. editMany 同时处理单文件和多文件调用：先校验全批，再记录逐文件执行状态。
+ * 4. editMany 同时处理单文件和多文件调用：先校验全批，再通知 Engine 计时开始并记录逐文件执行状态。
  * edit_progress 经 Engine 保存到历史，写入前标 unknown、成功后标 written；断电或持久化失败
  * 仍可能留下未知结果，恢复必须检查现场，不自动回滚或重放。参数/错误的脱敏由 Engine 负责。
  */
@@ -98,7 +98,7 @@ export class FileEditor {
     return { path: edit.path, changed: edit.before !== edit.after, diff };
   }
 
-  async editMany(inputs: FileEdit[]) {
+  async editMany(inputs: FileEdit[], onExecutionStart?: () => void) {
     const batchId = randomUUID();
     const files = inputs.map((input) => ({
       path: input.path,
@@ -132,6 +132,8 @@ export class FileEditor {
       return { batchId, files, error: error.message };
     }
 
+    // 所有路径审批和快照复核结束后，下一步才会开始写入文件。
+    onExecutionStart?.();
     this.ctx.emit("edit_progress", {
       batchId,
       files: files.map((file) => ({ ...file })),
