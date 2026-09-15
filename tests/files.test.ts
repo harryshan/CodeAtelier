@@ -2,7 +2,7 @@
  * 通过 fileFixture 调用真实 ToolRunner，检查文件工具的结果和磁盘上的变化。
  * 所有文件都建在临时目录，审批由用例明确处理。
  *
- * 1. 检查目录过滤、字面搜索（包括指定文件正文）、结果数量限制和带行号、分页元数据的分段读取。
+ * 1. 检查目录过滤、已移除搜索工具的拒绝，以及带行号、分页元数据的分段读取。
  * 2. 检查模型可见的定位/小范围读取契约，以及反向行区间、二进制文件和过大文件被拒绝。
  * 3. 检查多处快照替换、整批失败不写入、成功后复用读取状态、创建父目录、美元符号按原文替换，以及整文件覆盖需要审批。
  * 4. 在等待审批时修改文件，并检查规则文件、敏感文件和非法工具参数的处理。
@@ -54,58 +54,15 @@ it("lists usable immediate entries without dependency, build or sensitive files"
   ).toEqual(["README.md", "src"]);
 });
 
-it("searches names and text literally, case insensitively, excluding sensitive and binary content", async () => {
-  const { root, runner } = await fileFixture();
+it("does not expose the retired search tool and rejects direct calls", async () => {
+  const { runner } = await fileFixture();
 
-  await mkdir(path.join(root, "node_modules"));
-  await writeFile(path.join(root, "node_modules", "hidden.txt"), "a.b");
-  await writeFile(path.join(root, "A.B.txt"), "first\nA.B\naxb");
-  await writeFile(path.join(root, ".env"), "a.b");
-  await writeFile(path.join(root, "binary.bin"), "\0a.b");
-  const result = await runner.execute("search", { path: ".", query: "a.b" });
-
-  expect(result.matches).toEqual([
-    { path: "A.B.txt", kind: "filename" },
-    { path: "A.B.txt", line: 2, text: "A.B" },
-  ]);
-  expect(result.truncated).toBe(false);
-});
-
-it("searches contents in one specified file without including sibling files", async () => {
-  const { root, runner } = await fileFixture();
-
-  await mkdir(path.join(root, "notes"));
-  await writeFile(
-    path.join(root, "notes", "target.txt"),
-    "before\nneedle text\nafter",
+  expect(definitions.map((definition) => definition.name)).not.toContain(
+    "search",
   );
-  await writeFile(path.join(root, "sibling.txt"), "needle text");
-
-  const result = await runner.execute("search", {
-    path: "notes/target.txt",
-    query: "needle",
-  });
-
-  expect(result).toEqual({
-    matches: [
-      { path: path.join("notes", "target.txt"), line: 2, text: "needle text" },
-    ],
-    truncated: false,
-  });
-});
-
-it("never exceeds the search result limit when a filename fills the last slot", async () => {
-  const { root, runner } = await fileFixture();
-
-  await writeFile(
-    path.join(root, "a.txt"),
-    Array(99).fill("needle").join("\n"),
-  );
-  await writeFile(path.join(root, "b-needle.txt"), "needle");
-  const result = await runner.execute("search", { path: ".", query: "needle" });
-
-  expect(result.matches).toHaveLength(100);
-  expect(result.truncated).toBe(true);
+  await expect(
+    runner.execute("search", { path: ".", query: "needle" }),
+  ).rejects.toThrow("未知工具");
 });
 
 it("reads focused numbered lines and describes pagination when a request reaches the cap", async () => {
@@ -155,12 +112,14 @@ it("reads focused numbered lines and describes pagination when a request reaches
   });
 });
 
-it("tells the model to locate content before using a focused file range", () => {
+it("tells the model to use a command search before using a focused file range", () => {
   const readFile = definitions.find(
     (definition) => definition.name === "read_file",
   );
 
-  expect(readFile?.description).toContain("Use search to locate");
+  expect(readFile?.description).toContain(
+    "Use run_command with an environment-detected search command to locate",
+  );
   expect(readFile?.description).toContain("normally request 80-200 lines");
   expect(readFile?.description).toContain("Maximum 500 lines");
 });

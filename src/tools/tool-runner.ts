@@ -6,7 +6,7 @@
  * 2. currentFileHash 仅探测安全工作区文件的字节哈希，不更新读取凭证；access 解析路径并申请必要的权限；entries 限量遍历，commandGrant 为可复用命令计算指纹。
  * 3. execute 先通过 parseToolArguments 校验参数并解开 Git 的 request 包装（兼容历史扁平调用）。它在每次调用实际开始产生工具副作用或读取前回调 Engine，因此耗时不计入审批等待；统一的精确编辑分流给共享读取哈希的 FileEditor，单一专用 Git 工具分流给 GitToolRunner；普通命令只接受
  *    一条命令文本，内部选择 shell、拒绝直接 Git，再申请审批并调用 executeProcess。
- * 4. 只读分支处理列目录、读取和搜索；搜索可递归目录或只检查指定文件的文件名与正文，读文件按 500 行分页，返回全文字节 contentHash 供压缩比较，并在内部记录文本哈希供后续修改核对。
+ * 4. 只读分支处理列目录和读取；代码搜索由 run_command 在审批后执行。读文件按 500 行分页，返回全文字节 contentHash 供压缩比较，并在内部记录文本哈希供后续修改核对。
  * 5. write_file 修改已有文件前要求本任务已经读过且内容没有变化，整文件覆盖另需审批。
  * 6. 写入前再次核对路径和正文，再用同目录临时文件替换目标、保留权限，更新哈希并发出 diff。
  *
@@ -16,7 +16,6 @@
 import {
   readFile,
   readdir,
-  stat,
   writeFile,
   mkdir,
   rename,
@@ -161,15 +160,6 @@ export class ToolRunner {
     await walk(root);
 
     return { files: result, truncated: visited > max };
-  }
-
-  /** 搜索既可从目录递归开始，也可只检查一个已通过路径审批的普通文件。 */
-  private async searchEntries(target: string) {
-    if ((await stat(target)).isFile()) {
-      return { files: [target], truncated: false };
-    }
-
-    return this.entries(target);
   }
 
   // 会话授权绑定命令、目录和项目内容。源码变化后，旧授权不再复用。
@@ -330,58 +320,6 @@ export class ToolRunner {
           .map((l, i) => `${args.startLine + i}: ${l}`)
           .join("\n"),
       };
-    }
-
-    if (name === "search") {
-      startExecution();
-      const { files, truncated } = await this.searchEntries(file);
-      const matches: any[] = [];
-
-      for (const name of files) {
-        this.ctx.signal.throwIfAborted();
-        if (name.toLowerCase().includes(args.query.toLowerCase())) {
-          matches.push({
-            path: path.relative(this.ctx.root, name),
-            kind: "filename",
-          });
-        }
-
-        if (matches.length >= 100) {
-          break;
-        }
-
-        try {
-          await regularFile(name, 512 * 1024);
-          const text = await readFile(name, "utf8");
-
-          if (text.includes("\0")) {
-            continue;
-          }
-
-          const lines = text.split("\n");
-
-          for (let i = 0; i < lines.length; i++) {
-            if (lines[i].toLowerCase().includes(args.query.toLowerCase())) {
-              matches.push({
-                path: path.relative(this.ctx.root, name),
-                line: i + 1,
-                text: lines[i].slice(0, 500),
-              });
-              if (matches.length >= 100) {
-                break;
-              }
-            }
-          }
-        } catch {
-          /* 跳过无法读取或过大的文件，继续搜索其他文件。 */
-        }
-
-        if (matches.length >= 100) {
-          break;
-        }
-      }
-
-      return { matches, truncated: truncated || matches.length >= 100 };
     }
 
     let before = "";

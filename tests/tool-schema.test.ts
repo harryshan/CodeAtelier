@@ -49,11 +49,18 @@ it("declares every property as required for strict function tools", () => {
   }
 });
 
-it("exposes only edit_files and requires its files wrapper", () => {
+it("exposes only edit_files and no direct search tool", () => {
   expect(schemas).not.toHaveProperty("edit_file");
+  expect(schemas).not.toHaveProperty("search");
   expect(definitions.map((definition) => definition.name)).not.toContain(
     "edit_file",
   );
+  expect(definitions.map((definition) => definition.name)).not.toContain(
+    "search",
+  );
+  expect(() =>
+    parseToolArguments("search", { path: ".", query: "needle" }),
+  ).toThrow("未知工具");
   expect(
     schemas.edit_files.parse({
       files: [
@@ -97,6 +104,8 @@ it("accepts only one direct command string for run_command", () => {
   expect(runCommand?.description).toContain(
     "Provide the command to run directly",
   );
+  expect(runCommand?.description).toContain("environment-detected");
+  expect(runCommand?.description).toContain("multiple keywords");
   expect(runCommand?.description).toContain("`pwsh -Command`");
 });
 

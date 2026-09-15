@@ -18,7 +18,7 @@ server (Fastify)
 - `src/shared` 仅存浏览器和后端共享的数据契约，前端不能导入文件、进程或密钥实现。
 - `src/agent/engine.ts` 管理单任务锁、模型循环、停止条件与工具结果回传；`context.ts` 负责上下文恢复，`instructions.ts` 负责根规则与模型指令构建。src/context/ 负责预算、摘要压缩、快照契约与历史原文读取，循环在完整工具批次完成后接入；压缩阶段之间让出事件循环。
 - `src/providers` 将 Responses 输出映射为输出项和文本。主任务请求显式声明 `parallel_tool_calls: true`，让兼容服务可在一次响应中返回多个独立调用；自建服务需同时收集 output_item.done；completed.output 有内容时优先使用，不能只依赖 completed。
-- `src/tools` 定义 Zod 参数及对应 JSON Schema，提供目录、读取、搜索、写入、精确编辑、命令和单一受限 `git` 工具。`search` 对目录递归搜索文件名与正文，也可指定一个文件仅搜索其文件名和正文；`run_command` 只向模型公开一条命令文本，`command-shell.ts` 在执行器内部选择平台 shell；模型先由目录和搜索定位，`read_file` 再按行读取；单次硬上限为 500 行，并返回分页/截断状态。
+- `src/tools` 定义 Zod 参数及对应 JSON Schema，提供目录、读取、写入、精确编辑、命令和单一受限 `git` 工具。没有 `search` 工具；`search-commands.ts` 在每次任务建立指令前检测 PATH 和 Windows 系统位置可用的常见搜索程序，按估计性能排序后只向模型给出命令名与内容/文件名用途。模型以 `run_command` 执行首选的已检测工具，尽量把多个关键词合入一次多模式搜索；`run_command` 只公开一条命令文本，`command-shell.ts` 在执行器内部选择平台 shell。模型先由目录和命令搜索定位，`read_file` 再按行读取；单次硬上限为 500 行，并返回分页/截断状态。旧会话的 `search` 记录只保留展示、归档和快照回读兼容。
 - `src/permissions` 在后端等待用户批准，取消会释放待审批 Promise。模型无法自行同意审批。
 - `src/sessions/store.ts` 保存 sessions、tasks、events、context；初始数据库结构位于 `schema.ts`。大于 64 KiB 的 events、活动上下文和历史快照由 `store-worker.ts` 在独立 Worker 线程解析或事务写入，小记录避免线程创建开销而同步读取。启动时将 running/waiting 任务标为 interrupted。
 - `src/config` 管理非敏感设置、内存密钥和平台数据目录。

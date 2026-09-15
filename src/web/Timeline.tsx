@@ -17,7 +17,8 @@ import s from "./app.module.css";
 const labels: Record<string, string> = {
   list_files: "浏览目录",
   read_file: "读取文件",
-  search: "搜索代码",
+  // 已移除的 search 工具仅用于展示旧会话记录。
+  search: "搜索代码（旧记录）",
   // 旧会话的 edit_file 仅用于历史展示；新版模型契约只公开 edit_files。
   edit_file: "精确修改（旧记录）",
   edit_files: "精确修改文件",

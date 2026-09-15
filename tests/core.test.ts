@@ -31,6 +31,7 @@ import {
   detectWindowsShell,
 } from "../src/agent/instructions.js";
 import { commandShell } from "../src/tools/command-shell.js";
+import { detectSearchCommands } from "../src/tools/search-commands.js";
 import { createApp } from "../src/server/app.js";
 import pino from "pino";
 import { redactText } from "../src/logging/redact.js";
@@ -69,7 +70,7 @@ function runner(
 }
 
 describe("files and permissions", () => {
-  it("keeps Windows shell detection inside the executor and out of model instructions", async () => {
+  it("keeps Windows shell details out of model instructions", async () => {
     const environment = {
       Path: "C:\\Tools;C:\\Windows\\System32\\WindowsPowerShell\\v1.0",
       ComSpec: "C:\\Windows\\System32\\cmd.exe",
@@ -94,6 +95,55 @@ describe("files and permissions", () => {
     expect(instructions).toContain("safe independent checks");
     expect(instructions).not.toContain("C:\\\\Tools\\\\pwsh.exe");
     expect(instructions).not.toContain("CODEATELIER_STEP");
+  });
+
+  it("detects performance-ordered search commands before building instructions", async () => {
+    const windows = detectSearchCommands(
+      { Path: "C:\\Tools", SystemRoot: "C:\\Windows" },
+      (candidate) =>
+        [
+          "C:\\Tools\\rg.exe",
+          "C:\\Tools\\grep.exe",
+          "C:\\Windows\\System32\\findstr.exe",
+        ].includes(candidate),
+      "win32",
+    );
+    const instructions = await createInstructions(await temp(), windows);
+
+    expect(windows).toEqual([
+      { command: "rg", purpose: "content" },
+      { command: "grep", purpose: "content" },
+      { command: "findstr", purpose: "content" },
+    ]);
+    expect(instructions).toContain(
+      "repository search commands available through run_command, ordered by estimated performance: `rg` (content), `grep` (content), `findstr` (content)",
+    );
+    expect(instructions).toContain("There is no search tool");
+    expect(instructions).toContain("multiple relevant symbols");
+
+    const powershell = detectSearchCommands(
+      { Path: "C:\\Tools" },
+      (candidate) => candidate === "C:\\Tools\\powershell.exe",
+      "win32",
+    );
+    const posix = detectSearchCommands(
+      { PATH: "/usr/bin:/bin" },
+      (candidate) =>
+        ["/usr/bin/ugrep", "/bin/grep", "/usr/bin/fd", "/bin/find"].includes(
+          candidate,
+        ),
+      "linux",
+    );
+
+    expect(powershell).toEqual([
+      { command: "Select-String", purpose: "content" },
+    ]);
+    expect(posix).toEqual([
+      { command: "ugrep", purpose: "content" },
+      { command: "grep", purpose: "content" },
+      { command: "fd", purpose: "filenames" },
+      { command: "find", purpose: "filenames" },
+    ]);
   });
 
   it("uses a fixed POSIX shell internally", () => {

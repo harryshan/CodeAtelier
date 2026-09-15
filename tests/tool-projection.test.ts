@@ -1,7 +1,7 @@
 /**
  * 检查第二级工具正文归档及跨次压缩的恢复事实，所有事件和模型来自本地夹具。
  *
- * 1. pair/saved 生成完整工具协议对及匹配事件；验证搜索定位、目录省略数量、命令诊断。
+ * 1. pair/saved 生成完整工具协议对及匹配事件；验证旧搜索记录、目录省略数量、命令诊断。
  * 2. 验证只读 Git 输出和写文件 diff 缩短，Git 提交/推送输出及批次未知状态原样保留。
  * 3. 验证缺失/歧义来源、未知格式、无退出码、已有归档和短结果不被替换。
  * 4. 真实 Store 和 ContextManager 验证阈值、原子快照、重启回读、后续摘要恢复全文及执行账本。
@@ -55,7 +55,7 @@ const longOutput = [
   "end",
 ].join(String.fromCharCode(10));
 
-it("removes search text while retaining every location, query and truncation flag", () => {
+it("archives legacy search text while retaining every location, query and truncation flag", () => {
   const matches = Array.from({ length: 30 }, (_, line) => ({
     path: "src/file" + line + ".ts",
     line,
