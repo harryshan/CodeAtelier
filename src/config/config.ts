@@ -52,7 +52,7 @@ export class Config {
         auxiliaryModel: process.env.CODEATELIER_AUXILIARY_MODEL || "",
         auxiliaryReasoningEffort:
           process.env.CODEATELIER_AUXILIARY_REASONING_EFFORT || "low",
-        maxSteps: 30,
+        maxSteps: 100,
         commandTimeoutMs: 120000,
         requestTimeoutMs: 300000,
         idleTimeoutMs: 60000,

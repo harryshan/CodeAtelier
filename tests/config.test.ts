@@ -2,7 +2,7 @@
  * 检查 Config 的配置优先级、保存和重载，以及密钥处理。
  * 用临时目录和模拟环境变量测试，直接读取 settings.json 核对实际保存内容。
  *
- * 1. 检查数据目录、环境默认值和已保存配置的优先级。
+ * 1. 检查数据目录、环境默认值（包括最大模型调用次数）和已保存配置的优先级。
  * 2. 更新配置后检查端点格式、模型 ID、磁盘设置和内存密钥。
  * 3. 区分不传密钥与清空密钥，检查损坏文件和旧配置的默认思考等级。
  * 4. 检查缺少连接配置时报错，以及没有环境变量时仍可加载已有配置。
@@ -29,6 +29,7 @@ it("uses explicit data directory and saved settings take precedence over environ
   const initial = new Config();
 
   expect(initial.settings.model).toBe("env-model");
+  expect(initial.settings.maxSteps).toBe(100);
   initial.update({ settings: { ...initial.settings, model: "saved-model" } });
 
   expect(new Config(root).settings.model).toBe("saved-model");
