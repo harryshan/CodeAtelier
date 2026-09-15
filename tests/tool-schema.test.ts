@@ -79,7 +79,11 @@ it("exposes only edit_files and requires its files wrapper", () => {
   ).toBe(false);
 });
 
-it("accepts only one command string for run_command", () => {
+it("accepts only one direct command string for run_command", () => {
+  const runCommand = definitions.find(
+    (definition) => definition.name === "run_command",
+  );
+
   expect(schemas.run_command.parse({ command: "pnpm test" })).toEqual({
     command: "pnpm test",
   });
@@ -90,6 +94,10 @@ it("accepts only one command string for run_command", () => {
       cwd: ".",
     }).success,
   ).toBe(false);
+  expect(runCommand?.description).toContain(
+    "Provide the command to run directly",
+  );
+  expect(runCommand?.description).toContain("`pwsh -Command`");
 });
 
 it("declares strict action-specific parameters for the single git tool", () => {

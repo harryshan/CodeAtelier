@@ -89,6 +89,8 @@ describe("files and permissions", () => {
     expect(instructions).toContain("start with 80-200 lines");
     expect(instructions).toContain("Read complete files only");
     expect(instructions).toContain("only one command string");
+    expect(instructions).toContain("Never wrap it in a terminal invocation");
+    expect(instructions).toContain("`pwsh -Command`");
     expect(instructions).toContain("safe independent checks");
     expect(instructions).not.toContain("C:\\\\Tools\\\\pwsh.exe");
     expect(instructions).not.toContain("CODEATELIER_STEP");
