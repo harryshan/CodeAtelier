@@ -5,7 +5,7 @@
  * 1. 一次批准只放行对应请求，不能解开其他等待中的操作。
  * 2. 会话授权必须同时匹配 sessionId 和 grantKey；不支持复用的请求不能选择会话批准。
  * 3. 已取消的操作不进入待审批列表，并检查等待期间的授权变化。
- * 4. 工作区内容变化后，同一验证命令需要重新审批；sudo、runas 和 git push 在审批前就被拒绝。
+ * 4. 工作区内容变化后，同一验证命令需要重新审批；sudo、runas 和直接 git 命令在审批前就被拒绝。
  *
  * 不能只按命令名称复用权限，文件变化后旧指纹对应的授权必须失效。
  */
@@ -90,7 +90,7 @@ it("validation command grants expire after project content changes", async () =>
   const { root, runner, approvals } = await fileFixture();
 
   await writeFile(path.join(root, "test.test.js"), 'console.log("VALIDATED")');
-  const args = { command: "node", args: ["--test"], cwd: "." };
+  const args = { command: "node --test" };
   const first = runner.execute("run_command", args);
 
   await expect.poll(() => approvals.list().length).toBe(1);
@@ -109,13 +109,15 @@ it("validation command grants expire after project content changes", async () =>
   await expect(changed).rejects.toThrow("拒绝");
 });
 
-it.each(["sudo", "runas", "git"])(
+it.each(["sudo", "runas", "git", "echo ok && git status"])(
   "blocks prohibited direct command %s before approval",
   async (command) => {
     const { runner, approvals } = await fileFixture();
 
     await expect(
-      runner.execute("run_command", { command, args: ["push"], cwd: "." }),
+      runner.execute("run_command", {
+        command: command === "git" ? "git push" : command,
+      }),
     ).rejects.toThrow();
     expect(approvals.list()).toEqual([]);
   },

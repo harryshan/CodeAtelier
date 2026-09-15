@@ -107,6 +107,10 @@ const testArgs = [
   testPath,
   "--reporter=json",
 ];
+// run_command 只接受一条命令文本；JSON 字符串引号能让该固定命令中的路径在常见 shell 中保持完整。
+const testCommand = [process.execPath, ...testArgs]
+  .map((part) => JSON.stringify(part))
+  .join(" ");
 
 function verify(label: string) {
   try {
@@ -157,7 +161,7 @@ function observe(current: Engine, interrupt: boolean) {
         approval.tool,
         approval.description,
         workspace,
-        testArgs,
+        testCommand,
       );
       approvals += 1;
       log.info({ event: "bootstrap.approval", tool: approval.tool, allowed });
@@ -203,7 +207,7 @@ try {
   observe(engine, true);
   const task = engine.start(
     session.id,
-    `这是 CodeAtelier 自己源码的隔离验收副本。遵循 AGENTS.md 和文档约定，但本次不提交或推送代码；不需要安装依赖或启动服务。配置更新存在回归：baseUrl 输入 http://localhost:8888/v1/responses/ 后没有规范化为 http://localhost:8888/v1。请先读相关代码和测试并运行测试复现，然后修复，保留全部已有测试，追加构造函数从环境变量读取带 responses 后缀端点并规范化的测试，更新 docs/development.md 的相关说明。仅修改 ${[...allowedFiles].join("、")}，使用 edit_file。唯一预授权命令的 command=${JSON.stringify(process.execPath)}，args=${JSON.stringify(testArgs)}，cwd="."；不要运行其他命令。完成后根据实际测试结果报告。`,
+    `这是 CodeAtelier 自己源码的隔离验收副本。遵循 AGENTS.md 和文档约定，但本次不提交或推送代码；不需要安装依赖或启动服务。配置更新存在回归：baseUrl 输入 http://localhost:8888/v1/responses/ 后没有规范化为 http://localhost:8888/v1。请先读相关代码和测试并运行测试复现，然后修复，保留全部已有测试，追加构造函数从环境变量读取带 responses 后缀端点并规范化的测试，更新 docs/development.md 的相关说明。仅修改 ${[...allowedFiles].join("、")}，使用 edit_file。唯一预授权命令只传 command 字段，值必须精确为 ${JSON.stringify(testCommand)}；工作目录和 shell 由执行器内部固定，不要运行其他命令。完成后根据实际测试结果报告。`,
   );
   await wait();
   const firstStatus = store.task(task.id)?.status;

@@ -36,6 +36,95 @@ function textResult(event: Event) {
     : JSON.stringify(event.data.result, null, 2);
 }
 
+interface CommandCardState {
+  output: string;
+  result?: Event;
+}
+
+/** 将一个 run_command 的开始、流式输出和最终状态聚合，历史记录缺少 callId 时按顺序兼容。 */
+function commandCards(events: Event[]) {
+  const cards = new Map<number, CommandCardState>();
+  const calls = new Map<string, number>();
+  const outputEventIds = new Set<number>();
+  const resultEventIds = new Set<number>();
+  let activeCardId: number | undefined;
+
+  for (const event of events) {
+    if (event.type === "tool_start" && event.data.name === "run_command") {
+      cards.set(event.id, { output: "" });
+      calls.set(event.taskId + ":" + event.data.callId, event.id);
+      activeCardId = event.id;
+      continue;
+    }
+
+    if (event.type === "command_output") {
+      const cardId = event.data.callId
+        ? calls.get(event.taskId + ":" + event.data.callId)
+        : activeCardId;
+      const card = cardId === undefined ? undefined : cards.get(cardId);
+
+      if (card) {
+        card.output += event.data.text;
+        outputEventIds.add(event.id);
+      }
+
+      continue;
+    }
+
+    if (event.type === "tool_result" && event.data.name === "run_command") {
+      const cardId = calls.get(event.taskId + ":" + event.data.callId);
+      const card = cardId === undefined ? undefined : cards.get(cardId);
+
+      if (card) {
+        card.result = event;
+        resultEventIds.add(event.id);
+        activeCardId = undefined;
+      }
+    }
+  }
+
+  return { cards, outputEventIds, resultEventIds };
+}
+
+function CommandCard({
+  start,
+  state,
+}: {
+  start: Event;
+  state: CommandCardState;
+}) {
+  const result = state.result?.data.result;
+  const output =
+    state.output || (typeof result?.output === "string" ? result.output : "");
+  const status = result?.error
+    ? "操作未完成"
+    : result
+      ? result.exitCode === 0
+        ? "已完成"
+        : "退出码：" + (result.exitCode ?? "未知")
+      : "执行中";
+
+  return (
+    <details open className={s.commandCard}>
+      <summary>
+        <span className={s.toolDot} />
+        执行命令 <code>{start.data.args?.command || ""}</code>
+        <span className={s.commandStatus}>{status}</span>
+      </summary>
+      {output && <pre className={s.commandOutput}>{output}</pre>}
+      {result && (
+        <div className={s.commandResult}>
+          {result.error
+            ? "错误：" + result.error
+            : "退出码：" + (result.exitCode ?? "未知")}
+          {result.truncated ? "；输出已截断" : ""}
+          <span>{state.result?.data.durationMs} ms</span>
+        </div>
+      )}
+    </details>
+  );
+}
+
 export function Timeline({
   data,
   onError,
@@ -86,6 +175,8 @@ export function Timeline({
     editBatches.set(event.data.batchId, batch);
   }
 
+  const commandEvents = commandCards(data.events);
+
   return (
     <div className={s.timeline}>
       {data.events.map((e) => {
@@ -110,6 +201,14 @@ export function Timeline({
         }
 
         if (e.type === "tool_start") {
+          if (e.data.name === "run_command") {
+            const card = commandEvents.cards.get(e.id);
+
+            return card ? (
+              <CommandCard key={e.id} start={e} state={card} />
+            ) : null;
+          }
+
           return (
             <details className={s.tool} key={e.id}>
               <summary>
@@ -128,6 +227,10 @@ export function Timeline({
         }
 
         if (e.type === "tool_result") {
+          if (commandEvents.resultEventIds.has(e.id)) {
+            return null;
+          }
+
           return (
             <details className={s.toolResult} key={e.id}>
               <summary>
@@ -190,9 +293,13 @@ export function Timeline({
         }
 
         if (
-          (e.type === "command_output" || e.type === "git_output") &&
-          e.taskId === active?.id
+          e.type === "command_output" &&
+          commandEvents.outputEventIds.has(e.id)
         ) {
+          return null;
+        }
+
+        if (e.type === "command_output" || e.type === "git_output") {
           return (
             <pre className={s.toolResult} key={e.id}>
               {e.data.text}

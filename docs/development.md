@@ -55,11 +55,11 @@ Node.js 24，pnpm 11.22.0（packageManager 固定）。提交 pnpm-lock.yaml，�
 
 `read_file` 必须提供 `startLine` 和 `endLine`，每次最多返回 500 行。结果的 `returnedEndLine` 表示实际最后一行，`truncated` 表示请求因行数上限未完整返回，`hasMore` 表示文件后面还有行，`nextStartLine` 给出继续读取的位置（没有后续行时为 `null`）。执行器当前为检查 UTF-8、二进制、行数和编辑前的内容哈希，仍会在后端读取不超过 2 MiB 的整个文件；行范围限制的是发送给模型和保存到会话的文本，不承诺同等粒度的磁盘 I/O。
 
-模型已被要求在信息充分且操作互不依赖时，在一次 Responses 请求中返回多个工具调用，例如不同文件的读取、搜索或已读取文件的精确编辑。请求显式发送 `parallel_tool_calls: true`；这只是服务端的调用批次偏好，本机仍按模型返回顺序逐项校验、审批和执行。同一路径的多处修改合并为一个 `edit_file` 调用；不同文件的独立修改优先使用一个 `edit_files` 调用。完成一个可验证的逻辑改动后统一验证；需要前一步结果才能确定的操作仍须分轮，不为凑批次扩大范围。
+模型已被要求在信息充分且操作互不依赖时，在一次 Responses 请求中返回多个工具调用，例如不同文件的读取、搜索或已读取文件的精确编辑。请求显式发送 `parallel_tool_calls: true`；这只是服务端的调用批次偏好，本机仍按模型返回顺序逐项校验、审批和执行。同一路径的多处修改合并为一个 `edit_file` 调用；不同文件的独立修改优先使用一个 `edit_files` 调用。对于命令，模型应把可预先审批的顺序步骤、管道和安全的独立检查合入一条 `run_command` 文本；只有需要前一步结果或新的审批时才拆分，不为凑批次扩大范围。
 
-服务在 Windows 创建任务时自行检查 `PATH`、`SystemRoot` 和 `ComSpec`，按 `pwsh`、`powershell`、`cmd.exe` 的优先级选取第一个真实存在的 shell，并把解析后的可执行文件绝对路径及固定参数注入该任务的模型 instructions。模型不得探测、选择或回退 shell；检测不到时须报告无法使用 shell。`pwsh`/`powershell` 的固定前导参数是 `-NoLogo -NoProfile -NonInteractive -Command`，`cmd.exe` 是 `/d /s /c`。
+`run_command` 的模型参数只有 `{ command }`，工作目录固定为会话工作区。服务内部在 Windows 检查 `PATH`、`SystemRoot` 和 `ComSpec`，按 `pwsh`、`powershell`、`cmd.exe` 的优先级选择第一个真实存在的 shell；macOS 和 Linux 使用已验证的 `/bin/sh`。执行器追加固定的非交互参数（PowerShell 为 `-NoLogo -NoProfile -NonInteractive -Command`，cmd 为 `/d /s /c`，POSIX shell 为 `-c`），模型既不提供也不探测这些细节。完整复合命令仍作为一次副作用审批；不要求或保存命令间的人工分隔标记。
 
-只要完整复合命令可在执行前一并审批，模型应尽量用一个 shell 型 `run_command` 调用减少工具往返；这包括顺序命令、管道和具有流式生产者/消费者关系的命令，而不局限于可并行命令。模型必须在每个可独立报告的阶段前自行输出唯一的 `CODEATELIER_STEP:<id>` 分隔标记；管道的标记写入 stderr，以免改变管道输入。仅当需要工具结果来构造下一条命令或申请进一步审批时才拆分调用。
+命令每次流式输出都以工具调用 ID 保存。Web UI 将开始、所有输出分块和退出状态聚合在同一可展开命令卡片中，任务完成或刷新历史后仍可查看。
 
 `edit_file` 参数为 `{ path, edits: [{ oldText, newText, startLine, endLine }] }`，每次接受 1～100 项。`edit_files` 接受 `{ files: [{ path, edits }] }`，一次编辑 1～20 个已有文件，重复的真实路径会拒绝。新文件仍使用 `write_file`。原文和修改后文件各不超过 2 MiB，整批原文与结果合计不超过 16 MiB。
 
@@ -84,7 +84,7 @@ Node.js 24，pnpm 11.22.0（packageManager 固定）。提交 pnpm-lock.yaml，�
 
 普通工作区文件操作自动执行。工作区外访问、敏感文件、修改 AGENTS.md、完整覆盖已有文件需确认；直接修改 .git 被拒绝。外部读取当前采用逐次确认，尚未提供额外只读目录授权管理界面。
 
-命令均首次确认；简单 pnpm/npm 的 test/build/lint/typecheck 或 node --test 在可计算项目指纹时可授予本次会话重复执行。复杂 shell 不支持会话放行。Windows 由服务检测并在 instructions 中指定 shell，复合 shell 调用始终按单次审批处理。子进程环境设置 `NO_COLOR=1`、`FORCE_COLOR=0`、`CLICOLOR=0`、`CLICOLOR_FORCE=0` 和 `TERM=dumb` 请求工具禁用颜色；执行器还会跨输出分块移除 ANSI、OSC 等控制序列，只保存、展示和回传纯文本。没有系统沙箱、回滚或提权工具。请只操作可信项目。
+命令均首次确认；简单的 `pnpm`/`npm` test/build/lint/typecheck 或 `node --test` 在可计算项目指纹时可授予本次会话重复执行。包含更多 shell 语法的命令不支持会话放行，仍按单次审批处理。执行器内部选择 shell，不改变命令的权限边界；直接 Git 程序名（包括复合命令中的 Git）和提权命令会在审批前拒绝。子进程环境设置 `NO_COLOR=1`、`FORCE_COLOR=0`、`CLICOLOR=0`、`CLICOLOR_FORCE=0` 和 `TERM=dumb` 请求工具禁用颜色；执行器还会跨输出分块移除 ANSI、OSC 等控制序列，只保存、展示和回传纯文本。没有系统沙箱、回滚或提权工具。请只操作可信项目。
 
 Git 不经 `run_command` 执行，而使用单一 `git` 工具；模型可以主动调用允许的 action，不等待人工审批。`status`、`diff`、`log`、`show`、`branch` 只读；`add`、`commit`、`push` 会写入索引、仓库或已配置远程。`diff` 显式传 `staged`、`paths` 和 `contextLines`，空 paths 的全量差异先列出全部变更路径并拒绝敏感内容；`log` 传安全 revision、paths 与 limit；`show` 必须传安全 revision 和明确 paths；`add`/`commit` 必须传明确 paths，commit 另传非空 message；`push` 没有额外参数。
 
@@ -94,7 +94,7 @@ Git 不经 `run_command` 执行，而使用单一 `git` 工具；模型可以主
 
 - 模型返回“不支持 Responses”：核对服务公布的完整模型标识；配置原样传递，不自动转换简称。
 - 请求结束但无结果：检查服务是否发送完成事件。适配器支持从 output_item.done 收集结果。
-- 找不到 Windows shell：服务会按 `pwsh`、`powershell`、`cmd.exe` 检查环境并在任务 instructions 注入结果；若三者均不可用，模型会报告 shell 不可用而不会自行猜测。使用检测到的 `cmd.exe` 运行 pnpm 的 `.cmd` 脚本时仍按单次审批处理。
+- 找不到 Windows shell：服务会按 `pwsh`、`powershell`、`cmd.exe` 检查环境；若三者均不可用，`run_command` 会明确失败。模型无需也不得提供、探测或回退 shell；使用内部检测到的 `cmd.exe` 运行 pnpm 的 `.cmd` 脚本仍按单次审批处理。
 - 文件已变化：重新读取后再编辑；不要关闭并发修改检测。
 - 刷新后需要重新认证：服务重启会轮换本机会话 token，刷新页面。
 - 任务中断：在会话底部点击“恢复任务”，可先填写恢复说明。密钥或模型配置错误先到设置修正，超时可调整模型请求/空闲超时。模型自动重试记录 model.retry（含步骤、尝试次数、错误分类、HTTP 状态、等待时间）；耗尽后保留失败状态。详见 [恢复机制](recovery.md)。

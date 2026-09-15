@@ -30,6 +30,7 @@ import {
   createInstructions,
   detectWindowsShell,
 } from "../src/agent/instructions.js";
+import { commandShell } from "../src/tools/command-shell.js";
 import { createApp } from "../src/server/app.js";
 import pino from "pino";
 import { redactText } from "../src/logging/redact.js";
@@ -68,7 +69,7 @@ function runner(
 }
 
 describe("files and permissions", () => {
-  it("detects a Windows shell before injecting it into model instructions", async () => {
+  it("keeps Windows shell detection inside the executor and out of model instructions", async () => {
     const environment = {
       Path: "C:\\Tools;C:\\Windows\\System32\\WindowsPowerShell\\v1.0",
       ComSpec: "C:\\Windows\\System32\\cmd.exe",
@@ -78,7 +79,7 @@ describe("files and permissions", () => {
       (candidate) => candidate === "C:\\Tools\\pwsh.exe",
       "win32",
     );
-    const instructions = await createInstructions(await temp(), shell);
+    const instructions = await createInstructions(await temp());
 
     expect(shell).toEqual({
       command: "C:\\Tools\\pwsh.exe",
@@ -87,13 +88,19 @@ describe("files and permissions", () => {
     expect(instructions).toContain("Use progressive code reading");
     expect(instructions).toContain("start with 80-200 lines");
     expect(instructions).toContain("Read complete files only");
-    expect(instructions).toContain(
-      "CodeAtelier selected the Windows shell executable",
-    );
-    expect(instructions).toContain("C:\\\\Tools\\\\pwsh.exe");
-    expect(instructions).toContain("do not choose, probe, or fall back");
-    expect(instructions).toContain("CODEATELIER_STEP");
-    expect(instructions).toContain("streaming producer/consumer commands");
+    expect(instructions).toContain("only one command string");
+    expect(instructions).toContain("safe independent checks");
+    expect(instructions).not.toContain("C:\\\\Tools\\\\pwsh.exe");
+    expect(instructions).not.toContain("CODEATELIER_STEP");
+  });
+
+  it("uses a fixed POSIX shell internally", () => {
+    expect(
+      commandShell({}, (candidate) => candidate === "/bin/sh", "linux"),
+    ).toEqual({
+      command: "/bin/sh",
+      args: ["-c"],
+    });
   });
 
   it("falls back to powershell when pwsh is unavailable", () => {

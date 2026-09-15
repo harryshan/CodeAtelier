@@ -4,8 +4,8 @@
  *
  * 1. ignored 列出遍历时跳过的目录；ToolContext 定义依赖，readHashes 记住本任务读过的文件版本。
  * 2. access 解析路径并申请必要的权限；entries 限量遍历，commandGrant 为可复用命令计算指纹。
- * 3. execute 先校验参数。精确编辑分流给共享读取哈希的 FileEditor，单一专用 Git 工具分流给 GitToolRunner；普通命令拒绝直接 Git、
- *    再申请审批并调用 executeProcess。
+ * 3. execute 先校验参数。精确编辑分流给共享读取哈希的 FileEditor，单一专用 Git 工具分流给 GitToolRunner；普通命令只接受
+ *    一条命令文本，内部选择 shell、拒绝直接 Git，再申请审批并调用 executeProcess。
  * 4. 只读分支处理列目录、读取和搜索；读文件按 500 行分页并记录内容哈希，供后续修改核对。
  * 5. write_file 修改已有文件前要求本任务已经读过且内容没有变化，整文件覆盖另需审批。
  * 6. 写入前再次核对路径和正文，再用同目录临时文件替换目标、保留权限，更新哈希并发出 diff。
@@ -30,8 +30,9 @@ import type { Settings } from "../shared/types.js";
 import { ApprovalManager } from "../permissions/approval-manager.js";
 import { resolveTarget, regularFile, sensitive, inside } from "./paths.js";
 import { executeProcess } from "./process.js";
+import { commandShell } from "./command-shell.js";
 import { FileEditor } from "./file-editor.js";
-import { GitToolRunner, isGitExecutable } from "./git.js";
+import { GitToolRunner, containsGitCommand } from "./git.js";
 
 const ignored = new Set([
   ".git",
@@ -141,14 +142,11 @@ export class ToolRunner {
   }
 
   // 会话授权绑定命令、目录和项目内容。源码变化后，旧授权不再复用。
-  private async commandGrant(command: string, args: string[], cwd: string) {
+  private async commandGrant(command: string, cwd: string) {
     const safe =
-      (["pnpm", "npm", "pnpm.cmd", "npm.cmd"].includes(
-        path.basename(command).toLowerCase(),
-      ) &&
-        args.length === 1 &&
-        ["test", "build", "lint", "typecheck"].includes(args[0])) ||
-      (command === "node" && args.length === 1 && args[0] === "--test");
+      /^(?:pnpm|npm)(?:\.cmd)?\s+(?:test|build|lint|typecheck)$/i.test(
+        command.trim(),
+      ) || /^node\s+--test$/i.test(command.trim());
 
     if (!safe || !inside(this.ctx.root, cwd)) {
       return undefined;
@@ -162,7 +160,7 @@ export class ToolRunner {
 
     const hash = createHash("sha256");
 
-    hash.update(JSON.stringify([command, args, cwd]));
+    hash.update(JSON.stringify([command, cwd]));
     try {
       for (const file of files.sort()) {
         await regularFile(file, 1024 * 1024);
@@ -203,27 +201,28 @@ export class ToolRunner {
     }
 
     if (name === "run_command") {
-      const cwd = await this.access(args.cwd);
-      const grant = await this.commandGrant(args.command, args.args, cwd);
+      const shell = commandShell();
+      const cwd = this.ctx.root;
 
-      if (/^(sudo|su|runas)$/i.test(path.basename(args.command))) {
+      if (!shell) {
+        throw new Error("当前平台未找到可用的命令 shell。");
+      }
+
+      if (/^\s*(?:sudo|su|runas)(?:\s|$)/i.test(args.command)) {
         throw new Error("初版不支持提权命令。");
       }
 
-      if (isGitExecutable(args.command)) {
+      if (containsGitCommand(args.command)) {
         throw new Error("请使用受限的 git 工具。");
       }
 
+      const grant = await this.commandGrant(args.command, cwd);
       const allowed = await this.ctx.approvals.request(
         {
           sessionId: this.ctx.sessionId,
           taskId: this.ctx.taskId,
           tool: name,
-          description: JSON.stringify(
-            { command: args.command, args: args.args, cwd },
-            null,
-            2,
-          ),
+          description: JSON.stringify({ command: args.command, cwd }, null, 2),
         },
         this.ctx.signal,
         grant,
@@ -234,8 +233,8 @@ export class ToolRunner {
       }
 
       return executeProcess(
-        args.command,
-        args.args,
+        shell.command,
+        [...shell.args, args.command],
         cwd,
         this.ctx.signal,
         this.ctx.settings.commandTimeoutMs,

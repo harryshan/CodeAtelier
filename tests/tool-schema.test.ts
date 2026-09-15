@@ -3,7 +3,8 @@
  * 使用生产 definitions 和 schemas，不调用模型服务，也不执行文件或 Git 操作。
  *
  * 1. 递归遍历工具定义及数组项，核对 strict 对象的属性均为必填且禁止额外属性。
- * 2. 检查单一 git 工具的 discriminated action 契约：每个 action 只接受自身所需字段，不能混入任意选项。
+ * 2. 检查 run_command 只向模型公开 command 字符串，以及单一 git 工具的 discriminated action 契约。
+ *    每个 action 只接受自身所需字段，不能混入任意选项。
  */
 
 import { expect, it } from "vitest";
@@ -37,6 +38,19 @@ it("declares every property as required for strict function tools", () => {
 
     check(parameters);
   }
+});
+
+it("accepts only one command string for run_command", () => {
+  expect(schemas.run_command.parse({ command: "pnpm test" })).toEqual({
+    command: "pnpm test",
+  });
+  expect(
+    schemas.run_command.safeParse({
+      command: "node",
+      args: ["--test"],
+      cwd: ".",
+    }).success,
+  ).toBe(false);
 });
 
 it("declares strict action-specific parameters for the single git tool", () => {

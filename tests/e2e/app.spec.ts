@@ -6,7 +6,8 @@
  * 2. 检查重试文本分开显示、凭据失效后重新连接，以及会话切换后的数据隔离。
  * 3. 检查受确认的重载服务入口会等待替代服务、完整刷新页面，以及关闭服务成功和请求失败时的不同提示。
  * 4. 检查压缩通知、原始历史及模型用量在刷新后仍能显示。
- * 5. 验证多文件编辑的状态、diff 和刷新后的历史；通过页面内项目目录连接首个项目，再从项目标题右侧加号新建对话并检查历史隔离、折叠与最近记录限制。
+ * 5. 验证多文件编辑的状态、diff 和刷新后的历史；命令的流式输出、结果与历史重载聚合在同一卡片。
+ * 6. 通过页面内项目目录连接首个项目，再从项目标题右侧加号新建对话并检查历史隔离、折叠与最近记录限制。
  *
  * 页面刷新或重连不能重新提交任务。这里不调用真实模型。
  */
@@ -93,6 +94,34 @@ test("command approval survives refresh and can be denied or cancelled", async (
   await page.getByRole("button", { name: "拒绝", exact: true }).click();
 
   await expect(page.getByRole("button", { name: "恢复任务" })).toHaveCount(0);
+});
+
+test("groups streamed command output and its final status in one persistent card", async ({
+  page,
+}) => {
+  const workspace = await realpath(
+    await mkdtemp(path.join(tmpdir(), "codeatelier-e2e-")),
+  );
+
+  await page.goto("/");
+  await createInitialConversation(page, workspace);
+  await page.getByLabel("任务描述").fill("执行命令并查看输出");
+  await page.getByRole("button", { name: "开始执行" }).click();
+  await expect(page.getByText("允许这次操作？")).toBeVisible();
+  await page.getByRole("button", { name: "允许一次" }).click();
+
+  await expect(page.getByText("VERIFIED", { exact: true })).toBeVisible();
+  await expect(page.getByText("退出码：0")).toBeVisible();
+  await expect(
+    page.locator("details").filter({ hasText: "VERIFIED" }),
+  ).toHaveCount(1);
+  await page.reload();
+  await page.getByRole("button", { name: "执行命令并查看输出" }).click();
+
+  await expect(page.getByText("VERIFIED", { exact: true })).toBeVisible();
+  await expect(
+    page.locator("details").filter({ hasText: "VERIFIED" }),
+  ).toHaveCount(1);
 });
 
 test("settings validates and saves without exposing key", async ({ page }) => {

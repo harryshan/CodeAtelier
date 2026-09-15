@@ -52,11 +52,7 @@ export const schemas = {
     .object({ files: z.array(fileEditSchema).min(1).max(20) })
     .strict(),
   run_command: z
-    .object({
-      command: z.string().min(1),
-      args: z.array(z.string()).max(100),
-      cwd: z.string(),
-    })
+    .object({ command: z.string().trim().min(1).max(100000) })
     .strict(),
   git: z.discriminatedUnion("action", [
     z.object({ action: z.literal("status") }).strict(),
@@ -114,7 +110,7 @@ const descriptions: Record<string, string> = {
   edit_files:
     "Edit 1-20 distinct previously read files in one call. Each entry uses edit_file semantics: all ranges refer to that file's ORIGINAL snapshot; startLine/endLine are both integers or both null. Validate permissions, versions and all edits before any write. Files write sequentially, NOT as a cross-file transaction. On failure inspect per-file statuses and current contents; never blindly replay the batch. Merge all changes to the same real path in one entry. Existing files only; use write_file to create files.",
   run_command:
-    "Execute a program with an argument array, after user approval. No shell expansion. To use a shell specify the exact executable and arguments injected in the task instructions; on Windows do not probe or choose a shell yourself. Whenever a complete compound command can be approved up front, prefer one shell call for sequential commands, pipelines, and streaming producer/consumer commands when it reduces tool round trips. Print your own unique CODEATELIER_STEP marker before each independently reportable stage; write pipeline markers to stderr so they do not alter piped input. Split calls only when a tool result is needed to construct the next command or request further approval. Command output disables colors and removes terminal control sequences. Do not use direct Git commands, elevation, or destructive system operations.",
+    "Execute one command string in the session workspace after user approval. Provide only command: CodeAtelier selects the platform shell, fixed noninteractive arguments, and workspace directory internally. When a complete compound command can be approved up front, put sequential commands, pipelines, and safe independent checks into this one command whenever it reduces tool round trips; do not add artificial output separators. Split calls only when a prior result is needed to construct the next command or request further approval. Command output disables colors and removes terminal control sequences. Do not use direct Git commands, elevation, or destructive system operations.",
   git: "Perform one safe Git action in the session workspace. Actions: status; diff (explicit staged, paths, contextLines); log (revision, paths, limit); show (revision and explicit paths); branch; add (paths); commit (message and paths); push. This tool automatically validates that the workspace is the repository root, permits only safe paths/revisions and a configured HTTPS/SSH upstream, and disables hooks, GPG signing, external diff/text conversion and interactive prompts. Use it proactively for Git work; do not invoke Git through run_command. It accepts no arbitrary subcommand, option, remote, branch target, force, reset, clean, checkout, merge, rebase, tag, stash, clone, or PR operation. Inspect status/diff/log before writes and do not replay an interrupted add, commit, or push without rechecking.",
 };
 

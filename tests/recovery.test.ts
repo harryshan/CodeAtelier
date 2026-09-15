@@ -343,11 +343,7 @@ it("shutdown and approval cancellation remain recoverable and release the task l
             type: "function_call",
             name: "run_command",
             call_id: "pending",
-            arguments: JSON.stringify({
-              command: process.execPath,
-              args: ["-e", "process.exit(0)"],
-              cwd: ".",
-            }),
+            arguments: JSON.stringify({ command: 'node -e "process.exit(0)"' }),
           },
         ],
         text: "",

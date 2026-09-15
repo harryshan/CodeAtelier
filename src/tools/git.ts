@@ -4,7 +4,7 @@
  * GitToolRunner；测试可注入 GitExecutor，因而不需要创建真实提交或远程连接。
  *
  * 1. GitRequest 描述 status、diff、log、show、branch、add、commit 和 push 的互斥参数组合；
- *    isGitExecutable 继续阻止 run_command 绕过本模块。
+ *    isGitExecutable 和 containsGitCommand 继续阻止 run_command 绕过本模块。
  * 2. execute 在每项动作前验证会话工作区恰好是 Git worktree 根目录，再分派固定参数的子命令。
  * 3. workspacePaths 解析真实路径、拒绝敏感/.git/绝对或选项式路径，并递归检查目录，防止一次路径
  *    规范把敏感子文件一并暂存或读取。
@@ -98,6 +98,13 @@ function safePushUrl(value: string) {
 
 export function isGitExecutable(command: string) {
   return /^git(?:\.exe|\.cmd|\.bat)?$/i.test(path.basename(command));
+}
+
+/** shell 命令无法可靠静态解析；保守拒绝独立 git 程序名，避免普通工具绕过受限 action。 */
+export function containsGitCommand(command: string) {
+  return /(^|[^a-z0-9_.-])git(?:\.exe|\.cmd|\.bat)?(?=$|[^a-z0-9_.-])/i.test(
+    command,
+  );
 }
 
 export class GitToolRunner {

@@ -98,9 +98,7 @@ const { app, engine } = await createApp(
 
         if (step === 1 && lastUser.includes("命令")) {
           return tool("run_command", {
-            command: process.execPath,
-            args: ["-e", 'console.log("VERIFIED")'],
-            cwd: ".",
+            command: "node -e \"console.log('VERIFIED')\"",
           });
         }
 

@@ -109,9 +109,8 @@ it("shutdown acknowledges a running task, closes SSE, releases the port and pers
               call_id: "command",
               name: "run_command",
               arguments: JSON.stringify({
-                command: process.execPath,
-                args: ["-e", 'console.log("ready");setInterval(()=>{},1000)'],
-                cwd: ".",
+                command:
+                  "node -e \"console.log('ready');setInterval(()=>{},1000)\"",
               }),
             },
           ],
