@@ -4,7 +4,7 @@
  *
  * 1. TerminalTextSanitizer 在每个 stdout/stderr 流内跨 chunk 去除 ANSI、OSC 等终端控制序列，
  *    避免颜色和标题控制符进入会话记录；子进程环境同时请求常见工具禁用颜色。
- * 2. spawn 不经过 shell，隐藏 Windows 窗口，并从子进程环境中移除模型密钥。
+ * 2. spawn 不经过 shell，隐藏 Windows 窗口，并从子进程环境中移除模型密钥；调用方可追加受限环境变量。
  * 3. stop 在 Windows 使用 taskkill，在 Unix 使用进程组终止子进程树；超时和取消都走这里。
  * 4. stdout、stderr 按 UTF-8 流式解码，append 保留限额内的可见内容并通知调用方。
  * 5. error 和 close 清理计时器及监听，返回结果或抛出取消、超时等错误。
@@ -80,6 +80,7 @@ export async function executeProcess(
   timeoutMs: number,
   outputLimit: number,
   onOutput: (s: string) => void,
+  environment: NodeJS.ProcessEnv = {},
 ) {
   signal.throwIfAborted();
 
@@ -101,6 +102,7 @@ export async function executeProcess(
         CLICOLOR: "0",
         CLICOLOR_FORCE: "0",
         TERM: "dumb",
+        ...environment,
         CODEATELIER_API_KEY: undefined,
       },
     });

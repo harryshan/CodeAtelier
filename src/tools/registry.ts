@@ -1,7 +1,7 @@
 /**
  * 声明模型可以调用的文件和命令工具，供 Engine 生成工具列表、ToolRunner 校验参数。
  *
- * 1. schemas 定义列目录、读文件、搜索、写文件、单文件/多文件快照精确编辑、命令和受限 Git 操作的参数。
+ * 1. schemas 定义列目录、读文件、搜索、写文件、单文件/多文件快照精确编辑、命令和单一受限 Git 操作的参数。
  * 2. descriptions 向模型说明各工具的用途和限制。
  * 3. definitions 将 schema 转成 Responses API 需要的函数工具声明。
  *
@@ -58,16 +58,47 @@ export const schemas = {
       cwd: z.string(),
     })
     .strict(),
-  git_status: z.object({}).strict(),
-  // strict 工具要求所有属性均列入 required；用 false 显式选择未暂存差异。
-  git_diff: z.object({ staged: z.boolean() }).strict(),
-  git_commit: z
-    .object({
-      message: z.string().min(1).max(500),
-      paths: z.array(z.string().min(1)).min(1).max(100),
-    })
-    .strict(),
-  git_push: z.object({}).strict(),
+  git: z.discriminatedUnion("action", [
+    z.object({ action: z.literal("status") }).strict(),
+    z
+      .object({
+        action: z.literal("diff"),
+        staged: z.boolean(),
+        paths: z.array(z.string().min(1).max(1024)).max(100),
+        contextLines: z.number().int().min(0).max(100),
+      })
+      .strict(),
+    z
+      .object({
+        action: z.literal("log"),
+        revision: z.string().min(1).max(200),
+        paths: z.array(z.string().min(1).max(1024)).max(100),
+        limit: z.number().int().min(1).max(100),
+      })
+      .strict(),
+    z
+      .object({
+        action: z.literal("show"),
+        revision: z.string().min(1).max(200),
+        paths: z.array(z.string().min(1).max(1024)).min(1).max(100),
+      })
+      .strict(),
+    z.object({ action: z.literal("branch") }).strict(),
+    z
+      .object({
+        action: z.literal("add"),
+        paths: z.array(z.string().min(1).max(1024)).min(1).max(100),
+      })
+      .strict(),
+    z
+      .object({
+        action: z.literal("commit"),
+        message: z.string().trim().min(1).max(500),
+        paths: z.array(z.string().min(1).max(1024)).min(1).max(100),
+      })
+      .strict(),
+    z.object({ action: z.literal("push") }).strict(),
+  ]),
 };
 
 const descriptions: Record<string, string> = {
@@ -84,14 +115,7 @@ const descriptions: Record<string, string> = {
     "Edit 1-20 distinct previously read files in one call. Each entry uses edit_file semantics: all ranges refer to that file's ORIGINAL snapshot; startLine/endLine are both integers or both null. Validate permissions, versions and all edits before any write. Files write sequentially, NOT as a cross-file transaction. On failure inspect per-file statuses and current contents; never blindly replay the batch. Merge all changes to the same real path in one entry. Existing files only; use write_file to create files.",
   run_command:
     "Execute a program with an argument array, after user approval. No shell expansion. To use a shell specify the exact executable and arguments injected in the task instructions; on Windows do not probe or choose a shell yourself. Whenever a complete compound command can be approved up front, prefer one shell call for sequential commands, pipelines, and streaming producer/consumer commands when it reduces tool round trips. Print your own unique CODEATELIER_STEP marker before each independently reportable stage; write pipeline markers to stderr so they do not alter piped input. Split calls only when a tool result is needed to construct the next command or request further approval. Command output disables colors and removes terminal control sequences. Do not use direct Git commands, elevation, or destructive system operations.",
-  git_status:
-    "Show the current repository branch and concise working-tree status. This read-only tool runs in the session workspace.",
-  git_diff:
-    "Show the unstaged diff by default, or the staged diff when staged is true. This read-only tool never invokes an external diff program.",
-  git_commit:
-    "Stage and commit only the listed workspace paths with the supplied message. Inspect git_status and git_diff first. Do not include sensitive files or .git paths.",
-  git_push:
-    "Push the current branch only to its configured upstream. This tool accepts no remote, branch, force, or other Git options.",
+  git: "Perform one safe Git action in the session workspace. Actions: status; diff (explicit staged, paths, contextLines); log (revision, paths, limit); show (revision and explicit paths); branch; add (paths); commit (message and paths); push. This tool automatically validates that the workspace is the repository root, permits only safe paths/revisions and a configured HTTPS/SSH upstream, and disables hooks, GPG signing, external diff/text conversion and interactive prompts. Use it proactively for Git work; do not invoke Git through run_command. It accepts no arbitrary subcommand, option, remote, branch target, force, reset, clean, checkout, merge, rebase, tag, stash, clone, or PR operation. Inspect status/diff/log before writes and do not replay an interrupted add, commit, or push without rechecking.",
 };
 
 export const definitions = Object.entries(schemas).map(([name, schema]) => ({

@@ -18,7 +18,7 @@ server (Fastify)
 - `src/shared` 仅存浏览器和后端共享的数据契约，前端不能导入文件、进程或密钥实现。
 - `src/agent/engine.ts` 管理单任务锁、模型循环、停止条件与工具结果回传；`context.ts` 负责上下文恢复，`instructions.ts` 负责根规则与模型指令构建。src/context/ 负责预算、摘要压缩、快照契约与历史原文读取，循环在完整工具批次完成后接入。
 - `src/providers` 将 Responses 输出映射为输出项和文本。主任务请求显式声明 `parallel_tool_calls: true`，让兼容服务可在一次响应中返回多个独立调用；自建服务需同时收集 output_item.done；completed.output 有内容时优先使用，不能只依赖 completed。
-- `src/tools` 定义 Zod 参数及对应 JSON Schema，提供目录、读取、搜索、写入、精确编辑、命令和受限 Git 工具。模型先由目录和搜索定位，`read_file` 再按行读取；单次硬上限为 500 行，并返回分页/截断状态。
+- `src/tools` 定义 Zod 参数及对应 JSON Schema，提供目录、读取、搜索、写入、精确编辑、命令和单一受限 `git` 工具。模型先由目录和搜索定位，`read_file` 再按行读取；单次硬上限为 500 行，并返回分页/截断状态。
 - `src/permissions` 在后端等待用户批准，取消会释放待审批 Promise。模型无法自行同意审批。
 - `src/sessions/store.ts` 保存 sessions、tasks、events、context；初始数据库结构位于 `schema.ts`。启动时将 running/waiting 任务标为 interrupted。
 - `src/config` 管理非敏感设置、内存密钥和平台数据目录。
@@ -29,10 +29,10 @@ server (Fastify)
 | 模块 | 职责 |
 | --- | --- |
 | tools/registry.ts | 工具参数 schema、描述和模型可见定义 |
-| tools/tool-runner.ts | ToolRunner：校验、审批、文件与普通命令执行，并分流专用 Git 工具 |
+| tools/tool-runner.ts | ToolRunner：校验、审批、文件与普通命令执行，并分流单一专用 `git` 工具 |
 | tools/file-editor.ts | FileEditor：整批预检、逐文件写入和进度，复用 ToolRunner 的权限与读取哈希 |
 | tools/edit-plan.ts | 基于原始快照的行号/文本定位、重叠校验与纯文本转换 |
-| tools/git.ts | GitToolRunner：固定 status/diff/commit/push 参数、提交路径复核与自动执行 |
+| tools/git.ts | GitToolRunner：按 action 分流固定 Git 参数，复核 worktree、路径/revision/upstream 并自动执行 |
 | tools/paths.ts / process.ts | 路径边界与进程生命周期 |
 | providers/model-provider.ts | 与具体服务无关的模型接口和结果契约 |
 | providers/responses-provider.ts | ResponsesProvider：Responses 协议实现 |
@@ -66,7 +66,7 @@ UI 历史包含消息、工具调用、受限工具结果和修改 diff。长内
 
 文件操作解析真实路径，考虑符号链接与 Windows junction；工作区外或敏感路径询问用户。现存文件须先读取，精确修改时比对内容哈希，拒绝覆盖外部并发修改。完整覆盖现有文件另行审批；临时文件写入后重命名并保留原文件模式。
 
-命令使用参数数组和 shell:false，显式 shell 也必须审批。Windows 在创建任务时检测环境中的 `pwsh`、`powershell`、`cmd.exe`，将按优先级找到的第一个可执行文件绝对路径及固定参数注入模型 instructions；模型不探测、选择或回退 shell。完整复合命令可预先审批时，顺序命令、管道及流式生产者/消费者命令均应优先合并为一次 shell 调用；模型须在可独立报告的阶段前输出唯一 `CODEATELIER_STEP` 标记，且管道标记进入 stderr 而非管道输入。执行器通过常见环境变量请求子程序关闭颜色，并在 stdout/stderr 各自的流状态中移除 ANSI、OSC 等终端控制序列，因而历史和 UI 仅接收纯文本。对少量固定验证命令允许会话授权；绑定参数、cwd 及受限扫描得到的项目内容指纹。超大项目无法计算指纹时退回单次审批。直接 Git 程序调用被拒绝，改由 `git.ts` 提供固定子集：状态/差异只读，提交自动仅处理模型明确提供的非敏感工作区路径，推送自动仅使用当前 upstream；自动化不接受额外 Git 参数或目标。此机制不等同于系统隔离；命令的实际副作用由获准程序决定。
+命令使用参数数组和 shell:false，显式 shell 也必须审批。Windows 在创建任务时检测环境中的 `pwsh`、`powershell`、`cmd.exe`，将按优先级找到的第一个可执行文件绝对路径及固定参数注入模型 instructions；模型不探测、选择或回退 shell。完整复合命令可预先审批时，顺序命令、管道及流式生产者/消费者命令均应优先合并为一次 shell 调用；模型须在可独立报告的阶段前输出唯一 `CODEATELIER_STEP` 标记，且管道标记进入 stderr 而非管道输入。执行器通过常见环境变量请求子程序关闭颜色，并在 stdout/stderr 各自的流状态中移除 ANSI、OSC 等终端控制序列，因而历史和 UI 仅接收纯文本。对少量固定验证命令允许会话授权；绑定参数、cwd 及受限扫描得到的项目内容指纹。超大项目无法计算指纹时退回单次审批。直接 Git 程序调用被拒绝，改由 `git.ts` 提供单一 action 子集：状态、差异、历史、文件查看和分支只读，暂存/提交自动仅处理模型明确提供的非敏感工作区路径，推送自动仅使用当前分支经校验的 upstream。每次调用核对 worktree 根目录；全量差异先检查变更路径，文件内容读取必须带明确安全路径，revision 和 remote URL 采用保守白名单，Git 禁用 hooks、GPG、外部 diff/textconv 与交互提示。自动化不接受额外 Git 参数或目标，也不等同于系统隔离；可信仓库的 Git 过滤器等配置仍可能产生当前用户权限下的副作用。
 
 ## 本机 HTTP 边界
 

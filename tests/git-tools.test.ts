@@ -1,30 +1,36 @@
 /**
- * 验证专用 Git 工具的参数边界、自动执行流程和固定命令序列，不启动真实 Git 进程或修改仓库。
- * 夹具使用临时工作区与注入的 GitExecutor：路径解析保持生产实现，子进程以记录调用的替身代替，
- * 避免测试产生 commit、push 或远程写入。
+ * 验证单一 Git 工具的 action 契约、自动执行流程和固定命令序列，不启动真实 Git 进程或修改仓库。
+ * 夹具使用临时工作区与注入的 GitExecutor：路径解析和敏感目录检查保持生产实现，子进程以记录调用的
+ * 替身代替，因而不会产生提交、远程写入或真实凭据交互。
  *
- * 1. createFixture 组装 GitToolRunner、临时设置和记录 Git 参数的执行器。
- * 2. 只读用例检查 status/diff 的固定参数。
- * 3. 写入用例检查 commit/push 不等待审批即可执行、提交仅暂存明确路径、失败不继续提交。
- * 4. 路径与 schema 用例拒绝敏感文件和额外参数，确保不能借专用工具传递任意 Git 选项。
+ * 1. createFixture 模拟 worktree 根目录、当前分支及其安全 upstream，并记录 Git 参数和流式输出。
+ * 2. 只读用例检查 status、diff、log、show、branch 的固定参数、路径和 revision 限制。
+ * 3. 写入用例检查 add、commit、push 都无需审批，且 commit 仅暂存明确路径、暂存失败不继续提交。
+ * 4. 安全用例拒绝敏感目录、跨 worktree、危险 revision 与不安全 upstream，确保不能借 action 传递任意 Git 选项。
  *
- * 这些断言验证工具实际传给执行器的行为，而非只检查模型定义；真实 Git 兼容性仍需在
- * 用户明确要求的手动集成验证中完成。
+ * 这些断言验证实际传给执行器的行为，而非只检查模型定义；真实 Git 与远程服务兼容性仍需手动集成验证。
  */
 
 import { expect, it } from "vitest";
-import { writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { Config } from "../src/config/config.js";
 import { GitToolRunner, type GitExecutor } from "../src/tools/git.js";
 import { schemas } from "../src/tools/registry.js";
 import { temp } from "./fixtures/helpers.js";
 
-async function createFixture(exitCodes: number[] = []) {
+interface FixtureOptions {
+  exitCodes?: number[];
+  repositoryRoot?: string;
+  remoteUrl?: string;
+}
+
+async function createFixture(options: FixtureOptions = {}) {
   const root = await temp();
   const config = new Config(await temp());
   const calls: string[][] = [];
   const output: string[] = [];
+  const exitCodes = [...(options.exitCodes ?? [])];
   const execute: GitExecutor = async (
     args,
     _cwd,
@@ -34,10 +40,26 @@ async function createFixture(exitCodes: number[] = []) {
     emit,
   ) => {
     calls.push(args);
-    emit(args.join(" "));
+    const command = args.join(" ");
+    emit(command);
+
+    const outputByCommand = new Map<string, string>([
+      ["rev-parse --show-toplevel", options.repositoryRoot ?? root],
+      ["symbolic-ref --quiet --short HEAD", "main"],
+      ["config --get branch.main.remote", "origin"],
+      ["config --get branch.main.merge", "refs/heads/main"],
+      [
+        "remote get-url --push origin",
+        options.remoteUrl ?? "https://example.test/repo.git",
+      ],
+      [
+        "--no-optional-locks diff --name-only -z --no-ext-diff --no-textconv --",
+        "",
+      ],
+    ]);
 
     return {
-      output: args.join(" "),
+      output: outputByCommand.get(command) ?? command,
       exitCode: exitCodes.shift() ?? 0,
       truncated: false,
     };
@@ -62,43 +84,114 @@ async function createFixture(exitCodes: number[] = []) {
   return { root, calls, output, tools };
 }
 
-it("runs fixed read-only status and diff commands", async () => {
+it("runs proactive read-only actions with fixed options", async () => {
   const fixture = await createFixture();
 
-  expect(await fixture.tools.execute("git_status", {})).toMatchObject({
+  await expect(
+    fixture.tools.execute({ action: "status" }),
+  ).resolves.toMatchObject({
     exitCode: 0,
   });
-  expect(
-    await fixture.tools.execute("git_diff", { staged: true }),
-  ).toMatchObject({
-    staged: true,
+  await expect(
+    fixture.tools.execute({
+      action: "diff",
+      staged: true,
+      paths: ["changed.ts"],
+      contextLines: 5,
+    }),
+  ).resolves.toMatchObject({ staged: true, paths: ["changed.ts"] });
+  await expect(
+    fixture.tools.execute({
+      action: "log",
+      revision: "HEAD",
+      paths: [],
+      limit: 3,
+    }),
+  ).resolves.toMatchObject({ exitCode: 0 });
+  await expect(
+    fixture.tools.execute({
+      action: "show",
+      revision: "main",
+      paths: ["changed.ts"],
+    }),
+  ).resolves.toMatchObject({ exitCode: 0 });
+  await expect(
+    fixture.tools.execute({ action: "branch" }),
+  ).resolves.toMatchObject({
     exitCode: 0,
   });
 
   expect(fixture.calls).toEqual([
-    ["status", "--short", "--branch"],
-    ["diff", "--no-ext-diff", "--cached"],
+    ["rev-parse", "--show-toplevel"],
+    [
+      "--no-optional-locks",
+      "status",
+      "--short",
+      "--branch",
+      "--untracked-files=normal",
+    ],
+    [
+      "--no-optional-locks",
+      "diff",
+      "--no-ext-diff",
+      "--no-textconv",
+      "--no-color",
+      "--unified=5",
+      "--cached",
+      "--",
+      "changed.ts",
+    ],
+    [
+      "--no-optional-locks",
+      "log",
+      "--no-color",
+      "--no-decorate",
+      "--format=%H%x09%h%x09%s",
+      "--max-count=3",
+      "HEAD",
+      "--",
+    ],
+    [
+      "--no-optional-locks",
+      "show",
+      "--no-ext-diff",
+      "--no-textconv",
+      "--no-color",
+      "--format=fuller",
+      "main",
+      "--",
+      "changed.ts",
+    ],
+    [
+      "--no-optional-locks",
+      "branch",
+      "--no-color",
+      "--format=%(HEAD) %(refname:short) %(upstream:short)",
+    ],
   ]);
-  expect(fixture.output).toEqual([
-    "status --short --branch",
-    "diff --no-ext-diff --cached",
-  ]);
+  expect(fixture.output).toHaveLength(5);
 });
 
-it("automatically commits only the specified workspace paths", async () => {
+it("automatically adds and commits only the specified workspace paths", async () => {
   const fixture = await createFixture();
 
   await writeFile(
     path.join(fixture.root, "changed.ts"),
     "export const changed = true;\n",
   );
-  const result = await fixture.tools.execute("git_commit", {
+  await expect(
+    fixture.tools.execute({ action: "add", paths: ["changed.ts"] }),
+  ).resolves.toMatchObject({ paths: ["changed.ts"], add: { exitCode: 0 } });
+  const result = await fixture.tools.execute({
+    action: "commit",
     message: "feat: add changed module",
     paths: ["changed.ts"],
   });
 
   expect(result.paths).toEqual(["changed.ts"]);
   expect(fixture.calls).toEqual([
+    ["rev-parse", "--show-toplevel"],
+    ["add", "--", "changed.ts"],
     ["add", "--", "changed.ts"],
     [
       "-c",
@@ -116,11 +209,12 @@ it("automatically commits only the specified workspace paths", async () => {
 });
 
 it("does not attempt a commit when staging fails", async () => {
-  const fixture = await createFixture([1]);
+  const fixture = await createFixture({ exitCodes: [0, 1] });
 
   await writeFile(path.join(fixture.root, "changed.ts"), "changed\n");
   await expect(
-    fixture.tools.execute("git_commit", {
+    fixture.tools.execute({
+      action: "commit",
       message: "fix: retain staging error",
       paths: ["changed.ts"],
     }),
@@ -128,28 +222,90 @@ it("does not attempt a commit when staging fails", async () => {
     stage: { exitCode: 1 },
     commit: null,
   });
-  expect(fixture.calls).toEqual([["add", "--", "changed.ts"]]);
+  expect(fixture.calls).toEqual([
+    ["rev-parse", "--show-toplevel"],
+    ["add", "--", "changed.ts"],
+  ]);
 });
 
-it("automatically pushes only to the configured upstream and permits no options", async () => {
-  const fixture = await createFixture();
-
-  await expect(fixture.tools.execute("git_push", {})).resolves.toMatchObject({
-    exitCode: 0,
-  });
-  expect(fixture.calls).toEqual([["push", "--porcelain"]]);
-  expect(() => schemas.git_push.parse({ force: true })).toThrow();
-});
-
-it("rejects sensitive commit paths before execution", async () => {
+it("automatically pushes only the checked configured upstream", async () => {
   const fixture = await createFixture();
 
   await expect(
-    fixture.tools.execute("git_commit", {
-      message: "chore: should not commit credentials",
-      paths: [".env"],
+    fixture.tools.execute({ action: "push" }),
+  ).resolves.toMatchObject({
+    exitCode: 0,
+  });
+  expect(fixture.calls).toEqual([
+    ["rev-parse", "--show-toplevel"],
+    ["symbolic-ref", "--quiet", "--short", "HEAD"],
+    ["config", "--get", "branch.main.remote"],
+    ["config", "--get", "branch.main.merge"],
+    ["remote", "get-url", "--push", "origin"],
+    ["push", "--porcelain", "--no-verify", "origin", "HEAD:refs/heads/main"],
+  ]);
+  expect(schemas.git.safeParse({ action: "push", force: true }).success).toBe(
+    false,
+  );
+});
+
+it("rejects sensitive paths, dangerous revisions, foreign repositories and unsafe remotes", async () => {
+  const fixture = await createFixture();
+  await mkdir(path.join(fixture.root, "src"));
+  await writeFile(path.join(fixture.root, "src", ".env"), "secret\n");
+
+  await expect(
+    fixture.tools.execute({ action: "add", paths: ["src"] }),
+  ).rejects.toThrow("敏感");
+  await expect(
+    fixture.tools.execute({
+      action: "show",
+      revision: "HEAD~1;",
+      paths: ["src"],
     }),
-  ).rejects.toThrow("非敏感");
-  expect(fixture.calls).toEqual([]);
-  expect(() => schemas.git_commit.parse({ message: "x", paths: [] })).toThrow();
+  ).rejects.toThrow("revision");
+  expect(fixture.calls).toEqual([["rev-parse", "--show-toplevel"]]);
+
+  const foreign = await createFixture({
+    repositoryRoot: path.dirname(fixture.root),
+  });
+  await expect(foreign.tools.execute({ action: "status" })).rejects.toThrow(
+    "完全一致",
+  );
+
+  const unsafeRemote = await createFixture({ remoteUrl: "ext::sh -c exploit" });
+  await expect(unsafeRemote.tools.execute({ action: "push" })).rejects.toThrow(
+    "HTTPS、SSH",
+  );
+
+  const credentialedRemote = await createFixture({
+    remoteUrl: "https://token@example.test/repo.git",
+  });
+  await expect(
+    credentialedRemote.tools.execute({ action: "push" }),
+  ).rejects.toThrow("HTTPS、SSH");
+
+  const insecureRemote = await createFixture({
+    remoteUrl: "http://example.test/repo.git",
+  });
+  await expect(
+    insecureRemote.tools.execute({ action: "push" }),
+  ).rejects.toThrow("HTTPS、SSH");
+});
+
+it("keeps action schemas narrow and requires the action-specific fields", () => {
+  expect(schemas.git.safeParse({ action: "diff" }).success).toBe(false);
+  expect(
+    schemas.git.parse({
+      action: "diff",
+      staged: false,
+      paths: [],
+      contextLines: 3,
+    }),
+  ).toEqual({ action: "diff", staged: false, paths: [], contextLines: 3 });
+  expect(
+    schemas.git.safeParse({ action: "commit", message: "x", paths: [] })
+      .success,
+  ).toBe(false);
+  expect(schemas.git.safeParse({ action: "reset" }).success).toBe(false);
 });

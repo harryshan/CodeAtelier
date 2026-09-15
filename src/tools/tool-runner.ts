@@ -4,7 +4,7 @@
  *
  * 1. ignored 列出遍历时跳过的目录；ToolContext 定义依赖，readHashes 记住本任务读过的文件版本。
  * 2. access 解析路径并申请必要的权限；entries 限量遍历，commandGrant 为可复用命令计算指纹。
- * 3. execute 先校验参数。精确编辑分流给共享读取哈希的 FileEditor，专用 Git 分流给 GitToolRunner；普通命令拒绝直接 Git、
+ * 3. execute 先校验参数。精确编辑分流给共享读取哈希的 FileEditor，单一专用 Git 工具分流给 GitToolRunner；普通命令拒绝直接 Git、
  *    再申请审批并调用 executeProcess。
  * 4. 只读分支处理列目录、读取和搜索；读文件按 500 行分页并记录内容哈希，供后续修改核对。
  * 5. write_file 修改已有文件前要求本任务已经读过且内容没有变化，整文件覆盖另需审批。
@@ -31,7 +31,7 @@ import { ApprovalManager } from "../permissions/approval-manager.js";
 import { resolveTarget, regularFile, sensitive, inside } from "./paths.js";
 import { executeProcess } from "./process.js";
 import { FileEditor } from "./file-editor.js";
-import { GitToolRunner, isGitExecutable, isGitTool } from "./git.js";
+import { GitToolRunner, isGitExecutable } from "./git.js";
 
 const ignored = new Set([
   ".git",
@@ -194,8 +194,8 @@ export class ToolRunner {
       return this.editor.editMany(args.files);
     }
 
-    if (isGitTool(name)) {
-      return this.git.execute(name, args);
+    if (name === "git") {
+      return this.git.execute(args);
     }
 
     if (name === "read_file" && args.endLine < args.startLine) {
@@ -211,9 +211,7 @@ export class ToolRunner {
       }
 
       if (isGitExecutable(args.command)) {
-        throw new Error(
-          "请使用受限的 git_status、git_diff、git_commit 或 git_push 工具。",
-        );
+        throw new Error("请使用受限的 git 工具。");
       }
 
       const allowed = await this.ctx.approvals.request(

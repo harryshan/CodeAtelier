@@ -26,7 +26,7 @@
 | 新建与精确编辑 | files.test.ts、regressions.test.ts             | 嵌套创建、替换唯一性、字面替换、任务内读取前置条件、并发修改、覆盖拒绝、临时文件清理、POSIX 模式           |
 | 路径与工作区   | paths.test.ts、core.test.ts                    | 路径前缀隔离、父目录越界、新建路径规范化、敏感组件、真实目录要求、Windows ADS                              |
 | 权限           | permissions.test.ts、core.test.ts              | 单次/会话授权、失效请求、跨会话隔离、内容变化后重新审批、取消、敏感文件/AGENTS.md、直接 Git 与提权限制      |
-| Git 工具        | git-tools.test.ts                              | 固定 status/diff 参数、提交/推送自动执行、指定路径、敏感路径拒绝、暂存失败不提交、禁止额外推送选项         |
+| Git 工具        | git-tools.test.ts、tool-schema.test.ts         | 单一 action 契约、固定 status/diff/log/show/branch 参数、add/提交/推送自动执行、worktree/upstream/revision/敏感目录校验、暂存失败不提交、禁止额外选项 |
 | 命令执行       | process.test.ts、core.test.ts                  | 不存在的命令、输出与退出码、截断、UTF-8/ANSI 分块、颜色环境与控制符清理、API key 不继承、Windows shell 环境检测/注入、复合命令和分隔标记指令、取消和超时 |
 | 模型协议与重试 | provider.test.ts、recovery.test.ts             | item.done 回退、失败/不完整事件、断流、超时、重试次数、HTTP 分类、取消退避、并行工具调用请求参数           |
 | agent 循环     | engine.test.ts、core.test.ts、recovery.test.ts | 工具往返、同轮多项独立调用、单任务锁、步骤/上下文预算、参数错误反馈、根规则、输出预算、跨任务重新读取、不重放副作用 |
@@ -105,7 +105,7 @@ mechanical-input.test.ts 覆盖精确结果/跨路径正文引用、逐字还原
 
 ## 严格工具契约
 
-- tests/tool-schema.test.ts 检查所有生产工具的 strict 对象声明：属性均列入 required，禁止额外属性；git_diff 必须显式传 staged，true/false 均有效。此回归防止工具 schema 导致整轮模型请求被拒绝，不连接真实服务。
+- tests/tool-schema.test.ts 检查所有生产工具的 strict 对象声明：属性均列入 required，禁止额外属性；单一 `git` 工具的每个 discriminated action 仅接受对应字段，diff 必须显式传 staged、paths 和 contextLines。此回归防止工具 schema 导致整轮模型请求被拒绝，不连接真实服务。
 
 单/多文件批量编辑：`files.test.ts` 覆盖同快照多处替换和读取状态复用；`multi-file-edit.test.ts` 覆盖整批预检、重复真实路径、外部修改、审批拒绝、行号消歧、重叠拒绝、CRLF、取消与写入故障后的部分完成/未知状态。`tool-schema.test.ts` 递归检查 strict 契约；`engine.test.ts` 验证单次多文件调用及逐文件进度持久化；`e2e/app.spec.ts` 检查进度、diff 和刷新历史。已有 core 测试继续覆盖未读取及外部变化拒绝。
 

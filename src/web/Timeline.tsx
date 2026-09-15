@@ -22,10 +22,12 @@ const labels: Record<string, string> = {
   edit_files: "批量修改文件",
   write_file: "写入文件",
   run_command: "执行命令",
-  git_status: "Git 状态",
-  git_diff: "Git 差异",
-  git_commit: "Git 提交",
-  git_push: "Git 推送",
+  git: "Git 操作",
+  // 保留旧会话事件的中文标签；旧调用只展示，不会被新版 ToolRunner 执行。
+  git_status: "Git 状态（旧记录）",
+  git_diff: "Git 差异（旧记录）",
+  git_commit: "Git 提交（旧记录）",
+  git_push: "Git 推送（旧记录）",
 };
 
 function textResult(event: Event) {

@@ -86,7 +86,9 @@ Node.js 24，pnpm 11.22.0（packageManager 固定）。提交 pnpm-lock.yaml，�
 
 命令均首次确认；简单 pnpm/npm 的 test/build/lint/typecheck 或 node --test 在可计算项目指纹时可授予本次会话重复执行。复杂 shell 不支持会话放行。Windows 由服务检测并在 instructions 中指定 shell，复合 shell 调用始终按单次审批处理。子进程环境设置 `NO_COLOR=1`、`FORCE_COLOR=0`、`CLICOLOR=0`、`CLICOLOR_FORCE=0` 和 `TERM=dumb` 请求工具禁用颜色；执行器还会跨输出分块移除 ANSI、OSC 等控制序列，只保存、展示和回传纯文本。没有系统沙箱、回滚或提权工具。请只操作可信项目。
 
-Git 不经 `run_command` 执行，而使用固定的专用工具：`git_status` 显示分支和工作区状态，`git_diff` 显示未暂存或暂存差异，二者只读。`git_commit` 必须提供提交消息和明确路径，并自动仅对这些路径执行 `git add` 与无 hooks、无 GPG 签名的提交；不提交敏感文件、`.git` 或工作区外路径。`git_push` 自动只执行到当前分支已配置的 upstream，不接受 remote、branch、force 或其他参数。提交或推送中断时结果可能未知，恢复前必须重新检查状态和差异，不自动重放。
+Git 不经 `run_command` 执行，而使用单一 `git` 工具；模型可以主动调用允许的 action，不等待人工审批。`status`、`diff`、`log`、`show`、`branch` 只读；`add`、`commit`、`push` 会写入索引、仓库或已配置远程。`diff` 显式传 `staged`、`paths` 和 `contextLines`，空 paths 的全量差异先列出全部变更路径并拒绝敏感内容；`log` 传安全 revision、paths 与 limit；`show` 必须传安全 revision 和明确 paths；`add`/`commit` 必须传明确 paths，commit 另传非空 message；`push` 没有额外参数。
+
+每次调用先确认会话工作区恰好是非 bare Git worktree 根目录。所有路径必须为非选项式的相对路径，解析真实位置后仍在工作区，且不含 `.git`、敏感组件或敏感目录后代；revision 仅接受保守的分支、标签或提交哈希字符。Git 固定禁用 hooks、GPG 签名、外部 diff/textconv、交互认证提示、分页和编辑器。push 从当前分支配置读取唯一 remote 与 `refs/heads/*` upstream，拒绝本地、`ext::` 及其他非 HTTPS/SSH/SCP 风格地址，并以显式 refspec 推送，不接受 remote、branch、force 或其他选项。应用层校验不等于操作系统沙箱，可信项目中的 Git clean filter 等仓库配置仍可能以当前用户权限运行。add、commit 或 push 中断时结果可能未知，恢复前必须用 status/diff/log 重新检查，不自动重放。
 
 ## 常见问题
 

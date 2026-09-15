@@ -1,26 +1,39 @@
 /**
- * 提供受限的 Git 状态、差异、提交和推送工具，避免把任意 Git 参数暴露给模型。
- * ToolRunner 将已通过 Zod 校验的 Git 调用转交给 GitToolRunner；它使用当前会话的工作区、
- * 取消信号和命令输出限制。测试可注入 GitExecutor，因此不会对真实仓库写入。
+ * 提供单一、参数受限的 Git 工具，供 ToolRunner 在不经普通命令审批的情况下执行常见仓库操作。
+ * ToolRunner 先用 Zod 校验 `git` 的 action 专属参数，再把当前会话工作区、取消信号和输出限制交给
+ * GitToolRunner；测试可注入 GitExecutor，因而不需要创建真实提交或远程连接。
  *
- * 1. GitToolName、GitExecutor 与 GitToolContext 描述四个固定工具及其进程依赖。
- * 2. isGitTool 让 ToolRunner 将专用工具从普通命令分流；isGitExecutable 阻止通过 run_command
- *    直接调用 Git，以免绕过固定的参数和目标限制。
- * 3. GitToolRunner.execute 直接运行固定的 status/diff/commit/push 流程，不为提交或推送等待审批。
- * 4. commitPaths 在暂存前解析真实路径，拒绝工作区外、敏感及 .git 路径；commit 仅暂存并
- *    提交这些路径，禁用 hooks 与 GPG 签名，避免项目配置意外执行程序或请求凭据。
+ * 1. GitRequest 描述 status、diff、log、show、branch、add、commit 和 push 的互斥参数组合；
+ *    isGitExecutable 继续阻止 run_command 绕过本模块。
+ * 2. execute 在每项动作前验证会话工作区恰好是 Git worktree 根目录，再分派固定参数的子命令。
+ * 3. workspacePaths 解析真实路径、拒绝敏感/.git/绝对或选项式路径，并递归检查目录，防止一次路径
+ *    规范把敏感子文件一并暂存或读取。
+ * 4. diff/show/log 仅接受安全 revision 和受校验路径；全量 diff 先核对变更路径，避免输出敏感文件内容。
+ * 5. push 从当前分支的 upstream 配置推导唯一 remote 与 refs/heads 目标，拒绝本地、ext 等不安全 URL，
+ *    并禁用 hooks、交互认证提示、GPG 签名和外部 diff/textconv。
  *
- * Git 提交会修改索引和仓库元数据，push 会向已配置 upstream 进行外部写入，但用户已允许
- * 通过这些受限工具自动执行。取消或进程中断发生在 Git 命令执行期间时，结果可能未知，
- * 恢复流程必须先检查 git_status/git_diff，而不能盲目重放。
+ * Git 仍以当前用户权限访问可信工作区，应用层校验不是操作系统沙箱。add、commit 与 push 由用户授权
+ * 自动执行；取消或进程中断时结果可能未知，恢复前必须通过 git 的 status/diff/log 重新核实，不能重放。
  */
 
+import { lstat, readdir } from "node:fs/promises";
 import path from "node:path";
 import type { Settings } from "../shared/types.js";
-import { resolveTarget } from "./paths.js";
+import { resolveTarget, sensitive } from "./paths.js";
 import { executeProcess } from "./process.js";
 
-export type GitToolName = "git_status" | "git_diff" | "git_commit" | "git_push";
+export type GitAction =
+  "status" | "diff" | "log" | "show" | "branch" | "add" | "commit" | "push";
+
+export type GitRequest =
+  | { action: "status" }
+  | { action: "diff"; staged: boolean; paths: string[]; contextLines: number }
+  | { action: "log"; revision: string; paths: string[]; limit: number }
+  | { action: "show"; revision: string; paths: string[] }
+  | { action: "branch" }
+  | { action: "add"; paths: string[] }
+  | { action: "commit"; message: string; paths: string[] }
+  | { action: "push" };
 
 export interface GitProcessResult {
   output: string;
@@ -46,8 +59,41 @@ export interface GitToolContext {
   emit: (type: string, data: any) => void;
 }
 
-export function isGitTool(name: string): name is GitToolName {
-  return ["git_status", "git_diff", "git_commit", "git_push"].includes(name);
+function samePath(first: string, second: string) {
+  const normalize = (value: string) =>
+    process.platform === "win32" ? value.toLocaleLowerCase() : value;
+
+  return normalize(path.resolve(first)) === normalize(path.resolve(second));
+}
+
+function safeRevision(value: string) {
+  return (
+    value.length <= 200 &&
+    /^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(value) &&
+    !value.includes("..") &&
+    !value.includes("//") &&
+    !value.endsWith("/")
+  );
+}
+
+function safePushUrl(value: string) {
+  const remote = value.trim();
+
+  try {
+    const url = new URL(remote);
+
+    if (url.protocol === "https:") {
+      return Boolean(url.hostname) && !url.username && !url.password;
+    }
+
+    if (url.protocol === "ssh:") {
+      return Boolean(url.hostname) && !url.password;
+    }
+  } catch {
+    // Git 的 SCP 风格 SSH 地址不是 WHATWG URL，继续按保守规则检查。
+  }
+
+  return /^[A-Za-z0-9._-]+@[A-Za-z0-9._-]+:[^\s]+$/.test(remote);
 }
 
 export function isGitExecutable(command: string) {
@@ -55,6 +101,8 @@ export function isGitExecutable(command: string) {
 }
 
 export class GitToolRunner {
+  private repositoryRoot: string | undefined;
+
   constructor(
     private ctx: GitToolContext,
     private executeGit: GitExecutor = (
@@ -73,49 +121,94 @@ export class GitToolRunner {
         timeoutMs,
         outputLimit,
         onOutput,
+        {
+          // 保留已配置的非交互凭据，但绝不让模型任务卡在终端认证、分页或编辑器中。
+          GIT_TERMINAL_PROMPT: "0",
+          GIT_PAGER: "cat",
+          PAGER: "cat",
+          GIT_EDITOR: "true",
+        },
       ),
   ) {}
 
-  async execute(name: GitToolName, args: any): Promise<any> {
+  async execute(request: GitRequest): Promise<any> {
     this.ctx.signal.throwIfAborted();
+    await this.ensureRepository();
 
-    if (name === "git_status") {
-      return this.run(["status", "--short", "--branch"]);
+    switch (request.action) {
+      case "status":
+        return this.run([
+          "--no-optional-locks",
+          "status",
+          "--short",
+          "--branch",
+          "--untracked-files=normal",
+        ]);
+      case "diff":
+        return this.diff(request);
+      case "log":
+        return this.log(request);
+      case "show":
+        return this.show(request);
+      case "branch":
+        return this.run([
+          "--no-optional-locks",
+          "branch",
+          "--no-color",
+          "--format=%(HEAD) %(refname:short) %(upstream:short)",
+        ]);
+      case "add":
+        return this.add(request.paths);
+      case "commit":
+        return this.commit(request.message, request.paths);
+      case "push":
+        return this.push();
     }
-
-    if (name === "git_diff") {
-      return {
-        ...(await this.run([
-          "diff",
-          "--no-ext-diff",
-          ...(args.staged ? ["--cached"] : []),
-        ])),
-        staged: !!args.staged,
-      };
-    }
-
-    if (name === "git_commit") {
-      return this.commit(args.message, args.paths);
-    }
-
-    return this.push();
   }
 
-  private run(args: string[]) {
+  private run(args: string[], emit = true) {
     return this.executeGit(
       args,
       this.ctx.root,
       this.ctx.signal,
       this.ctx.settings.commandTimeoutMs,
       this.ctx.settings.outputChars,
-      (text) => this.ctx.emit("git_output", { text }),
+      emit ? (text) => this.ctx.emit("git_output", { text }) : () => {},
     );
   }
 
-  private async commitPaths(inputs: string[]) {
-    const paths: string[] = [];
+  private async ensureRepository() {
+    if (this.repositoryRoot) {
+      return;
+    }
+
+    const result = await this.run(["rev-parse", "--show-toplevel"], false);
+    const repositoryRoot = result.output.trim();
+
+    if (result.exitCode !== 0 || !repositoryRoot) {
+      throw new Error("当前会话工作区不是可用的 Git 工作树。");
+    }
+
+    if (!samePath(repositoryRoot, this.ctx.root)) {
+      throw new Error("Git 仓库根目录必须与当前会话工作区完全一致。");
+    }
+
+    this.repositoryRoot = repositoryRoot;
+  }
+
+  private async workspacePaths(inputs: string[]) {
+    const checkedPaths: string[] = [];
 
     for (const input of inputs) {
+      if (
+        !input.trim() ||
+        path.isAbsolute(input) ||
+        input.startsWith("-") ||
+        input.includes("\0")
+      ) {
+        throw new Error("Git 路径必须是工作区内的相对路径，且不能是选项。");
+      }
+
       const target = await resolveTarget(this.ctx.root, input);
       const relative = path.relative(this.ctx.root, target.path);
       const parts = target.path.split(/[\\/]/);
@@ -126,23 +219,151 @@ export class GitToolRunner {
         !relative ||
         parts.some((part) => /^\.git$/i.test(part))
       ) {
-        throw new Error("Git 提交路径必须是工作区内的非敏感文件或目录。");
+        throw new Error("Git 路径必须是工作区内的非敏感文件或目录。");
       }
 
-      if (!paths.includes(relative)) {
-        paths.push(relative);
+      await this.checkDirectory(target.path);
+      const gitPath = relative.split(path.sep).join("/");
+
+      if (!checkedPaths.includes(gitPath)) {
+        checkedPaths.push(gitPath);
       }
     }
 
-    return paths;
+    return checkedPaths;
+  }
+
+  private async checkDirectory(directory: string): Promise<void> {
+    let info;
+
+    try {
+      info = await lstat(directory);
+    } catch (error: any) {
+      if (error.code === "ENOENT") {
+        return;
+      }
+
+      throw error;
+    }
+
+    if (!info.isDirectory() || info.isSymbolicLink()) {
+      return;
+    }
+
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      if (sensitive(entry.name)) {
+        throw new Error("Git 目录路径不能包含敏感文件或 Git 元数据。");
+      }
+
+      const child = path.join(directory, entry.name);
+      const target = await resolveTarget(this.ctx.root, child);
+
+      if (target.outside || target.sensitive) {
+        throw new Error("Git 目录路径不能包含工作区外或敏感内容。");
+      }
+
+      if (entry.isDirectory() && !entry.isSymbolicLink()) {
+        await this.checkDirectory(target.path);
+      }
+    }
+  }
+
+  private async diff(request: Extract<GitRequest, { action: "diff" }>) {
+    const paths = request.paths.length
+      ? await this.workspacePaths(request.paths)
+      : await this.changedPaths(request.staged);
+    const result = await this.run([
+      "--no-optional-locks",
+      "diff",
+      "--no-ext-diff",
+      "--no-textconv",
+      "--no-color",
+      `--unified=${request.contextLines}`,
+      ...(request.staged ? ["--cached"] : []),
+      "--",
+      ...paths,
+    ]);
+
+    return { ...result, staged: request.staged, paths };
+  }
+
+  private async changedPaths(staged: boolean) {
+    const result = await this.run(
+      [
+        "--no-optional-locks",
+        "diff",
+        "--name-only",
+        "-z",
+        "--no-ext-diff",
+        "--no-textconv",
+        ...(staged ? ["--cached"] : []),
+        "--",
+      ],
+      false,
+    );
+
+    if (result.exitCode !== 0 || result.truncated) {
+      throw new Error("无法完整核对 Git 差异路径，已拒绝显示全量差异。");
+    }
+
+    const paths = result.output.split("\0").filter(Boolean);
+
+    return this.workspacePaths(paths);
+  }
+
+  private async log(request: Extract<GitRequest, { action: "log" }>) {
+    this.assertRevision(request.revision);
+    const paths = await this.workspacePaths(request.paths);
+
+    return this.run([
+      "--no-optional-locks",
+      "log",
+      "--no-color",
+      "--no-decorate",
+      "--format=%H%x09%h%x09%s",
+      `--max-count=${request.limit}`,
+      request.revision,
+      "--",
+      ...paths,
+    ]);
+  }
+
+  private async show(request: Extract<GitRequest, { action: "show" }>) {
+    this.assertRevision(request.revision);
+    const paths = await this.workspacePaths(request.paths);
+
+    return this.run([
+      "--no-optional-locks",
+      "show",
+      "--no-ext-diff",
+      "--no-textconv",
+      "--no-color",
+      "--format=fuller",
+      request.revision,
+      "--",
+      ...paths,
+    ]);
+  }
+
+  private assertRevision(revision: string) {
+    if (!safeRevision(revision)) {
+      throw new Error("Git revision 只能包含受限的分支、标签或提交哈希字符。");
+    }
+  }
+
+  private async add(inputs: string[]) {
+    const paths = await this.workspacePaths(inputs);
+    const add = await this.run(["add", "--", ...paths]);
+
+    return { paths, add };
   }
 
   private async commit(message: string, inputs: string[]) {
-    const checkedPaths = await this.commitPaths(inputs);
-    const stage = await this.run(["add", "--", ...checkedPaths]);
+    const paths = await this.workspacePaths(inputs);
+    const stage = await this.run(["add", "--", ...paths]);
 
     if (stage.exitCode !== 0) {
-      return { paths: checkedPaths, stage, commit: null };
+      return { paths, stage, commit: null };
     }
 
     const commit = await this.run([
@@ -155,13 +376,77 @@ export class GitToolRunner {
       "-m",
       message,
       "--",
-      ...checkedPaths,
+      ...paths,
     ]);
 
-    return { paths: checkedPaths, stage, commit };
+    return { paths, stage, commit };
   }
 
   private async push() {
-    return this.run(["push", "--porcelain"]);
+    const branch = await this.valueFromGit([
+      "symbolic-ref",
+      "--quiet",
+      "--short",
+      "HEAD",
+    ]);
+    const remote = await this.valueFromGit([
+      "config",
+      "--get",
+      `branch.${branch}.remote`,
+    ]);
+    const merge = await this.valueFromGit([
+      "config",
+      "--get",
+      `branch.${branch}.merge`,
+    ]);
+    const remoteUrl = await this.valueFromGit([
+      "remote",
+      "get-url",
+      "--push",
+      remote,
+    ]);
+
+    if (!safeRevision(branch) || !/^[A-Za-z0-9._-]+$/.test(remote)) {
+      throw new Error(
+        "当前 Git 分支或 upstream remote 名称不安全，已拒绝推送。",
+      );
+    }
+
+    if (
+      !merge.startsWith("refs/heads/") ||
+      !safeRevision(merge.slice("refs/heads/".length))
+    ) {
+      throw new Error("当前分支没有安全的 refs/heads upstream，已拒绝推送。");
+    }
+
+    if (!safePushUrl(remoteUrl)) {
+      throw new Error(
+        "upstream remote URL 仅允许 HTTPS、SSH 或 SCP 风格 SSH 地址。",
+      );
+    }
+
+    return this.run([
+      "push",
+      "--porcelain",
+      "--no-verify",
+      remote,
+      `HEAD:${merge}`,
+    ]);
+  }
+
+  private async valueFromGit(args: string[]) {
+    const result = await this.run(args, false);
+    const value = result.output.trim();
+
+    if (
+      result.exitCode !== 0 ||
+      !value ||
+      result.truncated ||
+      value.includes("\n")
+    ) {
+      throw new Error("无法确定当前分支的 Git upstream 配置。");
+    }
+
+    return value;
   }
 }
