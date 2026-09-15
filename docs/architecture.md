@@ -18,7 +18,7 @@ server (Fastify)
 - `src/shared` 仅存浏览器和后端共享的数据契约，前端不能导入文件、进程或密钥实现。
 - `src/agent/engine.ts` 管理单任务锁、模型循环、停止条件与工具结果回传；`context.ts` 负责上下文恢复，`instructions.ts` 负责根规则与模型指令构建。src/context/ 负责预算、摘要压缩、快照契约与历史原文读取，循环在完整工具批次完成后接入。
 - `src/providers` 将 Responses 输出映射为输出项和文本。主任务请求显式声明 `parallel_tool_calls: true`，让兼容服务可在一次响应中返回多个独立调用；自建服务需同时收集 output_item.done；completed.output 有内容时优先使用，不能只依赖 completed。
-- `src/tools` 定义 Zod 参数及对应 JSON Schema，提供目录、读取、搜索、写入、精确编辑、命令和单一受限 `git` 工具。`run_command` 只向模型公开一条命令文本，`command-shell.ts` 在执行器内部选择平台 shell；模型先由目录和搜索定位，`read_file` 再按行读取；单次硬上限为 500 行，并返回分页/截断状态。
+- `src/tools` 定义 Zod 参数及对应 JSON Schema，提供目录、读取、搜索、写入、精确编辑、命令和单一受限 `git` 工具。`search` 对目录递归搜索文件名与正文，也可指定一个文件仅搜索其文件名和正文；`run_command` 只向模型公开一条命令文本，`command-shell.ts` 在执行器内部选择平台 shell；模型先由目录和搜索定位，`read_file` 再按行读取；单次硬上限为 500 行，并返回分页/截断状态。
 - `src/permissions` 在后端等待用户批准，取消会释放待审批 Promise。模型无法自行同意审批。
 - `src/sessions/store.ts` 保存 sessions、tasks、events、context；初始数据库结构位于 `schema.ts`。启动时将 running/waiting 任务标为 interrupted。
 - `src/config` 管理非敏感设置、内存密钥和平台数据目录。

@@ -121,7 +121,7 @@ const descriptions: Record<string, string> = {
     "List immediate directory entries. Use paths relative to the workspace.",
   read_file: `Read text with line numbers. Read AGENTS.md and applicable nested AGENTS.md before edits. Use search to locate symbols or error text, then read a focused range around the matching line; normally request 80-200 lines and expand only when needed. Avoid repeating ranges already read. Full-file reading is for short files, project instructions, or necessary whole-file analysis. Maximum ${MAX_READ_LINES} lines per call. Results report whether more lines remain or the requested range was truncated.`,
   search:
-    "Search file names and text literally (not regex), recursively. Ignores dependency and build directories.",
+    "Search file names and text literally (not regex). A directory path is searched recursively; a file path searches that file's name and contents only. Ignores dependency and build directories during recursive searches.",
   write_file:
     "Create or replace a UTF-8 text file. Existing files must have been read in this task. Prefer edit_files for changes.",
   edit_files:
