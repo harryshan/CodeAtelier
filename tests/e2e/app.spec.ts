@@ -2,7 +2,7 @@
  * 用 Chromium 操作真实页面，检查用户完成会话任务时看到的结果。
  * Playwright 启动本地测试服务器和临时工作区，模型响应由 tests/fixtures/server.ts 模拟。
  *
- * 1. 创建会话、写文件、查看 diff、刷新历史，再检查审批、取消和设置保存。
+ * 1. 创建会话、通过统一文件编辑创建文件、查看 diff、刷新历史，再检查审批、取消和设置保存。
  * 2. 检查重试文本分开显示、凭据失效后重新连接，以及会话切换后的数据隔离。
  * 3. 检查受确认的重载服务入口会等待替代服务、完整刷新页面，以及关闭服务成功和请求失败时的不同提示。
  * 4. 检查压缩通知、原始历史及模型用量在刷新后仍能显示。
@@ -79,7 +79,7 @@ test("keeps current session statistics collapsed until expanded and projects per
   await expect(page.getByRole("heading", { name: "会话统计" })).toBeVisible();
   await expect(page.getByText("Token（服务实报）")).toBeVisible();
   await expect(page.getByText("输入（缓存 / 非缓存）")).toBeVisible();
-  await expect(page.getByText("工具分布：write_file 1")).toBeVisible();
+  await expect(page.getByText("工具分布：edit_files 1")).toBeVisible();
   await expect(page.getByText("成功 1/1（100%）")).toBeVisible();
   await expect(page.getByText("LLM 请求")).toBeVisible();
   await expect(page.getByText("明细未完整提供（输入合计 100）")).toBeVisible();

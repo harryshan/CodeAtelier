@@ -27,7 +27,7 @@
 机械整理独立于容量阈值和摘要是否失败，每次重新扫描当前输入，不调用模型，不创建快照。
 目前识别两种机会：
 
-1. read_file、list_files 的工具名、参数字符串、结果字符串完全相同：保留首次结果，后续使用 exact-output-v1 引用。已移除的 search 只在旧会话历史中保留原样兼容，不进入新版请求的机械去重。
+1. read_file 的工具名、参数字符串、结果字符串完全相同：保留首次结果，后续使用 exact-output-v1 引用。已移除的 search、list_files 和 write_file 只在旧会话历史中保留原样兼容，不进入新版请求的机械去重。
 2. read_file 的 text 完全相同，即使路径或其他元数据不同：保留一份正文，后续使用 exact-text-v1，仅替换 text，其他字段保留。不会据此合并文件或推断版本一致。
 
 引用的 inputIndex 是本次请求 input 的零基索引，附原 callId；引用只指向更早的结果，
@@ -70,10 +70,10 @@ ToolRunner 仅对工作区内非敏感、大小不超过 2 MiB 的普通文件�
 | --- | --- | --- |
 | read_file | 大于等于 2000 字符的正文换成摘录；过期版本沿用第一级去掉正文 | 路径、行数、哈希等元数据；失败或截断读取仍不投影 |
 | 旧会话 search | 去掉 matches 中的 text | 全部命中路径、行号、类型及原 truncated；查询参数保留在调用中；新模型改用 run_command |
-| list_files | 超过 40 条时只留前后各 20 条 | 条目原名和类型、原结果条数及省略条数；不声称是磁盘完整目录 |
+| 旧会话 list_files | 超过 40 条时只留前后各 20 条 | 条目原名和类型、原结果条数及省略条数；不声称是磁盘完整目录；新模型改用 run_command |
 | run_command | 大于等于 2000 字符的合并 output 换成摘录 | 明确整数 exitCode、error、truncated、取消/超时等原始元数据及完整调用 |
 | git | status/diff/log/show/branch 的长 output 换成摘录 | action 与参数、退出码等元数据；add/commit/push 的全部结果保持原样，保护操作结果标识 |
-| write_file / 历史 edit_file | 长 diff 换成摘录 | 路径、changed、error 和其他字段 |
+| 旧会话 write_file / edit_file | 长 diff 换成摘录 | 路径、changed、error 和其他字段；新模型统一使用 edit_files |
 | edit_files | 历史结果 files 条目中的长 diff 换成摘录 | batchId、顶层错误与全部逐文件路径/状态；当前工具结果本就不带 diff，通常不变 |
 
 非零退出码、原输出截断和多文件部分成功不阻止正文归档，但状态绝不覆盖或推断。

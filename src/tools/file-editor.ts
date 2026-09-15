@@ -1,15 +1,24 @@
 /**
  * FileEditor 执行 ToolRunner 分流的统一多文件编辑，共享其审批回调和读取哈希。
- * 1. prepare 逐文件审批、核对读取版本、用 planEdits 定位原始快照并限制内存规模；某项失败不阻塞独立文件。
- * 2. verify 在预检结束和每次写入前复核路径及原文，避免审批等待期间的变化被覆盖；失败逐项记录后继续。
- * 3. commit 用同目录临时文件替换单个目标，保留权限并更新读取哈希；不提供跨文件事务。
- * 4. editMany 同时处理单文件和多文件调用：汇总所有逐文件失败，仍写入可安全执行的条目，并记录逐文件状态。
+ * 1. prepare 逐文件审批，按 create 区分新建与已有文件：新建必须不存在，已有文件必须已读取并以 planEdits 定位原始快照；某项失败不阻塞独立文件。
+ * 2. verify 在预检结束和每次写入前复核路径、存在性及原文，避免审批等待期间的变化被覆盖或 create 误覆盖外部新建的文件。
+ * 3. commit 用同目录临时文件替换单个目标，创建时先建立父目录并重新核对真实路径；已有文件保留权限并更新读取哈希；不提供跨文件事务。
+ * 4. editMany 同时处理新建和已有文件条目：汇总所有逐文件失败，仍写入可安全执行的条目，并记录逐文件状态。
  * edit_progress 经 Engine 保存到历史，写入前标 unknown、成功后标 written；断电或持久化失败
  * 仍可能留下未知结果，恢复必须检查现场，不自动回滚或重放。参数/错误的脱敏由 Engine 负责。
  */
 
-import { readFile, writeFile, rename, unlink, chmod } from "node:fs/promises";
+import {
+  readFile,
+  writeFile,
+  rename,
+  unlink,
+  chmod,
+  lstat,
+  mkdir,
+} from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
+import path from "node:path";
 import { createTwoFilesPatch } from "diff";
 import { regularFile, resolveTarget } from "./paths.js";
 import { planEdits, type FileEdit } from "./edit-plan.js";
@@ -27,7 +36,8 @@ interface PreparedEdit {
   file: string;
   before: string;
   after: string;
-  mode: number;
+  mode?: number;
+  create: boolean;
 }
 
 type FileStatus = "not_attempted" | "failed" | "unknown" | "written";
@@ -51,6 +61,35 @@ export class FileEditor {
 
   private async prepare(input: FileEdit): Promise<PreparedEdit> {
     const file = await this.ctx.access(input.path);
+    if (input.create) {
+      if (input.content.includes("\0")) {
+        throw new Error("新文件内容不能包含二进制 NUL 字符。");
+      }
+
+      if (Buffer.byteLength(input.content) > MAX_FILE_BYTES) {
+        throw new Error("新文件超过 2 MiB，请缩小内容。");
+      }
+
+      try {
+        await lstat(file);
+        throw new Error(
+          "目标文件已存在；请使用 create:false 并先读取后精确编辑。",
+        );
+      } catch (error: any) {
+        if (error.code !== "ENOENT") {
+          throw error;
+        }
+      }
+
+      return {
+        path: input.path,
+        file,
+        before: "",
+        after: input.content,
+        create: true,
+      };
+    }
+
     const info = await regularFile(file, MAX_FILE_BYTES);
     const before = await readFile(file, "utf8");
     if (
@@ -65,7 +104,14 @@ export class FileEditor {
       throw new Error("编辑后文件超过 2 MiB，请缩小修改。");
     }
 
-    return { path: input.path, file, before, after, mode: info.mode };
+    return {
+      path: input.path,
+      file,
+      before,
+      after,
+      mode: info.mode,
+      create: false,
+    };
   }
 
   private async verify(edit: PreparedEdit) {
@@ -75,6 +121,19 @@ export class FileEditor {
       throw new Error("目标路径在审批或编辑期间变化。");
     }
 
+    if (edit.create) {
+      try {
+        await lstat(edit.file);
+        throw new Error("目标文件已在创建期间出现，已拒绝覆盖。");
+      } catch (error: any) {
+        if (error.code !== "ENOENT") {
+          throw error;
+        }
+      }
+
+      return;
+    }
+
     await regularFile(edit.file, MAX_FILE_BYTES);
     if ((await readFile(edit.file, "utf8")) !== edit.before) {
       throw new Error("文件已变化，请重新读取。");
@@ -82,10 +141,18 @@ export class FileEditor {
   }
 
   private async commit(edit: PreparedEdit) {
+    if (edit.create) {
+      await mkdir(path.dirname(edit.file), { recursive: true });
+    }
+
+    await this.verify(edit);
     const temp = edit.file + ".codeatelier-" + randomUUID() + ".tmp";
     try {
       await writeFile(temp, edit.after, { flag: "wx" });
-      await chmod(temp, edit.mode);
+      if (edit.mode !== undefined) {
+        await chmod(temp, edit.mode);
+      }
+
       await this.verify(edit);
       this.ctx.signal.throwIfAborted();
       await rename(temp, edit.file);

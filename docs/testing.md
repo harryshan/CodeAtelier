@@ -21,9 +21,9 @@
 
 | 功能           | 主要测试                                       | 核心行为                                                                                                   |
 | -------------- | ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| 目录与命令搜索 | files.test.ts、core.test.ts、tool-schema.test.ts | 文件类型、依赖/敏感文件过滤；不公开且拒绝已移除的 `search`；跨平台检测常见命令并按估计性能排序，将可用列表注入模型指令 |
+| 目录与命令搜索 | files.test.ts、core.test.ts、tool-schema.test.ts | 不公开且拒绝已移除的 `search`、`list_files` 与 `write_file`；跨平台检测常见命令并按估计性能排序，将目录浏览/可用列表注入模型指令 |
 | 文件读取       | files.test.ts、core.test.ts                    | 行号/范围/500 行限制、分页与截断元数据、无效范围、文件大小、二进制、链接越界                              |
-| 新建与精确编辑 | files.test.ts、regressions.test.ts             | 嵌套创建、替换唯一性、字面替换、任务内读取前置条件、并发修改、覆盖拒绝、临时文件清理、POSIX 模式           |
+| 新建与精确编辑 | files.test.ts、multi-file-edit.test.ts、regressions.test.ts | create:true 嵌套创建、已有目标与创建期间出现目标的覆盖拒绝；create:false 的唯一/字面替换、任务内读取前置条件、并发修改、临时文件清理、POSIX 模式 |
 | 路径与工作区   | paths.test.ts、core.test.ts                    | 路径前缀隔离、父目录越界、新建路径规范化、敏感组件、真实目录要求、Windows ADS                              |
 | 权限           | permissions.test.ts、model-approval.test.ts、core.test.ts | 单次/会话授权、低成本模型三级分流、失效或无模型时保守人工确认、跨会话隔离、内容变化后重新审批、取消、敏感文件/AGENTS.md、直接 Git 与提权限制      |
 | Git 工具        | git-tools.test.ts、tool-schema.test.ts、e2e/app.spec.ts | 单一 action 契约、固定 status/diff/log/show/branch 参数、add/提交/推送自动执行、worktree/upstream/revision/敏感目录校验、暂存失败不提交、禁止额外选项，以及流式输出与退出状态的卡片聚合 |
@@ -109,7 +109,7 @@ mechanical-input.test.ts 覆盖精确结果/跨路径正文引用、逐字还原
 
 - tests/tool-schema.test.ts 检查所有生产工具的 strict 对象声明：属性均列入 required，禁止额外属性；单一 `git` 工具的每个 discriminated action 仅接受对应字段，diff 必须显式传 staged、paths 和 contextLines。此回归防止工具 schema 导致整轮模型请求被拒绝，不连接真实服务。
 
-统一文件编辑：`files.test.ts` 覆盖单文件条目中的同快照多处替换和读取状态复用；`multi-file-edit.test.ts` 覆盖单/多文件条目的逐文件预检、重复真实路径、外部修改、审批拒绝、行号消歧、重叠拒绝、CRLF、取消，以及单文件预检/写入故障后继续独立文件、汇总全部失败路径和未知状态。`tool-schema.test.ts` 递归检查唯一 `edit_files` 的 strict 契约；`engine.test.ts` 验证单次多文件调用及逐文件进度持久化；`e2e/app.spec.ts` 检查进度、diff 和刷新历史。已有 core 测试继续覆盖未读取及外部变化拒绝。
+统一文件编辑：`files.test.ts` 覆盖 create:true 的嵌套创建、已有路径与创建期间出现路径的覆盖拒绝，以及 create:false 单文件条目中的同快照多处替换和读取状态复用；`multi-file-edit.test.ts` 覆盖单/多文件条目的逐文件预检、重复真实路径、外部修改、审批拒绝、行号消歧、重叠拒绝、CRLF、取消，以及单文件预检/写入故障后继续独立文件、汇总全部失败路径和未知状态。`tool-schema.test.ts` 递归检查唯一 `edit_files` 的 create 分支及 strict 契约；`engine.test.ts` 验证单次多文件调用及逐文件进度持久化；`e2e/app.spec.ts` 检查进度、diff 和刷新历史。已有 core 测试继续覆盖未读取及外部变化拒绝。
 
 行号搜索窗口回归：`multi-file-edit.test.ts` 覆盖行内/跨行片段、周围文本保留、末行 LF/CRLF、窗口内歧义（含重叠出现）、匹配跨出窗口、无范围外回退，以及多文件预检失败时独立有效文件仍可写入。
 

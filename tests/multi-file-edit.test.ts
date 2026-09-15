@@ -1,6 +1,6 @@
 /**
  * 使用真实 ToolRunner 和临时文件验证统一文件编辑工具，不访问模型或用户项目。
- * 1. 单/多文件条目成功、后项校验失败、重复路径以及读取版本检查通过磁盘内容验证。
+ * 1. 单/多文件的新建和已有编辑条目成功、后项校验失败、重复路径以及读取版本检查通过磁盘内容验证。
  * 2. 行号限定搜索窗口，覆盖行内/跨行片段、重复文本、原始快照偏移、范围越界、重叠和 CRLF 边界。
  * 3. 后续故障用例检查逐文件失败仍继续、聚合错误、取消及部分写入，不假设跨文件原子性。
  */
@@ -22,7 +22,19 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 /** 用统一工具的一个 files 条目覆盖单文件场景，并将该文件的失败恢复为测试断言需要的异常。 */
 async function editSingleFile(runner: ToolRunner, path: string, edits: any[]) {
   const result = await runner.execute("edit_files", {
-    files: [{ path, edits }],
+    files: [{ path, create: false, edits }],
+  });
+
+  if (result.error) {
+    throw new Error(result.error);
+  }
+
+  return result;
+}
+
+async function createFile(runner: ToolRunner, path: string, content: string) {
+  const result = await runner.execute("edit_files", {
+    files: [{ path, create: true, content }],
   });
 
   if (result.error) {
@@ -35,12 +47,15 @@ async function editSingleFile(runner: ToolRunner, path: string, edits: any[]) {
 it("edits two files in one call and reports each completed file", async () => {
   const { root, runner, events } = await fileFixture();
   for (const name of ["a.txt", "b.txt"]) {
-    await runner.execute("write_file", { path: name, content: "old" });
+    await createFile(runner, name, "old");
   }
+
+  events.length = 0;
 
   const result = await runner.execute("edit_files", {
     files: ["a.txt", "b.txt"].map((name) => ({
       path: name,
+      create: false,
       edits: [{ oldText: "old", newText: "new" }],
     })),
   });
@@ -63,13 +78,21 @@ it("edits two files in one call and reports each completed file", async () => {
 it("writes valid files when a later file fails preflight", async () => {
   const { root, runner } = await fileFixture();
   for (const name of ["a.txt", "b.txt"]) {
-    await runner.execute("write_file", { path: name, content: "old" });
+    await createFile(runner, name, "old");
   }
 
   const result = await runner.execute("edit_files", {
     files: [
-      { path: "a.txt", edits: [{ oldText: "old", newText: "new" }] },
-      { path: "b.txt", edits: [{ oldText: "missing", newText: "new" }] },
+      {
+        path: "a.txt",
+        create: false,
+        edits: [{ oldText: "old", newText: "new" }],
+      },
+      {
+        path: "b.txt",
+        create: false,
+        edits: [{ oldText: "missing", newText: "new" }],
+      },
     ],
   });
   expect(result.error).toContain("b.txt");
@@ -85,14 +108,26 @@ it("writes valid files when a later file fails preflight", async () => {
 it("reports every preflight failure while writing independent valid files", async () => {
   const { root, runner } = await fileFixture();
   for (const name of ["a.txt", "b.txt", "c.txt"]) {
-    await runner.execute("write_file", { path: name, content: "old" });
+    await createFile(runner, name, "old");
   }
 
   const result = await runner.execute("edit_files", {
     files: [
-      { path: "a.txt", edits: [{ oldText: "old", newText: "new" }] },
-      { path: "b.txt", edits: [{ oldText: "missing-b", newText: "new" }] },
-      { path: "c.txt", edits: [{ oldText: "missing-c", newText: "new" }] },
+      {
+        path: "a.txt",
+        create: false,
+        edits: [{ oldText: "old", newText: "new" }],
+      },
+      {
+        path: "b.txt",
+        create: false,
+        edits: [{ oldText: "missing-b", newText: "new" }],
+      },
+      {
+        path: "c.txt",
+        create: false,
+        edits: [{ oldText: "missing-c", newText: "new" }],
+      },
     ],
   });
 
@@ -110,10 +145,7 @@ it("reports every preflight failure while writing independent valid files", asyn
 
 it("uses original line ranges to disambiguate repeated text despite earlier inserted lines", async () => {
   const { root, runner } = await fileFixture();
-  await runner.execute("write_file", {
-    path: "a.txt",
-    content: "same\nsame\ntail\n",
-  });
+  await createFile(runner, "a.txt", "same\nsame\ntail\n");
   await editSingleFile(runner, "a.txt", [
     { oldText: "same", newText: "first\nextra", startLine: 1, endLine: 1 },
     { oldText: "same", newText: "second", startLine: 2, endLine: 2 },
@@ -125,7 +157,7 @@ it("uses original line ranges to disambiguate repeated text despite earlier inse
 
 it("rejects wrong lines and overlapping replacements without changing content", async () => {
   const { root, runner } = await fileFixture();
-  await runner.execute("write_file", { path: "a.txt", content: "alpha\nbeta" });
+  await createFile(runner, "a.txt", "alpha\nbeta");
   for (const edits of [
     [{ oldText: "alpha", newText: "x", startLine: 2, endLine: 2 }],
     [{ oldText: "alpha", newText: "x", startLine: 1, endLine: null }],
@@ -143,10 +175,11 @@ it("rejects wrong lines and overlapping replacements without changing content", 
 
 it("rejects aliases of one file and stale read versions before writing", async () => {
   const { root, runner } = await fileFixture();
-  await runner.execute("write_file", { path: "a.txt", content: "old" });
+  await createFile(runner, "a.txt", "old");
   const duplicate = await runner.execute("edit_files", {
     files: ["a.txt", "./a.txt"].map((name) => ({
       path: name,
+      create: false,
       edits: [{ oldText: "old", newText: "new" }],
     })),
   });
@@ -155,7 +188,11 @@ it("rejects aliases of one file and stale read versions before writing", async (
   await writeFile(path.join(root, "a.txt"), "external");
   const stale = await runner.execute("edit_files", {
     files: [
-      { path: "a.txt", edits: [{ oldText: "external", newText: "new" }] },
+      {
+        path: "a.txt",
+        create: false,
+        edits: [{ oldText: "external", newText: "new" }],
+      },
     ],
   });
   expect(stale.error).toContain("已变化");
@@ -184,7 +221,12 @@ async function hookedFixture(
     },
   });
   for (const name of ["a.txt", "b.txt", "c.txt"]) {
-    await runner.execute("write_file", { path: name, content: "old" });
+    await writeFile(path.join(fixture.root, name), "old");
+    await runner.execute("read_file", {
+      path: name,
+      startLine: 1,
+      endLine: 1,
+    });
   }
 
   return { ...fixture, runner };
@@ -193,6 +235,7 @@ async function hookedFixture(
 const threeFiles = {
   files: ["a.txt", "b.txt", "c.txt"].map((name) => ({
     path: name,
+    create: false,
     edits: [{ oldText: "old", newText: "new" }],
   })),
 };
@@ -268,7 +311,7 @@ it("reports uncertainty after a write error while continuing other files", async
 
 it("writes ordinary files when protected-file approval is denied", async () => {
   const { runner, root, approvals } = await fileFixture();
-  await runner.execute("write_file", { path: "a.txt", content: "old" });
+  await createFile(runner, "a.txt", "old");
   await writeFile(path.join(root, "AGENTS.md"), "rules");
   await runner.execute("read_file", {
     path: "AGENTS.md",
@@ -277,8 +320,16 @@ it("writes ordinary files when protected-file approval is denied", async () => {
   });
   const pending = runner.execute("edit_files", {
     files: [
-      { path: "a.txt", edits: [{ oldText: "old", newText: "new" }] },
-      { path: "AGENTS.md", edits: [{ oldText: "rules", newText: "changed" }] },
+      {
+        path: "a.txt",
+        create: false,
+        edits: [{ oldText: "old", newText: "new" }],
+      },
+      {
+        path: "AGENTS.md",
+        create: false,
+        edits: [{ oldText: "rules", newText: "changed" }],
+      },
     ],
   });
   await expect.poll(() => approvals.list().length).toBe(1);
@@ -296,10 +347,7 @@ it("writes ordinary files when protected-file approval is denied", async () => {
 
 it("matches complete CRLF ranges and preserves the terminal newline", async () => {
   const { runner, root } = await fileFixture();
-  await runner.execute("write_file", {
-    path: "a.txt",
-    content: "one\r\ntwo\r\nthree\r\n",
-  });
+  await createFile(runner, "a.txt", "one\r\ntwo\r\nthree\r\n");
   await editSingleFile(runner, "a.txt", [
     { oldText: "one\r\ntwo", newText: "first", startLine: 1, endLine: 2 },
     { oldText: "three", newText: "last", startLine: 3, endLine: 3 },
@@ -311,7 +359,7 @@ it("matches complete CRLF ranges and preserves the terminal newline", async () =
 
 it("rejects cascade targets and overlapping textual occurrences in the original snapshot", async () => {
   const { runner, root } = await fileFixture();
-  await runner.execute("write_file", { path: "a.txt", content: "aaa alpha" });
+  await createFile(runner, "a.txt", "aaa alpha");
   for (const edits of [
     [
       { oldText: "alpha", newText: "first" },
@@ -327,7 +375,7 @@ it("rejects cascade targets and overlapping textual occurrences in the original 
 
 it("rechecks earlier snapshots after a later approval completes", async () => {
   const { runner, root, approvals } = await fileFixture();
-  await runner.execute("write_file", { path: "a.txt", content: "old" });
+  await createFile(runner, "a.txt", "old");
   await writeFile(path.join(root, "AGENTS.md"), "rules");
   await runner.execute("read_file", {
     path: "AGENTS.md",
@@ -336,8 +384,16 @@ it("rechecks earlier snapshots after a later approval completes", async () => {
   });
   const pending = runner.execute("edit_files", {
     files: [
-      { path: "a.txt", edits: [{ oldText: "old", newText: "new" }] },
-      { path: "AGENTS.md", edits: [{ oldText: "rules", newText: "changed" }] },
+      {
+        path: "a.txt",
+        create: false,
+        edits: [{ oldText: "old", newText: "new" }],
+      },
+      {
+        path: "AGENTS.md",
+        create: false,
+        edits: [{ oldText: "rules", newText: "changed" }],
+      },
     ],
   });
   await expect.poll(() => approvals.list().length).toBe(1);
@@ -368,10 +424,11 @@ it("stops before the next file if saving a completed progress event fails", asyn
 
 it("uses line ranges as search windows and preserves surrounding text", async () => {
   const { runner, root } = await fileFixture();
-  await runner.execute("write_file", {
-    path: "a.txt",
-    content: "  const timeout = 1000;\n  const retry = 1000;\n",
-  });
+  await createFile(
+    runner,
+    "a.txt",
+    "  const timeout = 1000;\n  const retry = 1000;\n",
+  );
   await editSingleFile(runner, "a.txt", [
     { oldText: "1000", newText: "2000", startLine: 1, endLine: 1 },
     { oldText: "retry", newText: "attempts", startLine: 2, endLine: 2 },
@@ -385,10 +442,11 @@ it("accepts exact snippets with or without the final line ending", async () => {
   const { runner, root } = await fileFixture();
   for (const newline of ["\n", "\r\n"]) {
     const name = newline.length === 1 ? "lf.txt" : "crlf.txt";
-    await runner.execute("write_file", {
-      path: name,
-      content: `prefix first${newline}second suffix${newline}tail`,
-    });
+    await createFile(
+      runner,
+      name,
+      `prefix first${newline}second suffix${newline}tail`,
+    );
     await editSingleFile(runner, name, [
       {
         oldText: `first${newline}second`,
@@ -412,7 +470,7 @@ it("accepts exact snippets with or without the final line ending", async () => {
 it("rejects missing, ambiguous, out-of-range and overlapping matches without fallback", async () => {
   const { runner, root } = await fileFixture();
   const original = "outside\naaa value value\nlast";
-  await runner.execute("write_file", { path: "a.txt", content: original });
+  await createFile(runner, "a.txt", original);
   for (const edits of [
     [{ oldText: "outside", newText: "x", startLine: 2, endLine: 2 }],
     [{ oldText: "value", newText: "x", startLine: 2, endLine: 2 }],
@@ -431,22 +489,21 @@ it("rejects missing, ambiguous, out-of-range and overlapping matches without fal
 it("applies scoped snippets across files and keeps exact newline matching", async () => {
   const { runner, root } = await fileFixture();
   for (const name of ["a.txt", "b.txt"]) {
-    await runner.execute("write_file", {
-      path: name,
-      content: "prefix one\r\ntwo suffix",
-    });
+    await createFile(runner, name, "prefix one\r\ntwo suffix");
   }
 
   const rejected = await runner.execute("edit_files", {
     files: [
       {
         path: "a.txt",
+        create: false,
         edits: [
           { oldText: "prefix", newText: "new", startLine: 1, endLine: 1 },
         ],
       },
       {
         path: "b.txt",
+        create: false,
         edits: [
           { oldText: "one\ntwo", newText: "joined", startLine: 1, endLine: 2 },
         ],
@@ -464,6 +521,7 @@ it("applies scoped snippets across files and keeps exact newline matching", asyn
   const result = await runner.execute("edit_files", {
     files: ["a.txt", "b.txt"].map((name) => ({
       path: name,
+      create: false,
       edits: [
         { oldText: "one\r\ntwo", newText: "joined", startLine: 1, endLine: 2 },
       ],

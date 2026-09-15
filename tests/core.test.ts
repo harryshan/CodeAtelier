@@ -191,7 +191,13 @@ describe("files and permissions", () => {
     const tools = runner(root, config);
 
     const unread = await tools.execute("edit_files", {
-      files: [{ path: "a.txt", edits: [{ oldText: "old", newText: "new" }] }],
+      files: [
+        {
+          path: "a.txt",
+          create: false,
+          edits: [{ oldText: "old", newText: "new" }],
+        },
+      ],
     });
     expect(unread.error).toContain("未读取");
     await tools.execute("read_file", {
@@ -202,7 +208,13 @@ describe("files and permissions", () => {
     await writeFile(path.join(root, "a.txt"), "other");
 
     const stale = await tools.execute("edit_files", {
-      files: [{ path: "a.txt", edits: [{ oldText: "old", newText: "new" }] }],
+      files: [
+        {
+          path: "a.txt",
+          create: false,
+          edits: [{ oldText: "old", newText: "new" }],
+        },
+      ],
     });
     expect(stale.error).toContain("已变化");
   });
@@ -210,9 +222,17 @@ describe("files and permissions", () => {
     const root = await temp();
     const tools = runner(root, new Config(await temp()));
 
-    await tools.execute("write_file", { path: "a.txt", content: "abc" });
+    await tools.execute("edit_files", {
+      files: [{ path: "a.txt", create: true, content: "abc" }],
+    });
     const result = await tools.execute("edit_files", {
-      files: [{ path: "a.txt", edits: [{ oldText: "b", newText: "B" }] }],
+      files: [
+        {
+          path: "a.txt",
+          create: false,
+          edits: [{ oldText: "b", newText: "B" }],
+        },
+      ],
     });
 
     expect(await readFile(path.join(root, "a.txt"), "utf8")).toBe("aBc");
@@ -223,15 +243,17 @@ describe("files and permissions", () => {
     const outside = await temp();
     const approvals = new ApprovalManager(() => {});
     const tools = runner(root, new Config(await temp()), approvals);
-    const pending = tools.execute("write_file", {
-      path: path.join(outside, "x.txt"),
-      content: "no",
+    const pending = tools.execute("edit_files", {
+      files: [
+        { path: path.join(outside, "x.txt"), create: true, content: "no" },
+      ],
     });
 
     await waitFor(() => approvals.list().length === 1);
     approvals.decide(approvals.list()[0].id, "deny");
 
-    await expect(pending).rejects.toThrow("拒绝");
+    const result = await pending;
+    expect(result.error).toContain("拒绝");
     await expect(readFile(path.join(outside, "x.txt"))).rejects.toThrow();
   });
   it("recognizes directory links escaping workspace", async () => {
@@ -347,10 +369,11 @@ describe("execution and persistence", () => {
               output: [
                 {
                   type: "function_call",
-                  name: "write_file",
+                  name: "edit_files",
                   arguments: JSON.stringify({
-                    path: "hello.txt",
-                    content: "hello",
+                    files: [
+                      { path: "hello.txt", create: true, content: "hello" },
+                    ],
                   }),
                   call_id: "call1",
                 },

@@ -15,14 +15,15 @@ import { api } from "./api";
 import s from "./app.module.css";
 
 const labels: Record<string, string> = {
-  list_files: "浏览目录",
+  // 已移除的 list_files 工具仅用于展示旧会话记录。
+  list_files: "浏览目录（旧记录）",
   read_file: "读取文件",
   // 已移除的 search 工具仅用于展示旧会话记录。
   search: "搜索代码（旧记录）",
-  // 旧会话的 edit_file 仅用于历史展示；新版模型契约只公开 edit_files。
+  // 旧会话的 edit_file/write_file 仅用于历史展示；新版模型契约只公开 edit_files。
   edit_file: "精确修改（旧记录）",
-  edit_files: "精确修改文件",
-  write_file: "写入文件",
+  edit_files: "新建或精确修改文件",
+  write_file: "写入文件（旧记录）",
   run_command: "执行命令",
   git: "Git 操作",
   // 保留旧会话事件的中文标签；旧调用只展示，不会被新版 ToolRunner 执行。

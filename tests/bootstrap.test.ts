@@ -52,7 +52,7 @@ it("rejects malformed descriptions and non-command approvals", () => {
   ).toBe(false);
   expect(
     approveTestCommand(
-      "write_file",
+      "edit_files",
       JSON.stringify(request),
       workspace,
       command,

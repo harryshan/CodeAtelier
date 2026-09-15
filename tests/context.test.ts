@@ -373,7 +373,7 @@ it("bounds summary calls and rejects tool requests from the summarizer", async (
   const f = await fixture({
     async run() {
       return {
-        output: [{ type: "function_call", name: "write_file" }],
+        output: [{ type: "function_call", name: "edit_files" }],
         text: JSON.stringify(summary),
       };
     },

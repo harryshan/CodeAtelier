@@ -4,7 +4,7 @@
  *
  * 1. 模拟模型提供固定容量，按用途、提示和步骤返回标题、工具调用、文本或断流错误。
  * 2. 长历史用例生成足以触发压缩的内容，摘要请求返回符合格式要求的模拟摘要。
- * 3. 单/多文件、命令和 Git 状态请求交给真实 ToolRunner；普通回复分段输出并带固定 usage。
+ * 3. 统一文件新建/编辑、命令和 Git 状态请求交给真实 ToolRunner；普通回复分段输出并带固定 usage。
  * 4. 启动测试端口，收到 SIGTERM 后关闭引擎和应用。
  *
  * 这里只替换模型，不为测试另开绕过鉴权、审批或数据库保存的业务接口。
@@ -121,6 +121,7 @@ const { app, engine } = await createApp(
             return tool("edit_files", {
               files: ["a.txt", "b.txt"].map((name) => ({
                 path: name,
+                create: false,
                 edits: [
                   {
                     oldText:
@@ -138,9 +139,14 @@ const { app, engine } = await createApp(
         }
 
         if (step === 1 && lastUser.includes("修改")) {
-          return tool("write_file", {
-            path: "result.txt",
-            content: "CodeAtelier verified\n",
+          return tool("edit_files", {
+            files: [
+              {
+                path: "result.txt",
+                create: true,
+                content: "CodeAtelier verified\n",
+              },
+            ],
           });
         }
 

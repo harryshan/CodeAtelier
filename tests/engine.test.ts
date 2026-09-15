@@ -49,7 +49,7 @@ async function createFixture(provider: ModelProvider) {
   return { root, config, store, session, engine };
 }
 
-it("enforces step budget after saving completed tool results", async () => {
+it("enforces step budget after saving removed-tool errors as tool results", async () => {
   let calls = 0;
   const fixture = await createFixture({
     async run() {
@@ -91,7 +91,7 @@ it("enforces step budget after saving completed tool results", async () => {
   }
 });
 
-it("executes every independent tool call returned in one model response", async () => {
+it("creates independent files through one unified batch returned in one model response", async () => {
   let calls = 0;
   const fixture = await createFixture({
     async run() {
@@ -100,20 +100,21 @@ it("executes every independent tool call returned in one model response", async 
           output: [
             {
               type: "function_call",
-              call_id: "first-write",
-              name: "write_file",
+              call_id: "create-files",
+              name: "edit_files",
               arguments: JSON.stringify({
-                path: "first.txt",
-                content: "first file\n",
-              }),
-            },
-            {
-              type: "function_call",
-              call_id: "second-write",
-              name: "write_file",
-              arguments: JSON.stringify({
-                path: "second.txt",
-                content: "second file\n",
+                files: [
+                  {
+                    path: "first.txt",
+                    create: true,
+                    content: "first file\n",
+                  },
+                  {
+                    path: "second.txt",
+                    create: true,
+                    content: "second file\n",
+                  },
+                ],
               }),
             },
           ],
@@ -140,7 +141,7 @@ it("executes every independent tool call returned in one model response", async 
       fixture.store
         .events(fixture.session.id)
         .filter((event) => event.type === "tool_result"),
-    ).toHaveLength(2);
+    ).toHaveLength(1);
     expect(fixture.store.tasks(fixture.session.id)[0].status).toBe("completed");
   } finally {
     await fixture.engine.close();
@@ -347,7 +348,7 @@ it("returns invalid tool arguments as model feedback without mutating files", as
             {
               type: "function_call",
               call_id: "bad",
-              name: "write_file",
+              name: "edit_files",
               arguments: "not-json",
             },
           ],
@@ -461,6 +462,7 @@ it("requires a fresh read in a later task even when history contains an earlier 
                 files: [
                   {
                     path: "a.txt",
+                    create: false,
                     edits: [{ oldText: "old", newText: "new" }],
                   },
                 ],
@@ -580,6 +582,7 @@ it("persists multi-file progress with the call id and returns one batch result",
               arguments: JSON.stringify({
                 files: ["a.txt", "b.txt"].map((name) => ({
                   path: name,
+                  create: false,
                   edits: [
                     {
                       oldText: "old",

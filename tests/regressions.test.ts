@@ -3,7 +3,7 @@
  *
  * 1. 加载旧格式的端点和模型配置，检查规范化结果。
  * 2. 尝试写 Git 元数据，确认直接拒绝，而不是交给用户审批。
- * 3. 覆盖已有文件，检查原权限位仍保留；不支持的系统按条件跳过。
+ * 3. 精确编辑已有文件，检查原权限位仍保留；不支持的系统按条件跳过。
  *
  * 跳过只用于平台不支持的情况，不能靠删掉权限断言消除失败。
  */
@@ -62,9 +62,11 @@ it("rejects direct Git metadata edits before asking permission", async () => {
       emit: () => {},
     });
 
-    await expect(
-      tools.execute("write_file", { path: ".git/config", content: "no" }),
-    ).rejects.toThrow("Git 元数据");
+    const result = await tools.execute("edit_files", {
+      files: [{ path: ".git/config", create: true, content: "no" }],
+    });
+
+    expect(result.error).toContain("Git 元数据");
     expect(approvals.list()).toHaveLength(0);
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -101,6 +103,7 @@ it.skipIf(process.platform === "win32")(
         files: [
           {
             path: "script.sh",
+            create: false,
             edits: [{ oldText: "before", newText: "after" }],
           },
         ],

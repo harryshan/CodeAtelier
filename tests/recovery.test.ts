@@ -131,7 +131,7 @@ it("recovers a disconnected stream without executing partial tool calls", async 
               item: {
                 type: "function_call",
                 call_id: "partial",
-                name: "write_file",
+                name: "edit_files",
                 arguments: "{}",
               },
             },
@@ -223,11 +223,10 @@ it("resumes after completed file edits without replaying them and keeps original
           output: [
             {
               type: "function_call",
-              name: "write_file",
+              name: "edit_files",
               call_id: "edit",
               arguments: JSON.stringify({
-                path: "result.txt",
-                content: "once",
+                files: [{ path: "result.txt", create: true, content: "once" }],
               }),
             },
           ],
@@ -393,9 +392,11 @@ it("automatic model retry after a tool result does not repeat the completed edit
           output: [
             {
               type: "function_call",
-              name: "write_file",
+              name: "edit_files",
               call_id: "once",
-              arguments: JSON.stringify({ path: "once.txt", content: "saved" }),
+              arguments: JSON.stringify({
+                files: [{ path: "once.txt", create: true, content: "saved" }],
+              }),
             },
           ],
           text: "",

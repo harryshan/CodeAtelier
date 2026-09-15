@@ -4,27 +4,19 @@
  *
  * 1. ignored 列出遍历时跳过的目录；ToolContext 定义依赖，readHashes 记住本任务读过的文件版本。
  * 2. currentFileHash 仅探测安全工作区文件的字节哈希，不更新读取凭证；access 解析路径并申请必要的权限；entries 限量遍历，commandGrant 为可复用命令计算指纹。
- * 3. execute 先通过 parseToolArguments 校验参数并解开 Git 的 request 包装（兼容历史扁平调用）。它在每次调用实际开始产生工具副作用或读取前回调 Engine，因此耗时不计入审批等待；统一的精确编辑分流给共享读取哈希的 FileEditor，单一专用 Git 工具分流给 GitToolRunner；普通命令只接受
+ * 3. execute 先通过 parseToolArguments 校验参数并解开 Git 的 request 包装（兼容历史扁平调用）。它在每次调用实际开始产生工具副作用或读取前回调 Engine，因此耗时不计入审批等待；统一的精确编辑和显式新建文件均分流给共享读取哈希的 FileEditor，单一专用 Git 工具分流给 GitToolRunner；普通命令只接受
  *    一条命令文本，内部选择 shell、拒绝直接 Git，再申请审批并调用 executeProcess。
- * 4. 只读分支处理列目录和读取；代码搜索由 run_command 在审批后执行。读文件按 500 行分页，返回全文字节 contentHash 供压缩比较，并在内部记录文本哈希供后续修改核对。
- * 5. write_file 修改已有文件前要求本任务已经读过且内容没有变化，整文件覆盖另需审批。
- * 6. 写入前再次核对路径和正文，再用同目录临时文件替换目标、保留权限，更新哈希并发出 diff。
+ * 4. 只读分支只处理读取；目录浏览和代码搜索均由 run_command 在审批后执行。读文件按 500 行分页，返回全文字节 contentHash 供压缩比较，并在内部记录文本哈希供后续修改核对。
+ *
+ * 新建文件使用 edit_files 的 create:true 条目，已有文件只能用 create:false 的精确快照编辑；
+ * FileEditor 会在写入前复核路径、存在性和读取版本，并以同目录临时文件替换目标。
  *
  * 用户审批期间文件仍可能变化，所以批准后也要复核。新任务必须重新读文件，不能沿用上次任务的哈希。
  */
 
-import {
-  readFile,
-  readdir,
-  writeFile,
-  mkdir,
-  rename,
-  unlink,
-  chmod,
-} from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import path from "node:path";
-import { createHash, randomUUID } from "node:crypto";
-import { createTwoFilesPatch } from "diff";
 import { MAX_READ_LINES, parseToolArguments } from "./registry.js";
 import type { Settings } from "../shared/types.js";
 import { ApprovalManager } from "../permissions/approval-manager.js";
@@ -268,25 +260,8 @@ export class ToolRunner {
       );
     }
 
-    const file = await this.access(args.path, name === "write_file");
-
-    if (name === "list_files") {
-      startExecution();
-
-      return (await readdir(file, { withFileTypes: true }))
-        .filter((e) => !ignored.has(e.name) && !sensitive(e.name))
-        .slice(0, 300)
-        .map((e) => ({
-          name: e.name,
-          type: e.isSymbolicLink()
-            ? "link"
-            : e.isDirectory()
-              ? "directory"
-              : "file",
-        }));
-    }
-
     if (name === "read_file") {
+      const file = await this.access(args.path);
       startExecution();
       await regularFile(file, 2 * 1024 * 1024);
       const bytes = await readFile(file);
@@ -322,85 +297,6 @@ export class ToolRunner {
       };
     }
 
-    let before = "";
-    let exists = true;
-    let mode: number | undefined;
-
-    try {
-      mode = (await regularFile(file, 2 * 1024 * 1024)).mode;
-      before = await readFile(file, "utf8");
-    } catch (error: any) {
-      if (error.code === "ENOENT") {
-        exists = false;
-      } else {
-        throw error;
-      }
-    }
-
-    if (exists && this.readHashes.get(file) !== this.hash(before)) {
-      throw new Error("文件未读取或已变化，请重新读取后再修改。");
-    }
-
-    const after = args.content;
-
-    if (exists && name === "write_file") {
-      const allowed = await this.ctx.approvals.request(
-        {
-          sessionId: this.ctx.sessionId,
-          taskId: this.ctx.taskId,
-          tool: name,
-          description: "完整覆盖已有文件：" + file,
-        },
-        this.ctx.signal,
-      );
-
-      if (!allowed) {
-        throw new Error("用户拒绝覆盖文件。");
-      }
-    }
-
-    // 审批期间用户可能改动路径或文件，因此写入前再次核对。
-    const check = await resolveTarget(this.ctx.root, args.path);
-
-    if (check.path !== file) {
-      throw new Error("目标路径在审批期间变化。");
-    }
-
-    if (exists && (await readFile(file, "utf8")) !== before) {
-      throw new Error("文件已变化，请重新读取。");
-    }
-
-    this.ctx.signal.throwIfAborted();
-    // 完整覆盖的审批和路径/并发复核完成后，才进入实际写入阶段。
-    startExecution();
-    await mkdir(path.dirname(file), { recursive: true });
-    // 在同一目录写临时文件后重命名，避免读者看到半写入内容。
-    const temp = file + ".codeatelier-" + randomUUID() + ".tmp";
-
-    try {
-      await writeFile(temp, after, { flag: "wx" });
-      if (mode !== undefined) {
-        await chmod(temp, mode);
-      }
-
-      this.ctx.signal.throwIfAborted();
-      await rename(temp, file);
-    } finally {
-      await unlink(temp).catch(() => {});
-    }
-
-    this.readHashes.set(file, this.hash(after));
-    const diff = createTwoFilesPatch(
-      args.path,
-      args.path,
-      before,
-      after,
-      "before",
-      "after",
-    );
-
-    this.ctx.emit("diff", { path: args.path, diff: diff.slice(0, 100000) });
-
-    return { path: args.path, changed: before !== after, diff };
+    throw new Error("未知工具");
   }
 }

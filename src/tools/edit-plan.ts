@@ -1,6 +1,6 @@
 /**
  * 为 FileEditor 计算原始文本上的精确修改，不读取文件、不写盘，也不授予权限。
- * 1. TextEdit/FileEdit 是 registry 校验后的内部参数；行号为 null 时使用唯一文本匹配。
+ * 1. TextEdit、ExistingFileEdit 和 NewFile 是 registry 校验后的内部参数；已有文件用行号或唯一文本匹配，新文件只提供完整正文。
  * 2. planEdits 在指定行范围或全文中唯一匹配旧文本，转换为原始快照字符区间，拒绝错配和重叠。
  * 3. 从后向前应用已定位区间，保持其他区间坐标与未修改的换行符不变，返回完整新文本。
  * 行范围包含首尾行及末行换行符；只替换实际匹配片段，CRLF 必须精确匹配，不向范围外回退。
@@ -13,10 +13,19 @@ export interface TextEdit {
   endLine: number | null;
 }
 
-export interface FileEdit {
+export interface ExistingFileEdit {
   path: string;
+  create: false;
   edits: TextEdit[];
 }
+
+export interface NewFile {
+  path: string;
+  create: true;
+  content: string;
+}
+
+export type FileEdit = ExistingFileEdit | NewFile;
 
 export function planEdits(before: string, edits: TextEdit[]): string {
   const starts = [0];

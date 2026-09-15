@@ -2,16 +2,16 @@
  * 通过 fileFixture 调用真实 ToolRunner，检查文件工具的结果和磁盘上的变化。
  * 所有文件都建在临时目录，审批由用例明确处理。
  *
- * 1. 检查目录过滤、已移除搜索工具的拒绝，以及带行号、分页元数据的分段读取。
+ * 1. 检查已移除目录/搜索工具的拒绝，以及带行号、分页元数据的分段读取。
  * 2. 检查模型可见的定位/小范围读取契约，以及反向行区间、二进制文件和过大文件被拒绝。
- * 3. 检查多处快照替换、整批失败不写入、成功后复用读取状态、创建父目录、美元符号按原文替换，以及整文件覆盖需要审批。
+ * 3. 检查多处快照替换、整批失败不写入、成功后复用读取状态、显式新建父目录、美元符号按原文替换，以及 create 防止覆盖。
  * 4. 在等待审批时修改文件，并检查规则文件、敏感文件和非法工具参数的处理。
  *
  * 拒绝或校验失败后，原文件必须保持不变，不能只检查是否弹出了审批。
  */
 
 import { it, expect } from "vitest";
-import { writeFile, mkdir, readFile, readdir } from "node:fs/promises";
+import { writeFile, readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { definitions } from "../src/tools/registry.js";
 import type { ToolRunner } from "../src/tools/tool-runner.js";
@@ -20,7 +20,7 @@ import { fileFixture } from "./fixtures/helpers.js";
 /** 将单文件场景包装为唯一 edit_files 工具所需的 files 数组。 */
 async function editSingleFile(runner: ToolRunner, path: string, edits: any[]) {
   const result = await runner.execute("edit_files", {
-    files: [{ path, edits }],
+    files: [{ path, create: false, edits }],
   });
 
   if (result.error) {
@@ -30,39 +30,27 @@ async function editSingleFile(runner: ToolRunner, path: string, edits: any[]) {
   return result;
 }
 
-it("lists usable immediate entries without dependency, build or sensitive files", async () => {
-  const { root, runner } = await fileFixture();
+async function createFile(runner: ToolRunner, path: string, content: string) {
+  const result = await runner.execute("edit_files", {
+    files: [{ path, create: true, content }],
+  });
 
-  for (const name of ["src", "node_modules", "dist", ".git"]) {
-    await mkdir(path.join(root, name));
+  if (result.error) {
+    throw new Error(result.error);
   }
 
-  for (const name of ["README.md", ".env", "secret.pem"]) {
-    await writeFile(path.join(root, name), "x");
-  }
+  return result;
+}
 
-  expect(await runner.execute("list_files", { path: "." })).toEqual(
-    expect.arrayContaining([
-      { name: "src", type: "directory" },
-      { name: "README.md", type: "file" },
-    ]),
-  );
-  expect(
-    (await runner.execute("list_files", { path: "." }))
-      .map((e: any) => e.name)
-      .sort(),
-  ).toEqual(["README.md", "src"]);
-});
-
-it("does not expose the retired search tool and rejects direct calls", async () => {
+it("does not expose retired directory, write, or search tools and rejects direct calls", async () => {
   const { runner } = await fileFixture();
 
-  expect(definitions.map((definition) => definition.name)).not.toContain(
-    "search",
-  );
-  await expect(
-    runner.execute("search", { path: ".", query: "needle" }),
-  ).rejects.toThrow("未知工具");
+  for (const name of ["list_files", "write_file", "search"]) {
+    expect(definitions.map((definition) => definition.name)).not.toContain(
+      name,
+    );
+    await expect(runner.execute(name, {})).rejects.toThrow("未知工具");
+  }
 });
 
 it("reads focused numbered lines and describes pagination when a request reaches the cap", async () => {
@@ -152,7 +140,7 @@ it("rejects binary and oversized reads", async () => {
 it("rejects missing or ambiguous replacement targets without changing the file", async () => {
   const { root, runner } = await fileFixture();
 
-  await runner.execute("write_file", { path: "a.txt", content: "same same" });
+  await createFile(runner, "a.txt", "same same");
   for (const oldText of ["absent", "same"]) {
     await expect(
       editSingleFile(runner, "a.txt", [{ oldText, newText: "new" }]),
@@ -165,7 +153,7 @@ it("rejects missing or ambiguous replacement targets without changing the file",
 it("creates nested files and treats replacement dollar sequences literally", async () => {
   const { root, runner } = await fileFixture();
 
-  await runner.execute("write_file", { path: "src/a.txt", content: "before" });
+  await createFile(runner, "src/a.txt", "before");
   await editSingleFile(runner, "src/a.txt", [
     { oldText: "before", newText: "$&-$1" },
   ]);
@@ -174,36 +162,63 @@ it("creates nested files and treats replacement dollar sequences literally", asy
   expect(await readdir(path.join(root, "src"))).toEqual(["a.txt"]);
 });
 
-it("denying a complete overwrite leaves original content intact", async () => {
-  const { root, runner, approvals } = await fileFixture();
+it("rejects binary content for a new file before creating it", async () => {
+  const { root, runner } = await fileFixture();
 
-  await runner.execute("write_file", { path: "a.txt", content: "before" });
-  const pending = runner.execute("write_file", {
-    path: "a.txt",
-    content: "after",
+  const result = await runner.execute("edit_files", {
+    files: [{ path: "binary.txt", create: true, content: "a\0b" }],
   });
 
-  await expect.poll(() => approvals.list().length).toBe(1);
-  approvals.decide(approvals.list()[0].id, "deny");
+  expect(result.files).toMatchObject([
+    { path: "binary.txt", status: "failed" },
+  ]);
+  expect(result.error).toContain("NUL");
+  await expect(readFile(path.join(root, "binary.txt"))).rejects.toThrow();
+});
 
-  await expect(pending).rejects.toThrow("拒绝");
+it("rejects create when the target already exists without replacing it", async () => {
+  const { root, runner } = await fileFixture();
+
+  await createFile(runner, "a.txt", "before");
+  const result = await runner.execute("edit_files", {
+    files: [{ path: "a.txt", create: true, content: "after" }],
+  });
+
+  expect(result.files).toMatchObject([{ path: "a.txt", status: "failed" }]);
+  expect(result.error).toContain("已存在");
   expect(await readFile(path.join(root, "a.txt"), "utf8")).toBe("before");
 });
 
-it("detects a file changed while overwrite approval was pending", async () => {
+it("rejects a file that appears after create preflight", async () => {
   const { root, runner, approvals } = await fileFixture();
-
-  await runner.execute("write_file", { path: "a.txt", content: "before" });
-  const pending = runner.execute("write_file", {
-    path: "a.txt",
-    content: "after",
+  await writeFile(path.join(root, "AGENTS.md"), "rules");
+  await runner.execute("read_file", {
+    path: "AGENTS.md",
+    startLine: 1,
+    endLine: 1,
   });
 
-  await expect.poll(() => approvals.list().length).toBe(1);
+  const pending = runner.execute("edit_files", {
+    files: [
+      { path: "a.txt", create: true, content: "after" },
+      {
+        path: "AGENTS.md",
+        create: false,
+        edits: [{ oldText: "rules", newText: "updated" }],
+      },
+    ],
+  });
+
+  await expect.poll(() => approvals.list()).toHaveLength(1);
   await writeFile(path.join(root, "a.txt"), "external");
   approvals.decide(approvals.list()[0].id, "once");
+  const result = await pending;
 
-  await expect(pending).rejects.toThrow("已变化");
+  expect(result.error).toContain("出现");
+  expect(result.files).toMatchObject([
+    { path: "a.txt", status: "failed" },
+    { path: "AGENTS.md", status: "written" },
+  ]);
   expect(await readFile(path.join(root, "a.txt"), "utf8")).toBe("external");
 });
 
@@ -212,7 +227,10 @@ it("requires approval for project instruction edits and sensitive reads", async 
 
   await writeFile(path.join(root, ".env"), "secret");
   for (const [name, args] of [
-    ["write_file", { path: "AGENTS.md", content: "rules" }],
+    [
+      "edit_files",
+      { files: [{ path: "AGENTS.md", create: true, content: "rules" }] },
+    ],
     ["read_file", { path: ".env", startLine: 1, endLine: 3 }],
   ] as const) {
     const pending = runner.execute(name, args);
@@ -220,7 +238,11 @@ it("requires approval for project instruction edits and sensitive reads", async 
     await expect.poll(() => approvals.list().length).toBe(1);
     approvals.decide(approvals.list()[0].id, "deny");
 
-    await expect(pending).rejects.toThrow("拒绝");
+    if (name === "edit_files") {
+      expect((await pending).error).toContain("拒绝");
+    } else {
+      await expect(pending).rejects.toThrow("拒绝");
+    }
   }
 });
 
@@ -229,7 +251,9 @@ it("rejects unknown tools and invalid arguments before any side effects", async 
 
   await expect(runner.execute("not_a_tool", {})).rejects.toThrow("未知工具");
   await expect(
-    runner.execute("write_file", { path: "a", content: "x", extra: true }),
+    runner.execute("edit_files", {
+      files: [{ path: "a", create: true, content: "x", extra: true }],
+    }),
   ).rejects.toThrow();
   expect(await readdir(root)).toEqual([]);
   expect(approvals.list()).toEqual([]);
@@ -237,10 +261,7 @@ it("rejects unknown tools and invalid arguments before any side effects", async 
 
 it("applies multiple edits from one snapshot and allows another edit without rereading", async () => {
   const { root, runner } = await fileFixture();
-  await runner.execute("write_file", {
-    path: "a.txt",
-    content: "alpha middle omega",
-  });
+  await createFile(runner, "a.txt", "alpha middle omega");
   await editSingleFile(runner, "a.txt", [
     { oldText: "alpha", newText: "$&" },
     { oldText: "omega", newText: "last" },
@@ -258,10 +279,7 @@ it("applies multiple edits from one snapshot and allows another edit without rer
 
 it("leaves the file and read state intact when a later edit fails", async () => {
   const { root, runner } = await fileFixture();
-  await runner.execute("write_file", {
-    path: "a.txt",
-    content: "alpha same same",
-  });
+  await createFile(runner, "a.txt", "alpha same same");
   for (const oldText of ["absent", "same"]) {
     await expect(
       editSingleFile(runner, "a.txt", [
@@ -275,7 +293,9 @@ it("leaves the file and read state intact when a later edit fails", async () => 
   }
 
   await expect(
-    runner.execute("edit_files", { files: [{ path: "a.txt", edits: [] }] }),
+    runner.execute("edit_files", {
+      files: [{ path: "a.txt", create: false, edits: [] }],
+    }),
   ).rejects.toThrow();
   await editSingleFile(runner, "a.txt", [{ oldText: "alpha", newText: "ok" }]);
   expect(await readFile(path.join(root, "a.txt"), "utf8")).toBe("ok same same");

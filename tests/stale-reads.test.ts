@@ -217,6 +217,7 @@ it("probes safe files without granting fresh read permission and propagates canc
     files: [
       {
         path: "a.ts",
+        create: false,
         edits: [
           { oldText: "new", newText: "edited", startLine: null, endLine: null },
         ],
