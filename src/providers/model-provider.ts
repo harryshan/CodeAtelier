@@ -9,7 +9,17 @@
  * 流式回调只负责展示。调用方必须等完整结果返回后再执行工具；历史保存也由调用方负责。
  */
 
+import type { Settings } from "../shared/types.js";
 import type { ModelCapabilities, ModelUsage } from "./model-metadata.js";
+
+/** ModelPurpose 标记请求用途，使 Engine、HTTP 组装和测试工厂能选择正确的模型实现。 */
+export type ModelPurpose = "task" | "auxiliary" | "approval";
+
+/** 工厂在需要时按任务、通用辅助任务或审批任务创建独立的模型提供者。 */
+export type ModelProviderFactory = (
+  settings: Settings,
+  purpose: ModelPurpose,
+) => ModelProvider;
 
 /** 调用方只依赖这个接口，不需要知道具体服务商。 */
 export interface ModelResult {

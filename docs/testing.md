@@ -25,7 +25,7 @@
 | 文件读取       | files.test.ts、core.test.ts                    | 行号/范围/500 行限制、分页与截断元数据、无效范围、文件大小、二进制、链接越界                              |
 | 新建与精确编辑 | files.test.ts、regressions.test.ts             | 嵌套创建、替换唯一性、字面替换、任务内读取前置条件、并发修改、覆盖拒绝、临时文件清理、POSIX 模式           |
 | 路径与工作区   | paths.test.ts、core.test.ts                    | 路径前缀隔离、父目录越界、新建路径规范化、敏感组件、真实目录要求、Windows ADS                              |
-| 权限           | permissions.test.ts、core.test.ts              | 单次/会话授权、失效请求、跨会话隔离、内容变化后重新审批、取消、敏感文件/AGENTS.md、直接 Git 与提权限制      |
+| 权限           | permissions.test.ts、model-approval.test.ts、core.test.ts | 单次/会话授权、低成本模型三级分流、失效或无模型时保守人工确认、跨会话隔离、内容变化后重新审批、取消、敏感文件/AGENTS.md、直接 Git 与提权限制      |
 | Git 工具        | git-tools.test.ts、tool-schema.test.ts、e2e/app.spec.ts | 单一 action 契约、固定 status/diff/log/show/branch 参数、add/提交/推送自动执行、worktree/upstream/revision/敏感目录校验、暂存失败不提交、禁止额外选项，以及流式输出与退出状态的卡片聚合 |
 | 命令执行       | process.test.ts、core.test.ts、permissions.test.ts、tool-schema.test.ts | 不存在的命令及子进程实际错误、输出与退出码、截断、UTF-8/ANSI 分块、颜色环境与控制符清理、API key 不继承、内部 Windows/POSIX shell 选择、单一 command 契约、复合命令合并、直接 Git/提权拒绝、取消和超时 |
 | 模型协议与重试 | provider.test.ts、recovery.test.ts             | item.done 回退、失败/不完整事件、服务实际错误 message/reason/code 的脱敏保留、断流、超时、重试次数、HTTP 分类、取消退避、并行工具调用请求参数           |
@@ -94,6 +94,7 @@ mechanical-input.test.ts 覆盖精确结果/跨路径正文引用、逐字还原
 
 - `tests/auxiliary-model.test.ts`：旧配置兼容、主模型继承、环境默认值、保存/重载/清空、非法输入拒绝；生产 Engine 路由、辅助模型独立预算、完整摘要来源、摘要失败保留历史。使用模拟模型，不访问真实服务。
 - `tests/title-generation.test.ts`：首条 prompt 选择辅助模型、输入分隔和输出清理、未知标题模型故障最多额外重试 3 次、永久失败不阻断主任务、取消结束标题状态，以及旧 SQLite 标题迁移。
+- `tests/model-approval.test.ts`：审批请求只将工具名和待审批内容发送给无工具、256 token 的低成本模型；严格 JSON 输出分别自动通过、保留人工点击或直接拒绝并返回理由，分类器缺失时不自动放行。
 - `tests/e2e/app.spec.ts`：辅助模型表单保存、刷新回显与清空；首条 prompt 完成后在侧栏显示并在刷新后保留自动标题。
 
 评测包装器的辅助模型路由与主模型共用累计用量和调用上限；本次仅静态检查评测改动，未运行 Evaluation。

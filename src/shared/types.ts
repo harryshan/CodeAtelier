@@ -48,6 +48,7 @@ export interface Approval {
   tool: string;
   description: string;
   repeatable: boolean;
+  reviewReason?: string;
 }
 
 export interface Settings {

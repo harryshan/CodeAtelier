@@ -379,6 +379,21 @@ export function Timeline({
           );
         }
 
+        if (e.type === "approval_assessed") {
+          const labels: Record<string, string> = {
+            approve: "低成本审批模型已自动通过",
+            "human review": "低成本审批模型建议人工确认",
+            reject: "低成本审批模型已拒绝",
+          };
+
+          return (
+            <div role="status" key={e.id} className={s.notice}>
+              {labels[e.data.decision] || "低成本审批模型已完成评估"}：
+              {e.data.reason}
+            </div>
+          );
+        }
+
         if (e.type === "notice") {
           return (
             <div role="status" key={e.id} className={s.notice}>
@@ -414,7 +429,11 @@ export function Timeline({
           <small>需要你的确认</small>
           <h3>允许这次操作？</h3>
           <pre>{a.description}</pre>
-          <p>命令将以本机用户权限执行。请确认目标与参数。</p>
+          <p>
+            {a.reviewReason
+              ? "模型建议：" + a.reviewReason
+              : "请确认目标、参数及其可能影响。"}
+          </p>
           <div className={s.actions}>
             {(
               ["once", ...(a.repeatable ? ["session"] : []), "deny"] as const

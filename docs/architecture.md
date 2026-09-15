@@ -19,7 +19,7 @@ server (Fastify)
 - `src/agent/engine.ts` 管理单任务锁、模型循环、停止条件与工具结果回传；`context.ts` 负责上下文恢复，`instructions.ts` 负责根规则与模型指令构建。src/context/ 负责预算、摘要压缩、快照契约与历史原文读取，循环在完整工具批次完成后接入；压缩阶段之间让出事件循环。
 - `src/providers` 将 Responses 输出映射为输出项和文本。主任务请求显式声明 `parallel_tool_calls: true`，让兼容服务可在一次响应中返回多个独立调用；自建服务需同时收集 output_item.done；completed.output 有内容时优先使用，不能只依赖 completed。
 - `src/tools` 定义 Zod 参数及对应 JSON Schema，提供目录、读取、写入、精确编辑、命令和单一受限 `git` 工具。没有 `search` 工具；`search-commands.ts` 在每次任务建立指令前检测 PATH 和 Windows 系统位置可用的常见搜索程序，按估计性能排序后只向模型给出命令名与内容/文件名用途。模型以 `run_command` 执行首选的已检测工具，尽量把多个关键词合入一次多模式搜索；`run_command` 只公开一条命令文本，`command-shell.ts` 在执行器内部选择平台 shell。模型先由目录和命令搜索定位，`read_file` 再按行读取；单次硬上限为 500 行，并返回分页/截断状态。旧会话的 `search` 记录只保留展示、归档和快照回读兼容。
-- `src/permissions` 在后端等待用户批准，取消会释放待审批 Promise。模型无法自行同意审批。
+- `src/permissions` 用无工具的低成本辅助模型将待审批请求分为自动通过、人工确认或拒绝；人工确认仍在后端等待用户点击，取消会释放待审批 Promise。模型无法自行同意审批。
 - `src/sessions/store.ts` 保存 sessions、tasks、events、context；初始数据库结构位于 `schema.ts`。大于 64 KiB 的 events、活动上下文和历史快照由 `store-worker.ts` 在独立 Worker 线程解析或事务写入，小记录避免线程创建开销而同步读取。启动时将 running/waiting 任务标为 interrupted。
 - `src/config` 管理非敏感设置、内存密钥和平台数据目录。
 - `src/logging` 在 Pino 内部按字段脱敏后输出紧凑格式化纯文本，按级别筛选、保留受控错误详情并轮转文件。
@@ -53,7 +53,7 @@ server (Fastify)
 2. 后端拒绝同时启动第二个任务，并以 SQLite 条件更新领取首条用户消息的标题生成；它与任务和用户消息在同一事务中保存，避免恢复或后续追问覆盖标题。
 3. 已领取的首条消息先由低成本辅助模型生成无工具的简短标题；该请求有界重试，失败保留占位标题并不阻断主编码任务，取消则中止任务。
 4. 主任务加载本地上下文与根 AGENTS.md，模型请求包含当前指令、上下文与工具定义，并请求服务允许多个独立工具调用；接收文本及完整输出项。
-5. 自研循环检查工具参数和权限，按模型返回顺序执行完整工具批次，记录工具事件与 diff，再将 function_call_output 回传模型。工具调用提出后若需审批会停留在 waiting，ToolRunner 仅在真正开始读取、写入或启动进程时通知 Engine 开始耗时统计，因此审批等待不计入工具耗时。并行调用偏好不改变本地的顺序执行、审批或文件一致性校验。
+5. 自研循环检查工具参数和权限，所有原本需要审批的调用先由低成本模型给出自动通过、人工确认或拒绝；人工确认才停留在 waiting，模型不可用或输出无效也保守停留在该流程。Engine 持久化分类决定，再按模型返回顺序执行完整工具批次，记录工具事件与 diff，并将 function_call_output 回传主模型。ToolRunner 仅在真正开始读取、写入或启动进程时通知 Engine 开始耗时统计，因此分类和人工审批等待均不计入工具耗时。并行调用偏好不改变本地的顺序执行、审批或文件一致性校验。
 6. 没有工具调用且收到完成文本时任务结束；超时、取消、失败或超过步骤上限时明确停止。前端通过 SSE 得知标题或任务状态变化，重新读取带事件 ID 的快照；切换时立即显示“正在打开对话”，不把旧会话内容误当成新会话；重新连接只读状态，不会再次启动任务。
 
 ## 历史与恢复
@@ -90,7 +90,7 @@ UI 历史包含消息、工具调用、受限工具结果和修改 diff。`run_c
 
 ### 辅助模型配置与摘要路由
 
-`config/auxiliary-model.ts` 的 `auxiliarySettings` 为辅助调用创建独立配置副本；Engine 保持主任务提供商不变，并通过 ContextManager 的惰性 `summaryModel` 回调为摘要提供独立模型及预算。首条 prompt 的标题生成也使用该选择函数、无工具请求和 64 token 输出上限；空辅助配置沿用主模型。工具审批仍独立执行，模型不能自动授权。
+`config/auxiliary-model.ts` 的 `auxiliarySettings` 为辅助调用创建独立配置副本；Engine 保持主任务提供商不变，并通过 ContextManager 的惰性 `summaryModel` 回调为摘要提供独立模型及预算。首条 prompt 的标题生成也使用该选择函数、无工具请求和 64 token 输出上限；空辅助配置沿用主模型。`permissions/model-approval.ts` 对每项待审批请求使用已显式配置的辅助模型、无工具和 256 token 上限，严格解析 `approve`、`human review`、`reject`；空配置、故障或无效输出不使用主模型，而是保守要求人工确认。模型不能自行改变执行器安全边界。
 
 ### 项目与对话展示
 

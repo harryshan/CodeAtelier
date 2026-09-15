@@ -4,7 +4,7 @@
  *
  * 1. 复制当前设置作为表单初值，另存用户新输入的密钥；后端不会返回原密钥。
  * 2. 提交时组装 settings 和可选的 apiKey，等待保存并显示错误。
- * 3. 表单依次显示连接、主辅模型和执行参数，末尾提供保存与取消按钮。
+ * 3. 表单依次显示连接、主辅模型和执行参数，末尾提供保存与取消按钮；低成本辅助模型也用于审批分流。
  *
  * “已有密钥”只表示后端已配置。配置是否合法、任务运行中能否修改，最终由后端检查。
  */
@@ -106,7 +106,7 @@ export function SettingsPanel({
             辅助模型（低成本，可选）
             <input
               value={value.auxiliaryModel ?? ""}
-              placeholder="留空沿用主模型"
+              placeholder="留空：审批保留人工确认"
               onChange={(e) =>
                 setValue({ ...value, auxiliaryModel: e.target.value })
               }
@@ -131,7 +131,7 @@ export function SettingsPanel({
           </label>
           <p className={s.muted}>
             辅助模型共用 API
-            地址和密钥，目前用于上下文摘要。留空时沿用主模型及其思考等级。
+            地址和密钥，用于上下文摘要、会话标题和工具审批分流。留空时标题和摘要沿用主模型；为避免审批使用主模型，审批将保留人工确认。
           </p>
           <label>
             API key

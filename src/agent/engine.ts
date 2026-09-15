@@ -7,7 +7,8 @@
  * 3. resume 继续最后一个可恢复任务；cancel 处理用户取消，close 处理服务关闭。
  * 4. 首条 prompt 先用辅助模型生成标题；run 再读取历史和项目规则，准备工具及上下文预算。
  * 5. 为压缩提供 ToolRunner 的安全文件哈希探测；每轮先整理上下文，再请求模型。只有完整响应保存成功后，才按顺序执行工具。
- * 6. 多文件编辑进度附带 callId 逐项保存；ToolRunner 确认实际执行开始后才记录工具耗时，工具结果和更新后的上下文一起提交到数据库；退出时保存最终状态并发出 task_end。
+ * 6. 低成本模型先把所有待审批工具分为自动通过、人工确认或拒绝；模型故障和无效输出保守降级为人工确认，并持久化可审计的决定。
+ * 7. 多文件编辑进度附带 callId 逐项保存；ToolRunner 确认实际执行开始后才记录工具耗时，工具结果和更新后的上下文一起提交到数据库；退出时保存最终状态并发出 task_end。
  *
  * 模型请求可以重试，但已经执行的工具不能跟着重跑。数据库回滚也撤销不了文件修改或
  * 已启动的命令，所以保存失败时必须停止任务，并留下足够的记录供后续恢复。
@@ -34,8 +35,13 @@ import { Store } from "../sessions/store.js";
 import { generateConversationTitle } from "../sessions/title-generator.js";
 import { Config } from "../config/config.js";
 import { ApprovalManager } from "../permissions/approval-manager.js";
+import {
+  assessApproval,
+  type ApprovalAssessment,
+  type ApprovalSubject,
+} from "../permissions/model-approval.js";
 import { ResponsesProvider } from "../providers/responses-provider.js";
-import { type ModelProvider } from "../providers/model-provider.js";
+import { type ModelProviderFactory } from "../providers/model-provider.js";
 import { ToolRunner } from "../tools/tool-runner.js";
 import { definitions } from "../tools/registry.js";
 import { redactJson, redactText } from "../logging/redact.js";
@@ -53,20 +59,79 @@ export class Engine {
     public store: Store,
     public config: Config,
     private log: Logger,
-    private factory?: (
-      settings: Settings,
-      purpose: "task" | "auxiliary",
-    ) => ModelProvider,
+    private factory?: ModelProviderFactory,
   ) {
-    this.approvals = new ApprovalManager(() => {
-      if (this.active) {
-        const waiting =
-          this.approvals.list(this.active.task.sessionId).length > 0;
+    this.approvals = new ApprovalManager(
+      () => {
+        if (this.active) {
+          const waiting =
+            this.approvals.list(this.active.task.sessionId).length > 0;
 
-        this.store.status(this.active.task.id, waiting ? "waiting" : "running");
-        this.events.emit("change", this.active.task.sessionId);
+          this.store.status(
+            this.active.task.id,
+            waiting ? "waiting" : "running",
+          );
+          this.events.emit("change", this.active.task.sessionId);
+        }
+      },
+      (subject, signal) => this.classifyApproval(subject, signal),
+      (subject, assessment) => {
+        if (this.active) {
+          this.emit(this.active.task, "approval_assessed", {
+            tool: subject.tool,
+            decision: assessment.decision,
+            reason: assessment.reason,
+          });
+        }
+      },
+    );
+  }
+
+  /** 审批始终优先使用显式配置的低成本模型；缺失、取消以外的故障不能自动放行。 */
+  private async classifyApproval(
+    subject: ApprovalSubject,
+    signal: AbortSignal,
+  ): Promise<ApprovalAssessment> {
+    const settings = { ...this.config.settings };
+    if (!settings.auxiliaryModel?.trim()) {
+      return {
+        decision: "human review",
+        reason: "未配置低成本审批模型，需要人工确认。",
+      };
+    }
+
+    const selected = auxiliarySettings(settings);
+    const provider =
+      this.factory?.(selected, "approval") ??
+      new ResponsesProvider(selected, this.config.apiKey);
+
+    try {
+      const assessment = await assessApproval(provider, subject, signal);
+      this.log.info({
+        event: "approval.assessed",
+        module: "permissions",
+        tool: subject.tool,
+        decision: assessment.decision,
+      });
+
+      return assessment;
+    } catch (error) {
+      if (signal.aborted) {
+        throw signal.reason;
       }
-    });
+
+      this.log.warn({
+        event: "approval.assessment_failed",
+        module: "permissions",
+        tool: subject.tool,
+        err: error,
+      });
+
+      return {
+        decision: "human review",
+        reason: "低成本审批模型不可用或返回无效结果，需要人工确认。",
+      };
+    }
   }
 
   /** HTTP 快照在 Worker 中解析长事件 JSON；任务状态和审批仍从主线程的小索引查询取得。 */

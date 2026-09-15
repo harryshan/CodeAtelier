@@ -19,20 +19,16 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import type { Logger } from "pino";
-import type { Settings } from "../shared/types.js";
 import { Config } from "../config/config.js";
 import { Store } from "../sessions/store.js";
 import { Engine } from "../agent/engine.js";
-import type { ModelProvider } from "../providers/model-provider.js";
+import type { ModelProviderFactory } from "../providers/model-provider.js";
 import { workspacePath } from "../tools/paths.js";
 
 export async function createApp(
   config: Config,
   log: Logger,
-  providerFactory?: (
-    settings: Settings,
-    purpose: "task" | "auxiliary",
-  ) => ModelProvider,
+  providerFactory?: ModelProviderFactory,
   onStopped?: () => void,
   onReload?: () => void,
 ) {

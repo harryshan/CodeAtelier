@@ -35,7 +35,7 @@ Node.js 24，pnpm 11.22.0（packageManager 固定）。提交 pnpm-lock.yaml，�
 
 非敏感设置保存为 settings.json。已保存设置优先于环境变量默认值；通过 UI 修改。密钥始终来自环境或当前进程内存，不写 settings.json。任务运行时禁止修改配置。
 
-思考等级在“模型与设置”中选择，保存为 reasoningEffort，每次 Responses 请求显式发送 reasoning.effort，主任务和上下文摘要共用。默认 high，旧配置缺少字段时采用环境默认值或 high。例如 .env 中设置 CODEATELIER_REASONING_EFFORT=high；已保存设置优先，保存后用于后续调用。服务或模型不支持所选等级时按现有错误流程报告，不静默降级。
+思考等级在“模型与设置”中选择，保存为 reasoningEffort，每次主任务 Responses 请求显式发送 reasoning.effort，主任务和上下文摘要共用。默认 high，旧配置缺少字段时采用环境默认值或 high。例如 .env 中设置 CODEATELIER_REASONING_EFFORT=high；已保存设置优先，保存后用于后续调用。服务或模型不支持所选等级时按现有错误流程报告，不静默降级。低成本审批使用 auxiliaryModel 及 auxiliaryReasoningEffort，不会以主模型替代。
 
 默认限制：100 次模型调用、命令 120 秒、模型请求总计 300 秒、流空闲 60 秒、上下文 180000 字符、单工具输出 32000 字符。这是可配置字符预算，不是精确 token 计量。发现服务容量和支持的 tokenizer 后改用 token 预算，contextChars 仅备用；maxOutputTokens 默认 16384。输入预算扣除输出与安全余量后，达到 80% 时尝试压缩至 60% 以内。失败保留原历史，超过硬上限则停止。实测值和用量展示见 [model-tokens.md](model-tokens.md)。详见 [上下文管理](context-management.md)。高级字段可在停机时编辑 settings.json 或通过设置 API 更新。
 
@@ -84,7 +84,7 @@ Node.js 24，pnpm 11.22.0（packageManager 固定）。提交 pnpm-lock.yaml，�
 
 普通工作区文件操作自动执行。工作区外访问、敏感文件、修改 AGENTS.md、完整覆盖已有文件需确认；直接修改 .git 被拒绝。外部读取当前采用逐次确认，尚未提供额外只读目录授权管理界面。
 
-命令均首次确认；简单的 `pnpm`/`npm` test/build/lint/typecheck 或 `node --test` 在可计算项目指纹时可授予本次会话重复执行。包含更多 shell 语法的命令不支持会话放行，仍按单次审批处理。执行器内部选择 shell，不改变命令的权限边界；直接 Git 程序名（包括复合命令中的 Git）和提权命令会在审批前拒绝。子进程环境设置 `NO_COLOR=1`、`FORCE_COLOR=0`、`CLICOLOR=0`、`CLICOLOR_FORCE=0` 和 `TERM=dumb` 请求工具禁用颜色；执行器还会跨输出分块移除 ANSI、OSC 等控制序列，只保存、展示和回传纯文本。没有系统沙箱、回滚或提权工具。请只操作可信项目。
+每个原本需要审批的命令或工具使用先由已配置的低成本辅助模型作单次、无工具的三级分类：`approve` 自动通过，`human review` 显示现有人工点击审批，`reject` 直接拒绝并把简洁理由返回任务与时间线。分类请求只包含工具名和待审批内容，输出严格限制为 JSON 决定及理由，最多 256 token；无辅助模型、服务故障或无效输出一律保守转为人工确认，不调用主模型替代。模型分类不影响现有授权：简单的 `pnpm`/`npm` test/build/lint/typecheck 或 `node --test` 在可计算项目指纹时仍可授予本次会话重复执行，包含更多 shell 语法的命令仍不支持会话放行。执行器内部选择 shell，不改变命令的权限边界；直接 Git 程序名（包括复合命令中的 Git）和提权命令会在审批模型之前直接拒绝。子进程环境设置 `NO_COLOR=1`、`FORCE_COLOR=0`、`CLICOLOR=0`、`CLICOLOR_FORCE=0` 和 `TERM=dumb` 请求工具禁用颜色；执行器还会跨输出分块移除 ANSI、OSC 等控制序列，只保存、展示和回传纯文本。没有系统沙箱、回滚或提权工具。请只操作可信项目。
 
 Git 不经 `run_command` 执行，而使用单一 `git` 工具；模型可以主动调用允许的 action，不等待人工审批。`status`、`diff`、`log`、`show`、`branch` 只读；`add`、`commit`、`push` 会写入索引、仓库或已配置远程。`diff` 显式传 `staged`、`paths` 和 `contextLines`，空 paths 的全量差异先列出全部变更路径并拒绝敏感内容；`log` 传安全 revision、paths 与 limit；`show` 必须传安全 revision 和明确 paths；`add`/`commit` 必须传明确 paths，commit 另传非空 message；`push` 没有额外参数。
 
@@ -145,7 +145,7 @@ CODEATELIER_AUXILIARY_REASONING_EFFORT=low
 
 辅助模型共用主模型的 API 地址与密钥，默认不指定模型；空值沿用主模型及其思考等级。已保存设置优先于环境默认值，在 UI 清空即可恢复沿用。推理强度可选 low/medium/high，指定辅助模型时默认 low；程序不推断价格或自动选择模型。
 
-上下文摘要和首条用户 prompt 的标题生成均使用 `auxiliarySettings`：创建会话后先显示“新对话”，Engine 对首条消息发起无工具、64 token 上限的标题请求，成功后通过 SSE 更新侧栏；失败保留占位标题而不阻断编码任务，取消会中止任务。工具审批仍遵守规则和人工确认，未启用模型自动授权。配置不意味着服务兼容性已经实测。
+上下文摘要和首条用户 prompt 的标题生成均使用 `auxiliarySettings`：创建会话后先显示“新对话”，Engine 对首条消息发起无工具、64 token 上限的标题请求，成功后通过 SSE 更新侧栏；失败保留占位标题而不阻断编码任务，取消会中止任务。审批也复用已显式配置的辅助模型，但不在其为空时回退主模型：每个待审批请求使用无工具、256 token 上限的 JSON 分类，自动通过、人工确认或直接拒绝均会记录在时间线；模型故障和无效输出保留人工确认。配置不意味着服务兼容性已经实测。
 
 
 ### Git 模型参数兼容性

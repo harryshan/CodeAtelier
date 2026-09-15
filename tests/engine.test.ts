@@ -7,6 +7,7 @@
  * 3. 检查项目规则加载、大输出限制，以及多项互不冲突的工具调用会在同一轮全部执行。
  * 4. 检查多文件调用的逐文件进度及结果持久化、新任务必须重新读文件，以及含凭据相关源码的工具结果仍是合法 JSON。
  * 5. 检查模型实际错误会进入任务失败记录和通知，对需要批准的命令确认保存的工具耗时只从真正执行开始计算，不包含审批等待。
+ * 6. 配置辅助模型时，确认审批请求被路由给独立的低成本模型，并保存自动通过的分类决定。
  *
  * 只模拟模型响应，文件操作、审批和保存使用实际实现。
  */
@@ -193,6 +194,85 @@ it("starts tool duration after command approval instead of when the call is requ
     clock.mockRestore();
     await fixture.engine.close();
     fixture.store.close();
+  }
+});
+
+it("routes an approval to the configured low-cost model and persists an automatic pass", async () => {
+  const root = await temp();
+  const config = new Config(await temp());
+  const store = new Store(path.join(config.directory, "db"));
+  const session = store.create(root, "test");
+  config.settings.auxiliaryModel = "approval-model";
+  let taskCalls = 0;
+  let approvalCalls = 0;
+  const engine = new Engine(
+    store,
+    config,
+    pino({ enabled: false }),
+    (settings, purpose) => {
+      if (purpose === "approval") {
+        return {
+          async run(input, instructions, tools, _signal, _onDelta, options) {
+            approvalCalls++;
+            expect(settings.model).toBe("approval-model");
+            expect(input[0].content).toContain("run_command");
+            expect(instructions).toContain("工具审批分类器");
+            expect(tools).toEqual([]);
+            expect(options).toEqual({ maxOutputTokens: 256 });
+
+            return {
+              output: [],
+              text: '{"decision":"approve","reason":"固定验证命令"}',
+            };
+          },
+        };
+      }
+
+      return {
+        async run() {
+          if (++taskCalls === 1) {
+            return {
+              output: [
+                {
+                  type: "function_call",
+                  call_id: "automatic-command",
+                  name: "run_command",
+                  arguments: JSON.stringify({
+                    command: 'node -e "process.exit(0)"',
+                  }),
+                },
+              ],
+              text: "",
+            };
+          }
+
+          return done;
+        },
+      };
+    },
+  );
+
+  try {
+    engine.start(session.id, "run a fixed command");
+    await engine.active?.done;
+
+    expect(approvalCalls).toBe(1);
+    expect(engine.approvals.list()).toEqual([]);
+    expect(store.events(session.id)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "approval_assessed",
+          data: {
+            tool: "run_command",
+            decision: "approve",
+            reason: "固定验证命令",
+          },
+        }),
+      ]),
+    );
+  } finally {
+    await engine.close();
+    store.close();
   }
 });
 

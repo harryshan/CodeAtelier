@@ -119,7 +119,7 @@ export async function runEvaluation(
     checkpoint,
   );
   const engine = new Engine(store, config, log, (selected, purpose) =>
-    purpose === "auxiliary"
+    purpose === "auxiliary" || purpose === "approval"
       ? meter.forProvider(
           dependencies.provider ??
             new ResponsesProvider(selected, config.apiKey),
