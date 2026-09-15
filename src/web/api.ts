@@ -19,6 +19,7 @@ export async function api<T>(
   body?: unknown,
   method = body === undefined ? "GET" : "POST",
   refreshed = false,
+  signal?: AbortSignal,
 ): Promise<T> {
   const response = await fetch("/api" + url, {
     method,
@@ -27,13 +28,14 @@ export async function api<T>(
       "X-CodeAtelier-Token": token,
     },
     body: body === undefined ? undefined : JSON.stringify(body),
+    signal,
   });
 
   // 401 说明请求已被鉴权拒绝，可以刷新凭据后重试；网络错误则无法确定操作是否执行。
   if (response.status === 401 && url !== "/bootstrap" && !refreshed) {
     await bootstrap();
 
-    return api<T>(url, body, method, true);
+    return api<T>(url, body, method, true, signal);
   }
 
   const result = await response.json();
@@ -59,4 +61,5 @@ export async function bootstrap() {
 
 export const sessions = () => api<Session[]>("/sessions");
 
-export const snapshot = (id: string) => api<Snapshot>("/sessions/" + id);
+export const snapshot = (id: string, signal?: AbortSignal) =>
+  api<Snapshot>("/sessions/" + id, undefined, "GET", false, signal);

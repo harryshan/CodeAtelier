@@ -13,7 +13,7 @@
 
 import { createHash } from "node:crypto";
 import type { Event } from "../shared/types.js";
-import { previewOutput, savedToolResult } from "./tool-result.js";
+import { createToolResultIndex, previewOutput } from "./tool-result.js";
 
 interface Projection {
   value: Record<string, any>;
@@ -137,9 +137,10 @@ export function projectToolResults(
   source: any[],
   snapshotId: string,
   events: Event[],
+  index = createToolResultIndex(source, events),
 ): any[] {
-  return source.map((item, index) => {
-    const saved = savedToolResult(source, item, events);
+  return source.map((item, outputIndex) => {
+    const saved = index.savedOutput(outputIndex);
     if (
       !saved ||
       !saved.result ||
@@ -169,7 +170,7 @@ export function projectToolResults(
       ...projection.value,
       contextArchive: {
         snapshotId,
-        index,
+        index: outputIndex,
         offset: 0,
         sha256: createHash("sha256")
           .update(

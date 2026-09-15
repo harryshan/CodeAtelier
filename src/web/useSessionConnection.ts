@@ -2,10 +2,11 @@
  * 为 App 同步当前会话快照，并管理 SSE 连接和断线重试。
  * 接收会话 ID、连接开关及状态回调，返回快照 data、setData 和连接状态 connected。
  *
- * 1. effect 在选中会话后先清除旧快照并标记 loading；refresh 合并连续通知，读取最新快照。
- * 2. connect 先 bootstrap 更新凭据和配置，再建立当前会话的 EventSource。
- * 3. 收到 refresh 就读快照，连接失败则关闭旧流并安排重试。
- * 4. 清理时标记 disposed、清除定时器并关闭连接；晚到的异步响应会被丢弃，避免覆盖新会话。
+ * 1. effect 在选中会话后先清除旧快照并标记 loading；refresh 合并连续 SSE 通知，读取最新快照。
+ * 2. connect 先 bootstrap 更新凭据和配置，再建立当前会话的 EventSource；服务建立流时的首个 refresh
+ *    是唯一初始快照请求，避免切换时重复下载同一段历史。
+ * 3. 收到后续 refresh 就读快照，连接失败则关闭旧流并安排重试。
+ * 4. 清理时标记 disposed、取消进行中的快照、清除定时器并关闭连接；晚到响应不会覆盖新会话。
  *
  * 重连只恢复状态同步，不重发任务。服务停止后通过 enabled 关闭连接和重试。
  */
@@ -38,8 +39,9 @@ export function useSessionConnection(
     // 不能在新快照抵达前继续展示旧会话；否则侧栏已切换但主区域看似卡住。
     setData(undefined);
     setLoading(true);
-    // 合并连续刷新通知，并在切换会话或关闭服务时丢弃过期响应。
+    // 合并连续刷新通知，并在切换会话或关闭服务时取消过期的历史读取。
     let disposed = false;
+    const snapshotRequest = new AbortController();
     let refreshInProgress = false;
     let refreshQueued = false;
     const refresh = async () => {
@@ -51,14 +53,14 @@ export function useSessionConnection(
 
       refreshInProgress = true;
       try {
-        const v = await snapshot(selected);
+        const v = await snapshot(selected, snapshotRequest.signal);
 
         if (!disposed) {
           setData(v);
           setLoading(false);
         }
       } catch (e) {
-        if (!disposed) {
+        if (!disposed && (e as Error).name !== "AbortError") {
           setLoading(false);
           setError((e as Error).message);
         }
@@ -71,7 +73,6 @@ export function useSessionConnection(
       }
     };
 
-    void refresh();
     let stream: EventSource | undefined;
     let reconnect: ReturnType<typeof setTimeout>;
     const retryConnection = () => {
@@ -96,7 +97,6 @@ export function useSessionConnection(
 
         setSettings(v.settings);
         setHasKey(v.hasApiKey);
-        await refresh();
         if (disposed) {
           return;
         }
@@ -114,6 +114,7 @@ export function useSessionConnection(
 
     return () => {
       disposed = true;
+      snapshotRequest.abort();
       clearTimeout(reconnect);
       stream?.close();
     };

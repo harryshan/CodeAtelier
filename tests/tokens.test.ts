@@ -134,6 +134,7 @@ it("uses token measurement through compaction and keeps character archive metada
     model: "test",
     limit: budget.limit,
     measure: budget.measure,
+    measurement: budget.measurement,
     unit: budget.unit,
     maxOutputTokens: budget.outputTokens,
     signal: new AbortController().signal,

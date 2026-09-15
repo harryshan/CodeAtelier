@@ -12,34 +12,23 @@
 
 import type { ContextSnapshot } from "./types.js";
 import type { Event } from "../shared/types.js";
+import { createToolResultIndex, type ToolResultIndex } from "./tool-result.js";
 
 /** 根据已保存的工具事件判断状态；找不到记录就保留未知，不让摘要模型猜。 */
 export function executionLedger(
   prefix: any[],
   events: Event[],
   previous?: ContextSnapshot,
+  index: ToolResultIndex = createToolResultIndex(prefix, events),
 ): ContextSnapshot["ledger"] {
   const ledger = [...(previous?.ledger ?? [])];
   for (const item of prefix.filter(
     (record) => record.type === "function_call",
   )) {
-    const outputs = prefix.filter(
-      (record) =>
-        record.type === "function_call_output" &&
-        record.call_id === item.call_id,
-    );
-    // 服务可能在不同任务中重复使用 call_id，不能只取这个 ID 最后一次出现的结果。
-    // 结果不一致或无法唯一匹配时记为未知，不能把旧任务的成功算到本次调用上。
-    const matches = events.filter(
-      (event) =>
-        event.type === "tool_result" &&
-        event.data.callId === item.call_id &&
-        event.data.name === item.name &&
-        outputs.length === 1 &&
-        JSON.stringify(event.data.result) === outputs[0].output,
-    );
-    const saved = matches.length === 1 ? matches[0] : undefined;
-    const result = saved?.data.result;
+    // 服务可能在不同任务中重复使用 call_id。共享索引仍要求唯一输出和精确持久化结果，
+    // 但不会为每个调用重新扫描历史或序列化大输出。
+    const saved = index.savedCall(item);
+    const result = saved?.result;
     ledger.push({
       callId: item.call_id,
       name: item.name,

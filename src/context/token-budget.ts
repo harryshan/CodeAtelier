@@ -22,10 +22,16 @@ export type Measure = (
   tools: any[],
 ) => number;
 
+/** 可结构化克隆到压缩 Worker 的计量配置；校准系数只在当前任务内上调。 */
+export type ContextMeasurement =
+  | { unit: "characters" }
+  | { unit: "tokens"; tokenizer: "o200k_base"; correction: number };
+
 export interface ContextBudget {
   unit: "tokens" | "characters";
   limit: number;
   measure: Measure;
+  measurement: ContextMeasurement;
   outputTokens?: number;
   contextWindowTokens?: number;
   safetyTokens?: number;
@@ -39,13 +45,40 @@ export interface ContextBudget {
 }
 
 /** 使用服务明确返回、本地也支持的 tokenizer；不能根据模型名字猜编码。 */
+/** 在调用线程计量完整请求；压缩 Worker 复用同一契约，不能改用不一致的字符近似。 */
+export function measureContext(
+  measurement: ContextMeasurement,
+  input: any[],
+  instructions: string,
+  tools: any[],
+): number {
+  if (measurement.unit === "characters") {
+    return contextSize(input, instructions, tools);
+  }
+
+  encoder ??= new Tiktoken(o200k);
+
+  return Math.ceil(
+    encoder.encode(JSON.stringify({ input, instructions, tools }), [], [])
+      .length * measurement.correction,
+  );
+}
+
 export function createBudget(
   capabilities: ModelCapabilities | undefined,
   fallbackChars: number,
   requestedOutput = 16384,
 ): ContextBudget {
   if (!capabilities || capabilities.tokenizer !== "o200k_base") {
-    return { unit: "characters", limit: fallbackChars, measure: contextSize };
+    const measurement: ContextMeasurement = { unit: "characters" };
+
+    return {
+      unit: "characters",
+      limit: fallbackChars,
+      measurement,
+      measure: (input, instructions, tools) =>
+        measureContext(measurement, input, instructions, tools),
+    };
   }
 
   const window = capabilities.limits.max_context_window_tokens;
@@ -61,29 +94,47 @@ export function createBudget(
       capabilities.limits.max_prompt_tokens ?? window,
     ) - safetyTokens;
   if (limit <= 0) {
-    return { unit: "characters", limit: fallbackChars, measure: contextSize };
+    const measurement: ContextMeasurement = { unit: "characters" };
+
+    return {
+      unit: "characters",
+      limit: fallbackChars,
+      measurement,
+      measure: (input, instructions, tools) =>
+        measureContext(measurement, input, instructions, tools),
+    };
   }
 
-  encoder ??= new Tiktoken(o200k);
-  let correction = 1;
-  const rawMeasure: Measure = (input, instructions, tools) =>
-    encoder!.encode(JSON.stringify({ input, instructions, tools }), [], [])
-      .length;
+  const measurement: ContextMeasurement = {
+    unit: "tokens",
+    tokenizer: "o200k_base",
+    correction: 1,
+  };
+  const rawMeasure: Measure = (input, instructions, tools) => {
+    encoder ??= new Tiktoken(o200k);
+
+    return encoder.encode(
+      JSON.stringify({ input, instructions, tools }),
+      [],
+      [],
+    ).length;
+  };
 
   return {
     unit: "tokens",
     limit,
+    measurement,
     outputTokens,
     contextWindowTokens: window,
     safetyTokens,
     tokenizer: capabilities.tokenizer,
     // 本地无法精确计算服务端的额外开销。源码里的特殊 token 字面量按普通文本计数。
     measure: (input, instructions, tools) =>
-      Math.ceil(rawMeasure(input, instructions, tools) * correction),
+      measureContext(measurement, input, instructions, tools),
     // 只上调当前任务的估算比例，不能因为一次用量较低就减少预留。
     observeUsage: (actualInput, input, instructions, tools) => {
-      correction = Math.max(
-        correction,
+      measurement.correction = Math.max(
+        measurement.correction,
         actualInput / Math.max(1, rawMeasure(input, instructions, tools)),
       );
     },

@@ -11,6 +11,12 @@
 达到 80% 时尝试整理较早记录，只有压缩后不超过预算 60%，且至少缩小 10%，才提交。
 未到 80% 不增加摘要模型调用。
 
+达到阈值后，切分、祖先快照正文恢复、工具来源索引、读取/工具投影、执行账本、摘要分块、
+压缩前后计量和快照元数据在一次性专用 Worker 中完成。主线程仅读取 SQLite、在 ToolRunner 的既有
+权限边界内探测当前文件哈希、调用摘要模型并原子提交结果；取消会终止该 Worker。Worker 不访问工作区、
+不调用模型、不写数据库。这样摘要模型等待期间和大型历史转换期间仍可处理其他会话的 HTTP/SSE 请求，
+但 Worker 启动、历史结构化克隆、浏览器渲染大历史及 SQLite/文件 I/O 不构成响应延迟上界承诺。
+
 当前应用指令与根 AGENTS.md 每个任务重新加载。被覆盖范围内的用户消息逐条原文保留，
 其中包括目标、约束和后续纠正；最近记录保留原文。更早的模型记录变成结构化摘要，
 包含 completed、conclusions、verification、pending，每条附本次快照中的原始记录索引。
@@ -101,7 +107,9 @@ read_context_history(snapshotId, index, offset) 只读工具，从当前会话�
 从 offset=0 开始，跟随 nextOffset，null 表示结束。另一会话的快照不能读取。
 历史阅读不满足文件编辑所要求的本任务内实际文件读取。
 
-工具执行账本由已保存 tool_result 事件生成，不由摘要模型推断。匹配调用 ID、工具名及完整已保存输出；ID 重用、结果不一致或匹配歧义时保守标为未知。
+工具执行账本由已保存 tool_result 事件生成，不由摘要模型推断。压缩 Worker 为投影前缀和恢复后的账本输入
+各建立共享唯一来源索引，按 call ID、工具名及完整已保存输出匹配；读取投影、工具投影和同一输入视图的账本
+复用索引。这不改变 ID 重用、结果不一致或匹配歧义时保守标为未知的规则。
 recorded 只表示存在结果记录，保留 error、exitCode、truncated 及取消/超时状态；多文件批次保留 batchId 和各文件 path/status/changed/error，Git 保留嵌套阶段状态及完整 commit 阶段结果。状态 JSON 不再截成固定 500 字符；过大时由正常预算规则拒绝压缩，不能牺牲恢复事实。unknown 必须先检查现状，
 不能推断操作尚未执行，也不能自动重放。连续压缩会继承此前账本。
 摘要不会改变 ApprovalManager 或 ToolRunner 的授权与新鲜读取检查。
@@ -147,21 +155,21 @@ context.compaction_failed（WARN），继承 sessionId/taskId，包含前后大�
 
 ## 模块和验证
 
-- src/context/context-manager.ts：触发、调用预算、压缩编排与提交。
+- src/context/context-manager.ts：触发、调用预算、主线程编排与提交。
+- src/context/compaction-worker-client.ts、compaction-worker.ts：一次性 Worker 的消息、取消和 CPU 密集压缩转换；不访问工作区或 SQLite。
 - src/context/budget.ts：字符预算、保守分组切分。
 - src/context/compactor.ts：完整预算分块、摘要模型调用和结构/来源校验。
 - src/context/mechanical-input.ts：每请求精确工具结果/正文引用，不改变持久化输入。
 - src/context/read-projection.ts：可核对的文件读取去重、过期版本归档与正文摘录。
 - src/context/tool-projection.ts：第二级搜索、目录、命令、只读 Git 和写入 diff 归档。
-- src/context/tool-result.ts：共享的唯一来源匹配和诊断摘录，供两类投影复用。
+- src/context/tool-result.ts：一次构建、供读取/工具投影和账本复用的唯一来源索引，以及诊断摘录。
 - src/context/snapshot.ts、types.ts：执行账本与快照契约。
 - src/context/history.ts：会话隔离的有界原文读取工具。
 - src/sessions/store.ts：快照查询和原子保存。
 - src/agent/engine.ts：安全点接入、通知、容量错误恢复。
 
-tests/context.test.ts 覆盖预算、完整工具批次、用户纠正、重启归档读取、会话隔离、
-连续压缩的未知状态、无效摘要、失败退化、事务回滚、取消、过大用户输入、
-调用上限、agent 工具往返与容量错误 attempt 隔离。
+tests/context.test.ts 覆盖 Worker 编排下的预算、完整工具批次、用户纠正、重启归档读取、会话隔离、
+连续压缩的未知状态、无效摘要、失败退化、事务回滚、取消、过大用户输入、调用上限、agent 工具往返与容量错误 attempt 隔离。
 浏览器用例验证整理提示、正常续聊和刷新后的原历史。
 真实模型摘要质量、长期磁盘增长、精确 token 计量和全平台结果不由这些测试证明。
 

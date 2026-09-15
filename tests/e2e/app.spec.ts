@@ -419,9 +419,24 @@ test("context compression notice and original history survive refresh", async ({
   await page.getByLabel("任务描述").fill("准备上下文压缩");
   await page.getByRole("button", { name: "开始执行" }).click();
   await expect(page.getByText("已准备长历史。", { exact: true })).toBeVisible();
+  const project = page.getByRole("group", { name: workspace, exact: true });
+  await project.getByRole("button", { name: "新建对话", exact: true }).click();
+  await expect(project.getByRole("button", { name: "新对话" })).toBeVisible();
+  await project.getByRole("button", { name: "准备上下文压缩" }).click();
   await page.getByLabel("任务描述").fill("继续，保持原任务要求");
   await page.getByRole("button", { name: "开始执行" }).click();
-  await expect(page.getByText(/上下文已整理：/)).toBeVisible();
+  await expect(
+    page.getByText("正在整理上下文，已保存的历史对话不会删除。"),
+  ).toBeVisible();
+  await project.getByRole("button", { name: "新对话" }).click();
+  await expect(
+    page.getByRole("heading", { name: "正在打开对话…" }),
+  ).toBeVisible();
+  await expect(page.getByLabel("任务描述")).toBeVisible();
+  await project.getByRole("button", { name: "准备上下文压缩" }).click();
+  await expect(page.getByText(/上下文已整理：/)).toBeVisible({
+    timeout: 15000,
+  });
   await expect(
     page.getByText("任务完成，已检查工具结果。", { exact: true }),
   ).toBeVisible();
@@ -492,15 +507,15 @@ test("creates another conversation from its project and preserves separate histo
   ).toBeVisible();
   await page.reload();
   let delayedSnapshot = false;
+  let selectedSnapshotRequests = 0;
   await page.route("**/api/sessions/*", async (route) => {
     const request = route.request();
-    if (
-      !delayedSnapshot &&
-      request.method() === "GET" &&
-      !request.url().endsWith("/events")
-    ) {
-      delayedSnapshot = true;
-      await new Promise((resolve) => setTimeout(resolve, 300));
+    if (request.method() === "GET" && !request.url().endsWith("/events")) {
+      selectedSnapshotRequests++;
+      if (!delayedSnapshot) {
+        delayedSnapshot = true;
+        await new Promise((resolve) => setTimeout(resolve, 300));
+      }
     }
 
     await route.continue();
@@ -510,6 +525,7 @@ test("creates another conversation from its project and preserves separate histo
     page.getByRole("heading", { name: "正在打开对话…" }),
   ).toBeVisible();
   await expect(page.getByText("任务完成，已检查工具结果。")).toBeVisible();
+  expect(selectedSnapshotRequests).toBe(1);
   await page.unroute("**/api/sessions/*");
   await project.getByRole("button", { name: "项目对话二任务" }).click();
   await expect(page.getByText("任务完成，已检查工具结果。")).toBeVisible();
