@@ -4,7 +4,7 @@
  *
  * 1. labels 和 textResult 处理工具名称及结果的显示格式。
  * 2. 按任务、步骤和尝试次数合并流式文本；已有完整 assistant 事件时，去掉对应的临时文本。
- * 3. 合并同一编辑批次的逐文件最新状态；按事件类型显示消息、工具参数与结果、diff、命令输出，以及上下文预算和用量通知。
+ * 3. 合并同一编辑批次的逐文件最新状态；按调用 ID 聚合 run_command、git 的流式输出和最终结果，再显示其余工具、diff、预算和用量通知。
  * 4. 显示仍在接收的文本和待审批按钮，把用户选择发给后端。
  *
  * 失败尝试的半截文本不能拼进重试后的回复。命令有输出不代表成功，退出码和错误信息要保留。
@@ -37,31 +37,52 @@ function textResult(event: Event) {
     : JSON.stringify(event.data.result, null, 2);
 }
 
-interface CommandCardState {
+const streamedToolOutputTypes: Record<string, string> = {
+  run_command: "command_output",
+  git: "git_output",
+};
+
+interface ToolOutputCardState {
   output: string;
   result?: Event;
 }
 
-/** 将一个 run_command 的开始、流式输出和最终状态聚合，历史记录缺少 callId 时按顺序兼容。 */
-function commandCards(events: Event[]) {
-  const cards = new Map<number, CommandCardState>();
+function outputTypeForTool(name: string) {
+  return streamedToolOutputTypes[name];
+}
+
+function toolForOutputType(type: string) {
+  return Object.entries(streamedToolOutputTypes).find(
+    ([, outputType]) => outputType === type,
+  )?.[0];
+}
+
+/** 将有流式 stdout/stderr 的工具开始、输出和最终状态聚合；旧历史缺少 callId 时按工具顺序兼容。 */
+function toolOutputCards(events: Event[]) {
+  const cards = new Map<number, ToolOutputCardState>();
   const calls = new Map<string, number>();
   const outputEventIds = new Set<number>();
   const resultEventIds = new Set<number>();
-  let activeCardId: number | undefined;
+  const activeCards = new Map<string, number>();
 
   for (const event of events) {
-    if (event.type === "tool_start" && event.data.name === "run_command") {
+    const outputType =
+      event.type === "tool_start"
+        ? outputTypeForTool(event.data.name)
+        : undefined;
+
+    if (outputType) {
       cards.set(event.id, { output: "" });
       calls.set(event.taskId + ":" + event.data.callId, event.id);
-      activeCardId = event.id;
+      activeCards.set(outputType, event.id);
       continue;
     }
 
-    if (event.type === "command_output") {
+    const tool = toolForOutputType(event.type);
+    if (tool) {
       const cardId = event.data.callId
         ? calls.get(event.taskId + ":" + event.data.callId)
-        : activeCardId;
+        : activeCards.get(event.type);
       const card = cardId === undefined ? undefined : cards.get(cardId);
 
       if (card) {
@@ -72,14 +93,14 @@ function commandCards(events: Event[]) {
       continue;
     }
 
-    if (event.type === "tool_result" && event.data.name === "run_command") {
+    if (event.type === "tool_result" && outputTypeForTool(event.data.name)) {
       const cardId = calls.get(event.taskId + ":" + event.data.callId);
       const card = cardId === undefined ? undefined : cards.get(cardId);
 
       if (card) {
         card.result = event;
         resultEventIds.add(event.id);
-        activeCardId = undefined;
+        activeCards.delete(outputTypeForTool(event.data.name));
       }
     }
   }
@@ -87,12 +108,12 @@ function commandCards(events: Event[]) {
   return { cards, outputEventIds, resultEventIds };
 }
 
-function CommandCard({
+function ToolOutputCard({
   start,
   state,
 }: {
   start: Event;
-  state: CommandCardState;
+  state: ToolOutputCardState;
 }) {
   const result = state.result?.data.result;
   const output =
@@ -104,17 +125,22 @@ function CommandCard({
         ? "已完成"
         : "退出码：" + (result.exitCode ?? "未知")
       : "执行中";
+  const target =
+    start.data.args?.command ||
+    start.data.args?.action ||
+    start.data.args?.path ||
+    "";
 
   return (
-    <details open className={s.commandCard}>
+    <details open className={s.outputCard}>
       <summary>
         <span className={s.toolDot} />
-        执行命令 <code>{start.data.args?.command || ""}</code>
-        <span className={s.commandStatus}>{status}</span>
+        {labels[start.data.name] || start.data.name} <code>{target}</code>
+        <span className={s.outputStatus}>{status}</span>
       </summary>
-      {output && <pre className={s.commandOutput}>{output}</pre>}
+      {output && <pre className={s.outputText}>{output}</pre>}
       {result && (
-        <div className={s.commandResult}>
+        <div className={s.outputResult}>
           {result.error
             ? "错误：" + result.error
             : "退出码：" + (result.exitCode ?? "未知")}
@@ -176,7 +202,7 @@ export function Timeline({
     editBatches.set(event.data.batchId, batch);
   }
 
-  const commandEvents = commandCards(data.events);
+  const outputEvents = toolOutputCards(data.events);
 
   return (
     <div className={s.timeline}>
@@ -202,11 +228,11 @@ export function Timeline({
         }
 
         if (e.type === "tool_start") {
-          if (e.data.name === "run_command") {
-            const card = commandEvents.cards.get(e.id);
+          if (outputTypeForTool(e.data.name)) {
+            const card = outputEvents.cards.get(e.id);
 
             return card ? (
-              <CommandCard key={e.id} start={e} state={card} />
+              <ToolOutputCard key={e.id} start={e} state={card} />
             ) : null;
           }
 
@@ -228,7 +254,7 @@ export function Timeline({
         }
 
         if (e.type === "tool_result") {
-          if (commandEvents.resultEventIds.has(e.id)) {
+          if (outputEvents.resultEventIds.has(e.id)) {
             return null;
           }
 
@@ -293,10 +319,7 @@ export function Timeline({
           );
         }
 
-        if (
-          e.type === "command_output" &&
-          commandEvents.outputEventIds.has(e.id)
-        ) {
+        if (outputEvents.outputEventIds.has(e.id)) {
           return null;
         }
 

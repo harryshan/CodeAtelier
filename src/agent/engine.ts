@@ -302,7 +302,7 @@ export class Engine {
         emit: (type, data) =>
           emit(
             type,
-            ["edit_progress", "command_output"].includes(type)
+            ["edit_progress", "command_output", "git_output"].includes(type)
               ? { ...data, callId: currentToolCallId }
               : data,
           ),

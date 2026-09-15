@@ -508,7 +508,7 @@
   color: #d4dfe2;
 }
 .tool,
-.commandCard,
+.outputCard,
 .toolResult,
 .diff {
   border: 1px solid #304048;
@@ -518,7 +518,7 @@
   overflow: hidden;
 }
 .tool summary,
-.commandCard summary,
+.outputCard summary,
 .toolResult summary,
 .diff summary {
   padding: 11px 13px;
@@ -527,13 +527,13 @@
   color: #b0c5ce;
 }
 .tool summary code,
-.commandCard summary code {
+.outputCard summary code {
   font-size: 10px;
   color: #709099;
   margin-left: 15px;
 }
 .tool pre,
-.commandCard pre,
+.outputCard pre,
 .toolResult pre {
   padding: 0 14px 10px;
   max-height: 300px;
@@ -548,27 +548,27 @@
   border-radius: 50%;
   margin-right: 10px;
 }
-.commandCard {
+.outputCard {
   border-color: #3a554a;
 }
-.commandStatus {
+.outputStatus {
   float: right;
   color: #8dafa2;
 }
-.commandOutput {
+.outputText {
   margin: 0;
   padding: 0 14px 10px;
   max-height: 300px;
   overflow: auto;
   color: #91a7af;
 }
-.commandResult {
+.outputResult {
   border-top: 1px solid #283840;
   padding: 9px 13px;
   color: #8dafa2;
   font-size: 11px;
 }
-.commandResult span {
+.outputResult span {
   float: right;
   color: #627c85;
 }
