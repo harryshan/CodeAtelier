@@ -3,10 +3,10 @@
  * Engine 为每个任务创建 ToolRunner，传入工作区、设置、审批回调、事件回调和取消信号。
  *
  * 1. ignored 列出遍历时跳过的目录；ToolContext 定义依赖，readHashes 记住本任务读过的文件版本。
- * 2. access 解析路径并申请必要的权限；entries 限量遍历，commandGrant 为可复用命令计算指纹。
+ * 2. currentFileHash 仅探测安全工作区文件的字节哈希，不更新读取凭证；access 解析路径并申请必要的权限；entries 限量遍历，commandGrant 为可复用命令计算指纹。
  * 3. execute 先通过 parseToolArguments 校验参数并解开 Git 的 request 包装（兼容历史扁平调用）。它在每次调用实际开始产生工具副作用或读取前回调 Engine，因此耗时不计入审批等待；统一的精确编辑分流给共享读取哈希的 FileEditor，单一专用 Git 工具分流给 GitToolRunner；普通命令只接受
  *    一条命令文本，内部选择 shell、拒绝直接 Git，再申请审批并调用 executeProcess。
- * 4. 只读分支处理列目录、读取和搜索；搜索可递归目录或只检查指定文件的文件名与正文，读文件按 500 行分页并记录内容哈希，供后续修改核对。
+ * 4. 只读分支处理列目录、读取和搜索；搜索可递归目录或只检查指定文件的文件名与正文，读文件按 500 行分页，返回全文字节 contentHash 供压缩比较，并在内部记录文本哈希供后续修改核对。
  * 5. write_file 修改已有文件前要求本任务已经读过且内容没有变化，整文件覆盖另需审批。
  * 6. 写入前再次核对路径和正文，再用同目录临时文件替换目标、保留权限，更新哈希并发出 diff。
  *
@@ -72,6 +72,27 @@ export class ToolRunner {
 
   private hash(value: string) {
     return createHash("sha256").update(value).digest("hex");
+  }
+
+  /** 压缩用的只读版本探测；不申请额外权限，也不更新编辑所需的读取凭证。 */
+  async currentFileHash(input: string): Promise<string | undefined> {
+    this.ctx.signal.throwIfAborted();
+    try {
+      const target = await resolveTarget(this.ctx.root, input);
+      if (target.outside || target.sensitive) {
+        return undefined;
+      }
+
+      await regularFile(target.path, 2 * 1024 * 1024);
+      const bytes = await readFile(target.path, { signal: this.ctx.signal });
+      this.ctx.signal.throwIfAborted();
+
+      return createHash("sha256").update(bytes).digest("hex");
+    } catch {
+      this.ctx.signal.throwIfAborted();
+
+      return undefined;
+    }
   }
 
   // 先解析真实路径，再决定是否需要审批；不能只按路径字符串判断越界。
@@ -278,7 +299,8 @@ export class ToolRunner {
     if (name === "read_file") {
       startExecution();
       await regularFile(file, 2 * 1024 * 1024);
-      const text = await readFile(file, "utf8");
+      const bytes = await readFile(file);
+      const text = bytes.toString("utf8");
 
       if (text.includes("\0")) {
         throw new Error("不支持二进制文件");
@@ -297,6 +319,7 @@ export class ToolRunner {
 
       return {
         path: file,
+        contentHash: createHash("sha256").update(bytes).digest("hex"),
         totalLines: lines.length,
         returnedEndLine,
         truncated,

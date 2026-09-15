@@ -6,7 +6,7 @@
  * 2. start 确保同一时间只有一个任务，保存用户消息，并准备取消信号和完成通知。
  * 3. resume 继续最后一个可恢复任务；cancel 处理用户取消，close 处理服务关闭。
  * 4. 首条 prompt 先用辅助模型生成标题；run 再读取历史和项目规则，准备工具及上下文预算。
- * 5. 每轮先整理上下文，再请求模型。只有完整响应保存成功后，才按顺序执行工具。
+ * 5. 为压缩提供 ToolRunner 的安全文件哈希探测；每轮先整理上下文，再请求模型。只有完整响应保存成功后，才按顺序执行工具。
  * 6. 多文件编辑进度附带 callId 逐项保存；ToolRunner 确认实际执行开始后才记录工具耗时，工具结果和更新后的上下文一起提交到数据库；退出时保存最终状态并发出 task_end。
  *
  * 模型请求可以重试，但已经执行的工具不能跟着重跑。数据库回滚也撤销不了文件修改或
@@ -360,6 +360,7 @@ export class Engine {
         sessionId: session.id,
         model: settings.model,
         limit: budget.limit,
+        currentFileHash: (file) => runner.currentFileHash(file),
         measure: budget.measure,
         unit: budget.unit,
         maxOutputTokens: budget.outputTokens,

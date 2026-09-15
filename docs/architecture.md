@@ -78,7 +78,7 @@ UI 历史包含消息、工具调用、受限工具结果和修改 diff。`run_c
 
 上下文压缩的触发、持久化、失败边界与模块职责见 [context-management.md](context-management.md)。活动上下文可为摘要与最近原文的组合；压缩前完整输入另存快照，不删除事件历史。
 
-压缩按读取去重、文件归档、完整分块摘要逐级执行；read-projection.ts 负责确定性的读取投影，ContextManager 负责阶段选择与原子提交。快照记录精确投影以在后续摘要前还原全文，保留已验证来源的旧摘要原文。
+压缩按读取去重与过期版本正文归档、文件归档、完整分块摘要逐级执行；Engine 为 ContextManager 注入 ToolRunner.currentFileHash，只在阈值压缩时探测安全工作区文件，对照读取结果中的全文 contentHash；read-projection.ts 负责确定性的读取投影，ContextManager 负责阶段选择与原子提交。快照记录精确投影以在后续摘要前还原全文，保留已验证来源的旧摘要原文。
 
 ## SWE-bench 开发评测
 
