@@ -4,7 +4,7 @@
  *
  * 1. 检查达到步数或上下文上限时会停止，已经完成的工具结果仍然保存。
  * 2. 传入非法工具参数，确认错误返回模型且文件没有变化。
- * 3. 检查项目规则加载、大输出限制，以及多项互不冲突的工具调用会在同一轮全部执行。
+ * 3. 检查项目规则加载、复杂任务计划摘要在同轮工具执行前持久化和展示、大输出限制，以及多项互不冲突的工具调用会在同一轮全部执行。
  * 4. 检查多文件调用的逐文件进度及结果持久化、新任务必须重新读文件，以及含凭据相关源码的工具结果仍是合法 JSON。
  * 5. 检查模型实际错误会进入任务失败记录和通知，对需要批准的命令确认保存的工具耗时只从真正执行开始计算，不包含审批等待。
  * 6. 配置辅助模型时，确认审批请求被路由给独立的低成本模型，并保存自动通过的分类决定。
@@ -142,6 +142,61 @@ it("creates independent files through one unified batch returned in one model re
         .events(fixture.session.id)
         .filter((event) => event.type === "tool_result"),
     ).toHaveLength(1);
+    expect(fixture.store.tasks(fixture.session.id)[0].status).toBe("completed");
+  } finally {
+    await fixture.engine.close();
+    fixture.store.close();
+  }
+});
+
+it("persists a complex-task plan summary before executing a same-response tool call", async () => {
+  let calls = 0;
+  const plan = "## 计划摘要\n1. 读取目标文件。\n2. 核对结果。";
+  const fixture = await createFixture({
+    async run() {
+      if (++calls === 1) {
+        return {
+          output: [
+            {
+              type: "message",
+              role: "assistant",
+              content: [{ type: "output_text", text: plan }],
+            },
+            {
+              type: "function_call",
+              call_id: "read-plan-target",
+              name: "read_file",
+              arguments: JSON.stringify({
+                path: "plan-target.txt",
+                startLine: 1,
+                endLine: 10,
+              }),
+            },
+          ],
+          text: plan,
+        };
+      }
+
+      return done;
+    },
+  });
+
+  try {
+    await writeFile(path.join(fixture.root, "plan-target.txt"), "ready\n");
+    fixture.engine.start(fixture.session.id, "请完成复杂任务");
+    await fixture.engine.active?.done;
+
+    const events = fixture.store.events(fixture.session.id);
+    const planIndex = events.findIndex(
+      (event) => event.type === "assistant" && event.data.text === plan,
+    );
+    const toolStartIndex = events.findIndex(
+      (event) =>
+        event.type === "tool_start" && event.data.callId === "read-plan-target",
+    );
+
+    expect(planIndex).toBeGreaterThanOrEqual(0);
+    expect(toolStartIndex).toBeGreaterThan(planIndex);
     expect(fixture.store.tasks(fixture.session.id)[0].status).toBe("completed");
   } finally {
     await fixture.engine.close();
@@ -374,7 +429,7 @@ it("returns invalid tool arguments as model feedback without mutating files", as
   }
 });
 
-it("loads project guidance, encourages independent batches, and bounds large tool feedback", async () => {
+it("loads project guidance, requires plan-and-execute summaries for complex tasks, encourages independent batches, and bounds large tool feedback", async () => {
   let calls = 0;
   let guidance = "";
   let result: any;
@@ -419,6 +474,9 @@ it("loads project guidance, encourages independent batches, and bounds large too
 
     expect(guidance).toContain("Project convention");
     expect(guidance).toContain("Complete the user's whole request");
+    expect(guidance).toContain("plan-and-execute workflow");
+    expect(guidance).toContain("计划摘要");
+    expect(guidance).toContain("Then immediately execute that plan");
     expect(guidance).toContain("multiple independent tool calls");
     expect(guidance).toContain("true DAG-parallel execution");
     expect(guidance).toContain("largest safe set of relevant tool calls");
