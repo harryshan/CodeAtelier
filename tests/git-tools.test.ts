@@ -6,7 +6,7 @@
  * 1. createFixture 模拟 worktree 根目录、当前分支及其安全 upstream，并记录 Git 参数和流式输出。
  * 2. 只读用例检查 status、diff、log、show、branch 的固定参数、路径和 revision 限制。
  * 3. 写入用例检查 add、commit、push 都无需审批，且 commit 仅暂存明确路径、暂存失败不继续提交。
- * 4. 安全用例拒绝敏感目录、跨 worktree、危险 revision 与不安全 upstream，确保不能借 action 传递任意 Git 选项。
+ * 4. 安全用例拒绝敏感目录、未通过内容校验的 dotenv 模板、跨 worktree、危险 revision 与不安全 upstream，确保不能借 action 传递任意 Git 选项。
  *
  * 这些断言验证实际传给执行器的行为，而非只检查模型定义；真实 Git 与远程服务兼容性仍需手动集成验证。
  */
@@ -23,6 +23,7 @@ interface FixtureOptions {
   exitCodes?: number[];
   repositoryRoot?: string;
   remoteUrl?: string;
+  diffOutput?: string;
 }
 
 async function createFixture(options: FixtureOptions = {}) {
@@ -55,6 +56,10 @@ async function createFixture(options: FixtureOptions = {}) {
       [
         "--no-optional-locks diff --name-only -z --no-ext-diff --no-textconv --",
         "",
+      ],
+      [
+        "--no-optional-locks diff --no-ext-diff --no-textconv --no-color --unified=3 -- .env.example",
+        options.diffOutput ?? "",
       ],
     ]);
 
@@ -247,6 +252,54 @@ it("automatically pushes only the checked configured upstream", async () => {
   expect(schemas.git.safeParse({ action: "push", force: true }).success).toBe(
     false,
   );
+});
+
+it("allows checked dotenv templates but rejects runtime and credential-bearing variants", async () => {
+  const safe = await createFixture();
+  await writeFile(
+    path.join(safe.root, ".env.example"),
+    "CODEATELIER_BASE_URL=https://api.example.test/v1\nCODEATELIER_API_KEY=\n",
+  );
+
+  await expect(
+    safe.tools.execute({ action: "add", paths: [".env.example"] }),
+  ).resolves.toMatchObject({ paths: [".env.example"], add: { exitCode: 0 } });
+  expect(safe.calls).toEqual([
+    ["rev-parse", "--show-toplevel"],
+    ["add", "--", ".env.example"],
+  ]);
+
+  const unsafe = await createFixture();
+  await writeFile(
+    path.join(unsafe.root, ".env.example"),
+    "CODEATELIER_API_KEY=not-a-placeholder\n",
+  );
+  await expect(
+    unsafe.tools.execute({
+      action: "diff",
+      staged: false,
+      paths: [".env.example"],
+      contextLines: 3,
+    }),
+  ).rejects.toThrow("敏感变量");
+  expect(unsafe.calls).toEqual([["rev-parse", "--show-toplevel"]]);
+
+  const historical = await createFixture({
+    diffOutput: "CODEATELIER_API_KEY=should-not-be-emitted\n",
+  });
+  await writeFile(
+    path.join(historical.root, ".env.example"),
+    "CODEATELIER_API_KEY=\n",
+  );
+  await expect(
+    historical.tools.execute({
+      action: "diff",
+      staged: false,
+      paths: [".env.example"],
+      contextLines: 3,
+    }),
+  ).rejects.toThrow("敏感变量");
+  expect(historical.output).toEqual([]);
 });
 
 it("rejects sensitive paths, dangerous revisions, foreign repositories and unsafe remotes", async () => {

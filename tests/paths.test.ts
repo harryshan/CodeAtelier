@@ -13,6 +13,7 @@ import { writeFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import {
   inside,
+  pathRisk,
   resolveTarget,
   sensitive,
   workspacePath,
@@ -37,6 +38,17 @@ it("resolves new nested paths and flags parent traversal", async () => {
   });
   expect((await resolveTarget(root, "../outside.txt")).outside).toBe(true);
   await expect(resolveTarget(root, "a\0b")).rejects.toThrow("非法字符");
+});
+
+it("classifies dotenv templates separately while preserving conservative file sensitivity", () => {
+  expect(pathRisk(".env")).toBe("dotenv-runtime");
+  expect(pathRisk(".env.local")).toBe("dotenv-runtime");
+  expect(pathRisk(".env.example")).toBe("dotenv-template");
+  expect(pathRisk("config.env.sample")).toBe("dotenv-template");
+  expect(pathRisk(".env.example.bak")).toBe("dotenv-runtime");
+  expect(pathRisk("cert.pem")).toBe("hard-sensitive");
+  expect(pathRisk("src/config.ts")).toBe("ordinary");
+  expect(sensitive(".env.example")).toBe(true);
 });
 
 it("identifies sensitive path components without classifying ordinary names as secrets", () => {

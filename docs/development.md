@@ -90,7 +90,7 @@ Node.js 24，pnpm 11.22.0（packageManager 固定）。提交 pnpm-lock.yaml，�
 
 Git 不经 `run_command` 执行，而使用单一 `git` 工具；模型可以主动调用允许的 action，不等待人工审批。`status`、`diff`、`log`、`show`、`branch` 只读；`add`、`commit`、`push` 会写入索引、仓库或已配置远程。`diff` 显式传 `staged`、`paths` 和 `contextLines`，空 paths 的全量差异先列出全部变更路径并拒绝敏感内容；`log` 传安全 revision、paths 与 limit；`show` 必须传安全 revision 和明确 paths；`add`/`commit` 必须传明确 paths，commit 另传非空 message；`push` 没有额外参数。
 
-每次调用先确认会话工作区恰好是非 bare Git worktree 根目录。所有路径必须为非选项式的相对路径，解析真实位置后仍在工作区，且不含 `.git`、敏感组件或敏感目录后代；revision 仅接受保守的分支、标签或提交哈希字符。Git 固定禁用 hooks、GPG 签名、外部 diff/textconv、交互认证提示、分页和编辑器。push 从当前分支配置读取唯一 remote 与 `refs/heads/*` upstream，拒绝本地、`ext::` 及其他非 HTTPS/SSH/SCP 风格地址，并以显式 refspec 推送，不接受 remote、branch、force 或其他选项。应用层校验不等于操作系统沙箱，可信项目中的 Git clean filter 等仓库配置仍可能以当前用户权限运行。add、commit 或 push 中断时结果可能未知，恢复前必须用 status/diff/log 重新检查，不自动重放。
+每次调用先确认会话工作区恰好是非 bare Git worktree 根目录。所有路径必须为非选项式的相对路径，解析真实位置后仍在工作区，且不含 `.git`、硬敏感组件或敏感目录后代；`.env` 及其运行时变体始终拒绝。仅完整匹配 `.env.example`、`.env.sample`、`.env.template`、`.env.dist`（以及 `config.env.example` 等同类后缀）的普通 UTF-8 模板文件可进入额外校验：敏感变量必须为空或使用明确占位值，并拒绝私钥、JWT、常见 token、Bearer token 及带密码 URL。该检测不能证明发现任意秘密，无法判定为安全的敏感变量值会保守拒绝；普通文件访问仍把所有 dotenv 变体视为需确认的敏感路径。目录递归执行同一校验；涉及已校验模板的 diff/show 先缓冲并扫描输出，再写入历史和 UI，防止旧版本泄露凭据。revision 仅接受保守的分支、标签或提交哈希字符。Git 固定禁用 hooks、GPG 签名、外部 diff/textconv、交互认证提示、分页和编辑器。push 从当前分支配置读取唯一 remote 与 `refs/heads/*` upstream，拒绝本地、`ext::` 及其他非 HTTPS/SSH/SCP 风格地址，并以显式 refspec 推送，不接受 remote、branch、force 或其他选项。应用层校验不等于操作系统沙箱，可信项目中的 Git clean filter 等仓库配置仍可能以当前用户权限运行。add、commit 或 push 中断时结果可能未知，恢复前必须用 status/diff/log 重新检查，不自动重放。
 
 ## 常见问题
 

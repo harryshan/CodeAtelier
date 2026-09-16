@@ -6,9 +6,8 @@
  * 1. GitRequest 描述 status、diff、log、show、branch、add、commit 和 push 的互斥参数组合；
  *    isGitExecutable 和 containsGitCommand 继续阻止 run_command 绕过本模块。
  * 2. execute 在每项动作前通知 Engine 开始计时，验证会话工作区恰好是 Git worktree 根目录，再分派固定参数的子命令。
- * 3. workspacePaths 解析真实路径、拒绝敏感/.git/绝对或选项式路径，并递归检查目录，防止一次路径
- *    规范把敏感子文件一并暂存或读取。
- * 4. diff/show/log 仅接受安全 revision 和受校验路径；全量 diff 先核对变更路径，避免输出敏感文件内容。
+ * 3. workspacePaths 解析真实路径、拒绝敏感/.git/绝对或选项式路径；受控 dotenv 模板需通过内容校验，目录递归检查后代。
+ * 4. diff/show/log 仅接受安全 revision 和受校验路径；模板相关 diff/show 在输出前再次扫描，避免泄露历史凭据。
  * 5. push 从当前分支的 upstream 配置推导唯一 remote 与 refs/heads 目标，拒绝本地、ext 等不安全 URL，
  *    并禁用 hooks、交互认证提示、GPG 签名和外部 diff/textconv。
  *
@@ -19,7 +18,11 @@
 import { lstat, readdir } from "node:fs/promises";
 import path from "node:path";
 import type { Settings } from "../shared/types.js";
-import { resolveTarget, sensitive } from "./paths.js";
+import { pathRisk, resolveTarget, type PathRisk } from "./paths.js";
+import {
+  assertNoCredentialMaterial,
+  validateDotenvTemplate,
+} from "./dotenv-template.js";
 import { executeProcess } from "./process.js";
 
 export type GitAction =
@@ -49,6 +52,11 @@ export type GitExecutor = (
   outputLimit: number,
   onOutput: (text: string) => void,
 ) => Promise<GitProcessResult>;
+
+interface WorkspacePaths {
+  paths: string[];
+  hasDotenvTemplate: boolean;
+}
 
 export interface GitToolContext {
   root: string;
@@ -207,8 +215,9 @@ export class GitToolRunner {
     this.repositoryRoot = repositoryRoot;
   }
 
-  private async workspacePaths(inputs: string[]) {
+  private async workspacePaths(inputs: string[]): Promise<WorkspacePaths> {
     const checkedPaths: string[] = [];
+    let hasDotenvTemplate = false;
 
     for (const input of inputs) {
       if (
@@ -222,18 +231,15 @@ export class GitToolRunner {
 
       const target = await resolveTarget(this.ctx.root, input);
       const relative = path.relative(this.ctx.root, target.path);
-      const parts = target.path.split(/[\\/]/);
 
-      if (
-        target.outside ||
-        target.sensitive ||
-        !relative ||
-        parts.some((part) => /^\.git$/i.test(part))
-      ) {
-        throw new Error("Git 路径必须是工作区内的非敏感文件或目录。");
-      }
-
-      await this.checkDirectory(target.path);
+      hasDotenvTemplate =
+        (await this.checkGitPath(
+          target.path,
+          target.outside,
+          target.sensitive,
+        )) || hasDotenvTemplate;
+      hasDotenvTemplate =
+        (await this.checkDirectory(target.path)) || hasDotenvTemplate;
       const gitPath = relative.split(path.sep).join("/");
 
       if (!checkedPaths.includes(gitPath)) {
@@ -241,64 +247,112 @@ export class GitToolRunner {
       }
     }
 
-    return checkedPaths;
+    return { paths: checkedPaths, hasDotenvTemplate };
   }
 
-  private async checkDirectory(directory: string): Promise<void> {
+  private async checkGitPath(
+    target: string,
+    outside: boolean,
+    isSensitive: boolean,
+  ): Promise<boolean> {
+    const relative = path.relative(this.ctx.root, target);
+    const parts = target.split(/[\\/]/);
+    const risk: PathRisk = pathRisk(target);
+
+    if (
+      outside ||
+      !relative ||
+      parts.some((part) => /^\.git$/i.test(part)) ||
+      risk === "hard-sensitive" ||
+      risk === "dotenv-runtime" ||
+      (isSensitive && risk !== "dotenv-template")
+    ) {
+      throw new Error("Git 路径必须是工作区内的非敏感文件或目录。");
+    }
+
+    if (risk === "dotenv-template") {
+      await validateDotenvTemplate(target);
+
+      return true;
+    }
+
+    return false;
+  }
+
+  private async checkDirectory(directory: string): Promise<boolean> {
+    let hasDotenvTemplate = false;
     let info;
 
     try {
       info = await lstat(directory);
     } catch (error: any) {
       if (error.code === "ENOENT") {
-        return;
+        return hasDotenvTemplate;
       }
 
       throw error;
     }
 
     if (!info.isDirectory() || info.isSymbolicLink()) {
-      return;
+      return hasDotenvTemplate;
     }
 
     for (const entry of await readdir(directory, { withFileTypes: true })) {
-      if (sensitive(entry.name)) {
-        throw new Error("Git 目录路径不能包含敏感文件或 Git 元数据。");
-      }
-
       const child = path.join(directory, entry.name);
       const target = await resolveTarget(this.ctx.root, child);
 
-      if (target.outside || target.sensitive) {
-        throw new Error("Git 目录路径不能包含工作区外或敏感内容。");
-      }
+      hasDotenvTemplate =
+        (await this.checkGitPath(
+          target.path,
+          target.outside,
+          target.sensitive,
+        )) || hasDotenvTemplate;
 
       if (entry.isDirectory() && !entry.isSymbolicLink()) {
-        await this.checkDirectory(target.path);
+        hasDotenvTemplate =
+          (await this.checkDirectory(target.path)) || hasDotenvTemplate;
       }
     }
+
+    return hasDotenvTemplate;
+  }
+
+  private async runTemplateChecked(args: string[], hasDotenvTemplate: boolean) {
+    const result = await this.run(args, !hasDotenvTemplate);
+
+    if (hasDotenvTemplate) {
+      assertNoCredentialMaterial(result.output);
+      if (result.output) {
+        this.ctx.emit("git_output", { text: result.output });
+      }
+    }
+
+    return result;
   }
 
   private async diff(request: Extract<GitRequest, { action: "diff" }>) {
-    const paths = request.paths.length
+    const workspacePaths = request.paths.length
       ? await this.workspacePaths(request.paths)
       : await this.changedPaths(request.staged);
-    const result = await this.run([
-      "--no-optional-locks",
-      "diff",
-      "--no-ext-diff",
-      "--no-textconv",
-      "--no-color",
-      `--unified=${request.contextLines}`,
-      ...(request.staged ? ["--cached"] : []),
-      "--",
-      ...paths,
-    ]);
+    const result = await this.runTemplateChecked(
+      [
+        "--no-optional-locks",
+        "diff",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--no-color",
+        `--unified=${request.contextLines}`,
+        ...(request.staged ? ["--cached"] : []),
+        "--",
+        ...workspacePaths.paths,
+      ],
+      workspacePaths.hasDotenvTemplate,
+    );
 
-    return { ...result, staged: request.staged, paths };
+    return { ...result, staged: request.staged, paths: workspacePaths.paths };
   }
 
-  private async changedPaths(staged: boolean) {
+  private async changedPaths(staged: boolean): Promise<WorkspacePaths> {
     const result = await this.run(
       [
         "--no-optional-locks",
@@ -324,7 +378,7 @@ export class GitToolRunner {
 
   private async log(request: Extract<GitRequest, { action: "log" }>) {
     this.assertRevision(request.revision);
-    const paths = await this.workspacePaths(request.paths);
+    const workspacePaths = await this.workspacePaths(request.paths);
 
     return this.run([
       "--no-optional-locks",
@@ -335,25 +389,28 @@ export class GitToolRunner {
       `--max-count=${request.limit}`,
       request.revision,
       "--",
-      ...paths,
+      ...workspacePaths.paths,
     ]);
   }
 
   private async show(request: Extract<GitRequest, { action: "show" }>) {
     this.assertRevision(request.revision);
-    const paths = await this.workspacePaths(request.paths);
+    const workspacePaths = await this.workspacePaths(request.paths);
 
-    return this.run([
-      "--no-optional-locks",
-      "show",
-      "--no-ext-diff",
-      "--no-textconv",
-      "--no-color",
-      "--format=fuller",
-      request.revision,
-      "--",
-      ...paths,
-    ]);
+    return this.runTemplateChecked(
+      [
+        "--no-optional-locks",
+        "show",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--no-color",
+        "--format=fuller",
+        request.revision,
+        "--",
+        ...workspacePaths.paths,
+      ],
+      workspacePaths.hasDotenvTemplate,
+    );
   }
 
   private assertRevision(revision: string) {
@@ -363,18 +420,18 @@ export class GitToolRunner {
   }
 
   private async add(inputs: string[]) {
-    const paths = await this.workspacePaths(inputs);
-    const add = await this.run(["add", "--", ...paths]);
+    const workspacePaths = await this.workspacePaths(inputs);
+    const add = await this.run(["add", "--", ...workspacePaths.paths]);
 
-    return { paths, add };
+    return { paths: workspacePaths.paths, add };
   }
 
   private async commit(message: string, inputs: string[]) {
-    const paths = await this.workspacePaths(inputs);
-    const stage = await this.run(["add", "--", ...paths]);
+    const workspacePaths = await this.workspacePaths(inputs);
+    const stage = await this.run(["add", "--", ...workspacePaths.paths]);
 
     if (stage.exitCode !== 0) {
-      return { paths, stage, commit: null };
+      return { paths: workspacePaths.paths, stage, commit: null };
     }
 
     const commit = await this.run([
@@ -387,10 +444,10 @@ export class GitToolRunner {
       "-m",
       message,
       "--",
-      ...paths,
+      ...workspacePaths.paths,
     ]);
 
-    return { paths, stage, commit };
+    return { paths: workspacePaths.paths, stage, commit };
   }
 
   private async push() {
