@@ -53,6 +53,7 @@ import {
 } from "../tools/tool-graph.js";
 import { redactJson, redactText } from "../logging/redact.js";
 import { tracedModelProvider } from "../tracing/model-provider.js";
+import { TraceArchive } from "../tracing/archive.js";
 import { TraceRecorder } from "../tracing/recorder.js";
 import type { Task, TaskStatus } from "../shared/types.js";
 
@@ -75,8 +76,10 @@ export class Engine {
   private approvalTasks = new WeakMap<ApprovalSubject, Task>();
   private closing = false;
   private scheduling = false;
-  /** 当前进程内保留任务时间线；server/app.ts 只经受保护的本机接口导出 Perfetto JSON。 */
+  /** 当前进程内保留运行中及最近任务时间线，供任务尚未落盘时导出。 */
   readonly traces = new TraceRecorder();
+  /** 已结束任务的 trace 另行按会话/任务写入数据目录，服务重启后仍可下载。 */
+  readonly traceArchive: TraceArchive;
 
   /** 保留单任务调用方的兼容访问；服务端新逻辑应使用 activeTasks 或 hasActiveTasks。 */
   get active() {
@@ -91,12 +94,20 @@ export class Engine {
     return this.activeByTaskId.size > 0 || this.store.queuedTasks().length > 0;
   }
 
+  /** 优先读取已结束任务的持久化 trace；运行中任务仍从内存导出当前截断时间线。 */
+  async exportedTrace(task: Task) {
+    const archived = await this.traceArchive.read(task.sessionId, task.id);
+
+    return archived ?? this.traces.exportTask(task.id);
+  }
+
   constructor(
     public store: Store,
     public config: Config,
     private log: Logger,
     private factory?: ModelProviderFactory,
   ) {
+    this.traceArchive = new TraceArchive(config.directory, log);
     this.approvals = new ApprovalManager(
       () => this.updateWaitingTaskStatuses(),
       (subject, signal) => this.classifyApproval(subject, signal),
@@ -1088,6 +1099,11 @@ export class Engine {
             ? "cancelled"
             : "error",
       );
+      const trace = this.traces.exportTask(task.id);
+      if (trace) {
+        await this.traceArchive.write(task.sessionId, task.id, trace);
+      }
+
       emit("task_end", { status });
       log.info({ event: "task.finished", status });
     }

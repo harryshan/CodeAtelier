@@ -8,7 +8,7 @@
  * 4. 检查压缩通知、原始历史及模型用量在刷新后仍能显示。
  * 5. 验证多文件编辑的成功/失败状态、错误、diff 和刷新后的历史；命令和 Git 的流式输出、结果与历史重载聚合在同一卡片。
  * 6. 通过页面内项目目录连接首个项目，再从项目标题右侧加号新建对话并检查历史隔离、折叠与最近记录限制。
- * 7. 检查当前会话统计默认收起，展开后使用已保存事件显示 token、LLM、工具成功率和运行时间。
+ * 7. 检查当前会话统计默认收起，展开后使用已保存事件显示 token、LLM、工具成功率、运行时间和已结束任务的 Perfetto 下载入口。
  * 8. 验证用户和 agent 消息的 Markdown 标题、链接、代码围栏、表格和任务列表渲染，并拒绝原始 HTML。
  * 9. 检查任务输入框以所见即所得方式将 Markdown 输入规则原地转换为富文本，并将生成的 Markdown 发送给任务。
  *
@@ -156,6 +156,9 @@ test("keeps current session statistics collapsed until expanded and projects per
   await expect(page.getByText("成功 1/1（100%）")).toBeVisible();
   await expect(page.getByText("LLM 请求")).toBeVisible();
   await expect(page.getByText("明细未完整提供（输入合计 100）")).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: /下载任务 .* 的 Perfetto trace/ }),
+  ).toHaveAttribute("href", /\/api\/tasks\/.*\/trace/);
 });
 
 test("command approval survives refresh and can be denied or cancelled", async ({

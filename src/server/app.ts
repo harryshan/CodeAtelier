@@ -205,15 +205,14 @@ export async function createApp(
   });
   app.get("/api/tasks/:id/trace", async (req, reply) => {
     const id = (req.params as { id: string }).id;
-    if (!store.task(id)) {
+    const task = store.task(id);
+    if (!task) {
       return reply.code(404).send({ error: "任务不存在" });
     }
 
-    const trace = engine.traces.exportTask(id);
+    const trace = await engine.exportedTrace(task);
     if (!trace) {
-      return reply
-        .code(404)
-        .send({ error: "该任务尚未开始 tracing 或 trace 已过期。" });
+      return reply.code(404).send({ error: "该任务尚未生成 trace。" });
     }
 
     reply.header(

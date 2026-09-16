@@ -6,6 +6,7 @@
  * 2. 折叠按钮只显示累计运行时间，避免干扰对话；展开后分组展示 token、LLM、工具和任务统计。
  * 3. Token 区域明确区分服务实报总量与可选缓存明细；缺少明细时显示未知，而非假定没有缓存。
  * 4. 工具成功率的分母是已完成结果，待审批或仍执行的调用单独显示，避免将进行中操作当作失败。
+ * 5. 已结束任务按时间列出持久化 Perfetto trace 下载链接；链接仅访问当前会话任务的受保护本机 API。
  *
  * 组件只展示当前 session 已持久化或正在接收的 Snapshot；刷新和重启后会从同一历史事件重新计算。
  */
@@ -44,6 +45,11 @@ export function SessionStatistics({ data }: { data: Snapshot }) {
         purposeLabels[purpose as keyof typeof purposeLabels] + " " + count,
     )
     .join(" · ");
+  const completedTraceTasks = [...data.tasks]
+    .filter((task) => task.finishedAt)
+    .sort((left, right) =>
+      (right.finishedAt ?? "").localeCompare(left.finishedAt ?? ""),
+    );
 
   useEffect(() => {
     setExpanded(false);
@@ -145,6 +151,26 @@ export function SessionStatistics({ data }: { data: Snapshot }) {
               工具分布：{toolSummary(statistics.toolCallsByName)}
             </p>
           )}
+          <section className={s.statisticsTraces}>
+            <h3>Perfetto trace</h3>
+            {completedTraceTasks.length ? (
+              <ul>
+                {completedTraceTasks.map((task) => (
+                  <li key={task.id}>
+                    <a
+                      href={`/api/tasks/${encodeURIComponent(task.id)}/trace`}
+                      aria-label={`下载任务 ${task.id} 的 Perfetto trace`}
+                    >
+                      下载 trace · {task.id.slice(0, 8)}
+                    </a>
+                    <span>{task.status}</span>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p>任务结束后可下载 Perfetto trace。</p>
+            )}
+          </section>
         </section>
       )}
     </aside>

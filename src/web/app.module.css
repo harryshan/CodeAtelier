@@ -2,7 +2,7 @@
  * 主页面、时间线和弹窗共用的 CSS Module，由各 React 组件引用。
  *
  * 1. 开头设置颜色、字体和基础控件样式，再定义双栏布局、侧栏和标题区。
- * 2. 项目分组标题、折叠控件、最近会话限制与会话按钮展示一项目多对话；随后是欢迎页、项目栏、右上角可折叠会话统计、Markdown 对话消息、工具结果、diff 和通知。
+ * 2. 项目分组标题、折叠控件、最近会话限制与会话按钮展示一项目多对话；随后是欢迎页、项目栏、右上角可折叠会话统计与 Perfetto 下载链接、Markdown 对话消息、工具结果、diff 和通知。
  * 3. 审批按钮、所见即所得 Markdown 输入区、弹窗和字段网格对应页面中的操作与表单。
  * 4. 末尾通过媒体查询调整窄屏间距和排列。
  *
@@ -464,6 +464,46 @@
   font-size: 10px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.statisticsTraces {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #31434a;
+}
+.statisticsTraces h3 {
+  margin: 0 0 7px;
+  color: #b5cec7;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+}
+.statisticsTraces ul {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.statisticsTraces li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+.statisticsTraces a {
+  overflow: hidden;
+  color: #9dd9bf;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.statisticsTraces span,
+.statisticsTraces p {
+  margin: 0;
+  color: #809aa0;
+  font-size: 10px;
 }
 .scrollArea {
   flex: 1;

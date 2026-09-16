@@ -1,12 +1,12 @@
 /**
- * 验证 Perfetto tracing 的可导出时间线、敏感原文边界和真实 HTTP 下载接口。
+ * 验证 Perfetto tracing 的可导出时间线、敏感原文边界、会话/任务级持久化和真实 HTTP 下载接口。
  * 第一组直接驱动 TraceRecorder，检查 span、instant 与 flow 被转换为 Chrome Trace Event JSON；
- * 第二组通过生产 createApp、Engine 和模拟模型完成任务，确认模型调用与任务根 span 可经本机受保护 API 导出。
+ * 第二组通过生产 createApp、Engine 和模拟模型完成任务，确认模型调用与任务根 span 会写入数据目录，且可经本机受保护 API 下载。
  *
- * 测试不连接真实模型服务，也不写入用户工作区；它只检查导出的可观察结构，不依赖具体微秒耗时。
+ * 测试不连接真实模型服务，也不写入用户工作区；它只检查导出的可观察结构和临时数据目录，不依赖具体微秒耗时。
  */
 
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { expect, it } from "vitest";
 import pino from "pino";
@@ -65,7 +65,7 @@ it("exports spans, instants and cross-track flows as Perfetto Trace Event JSON",
   expect(request.args.forbiddenPrompt).toHaveLength(500);
 });
 
-it("exports an Engine task trace only through the authenticated local API", async () => {
+it("persists each Engine task trace by session and task, then exports it only through the authenticated local API", async () => {
   const config = new Config(await temp());
   const workspace = await temp();
   await writeFile(path.join(workspace, "trace-target.txt"), "trace target\n");
@@ -110,6 +110,18 @@ it("exports an Engine task trace only through the authenticated local API", asyn
     const task = fixture.engine.start(session.id, "answer briefly");
 
     await fixture.engine.active?.done;
+
+    const archivePath = path.join(
+      config.directory,
+      "traces",
+      session.id,
+      task.id + ".json",
+    );
+    const archivedTrace = JSON.parse(await readFile(archivePath, "utf8"));
+    expect(archivedTrace.metadata).toMatchObject({
+      taskId: task.id,
+      sessionId: session.id,
+    });
 
     expect(
       await fixture.app.inject({ url: `/api/tasks/${task.id}/trace` }),
