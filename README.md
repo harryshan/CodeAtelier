@@ -25,7 +25,7 @@ API 地址、主模型和可选辅助模型没有内置默认值；它们的唯�
 - 通过受审批的命令浏览目录和搜索代码；按行读取文件，并以统一的 `edit_files` 批量新建文件或精确替换，展示 diff。
 - 原本需要确认的命令和工具使用先由低成本模型分为自动通过、人工确认或拒绝；模型不可用或未配置时保守保留人工确认，支持取消、超时、输出限制和单任务并发保护。
 - 模型瞬态错误自动重试；失败、取消和重启中断后可点击“恢复任务”，并补充恢复说明。已完成工具不重放，详见 [恢复机制](docs/recovery.md)。
-- 可配置模型、步骤和上下文限制；结构化分级日志。
+- 可配置模型、步骤和上下文限制；结构化分级日志；已完成或运行中的任务可经受保护的本机接口导出 Perfetto 时间线，用于分析模型、上下文和工具的耗时与关键路径。trace 只记录安全摘要，不保存可重放的原始 prompt 或工具输出。
 - 单一受限 `git` 工具：查看状态、差异、历史、文件和分支；自动暂存/提交指定安全路径，并推送当前分支已校验的 upstream。
 
 当前为初版实现。真实模型已在隔离示例项目完成修复 bug、补充测试和运行验证。详细验证范围见 [验证记录](docs/verification.md)。
@@ -55,6 +55,7 @@ pnpm test:e2e
 - [架构](docs/architecture.md)
 - [上下文压缩与历史追溯](docs/context-management.md)
 - [模型容量与 token 用量](docs/model-tokens.md)
+- [Perfetto tracing 与本地导出](docs/development.md#perfetto-tracing)
 - [SWE-bench 子集评测](docs/swebench.md)
 - [开发、配置与排错](docs/development.md)
 - [验证记录](docs/verification.md)

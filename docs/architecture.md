@@ -12,6 +12,7 @@ server (Fastify)
       → providers/model-provider ← providers/responses-provider (官方 OpenAI SDK)
       → tools/tool-runner → tools/registry + permissions/approval-manager
       → sessions/store (SQLite)
+  → tracing (Perfetto Trace Event JSON)
   → logging (Pino)
 ```
 
@@ -22,29 +23,31 @@ server (Fastify)
 - `src/permissions` 用无工具的低成本辅助模型将待审批请求分为自动通过、人工确认或拒绝；人工确认仍在后端等待用户点击，取消会释放待审批 Promise。模型无法自行同意审批。
 - `src/sessions/store.ts` 保存 sessions、tasks、events、context；任务的 createdAt、startedAt、finishedAt 分别表示入队、实际开始和结束，排队时间不计入会话累计运行时间。初始数据库结构位于 `schema.ts`。大于 64 KiB 的 events、活动上下文和历史快照由 `store-worker.ts` 在独立 Worker 线程解析或事务写入，小记录避免线程创建开销而同步读取。启动时将 queued/running/waiting 任务标为 interrupted 并记录结束时间。
 - `src/config` 将 .env/进程环境中的只读连接配置与 settings.json 中的非连接偏好合成为运行时设置，另管理内存密钥和平台数据目录。
+- `src/tracing` 在当前进程为每个已启动任务保留有界的性能 timeline：Engine 在任务、上下文、模型和工具真实执行边界创建 span，模型包装器只记录长度、数量、usage、错误类别和首包时间；`GET /api/tasks/:id/trace` 在本机 cookie 保护下导出 Perfetto 可导入的 Chrome Trace Event JSON。trace 不保存提示词、源码、工具输出或凭据原文，服务重启前未导出的 trace 不保留；高保真 replay payload 另行设计。
 - `src/logging` 在 Pino 内部按字段脱敏后输出紧凑格式化纯文本，按级别筛选、保留受控错误详情并轮转文件。
 
 ## 文件职责与定位
 
-| 模块 | 职责 |
-| --- | --- |
-| tools/registry.ts / tool-graph.ts | 工具参数和 DAG 调度信封、模型可见定义；调用图的结构校验、稳定拓扑调度、并发上限和失败后继阻断；`edit_files` 以 create 区分新建与已有文件编辑 |
-| tools/tool-runner.ts | ToolRunner：校验、审批、读取与普通命令执行，并将统一文件编辑和单一专用 `git` 工具分流 |
-| tools/file-editor.ts | FileEditor：逐文件预检、create 存在性/读取版本复核、失败汇总、独立文件继续写入和进度，复用 ToolRunner 的权限与读取哈希 |
-| tools/edit-plan.ts | 基于原始快照的行号/文本定位、重叠校验与纯文本转换 |
-| tools/git.ts | GitToolRunner：按 action 分流固定 Git 参数，复核 worktree、路径/revision/upstream 并自动执行 |
-| tools/paths.ts / command-shell.ts / process.ts | 路径边界、内部 shell 选择与进程生命周期 |
-| providers/model-provider.ts | 与具体服务无关的模型接口和结果契约 |
-| providers/responses-provider.ts | ResponsesProvider：Responses 协议实现 |
-| providers/model-error.ts / retry.ts | 错误分类与有界重试策略 |
-| config/settings.ts / config.ts / data-directory.ts | 连接/偏好参数 schema、仅保存偏好的配置加载、内存密钥与平台数据目录 |
-| logging/logger.ts / redact.ts | 日志创建、错误详情序列化、格式化输出与轮转、纯文本脱敏 |
-| permissions/approval-manager.ts | ApprovalManager：授权等待与取消 |
-| server/app.ts | 服务组装、业务路由与关闭顺序 |
-| server/local-security.ts / session-events.ts | 本机请求防护、SSE 连接管理与清理 |
-| server/http-server.ts | 保留 Pino 日志类型的 HTTP 服务类型 |
+| 模块                                                                                   | 职责                                                                                                                                                                                              |
+| -------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| tools/registry.ts / tool-graph.ts                                                      | 工具参数和 DAG 调度信封、模型可见定义；调用图的结构校验、稳定拓扑调度、并发上限和失败后继阻断；`edit_files` 以 create 区分新建与已有文件编辑                                                      |
+| tools/tool-runner.ts                                                                   | ToolRunner：校验、审批、读取与普通命令执行，并将统一文件编辑和单一专用 `git` 工具分流                                                                                                             |
+| tools/file-editor.ts                                                                   | FileEditor：逐文件预检、create 存在性/读取版本复核、失败汇总、独立文件继续写入和进度，复用 ToolRunner 的权限与读取哈希                                                                            |
+| tools/edit-plan.ts                                                                     | 基于原始快照的行号/文本定位、重叠校验与纯文本转换                                                                                                                                                 |
+| tools/git.ts                                                                           | GitToolRunner：按 action 分流固定 Git 参数，复核 worktree、路径/revision/upstream 并自动执行                                                                                                      |
+| tools/paths.ts / command-shell.ts / process.ts                                         | 路径边界、内部 shell 选择与进程生命周期                                                                                                                                                           |
+| providers/model-provider.ts                                                            | 与具体服务无关的模型接口和结果契约                                                                                                                                                                |
+| providers/responses-provider.ts                                                        | ResponsesProvider：Responses 协议实现                                                                                                                                                             |
+| providers/model-error.ts / retry.ts                                                    | 错误分类与有界重试策略                                                                                                                                                                            |
+| config/settings.ts / config.ts / data-directory.ts                                     | 连接/偏好参数 schema、仅保存偏好的配置加载、内存密钥与平台数据目录                                                                                                                                |
+| tracing/recorder.ts / model-provider.ts                                                | 任务 span、模型安全摘要、跨轨道 flow 与 Perfetto Trace Event JSON 导出；模型包装器保持 Provider 契约与取消语义                                                                                    |
+| logging/logger.ts / redact.ts                                                          | 日志创建、错误详情序列化、格式化输出与轮转、纯文本脱敏                                                                                                                                            |
+| permissions/approval-manager.ts                                                        | ApprovalManager：授权等待与取消                                                                                                                                                                   |
+| server/app.ts                                                                          | 服务组装、业务路由与关闭顺序                                                                                                                                                                      |
+| server/local-security.ts / session-events.ts                                           | 本机请求防护、SSE 连接管理与清理                                                                                                                                                                  |
+| server/http-server.ts                                                                  | 保留 Pino 日志类型的 HTTP 服务类型                                                                                                                                                                |
 | web/App.tsx / MarkdownTaskEditor.tsx / useSessionConnection.ts / SessionStatistics.tsx | 页面交互与布局、任务输入框的所见即所得 Markdown 编辑和 Markdown 序列化、开发服务完整页面重载、当前会话右上角的折叠统计，以及快照和 SSE 重连生命周期；切换会话时先清除旧快照并显示本地历史加载提示 |
-| web/Timeline.tsx / MarkdownMessage.tsx | 事件时间线、工具输出聚合，以及用户和 agent 消息的 GitHub Flavored Markdown 渲染；原始 HTML 不进入页面 DOM |
+| web/Timeline.tsx / MarkdownMessage.tsx                                                 | 事件时间线、工具输出聚合，以及用户和 agent 消息的 GitHub Flavored Markdown 渲染；原始 HTML 不进入页面 DOM                                                                                         |
 
 本次全库审查将原 registry.ts 中的 ToolRunner 移出；paths.ts 原本就是路径函数模块。Engine、Store 及其上下文/schema 辅助模块、共享数据契约、测试和开发脚本继续按各自职责组织，不为每个小函数增加文件。
 
@@ -55,7 +58,7 @@ server (Fastify)
 3. 已领取的首条消息先由低成本辅助模型生成无工具的简短标题；该请求有界重试，失败保留占位标题并不阻断主编码任务，取消则中止任务。
 4. 主任务加载本地上下文与根 AGENTS.md，模型请求包含当前指令、上下文与工具定义，并请求服务允许多个独立工具调用；复杂任务要求模型先在用户可见文本中自行给出“计划摘要”，再在同轮或后续轮次调用工具执行，实质调整前更新摘要；接收文本及完整输出项。
 5. 自研循环先解析每项的 `execution` 信封，并在任一节点执行前拒绝重复 ID、未知依赖或环；旧历史格式作为无依赖调用兼容。通过校验后，Engine 以稳定拓扑顺序调度最多 4 个已满足前置条件的节点，并记录批次、节点状态、工具事件与 diff。每项实际调用仍由低成本模型给出自动通过、人工确认或拒绝；人工确认才停留在 waiting，模型不可用或输出无效也保守停留在该流程。前置失败时所有后继不执行而返回 `dependency_failed`，独立节点继续；每个完成或阻断的节点立即保存 `function_call_output`。DAG 覆盖读取、写入、命令及 Git，不推断共享文件或命令资源冲突，模型必须为需要串行化的调用声明依赖；ToolRunner 的路径、快照、权限和文件编辑复核仍然生效。ToolRunner 仅在真正开始读取、写入或启动进程时通知 Engine 开始耗时统计，因此分类和人工审批等待均不计入工具耗时。
-6. 每次实际模型请求记录 model_request，服务返回合法 usage 时再记录 model_usage；没有 usage 的请求不虚构 token。没有工具调用且收到完成文本时任务结束，Store 保存 finishedAt；超时、取消、失败或超过步骤上限时明确停止。前端通过 SSE 得知标题或任务状态变化，重新读取带事件 ID 的快照，在默认折叠的会话统计中聚合服务实报 token、LLM 请求/轮次、工具成功率与累计运行时间；切换时立即显示“正在打开对话”，不把旧会话内容误当成新会话；重新连接只读状态，不会再次启动任务。
+6. 每次实际模型请求记录 model_request，服务返回合法 usage 时再记录 model_usage；没有 usage 的请求不虚构 token。TraceRecorder 同时在任务、上下文、模型和实际工具执行边界记录单调时钟 span，模型只写安全计数和 usage，工具审批等待不计入执行 span；同一任务可导出 Perfetto JSON 分析轨道、并行度和关键路径。没有工具调用且收到完成文本时任务结束，Store 保存 finishedAt；超时、取消、失败或超过步骤上限时明确停止。前端通过 SSE 得知标题或任务状态变化，重新读取带事件 ID 的快照，在默认折叠的会话统计中聚合服务实报 token、LLM 请求/轮次、工具成功率与累计运行时间；切换时立即显示“正在打开对话”，不把旧会话内容误当成新会话；重新连接只读状态，不会再次启动任务。
 
 ## 历史与恢复
 

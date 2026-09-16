@@ -4,18 +4,18 @@
 
 Node.js 24，pnpm 11.22.0（packageManager 固定）。提交 pnpm-lock.yaml，使用 pnpm install --frozen-lockfile 重现依赖。esbuild 的安装脚本在 pnpm-workspace.yaml 中明确允许。
 
-| 命令 | 用途 |
-| --- | --- |
-| pnpm dev | 后端源码监听，默认 `127.0.0.1:4142`；tsx watch 在源码更新后重启后端 |
-| pnpm dev:web | Vite 前端，默认 `127.0.0.1:5173`；读取相同监听地址并通过 HMR 更新前端模块 |
-| pnpm build | 编译后端和前端 |
-| pnpm start | 运行构建后的本机服务；由监督进程支持 UI 确认后的后端重载 |
-| pnpm typecheck / lint / test | 类型、静态规则、核心测试 |
-| pnpm check | 类型、lint、核心测试、生产构建 |
-| pnpm test:e2e | 先编译后端和前端，再启动独立模拟服务验证浏览器交互 |
-| node --env-file=.env --import tsx scripts/probe-model-capabilities.ts | 检查模型窗口、计数接口及真实 usage（少量模型调用） |
-| node --env-file=.env --import tsx scripts/probe-responses.ts | 使用环境变量密钥测试真实服务工具往返 |
-| node --env-file=.env --import tsx scripts/smoke-agent.ts | 在 .local 下创建隔离项目，真实模型修复并运行测试 |
+| 命令                                                                  | 用途                                                                      |
+| --------------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| pnpm dev                                                              | 后端源码监听，默认 `127.0.0.1:4142`；tsx watch 在源码更新后重启后端       |
+| pnpm dev:web                                                          | Vite 前端，默认 `127.0.0.1:5173`；读取相同监听地址并通过 HMR 更新前端模块 |
+| pnpm build                                                            | 编译后端和前端                                                            |
+| pnpm start                                                            | 运行构建后的本机服务；由监督进程支持 UI 确认后的后端重载                  |
+| pnpm typecheck / lint / test                                          | 类型、静态规则、核心测试                                                  |
+| pnpm check                                                            | 类型、lint、核心测试、生产构建                                            |
+| pnpm test:e2e                                                         | 先编译后端和前端，再启动独立模拟服务验证浏览器交互                        |
+| node --env-file=.env --import tsx scripts/probe-model-capabilities.ts | 检查模型窗口、计数接口及真实 usage（少量模型调用）                        |
+| node --env-file=.env --import tsx scripts/probe-responses.ts          | 使用环境变量密钥测试真实服务工具往返                                      |
+| node --env-file=.env --import tsx scripts/smoke-agent.ts              | 在 .local 下创建隔离项目，真实模型修复并运行测试                          |
 
 脚本只接受环境变量密钥，不内置真实凭据；真实验证会消耗配置服务的模型额度。smoke-agent 只自动批准它自己创建的示例项目内固定 node --test 命令。
 
@@ -23,16 +23,16 @@ Node.js 24，pnpm 11.22.0（packageManager 固定）。提交 pnpm-lock.yaml，�
 
 后端启动时读取本地 `.env`。API 地址、主模型和可选辅助模型的唯一来源是 `.env` 或进程环境；无论是否已有 `settings.json`，都必须提供 API 地址和主模型，否则启动明确报错。设置界面只读显示连接字段，修改 `.env` 后须重启或重载服务。推荐通过 Web UI 为当前进程输入密钥，或使用环境变量；本地 `.env` 仅供开发使用，不提交 Git。
 
-| 环境变量 | 默认 / 用途 |
-| --- | --- |
-| CODEATELIER_BASE_URL | 无默认值；在 .env 填写实际 API Base URL |
-| CODEATELIER_MODEL | 无默认值；在 .env 填写服务公布的完整模型标识 |
-| CODEATELIER_REASONING_EFFORT | high；可选 low、medium、high |
-| CODEATELIER_API_KEY | 无默认值 |
-| CODEATELIER_DATA_DIR | 平台用户数据目录 |
-| CODEATELIER_PORT | 4142 |
-| CODEATELIER_LISTEN_ADDRESS | `127.0.0.1`；可选 `::1`、`0.0.0.0`（开放 IPv4 局域网）或 `::`（开放 IPv6 局域网） |
-| CODEATELIER_LOG_LEVEL | info |
+| 环境变量                     | 默认 / 用途                                                                       |
+| ---------------------------- | --------------------------------------------------------------------------------- |
+| CODEATELIER_BASE_URL         | 无默认值；在 .env 填写实际 API Base URL                                           |
+| CODEATELIER_MODEL            | 无默认值；在 .env 填写服务公布的完整模型标识                                      |
+| CODEATELIER_REASONING_EFFORT | high；可选 low、medium、high                                                      |
+| CODEATELIER_API_KEY          | 无默认值                                                                          |
+| CODEATELIER_DATA_DIR         | 平台用户数据目录                                                                  |
+| CODEATELIER_PORT             | 4142                                                                              |
+| CODEATELIER_LISTEN_ADDRESS   | `127.0.0.1`；可选 `::1`、`0.0.0.0`（开放 IPv4 局域网）或 `::`（开放 IPv6 局域网） |
+| CODEATELIER_LOG_LEVEL        | info                                                                              |
 
 `settings.json` 只保存非连接偏好：主/辅助模型的思考等级、任务限制（包括 `maxConcurrentTasks`）和日志级别；通过 UI 修改。已保存偏好优先于同名环境默认值。API 地址、主/辅助模型标识绝不写入该文件；旧版本留下的同名字段会在读取时忽略，并在下一次保存偏好时移除。密钥始终来自环境或当前进程内存，不写 `settings.json`。存在运行中或排队任务时禁止修改配置。
 
@@ -47,6 +47,14 @@ Node.js 24，pnpm 11.22.0（packageManager 固定）。提交 pnpm-lock.yaml，�
 - Linux：$XDG_DATA_HOME/CodeAtelier，未设置则 ~/.local/share/CodeAtelier
 
 目录包含 history.sqlite（及 SQLite WAL 文件）、settings.json、logs/app.log。历史会话与运行日志分开保存，不写入用户代码项目。
+
+### Perfetto tracing
+
+每个实际开始的任务在当前服务进程内生成一条有界的性能 timeline。模型请求、上下文准备、工具批次和工具真正读取/写入/启动进程的时刻记录为 span；工具审批等待仍与工具执行耗时分离。通过已建立本机会话的 `GET /api/tasks/:id/trace` 下载 Chrome Trace Event JSON 后，可在 [ui.perfetto.dev](https://ui.perfetto.dev) 打开。接口不接受写入，也沿用 cookie 校验；任务不存在、尚未启动 tracing 或被当前进程的 50 条完成 trace 上限淘汰时返回 404。
+
+trace 只含关联 ID、模型名称、步骤/尝试、字节/项目数量、usage、退出/错误类别和耗时，不含完整提示词、源码、工具参数或输出、服务错误正文、API key、认证头或 cookie。它不是会话历史、运行日志或高保真 replay 存档；服务重启后内存 trace 消失。后续实现 replay 前必须另建脱敏、保留策略和显式用户操作边界，不能将原始 payload 塞入 Perfetto 属性。
+
+新增或修改 agent、模型、工具、审批、上下文、存储或跨进程执行功能时，开发者必须同步增加合理 tracing，至少覆盖开始/结束、失败或取消、耗时、任务/调用关联及安全摘要；若确实不适用，须在设计或决策记录中说明原因。测试应覆盖新增 span 的可导出行为及敏感原文不进入事件属性。
 
 日志支持 trace/debug/info/warn/error，默认 info。文件和终端均为紧凑纯文本，例如 `2026-09-15T12:00:00.000Z INFO  agent task.started | session=… task=…`，不输出 JSON；固定的应用、进程和主机字段不重复写入。任务日志带 sessionId/taskId，工具日志包含 toolCallId、耗时和成功状态。错误记录保留脱敏且限长的名称、实际错误消息、受控错误码/状态、原因链和堆栈，不能只写 errorName；模型服务只提取协议错误对象的 message/reason/code，命令保留 shell 的 stdout/stderr，均不记录完整响应正文、完整源码或提示词。日志按约 10 MiB 轮转，共最多 5 个文件；DEBUG 可查看模型步骤。已知密钥和认证信息在格式化前脱敏。
 
@@ -78,8 +86,25 @@ Node.js 24，pnpm 11.22.0（packageManager 固定）。提交 pnpm-lock.yaml，�
 {
   "files": [
     { "path": "src/new.ts", "create": true, "content": "export {};\n" },
-    { "path": "src/a.ts", "create": false, "edits": [{ "oldText": "1", "newText": "2", "startLine": 1, "endLine": 1 }] },
-    { "path": "src/b.ts", "create": false, "edits": [{ "oldText": "oldName", "newText": "newName", "startLine": null, "endLine": null }] }
+    {
+      "path": "src/a.ts",
+      "create": false,
+      "edits": [
+        { "oldText": "1", "newText": "2", "startLine": 1, "endLine": 1 }
+      ]
+    },
+    {
+      "path": "src/b.ts",
+      "create": false,
+      "edits": [
+        {
+          "oldText": "oldName",
+          "newText": "newName",
+          "startLine": null,
+          "endLine": null
+        }
+      ]
+    }
   ]
 }
 ```
@@ -154,7 +179,6 @@ CODEATELIER_AUXILIARY_REASONING_EFFORT=low
 辅助模型共用主模型的 API 地址与密钥，默认不指定模型；空值时标题和摘要沿用主模型及其思考等级，而审批保留人工确认。模型标识只能修改 `.env` 并重启或重载服务；已保存的推理强度优先于环境默认值。推理强度可选 low/medium/high，指定辅助模型时默认 low；程序不推断价格或自动选择模型。
 
 上下文摘要和首条用户 prompt 的标题生成均使用 `auxiliarySettings`：创建会话后先显示“新对话”，Engine 对首条消息发起无工具、64 token 上限的标题请求，成功后通过 SSE 更新侧栏；失败保留占位标题而不阻断编码任务，取消会中止任务。审批也复用已显式配置的辅助模型，但不在其为空时回退主模型：每个待审批请求使用无工具、256 token 上限的 JSON 分类，自动通过、人工确认或直接拒绝均会记录在时间线；模型故障和无效输出保留人工确认。配置不意味着服务兼容性已经实测。
-
 
 ### Git 模型参数兼容性
 

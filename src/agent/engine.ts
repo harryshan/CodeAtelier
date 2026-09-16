@@ -52,6 +52,8 @@ import {
   type ToolGraphNode,
 } from "../tools/tool-graph.js";
 import { redactJson, redactText } from "../logging/redact.js";
+import { tracedModelProvider } from "../tracing/model-provider.js";
+import { TraceRecorder } from "../tracing/recorder.js";
 import type { Task, TaskStatus } from "../shared/types.js";
 
 // 标题请求没有工具或文件副作用；服务未提供可分类原因时，允许比主任务多一次诊断性重试。
@@ -73,6 +75,8 @@ export class Engine {
   private approvalTasks = new WeakMap<ApprovalSubject, Task>();
   private closing = false;
   private scheduling = false;
+  /** 当前进程内保留任务时间线；server/app.ts 只经受保护的本机接口导出 Perfetto JSON。 */
+  readonly traces = new TraceRecorder();
 
   /** 保留单任务调用方的兼容访问；服务端新逻辑应使用 activeTasks 或 hasActiveTasks。 */
   get active() {
@@ -141,7 +145,13 @@ export class Engine {
       }
 
       const assessment = await assessApproval(
-        provider,
+        task
+          ? tracedModelProvider(provider, this.traces, {
+              taskId: task.id,
+              purpose: "approval",
+              model: selected.model,
+            })
+          : provider,
         subject,
         signal,
         (usage) => {
@@ -451,8 +461,16 @@ export class Engine {
         (attempt) => {
           this.emit(task, "model_request", { purpose: "title", attempt });
 
-          return generateConversationTitle(provider, prompt, signal, (usage) =>
-            this.recordModelUsage(task, usage, "title", { attempt }),
+          return generateConversationTitle(
+            tracedModelProvider(provider, this.traces, {
+              taskId: task.id,
+              purpose: "title",
+              model: selected.model,
+              attempt,
+            }),
+            prompt,
+            signal,
+            (usage) => this.recordModelUsage(task, usage, "title", { attempt }),
           );
         },
         signal,
@@ -509,6 +527,7 @@ export class Engine {
     });
 
     log.info({ event: "task.started" });
+    this.traces.startTask(task.id, task.sessionId);
     let status: TaskStatus = "completed";
     let failure: string | undefined;
     const emit = (type: string, data: any) => this.emit(task, type, data);
@@ -598,7 +617,12 @@ export class Engine {
         onModelRequest: () =>
           emit("model_request", { purpose: "compaction", step }),
         onUsage: (usage) => recordUsage(usage, "compaction"),
-        provider,
+        provider: tracedModelProvider(provider, this.traces, {
+          taskId: task.id,
+          purpose: "compaction",
+          model: settings.model,
+          step,
+        }),
         summaryModel: settings.auxiliaryModel
           ? async () => {
               const selected = auxiliarySettings(settings);
@@ -630,7 +654,12 @@ export class Engine {
               });
 
               return {
-                provider: auxiliary,
+                provider: tracedModelProvider(auxiliary, this.traces, {
+                  taskId: task.id,
+                  purpose: "compaction",
+                  model: selected.model,
+                  step,
+                }),
                 model: selected.model,
                 budget: summaryBudget,
               };
@@ -651,7 +680,21 @@ export class Engine {
 
       for (step = 1; step <= settings.maxSteps; step++) {
         signal.throwIfAborted();
-        input = await context.prepare(input, instructions, tools);
+        const contextSpan = this.traces.startSpan(task.id, {
+          name: "context.prepare",
+          category: "context",
+          track: "Context",
+          attributes: { step },
+        });
+        try {
+          input = await context.prepare(input, instructions, tools);
+          this.traces.endSpan(contextSpan, "ok", { inputItems: input.length });
+        } catch (error) {
+          this.traces.endSpan(contextSpan, "error", {
+            errorName: error instanceof Error ? error.name : typeof error,
+          });
+          throw error;
+        }
 
         lastFlush = Date.now();
         log.debug({ event: "model.started", step });
@@ -678,7 +721,13 @@ export class Engine {
 
               emit("model_request", { purpose: "task", step, attempt });
 
-              return provider.run(
+              return tracedModelProvider(provider, this.traces, {
+                taskId: task.id,
+                purpose: "task",
+                model: settings.model,
+                step,
+                attempt,
+              }).run(
                 requestInput,
                 instructions,
                 tools,
@@ -760,6 +809,7 @@ export class Engine {
         }
 
         const batchId = randomUUID();
+        const modelSpan = this.traces.latestSpan(task.id, "llm");
         const toolSucceeded = (result: any) =>
           !result?.error &&
           (result?.exitCode === undefined || result.exitCode === 0) &&
@@ -887,65 +937,123 @@ export class Engine {
           });
         }
 
-        await executeToolGraph(graph, {
-          execute: async (node) => {
-            signal.throwIfAborted();
-            let executionStartedAt: number | undefined;
-            let result: any;
-
-            try {
-              if (node.name === historyDefinition.name) {
-                executionStartedAt = Date.now();
-                result = await readContextHistoryAsync(
-                  this.store,
-                  session.id,
-                  node.arguments,
-                  settings.outputChars,
-                );
-              } else {
-                result = await runner
-                  .forCall(node.callId)
-                  .execute(node.name, node.arguments, () => {
-                    executionStartedAt = Date.now();
-                  });
-              }
-            } catch (error: any) {
-              if (signal.aborted) {
-                throw error;
-              }
-
-              result = {
-                error: redactText(error.message, [this.config.apiKey]),
-              };
-              log.warn({
-                event: "tool.failed",
-                tool: node.name,
-                toolCallId: node.callId,
-                nodeId: node.nodeId,
-                batchId,
-                err: error,
-              });
-            }
-
-            saveResult(node, result, executionStartedAt);
-
-            return toolSucceeded(result);
-          },
-          block: async (node, failedDependency) => {
-            saveResult(node, {
-              error: `依赖工具 ${failedDependency.nodeId} 未成功，未执行当前调用。`,
-              code: "dependency_failed",
-              failedDependency: failedDependency.nodeId,
-            });
-          },
-          state: (node, state) =>
-            emit("tool_state", {
-              batchId,
-              nodeId: node.nodeId,
-              callId: node.callId,
-              state,
-            }),
+        const batchSpan = this.traces.startSpan(task.id, {
+          name: "tool.batch",
+          category: "tool",
+          track: "Tool scheduler",
+          attributes: { batchId, nodes: graph.nodes.length, step },
         });
+        try {
+          await executeToolGraph(graph, {
+            execute: async (node) => {
+              signal.throwIfAborted();
+              let executionStartedAt: number | undefined;
+              let toolSpan: ReturnType<TraceRecorder["startSpan"]>;
+              let result: any;
+
+              try {
+                if (node.name === historyDefinition.name) {
+                  executionStartedAt = Date.now();
+                  toolSpan = this.traces.startSpan(task.id, {
+                    name: "tool.read_context_history",
+                    category: "tool",
+                    track: `Tool ${node.callId}`,
+                    attributes: {
+                      batchId,
+                      callId: node.callId,
+                      nodeId: node.nodeId,
+                    },
+                  });
+                  result = await readContextHistoryAsync(
+                    this.store,
+                    session.id,
+                    node.arguments,
+                    settings.outputChars,
+                  );
+                } else {
+                  result = await runner
+                    .forCall(node.callId)
+                    .execute(node.name, node.arguments, () => {
+                      executionStartedAt = Date.now();
+                      toolSpan = this.traces.startSpan(task.id, {
+                        name: `tool.${node.name}`,
+                        category: "tool",
+                        track: `Tool ${node.callId}`,
+                        attributes: {
+                          batchId,
+                          callId: node.callId,
+                          nodeId: node.nodeId,
+                        },
+                      });
+                    });
+                }
+              } catch (error: any) {
+                if (signal.aborted) {
+                  throw error;
+                }
+
+                result = {
+                  error: redactText(error.message, [this.config.apiKey]),
+                };
+                log.warn({
+                  event: "tool.failed",
+                  tool: node.name,
+                  toolCallId: node.callId,
+                  nodeId: node.nodeId,
+                  batchId,
+                  err: error,
+                });
+              }
+
+              this.traces.link(modelSpan, toolSpan, "llm_to_tool");
+              this.traces.endSpan(
+                toolSpan,
+                toolSucceeded(result) ? "ok" : "error",
+                {
+                  durationMs: executionStartedAt
+                    ? Date.now() - executionStartedAt
+                    : 0,
+                },
+              );
+              saveResult(node, result, executionStartedAt);
+
+              return toolSucceeded(result);
+            },
+            block: async (node, failedDependency) => {
+              this.traces.instant(
+                task.id,
+                "tool.dependency_blocked",
+                "tool",
+                "Tool scheduler",
+                {
+                  batchId,
+                  callId: node.callId,
+                  nodeId: node.nodeId,
+                  failedDependency: failedDependency.nodeId,
+                },
+              );
+              saveResult(node, {
+                error: `依赖工具 ${failedDependency.nodeId} 未成功，未执行当前调用。`,
+                code: "dependency_failed",
+                failedDependency: failedDependency.nodeId,
+              });
+            },
+            state: (node, state) =>
+              emit("tool_state", {
+                batchId,
+                nodeId: node.nodeId,
+                callId: node.callId,
+                state,
+              }),
+          });
+          this.traces.endSpan(batchSpan, "ok");
+        } catch (error) {
+          this.traces.endSpan(
+            batchSpan,
+            signal.aborted ? "cancelled" : "error",
+          );
+          throw error;
+        }
       }
 
       throw new Error("已达到最大模型调用次数，任务停止。");
@@ -972,6 +1080,14 @@ export class Engine {
       });
     } finally {
       this.store.status(task.id, status, failure);
+      this.traces.finishTask(
+        task.id,
+        status === "completed"
+          ? "ok"
+          : status === "cancelled" || status === "interrupted"
+            ? "cancelled"
+            : "error",
+      );
       emit("task_end", { status });
       log.info({ event: "task.finished", status });
     }
