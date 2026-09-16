@@ -22,7 +22,7 @@ import { pathRisk, resolveTarget, type PathRisk } from "./paths.js";
 import {
   assertNoCredentialMaterial,
   validateDotenvTemplate,
-} from "./dotenv-template.js";
+} from "./git-file-safety.js";
 import { executeProcess } from "./process.js";
 
 export type GitAction =
