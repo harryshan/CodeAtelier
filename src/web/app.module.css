@@ -3,7 +3,7 @@
  *
  * 1. 开头设置颜色、字体和基础控件样式，再定义双栏布局、侧栏和标题区。
  * 2. 项目分组标题、折叠控件、最近会话限制与会话按钮展示一项目多对话；随后是欢迎页、项目栏、右上角可折叠会话统计、Markdown 对话消息、工具结果、diff 和通知。
- * 3. 审批按钮、输入区、弹窗和字段网格对应页面中的操作与表单。
+ * 3. 审批按钮、带 Markdown 编辑/预览切换的输入区、弹窗和字段网格对应页面中的操作与表单。
  * 4. 末尾通过媒体查询调整窄屏间距和排列。
  *
  * 修改类名时要同步 TSX 引用。按钮是否禁用由组件状态控制，不能只改成看起来不可用的样式。
@@ -911,24 +911,56 @@
   background: #1e2b31;
   padding: 13px 15px;
 }
-.composer textarea {
-  resize: vertical;
-  min-height: 55px;
-  max-height: 170px;
-  background: transparent;
-  border: 0;
-  padding: 7px;
-  box-shadow: none;
-}
-.composer > div {
+.composerToolbar,
+.composerActions {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-top: 8px;
+  gap: 10px;
 }
-.composer > div > span {
+.composerToolbar {
+  margin: 0 7px 8px;
+}
+.composerToolbar > span,
+.composerActions > span {
   font-size: 10px;
   color: #718b96;
+}
+.markdownToggle {
+  padding: 4px 8px;
+  border-color: #4b6269;
+  background: transparent;
+  color: #a4d9c1;
+  font-size: 11px;
+}
+.markdownToggle:hover {
+  background: #2b3c42;
+}
+.composer textarea,
+.markdownPreview {
+  min-height: 55px;
+  max-height: 170px;
+  padding: 7px;
+}
+.composer textarea {
+  resize: vertical;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+}
+.markdownPreview {
+  overflow: auto;
+  border: 1px solid #314850;
+  border-radius: 7px;
+  background: #172329;
+}
+.markdownPreview > p {
+  margin: 0;
+  color: #718b96;
+  font-size: 12px;
+}
+.composerActions {
+  margin-top: 8px;
 }
 .composerWrap > p {
   text-align: center;

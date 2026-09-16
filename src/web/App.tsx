@@ -5,7 +5,7 @@
  * 1. 状态和 effects 管理当前会话、表单、弹窗、加载状态、服务状态及自动滚动。
  * 2. 按服务端返回的工作区路径分组展示会话；项目可独立折叠，展开时默认仅显示最近五个对话，并可按需显示更早记录。
  * 3. resume、reloadService、stopServer、createProject、createConversation 和 send 处理恢复、受确认的服务重载、关闭服务、连接项目、新建会话和发送消息，并显示操作结果。
- * 4. 服务关闭后显示重启说明；正常页面由侧栏、项目栏、可折叠会话统计、时间线或项目连接页、输入框组成。
+ * 4. 服务关闭后显示重启说明；正常页面由侧栏、项目栏、可折叠会话统计、时间线或项目连接页、支持 Markdown 编辑与预览切换的输入框组成。
  * 5. 末尾仅渲染设置、重载和关闭确认弹窗，项目连接不使用弹窗。
  *
  * 关闭请求失败时不能断言服务已经关闭。切换会话和断线重连都只更新显示，不能重新提交任务。
@@ -15,6 +15,7 @@ import { useSessionConnection } from "./useSessionConnection";
 import { useEffect, useRef, useState } from "react";
 import type { Session, Settings } from "../shared/types";
 import { api, bootstrap, sessions, snapshot } from "./api";
+import { MarkdownMessage } from "./MarkdownMessage";
 import { SettingsPanel } from "./SettingsPanel";
 import { Timeline } from "./Timeline";
 import { SessionStatistics } from "./SessionStatistics";
@@ -37,6 +38,7 @@ export default function App() {
   >(() => new Set());
   const [workspace, setWorkspace] = useState("");
   const [prompt, setPrompt] = useState("");
+  const [previewingMarkdown, setPreviewingMarkdown] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [showShutdown, setShowShutdown] = useState(false);
@@ -140,6 +142,7 @@ export default function App() {
         instruction: prompt,
       });
       setPrompt("");
+      setPreviewingMarkdown(false);
       setData(await snapshot(selected));
     } catch (e) {
       setError((e as Error).message);
@@ -231,6 +234,7 @@ export default function App() {
     try {
       await api("/sessions/" + selected + "/tasks", { prompt });
       setPrompt("");
+      setPreviewingMarkdown(false);
       setList(await sessions());
     } catch (e) {
       setError((e as Error).message);
@@ -537,25 +541,50 @@ export default function App() {
                 </div>
               )}
             <div className={s.composer}>
-              <textarea
-                aria-label="任务描述"
-                placeholder="描述你想完成的任务…"
-                value={prompt}
-                onChange={(e) => setPrompt(e.target.value)}
-                onKeyDown={(e) => {
-                  if (
-                    e.key === "Enter" &&
-                    !e.shiftKey &&
-                    !e.nativeEvent.isComposing
-                  ) {
-                    e.preventDefault();
-                    if (!active && !busy) {
-                      void send();
+              <div className={s.composerToolbar}>
+                <span>支持 Markdown</span>
+                <button
+                  type="button"
+                  className={s.markdownToggle}
+                  aria-pressed={previewingMarkdown}
+                  onClick={() => setPreviewingMarkdown((current) => !current)}
+                >
+                  {previewingMarkdown ? "编辑 Markdown" : "预览 Markdown"}
+                </button>
+              </div>
+              {previewingMarkdown ? (
+                <div
+                  className={s.markdownPreview}
+                  role="region"
+                  aria-label="Markdown 预览"
+                >
+                  {prompt.trim() ? (
+                    <MarkdownMessage text={prompt} />
+                  ) : (
+                    <p>输入 Markdown 后在这里预览。</p>
+                  )}
+                </div>
+              ) : (
+                <textarea
+                  aria-label="任务描述"
+                  placeholder="描述你想完成的任务…"
+                  value={prompt}
+                  onChange={(e) => setPrompt(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (
+                      e.key === "Enter" &&
+                      !e.shiftKey &&
+                      !e.nativeEvent.isComposing
+                    ) {
+                      e.preventDefault();
+                      if (!active && !busy) {
+                        void send();
+                      }
                     }
-                  }
-                }}
-              />
-              <div>
+                  }}
+                />
+              )}
+              <div className={s.composerActions}>
                 <span>↵ 发送 · Shift + ↵ 换行</span>
                 {active ? (
                   <button

@@ -43,7 +43,7 @@ server (Fastify)
 | server/app.ts | 服务组装、业务路由与关闭顺序 |
 | server/local-security.ts / session-events.ts | 本机请求防护、SSE 连接管理与清理 |
 | server/http-server.ts | 保留 Pino 日志类型的 HTTP 服务类型 |
-| web/App.tsx / useSessionConnection.ts / SessionStatistics.tsx | 页面交互与布局、开发服务完整页面重载、当前会话右上角的折叠统计，以及快照和 SSE 重连生命周期；切换会话时先清除旧快照并显示本地历史加载提示 |
+| web/App.tsx / useSessionConnection.ts / SessionStatistics.tsx | 页面交互与布局、任务输入框的 Markdown 编辑/预览切换、开发服务完整页面重载、当前会话右上角的折叠统计，以及快照和 SSE 重连生命周期；切换会话时先清除旧快照并显示本地历史加载提示 |
 | web/Timeline.tsx / MarkdownMessage.tsx | 事件时间线、工具输出聚合，以及用户和 agent 消息的 GitHub Flavored Markdown 渲染；原始 HTML 不进入页面 DOM |
 
 本次全库审查将原 registry.ts 中的 ToolRunner 移出；paths.ts 原本就是路径函数模块。Engine、Store 及其上下文/schema 辅助模块、共享数据契约、测试和开发脚本继续按各自职责组织，不为每个小函数增加文件。
@@ -61,7 +61,7 @@ server (Fastify)
 
 上下文完整存储在本机；不依赖 previous_response_id 或服务端持久化。中断后旧对话可继续提问。先用已持久化工具结果修补缺失输出；没有记录的调用补充“执行结果未知”，不重放它。新任务必须重新读取文件。模型请求由 providers/retry 实施有界重试；人工恢复创建带来源记录的新任务，仅允许恢复会话最后一个失败、取消或中断任务。任务创建与用户消息、工具结果与上下文分别以 SQLite 事务保存。详情见 [恢复机制](recovery.md)。
 
-UI 历史包含消息、工具调用、受限工具结果和修改 diff。Timeline 通过 MarkdownMessage 将用户和 agent 文本渲染为 GitHub Flavored Markdown，支持标题、列表、表格、任务列表、链接和代码围栏；不加载原始 HTML，因此会话中不可信的模型或用户文本不能注入页面 DOM。`run_command`、`git` 等有流式输出的工具，将开始、输出与退出状态按调用 ID 聚合为同一可展开卡片；长内容带截断提示，历史不是无限容量的终端录制。
+任务输入框保留受控的 Markdown 原文；用户可在编辑和预览间切换，预览复用 MarkdownMessage，因而与提交后消息采用相同的 GFM 语义和原始 HTML 安全边界。切换只改变浏览器本地显示，不持久化草稿，也不改变送往后端的 prompt。UI 历史包含消息、工具调用、受限工具结果和修改 diff。Timeline 通过 MarkdownMessage 将用户和 agent 文本渲染为 GitHub Flavored Markdown，支持标题、列表、表格、任务列表、链接和代码围栏；不加载原始 HTML，因此会话中不可信的模型或用户文本不能注入页面 DOM。`run_command`、`git` 等有流式输出的工具，将开始、输出与退出状态按调用 ID 聚合为同一可展开卡片；长内容带截断提示，历史不是无限容量的终端录制。
 
 ## 文件和命令边界
 
