@@ -10,7 +10,7 @@
  * 6. 通过页面内项目目录连接首个项目，再从项目标题右侧加号新建对话并检查历史隔离、折叠与最近记录限制。
  * 7. 检查当前会话统计默认收起，展开后使用已保存事件显示 token、LLM、工具成功率和运行时间。
  * 8. 验证用户和 agent 消息的 Markdown 标题、链接、代码围栏、表格和任务列表渲染，并拒绝原始 HTML。
- * 9. 检查任务输入框可切换 Markdown 预览，并在返回编辑时保留未发送的原文。
+ * 9. 检查任务输入框在每次输入后即时渲染 Markdown，不显示额外预览切换操作。
  *
  * 页面刷新或重连不能重新提交任务。这里不调用真实模型。
  */
@@ -105,29 +105,30 @@ test("renders persisted agent replies as safe GitHub Flavored Markdown", async (
   ).toContainText("已渲染");
 });
 
-test("previews Markdown in the task composer and preserves its source", async ({
-  page,
-}) => {
+test("renders task Markdown immediately as it is entered", async ({ page }) => {
   const workspace = await realpath(
     await mkdtemp(path.join(tmpdir(), "codeatelier-e2e-")),
   );
-  const markdown = "# 预览标题\n\n**保留原文**";
+  const input = page.getByLabel("任务描述");
+  const preview = page.getByRole("region", { name: "Markdown 实时预览" });
 
   await page.goto("/");
   await createInitialConversation(page, workspace);
-  await page.getByLabel("任务描述").fill(markdown);
-  await page.getByRole("button", { name: "预览 Markdown" }).click();
-
-  const preview = page.getByRole("region", { name: "Markdown 预览" });
+  await input.fill("# 初始预览");
 
   await expect(
-    preview.getByRole("heading", { name: "预览标题" }),
+    preview.getByRole("heading", { name: "初始预览" }),
   ).toBeVisible();
-  await expect(preview.locator("strong")).toHaveText("保留原文");
-  await expect(page.getByLabel("任务描述")).toHaveCount(0);
 
-  await page.getByRole("button", { name: "编辑 Markdown" }).click();
-  await expect(page.getByLabel("任务描述")).toHaveValue(markdown);
+  await input.fill("# 更新预览\n\n**即时渲染**");
+  await expect(
+    preview.getByRole("heading", { name: "更新预览" }),
+  ).toBeVisible();
+  await expect(preview.locator("strong")).toHaveText("即时渲染");
+  await expect(input).toHaveValue("# 更新预览\n\n**即时渲染**");
+  await expect(page.getByRole("button", { name: "预览 Markdown" })).toHaveCount(
+    0,
+  );
 });
 
 test("keeps current session statistics collapsed until expanded and projects persisted usage", async ({
