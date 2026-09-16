@@ -2,9 +2,9 @@
  * App 打开的设置表单，用于修改模型连接、思考等级和执行限制。
  * 接收当前配置及保存、关闭回调，通过后端 API 保存修改。
  *
- * 1. 复制当前设置作为表单初值，另存用户新输入的密钥；后端不会返回原密钥。
- * 2. 提交时组装 settings 和可选的 apiKey，等待保存并显示错误。
- * 3. 表单依次显示连接、主辅模型和执行参数，末尾提供保存与取消按钮；低成本辅助模型也用于审批分流。
+ * 1. 复制当前偏好作为表单初值，另存用户新输入的临时密钥；后端不会返回原密钥。
+ * 2. 连接地址和模型只读展示，用户修改 .env 并重启或重载服务后才会更新。
+ * 3. 提交时组装 settings 和可选的 apiKey，等待保存并显示错误；表单其余部分为思考等级和执行参数。
  *
  * “已有密钥”只表示后端已配置。配置是否合法、任务运行中能否修改，最终由后端检查。
  */
@@ -71,20 +71,24 @@ export function SettingsPanel({
             }
           }}
         >
-          <label>
-            API Base URL
-            <input
-              value={value.baseUrl}
-              onChange={(e) => setValue({ ...value, baseUrl: e.target.value })}
-            />
-          </label>
-          <label>
-            模型
-            <input
-              value={value.model}
-              onChange={(e) => setValue({ ...value, model: e.target.value })}
-            />
-          </label>
+          <section aria-label="连接配置">
+            <h3>连接配置</h3>
+            <p className={s.muted}>
+              API 地址和模型只从本地 <code>.env</code>
+              （或进程环境）读取；为避免来源冲突，不能在此保存。
+              修改后请重启或重载服务。
+            </p>
+            <p>
+              API Base URL：<code>{settings.baseUrl}</code>
+            </p>
+            <p>
+              主模型：<code>{settings.model}</code>
+            </p>
+            <p>
+              辅助模型：
+              <code>{settings.auxiliaryModel || "未配置"}</code>
+            </p>
+          </section>
           <label>
             思考等级
             <select
@@ -101,16 +105,6 @@ export function SettingsPanel({
               <option value="medium">中（medium）</option>
               <option value="high">高（high，默认）</option>
             </select>
-          </label>
-          <label>
-            辅助模型（低成本，可选）
-            <input
-              value={value.auxiliaryModel ?? ""}
-              placeholder="留空：审批保留人工确认"
-              onChange={(e) =>
-                setValue({ ...value, auxiliaryModel: e.target.value })
-              }
-            />
           </label>
           <label>
             辅助模型推理强度
@@ -131,7 +125,8 @@ export function SettingsPanel({
           </label>
           <p className={s.muted}>
             辅助模型共用 API
-            地址和密钥，用于上下文摘要、会话标题和工具审批分流。留空时标题和摘要沿用主模型；为避免审批使用主模型，审批将保留人工确认。
+            地址和密钥，用于上下文摘要、会话标题和工具审批分流。未在 .env
+            配置时，标题和摘要沿用主模型；为避免审批使用主模型，审批将保留人工确认。
           </p>
           <label>
             API key
@@ -144,7 +139,8 @@ export function SettingsPanel({
             />
           </label>
           <p className={s.muted}>
-            密钥仅保留在后端内存。重启后可重新输入，或通过环境变量配置。
+            密钥仅保留在后端内存。本次输入会覆盖当前进程的环境密钥，重启后恢复
+            .env 或进程环境中的密钥；留空不修改。
           </p>
           <div className={s.fieldGrid}>
             <label>

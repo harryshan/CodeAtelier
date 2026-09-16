@@ -2,7 +2,7 @@
  * 检查辅助模型配置能否保存，以及 Engine 是否把摘要请求发给选定的辅助模型。
  * 使用临时 Config、Store 和模拟模型，不连接真实服务。
  *
- * 1. 检查默认值、环境变量、配置重载和非法输入。
+ * 1. 检查默认值、环境变量、只读模型来源和非法输入。
  * 2. 按真实工具/指令开销设置预算，用长历史触发摘要，核对主任务与摘要模型。
  * 3. 模拟摘要失败，确认原始历史仍然保留。
  */
@@ -42,7 +42,7 @@ it("inherits the main model and effort for old settings and validates auxiliary 
   ).toThrow();
 });
 
-it("loads environment defaults and persists an explicit override and clearing", async () => {
+it("uses the environment auxiliary model while persisting only its effort", async () => {
   vi.stubEnv("CODEATELIER_AUXILIARY_MODEL", "env-small");
   vi.stubEnv("CODEATELIER_AUXILIARY_REASONING_EFFORT", "medium");
   const config = new Config(await temp());
@@ -50,22 +50,25 @@ it("loads environment defaults and persists an explicit override and clearing", 
     model: "env-small",
     reasoningEffort: "medium",
   });
+  expect(() =>
+    config.update({
+      settings: { ...config.settings, auxiliaryModel: "small" },
+    }),
+  ).toThrow("由 .env 或进程环境配置");
   config.update({
-    settings: {
-      ...config.settings,
-      auxiliaryModel: " small ",
-      auxiliaryReasoningEffort: "low",
-    },
+    settings: { ...config.settings, auxiliaryReasoningEffort: "low" },
   });
+
   const reopened = new Config(config.directory);
   expect(auxiliarySettings(reopened.settings)).toMatchObject({
-    model: "small",
+    model: "env-small",
     reasoningEffort: "low",
     baseUrl: config.settings.baseUrl,
   });
-  expect(reopened.settings.model).toBe(config.settings.model);
-  reopened.update({ settings: { ...reopened.settings, auxiliaryModel: " " } });
-  expect(new Config(config.directory).settings.auxiliaryModel).toBe("");
+  vi.stubEnv("CODEATELIER_AUXILIARY_MODEL", "next-small");
+  expect(new Config(config.directory).settings.auxiliaryModel).toBe(
+    "next-small",
+  );
 });
 
 it.each([false, true])(

@@ -249,12 +249,14 @@ test("groups Git output and its final status in one persistent card", async ({
   ).toHaveCount(1);
 });
 
-test("settings validates and saves without exposing key", async ({ page }) => {
+test("settings show the environment connection and save preferences without exposing key", async ({
+  page,
+}) => {
   await page.goto("/");
   await page.getByRole("button", { name: "模型与设置" }).click();
+  await expect(page.getByLabel("连接配置")).toContainText("test-model");
   await expect(page.getByLabel("思考等级")).toHaveValue("high");
   await page.getByLabel("思考等级").selectOption("medium");
-  await page.getByLabel("辅助模型（低成本，可选）").fill("test-small");
   await page.getByLabel("辅助模型推理强度").selectOption("low");
   await page.getByLabel("API key", { exact: true }).fill("ui-test-secret");
   await page.getByRole("button", { name: "保存设置" }).click();
@@ -265,15 +267,14 @@ test("settings validates and saves without exposing key", async ({ page }) => {
   const saved = await response.text();
   expect(saved).not.toContain("ui-test-secret");
   expect(JSON.parse(saved).settings.reasoningEffort).toBe("medium");
-  expect(JSON.parse(saved).settings.auxiliaryModel).toBe("test-small");
+  expect(JSON.parse(saved).settings.auxiliaryModel).toBe("test-low-cost-model");
   await page.reload();
   await page.getByRole("button", { name: "模型与设置" }).click();
   await expect(page.getByLabel("思考等级")).toHaveValue("medium");
   await page.screenshot({ path: "test-results/settings.png", fullPage: true });
-  await expect(page.getByLabel("辅助模型（低成本，可选）")).toHaveValue(
-    "test-small",
+  await expect(page.getByLabel("连接配置")).toContainText(
+    "test-low-cost-model",
   );
-  await page.getByLabel("辅助模型（低成本，可选）").fill("");
   await page.getByLabel("思考等级").selectOption("high");
   await page.getByRole("button", { name: "保存设置" }).click();
   await expect(page.getByRole("dialog")).toHaveCount(0);

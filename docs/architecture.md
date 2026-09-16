@@ -21,7 +21,7 @@ server (Fastify)
 - `src/tools` 定义 Zod 参数及对应 JSON Schema，提供读取、统一文件编辑、命令和单一受限 `git` 工具。没有 `search` 或 `list_files` 工具；`search-commands.ts` 在每次任务建立指令前检测 PATH 和 Windows 系统位置可用的常见搜索程序，按估计性能排序后只向模型给出命令名与内容/文件名用途。模型以 `run_command` 执行目录浏览及首选的已检测工具，尽量把多个关键词合入一次多模式搜索；`run_command` 只公开一条命令文本，`command-shell.ts` 在执行器内部选择平台 shell。模型先由命令浏览/搜索定位，`read_file` 再按行读取；单次硬上限为 500 行，并返回分页/截断状态。`edit_files` 的 create:true 条目只新建不存在的文件，create:false 条目只精确编辑本任务已读取的已有文件。旧会话的 `search`、`list_files` 和 `write_file` 记录只保留展示、归档和快照回读兼容。
 - `src/permissions` 用无工具的低成本辅助模型将待审批请求分为自动通过、人工确认或拒绝；人工确认仍在后端等待用户点击，取消会释放待审批 Promise。模型无法自行同意审批。
 - `src/sessions/store.ts` 保存 sessions、tasks、events、context；任务终态另持久化 finishedAt，供会话累计运行时间统计。初始数据库结构位于 `schema.ts`。大于 64 KiB 的 events、活动上下文和历史快照由 `store-worker.ts` 在独立 Worker 线程解析或事务写入，小记录避免线程创建开销而同步读取。启动时将 running/waiting 任务标为 interrupted 并记录中断时间。
-- `src/config` 管理非敏感设置、内存密钥和平台数据目录。
+- `src/config` 将 .env/进程环境中的只读连接配置与 settings.json 中的非连接偏好合成为运行时设置，另管理内存密钥和平台数据目录。
 - `src/logging` 在 Pino 内部按字段脱敏后输出紧凑格式化纯文本，按级别筛选、保留受控错误详情并轮转文件。
 
 ## 文件职责与定位
@@ -37,7 +37,7 @@ server (Fastify)
 | providers/model-provider.ts | 与具体服务无关的模型接口和结果契约 |
 | providers/responses-provider.ts | ResponsesProvider：Responses 协议实现 |
 | providers/model-error.ts / retry.ts | 错误分类与有界重试策略 |
-| config/settings.ts / config.ts / data-directory.ts | 参数 schema、配置持久化、平台数据目录 |
+| config/settings.ts / config.ts / data-directory.ts | 连接/偏好参数 schema、仅保存偏好的配置加载、内存密钥与平台数据目录 |
 | logging/logger.ts / redact.ts | 日志创建、错误详情序列化、格式化输出与轮转、纯文本脱敏 |
 | permissions/approval-manager.ts | ApprovalManager：授权等待与取消 |
 | server/app.ts | 服务组装、业务路由与关闭顺序 |
@@ -91,7 +91,7 @@ server (Fastify)
 
 ### 辅助模型配置与摘要路由
 
-`config/auxiliary-model.ts` 的 `auxiliarySettings` 为辅助调用创建独立配置副本；Engine 保持主任务提供商不变，并通过 ContextManager 的惰性 `summaryModel` 回调为摘要提供独立模型及预算。首条 prompt 的标题生成也使用该选择函数、无工具请求和 64 token 输出上限；空辅助配置沿用主模型。`permissions/model-approval.ts` 对每项待审批请求使用已显式配置的辅助模型、无工具和 256 token 上限，严格解析 `approve`、`human review`、`reject`；空配置、故障或无效输出不使用主模型，而是保守要求人工确认。模型不能自行改变执行器安全边界。
+`Config` 在启动时只从 `.env` 或进程环境读取 API 地址、主模型和辅助模型标识；这些部署连接字段不进入 `settings.json`，设置 API 也拒绝其改动。`settings.json` 仅保存思考等级、执行限制和日志级别，保存后会覆盖同名环境默认值；浏览器仅只读展示连接信息。`config/auxiliary-model.ts` 的 `auxiliarySettings` 为辅助调用创建独立配置副本；Engine 保持主任务提供商不变，并通过 ContextManager 的惰性 `summaryModel` 回调为摘要提供独立模型及预算。首条 prompt 的标题生成也使用该选择函数、无工具请求和 64 token 输出上限；空辅助配置沿用主模型。`permissions/model-approval.ts` 对每项待审批请求使用已显式配置的辅助模型、无工具和 256 token 上限，严格解析 `approve`、`human review`、`reject`；空配置、故障或无效输出不使用主模型，而是保守要求人工确认。模型不能自行改变执行器安全边界。
 
 ### 项目与对话展示
 

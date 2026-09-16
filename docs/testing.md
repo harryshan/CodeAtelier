@@ -32,7 +32,7 @@
 | agent 循环     | engine.test.ts、core.test.ts、recovery.test.ts | 工具往返、同轮多项独立调用、单任务锁、步骤/上下文预算、参数错误反馈、根规则、输出预算、跨任务重新读取、不重放副作用、工具耗时排除审批等待 |
 | 会话存储与标题 | store.test.ts、recovery.test.ts、title-generation.test.ts | 隔离、事件顺序与游标、上下文、事务回滚、终态保留、重启中断、标题状态迁移和恢复，以及大 JSON 的 Worker 读取 |
 | 会话统计       | session-statistics.test.ts、e2e/app.spec.ts     | 服务实报 token 的缓存/非缓存完整性、LLM 请求与任务轮次、工具成功率、任务累计运行时间、旧 usage 历史回退及默认折叠/展开展示 |
-| 模型设置       | config.test.ts、regressions.test.ts            | 环境/磁盘优先级、端点与模型规范化、参数边界、失败更新保持原状态、密钥内存存储、损坏配置不覆盖              |
+| 模型设置       | config.test.ts、regressions.test.ts            | 连接只来自环境、settings.json 仅保存偏好、端点规范化、连接改动拒绝、参数边界、失败更新保持原状态、密钥内存存储、损坏配置不覆盖              |
 | 日志           | logging.test.ts、core.test.ts                  | 级别过滤、紧凑纯文本格式、上下文字段、错误元数据/原因链/堆栈、凭据脱敏、轮转、存储故障降级                 |
 | HTTP API 与监听范围 | server.test.ts、listen-address.test.ts、core.test.ts | 会话/任务接口、参数校验、默认 IPv4/IPv6 回环、显式 IPv4/IPv6 局域网通配监听、Host/Origin/cookie/token、配置更新互斥、取消与恢复                                |
 | 服务关闭       | shutdown.test.ts、e2e/app.spec.ts              | 关闭授权与确认、正在执行命令的中断保存、SSE 结束、端口释放、重复清理、实际入口进程退出、关闭页面与失败反馈 |
@@ -89,14 +89,14 @@ mechanical-input.test.ts 覆盖精确结果/跨路径正文引用、逐字还原
 
 镜像刷新手动回归 `scripts/swebench/test_refresh.py` 覆盖新运行包上传与文件校验、镜像结果记录、base_commit 不匹配时不提交镜像且清理容器。本次按 Evaluation 约定仅静态检查，未执行该套件。
 
-- 连接配置：缺少地址/模型时启动报错；环境值与已保存设置优先级、端点规范化、模型标识原样保存；单元与浏览器测试使用独立模拟配置。
+- 连接配置：缺少地址/模型时即使有旧 settings.json 也启动报错；API 地址和模型标识只从环境读取并规范化端点，settings.json 只保存偏好且拒绝竞争来源；单元与浏览器测试使用独立模拟配置。
 
 ### 辅助模型
 
-- `tests/auxiliary-model.test.ts`：旧配置兼容、主模型继承、环境默认值、保存/重载/清空、非法输入拒绝；生产 Engine 路由、辅助模型独立预算、完整摘要来源、摘要失败保留历史。使用模拟模型，不访问真实服务。
+- `tests/auxiliary-model.test.ts`：旧配置兼容、主模型继承、环境辅助模型来源、可保存推理强度、模型改动拒绝、非法输入拒绝；生产 Engine 路由、辅助模型独立预算、完整摘要来源、摘要失败保留历史。使用模拟模型，不访问真实服务。
 - `tests/title-generation.test.ts`：首条 prompt 选择辅助模型、输入分隔和输出清理、未知标题模型故障最多额外重试 3 次、永久失败不阻断主任务、取消结束标题状态，以及旧 SQLite 标题迁移。
 - `tests/model-approval.test.ts`：审批请求只将工具名和待审批内容发送给无工具、256 token 的低成本模型；严格 JSON 输出分别自动通过、保留人工点击或直接拒绝并返回理由；检查工作区内常用开发命令被 prompt 明确要求直接 `approve`，分类器缺失时不自动放行。
-- `tests/e2e/app.spec.ts`：辅助模型表单保存、刷新回显与清空；首条 prompt 完成后在侧栏显示并在刷新后保留自动标题。
+- `tests/e2e/app.spec.ts`：只读展示环境连接、保存思考偏好并在刷新后回显，且不暴露密钥；首条 prompt 完成后在侧栏显示并在刷新后保留自动标题。
 
 评测包装器的辅助模型路由与主模型共用累计用量和调用上限；本次仅静态检查评测改动，未运行 Evaluation。
 

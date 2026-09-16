@@ -19,12 +19,13 @@ import { Config } from "../../src/config/config.js";
 import { createApp } from "../../src/server/app.js";
 import { TITLE_INSTRUCTIONS } from "../../src/sessions/title-generator.js";
 
+process.env.CODEATELIER_AUXILIARY_MODEL = "test-low-cost-model";
+
 const config = new Config(
   await realpath(await mkdtemp(path.join(tmpdir(), "codeatelier-ui-"))),
 );
 
 config.apiKey = "test-key";
-config.settings.auxiliaryModel = "test-low-cost-model";
 
 const { app, engine } = await createApp(
   config,

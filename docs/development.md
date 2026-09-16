@@ -21,7 +21,7 @@ Node.js 24，pnpm 11.22.0（packageManager 固定）。提交 pnpm-lock.yaml，�
 
 ## 配置
 
-后端启动时读取本地 .env。无已保存连接配置时，必须在 .env 或环境变量提供 API 地址和模型标识，否则启动明确报错。推荐通过 Web UI 输入密钥或使用环境变量；本地 .env 仅供开发使用，不提交 Git。
+后端启动时读取本地 `.env`。API 地址、主模型和可选辅助模型的唯一来源是 `.env` 或进程环境；无论是否已有 `settings.json`，都必须提供 API 地址和主模型，否则启动明确报错。设置界面只读显示连接字段，修改 `.env` 后须重启或重载服务。推荐通过 Web UI 为当前进程输入密钥，或使用环境变量；本地 `.env` 仅供开发使用，不提交 Git。
 
 | 环境变量 | 默认 / 用途 |
 | --- | --- |
@@ -34,9 +34,9 @@ Node.js 24，pnpm 11.22.0（packageManager 固定）。提交 pnpm-lock.yaml，�
 | CODEATELIER_LISTEN_ADDRESS | `127.0.0.1`；可选 `::1`、`0.0.0.0`（开放 IPv4 局域网）或 `::`（开放 IPv6 局域网） |
 | CODEATELIER_LOG_LEVEL | info |
 
-非敏感设置保存为 settings.json。已保存设置优先于环境变量默认值；通过 UI 修改。密钥始终来自环境或当前进程内存，不写 settings.json。任务运行时禁止修改配置。
+`settings.json` 只保存非连接偏好：主/辅助模型的思考等级、任务限制和日志级别；通过 UI 修改。已保存偏好优先于同名环境默认值。API 地址、主/辅助模型标识绝不写入该文件；旧版本留下的同名字段会在读取时忽略，并在下一次保存偏好时移除。密钥始终来自环境或当前进程内存，不写 `settings.json`。任务运行时禁止修改配置。
 
-思考等级在“模型与设置”中选择，保存为 reasoningEffort，每次主任务 Responses 请求显式发送 reasoning.effort，主任务和上下文摘要共用。默认 high，旧配置缺少字段时采用环境默认值或 high。例如 .env 中设置 CODEATELIER_REASONING_EFFORT=high；已保存设置优先，保存后用于后续调用。服务或模型不支持所选等级时按现有错误流程报告，不静默降级。低成本审批使用 auxiliaryModel 及 auxiliaryReasoningEffort，不会以主模型替代。
+思考等级在“模型与设置”中选择，保存为 `reasoningEffort`，每次主任务 Responses 请求显式发送 `reasoning.effort`，主任务和上下文摘要共用。默认 high，旧配置缺少字段时采用环境默认值或 high。例如 `.env` 中设置 `CODEATELIER_REASONING_EFFORT=high`；已保存偏好优先，保存后用于后续调用。辅助模型标识由 `CODEATELIER_AUXILIARY_MODEL` 决定，其推理强度 `auxiliaryReasoningEffort` 可按同一规则保存。服务或模型不支持所选等级时按现有错误流程报告，不静默降级。低成本审批不会以主模型替代未配置的辅助模型。
 
 默认限制：100 次模型调用、命令 120 秒、模型请求总计 300 秒、流空闲 60 秒、上下文 180000 字符、单工具输出 32000 字符。这是可配置字符预算，不是精确 token 计量。发现服务容量和支持的 tokenizer 后改用 token 预算，contextChars 仅备用；maxOutputTokens 默认 16384。输入预算扣除输出与安全余量后，达到 80% 时尝试压缩至 60% 以内。失败保留原历史，超过硬上限则停止。实测值和用量展示见 [model-tokens.md](model-tokens.md)。详见 [上下文管理](context-management.md)。高级字段可在停机时编辑 settings.json 或通过设置 API 更新。
 
@@ -140,14 +140,14 @@ Web 侧栏的“关闭服务”需确认。`POST /api/server/shutdown` 接受 `{
 
 ## 可选低成本辅助模型
 
-设置界面提供“辅助模型（低成本，可选）”与“辅助模型推理强度”；保存后重启仍保留。也可在本地 `.env` 设置（模型 ID 为占位值，须替换为服务实际提供的 ID）：
+设置界面只读显示“辅助模型（低成本，可选）”，并可保存“辅助模型推理强度”。模型 ID 必须在本地 `.env` 设置（示例为占位值，须替换为服务实际提供的 ID）：
 
 ```dotenv
 CODEATELIER_AUXILIARY_MODEL=your-low-cost-model-id
 CODEATELIER_AUXILIARY_REASONING_EFFORT=low
 ```
 
-辅助模型共用主模型的 API 地址与密钥，默认不指定模型；空值沿用主模型及其思考等级。已保存设置优先于环境默认值，在 UI 清空即可恢复沿用。推理强度可选 low/medium/high，指定辅助模型时默认 low；程序不推断价格或自动选择模型。
+辅助模型共用主模型的 API 地址与密钥，默认不指定模型；空值时标题和摘要沿用主模型及其思考等级，而审批保留人工确认。模型标识只能修改 `.env` 并重启或重载服务；已保存的推理强度优先于环境默认值。推理强度可选 low/medium/high，指定辅助模型时默认 low；程序不推断价格或自动选择模型。
 
 上下文摘要和首条用户 prompt 的标题生成均使用 `auxiliarySettings`：创建会话后先显示“新对话”，Engine 对首条消息发起无工具、64 token 上限的标题请求，成功后通过 SSE 更新侧栏；失败保留占位标题而不阻断编码任务，取消会中止任务。审批也复用已显式配置的辅助模型，但不在其为空时回退主模型：每个待审批请求使用无工具、256 token 上限的 JSON 分类，自动通过、人工确认或直接拒绝均会记录在时间线；模型故障和无效输出保留人工确认。配置不意味着服务兼容性已经实测。
 
