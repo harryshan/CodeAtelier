@@ -3,7 +3,7 @@
  *
  * 1. 开头设置颜色、字体和基础控件样式，再定义双栏布局、侧栏和标题区。
  * 2. 项目分组标题、折叠控件、最近会话限制与会话按钮展示一项目多对话；随后是欢迎页、项目栏、右上角可折叠会话统计、Markdown 对话消息、工具结果、diff 和通知。
- * 3. 审批按钮、带 Markdown 实时预览的输入区、弹窗和字段网格对应页面中的操作与表单。
+ * 3. 审批按钮、所见即所得 Markdown 输入区、弹窗和字段网格对应页面中的操作与表单。
  * 4. 末尾通过媒体查询调整窄屏间距和排列。
  *
  * 修改类名时要同步 TSX 引用。按钮是否禁用由组件状态控制，不能只改成看起来不可用的样式。
@@ -911,23 +911,17 @@
   background: #1e2b31;
   padding: 13px 15px;
 }
-.composer textarea {
-  resize: vertical;
+.richComposerEditor {
   min-height: 55px;
   max-height: 170px;
-  background: transparent;
-  border: 0;
-  padding: 7px;
-  box-shadow: none;
-}
-.markdownPreview {
-  max-height: 170px;
-  margin-top: 8px;
   overflow: auto;
-  border: 1px solid #314850;
-  border-radius: 7px;
-  background: #172329;
+  outline: 0;
   padding: 7px;
+}
+.richComposerEditor > p:only-child:empty::before {
+  content: "描述你想完成的任务…";
+  color: #718b96;
+  pointer-events: none;
 }
 .composerActions {
   display: flex;

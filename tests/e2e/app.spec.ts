@@ -10,7 +10,7 @@
  * 6. 通过页面内项目目录连接首个项目，再从项目标题右侧加号新建对话并检查历史隔离、折叠与最近记录限制。
  * 7. 检查当前会话统计默认收起，展开后使用已保存事件显示 token、LLM、工具成功率和运行时间。
  * 8. 验证用户和 agent 消息的 Markdown 标题、链接、代码围栏、表格和任务列表渲染，并拒绝原始 HTML。
- * 9. 检查任务输入框在每次输入后即时渲染 Markdown，不显示额外预览切换操作。
+ * 9. 检查任务输入框以所见即所得方式将 Markdown 输入规则原地转换为富文本，并将生成的 Markdown 发送给任务。
  *
  * 页面刷新或重连不能重新提交任务。这里不调用真实模型。
  */
@@ -69,7 +69,7 @@ test("renders persisted agent replies as safe GitHub Flavored Markdown", async (
 
   await page.goto("/");
   await createInitialConversation(page, workspace);
-  await page.getByLabel("任务描述").fill("**用户 Markdown**");
+  await page.getByLabel("任务描述").pressSequentially("**用户 Markdown**");
   await page.getByRole("button", { name: "开始执行" }).click();
 
   const userMessage = page
@@ -105,30 +105,30 @@ test("renders persisted agent replies as safe GitHub Flavored Markdown", async (
   ).toContainText("已渲染");
 });
 
-test("renders task Markdown immediately as it is entered", async ({ page }) => {
+test("converts task Markdown input rules into an in-place rich editor", async ({
+  page,
+}) => {
   const workspace = await realpath(
     await mkdtemp(path.join(tmpdir(), "codeatelier-e2e-")),
   );
-  const input = page.getByLabel("任务描述");
-  const preview = page.getByRole("region", { name: "Markdown 实时预览" });
+  const editor = page.getByRole("textbox", { name: "任务描述" });
 
   await page.goto("/");
   await createInitialConversation(page, workspace);
-  await input.fill("# 初始预览");
+  await editor.pressSequentially("# ");
+  await editor.pressSequentially("所见即所得标题");
 
   await expect(
-    preview.getByRole("heading", { name: "初始预览" }),
+    editor.getByRole("heading", { name: "所见即所得标题" }),
   ).toBeVisible();
+  await expect(editor).not.toContainText("# 所见即所得标题");
 
-  await input.fill("# 更新预览\n\n**即时渲染**");
+  await editor.press("Shift+Enter");
+  await editor.pressSequentially(" **粗体内容**");
+  await expect(editor.locator("strong")).toHaveText("粗体内容");
   await expect(
-    preview.getByRole("heading", { name: "更新预览" }),
-  ).toBeVisible();
-  await expect(preview.locator("strong")).toHaveText("即时渲染");
-  await expect(input).toHaveValue("# 更新预览\n\n**即时渲染**");
-  await expect(page.getByRole("button", { name: "预览 Markdown" })).toHaveCount(
-    0,
-  );
+    page.getByRole("region", { name: "Markdown 实时预览" }),
+  ).toHaveCount(0);
 });
 
 test("keeps current session statistics collapsed until expanded and projects persisted usage", async ({
