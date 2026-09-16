@@ -127,7 +127,7 @@ export default function App() {
 
   const selectedSession = list.find((session) => session.id === selected);
   const active = data?.tasks.find((t) =>
-    ["running", "waiting"].includes(t.status),
+    ["queued", "running", "waiting"].includes(t.status),
   );
   const recoverable = data?.tasks.at(-1);
   const resume = async () => {
@@ -405,9 +405,11 @@ export default function App() {
             <span className={s.modelBadge}>{settings?.model || "连接中"}</span>
             <span className={s.status}>
               {active
-                ? active.status === "waiting"
-                  ? "等待确认"
-                  : "执行中"
+                ? active.status === "queued"
+                  ? "排队中"
+                  : active.status === "waiting"
+                    ? "等待确认"
+                    : "执行中"
                 : connected
                   ? "就绪"
                   : "重新连接中"}
@@ -485,7 +487,7 @@ export default function App() {
                 </article>
               </div>
               <div className={s.welcomeFoot}>
-                本地工作区 <i /> 单任务执行 <i /> 操作按需确认
+                本地工作区 <i /> 跨项目并行 <i /> 同项目串行 <i /> 操作按需确认
               </div>
             </section>
           ) : loading ? (
@@ -616,7 +618,7 @@ export default function App() {
           >
             <h2>关闭 CodeAtelier 服务？</h2>
             <p>
-              所有页面将断开连接。正在执行的任务会停止并保存为可恢复的中断状态，已修改的文件不会撤销。
+              所有页面将断开连接。正在执行或排队的任务会停止并保存为可恢复的中断状态，已修改的文件不会撤销。
             </p>
             <p>重新启动需在项目目录运行 pnpm start。</p>
             <div className={s.actions}>

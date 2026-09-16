@@ -4,7 +4,7 @@
  *
  * 1. 测试夹具通过 bootstrap 获取合法 Cookie 和 token。
  * 2. 检查不同会话的数据隔离，以及资源不存在和请求体非法时的状态码。
- * 3. 在任务运行中尝试启动新任务、修改设置，再检查取消与人工恢复。
+ * 3. 检查不同工作区可并行、同工作区排队、全局上限与设置互斥，再检查取消与人工恢复。
  * 4. 用伪造 token 和异常 Origin 检查写请求被拒绝。
  *
  * 模型只用来控制任务何时结束；鉴权和保存都走真实代码，清理时也要结束等待中的任务。
@@ -99,20 +99,40 @@ it("creates isolated sessions and validates missing sessions and bad payloads", 
   }
 });
 
-it("blocks concurrent tasks and settings updates, then supports cancellation and resume", async () => {
+it("runs different workspaces in parallel while queueing the same workspace", async () => {
   const fixture = await createFixture();
 
   try {
-    const session = fixture.store.create(await temp(), "busy");
-    const response = await fixture.app.inject({
-      method: "POST",
-      url: `/api/sessions/${session.id}/tasks`,
-      headers: fixture.headers,
-      payload: { prompt: "wait" },
-    });
+    const sharedWorkspace = await temp();
+    const firstSession = fixture.store.create(sharedWorkspace, "first");
+    const sameWorkspaceSession = fixture.store.create(sharedWorkspace, "same");
+    const otherSession = fixture.store.create(await temp(), "other");
+    const start = async (sessionId: string, prompt: string) =>
+      fixture.app.inject({
+        method: "POST",
+        url: `/api/sessions/${sessionId}/tasks`,
+        headers: fixture.headers,
+        payload: { prompt },
+      });
 
-    expect(response.statusCode).toBe(200);
-    const id = response.json().id;
+    const first = await start(firstSession.id, "first task");
+    expect(first.statusCode).toBe(200);
+    const firstTaskId = first.json().id;
+    expect(() => fixture.engine.start(firstSession.id, "same session")).toThrow(
+      "当前会话已有",
+    );
+
+    const queued = await start(sameWorkspaceSession.id, "same workspace task");
+    expect(queued.statusCode).toBe(200);
+    const queuedTaskId = queued.json().id;
+    expect(queued.json().status).toBe("queued");
+
+    const other = await start(otherSession.id, "other workspace task");
+    expect(other.statusCode).toBe(200);
+    const otherTaskId = other.json().id;
+    expect(other.json().status).toBe("running");
+    expect(fixture.engine.activeTasks).toHaveLength(2);
+    expect(fixture.store.task(queuedTaskId)?.status).toBe("queued");
 
     expect(
       (
@@ -124,34 +144,27 @@ it("blocks concurrent tasks and settings updates, then supports cancellation and
         })
       ).statusCode,
     ).toBe(409);
-    expect(
-      (
-        await fixture.app.inject({
-          method: "POST",
-          url: `/api/sessions/${session.id}/tasks`,
-          headers: fixture.headers,
-          payload: { prompt: "another" },
-        })
-      ).statusCode,
-    ).toBe(409);
+
     await fixture.app.inject({
       method: "POST",
-      url: `/api/tasks/${id}/cancel`,
+      url: `/api/tasks/${firstTaskId}/cancel`,
       headers: fixture.headers,
       payload: {},
     });
-    await fixture.engine.active?.done;
+    await expect
+      .poll(() => fixture.store.task(queuedTaskId)?.status)
+      .toBe("running");
 
-    expect(fixture.store.task(id)?.status).toBe("cancelled");
-    const resumed = await fixture.app.inject({
-      method: "POST",
-      url: `/api/tasks/${id}/resume`,
-      headers: fixture.headers,
-      payload: { instruction: "retry" },
-    });
+    for (const taskId of [queuedTaskId, otherTaskId]) {
+      await fixture.app.inject({
+        method: "POST",
+        url: `/api/tasks/${taskId}/cancel`,
+        headers: fixture.headers,
+        payload: {},
+      });
+    }
 
-    expect(resumed.statusCode).toBe(200);
-    expect(resumed.json().id).not.toBe(id);
+    await expect.poll(() => fixture.engine.hasActiveTasks).toBe(false);
   } finally {
     await fixture.app.close();
   }

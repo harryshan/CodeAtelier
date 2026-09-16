@@ -3,7 +3,7 @@
  * 校验后的设置通过共享的 Settings 类型传递给其他模块。
  *
  * 1. connectionSettingsSchema 校验只从环境读取的 API 地址、主模型和辅助模型标识。
- * 2. persistedSettingsSchema 描述 settings.json 可保存的偏好：思考等级、执行限制和日志级别。
+ * 2. persistedSettingsSchema 描述 settings.json 可保存的偏好：思考等级、任务并发及其他执行限制和日志级别。
  * 3. settingsSchema 将两类字段合成为运行时 Settings，供 Engine 和浏览器的只读连接信息使用。
  *
  * 增加字段时要同步 Settings、配置读写和设置界面。通过校验只表示配置格式合法，
@@ -26,6 +26,8 @@ export const persistedSettingsSchema = z.object({
   reasoningEffort: z.enum(["low", "medium", "high"]).default("high"),
   auxiliaryReasoningEffort: z.enum(["low", "medium", "high"]).default("low"),
   maxSteps: z.number().int().min(1).max(100),
+  // 全局硬上限避免并行模型和子进程耗尽本机或服务端资源。
+  maxConcurrentTasks: z.number().int().min(1).max(4).default(2),
   commandTimeoutMs: z.number().int().min(1000).max(600000),
   requestTimeoutMs: z.number().int().min(1000).max(600000),
   idleTimeoutMs: z.number().int().min(1000).max(300000),

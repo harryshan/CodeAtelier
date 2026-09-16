@@ -170,7 +170,8 @@ export function Timeline({
   onError: (s: string) => void;
 }) {
   const active = data.tasks.find(
-    (t) => t.status === "running" || t.status === "waiting",
+    (t) =>
+      t.status === "queued" || t.status === "running" || t.status === "waiting",
   );
   // 分别保留每次尝试的文本，避免将失败前的半截回复拼进成功结果。
   const streaming = new Map<string, string>();

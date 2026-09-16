@@ -4,7 +4,7 @@
  *
  * 1. sessionStatistics 聚合 service 实报的 token、模型请求、工具结果和任务状态；旧历史没有 model_request 时，仅以已有 usage 作保守回退。
  * 2. 工具成功仅依据最终 tool_result 的错误和退出码判断；仍在审批或执行的调用不进入成功率分母。
- * 3. 运行时间使用 Task 的 finishedAt 或 task_end 事件；运行中任务以调用方传入的当前时间持续累加。
+ * 3. 运行时间使用 Task 的 startedAt、finishedAt 或 task_end 事件；排队等待不计入累计运行时间，运行中任务以调用方传入的当前时间持续累加。
  * 4. formatTokenCount 与 formatDuration 为组件提供一致、紧凑且不依赖语言环境的显示文本。
  *
  * token 缓存明细是服务可选字段。任意一次实报缺失 cached_tokens 时，缓存和非缓存输入都标记为不完整，
@@ -84,7 +84,12 @@ function taskEndTimes(events: Event[]) {
 }
 
 function taskDuration(task: Task, endTimes: Map<string, number>, now: number) {
-  const startedAt = timestamp(task.createdAt);
+  // 新版排队任务尚未获得 startedAt；历史任务缺少该列时仍按 createdAt 兼容统计。
+  if (task.startedAt === null) {
+    return 0;
+  }
+
+  const startedAt = timestamp(task.startedAt) ?? timestamp(task.createdAt);
   if (startedAt === undefined) {
     return 0;
   }
@@ -190,6 +195,7 @@ export function sessionStatistics(
     );
   }).length;
   const taskCountsByStatus: Record<TaskStatus, number> = {
+    queued: 0,
     running: 0,
     waiting: 0,
     completed: 0,
@@ -236,7 +242,9 @@ export function sessionStatistics(
     taskCountsByStatus,
     totalRunMs,
     activeTask:
-      taskCountsByStatus.running > 0 || taskCountsByStatus.waiting > 0,
+      taskCountsByStatus.queued > 0 ||
+      taskCountsByStatus.running > 0 ||
+      taskCountsByStatus.waiting > 0,
   };
 }
 

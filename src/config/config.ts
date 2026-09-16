@@ -76,6 +76,7 @@ export class Config {
       auxiliaryReasoningEffort:
         process.env.CODEATELIER_AUXILIARY_REASONING_EFFORT || "low",
       maxSteps: 100,
+      maxConcurrentTasks: 2,
       commandTimeoutMs: 120000,
       requestTimeoutMs: 300000,
       idleTimeoutMs: 60000,

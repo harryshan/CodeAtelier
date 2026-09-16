@@ -3,7 +3,7 @@
  *
  * 1. 构造器初始化数据库，把重启前未完成的任务标为 interrupted 并记录结束时间；transaction 包装提交和回滚。
  * 2. list/get/create 读写会话；标题状态的领取、完成或失败保证首条 prompt 只生成一次标题。
- * 3. tasks/task/createTask/status 读写任务状态；event/events 保存和分页读取事件，hasEvent/taskEvent 避免为小判断解析全量事件。
+ * 3. tasks/task/createTask/status 读写任务状态；queuedTasks 和 hasUnfinishedTask 供 Engine 调度跨会话队列，event/events 保存和分页读取事件。
  * 4. context/saveContext 读写当前模型历史；较大的 context、events 和快照可交给 store-worker 在线程外解析或原子写入，避免阻塞 HTTP 主线程。
  * 5. close 由应用退出流程调用，关闭数据库连接；Worker 自己打开短生命周期的 WAL 连接，不持有 Store 的连接。
  *
@@ -27,7 +27,7 @@ export class Store {
     // 进程重启只能确认任务已中断，不能断言先前的命令是否执行成功。
     this.db
       .prepare(
-        "UPDATE tasks SET status='interrupted',error='服务已重启，任务中断；未重放命令。',finishedAt=COALESCE(finishedAt,?) WHERE status IN ('running','waiting')",
+        "UPDATE tasks SET status='interrupted',error='服务已重启，任务中断；未重放命令。',finishedAt=COALESCE(finishedAt,?) WHERE status IN ('queued','running','waiting')",
       )
       .run(new Date().toISOString());
   }
@@ -47,6 +47,10 @@ export class Store {
     const taskColumns = this.db
       .prepare("PRAGMA table_info(tasks)")
       .all() as Array<{ name: string }>;
+    if (!taskColumns.some((column) => column.name === "startedAt")) {
+      this.db.exec("ALTER TABLE tasks ADD COLUMN startedAt TEXT");
+    }
+
     if (!taskColumns.some((column) => column.name === "finishedAt")) {
       this.db.exec("ALTER TABLE tasks ADD COLUMN finishedAt TEXT");
     }
@@ -162,11 +166,31 @@ export class Store {
       .get(id) as unknown as Task | undefined;
   }
 
+  /** 同一会话的上下文不能并发追加；不同会话的任务由 Engine 依据工作区和全局上限调度。 */
+  hasUnfinishedTask(sessionId: string) {
+    return Boolean(
+      this.db
+        .prepare(
+          "SELECT 1 FROM tasks WHERE sessionId=? AND status IN ('queued','running','waiting') LIMIT 1",
+        )
+        .get(sessionId),
+    );
+  }
+
+  /** 排队顺序按创建时间稳定；Engine 可跳过被相同工作区锁阻塞的项，避免空闲并发槽位闲置。 */
+  queuedTasks() {
+    return this.db
+      .prepare(
+        "SELECT tasks.*,sessions.workspace FROM tasks JOIN sessions ON sessions.id=tasks.sessionId WHERE tasks.status='queued' ORDER BY tasks.createdAt,tasks.rowid",
+      )
+      .all() as unknown as Array<Task & { workspace: string }>;
+  }
+
   createTask(sessionId: string) {
     const task = {
       id: randomUUID(),
       sessionId,
-      status: "running" as TaskStatus,
+      status: "queued" as TaskStatus,
       createdAt: new Date().toISOString(),
     };
 
@@ -179,7 +203,7 @@ export class Store {
     return task;
   }
 
-  /** 终态只在任务真正结束时记录，供历史会话统计累计运行时间；等待审批不会提前结束计时。 */
+  /** 首次进入 running 时记实际开始时间；排队等待不计入运行统计，终态只在真正结束时记录。 */
   status(id: string, status: TaskStatus, error?: string) {
     const finished = [
       "completed",
@@ -187,13 +211,15 @@ export class Store {
       "cancelled",
       "interrupted",
     ].includes(status);
-    const finishedAt = finished ? new Date().toISOString() : null;
+    const now = new Date().toISOString();
+    const finishedAt = finished ? now : null;
+    const startedAt = status === "running" ? now : null;
 
     this.db
       .prepare(
-        "UPDATE tasks SET status=?,error=?,finishedAt=COALESCE(?,finishedAt) WHERE id=?",
+        "UPDATE tasks SET status=?,error=?,startedAt=CASE WHEN ? IS NULL THEN startedAt ELSE COALESCE(startedAt,?) END,finishedAt=COALESCE(?,finishedAt) WHERE id=?",
       )
-      .run(status, error || null, finishedAt, id);
+      .run(status, error || null, startedAt, startedAt, finishedAt, id);
   }
 
   event(sessionId: string, taskId: string, type: string, data: unknown): Event {

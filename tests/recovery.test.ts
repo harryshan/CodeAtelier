@@ -251,7 +251,9 @@ it("resumes after completed file edits without replaying them and keeps original
     expect(store.task(original.id)?.status).toBe("failed");
     const resumed = engine.resume(original.id, "continue verification");
 
-    expect(() => engine.resume(original.id)).toThrow("已有任务");
+    expect(() => engine.resume(original.id)).toThrow(
+      "只能恢复会话的最后一个任务",
+    );
     await engine.active?.done;
 
     expect(store.task(resumed.id)?.status).toBe("completed");

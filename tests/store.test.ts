@@ -4,7 +4,7 @@
  *
  * 1. 创建两个会话，核对各自事件、读取游标和上下文。
  * 2. 在保存任务和事件的事务中制造失败，确认整笔事务回滚。
- * 3. 保存不同状态的任务后重启，确认只有未完成任务变为 interrupted。
+ * 3. 保存排队、运行和终态任务后重启，确认所有未完成任务变为 interrupted。
  * 4. 大于同步阈值的事件和上下文由 Worker 读取，验证结果与同步接口相同且数据库可正常关闭。
  *
  * 重启要保留已有终态和上下文，不能把其他会话的数据混进来。
@@ -103,6 +103,7 @@ it("restart interrupts active tasks but preserves terminal states and context", 
   const session = store.create(root, "s");
 
   for (const status of [
+    "queued",
     "running",
     "waiting",
     "completed",
@@ -119,6 +120,7 @@ it("restart interrupts active tasks but preserves terminal states and context", 
   store = new Store(file);
   try {
     expect(store.tasks(session.id).map((t) => t.status)).toEqual([
+      "interrupted",
       "interrupted",
       "interrupted",
       "completed",

@@ -34,11 +34,11 @@ Node.js 24，pnpm 11.22.0（packageManager 固定）。提交 pnpm-lock.yaml，�
 | CODEATELIER_LISTEN_ADDRESS | `127.0.0.1`；可选 `::1`、`0.0.0.0`（开放 IPv4 局域网）或 `::`（开放 IPv6 局域网） |
 | CODEATELIER_LOG_LEVEL | info |
 
-`settings.json` 只保存非连接偏好：主/辅助模型的思考等级、任务限制和日志级别；通过 UI 修改。已保存偏好优先于同名环境默认值。API 地址、主/辅助模型标识绝不写入该文件；旧版本留下的同名字段会在读取时忽略，并在下一次保存偏好时移除。密钥始终来自环境或当前进程内存，不写 `settings.json`。任务运行时禁止修改配置。
+`settings.json` 只保存非连接偏好：主/辅助模型的思考等级、任务限制（包括 `maxConcurrentTasks`）和日志级别；通过 UI 修改。已保存偏好优先于同名环境默认值。API 地址、主/辅助模型标识绝不写入该文件；旧版本留下的同名字段会在读取时忽略，并在下一次保存偏好时移除。密钥始终来自环境或当前进程内存，不写 `settings.json`。存在运行中或排队任务时禁止修改配置。
 
 思考等级在“模型与设置”中选择，保存为 `reasoningEffort`，每次主任务 Responses 请求显式发送 `reasoning.effort`，主任务和上下文摘要共用。默认 high，旧配置缺少字段时采用环境默认值或 high。例如 `.env` 中设置 `CODEATELIER_REASONING_EFFORT=high`；已保存偏好优先，保存后用于后续调用。辅助模型标识由 `CODEATELIER_AUXILIARY_MODEL` 决定，其推理强度 `auxiliaryReasoningEffort` 可按同一规则保存。服务或模型不支持所选等级时按现有错误流程报告，不静默降级。低成本审批不会以主模型替代未配置的辅助模型。
 
-默认限制：100 次模型调用、命令 120 秒、模型请求总计 300 秒、流空闲 60 秒、上下文 180000 字符、单工具输出 32000 字符。这是可配置字符预算，不是精确 token 计量。发现服务容量和支持的 tokenizer 后改用 token 预算，contextChars 仅备用；maxOutputTokens 默认 16384。输入预算扣除输出与安全余量后，达到 80% 时尝试压缩至 60% 以内。失败保留原历史，超过硬上限则停止。实测值和用量展示见 [model-tokens.md](model-tokens.md)。详见 [上下文管理](context-management.md)。高级字段可在停机时编辑 settings.json 或通过设置 API 更新。
+默认限制：每任务 100 次模型调用、命令 120 秒、模型请求总计 300 秒、流空闲 60 秒、上下文 180000 字符、单工具输出 32000 字符；全局 `maxConcurrentTasks` 默认 2，允许 1～4。这是可配置字符预算，不是精确 token 计量。发现服务容量和支持的 tokenizer 后改用 token 预算，contextChars 仅备用；maxOutputTokens 默认 16384。输入预算扣除输出与安全余量后，达到 80% 时尝试压缩至 60% 以内。失败保留原历史，超过硬上限则停止。实测值和用量展示见 [model-tokens.md](model-tokens.md)。详见 [上下文管理](context-management.md)。高级字段可在没有运行中或排队任务时编辑 settings.json 或通过设置 API 更新。
 
 ## 数据与日志
 
@@ -63,6 +63,8 @@ Node.js 24，pnpm 11.22.0（packageManager 固定）。提交 pnpm-lock.yaml，�
 `run_command` 的模型参数只有 `{ command }`，工作目录固定为会话工作区。服务内部在 Windows 检查 `PATH`、`SystemRoot` 和 `ComSpec`，按 `pwsh`、`powershell`、`cmd.exe` 的优先级选择第一个真实存在的 shell；macOS 和 Linux 使用已验证的 `/bin/sh`。执行器追加固定的非交互参数（PowerShell 为 `-NoLogo -NoProfile -NonInteractive -Command`，cmd 为 `/d /s /c`，POSIX shell 为 `-c`），模型既不提供也不探测这些细节。完整复合命令仍作为一次副作用审批；不要求或保存命令间的人工分隔标记。
 
 `run_command` 和 `git` 的每次流式输出都以工具调用 ID 保存。Web UI 将有流式输出工具的开始、所有输出分块和退出状态聚合在同一可展开卡片中，任务完成或刷新历史后仍可查看。工具结果和诊断日志的耗时从执行器真正开始读取、写入或启动子进程时计算，不包含用户在审批界面的等待时间；因拒绝或预检失败而未实际执行的调用显示为 0 ms。
+
+不同真实工作目录的会话可同时运行，调度器按创建顺序选择可启动任务，默认至多两个；被全局上限或同目录锁阻塞的任务显示为 `queued`，可从该会话停止。调度器不会把同一工作目录的读取、编辑、命令或 Git 操作拆成“只读可并行”：任何同目录任务均等待，避免命令隐式写入、测试结果失效和 Git 索引竞争。相同会话也不会并发追加上下文。任务开始后记录 `startedAt`，排队时间不计入会话累计运行时间。服务关闭、重载或重启会把 queued/running/waiting 都标记为 interrupted；队列不在重启后自动执行。
 
 `edit_files` 是唯一的文件写入工具。新文件条目为 `{ path, create: true, content }`，只能创建不存在的路径；已有文件条目为 `{ path, create: false, edits: [{ oldText, newText, startLine, endLine }] }`，一次调用可合并 1～20 个新建或已有文件条目，每个已有文件条目接受 1～100 项修改，重复的真实路径会拒绝。单文件也使用一个文件条目。新文件内容、已有文件原文和修改后文件各不超过 2 MiB，整批原文与结果合计不超过 16 MiB。
 

@@ -353,7 +353,7 @@ describe("execution and persistence", () => {
     expect(second.tasks(session.id)[0].status).toBe("interrupted");
     second.close();
   });
-  it("completes a model/tool loop and rejects concurrent tasks", async () => {
+  it("completes a model/tool loop and rejects a second task in the same session", async () => {
     const root = await temp();
     const config = new Config(await temp());
     const store = new Store(path.join(config.directory, "db"));
@@ -395,7 +395,7 @@ describe("execution and persistence", () => {
 
     engine.start(session.id, "write");
 
-    expect(() => engine.start(session.id, "second")).toThrow("已有任务");
+    expect(() => engine.start(session.id, "second")).toThrow("当前会话已有");
     await engine.active!.done;
 
     expect(await readFile(path.join(root, "hello.txt"), "utf8")).toBe("hello");

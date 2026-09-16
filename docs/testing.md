@@ -29,12 +29,12 @@
 | Git 工具        | git-tools.test.ts、paths.test.ts、tool-schema.test.ts、e2e/app.spec.ts | 单一 action 契约、固定 status/diff/log/show/branch 参数、add/提交/推送自动执行、worktree/upstream/revision/敏感目录校验；运行时 dotenv 拒绝、受控 dotenv 模板的占位凭据校验与输出保护、暂存失败不提交、禁止额外选项，以及流式输出与退出状态的卡片聚合 |
 | 命令执行       | process.test.ts、core.test.ts、permissions.test.ts、tool-schema.test.ts | 不存在的命令及子进程实际错误、输出与退出码、截断、UTF-8/ANSI 分块、颜色环境与控制符清理、API key 不继承、内部 Windows/POSIX shell 选择、单一 command 契约、复合命令合并、直接 Git/提权拒绝、取消和超时 |
 | 模型协议与重试 | provider.test.ts、recovery.test.ts             | item.done 回退、失败/不完整事件、服务实际错误 message/reason/code 的脱敏保留、断流、超时、重试次数、HTTP 分类、取消退避、并行工具调用请求参数           |
-| agent 循环与工具 DAG | tool-graph.test.ts、engine.test.ts、core.test.ts、recovery.test.ts | 复杂任务的计划摘要与随后执行指令、工具往返、同轮 DAG 的稳定拓扑并发、并发上限、重复/未知/环拒绝、失败后继阻断与反馈、单任务锁、步骤/上下文预算、参数错误反馈、根规则、输出预算、跨任务重新读取、不重放副作用、工具耗时排除审批等待 |
-| 会话存储与标题 | store.test.ts、recovery.test.ts、title-generation.test.ts | 隔离、事件顺序与游标、上下文、事务回滚、终态保留、重启中断、标题状态迁移和恢复，以及大 JSON 的 Worker 读取 |
+| agent 循环、任务调度与工具 DAG | tool-graph.test.ts、engine.test.ts、core.test.ts、recovery.test.ts、server.test.ts | 复杂任务的计划摘要与随后执行指令、工具往返、同轮 DAG 的稳定拓扑并发、并发上限、重复/未知/环拒绝、失败后继阻断与反馈；跨会话不同工作目录并行、同目录排队、同会话互斥、取消/关闭队列、步骤/上下文预算、参数错误反馈、根规则、输出预算、跨任务重新读取、不重放副作用、工具耗时排除审批等待 |
+| 会话存储与标题 | store.test.ts、recovery.test.ts、title-generation.test.ts | 隔离、事件顺序与游标、上下文、事务回滚、queued/running/waiting 重启中断、实际开始时间、标题状态迁移和恢复，以及大 JSON 的 Worker 读取 |
 | 会话统计       | session-statistics.test.ts、e2e/app.spec.ts     | 服务实报 token 的缓存/非缓存完整性、LLM 请求与任务轮次、工具成功率、任务累计运行时间、旧 usage 历史回退及默认折叠/展开展示 |
 | 模型设置       | config.test.ts、regressions.test.ts            | 连接只来自环境、settings.json 仅保存偏好、端点规范化、连接改动拒绝、参数边界、失败更新保持原状态、密钥内存存储、损坏配置不覆盖              |
 | 日志           | logging.test.ts、core.test.ts                  | 级别过滤、紧凑纯文本格式、上下文字段、错误元数据/原因链/堆栈、凭据脱敏、轮转、存储故障降级                 |
-| HTTP API 与监听范围 | server.test.ts、listen-address.test.ts、core.test.ts | 会话/任务接口、参数校验、默认 IPv4/IPv6 回环、显式 IPv4/IPv6 局域网通配监听、Host/Origin/cookie/token、配置更新互斥、取消与恢复                                |
+| HTTP API 与监听范围 | server.test.ts、listen-address.test.ts、core.test.ts | 会话/任务接口、参数校验、跨工作区并行与同工作区排队、默认 IPv4/IPv6 回环、显式 IPv4/IPv6 局域网通配监听、Host/Origin/cookie/token、运行/排队任务时的配置更新互斥、取消与恢复                                |
 | 服务关闭       | shutdown.test.ts、e2e/app.spec.ts              | 关闭授权与确认、正在执行命令的中断保存、SSE 结束、端口释放、重复清理、实际入口进程退出、关闭页面与失败反馈 |
 | 开发服务重载   | e2e/app.spec.ts                                | 从侧栏完整刷新页面，重新请求 bootstrap 并恢复可操作的本机界面；不把页面刷新误作服务器进程重启 |
 | Web UI         | e2e/app.spec.ts                                | 建会话、首条消息标题更新、任务与 diff、历史续聊及隔离、项目内折叠和最近记录限制、审批与取消、有流式输出工具的卡片聚合与历史重载、设置、人工恢复、重试文本隔离、Markdown 输入规则原地转换为富文本且不显示独立预览、消息中的标题/链接/代码围栏/表格/任务列表及原始 HTML 拒绝、SSE 失效重连及切换会话时的加载反馈 |

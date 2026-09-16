@@ -151,13 +151,13 @@ export async function createApp(
     return {
       token,
       ...config.publicValue(),
-      active: engine.active?.task || null,
+      active: engine.activeTasks,
     };
   });
   app.get("/api/settings", async () => config.publicValue());
   app.put("/api/settings", async (req) => {
-    if (engine.active) {
-      throw new Error("请等待当前任务结束后再修改设置。");
+    if (engine.hasActiveTasks) {
+      throw new Error("请等待运行中或排队中的任务结束后再修改设置。");
     }
 
     config.update(req.body);

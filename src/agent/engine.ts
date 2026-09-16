@@ -3,7 +3,7 @@
  * HTTP 服务和手动评测都会创建 Engine；任务记录写入 Store，界面通过事件获知变化。
  *
  * 1. 构造器接好审批通知；snapshot 读取会话状态，emit 脱敏并保存事件。
- * 2. start 确保同一时间只有一个任务，保存用户消息，并准备取消信号和完成通知。
+ * 2. start 保存用户消息为 queued；调度器在全局并发上限内启动不同工作区的任务，并对相同真实工作区保持互斥。
  * 3. resume 继续最后一个可恢复任务；cancel 处理用户取消，close 处理服务关闭。
  * 4. 首条 prompt 先用辅助模型生成标题；run 再读取历史和项目规则，准备工具及上下文预算。
  * 5. 为压缩提供 ToolRunner 的安全文件哈希探测；每轮先整理上下文，再记录实际模型请求和服务实报用量。完整响应保存后校验工具 DAG，再按拓扑关系调度。
@@ -59,10 +59,33 @@ const titleRetryOptions = { retries: 3, retryUnknownErrors: true };
 
 type ModelUsagePurpose = "task" | "compaction" | "title" | "approval";
 
+type ActiveTask = {
+  task: Task;
+  workspace: string;
+  controller: AbortController;
+  done: Promise<void>;
+};
+
 export class Engine {
   events = new EventEmitter();
   approvals: ApprovalManager;
-  active?: { task: Task; controller: AbortController; done: Promise<void> };
+  private activeByTaskId = new Map<string, ActiveTask>();
+  private approvalTasks = new WeakMap<ApprovalSubject, Task>();
+  private closing = false;
+  private scheduling = false;
+
+  /** 保留单任务调用方的兼容访问；服务端新逻辑应使用 activeTasks 或 hasActiveTasks。 */
+  get active() {
+    return this.activeByTaskId.values().next().value as ActiveTask | undefined;
+  }
+
+  get activeTasks() {
+    return [...this.activeByTaskId.values()].map(({ task }) => task);
+  }
+
+  get hasActiveTasks() {
+    return this.activeByTaskId.size > 0 || this.store.queuedTasks().length > 0;
+  }
 
   constructor(
     public store: Store,
@@ -71,22 +94,13 @@ export class Engine {
     private factory?: ModelProviderFactory,
   ) {
     this.approvals = new ApprovalManager(
-      () => {
-        if (this.active) {
-          const waiting =
-            this.approvals.list(this.active.task.sessionId).length > 0;
-
-          this.store.status(
-            this.active.task.id,
-            waiting ? "waiting" : "running",
-          );
-          this.events.emit("change", this.active.task.sessionId);
-        }
-      },
+      () => this.updateWaitingTaskStatuses(),
       (subject, signal) => this.classifyApproval(subject, signal),
       (subject, assessment) => {
-        if (this.active) {
-          this.emit(this.active.task, "approval_assessed", {
+        const task = this.approvalTasks.get(subject);
+        this.approvalTasks.delete(subject);
+        if (task) {
+          this.emit(task, "approval_assessed", {
             tool: subject.tool,
             decision: assessment.decision,
             reason: assessment.reason,
@@ -101,6 +115,13 @@ export class Engine {
     subject: ApprovalSubject,
     signal: AbortSignal,
   ): Promise<ApprovalAssessment> {
+    // 即使未配置辅助模型，也要把后续人工审批评估事件归属到正确的并发任务。
+    const active = this.activeForSignal(signal);
+    const task = active?.task;
+    if (task) {
+      this.approvalTasks.set(subject, task);
+    }
+
     const settings = { ...this.config.settings };
     if (!settings.auxiliaryModel?.trim()) {
       return {
@@ -115,7 +136,6 @@ export class Engine {
       new ResponsesProvider(selected, this.config.apiKey);
 
     try {
-      const task = this.active?.task;
       if (task) {
         this.emit(task, "model_request", { purpose: "approval" });
       }
@@ -195,8 +215,8 @@ export class Engine {
     prompt: string,
     recovery?: { sourceTaskId: string; originalPrompt: string },
   ) {
-    if (this.active) {
-      throw new Error("已有任务运行，请等待或取消。");
+    if (this.closing) {
+      throw new Error("服务正在关闭，不能启动任务。");
     }
 
     const session = this.store.get(sessionId);
@@ -205,9 +225,12 @@ export class Engine {
       throw new Error("会话不存在");
     }
 
-    // 任务和用户消息一起保存，避免恢复时找不到用户原本要求做什么。
-    // 标题领取和首条消息同一事务提交，恢复或后续追问不能拿来覆盖原标题。
-    const { task, generateTitle } = this.store.transaction(() => {
+    // 同一会话的历史上下文只能由一个任务追加。跨会话排队由 workspace 锁和全局上限处理。
+    const task = this.store.transaction(() => {
+      if (this.store.hasUnfinishedTask(sessionId)) {
+        throw new Error("当前会话已有运行中或排队中的任务，请等待或取消。");
+      }
+
       const created = this.store.createTask(sessionId);
       const firstPrompt =
         session.titleState === "pending" &&
@@ -218,16 +241,94 @@ export class Engine {
         this.emit(created, "recovery", recovery);
       }
 
-      return {
-        task: created,
-        generateTitle:
-          firstPrompt && this.store.startTitleGeneration(sessionId),
-      };
-    });
-    const controller = new AbortController();
+      if (firstPrompt) {
+        this.store.startTitleGeneration(sessionId);
+      }
 
-    this.active = { task, controller, done: Promise.resolve() };
-    this.active.done = this.run(task, prompt, controller.signal, generateTitle)
+      return created;
+    });
+
+    this.events.emit("change", sessionId);
+    this.schedule();
+
+    return this.store.task(task.id)!;
+  }
+
+  /** 找到给定 AbortSignal 所属任务，避免并发审批事件误写入另一个会话。 */
+  private activeForSignal(signal: AbortSignal) {
+    return [...this.activeByTaskId.values()].find(
+      (active) => active.controller.signal === signal,
+    );
+  }
+
+  /** 每项审批只影响提出它的任务；其他会话仍可继续运行或等待自己的确认。 */
+  private updateWaitingTaskStatuses() {
+    for (const active of this.activeByTaskId.values()) {
+      const waiting = this.approvals
+        .list(active.task.sessionId)
+        .some((approval) => approval.taskId === active.task.id);
+      this.store.status(active.task.id, waiting ? "waiting" : "running");
+      this.events.emit("change", active.task.sessionId);
+    }
+  }
+
+  /** 在全局上限内领取不与已运行任务共享真实工作区的最早队列项；被工作区锁阻塞的项保持排队。 */
+  private schedule() {
+    if (this.closing || this.scheduling) {
+      return;
+    }
+
+    this.scheduling = true;
+    try {
+      while (
+        this.activeByTaskId.size < this.config.settings.maxConcurrentTasks
+      ) {
+        const next = this.store
+          .queuedTasks()
+          .find(
+            (candidate) =>
+              ![...this.activeByTaskId.values()].some(
+                (active) => active.workspace === candidate.workspace,
+              ),
+          );
+        if (!next) {
+          return;
+        }
+
+        this.launch(next);
+      }
+    } finally {
+      this.scheduling = false;
+    }
+  }
+
+  /** 将已领取任务转为 running 后再启动异步循环，确保同工作区的后续任务看见锁。 */
+  private launch(queued: Task & { workspace: string }) {
+    const user = this.store.taskEvent(queued.id, "user") as
+      { text?: string } | undefined;
+    if (!user?.text) {
+      this.store.failTitleGeneration(queued.sessionId);
+      this.store.status(queued.id, "failed", "缺少任务描述，无法执行。");
+      this.emit(queued, "task_end", { status: "failed" });
+      this.events.emit("change", queued.sessionId);
+
+      return;
+    }
+
+    this.store.status(queued.id, "running");
+    const task = this.store.task(queued.id)!;
+    const controller = new AbortController();
+    const active: ActiveTask = {
+      task,
+      workspace: queued.workspace,
+      controller,
+      done: Promise.resolve(),
+    };
+    this.activeByTaskId.set(task.id, active);
+    const generateTitle =
+      this.store.get(task.sessionId)?.titleState === "generating";
+
+    active.done = this.run(task, user.text, controller.signal, generateTitle)
       .catch((error) => {
         this.log.error({
           event: "task.persistence_failed",
@@ -246,18 +347,14 @@ export class Engine {
         }
       })
       .finally(() => {
-        this.active = undefined;
-        this.events.emit("change", sessionId);
+        this.activeByTaskId.delete(task.id);
+        this.events.emit("change", task.sessionId);
+        this.schedule();
       });
-
-    return task;
+    this.events.emit("change", task.sessionId);
   }
 
   resume(id: string, instruction = "") {
-    if (this.active) {
-      throw new Error("已有任务运行，请等待或取消。");
-    }
-
     const task = this.store.task(id);
 
     if (
@@ -292,16 +389,48 @@ export class Engine {
   }
 
   cancel(id: string) {
-    if (this.active?.task.id === id) {
-      this.active.controller.abort();
+    const active = this.activeByTaskId.get(id);
+    if (active) {
+      active.controller.abort();
+
+      return;
+    }
+
+    const queued = this.store.task(id);
+    if (queued?.status === "queued") {
+      this.store.failTitleGeneration(queued.sessionId);
+      this.store.status(id, "cancelled", "任务已在队列中取消，可手动恢复。");
+      this.emit(queued, "notice", {
+        text: "任务已在队列中取消，可手动恢复。",
+        status: "cancelled",
+      });
+      this.emit(queued, "task_end", { status: "cancelled" });
+      this.events.emit("change", queued.sessionId);
+      this.schedule();
     }
   }
 
   async close() {
-    this.active?.controller.abort(
-      new Error("服务关闭，任务中断，可手动恢复。"),
-    );
-    await this.active?.done;
+    this.closing = true;
+    try {
+      for (const queued of this.store.queuedTasks()) {
+        const message = "服务关闭，任务中断，可手动恢复。";
+        this.store.failTitleGeneration(queued.sessionId);
+        this.store.status(queued.id, "interrupted", message);
+        this.emit(queued, "notice", { text: message, status: "interrupted" });
+        this.emit(queued, "task_end", { status: "interrupted" });
+        this.events.emit("change", queued.sessionId);
+      }
+
+      const active = [...this.activeByTaskId.values()];
+      for (const item of active) {
+        item.controller.abort(new Error("服务关闭，任务中断，可手动恢复。"));
+      }
+
+      await Promise.all(active.map((item) => item.done));
+    } finally {
+      this.closing = false;
+    }
   }
 
   /** 生成标题失败时保留占位值；只有取消需要中止主任务，避免辅助能力降低可用性。 */

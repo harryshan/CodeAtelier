@@ -19,6 +19,7 @@ const settings: Settings = {
   baseUrl: "",
   model: "test",
   maxSteps: 3,
+  maxConcurrentTasks: 2,
   commandTimeoutMs: 1000,
   requestTimeoutMs: 3000,
   idleTimeoutMs: 1000,

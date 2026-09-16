@@ -2,7 +2,7 @@
  * App 打开的设置表单，用于修改模型连接、思考等级和执行限制。
  * 接收当前配置及保存、关闭回调，通过后端 API 保存修改。
  *
- * 1. 复制当前偏好作为表单初值，另存用户新输入的临时密钥；后端不会返回原密钥。
+ * 1. 复制当前偏好作为表单初值，另存用户新输入的临时密钥；后端不会返回原密钥，任务并发上限在没有活动或排队任务时可调整。
  * 2. 连接地址和模型只读展示，用户修改 .env 并重启或重载服务后才会更新。
  * 3. 提交时组装 settings 和可选的 apiKey，等待保存并显示错误；表单其余部分为思考等级和执行参数。
  *
@@ -152,6 +152,21 @@ export function SettingsPanel({
                 value={value.maxSteps}
                 onChange={(e) =>
                   setValue({ ...value, maxSteps: Number(e.target.value) })
+                }
+              />
+            </label>
+            <label>
+              同时运行任务数
+              <input
+                type="number"
+                min="1"
+                max="4"
+                value={value.maxConcurrentTasks}
+                onChange={(e) =>
+                  setValue({
+                    ...value,
+                    maxConcurrentTasks: Number(e.target.value),
+                  })
                 }
               />
             </label>

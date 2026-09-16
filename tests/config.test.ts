@@ -29,6 +29,7 @@ it("uses the explicit data directory and keeps the environment model authoritati
 
   expect(initial.settings.model).toBe("env-model");
   expect(initial.settings.maxSteps).toBe(100);
+  expect(initial.settings.maxConcurrentTasks).toBe(2);
   initial.update({
     settings: { ...initial.settings, reasoningEffort: "low" },
   });
@@ -94,6 +95,7 @@ it("rejects connection changes instead of silently selecting a competing source"
 
 it.each([
   { maxSteps: 0 },
+  { maxConcurrentTasks: 5 },
   { idleTimeoutMs: 300001 },
   { requestTimeoutMs: 0 },
   { contextChars: 9999 },

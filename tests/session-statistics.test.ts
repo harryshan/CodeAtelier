@@ -4,7 +4,7 @@
  *
  * 1. 首组使用新版 model_request、完整缓存明细、成功/失败/进行中工具和结束任务，验证聚合口径。
  * 2. 次组模拟升级前只有 model_usage 的历史及缺失缓存明细，验证保守回退而不把未知缓存写成零。
- * 3. 末组验证运行中任务按传入时钟累加，并检查紧凑格式化结果。
+ * 3. 末组验证运行中任务按传入时钟累加、排队任务不计运行时间，并检查紧凑格式化结果。
  *
  * 事件内容是最小可观察历史，不断言 React 组件的内部状态；真实 UI 的默认折叠和展开由 Playwright 覆盖。
  */
@@ -145,13 +145,25 @@ it("uses usage as a conservative legacy request fallback and leaves incomplete c
   expect(statistics.uncachedInputTokens).toBeUndefined();
 });
 
-it("continues counting an active task with the supplied clock and formats compact values", () => {
+it("continues counting an active task with the supplied clock, but excludes queue wait", () => {
   const statistics = sessionStatistics(
-    snapshot([], [task({ status: "waiting", finishedAt: null })]),
+    snapshot(
+      [],
+      [
+        task({ status: "waiting", finishedAt: null }),
+        task({
+          id: "task-2",
+          status: "queued",
+          startedAt: null,
+          finishedAt: null,
+        }),
+      ],
+    ),
     Date.parse("2026-09-16T10:01:05.000Z"),
   );
 
   expect(statistics.totalRunMs).toBe(65000);
+  expect(statistics.taskCountsByStatus.queued).toBe(1);
   expect(statistics.activeTask).toBe(true);
   expect(formatDuration(statistics.totalRunMs)).toBe("1 分 5 秒");
   expect(formatTokenCount(12345)).toBe("12,345");
