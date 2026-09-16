@@ -1,9 +1,9 @@
 /**
- * 创建本机 Fastify 应用，接入会话、任务、设置、审批和历史接口。
+ * 创建 Fastify 应用，接入会话、任务、设置、审批和历史接口；默认仅本机访问，也可由入口显式开放局域网监听。
  * 服务入口和测试服务都调用 createApp，得到 app、engine、store 及 shutdown。
  *
  * 1. 创建 Fastify、Store 和 Engine，准备关闭状态和可复用的关闭 Promise。
- * 2. 先注册来源与凭据检查、关闭/受监督重载接口和错误处理，再注册 bootstrap、设置接口。
+ * 2. 先按监听范围注册来源与凭据检查、关闭/受监督重载接口和错误处理，再注册 bootstrap、设置接口。
  * 3. 会话和任务路由校验请求，创建待生成标题的会话，调用 Engine 启动、恢复、取消任务或传递审批决定。
  * 4. 接入 SSE，并提供构建后的网页；没有前端产物时显示开发提示。
  * 5. preClose 中断任务并结束 SSE，onClose 关闭数据库。
@@ -31,6 +31,7 @@ export async function createApp(
   providerFactory?: ModelProviderFactory,
   onStopped?: () => void,
   onReload?: () => void,
+  allowNetworkAccess = false,
 ) {
   const app = Fastify({
     loggerInstance: log,
@@ -56,7 +57,7 @@ export async function createApp(
     return shutdownPromise;
   };
 
-  const token = registerLocalSecurity(app);
+  const token = registerLocalSecurity(app, allowNetworkAccess);
 
   app.addHook("preHandler", async (req, reply) => {
     if (

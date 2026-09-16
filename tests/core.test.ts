@@ -461,6 +461,53 @@ describe("server security and configuration", () => {
       await app.close();
     }
   });
+  it("accepts trusted LAN hosts only when network listening is explicitly enabled", async () => {
+    const config = new Config(await temp());
+    const { app } = await createApp(
+      config,
+      pino({ enabled: false }),
+      undefined,
+      undefined,
+      undefined,
+      true,
+    );
+
+    try {
+      expect(
+        (
+          await app.inject({
+            url: "/api/bootstrap",
+            headers: {
+              host: "192.168.1.10:4142",
+              origin: "http://192.168.1.10:4142",
+            },
+          })
+        ).statusCode,
+      ).toBe(200);
+      expect(
+        (
+          await app.inject({
+            url: "/api/bootstrap",
+            headers: {
+              host: "192.168.1.10:4142",
+              origin: "https://evil.example",
+            },
+          })
+        ).statusCode,
+      ).toBe(403);
+      expect(
+        (
+          await app.inject({
+            url: "/api/bootstrap",
+            headers: { host: "invalid[" },
+          })
+        ).statusCode,
+      ).toBe(403);
+    } finally {
+      await app.close();
+    }
+  });
+
   it("keeps API key out of settings file", async () => {
     const config = new Config(await temp());
 

@@ -385,7 +385,7 @@ export default function App() {
           </button>
           <button onClick={() => setShowShutdown(true)}>关闭服务</button>
           <div>
-            <span className={s.greenDot} /> 仅本机访问{" "}
+            <span className={s.greenDot} /> 受保护访问{" "}
             <span className={s.version}>v0.1</span>
           </div>
           <button onClick={() => setShowSettings(true)}>

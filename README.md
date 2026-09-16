@@ -15,7 +15,7 @@ pnpm start
 
 默认打开 [http://127.0.0.1:4142](http://127.0.0.1:4142)，在「模型与设置」输入 API key，然后新建会话并输入本机项目目录。
 
-API 地址和模型标识没有内置默认值；启动前在本地 .env 中填写 CODEATELIER_BASE_URL 和 CODEATELIER_MODEL。本机访问限制仅针对 UI/API，模型请求会发送到配置的服务。可选的 `CODEATELIER_LISTEN_ADDRESS` 只接受 `127.0.0.1`（默认）或 `::1`；选择 IPv6 时访问 `http://[::1]:4142`。该限制不会开放局域网或公网监听。
+API 地址和模型标识没有内置默认值；启动前在本地 .env 中填写 CODEATELIER_BASE_URL 和 CODEATELIER_MODEL。`CODEATELIER_LISTEN_ADDRESS` 默认为 `127.0.0.1`，也可设为 `::1`。若要开放受信任局域网，显式设为 `0.0.0.0`（IPv4）或 `::`（IPv6），然后用本机的局域网 IP 和端口访问，例如 `http://192.168.x.x:4142`。局域网模式没有用户认证，任何可访问该地址的设备都能建立会话并使用本机 agent；仅用于受信任网络，并通过防火墙阻止公网入站访问。
 
 请复制 `.env.example` 为本地 `.env`，填写实际连接配置及 `CODEATELIER_API_KEY`；该文件被 Git 忽略。不要将密钥写入源码或提交记录。UI 输入的密钥仅保留在后端内存。
 

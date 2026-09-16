@@ -34,7 +34,7 @@
 | 会话统计       | session-statistics.test.ts、e2e/app.spec.ts     | 服务实报 token 的缓存/非缓存完整性、LLM 请求与任务轮次、工具成功率、任务累计运行时间、旧 usage 历史回退及默认折叠/展开展示 |
 | 模型设置       | config.test.ts、regressions.test.ts            | 环境/磁盘优先级、端点与模型规范化、参数边界、失败更新保持原状态、密钥内存存储、损坏配置不覆盖              |
 | 日志           | logging.test.ts、core.test.ts                  | 级别过滤、紧凑纯文本格式、上下文字段、错误元数据/原因链/堆栈、凭据脱敏、轮转、存储故障降级                 |
-| 本机 HTTP API  | server.test.ts、listen-address.test.ts、core.test.ts | 会话/任务接口、参数校验、Host/Origin/cookie/token、仅允许 IPv4/IPv6 回环监听地址、配置更新互斥、取消与恢复                                |
+| HTTP API 与监听范围 | server.test.ts、listen-address.test.ts、core.test.ts | 会话/任务接口、参数校验、默认 IPv4/IPv6 回环、显式 IPv4/IPv6 局域网通配监听、Host/Origin/cookie/token、配置更新互斥、取消与恢复                                |
 | 服务关闭       | shutdown.test.ts、e2e/app.spec.ts              | 关闭授权与确认、正在执行命令的中断保存、SSE 结束、端口释放、重复清理、实际入口进程退出、关闭页面与失败反馈 |
 | 开发服务重载   | e2e/app.spec.ts                                | 从侧栏完整刷新页面，重新请求 bootstrap 并恢复可操作的本机界面；不把页面刷新误作服务器进程重启 |
 | Web UI         | e2e/app.spec.ts                                | 建会话、首条消息标题更新、任务与 diff、历史续聊及隔离、项目内折叠和最近记录限制、审批与取消、有流式输出工具的卡片聚合与历史重载、设置、人工恢复、重试文本隔离、Markdown 输入规则原地转换为富文本且不显示独立预览、消息中的标题/链接/代码围栏/表格/任务列表及原始 HTML 拒绝、SSE 失效重连及切换会话时的加载反馈 |

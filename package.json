@@ -9,7 +9,7 @@
   },
   "scripts": {
     "dev": "tsx watch src/server/main.ts",
-    "dev:web": "vite --host 127.0.0.1",
+    "dev:web": "vite",
     "build": "tsc -p tsconfig.server.json && vite build",
     "start": "node --env-file-if-exists=.env dist/server/server/launcher.js",
     "typecheck": "tsc --noEmit",

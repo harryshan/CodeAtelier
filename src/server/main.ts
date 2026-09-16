@@ -3,7 +3,7 @@
  * 这里准备配置、日志和 HTTP 应用，并在收到退出信号时关闭服务。
  *
  * 1. 尝试加载可选的 .env，再创建 Config 和能读取最新密钥的日志实例。
- * 2. 调用 createApp，按 CODEATELIER_PORT 和受限的 CODEATELIER_LISTEN_ADDRESS 在回环地址上监听，并记录访问地址。
+ * 2. 解析 CODEATELIER_PORT 和 CODEATELIER_LISTEN_ADDRESS，创建匹配监听范围的 HTTP 安全策略后记录访问地址。
  * 3. 由 launcher.ts fork 时，requestReload 在旧进程关闭后通过固定 IPC 事件请求父进程启动新的构建产物。
  * 4. SIGINT 和 SIGTERM 都调用 stop，由 shutdown 保存中断状态并释放资源；关闭失败时设置非零退出码。
  *
@@ -13,7 +13,11 @@
 import { Config } from "../config/config.js";
 import { createLogger } from "../logging/logger.js";
 import { createApp } from "./app.js";
-import { listeningUrl, loopbackAddress } from "./listen-address.js";
+import {
+  allowsNetworkAccess,
+  listeningAddress,
+  listeningUrl,
+} from "./listen-address.js";
 
 try {
   process.loadEnvFile();
@@ -59,19 +63,29 @@ const requestReload = () => {
   }
 };
 
+const port = Number(process.env.CODEATELIER_PORT || 4142);
+const address = listeningAddress();
+const networkAccess = allowsNetworkAccess(address);
+const url = listeningUrl(address, port);
 const { app, shutdown } = await createApp(
   config,
   log,
   undefined,
   () => process.exit(0),
   process.send && process.connected ? requestReload : undefined,
+  networkAccess,
 );
 
-const port = Number(process.env.CODEATELIER_PORT || 4142);
-const address = loopbackAddress();
-const url = listeningUrl(address, port);
-
 await app.listen({ host: address, port });
+
+if (networkAccess) {
+  log.warn({
+    event: "server.network_access_enabled",
+    module: "server",
+    address,
+    port,
+  });
+}
 
 log.info({
   event: "server.ready",
