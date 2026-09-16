@@ -71,7 +71,7 @@ server (Fastify)
 
 ## 本机 HTTP 边界
 
-服务仅监听 127.0.0.1。校验 Host/Origin，使用 HttpOnly、SameSite=Strict cookie 及写请求 token，不开放任意来源 CORS。启动时重新生成本机会话 token。设置接口不返回 API key；浏览器提交密钥后不持久化它。
+服务默认监听 `127.0.0.1`，可通过 `CODEATELIER_LISTEN_ADDRESS` 切换至 `::1`；启动时只接受这两个明确回环地址，拒绝局域网和公网地址。开发 Vite 代理读取同一环境变量。服务校验 Host/Origin，使用 HttpOnly、SameSite=Strict cookie 及写请求 token，不开放任意来源 CORS。启动时重新生成本机会话 token。设置接口不返回 API key；浏览器提交密钥后不持久化它。
 
 `pnpm start` 运行 `launcher.ts` 监督进程，并由它 fork 实际监听端口的 `main.ts` 子进程。经本机 cookie/token 鉴权和 `{ confirm: true }` 确认后，`POST /api/server/reload` 先停止任务、保存可恢复中断并关闭 SSE、HTTP 与 SQLite；旧子进程关闭后仅通过固定 IPC `server.reload` 事件请求父进程 fork 新的构建产物。父进程等待旧进程释放端口，因而不会并行监听。新进程启动时生成新的本机会话 token，UI 轮询到 token 变化后才完整刷新页面。重载不撤销已修改文件，但不能恢复已经关闭的服务；它也不编译源码，生产模式须先 `pnpm build`。开发时 `tsx watch` 与 Vite HMR 仍分别负责源码自动更新。
 

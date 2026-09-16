@@ -6,7 +6,7 @@ Node.js 24，pnpm 11.22.0（packageManager 固定）。提交 pnpm-lock.yaml，�
 
 | 命令 | 用途 |
 | --- | --- |
-| pnpm dev | 后端源码监听，4142 端口；tsx watch 在源码更新后重启后端 |
+| pnpm dev | 后端源码监听，默认 `127.0.0.1:4142`；tsx watch 在源码更新后重启后端 |
 | pnpm dev:web | Vite 前端，5173 端口；Vite HMR 更新前端模块 |
 | pnpm build | 编译后端和前端 |
 | pnpm start | 运行构建后的本机服务；由监督进程支持 UI 确认后的后端重载 |
@@ -31,6 +31,7 @@ Node.js 24，pnpm 11.22.0（packageManager 固定）。提交 pnpm-lock.yaml，�
 | CODEATELIER_API_KEY | 无默认值 |
 | CODEATELIER_DATA_DIR | 平台用户数据目录 |
 | CODEATELIER_PORT | 4142 |
+| CODEATELIER_LISTEN_ADDRESS | 127.0.0.1；只接受 `127.0.0.1` 或 `::1`，拒绝局域网和公网地址 |
 | CODEATELIER_LOG_LEVEL | info |
 
 非敏感设置保存为 settings.json。已保存设置优先于环境变量默认值；通过 UI 修改。密钥始终来自环境或当前进程内存，不写 settings.json。任务运行时禁止修改配置。
@@ -101,7 +102,8 @@ Git 不经 `run_command` 执行，而使用单一 `git` 工具；模型可以主
 - 刷新后需要重新认证：服务重启会轮换本机会话 token，刷新页面。
 - 任务中断：在会话底部点击“恢复任务”，可先填写恢复说明。密钥或模型配置错误先到设置修正，超时可调整模型请求/空闲超时。模型自动重试记录 model.retry（含步骤、尝试次数、错误分类、HTTP 状态、等待时间）；耗尽后保留失败状态。详见 [恢复机制](recovery.md)。
 - 数据目录不可写：先检查该目录所有权和 ACL，或使用 CODEATELIER_DATA_DIR 指定可写目录；不要扩大系统目录权限。
-- 端口占用：用 CODEATELIER_PORT 指定其他端口；开发时也同步修改 Vite 代理地址。
+- 端口占用：用 CODEATELIER_PORT 指定其他端口；开发 Vite 代理会自动读取同一个环境变量。
+- IPv6 回环：设置 CODEATELIER_LISTEN_ADDRESS=::1 后使用 `http://[::1]:端口` 访问；开发 Vite 代理会自动使用相同地址。该变量不接受 `0.0.0.0`、局域网或公网地址。
 
 ## 贡献流程
 
