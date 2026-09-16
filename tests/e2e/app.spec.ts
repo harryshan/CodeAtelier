@@ -9,6 +9,7 @@
  * 5. 验证多文件编辑的成功/失败状态、错误、diff 和刷新后的历史；命令和 Git 的流式输出、结果与历史重载聚合在同一卡片。
  * 6. 通过页面内项目目录连接首个项目，再从项目标题右侧加号新建对话并检查历史隔离、折叠与最近记录限制。
  * 7. 检查当前会话统计默认收起，展开后使用已保存事件显示 token、LLM、工具成功率和运行时间。
+ * 8. 验证用户和 agent 消息的 Markdown 标题、链接、代码围栏、表格和任务列表渲染，并拒绝原始 HTML。
  *
  * 页面刷新或重连不能重新提交任务。这里不调用真实模型。
  */
@@ -56,6 +57,51 @@ test("create a session, edit a file, inspect diff and reload history", async ({
 
   await expect(page.getByText("任务完成，已检查工具结果。")).toBeVisible();
   expect(errors).toEqual([]);
+});
+
+test("renders persisted agent replies as safe GitHub Flavored Markdown", async ({
+  page,
+}) => {
+  const workspace = await realpath(
+    await mkdtemp(path.join(tmpdir(), "codeatelier-e2e-")),
+  );
+
+  await page.goto("/");
+  await createInitialConversation(page, workspace);
+  await page.getByLabel("任务描述").fill("**用户 Markdown**");
+  await page.getByRole("button", { name: "开始执行" }).click();
+
+  const userMessage = page
+    .locator("article")
+    .filter({ hasText: "用户 Markdown" });
+  const markdownReply = page
+    .locator("article")
+    .filter({ hasText: "Markdown 标题" });
+
+  await expect(userMessage.locator("strong")).toHaveText("用户 Markdown");
+  await expect(
+    markdownReply.getByRole("heading", { name: "Markdown 标题" }),
+  ).toBeVisible();
+  await expect(markdownReply.locator("strong")).toHaveText("粗体");
+  await expect(
+    markdownReply.getByRole("link", { name: "CodeAtelier 官网" }),
+  ).toHaveAttribute("href", "https://example.com/docs");
+  await expect(markdownReply.locator("pre code")).toHaveText(
+    "const answer = 42;\n",
+  );
+  await expect(markdownReply.getByRole("table")).toContainText("已渲染");
+  await expect(markdownReply.getByRole("checkbox")).toBeChecked();
+  await expect(markdownReply.locator("script")).toHaveCount(0);
+  await expect(markdownReply).not.toContainText("markdownExecuted");
+
+  await page.reload();
+  await page.getByRole("button", { name: "**用户 Markdown**" }).click();
+  await expect(
+    page
+      .locator("article")
+      .filter({ hasText: "Markdown 标题" })
+      .getByRole("table"),
+  ).toContainText("已渲染");
 });
 
 test("keeps current session statistics collapsed until expanded and projects persisted usage", async ({

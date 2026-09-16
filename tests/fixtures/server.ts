@@ -106,6 +106,30 @@ const { app, engine } = await createApp(
           return tool("git", { action: "status" });
         }
 
+        if (step === 1 && lastUser === "**用户 Markdown**") {
+          const text = [
+            "# Markdown 标题",
+            "这是 **粗体**、*斜体*、~~删除线~~ 和 `inlineCode`。",
+            "[CodeAtelier 官网](https://example.com/docs)",
+            "```ts\nconst answer = 42;\n```",
+            "| 项目 | 状态 |\n| --- | --- |\n| Markdown | 已渲染 |",
+            "- [x] 已完成",
+            "<script>window.markdownExecuted = true</script>",
+          ].join("\n\n");
+
+          return {
+            output: [
+              {
+                type: "message",
+                role: "assistant",
+                content: [{ type: "output_text", text }],
+              },
+            ],
+            text,
+            usage: { input_tokens: 100, output_tokens: 20, total_tokens: 120 },
+          };
+        }
+
         const batchEdit =
           lastUser === "批量编辑文件" || lastUser === "批量编辑部分失败";
         if (batchEdit) {

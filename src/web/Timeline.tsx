@@ -3,7 +3,7 @@
  * 请求失败时交给传入的错误回调处理。
  *
  * 1. labels 和 textResult 处理工具名称及结果的显示格式。
- * 2. 按任务、步骤和尝试次数合并流式文本；已有完整 assistant 事件时，去掉对应的临时文本。
+ * 2. 按任务、步骤和尝试次数合并流式文本；已有完整 assistant 事件时，去掉对应的临时文本，并交给 MarkdownMessage 安全渲染用户和 agent 文本。
  * 3. 合并同一编辑批次的逐文件最新状态；按调用 ID 聚合 run_command、git 的流式输出和最终结果，再显示其余工具、diff、预算和各类模型用量通知。
  * 4. 显示仍在接收的文本和待审批按钮，把用户选择发给后端。
  *
@@ -13,6 +13,7 @@
 import type { Snapshot, Event } from "../shared/types";
 import { api } from "./api";
 import s from "./app.module.css";
+import { MarkdownMessage } from "./MarkdownMessage";
 
 const labels: Record<string, string> = {
   // 已移除的 list_files 工具仅用于展示旧会话记录。
@@ -231,7 +232,7 @@ export function Timeline({
                   })}
                 </time>
               </div>
-              <div className={s.prose}>{e.data.text}</div>
+              <MarkdownMessage text={e.data.text} />
             </article>
           );
         }
@@ -429,7 +430,7 @@ export function Timeline({
                 : "未完成的回复"}
             </span>
           </div>
-          <div className={s.prose}>{text}</div>
+          <MarkdownMessage text={text} />
         </article>
       ))}
       {data.approvals.map((a) => (

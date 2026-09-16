@@ -2,7 +2,7 @@
  * 主页面、时间线和弹窗共用的 CSS Module，由各 React 组件引用。
  *
  * 1. 开头设置颜色、字体和基础控件样式，再定义双栏布局、侧栏和标题区。
- * 2. 项目分组标题、折叠控件、最近会话限制与会话按钮展示一项目多对话；随后是欢迎页、项目栏、右上角可折叠会话统计、对话消息、工具结果、diff 和通知。
+ * 2. 项目分组标题、折叠控件、最近会话限制与会话按钮展示一项目多对话；随后是欢迎页、项目栏、右上角可折叠会话统计、Markdown 对话消息、工具结果、diff 和通知。
  * 3. 审批按钮、输入区、弹窗和字段网格对应页面中的操作与表单。
  * 4. 末尾通过媒体查询调整窄屏间距和排列。
  *
@@ -638,11 +638,107 @@
   margin-left: auto;
 }
 .prose {
-  white-space: pre-wrap;
   overflow-wrap: anywhere;
-  line-height: 1.95;
+  line-height: 1.8;
   font-size: 14px;
   color: #d4dfe2;
+}
+.prose > :first-child {
+  margin-top: 0;
+}
+.prose > :last-child {
+  margin-bottom: 0;
+}
+.prose h1,
+.prose h2,
+.prose h3,
+.prose h4,
+.prose h5,
+.prose h6 {
+  color: #e7f0ed;
+  line-height: 1.35;
+  margin: 1.35em 0 0.55em;
+}
+.prose h1 {
+  font-size: 1.45em;
+}
+.prose h2 {
+  font-size: 1.25em;
+}
+.prose h3 {
+  font-size: 1.1em;
+}
+.prose p,
+.prose ul,
+.prose ol,
+.prose blockquote,
+.prose pre,
+.prose table {
+  margin: 0 0 1em;
+}
+.prose ul,
+.prose ol {
+  padding-left: 1.7em;
+}
+.prose li + li {
+  margin-top: 0.3em;
+}
+.prose a {
+  color: #95d9bc;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+.prose a:hover {
+  color: #c0ead2;
+}
+.prose :not(pre) > code {
+  padding: 0.12em 0.35em;
+  border-radius: 4px;
+  background: #26343a;
+  color: #b8e4d1;
+  font-size: 0.9em;
+}
+.prose pre {
+  padding: 13px 15px;
+  overflow: auto;
+  border: 1px solid #30434a;
+  border-radius: 7px;
+  background: #141d21;
+  color: #c5d4d8;
+  white-space: pre;
+}
+.prose pre code {
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  font-size: inherit;
+}
+.prose blockquote {
+  padding-left: 14px;
+  border-left: 3px solid #5a8674;
+  color: #aebfc3;
+}
+.prose table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+}
+.prose th,
+.prose td {
+  padding: 7px 10px;
+  border: 1px solid #395058;
+  text-align: left;
+  white-space: nowrap;
+}
+.prose th {
+  background: #26383e;
+  color: #d9e9e2;
+}
+.prose :global(input[type="checkbox"]) {
+  width: auto;
+  margin: 0 0.45em 0 0;
+  accent-color: #8de0c3;
 }
 .tool,
 .outputCard,
