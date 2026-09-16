@@ -420,6 +420,8 @@ it("loads project guidance, encourages independent batches, and bounds large too
     expect(guidance).toContain("Project convention");
     expect(guidance).toContain("Complete the user's whole request");
     expect(guidance).toContain("multiple independent tool calls");
+    expect(guidance).toContain("true DAG-parallel execution");
+    expect(guidance).toContain("largest safe set of relevant tool calls");
     expect(result.truncated).toBe(true);
     expect(result.text.length).toBe(1000);
   } finally {
