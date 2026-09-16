@@ -1,14 +1,14 @@
 /**
- * CodeAtelier 的任务执行入口，把模型请求、工具执行、审批和历史保存串起来。
+ * CodeAtelier 的任务执行入口，把模型请求、工具调用 DAG、审批和历史保存串起来。
  * HTTP 服务和手动评测都会创建 Engine；任务记录写入 Store，界面通过事件获知变化。
  *
  * 1. 构造器接好审批通知；snapshot 读取会话状态，emit 脱敏并保存事件。
  * 2. start 确保同一时间只有一个任务，保存用户消息，并准备取消信号和完成通知。
  * 3. resume 继续最后一个可恢复任务；cancel 处理用户取消，close 处理服务关闭。
  * 4. 首条 prompt 先用辅助模型生成标题；run 再读取历史和项目规则，准备工具及上下文预算。
- * 5. 为压缩提供 ToolRunner 的安全文件哈希探测；每轮先整理上下文，再记录实际模型请求和服务实报用量。只有完整响应保存成功后，才按顺序执行工具。
- * 6. 低成本模型先把所有待审批工具分为自动通过、人工确认或拒绝；模型故障和无效输出保守降级为人工确认，并持久化可审计的决定。
- * 7. 多文件编辑进度附带 callId 逐项保存；ToolRunner 确认实际执行开始后才记录工具耗时，工具结果和更新后的上下文一起提交到数据库；退出时保存最终状态并发出 task_end。
+ * 5. 为压缩提供 ToolRunner 的安全文件哈希探测；每轮先整理上下文，再记录实际模型请求和服务实报用量。完整响应保存后校验工具 DAG，再按拓扑关系调度。
+ * 6. 每个实际工具调用仍经过低成本模型的自动通过、人工确认或拒绝分流；模型故障和无效输出保守降级为人工确认，并持久化可审计的决定。
+ * 7. 工具批次、节点状态和结果都附带批次/调用标识；ToolRunner 确认实际执行开始后才记录工具耗时，工具结果和更新后的上下文一起提交到数据库；退出时保存最终状态并发出 task_end。
  *
  * 模型请求可以重试，但已经执行的工具不能跟着重跑。数据库回滚也撤销不了文件修改或
  * 已启动的命令，所以保存失败时必须停止任务，并留下足够的记录供后续恢复。
@@ -24,11 +24,13 @@ import type {
 import { ContextManager } from "../context/context-manager.js";
 import {
   historyDefinition,
+  parseScheduledHistoryArguments,
   readContextHistoryAsync,
 } from "../context/history.js";
 import { prepareTaskContext } from "./context.js";
 import { createInstructions } from "./instructions.js";
 import { retryModel } from "../providers/retry.js";
+import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import type { Logger } from "pino";
 import { Store } from "../sessions/store.js";
@@ -43,7 +45,12 @@ import {
 import { ResponsesProvider } from "../providers/responses-provider.js";
 import { type ModelProviderFactory } from "../providers/model-provider.js";
 import { ToolRunner } from "../tools/tool-runner.js";
-import { definitions } from "../tools/registry.js";
+import { definitions, parseScheduledToolArguments } from "../tools/registry.js";
+import {
+  createToolGraph,
+  executeToolGraph,
+  type ToolGraphNode,
+} from "../tools/tool-graph.js";
 import { redactJson, redactText } from "../logging/redact.js";
 import type { Task, TaskStatus } from "../shared/types.js";
 
@@ -395,7 +402,6 @@ export class Engine {
 
       let input = await prepareTaskContext(this.store, session.id, prompt);
 
-      let currentToolCallId: string | undefined;
       const runner = new ToolRunner({
         root: session.workspace,
         sessionId: session.id,
@@ -403,13 +409,7 @@ export class Engine {
         signal,
         settings,
         approvals: this.approvals,
-        emit: (type, data) =>
-          emit(
-            type,
-            ["edit_progress", "command_output", "git_output"].includes(type)
-              ? { ...data, callId: currentToolCallId }
-              : data,
-          ),
+        emit,
       });
       const instructions = await createInstructions(session.workspace);
 
@@ -630,44 +630,19 @@ export class Engine {
           return;
         }
 
-        for (const call of calls) {
-          signal.throwIfAborted();
-          // tool_start 表示模型已提出调用，可能随后等待审批；耗时只能从执行器实际开始操作后计算。
-          let executionStartedAt: number | undefined;
-          let result: any;
-
-          try {
-            const args = JSON.parse(call.arguments);
-            currentToolCallId = call.call_id;
-
-            emit("tool_start", { name: call.name, callId: call.call_id, args });
-            if (call.name === historyDefinition.name) {
-              executionStartedAt = Date.now();
-              result = await readContextHistoryAsync(
-                this.store,
-                session.id,
-                args,
-                settings.outputChars,
-              );
-            } else {
-              result = await runner.execute(call.name, args, () => {
-                executionStartedAt = Date.now();
-              });
-            }
-          } catch (error: any) {
-            if (signal.aborted) {
-              throw error;
-            }
-
-            result = { error: redactText(error.message, [this.config.apiKey]) };
-            log.warn({
-              event: "tool.failed",
-              tool: call.name,
-              toolCallId: call.call_id,
-              err: error,
-            });
-          }
-
+        const batchId = randomUUID();
+        const toolSucceeded = (result: any) =>
+          !result?.error &&
+          (result?.exitCode === undefined || result.exitCode === 0) &&
+          !result?.files?.some(
+            (file: any) =>
+              file.status === "failed" || file.status === "unknown",
+          );
+        const saveResult = (
+          node: ToolGraphNode,
+          result: any,
+          executionStartedAt?: number,
+        ) => {
           let output = JSON.stringify(result);
 
           if (output.length > settings.outputChars) {
@@ -678,37 +653,170 @@ export class Engine {
           }
 
           output = redactJson(output, [this.config.apiKey]);
-          // 文件修改或命令执行已经发生，数据库回滚也撤销不了；结果和上下文要一起保存。
+          const durationMs =
+            executionStartedAt === undefined
+              ? 0
+              : Date.now() - executionStartedAt;
+          // 工具副作用无法由 SQLite 回滚；每个并行节点完成后立即原子保存结果和模型反馈。
           this.store.transaction(() => {
             emit("tool_result", {
-              name: call.name,
-              callId: call.call_id,
+              name: node.name,
+              callId: node.callId,
+              batchId,
+              nodeId: node.nodeId,
+              dependsOn: node.dependsOn,
               result: JSON.parse(output),
-              durationMs:
-                executionStartedAt === undefined
-                  ? 0
-                  : Date.now() - executionStartedAt,
+              durationMs,
             });
             input.push({
               type: "function_call_output",
-              call_id: call.call_id,
+              call_id: node.callId,
               output,
             });
             this.store.saveContext(session.id, input);
           });
           log.info({
             event: "tool.completed",
-            tool: call.name,
-            toolCallId: call.call_id,
-            durationMs:
-              executionStartedAt === undefined
-                ? 0
-                : Date.now() - executionStartedAt,
-            ok:
-              !result?.error &&
-              (result?.exitCode === undefined || result.exitCode === 0),
+            tool: node.name,
+            toolCallId: node.callId,
+            nodeId: node.nodeId,
+            batchId,
+            durationMs,
+            ok: toolSucceeded(result),
+          });
+        };
+
+        let graph;
+
+        try {
+          graph = createToolGraph(
+            calls.map((call, ordinal) => {
+              const raw = JSON.parse(call.arguments);
+              const scheduled =
+                call.name === historyDefinition.name
+                  ? parseScheduledHistoryArguments(raw, `call-${ordinal + 1}`)
+                  : parseScheduledToolArguments(
+                      call.name,
+                      raw,
+                      `call-${ordinal + 1}`,
+                    );
+
+              return {
+                callId: call.call_id,
+                nodeId: scheduled.execution.id,
+                name: call.name,
+                arguments: scheduled.arguments,
+                dependsOn: scheduled.execution.dependsOn,
+                ordinal,
+              };
+            }),
+          );
+        } catch (error: any) {
+          const message = redactText(error.message, [this.config.apiKey]);
+          // 图不可验证时整批没有副作用；每个原生调用都得到结果，模型可在下一轮修正计划。
+          for (const [ordinal, call] of calls.entries()) {
+            const node: ToolGraphNode = {
+              callId: call.call_id,
+              nodeId: `invalid-${ordinal + 1}`,
+              name: call.name,
+              arguments: call.arguments,
+              dependsOn: [],
+              ordinal,
+            };
+            emit("tool_start", {
+              name: node.name,
+              callId: node.callId,
+              batchId,
+              nodeId: node.nodeId,
+              dependsOn: node.dependsOn,
+              args: node.arguments,
+            });
+            saveResult(node, { error: `工具调用图无效：${message}` });
+          }
+
+          continue;
+        }
+
+        emit("tool_batch_planned", {
+          batchId,
+          nodes: graph.nodes.map((node) => ({
+            callId: node.callId,
+            nodeId: node.nodeId,
+            name: node.name,
+            dependsOn: node.dependsOn,
+            ordinal: node.ordinal,
+          })),
+        });
+        for (const node of graph.nodes) {
+          emit("tool_start", {
+            name: node.name,
+            callId: node.callId,
+            batchId,
+            nodeId: node.nodeId,
+            dependsOn: node.dependsOn,
+            args: node.arguments,
           });
         }
+
+        await executeToolGraph(graph, {
+          execute: async (node) => {
+            signal.throwIfAborted();
+            let executionStartedAt: number | undefined;
+            let result: any;
+
+            try {
+              if (node.name === historyDefinition.name) {
+                executionStartedAt = Date.now();
+                result = await readContextHistoryAsync(
+                  this.store,
+                  session.id,
+                  node.arguments,
+                  settings.outputChars,
+                );
+              } else {
+                result = await runner
+                  .forCall(node.callId)
+                  .execute(node.name, node.arguments, () => {
+                    executionStartedAt = Date.now();
+                  });
+              }
+            } catch (error: any) {
+              if (signal.aborted) {
+                throw error;
+              }
+
+              result = {
+                error: redactText(error.message, [this.config.apiKey]),
+              };
+              log.warn({
+                event: "tool.failed",
+                tool: node.name,
+                toolCallId: node.callId,
+                nodeId: node.nodeId,
+                batchId,
+                err: error,
+              });
+            }
+
+            saveResult(node, result, executionStartedAt);
+
+            return toolSucceeded(result);
+          },
+          block: async (node, failedDependency) => {
+            saveResult(node, {
+              error: `依赖工具 ${failedDependency.nodeId} 未成功，未执行当前调用。`,
+              code: "dependency_failed",
+              failedDependency: failedDependency.nodeId,
+            });
+          },
+          state: (node, state) =>
+            emit("tool_state", {
+              batchId,
+              nodeId: node.nodeId,
+              callId: node.callId,
+              state,
+            }),
+        });
       }
 
       throw new Error("已达到最大模型调用次数，任务停止。");

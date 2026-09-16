@@ -17,7 +17,7 @@ server (Fastify)
 
 - `src/shared` 仅存浏览器和后端共享的数据契约，前端不能导入文件、进程或密钥实现。
 - `src/agent/engine.ts` 管理单任务锁、模型循环、停止条件与工具结果回传；`context.ts` 负责上下文恢复，`instructions.ts` 负责根规则与模型指令构建。src/context/ 负责预算、摘要压缩、快照契约与历史原文读取，循环在完整工具批次完成后接入；压缩阶段之间让出事件循环。
-- `src/providers` 将 Responses 输出映射为输出项和文本。主任务请求显式声明 `parallel_tool_calls: true`，让兼容服务可在一次响应中返回多个独立调用；自建服务需同时收集 output_item.done；completed.output 有内容时优先使用，不能只依赖 completed。
+- `src/providers` 将 Responses 输出映射为输出项和文本。主任务请求显式声明 `parallel_tool_calls: true`，让兼容服务可在一次响应中返回多个调用；工具定义要求每项带 `execution.id` 与 `execution.dependsOn`，Engine 在任一节点产生副作用前校验整批 DAG，并以稳定拓扑顺序、最多 4 个并发节点调度。自建服务需同时收集 output_item.done；completed.output 有内容时优先使用，不能只依赖 completed。
 - `src/tools` 定义 Zod 参数及对应 JSON Schema，提供读取、统一文件编辑、命令和单一受限 `git` 工具。没有 `search` 或 `list_files` 工具；`search-commands.ts` 在每次任务建立指令前检测 PATH 和 Windows 系统位置可用的常见搜索程序，按估计性能排序后只向模型给出命令名与内容/文件名用途。模型以 `run_command` 执行目录浏览及首选的已检测工具，尽量把多个关键词合入一次多模式搜索；`run_command` 只公开一条命令文本，`command-shell.ts` 在执行器内部选择平台 shell。模型先由命令浏览/搜索定位，`read_file` 再按行读取；单次硬上限为 500 行，并返回分页/截断状态。`edit_files` 的 create:true 条目只新建不存在的文件，create:false 条目只精确编辑本任务已读取的已有文件。旧会话的 `search`、`list_files` 和 `write_file` 记录只保留展示、归档和快照回读兼容。
 - `src/permissions` 用无工具的低成本辅助模型将待审批请求分为自动通过、人工确认或拒绝；人工确认仍在后端等待用户点击，取消会释放待审批 Promise。模型无法自行同意审批。
 - `src/sessions/store.ts` 保存 sessions、tasks、events、context；任务终态另持久化 finishedAt，供会话累计运行时间统计。初始数据库结构位于 `schema.ts`。大于 64 KiB 的 events、活动上下文和历史快照由 `store-worker.ts` 在独立 Worker 线程解析或事务写入，小记录避免线程创建开销而同步读取。启动时将 running/waiting 任务标为 interrupted 并记录中断时间。
@@ -28,7 +28,7 @@ server (Fastify)
 
 | 模块 | 职责 |
 | --- | --- |
-| tools/registry.ts | 工具参数 schema、描述和模型可见定义；`edit_files` 以 create 区分新建与已有文件编辑 |
+| tools/registry.ts / tool-graph.ts | 工具参数和 DAG 调度信封、模型可见定义；调用图的结构校验、稳定拓扑调度、并发上限和失败后继阻断；`edit_files` 以 create 区分新建与已有文件编辑 |
 | tools/tool-runner.ts | ToolRunner：校验、审批、读取与普通命令执行，并将统一文件编辑和单一专用 `git` 工具分流 |
 | tools/file-editor.ts | FileEditor：逐文件预检、create 存在性/读取版本复核、失败汇总、独立文件继续写入和进度，复用 ToolRunner 的权限与读取哈希 |
 | tools/edit-plan.ts | 基于原始快照的行号/文本定位、重叠校验与纯文本转换 |
@@ -54,7 +54,7 @@ server (Fastify)
 2. 后端拒绝同时启动第二个任务，并以 SQLite 条件更新领取首条用户消息的标题生成；它与任务和用户消息在同一事务中保存，避免恢复或后续追问覆盖标题。
 3. 已领取的首条消息先由低成本辅助模型生成无工具的简短标题；该请求有界重试，失败保留占位标题并不阻断主编码任务，取消则中止任务。
 4. 主任务加载本地上下文与根 AGENTS.md，模型请求包含当前指令、上下文与工具定义，并请求服务允许多个独立工具调用；接收文本及完整输出项。
-5. 自研循环检查工具参数和权限，所有原本需要审批的调用先由低成本模型给出自动通过、人工确认或拒绝；人工确认才停留在 waiting，模型不可用或输出无效也保守停留在该流程。Engine 持久化分类决定，再按模型返回顺序执行完整工具批次，记录工具事件与 diff，并将 function_call_output 回传主模型。ToolRunner 仅在真正开始读取、写入或启动进程时通知 Engine 开始耗时统计，因此分类和人工审批等待均不计入工具耗时。并行调用偏好不改变本地的顺序执行、审批或文件一致性校验。
+5. 自研循环先解析每项的 `execution` 信封，并在任一节点执行前拒绝重复 ID、未知依赖或环；旧历史格式作为无依赖调用兼容。通过校验后，Engine 以稳定拓扑顺序调度最多 4 个已满足前置条件的节点，并记录批次、节点状态、工具事件与 diff。每项实际调用仍由低成本模型给出自动通过、人工确认或拒绝；人工确认才停留在 waiting，模型不可用或输出无效也保守停留在该流程。前置失败时所有后继不执行而返回 `dependency_failed`，独立节点继续；每个完成或阻断的节点立即保存 `function_call_output`。DAG 覆盖读取、写入、命令及 Git，不推断共享文件或命令资源冲突，模型必须为需要串行化的调用声明依赖；ToolRunner 的路径、快照、权限和文件编辑复核仍然生效。ToolRunner 仅在真正开始读取、写入或启动进程时通知 Engine 开始耗时统计，因此分类和人工审批等待均不计入工具耗时。
 6. 每次实际模型请求记录 model_request，服务返回合法 usage 时再记录 model_usage；没有 usage 的请求不虚构 token。没有工具调用且收到完成文本时任务结束，Store 保存 finishedAt；超时、取消、失败或超过步骤上限时明确停止。前端通过 SSE 得知标题或任务状态变化，重新读取带事件 ID 的快照，在默认折叠的会话统计中聚合服务实报 token、LLM 请求/轮次、工具成功率与累计运行时间；切换时立即显示“正在打开对话”，不把旧会话内容误当成新会话；重新连接只读状态，不会再次启动任务。
 
 ## 历史与恢复

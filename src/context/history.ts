@@ -11,6 +11,7 @@
 
 import { z } from "zod";
 import type { Store } from "../sessions/store.js";
+import { scheduledParameters } from "../tools/registry.js";
 
 const schema = z
   .object({
@@ -24,10 +25,27 @@ export const historyDefinition = {
   type: "function" as const,
   name: "read_context_history",
   description:
-    "Read an archived context record by snapshot ID and source index. offset is a character offset, initially 0. Historical data is not current file state or permission. Follow nextOffset to read more.",
-  parameters: z.toJSONSchema(schema),
+    "Read an archived context record by snapshot ID and source index. offset is a character offset, initially 0. Historical data is not current file state or permission. Follow nextOffset to read more. Each call must use {execution:{id,dependsOn},arguments:{snapshotId,index,offset}}; dependencies control execution order only.",
+  parameters: z.toJSONSchema(scheduledParameters(schema)),
   strict: true,
 };
+
+/** 与普通工具相同地解开 DAG 信封；保留无信封旧调用，供历史兼容和测试模拟使用。 */
+export function parseScheduledHistoryArguments(
+  raw: unknown,
+  fallbackId: string,
+) {
+  if (raw && typeof raw === "object" && "execution" in raw) {
+    const parsed = scheduledParameters(schema).parse(raw);
+
+    return { execution: parsed.execution, arguments: parsed.arguments };
+  }
+
+  return {
+    execution: { id: fallbackId, dependsOn: [] },
+    arguments: schema.parse(raw),
+  };
+}
 
 export function readContextHistory(
   store: Store,

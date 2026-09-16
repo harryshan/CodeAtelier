@@ -29,7 +29,7 @@
 | Git 工具        | git-tools.test.ts、paths.test.ts、tool-schema.test.ts、e2e/app.spec.ts | 单一 action 契约、固定 status/diff/log/show/branch 参数、add/提交/推送自动执行、worktree/upstream/revision/敏感目录校验；运行时 dotenv 拒绝、受控 dotenv 模板的占位凭据校验与输出保护、暂存失败不提交、禁止额外选项，以及流式输出与退出状态的卡片聚合 |
 | 命令执行       | process.test.ts、core.test.ts、permissions.test.ts、tool-schema.test.ts | 不存在的命令及子进程实际错误、输出与退出码、截断、UTF-8/ANSI 分块、颜色环境与控制符清理、API key 不继承、内部 Windows/POSIX shell 选择、单一 command 契约、复合命令合并、直接 Git/提权拒绝、取消和超时 |
 | 模型协议与重试 | provider.test.ts、recovery.test.ts             | item.done 回退、失败/不完整事件、服务实际错误 message/reason/code 的脱敏保留、断流、超时、重试次数、HTTP 分类、取消退避、并行工具调用请求参数           |
-| agent 循环     | engine.test.ts、core.test.ts、recovery.test.ts | 工具往返、同轮多项独立调用、单任务锁、步骤/上下文预算、参数错误反馈、根规则、输出预算、跨任务重新读取、不重放副作用、工具耗时排除审批等待 |
+| agent 循环与工具 DAG | tool-graph.test.ts、engine.test.ts、core.test.ts、recovery.test.ts | 工具往返、同轮 DAG 的稳定拓扑并发、并发上限、重复/未知/环拒绝、失败后继阻断与反馈、单任务锁、步骤/上下文预算、参数错误反馈、根规则、输出预算、跨任务重新读取、不重放副作用、工具耗时排除审批等待 |
 | 会话存储与标题 | store.test.ts、recovery.test.ts、title-generation.test.ts | 隔离、事件顺序与游标、上下文、事务回滚、终态保留、重启中断、标题状态迁移和恢复，以及大 JSON 的 Worker 读取 |
 | 会话统计       | session-statistics.test.ts、e2e/app.spec.ts     | 服务实报 token 的缓存/非缓存完整性、LLM 请求与任务轮次、工具成功率、任务累计运行时间、旧 usage 历史回退及默认折叠/展开展示 |
 | 模型设置       | config.test.ts、regressions.test.ts            | 连接只来自环境、settings.json 仅保存偏好、端点规范化、连接改动拒绝、参数边界、失败更新保持原状态、密钥内存存储、损坏配置不覆盖              |
@@ -107,7 +107,8 @@ mechanical-input.test.ts 覆盖精确结果/跨路径正文引用、逐字还原
 
 ## 严格工具契约
 
-- tests/tool-schema.test.ts 检查所有生产工具的 strict 对象声明：属性均列入 required，禁止额外属性；单一 `git` 工具的每个 discriminated action 仅接受对应字段，diff 必须显式传 staged、paths 和 contextLines。此回归防止工具 schema 导致整轮模型请求被拒绝，不连接真实服务。
+- tests/tool-schema.test.ts 检查所有生产工具的 strict 对象声明：属性均列入 required，禁止额外属性；新调用的根节点包含严格的 `execution`（唯一 ID 与依赖列表）及 `arguments` 信封；单一 `git` 工具的每个 discriminated action 仅接受对应字段，diff 必须显式传 staged、paths 和 contextLines。此回归防止工具 schema 导致整轮模型请求被拒绝，不连接真实服务。
+- tests/tool-graph.test.ts 验证独立根节点的拓扑并发与汇聚、失败节点对子孙的阻断，以及重复 ID、未知依赖和环在任何执行回调前拒绝；engine.test.ts 覆盖模型信封解析、阻断结果回传和批次事件持久化。
 
 统一文件编辑：`files.test.ts` 覆盖 create:true 的嵌套创建、已有路径与创建期间出现路径的覆盖拒绝，以及 create:false 单文件条目中的同快照多处替换和读取状态复用；`multi-file-edit.test.ts` 覆盖单/多文件条目的逐文件预检、重复真实路径、外部修改、审批拒绝、行号消歧、重叠拒绝、CRLF、取消，以及单文件预检/写入故障后继续独立文件、汇总全部失败路径和未知状态。`tool-schema.test.ts` 递归检查唯一 `edit_files` 的 create 分支及 strict 契约；`engine.test.ts` 验证单次多文件调用及逐文件进度持久化；`e2e/app.spec.ts` 检查进度、diff 和刷新历史。已有 core 测试继续覆盖未读取及外部变化拒绝。
 

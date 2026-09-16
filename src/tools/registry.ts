@@ -3,8 +3,9 @@
  *
  * 1. schemas 定义读文件、统一的多文件快照编辑（含显式新建文件）、命令和单一受限 Git 操作的参数；目录浏览和代码搜索均由 run_command 执行。
  * 2. gitRequestSchema 用 request 包裹各 action 的普通联合，适配模型 strict schema；parseToolArguments 同时兼容历史扁平参数。
- * 3. descriptions 向模型说明各工具的用途和限制。
- * 4. definitions 将 schema 转成 Responses API 需要的函数工具声明。
+ * 3. scheduledParameters 为新模型调用增加 execution（节点 ID 和依赖）信封；parseScheduledToolArguments 解开并严格校验它。
+ * 4. descriptions 向模型说明各工具的用途、限制和 DAG 参数约定。
+ * 5. definitions 将带调度信封的 schema 转成 Responses API 需要的函数工具声明。
  *
  * 这里只有定义，没有执行逻辑。增加工具时，还要在 ToolRunner 中补上实现和权限检查。
  */
@@ -119,6 +120,48 @@ export function parseToolArguments(name: string, raw: unknown) {
   return schema.parse(raw);
 }
 
+const executionSchema = z
+  .object({
+    id: z.string().regex(/^[A-Za-z][A-Za-z0-9_-]{0,63}$/),
+    dependsOn: z
+      .array(z.string().regex(/^[A-Za-z][A-Za-z0-9_-]{0,63}$/))
+      .max(19),
+  })
+  .strict();
+
+/** 每个原生 Responses function_call 都带执行元数据；arguments 保持工具自身的参数契约。 */
+export function scheduledParameters(schema: z.ZodType) {
+  return z.object({ execution: executionSchema, arguments: schema }).strict();
+}
+
+/**
+ * 解开模型调用的调度信封。没有信封的旧模拟响应仍按无依赖节点兼容，避免历史测试或
+ * 已完成调用的展示格式影响新执行；新模型定义始终要求 execution 与 arguments。
+ */
+export function parseScheduledToolArguments(
+  name: string,
+  raw: unknown,
+  fallbackId: string,
+) {
+  if (raw && typeof raw === "object" && "execution" in raw) {
+    const schema = schemas[name as keyof typeof schemas];
+    if (!schema) {
+      throw new Error("未知工具");
+    }
+
+    const parsed = scheduledParameters(
+      name === "git" ? gitRequestSchema : schema,
+    ).parse(raw);
+
+    return { execution: parsed.execution, arguments: parsed.arguments };
+  }
+
+  return {
+    execution: { id: fallbackId, dependsOn: [] },
+    arguments: parseToolArguments(name, raw),
+  };
+}
+
 const descriptions: Record<string, string> = {
   read_file: `Read text with line numbers. Read AGENTS.md and applicable nested AGENTS.md before edits. Use run_command with an environment-detected search command to locate symbols or error text, then read a focused range around the matching line; normally request 80-200 lines and expand only when needed. Avoid repeating ranges already read. Full-file reading is for short files, project instructions, or necessary whole-file analysis. Maximum ${MAX_READ_LINES} lines per call. Results report whether more lines remain or the requested range was truncated.`,
   edit_files:
@@ -131,7 +174,11 @@ const descriptions: Record<string, string> = {
 export const definitions = Object.entries(schemas).map(([name, schema]) => ({
   type: "function" as const,
   name,
-  description: descriptions[name],
-  parameters: z.toJSONSchema(name === "git" ? gitRequestSchema : schema),
+  description:
+    descriptions[name] +
+    " Each call must use {execution:{id,dependsOn},arguments:{...}}. id is unique within this response; dependsOn lists completed call ids required before this call starts. Dependencies control execution order only: do not assume another tool result can fill these arguments in the same response.",
+  parameters: z.toJSONSchema(
+    scheduledParameters(name === "git" ? gitRequestSchema : schema),
+  ),
   strict: true,
 }));

@@ -639,3 +639,67 @@ it("persists multi-file progress with the call id and returns one batch result",
     fixture.store.close();
   }
 });
+
+it("executes a scheduled DAG and returns blocked descendants without invoking them", async () => {
+  let calls = 0;
+  let feedback: any[] = [];
+  const fixture = await createFixture({
+    async run(input) {
+      if (++calls === 1) {
+        return {
+          text: "",
+          output: [
+            {
+              type: "function_call",
+              call_id: "missing-read",
+              name: "read_file",
+              arguments: JSON.stringify({
+                execution: { id: "missing", dependsOn: [] },
+                arguments: { path: "missing.txt", startLine: 1, endLine: 1 },
+              }),
+            },
+            {
+              type: "function_call",
+              call_id: "blocked-read",
+              name: "read_file",
+              arguments: JSON.stringify({
+                execution: { id: "dependent", dependsOn: ["missing"] },
+                arguments: { path: "never-read.txt", startLine: 1, endLine: 1 },
+              }),
+            },
+          ],
+        };
+      }
+
+      feedback = input
+        .filter((item) => item.type === "function_call_output")
+        .map((item) => JSON.parse(item.output));
+
+      return done;
+    },
+  });
+
+  try {
+    fixture.engine.start(fixture.session.id, "exercise the tool graph");
+    await fixture.engine.active?.done;
+
+    expect(calls).toBe(2);
+    expect(feedback).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ error: expect.any(String) }),
+        expect.objectContaining({
+          code: "dependency_failed",
+          failedDependency: "missing",
+        }),
+      ]),
+    );
+    expect(
+      fixture.store
+        .events(fixture.session.id)
+        .some((event) => event.type === "tool_batch_planned"),
+    ).toBe(true);
+  } finally {
+    await fixture.engine.close();
+    fixture.store.close();
+  }
+});

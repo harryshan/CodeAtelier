@@ -3,14 +3,15 @@
  * 使用生产 definitions 和 schemas，不调用模型服务，也不执行文件或 Git 操作。
  *
  * 1. 检查根节点为 object、禁止 oneOf，再递归遍历工具定义及数组项，核对 strict 对象的属性均为必填且禁止额外属性。
- * 2. 检查唯一 edit_files 工具的 create 分支和已有文件快照编辑、run_command 的单一 command 字符串，以及单一 git 工具的 discriminated action 契约。
- *    每个 action 只接受自身所需字段，不能混入任意选项。
+ * 2. 检查每个新调用的 execution/arguments 调度信封，及唯一 edit_files 工具的 create 分支和已有文件快照编辑、run_command 的单一 command 字符串。
+ * 3. 检查单一 git 工具的 discriminated action 契约；每个 action 只接受自身所需字段，不能混入任意选项。
  */
 
 import { expect, it } from "vitest";
 import {
   definitions,
   schemas,
+  parseScheduledToolArguments,
   parseToolArguments,
 } from "../src/tools/registry.js";
 
@@ -47,6 +48,39 @@ it("declares every property as required for strict function tools", () => {
 
     check(parameters);
   }
+});
+
+it("requires a strict DAG execution envelope for new model calls", () => {
+  expect(
+    parseScheduledToolArguments(
+      "read_file",
+      {
+        execution: { id: "read-source", dependsOn: [] },
+        arguments: { path: "src/app.ts", startLine: 1, endLine: 20 },
+      },
+      "fallback",
+    ),
+  ).toEqual({
+    execution: { id: "read-source", dependsOn: [] },
+    arguments: { path: "src/app.ts", startLine: 1, endLine: 20 },
+  });
+  expect(
+    parseScheduledToolArguments(
+      "read_file",
+      { path: "src/app.ts", startLine: 1, endLine: 20 },
+      "fallback",
+    ),
+  ).toMatchObject({ execution: { id: "fallback", dependsOn: [] } });
+  expect(() =>
+    parseScheduledToolArguments(
+      "read_file",
+      {
+        execution: { id: "read-source", dependsOn: [], extra: true },
+        arguments: { path: "src/app.ts", startLine: 1, endLine: 20 },
+      },
+      "fallback",
+    ),
+  ).toThrow();
 });
 
 it("exposes only edit_files for file writes and no directory or search tool", () => {

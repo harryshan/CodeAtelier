@@ -1,8 +1,8 @@
 /**
  * 执行模型提出的文件操作和命令，并在操作前完成参数、路径和审批检查。
- * Engine 为每个任务创建 ToolRunner，传入工作区、设置、审批回调、事件回调和取消信号。
+ * Engine 为每个任务创建共享读取快照的 ToolRunner，并为 DAG 中每个节点派生带独立 callId 的输出作用域。
  *
- * 1. ignored 列出遍历时跳过的目录；ToolContext 定义依赖，readHashes 记住本任务读过的文件版本。
+ * 1. ignored 列出遍历时跳过的目录；ToolContext 定义依赖，readHashes 记住本任务读过的文件版本；forCall 共享该状态但隔离事件关联。
  * 2. currentFileHash 仅探测安全工作区文件的字节哈希，不更新读取凭证；access 解析路径并申请必要的权限；entries 限量遍历，commandGrant 为可复用命令计算指纹。
  * 3. execute 先通过 parseToolArguments 校验参数并解开 Git 的 request 包装（兼容历史扁平调用）。它在每次调用实际开始产生工具副作用或读取前回调 Engine，因此耗时不计入审批等待；统一的精确编辑和显式新建文件均分流给共享读取哈希的 FileEditor，单一专用 Git 工具分流给 GitToolRunner；普通命令只接受
  *    一条命令文本，内部选择 shell、拒绝直接 Git，再申请审批并调用 executeProcess。
@@ -45,12 +45,20 @@ export interface ToolContext {
   emit: (type: string, data: any) => void;
 }
 
+interface ToolRunnerState {
+  readHashes: Map<string, string>;
+}
+
 export class ToolRunner {
-  private readHashes = new Map<string, string>();
+  private readHashes: Map<string, string>;
   private git: GitToolRunner;
   private editor: FileEditor;
 
-  constructor(private ctx: ToolContext) {
+  constructor(
+    private ctx: ToolContext,
+    state: ToolRunnerState = { readHashes: new Map<string, string>() },
+  ) {
+    this.readHashes = state.readHashes;
     this.git = new GitToolRunner(ctx);
     this.editor = new FileEditor({
       root: ctx.root,
@@ -59,6 +67,20 @@ export class ToolRunner {
       readHashes: this.readHashes,
       emit: ctx.emit,
     });
+  }
+
+  /**
+   * 并行图中的每个节点必须有独立输出作用域，不能复用 Engine 的可变当前 callId。
+   * 子实例共享本任务读取哈希，因而后继 edit_files 仍能使用先前 read_file 的快照凭证。
+   */
+  forCall(callId: string) {
+    return new ToolRunner(
+      {
+        ...this.ctx,
+        emit: (type, data) => this.ctx.emit(type, { ...data, callId }),
+      },
+      { readHashes: this.readHashes },
+    );
   }
 
   private hash(value: string) {
