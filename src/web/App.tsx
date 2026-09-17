@@ -3,9 +3,9 @@
  * 通过 api 请求后端，通过 useSessionConnection 同步会话，再交给 Timeline 和 SettingsPanel 展示。
  *
  * 1. 状态和 effects 管理当前会话、表单、弹窗、加载状态、服务状态及自动滚动。
- * 2. 按服务端返回的工作区路径分组展示会话；项目可独立折叠，展开时默认仅显示最近五个对话，并可按需显示更早记录。
+ * 2. 按服务端返回的工作区路径分组展示会话；项目可独立折叠，展开时默认仅显示最近五个对话，并可按需显示更早记录；手机端以可关闭的抽屉呈现该侧栏。
  * 3. resume、reloadService、stopServer、createProject、createConversation 和 send 处理恢复、受确认的服务重载、关闭服务、连接项目、新建会话和发送消息，并显示操作结果。
- * 4. 服务关闭后显示重启说明；正常页面由侧栏、项目栏、可折叠会话统计、时间线或项目连接页、所见即所得 Markdown 任务编辑器组成。
+ * 4. 服务关闭后显示重启说明；正常页面由侧栏或手机端导航抽屉、项目栏、可折叠会话统计、时间线或项目连接页、所见即所得 Markdown 任务编辑器组成。
  * 5. 末尾仅渲染设置、重载和关闭确认弹窗，项目连接不使用弹窗。
  *
  * 关闭请求失败时不能断言服务已经关闭。切换会话和断线重连都只更新显示，不能重新提交任务。
@@ -30,6 +30,7 @@ export default function App() {
   const [hasKey, setHasKey] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [addingProject, setAddingProject] = useState(false);
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [expandedProjectHistories, setExpandedProjectHistories] = useState<
     Set<string>
   >(() => new Set());
@@ -70,6 +71,22 @@ export default function App() {
   useEffect(() => {
     bottom.current?.scrollIntoView({ behavior: "smooth" });
   }, [data?.events.length, data?.approvals.length]);
+
+  useEffect(() => {
+    if (!mobileSidebarOpen) {
+      return;
+    }
+
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setMobileSidebarOpen(false);
+      }
+    };
+
+    window.addEventListener("keydown", closeOnEscape);
+
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [mobileSidebarOpen]);
 
   // SSE 刷新的快照含标题生成后的 Session；同步侧栏副本才能即时显示新标题。
   useEffect(() => {
@@ -121,6 +138,7 @@ export default function App() {
   };
 
   const openProjectForm = () => {
+    setMobileSidebarOpen(false);
     setWorkspace("");
     setError("");
     setAddingProject(true);
@@ -211,6 +229,7 @@ export default function App() {
       setList(await sessions());
       setSelected(session.id);
       setAddingProject(false);
+      setMobileSidebarOpen(false);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -258,7 +277,13 @@ export default function App() {
 
   return (
     <div className={s.app}>
-      <aside className={s.sidebar}>
+      <aside
+        id="primary-navigation"
+        aria-label="项目与对话"
+        className={
+          mobileSidebarOpen ? `${s.sidebar} ${s.mobileSidebarOpen}` : s.sidebar
+        }
+      >
         <a className={s.brand} href="/">
           <span className={s.logo}>✳</span>
           <span>
@@ -343,6 +368,7 @@ export default function App() {
                         onClick={() => {
                           setSelected(item.id);
                           setError("");
+                          setMobileSidebarOpen(false);
                         }}
                       >
                         <span className={s.sessionIcon}>⌘</span>
@@ -379,23 +405,56 @@ export default function App() {
         <div className={s.sideFooter}>
           <button
             disabled={serverState !== "running"}
-            onClick={() => setShowReload(true)}
+            onClick={() => {
+              setMobileSidebarOpen(false);
+              setShowReload(true);
+            }}
             title="重启构建后的本机服务并重新加载页面"
           >
             重载服务
           </button>
-          <button onClick={() => setShowShutdown(true)}>关闭服务</button>
+          <button
+            onClick={() => {
+              setMobileSidebarOpen(false);
+              setShowShutdown(true);
+            }}
+          >
+            关闭服务
+          </button>
           <div>
             <span className={s.greenDot} /> 受保护访问{" "}
             <span className={s.version}>v0.1</span>
           </div>
-          <button onClick={() => setShowSettings(true)}>
+          <button
+            onClick={() => {
+              setMobileSidebarOpen(false);
+              setShowSettings(true);
+            }}
+          >
             ⚙ 模型与设置 <span>↗</span>
           </button>
         </div>
       </aside>
+      {mobileSidebarOpen && (
+        <button
+          type="button"
+          className={s.mobileSidebarBackdrop}
+          aria-label="关闭导航抽屉"
+          onClick={() => setMobileSidebarOpen(false)}
+        />
+      )}
       <main className={s.main}>
         <header className={s.header}>
+          <button
+            type="button"
+            className={s.mobileMenuButton}
+            aria-controls="primary-navigation"
+            aria-expanded={mobileSidebarOpen}
+            aria-label={mobileSidebarOpen ? "关闭导航菜单" : "打开导航菜单"}
+            onClick={() => setMobileSidebarOpen((open) => !open)}
+          >
+            <span aria-hidden="true">{mobileSidebarOpen ? "×" : "☰"}</span>
+          </button>
           <div>
             <span className={s.breadcrumb}>工作台 / </span>
             {loading

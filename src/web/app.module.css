@@ -4,7 +4,7 @@
  * 1. 开头设置颜色、字体和基础控件样式，再定义双栏布局、侧栏和标题区。
  * 2. 项目分组标题、折叠控件、最近会话限制与会话按钮展示一项目多对话；随后是欢迎页、项目栏、右上角可折叠会话统计与 Perfetto 下载链接、Markdown 对话消息、工具结果、diff 和通知。
  * 3. 审批按钮、所见即所得 Markdown 输入区、弹窗和字段网格对应页面中的操作与表单。
- * 4. 末尾通过媒体查询调整窄屏间距和排列。
+ * 4. 末尾通过媒体查询调整窄屏间距和排列；手机端把完整侧栏改为带遮罩的导航抽屉，避免隐藏项目和会话操作。
  *
  * 修改类名时要同步 TSX 引用。按钮是否禁用由组件状态控制，不能只改成看起来不可用的样式。
  */
@@ -85,6 +85,10 @@
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
+}
+.mobileMenuButton,
+.mobileSidebarBackdrop {
+  display: none;
 }
 .brand {
   display: flex;
@@ -1110,45 +1114,65 @@
     height: 100dvh;
   }
   .sidebar {
-    width: 65px;
-    padding: 20px 7px;
+    position: fixed;
+    inset: 0 auto 0 0;
+    z-index: 30;
+    width: min(320px, calc(100vw - 48px));
+    min-height: 100dvh;
+    padding: 20px 14px 15px;
+    transform: translateX(-100%);
+    visibility: hidden;
+    box-shadow: 18px 0 42px #0008;
+    transition:
+      transform 0.2s ease-out,
+      visibility 0s linear 0.2s;
   }
-  .brand {
-    padding: 0;
-    justify-content: center;
+  .mobileSidebarOpen {
+    transform: translateX(0);
+    visibility: visible;
+    transition-delay: 0s;
   }
-  .brand > span:last-child,
-  .sectionLabel,
-  .addProjectButton,
-  .sessionList .conversationButton > span:last-child,
-  .sessionList .conversationLimitButton,
-  .emptyList,
-  .sideFooter {
-    display: none;
-  }
-  .projectTitle {
-    grid-template-columns: 18px 26px;
-    justify-content: space-around;
-    gap: 7px;
-  }
-  .projectTitle strong,
-  .projectCount,
-  .projectWorkspace {
-    display: none;
-  }
-  .sessionList .projectNewButton > span {
+  .mobileSidebarBackdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 20;
     display: block;
+    border: 0;
+    border-radius: 0;
+    padding: 0;
+    background: #060c10a8;
   }
-  .sessionList .conversationButton {
+  .mobileMenuButton {
+    display: inline-flex;
+    width: 42px;
+    min-width: 42px;
+    height: 42px;
+    align-items: center;
     justify-content: center;
+    padding: 0;
+    border-color: #41534b;
+    background: #182225;
+    color: #b7d7c6;
+    font-size: 22px;
   }
   .header {
     height: 65px;
+    gap: 12px;
     padding: 0 16px;
+  }
+  .header > div:first-of-type {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .breadcrumb,
   .modelBadge {
     display: none;
+  }
+  .headerRight {
+    margin-left: auto;
+    flex-shrink: 0;
   }
   .welcome {
     padding: 35px 22px;
@@ -1199,5 +1223,10 @@
   }
   .modal {
     padding: 22px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sidebar {
+    transition: none;
   }
 }

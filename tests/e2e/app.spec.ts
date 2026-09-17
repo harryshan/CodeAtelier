@@ -12,6 +12,7 @@
  * 8. 验证用户和 agent 消息的 Markdown 标题、链接、代码围栏、表格和任务列表渲染，并拒绝原始 HTML。
  * 9. 检查任务输入框以所见即所得方式将 Markdown 输入规则原地转换为富文本，并将生成的 Markdown 发送给任务。
  * 10. 累积较长时间线后检查滚动窗口外只保留高度占位，滚动到另一端才创建对应消息节点。
+ * 11. 在手机视口检查完整侧栏由菜单按钮打开，并可通过会话选择、遮罩或 Escape 关闭。
  *
  * 页面刷新或重连不能重新提交任务。这里不调用真实模型。
  */
@@ -59,6 +60,38 @@ test("create a session, edit a file, inspect diff and reload history", async ({
 
   await expect(page.getByText("任务完成，已检查工具结果。")).toBeVisible();
   expect(errors).toEqual([]);
+});
+
+test("opens and closes the complete navigation drawer on a phone viewport", async ({
+  page,
+}) => {
+  const workspace = await realpath(
+    await mkdtemp(path.join(tmpdir(), "codeatelier-mobile-nav-")),
+  );
+  const menuButton = page.getByRole("button", { name: /导航菜单/ });
+  const drawer = page.getByRole("complementary", { name: "项目与对话" });
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/");
+  await createInitialConversation(page, workspace);
+
+  await expect(menuButton).toHaveAttribute("aria-expanded", "false");
+  await expect(drawer).toBeHidden();
+  await menuButton.click();
+  await expect(menuButton).toHaveAttribute("aria-expanded", "true");
+  await expect(drawer).toBeVisible();
+
+  await drawer.getByRole("button", { name: "新对话", exact: true }).click();
+  await expect(menuButton).toHaveAttribute("aria-expanded", "false");
+  await expect(drawer).toBeHidden();
+
+  await menuButton.click();
+  await page.getByRole("button", { name: "关闭导航抽屉" }).click();
+  await expect(drawer).toBeHidden();
+
+  await menuButton.click();
+  await page.keyboard.press("Escape");
+  await expect(drawer).toBeHidden();
 });
 
 test("renders persisted agent replies as safe GitHub Flavored Markdown", async ({
