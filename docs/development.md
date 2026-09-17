@@ -50,7 +50,7 @@ Node.js 24，pnpm 11.22.0（packageManager 固定）。提交 pnpm-lock.yaml，�
 
 ### Perfetto tracing
 
-tracing 默认启用：每个实际开始的任务在当前服务进程内生成一条性能 timeline。模型请求、上下文准备/机械整理/压缩、模型重试退避、响应处理、工具计划、工具批次、工具真正读取/写入/启动进程以及工具结果的 SQLite 持久化时刻记录为 span；工具审批等待仍与工具执行耗时分离。工具调用不会按 call ID 无限增加行数：DAG 调度器为每个并发执行分配可复用槽位，Perfetto 固定使用最多 4 条 `Tool worker 1` 至 `Tool worker 4` 轨道，后续节点复用最先空闲的轨道。任务进入 completed、failed、cancelled 或 interrupted 终态后，安全 JSON 原子写入 `traces/<sessionId>/<taskId>.json`，同一会话的任务各用独立文件，绝不覆盖；写入完成或失败后立即释放该任务的内存记录，不保留完成 trace 缓存。统计框通过受保护的 `GET /api/sessions/:id/traces` 查询实际存在的文件，只有已保存 trace 才显示下载入口；`GET /api/tasks/:id/trace` 也只读取该文件并可在 [ui.perfetto.dev](https://ui.perfetto.dev) 打开。接口不接受写入，也沿用 cookie 校验；任务不存在、仍在执行或尚未成功保存 trace 时返回 404。
+tracing 默认启用：每个实际开始的任务在当前服务进程内生成一条性能 timeline。模型请求、上下文准备/机械整理/压缩、模型重试退避、响应处理、工具计划、工具批次、工具真正读取/写入/启动进程以及工具结果的 SQLite 持久化时刻记录为 span；工具审批等待仍与工具执行耗时分离。任务根、压缩和工作阶段使用独立逻辑轨道，避免同一轨道的完整 span 交叠。工具调用不会按 call ID 无限增加行数：DAG 调度器为每个并发执行分配可复用槽位，Perfetto 固定使用最多 4 条 `Tool worker 1` 至 `Tool worker 4` 轨道，后续节点复用最先空闲的轨道。导出会按时间排序，并以递增整数而非 UUID 标识 flow，保证 Perfetto Trace Event JSON importer 可解析。任务进入 completed、failed、cancelled 或 interrupted 终态后，安全 JSON 原子写入 `traces/<sessionId>/<taskId>.json`，同一会话的任务各用独立文件，绝不覆盖；写入完成或失败后立即释放该任务的内存记录，不保留完成 trace 缓存。统计框通过受保护的 `GET /api/sessions/:id/traces` 查询实际存在的文件，只有已保存 trace 才显示下载入口；`GET /api/tasks/:id/trace` 也只读取该文件并可在 [ui.perfetto.dev](https://ui.perfetto.dev) 打开。接口不接受写入，也沿用 cookie 校验；任务不存在、仍在执行或尚未成功保存 trace 时返回 404。
 
 trace 只含关联 ID、模型名称、步骤/尝试、字节/项目数量、usage、退出/错误类别和耗时，不含完整提示词、源码、工具参数或输出、服务错误正文、API key、认证头或 cookie。它不是会话历史、运行日志或高保真 replay 存档；服务重启不影响已结束任务的 trace 文件下载。后续实现 replay 前必须另建脱敏、保留策略和显式用户操作边界，不能将原始 payload 塞入 Perfetto 属性。
 

@@ -18,6 +18,12 @@ import { temp } from "./fixtures/helpers.js";
 it("exports spans, instants and cross-track flows as Perfetto Trace Event JSON", () => {
   const recorder = new TraceRecorder();
   const task = recorder.startTask("task-1", "session-1");
+  const responseProcessing = recorder.startSpan("task-1", {
+    name: "model.response_process",
+    category: "agent",
+    track: "Agent",
+  });
+  recorder.endSpan(responseProcessing, "ok");
   const model = recorder.startSpan("task-1", {
     name: "llm.request",
     category: "llm",
@@ -58,6 +64,64 @@ it("exports spans, instants and cross-track flows as Perfetto Trace Event JSON",
       expect.objectContaining({ name: "llm_to_tool", ph: "f" }),
     ]),
   );
+  const timelineEvents = exported?.traceEvents.filter(
+    (event: { ts?: number }) => event.ts !== undefined,
+  );
+  expect(
+    timelineEvents?.every(
+      (event: { id?: unknown; ph: string }) =>
+        (event.ph !== "s" && event.ph !== "f") ||
+        (typeof event.id === "number" && Number.isSafeInteger(event.id)),
+    ),
+  ).toBe(true);
+  expect(
+    timelineEvents?.every(
+      (event: { ts: number }, index: number, events: Array<{ ts: number }>) =>
+        index === 0 || events[index - 1].ts <= event.ts,
+    ),
+  ).toBe(true);
+  const flowEvents =
+    timelineEvents?.filter(
+      (event: { ph: string }) => event.ph === "s" || event.ph === "f",
+    ) ?? [];
+  expect(flowEvents).toHaveLength(2);
+  expect(flowEvents[0].id).toBe(flowEvents[1].id);
+  expect(flowEvents[0].ts).toBeLessThanOrEqual(flowEvents[1].ts);
+  const completeEventsByTrack = new Map<
+    number,
+    Array<{ ts: number; dur: number }>
+  >();
+  for (const event of timelineEvents?.filter(
+    (candidate: { ph: string }) => candidate.ph === "X",
+  ) ?? []) {
+    const completeEvent = event as { tid: number; ts: number; dur: number };
+    const trackEvents = completeEventsByTrack.get(completeEvent.tid) ?? [];
+    trackEvents.push(completeEvent);
+    completeEventsByTrack.set(completeEvent.tid, trackEvents);
+  }
+
+  for (const trackEvents of completeEventsByTrack.values()) {
+    trackEvents.sort((left, right) => left.ts - right.ts);
+    for (let index = 1; index < trackEvents.length; index++) {
+      const previous = trackEvents[index - 1];
+      const current = trackEvents[index];
+      expect(previous.ts + previous.dur).toBeLessThanOrEqual(current.ts);
+    }
+  }
+
+  const taskTrack = exported?.traceEvents.find(
+    (event: { name: string; ph: string; args: { name?: string } }) =>
+      event.name === "thread_name" &&
+      event.ph === "M" &&
+      event.args.name === "Task",
+  );
+  const agentTrack = exported?.traceEvents.find(
+    (event: { name: string; ph: string; args: { name?: string } }) =>
+      event.name === "thread_name" &&
+      event.ph === "M" &&
+      event.args.name === "Agent",
+  );
+  expect(taskTrack.tid).not.toBe(agentTrack.tid);
   const request = exported?.traceEvents.find(
     (event: { name: string; ph: string }) =>
       event.name === "llm.request" && event.ph === "X",

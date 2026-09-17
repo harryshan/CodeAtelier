@@ -632,7 +632,7 @@ export class Engine {
           compactionSpan = this.traces.startSpan(task.id, {
             name: "context.compaction",
             category: "context",
-            track: "Context",
+            track: "Compaction",
             attributes: compactionAttributes(data),
           });
         } else if (event === "context.compaction_completed") {

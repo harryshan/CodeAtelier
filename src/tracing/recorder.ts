@@ -3,9 +3,9 @@
  * Engine 为每个实际运行的任务调用 startTask/finishTask；模型和工具包装器在真实执行边界创建 span，
  * server/app.ts 通过 exportTask 将已完成或运行中的 trace 作为本地下载接口返回。
  *
- * 1. 单调时钟把 span 和 instant 事件映射到同一个微秒时间轴；task 是根 span，未结束的子操作会在任务结束时标为实际终态。
+ * 1. 单调时钟把 span 和 instant 事件映射到同一个微秒时间轴；task 根 span 使用独立轨道，未结束的子操作会在任务结束时标为实际终态，避免完整事件在工作轨道重叠。
  * 2. startSpan/endSpan/instant 只接收受限标量属性，并截断长字符串，防止 tracing 成为提示词、源码、工具输出或密钥的存储通道。
- * 3. link 保存跨轨道因果关系；exportTask 输出进程/轨道元数据、完整耗时片段和 Perfetto flow 事件。
+ * 3. link 保存跨轨道因果关系；exportTask 输出进程/轨道元数据、按时间排序的完整耗时片段和使用递增整数 ID 的 Perfetto flow 事件。
  * 4. recorder 只保存运行中任务构造完整 JSON 所需的短暂状态；Engine 成功或失败写入 TraceArchive 后立即 discardTask，不保留完成 trace 缓存。
  *
  * 此记录器不参与任务恢复，也不改变工具或模型的执行顺序。记录故障必须不影响 agent 主流程。
@@ -97,7 +97,7 @@ export class TraceRecorder {
       taskId,
       name: "task.run",
       category: "agent",
-      track: "Agent",
+      track: "Task",
       startedAtUs: this.nowUs(),
       attributes: safeAttributes({ taskId, sessionId }),
     };
@@ -235,7 +235,7 @@ export class TraceRecorder {
 
     const exportedAtUs = this.nowUs();
     const { tracks, id } = trackIds(record);
-    const traceEvents: any[] = [
+    const metadataEvents: any[] = [
       {
         name: "process_name",
         ph: "M",
@@ -244,9 +244,10 @@ export class TraceRecorder {
         args: { name: "CodeAtelier server" },
       },
     ];
+    const timelineEvents: any[] = [];
 
     for (const [track, tid] of tracks) {
-      traceEvents.push({
+      metadataEvents.push({
         name: "thread_name",
         ph: "M",
         pid: process.pid,
@@ -257,7 +258,7 @@ export class TraceRecorder {
 
     for (const span of record.spans.values()) {
       const finishedAtUs = span.finishedAtUs ?? exportedAtUs;
-      traceEvents.push({
+      timelineEvents.push({
         name: span.name,
         cat: span.category,
         ph: "X",
@@ -270,7 +271,7 @@ export class TraceRecorder {
     }
 
     for (const instant of record.instants) {
-      traceEvents.push({
+      timelineEvents.push({
         name: instant.name,
         cat: instant.category,
         ph: "i",
@@ -282,35 +283,63 @@ export class TraceRecorder {
       });
     }
 
-    for (const link of record.links) {
+    for (const [flowIndex, link] of record.links.entries()) {
       const from = record.spans.get(link.fromSpanId);
       const to = record.spans.get(link.toSpanId);
-      if (!from || !to) {
+      const fromTimestampUs = from?.finishedAtUs ?? exportedAtUs;
+      if (!from || !to || to.startedAtUs < fromTimestampUs) {
         continue;
       }
 
-      traceEvents.push({
+      // Perfetto 的 Trace Event JSON importer 接受 64 位整数 ID，不接受 UUID 字符串。
+      // 因果边只有在源操作结束后目标操作才开始时才有效，逆序边不导出为 flow。
+      const flowId = flowIndex + 1;
+      timelineEvents.push({
         name: link.name,
         cat: "flow",
         ph: "s",
-        ts: from.finishedAtUs ?? exportedAtUs,
+        ts: fromTimestampUs,
         pid: process.pid,
         tid: id(from.track),
-        id: link.id,
+        id: flowId,
       });
-      traceEvents.push({
+      timelineEvents.push({
         name: link.name,
         cat: "flow",
         ph: "f",
         ts: to.startedAtUs,
         pid: process.pid,
         tid: id(to.track),
-        id: link.id,
+        id: flowId,
       });
     }
 
+    timelineEvents.sort((left, right) => {
+      if (left.ts !== right.ts) {
+        return left.ts - right.ts;
+      }
+
+      if (left.ph === "s") {
+        return -1;
+      }
+
+      if (right.ph === "s") {
+        return 1;
+      }
+
+      if (left.ph === "f") {
+        return 1;
+      }
+
+      if (right.ph === "f") {
+        return -1;
+      }
+
+      return 0;
+    });
+
     return {
-      traceEvents,
+      traceEvents: [...metadataEvents, ...timelineEvents],
       displayTimeUnit: "ms",
       metadata: {
         traceId: record.id,
