@@ -47,13 +47,14 @@ pnpm exec playwright install chromium
 pnpm test:e2e
 ```
 
-初版使用应用层审批，不提供操作系统沙箱；低成本模型的 `approve` 结果也不绕过执行器的路径、Git、提权和并发校验，获准命令仍以本机用户权限运行，适用于你信任的项目。模型可主动自动调用单一、参数受限的 `git` 工具：它检查 worktree、路径、revision 和 upstream，并禁止强推、指定远程/分支目标、重置或创建 PR；Git 仓库配置仍不是系统沙箱。
+初版使用应用层审批，不提供操作系统沙箱；低成本模型的 `approve` 结果也不绕过执行器的路径、Git、提权和并发校验，获准命令仍以本机用户权限运行，适用于你信任的项目。后续可选的分层隔离、暂存合并、网络能力与平台后端路线见 [Sandbox 架构设计](docs/sandbox.md)，该设计尚未实现。模型可主动自动调用单一、参数受限的 `git` 工具：它检查 worktree、路径、revision 和 upstream，并禁止强推、指定远程/分支目标、重置或创建 PR；Git 仓库配置仍不是系统沙箱。
 
 ## 文档
 
 - [AGENTS.md](AGENTS.md)：开发 agent 的工作约定。
 - [需求与范围](docs/requirements.md)
 - [架构](docs/architecture.md)
+- [Sandbox 架构设计（后续，尚未实现）](docs/sandbox.md)
 - [上下文压缩与历史追溯](docs/context-management.md)
 - [模型容量与 token 用量](docs/model-tokens.md)
 - [Perfetto tracing 与本地导出](docs/development.md#perfetto-tracing)
