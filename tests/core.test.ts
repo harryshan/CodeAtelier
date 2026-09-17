@@ -92,10 +92,23 @@ describe("files and permissions", () => {
     expect(instructions).toContain("only one command string");
     expect(instructions).toContain("Never wrap it in a terminal invocation");
     expect(instructions).toContain("`pwsh -Command`");
-    expect(instructions).toContain("safe independent checks");
+    expect(instructions).toContain("independent checks");
     expect(instructions).toContain("do not casually request a full git diff");
     expect(instructions).not.toContain("C:\\\\Tools\\\\pwsh.exe");
     expect(instructions).not.toContain("CODEATELIER_STEP");
+  });
+
+  it("guides known dependent tool calls into one response", async () => {
+    const instructions = await createInstructions(await temp());
+
+    expect(instructions).toContain("edit_files -> run_command");
+    expect(instructions).toContain('dependsOn:["edit"]');
+    expect(instructions).toContain(
+      "only when the next call's arguments require the preceding result",
+    );
+    expect(instructions).not.toContain(
+      "The application executes each returned call in order",
+    );
   });
 
   it("detects performance-ordered search commands before building instructions", async () => {

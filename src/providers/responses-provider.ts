@@ -96,7 +96,7 @@ export class ResponsesProvider implements ModelProvider {
           input,
           instructions,
           tools,
-          // 只是允许同一响应携带多个独立调用；Engine 仍按返回顺序执行，保留审批和文件校验边界。
+          // 允许同一响应携带多个调用；Engine 按显式依赖调度并保留审批和文件校验边界。
           parallel_tool_calls: true,
           stream: true,
           store: false,
