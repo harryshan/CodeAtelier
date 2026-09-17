@@ -5,7 +5,7 @@
  *
  * 1. ModelTraceScope 固定任务、用途、模型和可选 step/attempt，作为单次调用的关联字段。
  * 2. tracedModelProvider 透传 capabilities，并在 run 前创建 llm.request；第一个 delta 生成 instant，完成或失败结束 span。
- * 3. 不记录 input、instructions、tools、输出文本、服务错误消息或 API key 的原文；高保真 replay payload 由后续独立机制处理。
+ * 3. 不记录 input、instructions、tools、输出文本、服务错误消息或 API key 的原文；LLM span 位于 Node 主线程轨道，高保真 replay payload 由后续独立机制处理。
  */
 
 import type { ModelProvider } from "../providers/model-provider.js";
@@ -39,7 +39,7 @@ export function tracedModelProvider(
       const span = recorder.startSpan(scope.taskId, {
         name: "llm.request",
         category: "llm",
-        track: "LLM",
+        track: "Main thread",
         attributes: {
           purpose: scope.purpose,
           model: scope.model,
@@ -63,10 +63,16 @@ export function tracedModelProvider(
           (delta) => {
             if (!receivedFirstDelta) {
               receivedFirstDelta = true;
-              recorder.instant(scope.taskId, "llm.first_output", "llm", "LLM", {
-                chars: delta.length,
-                purpose: scope.purpose,
-              });
+              recorder.instant(
+                scope.taskId,
+                "llm.first_output",
+                "llm",
+                "Main thread",
+                {
+                  chars: delta.length,
+                  purpose: scope.purpose,
+                },
+              );
             }
 
             onDelta(delta);

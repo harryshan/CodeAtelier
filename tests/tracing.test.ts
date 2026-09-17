@@ -1,7 +1,7 @@
 /**
  * 验证 Perfetto tracing 的可导出时间线、敏感原文边界、会话/任务级持久化和真实 HTTP 下载接口。
- * 第一组直接驱动 TraceRecorder，检查 span、instant 与 flow 被转换为 Chrome Trace Event JSON；
- * 第二组通过生产 createApp、Engine 和模拟模型完成并发工具任务，确认上下文/响应/计划/持久化阶段、四条可复用工具轨道及任务根 span 写入数据目录后即释放内存，并可经本机受保护 API 和真实文件清单下载。
+ * 第一组直接驱动 TraceRecorder，检查主线程 begin/end slice、instant、flow 与递归凭据脱敏的 tool 参数被转换为 Chrome Trace Event JSON；
+ * 第二组通过生产 createApp、Engine 和模拟模型完成并发工具任务，确认主线程上下文/响应/计划/持久化阶段、四条可复用工具轨道及任务根 span 写入数据目录后即释放内存，并可经本机受保护 API 和真实文件清单下载。
  *
  * 测试不连接真实模型服务，也不写入用户工作区；它只检查导出的可观察结构和临时数据目录，不依赖具体微秒耗时。
  */
@@ -21,16 +21,18 @@ it("exports spans, instants and cross-track flows as Perfetto Trace Event JSON",
   const responseProcessing = recorder.startSpan("task-1", {
     name: "model.response_process",
     category: "agent",
-    track: "Agent",
+    track: "Main thread",
   });
   recorder.endSpan(responseProcessing, "ok");
   const model = recorder.startSpan("task-1", {
     name: "llm.request",
     category: "llm",
-    track: "LLM",
+    track: "Main thread",
     attributes: { inputChars: 42, forbiddenPrompt: "x".repeat(600) },
   });
-  recorder.instant("task-1", "llm.first_output", "llm", "LLM", { chars: 3 });
+  recorder.instant("task-1", "llm.first_output", "llm", "Main thread", {
+    chars: 3,
+  });
   recorder.endSpan(model, "ok", { outputChars: 3 });
   const batch = recorder.startSpan("task-1", {
     name: "tool.batch",
@@ -42,6 +44,12 @@ it("exports spans, instants and cross-track flows as Perfetto Trace Event JSON",
     name: "tool.read_file",
     category: "tool",
     track: "Tool worker 1",
+    attributes: {
+      parameters: {
+        authorization: "Bearer trace-secret",
+        path: "src/tracing/recorder.ts",
+      },
+    },
   });
   recorder.endSpan(tool, "ok");
   recorder.link(model, tool, "llm_to_tool");
@@ -57,7 +65,8 @@ it("exports spans, instants and cross-track flows as Perfetto Trace Event JSON",
   expect(exported?.traceEvents).toEqual(
     expect.arrayContaining([
       expect.objectContaining({ name: "task.run", ph: "X", cat: "agent" }),
-      expect.objectContaining({ name: "llm.request", ph: "X", cat: "llm" }),
+      expect.objectContaining({ name: "llm.request", ph: "B", cat: "llm" }),
+      expect.objectContaining({ name: "llm.request", ph: "E", cat: "llm" }),
       expect.objectContaining({ name: "tool.batch", ph: "X", cat: "tool" }),
       expect.objectContaining({ name: "llm.first_output", ph: "i" }),
       expect.objectContaining({ name: "llm_to_tool", ph: "s" }),
@@ -115,18 +124,26 @@ it("exports spans, instants and cross-track flows as Perfetto Trace Event JSON",
       event.ph === "M" &&
       event.args.name === "Task",
   );
-  const agentTrack = exported?.traceEvents.find(
+  const mainThreadTrack = exported?.traceEvents.find(
     (event: { name: string; ph: string; args: { name?: string } }) =>
       event.name === "thread_name" &&
       event.ph === "M" &&
-      event.args.name === "Agent",
+      event.args.name === "Main thread",
   );
-  expect(taskTrack.tid).not.toBe(agentTrack.tid);
+  expect(taskTrack.tid).not.toBe(mainThreadTrack.tid);
   const request = exported?.traceEvents.find(
     (event: { name: string; ph: string }) =>
-      event.name === "llm.request" && event.ph === "X",
+      event.name === "llm.request" && event.ph === "B",
   );
   expect(request.args.forbiddenPrompt).toHaveLength(500);
+  const toolEvent = exported?.traceEvents.find(
+    (event: { name: string; ph: string }) =>
+      event.name === "tool.read_file" && event.ph === "X",
+  );
+  expect(toolEvent.args.parameters).toEqual({
+    authorization: "[REDACTED]",
+    path: "src/tracing/recorder.ts",
+  });
 });
 
 it("persists each Engine task trace by session and task, then exports it only through the authenticated local API", async () => {
@@ -207,14 +224,14 @@ it("persists each Engine task trace by session and task, then exports it only th
     expect(response.json().traceEvents).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ name: "task.run", ph: "X" }),
-        expect.objectContaining({ name: "context.prepare", ph: "X" }),
-        expect.objectContaining({ name: "context.request", ph: "X" }),
-        expect.objectContaining({ name: "llm.request", ph: "X" }),
-        expect.objectContaining({ name: "model.response_process", ph: "X" }),
-        expect.objectContaining({ name: "tool.plan", ph: "X" }),
+        expect.objectContaining({ name: "context.prepare", ph: "B" }),
+        expect.objectContaining({ name: "context.request", ph: "B" }),
+        expect.objectContaining({ name: "llm.request", ph: "B" }),
+        expect.objectContaining({ name: "model.response_process", ph: "B" }),
+        expect.objectContaining({ name: "tool.plan", ph: "B" }),
         expect.objectContaining({ name: "tool.batch", ph: "X" }),
         expect.objectContaining({ name: "tool.read_file", ph: "X" }),
-        expect.objectContaining({ name: "tool.result_persist", ph: "X" }),
+        expect.objectContaining({ name: "tool.result_persist", ph: "B" }),
         expect.objectContaining({ name: "llm_to_tool", ph: "s" }),
         expect.objectContaining({ name: "llm_to_tool", ph: "f" }),
       ]),
@@ -228,6 +245,41 @@ it("persists each Engine task trace by session and task, then exports it only th
           event.args.name?.startsWith("Tool worker "),
       );
     expect(toolTracks).toHaveLength(4);
+    const mainThreadTrack = response
+      .json()
+      .traceEvents.find(
+        (event: { name: string; ph: string; args: { name?: string } }) =>
+          event.name === "thread_name" &&
+          event.ph === "M" &&
+          event.args.name === "Main thread",
+      );
+    const mainThreadNames = response
+      .json()
+      .traceEvents.filter(
+        (event: { tid: number; ph: string }) =>
+          event.tid === mainThreadTrack.tid && event.ph === "B",
+      )
+      .map((event: { name: string }) => event.name);
+    expect(mainThreadNames).toEqual(
+      expect.arrayContaining([
+        "context.prepare",
+        "llm.request",
+        "model.response_process",
+        "tool.plan",
+        "tool.result_persist",
+      ]),
+    );
+    const tool = response
+      .json()
+      .traceEvents.find(
+        (event: { name: string; ph: string }) =>
+          event.name === "tool.read_file" && event.ph === "X",
+      );
+    expect(tool.args.parameters).toEqual({
+      path: "trace-target.txt",
+      startLine: 1,
+      endLine: 1,
+    });
   } finally {
     await fixture.app.close();
   }

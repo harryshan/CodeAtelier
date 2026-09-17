@@ -632,7 +632,7 @@ export class Engine {
           compactionSpan = this.traces.startSpan(task.id, {
             name: "context.compaction",
             category: "context",
-            track: "Compaction",
+            track: "Main thread",
             attributes: compactionAttributes(data),
           });
         } else if (event === "context.compaction_completed") {
@@ -725,7 +725,7 @@ export class Engine {
         const contextSpan = this.traces.startSpan(task.id, {
           name: "context.prepare",
           category: "context",
-          track: "Context",
+          track: "Main thread",
           attributes: { force, step },
         });
         try {
@@ -773,7 +773,7 @@ export class Engine {
               const requestSpan = this.traces.startSpan(task.id, {
                 name: "context.request",
                 category: "context",
-                track: "Context",
+                track: "Main thread",
                 attributes: { attempt, step },
               });
               let request;
@@ -837,7 +837,7 @@ export class Engine {
               retryDelaySpan = this.traces.startSpan(task.id, {
                 name: "llm.retry_delay",
                 category: "llm",
-                track: "LLM",
+                track: "Main thread",
                 attributes: {
                   delayMs,
                   failedAttempt,
@@ -876,7 +876,7 @@ export class Engine {
         const responseSpan = this.traces.startSpan(task.id, {
           name: "model.response_process",
           category: "agent",
-          track: "Agent",
+          track: "Main thread",
           attributes: { attempt, step },
         });
         let calls;
@@ -955,7 +955,7 @@ export class Engine {
           const persistenceSpan = this.traces.startSpan(task.id, {
             name: "tool.result_persist",
             category: "storage",
-            track: "Storage",
+            track: "Main thread",
             attributes: {
               batchId,
               callId: node.callId,
@@ -1005,7 +1005,7 @@ export class Engine {
         const planningSpan = this.traces.startSpan(task.id, {
           name: "tool.plan",
           category: "tool",
-          track: "Tool scheduler",
+          track: "Main thread",
           attributes: { batchId, calls: calls.length, step },
         });
         let graph;
@@ -1087,6 +1087,10 @@ export class Engine {
           nodes: graph.nodes.length,
         });
 
+        const traceToolParameters = (arguments_: unknown) =>
+          JSON.parse(
+            redactJson(JSON.stringify(arguments_), [this.config.apiKey]),
+          );
         const batchSpan = this.traces.startSpan(task.id, {
           name: "tool.batch",
           category: "tool",
@@ -1117,6 +1121,7 @@ export class Engine {
                       batchId,
                       callId: node.callId,
                       nodeId: node.nodeId,
+                      parameters: traceToolParameters(node.arguments),
                     },
                   });
                   result = await readContextHistoryAsync(
@@ -1138,6 +1143,7 @@ export class Engine {
                           batchId,
                           callId: node.callId,
                           nodeId: node.nodeId,
+                          parameters: traceToolParameters(node.arguments),
                         },
                       });
                     });
