@@ -50,9 +50,9 @@ Node.js 24，pnpm 11.22.0（packageManager 固定）。提交 pnpm-lock.yaml，�
 
 ### Perfetto tracing
 
-tracing 默认启用：每个实际开始的任务在当前服务进程内生成一条有界的性能 timeline。模型请求、上下文准备、工具批次和工具真正读取/写入/启动进程的时刻记录为 span；工具审批等待仍与工具执行耗时分离。任务进入 completed、failed、cancelled 或 interrupted 终态后，安全 JSON 原子写入 `traces/<sessionId>/<taskId>.json`，同一会话的任务各用独立文件，绝不覆盖。统计框会列出已结束任务的下载入口；也可通过已建立本机会话的 `GET /api/tasks/:id/trace` 下载 Chrome Trace Event JSON 并在 [ui.perfetto.dev](https://ui.perfetto.dev) 打开。接口不接受写入，也沿用 cookie 校验；任务不存在或尚未生成 trace 时返回 404。运行中任务从内存导出当前截断时间线，最近 50 条内存 trace 仅作即时导出缓存。
+tracing 默认启用：每个实际开始的任务在当前服务进程内生成一条性能 timeline。模型请求、上下文准备、工具批次和工具真正读取/写入/启动进程的时刻记录为 span；工具审批等待仍与工具执行耗时分离。任务进入 completed、failed、cancelled 或 interrupted 终态后，安全 JSON 原子写入 `traces/<sessionId>/<taskId>.json`，同一会话的任务各用独立文件，绝不覆盖；写入完成或失败后立即释放该任务的内存记录，不保留完成 trace 缓存。统计框通过受保护的 `GET /api/sessions/:id/traces` 查询实际存在的文件，只有已保存 trace 才显示下载入口；`GET /api/tasks/:id/trace` 也只读取该文件并可在 [ui.perfetto.dev](https://ui.perfetto.dev) 打开。接口不接受写入，也沿用 cookie 校验；任务不存在、仍在执行或尚未成功保存 trace 时返回 404。
 
-trace 只含关联 ID、模型名称、步骤/尝试、字节/项目数量、usage、退出/错误类别和耗时，不含完整提示词、源码、工具参数或输出、服务错误正文、API key、认证头或 cookie。它不是会话历史、运行日志或高保真 replay 存档；服务重启后内存 cache 消失，但已结束任务的 trace 文件仍可下载。后续实现 replay 前必须另建脱敏、保留策略和显式用户操作边界，不能将原始 payload 塞入 Perfetto 属性。
+trace 只含关联 ID、模型名称、步骤/尝试、字节/项目数量、usage、退出/错误类别和耗时，不含完整提示词、源码、工具参数或输出、服务错误正文、API key、认证头或 cookie。它不是会话历史、运行日志或高保真 replay 存档；服务重启不影响已结束任务的 trace 文件下载。后续实现 replay 前必须另建脱敏、保留策略和显式用户操作边界，不能将原始 payload 塞入 Perfetto 属性。
 
 新增或修改 agent、模型、工具、审批、上下文、存储或跨进程执行功能时，开发者必须同步增加合理 tracing，至少覆盖开始/结束、失败或取消、耗时、任务/调用关联及安全摘要；若确实不适用，须在设计或决策记录中说明原因。测试应覆盖新增 span 的可导出行为及敏感原文不进入事件属性。
 

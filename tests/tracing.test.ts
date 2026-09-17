@@ -1,7 +1,7 @@
 /**
  * 验证 Perfetto tracing 的可导出时间线、敏感原文边界、会话/任务级持久化和真实 HTTP 下载接口。
  * 第一组直接驱动 TraceRecorder，检查 span、instant 与 flow 被转换为 Chrome Trace Event JSON；
- * 第二组通过生产 createApp、Engine 和模拟模型完成任务，确认模型调用与任务根 span 会写入数据目录，且可经本机受保护 API 下载。
+ * 第二组通过生产 createApp、Engine 和模拟模型完成任务，确认模型调用与任务根 span 写入数据目录后即释放内存，并可经本机受保护 API 和真实文件清单下载。
  *
  * 测试不连接真实模型服务，也不写入用户工作区；它只检查导出的可观察结构和临时数据目录，不依赖具体微秒耗时。
  */
@@ -122,6 +122,13 @@ it("persists each Engine task trace by session and task, then exports it only th
       taskId: task.id,
       sessionId: session.id,
     });
+    expect(fixture.engine.traces.exportTask(task.id)).toBeUndefined();
+
+    const traceList = await fixture.app.inject({
+      url: `/api/sessions/${session.id}/traces`,
+      headers,
+    });
+    expect(traceList.json().taskIds).toContain(task.id);
 
     expect(
       await fixture.app.inject({ url: `/api/tasks/${task.id}/trace` }),

@@ -6,13 +6,20 @@
  *
  * 1. archiveFile 统一构造以 sessionId 和 taskId 分层的路径，使同一会话的每个任务各有独立文件而不覆盖。
  * 2. write 先在目标目录写入随机临时文件，再 rename 为最终文件；写入故障记录受控警告并吞掉，不能妨碍任务终态、恢复或通知。
- * 3. read 返回持久化 JSON 文本供 HTTP 响应直接下载；文件不存在表示该任务尚未结束或历史版本没有 trace，其他读取问题只记录诊断信息。
+ * 3. read 返回持久化 JSON 文本供 HTTP 响应直接下载；taskIds 只列举目录中真实存在的任务文件，供统计框避免展示失效链接。
  *
  * 此模块只管理本机诊断文件，不参与 SQLite 历史、权限判断或任务重放。
  */
 
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import path from "node:path";
 import type { Logger } from "pino";
 
@@ -48,6 +55,33 @@ export class TraceArchive {
         taskId,
         err: error,
       });
+    }
+  }
+
+  /** 只返回数据目录中存在的 JSON 文件名，不能根据任务终态猜测 trace 已成功写入。 */
+  async taskIds(sessionId: string) {
+    try {
+      const entries = await readdir(
+        path.join(this.dataDirectory, "traces", sessionId),
+        { withFileTypes: true },
+      );
+
+      return entries
+        .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+        .map((entry) => entry.name.slice(0, -".json".length));
+    } catch (error: any) {
+      if (error?.code === "ENOENT") {
+        return [];
+      }
+
+      this.log.warn({
+        event: "tracing.archive_list_failed",
+        module: "tracing",
+        sessionId,
+        err: error,
+      });
+
+      return [];
     }
   }
 

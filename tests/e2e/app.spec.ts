@@ -144,11 +144,15 @@ test("keeps current session statistics collapsed until expanded and projects per
     page.getByRole("button", { name: "展开会话统计" }),
   ).toBeVisible();
   await expect(page.getByRole("heading", { name: "会话统计" })).toHaveCount(0);
+  await page.getByRole("button", { name: "展开会话统计" }).click();
+  await expect(page.getByRole("heading", { name: "会话统计" })).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: /下载任务 .* 的 Perfetto trace/ }),
+  ).toHaveCount(0);
   await page.getByLabel("任务描述").fill("修改文件");
   await page.getByRole("button", { name: "开始执行" }).click();
   await expect(page.getByText("任务完成，已检查工具结果。")).toBeVisible();
 
-  await page.getByRole("button", { name: "展开会话统计" }).click();
   await expect(page.getByRole("heading", { name: "会话统计" })).toBeVisible();
   await expect(page.getByText("Token（服务实报）")).toBeVisible();
   await expect(page.getByText("输入（缓存 / 非缓存）")).toBeVisible();

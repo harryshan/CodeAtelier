@@ -4,7 +4,7 @@
  *
  * 1. api 组装方法、请求体和令牌，解析响应或抛出错误；收到 401 时刷新凭据并最多重试一次。
  * 2. bootstrap 获取公开配置，同时更新模块内的令牌。
- * 3. sessions 和 snapshot 提供带类型的会话列表、快照读取函数。
+ * 3. sessions、snapshot 和 sessionTraceTaskIds 提供带类型的会话列表、快照及已保存 trace 清单读取函数。
  *
  * 401 表示请求在鉴权时已被拒绝，因此可以重试。网络错误无法确定写操作是否执行，不能自动重发。
  * 这里保存的是本机会话令牌，不是模型 API 密钥。
@@ -63,3 +63,6 @@ export const sessions = () => api<Session[]>("/sessions");
 
 export const snapshot = (id: string, signal?: AbortSignal) =>
   api<Snapshot>("/sessions/" + id, undefined, "GET", false, signal);
+
+export const sessionTraceTaskIds = (id: string) =>
+  api<{ taskIds: string[] }>("/sessions/" + id + "/traces");

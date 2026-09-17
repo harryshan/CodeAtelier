@@ -4,7 +4,7 @@
  *
  * 1. 创建 Fastify、Store 和 Engine，准备关闭状态和可复用的关闭 Promise。
  * 2. 先按监听范围注册来源与凭据检查、关闭/受监督重载接口和错误处理，再注册 bootstrap、设置接口。
- * 3. 会话和任务路由校验请求，创建待生成标题的会话，调用 Engine 启动、恢复、取消任务、导出 Perfetto trace 或传递审批决定。
+ * 3. 会话和任务路由校验请求，创建待生成标题的会话，调用 Engine 启动、恢复、取消任务，列出或下载已保存的 Perfetto trace，或传递审批决定。
  * 4. 接入 SSE，并提供构建后的网页；没有前端产物时显示开发提示。
  * 5. preClose 中断任务并结束 SSE，onClose 关闭数据库。
  *
@@ -174,6 +174,15 @@ export async function createApp(
 
     return store.create(await workspacePath(data.workspace));
   });
+  app.get("/api/sessions/:id/traces", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const session = store.get(id);
+    if (!session) {
+      return reply.code(404).send({ error: "会话不存在" });
+    }
+
+    return { taskIds: await engine.traceArchive.taskIds(session.id) };
+  });
   app.get("/api/sessions/:id", async (req, reply) => {
     const { id } = req.params as { id: string };
 
@@ -210,7 +219,7 @@ export async function createApp(
       return reply.code(404).send({ error: "任务不存在" });
     }
 
-    const trace = await engine.exportedTrace(task);
+    const trace = await engine.savedTrace(task);
     if (!trace) {
       return reply.code(404).send({ error: "该任务尚未生成 trace。" });
     }

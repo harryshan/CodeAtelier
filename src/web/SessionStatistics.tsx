@@ -1,18 +1,19 @@
 /**
  * 在当前对话右上角显示可折叠的本地会话统计，供 App 在已加载 Snapshot 后渲染。
- * 它依赖 session-statistics 的纯投影和 App 的 CSS Module，不访问后端或保存任何用户偏好。
+ * 它依赖 session-statistics 的纯投影、受保护的 trace 清单 API 和 App 的 CSS Module，不保存任何用户偏好。
  *
  * 1. useEffect 在切换会话时恢复折叠状态；仅在任务运行或等待审批时每秒刷新一次时钟。
  * 2. 折叠按钮只显示累计运行时间，避免干扰对话；展开后分组展示 token、LLM、工具和任务统计。
  * 3. Token 区域明确区分服务实报总量与可选缓存明细；缺少明细时显示未知，而非假定没有缓存。
  * 4. 工具成功率的分母是已完成结果，待审批或仍执行的调用单独显示，避免将进行中操作当作失败。
- * 5. 已结束任务按时间列出持久化 Perfetto trace 下载链接；链接仅访问当前会话任务的受保护本机 API。
+ * 5. 展开后读取当前会话真实存在的 trace 文件清单；只有同时结束且在清单中的任务才显示下载链接。
  *
  * 组件只展示当前 session 已持久化或正在接收的 Snapshot；刷新和重启后会从同一历史事件重新计算。
  */
 
 import { useEffect, useState } from "react";
 import type { Snapshot } from "../shared/types";
+import { sessionTraceTaskIds } from "./api";
 import {
   formatDuration,
   formatTokenCount,
@@ -37,6 +38,9 @@ function toolSummary(calls: Record<string, number>) {
 export function SessionStatistics({ data }: { data: Snapshot }) {
   const [expanded, setExpanded] = useState(false);
   const [now, setNow] = useState(() => Date.now());
+  const [savedTraceTaskIds, setSavedTraceTaskIds] = useState<Set<string>>(
+    () => new Set(),
+  );
   const statistics = sessionStatistics(data, now);
   const purposeSummary = Object.entries(statistics.modelRequestsByPurpose)
     .filter(([, count]) => count > 0)
@@ -50,6 +54,12 @@ export function SessionStatistics({ data }: { data: Snapshot }) {
     .sort((left, right) =>
       (right.finishedAt ?? "").localeCompare(left.finishedAt ?? ""),
     );
+  const completedTraceTaskKey = completedTraceTasks
+    .map((task) => task.id)
+    .join(",");
+  const savedTraceTasks = completedTraceTasks.filter((task) =>
+    savedTraceTaskIds.has(task.id),
+  );
 
   useEffect(() => {
     setExpanded(false);
@@ -65,6 +75,32 @@ export function SessionStatistics({ data }: { data: Snapshot }) {
 
     return () => window.clearInterval(timer);
   }, [statistics.activeTask]);
+
+  useEffect(() => {
+    let active = true;
+    setSavedTraceTaskIds(new Set());
+    if (!expanded) {
+      return () => {
+        active = false;
+      };
+    }
+
+    void sessionTraceTaskIds(data.session.id)
+      .then(({ taskIds }) => {
+        if (active) {
+          setSavedTraceTaskIds(new Set(taskIds));
+        }
+      })
+      .catch(() => {
+        if (active) {
+          setSavedTraceTaskIds(new Set());
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [data.session.id, completedTraceTaskKey, expanded]);
 
   return (
     <aside className={s.sessionStatistics} aria-label="会话统计">
@@ -153,9 +189,9 @@ export function SessionStatistics({ data }: { data: Snapshot }) {
           )}
           <section className={s.statisticsTraces}>
             <h3>Perfetto trace</h3>
-            {completedTraceTasks.length ? (
+            {savedTraceTasks.length ? (
               <ul>
-                {completedTraceTasks.map((task) => (
+                {savedTraceTasks.map((task) => (
                   <li key={task.id}>
                     <a
                       href={`/api/tasks/${encodeURIComponent(task.id)}/trace`}
@@ -168,7 +204,7 @@ export function SessionStatistics({ data }: { data: Snapshot }) {
                 ))}
               </ul>
             ) : (
-              <p>任务结束后可下载 Perfetto trace。</p>
+              <p>尚无已保存的 Perfetto trace。</p>
             )}
           </section>
         </section>

@@ -8,7 +8,7 @@
  * 4. 首条 prompt 先用辅助模型生成标题；run 再读取历史和项目规则，准备工具及上下文预算。
  * 5. 为压缩提供 ToolRunner 的安全文件哈希探测；每轮先整理上下文，再记录实际模型请求和服务实报用量。完整响应保存后校验工具 DAG，再按拓扑关系调度。
  * 6. 每个实际工具调用仍经过低成本模型的自动通过、人工确认或拒绝分流；模型故障和无效输出保守降级为人工确认，并持久化可审计的决定。
- * 7. 工具批次、节点状态和结果都附带批次/调用标识；ToolRunner 确认实际执行开始后才记录工具耗时，工具结果和更新后的上下文一起提交到数据库；退出时保存最终状态并发出 task_end。
+ * 7. 工具批次、节点状态和结果都附带批次/调用标识；ToolRunner 确认实际执行开始后才记录工具耗时，工具结果和更新后的上下文一起提交到数据库；退出时将安全 trace 写入会话/任务文件、释放运行期记录并发出 task_end。
  *
  * 模型请求可以重试，但已经执行的工具不能跟着重跑。数据库回滚也撤销不了文件修改或
  * 已启动的命令，所以保存失败时必须停止任务，并留下足够的记录供后续恢复。
@@ -76,7 +76,7 @@ export class Engine {
   private approvalTasks = new WeakMap<ApprovalSubject, Task>();
   private closing = false;
   private scheduling = false;
-  /** 当前进程内保留运行中及最近任务时间线，供任务尚未落盘时导出。 */
+  /** 当前进程仅保留运行中任务构造 trace 所需的状态，任务落盘后立即释放。 */
   readonly traces = new TraceRecorder();
   /** 已结束任务的 trace 另行按会话/任务写入数据目录，服务重启后仍可下载。 */
   readonly traceArchive: TraceArchive;
@@ -94,11 +94,9 @@ export class Engine {
     return this.activeByTaskId.size > 0 || this.store.queuedTasks().length > 0;
   }
 
-  /** 优先读取已结束任务的持久化 trace；运行中任务仍从内存导出当前截断时间线。 */
-  async exportedTrace(task: Task) {
-    const archived = await this.traceArchive.read(task.sessionId, task.id);
-
-    return archived ?? this.traces.exportTask(task.id);
+  /** 下载只读取已经成功落盘的 trace，运行中或写入失败任务不会暴露不完整的内存数据。 */
+  async savedTrace(task: Task) {
+    return this.traceArchive.read(task.sessionId, task.id);
   }
 
   constructor(
@@ -1103,6 +1101,8 @@ export class Engine {
       if (trace) {
         await this.traceArchive.write(task.sessionId, task.id, trace);
       }
+
+      this.traces.discardTask(task.id);
 
       emit("task_end", { status });
       log.info({ event: "task.finished", status });

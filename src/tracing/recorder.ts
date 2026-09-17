@@ -6,7 +6,7 @@
  * 1. 单调时钟把 span 和 instant 事件映射到同一个微秒时间轴；task 是根 span，未结束的子操作会在任务结束时标为实际终态。
  * 2. startSpan/endSpan/instant 只接收受限标量属性，并截断长字符串，防止 tracing 成为提示词、源码、工具输出或密钥的存储通道。
  * 3. link 保存跨轨道因果关系；exportTask 输出进程/轨道元数据、完整耗时片段和 Perfetto flow 事件。
- * 4. 已完成 trace 只在当前进程保留有限数量，避免常驻服务因长期会话无限占用内存；服务重启前应由用户导出。
+ * 4. recorder 只保存运行中任务构造完整 JSON 所需的短暂状态；Engine 成功或失败写入 TraceArchive 后立即 discardTask，不保留完成 trace 缓存。
  *
  * 此记录器不参与任务恢复，也不改变工具或模型的执行顺序。记录故障必须不影响 agent 主流程。
  */
@@ -21,7 +21,6 @@ import type {
   TraceStatus,
 } from "./types.js";
 
-const MAX_COMPLETED_TRACES = 50;
 const MAX_ATTRIBUTE_LENGTH = 500;
 
 type TraceRecord = {
@@ -81,7 +80,6 @@ function trackIds(record: TraceRecord) {
 
 export class TraceRecorder {
   private traces = new Map<string, TraceRecord>();
-  private completedTaskIds: string[] = [];
 
   /** 使用固定的 wall-clock origin 加单调 performance.now，既可导入 Perfetto，又不受任务期间系统校时影响。 */
   private nowUs() {
@@ -221,16 +219,11 @@ export class TraceRecorder {
         span.status = span.status ?? status;
       }
     }
+  }
 
-    if (!this.completedTaskIds.includes(taskId)) {
-      this.completedTaskIds.push(taskId);
-      while (this.completedTaskIds.length > MAX_COMPLETED_TRACES) {
-        const expired = this.completedTaskIds.shift();
-        if (expired) {
-          this.traces.delete(expired);
-        }
-      }
-    }
+  /** 任务已经导出并尝试落盘后释放其运行期状态；不可把该方法用于仍在执行的任务。 */
+  discardTask(taskId: string) {
+    this.traces.delete(taskId);
   }
 
   /** 返回可直接导入 ui.perfetto.dev 的 JSON；运行中 span 以导出时刻截断，但不会改写其内存状态。 */
