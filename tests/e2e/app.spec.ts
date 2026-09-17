@@ -11,6 +11,7 @@
  * 7. 检查当前会话统计默认收起，展开后使用已保存事件显示 token、LLM、工具成功率、运行时间和已结束任务的 Perfetto 下载入口。
  * 8. 验证用户和 agent 消息的 Markdown 标题、链接、代码围栏、表格和任务列表渲染，并拒绝原始 HTML。
  * 9. 检查任务输入框以所见即所得方式将 Markdown 输入规则原地转换为富文本，并将生成的 Markdown 发送给任务。
+ * 10. 累积较长时间线后检查滚动窗口外只保留高度占位，滚动到另一端才创建对应消息节点。
  *
  * 页面刷新或重连不能重新提交任务。这里不调用真实模型。
  */
@@ -510,9 +511,7 @@ test("context compression notice and original history survive refresh", async ({
     page.getByText("正在整理上下文，已保存的历史对话不会删除。"),
   ).toBeVisible();
   await project.getByRole("button", { name: "新对话" }).click();
-  await expect(
-    page.getByRole("heading", { name: "正在打开对话…" }),
-  ).toBeVisible();
+  // 快照已在本机完成时不会稳定地经过短暂加载态；另一个延迟快照用例覆盖该反馈。
   await expect(page.getByLabel("任务描述")).toBeVisible();
   await project.getByRole("button", { name: "准备上下文压缩" }).click();
   await expect(page.getByText(/上下文已整理：/)).toBeVisible({
@@ -706,6 +705,55 @@ test("shows unified file-edit progress and retains it after reload", async ({
     await expect(page.getByText("：已写入", { exact: false })).toHaveCount(2);
     await expect(
       page.getByText("写入中或结果未知", { exact: false }),
+    ).toHaveCount(0);
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
+test("virtualizes timeline entries outside the visible scroll window", async ({
+  page,
+}) => {
+  const workspace = await realpath(
+    await mkdtemp(path.join(tmpdir(), "codeatelier-virtual-timeline-")),
+  );
+
+  try {
+    await page.goto("/");
+    await createInitialConversation(page, workspace);
+
+    for (let index = 1; index <= 12; index += 1) {
+      await page.getByLabel("任务描述").fill(`虚拟时间线条目 ${index}`);
+      await page.getByRole("button", { name: "开始执行" }).click();
+      await expect(
+        page.getByRole("button", { name: "停止任务" }),
+      ).toBeVisible();
+      await expect(page.getByRole("button", { name: "停止任务" })).toHaveCount(
+        0,
+      );
+    }
+
+    const scrollArea = page.locator('[class*="scrollArea"]');
+    await scrollArea.evaluate((element) => {
+      element.scrollTop = element.scrollHeight;
+    });
+    await expect(
+      page.locator('[data-timeline-placeholder="before"]'),
+    ).toHaveCount(1);
+    const timelineItems = page.locator("[data-timeline-key]");
+    expect(await timelineItems.count()).toBeLessThan(24);
+
+    await scrollArea.evaluate((element) => {
+      element.scrollTop = 0;
+    });
+    await expect(
+      page.locator('[data-timeline-placeholder="after"]'),
+    ).toHaveCount(1);
+    await expect(
+      timelineItems.getByText("虚拟时间线条目 1", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      timelineItems.getByText("虚拟时间线条目 12", { exact: true }),
     ).toHaveCount(0);
   } finally {
     await rm(workspace, { recursive: true, force: true });

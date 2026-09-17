@@ -53,6 +53,7 @@ export default function App() {
     setError,
   );
   const bottom = useRef<HTMLDivElement>(null);
+  const scrollArea = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     bootstrap()
@@ -429,7 +430,7 @@ export default function App() {
           </div>
         )}
         {data && !loading && <SessionStatistics data={data} />}
-        <div className={s.scrollArea}>
+        <div ref={scrollArea} className={s.scrollArea}>
           {addingProject || !selected ? (
             <section className={s.welcome}>
               <div className={s.eyebrow}>IDEAS INTO WORKING CODE</div>
@@ -507,7 +508,13 @@ export default function App() {
                 <code>{data?.session.workspace}</code>
                 <span>本地项目</span>
               </div>
-              {data && <Timeline data={data} onError={setError} />}
+              {data && (
+                <Timeline
+                  data={data}
+                  onError={setError}
+                  scrollContainerRef={scrollArea}
+                />
+              )}
               {data && !data.events.length && (
                 <div className={s.sessionEmpty}>
                   <span>✳</span>

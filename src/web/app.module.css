@@ -650,6 +650,12 @@
   margin: auto;
   padding: 0 45px 32px;
 }
+.timelineItem {
+  contain: layout;
+}
+.timelinePlaceholder {
+  pointer-events: none;
+}
 .userMessage,
 .assistantMessage {
   margin: 25px 0 20px;
