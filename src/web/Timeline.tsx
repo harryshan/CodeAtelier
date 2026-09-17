@@ -5,8 +5,9 @@
  * 1. labels 和 textResult 处理工具名称及结果的显示格式。
  * 2. 按任务、步骤和尝试次数合并流式文本；已有完整 assistant 事件时去掉对应的临时文本，未完成文本紧随其最后一个 delta，而非错误追加到时间线末尾。MarkdownMessage 负责安全渲染用户和 agent 文本。
  * 3. 合并同一编辑批次的逐文件最新状态；按调用 ID 聚合 run_command、git 的流式输出和最终结果，再显示其余工具、diff、预算和各类模型用量通知。
- * 4. 将可见条目及缓冲区交给虚拟列表；ResizeObserver 测得的高度用于在未渲染历史前后保留准确占位。
- * 5. 显示仍在接收的文本和待审批按钮，把用户选择发给后端。
+ * 4. 已完成任务默认仅保留用户输入和最后一条 agent 输出，将中间过程收纳为可展开区域；未完成、失败、取消和中断任务继续完整显示。
+ * 5. 将可见条目及缓冲区交给虚拟列表；ResizeObserver 测得的高度用于在未渲染历史前后保留准确占位。
+ * 6. 显示仍在接收的文本和待审批按钮，把用户选择发给后端。
  *
  * 失败尝试的半截文本不能拼进重试后的回复。命令有输出不代表成功，退出码和错误信息要保留；
  * 视区外条目不创建 Markdown、工具卡片或审批控件，只有滚动尺寸占位，重新进入视区后才渲染。
@@ -184,9 +185,89 @@ type EditBatch = {
 
 type TimelineEntry =
   | { key: string; kind: "event"; event: Event }
-  | { key: string; kind: "streaming"; text: string }
+  | { key: string; kind: "streaming"; taskId: string; text: string }
   | { key: string; kind: "approval"; approval: Snapshot["approvals"][number] }
-  | { key: string; kind: "interrupted" };
+  | { key: string; kind: "interrupted"; taskId: string }
+  | { key: string; kind: "process"; taskId: string; entries: TimelineEntry[] };
+
+function taskIdForEntry(entry: TimelineEntry) {
+  if (entry.kind === "event") {
+    return entry.event.taskId;
+  }
+
+  if (entry.kind === "streaming" || entry.kind === "interrupted") {
+    return entry.taskId;
+  }
+
+  if (entry.kind === "approval") {
+    return entry.approval.taskId;
+  }
+
+  return entry.taskId;
+}
+
+function collapseCompletedTaskProcesses(
+  entries: TimelineEntry[],
+  events: Event[],
+  tasks: Snapshot["tasks"],
+) {
+  const completedTaskIds = new Set(
+    tasks.filter((task) => task.status === "completed").map((task) => task.id),
+  );
+  const latestAssistantEventByTask = new Map<string, number>();
+
+  for (const event of events) {
+    if (event.type === "assistant" && completedTaskIds.has(event.taskId)) {
+      latestAssistantEventByTask.set(event.taskId, event.id);
+    }
+  }
+
+  const collapsed: TimelineEntry[] = [];
+  let processEntries: TimelineEntry[] = [];
+  let processTaskId: string | undefined;
+
+  const flushProcess = () => {
+    if (!processTaskId || !processEntries.length) {
+      return;
+    }
+
+    collapsed.push({
+      key: `process:${processTaskId}:${processEntries[0].key}`,
+      kind: "process",
+      taskId: processTaskId,
+      entries: processEntries,
+    });
+    processEntries = [];
+    processTaskId = undefined;
+  };
+
+  for (const entry of entries) {
+    const taskId = taskIdForEntry(entry);
+    const isCompletedTask = completedTaskIds.has(taskId);
+    const isUserInput = entry.kind === "event" && entry.event.type === "user";
+    const isFinalOutput =
+      entry.kind === "event" &&
+      entry.event.type === "assistant" &&
+      latestAssistantEventByTask.get(taskId) === entry.event.id;
+
+    if (!isCompletedTask || isUserInput || isFinalOutput) {
+      flushProcess();
+      collapsed.push(entry);
+      continue;
+    }
+
+    if (processTaskId && processTaskId !== taskId) {
+      flushProcess();
+    }
+
+    processTaskId = taskId;
+    processEntries.push(entry);
+  }
+
+  flushProcess();
+
+  return collapsed;
+}
 
 function eventHasTimelineContent(
   event: Event,
@@ -408,6 +489,77 @@ function TimelineEvent({
   return null;
 }
 
+function StreamingMessage({
+  active,
+  data,
+  entry,
+}: {
+  active?: Snapshot["tasks"][number];
+  data: Snapshot;
+  entry: Extract<TimelineEntry, { kind: "streaming" }>;
+}) {
+  return (
+    <article className={s.assistantMessage}>
+      <div className={s.messageLabel}>
+        ✳ CodeAtelier{" "}
+        <span className={s.pulse}>
+          {active &&
+          entry.taskId === active.id &&
+          !data.events.some(
+            (event) =>
+              event.type === "notice" &&
+              entry.key ===
+                `streaming:${event.taskId}:${event.data.step}:${event.data.attempt || 1}`,
+          )
+            ? "生成中"
+            : "未完成的回复"}
+        </span>
+      </div>
+      <MarkdownMessage text={entry.text} />
+    </article>
+  );
+}
+
+function TaskProcess({
+  data,
+  entries,
+  outputEvents,
+  editBatches,
+}: {
+  data: Snapshot;
+  entries: TimelineEntry[];
+  outputEvents: ReturnType<typeof toolOutputCards>;
+  editBatches: Map<string, EditBatch>;
+}) {
+  return (
+    <details className={s.taskProcess} data-task-process>
+      <summary>展开任务过程（{entries.length} 项）</summary>
+      <div className={s.taskProcessContent}>
+        {entries.map((entry) => {
+          if (entry.kind === "event") {
+            return (
+              <TimelineEvent
+                key={entry.key}
+                event={entry.event}
+                outputEvents={outputEvents}
+                editBatches={editBatches}
+              />
+            );
+          }
+
+          if (entry.kind === "streaming") {
+            return (
+              <StreamingMessage key={entry.key} data={data} entry={entry} />
+            );
+          }
+
+          return null;
+        })}
+      </div>
+    </details>
+  );
+}
+
 function useVirtualTimeline(
   entries: TimelineEntry[],
   scrollContainerRef: RefObject<HTMLDivElement | null>,
@@ -596,21 +748,22 @@ export function Timeline({
     entries.push({
       key: `streaming:${key}`,
       kind: "streaming",
+      taskId: key.split(":", 1)[0],
       text: state.text,
     });
     streamingAfterEvent.set(state.lastEventId, entries);
   }
 
-  const entries: TimelineEntry[] = [];
+  const timelineEntries: TimelineEntry[] = [];
   for (const event of data.events) {
     if (eventHasTimelineContent(event, outputEvents, editBatches)) {
-      entries.push({ key: `event:${event.id}`, kind: "event", event });
+      timelineEntries.push({ key: `event:${event.id}`, kind: "event", event });
     }
 
-    entries.push(...(streamingAfterEvent.get(event.id) ?? []));
+    timelineEntries.push(...(streamingAfterEvent.get(event.id) ?? []));
   }
 
-  entries.push(
+  timelineEntries.push(
     ...data.approvals.map((approval) => ({
       key: `approval:${approval.id}`,
       kind: "approval" as const,
@@ -621,7 +774,13 @@ export function Timeline({
       .map((task) => ({
         key: `interrupted:${task.id}`,
         kind: "interrupted" as const,
+        taskId: task.id,
       })),
+  );
+  const entries = collapseCompletedTaskProcesses(
+    timelineEntries,
+    data.events,
+    data.tasks,
   );
   const { measureItem, range } = useVirtualTimeline(
     entries,
@@ -654,24 +813,15 @@ export function Timeline({
             />
           )}
           {entry.kind === "streaming" && (
-            <article className={s.assistantMessage}>
-              <div className={s.messageLabel}>
-                ✳ CodeAtelier{" "}
-                <span className={s.pulse}>
-                  {active &&
-                  entry.key.startsWith(`streaming:${active.id}:`) &&
-                  !data.events.some(
-                    (event) =>
-                      event.type === "notice" &&
-                      entry.key ===
-                        `streaming:${event.taskId}:${event.data.step}:${event.data.attempt || 1}`,
-                  )
-                    ? "生成中"
-                    : "未完成的回复"}
-                </span>
-              </div>
-              <MarkdownMessage text={entry.text} />
-            </article>
+            <StreamingMessage active={active} data={data} entry={entry} />
+          )}
+          {entry.kind === "process" && (
+            <TaskProcess
+              data={data}
+              entries={entry.entries}
+              outputEvents={outputEvents}
+              editBatches={editBatches}
+            />
           )}
           {entry.kind === "approval" && (
             <section className={s.approval}>

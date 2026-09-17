@@ -11,8 +11,9 @@
  * 7. 检查当前会话统计默认收起，展开后使用已保存事件显示 token、LLM、工具成功率、运行时间和已结束任务的 Perfetto 下载入口。
  * 8. 验证用户和 agent 消息的 Markdown 标题、链接、代码围栏、表格和任务列表渲染，并拒绝原始 HTML。
  * 9. 检查任务输入框以所见即所得方式将 Markdown 输入规则原地转换为富文本，并将生成的 Markdown 发送给任务。
- * 10. 累积较长时间线后检查滚动窗口外只保留高度占位，滚动到另一端才创建对应消息节点。
- * 11. 在手机视口检查完整侧栏由菜单按钮打开，并可通过会话选择、遮罩或 Escape 关闭。
+ * 10. 已完成任务默认仅显示输入和最后一轮输出；中间工具、通知和重试文本收纳为可展开过程，未完成任务仍完整显示。
+ * 11. 累积较长时间线后检查滚动窗口外只保留高度占位，滚动到另一端才创建对应消息节点。
+ * 12. 在手机视口检查完整侧栏由菜单按钮打开，并可通过会话选择、遮罩或 Escape 关闭。
  *
  * 页面刷新或重连不能重新提交任务。这里不调用真实模型。
  */
@@ -25,6 +26,14 @@ import path from "node:path";
 async function createInitialConversation(page: Page, workspace: string) {
   await page.getByLabel("项目目录").fill(workspace);
   await page.getByRole("button", { name: "连接项目并新建对话" }).click();
+}
+
+async function expandTaskProcess(page: Page) {
+  await page
+    .locator("[data-task-process]")
+    .last()
+    .locator(":scope > summary")
+    .click();
 }
 
 test("create a session, edit a file, inspect diff and reload history", async ({
@@ -46,7 +55,12 @@ test("create a session, edit a file, inspect diff and reload history", async ({
   await page.getByRole("button", { name: "开始执行" }).click();
 
   await expect(page.getByText("任务完成，已检查工具结果。")).toBeVisible();
-  await expect(page.getByRole("button", { name: "修改文件" })).toBeVisible();
+  await expect(
+    page.locator("article").filter({ hasText: "修改文件" }),
+  ).toBeVisible();
+  await expect(page.getByText(/展开任务过程（\d+ 项）/)).toBeVisible();
+  await expect(page.getByText("修改预览")).toBeHidden();
+  await expandTaskProcess(page);
   await expect(page.getByText("修改预览")).toBeVisible();
   expect(await readFile(path.join(workspace, "result.txt"), "utf8")).toContain(
     "CodeAtelier verified",
@@ -59,6 +73,9 @@ test("create a session, edit a file, inspect diff and reload history", async ({
   await page.getByRole("button", { name: "修改文件" }).click();
 
   await expect(page.getByText("任务完成，已检查工具结果。")).toBeVisible();
+  await expect(page.getByText("修改预览")).toBeHidden();
+  await expandTaskProcess(page);
+  await expect(page.getByText("修改预览")).toBeVisible();
   expect(errors).toEqual([]);
 });
 
@@ -252,17 +269,22 @@ test("groups streamed command output and its final status in one persistent card
   await expect(page.getByText("允许这次操作？")).toBeVisible();
   await page.getByRole("button", { name: "允许一次" }).click();
 
+  await expect(page.getByText("任务完成，已检查工具结果。")).toBeVisible();
+  await expect(page.getByText("VERIFIED", { exact: true })).toBeHidden();
+  await expandTaskProcess(page);
   await expect(page.getByText("VERIFIED", { exact: true })).toBeVisible();
   await expect(page.getByText("退出码：0")).toBeVisible();
   await expect(
-    page.locator("details").filter({ hasText: "VERIFIED" }),
+    page.locator("details details").filter({ hasText: "VERIFIED" }),
   ).toHaveCount(1);
   await page.reload();
   await page.getByRole("button", { name: "执行命令并查看输出" }).click();
 
+  await expect(page.getByText("VERIFIED", { exact: true })).toBeHidden();
+  await expandTaskProcess(page);
   await expect(page.getByText("VERIFIED", { exact: true })).toBeVisible();
   await expect(
-    page.locator("details").filter({ hasText: "VERIFIED" }),
+    page.locator("details details").filter({ hasText: "VERIFIED" }),
   ).toHaveCount(1);
 });
 
@@ -276,8 +298,10 @@ test("groups Git output and its final status in one persistent card", async ({
   await page.getByLabel("任务描述").fill("查看 Git 输出");
   await page.getByRole("button", { name: "开始执行" }).click();
 
+  await expect(page.getByText("任务完成，已检查工具结果。")).toBeVisible();
+  await expandTaskProcess(page);
   const gitCard = page
-    .locator("details")
+    .locator("details details")
     .filter({ hasText: "Git 操作 status" });
 
   await expect(gitCard).toHaveCount(1);
@@ -285,8 +309,9 @@ test("groups Git output and its final status in one persistent card", async ({
   await page.reload();
   await page.getByRole("button", { name: "查看 Git 输出" }).click();
 
+  await expandTaskProcess(page);
   await expect(
-    page.locator("details").filter({ hasText: "Git 操作 status" }),
+    page.locator("details details").filter({ hasText: "Git 操作 status" }),
   ).toHaveCount(1);
 });
 
@@ -334,6 +359,9 @@ test("model retries keep incomplete text separate from the successful response",
   await page.getByRole("button", { name: "开始执行" }).click();
 
   await expect(page.getByText("任务完成，已检查工具结果。")).toBeVisible();
+  await expect(page.getByText("第一次尝试的部分回复")).toBeHidden();
+  await expect(page.getByText("未完成的回复")).toBeHidden();
+  await expandTaskProcess(page);
   await expect(page.getByText("第一次尝试的部分回复")).toBeVisible();
   await expect(page.getByText("未完成的回复")).toBeVisible();
   await expect(
@@ -554,18 +582,20 @@ test("context compression notice and original history survive refresh", async ({
   // 快照已在本机完成时不会稳定地经过短暂加载态；另一个延迟快照用例覆盖该反馈。
   await expect(page.getByLabel("任务描述")).toBeVisible();
   await project.getByRole("button", { name: "准备上下文压缩" }).click();
-  await expect(page.getByText(/上下文已整理：/)).toBeVisible({
-    timeout: 15000,
-  });
+  await expect(page.getByText(/上下文已整理：/)).toBeHidden();
   await expect(
     page.getByText("任务完成，已检查工具结果。", { exact: true }),
   ).toBeVisible();
+  await expandTaskProcess(page);
+  await expect(page.getByText(/上下文已整理：/)).toBeVisible();
   await page.reload();
   await page.getByRole("button", { name: "准备上下文压缩" }).click();
   await expect(
     page.getByRole("main").getByText("准备上下文压缩", { exact: true }),
   ).toBeVisible();
   await expect(page.getByText("已准备长历史。", { exact: true })).toBeVisible();
+  await expect(page.getByText(/上下文已整理：/)).toBeHidden();
+  await expandTaskProcess(page);
   await expect(page.getByText(/上下文已整理：/)).toBeVisible();
 });
 
@@ -579,6 +609,11 @@ test("shows discovered token budget and persisted actual usage", async ({
   await createInitialConversation(page, workspace);
   await page.getByLabel("任务描述").fill("检查 token 用量");
   await page.getByRole("button", { name: "开始执行" }).click();
+  await expect(page.getByText("任务完成，已检查工具结果。")).toBeVisible();
+  await expect(
+    page.getByText("上下文预算：token 模式", { exact: true }),
+  ).toBeHidden();
+  await expandTaskProcess(page);
   await expect(
     page.getByText("上下文预算：token 模式", { exact: true }),
   ).toBeVisible();
@@ -593,6 +628,7 @@ test("shows discovered token budget and persisted actual usage", async ({
   ).toBeVisible();
   await page.reload();
   await page.getByRole("button", { name: "检查 token 用量" }).click();
+  await expandTaskProcess(page);
   await expect(
     page.getByText("模型用量（服务实报）：输入 100 / 输出 20 token", {
       exact: true,
@@ -731,6 +767,8 @@ test("shows unified file-edit progress and retains it after reload", async ({
     await page.getByLabel("任务描述").fill("批量编辑文件");
     await page.getByRole("button", { name: "开始执行" }).click();
     await expect(page.getByText("任务完成，已检查工具结果。")).toBeVisible();
+    await expect(page.getByText("文件编辑进度", { exact: true })).toBeHidden();
+    await expandTaskProcess(page);
     await expect(page.getByText("文件编辑进度", { exact: true })).toBeVisible();
     await expect(page.getByText("：已写入", { exact: false })).toHaveCount(2);
     await expect(page.getByText("修改预览", { exact: false })).toHaveCount(2);
@@ -742,6 +780,7 @@ test("shows unified file-edit progress and retains it after reload", async ({
     await page
       .getByRole("button", { name: "批量编辑文件", exact: true })
       .click();
+    await expandTaskProcess(page);
     await expect(page.getByText("：已写入", { exact: false })).toHaveCount(2);
     await expect(
       page.getByText("写入中或结果未知", { exact: false }),
@@ -816,6 +855,7 @@ test("shows every failed file while retaining successful batch edits", async ({
     await page.getByLabel("任务描述").fill("批量编辑部分失败");
     await page.getByRole("button", { name: "开始执行" }).click();
     await expect(page.getByText("任务完成，已检查工具结果。")).toBeVisible();
+    await expandTaskProcess(page);
     await expect(
       page.getByText("a.txt：已写入", { exact: true }),
     ).toBeVisible();
@@ -829,6 +869,7 @@ test("shows every failed file while retaining successful batch edits", async ({
     await page
       .getByRole("button", { name: "批量编辑部分失败", exact: true })
       .click();
+    await expandTaskProcess(page);
     await expect(
       page.getByText("a.txt：已写入", { exact: true }),
     ).toBeVisible();

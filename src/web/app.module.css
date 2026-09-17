@@ -660,6 +660,22 @@
 .timelinePlaceholder {
   pointer-events: none;
 }
+.taskProcess {
+  margin: 14px 0;
+  border: 1px solid #283840;
+  border-radius: 7px;
+  background: #182227;
+}
+.taskProcess summary {
+  padding: 11px 13px;
+  cursor: pointer;
+  color: #8dafa2;
+  font-size: 12px;
+}
+.taskProcessContent {
+  padding: 0 13px 1px;
+  border-top: 1px solid #283840;
+}
 .userMessage,
 .assistantMessage {
   margin: 25px 0 20px;
@@ -803,7 +819,8 @@
 .tool summary,
 .outputCard summary,
 .toolResult summary,
-.diff summary {
+.diff summary,
+.taskProcess summary {
   padding: 11px 13px;
   font-size: 12px;
   cursor: pointer;
