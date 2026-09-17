@@ -21,7 +21,7 @@ Node.js 24，pnpm 11.22.0（packageManager 固定）。提交 pnpm-lock.yaml，�
 
 ## 配置
 
-后端启动时读取本地 `.env`。API 地址、主模型和可选辅助模型的唯一来源是 `.env` 或进程环境；无论是否已有 `settings.json`，都必须提供 API 地址和主模型，否则启动明确报错。设置界面只读显示连接字段，修改 `.env` 后须重启或重载服务。推荐通过 Web UI 为当前进程输入密钥，或使用环境变量；本地 `.env` 仅供开发使用，不提交 Git。
+后端启动时读取本地 `.env`。API 地址、主模型和可选辅助模型的唯一来源是 `.env` 或进程环境；无论是否已有 `settings.json`，都必须提供 API 地址和主模型，否则启动明确报错。设置界面只读显示连接字段，修改 `.env` 后须重启或重载服务。访问密码门禁也只在服务启动时读取环境变量，修改后同样须重启或重载。推荐通过 Web UI 为当前进程输入密钥，或使用环境变量；本地 `.env` 仅供开发使用，不提交 Git。
 
 | 环境变量                     | 默认 / 用途                                                                       |
 | ---------------------------- | --------------------------------------------------------------------------------- |
@@ -31,10 +31,14 @@ Node.js 24，pnpm 11.22.0（packageManager 固定）。提交 pnpm-lock.yaml，�
 | CODEATELIER_API_KEY          | 无默认值                                                                          |
 | CODEATELIER_DATA_DIR         | 平台用户数据目录                                                                  |
 | CODEATELIER_PORT             | 4142                                                                              |
-| CODEATELIER_LISTEN_ADDRESS   | `127.0.0.1`；可选 `::1`、`0.0.0.0`（开放 IPv4 局域网）或 `::`（开放 IPv6 局域网） |
-| CODEATELIER_LOG_LEVEL        | info                                                                              |
+| CODEATELIER_LISTEN_ADDRESS            | `127.0.0.1`；可选 `::1`、`0.0.0.0`（开放 IPv4 局域网）或 `::`（开放 IPv6 局域网） |
+| CODEATELIER_WEB_PASSWORD_ENABLED      | false；只能为 `true` 或 `false`，启用 Web UI 单一访问密码门禁                      |
+| CODEATELIER_WEB_PASSWORD              | 无默认值；开关为 `true` 时必须为非空密码，不写入设置、浏览器配置或日志              |
+| CODEATELIER_LOG_LEVEL                 | info                                                                              |
 
 `settings.json` 只保存非连接偏好：主/辅助模型的思考等级、任务限制（包括 `maxConcurrentTasks`）和日志级别；通过 UI 修改。已保存偏好优先于同名环境默认值。API 地址、主/辅助模型标识绝不写入该文件；旧版本留下的同名字段会在读取时忽略，并在下一次保存偏好时移除。密钥始终来自环境或当前进程内存，不写 `settings.json`。存在运行中或排队任务时禁止修改配置。
+
+访问门禁在服务启动时读取 `CODEATELIER_WEB_PASSWORD_ENABLED` 与 `CODEATELIER_WEB_PASSWORD`：默认关闭；设为 `true` 时密码不能为空，否则服务拒绝启动。启用后，浏览器必须先在门禁页提交正确密码，服务才会发放仅本进程有效的 HttpOnly、SameSite=Strict cookie，并允许读取 bootstrap、会话、SSE 及其他 API；密码不会发送到前端构建环境、持久化设置或日志。关闭或重启服务会轮换该 cookie，需再次验证。它是单一共享密码，不提供账户、用户身份、角色、找回密码、限流或公网安全保证。
 
 思考等级在“模型与设置”中选择，保存为 `reasoningEffort`，每次主任务 Responses 请求显式发送 `reasoning.effort`，主任务和上下文摘要共用。默认 high，旧配置缺少字段时采用环境默认值或 high。例如 `.env` 中设置 `CODEATELIER_REASONING_EFFORT=high`；已保存偏好优先，保存后用于后续调用。辅助模型标识由 `CODEATELIER_AUXILIARY_MODEL` 决定，其推理强度 `auxiliaryReasoningEffort` 可按同一规则保存。服务或模型不支持所选等级时按现有错误流程报告，不静默降级。低成本审批不会以主模型替代未配置的辅助模型。
 
@@ -143,7 +147,7 @@ Git 不经 `run_command` 执行，而使用单一 `git` 工具；模型可以主
 - 数据目录不可写：先检查该目录所有权和 ACL，或使用 CODEATELIER_DATA_DIR 指定可写目录；不要扩大系统目录权限。
 - 端口占用：用 CODEATELIER_PORT 指定其他端口；开发 Vite 代理会自动读取同一个环境变量。
 - IPv6 回环：设置 CODEATELIER_LISTEN_ADDRESS=::1 后使用 `http://[::1]:端口` 访问；开发 Vite 代理会自动使用相同地址。
-- 局域网访问：设置 `CODEATELIER_LISTEN_ADDRESS=0.0.0.0` 或 `::` 后，后端和 `pnpm dev:web` 都在相应通配地址监听；用运行服务电脑的局域网 IP 和对应端口访问，不要在浏览器中使用 `0.0.0.0` 或 `::`。该模式没有用户认证，任何可达设备都可操作 agent；仅用于受信任网络，并使用操作系统或路由器防火墙拒绝公网入站访问。
+- 局域网访问：设置 `CODEATELIER_LISTEN_ADDRESS=0.0.0.0` 或 `::` 后，后端和 `pnpm dev:web` 都在相应通配地址监听；用运行服务电脑的局域网 IP 和对应端口访问，不要在浏览器中使用 `0.0.0.0` 或 `::`。默认任何可达设备都可操作 agent；可设置 `CODEATELIER_WEB_PASSWORD_ENABLED=true` 和非空 `CODEATELIER_WEB_PASSWORD` 要求先通过单一密码门禁，但这不替代受信任网络、防火墙或公网入站限制。
 
 ## 贡献流程
 

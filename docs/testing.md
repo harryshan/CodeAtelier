@@ -35,10 +35,10 @@
 | 模型设置                       | config.test.ts、regressions.test.ts                                                | 连接只来自环境、settings.json 仅保存偏好、端点规范化、连接改动拒绝、参数边界、失败更新保持原状态、密钥内存存储、损坏配置不覆盖                                                                                                                                                                                                                                                   |
 | 日志                           | logging.test.ts、core.test.ts                                                      | 级别过滤、紧凑纯文本格式、上下文字段、错误元数据/原因链/堆栈、凭据脱敏、轮转、存储故障降级                                                                                                                                                                                                                                                                                       |
 | Perfetto tracing               | tracing.test.ts、tool-graph.test.ts、e2e/app.spec.ts                               | 任务、`context.prepare` 下的预算请求视图计量/压缩与 `context.request` 下的计量/机械整理阶段、独立模型与响应处理、工具计划/持久化及 instant/flow 事件导出为 Trace Event JSON；主线程嵌套 begin/end slice、Task 包络、时序排序、整数 flow ID、最多 4 条可复用工具调度轨道、实际 tool 的完整结构化参数及递归凭据脱敏、按 session/task 独立持久化、终态后释放内存、认证下载、仅显示真实文件的统计框入口、关联元数据与普通长属性限长                        |
-| HTTP API 与监听范围            | server.test.ts、listen-address.test.ts、core.test.ts                               | 会话/任务接口、参数校验、跨工作区并行与同工作区排队、默认 IPv4/IPv6 回环、显式 IPv4/IPv6 局域网通配监听、Host/Origin/cookie/token、运行/排队任务时的配置更新互斥、取消与恢复                                                                                                                                                                                                     |
+| HTTP API、访问密码与监听范围   | access-password.test.ts、server.test.ts、listen-address.test.ts、core.test.ts       | 环境开关默认关闭、非法开关/启用时缺少密码拒绝启动、正确/错误密码、HttpOnly 门禁 cookie、未验证 API 拒绝；会话/任务接口、参数校验、跨工作区并行与同工作区排队、默认 IPv4/IPv6 回环、显式 IPv4/IPv6 局域网通配监听、Host/Origin/cookie/token、运行/排队任务时的配置更新互斥、取消与恢复 |
 | 服务关闭                       | shutdown.test.ts、e2e/app.spec.ts                                                  | 关闭授权与确认、正在执行命令的中断保存、SSE 结束、端口释放、重复清理、实际入口进程退出、关闭页面与失败反馈                                                                                                                                                                                                                                                                       |
 | 开发服务重载                   | e2e/app.spec.ts                                                                    | 从侧栏完整刷新页面，重新请求 bootstrap 并恢复可操作的本机界面；不把页面刷新误作服务器进程重启                                                                                                                                                                                                                                                                                    |
-| Web UI                         | e2e/app.spec.ts、timeline-virtualization.test.ts                                   | 建会话、首条消息标题更新、任务与 diff、历史续聊及隔离、项目内折叠和最近记录限制、审批与取消、有流式输出工具的卡片聚合与历史重载、设置、人工恢复、重试文本隔离、Markdown 输入规则原地转换为富文本且不显示独立预览、消息中的标题/链接/代码围栏/表格/任务列表及原始 HTML 拒绝、SSE 失效重连及切换会话时的加载反馈；手机视口可通过菜单完整打开侧栏，并由会话选择、遮罩或 Escape 收起；时间线按滚动位置和缓冲范围只创建可视条目，其余历史以准确高度占位 |
+| Web UI                         | e2e/app.spec.ts、e2e/access-password.spec.ts、timeline-virtualization.test.ts      | 访问密码开启时先显示门禁、错误密码不进入主页面且正确密码后加载主页面；建会话、首条消息标题更新、任务与 diff、历史续聊及隔离、项目内折叠和最近记录限制、审批与取消、有流式输出工具的卡片聚合与历史重载、设置、人工恢复、重试文本隔离、Markdown 输入规则原地转换为富文本且不显示独立预览、消息中的标题/链接/代码围栏/表格/任务列表及原始 HTML 拒绝、SSE 失效重连及切换会话时的加载反馈；手机视口可通过菜单完整打开侧栏，并由会话选择、遮罩或 Escape 收起；时间线按滚动位置和缓冲范围只创建可视条目，其余历史以准确高度占位 |
 
 ## 本轮复现并修复的缺陷
 
@@ -46,7 +46,7 @@
 - endLine 小于 startLine 时返回成功空读取。现在拒绝无效范围，避免将错误输入当作成功读取。
 - 原结构化 JSON 日志的 token/password 等字段未被文本脱敏识别。增加内部字段脱敏，测试包含嵌套字段和转义引号；当前落盘前再格式化为纯文本，不泄露凭据。
 
-测试清单不等于穷尽所有输入或保证没有缺陷。当前未进行断电/磁盘损坏恢复、真实模型质量统计、全浏览器矩阵、OS 级沙箱或长期压力测试；应用层权限不是系统沙箱。不得将通过现有测试描述成上述能力已经验证。
+测试清单不等于穷尽所有输入或保证没有缺陷。当前未进行断电/磁盘损坏恢复、真实模型质量统计、全浏览器矩阵、OS 级沙箱、访问密码抗暴力破解评估或长期压力测试；应用层权限和单一密码门禁都不是系统沙箱或公网安全保证。不得将通过现有测试描述成上述能力已经验证。
 
 ## 自举验收
 

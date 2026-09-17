@@ -13,7 +13,10 @@
 
 import Fastify, { LogController } from "fastify";
 import staticPlugin from "@fastify/static";
-import { registerLocalSecurity } from "./local-security.js";
+import {
+  registerLocalSecurity,
+  validatePasswordAccessConfiguration,
+} from "./local-security.js";
 import { registerSessionEvents } from "./session-events.js";
 import { existsSync } from "node:fs";
 import path from "node:path";
@@ -38,6 +41,8 @@ export async function createApp(
     logController: new LogController({ disableRequestLogging: true }),
     bodyLimit: 1048576,
   });
+  validatePasswordAccessConfiguration();
+
   const store = new Store(path.join(config.directory, "history.sqlite"));
   const engine = new Engine(store, config, log, providerFactory);
   let stopping = false;

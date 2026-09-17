@@ -32,7 +32,11 @@ export async function api<T>(
   });
 
   // 401 说明请求已被鉴权拒绝，可以刷新凭据后重试；网络错误则无法确定操作是否执行。
-  if (response.status === 401 && url !== "/bootstrap" && !refreshed) {
+  if (
+    response.status === 401 &&
+    !["/bootstrap", "/access/login"].includes(url) &&
+    !refreshed
+  ) {
     await bootstrap();
 
     return api<T>(url, body, method, true, signal);
@@ -66,3 +70,15 @@ export const snapshot = (id: string, signal?: AbortSignal) =>
 
 export const sessionTraceTaskIds = (id: string) =>
   api<{ taskIds: string[] }>("/sessions/" + id + "/traces");
+
+export type AccessStatus = {
+  enabled: boolean;
+  authenticated: boolean;
+};
+
+/** 在加载主界面前读取服务端访问门禁状态；该端点不要求已有本机会话。 */
+export const accessStatus = () => api<AccessStatus>("/access/status");
+
+/** 仅把用户在当前表单输入的密码交给同源后端，成功后的状态由 HttpOnly cookie 保存。 */
+export const loginAccess = (password: string) =>
+  api<{ ok: true }>("/access/login", { password });

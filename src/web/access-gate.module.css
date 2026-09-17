@@ -1,0 +1,96 @@
+/**
+ * AccessGate 的独立门禁布局与错误状态样式，由 AccessGate.tsx 导入。
+ *
+ * 1. gate 将验证内容置于可视区域中央，避免未验证时渲染主页面布局。
+ * 2. card、form 和 eyebrow 提供与主界面一致的紧凑深色表单层级。
+ * 3. error 仅突出服务拒绝或连接失败；按钮禁用状态仍由组件的语义属性控制。
+ *
+ * 本文件不保存或显示密码值；窄屏使用弹性宽度而不依赖主页面侧栏的响应式规则。
+ */
+
+.gate {
+  align-items: center;
+  background: #121619;
+  color: #e0e4e8;
+  display: flex;
+  font-family: Inter, "Segoe UI", "Microsoft YaHei", sans-serif;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 24px;
+}
+
+.card {
+  background: #181f22;
+  border: 1px solid #354044;
+  border-radius: 12px;
+  box-shadow: 0 18px 50px rgb(0 0 0 / 25%);
+  max-width: 420px;
+  padding: 34px;
+  width: 100%;
+}
+
+.card h1 {
+  margin: 0 0 12px;
+}
+
+.card p {
+  color: #b7c4c6;
+  line-height: 1.6;
+}
+
+.eyebrow {
+  color: #8de0c3 !important;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 1.6px;
+  margin: 0 0 8px !important;
+}
+
+.form {
+  display: grid;
+  gap: 12px;
+}
+
+.form p {
+  margin: 0 0 4px;
+}
+
+.form label {
+  color: #dce5e6;
+  font-weight: 600;
+}
+
+.form input {
+  background: #11191c;
+  border: 1px solid #37464b;
+  border-radius: 7px;
+  color: #e7eeec;
+  font: inherit;
+  padding: 12px;
+}
+
+.form input:focus {
+  border-color: #8de0c3;
+  outline: none;
+}
+
+.form button,
+.card > button {
+  background: #2c5b4c;
+  border: 1px solid #4c957b;
+  border-radius: 7px;
+  color: #effff7;
+  font: inherit;
+  font-weight: 600;
+  padding: 10px 14px;
+}
+
+.form button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.error {
+  color: #ffb4ab !important;
+  margin: 0 !important;
+}
