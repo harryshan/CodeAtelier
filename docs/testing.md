@@ -112,7 +112,7 @@ mechanical-input.test.ts 覆盖精确结果/跨路径正文引用、逐字还原
 - tests/tool-schema.test.ts 检查所有生产工具的 strict 对象声明：属性均列入 required，禁止额外属性；新调用的根节点包含严格的 `execution`（唯一 ID 与依赖列表）及 `arguments` 信封；单一 `git` 工具的每个 discriminated action 仅接受对应字段，diff 必须显式传 staged、paths 和 contextLines。此回归防止工具 schema 导致整轮模型请求被拒绝，不连接真实服务。
 - tests/tool-graph.test.ts 验证独立根节点的拓扑并发与汇聚、失败节点对子孙的阻断，以及重复 ID、未知依赖和环在任何执行回调前拒绝；engine.test.ts 覆盖模型信封解析、阻断结果回传和批次事件持久化。
 
-统一文件编辑：`files.test.ts` 覆盖 create:true 的嵌套创建、已有路径与创建期间出现路径的覆盖拒绝，以及 create:false 单文件条目中的同快照多处替换和成功修改后必须重新读取；`multi-file-edit.test.ts` 覆盖单/多文件条目的逐文件预检、重复真实路径、外部修改、审批拒绝、行号消歧、重叠拒绝、CRLF、取消，以及单文件预检/写入故障后继续独立文件、汇总全部失败路径和未知状态。`tool-schema.test.ts` 递归检查唯一 `edit_files` 的 create 分支、无前后锚点的已有文件补丁及 strict 契约；`engine.test.ts` 验证单次多文件调用及逐文件进度持久化；`e2e/app.spec.ts` 检查进度、diff 和刷新历史。已有 core 测试继续覆盖未读取及外部变化拒绝。
+统一文件编辑：`files.test.ts` 覆盖 create:true 的嵌套创建、已有路径与创建期间出现路径的覆盖拒绝，以及 create:false 单文件条目中的同快照多处替换和成功修改后必须重新读取；`multi-file-edit.test.ts` 覆盖单/多文件条目的逐文件预检、重复真实路径、外部修改、审批拒绝、行号消歧、重叠拒绝、CRLF、取消，以及单文件预检/写入故障后继续独立文件、汇总全部失败路径和未知状态。`tool-schema.test.ts` 递归检查唯一 `edit_files` 的 create 分支、无前后锚点的已有文件补丁及 strict 契约；`core.test.ts` 验证模型指令要求将参数已知、互不冲突的同一逻辑改动合并为单次 `edit_files` 调用；`engine.test.ts` 验证单次多文件调用及逐文件进度持久化；`e2e/app.spec.ts` 检查进度、diff 和刷新历史。已有 core 测试继续覆盖未读取及外部变化拒绝。
 
 行号搜索窗口回归：`multi-file-edit.test.ts` 覆盖行内/跨行片段、周围文本保留、末行 LF/CRLF、窗口内歧义（含重叠出现）、匹配跨出窗口、无范围外回退，以及多文件预检失败时独立有效文件仍可写入。
 
