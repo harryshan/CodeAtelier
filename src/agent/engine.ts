@@ -6,7 +6,7 @@
  * 2. start 保存用户消息为 queued；调度器在全局并发上限内启动不同工作区的任务，并对相同真实工作区保持互斥。
  * 3. resume 继续最后一个可恢复任务；cancel 处理用户取消，close 处理服务关闭。
  * 4. 首条 prompt 先用辅助模型生成标题；run 再读取历史和项目规则，准备工具及上下文预算。
- * 5. 为压缩提供 ToolRunner 的安全文件哈希探测；每轮先记录上下文准备/机械整理、模型重试和响应处理，再记录实际模型请求和服务实报用量。完整响应保存后校验工具 DAG，再按拓扑关系调度。
+ * 5. 为压缩提供 ToolRunner 的安全文件哈希探测；每轮以嵌套的上下文准备、请求视图、模型重试和实际模型请求记录 trace，再记录响应处理和服务实报用量。完整响应保存后校验工具 DAG，再按拓扑关系调度。
  * 6. 每个实际工具调用仍经过低成本模型的自动通过、人工确认或拒绝分流；模型故障和无效输出保守降级为人工确认，并持久化可审计的决定。
  * 7. 工具批次、节点状态和结果都附带批次/调用标识；ToolRunner 确认实际执行开始后才记录工具耗时，并在可复用调度轨道显示执行和结果持久化；退出时将安全 trace 写入会话/任务文件、释放运行期记录并发出 task_end。
  *
@@ -615,6 +615,7 @@ export class Engine {
 
       const tools = [...definitions, historyDefinition];
       let compactionSpan: ReturnType<TraceRecorder["startSpan"]>;
+      let contextPrepareSpan: ReturnType<TraceRecorder["startSpan"]>;
       const compactionAttributes = (data: Record<string, unknown>) => ({
         step,
         beforeAmount:
@@ -633,6 +634,7 @@ export class Engine {
             name: "context.compaction",
             category: "context",
             track: "Main thread",
+            parentSpanId: contextPrepareSpan?.id,
             attributes: compactionAttributes(data),
           });
         } else if (event === "context.compaction_completed") {
@@ -728,6 +730,7 @@ export class Engine {
           track: "Main thread",
           attributes: { force, step },
         });
+        contextPrepareSpan = contextSpan;
         try {
           const prepared = await context.prepare(
             input,
@@ -735,18 +738,20 @@ export class Engine {
             tools,
             force,
           );
-          this.traces.endSpan(contextSpan, "ok", {
-            inputItems: prepared.length,
-          });
 
-          return prepared;
+          // 保持父 span 到请求结束，使 Perfetto 呈现准备、请求视图与 LLM 调用的真实层级。
+          return { input: prepared, span: contextSpan };
         } catch (error) {
           const traceStatus = signal.aborted ? "cancelled" : "error";
+          this.traces.endSpan(compactionSpan, traceStatus);
+          compactionSpan = undefined;
           this.traces.endSpan(contextSpan, traceStatus, {
             errorName: error instanceof Error ? error.name : typeof error,
           });
-          this.traces.endSpan(compactionSpan, traceStatus);
-          compactionSpan = undefined;
+          if (contextPrepareSpan === contextSpan) {
+            contextPrepareSpan = undefined;
+          }
+
           throw error;
         }
       };
@@ -755,7 +760,8 @@ export class Engine {
 
       for (step = 1; step <= settings.maxSteps; step++) {
         signal.throwIfAborted();
-        input = await prepareContext();
+        let preparedContext = await prepareContext();
+        input = preparedContext.input;
 
         lastFlush = Date.now();
         log.debug({ event: "model.started", step });
@@ -774,56 +780,67 @@ export class Engine {
                 name: "context.request",
                 category: "context",
                 track: "Main thread",
+                parentSpanId: preparedContext.span?.id,
                 attributes: { attempt, step },
               });
-              let request;
               try {
-                request = context.request(input, instructions, tools);
+                const request = context.request(input, instructions, tools);
                 requestInput = request.input;
+
+                if (request.after < request.before) {
+                  log.debug({
+                    event: "context.mechanical",
+                    step,
+                    attempt,
+                    before: request.before,
+                    after: request.after,
+                    unit: budget.unit,
+                  });
+                }
+
+                emit("model_request", { purpose: "task", step, attempt });
+                const response = await tracedModelProvider(
+                  provider,
+                  this.traces,
+                  {
+                    taskId: task.id,
+                    purpose: "task",
+                    model: settings.model,
+                    step,
+                    attempt,
+                    parentSpanId: requestSpan?.id,
+                  },
+                ).run(
+                  requestInput,
+                  instructions,
+                  tools,
+                  signal,
+                  (delta) => {
+                    buffer += delta;
+                    if (Date.now() - lastFlush > 100 || buffer.length > 1000) {
+                      flush();
+                    }
+                  },
+                  { maxOutputTokens: budget.outputTokens },
+                );
                 this.traces.endSpan(requestSpan, "ok", {
                   afterAmount: request.after,
                   beforeAmount: request.before,
                   inputItems: request.input.length,
                 });
+
+                return response;
               } catch (error) {
-                this.traces.endSpan(requestSpan, "error", {
-                  errorName: error instanceof Error ? error.name : typeof error,
-                });
+                this.traces.endSpan(
+                  requestSpan,
+                  signal.aborted ? "cancelled" : "error",
+                  {
+                    errorName:
+                      error instanceof Error ? error.name : typeof error,
+                  },
+                );
                 throw error;
               }
-
-              if (request.after < request.before) {
-                log.debug({
-                  event: "context.mechanical",
-                  step,
-                  attempt,
-                  before: request.before,
-                  after: request.after,
-                  unit: budget.unit,
-                });
-              }
-
-              emit("model_request", { purpose: "task", step, attempt });
-
-              return tracedModelProvider(provider, this.traces, {
-                taskId: task.id,
-                purpose: "task",
-                model: settings.model,
-                step,
-                attempt,
-              }).run(
-                requestInput,
-                instructions,
-                tools,
-                signal,
-                (delta) => {
-                  buffer += delta;
-                  if (Date.now() - lastFlush > 100 || buffer.length > 1000) {
-                    flush();
-                  }
-                },
-                { maxOutputTokens: budget.outputTokens },
-              );
             },
             signal,
             (error, failedAttempt, delayMs) => {
@@ -838,6 +855,7 @@ export class Engine {
                 name: "llm.retry_delay",
                 category: "llm",
                 track: "Main thread",
+                parentSpanId: preparedContext.span?.id,
                 attributes: {
                   delayMs,
                   failedAttempt,
@@ -859,6 +877,14 @@ export class Engine {
             },
           );
         const response = await requestModel().catch(async (error) => {
+          const traceStatus = signal.aborted ? "cancelled" : "error";
+          this.traces.endSpan(preparedContext.span, traceStatus, {
+            errorName: error instanceof Error ? error.name : typeof error,
+          });
+          if (contextPrepareSpan === preparedContext.span) {
+            contextPrepareSpan = undefined;
+          }
+
           if (error?.code !== "context_length_exceeded" || overflowRetried) {
             throw error;
           }
@@ -868,10 +894,17 @@ export class Engine {
           attemptOffset = attempt;
           lastFlush = Date.now();
           overflowRetried = true;
-          input = await prepareContext(true);
+          preparedContext = await prepareContext(true);
+          input = preparedContext.input;
 
           return requestModel();
         });
+        this.traces.endSpan(preparedContext.span, "ok", {
+          inputItems: input.length,
+        });
+        if (contextPrepareSpan === preparedContext.span) {
+          contextPrepareSpan = undefined;
+        }
 
         const responseSpan = this.traces.startSpan(task.id, {
           name: "model.response_process",

@@ -4,7 +4,7 @@
  * 仅把请求/响应的长度、数量、usage、错误类别及首个文本分块时间交给 TraceRecorder。
  *
  * 1. ModelTraceScope 固定任务、用途、模型和可选 step/attempt，作为单次调用的关联字段。
- * 2. tracedModelProvider 透传 capabilities，并在 run 前创建 llm.request；第一个 delta 生成 instant，完成或失败结束 span。
+ * 2. tracedModelProvider 透传 capabilities，并在 run 前创建可选父 span 下的 llm.request；第一个 delta 生成 instant，完成或失败结束 span。
  * 3. 不记录 input、instructions、tools、输出文本、服务错误消息或 API key 的原文；LLM span 位于 Node 主线程轨道，高保真 replay payload 由后续独立机制处理。
  */
 
@@ -17,6 +17,7 @@ export interface ModelTraceScope {
   model: string;
   step?: number;
   attempt?: number;
+  parentSpanId?: string;
 }
 
 function serializedLength(value: unknown) {
@@ -40,6 +41,7 @@ export function tracedModelProvider(
         name: "llm.request",
         category: "llm",
         track: "Main thread",
+        parentSpanId: scope.parentSpanId,
         attributes: {
           purpose: scope.purpose,
           model: scope.model,
