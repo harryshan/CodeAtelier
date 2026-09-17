@@ -97,6 +97,16 @@ it("exposes only edit_files for file writes and no directory or search tool", ()
     expect(() => parseToolArguments(name, {})).toThrow("未知工具");
   }
 
+  const editDefinition = definitions.find(
+    (definition) => definition.name === "edit_files",
+  );
+  expect(editDefinition?.description).toContain(
+    "Default startLine/endLine to null",
+  );
+  expect(editDefinition?.description).toContain(
+    "unique CRLF/LF-equivalent matching for every text file",
+  );
+
   expect(
     schemas.edit_files.parse({
       files: [

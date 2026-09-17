@@ -1219,6 +1219,13 @@ export class Engine {
                 });
               }
 
+              // 只记录匹配策略的计数；源码、oldText 和替换内容不进入 trace。
+              const editMatchModes: string[] =
+                node.name === "edit_files" && Array.isArray(result?.files)
+                  ? result.files.flatMap((file: any) =>
+                      Array.isArray(file.matchModes) ? file.matchModes : [],
+                    )
+                  : [];
               this.traces.link(modelSpan, toolSpan, "llm_to_tool");
               this.traces.endSpan(
                 toolSpan,
@@ -1227,6 +1234,22 @@ export class Engine {
                   durationMs: executionStartedAt
                     ? Date.now() - executionStartedAt
                     : 0,
+                  editExactMatches:
+                    node.name === "edit_files"
+                      ? editMatchModes.filter((mode) => mode === "exact").length
+                      : undefined,
+                  editLineEndingMatches:
+                    node.name === "edit_files"
+                      ? editMatchModes.filter(
+                          (mode) => mode === "normalized_line_endings",
+                        ).length
+                      : undefined,
+                  editWhitespaceMatches:
+                    node.name === "edit_files"
+                      ? editMatchModes.filter(
+                          (mode) => mode === "normalized_whitespace",
+                        ).length
+                      : undefined,
                 },
               );
               saveResult(node, result, executionStartedAt);

@@ -1,7 +1,7 @@
 /**
  * 使用真实 ToolRunner 和临时文件验证统一文件编辑工具，不访问模型或用户项目。
  * 1. 单/多文件的新建和已有编辑条目成功、后项校验失败、重复路径以及读取版本检查通过磁盘内容验证。
- * 2. 行号限定搜索窗口，覆盖行内/跨行片段、重复文本、原始快照偏移、范围越界、重叠、CRLF、唯一空白规范化候选和可修复诊断。
+ * 2. 行号限定搜索窗口，覆盖行内/跨行片段、重复文本、原始快照偏移、范围越界、重叠、所有文本文件的 CRLF/LF 等价定位、唯一空白候选和可修复诊断。
  * 3. 后续故障用例检查逐文件失败仍继续、版本校验、聚合错误、取消及部分写入，不假设跨文件原子性。
  */
 
@@ -616,7 +616,7 @@ it("uses scoped normalization for CRLF differences without rewriting surrounding
 
   expect(result.files).toMatchObject([
     { status: "written", matchModes: ["exact"] },
-    { status: "written", matchModes: ["normalized_whitespace"] },
+    { status: "written", matchModes: ["normalized_line_endings"] },
   ]);
   expect(await readFile(path.join(root, "a.txt"), "utf8")).toBe(
     "new one\r\ntwo suffix",
@@ -624,4 +624,101 @@ it("uses scoped normalization for CRLF differences without rewriting surrounding
   expect(await readFile(path.join(root, "b.txt"), "utf8")).toBe(
     "prefix joined suffix",
   );
+});
+
+it("matches only line-ending differences in whitespace-sensitive files and preserves their style", async () => {
+  const { runner, root } = await fileFixture();
+  await createFile(runner, "guide.md", "first\r\nsecond\r\nthird\r\n");
+  await createFile(runner, "rules.py", "if ready:\n    run()\n");
+  await createFile(runner, "anchors.md", "intro\r\nmatch\r\noutro\r\n");
+
+  const result = await runner.execute("edit_files", {
+    files: [
+      {
+        path: "guide.md",
+        create: false,
+        edits: [
+          {
+            oldText: "first\nsecond",
+            newText: "first\nupdated",
+            startLine: null,
+            endLine: null,
+          },
+        ],
+      },
+      {
+        path: "rules.py",
+        create: false,
+        edits: [
+          {
+            oldText: "if ready:\r\n    run()",
+            newText: "if ready:\r\n    execute()",
+            startLine: null,
+            endLine: null,
+          },
+        ],
+      },
+      {
+        path: "anchors.md",
+        create: false,
+        edits: [
+          {
+            oldText: "match",
+            newText: "changed\nmore",
+            beforeContext: "intro\n",
+            afterContext: "\noutro",
+            startLine: null,
+            endLine: null,
+          },
+        ],
+      },
+    ],
+  });
+
+  expect(result.files).toMatchObject([
+    { status: "written", matchModes: ["normalized_line_endings"] },
+    { status: "written", matchModes: ["normalized_line_endings"] },
+    { status: "written", matchModes: ["normalized_line_endings"] },
+  ]);
+  expect(await readFile(path.join(root, "guide.md"), "utf8")).toBe(
+    "first\r\nupdated\r\nthird\r\n",
+  );
+  expect(await readFile(path.join(root, "rules.py"), "utf8")).toBe(
+    "if ready:\n    execute()\n",
+  );
+  expect(await readFile(path.join(root, "anchors.md"), "utf8")).toBe(
+    "intro\r\nchanged\r\nmore\r\noutro\r\n",
+  );
+});
+
+it("rejects ambiguous line-ending matches without writing whitespace-sensitive files", async () => {
+  const { runner, root } = await fileFixture();
+  const original = "one\r\ntwo\r\none\r\ntwo\r\n";
+  await createFile(runner, "guide.md", original);
+
+  const result = await runner.execute("edit_files", {
+    files: [
+      {
+        path: "guide.md",
+        create: false,
+        edits: [
+          {
+            oldText: "one\ntwo",
+            newText: "updated",
+            startLine: null,
+            endLine: null,
+          },
+        ],
+      },
+    ],
+  });
+
+  expect(result.files[0]).toMatchObject({
+    status: "failed",
+    diagnostic: {
+      code: "EDIT_TARGET_AMBIGUOUS",
+      candidateLines: [1, 3],
+    },
+  });
+  expect(await readFile(path.join(root, "guide.md"), "utf8")).toBe(original);
 });

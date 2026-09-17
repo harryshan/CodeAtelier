@@ -118,7 +118,7 @@ mechanical-input.test.ts 覆盖精确结果/跨路径正文引用、逐字还原
 ### 补丁定位与可见空白回归
 
 - `tests/files.test.ts`：读取结果同时验证可复制原文、全文版本哈希和按需生成的 `visibleText` 标记。
-- `tests/multi-file-edit.test.ts`：验证普通文件的唯一空白规范化候选、CRLF/LF 差异、候选行诊断、空白敏感文件严格拒绝和显式版本冲突；歧义不会修改磁盘。
+- `tests/multi-file-edit.test.ts`：验证普通文件的唯一空白规范化候选、所有文本文件的 CRLF/LF 等价定位与原换行风格、候选行诊断、空白敏感文件对其他空白差异的严格拒绝和显式版本冲突；歧义不会修改磁盘。
 - `tests/tool-schema.test.ts` 与 `tests/tracing.test.ts`：验证新工具字段通过严格 schema，且实际执行参数（含默认的 `whitespaceMode`）仍可安全导出到 trace。
 
 ## 受监督服务重载

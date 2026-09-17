@@ -1,9 +1,9 @@
 /**
  * 为 FileEditor 在原始文本快照上规划可验证的补丁，不读取文件、不写盘，也不授予权限。
  * 1. TextEdit、ExistingFileEdit 和 NewFile 是 registry 校验后的内部参数；已有文件携带读取时的版本和可选上下文锚点，新文件只提供完整正文。
- * 2. planEdits 先在行范围或全文进行精确匹配；仅在精确匹配不存在时，才在同一范围内用空白规范化定位唯一候选，并保留真实原文坐标。
+ * 2. planEdits 在行范围或全文先精确匹配，再按 CRLF/LF 等价定位，最后仅对普通文件尝试宽松空白定位；每步都要求唯一候选并映射回真实原文坐标。
  * 3. EditPlanError 将未找到、歧义、锚点不符及空白敏感文件拒绝转换为模型可修复的结构化诊断；不确定时绝不选择候选。
- * 4. 从后向前应用已定位区间，保持其他区间坐标和文件原有换行风格不变，返回完整新文本及每项实际匹配方式。
+ * 4. 换行等价定位时按匹配片段或单行片段所在文件的统一风格转换替换文本；从后向前应用已定位区间，保持其他区间坐标不变，返回完整新文本及每项实际匹配方式。
  * 行范围包含首尾行及末行换行符；规范化只用于定位，写入始终替换真实快照片段，且不能越过搜索窗口。
  */
 
@@ -30,7 +30,8 @@ export interface NewFile {
 }
 
 export type FileEdit = ExistingFileEdit | NewFile;
-export type EditMatchMode = "exact" | "normalized_whitespace";
+export type EditMatchMode =
+  "exact" | "normalized_line_endings" | "normalized_whitespace";
 
 export interface EditDiagnostic {
   code:
@@ -142,6 +143,60 @@ function normalizeWhitespace(text: string): NormalizedText {
   return { value, starts, ends };
 }
 
+/** 只折叠 CRLF 为 LF，保留每个规范化字符在原始文本中的精确边界。 */
+function normalizeLineEndings(text: string): NormalizedText {
+  let value = "";
+  const starts: number[] = [];
+  const ends: number[] = [];
+
+  for (let index = 0; index < text.length; index++) {
+    const crlf = text[index] === "\r" && text[index + 1] === "\n";
+    value += crlf ? "\n" : text[index];
+    starts.push(index);
+    ends.push(index + (crlf ? 2 : 1));
+    if (crlf) {
+      index++;
+    }
+  }
+
+  return { value, starts, ends };
+}
+
+function allLineEndingMatches(
+  text: string,
+  target: string,
+  offset: number,
+): MatchRange[] {
+  const source = normalizeLineEndings(text);
+  const expected = normalizeLineEndings(target).value;
+  if (!expected) {
+    return [];
+  }
+
+  return allExactMatches(source.value, expected, 0).map((match) => ({
+    start: offset + source.starts[match.start],
+    end: offset + source.ends[match.end - 1],
+  }));
+}
+
+/** 优先沿用匹配片段的单一换行风格；单行片段使用文件的单一风格。 */
+function replacementForLineEndingMatch(
+  source: string,
+  replacement: string,
+  fileText: string,
+): string {
+  const sample = source.includes("\n") ? source : fileText;
+  const hasCrLf = sample.includes("\r\n");
+  const hasLf = /(?<!\r)\n/u.test(sample);
+  if (hasCrLf === hasLf) {
+    return replacement;
+  }
+
+  const ending = hasCrLf ? "\r\n" : "\n";
+
+  return replacement.replace(/\r\n|\n/gu, ending);
+}
+
 function allNormalizedMatches(
   text: string,
   target: string,
@@ -168,12 +223,41 @@ function allNormalizedMatches(
   return matches;
 }
 
-function matchesContext(before: string, range: MatchRange, edit: TextEdit) {
+function matchesContext(
+  before: string,
+  range: MatchRange,
+  edit: TextEdit,
+  normalizeEndings = false,
+) {
+  const beforeCandidate =
+    edit.beforeContext === null
+      ? ""
+      : before.slice(
+          Math.max(0, range.start - edit.beforeContext.length * 2),
+          range.start,
+        );
+  const afterCandidate =
+    edit.afterContext === null
+      ? ""
+      : before.slice(range.end, range.end + edit.afterContext.length * 2);
+  const preceding = normalizeEndings
+    ? normalizeLineEndings(beforeCandidate).value
+    : beforeCandidate;
+  const following = normalizeEndings
+    ? normalizeLineEndings(afterCandidate).value
+    : afterCandidate;
+  const expectedBefore =
+    normalizeEndings && edit.beforeContext !== null
+      ? normalizeLineEndings(edit.beforeContext).value
+      : edit.beforeContext;
+  const expectedAfter =
+    normalizeEndings && edit.afterContext !== null
+      ? normalizeLineEndings(edit.afterContext).value
+      : edit.afterContext;
+
   return (
-    (edit.beforeContext === null ||
-      before.slice(0, range.start).endsWith(edit.beforeContext)) &&
-    (edit.afterContext === null ||
-      before.slice(range.end).startsWith(edit.afterContext))
+    (expectedBefore === null || preceding.endsWith(expectedBefore)) &&
+    (expectedAfter === null || following.startsWith(expectedAfter))
   );
 }
 
@@ -193,7 +277,7 @@ function diagnostic(
     expectedDisplay: displayWhitespace(edit.oldText),
     candidateLines,
     suggestedAction:
-      "重新读取候选行（whitespaceMode:true 可显示不可见字符），缩小行范围或补充稳定上下文后再编辑。",
+      "重新读取候选行（whitespaceMode:true 可显示不可见字符），先用全文唯一的短 oldText；重复时再添加行范围或稳定上下文。",
   });
 }
 
@@ -246,6 +330,26 @@ function selectUniqueMatch(
 
   const rawExact = allExactMatches(scopedText, edit.oldText, scope.start);
   if (rawExact.length > 0) {
+    const normalizedAnchors = rawExact.filter((match) =>
+      matchesContext(before, match, edit, true),
+    );
+
+    if (normalizedAnchors.length === 1) {
+      return {
+        range: normalizedAnchors[0],
+        matchMode: "normalized_line_endings",
+      };
+    }
+
+    if (normalizedAnchors.length > 1) {
+      throw diagnostic(
+        "EDIT_TARGET_AMBIGUOUS",
+        `第 ${index + 1} 项：换行等价上下文存在多个候选，已拒绝猜测。`,
+        edit,
+        lineNumbers(normalizedAnchors),
+      );
+    }
+
     throw diagnostic(
       "EDIT_CONTEXT_MISMATCH",
       `第 ${index + 1} 项：oldText 已找到，但不满足提供的上下文锚点。`,
@@ -254,11 +358,32 @@ function selectUniqueMatch(
     );
   }
 
+  const lineEndings = allLineEndingMatches(
+    scopedText,
+    edit.oldText,
+    scope.start,
+  ).filter((match) => matchesContext(before, match, edit, true));
+  if (lineEndings.length > 1) {
+    throw diagnostic(
+      "EDIT_TARGET_AMBIGUOUS",
+      `第 ${index + 1} 项：换行等价匹配存在多个候选，已拒绝猜测。`,
+      edit,
+      lineNumbers(lineEndings),
+    );
+  }
+
+  if (lineEndings.length === 1) {
+    return {
+      range: lineEndings[0],
+      matchMode: "normalized_line_endings",
+    };
+  }
+
   const normalized = allNormalizedMatches(
     scopedText,
     edit.oldText,
     scope.start,
-  ).filter((match) => matchesContext(before, match, edit));
+  ).filter((match) => matchesContext(before, match, edit, true));
   if (!normalized.length) {
     throw diagnostic(
       "EDIT_TARGET_NOT_FOUND",
@@ -307,7 +432,14 @@ export function planEdits(
 
       return {
         ...match.range,
-        replacement: edit.newText,
+        replacement:
+          match.matchMode === "normalized_line_endings"
+            ? replacementForLineEndingMatch(
+                before.slice(match.range.start, match.range.end),
+                edit.newText,
+                before,
+              )
+            : edit.newText,
         matchMode: match.matchMode,
       };
     })
