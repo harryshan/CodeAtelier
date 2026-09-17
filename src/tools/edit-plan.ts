@@ -1,8 +1,8 @@
 /**
  * 为 FileEditor 在原始文本快照上规划可验证的补丁，不读取文件、不写盘，也不授予权限。
- * 1. TextEdit、ExistingFileEdit 和 NewFile 是 registry 校验后的内部参数；已有文件携带读取时的版本和可选上下文锚点，新文件只提供完整正文。
+ * 1. TextEdit、ExistingFileEdit 和 NewFile 是 registry 校验后的内部参数；已有文件携带读取时的版本，新文件只提供完整正文。
  * 2. planEdits 在行范围或全文先精确匹配，再按 CRLF/LF 等价定位，最后仅对普通文件尝试宽松空白定位；每步都要求唯一候选并映射回真实原文坐标。
- * 3. EditPlanError 将未找到、歧义、锚点不符及空白敏感文件拒绝转换为模型可修复的结构化诊断；不确定时绝不选择候选。
+ * 3. EditPlanError 将未找到、歧义及空白敏感文件拒绝转换为模型可修复的结构化诊断；不确定时绝不选择候选。
  * 4. 换行等价定位时按匹配片段或单行片段所在文件的统一风格转换替换文本；从后向前应用已定位区间，保持其他区间坐标不变，返回完整新文本及每项实际匹配方式。
  * 行范围包含首尾行及末行换行符；规范化只用于定位，写入始终替换真实快照片段，且不能越过搜索窗口。
  */
@@ -12,8 +12,6 @@ export interface TextEdit {
   newText: string;
   startLine: number | null;
   endLine: number | null;
-  beforeContext: string | null;
-  afterContext: string | null;
 }
 
 export interface ExistingFileEdit {
@@ -37,7 +35,6 @@ export interface EditDiagnostic {
   code:
     | "EDIT_TARGET_NOT_FOUND"
     | "EDIT_TARGET_AMBIGUOUS"
-    | "EDIT_CONTEXT_MISMATCH"
     | "EDIT_WHITESPACE_FALLBACK_DISALLOWED"
     | "EDIT_FILE_VERSION_MISMATCH"
     | "EDIT_OVERLAPPING_RANGES";
@@ -223,44 +220,6 @@ function allNormalizedMatches(
   return matches;
 }
 
-function matchesContext(
-  before: string,
-  range: MatchRange,
-  edit: TextEdit,
-  normalizeEndings = false,
-) {
-  const beforeCandidate =
-    edit.beforeContext === null
-      ? ""
-      : before.slice(
-          Math.max(0, range.start - edit.beforeContext.length * 2),
-          range.start,
-        );
-  const afterCandidate =
-    edit.afterContext === null
-      ? ""
-      : before.slice(range.end, range.end + edit.afterContext.length * 2);
-  const preceding = normalizeEndings
-    ? normalizeLineEndings(beforeCandidate).value
-    : beforeCandidate;
-  const following = normalizeEndings
-    ? normalizeLineEndings(afterCandidate).value
-    : afterCandidate;
-  const expectedBefore =
-    normalizeEndings && edit.beforeContext !== null
-      ? normalizeLineEndings(edit.beforeContext).value
-      : edit.beforeContext;
-  const expectedAfter =
-    normalizeEndings && edit.afterContext !== null
-      ? normalizeLineEndings(edit.afterContext).value
-      : edit.afterContext;
-
-  return (
-    (expectedBefore === null || preceding.endsWith(expectedBefore)) &&
-    (expectedAfter === null || following.startsWith(expectedAfter))
-  );
-}
-
 function diagnostic(
   code: EditDiagnostic["code"],
   message: string,
@@ -277,7 +236,7 @@ function diagnostic(
     expectedDisplay: displayWhitespace(edit.oldText),
     candidateLines,
     suggestedAction:
-      "重新读取候选行（whitespaceMode:true 可显示不可见字符），先用全文唯一的短 oldText；重复时再添加行范围或稳定上下文。",
+      "重新读取候选行（whitespaceMode:true 可显示不可见字符），先用全文唯一的短 oldText；重复时再缩小行范围。",
   });
 }
 
@@ -311,9 +270,7 @@ function selectUniqueMatch(
   const scopedText = before.slice(scope.start, scope.end);
   const lineNumbers = (matches: MatchRange[]) =>
     matches.map((match) => lineForOffset(starts, match.start));
-  const exact = allExactMatches(scopedText, edit.oldText, scope.start).filter(
-    (match) => matchesContext(before, match, edit),
-  );
+  const exact = allExactMatches(scopedText, edit.oldText, scope.start);
 
   if (exact.length === 1) {
     return { range: exact[0], matchMode: "exact" };
@@ -328,41 +285,11 @@ function selectUniqueMatch(
     );
   }
 
-  const rawExact = allExactMatches(scopedText, edit.oldText, scope.start);
-  if (rawExact.length > 0) {
-    const normalizedAnchors = rawExact.filter((match) =>
-      matchesContext(before, match, edit, true),
-    );
-
-    if (normalizedAnchors.length === 1) {
-      return {
-        range: normalizedAnchors[0],
-        matchMode: "normalized_line_endings",
-      };
-    }
-
-    if (normalizedAnchors.length > 1) {
-      throw diagnostic(
-        "EDIT_TARGET_AMBIGUOUS",
-        `第 ${index + 1} 项：换行等价上下文存在多个候选，已拒绝猜测。`,
-        edit,
-        lineNumbers(normalizedAnchors),
-      );
-    }
-
-    throw diagnostic(
-      "EDIT_CONTEXT_MISMATCH",
-      `第 ${index + 1} 项：oldText 已找到，但不满足提供的上下文锚点。`,
-      edit,
-      lineNumbers(rawExact),
-    );
-  }
-
   const lineEndings = allLineEndingMatches(
     scopedText,
     edit.oldText,
     scope.start,
-  ).filter((match) => matchesContext(before, match, edit, true));
+  );
   if (lineEndings.length > 1) {
     throw diagnostic(
       "EDIT_TARGET_AMBIGUOUS",
@@ -383,7 +310,7 @@ function selectUniqueMatch(
     scopedText,
     edit.oldText,
     scope.start,
-  ).filter((match) => matchesContext(before, match, edit, true));
+  );
   if (!normalized.length) {
     throw diagnostic(
       "EDIT_TARGET_NOT_FOUND",

@@ -89,6 +89,10 @@ describe("files and permissions", () => {
     expect(instructions).toContain("Use progressive code reading");
     expect(instructions).toContain("start with 80-200 lines");
     expect(instructions).toContain("Read complete files only");
+    expect(instructions).toContain(
+      "After successfully editing an existing file, read that file again",
+    );
+
     expect(instructions).toContain("only one command string");
     expect(instructions).toContain("Never wrap it in a terminal invocation");
     expect(instructions).toContain("`pwsh -Command`");

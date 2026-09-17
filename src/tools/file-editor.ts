@@ -2,7 +2,7 @@
  * FileEditor 执行 ToolRunner 分流的统一多文件编辑，共享其审批回调和读取哈希。
  * 1. prepare 逐文件审批，按 create 区分新建与已有文件：新建必须不存在；已有文件必须已读取、核对可选版本，并以 planEdits 的精确优先/唯一空白候选策略定位原始快照；某项失败不阻塞独立文件。
  * 2. verify 在预检结束和每次写入前复核路径、存在性及原文，避免审批等待期间的变化被覆盖或 create 误覆盖外部新建的文件；空白敏感扩展名仅容忍 CRLF/LF 差异。
- * 3. commit 用同目录临时文件替换单个目标，创建时先建立父目录并重新核对真实路径；已有文件保留权限并更新读取哈希；不提供跨文件事务。
+ * 3. commit 用同目录临时文件替换单个目标，创建时先建立父目录并重新核对真实路径；已有文件保留权限，但成功修改后作废读取哈希，要求再次读取后才能继续修改；不提供跨文件事务。
  * 4. editMany 同时处理新建和已有文件条目：汇总所有逐文件失败，仍写入可安全执行的条目，并记录逐文件状态。
  * edit_progress 经 Engine 保存到历史，写入前标 unknown、成功后标 written；断电或持久化失败
  * 仍可能留下未知结果，恢复必须检查现场，不自动回滚或重放。参数/错误的脱敏由 Engine 负责。
@@ -214,7 +214,12 @@ export class FileEditor {
       await this.verify(edit);
       this.ctx.signal.throwIfAborted();
       await rename(temp, edit.file);
-      this.ctx.readHashes.set(edit.file, hash(edit.after));
+      if (edit.create) {
+        this.ctx.readHashes.set(edit.file, hash(edit.after));
+      } else {
+        // 编辑后的真实内容虽然可由本次补丁推导，但后续补丁必须显式读取当前文件。
+        this.ctx.readHashes.delete(edit.file);
+      }
     } finally {
       await unlink(temp).catch(() => {});
     }

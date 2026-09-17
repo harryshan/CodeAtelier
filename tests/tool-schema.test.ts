@@ -3,7 +3,7 @@
  * 使用生产 definitions 和 schemas，不调用模型服务，也不执行文件或 Git 操作。
  *
  * 1. 检查根节点为 object、禁止 oneOf，再递归遍历工具定义及数组项，核对 strict 对象的属性均为必填且禁止额外属性。
- * 2. 检查每个新调用的 execution/arguments 调度信封，及唯一 edit_files 工具的 create 分支、带版本/锚点的已有文件补丁、可见空白读取和 run_command 的单一 command 字符串。
+ * 2. 检查每个新调用的 execution/arguments 调度信封，及唯一 edit_files 工具的 create 分支、带版本和行范围的已有文件补丁、可见空白读取和 run_command 的单一 command 字符串。
  * 3. 检查单一 git 工具的 discriminated action 契约；每个 action 只接受自身所需字段，不能混入任意选项。
  */
 
@@ -106,6 +106,13 @@ it("exposes only edit_files for file writes and no directory or search tool", ()
   expect(editDefinition?.description).toContain(
     "unique CRLF/LF-equivalent matching for every text file",
   );
+  expect(editDefinition?.description).toContain(
+    "read that file again before editing it again",
+  );
+  expect(editDefinition?.description).not.toContain("beforeContext");
+  expect(JSON.stringify(editDefinition?.parameters)).not.toContain(
+    "beforeContext",
+  );
 
   expect(
     schemas.edit_files.parse({
@@ -120,8 +127,6 @@ it("exposes only edit_files for file writes and no directory or search tool", ()
               newText: "new",
               startLine: null,
               endLine: null,
-              beforeContext: null,
-              afterContext: null,
             },
           ],
         },
@@ -140,6 +145,19 @@ it("exposes only edit_files for file writes and no directory or search tool", ()
     { path: "src/new.ts", create: true, edits: [] },
     { path: "src/app.ts", create: false, content: "replace" },
     { path: "src/app.ts", edits: [] },
+    {
+      path: "src/app.ts",
+      create: false,
+      edits: [
+        {
+          oldText: "old",
+          newText: "new",
+          startLine: null,
+          endLine: null,
+          beforeContext: null,
+        },
+      ],
+    },
   ]) {
     expect(schemas.edit_files.safeParse({ files: [invalid] }).success).toBe(
       false,

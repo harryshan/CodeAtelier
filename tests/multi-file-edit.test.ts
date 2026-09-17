@@ -630,7 +630,6 @@ it("matches only line-ending differences in whitespace-sensitive files and prese
   const { runner, root } = await fileFixture();
   await createFile(runner, "guide.md", "first\r\nsecond\r\nthird\r\n");
   await createFile(runner, "rules.py", "if ready:\n    run()\n");
-  await createFile(runner, "anchors.md", "intro\r\nmatch\r\noutro\r\n");
 
   const result = await runner.execute("edit_files", {
     files: [
@@ -658,25 +657,10 @@ it("matches only line-ending differences in whitespace-sensitive files and prese
           },
         ],
       },
-      {
-        path: "anchors.md",
-        create: false,
-        edits: [
-          {
-            oldText: "match",
-            newText: "changed\nmore",
-            beforeContext: "intro\n",
-            afterContext: "\noutro",
-            startLine: null,
-            endLine: null,
-          },
-        ],
-      },
     ],
   });
 
   expect(result.files).toMatchObject([
-    { status: "written", matchModes: ["normalized_line_endings"] },
     { status: "written", matchModes: ["normalized_line_endings"] },
     { status: "written", matchModes: ["normalized_line_endings"] },
   ]);
@@ -685,9 +669,6 @@ it("matches only line-ending differences in whitespace-sensitive files and prese
   );
   expect(await readFile(path.join(root, "rules.py"), "utf8")).toBe(
     "if ready:\n    execute()\n",
-  );
-  expect(await readFile(path.join(root, "anchors.md"), "utf8")).toBe(
-    "intro\r\nchanged\r\nmore\r\noutro\r\n",
   );
 });
 

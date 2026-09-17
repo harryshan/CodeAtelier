@@ -4,7 +4,7 @@
  *
  * 1. 检查已移除目录/搜索工具的拒绝，以及带行号、分页、版本和可见空白元数据的分段读取。
  * 2. 检查模型可见的定位/小范围读取契约，以及反向行区间、二进制文件和过大文件被拒绝。
- * 3. 检查多处快照替换、整批失败不写入、成功后复用读取状态、显式新建父目录、美元符号按原文替换，以及 create 防止覆盖。
+ * 3. 检查多处快照替换、整批失败不写入、已有文件成功编辑后必须重新读取、显式新建父目录、美元符号按原文替换，以及 create 防止覆盖。
  * 4. 在等待审批时修改文件，并检查规则文件、敏感文件和非法工具参数的处理。
  *
  * 拒绝或校验失败后，原文件必须保持不变，不能只检查是否弹出了审批。
@@ -275,7 +275,7 @@ it("rejects unknown tools and invalid arguments before any side effects", async 
   expect(approvals.list()).toEqual([]);
 });
 
-it("applies multiple edits from one snapshot and allows another edit without rereading", async () => {
+it("requires a reread after successfully editing an existing file", async () => {
   const { root, runner } = await fileFixture();
   await createFile(runner, "a.txt", "alpha middle omega");
   await editSingleFile(runner, "a.txt", [
@@ -285,6 +285,14 @@ it("applies multiple edits from one snapshot and allows another edit without rer
   expect(await readFile(path.join(root, "a.txt"), "utf8")).toBe(
     "$& middle last",
   );
+  await expect(
+    editSingleFile(runner, "a.txt", [{ oldText: "middle", newText: "center" }]),
+  ).rejects.toThrow("未读取");
+  await runner.execute("read_file", {
+    path: "a.txt",
+    startLine: 1,
+    endLine: 1,
+  });
   await editSingleFile(runner, "a.txt", [
     { oldText: "middle", newText: "center" },
   ]);
