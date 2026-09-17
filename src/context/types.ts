@@ -32,7 +32,7 @@ export type ContextSummary = z.infer<typeof summarySchema>;
 
 export interface ContextSnapshot {
   version: 1;
-  stage?: "deduplicate" | "archive" | "summary";
+  stage?: "deduplicate" | "archive" | "summary" | "fallback";
   note?: string;
   projections?: { index: number; output: string }[];
   id: string;

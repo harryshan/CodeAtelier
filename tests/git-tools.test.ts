@@ -15,7 +15,11 @@ import { expect, it } from "vitest";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { Config } from "../src/config/config.js";
-import { GitToolRunner, type GitExecutor } from "../src/tools/git.js";
+import {
+  GitToolRunner,
+  MAX_GIT_DIFF_OUTPUT_CHARS,
+  type GitExecutor,
+} from "../src/tools/git.js";
 import { schemas } from "../src/tools/registry.js";
 import { temp } from "./fixtures/helpers.js";
 
@@ -31,16 +35,18 @@ async function createFixture(options: FixtureOptions = {}) {
   const config = new Config(await temp());
   const calls: string[][] = [];
   const output: string[] = [];
+  const outputLimits: number[] = [];
   const exitCodes = [...(options.exitCodes ?? [])];
   const execute: GitExecutor = async (
     args,
     _cwd,
     _signal,
     _timeout,
-    _limit,
+    limit,
     emit,
   ) => {
     calls.push(args);
+    outputLimits.push(limit);
     const command = args.join(" ");
     emit(command);
 
@@ -61,12 +67,18 @@ async function createFixture(options: FixtureOptions = {}) {
         "--no-optional-locks diff --no-ext-diff --no-textconv --no-color --unified=3 -- .env.example",
         options.diffOutput ?? "",
       ],
+      [
+        "--no-optional-locks diff --no-ext-diff --no-textconv --no-color --unified=3 -- changed.ts",
+        options.diffOutput ?? "",
+      ],
     ]);
 
+    const result = outputByCommand.get(command) ?? command;
+
     return {
-      output: outputByCommand.get(command) ?? command,
+      output: result.slice(0, limit),
       exitCode: exitCodes.shift() ?? 0,
-      truncated: false,
+      truncated: result.length > limit,
     };
   };
 
@@ -86,7 +98,7 @@ async function createFixture(options: FixtureOptions = {}) {
     execute,
   );
 
-  return { root, calls, output, tools };
+  return { root, calls, output, outputLimits, tools };
 }
 
 it("runs proactive read-only actions with fixed options", async () => {
@@ -175,6 +187,23 @@ it("runs proactive read-only actions with fixed options", async () => {
     ],
   ]);
   expect(fixture.output).toHaveLength(5);
+});
+
+it("caps long diff output independently from the general command output limit", async () => {
+  const fixture = await createFixture({
+    diffOutput: "x".repeat(MAX_GIT_DIFF_OUTPUT_CHARS + 1),
+  });
+
+  const result = await fixture.tools.execute({
+    action: "diff",
+    staged: false,
+    paths: ["changed.ts"],
+    contextLines: 3,
+  });
+
+  expect(fixture.outputLimits).toContain(MAX_GIT_DIFF_OUTPUT_CHARS);
+  expect(result).toMatchObject({ truncated: true });
+  expect(result.output).toHaveLength(MAX_GIT_DIFF_OUTPUT_CHARS);
 });
 
 it("automatically adds and commits only the specified workspace paths", async () => {

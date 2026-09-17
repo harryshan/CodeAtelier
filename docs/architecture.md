@@ -82,13 +82,13 @@ server (Fastify)
 
 上下文压缩的触发、持久化、失败边界与模块职责见 [context-management.md](context-management.md)。活动上下文可为摘要与最近原文的组合；压缩前完整输入另存快照，不删除事件历史。
 
-压缩按读取去重与过期版本正文归档、工具正文归档、完整分块摘要逐级执行；Engine 为 ContextManager 注入 ToolRunner.currentFileHash，只在阈值压缩时探测安全工作区文件，对照读取结果中的全文 contentHash；read-projection.ts 负责读取投影，tool-projection.ts 负责其他工具的选择性正文归档，tool-result.ts 共享来源核对与摘录，ContextManager 负责阶段选择与原子提交。快照记录精确投影以在后续摘要前还原全文，保留已验证来源的旧摘要原文。
+压缩按读取去重与过期版本正文归档、工具正文归档、完整分块摘要逐级执行；Engine 为 ContextManager 注入 ToolRunner.currentFileHash，只在阈值压缩时探测安全工作区文件，对照读取结果中的全文 contentHash；read-projection.ts 负责读取投影，tool-projection.ts 负责其他工具的选择性正文归档，tool-result.ts 共享来源核对与摘录，ContextManager 负责阶段选择与原子提交。常规压缩无法在硬预算内完成时，Worker 构造 `fallback` 活动视图：完整输入仍保存到快照，活动视图保留全部用户原文、最新结论与完整近期批次，不能满足这些保留项时停止。快照记录精确投影以在后续摘要前还原全文，保留已验证来源的旧摘要原文。
 
 ## SWE-bench 开发评测
 
 `src/evaluation/` 保留生产 Engine/Store 的无界面入口、预算、审批和执行记录。`scripts/swebench/dataset.py` 校验固定子集并仅生成 issue 提示词；`predict.py` 在官方任务镜像中运行 agent 并提取补丁；`grade.py` 在独立干净环境调用官方评分器；`prepare.py` 打包白名单运行文件。详见 [swebench.md](swebench.md)。
 
-每次主任务模型请求前由 context/mechanical-input.ts 生成无损请求视图，重复只读结果与相同正文采用向前引用。Engine 的估算与 usage 校准使用该视图，持久化和有损压缩继续使用原始输入；此阶段独立于容量阈值。
+每次主任务模型请求前由 context/mechanical-input.ts 生成无损请求视图，重复只读结果与相同正文采用向前引用。工具结果先持久化到原始输入，随后在下一次模型请求前重新计量并在超预算时压缩或进入保底视图，避免把超长工具数据直接附加给模型。Engine 的估算与 usage 校准使用该视图，持久化和有损压缩继续使用原始输入；此阶段独立于容量阈值。Git `diff` 另有 12000 字符硬输出上限，避免全量补丁绕过通用工具输出配置而占满上下文。
 
 最终报告由 scripts/swebench/report.py 从运行和官方评分产物聚合；predict.py/grade.py 仅在用户手动运行结束时调用。报告可单独离线重建，分开正确性、效率、过程和数据完整性；不引入模型评分或额外评测运行。
 

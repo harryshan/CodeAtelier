@@ -7,7 +7,7 @@
  *    isGitExecutable 和 containsGitCommand 继续阻止 run_command 绕过本模块。
  * 2. execute 在每项动作前通知 Engine 开始计时，验证会话工作区恰好是 Git worktree 根目录，再分派固定参数的子命令。
  * 3. workspacePaths 解析真实路径、拒绝敏感/.git/绝对或选项式路径；受控 dotenv 模板需通过内容校验，目录递归检查后代。
- * 4. diff/show/log 仅接受安全 revision 和受校验路径；模板相关 diff/show 在输出前再次扫描，避免泄露历史凭据。
+ * 4. diff/show/log 仅接受安全 revision 和受校验路径；完整 diff 使用独立硬输出上限，模板相关 diff/show 在输出前再次扫描，避免泄露历史凭据。
  * 5. push 从当前分支的 upstream 配置推导唯一 remote 与 refs/heads 目标，拒绝本地、ext 等不安全 URL，
  *    并禁用 hooks、交互认证提示、GPG 签名和外部 diff/textconv。
  *
@@ -43,6 +43,9 @@ export interface GitProcessResult {
   exitCode: number | null;
   truncated: boolean;
 }
+
+/** 完整补丁很容易挤占下一轮模型输入；diff 不随用户的通用命令输出上限无限增大。 */
+export const MAX_GIT_DIFF_OUTPUT_CHARS = 12000;
 
 export type GitExecutor = (
   args: string[],
@@ -185,13 +188,17 @@ export class GitToolRunner {
     }
   }
 
-  private run(args: string[], emit = true) {
+  private run(
+    args: string[],
+    emit = true,
+    outputLimit = this.ctx.settings.outputChars,
+  ) {
     return this.executeGit(
       args,
       this.ctx.root,
       this.ctx.signal,
       this.ctx.settings.commandTimeoutMs,
-      this.ctx.settings.outputChars,
+      outputLimit,
       emit ? (text) => this.ctx.emit("git_output", { text }) : () => {},
     );
   }
@@ -317,10 +324,20 @@ export class GitToolRunner {
     return hasDotenvTemplate;
   }
 
-  private async runTemplateChecked(args: string[], hasDotenvTemplate: boolean) {
-    const result = await this.run(args, !hasDotenvTemplate);
+  private async runTemplateChecked(
+    args: string[],
+    hasDotenvTemplate: boolean,
+    outputLimit?: number,
+  ) {
+    const result = await this.run(args, !hasDotenvTemplate, outputLimit);
 
     if (hasDotenvTemplate) {
+      if (result.truncated) {
+        throw new Error(
+          "受控 dotenv 模板的输出超过安全上限，已拒绝显示不完整内容。",
+        );
+      }
+
       assertNoCredentialMaterial(result.output);
       if (result.output) {
         this.ctx.emit("git_output", { text: result.output });
@@ -347,6 +364,7 @@ export class GitToolRunner {
         ...workspacePaths.paths,
       ],
       workspacePaths.hasDotenvTemplate,
+      Math.min(this.ctx.settings.outputChars, MAX_GIT_DIFF_OUTPUT_CHARS),
     );
 
     return { ...result, staged: request.staged, paths: workspacePaths.paths };

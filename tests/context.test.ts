@@ -235,6 +235,50 @@ it("continues below the hard limit after summary failure and does not repeatedly
   }
 });
 
+it("falls back to user input, the latest conclusion, and recent complete records when summary compaction fails over budget", async () => {
+  let calls = 0;
+  const f = await fixture({
+    async run() {
+      calls++;
+      throw new Error("summary unavailable");
+    },
+  });
+  try {
+    const source = [
+      { role: "user", content: "保留用户的原始目标" },
+      {
+        type: "function_call",
+        call_id: "large-output",
+        name: "run_command",
+        arguments: "{}",
+      },
+      {
+        type: "function_call_output",
+        call_id: "large-output",
+        output: JSON.stringify({ output: "x".repeat(18000), exitCode: 0 }),
+      },
+      { role: "assistant", content: "任务结论：修改已完成，仍需运行测试。" },
+    ];
+    f.store.saveContext(f.session.id, source);
+
+    const next = await f.manager.prepare(source, "", []);
+    const snapshot = f.store.latestContextSnapshot(f.session.id)!;
+
+    expect(calls).toBe(1);
+    expect(snapshot.stage).toBe("fallback");
+    expect(snapshot.source).toEqual(source);
+    expect(next).toContainEqual(source[0]);
+    expect(next).toContainEqual(source.at(-1));
+    expect(JSON.stringify(next)).not.toContain("x".repeat(1000));
+    expect(contextSize(next, "", [])).toBeLessThan(12000);
+    expect(f.notices.some((notice) => notice.includes("保底上下文裁剪"))).toBe(
+      true,
+    );
+  } finally {
+    f.store.close();
+  }
+});
+
 it("rolls back archive creation if replacing active context fails", async () => {
   const f = await fixture();
   try {
@@ -389,7 +433,7 @@ it("bounds summary calls and rejects tool requests from the summarizer", async (
   }
 });
 
-it("retains large histories when they cannot fit within the bounded summary call budget", async () => {
+it("uses the fallback view when a large history exceeds the bounded summary call budget", async () => {
   let calls = 0;
   const f = await fixture({
     async run() {
@@ -408,9 +452,14 @@ it("retains large histories when they cannot fit within the bounded summary call
       { role: "user", content: "continue" },
     ];
     f.store.saveContext(f.session.id, source);
-    await expect(f.manager.prepare(source, "", [])).rejects.toThrow("上下文");
+    const next = await f.manager.prepare(source, "", []);
+
     expect(calls).toBe(0);
-    expect(f.store.context(f.session.id)).toEqual(source);
+    expect(f.store.latestContextSnapshot(f.session.id)?.stage).toBe("fallback");
+    expect(f.store.latestContextSnapshot(f.session.id)?.source).toEqual(source);
+    expect(next).toContainEqual(source[0]);
+    expect(next).toContainEqual(source.at(-1));
+    expect(contextSize(next, "", [])).toBeLessThan(12000);
   } finally {
     f.store.close();
   }

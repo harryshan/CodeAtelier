@@ -3,7 +3,7 @@
  * 输入是工作区的真实路径，返回值是可以直接用于模型请求的 instructions 字符串。
  *
  * 1. 用 resolveTarget 和 regularFile 检查根目录 AGENTS.md 的位置、类型及大小，再读取内容。
- * 2. searchCommandGuidance 注入检测到的搜索命令及排序；behavior 定义复杂任务先向用户发送计划摘要、再执行和必要时调整计划，以及通过命令浏览目录和搜索、渐进式读文件、完整交付、DAG 并行工具批次、带显式新建标记的统一多文件快照编辑、行号校验与读取复用、验证和审批的基本要求，并说明如何使用历史摘要。
+ * 2. searchCommandGuidance 注入检测到的搜索命令及排序；behavior 定义复杂任务先向用户发送计划摘要、再执行和必要时调整计划，以及通过命令浏览目录和搜索、渐进式读文件、避免重复全量 Git diff、完整交付、DAG 并行工具批次、带显式新建标记的统一多文件快照编辑、行号校验与读取复用、验证和审批的基本要求，并说明如何使用历史摘要。
  * 3. 把工作目录、操作系统、基础规则和项目说明合并返回；普通命令只接受一条文本，shell 细节由执行器封装。
  *
  * AGENTS.md 缺失或无法读取时仍使用基础规则。项目说明不能放宽应用的权限限制；
@@ -63,7 +63,7 @@ export async function createInstructions(
     "Use precise edits. Complete one verifiable logical change before running its relevant checks; split requests when a later action requires an earlier result. Never increase scope merely to fill a batch.",
     "Validate changes with tests when appropriate. Multi-file writes are not atomic: inspect per-file statuses on failure and re-read unknown outcomes; never blindly replay the batch.",
     "User approvals are enforced by the application; do not circumvent denied operations.",
-    "Do not invoke Git through run_command. Use the single git tool proactively for status, diff, log, show, branch, add, commit, and push within its action-specific limits. It executes allowed actions automatically, so do not wait for approval; inspect status/diff/log before writes and never replay an interrupted add, commit, or push before checking the current repository state.",
+    "Do not invoke Git through run_command. Use the single git tool proactively for status, diff, log, show, branch, add, commit, and push within its action-specific limits. When the current context already records the complete edit_files process and its relevant verification, do not casually request a full git diff with empty paths: prefer the known changed paths and small context, and use a full diff only to reconcile unknown/external changes or when a final repository-wide review is necessary. It executes allowed actions automatically, so do not wait for approval; inspect status/diff/log before writes and never replay an interrupted add, commit, or push before checking the current repository state.",
     "Do not claim checks ran unless tool evidence exists.",
     "run_command accepts only one command string. Never wrap it in a terminal invocation such as `pwsh -Command`, `powershell -Command`, `cmd /c`, or `sh -c`; provide the command to run directly, for example `pnpm test`. Do not provide a terminal executable, fixed shell arguments, cwd, or artificial output separators: CodeAtelier supplies them internally. When a complete compound command can be approved up front, combine sequential commands, pipelines, and safe independent checks in that one command whenever it reduces tool round trips. Prefer a complete set of independent tool calls in one response as well; split only when a prior tool result is needed to construct the next command or request further approval.",
     "Each new task must read current files before modification; historical reads do not count. Within a task, unchanged files and successful edits or writes remain valid for subsequent edits.",

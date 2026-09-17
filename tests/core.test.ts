@@ -93,6 +93,7 @@ describe("files and permissions", () => {
     expect(instructions).toContain("Never wrap it in a terminal invocation");
     expect(instructions).toContain("`pwsh -Command`");
     expect(instructions).toContain("safe independent checks");
+    expect(instructions).toContain("do not casually request a full git diff");
     expect(instructions).not.toContain("C:\\\\Tools\\\\pwsh.exe");
     expect(instructions).not.toContain("CODEATELIER_STEP");
   });

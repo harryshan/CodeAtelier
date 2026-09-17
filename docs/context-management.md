@@ -126,9 +126,8 @@ SQLite 新增 context_snapshots 表，通过 CREATE TABLE IF NOT EXISTS 兼容�
 这里的原文是此前已经保存的内容。工具输出原先可能受 outputChars 截断，
 压缩机制不能恢复早已被丢弃的输出。快照占用额外磁盘空间，目前不自动清理或设总容量配额。
 
-摘要失败时保留原上下文，并在本任务内停止进一步摘要尝试。
-低于硬限制时可以继续；超过硬限制则停止并提供既有人工恢复入口。
-规则、用户原文、最近完整分组或继承账本过大时也可能无法压缩，不会偷偷截断用户要求。
+摘要失败时保留原上下文，并在本任务内停止进一步摘要尝试。若此时工具结果与现有材料已超过输入预算（或服务明确报告容量错误），会启动不调用模型的保底 Worker：完整原文、工具来源和执行账本先随快照原子保存；活动视图保留全部用户原文、最新可见任务结论及从安全批次边界开始的尽量多近期记录，并附快照回读提示。它以正常请求预算的 90% 为目标，服务容量错误恢复则以 60% 为目标；中间工具过程会被整体裁去，不伪造结果、成功状态或授权。
+规则、用户原文、任务结论、近期完整分组或继承账本本身过大时，保底机制也会失败并明确停止，不会偷偷截断用户要求。
 人工恢复新建任务，可重新尝试；用户取消和服务关闭会终止摘要请求，不自动重启任务。
 
 服务端明确返回 context_length_exceeded 时，每任务最多强制压缩恢复一次。
@@ -150,13 +149,13 @@ Web UI“模型与设置”提供“备用上下文字符上限”和“最大�
 原对话和工具记录继续显示，刷新后仍能查看。内部摘要不作为用户可见的 agent 正式答复。
 
 日志事件：context.compaction_started、context.compaction_completed（INFO）、
-context.compaction_failed（WARN），继承 sessionId/taskId，包含前后大小、调用数和成功提交的 stage；通知显示当前计量单位及级别。
+context.compaction_failed（WARN），继承 sessionId/taskId，包含前后大小、调用数、是否为 fallback 和成功提交的 stage；通知显示当前计量单位及级别。`fallback` stage 仍受 ContextManager 的开始、完成、失败 tracing span 覆盖，只记录大小和阶段，不记录历史或工具正文。
 不输出摘要正文、历史原文或密钥。现有工具日志记录历史读取工具名与调用 ID。
 
 ## 模块和验证
 
 - src/context/context-manager.ts：触发、调用预算、主线程编排与提交。
-- src/context/compaction-worker-client.ts、compaction-worker.ts：一次性 Worker 的消息、取消和 CPU 密集压缩转换；不访问工作区或 SQLite。
+- src/context/compaction-worker-client.ts、compaction-worker.ts：一次性 Worker 的消息、取消和 CPU 密集三级压缩/保底视图转换；不访问工作区或 SQLite。
 - src/context/budget.ts：字符预算、保守分组切分。
 - src/context/compactor.ts：完整预算分块、摘要模型调用和结构/来源校验。
 - src/context/mechanical-input.ts：每请求精确工具结果/正文引用，不改变持久化输入。
