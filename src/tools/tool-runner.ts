@@ -83,8 +83,15 @@ export class ToolRunner {
     );
   }
 
-  private hash(value: string) {
+  private hash(value: string | Buffer) {
     return createHash("sha256").update(value).digest("hex");
+  }
+
+  private visibleWhitespace(line: string) {
+    return (
+      line.replaceAll("\r", "␍").replaceAll("\t", "→").replaceAll(" ", "·") +
+      "↵"
+    );
   }
 
   /** 压缩用的只读版本探测；不申请额外权限，也不更新编辑所需的读取凭证。 */
@@ -293,7 +300,8 @@ export class ToolRunner {
         throw new Error("不支持二进制文件");
       }
 
-      this.readHashes.set(file, this.hash(text));
+      // 读取凭证使用返回给模型的全文字节哈希，避免文本重编码掩盖版本差异。
+      this.readHashes.set(file, this.hash(bytes));
       const lines = text.split("\n");
       // 区分文件自然结束和行数上限，模型才能安全地按 nextStartLine 继续读取。
       const requestedEndLine = Math.min(args.endLine, lines.length);
@@ -314,8 +322,17 @@ export class ToolRunner {
         nextStartLine: hasMore ? returnedEndLine + 1 : null,
         text: lines
           .slice(args.startLine - 1, returnedEndLine)
-          .map((l, i) => `${args.startLine + i}: ${l}`)
+          .map((line, index) => `${args.startLine + index}: ${line}`)
           .join("\n"),
+        visibleText: args.whitespaceMode
+          ? lines
+              .slice(args.startLine - 1, returnedEndLine)
+              .map(
+                (line, index) =>
+                  `${args.startLine + index}: ${this.visibleWhitespace(line)}`,
+              )
+              .join("\n")
+          : undefined,
       };
     }
 

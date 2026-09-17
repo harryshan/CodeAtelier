@@ -279,6 +279,7 @@ it("persists each Engine task trace by session and task, then exports it only th
       path: "trace-target.txt",
       startLine: 1,
       endLine: 1,
+      whitespaceMode: false,
     });
   } finally {
     await fixture.app.close();

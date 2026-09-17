@@ -113,6 +113,14 @@ trace 含关联 ID、模型名称、步骤/尝试、字节/项目数量、usage�
 
 旧历史参数保留展示，不重放旧工具调用。
 
+### 安全补丁定位与空白诊断
+
+`read_file` 的 `contentHash` 是全文字节 SHA-256 版本。新版 `edit_files` 的已有文件条目应将它作为 `fileVersion` 传回；执行器仍以本任务保存的读取凭证和写入前复核为准，拒绝版本不一致或外部变化。为兼容旧历史和旧模拟调用，省略时解析为 `null`，但新的模型工具定义要求显式传递版本。
+
+每项已有文件编辑还接受可空的 `beforeContext`、`afterContext`，用于在重复代码中筛选稳定锚点。先在指定行窗口（或全文）作字面精确匹配；仅在没有精确候选时，普通文件可删除空白差异后定位**唯一**候选。规范化仅将该候选映射回真实原文字符范围，写入不会格式化或改动范围外的空白。多个候选、锚点不符、无候选和版本冲突均返回结构化诊断并拒绝写入；不得选择第一个候选或盲目重试。
+
+Python、YAML、TOML、Makefile、Make 片段和 Markdown 默认是空白敏感文件，空白规范化回退禁用。遇到 `EDIT_TARGET_NOT_FOUND`、`EDIT_TARGET_AMBIGUOUS`、`EDIT_CONTEXT_MISMATCH`、`EDIT_WHITESPACE_FALLBACK_DISALLOWED` 或 `EDIT_FILE_VERSION_MISMATCH`，先按返回的候选行重新读取。调用 `read_file` 时设 `whitespaceMode: true`，结果保留可复制的 `text`，并额外以 `visibleText` 标记普通空格（`·`）、Tab（`→`）、CR（`␍`）和行尾（`↵`）。
+
 ## 权限交互
 
 普通工作区文件操作自动执行。工作区外访问、敏感文件或修改 AGENTS.md 需确认；直接修改 .git 被拒绝。create:true 永不覆盖已有文件，已有文件只能通过 create:false 的读取后精确编辑修改。外部读取当前采用逐次确认，尚未提供额外只读目录授权管理界面。

@@ -1,7 +1,7 @@
 /**
  * FileEditor 执行 ToolRunner 分流的统一多文件编辑，共享其审批回调和读取哈希。
- * 1. prepare 逐文件审批，按 create 区分新建与已有文件：新建必须不存在，已有文件必须已读取并以 planEdits 定位原始快照；某项失败不阻塞独立文件。
- * 2. verify 在预检结束和每次写入前复核路径、存在性及原文，避免审批等待期间的变化被覆盖或 create 误覆盖外部新建的文件。
+ * 1. prepare 逐文件审批，按 create 区分新建与已有文件：新建必须不存在；已有文件必须已读取、核对可选版本，并以 planEdits 的精确优先/唯一空白候选策略定位原始快照；某项失败不阻塞独立文件。
+ * 2. verify 在预检结束和每次写入前复核路径、存在性及原文，避免审批等待期间的变化被覆盖或 create 误覆盖外部新建的文件；空白敏感扩展名保持严格匹配。
  * 3. commit 用同目录临时文件替换单个目标，创建时先建立父目录并重新核对真实路径；已有文件保留权限并更新读取哈希；不提供跨文件事务。
  * 4. editMany 同时处理新建和已有文件条目：汇总所有逐文件失败，仍写入可安全执行的条目，并记录逐文件状态。
  * edit_progress 经 Engine 保存到历史，写入前标 unknown、成功后标 written；断电或持久化失败
@@ -21,7 +21,12 @@ import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { createTwoFilesPatch } from "diff";
 import { regularFile, resolveTarget } from "./paths.js";
-import { planEdits, type FileEdit } from "./edit-plan.js";
+import {
+  EditPlanError,
+  planEdits,
+  type EditDiagnostic,
+  type FileEdit,
+} from "./edit-plan.js";
 
 interface EditorContext {
   root: string;
@@ -38,6 +43,7 @@ interface PreparedEdit {
   after: string;
   mode?: number;
   create: boolean;
+  matchModes?: string[];
 }
 
 type FileStatus = "not_attempted" | "failed" | "unknown" | "written";
@@ -46,15 +52,59 @@ interface FileResult {
   path: string;
   status: FileStatus;
   error?: string;
+  diagnostic?: EditDiagnostic;
+  matchModes?: string[];
 }
 
 interface PreparedFile {
   edit: PreparedEdit;
   bytes: number;
 }
-const hash = (text: string) => createHash("sha256").update(text).digest("hex");
+const hash = (value: string | Buffer) =>
+  createHash("sha256").update(value).digest("hex");
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
 const MAX_BATCH_BYTES = 16 * 1024 * 1024;
+const whitespaceSensitiveExtensions = new Set([
+  ".make",
+  ".md",
+  ".mk",
+  ".py",
+  ".pyi",
+  ".toml",
+  ".yaml",
+  ".yml",
+]);
+
+function allowsWhitespaceFallback(filePath: string) {
+  const basename = path.basename(filePath).toLowerCase();
+
+  return (
+    basename !== "makefile" &&
+    !whitespaceSensitiveExtensions.has(path.extname(basename))
+  );
+}
+
+function diagnosticFor(error: unknown): EditDiagnostic | undefined {
+  if (error instanceof EditPlanError) {
+    return error.diagnostic;
+  }
+
+  if (
+    error instanceof Error &&
+    error.message.includes("文件版本与本任务读取结果不一致")
+  ) {
+    return {
+      code: "EDIT_FILE_VERSION_MISMATCH",
+      message: error.message,
+      lineRange: null,
+      expectedDisplay: "",
+      suggestedAction:
+        "重新读取当前文件并使用返回的 contentHash 重新提交编辑。",
+    };
+  }
+
+  return undefined;
+}
 
 export class FileEditor {
   constructor(private ctx: EditorContext) {}
@@ -91,15 +141,22 @@ export class FileEditor {
     }
 
     const info = await regularFile(file, MAX_FILE_BYTES);
-    const before = await readFile(file, "utf8");
-    if (
-      before.includes("\0") ||
-      this.ctx.readHashes.get(file) !== hash(before)
-    ) {
+    const bytes = await readFile(file);
+    const before = bytes.toString("utf8");
+    const currentHash = hash(bytes);
+    const readHash = this.ctx.readHashes.get(file);
+    if (before.includes("\0") || readHash !== currentHash) {
       throw new Error("文件未读取或已变化，请重新读取后再修改。");
     }
 
-    const after = planEdits(before, input.edits);
+    if (input.fileVersion !== null && input.fileVersion !== readHash) {
+      throw new Error("文件版本与本任务读取结果不一致，请重新读取后再修改。");
+    }
+
+    const plan = planEdits(before, input.edits, {
+      allowWhitespaceFallback: allowsWhitespaceFallback(input.path),
+    });
+    const after = plan.after;
     if (Buffer.byteLength(after) > MAX_FILE_BYTES) {
       throw new Error("编辑后文件超过 2 MiB，请缩小修改。");
     }
@@ -111,6 +168,7 @@ export class FileEditor {
       after,
       mode: info.mode,
       create: false,
+      matchModes: plan.matchModes,
     };
   }
 
@@ -195,6 +253,7 @@ export class FileEditor {
     ) => {
       files[index].status = status;
       files[index].error = messageFor(error);
+      files[index].diagnostic = diagnosticFor(error);
     };
 
     const result = (stopped?: unknown) => {
@@ -314,6 +373,7 @@ export class FileEditor {
       }
 
       files[index].status = "written";
+      files[index].matchModes = edit.matchModes;
       this.ctx.emit("edit_progress", { batchId, ...files[index] });
       this.reportDiff(edit);
     }

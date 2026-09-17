@@ -115,6 +115,12 @@ mechanical-input.test.ts 覆盖精确结果/跨路径正文引用、逐字还原
 
 行号搜索窗口回归：`multi-file-edit.test.ts` 覆盖行内/跨行片段、周围文本保留、末行 LF/CRLF、窗口内歧义（含重叠出现）、匹配跨出窗口、无范围外回退，以及多文件预检失败时独立有效文件仍可写入。
 
+### 补丁定位与可见空白回归
+
+- `tests/files.test.ts`：读取结果同时验证可复制原文、全文版本哈希和按需生成的 `visibleText` 标记。
+- `tests/multi-file-edit.test.ts`：验证普通文件的唯一空白规范化候选、CRLF/LF 差异、候选行诊断、空白敏感文件严格拒绝和显式版本冲突；歧义不会修改磁盘。
+- `tests/tool-schema.test.ts` 与 `tests/tracing.test.ts`：验证新工具字段通过严格 schema，且实际执行参数（含默认的 `whitespaceMode`）仍可安全导出到 trace。
+
 ## 受监督服务重载
 
 - `tests/shutdown.test.ts`：验证未受 launcher 监督的后端以 409 拒绝重载；并以 `launcher.ts` 启动隔离后端，认证并确认重载，验证旧子进程退出后相同端口出现第二次监听记录、替代进程可取得新会话，随后确认关闭时 launcher 也正常退出。

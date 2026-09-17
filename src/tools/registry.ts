@@ -22,6 +22,8 @@ const textEditSchema = z
     newText: z.string().max(500000),
     startLine: z.number().int().min(1).nullable().default(null),
     endLine: z.number().int().min(1).nullable().default(null),
+    beforeContext: z.string().min(1).nullable().default(null),
+    afterContext: z.string().min(1).nullable().default(null),
   })
   .strict();
 
@@ -38,6 +40,11 @@ const fileEditSchema = z.union([
     .object({
       path: z.string().min(1),
       create: z.literal(false),
+      fileVersion: z
+        .string()
+        .regex(/^[a-f0-9]{64}$/)
+        .nullable()
+        .default(null),
       edits: z.array(textEditSchema).min(1).max(100),
     })
     .strict(),
@@ -50,6 +57,7 @@ export const schemas = {
       path: z.string(),
       startLine: z.number().int().min(1),
       endLine: z.number().int().min(1),
+      whitespaceMode: z.boolean().default(false),
     })
     .strict(),
   edit_files: z
@@ -163,9 +171,9 @@ export function parseScheduledToolArguments(
 }
 
 const descriptions: Record<string, string> = {
-  read_file: `Read text with line numbers. Read AGENTS.md and applicable nested AGENTS.md before edits. Use run_command with an environment-detected search command to locate symbols or error text, then read a focused range around the matching line; normally request 80-200 lines and expand only when needed. Avoid repeating ranges already read. Full-file reading is for short files, project instructions, or necessary whole-file analysis. Maximum ${MAX_READ_LINES} lines per call. Results report whether more lines remain or the requested range was truncated.`,
+  read_file: `Read text with line numbers. Set whitespaceMode:true when diagnosing whitespace-sensitive edits: the normal text remains copyable and visibleText marks spaces (·), tabs (→), CR (␍), and line endings (↵). Read AGENTS.md and applicable nested AGENTS.md before edits. Use run_command with an environment-detected search command to locate symbols or error text, then read a focused range around the matching line; normally request 80-200 lines and expand only when needed. Avoid repeating ranges already read. Full-file reading is for short files, project instructions, or necessary whole-file analysis. Maximum ${MAX_READ_LINES} lines per call. Results report whether more lines remain or the requested range was truncated, plus a contentHash version for edits.`,
   edit_files:
-    "Create or edit 1-20 distinct files in one call. For a new file use {path, create:true, content}; creation fails if that path already exists. For an existing file use {path, create:false, edits}; read it in this task first, then provide 1-100 non-overlapping edits located in the ORIGINAL snapshot, never text produced by another edit. Supply startLine/endLine as a pair of 1-based inclusive lines, or both null for unique exact-text matching. With lines, search ONLY within those lines (including the last line ending): oldText must match exactly once wholly inside that range and may be a substring of a line or span multiple lines. Preserve exact whitespace and line endings; do not include read_file line-number prefixes. No fuzzy matching or fallback outside the range. Validate each file’s permissions, version and edits before writing it; one file’s failure must not cancel independent valid files. Files write sequentially, NOT as a cross-file transaction. The result lists every failed path and error together; inspect per-file statuses and current contents, and never blindly replay unknown writes. Merge all changes to the same real path in one entry.",
+    "Create or edit 1-20 distinct files in one call. For a new file use {path, create:true, content}; creation fails if that path already exists. For an existing file use {path, create:false, fileVersion, edits}; read it in this task first and copy its contentHash as fileVersion (legacy null is accepted only for old calls). Provide 1-100 non-overlapping edits located in the ORIGINAL snapshot, never text produced by another edit. Each edit has oldText/newText, startLine/endLine, and nullable beforeContext/afterContext anchors. Prefer a narrow 1-based inclusive line range and stable anchors. Exact matching is attempted first; only a unique whitespace-normalized candidate in the same range may be used for ordinary files, while whitespace-sensitive files remain strict. Normalization only locates the real source range; it never rewrites surrounding whitespace. Ambiguous candidates, stale versions, and context mismatches are rejected with structured diagnostics; do not replay them blindly. Files write sequentially, NOT as a cross-file transaction. The result lists every failed path and error together; inspect per-file statuses and current contents. Merge all changes to the same real path in one entry.",
   run_command:
     "Execute one command string in the session workspace after user approval. Use this tool for repository directory listings and searches: follow the environment-detected, performance-ordered command list in the task instructions, prefer its first suitable command, and combine multiple keywords into one multi-pattern search when supported. Provide the command to run directly, for example `pnpm test`; never wrap it in `pwsh -Command`, `powershell -Command`, `cmd /c`, `sh -c`, or another terminal invocation. CodeAtelier selects the platform shell, fixed noninteractive arguments, and workspace directory internally. A complete compound command may combine known sequential commands or pipelines; for independent checks or a check after a known edit, prefer separate calls in the same DAG response with the required dependencies. Do not add artificial output separators. Use another model response only when a prior result is needed to construct the next command or decide whether to run it. Command output disables colors and removes terminal control sequences. Do not use direct Git commands, elevation, or destructive system operations.",
   git: "Put the action and its fields inside the request object, e.g. {request:{action:status}}. Perform one safe Git action in the session workspace. Actions: status; diff (explicit staged, paths, contextLines); log (revision, paths, limit); show (revision and explicit paths); branch; add (paths); commit (message and paths); push. When the current context already contains the complete edit process and relevant verification, do not casually request a full diff with empty paths: use the known changed paths and minimal context unless reconciling unknown/external changes or performing a necessary final repository-wide review. Full diff output has a fixed context limit and may be truncated. This tool automatically validates that the workspace is the repository root, permits only safe paths/revisions and a configured HTTPS/SSH upstream, and disables hooks, GPG signing, external diff/text conversion and interactive prompts. Use it proactively for Git work; do not invoke Git through run_command. It accepts no arbitrary subcommand, option, remote, branch target, force, reset, clean, checkout, merge, rebase, tag, stash, clone, or PR operation. Inspect status/diff/log before writes and do not replay an interrupted add, commit, or push without rechecking.",

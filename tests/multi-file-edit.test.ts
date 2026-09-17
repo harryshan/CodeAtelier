@@ -1,8 +1,8 @@
 /**
  * 使用真实 ToolRunner 和临时文件验证统一文件编辑工具，不访问模型或用户项目。
  * 1. 单/多文件的新建和已有编辑条目成功、后项校验失败、重复路径以及读取版本检查通过磁盘内容验证。
- * 2. 行号限定搜索窗口，覆盖行内/跨行片段、重复文本、原始快照偏移、范围越界、重叠和 CRLF 边界。
- * 3. 后续故障用例检查逐文件失败仍继续、聚合错误、取消及部分写入，不假设跨文件原子性。
+ * 2. 行号限定搜索窗口，覆盖行内/跨行片段、重复文本、原始快照偏移、范围越界、重叠、CRLF、唯一空白规范化候选和可修复诊断。
+ * 3. 后续故障用例检查逐文件失败仍继续、版本校验、聚合错误、取消及部分写入，不假设跨文件原子性。
  */
 
 import { expect, it, vi, afterEach } from "vitest";
@@ -486,13 +486,116 @@ it("rejects missing, ambiguous, out-of-range and overlapping matches without fal
   }
 });
 
-it("applies scoped snippets across files and keeps exact newline matching", async () => {
+it("uses one whitespace-normalized candidate while retaining the real source range", async () => {
+  const { runner, root } = await fileFixture();
+  await createFile(
+    runner,
+    "a.ts",
+    "const value = createTask(\r\n  input,\r\n);\r\n",
+  );
+
+  const result = await runner.execute("edit_files", {
+    files: [
+      {
+        path: "a.ts",
+        create: false,
+        edits: [
+          {
+            oldText: "createTask(\n input,\n)",
+            newText: "createTask({ input })",
+            startLine: 1,
+            endLine: 3,
+          },
+        ],
+      },
+    ],
+  });
+
+  expect(result.files).toMatchObject([
+    { status: "written", matchModes: ["normalized_whitespace"] },
+  ]);
+  expect(await readFile(path.join(root, "a.ts"), "utf8")).toBe(
+    "const value = createTask({ input });\r\n",
+  );
+});
+
+it("rejects ambiguous normalized candidates with candidate-line diagnostics", async () => {
+  const { runner, root } = await fileFixture();
+  const original = "call( 1 );\ncall( 1 );\n";
+  await createFile(runner, "a.ts", original);
+
+  const result = await runner.execute("edit_files", {
+    files: [
+      {
+        path: "a.ts",
+        create: false,
+        edits: [
+          { oldText: "call(1);", newText: "run();", startLine: 1, endLine: 2 },
+        ],
+      },
+    ],
+  });
+
+  expect(result.files[0]).toMatchObject({
+    status: "failed",
+    diagnostic: {
+      code: "EDIT_TARGET_AMBIGUOUS",
+      candidateLines: [1, 2],
+    },
+  });
+  expect(await readFile(path.join(root, "a.ts"), "utf8")).toBe(original);
+});
+
+it("keeps whitespace-sensitive files strict and validates an explicit file version", async () => {
+  const { runner, root } = await fileFixture();
+  await createFile(runner, "rules.py", "if ready:\n    run()\n");
+  await createFile(runner, "a.ts", "const value = 1;\n");
+
+  const strict = await runner.execute("edit_files", {
+    files: [
+      {
+        path: "rules.py",
+        create: false,
+        edits: [
+          { oldText: "if ready:\n run()", newText: "if ready:\n    run()" },
+        ],
+      },
+    ],
+  });
+  const staleVersion = await runner.execute("edit_files", {
+    files: [
+      {
+        path: "a.ts",
+        create: false,
+        fileVersion: "0".repeat(64),
+        edits: [{ oldText: "value", newText: "result" }],
+      },
+    ],
+  });
+
+  expect(strict.files[0]).toMatchObject({
+    status: "failed",
+    diagnostic: { code: "EDIT_WHITESPACE_FALLBACK_DISALLOWED" },
+  });
+  expect(staleVersion.files[0]).toMatchObject({
+    status: "failed",
+    diagnostic: { code: "EDIT_FILE_VERSION_MISMATCH" },
+  });
+  expect(await readFile(path.join(root, "rules.py"), "utf8")).toBe(
+    "if ready:\n    run()\n",
+  );
+  expect(await readFile(path.join(root, "a.ts"), "utf8")).toBe(
+    "const value = 1;\n",
+  );
+});
+
+it("uses scoped normalization for CRLF differences without rewriting surrounding text", async () => {
   const { runner, root } = await fileFixture();
   for (const name of ["a.txt", "b.txt"]) {
     await createFile(runner, name, "prefix one\r\ntwo suffix");
   }
 
-  const rejected = await runner.execute("edit_files", {
+  const result = await runner.execute("edit_files", {
     files: [
       {
         path: "a.txt",
@@ -510,28 +613,13 @@ it("applies scoped snippets across files and keeps exact newline matching", asyn
       },
     ],
   });
-  expect(rejected.error).toContain("b.txt");
-  expect(rejected.files.map((file: any) => file.status)).toEqual([
-    "written",
-    "failed",
+
+  expect(result.files).toMatchObject([
+    { status: "written", matchModes: ["exact"] },
+    { status: "written", matchModes: ["normalized_whitespace"] },
   ]);
   expect(await readFile(path.join(root, "a.txt"), "utf8")).toBe(
     "new one\r\ntwo suffix",
-  );
-  const result = await runner.execute("edit_files", {
-    files: ["a.txt", "b.txt"].map((name) => ({
-      path: name,
-      create: false,
-      edits: [
-        { oldText: "one\r\ntwo", newText: "joined", startLine: 1, endLine: 2 },
-      ],
-    })),
-  });
-  expect(result.files.every((file: any) => file.status === "written")).toBe(
-    true,
-  );
-  expect(await readFile(path.join(root, "a.txt"), "utf8")).toBe(
-    "new joined suffix",
   );
   expect(await readFile(path.join(root, "b.txt"), "utf8")).toBe(
     "prefix joined suffix",
