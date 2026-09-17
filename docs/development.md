@@ -10,9 +10,9 @@ Node.js 24，pnpm 11.22.0（packageManager 固定）。提交 pnpm-lock.yaml，�
 | pnpm dev:web                                                          | Vite 前端，默认 `127.0.0.1:5173`；读取相同监听地址并通过 HMR 更新前端模块 |
 | pnpm build                                                            | 编译后端和前端                                                            |
 | pnpm start                                                            | 运行构建后的本机服务；由监督进程支持 UI 确认后的后端重载                  |
-| pnpm typecheck / lint / test                                          | 类型、静态规则、核心测试                                                  |
-| pnpm check                                                            | 类型、lint、核心测试、生产构建                                            |
-| pnpm test:e2e                                                         | 先编译后端和前端，再启动独立模拟服务验证浏览器交互                        |
+| pnpm typecheck / lint / test                                          | 类型、静态规则、核心测试；test 只使用白名单测试环境                      |
+| pnpm check                                                            | 类型、lint、核心测试、测试模式构建                                        |
+| pnpm test:e2e                                                         | 先进行不读取 dotenv 的测试模式构建，再启动独立模拟服务验证浏览器交互      |
 | node --env-file=.env --import tsx scripts/probe-model-capabilities.ts | 检查模型窗口、计数接口及真实 usage（少量模型调用）                        |
 | node --env-file=.env --import tsx scripts/probe-responses.ts          | 使用环境变量密钥测试真实服务工具往返                                      |
 | node --env-file=.env --import tsx scripts/smoke-agent.ts              | 在 .local 下创建隔离项目，真实模型修复并运行测试                          |
@@ -153,7 +153,7 @@ Git 不经 `run_command` 执行，而使用单一 `git` 工具；模型可以主
 
 按职责划分文件，保持 strict 类型检查；协议边界的动态结构应由 schema 验证。变更前读 AGENTS.md 与需求文档。核心行为修改添加对应行为测试，纯文档不写形式化测试。每个独立可验证增量创建 commit，同步更新文档；隔一段时间批量 push。
 
-CI 使用 GitHub 托管的 Windows、Linux、macOS runner 执行 pnpm check，Linux Chromium 执行 UI 验收。测试不需要真实 API key；真实服务 smoke 手动运行。
+CI 使用 GitHub 托管的 Windows、Linux、macOS runner 执行 pnpm check，Linux Chromium 执行 UI 验收。`pnpm test`、`pnpm test:watch`、`pnpm test:e2e` 和 check 中的测试模式构建均由 `scripts/test-runner.ts` 以固定白名单环境启动，Vitest 不继承父进程配置、Vite 的 test 模式不读取 dotenv，Playwright 测试后端也不经包管理器路径启动；因此不使用真实 API key、生产 `.env` 或系统中的 CodeAtelier 配置。真实服务 smoke 手动运行。
 
 ## 开发中的测试要求
 
