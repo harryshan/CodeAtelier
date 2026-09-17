@@ -3,7 +3,7 @@
  * Engine 为每个任务创建 ContextManager；它保留模型调用、文件哈希探测和 SQLite 提交，
  * 将历史扫描、投影、账本、分块和计量转交给专用 Worker，避免阻塞 HTTP/SSE。
  *
- * 1. Options 接收预算、存储、摘要模型、文件探测和通知依赖；request 只生成本次无损机械视图。
+ * 1. Options 接收预算、存储、摘要模型、文件探测、通知和可选 tracing 依赖；request 只生成本次无损机械视图。
  * 2. prepare 在阈值前直接返回，达到阈值后启动 Worker；常规压缩失败且已达硬上限时改用受限保底视图。
  * 3. compact 读取快照链和事件，Worker 构建索引并给出受限文件版本候选；主线程只执行 ToolRunner 的
  *    权限内哈希探测、可取消的摘要模型请求和原子 SQLite 提交。
@@ -23,6 +23,21 @@ import { probeReadHashes, type ReadHashCandidate } from "./read-projection.js";
 import type { ContextSnapshot } from "./types.js";
 import type { Store } from "../sessions/store.js";
 import type { ModelProvider } from "../providers/model-provider.js";
+
+type ContextTraceAttributes = Record<
+  string,
+  boolean | number | string | undefined
+>;
+
+export interface ContextTrace {
+  start(name: string, attributes?: ContextTraceAttributes): unknown;
+  end(
+    handle: unknown,
+    status: "cancelled" | "error" | "ok",
+    attributes?: ContextTraceAttributes,
+  ): void;
+  currentSpanId?(): string | undefined;
+}
 
 interface Options {
   store: Store;
@@ -46,6 +61,7 @@ interface Options {
   clean: (text: string) => string;
   notice: (text: string) => void;
   report: (event: string, data: Record<string, unknown>) => void;
+  trace?: ContextTrace;
 }
 
 interface Compaction {
@@ -77,13 +93,54 @@ export class ContextManager {
 
   constructor(private options: Options) {}
 
+  private traceStatus() {
+    return this.options.signal.aborted ? "cancelled" : "error";
+  }
+
+  private traceSync<T>(
+    name: string,
+    attributes: ContextTraceAttributes,
+    operation: () => T,
+    resultAttributes?: (result: T) => ContextTraceAttributes,
+  ) {
+    const handle = this.options.trace?.start(name, attributes);
+    try {
+      const result = operation();
+      this.options.trace?.end(handle, "ok", resultAttributes?.(result));
+
+      return result;
+    } catch (error) {
+      this.options.trace?.end(handle, this.traceStatus(), {
+        errorName: error instanceof Error ? error.name : typeof error,
+      });
+      throw error;
+    }
+  }
+
   /** 只整理本次请求；数据库保留原始历史，供恢复和后续压缩使用。 */
   request(input: any[], instructions: string, tools: any[]) {
     const measure = this.options.measure ?? contextSize;
-    const before = measure(input, instructions, tools);
-    const candidate = mechanicalInput(input);
+    const before = this.traceSync(
+      "context.request.measure_before",
+      { inputItems: input.length, toolCount: tools.length },
+      () => measure(input, instructions, tools),
+      (amount) => ({ amount }),
+    );
+    const candidate = this.traceSync(
+      "context.request.mechanical_input",
+      { inputItems: input.length },
+      () => mechanicalInput(input),
+      (result) => ({ changed: result !== input, outputItems: result.length }),
+    );
     const after =
-      candidate === input ? before : measure(candidate, instructions, tools);
+      candidate === input
+        ? before
+        : this.traceSync(
+            "context.request.measure_after",
+            { inputItems: candidate.length, toolCount: tools.length },
+            () => measure(candidate, instructions, tools),
+            (amount) => ({ amount }),
+          );
 
     return after < before
       ? { input: candidate, before, after }
@@ -105,7 +162,12 @@ export class ContextManager {
   ): Promise<any[]> {
     const options = this.options;
     options.signal.throwIfAborted();
-    const before = this.measure(input, instructions, tools);
+    const before = this.traceSync(
+      "context.prepare.measure_request_view",
+      { force, inputItems: input.length, toolCount: tools.length },
+      () => this.measure(input, instructions, tools),
+      (amount) => ({ amount }),
+    );
     if (!force && before < options.limit * 0.8) {
       return input;
     }

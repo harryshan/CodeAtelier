@@ -6,7 +6,7 @@
  * 2. start 保存用户消息为 queued；调度器在全局并发上限内启动不同工作区的任务，并对相同真实工作区保持互斥。
  * 3. resume 继续最后一个可恢复任务；cancel 处理用户取消，close 处理服务关闭。
  * 4. 首条 prompt 先用辅助模型生成标题；run 再读取历史和项目规则，准备工具及上下文预算。
- * 5. 为压缩提供 ToolRunner 的安全文件哈希探测；每轮以嵌套的上下文准备、请求视图、模型重试和实际模型请求记录 trace，再记录响应处理和服务实报用量。完整响应保存后校验工具 DAG，再按拓扑关系调度。
+ * 5. 为压缩提供 ToolRunner 的安全文件哈希探测；每轮记录上下文准备和请求视图的内部安全阶段、模型重试、实际模型请求和响应处理，再记录服务实报用量。完整响应保存后校验工具 DAG，再按拓扑关系调度。
  * 6. 每个实际工具调用仍经过低成本模型的自动通过、人工确认或拒绝分流；模型故障和无效输出保守降级为人工确认，并持久化可审计的决定。
  * 7. 工具批次、节点状态和结果都附带批次/调用标识；ToolRunner 确认实际执行开始后才记录工具耗时，并在可复用调度轨道显示执行和结果持久化；退出时将安全 trace 写入会话/任务文件、释放运行期记录并发出 task_end。
  *
@@ -21,7 +21,10 @@ import type {
   ModelCapabilities,
   ModelUsage,
 } from "../providers/model-metadata.js";
-import { ContextManager } from "../context/context-manager.js";
+import {
+  ContextManager,
+  type ContextTrace,
+} from "../context/context-manager.js";
 import {
   historyDefinition,
   parseScheduledHistoryArguments,
@@ -56,6 +59,7 @@ import { redactJson, redactText } from "../logging/redact.js";
 import { tracedModelProvider } from "../tracing/model-provider.js";
 import { TraceArchive } from "../tracing/archive.js";
 import { TraceRecorder } from "../tracing/recorder.js";
+import type { TraceSpan } from "../tracing/types.js";
 import type { Task, TaskStatus } from "../shared/types.js";
 
 // 标题请求没有工具或文件副作用；服务未提供可分类原因时，允许比主任务多一次诊断性重试。
@@ -614,8 +618,37 @@ export class Engine {
       };
 
       const tools = [...definitions, historyDefinition];
-      let compactionSpan: ReturnType<TraceRecorder["startSpan"]>;
-      let contextPrepareSpan: ReturnType<TraceRecorder["startSpan"]>;
+      let compactionSpan: TraceSpan | undefined;
+      let contextTraceParent: TraceSpan | undefined;
+      const contextStageSpans: Array<TraceSpan | undefined> = [];
+      const contextTrace: ContextTrace = {
+        start: (name, attributes) => {
+          const parentSpan =
+            contextStageSpans.at(-1) ?? compactionSpan ?? contextTraceParent;
+          const span = this.traces.startSpan(task.id, {
+            name,
+            category: "context",
+            track: "Main thread",
+            parentSpanId: parentSpan?.id,
+            attributes,
+          });
+          contextStageSpans.push(span);
+
+          return span;
+        },
+        end: (handle, status, attributes) => {
+          const span = handle as TraceSpan | undefined;
+          this.traces.endSpan(span, status, attributes);
+          const index = contextStageSpans.lastIndexOf(span);
+          if (index >= 0) {
+            contextStageSpans.splice(index, 1);
+          }
+        },
+        currentSpanId: () =>
+          contextStageSpans.at(-1)?.id ??
+          compactionSpan?.id ??
+          contextTraceParent?.id,
+      };
       const compactionAttributes = (data: Record<string, unknown>) => ({
         step,
         beforeAmount:
@@ -634,7 +667,7 @@ export class Engine {
             name: "context.compaction",
             category: "context",
             track: "Main thread",
-            parentSpanId: contextPrepareSpan?.id,
+            parentSpanId: contextTraceParent?.id,
             attributes: compactionAttributes(data),
           });
         } else if (event === "context.compaction_completed") {
@@ -668,6 +701,7 @@ export class Engine {
           purpose: "compaction",
           model: settings.model,
           step,
+          parentSpanId: () => contextTrace.currentSpanId?.(),
         }),
         summaryModel: settings.auxiliaryModel
           ? async () => {
@@ -705,6 +739,7 @@ export class Engine {
                   purpose: "compaction",
                   model: selected.model,
                   step,
+                  parentSpanId: () => contextTrace.currentSpanId?.(),
                 }),
                 model: selected.model,
                 budget: summaryBudget,
@@ -714,6 +749,7 @@ export class Engine {
         signal,
         clean: (text) => redactJson(text, [this.config.apiKey]),
         notice: (text) => emit("notice", { text }),
+        trace: contextTrace,
         report: (event, data) => {
           traceCompaction(event, data);
           log[event.endsWith("failed") ? "warn" : "info"]({
@@ -730,7 +766,7 @@ export class Engine {
           track: "Main thread",
           attributes: { force, step },
         });
-        contextPrepareSpan = contextSpan;
+        contextTraceParent = contextSpan;
         try {
           const prepared = await context.prepare(
             input,
@@ -738,9 +774,11 @@ export class Engine {
             tools,
             force,
           );
+          this.traces.endSpan(contextSpan, "ok", {
+            inputItems: prepared.length,
+          });
 
-          // 保持父 span 到请求结束，使 Perfetto 呈现准备、请求视图与 LLM 调用的真实层级。
-          return { input: prepared, span: contextSpan };
+          return prepared;
         } catch (error) {
           const traceStatus = signal.aborted ? "cancelled" : "error";
           this.traces.endSpan(compactionSpan, traceStatus);
@@ -748,11 +786,11 @@ export class Engine {
           this.traces.endSpan(contextSpan, traceStatus, {
             errorName: error instanceof Error ? error.name : typeof error,
           });
-          if (contextPrepareSpan === contextSpan) {
-            contextPrepareSpan = undefined;
-          }
-
           throw error;
+        } finally {
+          if (contextTraceParent === contextSpan) {
+            contextTraceParent = undefined;
+          }
         }
       };
 
@@ -760,8 +798,7 @@ export class Engine {
 
       for (step = 1; step <= settings.maxSteps; step++) {
         signal.throwIfAborted();
-        let preparedContext = await prepareContext();
-        input = preparedContext.input;
+        input = await prepareContext();
 
         lastFlush = Date.now();
         log.debug({ event: "model.started", step });
@@ -780,56 +817,18 @@ export class Engine {
                 name: "context.request",
                 category: "context",
                 track: "Main thread",
-                parentSpanId: preparedContext.span?.id,
                 attributes: { attempt, step },
               });
+              let request;
+              contextTraceParent = requestSpan;
               try {
-                const request = context.request(input, instructions, tools);
+                request = context.request(input, instructions, tools);
                 requestInput = request.input;
-
-                if (request.after < request.before) {
-                  log.debug({
-                    event: "context.mechanical",
-                    step,
-                    attempt,
-                    before: request.before,
-                    after: request.after,
-                    unit: budget.unit,
-                  });
-                }
-
-                emit("model_request", { purpose: "task", step, attempt });
-                const response = await tracedModelProvider(
-                  provider,
-                  this.traces,
-                  {
-                    taskId: task.id,
-                    purpose: "task",
-                    model: settings.model,
-                    step,
-                    attempt,
-                    parentSpanId: requestSpan?.id,
-                  },
-                ).run(
-                  requestInput,
-                  instructions,
-                  tools,
-                  signal,
-                  (delta) => {
-                    buffer += delta;
-                    if (Date.now() - lastFlush > 100 || buffer.length > 1000) {
-                      flush();
-                    }
-                  },
-                  { maxOutputTokens: budget.outputTokens },
-                );
                 this.traces.endSpan(requestSpan, "ok", {
                   afterAmount: request.after,
                   beforeAmount: request.before,
                   inputItems: request.input.length,
                 });
-
-                return response;
               } catch (error) {
                 this.traces.endSpan(
                   requestSpan,
@@ -840,7 +839,44 @@ export class Engine {
                   },
                 );
                 throw error;
+              } finally {
+                if (contextTraceParent === requestSpan) {
+                  contextTraceParent = undefined;
+                }
               }
+
+              if (request.after < request.before) {
+                log.debug({
+                  event: "context.mechanical",
+                  step,
+                  attempt,
+                  before: request.before,
+                  after: request.after,
+                  unit: budget.unit,
+                });
+              }
+
+              emit("model_request", { purpose: "task", step, attempt });
+
+              return tracedModelProvider(provider, this.traces, {
+                taskId: task.id,
+                purpose: "task",
+                model: settings.model,
+                step,
+                attempt,
+              }).run(
+                requestInput,
+                instructions,
+                tools,
+                signal,
+                (delta) => {
+                  buffer += delta;
+                  if (Date.now() - lastFlush > 100 || buffer.length > 1000) {
+                    flush();
+                  }
+                },
+                { maxOutputTokens: budget.outputTokens },
+              );
             },
             signal,
             (error, failedAttempt, delayMs) => {
@@ -855,7 +891,6 @@ export class Engine {
                 name: "llm.retry_delay",
                 category: "llm",
                 track: "Main thread",
-                parentSpanId: preparedContext.span?.id,
                 attributes: {
                   delayMs,
                   failedAttempt,
@@ -877,14 +912,6 @@ export class Engine {
             },
           );
         const response = await requestModel().catch(async (error) => {
-          const traceStatus = signal.aborted ? "cancelled" : "error";
-          this.traces.endSpan(preparedContext.span, traceStatus, {
-            errorName: error instanceof Error ? error.name : typeof error,
-          });
-          if (contextPrepareSpan === preparedContext.span) {
-            contextPrepareSpan = undefined;
-          }
-
           if (error?.code !== "context_length_exceeded" || overflowRetried) {
             throw error;
           }
@@ -894,17 +921,10 @@ export class Engine {
           attemptOffset = attempt;
           lastFlush = Date.now();
           overflowRetried = true;
-          preparedContext = await prepareContext(true);
-          input = preparedContext.input;
+          input = await prepareContext(true);
 
           return requestModel();
         });
-        this.traces.endSpan(preparedContext.span, "ok", {
-          inputItems: input.length,
-        });
-        if (contextPrepareSpan === preparedContext.span) {
-          contextPrepareSpan = undefined;
-        }
 
         const responseSpan = this.traces.startSpan(task.id, {
           name: "model.response_process",

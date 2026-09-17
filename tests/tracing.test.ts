@@ -1,7 +1,7 @@
 /**
  * 验证 Perfetto tracing 的可导出时间线、敏感原文边界、会话/任务级持久化和真实 HTTP 下载接口。
  * 第一组直接驱动 TraceRecorder，检查主线程 begin/end slice、instant、flow 与递归凭据脱敏的 tool 参数被转换为 Chrome Trace Event JSON；
- * 第二组通过生产 createApp、Engine 和模拟模型完成并发工具任务，确认主线程 context.prepare → context.request → llm.request 的嵌套、响应/计划/持久化阶段、四条可复用工具轨道及任务根 span 写入数据目录后即释放内存，并可经本机受保护 API 和真实文件清单下载。
+ * 第二组通过生产 createApp、Engine 和模拟模型完成并发工具任务，确认 context.prepare 与 context.request 的内部预算计量和机械整理阶段、响应/计划/持久化阶段、四条可复用工具轨道及任务根 span 写入数据目录后即释放内存，并可经本机受保护 API 和真实文件清单下载。
  *
  * 测试不连接真实模型服务，也不写入用户工作区；它只检查导出的可观察结构和临时数据目录，不依赖具体微秒耗时。
  */
@@ -263,7 +263,10 @@ it("persists each Engine task trace by session and task, then exports it only th
     expect(mainThreadNames).toEqual(
       expect.arrayContaining([
         "context.prepare",
+        "context.prepare.measure_request_view",
         "context.request",
+        "context.request.measure_before",
+        "context.request.mechanical_input",
         "llm.request",
         "model.response_process",
         "tool.plan",
@@ -284,17 +287,37 @@ it("persists each Engine task trace by session and task, then exports it only th
       );
 
     const prepareBegin = sliceIndex("context.prepare", "B");
-    const requestBegin = sliceIndex("context.request", "B");
-    const modelBegin = sliceIndex("llm.request", "B");
-    const modelEnd = sliceIndex("llm.request", "E");
-    const requestEnd = sliceIndex("context.request", "E");
+    const prepareMeasureBegin = sliceIndex(
+      "context.prepare.measure_request_view",
+      "B",
+    );
+    const prepareMeasureEnd = sliceIndex(
+      "context.prepare.measure_request_view",
+      "E",
+    );
     const prepareEnd = sliceIndex("context.prepare", "E");
-    expect(prepareBegin).toBeGreaterThanOrEqual(0);
-    expect(requestBegin).toBeGreaterThan(prepareBegin);
-    expect(modelBegin).toBeGreaterThan(requestBegin);
-    expect(modelEnd).toBeGreaterThan(modelBegin);
-    expect(requestEnd).toBeGreaterThan(modelEnd);
-    expect(prepareEnd).toBeGreaterThan(requestEnd);
+    const requestBegin = sliceIndex("context.request", "B");
+    const requestEnd = sliceIndex("context.request", "E");
+    const modelBegin = sliceIndex("llm.request", "B");
+    expect(prepareMeasureBegin).toBeGreaterThan(prepareBegin);
+    expect(prepareMeasureEnd).toBeGreaterThan(prepareMeasureBegin);
+    expect(prepareEnd).toBeGreaterThan(prepareMeasureEnd);
+    expect(requestBegin).toBeGreaterThan(prepareEnd);
+    expect(requestEnd).toBeGreaterThan(requestBegin);
+    expect(modelBegin).toBeGreaterThan(requestEnd);
+
+    const mechanicalStage = response
+      .json()
+      .traceEvents.find(
+        (event: { name: string; ph: string }) =>
+          event.name === "context.request.mechanical_input" && event.ph === "B",
+      );
+    expect(mechanicalStage.args).toMatchObject({
+      inputItems: expect.any(Number),
+    });
+    expect(JSON.stringify(mechanicalStage.args)).not.toContain(
+      "answer briefly",
+    );
 
     const tool = response
       .json()
