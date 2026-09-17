@@ -1,7 +1,7 @@
 /**
  * 验证 Perfetto tracing 的可导出时间线、敏感原文边界、会话/任务级持久化和真实 HTTP 下载接口。
  * 第一组直接驱动 TraceRecorder，检查 span、instant 与 flow 被转换为 Chrome Trace Event JSON；
- * 第二组通过生产 createApp、Engine 和模拟模型完成任务，确认模型调用与任务根 span 写入数据目录后即释放内存，并可经本机受保护 API 和真实文件清单下载。
+ * 第二组通过生产 createApp、Engine 和模拟模型完成并发工具任务，确认上下文/响应/计划/持久化阶段、四条可复用工具轨道及任务根 span 写入数据目录后即释放内存，并可经本机受保护 API 和真实文件清单下载。
  *
  * 测试不连接真实模型服务，也不写入用户工作区；它只检查导出的可观察结构和临时数据目录，不依赖具体微秒耗时。
  */
@@ -35,7 +35,7 @@ it("exports spans, instants and cross-track flows as Perfetto Trace Event JSON",
   const tool = recorder.startSpan("task-1", {
     name: "tool.read_file",
     category: "tool",
-    track: "Tool call-1",
+    track: "Tool worker 1",
   });
   recorder.endSpan(tool, "ok");
   recorder.link(model, tool, "llm_to_tool");
@@ -76,16 +76,16 @@ it("persists each Engine task trace by session and task, then exports it only th
       if (modelCalls === 1) {
         return {
           output: [
-            {
-              type: "function_call",
-              call_id: "read-trace-target",
+            ...Array.from({ length: 5 }, (_, index) => ({
+              type: "function_call" as const,
+              call_id: `read-trace-target-${index + 1}`,
               name: "read_file",
               arguments: JSON.stringify({
                 path: "trace-target.txt",
                 startLine: 1,
                 endLine: 1,
               }),
-            },
+            })),
           ],
           text: "",
         };
@@ -143,13 +143,27 @@ it("persists each Engine task trace by session and task, then exports it only th
     expect(response.json().traceEvents).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ name: "task.run", ph: "X" }),
+        expect.objectContaining({ name: "context.prepare", ph: "X" }),
+        expect.objectContaining({ name: "context.request", ph: "X" }),
         expect.objectContaining({ name: "llm.request", ph: "X" }),
+        expect.objectContaining({ name: "model.response_process", ph: "X" }),
+        expect.objectContaining({ name: "tool.plan", ph: "X" }),
         expect.objectContaining({ name: "tool.batch", ph: "X" }),
         expect.objectContaining({ name: "tool.read_file", ph: "X" }),
+        expect.objectContaining({ name: "tool.result_persist", ph: "X" }),
         expect.objectContaining({ name: "llm_to_tool", ph: "s" }),
         expect.objectContaining({ name: "llm_to_tool", ph: "f" }),
       ]),
     );
+    const toolTracks = response
+      .json()
+      .traceEvents.filter(
+        (event: { name: string; ph: string; args: { name?: string } }) =>
+          event.name === "thread_name" &&
+          event.ph === "M" &&
+          event.args.name?.startsWith("Tool worker "),
+      );
+    expect(toolTracks).toHaveLength(4);
   } finally {
     await fixture.app.close();
   }

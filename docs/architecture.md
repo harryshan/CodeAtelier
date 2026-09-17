@@ -23,7 +23,7 @@ server (Fastify)
 - `src/permissions` 用无工具的低成本辅助模型将待审批请求分为自动通过、人工确认或拒绝；人工确认仍在后端等待用户点击，取消会释放待审批 Promise。模型无法自行同意审批。
 - `src/sessions/store.ts` 保存 sessions、tasks、events、context；任务的 createdAt、startedAt、finishedAt 分别表示入队、实际开始和结束，排队时间不计入会话累计运行时间。初始数据库结构位于 `schema.ts`。大于 64 KiB 的 events、活动上下文和历史快照由 `store-worker.ts` 在独立 Worker 线程解析或事务写入，小记录避免线程创建开销而同步读取。启动时将 queued/running/waiting 任务标为 interrupted 并记录结束时间。
 - `src/config` 将 .env/进程环境中的只读连接配置与 settings.json 中的非连接偏好合成为运行时设置，另管理内存密钥和平台数据目录。
-- `src/tracing` 默认只在任务运行期间于当前进程构造性能 timeline：Engine 在任务、上下文、模型和工具真实执行边界创建 span，模型包装器只记录长度、数量、usage、错误类别和首包时间；任务进入终态时 TraceArchive 以临时文件后 rename 的方式保存 `traces/<sessionId>/<taskId>.json`，然后立即释放内存记录，所以同一会话各任务不覆盖且没有完成 trace 缓存。`GET /api/tasks/:id/trace` 在本机 cookie 保护下只读取该文件；`GET /api/sessions/:id/traces` 只列出实际存在的文件，统计框据此显示下载入口。trace 不保存提示词、源码、工具输出或凭据原文；高保真 replay payload 另行设计。
+- `src/tracing` 默认只在任务运行期间于当前进程构造性能 timeline：Engine 在上下文整理/压缩、模型请求与退避、响应处理、工具计划、工具真实执行和工具结果持久化边界创建 span，模型包装器只记录长度、数量、usage、错误类别和首包时间。工具 DAG 调度器将实际执行节点映射到最多 4 个可复用 `Tool worker` 逻辑轨道，而不为每个 call ID 创建一行；flow 仍保留模型到工具的因果关系。任务进入终态时 TraceArchive 以临时文件后 rename 的方式保存 `traces/<sessionId>/<taskId>.json`，然后立即释放内存记录，所以同一会话各任务不覆盖且没有完成 trace 缓存。`GET /api/tasks/:id/trace` 在本机 cookie 保护下只读取该文件；`GET /api/sessions/:id/traces` 只列出实际存在的文件，统计框据此显示下载入口。trace 不保存提示词、源码、工具输出或凭据原文；高保真 replay payload 另行设计。
 - `src/logging` 在 Pino 内部按字段脱敏后输出紧凑格式化纯文本，按级别筛选、保留受控错误详情并轮转文件。
 
 ## 文件职责与定位

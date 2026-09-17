@@ -5,7 +5,7 @@
  *
  * 1. createToolGraph 校验节点 ID、依赖引用及环，保留模型原始顺序作为稳定调度优先级。
  * 2. executeToolGraph 使用 Kahn 入度算法：所有前置成功的节点才进入 ready 队列，最多同时运行
- *    maxConcurrency 个节点。
+ *    maxConcurrency 个节点；每个运行节点同时获得一个可复用的稳定并发槽位，供调用方合并性能轨道。
  * 3. 前置失败时 blockDescendants 会递归阻断所有后继节点；被阻断节点不会调用 execute，避免把失败或
  *    未知副作用当成可继续使用的前置条件。
  *
@@ -117,7 +117,7 @@ export async function executeToolGraph(
   graph: ToolGraph,
   options: {
     maxConcurrency?: number;
-    execute: (node: ToolGraphNode) => Promise<boolean>;
+    execute: (node: ToolGraphNode, slot: number) => Promise<boolean>;
     block: (
       node: ToolGraphNode,
       failedDependency: ToolGraphNode,
@@ -135,7 +135,7 @@ export async function executeToolGraph(
     .sort((left, right) => left.ordinal - right.ordinal);
   const active = new Map<
     string,
-    Promise<{ node: ToolGraphNode; succeeded: boolean }>
+    Promise<{ node: ToolGraphNode; slot: number; succeeded: boolean }>
   >();
   const maxConcurrency = Math.max(
     1,
@@ -143,6 +143,10 @@ export async function executeToolGraph(
       options.maxConcurrency ?? DEFAULT_TOOL_CONCURRENCY,
       graph.nodes.length,
     ),
+  );
+  const availableSlots = Array.from(
+    { length: maxConcurrency },
+    (_, index) => index,
   );
 
   const update = (node: ToolGraphNode, state: ToolGraphNodeState) => {
@@ -189,15 +193,18 @@ export async function executeToolGraph(
         continue;
       }
 
+      const slot = availableSlots.shift()!;
       update(node, "executing");
       const execution = options
-        .execute(node)
-        .then((succeeded) => ({ node, succeeded }));
+        .execute(node, slot)
+        .then((succeeded) => ({ node, slot, succeeded }));
       active.set(node.nodeId, execution);
     }
 
     const completed = await Promise.race(active.values());
     active.delete(completed.node.nodeId);
+    availableSlots.push(completed.slot);
+    availableSlots.sort((left, right) => left - right);
 
     if (!completed.succeeded) {
       update(completed.node, "failed");

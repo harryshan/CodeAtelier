@@ -6,9 +6,9 @@
  * 2. start 保存用户消息为 queued；调度器在全局并发上限内启动不同工作区的任务，并对相同真实工作区保持互斥。
  * 3. resume 继续最后一个可恢复任务；cancel 处理用户取消，close 处理服务关闭。
  * 4. 首条 prompt 先用辅助模型生成标题；run 再读取历史和项目规则，准备工具及上下文预算。
- * 5. 为压缩提供 ToolRunner 的安全文件哈希探测；每轮先整理上下文，再记录实际模型请求和服务实报用量。完整响应保存后校验工具 DAG，再按拓扑关系调度。
+ * 5. 为压缩提供 ToolRunner 的安全文件哈希探测；每轮先记录上下文准备/机械整理、模型重试和响应处理，再记录实际模型请求和服务实报用量。完整响应保存后校验工具 DAG，再按拓扑关系调度。
  * 6. 每个实际工具调用仍经过低成本模型的自动通过、人工确认或拒绝分流；模型故障和无效输出保守降级为人工确认，并持久化可审计的决定。
- * 7. 工具批次、节点状态和结果都附带批次/调用标识；ToolRunner 确认实际执行开始后才记录工具耗时，工具结果和更新后的上下文一起提交到数据库；退出时将安全 trace 写入会话/任务文件、释放运行期记录并发出 task_end。
+ * 7. 工具批次、节点状态和结果都附带批次/调用标识；ToolRunner 确认实际执行开始后才记录工具耗时，并在可复用调度轨道显示执行和结果持久化；退出时将安全 trace 写入会话/任务文件、释放运行期记录并发出 task_end。
  *
  * 模型请求可以重试，但已经执行的工具不能跟着重跑。数据库回滚也撤销不了文件修改或
  * 已启动的命令，所以保存失败时必须停止任务，并留下足够的记录供后续恢复。
@@ -48,6 +48,7 @@ import { ToolRunner } from "../tools/tool-runner.js";
 import { definitions, parseScheduledToolArguments } from "../tools/registry.js";
 import {
   createToolGraph,
+  DEFAULT_TOOL_CONCURRENCY,
   executeToolGraph,
   type ToolGraphNode,
 } from "../tools/tool-graph.js";
@@ -613,6 +614,40 @@ export class Engine {
       };
 
       const tools = [...definitions, historyDefinition];
+      let compactionSpan: ReturnType<TraceRecorder["startSpan"]>;
+      const compactionAttributes = (data: Record<string, unknown>) => ({
+        step,
+        beforeAmount:
+          typeof data.beforeAmount === "number" ? data.beforeAmount : undefined,
+        afterAmount:
+          typeof data.afterAmount === "number" ? data.afterAmount : undefined,
+        calls: typeof data.calls === "number" ? data.calls : undefined,
+        stage: typeof data.stage === "string" ? data.stage : undefined,
+      });
+      const traceCompaction = (
+        event: string,
+        data: Record<string, unknown>,
+      ) => {
+        if (event === "context.compaction_started") {
+          compactionSpan = this.traces.startSpan(task.id, {
+            name: "context.compaction",
+            category: "context",
+            track: "Context",
+            attributes: compactionAttributes(data),
+          });
+        } else if (event === "context.compaction_completed") {
+          this.traces.endSpan(compactionSpan, "ok", compactionAttributes(data));
+          compactionSpan = undefined;
+        } else if (event === "context.compaction_failed") {
+          this.traces.endSpan(
+            compactionSpan,
+            "error",
+            compactionAttributes(data),
+          );
+          compactionSpan = undefined;
+        }
+      };
+
       const context = new ContextManager({
         store: this.store,
         sessionId: session.id,
@@ -678,6 +713,7 @@ export class Engine {
         clean: (text) => redactJson(text, [this.config.apiKey]),
         notice: (text) => emit("notice", { text }),
         report: (event, data) => {
+          traceCompaction(event, data);
           log[event.endsWith("failed") ? "warn" : "info"]({
             event,
             unit: budget.unit,
@@ -685,38 +721,77 @@ export class Engine {
           });
         },
       });
-      let overflowRetried = false;
-
-      for (step = 1; step <= settings.maxSteps; step++) {
-        signal.throwIfAborted();
+      const prepareContext = async (force = false) => {
         const contextSpan = this.traces.startSpan(task.id, {
           name: "context.prepare",
           category: "context",
           track: "Context",
-          attributes: { step },
+          attributes: { force, step },
         });
         try {
-          input = await context.prepare(input, instructions, tools);
-          this.traces.endSpan(contextSpan, "ok", { inputItems: input.length });
+          const prepared = await context.prepare(
+            input,
+            instructions,
+            tools,
+            force,
+          );
+          this.traces.endSpan(contextSpan, "ok", {
+            inputItems: prepared.length,
+          });
+
+          return prepared;
         } catch (error) {
-          this.traces.endSpan(contextSpan, "error", {
+          const traceStatus = signal.aborted ? "cancelled" : "error";
+          this.traces.endSpan(contextSpan, traceStatus, {
             errorName: error instanceof Error ? error.name : typeof error,
           });
+          this.traces.endSpan(compactionSpan, traceStatus);
+          compactionSpan = undefined;
           throw error;
         }
+      };
+
+      let overflowRetried = false;
+
+      for (step = 1; step <= settings.maxSteps; step++) {
+        signal.throwIfAborted();
+        input = await prepareContext();
 
         lastFlush = Date.now();
         log.debug({ event: "model.started", step });
         // 这里只重试模型请求。完整响应保存成功后，才能执行其中的工具调用。
         let attemptOffset = 0;
         let requestInput = input;
+        let retryDelaySpan: ReturnType<TraceRecorder["startSpan"]>;
         const requestModel = () =>
           retryModel(
             async (currentAttempt) => {
               attempt = attemptOffset + currentAttempt;
+              this.traces.endSpan(retryDelaySpan, "ok", { attempt });
+              retryDelaySpan = undefined;
 
-              const request = context.request(input, instructions, tools);
-              requestInput = request.input;
+              const requestSpan = this.traces.startSpan(task.id, {
+                name: "context.request",
+                category: "context",
+                track: "Context",
+                attributes: { attempt, step },
+              });
+              let request;
+              try {
+                request = context.request(input, instructions, tools);
+                requestInput = request.input;
+                this.traces.endSpan(requestSpan, "ok", {
+                  afterAmount: request.after,
+                  beforeAmount: request.before,
+                  inputItems: request.input.length,
+                });
+              } catch (error) {
+                this.traces.endSpan(requestSpan, "error", {
+                  errorName: error instanceof Error ? error.name : typeof error,
+                });
+                throw error;
+              }
+
               if (request.after < request.before) {
                 log.debug({
                   event: "context.mechanical",
@@ -759,6 +834,16 @@ export class Engine {
                 step,
                 attempt,
               });
+              retryDelaySpan = this.traces.startSpan(task.id, {
+                name: "llm.retry_delay",
+                category: "llm",
+                track: "LLM",
+                attributes: {
+                  delayMs,
+                  failedAttempt,
+                  step,
+                },
+              });
               log.warn({
                 event: "model.retry",
                 step,
@@ -783,30 +868,52 @@ export class Engine {
           attemptOffset = attempt;
           lastFlush = Date.now();
           overflowRetried = true;
-          input = await context.prepare(input, instructions, tools, true);
+          input = await prepareContext(true);
 
           return requestModel();
         });
 
-        flush();
-        signal.throwIfAborted();
-        if (response.usage) {
-          budget.observeUsage?.(
-            response.usage.input_tokens,
-            requestInput,
-            instructions,
-            tools,
+        const responseSpan = this.traces.startSpan(task.id, {
+          name: "model.response_process",
+          category: "agent",
+          track: "Agent",
+          attributes: { attempt, step },
+        });
+        let calls;
+        try {
+          flush();
+          signal.throwIfAborted();
+          if (response.usage) {
+            budget.observeUsage?.(
+              response.usage.input_tokens,
+              requestInput,
+              instructions,
+              tools,
+            );
+            recordUsage(response.usage, "task");
+          }
+
+          input.push(...response.output);
+          this.store.saveContext(session.id, input);
+          if (response.text) {
+            emit("assistant", { text: response.text, step, attempt });
+          }
+
+          calls = response.output.filter((i) => i.type === "function_call");
+          this.traces.endSpan(responseSpan, "ok", {
+            outputItems: response.output.length,
+            toolCalls: calls.length,
+          });
+        } catch (error) {
+          this.traces.endSpan(
+            responseSpan,
+            signal.aborted ? "cancelled" : "error",
+            {
+              errorName: error instanceof Error ? error.name : typeof error,
+            },
           );
-          recordUsage(response.usage, "task");
+          throw error;
         }
-
-        input.push(...response.output);
-        this.store.saveContext(session.id, input);
-        if (response.text) {
-          emit("assistant", { text: response.text, step, attempt });
-        }
-
-        const calls = response.output.filter((i) => i.type === "function_call");
 
         log.info({ event: "model.completed", step, toolCount: calls.length });
         if (!calls.length) {
@@ -845,24 +952,45 @@ export class Engine {
             executionStartedAt === undefined
               ? 0
               : Date.now() - executionStartedAt;
-          // 工具副作用无法由 SQLite 回滚；每个并行节点完成后立即原子保存结果和模型反馈。
-          this.store.transaction(() => {
-            emit("tool_result", {
-              name: node.name,
-              callId: node.callId,
+          const persistenceSpan = this.traces.startSpan(task.id, {
+            name: "tool.result_persist",
+            category: "storage",
+            track: "Storage",
+            attributes: {
               batchId,
+              callId: node.callId,
               nodeId: node.nodeId,
-              dependsOn: node.dependsOn,
-              result: JSON.parse(output),
-              durationMs,
-            });
-            input.push({
-              type: "function_call_output",
-              call_id: node.callId,
-              output,
-            });
-            this.store.saveContext(session.id, input);
+            },
           });
+          // 工具副作用无法由 SQLite 回滚；每个并行节点完成后立即原子保存结果和模型反馈。
+          try {
+            this.store.transaction(() => {
+              emit("tool_result", {
+                name: node.name,
+                callId: node.callId,
+                batchId,
+                nodeId: node.nodeId,
+                dependsOn: node.dependsOn,
+                result: JSON.parse(output),
+                durationMs,
+              });
+              input.push({
+                type: "function_call_output",
+                call_id: node.callId,
+                output,
+              });
+              this.store.saveContext(session.id, input);
+            });
+            this.traces.endSpan(persistenceSpan, "ok", {
+              outputChars: output.length,
+            });
+          } catch (error) {
+            this.traces.endSpan(persistenceSpan, "error", {
+              errorName: error instanceof Error ? error.name : typeof error,
+            });
+            throw error;
+          }
+
           log.info({
             event: "tool.completed",
             tool: node.name,
@@ -874,6 +1002,12 @@ export class Engine {
           });
         };
 
+        const planningSpan = this.traces.startSpan(task.id, {
+          name: "tool.plan",
+          category: "tool",
+          track: "Tool scheduler",
+          attributes: { batchId, calls: calls.length, step },
+        });
         let graph;
 
         try {
@@ -900,6 +1034,9 @@ export class Engine {
             }),
           );
         } catch (error: any) {
+          this.traces.endSpan(planningSpan, "error", {
+            errorName: error instanceof Error ? error.name : typeof error,
+          });
           const message = redactText(error.message, [this.config.apiKey]);
           // 图不可验证时整批没有副作用；每个原生调用都得到结果，模型可在下一轮修正计划。
           for (const [ordinal, call] of calls.entries()) {
@@ -946,15 +1083,24 @@ export class Engine {
           });
         }
 
+        this.traces.endSpan(planningSpan, "ok", {
+          nodes: graph.nodes.length,
+        });
+
         const batchSpan = this.traces.startSpan(task.id, {
           name: "tool.batch",
           category: "tool",
           track: "Tool scheduler",
-          attributes: { batchId, nodes: graph.nodes.length, step },
+          attributes: {
+            batchId,
+            lanes: Math.min(graph.nodes.length, DEFAULT_TOOL_CONCURRENCY),
+            nodes: graph.nodes.length,
+            step,
+          },
         });
         try {
           await executeToolGraph(graph, {
-            execute: async (node) => {
+            execute: async (node, slot) => {
               signal.throwIfAborted();
               let executionStartedAt: number | undefined;
               let toolSpan: ReturnType<TraceRecorder["startSpan"]>;
@@ -966,7 +1112,7 @@ export class Engine {
                   toolSpan = this.traces.startSpan(task.id, {
                     name: "tool.read_context_history",
                     category: "tool",
-                    track: `Tool ${node.callId}`,
+                    track: `Tool worker ${slot + 1}`,
                     attributes: {
                       batchId,
                       callId: node.callId,
@@ -987,7 +1133,7 @@ export class Engine {
                       toolSpan = this.traces.startSpan(task.id, {
                         name: `tool.${node.name}`,
                         category: "tool",
-                        track: `Tool ${node.callId}`,
+                        track: `Tool worker ${slot + 1}`,
                         attributes: {
                           batchId,
                           callId: node.callId,
