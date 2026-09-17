@@ -21,7 +21,7 @@ type PasswordAccess = {
 };
 
 function passwordAccess(): PasswordAccess {
-  const enabled = process.env.CODEATELIER_WEB_PASSWORD_ENABLED ?? "false";
+  const enabled = process.env.CODEATELIER_WEB_PASSWORD_ENABLED || "false";
   const password = process.env.CODEATELIER_WEB_PASSWORD ?? "";
 
   if (enabled !== "true" && enabled !== "false") {

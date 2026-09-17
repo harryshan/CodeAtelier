@@ -596,7 +596,7 @@
 
 - 日期：2026-09-19
 - 状态：用户要求实现。
-- 决定：服务启动时读取 `CODEATELIER_WEB_PASSWORD_ENABLED`（严格为 `true` 或 `false`，默认 `false`）和 `CODEATELIER_WEB_PASSWORD`；开关为 `true` 时密码必须非空。启用后，浏览器先通过同源登录 API 提交密码，服务只在匹配时以常量时间比较并写入本进程有效的 HttpOnly、SameSite=Strict `ca_access` cookie；除门禁状态和登录外的 API（包括 bootstrap、SSE 与业务接口）都拒绝未验证请求。前端只显示密码输入门禁，不接收环境密码或将其编译进构建产物。
+- 决定：服务启动时读取 `CODEATELIER_WEB_PASSWORD_ENABLED`（未设置或空值默认 `false`；显式值严格为 `true` 或 `false`）和 `CODEATELIER_WEB_PASSWORD`；开关为 `true` 时密码必须非空。启用后，浏览器先通过同源登录 API 提交密码，服务只在匹配时以常量时间比较并写入本进程有效的 HttpOnly、SameSite=Strict `ca_access` cookie；除门禁状态和登录外的 API（包括 bootstrap、SSE 与业务接口）都拒绝未验证请求。前端只显示密码输入门禁，不接收环境密码或将其编译进构建产物。
 - 原因：用户需要可按部署环境启用的简单页面访问验证，同时保持默认本机开发体验不变。
 - 安全边界：这是单一共享密码而非账户系统；没有用户身份、角色、找回密码、限流、审计账户或公网部署保证。局域网模式仍须仅用于受信任网络并由防火墙阻止公网入站；密码不写入 settings、浏览器状态、会话历史、trace 或日志。服务重启会轮换门禁 cookie，用户需重新输入密码。
 - tracing：该门禁发生在任务、模型、工具、审批、上下文和存储运行时之外，不创建可归属到任务的 Perfetto span；只记录不含密码的接受/拒绝服务日志。HTTP 与浏览器回归覆盖配置、拒绝和成功路径。

@@ -32,7 +32,7 @@ Node.js 24，pnpm 11.22.0（packageManager 固定）。提交 pnpm-lock.yaml，�
 | CODEATELIER_DATA_DIR         | 平台用户数据目录                                                                  |
 | CODEATELIER_PORT             | 4142                                                                              |
 | CODEATELIER_LISTEN_ADDRESS            | `127.0.0.1`；可选 `::1`、`0.0.0.0`（开放 IPv4 局域网）或 `::`（开放 IPv6 局域网） |
-| CODEATELIER_WEB_PASSWORD_ENABLED      | false；只能为 `true` 或 `false`，启用 Web UI 单一访问密码门禁                      |
+| CODEATELIER_WEB_PASSWORD_ENABLED      | false（未设置或空值）；显式值只能为 `true` 或 `false`，启用 Web UI 单一访问密码门禁 |
 | CODEATELIER_WEB_PASSWORD              | 无默认值；开关为 `true` 时必须为非空密码，不写入设置、浏览器配置或日志              |
 | CODEATELIER_LOG_LEVEL                 | info                                                                              |
 

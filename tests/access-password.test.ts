@@ -34,8 +34,8 @@ function firstCookie(value: string | string[] | undefined): string {
   return header.split(";", 1)[0];
 }
 
-it("keeps the password gate disabled by default", async () => {
-  vi.stubEnv("CODEATELIER_WEB_PASSWORD_ENABLED", "false");
+it("keeps the password gate disabled when the template switch is empty", async () => {
+  vi.stubEnv("CODEATELIER_WEB_PASSWORD_ENABLED", "");
   vi.stubEnv("CODEATELIER_WEB_PASSWORD", "");
   const fixture = await accessFixture();
 
