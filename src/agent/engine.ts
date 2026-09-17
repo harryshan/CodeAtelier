@@ -201,9 +201,9 @@ export class Engine {
     }
   }
 
-  /** HTTP 快照在 Worker 中解析长事件 JSON；任务状态和审批仍从主线程的小索引查询取得。 */
-  async snapshot(id: string) {
-    const events = await this.store.eventsAsync(id);
+  /** HTTP 快照首次加载全量事件，后续刷新只解析游标后的新增事件；任务状态和审批始终从小索引重新读取。 */
+  async snapshot(id: string, after = 0) {
+    const events = await this.store.eventsAsync(id, after);
 
     return {
       session: this.store.get(id),

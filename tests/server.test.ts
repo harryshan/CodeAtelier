@@ -99,6 +99,42 @@ it("creates isolated sessions and validates missing sessions and bad payloads", 
   }
 });
 
+it("returns only events after the snapshot cursor while keeping current session state", async () => {
+  const fixture = await createFixture();
+
+  try {
+    const session = fixture.store.create(await temp());
+    const first = fixture.store.event(session.id, "task-one", "notice", {
+      text: "first event",
+    });
+    const second = fixture.store.event(session.id, "task-one", "notice", {
+      text: "second event",
+    });
+    const response = await fixture.app.inject({
+      url: `/api/sessions/${session.id}?after=${first.id}`,
+      headers: fixture.headers,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      session: { id: session.id },
+      tasks: [],
+      approvals: [],
+      events: [{ id: second.id, data: { text: "second event" } }],
+    });
+    expect(
+      (
+        await fixture.app.inject({
+          url: `/api/sessions/${session.id}?after=-1`,
+          headers: fixture.headers,
+        })
+      ).statusCode,
+    ).toBe(400);
+  } finally {
+    await fixture.app.close();
+  }
+});
+
 it("runs different workspaces in parallel while queueing the same workspace", async () => {
   const fixture = await createFixture();
 

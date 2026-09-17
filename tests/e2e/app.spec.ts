@@ -3,7 +3,7 @@
  * Playwright 启动本地测试服务器和临时工作区，模型响应由 tests/fixtures/server.ts 模拟。
  *
  * 1. 创建会话、通过统一文件编辑创建文件、查看 diff、刷新历史，再检查审批、取消和设置保存。
- * 2. 检查重试文本分开显示、凭据失效后重新连接，以及会话切换后的数据隔离。
+ * 2. 检查重试文本分开显示且保持原始顺序、凭据失效后重新连接，以及会话切换后的数据隔离。
  * 3. 检查受确认的重载服务入口会等待替代服务、完整刷新页面，以及关闭服务成功和请求失败时的不同提示。
  * 4. 检查压缩通知、原始历史及模型用量在刷新后仍能显示。
  * 5. 验证多文件编辑的成功/失败状态、错误、diff 和刷新后的历史；命令和 Git 的流式输出、结果与历史重载聚合在同一卡片。
@@ -339,6 +339,13 @@ test("model retries keep incomplete text separate from the successful response",
   await expect(
     page.getByRole("status").filter({ hasText: "后重试" }),
   ).toBeVisible();
+
+  const timelineText = (
+    await page.locator("[data-timeline-key]").allTextContents()
+  ).join("\n");
+  expect(timelineText.indexOf("第一次尝试的部分回复")).toBeLessThan(
+    timelineText.indexOf("后重试"),
+  );
 });
 
 test("reconnects after an expired SSE session without resubmitting a task", async ({

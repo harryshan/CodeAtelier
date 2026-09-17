@@ -3,7 +3,7 @@
  * 请求失败时交给传入的错误回调处理。
  *
  * 1. labels 和 textResult 处理工具名称及结果的显示格式。
- * 2. 按任务、步骤和尝试次数合并流式文本；已有完整 assistant 事件时，去掉对应的临时文本，并交给 MarkdownMessage 安全渲染用户和 agent 文本。
+ * 2. 按任务、步骤和尝试次数合并流式文本；已有完整 assistant 事件时去掉对应的临时文本，未完成文本紧随其最后一个 delta，而非错误追加到时间线末尾。MarkdownMessage 负责安全渲染用户和 agent 文本。
  * 3. 合并同一编辑批次的逐文件最新状态；按调用 ID 聚合 run_command、git 的流式输出和最终结果，再显示其余工具、diff、预算和各类模型用量通知。
  * 4. 将可见条目及缓冲区交给虚拟列表；ResizeObserver 测得的高度用于在未渲染历史前后保留准确占位。
  * 5. 显示仍在接收的文本和待审批按钮，把用户选择发给后端。
@@ -546,15 +546,19 @@ export function Timeline({
       task.status === "running" ||
       task.status === "waiting",
   );
-  // 分别保留每次尝试的文本，避免将失败前的半截回复拼进成功结果。
-  const streaming = new Map<string, string>();
+  // 分别保留每次尝试的文本，避免将失败前的半截回复拼进成功结果；同时记住末尾 delta，保留历史顺序。
+  const streaming = new Map<string, { text: string; lastEventId: number }>();
 
   for (const event of data.events) {
     if (event.type === "delta") {
       const key =
         event.taskId + ":" + event.data.step + ":" + (event.data.attempt || 1);
+      const previous = streaming.get(key);
 
-      streaming.set(key, (streaming.get(key) || "") + event.data.text);
+      streaming.set(key, {
+        text: (previous?.text || "") + event.data.text,
+        lastEventId: event.id,
+      });
     }
   }
 
@@ -585,20 +589,28 @@ export function Timeline({
   }
 
   const outputEvents = toolOutputCards(data.events);
-  const entries: TimelineEntry[] = [
-    ...data.events
-      .filter((event) =>
-        eventHasTimelineContent(event, outputEvents, editBatches),
-      )
-      .map(
-        (event) =>
-          ({ key: `event:${event.id}`, kind: "event", event }) as const,
-      ),
-    ...Array.from(streaming, ([key, text]) => ({
+  const streamingAfterEvent = new Map<number, TimelineEntry[]>();
+  for (const [key, state] of streaming) {
+    const entries = streamingAfterEvent.get(state.lastEventId) ?? [];
+
+    entries.push({
       key: `streaming:${key}`,
-      kind: "streaming" as const,
-      text,
-    })),
+      kind: "streaming",
+      text: state.text,
+    });
+    streamingAfterEvent.set(state.lastEventId, entries);
+  }
+
+  const entries: TimelineEntry[] = [];
+  for (const event of data.events) {
+    if (eventHasTimelineContent(event, outputEvents, editBatches)) {
+      entries.push({ key: `event:${event.id}`, kind: "event", event });
+    }
+
+    entries.push(...(streamingAfterEvent.get(event.id) ?? []));
+  }
+
+  entries.push(
     ...data.approvals.map((approval) => ({
       key: `approval:${approval.id}`,
       kind: "approval" as const,
@@ -610,7 +622,7 @@ export function Timeline({
         key: `interrupted:${task.id}`,
         kind: "interrupted" as const,
       })),
-  ];
+  );
   const { measureItem, range } = useVirtualTimeline(
     entries,
     scrollContainerRef,

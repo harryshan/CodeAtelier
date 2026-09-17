@@ -65,8 +65,14 @@ export async function bootstrap() {
 
 export const sessions = () => api<Session[]>("/sessions");
 
-export const snapshot = (id: string, signal?: AbortSignal) =>
-  api<Snapshot>("/sessions/" + id, undefined, "GET", false, signal);
+export const snapshot = (id: string, signal?: AbortSignal, after = 0) =>
+  api<Snapshot>(
+    "/sessions/" + id + (after > 0 ? "?after=" + after : ""),
+    undefined,
+    "GET",
+    false,
+    signal,
+  );
 
 export const sessionTraceTaskIds = (id: string) =>
   api<{ taskIds: string[] }>("/sessions/" + id + "/traces");

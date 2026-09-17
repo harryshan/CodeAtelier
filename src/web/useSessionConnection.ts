@@ -44,6 +44,7 @@ export function useSessionConnection(
     const snapshotRequest = new AbortController();
     let refreshInProgress = false;
     let refreshQueued = false;
+    let lastEventId = 0;
     const refresh = async () => {
       if (refreshInProgress) {
         refreshQueued = true;
@@ -53,10 +54,27 @@ export function useSessionConnection(
 
       refreshInProgress = true;
       try {
-        const v = await snapshot(selected, snapshotRequest.signal);
+        const v = await snapshot(selected, snapshotRequest.signal, lastEventId);
+        for (const event of v.events) {
+          lastEventId = Math.max(lastEventId, event.id);
+        }
 
         if (!disposed) {
-          setData(v);
+          setData((current) => {
+            if (!current) {
+              return v;
+            }
+
+            const knownEventIds = new Set(
+              current.events.map((event) => event.id),
+            );
+            const events = [
+              ...current.events,
+              ...v.events.filter((event) => !knownEventIds.has(event.id)),
+            ];
+
+            return { ...v, events };
+          });
           setLoading(false);
         }
       } catch (e) {

@@ -251,11 +251,15 @@ export class Store {
       .map((r) => ({ ...r, data: JSON.parse(String(r.data)) })) as Event[];
   }
 
-  /** 为 HTTP 快照和压缩准备读取全量事件；小会话直接读以免 Worker 启动延迟，长 JSON 才在线程外解析。 */
-  async eventsAsync(sessionId: string): Promise<Event[]> {
-    return this.serializedSize("events", sessionId) < 64 * 1024
-      ? this.events(sessionId)
-      : this.runWorker<Event[]>({ operation: "events", sessionId });
+  /**
+   * 为 HTTP 快照和压缩读取事件；after 仅返回游标之后的新增记录，避免流式刷新反复解析整段历史。
+   * 小结果直接读取以免 Worker 启动延迟，长 JSON 才在线程外解析。
+   */
+  async eventsAsync(sessionId: string, after = 0): Promise<Event[]> {
+    return this.serializedSize("events", sessionId, undefined, after) <
+      64 * 1024
+      ? this.events(sessionId, after)
+      : this.runWorker<Event[]>({ operation: "events", sessionId, after });
   }
 
   context(id: string): any[] {
@@ -325,13 +329,14 @@ export class Store {
     source: "events" | "context" | "latestSnapshot" | "snapshot",
     sessionId: string,
     snapshotId?: string,
+    after = 0,
   ) {
     if (source === "events") {
       const row = this.db
         .prepare(
-          "SELECT COALESCE(SUM(length(data)), 0) AS size FROM events WHERE sessionId=?",
+          "SELECT COALESCE(SUM(length(data)), 0) AS size FROM events WHERE sessionId=? AND id>?",
         )
-        .get(sessionId) as { size: number };
+        .get(sessionId, after) as { size: number };
 
       return row.size;
     }
@@ -371,6 +376,7 @@ export class Store {
     operation: "context" | "events" | "latestSnapshot" | "snapshot" | "compact";
     sessionId: string;
     snapshotId?: string;
+    after?: number;
     snapshot?: unknown;
     input?: unknown;
   }): Promise<T> {

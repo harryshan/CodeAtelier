@@ -17,6 +17,7 @@ interface Request {
   file: string;
   sessionId: string;
   snapshotId?: string;
+  after?: number;
   snapshot?: unknown;
   input?: unknown;
 }
@@ -35,8 +36,8 @@ function handle(request: Request) {
 
     if (request.operation === "events") {
       return db
-        .prepare("SELECT * FROM events WHERE sessionId=? ORDER BY id")
-        .all(request.sessionId)
+        .prepare("SELECT * FROM events WHERE sessionId=? AND id>? ORDER BY id")
+        .all(request.sessionId, request.after || 0)
         .map((row: any) => ({ ...row, data: JSON.parse(String(row.data)) }));
     }
 

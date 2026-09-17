@@ -190,12 +190,15 @@ export async function createApp(
   });
   app.get("/api/sessions/:id", async (req, reply) => {
     const { id } = req.params as { id: string };
+    const { after } = z
+      .object({ after: z.coerce.number().int().min(0).default(0) })
+      .parse(req.query);
 
     if (!store.get(id)) {
       return reply.code(404).send({ error: "会话不存在" });
     }
 
-    return engine.snapshot(id);
+    return engine.snapshot(id, after);
   });
   app.post("/api/sessions/:id/tasks", async (req) => {
     const { id } = req.params as { id: string };
