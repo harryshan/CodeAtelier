@@ -115,6 +115,12 @@ describe("files and permissions", () => {
     expect(instructions).toContain("edit_files -> run_command");
     expect(instructions).toContain('dependsOn:["edit"]');
     expect(instructions).toContain(
+      "DAG dependencies are scoped strictly to this response",
+    );
+    expect(instructions).toContain(
+      "Never reference execution IDs, node IDs, or tool call IDs from an earlier model response",
+    );
+    expect(instructions).toContain(
       "only when the next call's arguments require the preceding result",
     );
     expect(instructions).not.toContain(

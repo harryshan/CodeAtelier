@@ -51,6 +51,15 @@ it("declares every property as required for strict function tools", () => {
 });
 
 it("requires a strict DAG execution envelope for new model calls", () => {
+  for (const definition of definitions) {
+    expect(definition.description).toContain(
+      "dependsOn lists only execution.id values from other tool calls returned in this same response",
+    );
+    expect(definition.description).toContain(
+      "Never use node IDs, execution IDs, or tool call IDs from an earlier model response as dependencies",
+    );
+  }
+
   expect(
     parseScheduledToolArguments(
       "read_file",

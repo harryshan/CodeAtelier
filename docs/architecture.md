@@ -18,7 +18,7 @@ server (Fastify)
 
 - `src/shared` 仅存浏览器和后端共享的数据契约，前端不能导入文件、进程或密钥实现。
 - `src/agent/engine.ts` 管理任务队列、全局并发上限、真实工作目录互斥、模型循环、停止条件与工具结果回传；同一会话也只允许一个运行中或排队任务。`context.ts` 负责上下文恢复，`instructions.ts` 负责根规则与模型指令构建。src/context/ 负责预算、摘要压缩、快照契约与历史原文读取，循环在完整工具批次完成后接入；压缩阶段之间让出事件循环。
-- `src/providers` 将 Responses 输出映射为输出项和文本。主任务请求显式声明 `parallel_tool_calls: true`，让兼容服务可在一次响应中返回多个调用；工具定义要求每项带 `execution.id` 与 `execution.dependsOn`，Engine 在任一节点产生副作用前校验整批 DAG，并以稳定拓扑顺序、最多 4 个并发节点调度。自建服务需同时收集 output_item.done；completed.output 有内容时优先使用，不能只依赖 completed。
+- `src/providers` 将 Responses 输出映射为输出项和文本。主任务请求显式声明 `parallel_tool_calls: true`，让兼容服务可在一次响应中返回多个调用；工具定义要求每项带 `execution.id` 与 `execution.dependsOn`；依赖只能引用同一 Responses 响应内的节点，不能跨轮引用历史 ID。Engine 在任一节点产生副作用前校验整批 DAG，并以稳定拓扑顺序、最多 4 个并发节点调度。自建服务需同时收集 output_item.done；completed.output 有内容时优先使用，不能只依赖 completed。
 - `src/tools` 定义 Zod 参数及对应 JSON Schema，提供读取、统一文件编辑、命令和单一受限 `git` 工具。没有 `search` 或 `list_files` 工具；`search-commands.ts` 在每次任务建立指令前检测 PATH 和 Windows 系统位置可用的常见搜索程序，按估计性能排序后只向模型给出命令名与内容/文件名用途。模型以 `run_command` 执行目录浏览及首选的已检测工具，尽量把多个关键词合入一次多模式搜索；`run_command` 只公开一条命令文本，`command-shell.ts` 在执行器内部选择平台 shell。模型先由命令浏览/搜索定位，`read_file` 再按行读取；单次硬上限为 500 行，并返回分页/截断状态。`edit_files` 的 create:true 条目只新建不存在的文件，create:false 条目只精确编辑本任务已读取的已有文件。旧会话的 `search`、`list_files` 和 `write_file` 记录只保留展示、归档和快照回读兼容。
 - `src/permissions` 用无工具的低成本辅助模型将待审批请求分为自动通过、人工确认或拒绝；人工确认仍在后端等待用户点击，取消会释放待审批 Promise。模型无法自行同意审批。
 - `src/server/local-security.ts` 在业务 API 前校验 Host、Origin、可选的环境访问密码与本机会话 token；密码门禁启用后，只有状态/登录路由可在未验证时访问，登录成功写入服务进程有效的 HttpOnly cookie。
