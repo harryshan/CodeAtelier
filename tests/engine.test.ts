@@ -4,7 +4,7 @@
  *
  * 1. 检查达到步数或上下文上限时会停止，已经完成的工具结果仍然保存。
  * 2. 传入非法工具参数，确认错误返回模型且文件没有变化。
- * 3. 检查项目规则加载、复杂任务计划摘要在同轮工具执行前持久化和展示、大输出限制，以及多项互不冲突的工具调用会在同一轮全部执行。
+ * 3. 检查项目规则加载、复杂任务先读取文件并获得信息后才持久化和展示计划摘要、大输出限制，以及多项互不冲突的工具调用会在同一轮全部执行。
  * 4. 检查多文件调用的逐文件进度及结果持久化、新任务必须重新读文件，以及含凭据相关源码的工具结果仍是合法 JSON。
  * 5. 检查模型实际错误会进入任务失败记录和通知，对需要批准的命令确认保存的工具耗时只从真正执行开始计算，不包含审批等待。
  * 6. 配置辅助模型时，确认审批请求被路由给独立的低成本模型，并保存自动通过的分类决定。
@@ -205,12 +205,30 @@ it("creates independent files through one unified batch returned in one model re
   }
 });
 
-it("persists a complex-task plan summary before executing a same-response tool call", async () => {
+it("persists a complex-task plan after inspection and before executing its next tool call", async () => {
   let calls = 0;
   const plan = "## 计划摘要\n1. 读取目标文件。\n2. 核对结果。";
   const fixture = await createFixture({
     async run() {
       if (++calls === 1) {
+        return {
+          output: [
+            {
+              type: "function_call",
+              call_id: "read-plan-target",
+              name: "read_file",
+              arguments: JSON.stringify({
+                path: "plan-target.txt",
+                startLine: 1,
+                endLine: 10,
+              }),
+            },
+          ],
+          text: "",
+        };
+      }
+
+      if (calls === 2) {
         return {
           output: [
             {
@@ -220,7 +238,7 @@ it("persists a complex-task plan summary before executing a same-response tool c
             },
             {
               type: "function_call",
-              call_id: "read-plan-target",
+              call_id: "read-plan-verification",
               name: "read_file",
               arguments: JSON.stringify({
                 path: "plan-target.txt",
@@ -243,16 +261,23 @@ it("persists a complex-task plan summary before executing a same-response tool c
     await fixture.engine.active?.done;
 
     const events = fixture.store.events(fixture.session.id);
+    const inspectionResultIndex = events.findIndex(
+      (event) =>
+        event.type === "tool_result" &&
+        event.data.callId === "read-plan-target",
+    );
     const planIndex = events.findIndex(
       (event) => event.type === "assistant" && event.data.text === plan,
     );
-    const toolStartIndex = events.findIndex(
+    const verificationStartIndex = events.findIndex(
       (event) =>
-        event.type === "tool_start" && event.data.callId === "read-plan-target",
+        event.type === "tool_start" &&
+        event.data.callId === "read-plan-verification",
     );
 
-    expect(planIndex).toBeGreaterThanOrEqual(0);
-    expect(toolStartIndex).toBeGreaterThan(planIndex);
+    expect(inspectionResultIndex).toBeGreaterThanOrEqual(0);
+    expect(planIndex).toBeGreaterThan(inspectionResultIndex);
+    expect(verificationStartIndex).toBeGreaterThan(planIndex);
     expect(fixture.store.tasks(fixture.session.id)[0].status).toBe("completed");
   } finally {
     await fixture.engine.close();
@@ -485,7 +510,7 @@ it("returns invalid tool arguments as model feedback without mutating files", as
   }
 });
 
-it("loads project guidance, requires plan-and-execute summaries for complex tasks, encourages independent batches, and bounds large tool feedback", async () => {
+it("loads project guidance, requires evidence-based complex-task plans, encourages independent batches, and bounds large tool feedback", async () => {
   let calls = 0;
   let guidance = "";
   let result: any;
@@ -532,7 +557,13 @@ it("loads project guidance, requires plan-and-execute summaries for complex task
     expect(guidance).toContain("Complete the user's whole request");
     expect(guidance).toContain("plan-and-execute workflow");
     expect(guidance).toContain("计划摘要");
-    expect(guidance).toContain("Then immediately execute that plan");
+    expect(guidance).toContain("Only after that initial investigation");
+    expect(guidance).toContain(
+      "do not produce a plan from assumptions before reading code or files",
+    );
+    expect(guidance).toContain(
+      "Then immediately execute that evidence-based plan",
+    );
     expect(guidance).toContain("multiple independent tool calls");
     expect(guidance).toContain("true DAG-parallel execution");
     expect(guidance).toContain("largest safe set of relevant tool calls");
