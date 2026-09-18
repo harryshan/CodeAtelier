@@ -28,12 +28,15 @@ Perfetto trace 仍只用于性能诊断，刻意不含这些高保真 payload；
 只在需要开发 replay 测试时执行；不会调用模型、执行工具或运行 Evaluation。
 
 ```sh
+# 先列出可导出的任务：每行是 task ID、状态和创建时间
+pnpm replay:export -- --list
+
 pnpm replay:export -- --task-id TASK_ID --output C:\safe\case.json
 # 如数据目录不是默认平台目录：
 pnpm replay:export -- --data-dir C:\CodeAtelierData --task-id TASK_ID --output C:\safe\case.json
 ```
 
-`--output` 必须是一个不存在的新文件，避免覆盖其他本地 case。输出的 `source` 为 `captured` 或 `legacy`；导出本身不表示文件场景完整。
+`--list` 和导出都不会变更任务状态。`--output` 必须是一个不存在的新文件，避免覆盖其他本地 case。输出的 `source` 为 `captured` 或 `legacy`；导出本身不表示文件场景完整。
 
 在 TypeScript 改进测试中，先调用 `analyzeReplayWorkspace(caseFile)`。只有 `complete: true` 时，才调用 `materializeReplayWorkspace(caseFile, newDirectory)`；函数要求 `newDirectory` 尚不存在，只会写入被 `edit_files(create:false)` 所需、经哈希验证的读取文件。随后测试可以在该目录创建自己的 ToolRunner/Engine。不要把原 workspace 传入 replay，也不要执行已记录的 `run_command`、Git 或其他副作用工具。
 
