@@ -8,6 +8,7 @@
  * 4. 检查多文件调用的逐文件进度及结果持久化、新任务必须重新读文件，以及含凭据相关源码的工具结果仍是合法 JSON。
  * 5. 检查模型实际错误会进入任务失败记录和通知，对需要批准的命令确认保存的工具耗时只从真正执行开始计算，不包含审批等待。
  * 6. 配置辅助模型时，确认审批请求被路由给独立的低成本模型，并保存自动通过的分类决定。
+ * 7. 新任务逐次捕获模型请求/响应和未截断工具结果，供后续导出隔离 replay case。
  *
  * 只模拟模型响应，文件操作、审批和保存使用实际实现。
  */
@@ -85,6 +86,61 @@ it("enforces step budget after saving removed-tool errors as tool results", asyn
         .some((i) => i.type === "function_call_output"),
     ).toBe(true);
     expect(fixture.engine.active).toBeUndefined();
+  } finally {
+    await fixture.engine.close();
+    fixture.store.close();
+  }
+});
+
+it("captures model exchanges and complete tool results for a replay case", async () => {
+  let calls = 0;
+  const fixture = await createFixture({
+    async run() {
+      if (++calls === 1) {
+        return {
+          output: [
+            {
+              type: "function_call",
+              call_id: "replay-read",
+              name: "read_file",
+              arguments: JSON.stringify({
+                path: "replay-target.txt",
+                startLine: 1,
+                endLine: 1,
+              }),
+            },
+          ],
+          text: "",
+        };
+      }
+
+      return done;
+    },
+  });
+
+  try {
+    await writeFile(path.join(fixture.root, "replay-target.txt"), "original\n");
+    fixture.engine.start(fixture.session.id, "read the target");
+    await fixture.engine.active?.done;
+
+    const task = fixture.store.tasks(fixture.session.id)[0];
+    expect(fixture.store.replayCase(task.id)).toMatchObject({
+      source: "captured",
+      capture: {
+        finalizedAt: expect.any(String),
+        modelExchanges: [
+          { purpose: "task", response: { text: "" } },
+          { purpose: "task", response: { text: "done" } },
+        ],
+        tools: [
+          {
+            callId: "replay-read",
+            arguments: { path: "replay-target.txt" },
+            result: { text: "1: original" },
+          },
+        ],
+      },
+    });
   } finally {
     await fixture.engine.close();
     fixture.store.close();

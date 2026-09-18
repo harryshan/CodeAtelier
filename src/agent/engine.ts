@@ -46,7 +46,15 @@ import {
   type ApprovalSubject,
 } from "../permissions/model-approval.js";
 import { ResponsesProvider } from "../providers/responses-provider.js";
-import { type ModelProviderFactory } from "../providers/model-provider.js";
+import {
+  type ModelProvider,
+  type ModelProviderFactory,
+} from "../providers/model-provider.js";
+import {
+  captureModelProvider,
+  replaySettings,
+  type RecordedModelExchange,
+} from "../sessions/replay-case.js";
 import { ToolRunner } from "../tools/tool-runner.js";
 import { definitions, parseScheduledToolArguments } from "../tools/registry.js";
 import {
@@ -160,11 +168,17 @@ export class Engine {
 
       const assessment = await assessApproval(
         task
-          ? tracedModelProvider(provider, this.traces, {
-              taskId: task.id,
-              purpose: "approval",
-              model: selected.model,
-            })
+          ? tracedModelProvider(
+              this.replayProvider(task, provider, () => ({
+                purpose: "approval",
+              })),
+              this.traces,
+              {
+                taskId: task.id,
+                purpose: "approval",
+                model: selected.model,
+              },
+            )
           : provider,
         subject,
         signal,
@@ -232,6 +246,30 @@ export class Engine {
   ) {
     this.emit(task, "model_usage", { ...usage, purpose, ...details });
     this.log.info({ event: "model.usage", purpose, ...details, ...usage });
+  }
+
+  /** replay 捕获与任务历史同库保存；脱敏后才进入本地高保真材料，trace 仍只保留安全摘要。 */
+  private replayProvider(
+    task: Task,
+    provider: ModelProvider,
+    details: () => Pick<RecordedModelExchange, "purpose" | "step" | "attempt">,
+  ) {
+    const clean = <T>(value: T) =>
+      JSON.parse(redactJson(JSON.stringify(value), [this.config.apiKey])) as T;
+
+    return captureModelProvider(
+      provider,
+      {
+        startModelExchange: (exchange) => {
+          this.store.startReplayModelExchange(task.id, clean(exchange));
+
+          return exchange.id;
+        },
+        finishModelExchange: (id, outcome) =>
+          this.store.finishReplayModelExchange(task.id, id, clean(outcome)),
+      },
+      details,
+    );
   }
 
   start(
@@ -476,12 +514,19 @@ export class Engine {
           this.emit(task, "model_request", { purpose: "title", attempt });
 
           return generateConversationTitle(
-            tracedModelProvider(provider, this.traces, {
-              taskId: task.id,
-              purpose: "title",
-              model: selected.model,
-              attempt,
-            }),
+            tracedModelProvider(
+              this.replayProvider(task, provider, () => ({
+                purpose: "title",
+                attempt,
+              })),
+              this.traces,
+              {
+                taskId: task.id,
+                purpose: "title",
+                model: selected.model,
+                attempt,
+              },
+            ),
             prompt,
             signal,
             (usage) => this.recordModelUsage(task, usage, "title", { attempt }),
@@ -549,6 +594,9 @@ export class Engine {
     let attempt = 1;
     let buffer = "";
     let lastFlush = 0;
+    let replayCaptureSpan: TraceSpan | undefined;
+    const cleanReplay = <T>(value: T) =>
+      JSON.parse(redactJson(JSON.stringify(value), [this.config.apiKey])) as T;
     const flush = () => {
       if (buffer) {
         emit("delta", { text: buffer, step, attempt });
@@ -558,6 +606,17 @@ export class Engine {
     };
 
     try {
+      this.store.startReplayCapture(task, {
+        schemaVersion: 1,
+        capturedAt: new Date().toISOString(),
+        platform: process.platform,
+        settings: replaySettings(settings),
+      });
+      replayCaptureSpan = this.traces.startSpan(task.id, {
+        name: "replay.capture",
+        category: "storage",
+        track: "Main thread",
+      });
       if (generateTitle) {
         await this.generateTitle(task, prompt, settings, signal, log);
       }
@@ -696,13 +755,20 @@ export class Engine {
         onModelRequest: () =>
           emit("model_request", { purpose: "compaction", step }),
         onUsage: (usage) => recordUsage(usage, "compaction"),
-        provider: tracedModelProvider(provider, this.traces, {
-          taskId: task.id,
-          purpose: "compaction",
-          model: settings.model,
-          step,
-          parentSpanId: () => contextTrace.currentSpanId?.(),
-        }),
+        provider: tracedModelProvider(
+          this.replayProvider(task, provider, () => ({
+            purpose: "compaction",
+            step,
+          })),
+          this.traces,
+          {
+            taskId: task.id,
+            purpose: "compaction",
+            model: settings.model,
+            step,
+            parentSpanId: () => contextTrace.currentSpanId?.(),
+          },
+        ),
         summaryModel: settings.auxiliaryModel
           ? async () => {
               const selected = auxiliarySettings(settings);
@@ -734,13 +800,20 @@ export class Engine {
               });
 
               return {
-                provider: tracedModelProvider(auxiliary, this.traces, {
-                  taskId: task.id,
-                  purpose: "compaction",
-                  model: selected.model,
-                  step,
-                  parentSpanId: () => contextTrace.currentSpanId?.(),
-                }),
+                provider: tracedModelProvider(
+                  this.replayProvider(task, auxiliary, () => ({
+                    purpose: "compaction",
+                    step,
+                  })),
+                  this.traces,
+                  {
+                    taskId: task.id,
+                    purpose: "compaction",
+                    model: selected.model,
+                    step,
+                    parentSpanId: () => contextTrace.currentSpanId?.(),
+                  },
+                ),
                 model: selected.model,
                 budget: summaryBudget,
               };
@@ -858,13 +931,21 @@ export class Engine {
 
               emit("model_request", { purpose: "task", step, attempt });
 
-              return tracedModelProvider(provider, this.traces, {
-                taskId: task.id,
-                purpose: "task",
-                model: settings.model,
-                step,
-                attempt,
-              }).run(
+              return tracedModelProvider(
+                this.replayProvider(task, provider, () => ({
+                  purpose: "task",
+                  step,
+                  attempt,
+                })),
+                this.traces,
+                {
+                  taskId: task.id,
+                  purpose: "task",
+                  model: settings.model,
+                  step,
+                  attempt,
+                },
+              ).run(
                 requestInput,
                 instructions,
                 tools,
@@ -1027,6 +1108,12 @@ export class Engine {
                 result: JSON.parse(output),
                 durationMs,
               });
+              // replay 保留执行器原始脱敏结果，不受模型上下文 outputChars 截断影响。
+              this.store.finishReplayTool(
+                task.id,
+                node.callId,
+                cleanReplay(result),
+              );
               input.push({
                 type: "function_call_output",
                 call_id: node.callId,
@@ -1109,6 +1196,17 @@ export class Engine {
               dependsOn: node.dependsOn,
               args: node.arguments,
             });
+            this.store.startReplayTool(
+              task.id,
+              cleanReplay({
+                name: node.name,
+                callId: node.callId,
+                batchId,
+                nodeId: node.nodeId,
+                dependsOn: node.dependsOn,
+                arguments: node.arguments,
+              }),
+            );
             saveResult(node, { error: `工具调用图无效：${message}` });
           }
 
@@ -1134,6 +1232,17 @@ export class Engine {
             dependsOn: node.dependsOn,
             args: node.arguments,
           });
+          this.store.startReplayTool(
+            task.id,
+            cleanReplay({
+              name: node.name,
+              callId: node.callId,
+              batchId,
+              nodeId: node.nodeId,
+              dependsOn: node.dependsOn,
+              arguments: node.arguments,
+            }),
+          );
         }
 
         this.traces.endSpan(planningSpan, "ok", {
@@ -1317,6 +1426,16 @@ export class Engine {
       });
     } finally {
       this.store.status(task.id, status, failure);
+      try {
+        this.store.finishReplayCapture(task.id, status);
+        this.traces.endSpan(replayCaptureSpan, "ok");
+      } catch (error) {
+        this.traces.endSpan(replayCaptureSpan, "error", {
+          errorName: error instanceof Error ? error.name : typeof error,
+        });
+        log.error({ event: "replay.capture_failed", err: error });
+      }
+
       this.traces.finishTask(
         task.id,
         status === "completed"

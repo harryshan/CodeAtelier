@@ -31,7 +31,7 @@
 | 命令执行                       | process.test.ts、core.test.ts、permissions.test.ts、tool-schema.test.ts            | 不存在的命令及子进程实际错误、输出与退出码、截断、UTF-8/ANSI 分块、颜色环境与控制符清理、API key 不继承、内部 Windows/POSIX shell 选择、单一 command 契约、复合命令合并、直接 Git/提权拒绝、取消和超时                                                                                                                                                                           |
 | 模型协议与重试                 | provider.test.ts、recovery.test.ts                                                 | item.done 回退、失败/不完整事件、服务实际错误 message/reason/code 的脱敏保留、断流、超时、重试次数、HTTP 分类、取消退避、并行工具调用请求参数                                                                                                                                                                                                                                    |
 | agent 循环、任务调度与工具 DAG | tool-graph.test.ts、engine.test.ts、core.test.ts、recovery.test.ts、server.test.ts | 复杂任务的计划摘要与随后执行指令、已知参数的依赖调用同轮提交指引与过时顺序指令回归、工具往返、同轮 DAG 的稳定拓扑并发、并发上限、重复/未知/环拒绝、失败后继阻断与反馈；跨会话不同工作目录并行、同目录排队、同会话互斥、取消/关闭队列、步骤/上下文预算、参数错误反馈、根规则、输出预算、跨任务重新读取、不重放副作用、工具耗时排除审批等待                                                                                          |
-| 会话存储与标题                 | store.test.ts、recovery.test.ts、title-generation.test.ts                          | 隔离、事件顺序与游标、上下文、事务回滚、queued/running/waiting 重启中断、实际开始时间、标题状态迁移和恢复，以及大 JSON 的 Worker 读取                                                                                                                                                                                                                                            |
+| 会话存储、标题与 Replay Case   | store.test.ts、recovery.test.ts、title-generation.test.ts、replay-case.test.ts     | 隔离、事件顺序与游标、上下文、事务回滚、queued/running/waiting 重启中断、实际开始时间、标题状态迁移和恢复，以及大 JSON 的 Worker 读取；逐次模型/工具捕获、legacy 历史标记、局部读取拒绝、哈希一致的分页读取重建和只写入新隔离目录                                                                                                                                                                                                                                            |
 | 会话统计                       | session-statistics.test.ts、e2e/app.spec.ts                                        | 服务实报 token 的缓存/非缓存完整性、LLM 请求与任务轮次、工具成功率、任务累计运行时间、旧 usage 历史回退及默认折叠/展开展示                                                                                                                                                                                                                                                       |
 | 模型设置                       | config.test.ts、regressions.test.ts                                                | 连接只来自环境、settings.json 仅保存偏好、端点规范化、连接改动拒绝、参数边界、失败更新保持原状态、密钥内存存储、损坏配置不覆盖                                                                                                                                                                                                                                                   |
 | 日志                           | logging.test.ts、core.test.ts                                                      | 级别过滤、紧凑纯文本格式、上下文字段、错误元数据/原因链/堆栈、凭据脱敏、轮转、存储故障降级                                                                                                                                                                                                                                                                                       |
@@ -126,6 +126,11 @@ mechanical-input.test.ts 覆盖精确结果/跨路径正文引用、逐字还原
 
 - `tests/shutdown.test.ts`：验证未受 launcher 监督的后端以 409 拒绝重载；并以 `launcher.ts` 启动隔离后端，认证并确认重载，验证旧子进程退出后相同端口出现第二次监听记录、替代进程可取得新会话，随后确认关闭时 launcher 也正常退出。
 - `tests/e2e/app.spec.ts`：验证重载需先确认；模拟替代服务使用不同本机会话 token，验证页面等待它后完整刷新。浏览器用例不运行真实编译或长期常驻的生产服务，进程替换由前一条回归覆盖。
+
+### Replay Case
+
+- `tests/replay-case.test.ts`：连续的同哈希 `read_file` 页可重建 `edit_files(create:false)` 的原始文件，并且只允许写入此前不存在的隔离目录；局部读取、哈希不符和已有目录均拒绝。`RecordedModelProvider` 对 input、instructions、工具定义和输出选项严格匹配，避免用旧响应掩盖改动后的行为。
+- 任务执行路径的 replay 捕获与 Store 持久化属于默认回归；手动 `pnpm replay:export` 只导出本地材料，不启动模型、工具或 Evaluation。旧历史没有完整模型载荷时导出为 legacy，不能宣称 transcript 可重放。
 
 ### Git 模型参数兼容性
 

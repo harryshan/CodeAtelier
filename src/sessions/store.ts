@@ -4,13 +4,20 @@
  * 1. 构造器初始化数据库，把重启前未完成的任务标为 interrupted 并记录结束时间；transaction 包装提交和回滚。
  * 2. list/get/create 读写会话；标题状态的领取、完成或失败保证首条 prompt 只生成一次标题。
  * 3. tasks/task/createTask/status 读写任务状态；queuedTasks 和 hasUnfinishedTask 供 Engine 调度跨会话队列，event/events 保存和分页读取事件。
- * 4. context/saveContext 读写当前模型历史；较大的 context、events 和快照可交给 store-worker 在线程外解析或原子写入，避免阻塞 HTTP 主线程。
- * 5. close 由应用退出流程调用，关闭数据库连接；Worker 自己打开短生命周期的 WAL 连接，不持有 Store 的连接。
+ * 4. task_replays 在任务开始后追加高保真模型/工具材料；replayCase 导出单任务的 captured 或 legacy case，不触发恢复或副作用。
+ * 5. context/saveContext 读写当前模型历史；较大的 context、events 和快照可交给 store-worker 在线程外解析或原子写入，避免阻塞 HTTP 主线程。
+ * 6. close 由应用退出流程调用，关闭数据库连接；Worker 自己打开短生命周期的 WAL 连接，不持有 Store 的连接。
  *
  * 事务只能回滚数据库，不能撤销文件修改或命令执行。恢复需要的未知状态和原始记录必须保留。
  */
 
 import type { ContextSnapshot } from "../context/types.js";
+import type {
+  RecordedModelExchange,
+  RecordedToolCall,
+  TaskReplayCapture,
+  TaskReplayCase,
+} from "./replay-case.js";
 import { SCHEMA_SQL } from "./schema.js";
 import { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
@@ -20,16 +27,21 @@ import type { Session, Task, TaskStatus, Event } from "../shared/types.js";
 export class Store {
   db: DatabaseSync;
 
-  constructor(private file: string) {
+  constructor(
+    private file: string,
+    options: { interruptActive?: boolean } = {},
+  ) {
     this.db = new DatabaseSync(file);
     this.db.exec(SCHEMA_SQL);
     this.migrate();
-    // 进程重启只能确认任务已中断，不能断言先前的命令是否执行成功。
-    this.db
-      .prepare(
-        "UPDATE tasks SET status='interrupted',error='服务已重启，任务中断；未重放命令。',finishedAt=COALESCE(finishedAt,?) WHERE status IN ('queued','running','waiting')",
-      )
-      .run(new Date().toISOString());
+    // 导出历史必须保持只读；正常服务启动仍将无法确认结果的任务标为 interrupted。
+    if (options.interruptActive ?? true) {
+      this.db
+        .prepare(
+          "UPDATE tasks SET status='interrupted',error='服务已重启，任务中断；未重放命令。',finishedAt=COALESCE(finishedAt,?) WHERE status IN ('queued','running','waiting')",
+        )
+        .run(new Date().toISOString());
+    }
   }
 
   /** 将历史会话标为完成，避免升级后用旧消息意外覆盖用户原有标题。 */
@@ -164,6 +176,166 @@ export class Store {
     return this.db
       .prepare("SELECT * FROM tasks WHERE id=?")
       .get(id) as unknown as Task | undefined;
+  }
+
+  /** replay 导出只读取单个任务的事件，避免将同会话其他任务的历史混入 case。 */
+  taskEvents(taskId: string) {
+    return this.db
+      .prepare("SELECT * FROM events WHERE taskId=? ORDER BY id")
+      .all(taskId)
+      .map((row) => ({
+        ...row,
+        data: JSON.parse(String(row.data)),
+      })) as Event[];
+  }
+
+  /** 任务开始即创建捕获容器；模型请求先写入，进程中断时保留无终态事实而非猜测。 */
+  startReplayCapture(
+    task: Task,
+    capture: Omit<TaskReplayCapture, "modelExchanges" | "tools">,
+  ) {
+    const data: TaskReplayCapture = {
+      ...capture,
+      modelExchanges: [],
+      tools: [],
+    };
+    this.db
+      .prepare("INSERT INTO task_replays(taskId,data) VALUES(?,?)")
+      .run(task.id, JSON.stringify(data));
+  }
+
+  private replayCapture(taskId: string) {
+    const row = this.db
+      .prepare("SELECT data FROM task_replays WHERE taskId=?")
+      .get(taskId) as { data: string } | undefined;
+
+    return row ? (JSON.parse(row.data) as TaskReplayCapture) : undefined;
+  }
+
+  private saveReplayCapture(taskId: string, capture: TaskReplayCapture) {
+    this.db
+      .prepare("UPDATE task_replays SET data=? WHERE taskId=?")
+      .run(JSON.stringify(capture), taskId);
+  }
+
+  startReplayModelExchange(taskId: string, exchange: RecordedModelExchange) {
+    const capture = this.replayCapture(taskId);
+    if (!capture) {
+      return;
+    }
+
+    capture.modelExchanges.push(exchange);
+    this.saveReplayCapture(taskId, capture);
+  }
+
+  finishReplayModelExchange(
+    taskId: string,
+    id: string,
+    outcome: Pick<RecordedModelExchange, "response" | "error">,
+  ) {
+    const capture = this.replayCapture(taskId);
+    const exchange = capture?.modelExchanges.find((item) => item.id === id);
+    if (!capture || !exchange) {
+      return;
+    }
+
+    Object.assign(exchange, outcome);
+    this.saveReplayCapture(taskId, capture);
+  }
+
+  startReplayTool(taskId: string, tool: RecordedToolCall) {
+    const capture = this.replayCapture(taskId);
+    if (!capture) {
+      return;
+    }
+
+    capture.tools.push(tool);
+    this.saveReplayCapture(taskId, capture);
+  }
+
+  finishReplayTool(taskId: string, callId: string, result: unknown) {
+    const capture = this.replayCapture(taskId);
+    const tool = capture?.tools.find((item) => item.callId === callId);
+    if (!capture || !tool) {
+      return;
+    }
+
+    tool.result = result;
+    this.saveReplayCapture(taskId, capture);
+  }
+
+  finishReplayCapture(taskId: string, status: TaskStatus) {
+    const capture = this.replayCapture(taskId);
+    if (!capture) {
+      return;
+    }
+
+    capture.status = status;
+    capture.finalizedAt = new Date().toISOString();
+    this.saveReplayCapture(taskId, capture);
+  }
+
+  /** 新捕获优先使用未截断工具材料；旧历史退回事件配对，但 source 必须明确标为 legacy。 */
+  replayCase(taskId: string): TaskReplayCase | undefined {
+    const task = this.task(taskId);
+    if (!task) {
+      return undefined;
+    }
+
+    const session = this.get(task.sessionId);
+    if (!session) {
+      return undefined;
+    }
+
+    const events = this.taskEvents(taskId);
+    const capture = this.replayCapture(taskId);
+    const starts = new Map<string, any>();
+    for (const event of events) {
+      if (
+        event.type === "tool_start" &&
+        typeof event.data?.callId === "string"
+      ) {
+        starts.set(event.data.callId, event.data);
+      }
+    }
+
+    const tools: RecordedToolCall[] = capture?.tools ?? [];
+    if (!capture) {
+      for (const start of starts.values()) {
+        tools.push({
+          callId: start.callId,
+          nodeId: start.nodeId || start.callId,
+          name: start.name,
+          arguments: start.args,
+          dependsOn: Array.isArray(start.dependsOn) ? start.dependsOn : [],
+          batchId: start.batchId || "legacy",
+        });
+      }
+
+      for (const event of events) {
+        if (
+          event.type !== "tool_result" ||
+          typeof event.data?.callId !== "string"
+        ) {
+          continue;
+        }
+
+        const tool = tools.find((item) => item.callId === event.data.callId);
+        if (tool) {
+          tool.result = event.data.result;
+        }
+      }
+    }
+
+    return {
+      schemaVersion: 1,
+      source: capture ? "captured" : "legacy",
+      session,
+      task,
+      capture,
+      tools,
+      events,
+    };
   }
 
   /** 同一会话的上下文不能并发追加；不同会话的任务由 Engine 依据工作区和全局上限调度。 */

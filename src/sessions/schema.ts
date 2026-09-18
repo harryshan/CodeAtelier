@@ -3,7 +3,7 @@
  *
  * 1. 开启 WAL 和外键检查；sessions 保存会话、工作区及标题生成状态，tasks 保存排队、实际运行、结束时间和错误。
  * 2. events 保存按顺序读取的对话与工具事件；context 保存每个会话当前使用的模型协议记录。
- * 3. context_snapshots 保存压缩前的历史，索引支持按会话和顺序查询，末尾设置 user_version。
+ * 3. context_snapshots 保存压缩前的历史；task_replays 保存高保真本地 replay 捕获，末尾设置 user_version。
  *
  * 表结构要与 Store 中的 SQL 一起维护。修改时也要考虑旧数据库如何升级，不能只检查新建数据库。
  */
@@ -55,5 +55,10 @@ export const SCHEMA_SQL = `
   );
   CREATE INDEX IF NOT EXISTS context_snapshots_session ON context_snapshots(sessionId);
 
-  PRAGMA user_version = 4;
+  CREATE TABLE IF NOT EXISTS task_replays (
+    taskId TEXT PRIMARY KEY REFERENCES tasks(id),
+    data TEXT NOT NULL
+  );
+
+  PRAGMA user_version = 5;
 `;
