@@ -56,6 +56,7 @@ pnpm test:e2e
 - [架构](docs/architecture.md)
 - [Sandbox 需求、实施档案与后续工作](docs/sandbox.md)
 - [上下文压缩与历史追溯](docs/context-management.md)
+- [项目记忆系统设计（尚未实现）](docs/memory-system.md)
 - [模型容量与 token 用量](docs/model-tokens.md)
 - [Perfetto tracing 与本地导出](docs/development.md#perfetto-tracing)
 - [任务 Replay Case](docs/replay-cases.md)
