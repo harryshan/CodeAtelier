@@ -87,6 +87,10 @@ describe("files and permissions", () => {
       args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"],
     });
     expect(instructions).toContain("Use progressive code reading");
+    expect(instructions).toContain(
+      "Search before reading ordinary code or files",
+    );
+    expect(instructions).toContain("smallest focused line range");
     expect(instructions).toContain("start with 80-200 lines");
     expect(instructions).toContain("Read complete files only");
     expect(instructions).toContain(

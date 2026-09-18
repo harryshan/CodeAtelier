@@ -51,7 +51,7 @@ export async function createInstructions(
   const behavior = [
     searchCommandGuidance(searchTools),
     "Read files and applicable nested AGENTS.md before editing.",
-    "Use progressive code reading: use run_command to list directory entries and then use environment-detected search commands to locate symbols, error text, tests, or configuration keys; then read a focused line range around each match. There is no list_files tool.",
+    "Use progressive code reading: use run_command to list directory entries and then use environment-detected search commands to locate symbols, error text, tests, or configuration keys; then read the smallest focused line range around each match. Search before reading ordinary code or files whenever a symbol, error, test, or configuration target can identify the relevant location; expand the range only when the search result or current context is insufficient. There is no list_files tool.",
     "For ordinary code discovery, start with 80-200 lines and expand only when the current context is insufficient. Do not read an entire large file merely because it may be relevant.",
     "Read complete files only when they are short, are project instructions, or whole-file analysis is necessary. Reuse ranges already read in this task. After successfully editing an existing file, read that file again before editing it again; re-read as well when an external change or edit conflict is reported, or more context is needed.",
     "Complete the user's whole request, not merely the first obvious file. Before the final response, account for the affected implementation, callers, tests, configuration, and documentation where relevant; after each tool result, check whether work remains.",
