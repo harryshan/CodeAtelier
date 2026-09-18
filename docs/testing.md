@@ -7,16 +7,24 @@
 1. 明确功能正常行为、关键失败路径、边界条件；选择能够验证行为的最小测试层次。
 2. 修复缺陷先增加能失败的复现用例，再修复，确认该用例通过。
 3. 每完成一个可验证增量就运行相关测试。开发时可使用 `pnpm test:watch`，或 `pnpm test -- tests/files.test.ts` 定向验证。
-4. 提交前运行 `pnpm check`（类型、lint、格式、单元/集成回归、构建）。UI、API、SSE 变更额外运行 `pnpm test:e2e`。
-5. 新增行为同步维护下表与验证记录；说明平台跳过、外部依赖和未验证范围。CI 在 Windows、macOS、Linux 跑核心检查，在 Linux Chromium 跑 UI 验收。
+4. 需要评估单元/回归测试的源码覆盖率时运行 `pnpm test:coverage`；在补测前先查看未覆盖分支，避免为提高数字而削弱行为断言。
+5. 提交前运行 `pnpm check`（类型、lint、格式、单元/集成回归、构建）。UI、API、SSE 变更额外运行 `pnpm test:e2e`。
+6. 新增行为同步维护下表与验证记录；说明平台跳过、外部依赖和未验证范围。CI 在 Windows、macOS、Linux 跑核心检查，在 Linux Chromium 跑 UI 验收。
 
 ## 测试分层
 
 - 单元测试验证配置、授权、错误分类等可独立观察的行为。
 - 集成回归使用真实临时文件、SQLite、子进程和本机 HTTP；模型通过可控适配器/SSE 服务注入预设请求与回复，验证上下文与副作用，而非只检查 mock 调用次数。
 - 浏览器测试操作真实 Web UI 与测试后端，覆盖消息、历史、权限、设置、恢复与重连。
-- `pnpm test`、`pnpm test:watch`、`pnpm test:e2e` 和 `pnpm check` 都经 `scripts/test-runner.ts` 启动：Vitest 子进程仅接收固定测试环境白名单，Vite 的 test 模式禁止读取 dotenv；Playwright 测试后端直接以 Node/tsx 启动，不解析包管理器的系统路径。测试不继承本机 `.env`、系统中的 CodeAtelier 配置或真实 API key；模型只可使用注入式模拟值和本机测试 HTTP/SSE 服务。
+- `pnpm test`、`pnpm test:coverage`、`pnpm test:watch`、`pnpm test:e2e` 和 `pnpm check` 都经 `scripts/test-runner.ts` 启动：Vitest 子进程仅接收固定测试环境白名单，Vite 的 test 模式禁止读取 dotenv；Playwright 测试后端直接以 Node/tsx 启动，不解析包管理器的系统路径。测试不继承本机 `.env`、系统中的 CodeAtelier 配置或真实 API key；模型只可使用注入式模拟值和本机测试 HTTP/SSE 服务。
 - 真实模型 smoke 测试独立运行，需要本地提供密钥；不作为日常离线测试前提。不对用户项目进行测试性写入。
+
+## 代码覆盖率
+
+- `pnpm test:coverage` 通过同一隔离测试启动器执行默认 Vitest 测试，并使用 V8 provider 统计 `src/**/*.{ts,tsx}`；`src/evaluation/**` 明确排除，避免将只能手动运行的 Evaluation 纳入日常覆盖率。
+- 命令在终端输出行、函数、分支和语句摘要，并将 HTML 报告写入 `coverage/index.html`、LCOV 写入 `coverage/lcov.info`。`coverage/` 为可再生成的本地产物，已由 Git 忽略。
+- 报告覆盖默认单元/集成回归可加载到的产品源码，不包含 Playwright 浏览器 E2E、真实模型 smoke 或 Evaluation；它反映测试执行路径，不能替代关键失败路径、跨平台和端到端行为验证。
+- 当前不设置覆盖率阈值。先保留真实基线并用报告定位高风险缺口；引入门槛前应依据稳定基线和模块风险另行确认，不能以排除源码或降低断言来满足数字。
 
 ## 已有功能覆盖
 
