@@ -228,3 +228,9 @@
 - 同一发行版已安装 `/usr/bin/bwrap`。实际无害夹具以 `bwrap` 的 user/PID/network namespace、只读 `G:/codeagent` 映射、私有 `/mnt`、`/home`、`/root`、`/tmp`、新 `/proc`、最小 `/dev` 启动：可读取工作区 `package.json`，工作区内 `touch` 因只读文件系统失败，`/mnt/g` 与 `/home/root/.ssh` 不存在。该证据只覆盖本机 WSL2 参考后端。
 - `WslInspectRuntime` 的实际 `selfCheck` 成功；隔离命令返回 `sandbox-ok`，独立边界命令验证 `/mnt/g`、`/home/root/.ssh`、真实 `.git/config` 与 `/sys/class/net` 不可见，且工作区写探针失败后返回 `boundary-ok`。本轮 `pnpm check` 通过：类型、ESLint、Prettier、36 个测试文件的 250 项通过和 1 项跳过，以及测试生产构建；构建仍有前端 bundle 大小警告。
 - 未验证 Windows 原生 AppContainer/Job Object、其他 WSL 发行版、Linux/macOS、受保护路径的全部别名、cgroup/rlimit、fork/取消、资源消耗或真实构建；不将该夹具描述为完整 S2 或跨平台系统隔离。
+
+## WSL2 inspect 后续工作归档
+
+- 用户明确暂缓 Windows 原生 Runtime；本次仅归档既有实现和后续验收，不运行新的 Runtime、网络、资源或取消探针。
+- 先后顺序为：取消/超时后的完整进程树和 PID/资源限制，网络的 DNS/TCP/UDP/loopback/宿主行为证据，`.env`/`.git` 的链接、硬链接、祖先替换及并发变化，再处理 inspect 的只读开发命令兼容性与诊断。`modify`、外部文件、受控网络和其他平台均待独立设计与授权。
+- 因此本节不新增平台验证结论；当前唯一可引用的 Runtime 证据仍是上一节的本机 WSL2 无害夹具。详细状态与验收要求见 [sandbox.md](sandbox.md)。

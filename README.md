@@ -47,14 +47,14 @@ pnpm exec playwright install chromium
 pnpm test:e2e
 ```
 
-初版使用应用层审批，不提供操作系统沙箱；低成本模型的 `approve` 结果也不绕过执行器的路径、Git、提权和并发校验，获准命令仍以本机用户权限运行，适用于你信任的项目。后续可选的隔离设计见 [Sandbox 需求与架构设计](docs/sandbox.md)：计划由默认关闭的环境变量控制，关闭时保留当前行为；启用后真实工作区修改即时生效，工作区外文件按具体能力授权。该设计尚未实现。模型可主动自动调用单一、参数受限的 `git` 工具：它检查 worktree、路径、revision 和 upstream，并禁止强推、指定远程/分支目标、重置或创建 PR；Git 仓库配置仍不是系统沙箱。
+初版仍以应用层审批为主：低成本模型的 `approve` 结果不绕过执行器的路径、Git、提权和并发校验，关闭 Sandbox 时获准命令以本机用户权限运行，适用于你信任的项目。可选的 `CODEATELIER_SANDBOX_ENABLED=true` 在 Windows 上提供 WSL2 bubblewrap 的只读 `inspect` Runtime；它以 POSIX shell 执行命令，失败时拒绝而不回退宿主执行。该 Runtime 仅有本机夹具证据，尚不提供资源限制、`modify`、外部文件、完整别名防护或跨平台/Windows 原生隔离；详情与后续工作见 [Sandbox 需求与架构设计](docs/sandbox.md)。模型可主动自动调用单一、参数受限的 `git` 工具：它检查 worktree、路径、revision 和 upstream，并禁止强推、指定远程/分支目标、重置或创建 PR；Git 仓库配置仍不是系统沙箱。
 
 ## 文档
 
 - [AGENTS.md](AGENTS.md)：开发 agent 的工作约定。
 - [需求与范围](docs/requirements.md)
 - [架构](docs/architecture.md)
-- [Sandbox 需求与架构设计（后续，尚未实现）](docs/sandbox.md)
+- [Sandbox 需求、实施档案与后续工作](docs/sandbox.md)
 - [上下文压缩与历史追溯](docs/context-management.md)
 - [模型容量与 token 用量](docs/model-tokens.md)
 - [Perfetto tracing 与本地导出](docs/development.md#perfetto-tracing)

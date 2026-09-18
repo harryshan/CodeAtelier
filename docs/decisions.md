@@ -712,3 +712,11 @@
 - 命令语义：启用此后端的 Windows `run_command` 固定采用 POSIX `/bin/sh -c` 文本，并在模型 instructions 中明确说明 Linux 相对路径和语法；不能把宿主 PowerShell/cmd 命令传给 Runtime。
 - 原因：当前 WSL2 可用 `bwrap` 实测能完成只读工作区与宿主驱动器/home 隐藏；直接 rootless `mount --bind` 已实测失败，不以未经验证的 namespace 名称代替文件系统边界。用户选择只读 profile，优先避免真实工作区写入。
 - 影响与限制：这是利用 WSL Linux 内核的参考后端，不是 Windows AppContainer/Job Object。暂不提供 `modify`、外部文件、网络例外、cgroup/rlimit、磁盘配额、fork/取消完整实测或祖先/硬链接等别名防护；因此不宣称 S2 已完成。`edit_files` 与受限 Git 保持既有真实工作区能力，未进入此 Runtime。
+
+## D087：暂缓 Windows 原生 Runtime，归档 WSL2 inspect 后续工作
+
+- 日期：本次文档归档
+- 状态：用户明确暂缓 Windows 原生实现；后续清单已记录，但不构成自动实现授权。
+- 决定：当前继续以 WSL2 bubblewrap `inspect` 为唯一 Windows Sandbox Runtime，不新增 AppContainer、Job Object、受限 token 或 ACL 后端。下一步先补足现有 Runtime 的取消/后代进程与资源限制、网络行为、文件系统别名与并发变化、可用性诊断和只读开发命令证据；`modify`、外部文件/网络例外及其他平台维持后续独立阶段。
+- 原因：Job Object 本身不能完成文件系统和网络隔离；AppContainer 等原生组合需要独立设计能力、ACL/reparse point、网络、进程树及资源验证。当前已有可实测的 WSL2 只读边界，优先完善其已知缺口，避免以不完整原生组件冒充 Sandbox。
+- 影响：Windows 原生 Runtime 不进入当前实现范围。WSL2 夹具证据仍仅适用于本机；在每项后续验收完成前，状态、UI 和文档不得宣称 cgroup/rlimit、fork 防护、完整取消、网络不可达、别名保护、`modify` 或跨平台系统隔离。详细顺序与验收留存在 [sandbox.md](sandbox.md)。

@@ -1,6 +1,6 @@
 # Sandbox 需求与架构设计
 
-状态：S0（开关、模式契约、Broker 安全失败与观测）与 S1 的 WorkspaceView 策略契约已实现；S1 的文件系统级隔离及 S2～S5 仍待平台验证后实施。本版按 D081、D082、D083 修订 D074：保留真实工作区直接修改，取消任务级 staging、暂存 diff 和合并；外部文件由 Broker 按具体能力读取或写入。
+状态：S0（开关、模式契约、Broker 安全失败与观测）和 S1（WorkspaceView 策略契约）已实现；Windows 上的 WSL2 bubblewrap `inspect` reference Runtime 已作为部分 S2 实现并完成本机无害夹具验证。它只提供只读工作区命令边界，未完成完整 S2，更不代表 Windows 原生或跨平台系统隔离。本版按 D081、D082、D083 修订 D074：保留真实工作区直接修改，取消任务级 staging、暂存 diff 和合并；外部文件由 Broker 按具体能力读取或写入。
 
 ## 1. 目标、开关与兼容性
 
@@ -128,7 +128,7 @@ UI 显示实际 `sandboxed`、`non-isolated` 或 `unknown` 状态、平台等级
 | 阶段 | 交付物 | 必要证据 |
 | --- | --- | --- |
 | S0：开关和契约 | 已实现：默认关闭的环境变量、公开模式状态、SandboxBroker 安全失败分流和阶段事件 | 关闭时沿用 V1 宿主命令；开启而无已验证 runtime 时拒绝执行、不回退；配置、Broker、命令分流与 tracing 测试 |
-| S1：工作区视图 | 已实现基础：Broker 在启用时规范化真实根目录并向 Runtime 传递 `.env`、`.git` 直接保护契约；profile 与文件系统后端仍待实现 | WorkspaceView 单元测试覆盖直接受保护目标、名称仍可列出、工作区外链接逃逸和普通路径；实际 Runtime 必须在每次文件访问时复核并落实该契约，且仍须补齐并发、取消和真实文件系统隔离实测；祖先与别名风险继续记录 |
+| S1：工作区视图 | 已实现：Broker 规范化真实根目录并向 Runtime 传递 `.env`、`.git` 直接保护契约；当前 WSL2 inspect Runtime 以只读 `/opt` 和启动时遮蔽落实直接路径边界 | WorkspaceView 单元测试覆盖直接受保护目标、名称仍可列出、工作区外链接逃逸和普通路径；本机 Runtime 夹具验证只读工作区和真实 `.git/config` 不可见。仍须补齐并发变化、取消和完整文件系统别名实测；祖先与别名风险继续记录 |
 | S2：Linux 参考 | 部分实现：Windows 上的 WSL2 bubblewrap `inspect` runtime，包含只读工作区、默认无网络、私有环境与基础进程 namespace | 已实测该平台夹具的只读映射、隐藏宿主挂载/home、最小设备和独立 `/proc`；仍缺 cgroup/rlimit、fork/取消、真实构建与资源验收，故不宣称 S2 完成或 Windows 原生隔离 |
 | S3：外部文件 | Broker 受限读取、结果可见范围、专用外部写入 | 对象替换、跨任务隔离、模型/历史/Replay Case 可见性提示及捕获测试 |
 | S4：网络和缓存 | 只读缓存、受控代理和单次授权 | DNS/重定向/内网拒绝、上传边界和凭据测试 |
@@ -144,3 +144,29 @@ UI 显示实际 `sandboxed`、`non-isolated` 或 `unknown` 状态、平台等级
 4. 网络目标、私有依赖凭据、输出、历史及账本的保留与配额。
 
 这些待定参数不改变已确定的边界：**环境变量默认关闭且关闭时保持 V1 行为；启用后无 staging，工作区修改即时生效；工作区外访问逐项授权，命令不获得宽泛宿主权限。**
+
+## 8. WSL2 inspect 实施档案与后续工作
+
+### 8.1 已归档的当前边界
+
+当前后端只在 Windows、显式启用 `CODEATELIER_SANDBOX_ENABLED=true` 且每次自检成功时使用 `wsl2-bubblewrap-inspect`。命令固定以 POSIX `/bin/sh -c` 在 WSL2 中执行，工作区只读映射为 `/opt`；`edit_files` 和受限 `git` 仍是既有宿主真实工作区工具，不受这个 Runtime 隔离。缺少 WSL2、`bwrap`、路径转换或自检任一项时必须安全失败，不回退宿主 shell。
+
+本机证据和精确运行环境记录在 [verification.md](verification.md)。它们只证明该 Windows 主机上的无害夹具，不能替代下列行为验收，也不扩大为其他 WSL 发行版、Linux、macOS 或 Windows 原生实现的承诺。
+
+### 8.2 后续工作档案
+
+以下顺序记录已知缺口，供后续单独设计、实现与验收使用；除“暂缓”说明外，条目均不是自动实施授权。每项完成前，UI、文档和 Runtime 状态继续使用当前实际能力，不以组件名称推断安全等级。
+
+| 优先级 | 后续目标 | 最低验收与失败边界 | 当前状态 |
+| --- | --- | --- | --- |
+| P0 | 取消、超时、后代进程与 PID 限制 | 用无害 sleep/派生夹具验证取消和超时后没有残留后代；先实测 WSL2 cgroup v2，再决定可验证的 cgroup 或 `prlimit`/`ulimit` 降级；无法证明时拒绝宣称资源或 fork 防护 | 未实现、未验收 |
+| P0 | 网络行为验收 | 验证 DNS、TCP、UDP、loopback、宿主/局域网与云元数据均不可达；network namespace 创建或探针失败时 Runtime 必须拒绝执行，不得降级 | namespace 已使用；行为验收未完成 |
+| P0 | 文件系统别名和并发变化 | 覆盖 `.env`/`.git` 的符号链接、junction/reparse point、硬链接、祖先目录替换、大小写/Unicode 与运行期对象替换；无法证明的别名不计入保护承诺 | 直接路径和启动时遮蔽已覆盖；别名未完成 |
+| P1 | inspect 可用性与诊断 | 记录受控的 WSL/bwrap/内核能力摘要，区分自检、命令自然失败和隔离拒绝；为只读检查设计私有临时目录与不含凭据的只读依赖缓存策略 | 基本自检已实现；体验和缓存未设计 |
+| P1 | 真实开发命令兼容性 | 使用无害测试项目验证只读 lint/typecheck/test 场景，并明确哪些工具因工作区只读或缓存写入失败；不将失败命令伪装成隔离故障 | 未验收 |
+| P2 | `modify` profile | 先确定隔离写入模型、保护路径、临时空间/配额、可观察差异和恢复语义，再实现；不得把当前 `/opt` 直接改为可写后宣称安全修改 | 未设计、未授权 |
+| P2 | 外部文件、网络例外与受限缓存 | 由 Broker 提供精确对象/目标、一次性授权、可见范围和审计；Runtime 不获得宽泛宿主路径、凭据或网络能力 | 未实现 |
+| 暂缓 | Windows 原生 Runtime | 不在当前 WSL2 路线中实现 AppContainer、Job Object、受限 token 或 ACL 后端；如未来恢复，须单独设计文件系统、网络、进程树、reparse point 与资源证据 | 用户明确暂缓 |
+| 后续 | Linux、macOS 和可选 VM | 分别实现和实机验证；不得从 WSL2 夹具推断其他平台能力 | 未实现 |
+
+后续变更必须同时更新本节、[testing.md](testing.md)、[verification.md](verification.md) 和相关决策；涉及新的执行、取消、资源或 Broker 行为时，也必须接入安全摘要 tracing。
