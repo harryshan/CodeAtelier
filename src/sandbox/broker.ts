@@ -5,11 +5,11 @@
  *
  * 1. status 返回启动时可公开的实际模式：关闭时为 non-isolated，启用且未验证后端时为 unknown。
  * 2. executeCommand 记录无敏感内容的策略、provision、执行和收集阶段，并在关闭时调用传入的既有宿主执行器。
- * 3. 启用时先调用 runtime.selfCheck，只有成功后才允许 runtime.execute；缺失、失败或未知状态都抛出安全失败。
+ * 3. 启用时先建立 WorkspaceView，再调用 runtime.selfCheck；只有声明直接受保护路径防护的后端才可执行。
  * 4. record 将阶段交给任务事件和 tracing；它只传模式、平台、等级和受限原因，不传命令或工作区路径。
  *
- * 当前 S0 不注册平台 runtime，因此启用开关会拒绝 run_command 而不会降级到宿主权限。S1 及后续阶段
- * 可注入经过真实平台验证的 runtime，并保持本接口的默认拒绝行为。
+ * 当前没有注册平台 runtime，因此启用开关会拒绝 run_command 而不会降级到宿主权限。WorkspaceView 仅是
+ * S1 的可信策略和 Runtime 契约；文件系统级保护仍由经过真实平台验证的 runtime 实现并保持默认拒绝。
  */
 
 import type {
@@ -20,6 +20,7 @@ import type {
   SandboxStatus,
 } from "./types.js";
 import { SandboxUnavailableError } from "./types.js";
+import { WorkspaceView } from "./workspace-view.js";
 
 export class SandboxBroker {
   private latestStatus: SandboxStatus;
@@ -63,6 +64,15 @@ export class SandboxBroker {
       return { result, status: this.latestStatus };
     }
 
+    let workspace: ReturnType<WorkspaceView["descriptor"]>;
+
+    try {
+      workspace = (await WorkspaceView.open(command.cwd)).descriptor();
+    } catch (error) {
+      this.record("failed", onStage);
+      throw error;
+    }
+
     this.record("provisioning", onStage);
     if (!this.runtime) {
       this.record("failed", onStage);
@@ -72,8 +82,13 @@ export class SandboxBroker {
     }
 
     try {
-      const checked = await this.runtime.selfCheck(command.signal);
+      const checked = await this.runtime.selfCheck(command.signal, workspace);
       command.signal.throwIfAborted();
+
+      if (checked.workspaceProtection !== "direct-path") {
+        throw new Error("平台 runtime 未证明直接受保护路径防护。");
+      }
+
       this.latestStatus = {
         enabled: true,
         mode: "sandboxed",
@@ -81,7 +96,7 @@ export class SandboxBroker {
         level: checked.level,
       };
       this.record("executing", onStage);
-      const result = await this.runtime.execute(command);
+      const result = await this.runtime.execute(command, workspace);
       this.record("collecting", onStage);
       this.record("completed", onStage);
 

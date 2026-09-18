@@ -694,4 +694,12 @@
 - 状态：用户已授权开始；S0 已实现，后续阶段仍待平台验证。
 - 决定：先实现 `CODEATELIER_SANDBOX_ENABLED` 的严格启动期解析、公开实际模式、SandboxBroker 命令分流、安全失败和安全摘要观测。关闭或 `false` 保持既有 V1 `run_command` 宿主执行；`true` 时命令只可经已自检的 `SandboxRuntime` 运行，缺失、失败或未知状态一律拒绝，绝不退回宿主权限。
 - 原因：用户要求根据当前 sandbox 文档开始实现，同时文档要求没有验证的 Windows/macOS/Linux 后端不得声称可用。
-- 影响：当前没有注册平台 runtime，因此开启开关会在命令执行前失败，并在 UI 显示 `unknown` /“隔离不可用”；`edit_files` 和受限 Git 仍是既有真实工作区能力。Broker 阶段写入任务事件及 trace 的安全摘要；工作区视图、受保护路径、外部文件、网络、资源限制和各平台 runtime 留给 S1～S5，并必须各自增加实机验证。
+- 影响：当前没有注册平台 runtime，因此开启开关会在命令执行前失败，并在 UI 显示 `unknown` /“隔离不可用”；`edit_files` 和受限 Git 仍是既有真实工作区能力。Broker 阶段写入任务事件及 trace 的安全摘要；S1 的 WorkspaceView 契约与 S2～S5 的实际隔离、外部文件、网络、资源限制和各平台 runtime 仍须分别增加实机验证。
+
+## D085：Sandbox S1 WorkspaceView 策略契约
+
+- 日期：本次实现
+- 状态：用户授权继续实现；仅完成可审计的 Broker/Runtime 契约，尚未完成文件系统隔离。
+- 决定：Sandbox 启用时，Broker 在 Runtime 自检前规范化命令 cwd 为真实工作区根，并传递固定的 `.env`、`.git` 直接保护 descriptor。Runtime 的自检必须明确声明可落实该保护，实际执行同时接收同一 descriptor；根不可用、工作区外目标或经链接解析的直接逃逸一律拒绝，且不回退宿主执行。
+- 原因：先把真实工作区边界和受保护路径要求固定在唯一可信分流点，使后续 Windows/Linux/macOS 后端有可验证的输入契约，而不是解析 shell 命令文本猜测文件访问。
+- 影响与限制：`WorkspaceView.resolveDirectPath` 为 Runtime 适配器和测试在实际访问前复核直接目标，但单独使用它不能限制任意命令的文件系统访问。当前没有实际 Runtime，仍安全拒绝所有启用的命令；目录名称可见，祖先目录操作、硬链接和其他别名风险尚未承诺防护。实际 profile、平台文件系统执行、并发及取消后的真实文件证据留待后续阶段。

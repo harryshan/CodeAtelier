@@ -5,8 +5,9 @@
  *
  * 1. SandboxMode 和 SandboxStatus 区分关闭时的宿主执行、已验证隔离和未知/不可用状态。
  * 2. SandboxConfiguration 是只读环境开关结果，不属于可持久化的 settings.json 偏好。
- * 3. SandboxCommand 与 SandboxRuntime 划定 Broker 可交给平台后端的固定命令请求；运行时不能反向请求任意宿主操作。
- * 4. SandboxStage 仅记录无敏感内容的生命周期事实，供事件与 tracing 关联。
+ * 3. SandboxWorkspace 描述真实工作区根与直接受保护路径；Runtime 必须以文件系统边界落实它，不能只信任命令文本。
+ * 4. SandboxCommand 与 SandboxRuntime 划定 Broker 可交给平台后端的固定命令请求；运行时不能反向请求任意宿主操作。
+ * 5. SandboxStage 仅记录无敏感内容的生命周期事实，供事件与 tracing 关联。
  *
  * 状态中的原因不得包含命令、工作区路径、外部文件内容或凭据。平台后端必须在 selfCheck 成功后才可返回
  * sandboxed；unknown 状态绝不能由 Broker 回退到宿主权限执行。
@@ -35,6 +36,12 @@ export type SandboxStage =
   | "completed"
   | "failed";
 
+export interface SandboxWorkspace {
+  root: string;
+  protectedPaths: string[];
+  protection: "direct-path";
+}
+
 export interface SandboxCommand {
   command: string;
   args: string[];
@@ -46,8 +53,14 @@ export interface SandboxCommand {
 }
 
 export interface SandboxRuntime {
-  selfCheck(signal: AbortSignal): Promise<{ level: string }>;
-  execute(command: SandboxCommand): Promise<{
+  selfCheck(
+    signal: AbortSignal,
+    workspace: SandboxWorkspace,
+  ): Promise<{ level: string; workspaceProtection: "direct-path" }>;
+  execute(
+    command: SandboxCommand,
+    workspace: SandboxWorkspace,
+  ): Promise<{
     output: string;
     exitCode: number | null;
     truncated: boolean;
