@@ -35,8 +35,11 @@ Node.js 24，pnpm 11.22.0（packageManager 固定）。提交 pnpm-lock.yaml，�
 | CODEATELIER_WEB_PASSWORD_ENABLED      | false（未设置或空值）；显式值只能为 `true` 或 `false`，启用 Web UI 单一访问密码门禁 |
 | CODEATELIER_WEB_PASSWORD              | 无默认值；开关为 `true` 时必须为非空密码，不写入设置、浏览器配置或日志              |
 | CODEATELIER_LOG_LEVEL                 | info                                                                              |
+| CODEATELIER_SANDBOX_ENABLED           | false；只接受明确的 `true` 或 `false`；启动后不可动态切换                          |
 
 `settings.json` 只保存非连接偏好：主/辅助模型的思考等级、任务限制（包括 `maxConcurrentTasks`）和日志级别；通过 UI 修改。已保存偏好优先于同名环境默认值。API 地址、主/辅助模型标识绝不写入该文件；旧版本留下的同名字段会在读取时忽略，并在下一次保存偏好时移除。密钥始终来自环境或当前进程内存，不写 `settings.json`。存在运行中或排队任务时禁止修改配置。
+
+Sandbox 开关只在 Config 构造时读取。未设置、空值或 `false` 时，`run_command` 保持原有 V1 宿主执行，并在 UI 标为“未隔离”；`true` 时所有命令必须经 SandboxBroker。当前仅完成 S0，尚未注册经平台验证的 runtime，因此会显示“隔离不可用”并安全拒绝命令，绝不退回宿主权限执行。`edit_files` 与受限 `git` 仍沿用现有真实工作区边界；受保护路径、外部文件、网络、资源和各平台 runtime 属于后续阶段，详见 [sandbox.md](sandbox.md)。
 
 访问门禁在服务启动时读取 `CODEATELIER_WEB_PASSWORD_ENABLED` 与 `CODEATELIER_WEB_PASSWORD`：默认关闭；设为 `true` 时密码不能为空，否则服务拒绝启动。启用后，浏览器必须先在门禁页提交正确密码，服务才会发放仅本进程有效的 HttpOnly、SameSite=Strict cookie，并允许读取 bootstrap、会话、SSE 及其他 API；密码不会发送到前端构建环境、持久化设置或日志。关闭或重启服务会轮换该 cookie，需再次验证。它是单一共享密码，不提供账户、用户身份、角色、找回密码、限流或公网安全保证。
 

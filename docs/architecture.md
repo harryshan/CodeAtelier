@@ -10,7 +10,8 @@ web (React)
 server (Fastify)
   → agent/engine
       → providers/model-provider ← providers/responses-provider (官方 OpenAI SDK)
-      → tools/tool-runner → tools/registry + permissions/approval-manager
+      → tools/tool-runner → sandbox/broker → platform runtime（启用且可用时）
+      → tools/registry + permissions/approval-manager
       → sessions/store (SQLite)
   → tracing (Perfetto Trace Event JSON)
   → logging (Pino)
@@ -23,8 +24,9 @@ server (Fastify)
 - `src/permissions` 用无工具的低成本辅助模型将待审批请求分为自动通过、人工确认或拒绝；人工确认仍在后端等待用户点击，取消会释放待审批 Promise。模型无法自行同意审批。
 - `src/server/local-security.ts` 在业务 API 前校验 Host、Origin、可选的环境访问密码与本机会话 token；密码门禁启用后，只有状态/登录路由可在未验证时访问，登录成功写入服务进程有效的 HttpOnly cookie。
 - `src/sessions/store.ts` 保存 sessions、tasks、events、context 和新任务的高保真 replay 捕获；任务的 createdAt、startedAt、finishedAt 分别表示入队、实际开始和结束，排队时间不计入会话累计运行时间。初始数据库结构位于 `schema.ts`。replay 捕获逐次保存模型 input/instructions/响应及完整脱敏工具参数/结果，导出时可从同一哈希的完整 `read_file` 页拼接 `edit_files` 的原始文件；只读到部分行或旧历史则明确拒绝真实文件物化。会话初始快照读取全量事件，SSE 后续刷新按 event ID 游标只读取新增事件；超过 64 KiB 的任一事件读取范围、活动上下文和历史快照由 `store-worker.ts` 在独立 Worker 线程解析或事务写入，小记录避免线程创建开销而同步读取。启动时将 queued/running/waiting 任务标为 interrupted 并记录结束时间。
-- `src/config` 将 .env/进程环境中的只读连接配置与 settings.json 中的非连接偏好合成为运行时设置，另管理内存密钥和平台数据目录；访问门禁配置由 server/local-security.ts 在服务启动时单独读取，避免将密码纳入浏览器可见配置。
-- `src/tracing` 默认只在任务运行期间于当前进程构造性能 timeline：Engine 在上下文计量/压缩、模型请求与退避、响应处理、工具计划、工具真实执行和工具结果持久化边界创建 span；`context.prepare` 与 `context.request` 保持各自边界；前者以下挂预算输入计量和已有的压缩阶段，后者以下挂实际请求计量阶段。模型、退避与响应处理仍是独立 span，模型包装器记录长度、数量、usage、错误类别和首包时间。Node 主事件循环执行的上下文、模型、响应、计划和持久化 span 汇集于 `Main thread`，并以 begin/end slice 表示这些内部阶段；`Task` 根是生命周期包络。工具批次/依赖属于 `Tool scheduler` 逻辑轨道，实际执行节点映射到最多 4 个可复用 `Tool worker` 并发槽位，而不为每个 call ID 创建一行。导出事件按时间排序，并用递增整数 ID 连接模型到工具的 flow，保证 Perfetto Trace Event JSON 兼容性。每个实际 tool span 保存经递归凭据脱敏后的结构化执行参数，因此 trace 是不得上传或提交的敏感本机诊断文件；它仍不保存提示词、模型/工具输出或凭据原文。高保真 replay payload 独立保存在 Store 的 `task_replays`，不混入 Perfetto；模型/工具 replay 只用于隔离测试，文件物化还必须验证完整读取版本。任务进入终态时 TraceArchive 以临时文件后 rename 的方式保存 `traces/<sessionId>/<taskId>.json`，然后立即释放内存记录，所以同一会话各任务不覆盖且没有完成 trace 缓存。`GET /api/tasks/:id/trace` 在本机 cookie 保护下只读取该文件；`GET /api/sessions/:id/traces` 只列出实际存在的文件，统计框据此显示下载入口。
+- `src/config` 将 .env/进程环境中的只读连接配置与 settings.json 中的非连接偏好合成为运行时设置，另管理内存密钥和平台数据目录；`src/sandbox/config.ts` 同时只在启动时严格读取 Sandbox 开关，避免它被浏览器设置或旧持久化偏好改变。访问门禁配置由 server/local-security.ts 在服务启动时单独读取，避免将密码纳入浏览器可见配置。
+- `src/sandbox/broker.ts` 是 `run_command` 的唯一 Sandbox 分流点：关闭时调用既有宿主进程执行器并公开 `non-isolated`，启用后只接受通过 `SandboxRuntime.selfCheck` 的后端；当前 S0 未注册任何平台 runtime，因而状态为 `unknown` 并安全失败，不会退回宿主执行。Broker 阶段以安全摘要写入任务事件与 tracing；S1+ 再接入工作区视图、受保护路径、外部授权、网络和资源限制。
+- `src/tracing` 默认只在任务运行期间于当前进程构造性能 timeline：Engine 在上下文计量/压缩、模型请求与退避、响应处理、工具计划、SandboxBroker 阶段、工具真实执行和工具结果持久化边界创建 span；`context.prepare` 与 `context.request` 保持各自边界；前者以下挂预算输入计量和已有的压缩阶段，后者以下挂实际请求计量阶段。模型、退避与响应处理仍是独立 span，模型包装器记录长度、数量、usage、错误类别和首包时间。Node 主事件循环执行的上下文、模型、响应、计划和持久化 span 汇集于 `Main thread`，并以 begin/end slice 表示这些内部阶段；`Task` 根是生命周期包络。工具批次/依赖属于 `Tool scheduler` 逻辑轨道，实际执行节点映射到最多 4 个可复用 `Tool worker` 并发槽位，而不为每个 call ID 创建一行。导出事件按时间排序，并用递增整数 ID 连接模型到工具的 flow，保证 Perfetto Trace Event JSON 兼容性。每个实际 tool span 保存经递归凭据脱敏后的结构化执行参数，因此 trace 是不得上传或提交的敏感本机诊断文件；它仍不保存提示词、模型/工具输出或凭据原文。高保真 replay payload 独立保存在 Store 的 `task_replays`，不混入 Perfetto；模型/工具 replay 只用于隔离测试，文件物化还必须验证完整读取版本。任务进入终态时 TraceArchive 以临时文件后 rename 的方式保存 `traces/<sessionId>/<taskId>.json`，然后立即释放内存记录，所以同一会话各任务不覆盖且没有完成 trace 缓存。`GET /api/tasks/:id/trace` 在本机 cookie 保护下只读取该文件；`GET /api/sessions/:id/traces` 只列出实际存在的文件，统计框据此显示下载入口。
 - `src/logging` 在 Pino 内部按字段脱敏后输出紧凑格式化纯文本，按级别筛选、保留受控错误详情并轮转文件。
 
 ## 文件职责与定位

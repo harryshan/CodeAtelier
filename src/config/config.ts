@@ -5,9 +5,9 @@
  * 1. 构造器准备数据目录，只从环境读取连接配置，再读取 settings.json 中的可持久化偏好。
  * 2. normalizeBaseUrl 去掉端点末尾的 responses 和斜杠；模型 ID 保持环境变量的原样。
  * 3. update 拒绝修改连接字段，只原子保存偏好；浏览器输入的密钥仅覆盖本次进程。
- * 4. publicValue 返回运行时设置及 hasApiKey，浏览器据此显示只读连接信息和密钥状态。
+ * 4. publicValue 返回运行时设置、密钥状态和启动期 sandbox 模式，浏览器据此显示实际命令边界。
  *
- * API 地址、主/辅助模型和环境密钥的基线只来自 .env 或进程环境，避免与 settings.json 竞争。
+ * API 地址、主/辅助模型、环境密钥和 sandbox 开关的基线只来自 .env 或进程环境，避免与 settings.json 竞争。
  * 密钥不写进 settings.json。已保存的配置损坏时应报错，不能悄悄用默认值覆盖。
  */
 
@@ -26,6 +26,8 @@ import {
   settingsSchema,
 } from "./settings.js";
 import { dataDirectory } from "./data-directory.js";
+import { sandboxConfiguration } from "../sandbox/config.js";
+import type { SandboxConfiguration } from "../sandbox/types.js";
 
 type ConnectionSettings = z.infer<typeof connectionSettingsSchema>;
 type PersistedSettings = z.infer<typeof persistedSettingsSchema>;
@@ -38,6 +40,8 @@ export class Config {
   settings: z.infer<typeof settingsSchema>;
   private connection: ConnectionSettings;
   apiKey = process.env.CODEATELIER_API_KEY || "";
+  readonly sandbox: SandboxConfiguration;
+
   constructor(public directory = dataDirectory()) {
     mkdirSync(directory, { recursive: true });
     const file = path.join(directory, "settings.json");
@@ -46,6 +50,7 @@ export class Config {
       : {};
 
     this.connection = this.readEnvironmentConnection();
+    this.sandbox = sandboxConfiguration();
     this.settings = this.runtimeSettings(this.savedPreferences(saved));
   }
 
@@ -134,6 +139,10 @@ export class Config {
   }
 
   publicValue() {
-    return { settings: this.settings, hasApiKey: !!this.apiKey };
+    return {
+      sandbox: this.sandbox.initialStatus,
+      settings: this.settings,
+      hasApiKey: !!this.apiKey,
+    };
   }
 }

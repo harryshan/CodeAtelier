@@ -5,7 +5,7 @@
  * 1. 状态和 effects 管理当前会话、表单、弹窗、加载状态、服务状态及自动滚动。
  * 2. 按服务端返回的工作区路径分组展示会话；项目可独立折叠，展开时默认仅显示最近五个对话，并可按需显示更早记录；手机端以可关闭的抽屉呈现该侧栏。
  * 3. resume、reloadService、stopServer、createProject、createConversation 和 send 处理恢复、受确认的服务重载、关闭服务、连接项目、新建会话和发送消息，并显示操作结果。
- * 4. 服务关闭后显示重启说明；正常页面由侧栏或手机端导航抽屉、项目栏、可折叠会话统计、会将已完成任务过程默认收纳的时间线或项目连接页、所见即所得 Markdown 任务编辑器组成。
+ * 4. 服务关闭后显示重启说明；正常页面由侧栏或手机端导航抽屉、项目栏、实际 sandbox 模式、可折叠会话统计、会将已完成任务过程默认收纳的时间线或项目连接页、所见即所得 Markdown 任务编辑器组成。
  * 5. 末尾仅渲染设置、重载和关闭确认弹窗，项目连接不使用弹窗。
  *
  * 关闭请求失败时不能断言服务已经关闭。切换会话和断线重连都只更新显示，不能重新提交任务。
@@ -13,7 +13,7 @@
 
 import { useSessionConnection } from "./useSessionConnection";
 import { useEffect, useRef, useState } from "react";
-import type { Session, Settings } from "../shared/types";
+import type { SandboxStatus, Session, Settings } from "../shared/types";
 import { api, bootstrap, sessions, snapshot } from "./api";
 import { MarkdownTaskEditor } from "./MarkdownTaskEditor";
 import { SettingsPanel } from "./SettingsPanel";
@@ -28,6 +28,7 @@ export default function App() {
   const [selected, setSelected] = useState("");
   const [settings, setSettings] = useState<Settings>();
   const [hasKey, setHasKey] = useState(false);
+  const [sandbox, setSandbox] = useState<SandboxStatus>();
   const [showSettings, setShowSettings] = useState(false);
   const [addingProject, setAddingProject] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
@@ -51,6 +52,7 @@ export default function App() {
     serverState === "running",
     setSettings,
     setHasKey,
+    setSandbox,
     setError,
   );
   const bottom = useRef<HTMLDivElement>(null);
@@ -61,6 +63,7 @@ export default function App() {
       .then((v) => {
         setSettings(v.settings);
         setHasKey(v.hasApiKey);
+        setSandbox(v.sandbox);
 
         return sessions();
       })
@@ -463,6 +466,17 @@ export default function App() {
           </div>
           <div className={s.headerRight}>
             <span className={s.modelBadge}>{settings?.model || "连接中"}</span>
+            <span
+              className={s.sandboxBadge}
+              title={sandbox?.reason}
+              aria-label={`命令隔离状态：${sandbox?.mode ?? "unknown"}`}
+            >
+              {sandbox?.mode === "sandboxed"
+                ? `已隔离${sandbox.level ? `：${sandbox.level}` : ""}`
+                : sandbox?.mode === "non-isolated"
+                  ? "未隔离"
+                  : "隔离不可用"}
+            </span>
             <span className={s.status}>
               {active
                 ? active.status === "queued"

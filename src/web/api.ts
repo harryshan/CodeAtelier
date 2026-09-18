@@ -10,7 +10,12 @@
  * 这里保存的是本机会话令牌，不是模型 API 密钥。
  */
 
-import type { Settings, Session, Snapshot } from "../shared/types";
+import type {
+  SandboxStatus,
+  Settings,
+  Session,
+  Snapshot,
+} from "../shared/types";
 
 let token = "";
 
@@ -55,6 +60,7 @@ export async function bootstrap() {
   const value = await api<{
     token: string;
     settings: Settings;
+    sandbox: SandboxStatus;
     hasApiKey: boolean;
   }>("/bootstrap");
 

@@ -6,7 +6,7 @@
  * 2. 传入非法工具参数，确认错误返回模型且文件没有变化。
  * 3. 检查项目规则加载、复杂任务先读取文件并获得信息后才持久化和展示计划摘要、大输出限制，以及多项互不冲突的工具调用会在同一轮全部执行。
  * 4. 检查多文件调用的逐文件进度及结果持久化、新任务必须重新读文件，以及含凭据相关源码的工具结果仍是合法 JSON。
- * 5. 检查模型实际错误会进入任务失败记录和通知，对需要批准的命令确认保存的工具耗时只从真正执行开始计算，不包含审批等待。
+ * 5. 检查模型实际错误会进入任务失败记录和通知，对需要批准的命令确认保存的工具耗时只从真正执行开始计算，不包含审批等待；同时记录 SandboxBroker 的安全阶段和 trace。
  * 6. 配置辅助模型时，确认审批请求被路由给独立的低成本模型，并保存自动通过的分类决定。
  * 7. 新任务逐次捕获模型请求/响应和未截断工具结果，供后续导出隔离 replay case。
  *
@@ -312,7 +312,7 @@ it("starts tool duration after command approval instead of when the call is requ
   });
 
   try {
-    fixture.engine.start(fixture.session.id, "run the command");
+    const task = fixture.engine.start(fixture.session.id, "run the command");
     await expect.poll(() => fixture.engine.approvals.list()).toHaveLength(1);
 
     // 模拟用户在审批界面停留十秒；命令获准后时间才应开始累计。
@@ -323,10 +323,27 @@ it("starts tool duration after command approval instead of when the call is requ
     );
     await fixture.engine.active?.done;
 
-    const result = fixture.store
-      .events(fixture.session.id)
-      .find((event) => event.type === "tool_result");
+    const events = fixture.store.events(fixture.session.id);
+    const result = events.find((event) => event.type === "tool_result");
+    const sandboxStages = events
+      .filter((event) => event.type === "sandbox_stage")
+      .map((event) => event.data.stage);
+    const trace = await fixture.engine.savedTrace(task);
+    const traceEvents = trace ? JSON.parse(trace).traceEvents : [];
+
     expect(result?.data.durationMs).toBe(0);
+    expect(sandboxStages).toEqual([
+      "policy_resolved",
+      "executing",
+      "collecting",
+      "completed",
+    ]);
+    expect(traceEvents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: "sandbox.policy_resolved", ph: "i" }),
+        expect.objectContaining({ name: "sandbox.completed", ph: "i" }),
+      ]),
+    );
   } finally {
     clock.mockRestore();
     await fixture.engine.close();

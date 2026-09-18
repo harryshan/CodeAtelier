@@ -25,6 +25,9 @@ import { executeProcess } from "./process.js";
 import { commandShell } from "./command-shell.js";
 import { FileEditor } from "./file-editor.js";
 import { GitToolRunner, containsGitCommand } from "./git.js";
+import { SandboxBroker } from "../sandbox/broker.js";
+import { sandboxConfiguration } from "../sandbox/config.js";
+import type { SandboxStage, SandboxStatus } from "../sandbox/types.js";
 
 const ignored = new Set([
   ".git",
@@ -43,6 +46,8 @@ export interface ToolContext {
   settings: Settings;
   approvals: ApprovalManager;
   emit: (type: string, data: any) => void;
+  sandbox?: SandboxBroker;
+  onSandboxStage?: (stage: SandboxStage, status: SandboxStatus) => void;
 }
 
 interface ToolRunnerState {
@@ -53,12 +58,14 @@ export class ToolRunner {
   private readHashes: Map<string, string>;
   private git: GitToolRunner;
   private editor: FileEditor;
+  private sandbox: SandboxBroker;
 
   constructor(
     private ctx: ToolContext,
     state: ToolRunnerState = { readHashes: new Map<string, string>() },
   ) {
     this.readHashes = state.readHashes;
+    this.sandbox = ctx.sandbox ?? new SandboxBroker(sandboxConfiguration());
     this.git = new GitToolRunner(ctx);
     this.editor = new FileEditor({
       root: ctx.root,
@@ -77,6 +84,7 @@ export class ToolRunner {
     return new ToolRunner(
       {
         ...this.ctx,
+        sandbox: this.sandbox,
         emit: (type, data) => this.ctx.emit(type, { ...data, callId }),
       },
       { readHashes: this.readHashes },
@@ -275,18 +283,35 @@ export class ToolRunner {
         throw new Error("用户拒绝执行命令。");
       }
 
-      // 命令授权结束才开始计时；授权等待和命令指纹计算均不是命令执行。
+      // 命令授权结束才开始计时；Broker 的自检和实际执行都属于本次命令，不把审批等待计入其中。
       startExecution();
-
-      return executeProcess(
-        shell.command,
-        [...shell.args, args.command],
-        cwd,
-        this.ctx.signal,
-        this.ctx.settings.commandTimeoutMs,
-        this.ctx.settings.outputChars,
-        (s) => this.ctx.emit("command_output", { text: s }),
+      const outcome = await this.sandbox.executeCommand(
+        {
+          command: shell.command,
+          args: [...shell.args, args.command],
+          cwd,
+          signal: this.ctx.signal,
+          timeoutMs: this.ctx.settings.commandTimeoutMs,
+          outputLimit: this.ctx.settings.outputChars,
+          onOutput: (text) => this.ctx.emit("command_output", { text }),
+        },
+        () =>
+          executeProcess(
+            shell.command,
+            [...shell.args, args.command],
+            cwd,
+            this.ctx.signal,
+            this.ctx.settings.commandTimeoutMs,
+            this.ctx.settings.outputChars,
+            (text) => this.ctx.emit("command_output", { text }),
+          ),
+        (stage, status) => {
+          this.ctx.emit("sandbox_stage", { stage, ...status });
+          this.ctx.onSandboxStage?.(stage, status);
+        },
       );
+
+      return { ...outcome.result, sandbox: outcome.status };
     }
 
     if (name === "read_file") {

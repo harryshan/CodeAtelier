@@ -2,7 +2,7 @@
  * 主页面、时间线和弹窗共用的 CSS Module，由各 React 组件引用。
  *
  * 1. 开头设置颜色、字体和基础控件样式，再定义双栏布局、侧栏和标题区。
- * 2. 项目分组标题、折叠控件、最近会话限制与会话按钮展示一项目多对话；随后是欢迎页、项目栏、右上角可折叠会话统计与 Perfetto 下载链接、Markdown 对话消息、工具结果、diff 和通知。
+ * 2. 项目分组标题、折叠控件、最近会话限制与会话按钮展示一项目多对话；随后是欢迎页、项目栏、右上角实际 sandbox 状态、可折叠会话统计与 Perfetto 下载链接、Markdown 对话消息、工具结果、diff 和通知。
  * 3. 审批按钮、所见即所得 Markdown 输入区、弹窗和字段网格对应页面中的操作与表单。
  * 4. 末尾通过媒体查询调整窄屏间距和排列；手机端把完整侧栏改为带遮罩的导航抽屉，避免隐藏项目和会话操作。
  *
@@ -322,12 +322,17 @@
   gap: 18px;
   align-items: center;
 }
-.modelBadge {
+.modelBadge,
+.sandboxBadge {
   border: 1px solid #334147;
   border-radius: 20px;
   padding: 7px 12px;
   font-size: 11px;
   color: #a4b7bf;
+}
+.sandboxBadge {
+  border-color: #775d37;
+  color: #e2bd7b;
 }
 .status {
   color: #98c2ae;

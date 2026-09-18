@@ -3,7 +3,7 @@
  * 接收会话 ID、连接开关及状态回调，返回快照 data、setData 和连接状态 connected。
  *
  * 1. effect 在选中会话后先清除旧快照并标记 loading；refresh 合并连续 SSE 通知，读取最新快照。
- * 2. connect 先 bootstrap 更新凭据和配置，再建立当前会话的 EventSource；服务建立流时的首个 refresh
+ * 2. connect 先 bootstrap 更新凭据、配置和 sandbox 状态，再建立当前会话的 EventSource；服务建立流时的首个 refresh
  *    是唯一初始快照请求，避免切换时重复下载同一段历史。
  * 3. 收到后续 refresh 就读快照，连接失败则关闭旧流并安排重试。
  * 4. 清理时标记 disposed、取消进行中的快照、清除定时器并关闭连接；晚到响应不会覆盖新会话。
@@ -13,7 +13,7 @@
 
 import { useEffect, useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
-import type { Settings, Snapshot } from "../shared/types";
+import type { SandboxStatus, Settings, Snapshot } from "../shared/types";
 import { bootstrap, snapshot } from "./api";
 
 /** 管理快照和 SSE 连接；enabled 为 false 时断开，供关闭服务时使用。 */
@@ -22,6 +22,7 @@ export function useSessionConnection(
   enabled: boolean,
   setSettings: Dispatch<SetStateAction<Settings | undefined>>,
   setHasKey: Dispatch<SetStateAction<boolean>>,
+  setSandbox: Dispatch<SetStateAction<SandboxStatus | undefined>>,
   setError: Dispatch<SetStateAction<string>>,
 ) {
   const [data, setData] = useState<Snapshot>();
@@ -115,6 +116,7 @@ export function useSessionConnection(
 
         setSettings(v.settings);
         setHasKey(v.hasApiKey);
+        setSandbox(v.sandbox);
         if (disposed) {
           return;
         }
@@ -136,7 +138,7 @@ export function useSessionConnection(
       clearTimeout(reconnect);
       stream?.close();
     };
-  }, [selected, enabled, setSettings, setHasKey, setError]);
+  }, [selected, enabled, setSettings, setHasKey, setSandbox, setError]);
 
   return { data, setData, connected, loading };
 }

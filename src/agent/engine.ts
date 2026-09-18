@@ -56,6 +56,7 @@ import {
   type RecordedModelExchange,
 } from "../sessions/replay-case.js";
 import { ToolRunner } from "../tools/tool-runner.js";
+import { SandboxBroker } from "../sandbox/broker.js";
 import { definitions, parseScheduledToolArguments } from "../tools/registry.js";
 import {
   createToolGraph,
@@ -93,6 +94,8 @@ export class Engine {
   readonly traces = new TraceRecorder();
   /** 已结束任务的 trace 另行按会话/任务写入数据目录，服务重启后仍可下载。 */
   readonly traceArchive: TraceArchive;
+  /** SandboxBroker 在整个任务内复用；启用时不会因为某个调用失败而回退为宿主执行。 */
+  readonly sandbox: SandboxBroker;
 
   /** 保留单任务调用方的兼容访问；服务端新逻辑应使用 activeTasks 或 hasActiveTasks。 */
   get active() {
@@ -119,6 +122,7 @@ export class Engine {
     private factory?: ModelProviderFactory,
   ) {
     this.traceArchive = new TraceArchive(config.directory, log);
+    this.sandbox = new SandboxBroker(config.sandbox);
     this.approvals = new ApprovalManager(
       () => this.updateWaitingTaskStatuses(),
       (subject, signal) => this.classifyApproval(subject, signal),
@@ -631,6 +635,20 @@ export class Engine {
         settings,
         approvals: this.approvals,
         emit,
+        sandbox: this.sandbox,
+        onSandboxStage: (stage, status) => {
+          this.traces.instant(
+            task.id,
+            `sandbox.${stage}`,
+            "sandbox",
+            "Main thread",
+            {
+              mode: status.mode,
+              enabled: status.enabled,
+              level: status.level,
+            },
+          );
+        },
       });
       const instructions = await createInstructions(session.workspace);
 

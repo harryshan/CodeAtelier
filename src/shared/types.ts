@@ -59,6 +59,14 @@ export interface Approval {
   reviewReason?: string;
 }
 
+export interface SandboxStatus {
+  enabled: boolean;
+  mode: "non-isolated" | "sandboxed" | "unknown";
+  platform: string;
+  level: string | null;
+  reason?: string;
+}
+
 export interface Settings {
   baseUrl: string;
   model: string;
