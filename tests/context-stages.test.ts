@@ -100,7 +100,7 @@ async function setup() {
   return { store, session, requests, manager, read };
 }
 
-it("deduplicates identical historical reads without model calls and preserves protocol pairs", async () => {
+it("deduplicates old reads only after the capacity threshold and preserves protocol pairs", async () => {
   const f = await setup();
   try {
     const source = [
@@ -113,14 +113,17 @@ it("deduplicates identical historical reads without model calls and preserves pr
     ];
     const next = await f.manager.prepare(source, "", []);
     const request = f.manager.request(next, "", []);
-    expect(f.store.latestContextSnapshot(f.session.id)).toBeUndefined();
-    expect(next).toBe(source);
+    expect(f.store.latestContextSnapshot(f.session.id)?.stage).toBe(
+      "deduplicate",
+    );
+    expect(next).not.toBe(source);
     expect(f.requests).toHaveLength(0);
     expect(next.map((item) => item.call_id)).toEqual(
       source.map((item) => ("call_id" in item ? item.call_id : undefined)),
     );
-    expect(contextSize(request.input, "", [])).toBeLessThan(7200);
-    expect(request.after).toBeLessThan(request.before);
+    expect(request.input).toBe(next);
+    expect(request.after).toBe(request.before);
+    expect(contextSize(next, "", [])).toBeLessThan(7200);
   } finally {
     f.store.close();
   }

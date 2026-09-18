@@ -1,9 +1,9 @@
 /**
- * 控制发给模型的上下文大小：每次请求先去掉可还原的重复内容，历史接近上限时再压缩。
+ * 控制发给模型的上下文大小：未到阈值时保留完整历史，接近上限时再压缩。
  * Engine 为每个任务创建 ContextManager；它保留模型调用、文件哈希探测和 SQLite 提交，
  * 将历史扫描、投影、账本、分块和计量转交给专用 Worker，避免阻塞 HTTP/SSE。
  *
- * 1. Options 接收预算、存储、摘要模型、文件探测、通知和可选 tracing 依赖；request 只生成本次无损机械视图。
+ * 1. Options 接收预算、存储、摘要模型、文件探测、通知和可选 tracing 依赖；request 计量原始请求。
  * 2. prepare 在阈值前直接返回，达到阈值后启动 Worker；常规压缩失败且已达硬上限时改用受限保底视图。
  * 3. compact 读取快照链和事件，Worker 构建索引并给出受限文件版本候选；主线程只执行 ToolRunner 的
  *    权限内哈希探测、可取消的摘要模型请求和原子 SQLite 提交。
@@ -18,7 +18,6 @@ import { randomUUID } from "node:crypto";
 import { contextSize } from "./budget.js";
 import { summarize } from "./compactor.js";
 import { CompactionWorkerClient } from "./compaction-worker-client.js";
-import { mechanicalInput } from "./mechanical-input.js";
 import { probeReadHashes, type ReadHashCandidate } from "./read-projection.js";
 import type { ContextSnapshot } from "./types.js";
 import type { Store } from "../sessions/store.js";
@@ -117,38 +116,21 @@ export class ContextManager {
     }
   }
 
-  /** 只整理本次请求；数据库保留原始历史，供恢复和后续压缩使用。 */
+  /** 计量实际发送的完整历史；请求前不改写工具结果。 */
   request(input: any[], instructions: string, tools: any[]) {
     const measure = this.options.measure ?? contextSize;
-    const before = this.traceSync(
-      "context.request.measure_before",
+    const amount = this.traceSync(
+      "context.request.measure_input",
       { inputItems: input.length, toolCount: tools.length },
       () => measure(input, instructions, tools),
-      (amount) => ({ amount }),
+      (size) => ({ amount: size }),
     );
-    const candidate = this.traceSync(
-      "context.request.mechanical_input",
-      { inputItems: input.length },
-      () => mechanicalInput(input),
-      (result) => ({ changed: result !== input, outputItems: result.length }),
-    );
-    const after =
-      candidate === input
-        ? before
-        : this.traceSync(
-            "context.request.measure_after",
-            { inputItems: candidate.length, toolCount: tools.length },
-            () => measure(candidate, instructions, tools),
-            (amount) => ({ amount }),
-          );
 
-    return after < before
-      ? { input: candidate, before, after }
-      : { input, before, after: before };
+    return { input, before: amount, after: amount };
   }
 
   private measure = (input: any[], instructions: string, tools: any[]) =>
-    this.request(input, instructions, tools).after;
+    (this.options.measure ?? contextSize)(input, instructions, tools);
 
   private measurement(): ContextMeasurement {
     return this.options.measurement ?? { unit: "characters" };

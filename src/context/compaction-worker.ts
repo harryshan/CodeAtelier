@@ -16,7 +16,6 @@ import { parentPort } from "node:worker_threads";
 import { createHash } from "node:crypto";
 import { chooseCut, contextSize, safeCuts } from "./budget.js";
 import { summaryChunks } from "./compactor.js";
-import { mechanicalInput } from "./mechanical-input.js";
 import { projectReads, readHashCandidates } from "./read-projection.js";
 import { projectToolResults } from "./tool-projection.js";
 import { executionLedger } from "./snapshot.js";
@@ -47,12 +46,7 @@ function measure(
   instructions: string,
   tools: any[],
 ) {
-  return measureContext(
-    measurement,
-    mechanicalInput(input),
-    instructions,
-    tools,
-  );
+  return measureContext(measurement, input, instructions, tools);
 }
 
 function restoreHistory(prefix: any[], snapshots: ContextSnapshot[]) {

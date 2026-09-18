@@ -6,7 +6,7 @@
  * 2. start 保存用户消息为 queued；调度器在全局并发上限内启动不同工作区的任务，并对相同真实工作区保持互斥。
  * 3. resume 继续最后一个可恢复任务；cancel 处理用户取消，close 处理服务关闭。
  * 4. 首条 prompt 先用辅助模型生成标题；run 再读取历史和项目规则，准备工具及上下文预算。
- * 5. 为压缩提供 ToolRunner 的安全文件哈希探测；每轮记录上下文准备和请求视图的内部安全阶段、模型重试、实际模型请求和响应处理，再记录服务实报用量。完整响应保存后校验工具 DAG，再按拓扑关系调度。
+ * 5. 为压缩提供 ToolRunner 的安全文件哈希探测；每轮记录上下文准备和请求计量、模型重试、实际模型请求和响应处理，再记录服务实报用量。完整响应保存后校验工具 DAG，再按拓扑关系调度。
  * 6. 每个实际工具调用仍经过低成本模型的自动通过、人工确认或拒绝分流；模型故障和无效输出保守降级为人工确认，并持久化可审计的决定。
  * 7. 工具批次、节点状态和结果都附带批次/调用标识；ToolRunner 确认实际执行开始后才记录工具耗时，并在可复用调度轨道显示执行和结果持久化；退出时将安全 trace 写入会话/任务文件、释放运行期记录并发出 task_end。
  *
@@ -916,17 +916,6 @@ export class Engine {
                 if (contextTraceParent === requestSpan) {
                   contextTraceParent = undefined;
                 }
-              }
-
-              if (request.after < request.before) {
-                log.debug({
-                  event: "context.mechanical",
-                  step,
-                  attempt,
-                  before: request.before,
-                  after: request.after,
-                  unit: budget.unit,
-                });
               }
 
               emit("model_request", { purpose: "task", step, attempt });
