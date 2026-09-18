@@ -221,3 +221,10 @@
 - 低于容量阈值时，主任务请求、瞬态重试及工具后续轮次均发送完整活动上下文；达到阈值后的一级读取去重、归档和摘要仍按原预算规则执行。测试先在旧实现下确认新增回归失败，再修改实现。
 - `pnpm check` 在解除沙箱限制的同一工作区通过：类型、ESLint、Prettier、35 个测试文件的 243 项通过、1 项跳过，生产构建成功。受限环境中的既有进程取消及服务关闭用例曾发生临时目录 `EBUSY` 和超时；解除限制后的完整检查通过。
 - 未运行 Evaluation、真实模型或浏览器 E2E；静态与模拟模型测试不证明服务端缓存命中率已改善。
+
+## 2026-09-18：WSL2 bubblewrap inspect Sandbox 夹具
+
+- Windows 10 Enterprise（build 26200）上的 WSL `Ubuntu-26.04` 使用 Linux kernel `6.18.33.2-microsoft-standard-WSL2`。`unshare --user --map-root-user --mount --net --fork` 可以创建 namespace，但用户 namespace 内直接 `mount --bind / ...` 被拒绝；没有把该失败路径登记为 Runtime。
+- 同一发行版已安装 `/usr/bin/bwrap`。实际无害夹具以 `bwrap` 的 user/PID/network namespace、只读 `G:/codeagent` 映射、私有 `/mnt`、`/home`、`/root`、`/tmp`、新 `/proc`、最小 `/dev` 启动：可读取工作区 `package.json`，工作区内 `touch` 因只读文件系统失败，`/mnt/g` 与 `/home/root/.ssh` 不存在。该证据只覆盖本机 WSL2 参考后端。
+- `WslInspectRuntime` 的实际 `selfCheck` 成功；隔离命令返回 `sandbox-ok`，独立边界命令验证 `/mnt/g`、`/home/root/.ssh`、真实 `.git/config` 与 `/sys/class/net` 不可见，且工作区写探针失败后返回 `boundary-ok`。本轮 `pnpm check` 通过：类型、ESLint、Prettier、36 个测试文件的 250 项通过和 1 项跳过，以及测试生产构建；构建仍有前端 bundle 大小警告。
+- 未验证 Windows 原生 AppContainer/Job Object、其他 WSL 发行版、Linux/macOS、受保护路径的全部别名、cgroup/rlimit、fork/取消、资源消耗或真实构建；不将该夹具描述为完整 S2 或跨平台系统隔离。

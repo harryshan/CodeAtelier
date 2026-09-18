@@ -90,6 +90,8 @@ Broker 是宿主文件、受限 Git、网络例外和进程管理的可信入口
 
 每任务建立独立无特权边界、固定 cwd、白名单环境及私有临时目录。不得继承 API key、云凭据、包管理器 token、SSH agent、用户 home、设备或宿主 daemon socket。默认无网络；限制 CPU、内存、进程数、输出和墙钟时间。私有临时目录可按后端能力限制大小，但真实工作区直接写入不承诺目录级磁盘配额；可写命令仍可能消耗承载工作区的宿主卷空间。取消和超时须终止完整子进程树，自检须证明限制实际生效。
 
+当前已确认的默认 profile 是 **`inspect`**。它只读映射真实工作区；需要写入工作区的构建、测试、安装或代码生成命令会失败。Windows 主机的 inspect 命令由 WSL2 Linux Runtime 以 POSIX `/bin/sh -c` 解释，不使用 PowerShell/cmd 语法或 Windows 路径；模型指令必须如实说明该差异。
+
 | 平台 | 候选基线 | 更强候选 | 关键验收 |
 | --- | --- | --- | --- |
 | Linux | rootless namespace、受限挂载、seccomp/Landlock、cgroup v2 的可验证组合 | KVM/microVM 或受管 VM | 工作区边界、受保护路径、网络、后代进程和 CPU/内存/PID 等可验证资源 |
@@ -97,6 +99,8 @@ Broker 是宿主文件、受限 Git、网络例外和进程管理的可信入口
 | macOS | 受支持、签名且审查过策略的系统隔离 helper | Virtualization Framework 受管 VM | entitlement、共享目录、网络、进程清理及可验证资源 |
 
 等级以行为验收定义，不按组件名称推断。可先完成 Linux 参考后端；Windows、macOS 通过各自真实平台测试后才启用相同等级。无法实施工作区外隔离、受保护路径排除、进程树终止或默认网络拒绝时，相关 profile 不可用且不得静默回退。
+
+当前 Windows 仅注册 WSL2 的 `wsl2-bubblewrap-inspect` 参考后端。它在每次命令前使用 `bwrap` 自检 user/PID/IPC/UTS/network namespace、只读工作区 `/opt`、私有 `/tmp`、`/home`、`/root`、`/run`、`/mnt` 与 `/sys`、新建 `/proc` 和最小 `/dev`，并以 `--clearenv` 清空命令环境。真实 `.git` 遮蔽为私有空目录，现有 `.env`/`.env.*` 映射为空设备：命令不能读取原始内容或写入原路径，但父目录仍可列出名称。WSL、`bwrap`、路径转换或任一自检失败时，Broker 状态回到 `unknown` 并拒绝该命令。它不是 Windows 原生 Runtime，尚无 cgroup/rlimit 资源限制、受控网络例外、外部文件或完整受保护路径别名防护。
 
 ## 4. 网络、依赖和 Git
 
@@ -125,7 +129,7 @@ UI 显示实际 `sandboxed`、`non-isolated` 或 `unknown` 状态、平台等级
 | --- | --- | --- |
 | S0：开关和契约 | 已实现：默认关闭的环境变量、公开模式状态、SandboxBroker 安全失败分流和阶段事件 | 关闭时沿用 V1 宿主命令；开启而无已验证 runtime 时拒绝执行、不回退；配置、Broker、命令分流与 tracing 测试 |
 | S1：工作区视图 | 已实现基础：Broker 在启用时规范化真实根目录并向 Runtime 传递 `.env`、`.git` 直接保护契约；profile 与文件系统后端仍待实现 | WorkspaceView 单元测试覆盖直接受保护目标、名称仍可列出、工作区外链接逃逸和普通路径；实际 Runtime 必须在每次文件访问时复核并落实该契约，且仍须补齐并发、取消和真实文件系统隔离实测；祖先与别名风险继续记录 |
-| S2：Linux 参考 | 独立 runtime、无网络、资源和进程树限制 | 宿主逃逸、凭据、fork、取消与真实构建测试；不宣称真实工作区目录配额 |
+| S2：Linux 参考 | 部分实现：Windows 上的 WSL2 bubblewrap `inspect` runtime，包含只读工作区、默认无网络、私有环境与基础进程 namespace | 已实测该平台夹具的只读映射、隐藏宿主挂载/home、最小设备和独立 `/proc`；仍缺 cgroup/rlimit、fork/取消、真实构建与资源验收，故不宣称 S2 完成或 Windows 原生隔离 |
 | S3：外部文件 | Broker 受限读取、结果可见范围、专用外部写入 | 对象替换、跨任务隔离、模型/历史/Replay Case 可见性提示及捕获测试 |
 | S4：网络和缓存 | 只读缓存、受控代理和单次授权 | DNS/重定向/内网拒绝、上传边界和凭据测试 |
 | S5：其他平台与 VM | Windows/macOS adapter、行为自检、可选 VM | 各平台真实路径、进程、网络和权限测试 |
@@ -134,7 +138,7 @@ UI 显示实际 `sandboxed`、`non-isolated` 或 `unknown` 状态、平台等级
 
 ## 7. 实施前待定参数
 
-1. 开关开启后的默认 `inspect`/`modify` profile，以及是否允许明确选择非隔离模式；
+1. `inspect` 已由用户确认作为开启 Sandbox 的默认 profile；`modify` 的启用条件、显式非隔离模式和任何持久化设置仍待确定；
 2. 各平台直接受保护路径规则、最低隔离等级和虚拟化前置条件；祖先与别名防护留待后续单独设计；
 3. 外部读取大小、时间与结果可见范围，以及外部写入专用工具的最小操作集；
 4. 网络目标、私有依赖凭据、输出、历史及账本的保留与配额。

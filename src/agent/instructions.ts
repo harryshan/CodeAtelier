@@ -35,6 +35,7 @@ function searchCommandGuidance(tools: RepositorySearchTool[]) {
 export async function createInstructions(
   workspace: string,
   searchTools = detectSearchCommands(),
+  sandboxEnabled = false,
 ): Promise<string> {
   let projectRules = "";
   const rules = await resolveTarget(workspace, "AGENTS.md");
@@ -48,7 +49,13 @@ export async function createInstructions(
     }
   }
 
+  const sandboxShellGuidance =
+    sandboxEnabled && process.platform === "win32"
+      ? "Sandbox inspect profile is enabled: run_command executes in a Linux WSL2 environment through POSIX /bin/sh -c, not PowerShell or cmd. Use POSIX command syntax and Linux paths relative to the workspace. Host search probes may not exist inside the sandbox; prefer grep or find when a POSIX search command is needed."
+      : "";
+
   const behavior = [
+    sandboxShellGuidance,
     searchCommandGuidance(searchTools),
     "Read files and applicable nested AGENTS.md before editing.",
     "Use progressive code reading: use run_command to list directory entries and then use environment-detected search commands to locate symbols, error text, tests, or configuration keys; then read the smallest focused line range around each match. Search before reading ordinary code or files whenever a symbol, error, test, or configuration target can identify the relevant location; expand the range only when the search result or current context is insufficient. There is no list_files tool.",

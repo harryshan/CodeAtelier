@@ -703,3 +703,12 @@
 - 决定：Sandbox 启用时，Broker 在 Runtime 自检前规范化命令 cwd 为真实工作区根，并传递固定的 `.env`、`.git` 直接保护 descriptor。Runtime 的自检必须明确声明可落实该保护，实际执行同时接收同一 descriptor；根不可用、工作区外目标或经链接解析的直接逃逸一律拒绝，且不回退宿主执行。
 - 原因：先把真实工作区边界和受保护路径要求固定在唯一可信分流点，使后续 Windows/Linux/macOS 后端有可验证的输入契约，而不是解析 shell 命令文本猜测文件访问。
 - 影响与限制：`WorkspaceView.resolveDirectPath` 为 Runtime 适配器和测试在实际访问前复核直接目标，但单独使用它不能限制任意命令的文件系统访问。当前没有实际 Runtime，仍安全拒绝所有启用的命令；目录名称可见，祖先目录操作、硬链接和其他别名风险尚未承诺防护。实际 profile、平台文件系统执行、并发及取消后的真实文件证据留待后续阶段。
+
+## D086：Windows 上采用 WSL2 bubblewrap 的 inspect 参考 Runtime
+
+- 日期：本次实现
+- 状态：用户确认 `inspect` 为 Sandbox 开启时的默认 profile；仅实现并实测本机 WSL2 参考路径。
+- 决定：Windows + `CODEATELIER_SANDBOX_ENABLED=true` 时，Engine 注册 `WslInspectRuntime`。每次命令经 WSL2 的 `bwrap` 进入 Linux user/PID/IPC/UTS/network namespace，以只读工作区 `/opt`、清空环境、私有常见宿主目录、最小 `/dev` 和新 `/proc` 运行。既有 `.git` 映射为空目录，既有 `.env`/`.env.*` 映射为空设备。任何 WSL、bubblewrap、路径转换或自检失败维持 `unknown` 并拒绝命令；不会回退 PowerShell/cmd 或宿主执行。
+- 命令语义：启用此后端的 Windows `run_command` 固定采用 POSIX `/bin/sh -c` 文本，并在模型 instructions 中明确说明 Linux 相对路径和语法；不能把宿主 PowerShell/cmd 命令传给 Runtime。
+- 原因：当前 WSL2 可用 `bwrap` 实测能完成只读工作区与宿主驱动器/home 隐藏；直接 rootless `mount --bind` 已实测失败，不以未经验证的 namespace 名称代替文件系统边界。用户选择只读 profile，优先避免真实工作区写入。
+- 影响与限制：这是利用 WSL Linux 内核的参考后端，不是 Windows AppContainer/Job Object。暂不提供 `modify`、外部文件、网络例外、cgroup/rlimit、磁盘配额、fork/取消完整实测或祖先/硬链接等别名防护；因此不宣称 S2 已完成。`edit_files` 与受限 Git 保持既有真实工作区能力，未进入此 Runtime。

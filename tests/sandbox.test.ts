@@ -1,15 +1,16 @@
 /**
- * 验证 Sandbox S0/S1 的环境开关、Broker 分流、WorkspaceView 与安全失败边界。
+ * 验证 Sandbox S0/S1 的环境开关、Broker 分流、WorkspaceView、WSL inspect runtime 请求形状与安全失败边界。
  * 测试直接使用 Config 和 SandboxBroker；临时配置目录避免读取用户设置，假的 runtime 只证明契约分流，
- * 不把它当成任何平台隔离实现。
+ * WSL Runtime 以注入的进程执行器检查固定启动器参数，不把单元测试当成任何平台隔离实现。
  *
  * 1. 配置用例检查空值/false 保留 non-isolated，以及非法值和 true 的 unknown 初始状态。
  * 2. Broker 关闭时调用传入的既有宿主执行器，并记录可审计但不含命令内容的生命周期阶段。
  * 3. S1 WorkspaceView 以真实临时目录验证直接受保护项、链接逃逸和普通路径的策略边界。
  * 4. 启用而没有 runtime 时拒绝，不调用宿主执行器；测试 runtime 必须声明并接收工作区保护契约。
+ * 5. Windows inspect 路径只交给 WSL 固定 POSIX shell 形状，测试启动器清空环境、传递真实根及拒绝其他形状。
  *
- * 用例不启动真实 shell、不访问网络或用户项目。它证明 S0/S1 的安全失败和策略契约，不证明 Windows、Linux
- * 或 macOS 已提供 OS 级隔离。
+ * 用例不启动真实 shell、不访问网络或用户项目。它证明策略、请求形状与安全失败；实际 WSL2 bubblewrap
+ * 隔离只能由平台夹具和验证记录证明，不能推广为 Windows 原生或其他平台的 OS 级隔离。
  */
 
 import { afterEach, expect, it, vi } from "vitest";
@@ -18,7 +19,10 @@ import path from "node:path";
 import { Config } from "../src/config/config.js";
 import { SandboxBroker } from "../src/sandbox/broker.js";
 import { sandboxConfiguration } from "../src/sandbox/config.js";
+import { createSandboxRuntime } from "../src/sandbox/runtime-factory.js";
 import { WorkspaceView } from "../src/sandbox/workspace-view.js";
+import { WslInspectRuntime } from "../src/sandbox/wsl-inspect-runtime.js";
+import { commandShell } from "../src/tools/command-shell.js";
 import type { SandboxRuntime, SandboxStage } from "../src/sandbox/types.js";
 import { temp } from "./fixtures/helpers.js";
 
@@ -60,6 +64,26 @@ it("parses the startup-only sandbox switch strictly and exposes an honest initia
     enabled: true,
     mode: "unknown",
   });
+});
+
+it("selects the WSL POSIX shell shape only for enabled Windows sandbox commands", () => {
+  expect(commandShell({}, () => false, "win32", true)).toEqual({
+    command: "/bin/sh",
+    args: ["-c"],
+  });
+  expect(commandShell({}, () => false, "win32", false)).toBeUndefined();
+  expect(
+    createSandboxRuntime(
+      sandboxConfiguration({ CODEATELIER_SANDBOX_ENABLED: "true" }),
+      "win32",
+    ),
+  ).toBeInstanceOf(WslInspectRuntime);
+  expect(
+    createSandboxRuntime(
+      sandboxConfiguration({ CODEATELIER_SANDBOX_ENABLED: "true" }),
+      "linux",
+    ),
+  ).toBeUndefined();
 });
 
 it("uses the existing host executor only while sandbox is explicitly disabled", async () => {
@@ -142,6 +166,58 @@ it("fails closed without a verified runtime and never falls back to host executi
   expect(executeHost).not.toHaveBeenCalled();
   expect(broker.status.mode).toBe("unknown");
   expect(stages).toEqual(["policy_resolved", "provisioning", "failed"]);
+});
+
+it("passes only fixed WSL launcher arguments to the inspect runtime", async () => {
+  const runProcess = vi.fn(async () => ({
+    output: "",
+    exitCode: 0,
+    truncated: false,
+  }));
+  const runtime = new WslInspectRuntime(runProcess);
+  const workspace = (await WorkspaceView.open(process.cwd())).descriptor();
+
+  await expect(
+    runtime.selfCheck(new AbortController().signal, workspace),
+  ).resolves.toMatchObject({
+    level: "wsl2-bubblewrap-inspect",
+    workspaceProtection: "direct-path",
+  });
+  await runtime.execute({ ...command(), command: "/bin/sh" }, workspace);
+
+  expect(runProcess).toHaveBeenCalledTimes(2);
+  expect(runProcess).toHaveBeenNthCalledWith(
+    1,
+    "wsl.exe",
+    expect.arrayContaining([
+      "--exec",
+      "/bin/sh",
+      "-c",
+      "codeatelier-wsl-inspect",
+      "self-check",
+      workspace.root,
+    ]),
+    process.cwd(),
+    expect.any(AbortSignal),
+    10_000,
+    1_000,
+    expect.any(Function),
+  );
+  expect(runProcess).toHaveBeenLastCalledWith(
+    "wsl.exe",
+    expect.arrayContaining(["execute", workspace.root, "echo safe"]),
+    process.cwd(),
+    expect.any(AbortSignal),
+    1_000,
+    1_000,
+    expect.any(Function),
+  );
+  expect(() =>
+    runtime.execute(
+      { ...command(), command: "cmd.exe", args: ["/c", "echo unsafe"] },
+      workspace,
+    ),
+  ).toThrow("固定的 POSIX shell");
 });
 
 it("dispatches only to a runtime that passed self-check", async () => {

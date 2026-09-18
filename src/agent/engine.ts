@@ -57,6 +57,7 @@ import {
 } from "../sessions/replay-case.js";
 import { ToolRunner } from "../tools/tool-runner.js";
 import { SandboxBroker } from "../sandbox/broker.js";
+import { createSandboxRuntime } from "../sandbox/runtime-factory.js";
 import { definitions, parseScheduledToolArguments } from "../tools/registry.js";
 import {
   createToolGraph,
@@ -122,7 +123,10 @@ export class Engine {
     private factory?: ModelProviderFactory,
   ) {
     this.traceArchive = new TraceArchive(config.directory, log);
-    this.sandbox = new SandboxBroker(config.sandbox);
+    this.sandbox = new SandboxBroker(
+      config.sandbox,
+      createSandboxRuntime(config.sandbox),
+    );
     this.approvals = new ApprovalManager(
       () => this.updateWaitingTaskStatuses(),
       (subject, signal) => this.classifyApproval(subject, signal),
@@ -650,7 +654,11 @@ export class Engine {
           );
         },
       });
-      const instructions = await createInstructions(session.workspace);
+      const instructions = await createInstructions(
+        session.workspace,
+        undefined,
+        this.config.sandbox.enabled,
+      );
 
       const provider =
         this.factory?.(settings, "task") ||

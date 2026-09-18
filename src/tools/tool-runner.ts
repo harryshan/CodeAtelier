@@ -252,7 +252,12 @@ export class ToolRunner {
     }
 
     if (name === "run_command") {
-      const shell = commandShell();
+      const shell = commandShell(
+        process.env,
+        undefined,
+        process.platform,
+        this.sandbox.status.enabled && process.platform === "win32",
+      );
       const cwd = this.ctx.root;
 
       if (!shell) {
