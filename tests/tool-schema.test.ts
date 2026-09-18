@@ -174,6 +174,44 @@ it("exposes only edit_files for file writes and no directory or search tool", ()
   }
 });
 
+it("accepts only the structured current-project memory maintenance operation", () => {
+  const definition = definitions.find(
+    (candidate) => candidate.name === "memory_apply",
+  );
+  const operation = {
+    action: "create",
+    kind: "constraint",
+    title: "使用 pnpm",
+    statement: "项目使用 pnpm 运行验证命令。",
+    tags: ["pnpm"],
+    importance: "high",
+    confidence: "confirmed",
+    expiresAt: null,
+    source: {
+      summary: "当前任务已检查 package.json。",
+      eventId: null,
+      filePath: "package.json",
+      fileHash: "a".repeat(64),
+    },
+    reason: "稳定的项目约束。",
+  };
+
+  expect(
+    schemas.memory_apply.parse({
+      expectedVersion: null,
+      operations: [operation],
+    }),
+  ).toMatchObject({ operations: [operation] });
+  expect(
+    schemas.memory_apply.safeParse({
+      expectedVersion: null,
+      operations: [{ ...operation, arbitraryMarkdown: "# 不允许" }],
+    }).success,
+  ).toBe(false);
+  expect(definition?.description).toContain("without a user approval");
+  expect(definition?.description).toContain("project-wide deletion");
+});
+
 it("accepts only one direct command string for run_command", () => {
   const runCommand = definitions.find(
     (definition) => definition.name === "run_command",

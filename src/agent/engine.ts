@@ -56,6 +56,7 @@ import {
   type RecordedModelExchange,
 } from "../sessions/replay-case.js";
 import { ToolRunner } from "../tools/tool-runner.js";
+import { ProjectMemoryService } from "../memory/service.js";
 import { SandboxBroker } from "../sandbox/broker.js";
 import { createSandboxRuntime } from "../sandbox/runtime-factory.js";
 import { definitions, parseScheduledToolArguments } from "../tools/registry.js";
@@ -97,6 +98,8 @@ export class Engine {
   readonly traceArchive: TraceArchive;
   /** SandboxBroker 在整个任务内复用；启用时不会因为某个调用失败而回退为宿主执行。 */
   readonly sandbox: SandboxBroker;
+  /** 项目记忆只写入平台数据目录；任务开始时读取固定 bundle，工具调用时执行受限维护操作。 */
+  readonly memories: ProjectMemoryService;
 
   /** 保留单任务调用方的兼容访问；服务端新逻辑应使用 activeTasks 或 hasActiveTasks。 */
   get active() {
@@ -127,6 +130,7 @@ export class Engine {
       config.sandbox,
       createSandboxRuntime(config.sandbox),
     );
+    this.memories = new ProjectMemoryService(config.directory, log);
     this.approvals = new ApprovalManager(
       () => this.updateWaitingTaskStatuses(),
       (subject, signal) => this.classifyApproval(subject, signal),
@@ -640,6 +644,7 @@ export class Engine {
         approvals: this.approvals,
         emit,
         sandbox: this.sandbox,
+        memory: this.memories,
         onSandboxStage: (stage, status) => {
           this.traces.instant(
             task.id,
@@ -654,11 +659,32 @@ export class Engine {
           );
         },
       });
-      const instructions = await createInstructions(
+      const baseInstructions = await createInstructions(
         session.workspace,
         undefined,
         this.config.sandbox.enabled,
       );
+      const memorySpan = this.traces.startSpan(task.id, {
+        name: "memory.retrieve",
+        category: "memory",
+        track: "Main thread",
+      });
+      const memory = await this.memories.retrieve(session.workspace, prompt);
+      this.traces.endSpan(memorySpan, memory.available ? "ok" : "error", {
+        available: memory.available,
+        entries: memory.bundle?.entries.length ?? 0,
+      });
+      emit("memory_retrieved", {
+        available: memory.available,
+        entries: memory.bundle?.entries.length ?? 0,
+      });
+      if (!memory.available) {
+        emit("notice", { text: "项目记忆不可用，当前任务将不使用历史记忆。" });
+      }
+
+      const instructions = [baseInstructions, memory.bundle?.text]
+        .filter(Boolean)
+        .join("\n\n");
 
       const provider =
         this.factory?.(settings, "task") ||
@@ -1245,7 +1271,14 @@ export class Engine {
             batchId,
             nodeId: node.nodeId,
             dependsOn: node.dependsOn,
-            args: node.arguments,
+            args:
+              node.name === "memory_apply"
+                ? {
+                    operationCount:
+                      (node.arguments as { operations?: unknown[] }).operations
+                        ?.length ?? 0,
+                  }
+                : node.arguments,
           });
           this.store.startReplayTool(
             task.id,
@@ -1313,14 +1346,21 @@ export class Engine {
                     .execute(node.name, node.arguments, () => {
                       executionStartedAt = Date.now();
                       toolSpan = this.traces.startSpan(task.id, {
-                        name: `tool.${node.name}`,
-                        category: "tool",
+                        name:
+                          node.name === "memory_apply"
+                            ? "memory.apply"
+                            : `tool.${node.name}`,
+                        category:
+                          node.name === "memory_apply" ? "memory" : "tool",
                         track: `Tool worker ${slot + 1}`,
                         attributes: {
                           batchId,
                           callId: node.callId,
                           nodeId: node.nodeId,
-                          parameters: traceToolParameters(node.arguments),
+                          parameters:
+                            node.name === "memory_apply"
+                              ? undefined
+                              : traceToolParameters(node.arguments),
                         },
                       });
                     });

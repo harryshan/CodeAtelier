@@ -804,6 +804,87 @@ it("persists multi-file progress with the call id and returns one batch result",
   }
 });
 
+it("lets the model create current-project memory without approval and exposes only a safe result", async () => {
+  let calls = 0;
+  let receivedResult: any;
+  const fixture = await createFixture({
+    async run(input, _instructions, tools) {
+      if (++calls === 1) {
+        expect(tools.map((tool) => tool.name)).toContain("memory_apply");
+
+        return {
+          text: "",
+          output: [
+            {
+              type: "function_call",
+              call_id: "remember-pnpm",
+              name: "memory_apply",
+              arguments: JSON.stringify({
+                expectedVersion: null,
+                operations: [
+                  {
+                    action: "create",
+                    kind: "constraint",
+                    title: "使用 pnpm",
+                    statement: "项目使用 pnpm 运行验证命令。",
+                    tags: ["pnpm"],
+                    importance: "high",
+                    confidence: "confirmed",
+                    expiresAt: null,
+                    source: {
+                      summary: "当前任务已检查 package.json。",
+                      eventId: null,
+                      filePath: "package.json",
+                      fileHash: "a".repeat(64),
+                    },
+                    reason: "稳定的项目约束。",
+                  },
+                ],
+              }),
+            },
+          ],
+        };
+      }
+
+      receivedResult = input
+        .filter((item) => item.type === "function_call_output")
+        .map((item) => JSON.parse(item.output))
+        .find((result) => result.operations);
+
+      return done;
+    },
+  });
+
+  try {
+    fixture.engine.start(fixture.session.id, "记住包管理器约束");
+    await fixture.engine.active?.done;
+
+    expect(calls).toBe(2);
+    expect(receivedResult).toMatchObject({
+      version: expect.stringMatching(/^[a-f0-9]{64}$/),
+      operations: [{ action: "create", id: expect.any(String) }],
+    });
+    const remembered = await fixture.engine.memories.retrieve(
+      fixture.root,
+      "pnpm 验证",
+    );
+    expect(remembered.bundle?.entries).toEqual([
+      expect.objectContaining({ title: "使用 pnpm" }),
+    ]);
+    expect(
+      fixture.store
+        .events(fixture.session.id)
+        .find(
+          (event) =>
+            event.type === "tool_start" && event.data.name === "memory_apply",
+        )?.data.args,
+    ).toEqual({ operationCount: 1 });
+  } finally {
+    await fixture.engine.close();
+    fixture.store.close();
+  }
+});
+
 it("executes a scheduled DAG and returns blocked descendants without invoking them", async () => {
   let calls = 0;
   let feedback: any[] = [];
