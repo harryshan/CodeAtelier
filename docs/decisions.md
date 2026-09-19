@@ -760,9 +760,9 @@
 ## D092：Runtime 完整工作区、Git、原生监督与统一取消语义
 
 - 日期：2026-09-19
-- 状态：用户已确认目标架构修订；push、supervisor、文件授权和实例字段由 D093/D094 继续收紧。仅文档设计，尚未授权实现或验证。
-- 工作区与 Git：Runtime 对工作区和用户显式添加目录按目录授权拥有完整递归访问，不再对 `.git`、`.env` 或其他子路径提供额外 Sandbox 保护；替代 D082/D083 的受保护工作区路径方向。所有 Git 进程和本地/远程 action 都在 Runtime 内执行，Broker 不调用 Git，也不以宿主 Git 处理 Runtime 工作区；D094 只允许 Broker 将少数 Git 元数据作为不可信数据受限解析为 PushSpec，不把真实配置交给 Git。工作区及其 Git 元数据可能被读取、修改、删除或加入模型上下文，用户不希望 Runtime 接触的内容不得进入直接授权目录。
-- push 网络：Runtime 默认无网络；每次 `git push` 需要确认并获得绑定精确 HTTPS scheme/host/port、时限、流量上限和尽可能短期且仓库范围最小凭据的单用途能力。D093 将其强制机制收紧为独立 Push Runner、WFP 默认拒绝和 Broker CONNECT 代理，并禁止 Git 跟随重定向。应用层仍检查 upstream、remote 和 ref 以减少误操作，但 Broker 不解析 Git 协议，host 级网络边界不承诺限制仓库路径或 ref；首版不开放 SSH push。
+- 状态：用户已确认目标架构修订；push、supervisor、文件授权和实例字段由 D093--D095 继续细化。仅文档设计，尚未授权实现或验证。
+- 工作区与 Git：Runtime 对工作区和用户显式添加目录按目录授权拥有完整递归访问，不再对 `.git`、`.env` 或其他子路径提供额外 Sandbox 保护；替代 D082/D083 的受保护工作区路径方向。所有 Git 进程和本地/远程 action 都在 Runtime 内执行，Broker 不调用 Git，也不以宿主 Git 处理 Runtime 工作区。D095 进一步确认 Push Runner 也正常加载真实仓库 Git 配置，Broker 不独立重现配置解析。工作区及其 Git 元数据可能被读取、修改、删除或加入模型上下文，用户不希望 Runtime 接触的内容不得进入直接授权目录。
+- push 网络：Runtime 默认无网络；每次 `git push` 需要确认并获得绑定精确 HTTPS scheme/host/port、时限、流量上限和尽可能短期且仓库范围最小凭据的单用途能力。D093 将其强制机制收紧为独立 Push Runner、WFP 默认拒绝和 Broker CONNECT 代理；D095 允许 Git 配置重定向，但每个新 CONNECT 仍必须通过同一 host/port 校验。应用层仍检查 upstream、remote 和 ref 以减少误操作，但 Broker 不解析 Git 协议，host 级网络边界不承诺限制仓库路径或 ref；首版不开放 SSH push。
 - Windows 启动与身份：采用独立薄层 C++ supervisor 启动并监督 Node.js AppContainer Runtime，负责 profile/SID、最小环境、process/Job handle、资源、等待、取消和清理，不实现 agent、Git 或通用 Broker。目录授权的具体机制由 D093/D094 收紧为最小 ACL 与原对象 handle。每次启动持久化 kind-specific sandbox process ID、supervisor/实际进程 PID、创建时间、AppContainer SID 摘要、Job instance ID、映像摘要和状态；IPC 以启动时 process handle、创建时间、PID、token SID、映像、Job 归属和 nonce 联合证明，PID 单独不构成身份。服务重启后不能重新证明同一实例时标记 interrupted/unknown，不接管复用 PID。
 - 取消与上下文：Sandbox 开启和关闭使用同一产品语义：终止进程树但不回滚已发生的工作区/Git 副作用；确认终止记为 `cancelled`，无法确认记为 `unknown`，绝不自动重放。保存执行实例/PID、执行是否开始、时间、受限部分输出、`sideEffects: may_have_occurred` 与 `replayAllowed: false`，作为工具结果或恢复事件追加到 session，并在下一次模型请求中与历史一并发送，要求先核对当前文件和 Git 状态；D093 将实例字段统一为 `executionInstance`，避免非 Sandbox 模式伪造 Runtime 身份。
 - 影响：D091 的 AppContainer/Broker 总体边界继续有效，但 Broker adapter 清单移除 Git，新增 Runtime 原生监督记录、host 级 push egress 和统一取消持久化。同步更新 requirements、architecture、development、testing、verification 与权威设计；所有内容仍是后续目标，不能描述为当前实现或验证结果。
@@ -771,7 +771,7 @@
 
 - 日期：2026-09-19
 - 状态：根据安全审查补足可执行机制；Git 配置、代理认证、ACL 原对象与实例命名由 D094 继续收紧。仅文档设计，尚未实现或验证。
-- push 强制机制：AppContainer 网络 capability 不作为 host allowlist。每次 push 创建新的单用途 Push Runner 和 SID，不加载 agent loop 或 shell；Broker 先终止普通 Runtime 并锁定工作区。WFP 对 Runner SID 默认拒绝全部直接出站，代理仅接受获准 host/port，负责 DNS/IP/私网/metadata/时限/字节数检查和加密字节转发，不解密或解析 Git。D094 将本条中的“固定配置/直连 Broker 代理端点”进一步替换为 PushSpec、shadow Git directory 和 Runner relay；现行执行契约以 D094 与权威设计文档为准。任一安装、自检或撤销状态不确定均安全失败。
+- push 强制机制：AppContainer 网络 capability 不作为 host allowlist。每次 push 创建新的单用途 Push Runner 和 SID，不加载 agent loop 或 shell；Broker 先终止普通 Runtime 并锁定工作区。WFP 对 Runner SID 默认拒绝全部直接出站，代理仅接受获准 host/port，负责 DNS/IP/私网/metadata/时限/字节数检查和加密字节转发，不解密或解析 Git。D094 增加 Runner relay 与连接身份证明；D095 随后撤销 shadow Git/配置隔离要求，但不改变 WFP 和 CONNECT host 边界。现行执行契约以 D095 与权威设计文档为准。任一安装、自检或撤销状态不确定均安全失败。
 - supervisor 与孤儿：supervisor 从固定安装路径启动并核对签名、版本和映像哈希，只接受 Broker 私有继承 handle 或同等强度通道上的固定 schema；Runtime 不能连接控制面，IPC 不返回原始 handle。控制通道带 heartbeat/租约；Broker 断开、租约过期、身份变化或实例无法复证时关闭带 `KILL_ON_JOB_CLOSE` 的 Job 并撤销 WFP/ACL。失败持久化为 `orphaned` 安全告警；对账完成前锁定 task/workspace，不创建替代 Runtime。
 - 文件授权：首版只接受授权根的最小 ACL ACE，明确禁止 `broadFileSystemAccess`。删除未定义的 “BFS” 备选；Brokered File System 或其他替代方案只有在另行定义平台 API、对象/重解析/撤销语义并证明不宽于 ACL 后才能采用。
 - 统一恢复模型：session 使用 `executionInstance`，包含 `mode: appcontainer | host-process`、`instanceId`、可空 `pid`、`createdAt`；D094 进一步要求 AppContainer 记录以 kind 和二选一 `agentRuntimeInstanceId`/`pushRunnerInstanceId` 归因。不为非 Sandbox 执行伪造 Runtime 字段；取消、未知、副作用与禁止重放语义保持 D092 不变。
@@ -781,9 +781,17 @@
 ## D094：隔离 push 配置、认证连接、ACL 原对象与实例命名
 
 - 日期：2026-09-19
-- 状态：根据后续安全审查补足可执行机制；仅文档设计，尚未实现或验证。
+- 状态：根据安全审查记录的历史设计；Git 配置隔离和凭据不可见结论已被 D095 放宽，代理认证、ACL 原对象与实例命名仍有效。仅文档设计，尚未实现或验证。
 - Git 配置隔离：Broker 不运行 Git，只以严格解析器读取 HEAD/ref 及唯一 upstream/remote URL 白名单键，拒绝 include、URL rewrite、proxy/helper、外部程序和歧义，固化含源 OID、显式 HTTPS URL/目标 ref、对象 ID、内容哈希、凭据 scope 与期限的 `PushSpec`。Push Runner 使用私有 shadow Git directory、显式 OID refspec 和 URL；真实 `.git/config`、refs、hooks、attributes 及 system/global config 不进入 Git 配置栈，安全性不依赖 `-c` 覆盖优先级。PushSpec 漂移必须重新确认。
 - 代理与凭据认证：Runner 内固定 relay 主动连接任务专属 Broker pipe；pipe 名称不授权，Broker 从连接取得实际客户端 PID，并联合验证 `pushRunnerInstanceId`、创建时间、SID、映像、父进程/Job、lease 与调用摘要，不发 bearer token。WFP 同时限制 helper 到 relay 的出站与 relay 的入站 flow，其他 AppContainer/本机进程不能复用端口。固定 credential helper 使用独立任务管道，Broker 另核对其映像、Git 父进程及未消费 lease，凭据只经 helper stdin/stdout 返回，不进入 argv、环境、配置、文件、session、日志或 trace。
 - ACL 原对象：每个授权根在租约期保留 Broker-only 目录 handle、卷标识、文件 ID、原始 DACL 摘要与 ACE delta；撤销对原 handle 使用 handle-based API，不按原路径重开。Broker 崩溃后只可按卷/file ID 重新定位并核对原对象；rename/move 不改变目标，路径替换或删除重建的新对象不修改。无法重新定位/撤销时进入 `orphaned`、锁定 workspace，且 SID/profile identity 永不复用。
 - 身份命名：普通 agent 使用 `agentRuntimeInstanceId`，单用途 push 使用 `pushRunnerInstanceId`，持久化 `SandboxProcessRecord.kind` 明确二者。产品恢复层继续使用 `executionInstance`，AppContainer 模式以 `kind` 和二选一 kind-specific ID 归因；移除模糊的 `runtimeInstanceId`/`sandboxRuntimeInstanceId` 表述，UI/恢复不能把 Push Runner 当作 Agent Runtime。
 - 验收影响：A2 增加授权根 rename/move/replace/delete-recreate 夹具；A5 增加恶意 local config、include/URL-specific proxy/helper、shadow config origin、其他进程复用 relay、过期 lease、PID 复用和代理重启夹具。同步更新 requirements、architecture、development、recovery、testing、verification 与 tracing 字段约束。
+
+## D095：Push Runner 正常加载 Git 配置
+
+- 日期：2026-09-19
+- 状态：用户已确认放宽 D094 的 Git 配置隔离；仅文档设计，尚未实现或验证。
+- 决定：Push Runner 不创建 shadow Git directory，不对真实 `.git/config`、include、URL rewrite、proxy、credential helper、hooks、filter、diff/textconv 或 remote helper 实施配置键白名单。Git 在真实仓库上运行，正常加载最小 AppContainer 环境可见的 system/global/local/worktree 配置；Runner 仍不继承宿主用户 profile、环境凭据、SSH agent 或句柄。Broker 不运行 Git 或独立重现 Git 配置解析；普通 Agent Runtime 以受限 Git 查询提供预期 upstream/URL/OID/ref，Broker 只校验并持久化用户确认的 PushSpec。
+- 安全边界：PushSpec 只是预期行为和网络租约输入，不证明 Git 最终目标路径/ref 或子进程语义。仓库配置可改写 URL/代理/凭据流程，hooks/helper 和 Git 子进程可在 Runner 获授 ACL 内读写并观察短期凭据。WFP 仍默认拒绝直接网络，relay/CONNECT 代理仍拒绝任何不等于逐次确认 HTTPS host/port 的实际连接；自定义代理或非登记 transport 只能使 push 失败，不能获得其他网络。因此获准 host 必须按可接收 Runner 能读取的任意工作区内容来信任；凭据应尽可能限单一仓库、短时有效并在 Runner 结束后立即失效。
+- 验收影响：A5 不再验收 shadow config origin 或拒绝恶意 local config；改为验证 include、URL rewrite、URL-specific proxy/helper、hooks 和 remote helper 实际执行时仍无法连接未获准 host，并验证配置导致不经 relay 时 push 安全失败。UI 必须显示 host 级而非仓库/ref 级保证，并提示 Git 配置/子进程和凭据观察风险。同步更新 requirements、architecture、development、testing、verification 与 tracing 边界。
