@@ -101,6 +101,10 @@ Broker 只提供参数受限的 typed operation：
 
 普通 Agent Runtime 的命令进程默认无网络。restricted token 本身不提供网络隔离，必须由 WFP 默认拒绝规则及启动自检落实；模型请求始终由 Broker 发出。WFP 安装、自检或撤销状态不确定时拒绝启动，不能退化为开放网络。
 
+Broker IPC 与直接网络阻断是两个独立边界。任务专属 pipe 可以认证客户端并代理 `model.request`、`network.fetch` 或 push relay，但它不能阻止 Runtime、hook 或任意子进程直接调用 Winsock。网络安全声明必须来自 WFP 等内核强制机制，不能把“正常请求都走 Broker”当作无命令网络的证据。
+
+2026-09-20 的 SDK 条件审计确认，`ALE_AUTH_CONNECT` 的内建 user-mode filter 条件提供规范化映像路径 `ALE_APP_ID`、用户、AppContainer package、FQBN、地址、端口等字段，但没有 PID、进程创建时间、Job 或任意 restricted SID 条件。`ALE_USER_ID` 仍是当前用户身份，`ALE_PACKAGE_ID` 只适用于 AppContainer，均不能区分同一用户下使用同一 Node/Git/PowerShell 映像的本次 Runtime。内核 classify metadata 可向 callout 提供 `processId`，所以当前最直接的候选是受签名与版本控制的 WFP callout driver：它在 ALE 层把 PID 重新证明为 Broker 登记的 process handle、创建时间、execution SID 与 Job 后代。该 driver 尚未实现或实机运行；在它通过绕过夹具前，W1 的“无命令网络”和 W5 都是阻塞状态。若不接受 driver 的安装、签名、更新和内核攻击面成本，必须改用 Windows 可原生匹配的隔离身份或撤销这项能力声明。
+
 所有本地 Git 直接在普通 Runtime 中运行。`push` 逐次确认规范化 HTTPS host/port、预期 source OID 和目标 ref 后，先停止普通 Runtime 并锁定工作区，再创建新的 `pushRunnerInstanceId` 和单用途 Push Runner。Runner 不加载 agent loop 或任意 shell，但正常 Git 配置、hooks、helper、filter 和 remote helper 仍可执行，并拥有与本次工作区相同的写根以及当前用户读取能力。
 
 Push Runner 只能经固定 relay/CONNECT 组件连接 Broker。WFP 必须能够把默认拒绝和 relay 例外绑定到本次 Runner 的可验证 token/执行身份、受信任映像和端点；若目标 Windows 的 WFP 条件不能安全地区分本次 Runner 与同一宿主用户的其它进程，受限 push profile 不可用。不能用“进程路径相同”“当前用户相同”或 relay 端口难猜代替实例身份。
@@ -137,7 +141,7 @@ Sandbox 开启和关闭时保持同一产品取消语义：终止进程树，不
 | 阶段               | 交付物                                                                  | 必要证据                                                                             |
 | ------------------ | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
 | W0：契约           | AccessManifest、executionInstance、风险文案、禁用模式兼容               | 当前实现与目标 profile 不混淆；开关失败关闭                                          |
-| W1：原生监督       | C++ supervisor、restricted token、私有 desktop、Job、租约、WFP 默认拒绝 | 非提升 token、后代/宿主代写不逃逸、Broker 失联关闭 Job、PID 复用拒绝、直接出站不可达 |
+| W1：原生监督       | C++ supervisor、restricted token、私有 desktop、Job、租约、可绑定实例的 WFP callout/策略服务 | 非提升 token、后代/宿主代写不逃逸、Broker 失联关闭 Job、PID 复用拒绝、直接出站不可达 |
 | W2：读取与写根     | WRITE_RESTRICTED、根 capability SID、ACL 投影/对账                      | 当前用户可读对象可读；正常对象仅获准根可写；弱/null DACL和所有别名有明确结果         |
 | W3：Broker IPC     | pipe 客户端身份、capability、配额、模型/session adapter                 | 跨任务、重放、错误映像/Job/token、畸形帧安全拒绝                                     |
 | W4：外部写入与清洗 | 版本化单对象写入、结果清洗、审批绑定                                    | TOCTOU、reparse、对象替换、敏感日志和超限失败路径                                    |
@@ -157,6 +161,13 @@ W1--W2 通过后只能声明“Windows 完整性 Sandbox：广泛读取、指定
 - 经批准的宿主权限运行中，launcher 父进程为 `restricted=no`、`restrictedSidCount=0`、`appContainer=no`、medium integrity；创建的探针和后代均为 `restricted=yes`、3 个 restricting SID。它们成功读取临时兄弟目录文件和 `C:\Windows\win.ini`，修改 capability 根中的已有文件并创建两个新文件，在未授权兄弟目录的两次创建中得到 `ERROR_ACCESS_DENIED`。launcher 与目标仍显示 `inJob=yes`，所以该结果不证明脱离 Codex 外层 Job 的独立 Job 行为。
 
 这组结果只验证正常 DACL 临时目录上的 token/ACL 核心假设和一个普通后代；不完成 W1/W2，也不覆盖弱 DACL、别名、宿主代写、私有 desktop、WFP、Broker 或真实工具兼容矩阵。
+
+[experiments/windows-network-ipc-demo](../experiments/windows-network-ipc-demo/README.md) 进一步把 Broker IPC 与网络强制分成两个探针。2026-09-20 在同一 Windows/MSVC 环境取得以下结果：
+
+- 普通 Codex 工具环境仍因父 token 已受限而在嵌套 `CreateRestrictedToken` 返回错误 87；该结果只记录 Codex Sandbox 干扰。
+- 经批准的宿主权限运行中，Broker 从 Named Pipe 取得真实客户端 PID，并联合核对保存的 process handle/创建时间、restricted token、execution SID、映像、Job 和 nonce。合法 client 被接受；同用户、同映像、知道同一 nonce 但不在目标 Job 且没有目标 token 身份的 client 被拒绝。该窄结果支持 IPC 联合身份证明可行，不完成 W3，也不能提供网络阻断。
+- WFP 探针的回环 TCP baseline 成功，但普通 Codex 环境和经批准的宿主权限运行都在 `FwpmSubLayerAdd0` 得到 `ERROR_ACCESS_DENIED`；后者仍是 medium-integrity 非提升进程。这确认运行时 Broker 不能自行安装策略，需要提升的安装/策略组件。动态 `ALE_APP_ID` filter 的同映像实例实测仍须由管理员 PowerShell 手动完成。
+- Windows SDK 10.0.28000.0 与 Microsoft ALE 条件文档的静态审计没有发现可供 user-mode filter 精确匹配 PID、创建时间或 Job 的内建条件；`ALE_APP_ID` 是规范化映像路径。这个结果足以否定“仅用 Broker IPC 或普通 APP_ID/user filter 绑定本次 Runtime”的方案，但尚未验证自有 callout driver。
 
 ## 10. 与现有实现的关系
 
