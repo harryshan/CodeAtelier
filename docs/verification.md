@@ -232,5 +232,5 @@
 ## AppContainer 目标架构的验证状态
 
 - 用户已将后续 Windows Runtime 目标改为 AppContainer Agent Runtime 与 Broker；设计见 [appcontainer-sandbox.md](appcontainer-sandbox.md)。本次只重构文档，没有运行 AppContainer、ACL、Job Object、Broker IPC、代理或清洗器。
-- 因此没有任何 AppContainer 实机、单元、集成或端到端验证结论。实施前后的必要夹具包括：每任务 SID 与最小环境、工作区和用户额外目录 ACL、未授权目录/重解析逃逸、Broker IPC 的 PID/SID/nonce/capability 验证、外部对象替换、清洗/脱敏、Job Object 取消和 ACL 撤销。
+- 因此没有任何 AppContainer 实机、单元、集成或端到端验证结论。实施前后的必要夹具包括：独立 C++ supervisor、每任务 SID 与最小环境、process/Job handle、PID/创建时间/映像/token SID/Job/nonce 联合身份、整个工作区含 `.git`/`.env` 的 ACL/BFS 访问、未授权目录/重解析逃逸、Runtime 内本地 Git、push 的精确 HTTPS host/DNS/IP/重定向/私网/时限/流量/短期凭据边界、外部对象替换、清洗/脱敏、Job Object 取消、ACL 撤销，以及 cancelled/unknown 追加 session 并进入下一次模型请求。
 - 上一节的 WSL2 无害夹具仍仅可作为旧实现的历史事实；它不能作为 AppContainer fallback、阶段完成或跨平台系统隔离证据。

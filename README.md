@@ -47,7 +47,7 @@ pnpm exec playwright install chromium
 pnpm test:e2e
 ```
 
-初版仍以应用层审批为主：低成本模型的 `approve` 结果不绕过执行器的路径、Git、提权和并发校验，关闭 Sandbox 时获准命令以本机用户权限运行，适用于你信任的项目。Windows 后续目标是 [AppContainer Agent Runtime 与 Broker 架构](docs/appcontainer-sandbox.md)：Runtime 直接访问工作区和用户显式添加目录，其余宿主请求由 Broker 审查、代理并清洗后回传。该架构尚未实现或验证，不能通过现有环境变量启用；当前 WSL2 `inspect` 仅保留为历史实现记录，见 [旧 WSL2 Sandbox 档案](docs/sandbox.md)。模型可主动自动调用单一、参数受限的 `git` 工具：它检查 worktree、路径、revision 和 upstream，并禁止强推、指定远程/分支目标、重置或创建 PR；Git 仓库配置仍不是系统沙箱。
+初版仍以应用层审批为主：低成本模型的 `approve` 结果不绕过执行器的路径、Git、提权和并发校验，关闭 Sandbox 时获准命令以本机用户权限运行，适用于你信任的项目。Windows 后续目标是 [AppContainer Agent Runtime 与 Broker 架构](docs/appcontainer-sandbox.md)：Runtime 完整访问工作区和用户显式添加目录并执行全部 Git，Broker 不执行 Git，只代理目录外宿主能力和默认关闭的网络；push 经确认后只获得精确 HTTPS host 的短时 egress。独立 C++ supervisor 持有 Runtime process/Job handle 并记录 PID 与联合身份，取消/未知结果追加到 session 供下一轮模型核对。该架构尚未实现或验证，不能通过现有环境变量启用；当前 WSL2 `inspect` 仅保留为历史实现记录，见 [旧 WSL2 Sandbox 档案](docs/sandbox.md)。当前模型仍只可主动调用单一、参数受限的 `git` 工具：它检查 worktree、路径、revision 和 upstream，并禁止强推、指定远程/分支目标、重置或创建 PR；Git 仓库配置仍不是系统沙箱。
 
 ## 文档
 

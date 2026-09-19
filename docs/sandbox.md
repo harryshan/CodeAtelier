@@ -1,6 +1,6 @@
 # 旧 WSL2 Sandbox 实施档案（已被 AppContainer 目标架构替代）
 
-状态：本文保留当前仓库中 WSL2 bubblewrap `inspect` Runtime 的已实现行为、本机夹具证据和历史阶段记录，供迁移与事实核对使用；它不再是未来 Sandbox 的权威设计。Windows 后续目标架构以 [AppContainer Agent Runtime 与 Broker 架构](appcontainer-sandbox.md) 为准：Agent Runtime 使用 AppContainer，直接访问工作区与用户显式添加目录，其余宿主请求经 Broker 审查、代理和清洗。该目标尚未实现或验证，本文记录不构成 AppContainer 能力的证据。
+状态：本文保留当前仓库中 WSL2 bubblewrap `inspect` Runtime 的已实现行为、本机夹具证据和历史阶段记录，供迁移与事实核对使用；它不再是未来 Sandbox 的权威设计。Windows 后续目标架构以 [AppContainer Agent Runtime 与 Broker 架构](appcontainer-sandbox.md) 为准：Agent Runtime 使用 AppContainer，完整访问工作区与用户显式添加目录并执行全部 Git；Broker 不执行 Git，只审查和代理目录外对象、模型、存储与受限网络等宿主能力。该目标尚未实现或验证，本文记录不构成 AppContainer 能力的证据。
 
 ## 1. 目标、开关与兼容性
 

@@ -672,7 +672,7 @@
 ## D082：Sandbox 受保护路径、外部读取与真实工作区资源边界
 
 - 日期：2026-09-21
-- 状态：原始修订；受保护路径的枚举、祖先/别名边界及 Replay Case 去向由 D083 更新。尚未授权实现。
+- 状态：历史设计；受保护路径方向先由 D083 更新、后由 D092 替代，外部读取与资源边界作为后续设计背景保留。
 - 决定：sandbox 的受保护工作区路径必须在文件系统层拒绝枚举、读取、创建、删除、改名、覆盖及链接，不得只靠遮蔽或路径字符串过滤；无法证明该规则覆盖链接、大小写、路径组件和并发替换的后端不能启用相应 profile。外部普通文件由宿主 Broker 在单次、精确授权后代为读取并按现有结果限制交给 agent，runtime 与命令不接收外部路径、目录映射或文件句柄；需要通用命令直接消费外部文件时明确不支持。授权 UI 必须提示外部读取结果可能进入 agent 上下文、会话历史和后续模型服务请求。
 - 资源边界：移除对可写真实工作区目录磁盘配额的要求。sandbox 继续限制 CPU、内存、进程数、输出和墙钟时间；私有临时目录可按后端能力限额，但可写命令可能消耗承载真实工作区的宿主卷空间。
 - Git 边界：在实现并验证禁用策略前，不再宣称宿主 Git 已禁用全部 filters；可信仓库的 clean/smudge filter、submodule、过滤器和远程行为继续作为独立风险验收项。
@@ -682,7 +682,7 @@
 ## D083：收窄受保护路径承诺并允许外部数据进入 Replay Case
 
 - 日期：2026-09-18
-- 状态：用户确认后续 sandbox 设计修订；尚未授权实现。
+- 状态：历史设计；受保护路径方向已由 D092 替代，Replay Case 去向继续有效。
 - 决定：替代 D082 的“不得枚举”要求。一般命令不得直接读取或修改受保护工作区路径，但列出父目录时可以看到名称。暂不设计或验收祖先目录操作及硬链接等别名对受保护对象的间接影响；这些是明确的剩余风险，隔离说明须如实展示。
 - Replay Case：授权读取的外部文件内容、完整工具结果和后续模型请求材料均允许按现有捕获流程进入 Replay Case，不因来源在工作区外而排除。继续适用既有凭据字段脱敏、受保护本地存储及手动导出规则；外部读取审批应明确告知本地捕获和导出的可能性。
 - 原因：用户接受受保护名称可见并暂缓祖先和别名防护，同时优先保证 Replay Case 保存任务证据的完整性。
@@ -699,7 +699,7 @@
 ## D085：Sandbox S1 WorkspaceView 策略契约
 
 - 日期：本次实现
-- 状态：用户授权继续实现；仅完成可审计的 Broker/Runtime 契约，尚未完成文件系统隔离。
+- 状态：历史 WSL2 实现契约；`.env`/`.git` 直接保护不再属于 D092 的 AppContainer 目标，现有代码与测试仅供迁移期事实核对。
 - 决定：Sandbox 启用时，Broker 在 Runtime 自检前规范化命令 cwd 为真实工作区根，并传递固定的 `.env`、`.git` 直接保护 descriptor。Runtime 的自检必须明确声明可落实该保护，实际执行同时接收同一 descriptor；根不可用、工作区外目标或经链接解析的直接逃逸一律拒绝，且不回退宿主执行。
 - 原因：先把真实工作区边界和受保护路径要求固定在唯一可信分流点，使后续 Windows/Linux/macOS 后端有可验证的输入契约，而不是解析 shell 命令文本猜测文件访问。
 - 影响与限制：`WorkspaceView.resolveDirectPath` 为 Runtime 适配器和测试在实际访问前复核直接目标，但单独使用它不能限制任意命令的文件系统访问。当前没有实际 Runtime，仍安全拒绝所有启用的命令；目录名称可见，祖先目录操作、硬链接和其他别名风险尚未承诺防护。实际 profile、平台文件系统执行、并发及取消后的真实文件证据留待后续阶段。
@@ -751,8 +751,18 @@
 ## D091：以 AppContainer Agent Runtime 为中心的 Broker Sandbox 架构
 
 - 日期：本次设计重构
-- 状态：用户已确认目标架构；仅文档设计，尚未授权实现或验证。
+- 状态：用户已确认目标架构；Git、工作区、Runtime 身份和取消边界由 D092 细化。仅文档设计，尚未授权实现或验证。
 - 决定：替代 D086/D087 所确立的“以 WSL2 bubblewrap inspect 为 Windows 后续路线、暂缓 AppContainer”的方向。Windows 后续 Sandbox 以每任务独立的 AppContainer Agent Runtime 为执行边界，保留 Broker Host 为唯一宿主能力边界。Runtime 直接访问当前工作区和用户显式添加的额外目录，目录权限由任务绑定的 AccessManifest 与最小 ACL 租约落实；其他主机文件、模型服务、会话存储、Git、网络及宿主操作只能通过 Broker 的固定 schema 代理。
 - Broker 审查：Broker 必须验证 Runtime 的 AppContainer SID/PID/任务绑定、单次 nonce、能力、时限和配额；外部对象以稳定句柄/对象标识复核类型、重解析点、版本和授权范围，禁止把任意路径、shell 文本、文件句柄或网络 socket 透传给 Runtime。代理结果须按大小、编码、控制字符和敏感内容审查，尽力脱敏后以带来源、哈希、截断和脱敏标志的非可信信封返回；清洗失败、对象替换或不支持的请求安全拒绝，不回退为宿主执行。内容清洗不能保证发现全部秘密或提示注入，直接目录授权也不经过 Broker 内容审查，UI 必须明示这两项边界。
 - 进程与网络：Runtime 不继承宿主环境、密钥、用户 profile、句柄或网络能力；模型与网络访问分别由 Broker 的参数受限 adapter 代理。AppContainer launch、ACL 租约、IPC 身份证明、Job Object 子进程清理、资源限制、Broker adapters 与各项夹具须逐阶段实现和验证。
 - 影响：新增权威设计文档 [appcontainer-sandbox.md](appcontainer-sandbox.md)，`sandbox.md` 和 verification 中的 WSL2 内容降为历史实施事实。D084/D085 的现有开关/Broker/WorkspaceView 实现可保留迁移期兼容，但不构成 D091 的 AppContainer 阶段完成，也不得作为 fallback。新实现必须同步更新架构、配置、测试、验证、恢复、UI、执行账本和安全摘要 tracing；在真实 Windows 验收通过前不宣称 Windows 原生或跨平台系统隔离。
+
+## D092：Runtime 完整工作区、Git、原生监督与统一取消语义
+
+- 日期：2026-09-19
+- 状态：用户已确认目标架构修订；仅文档设计，尚未授权实现或验证。
+- 工作区与 Git：Runtime 对工作区和用户显式添加目录按目录授权拥有完整递归访问，不再对 `.git`、`.env` 或其他子路径提供额外 Sandbox 保护；替代 D082/D083 的受保护工作区路径方向。所有 Git 进程和本地/远程 action 都在 Runtime 内执行，Broker 不调用 Git、不读取仓库配置，也不以宿主 Git 处理 Runtime 工作区。工作区及其 Git 元数据可能被读取、修改、删除或加入模型上下文，用户不希望 Runtime 接触的内容不得进入直接授权目录。
+- push 网络：Runtime 默认无网络；每次 `git push` 需要确认并获得短时、单用途、绑定精确 HTTPS scheme/host/port 的网络能力、时限、流量上限和尽可能短期且仓库范围最小的凭据。代理复核 DNS、IP 和重定向并拒绝 loopback、私网和 metadata 地址。应用层仍检查 upstream、remote 和 ref 以减少误操作，但 Broker 不解析 Git 协议，host 级网络边界不承诺限制仓库路径或 ref；首版不开放 SSH push。
+- Windows 启动与身份：采用独立薄层 C++ supervisor 启动并监督 Node.js AppContainer Runtime，负责 profile/SID、ACL 或 BFS、最小环境、process/Job handle、资源、等待、取消和清理，不实现 agent、Git 或通用 Broker。每次启动持久化 `runtimeInstanceId`、supervisor/Runtime PID、进程创建时间、AppContainer SID 摘要、Job instance ID、映像摘要和状态；IPC 以启动时 process handle、创建时间、PID、token SID、映像、Job 归属和 nonce 联合证明，PID 单独不构成身份。服务重启后不能重新证明同一实例时标记 interrupted/unknown，不接管复用 PID。
+- 取消与上下文：Sandbox 开启和关闭使用同一产品语义：终止进程树但不回滚已发生的工作区/Git 副作用；确认终止记为 `cancelled`，无法确认记为 `unknown`，绝不自动重放。保存 runtime instance/PID、执行是否开始、时间、受限部分输出、`sideEffects: may_have_occurred` 与 `replayAllowed: false`，作为工具结果或恢复事件追加到 session，并在下一次模型请求中与历史一并发送，要求先核对当前文件和 Git 状态。
+- 影响：D091 的 AppContainer/Broker 总体边界继续有效，但 Broker adapter 清单移除 Git，新增 Runtime 原生监督记录、host 级 push egress 和统一取消持久化。同步更新 requirements、architecture、development、testing、verification 与权威设计；所有内容仍是后续目标，不能描述为当前实现或验证结果。
