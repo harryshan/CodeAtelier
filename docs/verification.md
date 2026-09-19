@@ -1,6 +1,6 @@
 # 初版验证记录
 
-日期：2026-09-07；后续条目按各自日期补充。以下区分实际验证和计划覆盖，不将构建成功等同于跨平台运行成功。**当前 AppContainer Agent Runtime 与 Broker 目标架构尚未实现或验证；本文件中的 WSL2 条目仅是被替代路线的历史证据，不能用于宣称 AppContainer 能力。**
+日期：2026-09-07；后续条目按各自日期补充。以下区分实际验证和计划覆盖，不将构建成功等同于跨平台运行成功。**当前 Windows restricted-token Runtime 与 Broker 目标架构尚未实现或验证；本文件中的 WSL2 条目仅是被替代路线的历史证据，不能用于宣称 restricted-token 能力。**
 
 ## 本机实际验证
 
@@ -222,15 +222,15 @@
 - `pnpm check` 在解除沙箱限制的同一工作区通过：类型、ESLint、Prettier、35 个测试文件的 243 项通过、1 项跳过，生产构建成功。受限环境中的既有进程取消及服务关闭用例曾发生临时目录 `EBUSY` 和超时；解除限制后的完整检查通过。
 - 未运行 Evaluation、真实模型或浏览器 E2E；静态与模拟模型测试不证明服务端缓存命中率已改善。
 
-## 2026-09-18：WSL2 bubblewrap inspect Sandbox 夹具（历史证据，非 AppContainer）
+## 2026-09-18：WSL2 bubblewrap inspect Sandbox 夹具（历史证据，非 restricted-token）
 
 - Windows 10 Enterprise（build 26200）上的 WSL `Ubuntu-26.04` 使用 Linux kernel `6.18.33.2-microsoft-standard-WSL2`。`unshare --user --map-root-user --mount --net --fork` 可以创建 namespace，但用户 namespace 内直接 `mount --bind / ...` 被拒绝；没有把该失败路径登记为 Runtime。
 - 同一发行版已安装 `/usr/bin/bwrap`。实际无害夹具以 `bwrap` 的 user/PID/network namespace、只读 `G:/codeagent` 映射、私有 `/mnt`、`/home`、`/root`、`/tmp`、新 `/proc`、最小 `/dev` 启动：可读取工作区 `package.json`，工作区内 `touch` 因只读文件系统失败，`/mnt/g` 与 `/home/root/.ssh` 不存在。该证据只覆盖本机 WSL2 参考后端。
 - `WslInspectRuntime` 的实际 `selfCheck` 成功；隔离命令返回 `sandbox-ok`，独立边界命令验证 `/mnt/g`、`/home/root/.ssh`、真实 `.git/config` 与 `/sys/class/net` 不可见，且工作区写探针失败后返回 `boundary-ok`。本轮 `pnpm check` 通过：类型、ESLint、Prettier、36 个测试文件的 250 项通过和 1 项跳过，以及测试生产构建；构建仍有前端 bundle 大小警告。
-- 未验证 Windows 原生 AppContainer/Job Object、其他 WSL 发行版、Linux/macOS、受保护路径的全部别名、cgroup/rlimit、fork/取消、资源消耗或真实构建；不将该夹具描述为完整 S2 或跨平台系统隔离。
+- 未验证 Windows 原生 restricted token/Job Object、其他 WSL 发行版、Linux/macOS、受保护路径的全部别名、cgroup/rlimit、fork/取消、资源消耗或真实构建；不将该夹具描述为完整 S2 或跨平台系统隔离。
 
-## AppContainer 目标架构的验证状态
+## Restricted-token 目标架构的验证状态
 
-- 用户已将后续 Windows Runtime 目标改为 AppContainer Agent Runtime 与 Broker，并撤回全盘只读方案；设计见 [appcontainer-sandbox.md](appcontainer-sandbox.md)。目标使用经典 AppContainer SID 与最小 ACL，不依赖实验性的 `CreateProcessInSandbox`/BFS。本次只重构文档，没有运行 AppContainer、ACL、Job Object、Broker IPC、代理或清洗器。
-- 因此没有任何 AppContainer 实机、单元、集成或端到端验证结论。必要夹具包括：supervisor 固定映像/控制面/租约、PID 联合身份、Broker 失联和孤儿对账；标准 global config 与 include/includeIf 的精确只读 ACE、父目录不可列举、任意未授权 profile/同盘其他目录/其他盘文件不可读，以及授权根/config handle/卷/file ID 在 rename/move/replace/delete-recreate 后的原对象 ACE 撤销与 SID 永不复用；系统不存在或不可用 `CreateProcessInSandbox` 时经典 AppContainer 路径仍成立；PushSpec 确认/漂移提示，以及宿主 global 与真实 local config、include/URL rewrite/URL-specific proxy/helper、hooks 和 remote helper 执行时未获准 host 仍不可达；主 Runtime 退出，WFP 直接网络与其他 loopback/端口复用拒绝，relay/credential pipe 对错误 SID/PID/创建时间/映像/Job/父进程/lease/代理重启的拒绝；CONNECT host/DNS/IP/重定向/时限/流量/凭据/撤销；以及 `agent-runtime | push-runner` executionInstance 的 cancelled/unknown 进入 session 和下一次模型请求。结论必须按 A1--A4、A5、A6 profile 分层。
-- 上一节的 WSL2 无害夹具仍仅可作为旧实现的历史事实；它不能作为 AppContainer fallback、阶段完成或跨平台系统隔离证据。
+- 用户已将后续 Windows Runtime 目标改为 restricted-token 完整性 Sandbox 与 Broker；设计见 [windows-integrity-sandbox.md](windows-integrity-sandbox.md)。目标以 `WRITE_RESTRICTED` token、每写根 capability SID/ACL、Job、私有 desktop 和 WFP 运行未修改的本机工具；读取沿用当前用户权限，不提供文件机密性。本次只重构文档，没有运行 token、ACL、Job、Broker IPC、代理或清洗器。
+- 因此没有任何 restricted-token 实机、单元、集成或端到端验证结论。必要夹具包括：supervisor 固定映像/控制面/租约、PID 联合身份、Broker 失联和孤儿对账；当前用户可读对象读取兼容、正常对象工作区外写入拒绝、每根 SID 选择性、existing/new child、rename/move/replace/delete-recreate，以及 null DACL、Everyone/Users 可写、显式 deny、继承关闭、reparse/hard link/UNC/其它盘的精确结果；真实 system/global/include/local/worktree Git 配置；PushSpec 确认/漂移提示；主 Runtime 退出，WFP 直接网络与其它 loopback/端口复用拒绝，relay/credential pipe 对同用户其它进程、错误 token/PID/创建时间/映像/Job/父进程/lease/代理重启的拒绝；CONNECT host/DNS/IP/重定向/时限/流量/凭据/撤销；以及 `agent-runtime | push-runner` executionInstance 的 cancelled/unknown 进入 session 和下一次模型请求。结论必须按 W1--W4、W5、W6 profile 分层。
+- 上一节的 WSL2 无害夹具仍仅可作为旧实现的历史事实；它不能作为 restricted-token fallback、阶段完成或跨平台系统隔离证据。

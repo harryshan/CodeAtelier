@@ -66,7 +66,7 @@
 - 浏览器自动化、MCP、插件系统、向量检索。
 - 内置完整 IDE、交互式终端、调试器。
 - 云端部署、远程访问、多用户账号或账户系统。
-- 无人值守的崩溃重启执行；人工恢复已纳入范围（D018）。Windows Sandbox 的后续目标以 [AppContainer Agent Runtime 与 Broker 架构](appcontainer-sandbox.md) 为准：每个 Agent Runtime 使用经典 AppContainer，完整访问当前工作区和用户显式添加目录，包含 `.git`、`.env` 等全部子路径；全部 Git 在 Runtime 内执行，Broker 不运行 Git。标准宿主 global Git config 及已解析 include 文件以精确只读 ACL 默认授权给 Runtime，不开放整个用户 profile 或全盘读取；其内容对 Runtime 中任意进程可读，不应包含明文凭据。文件边界由 AppContainer SID 与最小 ACL 落实，不依赖实验性的 `CreateProcessInSandbox`/Bound File System，也不使用 `broadFileSystemAccess`。push 逐次确认预期 host/ref 并切换到单用途 Push Runner；Runner 正常加载 global/local/worktree Git 配置，因而不保证 hooks/helper/配置无副作用。WFP 与认证 relay/CONNECT 代理只强制实际网络不超出获准的精确 HTTPS host，不把预期仓库路径/ref 当作 Sandbox 边界。原生 C++ supervisor 使用受保护控制面、heartbeat/租约和 Job handle；目录与 config 文件 ACL 租约保留原对象 handle/文件 ID，不能按已替换路径撤销。取消/未知结果以区分 Agent Runtime 与 Push Runner 的统一 executionInstance 进入 session，不回滚或重放副作用。该架构尚未实现或验证，能力只能按无网络 Runtime、受限 push、取消/资源三个 profile 分层声明；当前 WSL2 `inspect` 仅是历史实现，见 [sandbox.md](sandbox.md)。
+- 无人值守的崩溃重启执行；人工恢复已纳入范围（D018）。Windows Sandbox 的后续目标以 [Windows Restricted-Token Runtime 与 Broker 架构](windows-integrity-sandbox.md) 为准：Agent Runtime 以 `WRITE_RESTRICTED` token 运行，读取沿用当前宿主用户权限，写入还必须匹配当前 AccessManifest 中可写根的 capability SID/ACL；工作区内包含 `.git`、`.env` 的全部内容均可修改，全部 Git 在 Runtime 内执行，Broker 不运行 Git。该 profile 只承诺宿主完整性边界，不保护文件机密性；Runtime、Git 配置、hooks/helper 和子进程可读取用户 profile、其它源码和潜在凭据，并可能把内容送入模型请求、session 或获准网络。普通 Runtime 默认无命令网络。push 逐次确认预期 host/ref 并切换到单用途 Push Runner；WFP 与认证 relay 只有在能绑定本次 Runner 实例时才开放获准 HTTPS host。C++ supervisor 使用受保护控制面、heartbeat/租约、Job、私有 desktop 和最小环境；取消/未知结果以区分 Agent Runtime 与 Push Runner 的统一 executionInstance 进入 session，不回滚或重放副作用。首版不使用 AppContainer、Chromium Target hook 或实验性的 `CreateProcessInSandbox`/BFS。该架构尚未实现或验证，能力只能按无网络完整性 Runtime、受限 push、取消/资源三个 profile 分层声明；当前 WSL2 `inspect` 仅是历史实现，见 [sandbox.md](sandbox.md)。
 
 分级诊断日志是同时适用的开发要求（R18）；历史会话与诊断日志分别管理。
 
@@ -81,7 +81,7 @@
 - 跨平台实现需处理路径、shell、进程生命周期、文件权限和编码差异；版本与浏览器矩阵确定后安排对应验证。
 - 模型层保持小型接口，先落地一种 API 协议，再按实际需要扩展；不预先承诺兼容所有提供商。
 - 明确最大步骤、命令超时、上下文容量和重试上限，避免无限循环或无限重试。
-- 工具授权是应用逻辑，不能冒充操作系统沙箱。AppContainer/Broker 是 Windows 后续目标设计，不承诺当前可用、跨平台或 Windows 原生系统级隔离；只有通过各阶段真实验收后才可更新能力声明。
+- 工具授权是应用逻辑，不能冒充操作系统沙箱。Restricted-token/Broker 是 Windows 后续目标设计，不承诺当前可用、跨平台、文件保密或已经具备 Windows 原生系统级隔离；只有通过各阶段真实验收后才可更新能力声明。
 
 模块结构方向（实际目录和职责见 architecture.md）：
 

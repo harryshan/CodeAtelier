@@ -4,8 +4,8 @@
  * WslInspectRuntime.selfCheck 在每次命令的 provision 阶段完成，失败后 Broker 保持 unknown 且拒绝执行。
  *
  * 1. 开关关闭时返回 undefined，确保 V1 宿主命令路径不创建任何 Sandbox 后端。
- * 2. 当前仅 Windows 注册 WSL2 bubblewrap 的 inspect 参考实现；它使用 Linux 内核能力，但不等同于原生
- *    Windows AppContainer/Job Object 隔离。
+ * 2. 当前仅 Windows 注册 WSL2 bubblewrap 的 inspect 参考实现；它使用 Linux 内核能力，但不等同于目标
+ *    Windows restricted-token、写根 ACL、Job Object 与 WFP 完整性隔离。
  * 3. 其他平台和未来 profile 继续返回 undefined，保留默认拒绝而不是猜测平台能力或降级宿主执行。
  */
 

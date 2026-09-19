@@ -11,7 +11,7 @@
 - 保持清晰的目录、模块与代码文件结构。
 - 保持完善且与开发同步更新的文档。
 - **初版功能边界已确认**，以 docs/requirements.md 第 2、5 节为范围与验收依据；用户已授权开始实现；当前按 Node.js 24、React/Vite、Fastify、SQLite、Pino 技术方案开发。
-- 第一版使用 Web UI 作为用户交互界面，支持 Windows、macOS 和 Linux，优先完成读代码、修改与验证闭环。原 CLI 方向已被替代。Windows AppContainer Agent Runtime 与 Broker 的目标设计仅适用于后续 Windows Sandbox；Runtime 将完整访问获授工作区并执行全部 Git，Broker 不执行 Git。不能据此夸大为当前跨平台实现。
+- 第一版使用 Web UI 作为用户交互界面，支持 Windows、macOS 和 Linux，优先完成读代码、修改与验证闭环。原 CLI 方向已被替代。后续 Windows Sandbox 采用 restricted-token 完整性边界：Runtime 沿用当前用户读取能力，仅获准根可写并执行全部 Git，Broker 不执行 Git。不能据此夸大为当前可用或跨平台实现。
 - 默认采用本机后端 + 本机浏览器访问并监听回环地址；用户显式配置后可在受信任局域网监听，仍不提供公网部署、多用户账户或权限分级。Web UI 可由环境变量启用单一访问密码门禁；此限制针对 UI 和后端服务的入站访问，不限制已配置的模型 API 调用。
 - 跨平台设计需覆盖路径、shell、进程取消和文件权限差异；不得将单一系统验证描述为全平台验证。具体系统版本与浏览器支持矩阵待定。
 - 首个模型服务为用户自建 Responses API server，预留其他提供商接口；实际端点、模型标识与 Bearer API key 仅在本地 .env 配置，不写入源码、示例或文档；示例仅使用占位值。模型标识原样传递，不内置特定服务的简称转换。
@@ -20,7 +20,7 @@
 - 会话内上下文压缩已授权：保留用户原文、历史快照与未知执行状态，摘要不提升权限；细节见 docs/context-management.md。已接入服务模型容量与实际 usage，token 预算与备用字符模式见 docs/model-tokens.md。
 - 提供 Web UI“关闭服务”入口及终端 Ctrl+C 退出方式；关闭时停止任务并保存为可恢复中断，保留历史和已修改文件。服务关闭流程必须覆盖鉴权、清理与端口释放测试。
 - 初版仅单 agent；不同真实工作目录的会话最多可并行运行 2 个编码任务（可在设置中调为 1～4），同一工作目录始终串行排队。直接修改选定工作目录，不自动创建 worktree 或一键回滚。页面关闭后后端仍运行时任务可继续。
-- 不扩展初版范围到多 agent、MCP、插件、浏览器自动化、向量检索、完整 IDE、交互式终端或云端。Windows AppContainer Agent Runtime、独立 C++ supervisor 与 Broker 是已确认的后续 Sandbox 目标架构；工作区内不额外保护 `.git`/`.env`，Runtime 对宿主标准 global Git config 及已解析 include 文件获得精确只读授权，但不获得整个用户 profile 或全盘读取能力。文件访问使用经典 AppContainer SID 与最小 ACL，不依赖实验性的 `CreateProcessInSandbox`/Bound File System，也不使用 `broadFileSystemAccess`。Push Runner 正常加载真实 Git 配置，push 使用逐次确认的 PushSpec、单用途 Runner、WFP 与认证 relay/CONNECT 代理，取消结果以区分 Agent Runtime/Push Runner 的 executionInstance 写入 session。网络边界只承诺实际连接不超出获准 HTTPS host，不承诺仓库配置、hooks/helper 或 Git 子进程无副作用。global config 内容可被 Runtime 中任意进程读取，不应存放明文凭据。在用户另行授权实现并完成分层平台验收前，不得将其当作当前可用功能或跨平台系统级沙箱。
+- 不扩展初版范围到多 agent、MCP、插件、浏览器自动化、向量检索、完整 IDE、交互式终端或云端。Windows restricted-token Runtime、独立 C++ supervisor 与 Broker 是已确认的后续 Sandbox 目标架构；`WRITE_RESTRICTED` token 配合每个可写根的 capability SID/ACL，只限制普通宿主对象的写入，不限制当前用户本来拥有的读取。它是完整性 Sandbox，不保护宿主文件机密性：Runtime、Git、hooks/helper 和子进程可读取用户 profile、其它源码与 Git 配置，并可能把内容送入模型请求、session 或获准网络。工作区内不额外保护 `.git`/`.env`；普通 Runtime 默认无命令网络。Push Runner 正常加载真实 Git 配置，push 使用逐次确认的 PushSpec、单用途 Runner、WFP 与认证 relay/CONNECT 代理；如果 WFP 不能把例外绑定到本次 Runner 身份则不提供受限 push。取消结果以区分 Agent Runtime/Push Runner 的 executionInstance 写入 session。首版不依赖 AppContainer、实验性的 `CreateProcessInSandbox`/Bound File System 或 Chromium Target hook。在用户另行授权实现并完成分层平台验收前，不得将其当作当前可用功能或跨平台系统级沙箱。
 
 ## 需求的权威来源
 

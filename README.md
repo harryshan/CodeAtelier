@@ -47,14 +47,14 @@ pnpm exec playwright install chromium
 pnpm test:e2e
 ```
 
-初版仍以应用层审批为主：低成本模型的 `approve` 结果不绕过执行器的路径、Git、提权和并发校验，关闭 Sandbox 时获准命令以本机用户权限运行，适用于你信任的项目。Windows 后续目标是 [AppContainer Agent Runtime 与 Broker 架构](docs/appcontainer-sandbox.md)：Runtime 完整访问获授目录并执行全部 Git，Broker 不运行 Git；宿主标准 global Git config 及已解析 include 文件以精确只读 ACL 进入 AccessManifest，不授权整个用户 profile 或全盘读取。目标使用经典 AppContainer SID 与最小 ACL，不依赖实验性的 `CreateProcessInSandbox`/Bound File System，也不使用 `broadFileSystemAccess`。push 逐次确认 PushSpec 后切换到正常加载真实 Git 配置的单用途 Runner，WFP 强制实际连接经 Runner relay 和联合身份验证的 pipe 到只允许获准 HTTPS host 的 Broker CONNECT 代理。这个 host 边界不保证 Git 配置、hooks/helper 或子进程无副作用；global config 的内容也对 Runtime 内任意进程可读。supervisor 使用受保护控制面和失联租约，ACL 对原对象 handle 撤销；executionInstance 区分 Agent Runtime 与 Push Runner。该架构尚未实现或验证，不能通过现有环境变量启用；当前 WSL2 `inspect` 仅保留为历史记录，见 [旧 WSL2 Sandbox 档案](docs/sandbox.md)。当前模型仍只可主动调用单一、参数受限的 `git` 工具：它检查 worktree、路径、revision 和 upstream，并禁止强推、指定远程/分支目标、重置或创建 PR；Git 仓库配置仍不是系统沙箱。
+初版仍以应用层审批为主：低成本模型的 `approve` 结果不绕过执行器的路径、Git、提权和并发校验，关闭 Sandbox 时获准命令以本机用户权限运行，适用于你信任的项目。Windows 后续目标是 [Restricted-Token Runtime 与 Broker 架构](docs/windows-integrity-sandbox.md)：C++ supervisor 以 `WRITE_RESTRICTED` token、每个写根 capability SID/ACL、Job Object 和私有 desktop 运行未修改的 Node、Git、shell 与编译器。Runtime 沿用当前用户原本的读取能力，只把工作区、显式可写根和私有临时目录作为目标写边界；因此它主要保护宿主完整性，不保护文件机密性，用户 profile、其它源码和 Git 配置可能被读取并进入模型请求或获准网络。普通 Runtime 默认无命令网络；push 逐次确认 PushSpec 后切换到单用途 Runner，只有在 WFP 与认证 relay 能绑定本次 Runner 身份时才开放获准 HTTPS host。工作区内不额外保护 `.git`/`.env`，Broker 不运行 Git。该架构尚未实现或验证，不能通过现有环境变量启用；当前 WSL2 `inspect` 仅保留为历史记录，见 [旧 WSL2 Sandbox 档案](docs/sandbox.md)。当前模型仍只可主动调用单一、参数受限的 `git` 工具：它检查 worktree、路径、revision 和 upstream，并禁止强推、指定远程/分支目标、重置或创建 PR；Git 仓库配置仍不是系统沙箱。
 
 ## 文档
 
 - [AGENTS.md](AGENTS.md)：开发 agent 的工作约定。
 - [需求与范围](docs/requirements.md)
 - [架构](docs/architecture.md)
-- [AppContainer Agent Runtime 与 Broker 架构（目标设计，尚未实现）](docs/appcontainer-sandbox.md)
+- [Windows Restricted-Token Runtime 与 Broker 架构（目标设计，尚未实现）](docs/windows-integrity-sandbox.md)
 - [旧 WSL2 Sandbox 实施档案](docs/sandbox.md)
 - [上下文压缩与历史追溯](docs/context-management.md)
 - [项目记忆系统设计（尚未实现）](docs/memory-system.md)
