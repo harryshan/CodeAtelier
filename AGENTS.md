@@ -20,7 +20,7 @@
 - 会话内上下文压缩已授权：保留用户原文、历史快照与未知执行状态，摘要不提升权限；细节见 docs/context-management.md。已接入服务模型容量与实际 usage，token 预算与备用字符模式见 docs/model-tokens.md。
 - 提供 Web UI“关闭服务”入口及终端 Ctrl+C 退出方式；关闭时停止任务并保存为可恢复中断，保留历史和已修改文件。服务关闭流程必须覆盖鉴权、清理与端口释放测试。
 - 初版仅单 agent；不同真实工作目录的会话最多可并行运行 2 个编码任务（可在设置中调为 1～4），同一工作目录始终串行排队。直接修改选定工作目录，不自动创建 worktree 或一键回滚。页面关闭后后端仍运行时任务可继续。
-- 不扩展初版范围到多 agent、MCP、插件、浏览器自动化、向量检索、完整 IDE、交互式终端或云端。Windows AppContainer Agent Runtime、独立 C++ supervisor 与 Broker 是已确认的后续 Sandbox 目标架构；工作区内不额外保护 `.git`/`.env`，push 使用单用途 Runner、WFP 默认拒绝规则与 Broker CONNECT 代理，取消结果以统一 executionInstance 写入 session。在用户另行授权实现并完成分层平台验收前，不得将其当作当前可用功能或跨平台系统级沙箱。
+- 不扩展初版范围到多 agent、MCP、插件、浏览器自动化、向量检索、完整 IDE、交互式终端或云端。Windows AppContainer Agent Runtime、独立 C++ supervisor 与 Broker 是已确认的后续 Sandbox 目标架构；工作区内不额外保护 `.git`/`.env`，push 使用 PushSpec、shadow Git、单用途 Runner、WFP 与认证 relay/CONNECT 代理，取消结果以区分 Agent Runtime/Push Runner 的 executionInstance 写入 session。在用户另行授权实现并完成分层平台验收前，不得将其当作当前可用功能或跨平台系统级沙箱。
 
 ## 需求的权威来源
 
