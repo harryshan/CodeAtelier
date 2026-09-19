@@ -42,7 +42,7 @@ Browser ── HTTPS/HTTP + SSE ── Host Server
                     └─ 私有临时目录
 ```
 
-Broker 是唯一持有宿主 API key、用户 profile、会话数据库、长期凭据和默认网络能力的组件。它应作为独立的 Broker Host 进程运行，而不是把任意宿主操作暴露给 AppContainer 内的 Node 进程。Server 与 Broker 的内部通信同样使用受限、版本化契约；Server 不能把浏览器提供的任意路径或命令原样转交给 Broker。Broker 不执行 Git；普通 Agent Runtime 使用受限 Git 查询得到当前 upstream、URL、source OID 和 ref，Broker 只对这些字段做结构、HTTPS host 与确认绑定校验，不尝试独立重现 Git 配置解析。
+Broker 是唯一持有宿主 API key、完整用户 profile、会话数据库、长期凭据和默认网络能力的组件；第 3.3 节精确只读授权的 global Git config 是唯一 profile 文件例外。它应作为独立的 Broker Host 进程运行，而不是把任意宿主操作暴露给 AppContainer 内的 Node 进程。Server 与 Broker 的内部通信同样使用受限、版本化契约；Server 不能把浏览器提供的任意路径或命令原样转交给 Broker。Broker 不执行 Git；普通 Agent Runtime 使用受限 Git 查询得到当前 upstream、URL、source OID 和 ref，Broker 只对这些字段做结构、HTTPS host 与确认绑定校验，不尝试独立重现 Git 配置的运行时语义。
 
 Runtime 不能继承父进程环境、工作目录、打开的文件/目录句柄、标准输入管道、API key、用户 token、代理设置、SSH agent、浏览器 cookie 或服务监听 socket。普通 Runtime 不声明 `internetClient`、`internetClientServer`、loopback exemption、`broadFileSystemAccess`、设备或企业认证能力；模型请求和其他网络请求只能走 Broker 的专用 adapter。经确认的 HTTPS Git push 不给普通 Runtime 增加网络能力，而是建立新的单用途 Push Runner；Git 的唯一网络连接是 Runner 内 relay，relay 再经认证 pipe 使用 Broker 代理，不能因此获得通用网络。
 
@@ -73,6 +73,16 @@ ACL 是权限实现，不是路径字符串检查的替代品。对目录内重�
 - 目录授权在任务启动后冻结。新增、缩小或扩大目录集合需停止当前 Runtime，建立新的 AccessManifest 和新的 AppContainer identity，不能在旧任务中静默加 ACE。
 - 直接目录内部没有 `.git`、`.env` 或其他敏感名称例外；目录授权同时允许 Runtime 内的 Git 和普通命令按授予模式访问这些对象。
 - 直接目录路径只用于 Runtime 文件系统，不自动成为网络上传许可；但 Runtime 读取的正文可以进入模型上下文、会话历史和 Replay Case，也可能在用户确认网络外发后离开本机。Broker 的尽力脱敏不能作为直接目录秘密保护保证。
+
+### 3.3 宿主 global Git config
+
+为了保留用户的 Git 身份、URL rewrite、代理和 credential helper 等常用设置，Agent Runtime 和 Push Runner 的 `AccessManifest` 都包含宿主用户已存在的标准 global config 文件：`%USERPROFILE%\.gitconfig` 与 `%USERPROFILE%\.config\git\config`，以及从它们解析得到且条件对当前工作区成立的 `include`/`includeIf` 文件。只对每个规范化后的已存在普通文件授予精确只读 ACE，父目录只获得打开该文件所必需的最小 traverse 权限，不允许列举、读取其他文件或修改 global config，也不给整个 `%USERPROFILE%` 添加 ACE。
+
+Broker 可用受限、只读的数据解析器遍历 include 边，但这个解析器只生成文件授权清单，不运行 Git，不解释 remote/ref/push 语义，也不作为网络安全边界。它必须限制 include 深度和文件数，拒绝循环、UNC/设备路径、重解析点、非普通文件、无法规范化或在建立租约前发生替换的目标；不支持或不确定的 include 导致 Runtime 安全拒绝启动，不会因为解析遗漏而扩大访问。每个 config 文件与直接目录根一样保存 Broker-only handle、卷/file ID、DACL delta 并按原对象撤销。
+
+supervisor 不继承宿主环境；它只从已验证 manifest 生成受控的 `HOME`/`USERPROFILE`/`XDG_CONFIG_HOME` 定位值，使 Git 按自身顺序找到这些文件。这些值不导致 profile 其他内容可读，不带入凭据、代理环境或 SSH agent。config 引用的外部 helper、CA/证书、签名程序或其他数据不因 config 获准而自动授权；若不在已授权根或另一精确授权内，相关 Git 操作必须失败并给出可诊断提示。
+
+global config 对 Runtime 内的 Git、agent 与任何子进程都可读，不是只对 Git 可见的秘密通道；其内容可进入命令输出、模型上下文或会话。UI 必须在启用 AppContainer profile 时明示该默认授权，并提醒不得在 global config/include 中保存明文凭据。`git config --global` 等写入操作必须因只读 ACL 失败。
 
 ## 4. Windows 启动监督与 Runtime 身份
 
@@ -111,7 +121,7 @@ Git 默认没有网络。`status`、`diff`、`add`、`commit` 等本地操作直
 
 每次 push 创建新的 `pushRunnerInstanceId` 和 AppContainer SID，仅启动 **Push Runner**，不加载 agent loop、不接受模型/Runtime IPC 工具请求，也不提供任意 shell 入口；Git 配置和 hooks 仍可由 Git 启动子进程。Broker 先持久化 PushSpec 与待执行 tool call，停止普通 Agent Runtime 的 Job 并确认退出，冻结同一工作区调度，撤销其 SID 的 ACE，再依据同一 AccessManifest 根和模式为 Push Runner SID 安装新的最小 ACE；不能在两个 SID 间共享或同时保留目录租约。push 结果先持久化为完整、失败或 `unknown` 的工具结果，完成网络、凭据和进程清理后，才可为新的无网络 Agent Runtime 建立新 `agentRuntimeInstanceId`、SID 和 ACL 租约，并从已保存结果继续 agent loop，不重新执行 push。任何阶段无法确认旧实例退出或 ACE 撤销时，push 安全拒绝且 task/workspace 保持锁定。
 
-Push Runner 在真实工作区/Git directory 上执行固定形状的 `git push`，正常加载该 Runner 最小 AppContainer 环境中 Git 的 system/global/local/worktree 配置，不创建 shadow Git directory，也不对 `.git/config`、include、URL rewrite、proxy、credential helper、hooks、filter、diff/textconv 或 remote helper 做键白名单。Runner 仍不继承宿主用户 profile、环境凭据、SSH agent 或已打开句柄；“正常加载”指 Git 按自身规则解释 Runner 可见的真实仓库配置及固定映像/隔离 profile 配置，不是把宿主 profile 带入 AppContainer。
+Push Runner 在真实工作区/Git directory 上执行固定形状的 `git push`，正常加载 Git 的 system、第 3.3 节精确只读授权的宿主 global/include、local 和 worktree 配置，不创建 shadow Git directory，也不对 `.git/config`、include、URL rewrite、proxy、credential helper、hooks、filter、diff/textconv 或 remote helper 做键白名单。Runner 仍不继承宿主 profile 的其他内容、环境凭据、SSH agent 或已打开句柄。
 
 这是显式接受的风险：真实 Git 配置可以改写 URL、选择代理/凭据或 remote helper，hooks/helper 及 Git 启动的其他子进程可以在 Push Runner 的工作区 ACL 内读写并观察本次短期凭据。它们不会因此获得普通网络：任何不符合 WFP 允许进程/端点的连接都被内核层拒绝，通过 relay 的 CONNECT 目标不等于已确认 host/port 也被 Broker 拒绝。配置重写或自定义代理导致 Git 不经 relay 时，push 失败而不是放宽网络。因为 host 边界不限制 URL path/ref，获准 host 必须按可接收 Runner 能读取的任意仓库内容来信任；短期凭据应尽可能只授权单一仓库并在 Runner 结束后立即失效。
 
@@ -158,16 +168,16 @@ UI 应显示实际 profile/identity、`agent-runtime | push-runner` kind 及对�
 
 ## 8. Windows 实施与验收路线
 
-| 阶段               | 交付物                                                                                   | 必要行为证据                                                                          |
-| ------------------ | ---------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
-| A0：契约与迁移     | AccessManifest、SandboxProcessRecord、executionInstance、kind-specific ID、Broker schema | 旧 Runtime/Push Runner 不会混淆；开关、profile、模式与实际后端一致                    |
-| A1：原生启动监督   | C++ supervisor、受保护控制面、每任务 SID、最小环境、process/Job handle、租约/heartbeat   | PID 复用、错误映像/Job/SID、Broker/supervisor 失联和孤儿清理均安全失败                |
-| A2：直接目录访问   | 最小 ACL、原对象 handle、卷/file ID、DACL delta、崩溃对账和清理                          | rename/move/replace/delete-recreate 后仍只撤销原对象 ACE；失败 orphaned；SID 永不复用 |
-| A3：Broker IPC     | 客户端 PID/创建时间/token/SID/Job/nonce 证明、capability、限额                           | 非启动 Runtime、跨任务、重放、畸形/超限帧均不能获得能力                               |
-| A4：代理审查与清洗 | 外部 read/write、模型、普通 HTTPS adapters；统一 Sanitizer                               | TOCTOU/重解析替换、敏感文本、控制字符、截断、扫描失败和无确认路径都安全失败           |
-| A5：Git push 网络  | 已确认 PushSpec、真实 Git 配置、单用途 Push Runner、认证 relay/CONNECT、WFP 和短期凭据   | 配置/hooks/helper 可执行但无法突破获准 host；连接复用/PID/lease/代理重启均以夹具验证  |
-| A6：取消与资源边界 | 统一 executionInstance/session 结果、CPU/内存/PID/输出/墙钟限制                          | cancelled/unknown 随下轮上下文发送；Job 后代终止与资源上限以真实 Windows 夹具验证     |
-| A7：其它平台       | 复用策略契约的 Linux/macOS 适配器                                                        | 各平台以自身夹具证明边界，不继承 Windows 结论                                         |
+| 阶段               | 交付物                                                                                   | 必要行为证据                                                                                 |
+| ------------------ | ---------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| A0：契约与迁移     | AccessManifest、SandboxProcessRecord、executionInstance、kind-specific ID、Broker schema | 旧 Runtime/Push Runner 不会混淆；开关、profile、模式与实际后端一致                           |
+| A1：原生启动监督   | C++ supervisor、受保护控制面、每任务 SID、最小环境、process/Job handle、租约/heartbeat   | PID 复用、错误映像/Job/SID、Broker/supervisor 失联和孤儿清理均安全失败                       |
+| A2：文件系统授权   | 目录与 global config 最小 ACL、原对象 handle、卷/file ID、DACL delta、对账清理           | config 只读/profile 隔离；对象 rename/move/replace/delete-recreate 后精确撤销；失败 orphaned |
+| A3：Broker IPC     | 客户端 PID/创建时间/token/SID/Job/nonce 证明、capability、限额                           | 非启动 Runtime、跨任务、重放、畸形/超限帧均不能获得能力                                      |
+| A4：代理审查与清洗 | 外部 read/write、模型、普通 HTTPS adapters；统一 Sanitizer                               | TOCTOU/重解析替换、敏感文本、控制字符、截断、扫描失败和无确认路径都安全失败                  |
+| A5：Git push 网络  | 已确认 PushSpec、真实 Git 配置、单用途 Push Runner、认证 relay/CONNECT、WFP 和短期凭据   | 配置/hooks/helper 可执行但无法突破获准 host；连接复用/PID/lease/代理重启均以夹具验证         |
+| A6：取消与资源边界 | 统一 executionInstance/session 结果、CPU/内存/PID/输出/墙钟限制                          | cancelled/unknown 随下轮上下文发送；Job 后代终止与资源上限以真实 Windows 夹具验证            |
+| A7：其它平台       | 复用策略契约的 Linux/macOS 适配器                                                        | 各平台以自身夹具证明边界，不继承 Windows 结论                                                |
 
 能力声明按 profile 分层：A1--A4 完成并通过真实夹具后，只能声明“无网络、本地工作区 AppContainer Runtime”；A5 完成后才可额外声明“受限 HTTPS Git push”；A6 完成后才可声明“已验证取消与资源边界”。只有 A1--A6 全部通过时，产品才可不带 profile 限定地称 Windows 原生 Sandbox 已完成。`CODEATELIER_SANDBOX_ENABLED` 的现有 WSL2 行为不能被重新解释为本设计的任何阶段完成。
 

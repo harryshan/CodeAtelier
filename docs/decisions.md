@@ -754,14 +754,14 @@
 - 状态：用户已确认目标架构；Git、工作区、Runtime 身份和取消边界由 D092 细化。仅文档设计，尚未授权实现或验证。
 - 决定：替代 D086/D087 所确立的“以 WSL2 bubblewrap inspect 为 Windows 后续路线、暂缓 AppContainer”的方向。Windows 后续 Sandbox 以每任务独立的 AppContainer Agent Runtime 为执行边界，保留 Broker Host 为唯一宿主能力边界。Runtime 直接访问当前工作区和用户显式添加的额外目录，目录权限由任务绑定的 AccessManifest 与最小 ACL 租约落实；其他主机文件、模型服务、会话存储、Git、网络及宿主操作只能通过 Broker 的固定 schema 代理。
 - Broker 审查：Broker 必须验证 Runtime 的 AppContainer SID/PID/任务绑定、单次 nonce、能力、时限和配额；外部对象以稳定句柄/对象标识复核类型、重解析点、版本和授权范围，禁止把任意路径、shell 文本、文件句柄或网络 socket 透传给 Runtime。代理结果须按大小、编码、控制字符和敏感内容审查，尽力脱敏后以带来源、哈希、截断和脱敏标志的非可信信封返回；清洗失败、对象替换或不支持的请求安全拒绝，不回退为宿主执行。内容清洗不能保证发现全部秘密或提示注入，直接目录授权也不经过 Broker 内容审查，UI 必须明示这两项边界。
-- 进程与网络：Runtime 不继承宿主环境、密钥、用户 profile、句柄或网络能力；模型与网络访问分别由 Broker 的参数受限 adapter 代理。AppContainer launch、ACL 租约、IPC 身份证明、Job Object 子进程清理、资源限制、Broker adapters 与各项夹具须逐阶段实现和验证。
+- 进程与网络：Runtime 不继承宿主环境、密钥、完整用户 profile、句柄或网络能力；D096 后续确认的精确只读 global Git config 是唯一 profile 文件例外。模型与网络访问分别由 Broker 的参数受限 adapter 代理。AppContainer launch、ACL 租约、IPC 身份证明、Job Object 子进程清理、资源限制、Broker adapters 与各项夹具须逐阶段实现和验证。
 - 影响：新增权威设计文档 [appcontainer-sandbox.md](appcontainer-sandbox.md)，`sandbox.md` 和 verification 中的 WSL2 内容降为历史实施事实。D084/D085 的现有开关/Broker/WorkspaceView 实现可保留迁移期兼容，但不构成 D091 的 AppContainer 阶段完成，也不得作为 fallback。新实现必须同步更新架构、配置、测试、验证、恢复、UI、执行账本和安全摘要 tracing；在真实 Windows 验收通过前不宣称 Windows 原生或跨平台系统隔离。
 
 ## D092：Runtime 完整工作区、Git、原生监督与统一取消语义
 
 - 日期：2026-09-19
-- 状态：用户已确认目标架构修订；push、supervisor、文件授权和实例字段由 D093--D095 继续细化。仅文档设计，尚未授权实现或验证。
-- 工作区与 Git：Runtime 对工作区和用户显式添加目录按目录授权拥有完整递归访问，不再对 `.git`、`.env` 或其他子路径提供额外 Sandbox 保护；替代 D082/D083 的受保护工作区路径方向。所有 Git 进程和本地/远程 action 都在 Runtime 内执行，Broker 不调用 Git，也不以宿主 Git 处理 Runtime 工作区。D095 进一步确认 Push Runner 也正常加载真实仓库 Git 配置，Broker 不独立重现配置解析。工作区及其 Git 元数据可能被读取、修改、删除或加入模型上下文，用户不希望 Runtime 接触的内容不得进入直接授权目录。
+- 状态：用户已确认目标架构修订；push、supervisor、文件授权和实例字段由 D093--D096 继续细化。仅文档设计，尚未授权实现或验证。
+- 工作区与 Git：Runtime 对工作区和用户显式添加目录按目录授权拥有完整递归访问，不再对 `.git`、`.env` 或其他子路径提供额外 Sandbox 保护；替代 D082/D083 的受保护工作区路径方向。所有 Git 进程和本地/远程 action 都在 Runtime 内执行，Broker 不调用 Git，也不以宿主 Git 处理 Runtime 工作区。D095 进一步确认 Push Runner 正常加载真实仓库 Git 配置，D096 增加宿主 global/include config 的精确只读授权；Broker 不运行 Git 或独立重现配置的运行时语义。工作区及其 Git 元数据、global/include config 可能被读取或加入模型上下文，工作区内容还可能被修改或删除。用户不希望 Runtime 接触的内容不得进入直接授权目录或 Git config。
 - push 网络：Runtime 默认无网络；每次 `git push` 需要确认并获得绑定精确 HTTPS scheme/host/port、时限、流量上限和尽可能短期且仓库范围最小凭据的单用途能力。D093 将其强制机制收紧为独立 Push Runner、WFP 默认拒绝和 Broker CONNECT 代理；D095 允许 Git 配置重定向，但每个新 CONNECT 仍必须通过同一 host/port 校验。应用层仍检查 upstream、remote 和 ref 以减少误操作，但 Broker 不解析 Git 协议，host 级网络边界不承诺限制仓库路径或 ref；首版不开放 SSH push。
 - Windows 启动与身份：采用独立薄层 C++ supervisor 启动并监督 Node.js AppContainer Runtime，负责 profile/SID、最小环境、process/Job handle、资源、等待、取消和清理，不实现 agent、Git 或通用 Broker。目录授权的具体机制由 D093/D094 收紧为最小 ACL 与原对象 handle。每次启动持久化 kind-specific sandbox process ID、supervisor/实际进程 PID、创建时间、AppContainer SID 摘要、Job instance ID、映像摘要和状态；IPC 以启动时 process handle、创建时间、PID、token SID、映像、Job 归属和 nonce 联合证明，PID 单独不构成身份。服务重启后不能重新证明同一实例时标记 interrupted/unknown，不接管复用 PID。
 - 取消与上下文：Sandbox 开启和关闭使用同一产品语义：终止进程树但不回滚已发生的工作区/Git 副作用；确认终止记为 `cancelled`，无法确认记为 `unknown`，绝不自动重放。保存执行实例/PID、执行是否开始、时间、受限部分输出、`sideEffects: may_have_occurred` 与 `replayAllowed: false`，作为工具结果或恢复事件追加到 session，并在下一次模型请求中与历史一并发送，要求先核对当前文件和 Git 状态；D093 将实例字段统一为 `executionInstance`，避免非 Sandbox 模式伪造 Runtime 身份。
@@ -791,7 +791,15 @@
 ## D095：Push Runner 正常加载 Git 配置
 
 - 日期：2026-09-19
-- 状态：用户已确认放宽 D094 的 Git 配置隔离；仅文档设计，尚未实现或验证。
-- 决定：Push Runner 不创建 shadow Git directory，不对真实 `.git/config`、include、URL rewrite、proxy、credential helper、hooks、filter、diff/textconv 或 remote helper 实施配置键白名单。Git 在真实仓库上运行，正常加载最小 AppContainer 环境可见的 system/global/local/worktree 配置；Runner 仍不继承宿主用户 profile、环境凭据、SSH agent 或句柄。Broker 不运行 Git 或独立重现 Git 配置解析；普通 Agent Runtime 以受限 Git 查询提供预期 upstream/URL/OID/ref，Broker 只校验并持久化用户确认的 PushSpec。
+- 状态：用户已确认放宽 D094 的 Git 配置隔离；D096 进一步补充宿主 global config 的精确只读授权。仅文档设计，尚未实现或验证。
+- 决定：Push Runner 不创建 shadow Git directory，不对真实 `.git/config`、include、URL rewrite、proxy、credential helper、hooks、filter、diff/textconv 或 remote helper 实施配置键白名单。Git 在真实仓库上运行，正常加载 system、D096 授权的宿主 global/include、local 和 worktree 配置；Runner 仍不继承完整宿主用户 profile、环境凭据、SSH agent 或句柄。Broker 不运行 Git 或独立重现 Git 配置的运行时语义；普通 Agent Runtime 以受限 Git 查询提供预期 upstream/URL/OID/ref，Broker 只校验并持久化用户确认的 PushSpec。
 - 安全边界：PushSpec 只是预期行为和网络租约输入，不证明 Git 最终目标路径/ref 或子进程语义。仓库配置可改写 URL/代理/凭据流程，hooks/helper 和 Git 子进程可在 Runner 获授 ACL 内读写并观察短期凭据。WFP 仍默认拒绝直接网络，relay/CONNECT 代理仍拒绝任何不等于逐次确认 HTTPS host/port 的实际连接；自定义代理或非登记 transport 只能使 push 失败，不能获得其他网络。因此获准 host 必须按可接收 Runner 能读取的任意工作区内容来信任；凭据应尽可能限单一仓库、短时有效并在 Runner 结束后立即失效。
 - 验收影响：A5 不再验收 shadow config origin 或拒绝恶意 local config；改为验证 include、URL rewrite、URL-specific proxy/helper、hooks 和 remote helper 实际执行时仍无法连接未获准 host，并验证配置导致不经 relay 时 push 安全失败。UI 必须显示 host 级而非仓库/ref 级保证，并提示 Git 配置/子进程和凭据观察风险。同步更新 requirements、architecture、development、testing、verification 与 tracing 边界。
+
+## D096：精确只读授权宿主 global Git config
+
+- 日期：2026-09-19
+- 状态：用户已确认宿主 global Git config 需在 AppContainer Runtime 中正常加载；仅文档设计，尚未实现或验证。
+- 决定：Agent Runtime 与 Push Runner 的 `AccessManifest` 默认加入已存在的 `%USERPROFILE%\.gitconfig`、`%USERPROFILE%\.config\git\config` 及对当前工作区成立的 include/includeIf 文件。每个普通文件只获得精确只读 ACE，祖先目录只获得必需的 traverse 权限，不授权整个用户 profile。supervisor 从已验证 manifest 生成受控的 `HOME`/`USERPROFILE`/`XDG_CONFIG_HOME`，但不继承其他环境、凭据或 SSH agent。`git config --global` 等写入因 ACL 失败。
+- 解析与边界：Broker 的受限解析器只用于建立 include 文件授权图，不运行 Git、不导出 push 目标也不影响网络判定；循环、超限、重解析点、UNC/设备路径或无法稳定打开的目标使 Runtime 安全拒绝启动。helper、证书、签名程序等 config 引用对象不自动授权；缺权限时操作失败。每个 config 文件以 handle、卷/file ID 和 DACL delta 绑定原对象并按 D094 撤销。
+- 风险与验收：global config/include 对 Runtime 内所有进程可读，可能进入模型上下文或会话；UI 必须明示默认授权并提醒不要存放明文凭据。A2 增加标准两路径、includeIf、只读/不可列举、路径替换、原对象撤销和未授权 profile 文件不可读夹具；A5 要在宿主 global config 生效的情况下重复 host 边界验收。
