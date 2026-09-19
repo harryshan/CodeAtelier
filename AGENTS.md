@@ -20,7 +20,7 @@
 - 会话内上下文压缩已授权：保留用户原文、历史快照与未知执行状态，摘要不提升权限；细节见 docs/context-management.md。已接入服务模型容量与实际 usage，token 预算与备用字符模式见 docs/model-tokens.md。
 - 提供 Web UI“关闭服务”入口及终端 Ctrl+C 退出方式；关闭时停止任务并保存为可恢复中断，保留历史和已修改文件。服务关闭流程必须覆盖鉴权、清理与端口释放测试。
 - 初版仅单 agent；不同真实工作目录的会话最多可并行运行 2 个编码任务（可在设置中调为 1～4），同一工作目录始终串行排队。直接修改选定工作目录，不自动创建 worktree 或一键回滚。页面关闭后后端仍运行时任务可继续。
-- 不扩展初版范围到多 agent、MCP、插件、浏览器自动化、向量检索、完整 IDE、交互式终端或云端。Windows AppContainer Agent Runtime、独立 C++ supervisor 与 Broker 是已确认的后续 Sandbox 目标架构；工作区内不额外保护 `.git`/`.env`，Runtime 对宿主标准 global Git config 及已解析 include 文件获得精确只读授权，Push Runner 正常加载真实 Git 配置，push 使用逐次确认的 PushSpec、单用途 Runner、WFP 与认证 relay/CONNECT 代理，取消结果以区分 Agent Runtime/Push Runner 的 executionInstance 写入 session。网络边界只承诺实际连接不超出获准 HTTPS host，不承诺仓库配置、hooks/helper 或 Git 子进程无副作用。global config 内容可被 Runtime 中任意进程读取，不应存放明文凭据。在用户另行授权实现并完成分层平台验收前，不得将其当作当前可用功能或跨平台系统级沙箱。
+- 不扩展初版范围到多 agent、MCP、插件、浏览器自动化、向量检索、完整 IDE、交互式终端或云端。Windows AppContainer Agent Runtime、独立 C++ supervisor 与 Broker 是已确认的后续 Sandbox 目标架构；工作区内不额外保护 `.git`/`.env`，Runtime 对宿主标准 global Git config 及已解析 include 文件获得精确只读授权，但不获得整个用户 profile 或全盘读取能力。文件访问使用经典 AppContainer SID 与最小 ACL，不依赖实验性的 `CreateProcessInSandbox`/Bound File System，也不使用 `broadFileSystemAccess`。Push Runner 正常加载真实 Git 配置，push 使用逐次确认的 PushSpec、单用途 Runner、WFP 与认证 relay/CONNECT 代理，取消结果以区分 Agent Runtime/Push Runner 的 executionInstance 写入 session。网络边界只承诺实际连接不超出获准 HTTPS host，不承诺仓库配置、hooks/helper 或 Git 子进程无副作用。global config 内容可被 Runtime 中任意进程读取，不应存放明文凭据。在用户另行授权实现并完成分层平台验收前，不得将其当作当前可用功能或跨平台系统级沙箱。
 
 ## 需求的权威来源
 

@@ -11,7 +11,7 @@ Windows 的目标执行边界是：每个运行中的 agent 使用独立的 **Ap
 1. **直接目录访问**：Runtime 可直接访问当前任务工作区，以及用户在任务创建或任务运行前显式添加的额外目录。目录授权是 AppContainer SID 的 ACL 授权，不通过 Broker 逐文件转发。
 2. **Broker 代理访问**：不在该目录清单内的主机文件、模型服务、会话存储、网络或其他宿主能力，Runtime 不能自行访问；它只能发送固定类型的请求给 Broker。Broker 可拒绝、要求确认、执行受限动作，并只返回审查和清洗后的结果。Git 不是 Broker 能力：所有 Git 进程都在 Runtime 内运行。
 
-直接目录访问意味着 Runtime 能读取获授目录中它拥有 ACL 权限的全部内容，也能按所授读写权限修改内容。工作区内部不再区分普通文件、`.git`、`.env`、私钥或构建凭据，也不承诺对任何子路径做额外文件系统保护。Runtime 可以直接运行 Git、修改仓库元数据、破坏工作区或把其中内容加入模型请求和获准的网络发送。UI 必须在授权前展示这一事实；不希望 Runtime 接触的内容不得放入直接访问目录。
+直接目录访问意味着 Runtime 能读取获授目录中它拥有 ACL 权限的全部内容，也能按所授读写权限修改内容。工作区内部不再区分普通文件、`.git`、`.env`、私钥或构建凭据，也不承诺对任何子路径做额外文件系统保护。Runtime 可以直接运行 Git、修改仓库元数据、破坏工作区或把其中内容加入模型请求和获准的网络发送。除此以外，Runtime 不获得整个用户 profile 或全盘读取权限。UI 必须在授权前展示这一事实；不希望 Runtime 接触的内容不得放入直接访问目录。
 
 本设计防护的是不可信模型输出、仓库脚本及其子进程越出用户明确选择的目录和能力。它不防护恶意本机管理员、内核缺陷、已获直接目录授权的数据泄漏，或用户明确确认的外部写入/网络发送。
 
@@ -64,7 +64,7 @@ Broker 对每个根目录执行以下流程：
 
 ACL 是权限实现，不是路径字符串检查的替代品。对目录内重解析点、junction、symlink、hard link、短名称、大小写/Unicode 等别名必须做平台夹具验证；未验证的形态不得写入“已隔离”的承诺。目录内容在运行期被其他进程改动也可能改变可见对象，故重要写入仍要使用版本/对象复核。
 
-首版只接受按授权根添加最小 ACE 的 ACL 方案，不使用 Windows `broadFileSystemAccess` capability，也不保留含义不明的 “BFS” 备选。未来若引入 Brokered File System 或其他文件系统代理，必须另行记录其完整平台 API、句柄与对象身份、重解析点、授权范围和撤销语义，并用真实夹具证明它与当前 ACL 根等价或更窄；在此之前不能替代 ACL 验收。
+首版只接受经典 AppContainer SID 配合按授权根添加最小 ACE 的 ACL 方案，不使用 Windows `broadFileSystemAccess` capability，也不依赖实验性的 [`CreateProcessInSandbox`](https://learn.microsoft.com/windows/win32/secauthz/createprocessinsandbox) 或其 Bound File System（BFS）策略。BFS 是依赖 AppContainer 的附加文件策略，不是 AppContainer 本身；全盘只读方案已经撤回。未来若重新评估 BFS 或其他文件系统代理，必须另行决策其最低 Windows 版本、实验 API 稳定性、普通 Win32 I/O、句柄与对象身份、重解析点、授权范围和生命周期，并用真实夹具证明它与当前 ACL 根等价或更窄；在此之前不能替代 ACL 验收或成为失败 fallback。
 
 ### 3.2 工作区与额外目录的产品语义
 
@@ -86,7 +86,7 @@ global config 对 Runtime 内的 Git、agent 与任何子进程都可读，不�
 
 ## 4. Windows 启动监督与 Runtime 身份
 
-Windows 使用独立、薄层的原生 C++ `codeatelier-sandbox-host.exe` 启动并监督 AppContainer，而不是在宿主 Node.js 进程中直接绑定不稳定的 native addon。TypeScript Broker 仍负责策略、审批和产品状态；原生 helper 只负责 AppContainer profile/SID、最小环境、进程创建、Job Object、资源限制、等待、取消和清理，不实现 agent、Git、网络代理或通用 Broker 操作。ACL/WFP 策略由 Broker 决定，supervisor 只应用已登记 manifest/lease ID 对应的固定操作，不能接收任意 SID、路径、ACE、网络目标或命令文本。
+Windows 使用独立、薄层的原生 C++ `codeatelier-sandbox-host.exe` 启动并监督 AppContainer，而不是在宿主 Node.js 进程中直接绑定不稳定的 native addon。首版使用经典 `CreateAppContainerProfile`/AppContainer SID 与 `PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES` 进程创建路径，不依赖实验性的 `CreateProcessInSandbox`。TypeScript Broker 仍负责策略、审批和产品状态；原生 helper 只负责 AppContainer profile/SID、最小环境、进程创建、Job Object、资源限制、等待、取消和清理，不实现 agent、Git、网络代理或通用 Broker 操作。ACL/WFP 策略由 Broker 决定，supervisor 只应用已登记 manifest/lease ID 对应的固定操作，不能接收任意 SID、路径、ACE、网络目标或命令文本。
 
 helper 在隔离进程整个生命周期内保持运行并持有 process handle 与 Job handle。普通 Agent Runtime 创建 `agentRuntimeInstanceId`，单用途 Push Runner 创建 `pushRunnerInstanceId`；两者属于不同命名空间，不能互换或复用。持久化的 `SandboxProcessRecord` 明确记录 `kind: agent-runtime | push-runner`、对应 kind-specific ID、supervisor PID、实际进程 PID、进程创建时间、AppContainer SID 摘要、Job instance ID、实际映像摘要、状态与关联 task/tool-call ID。PID 只用于显示和查找，不能单独证明身份，因为系统会复用 PID。
 
@@ -168,16 +168,16 @@ UI 应显示实际 profile/identity、`agent-runtime | push-runner` kind 及对�
 
 ## 8. Windows 实施与验收路线
 
-| 阶段               | 交付物                                                                                   | 必要行为证据                                                                                 |
-| ------------------ | ---------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| A0：契约与迁移     | AccessManifest、SandboxProcessRecord、executionInstance、kind-specific ID、Broker schema | 旧 Runtime/Push Runner 不会混淆；开关、profile、模式与实际后端一致                           |
-| A1：原生启动监督   | C++ supervisor、受保护控制面、每任务 SID、最小环境、process/Job handle、租约/heartbeat   | PID 复用、错误映像/Job/SID、Broker/supervisor 失联和孤儿清理均安全失败                       |
-| A2：文件系统授权   | 目录与 global config 最小 ACL、原对象 handle、卷/file ID、DACL delta、对账清理           | config 只读/profile 隔离；对象 rename/move/replace/delete-recreate 后精确撤销；失败 orphaned |
-| A3：Broker IPC     | 客户端 PID/创建时间/token/SID/Job/nonce 证明、capability、限额                           | 非启动 Runtime、跨任务、重放、畸形/超限帧均不能获得能力                                      |
-| A4：代理审查与清洗 | 外部 read/write、模型、普通 HTTPS adapters；统一 Sanitizer                               | TOCTOU/重解析替换、敏感文本、控制字符、截断、扫描失败和无确认路径都安全失败                  |
-| A5：Git push 网络  | 已确认 PushSpec、真实 Git 配置、单用途 Push Runner、认证 relay/CONNECT、WFP 和短期凭据   | 配置/hooks/helper 可执行但无法突破获准 host；连接复用/PID/lease/代理重启均以夹具验证         |
-| A6：取消与资源边界 | 统一 executionInstance/session 结果、CPU/内存/PID/输出/墙钟限制                          | cancelled/unknown 随下轮上下文发送；Job 后代终止与资源上限以真实 Windows 夹具验证            |
-| A7：其它平台       | 复用策略契约的 Linux/macOS 适配器                                                        | 各平台以自身夹具证明边界，不继承 Windows 结论                                                |
+| 阶段               | 交付物                                                                                            | 必要行为证据                                                                                     |
+| ------------------ | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| A0：契约与迁移     | AccessManifest、SandboxProcessRecord、executionInstance、kind-specific ID、Broker schema          | 旧 Runtime/Push Runner 不会混淆；开关、profile、模式与实际后端一致                               |
+| A1：原生启动监督   | C++ supervisor、受保护控制面、每任务 SID、最小环境、process/Job handle、租约/heartbeat            | PID 复用、错误映像/Job/SID、Broker/supervisor 失联和孤儿清理均安全失败                           |
+| A2：文件系统授权   | 经典 AppContainer、目录与 global config 最小 ACL、原对象 handle、卷/file ID、DACL delta、对账清理 | 获授根可用且未授权 profile/同盘/其他盘文件不可读；config 只读；对象替换后精确撤销；失败 orphaned |
+| A3：Broker IPC     | 客户端 PID/创建时间/token/SID/Job/nonce 证明、capability、限额                                    | 非启动 Runtime、跨任务、重放、畸形/超限帧均不能获得能力                                          |
+| A4：代理审查与清洗 | 外部 read/write、模型、普通 HTTPS adapters；统一 Sanitizer                                        | TOCTOU/重解析替换、敏感文本、控制字符、截断、扫描失败和无确认路径都安全失败                      |
+| A5：Git push 网络  | 已确认 PushSpec、真实 Git 配置、单用途 Push Runner、认证 relay/CONNECT、WFP 和短期凭据            | 配置/hooks/helper 可执行但无法突破获准 host；连接复用/PID/lease/代理重启均以夹具验证             |
+| A6：取消与资源边界 | 统一 executionInstance/session 结果、CPU/内存/PID/输出/墙钟限制                                   | cancelled/unknown 随下轮上下文发送；Job 后代终止与资源上限以真实 Windows 夹具验证                |
+| A7：其它平台       | 复用策略契约的 Linux/macOS 适配器                                                                 | 各平台以自身夹具证明边界，不继承 Windows 结论                                                    |
 
 能力声明按 profile 分层：A1--A4 完成并通过真实夹具后，只能声明“无网络、本地工作区 AppContainer Runtime”；A5 完成后才可额外声明“受限 HTTPS Git push”；A6 完成后才可声明“已验证取消与资源边界”。只有 A1--A6 全部通过时，产品才可不带 profile 限定地称 Windows 原生 Sandbox 已完成。`CODEATELIER_SANDBOX_ENABLED` 的现有 WSL2 行为不能被重新解释为本设计的任何阶段完成。
 
