@@ -49,9 +49,11 @@ supervisor 从当前非提升用户 token 创建 restricted primary token，至�
 
 Broker 正常运行时不应提升；如果安装或维护 WFP/ACL 的独立服务处于提升上下文，supervisor 必须从已认证的交互用户会话取得其非提升 primary token，不能从服务、管理员或 SYSTEM token 直接降级猜测。无法证明 token 对应当前会话用户、属于非提升完整性且不含额外特权时拒绝启动。
 
-`WRITE_RESTRICTED` 是核心边界：读取沿用当前用户正常 SID/DACL 检查；写访问还必须通过 restricting SID 集合的第二次访问检查。每个授权可写根拥有随机、稳定且不复用到其它根的 capability SID；Runtime token 只包含本次 AccessManifest 中可写根的 SID。Broker 为对应根安装可继承的写入 ACE，因此未修改的 Git、Node 和编译器可以直接读写真实工作区，而其它普通路径缺少匹配 capability SID，写入应由内核拒绝。
+`WRITE_RESTRICTED` 是核心边界：读取沿用当前用户正常 SID/DACL 检查；写访问还必须通过 restricting SID 集合的第二次访问检查。每个授权可写根拥有随机、稳定且不复用到其它根的 capability SID；Runtime token 的写根 capability 部分只包含本次 AccessManifest 中的根 SID。Broker 为对应根安装可继承的写入 ACE，因此未修改的 Git、Node 和编译器可以直接读写真实工作区，而其它普通路径缺少匹配 capability SID，写入应由内核拒绝。
 
-Runtime token 还包含只用于进程/IPC 归因的 execution SID。可写根 SID、execution SID、logon SID 和默认 DACL 的组合必须以真实 Windows 访问检查验证，不能因为 SID 出现在 token 中就假定其只会缩小权限。尤其不得把 `Everyone`、`Users` 或 `Authenticated Users` 作为通用写 capability；如果兼容性要求把宽泛 SID 放入 restricting 集合，W2 直接失败，除非能够证明它不会使工作区外对象通过第二次写检查。
+普通 Win32 进程启动和创建管道等子对象还需要额外的兼容 SID、token default DACL 与 `SeChangeNotifyPrivilege`。已运行的最小探针表明，只放写根 capability SID 会在进入程序入口前以 DLL 初始化失败退出；当前已验证的组合加入 capability、当前 logon、Everyone 三个 restricting SID，以三者建立 default DACL，并只重新启用 `SeChangeNotifyPrivilege` 后正常启动。该结果没有分别证明 logon 与 Everyone 在每类工具中都不可省略；W1 必须继续最小化组合。产品实现还需加入只用于进程/IPC 归因且不进入 default DACL 的 execution SID。
+
+这些兼容 SID 不是无害细节：对象只要向 logon SID 或 Everyone 授予写权限，就可能通过第二次写检查；包含 `GENERIC_ALL` Everyone ACE 的 default DACL 还会影响 Runtime 新建的管道、事件等对象。Broker/supervisor 控制面不能依赖该 default DACL，必须使用显式私有 security descriptor 和客户端联合身份验证。可写根 SID、execution SID、logon/Everyone SID、默认 DACL 和现有对象 DACL 的组合必须以真实 Windows 访问检查验证，不能因为 SID 出现在 token 中就假定其只会缩小权限。尤其不得把 `Users`、`Authenticated Users` 或其它宽泛 SID 继续加入 restricting 集合；null DACL、Everyone/logon 可写对象必须计入额外可写面，不能仍宣称只有指定根可写。
 
 ### 3.2 可写根 ACL 投影
 
@@ -145,7 +147,18 @@ Sandbox 开启和关闭时保持同一产品取消语义：终止进程树，不
 
 W1--W2 通过后只能声明“Windows 完整性 Sandbox：广泛读取、指定根写入、无命令网络”；不得声明文件保密。W5 前不支持受限 push，W6 前不声明已验证取消和资源边界。任何阶段都必须列出 null DACL、宽泛写 ACE、驱动/设备、已打开句柄和平台差异等剩余限制。
 
-## 9. 与现有实现的关系
+## 9. 最小可行性探针
+
+[experiments/windows-restricted-token-demo](../experiments/windows-restricted-token-demo/README.md) 是手动运行的 C++ feasibility demo，不接入产品。它创建临时 capability SID/ACL、restricted token 与 Job，并验证两个外部读取、安装根 ACE 前的已有文件修改、直接进程/后代的新建文件及两个越界写入拒绝。
+
+2026-09-20 在 Windows `10.0.26200`、MSVC `19.52.36725` 上取得两组相互区分的结果：
+
+- 普通 Codex 工具环境中的 launcher 父进程已经是 `restricted=yes`、`restrictedSidCount=6`、`inJob=yes`；在该 token 上再次调用 `CreateRestrictedToken` 返回错误 87，未启动目标探针。这只证明当前 Codex Sandbox 会干扰嵌套实验，不能用作本设计失败或成功的证据。
+- 经批准的宿主权限运行中，launcher 父进程为 `restricted=no`、`restrictedSidCount=0`、`appContainer=no`、medium integrity；创建的探针和后代均为 `restricted=yes`、3 个 restricting SID。它们成功读取临时兄弟目录文件和 `C:\Windows\win.ini`，修改 capability 根中的已有文件并创建两个新文件，在未授权兄弟目录的两次创建中得到 `ERROR_ACCESS_DENIED`。launcher 与目标仍显示 `inJob=yes`，所以该结果不证明脱离 Codex 外层 Job 的独立 Job 行为。
+
+这组结果只验证正常 DACL 临时目录上的 token/ACL 核心假设和一个普通后代；不完成 W1/W2，也不覆盖弱 DACL、别名、宿主代写、私有 desktop、WFP、Broker 或真实工具兼容矩阵。
+
+## 10. 与现有实现的关系
 
 现有 WSL2 bubblewrap `inspect` Runtime 是历史实现，不是本目标的 fallback 或验收替代。迁移期间 UI 必须区分 `legacy-wsl2-inspect`、`windows-restricted-token`、`non-isolated` 和 `unknown`。restricted token、写根 ACL、Job、IPC 或网络自检失败时，Sandbox 模式安全拒绝，不能静默转为宿主完整权限。
 
