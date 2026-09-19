@@ -10,7 +10,7 @@ Node.js 24，pnpm 11.22.0（packageManager 固定）。提交 pnpm-lock.yaml，�
 | pnpm dev:web                                                          | Vite 前端，默认 `127.0.0.1:5173`；读取相同监听地址并通过 HMR 更新前端模块 |
 | pnpm build                                                            | 编译后端和前端                                                            |
 | pnpm start                                                            | 运行构建后的本机服务；由监督进程支持 UI 确认后的后端重载                  |
-| pnpm typecheck / lint / test                                          | 类型、静态规则、核心测试；test 只使用白名单测试环境                      |
+| pnpm typecheck / lint / test                                          | 类型、静态规则、核心测试；test 只使用白名单测试环境                       |
 | pnpm check                                                            | 类型、lint、核心测试、测试模式构建                                        |
 | pnpm test:e2e                                                         | 先进行不读取 dotenv 的测试模式构建，再启动独立模拟服务验证浏览器交互      |
 | node --env-file=.env --import tsx scripts/probe-model-capabilities.ts | 检查模型窗口、计数接口及真实 usage（少量模型调用）                        |
@@ -23,23 +23,23 @@ Node.js 24，pnpm 11.22.0（packageManager 固定）。提交 pnpm-lock.yaml，�
 
 后端启动时读取本地 `.env`。API 地址、主模型和可选辅助模型的唯一来源是 `.env` 或进程环境；无论是否已有 `settings.json`，都必须提供 API 地址和主模型，否则启动明确报错。设置界面只读显示连接字段，修改 `.env` 后须重启或重载服务。访问密码门禁也只在服务启动时读取环境变量，修改后同样须重启或重载。推荐通过 Web UI 为当前进程输入密钥，或使用环境变量；本地 `.env` 仅供开发使用，不提交 Git。
 
-| 环境变量                     | 默认 / 用途                                                                       |
-| ---------------------------- | --------------------------------------------------------------------------------- |
-| CODEATELIER_BASE_URL         | 无默认值；在 .env 填写实际 API Base URL                                           |
-| CODEATELIER_MODEL            | 无默认值；在 .env 填写服务公布的完整模型标识                                      |
-| CODEATELIER_REASONING_EFFORT | high；可选 low、medium、high                                                      |
-| CODEATELIER_API_KEY          | 无默认值                                                                          |
-| CODEATELIER_DATA_DIR         | 平台用户数据目录                                                                  |
-| CODEATELIER_PORT             | 4142                                                                              |
-| CODEATELIER_LISTEN_ADDRESS            | `127.0.0.1`；可选 `::1`、`0.0.0.0`（开放 IPv4 局域网）或 `::`（开放 IPv6 局域网） |
-| CODEATELIER_WEB_PASSWORD_ENABLED      | false（未设置或空值）；显式值只能为 `true` 或 `false`，启用 Web UI 单一访问密码门禁 |
-| CODEATELIER_WEB_PASSWORD              | 无默认值；开关为 `true` 时必须为非空密码，不写入设置、浏览器配置或日志              |
-| CODEATELIER_LOG_LEVEL                 | info                                                                              |
-| CODEATELIER_SANDBOX_ENABLED           | false；只接受明确的 `true` 或 `false`；启动后不可动态切换                          |
+| 环境变量                         | 默认 / 用途                                                                         |
+| -------------------------------- | ----------------------------------------------------------------------------------- |
+| CODEATELIER_BASE_URL             | 无默认值；在 .env 填写实际 API Base URL                                             |
+| CODEATELIER_MODEL                | 无默认值；在 .env 填写服务公布的完整模型标识                                        |
+| CODEATELIER_REASONING_EFFORT     | high；可选 low、medium、high                                                        |
+| CODEATELIER_API_KEY              | 无默认值                                                                            |
+| CODEATELIER_DATA_DIR             | 平台用户数据目录                                                                    |
+| CODEATELIER_PORT                 | 4142                                                                                |
+| CODEATELIER_LISTEN_ADDRESS       | `127.0.0.1`；可选 `::1`、`0.0.0.0`（开放 IPv4 局域网）或 `::`（开放 IPv6 局域网）   |
+| CODEATELIER_WEB_PASSWORD_ENABLED | false（未设置或空值）；显式值只能为 `true` 或 `false`，启用 Web UI 单一访问密码门禁 |
+| CODEATELIER_WEB_PASSWORD         | 无默认值；开关为 `true` 时必须为非空密码，不写入设置、浏览器配置或日志              |
+| CODEATELIER_LOG_LEVEL            | info                                                                                |
+| CODEATELIER_SANDBOX_ENABLED      | false；只接受明确的 `true` 或 `false`；启动后不可动态切换                           |
 
 `settings.json` 只保存非连接偏好：主/辅助模型的思考等级、任务限制（包括 `maxConcurrentTasks`）和日志级别；通过 UI 修改。已保存偏好优先于同名环境默认值。API 地址、主/辅助模型标识绝不写入该文件；旧版本留下的同名字段会在读取时忽略，并在下一次保存偏好时移除。密钥始终来自环境或当前进程内存，不写 `settings.json`。存在运行中或排队任务时禁止修改配置。
 
-Sandbox 开关只在 Config 构造时读取。未设置、空值或 `false` 时，`run_command` 保持原有 V1 宿主执行，并在 UI 标为“未隔离”；`true` 时所有命令必须经 SandboxBroker。Windows 上会注册 WSL2 bubblewrap 的只读 `inspect` Runtime，命令固定使用 POSIX `/bin/sh -c` 而非 PowerShell/cmd；每次 WSL、`bwrap`、路径转换和 Runtime 自检失败都会显示“隔离不可用”并安全拒绝命令，绝不退回宿主权限执行。Broker 规范化命令 cwd，并向 Runtime 传递 `.env`、`.git` 的直接保护 WorkspaceView；它拒绝工作区外或经链接逃逸的直接目标，但仍不承诺祖先目录或别名防护。`edit_files` 与受限 `git` 仍沿用现有真实工作区边界；资源限制、取消/进程树、网络行为、外部文件、`modify` 和其他平台 runtime 属于后续阶段，详见 [sandbox.md](sandbox.md)。
+`CODEATELIER_SANDBOX_ENABLED` 的当前实现行为仍以 [sandbox.md](sandbox.md) 中的历史 WSL2 `inspect` 记录为准；本次文档变更不改变配置或已发布二进制。Windows 的后续设计已改为 [AppContainer Agent Runtime 与 Broker 架构](appcontainer-sandbox.md)：每个 Agent Runtime 使用独立 AppContainer SID，直接访问工作区和用户明确添加的目录；Broker 以 ACL 租约、经认证 IPC、固定能力、对象/操作复核和结果清洗管理其余宿主能力。该设计未实现，不能通过设置现有环境变量启用，也不能将 WSL2 路径当作 AppContainer fallback。实现后应在启动日志、UI 和任务账本明确报告 `legacy-wsl2-inspect`、`appcontainer`、`non-isolated` 或 `unknown` 的实际模式。
 
 访问门禁在服务启动时读取 `CODEATELIER_WEB_PASSWORD_ENABLED` 与 `CODEATELIER_WEB_PASSWORD`：默认关闭；设为 `true` 时密码不能为空，否则服务拒绝启动。启用后，浏览器必须先在门禁页提交正确密码，服务才会发放仅本进程有效的 HttpOnly、SameSite=Strict cookie，并允许读取 bootstrap、会话、SSE 及其他 API；密码不会发送到前端构建环境、持久化设置或日志。关闭或重启服务会轮换该 cookie，需再次验证。它是单一共享密码，不提供账户、用户身份、角色、找回密码、限流或公网安全保证。
 

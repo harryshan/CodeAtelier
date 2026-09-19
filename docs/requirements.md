@@ -66,7 +66,7 @@
 - 浏览器自动化、MCP、插件系统、向量检索。
 - 内置完整 IDE、交互式终端、调试器。
 - 云端部署、远程访问、多用户账号或账户系统。
-- 无人值守的崩溃重启执行；人工恢复已纳入范围（D018）。系统 Sandbox 按 [sandbox.md](sandbox.md) 分阶段实现：S0 已提供默认关闭的环境开关、模式状态、Broker 分流与启用失败时的安全拒绝；S1 已提供 WorkspaceView 策略契约；Windows 上 WSL2 bubblewrap 的只读 `inspect` Runtime 是部分 S2 实现并仅有本机夹具证据。资源限制、进程取消、网络行为、文件别名、外部能力、`modify` profile 及其他平台仍须分别验证后才可用。
+- 无人值守的崩溃重启执行；人工恢复已纳入范围（D018）。Windows Sandbox 的后续目标以 [AppContainer Agent Runtime 与 Broker 架构](appcontainer-sandbox.md) 为准：每个 Agent Runtime 使用 AppContainer，直接访问当前工作区和用户显式添加目录；其余宿主能力只能由 Broker 审查、代理并清洗结果后回传。该架构尚未实现或验证，不能作为当前初版能力、跨平台保证或系统级隔离宣称；当前 WSL2 `inspect` 仅是历史实现，见 [sandbox.md](sandbox.md)。
 
 分级诊断日志是同时适用的开发要求（R18）；历史会话与诊断日志分别管理。
 
@@ -81,7 +81,7 @@
 - 跨平台实现需处理路径、shell、进程生命周期、文件权限和编码差异；版本与浏览器矩阵确定后安排对应验证。
 - 模型层保持小型接口，先落地一种 API 协议，再按实际需要扩展；不预先承诺兼容所有提供商。
 - 明确最大步骤、命令超时、上下文容量和重试上限，避免无限循环或无限重试。
-- 工具授权是应用逻辑，不能冒充操作系统沙箱；当前仅提供默认关闭、可选的 Windows WSL2 `inspect` 参考 Runtime，且必须如实显示其实际边界。初版不承诺跨平台或 Windows 原生操作系统级沙箱。
+- 工具授权是应用逻辑，不能冒充操作系统沙箱。AppContainer/Broker 是 Windows 后续目标设计，不承诺当前可用、跨平台或 Windows 原生系统级隔离；只有通过各阶段真实验收后才可更新能力声明。
 
 模块结构方向（实际目录和职责见 architecture.md）：
 

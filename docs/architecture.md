@@ -1,23 +1,27 @@
 # 架构
 
-初版为单进程本机后端、浏览器单页应用、单 agent。不同真实工作目录的会话默认最多两个任务并行；同一目录严格串行。核心机制自行实现，没有引入 agent 编排框架。
+当前初版为单进程本机后端、浏览器单页应用、单 agent；不同真实工作目录的会话默认最多两个任务并行，同一目录严格串行。Windows Sandbox 的目标架构改为独立的 AppContainer Agent Runtime 与宿主 Broker Host，详见 [AppContainer Agent Runtime 与 Broker 架构](appcontainer-sandbox.md)；该目标尚未实现，不能把本段当前进程结构解释为已隔离。核心机制自行实现，没有引入 agent 编排框架。
 
 ## 模块与数据流
 
 ```text
-web (React)
-  → HTTP 操作 / SSE 变更通知
-server (Fastify)
-  → agent/engine
-      → providers/model-provider ← providers/responses-provider (官方 OpenAI SDK)
-      → tools/tool-runner → sandbox/broker → platform runtime（启用且可用时）
-      → tools/registry + permissions/approval-manager
-      → sessions/store (SQLite)
-  → tracing (Perfetto Trace Event JSON)
-  → logging (Pino)
+Browser / Web UI
+  ↕ HTTP、SSE（宿主 Server）
+Broker Host（可信宿主边界）
+  ├─ 策略、审批、AccessManifest、ACL 租约、执行账本与 tracing
+  ├─ 参数受限的 model / storage / Git / network / external adapters
+  └─ 经认证、固定 schema 的 IPC
+       ↕
+Agent Runtime（每任务 AppContainer）
+  ├─ agent loop、工具计划与命令子进程
+  ├─ 当前工作区（直接 ACL）
+  ├─ 用户显式添加目录（直接 ACL）
+  └─ 私有临时目录；无宿主密钥、profile 或网络能力
 ```
 
-- `src/shared` 仅存浏览器和后端共享的数据契约，前端不能导入文件、进程或密钥实现。
+以下文件职责描述当前实现；AppContainer/Broker 目标模块和迁移边界以 [appcontainer-sandbox.md](appcontainer-sandbox.md) 为准。无论当前还是目标架构，前端都不能导入文件、进程或密钥实现。
+
+- `src/shared` 仅存浏览器和后端共享的数据契约。
 - `src/agent/engine.ts` 管理任务队列、全局并发上限、真实工作目录互斥、模型循环、停止条件与工具结果回传；同一会话也只允许一个运行中或排队任务。`context.ts` 负责上下文恢复，`instructions.ts` 负责根规则与模型指令构建。src/context/ 负责预算、摘要压缩、快照契约与历史原文读取，循环在完整工具批次完成后接入；压缩阶段之间让出事件循环。
 - `src/providers` 将 Responses 输出映射为输出项和文本。主任务请求显式声明 `parallel_tool_calls: true`，让兼容服务可在一次响应中返回多个调用；工具定义要求每项带 `execution.id` 与 `execution.dependsOn`；依赖只能引用同一 Responses 响应内的节点，不能跨轮引用历史 ID。Engine 在任一节点产生副作用前校验整批 DAG，并以稳定拓扑顺序、最多 4 个并发节点调度。自建服务需同时收集 output_item.done；completed.output 有内容时优先使用，不能只依赖 completed。
 - `src/tools` 定义 Zod 参数及对应 JSON Schema，提供读取、统一文件编辑、命令和单一受限 `git` 工具。没有 `search` 或 `list_files` 工具；`search-commands.ts` 在每次任务建立指令前检测 PATH 和 Windows 系统位置可用的常见搜索程序，按估计性能排序后只向模型给出命令名与内容/文件名用途。模型以 `run_command` 执行目录浏览及首选的已检测工具，尽量把多个关键词合入一次多模式搜索；`run_command` 只公开一条命令文本，`command-shell.ts` 在执行器内部选择平台 shell。模型先由命令浏览/搜索定位，`read_file` 再按行读取；单次硬上限为 500 行，并返回分页/截断状态。`edit_files` 的 create:true 条目只新建不存在的文件，create:false 条目只精确编辑本任务已读取的已有文件。旧会话的 `search`、`list_files` 和 `write_file` 记录只保留展示、归档和快照回读兼容。
@@ -25,7 +29,7 @@ server (Fastify)
 - `src/server/local-security.ts` 在业务 API 前校验 Host、Origin、可选的环境访问密码与本机会话 token；密码门禁启用后，只有状态/登录路由可在未验证时访问，登录成功写入服务进程有效的 HttpOnly cookie。
 - `src/sessions/store.ts` 保存 sessions、tasks、events、context 和新任务的高保真 replay 捕获；任务的 createdAt、startedAt、finishedAt 分别表示入队、实际开始和结束，排队时间不计入会话累计运行时间。初始数据库结构位于 `schema.ts`。replay 捕获逐次保存模型 input/instructions/响应及完整脱敏工具参数/结果，导出时可从同一哈希的完整 `read_file` 页拼接 `edit_files` 的原始文件；只读到部分行或旧历史则明确拒绝真实文件物化。会话初始快照读取全量事件，SSE 后续刷新按 event ID 游标只读取新增事件；超过 64 KiB 的任一事件读取范围、活动上下文和历史快照由 `store-worker.ts` 在独立 Worker 线程解析或事务写入，小记录避免线程创建开销而同步读取。启动时将 queued/running/waiting 任务标为 interrupted 并记录结束时间。
 - `src/config` 将 .env/进程环境中的只读连接配置与 settings.json 中的非连接偏好合成为运行时设置，另管理内存密钥和平台数据目录；`src/sandbox/config.ts` 同时只在启动时严格读取 Sandbox 开关，避免它被浏览器设置或旧持久化偏好改变。访问门禁配置由 server/local-security.ts 在服务启动时单独读取，避免将密码纳入浏览器可见配置。
-- `src/sandbox/broker.ts` 是 `run_command` 的唯一 Sandbox 分流点：关闭时调用既有宿主进程执行器并公开 `non-isolated`，启用后先由 `workspace-view.ts` 规范化真实根目录并向 Runtime 传递 `.env`、`.git` 的直接保护契约，再只接受通过 `SandboxRuntime.selfCheck` 的后端。`runtime-factory.ts` 当前只会在 Windows 且开关开启时注册 `wsl-inspect-runtime.ts`；它以 WSL2 `bwrap` 提供只读 `inspect`，运行 WSL、路径转换或自检失败时状态为 `unknown` 并安全失败，不会退回宿主执行。WorkspaceView 拒绝工作区外和经链接逃逸的直接目标，但不替代 Runtime 的文件系统保护，也不承诺祖先或别名防护。Broker 阶段以安全摘要写入任务事件与 tracing；外部授权、资源限制、网络行为验收及其他平台 runtime 仍待后续阶段。
+- Sandbox 的目标模块以 `BrokerHost` 为宿主可信边界：它创建每任务 AppContainer identity、生成 AccessManifest、为工作区和用户额外目录租约式授予最小 ACL、验证 Runtime IPC 身份，并代理模型、会话、Git、网络和目录清单外的外部访问。Runtime 内的 agent/命令可直接使用获授目录，但不继承宿主密钥、网络、用户 profile 或任意句柄。所有代理请求都经过 capability、对象、操作和内容清洗审查，返回带来源/脱敏/截断元数据的非可信 `BrokerResult`；Broker 不代理任意 shell 命令。现有 `src/sandbox` 的 WSL2 `inspect` 代码只是待迁移的历史实现，不能当作该模块已交付。目标阶段的 tracing 以安全摘要覆盖 ACL 租约、Runtime attestation、Broker 审查、执行、清洗、取消和销毁。完整边界见 [appcontainer-sandbox.md](appcontainer-sandbox.md)。
 - `src/tracing` 默认只在任务运行期间于当前进程构造性能 timeline：Engine 在上下文计量/压缩、模型请求与退避、响应处理、工具计划、SandboxBroker 阶段、工具真实执行和工具结果持久化边界创建 span；`context.prepare` 与 `context.request` 保持各自边界；前者以下挂预算输入计量和已有的压缩阶段，后者以下挂实际请求计量阶段。模型、退避与响应处理仍是独立 span，模型包装器记录长度、数量、usage、错误类别和首包时间。Node 主事件循环执行的上下文、模型、响应、计划和持久化 span 汇集于 `Main thread`，并以 begin/end slice 表示这些内部阶段；`Task` 根是生命周期包络。工具批次/依赖属于 `Tool scheduler` 逻辑轨道，实际执行节点映射到最多 4 个可复用 `Tool worker` 并发槽位，而不为每个 call ID 创建一行。导出事件按时间排序，并用递增整数 ID 连接模型到工具的 flow，保证 Perfetto Trace Event JSON 兼容性。每个实际 tool span 保存经递归凭据脱敏后的结构化执行参数，因此 trace 是不得上传或提交的敏感本机诊断文件；它仍不保存提示词、模型/工具输出或凭据原文。高保真 replay payload 独立保存在 Store 的 `task_replays`，不混入 Perfetto；模型/工具 replay 只用于隔离测试，文件物化还必须验证完整读取版本。任务进入终态时 TraceArchive 以临时文件后 rename 的方式保存 `traces/<sessionId>/<taskId>.json`，然后立即释放内存记录，所以同一会话各任务不覆盖且没有完成 trace 缓存。`GET /api/tasks/:id/trace` 在本机 cookie 保护下只读取该文件；`GET /api/sessions/:id/traces` 只列出实际存在的文件，统计框据此显示下载入口。
 - `src/logging` 在 Pino 内部按字段脱敏后输出紧凑格式化纯文本，按级别筛选、保留受控错误详情并轮转文件。
 
@@ -73,7 +77,7 @@ server (Fastify)
 
 文件操作解析真实路径，考虑符号链接与 Windows junction；工作区外或敏感路径询问用户。`edit_files` 的 create:true 只能新建不存在的路径，预检、审批等待后和写入前都会复核，拒绝覆盖期间出现的文件；它可创建父目录。create:false 的现存文件须先读取，精确修改时比对内容哈希，拒绝外部并发修改。临时文件写入后重命名，并保留已有文件的原模式。
 
-`run_command` 的模型参数只有 `{ command }`，执行器固定在会话工作区运行。Windows 内部按 `pwsh`、`powershell`、`cmd.exe` 的优先级检测真实可执行文件；macOS/Linux 使用已验证的 `/bin/sh`。执行器追加固定非交互参数，模型不提供、探测或回退 shell。完整复合命令可预先审批时，顺序命令、管道及安全的独立检查应合并为一条命令文本；无需人工输出分隔标记。执行器通过常见环境变量请求子程序关闭颜色，并在 stdout/stderr 各自的流状态中移除 ANSI、OSC 等终端控制序列，因而历史和 UI 仅接收纯文本。对少量完全匹配的固定验证命令允许会话授权；绑定命令文本、工作区及受限扫描得到的项目内容指纹。超大项目无法计算指纹时退回单次审批。直接 Git 程序名（包括复合命令中的 Git）被拒绝，改由 `git.ts` 提供单一 action 子集：状态、差异、历史、文件查看和分支只读，暂存/提交自动仅处理模型明确提供的工作区路径。`.env` 运行时配置和硬敏感路径始终拒绝；受控 dotenv 模板需为普通 UTF-8 文件，且经占位敏感变量和常见凭据字面量校验后才可暂存或提交，相关 diff/show 在输出前再次扫描。普通文件访问仍将模板视为需确认的敏感路径。推送自动仅使用当前分支经校验的 upstream。每次调用核对 worktree 根目录；全量差异先检查变更路径，文件内容读取必须带明确安全路径，revision 和 remote URL 采用保守白名单，Git 禁用 hooks、GPG、外部 diff/textconv 与交互提示。自动化不接受额外 Git 参数或目标，也不等同于系统隔离；可信仓库的 Git 过滤器等配置仍可能产生当前用户权限下的副作用。当前 Windows 的启用开关会使用 WSL2 bubblewrap 只读 `inspect` Runtime；它以 POSIX shell 运行并在自检失败时安全拒绝命令。其他平台、`modify`、外部文件、资源限制、网络行为验收以及祖先/别名防护尚未实现，不能将该 Runtime 视为完整操作系统级 sandbox。后续边界和工作档案见 [sandbox.md](sandbox.md)。
+`run_command` 的模型参数只有 `{ command }`，执行器固定在会话工作区运行。Windows 内部按 `pwsh`、`powershell`、`cmd.exe` 的优先级检测真实可执行文件；macOS/Linux 使用已验证的 `/bin/sh`。执行器追加固定非交互参数，模型不提供、探测或回退 shell。完整复合命令可预先审批时，顺序命令、管道及安全的独立检查应合并为一条命令文本；无需人工输出分隔标记。执行器通过常见环境变量请求子程序关闭颜色，并在 stdout/stderr 各自的流状态中移除 ANSI、OSC 等终端控制序列，因而历史和 UI 仅接收纯文本。对少量完全匹配的固定验证命令允许会话授权；绑定命令文本、工作区及受限扫描得到的项目内容指纹。超大项目无法计算指纹时退回单次审批。直接 Git 程序名（包括复合命令中的 Git）被拒绝，改由 `git.ts` 提供单一 action 子集：状态、差异、历史、文件查看和分支只读，暂存/提交自动仅处理模型明确提供的工作区路径。`.env` 运行时配置和硬敏感路径始终拒绝；受控 dotenv 模板需为普通 UTF-8 文件，且经占位敏感变量和常见凭据字面量校验后才可暂存或提交，相关 diff/show 在输出前再次扫描。普通文件访问仍将模板视为需确认的敏感路径。推送自动仅使用当前分支经校验的 upstream。每次调用核对 worktree 根目录；全量差异先检查变更路径，文件内容读取必须带明确安全路径，revision 和 remote URL 采用保守白名单，Git 禁用 hooks、GPG、外部 diff/textconv 与交互提示。自动化不接受额外 Git 参数或目标，也不等同于系统隔离；可信仓库的 Git 过滤器等配置仍可能产生当前用户权限下的副作用。Windows 后续目标使用 AppContainer Agent Runtime：Runtime 直接访问经 ACL 租约授权的工作区和用户额外目录；模型、存储、Git、网络及其余宿主操作只能经 Broker 的类型受限代理，并在对象/操作复核和内容清洗后返回。AppContainer 身份、ACL、IPC attestation、Job Object、清洗器和平台夹具均尚未实现或验证；任何失败都必须安全拒绝，不能回退到 WSL2 或宿主执行。后续边界见 [appcontainer-sandbox.md](appcontainer-sandbox.md)，WSL2 历史事实见 [sandbox.md](sandbox.md)。
 
 ## 补丁编辑的准确性边界
 

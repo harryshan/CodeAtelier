@@ -1,6 +1,6 @@
 # 初版验证记录
 
-日期：2026-09-07。以下区分实际验证和计划覆盖，不将构建成功等同于跨平台运行成功。
+日期：2026-09-07；后续条目按各自日期补充。以下区分实际验证和计划覆盖，不将构建成功等同于跨平台运行成功。**当前 AppContainer Agent Runtime 与 Broker 目标架构尚未实现或验证；本文件中的 WSL2 条目仅是被替代路线的历史证据，不能用于宣称 AppContainer 能力。**
 
 ## 本机实际验证
 
@@ -222,15 +222,15 @@
 - `pnpm check` 在解除沙箱限制的同一工作区通过：类型、ESLint、Prettier、35 个测试文件的 243 项通过、1 项跳过，生产构建成功。受限环境中的既有进程取消及服务关闭用例曾发生临时目录 `EBUSY` 和超时；解除限制后的完整检查通过。
 - 未运行 Evaluation、真实模型或浏览器 E2E；静态与模拟模型测试不证明服务端缓存命中率已改善。
 
-## 2026-09-18：WSL2 bubblewrap inspect Sandbox 夹具
+## 2026-09-18：WSL2 bubblewrap inspect Sandbox 夹具（历史证据，非 AppContainer）
 
 - Windows 10 Enterprise（build 26200）上的 WSL `Ubuntu-26.04` 使用 Linux kernel `6.18.33.2-microsoft-standard-WSL2`。`unshare --user --map-root-user --mount --net --fork` 可以创建 namespace，但用户 namespace 内直接 `mount --bind / ...` 被拒绝；没有把该失败路径登记为 Runtime。
 - 同一发行版已安装 `/usr/bin/bwrap`。实际无害夹具以 `bwrap` 的 user/PID/network namespace、只读 `G:/codeagent` 映射、私有 `/mnt`、`/home`、`/root`、`/tmp`、新 `/proc`、最小 `/dev` 启动：可读取工作区 `package.json`，工作区内 `touch` 因只读文件系统失败，`/mnt/g` 与 `/home/root/.ssh` 不存在。该证据只覆盖本机 WSL2 参考后端。
 - `WslInspectRuntime` 的实际 `selfCheck` 成功；隔离命令返回 `sandbox-ok`，独立边界命令验证 `/mnt/g`、`/home/root/.ssh`、真实 `.git/config` 与 `/sys/class/net` 不可见，且工作区写探针失败后返回 `boundary-ok`。本轮 `pnpm check` 通过：类型、ESLint、Prettier、36 个测试文件的 250 项通过和 1 项跳过，以及测试生产构建；构建仍有前端 bundle 大小警告。
 - 未验证 Windows 原生 AppContainer/Job Object、其他 WSL 发行版、Linux/macOS、受保护路径的全部别名、cgroup/rlimit、fork/取消、资源消耗或真实构建；不将该夹具描述为完整 S2 或跨平台系统隔离。
 
-## WSL2 inspect 后续工作归档
+## AppContainer 目标架构的验证状态
 
-- 用户明确暂缓 Windows 原生 Runtime；本次仅归档既有实现和后续验收，不运行新的 Runtime、网络、资源或取消探针。
-- 先后顺序为：取消/超时后的完整进程树和 PID/资源限制，网络的 DNS/TCP/UDP/loopback/宿主行为证据，`.env`/`.git` 的链接、硬链接、祖先替换及并发变化，再处理 inspect 的只读开发命令兼容性与诊断。`modify`、外部文件、受控网络和其他平台均待独立设计与授权。
-- 因此本节不新增平台验证结论；当前唯一可引用的 Runtime 证据仍是上一节的本机 WSL2 无害夹具。详细状态与验收要求见 [sandbox.md](sandbox.md)。
+- 用户已将后续 Windows Runtime 目标改为 AppContainer Agent Runtime 与 Broker；设计见 [appcontainer-sandbox.md](appcontainer-sandbox.md)。本次只重构文档，没有运行 AppContainer、ACL、Job Object、Broker IPC、代理或清洗器。
+- 因此没有任何 AppContainer 实机、单元、集成或端到端验证结论。实施前后的必要夹具包括：每任务 SID 与最小环境、工作区和用户额外目录 ACL、未授权目录/重解析逃逸、Broker IPC 的 PID/SID/nonce/capability 验证、外部对象替换、清洗/脱敏、Job Object 取消和 ACL 撤销。
+- 上一节的 WSL2 无害夹具仍仅可作为旧实现的历史事实；它不能作为 AppContainer fallback、阶段完成或跨平台系统隔离证据。

@@ -707,7 +707,7 @@
 ## D086：Windows 上采用 WSL2 bubblewrap 的 inspect 参考 Runtime
 
 - 日期：本次实现
-- 状态：用户确认 `inspect` 为 Sandbox 开启时的默认 profile；仅实现并实测本机 WSL2 参考路径。
+- 状态：历史实现与本机 WSL2 参考证据；Windows 后续目标已由 D091 替代。
 - 决定：Windows + `CODEATELIER_SANDBOX_ENABLED=true` 时，Engine 注册 `WslInspectRuntime`。每次命令经 WSL2 的 `bwrap` 进入 Linux user/PID/IPC/UTS/network namespace，以只读工作区 `/opt`、清空环境、私有常见宿主目录、最小 `/dev` 和新 `/proc` 运行。既有 `.git` 映射为空目录，既有 `.env`/`.env.*` 映射为空设备。任何 WSL、bubblewrap、路径转换或自检失败维持 `unknown` 并拒绝命令；不会回退 PowerShell/cmd 或宿主执行。
 - 命令语义：启用此后端的 Windows `run_command` 固定采用 POSIX `/bin/sh -c` 文本，并在模型 instructions 中明确说明 Linux 相对路径和语法；不能把宿主 PowerShell/cmd 命令传给 Runtime。
 - 原因：当前 WSL2 可用 `bwrap` 实测能完成只读工作区与宿主驱动器/home 隐藏；直接 rootless `mount --bind` 已实测失败，不以未经验证的 namespace 名称代替文件系统边界。用户选择只读 profile，优先避免真实工作区写入。
@@ -716,7 +716,7 @@
 ## D087：暂缓 Windows 原生 Runtime，归档 WSL2 inspect 后续工作
 
 - 日期：本次文档归档
-- 状态：用户明确暂缓 Windows 原生实现；后续清单已记录，但不构成自动实现授权。
+- 状态：历史归档；其中“暂缓 Windows 原生 Runtime”的方向已由 D091 替代。
 - 决定：当前继续以 WSL2 bubblewrap `inspect` 为唯一 Windows Sandbox Runtime，不新增 AppContainer、Job Object、受限 token 或 ACL 后端。下一步先补足现有 Runtime 的取消/后代进程与资源限制、网络行为、文件系统别名与并发变化、可用性诊断和只读开发命令证据；`modify`、外部文件/网络例外及其他平台维持后续独立阶段。
 - 原因：Job Object 本身不能完成文件系统和网络隔离；AppContainer 等原生组合需要独立设计能力、ACL/reparse point、网络、进程树及资源验证。当前已有可实测的 WSL2 只读边界，优先完善其已知缺口，避免以不完整原生组件冒充 Sandbox。
 - 影响：Windows 原生 Runtime 不进入当前实现范围。WSL2 夹具证据仍仅适用于本机；在每项后续验收完成前，状态、UI 和文档不得宣称 cgroup/rlimit、fork 防护、完整取消、网络不可达、别名保护、`modify` 或跨平台系统隔离。详细顺序与验收留存在 [sandbox.md](sandbox.md)。
@@ -747,3 +747,12 @@
 - 原因：用户明确要求由模型自行决定记忆的添加与清除，避免候选审批阻断记忆的及时维护。
 - 安全、恢复与可审计边界：工具只接受结构化、有限批量、当前项目和当前任务来源的条目操作；服务端负责敏感内容拒绝、来源/ID/路径校验、去重、版本冲突、临时文件与原子替换。模型不能任意编辑 Markdown、写入工作区或其他项目、改变权限，亦不能项目级物理删除。模型 archive 的任务来源和理由在文件/UI 中可查看并可由用户恢复。未知结果不自动重放；恢复后的模型须重新读取状态后决定。tracing 和日志仅记录操作计数、状态和不透明关联 ID。
 - 影响：D088/D089 的项目隔离、Markdown 文件、关键词检索、预算、失效、Replay Case 和安全脱敏原则保持；其人工确认、candidate 状态、候选提取模块和“自动激活需另行决定”描述均被本决定替代。当前运行时仍未实现项目记忆；实现须增加工具契约、自动 archive、冲突/取消恢复、来源校验和模型操作可观察性的回归测试。
+
+## D091：以 AppContainer Agent Runtime 为中心的 Broker Sandbox 架构
+
+- 日期：本次设计重构
+- 状态：用户已确认目标架构；仅文档设计，尚未授权实现或验证。
+- 决定：替代 D086/D087 所确立的“以 WSL2 bubblewrap inspect 为 Windows 后续路线、暂缓 AppContainer”的方向。Windows 后续 Sandbox 以每任务独立的 AppContainer Agent Runtime 为执行边界，保留 Broker Host 为唯一宿主能力边界。Runtime 直接访问当前工作区和用户显式添加的额外目录，目录权限由任务绑定的 AccessManifest 与最小 ACL 租约落实；其他主机文件、模型服务、会话存储、Git、网络及宿主操作只能通过 Broker 的固定 schema 代理。
+- Broker 审查：Broker 必须验证 Runtime 的 AppContainer SID/PID/任务绑定、单次 nonce、能力、时限和配额；外部对象以稳定句柄/对象标识复核类型、重解析点、版本和授权范围，禁止把任意路径、shell 文本、文件句柄或网络 socket 透传给 Runtime。代理结果须按大小、编码、控制字符和敏感内容审查，尽力脱敏后以带来源、哈希、截断和脱敏标志的非可信信封返回；清洗失败、对象替换或不支持的请求安全拒绝，不回退为宿主执行。内容清洗不能保证发现全部秘密或提示注入，直接目录授权也不经过 Broker 内容审查，UI 必须明示这两项边界。
+- 进程与网络：Runtime 不继承宿主环境、密钥、用户 profile、句柄或网络能力；模型与网络访问分别由 Broker 的参数受限 adapter 代理。AppContainer launch、ACL 租约、IPC 身份证明、Job Object 子进程清理、资源限制、Broker adapters 与各项夹具须逐阶段实现和验证。
+- 影响：新增权威设计文档 [appcontainer-sandbox.md](appcontainer-sandbox.md)，`sandbox.md` 和 verification 中的 WSL2 内容降为历史实施事实。D084/D085 的现有开关/Broker/WorkspaceView 实现可保留迁移期兼容，但不构成 D091 的 AppContainer 阶段完成，也不得作为 fallback。新实现必须同步更新架构、配置、测试、验证、恢复、UI、执行账本和安全摘要 tracing；在真实 Windows 验收通过前不宣称 Windows 原生或跨平台系统隔离。
