@@ -23,12 +23,18 @@ Browser ── HTTPS/HTTP + SSE ── Host Server
                                   ▼
                     Broker Host（可信宿主边界）
                     ├─ Policy / approval / capability issuer
-                    ├─ AppContainer launcher + ACL lease manager
-                    ├─ model / storage / network / external-operation adapters
+                    ├─ ACL lease / WFP egress lease manager
+                    ├─ model / storage / external-operation adapters
+                    ├─ authenticated HTTPS CONNECT proxy
                     ├─ object verifier + result sanitizer
                     └─ execution ledger / tracing bridge
                          ▲  authenticated, fixed-schema IPC
-                         │
+                         │                         control IPC
+                         │                             │
+                         │                C++ Sandbox Supervisor
+                         │                    ├─ process / Job handles
+                         │                    └─ launch / wait / cancel / cleanup
+                         │                             │
                     Agent Runtime（AppContainer，非可信）
                     ├─ agent loop、工具计划、Git 与命令子进程
                     ├─ 当前工作区（直接 ACL）
@@ -38,7 +44,7 @@ Browser ── HTTPS/HTTP + SSE ── Host Server
 
 Broker 是唯一持有宿主 API key、用户 profile、会话数据库、长期凭据和默认网络能力的组件。它应作为独立的 Broker Host 进程运行，而不是把任意宿主操作暴露给 AppContainer 内的 Node 进程。Server 与 Broker 的内部通信同样使用受限、版本化契约；Server 不能把浏览器提供的任意路径或命令原样转交给 Broker。Broker 不执行 Git、不读取仓库配置，也不根据 Git 元数据获得宿主权限。
 
-Runtime 不能继承父进程环境、工作目录、打开的文件/目录句柄、标准输入管道、API key、用户 token、代理设置、SSH agent、浏览器 cookie 或服务监听 socket。普通 Runtime 不声明 `internetClient`、`internetClientServer`、loopback exemption、设备或企业认证能力；模型请求和其他网络请求只能走 Broker 的专用 adapter。经确认的 HTTPS Git push 使用短时、单用途、绑定精确 host 的网络能力，不能因此获得通用网络。
+Runtime 不能继承父进程环境、工作目录、打开的文件/目录句柄、标准输入管道、API key、用户 token、代理设置、SSH agent、浏览器 cookie 或服务监听 socket。普通 Runtime 不声明 `internetClient`、`internetClientServer`、loopback exemption、`broadFileSystemAccess`、设备或企业认证能力；模型请求和其他网络请求只能走 Broker 的专用 adapter。经确认的 HTTPS Git push 不给普通 Runtime 增加网络能力，而是建立新的单用途 Push Runner；其出站只允许到 Broker 控制的代理端点，不能因此获得通用网络。
 
 ## 3. 直接目录访问
 
@@ -56,6 +62,8 @@ Broker 对每个根目录执行以下流程：
 
 ACL 是权限实现，不是路径字符串检查的替代品。对目录内重解析点、junction、symlink、hard link、短名称、大小写/Unicode 等别名必须做平台夹具验证；未验证的形态不得写入“已隔离”的承诺。目录内容在运行期被其他进程改动也可能改变可见对象，故重要写入仍要使用版本/对象复核。
 
+首版只接受按授权根添加最小 ACE 的 ACL 方案，不使用 Windows `broadFileSystemAccess` capability，也不保留含义不明的 “BFS” 备选。未来若引入 Brokered File System 或其他文件系统代理，必须另行记录其完整平台 API、句柄与对象身份、重解析点、授权范围和撤销语义，并用真实夹具证明它与当前 ACL 根等价或更窄；在此之前不能替代 ACL 验收。
+
 ### 3.2 工作区与额外目录的产品语义
 
 - **工作区**为每个任务必选的直接目录；默认给予完成编码任务所需的读写权限，命令和 `edit_files` 观察同一真实目录，修改立即生效且不自动回滚。
@@ -66,11 +74,15 @@ ACL 是权限实现，不是路径字符串检查的替代品。对目录内重�
 
 ## 4. Windows 启动监督与 Runtime 身份
 
-Windows 使用独立、薄层的原生 C++ `codeatelier-sandbox-host.exe` 启动并监督 AppContainer，而不是在宿主 Node.js 进程中直接绑定不稳定的 native addon。TypeScript Broker 仍负责策略、审批和产品状态；原生 helper 只负责 AppContainer profile/SID、ACL 或受支持的 BFS、最小环境、进程创建、Job Object、资源限制、等待、取消和清理，不实现 agent、Git 或通用 Broker 操作。
+Windows 使用独立、薄层的原生 C++ `codeatelier-sandbox-host.exe` 启动并监督 AppContainer，而不是在宿主 Node.js 进程中直接绑定不稳定的 native addon。TypeScript Broker 仍负责策略、审批和产品状态；原生 helper 只负责 AppContainer profile/SID、最小环境、进程创建、Job Object、资源限制、等待、取消和清理，不实现 agent、Git、网络代理或通用 Broker 操作。ACL/WFP 策略由 Broker 决定，supervisor 只应用已登记 manifest/lease ID 对应的固定操作，不能接收任意 SID、路径、ACE、网络目标或命令文本。
 
 helper 在 Runtime 整个生命周期内保持运行并持有 process handle 与 Job handle。每次启动先生成 `runtimeInstanceId` 和单次 nonce，并持久化 `RuntimeProcessRecord`：supervisor PID、Runtime PID、进程创建时间、AppContainer SID 摘要、Job instance ID、实际映像摘要、状态与关联 task ID。PID 只用于显示和查找，不能单独证明身份，因为系统会复用 PID。
 
 Runtime IPC 建连时，Broker/监督器通过管道取得客户端 PID，并与启动时保存的 process handle、创建时间、AppContainer token SID、映像和 Job 归属联合核对。原始 nonce、process handle 和完整 SID 不进入 session、日志或 trace。服务重启后若不能重新证明这些字段属于同一实例，任务标记为 `interrupted`，未确认的执行结果标记为 `unknown`，不得因 PID 数值相同而重新接管或重放。
+
+Broker 启动 supervisor 时从安装目录的固定绝对路径打开二进制，不搜索 `PATH`，并在执行前核对发布签名和版本清单中的映像哈希；开发构建至少核对构建清单固定的哈希。启动参数只含不可猜实例 ID 和已登记 manifest ID，敏感数据经私有控制通道传递。Broker 与 supervisor 使用仅向该子进程显式继承的 duplex handle，或满足相同证明强度的命名管道；句柄继承清单不得包含 Runtime。控制协议只有 launch、query、cancel、destroy 和 heartbeat 等固定 schema，设有版本、帧长、序号、deadline 和状态机检查。Runtime SID/DACL 明确不能连接控制面，任何 IPC 都不返回原始 process、Job、token、文件或目录 handle。
+
+控制通道同时是有期限的租约。Broker 按固定周期发送带实例序号的 heartbeat；通道断开、租约过期、Broker 身份变化或实例无法复证时，supervisor 必须先关闭带 `KILL_ON_JOB_CLOSE` 的 Job、确认后代退出，再请求撤销 ACL/WFP 租约并退出。supervisor 自身异常退出时，Job handle 关闭也必须终止 Runtime。终止、WFP 或 ACL 清理失败均持久化为安全告警和 `orphaned` 遗留实例；恢复服务在证明旧实例已退出且租约已撤销前锁定该 task/workspace，不得创建替代 Runtime。启动时还必须对未完成的 supervisor/ACL/WFP 账本执行对账和保守清理。
 
 ## 5. Broker IPC 与能力模型
 
@@ -86,12 +98,22 @@ Broker 只实现有限的 typed operation，例如：
 | `external.read`   | 在获准的单一对象上读取有限文本/元数据，并生成清洗结果                                     | 不挂载目录、不返回真实路径、文件句柄或原始二进制流              |
 | `external.write`  | 对确认过的单一对象执行受限、版本化的创建/精确编辑                                         | 不执行 Runtime 给出的 shell、脚本、递归复制或任意目录写入       |
 | `network.fetch`   | 对明确允许的 HTTPS 读取做 DNS/IP/重定向/大小审查并返回受限响应                            | 不提供通用 socket、端口监听、内网/metadata 访问或上传默认许可   |
-| `git.push.egress` | 为确认过的单次 Runtime Git push 开放精确 HTTPS scheme/host/port、短期凭据、时限与流量上限 | 不执行或解析 Git，不承诺限制仓库路径/ref，不开放 SSH 或通用网络 |
+| `git.push.egress` | 创建一次性 Push Runner、WFP 规则和 CONNECT 租约，并注入短期凭据、固定调用、时限与流量上限 | 不执行或解析 Git，不承诺限制仓库路径/ref，不开放 SSH 或通用网络 |
 | `session.store`   | 持久化已验证的会话事件、工具结果和恢复账本                                                | 不允许 Runtime 查询或修改其他会话/项目的数据库记录              |
 
 普通 `run_command` 和全部 Git action 始终在 AppContainer Runtime 内运行。Broker 不以“代理命令”或“代理 Git”为名在宿主执行 Runtime 传入的文本；无法映射为上述专用 operation 的宿主请求，返回 `BROKER_OPERATION_UNSUPPORTED`。这避免把 IPC 变成逃逸通道。
 
-Git 默认没有网络。`status`、`diff`、`add`、`commit` 等本地操作直接使用 Runtime 可写的真实 `.git`。`push` 必须逐次确认，并在短生命周期的网络授权 Runtime 中执行；该实例复用同一工作区目录授权，但只允许精确 HTTPS host、固定端口、受限时间/字节数和尽可能短期且仓库范围最小的凭据。代理逐跳复核 DNS、IP 和重定向，拒绝 loopback、私网和 metadata 地址。应用层仍可检查 upstream、remote 与 ref 以避免误操作，但 host 级 Sandbox 不解析 Git receive-pack，不能把这些检查描述为网络安全边界。
+### 5.1 单用途 HTTPS Git push
+
+Git 默认没有网络。`status`、`diff`、`add`、`commit` 等本地操作直接使用普通 Runtime 可写的真实 `.git`。`push` 必须逐次确认，Broker 将确认过的 HTTPS URL 规范化为精确 scheme/host/port，并显示该 host 可能接收仓库内容，以及 Git 配置或子进程在本次窗口内运行的剩余风险。应用层仍检查 upstream、remote 与 ref 以减少误操作，但这些字段不是 host 级 Sandbox 边界。
+
+每次 push 创建新的 `runtimeInstanceId` 和 AppContainer SID，仅启动 **Push Runner**，不加载 agent loop、不接受模型/Runtime IPC 工具请求，也不运行任意 shell。Broker 先持久化待执行的 push tool call，停止普通 Runtime 的 Job 并确认退出，冻结同一工作区调度，撤销普通 Runtime SID 的 ACE，再依据同一 AccessManifest 根和模式为 Push Runner SID 安装新的最小 ACE；不能在两个 SID 间共享或同时保留目录租约。push 结果先持久化为完整、失败或 `unknown` 的工具结果，完成网络、凭据和进程清理后，才可为新的无网络普通 Runtime 建立新 SID/ACL 租约，并从已保存结果继续 agent loop，不重新执行 push。任何阶段无法确认旧实例退出或 ACE 撤销时，push 安全拒绝且 task/workspace 保持锁定。
+
+Push Runner 只从固定绝对路径启动受信任的 Git 映像，并执行 Broker 根据已确认 action 生成的规范 argv；不接受任意 Git 参数。最小环境清除 `GIT_CONFIG_*`、代理变量、SSH agent、编辑器和交互认证入口，显式禁用 hooks、仓库/系统/global credential helper、外部 diff/textconv、可选 submodule 递归和非 HTTPS protocol，并设置 `http.followRedirects=false` 及仅指向本次代理端点的 `http.proxy`。认证只允许固定路径且经过签名/哈希核验的 CodeAtelier credential helper；它通过私有 pipe 领取绑定 host、调用和单次使用的短期凭据，不接受仓库参数，也不把凭据写入工作区、命令行、日志或代理。实现夹具必须证明仓库配置、hook、filter、非固定 credential helper 和 Git 启动的子进程不能改变调用或获得额外网络目标；无法证明的配置安全拒绝。
+
+AppContainer 网络 capability 本身不作为 host allowlist。Broker 为 Push Runner 安装按 AppContainer SID、代理地址和代理端口绑定的一次性 WFP（Windows Filtering Platform）规则：拒绝该 SID 下 Git 及其所有子进程的直接 Internet、DNS 和其他 loopback/局域网出站，只允许连接 Broker 本次创建的本地代理端点。规则必须以 fail-closed 租约存在，不能因 Broker/代理进程崩溃而先于 Runner Job 自动消失；终止 Job 并确认后代退出后才能移除，启动对账负责清理遗留规则。若访问本地代理需要 loopback exemption，该 exemption 只有与 WFP 默认拒绝规则同时生效且夹具证明无法连接其他 loopback 服务时才可启用；任一规则安装或自检失败都不得启动 Git。
+
+代理只接受绑定本次 lease/Runner/调用摘要的认证连接和 HTTPS `CONNECT`，且目标必须等于已确认 host 与端口。DNS 只由代理解析；每次解析和连接都拒绝 loopback、私网、link-local、multicast、保留地址与 metadata endpoint，并将实际 IP 固定到本次连接。代理不解密 TLS、不读取 receive-pack，也不执行或解析 Git；它只记录受限的 CONNECT 元数据、字节数、期限和结果。Git 已禁止 HTTP 重定向；即使实现缺陷触发新的 CONNECT，不同 host 也会被代理拒绝。到期、字节超限、取消、Runner 退出或控制租约失效时，代理先停止转发，随后撤销 WFP、凭据和 ACL 租约；撤销失败进入 `orphaned` 安全告警。
 
 ## 6. Broker 审查与回传清洗
 
@@ -115,30 +137,31 @@ Git 默认没有网络。`status`、`diff`、`add`、`commit` 等本地操作直
 policy-resolved
   → ACL-leased → AppContainer-provisioned → attested → executing
   → broker-requested → reviewed → proxied → sanitized → completed
-                          └──────────────→ denied | failed | cancelled | unknown
+                          └──────────────→ denied | failed | cancelled | unknown | orphaned
 ```
 
-Broker 在授予目录 ACL、启动 Runtime、接收代理请求、对象复核、执行、清洗、取消和清理时记录执行账本。Sandbox 开启与关闭时采用相同的产品取消语义：取消只终止进程树，不回滚已发生的工作区或 Git 副作用。AppContainer 模式由监督器关闭 Job Object，非 Sandbox 模式沿用现有进程树终止方式；确认终止记为 `cancelled`，无法确认进程或副作用结果则记为 `unknown`。之后才撤销 ACL 租约。
+Broker 在授予目录 ACL、启动 Runtime、接收代理请求、对象复核、执行、清洗、取消和清理时记录执行账本。Sandbox 开启与关闭时采用相同的产品取消语义：取消只终止进程树，不回滚已发生的工作区或 Git 副作用。AppContainer 模式由监督器关闭 Job Object，非 Sandbox 模式沿用现有进程树终止方式；确认终止记为 `cancelled`，无法确认进程或副作用结果则记为 `unknown`。之后才撤销网络与 ACL 租约。
 
-取消记录包含 `runtimeInstanceId`、Runtime PID、执行是否已经开始、取消和终止时间、受限部分输出，以及 `sideEffects: may_have_occurred` 和 `replayAllowed: false`。该结果作为工具结果/恢复事件追加到 session，下一次模型请求与历史一并发送，并明确要求先检查当前文件和 Git 状态。崩溃、服务重启、IPC 中断或无法确认写入状态同样进入 `unknown`；任何模式都绝不自动重放副作用。
+统一记录使用 `executionInstance`：`mode: appcontainer | host-process`、`instanceId`、可空的 `pid`、`createdAt`，以及仅 AppContainer 模式存在的 `sandboxRuntimeInstanceId`。取消记录另含执行是否已经开始、取消和终止时间、受限部分输出、`sideEffects: may_have_occurred` 和 `replayAllowed: false`。该结果作为工具结果/恢复事件追加到 session，下一次模型请求与历史一并发送，并明确要求先检查当前文件和 Git 状态。崩溃、服务重启、IPC/租约中断或无法确认写入状态同样进入 `unknown`；任何模式都绝不自动重放副作用，不为 host-process 伪造 Runtime 字段。
 
-`src/tracing` 的目标 span 至少包括 `sandbox.acl_lease`、`sandbox.runtime_provision`、`sandbox.runtime_attest`、`broker.request_review`、`broker.object_verify`、`broker.proxy_execute`、`broker.result_sanitize` 与 `sandbox.destroy`。span 只包含状态、耗时、数量、类别、关联 ID 和匿名化/受限路径摘要；不含外部文件正文、密钥、原始网络内容、完整命令、Capability 或 AppContainer SID。Pino 日志遵循同一数据边界。
+`src/tracing` 的目标 span 至少包括 `sandbox.acl_lease`、`sandbox.runtime_provision`、`sandbox.runtime_attest`、`sandbox.supervisor_control`、`sandbox.runtime_lease`、`sandbox.push_runner`、`sandbox.egress_lease`、`broker.request_review`、`broker.object_verify`、`broker.proxy_connect`、`broker.proxy_execute`、`broker.result_sanitize` 与 `sandbox.destroy`。span 只包含状态、耗时、数量、类别、profile、关联 ID、匿名化/受限路径摘要及 orphaned/cleanup 状态；不含外部文件正文、凭据、原始 host/IP/网络内容、完整命令、Capability 或 AppContainer SID。Pino 日志遵循同一数据边界，并以 ERROR 记录无法终止或无法撤销租约的安全告警，避免重复记录同一 orphaned 实例。
 
-UI 应显示实际 identity、任务是否已通过 attestation、直接目录数量及每项读写模式、Broker 请求类别、确认状态、脱敏/截断提示和清理失败。不得把“AppContainer 已创建”“ACL 已尝试”或“Broker 已收到请求”显示成已验证隔离。
+UI 应显示实际 profile/identity、任务是否已通过 attestation、直接目录数量及每项读写模式、Broker 请求类别、确认状态、脱敏/截断提示，以及 `unknown`/`orphaned` 和清理失败。不得把“AppContainer 已创建”“ACL/WFP 已尝试”或“Broker 已收到请求”显示成已验证隔离。
 
 ## 8. Windows 实施与验收路线
 
-| 阶段               | 交付物                                                                           | 必要行为证据                                                                      |
-| ------------------ | -------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
-| A0：契约与迁移     | 版本化 AccessManifest、RuntimeProcessRecord、Broker schema、旧 WSL2 路径退役计划 | 旧 Runtime 不会被标作 AppContainer；开关/模式显示与实际后端一致                   |
-| A1：原生启动监督   | C++ supervisor、每任务 SID、最小环境、process/Job handle、PID 与创建时间记录     | Runtime 不能继承 API key；PID 复用、错误映像/Job/SID 和 supervisor 中断均安全失败 |
-| A2：直接目录访问   | 工作区和用户额外目录的 ACL/BFS 授权、对象标识和清理                              | 整个授权根含 `.git`/`.env` 按模式可用；未授权根/重解析逃逸被拒绝；ACE 精确撤销    |
-| A3：Broker IPC     | 客户端 PID/创建时间/token/SID/Job/nonce 证明、capability、限额                   | 非启动 Runtime、跨任务、重放、畸形/超限帧均不能获得能力                           |
-| A4：代理审查与清洗 | 外部 read/write、模型、普通 HTTPS adapters；统一 Sanitizer                       | TOCTOU/重解析替换、敏感文本、控制字符、截断、扫描失败和无确认路径都安全失败       |
-| A5：Git push 网络  | Runtime 内 Git、精确 HTTPS host 的一次性 egress、短期凭据                        | 默认无网络；DNS/IP/重定向/私网拒绝、超时/流量撤销和取消状态均以真实 push 夹具验证 |
-| A6：取消与平台扩展 | 统一 session 取消结果、CPU/内存/PID/输出/墙钟限制和其它平台适配器                | cancelled/unknown 随下轮上下文发送；各平台以自身夹具证明边界                      |
+| 阶段               | 交付物                                                                                          | 必要行为证据                                                                                   |
+| ------------------ | ----------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| A0：契约与迁移     | 版本化 AccessManifest、RuntimeProcessRecord、executionInstance、Broker schema、旧 WSL2 退役计划 | 旧 Runtime 不会被标作 AppContainer；开关/模式显示与实际后端一致                                |
+| A1：原生启动监督   | C++ supervisor、受保护控制面、每任务 SID、最小环境、process/Job handle、租约/heartbeat          | PID 复用、错误映像/Job/SID、Broker/supervisor 失联和孤儿清理均安全失败                         |
+| A2：直接目录访问   | 工作区和用户额外目录的最小 ACL 授权、对象标识、账本和清理                                       | 整个授权根含 `.git`/`.env` 按模式可用；无 broad access；未授权/重解析逃逸拒绝；ACE 精确撤销    |
+| A3：Broker IPC     | 客户端 PID/创建时间/token/SID/Job/nonce 证明、capability、限额                                  | 非启动 Runtime、跨任务、重放、畸形/超限帧均不能获得能力                                        |
+| A4：代理审查与清洗 | 外部 read/write、模型、普通 HTTPS adapters；统一 Sanitizer                                      | TOCTOU/重解析替换、敏感文本、控制字符、截断、扫描失败和无确认路径都安全失败                    |
+| A5：Git push 网络  | 单用途 Push Runner、CONNECT 代理、WFP 默认拒绝规则、固定 Git 调用和短期凭据                     | 无直接出站；host/DNS/IP/loopback/重定向/配置/子进程/时限/流量/撤销均以真实 push 与绕过夹具验证 |
+| A6：取消与资源边界 | 统一 executionInstance/session 结果、CPU/内存/PID/输出/墙钟限制                                 | cancelled/unknown 随下轮上下文发送；Job 后代终止与资源上限以真实 Windows 夹具验证              |
+| A7：其它平台       | 复用策略契约的 Linux/macOS 适配器                                                               | 各平台以自身夹具证明边界，不继承 Windows 结论                                                  |
 
-在 A1--A4 完成并以实际 AppContainer 夹具验证前，产品不能声称 Windows 原生 Sandbox 已可用。`CODEATELIER_SANDBOX_ENABLED` 的现有 WSL2 行为也不能被重新解释为本设计的任何阶段完成。
+能力声明按 profile 分层：A1--A4 完成并通过真实夹具后，只能声明“无网络、本地工作区 AppContainer Runtime”；A5 完成后才可额外声明“受限 HTTPS Git push”；A6 完成后才可声明“已验证取消与资源边界”。只有 A1--A6 全部通过时，产品才可不带 profile 限定地称 Windows 原生 Sandbox 已完成。`CODEATELIER_SANDBOX_ENABLED` 的现有 WSL2 行为不能被重新解释为本设计的任何阶段完成。
 
 ## 9. 与现有 WSL2 实现的关系
 

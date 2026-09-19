@@ -66,7 +66,7 @@
 - 浏览器自动化、MCP、插件系统、向量检索。
 - 内置完整 IDE、交互式终端、调试器。
 - 云端部署、远程访问、多用户账号或账户系统。
-- 无人值守的崩溃重启执行；人工恢复已纳入范围（D018）。Windows Sandbox 的后续目标以 [AppContainer Agent Runtime 与 Broker 架构](appcontainer-sandbox.md) 为准：每个 Agent Runtime 使用 AppContainer，完整访问当前工作区和用户显式添加目录，包含 `.git`、`.env` 等全部子路径；全部 Git 在 Runtime 内执行，Broker 仅代理模型、存储、目录外对象和受限网络等宿主能力。push 逐次确认并只开放精确 HTTPS host 的短时网络能力，ref/upstream 检查不构成 Sandbox 边界。原生 C++ supervisor 记录并联合验证 PID、创建时间、SID、映像和 Job；取消/未知结果追加到 session 并在下一轮模型上下文中发送，不回滚或重放副作用。该架构尚未实现或验证，不能作为当前初版能力、跨平台保证或系统级隔离宣称；当前 WSL2 `inspect` 仅是历史实现，见 [sandbox.md](sandbox.md)。
+- 无人值守的崩溃重启执行；人工恢复已纳入范围（D018）。Windows Sandbox 的后续目标以 [AppContainer Agent Runtime 与 Broker 架构](appcontainer-sandbox.md) 为准：每个 Agent Runtime 使用 AppContainer，完整访问当前工作区和用户显式添加目录，包含 `.git`、`.env` 等全部子路径；全部 Git 在 Runtime 内执行，Broker 仅代理模型、存储、目录外对象和受限网络等宿主能力。push 逐次确认并切换到新的单用途 Runner；WFP 阻断其直接出站，只允许连接按精确 HTTPS host 审查的 Broker CONNECT 代理，ref/upstream 检查不构成 Sandbox 边界。原生 C++ supervisor 使用受保护控制面、heartbeat/租约和 Job handle 处理失联；首版目录授权仅使用最小 ACL，不使用 `broadFileSystemAccess`。取消/未知结果以统一 executionInstance 追加到 session 并进入下一轮模型上下文，不回滚或重放副作用。该架构尚未实现或验证，能力只能按无网络 Runtime、受限 push、取消/资源三个 profile 分层声明；当前 WSL2 `inspect` 仅是历史实现，见 [sandbox.md](sandbox.md)。
 
 分级诊断日志是同时适用的开发要求（R18）；历史会话与诊断日志分别管理。
 

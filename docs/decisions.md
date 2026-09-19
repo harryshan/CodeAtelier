@@ -760,9 +760,20 @@
 ## D092：Runtime 完整工作区、Git、原生监督与统一取消语义
 
 - 日期：2026-09-19
-- 状态：用户已确认目标架构修订；仅文档设计，尚未授权实现或验证。
+- 状态：用户已确认目标架构修订；push 强制机制、supervisor 租约/控制面、文件授权和统一实例字段由 D093 收紧。仅文档设计，尚未授权实现或验证。
 - 工作区与 Git：Runtime 对工作区和用户显式添加目录按目录授权拥有完整递归访问，不再对 `.git`、`.env` 或其他子路径提供额外 Sandbox 保护；替代 D082/D083 的受保护工作区路径方向。所有 Git 进程和本地/远程 action 都在 Runtime 内执行，Broker 不调用 Git、不读取仓库配置，也不以宿主 Git 处理 Runtime 工作区。工作区及其 Git 元数据可能被读取、修改、删除或加入模型上下文，用户不希望 Runtime 接触的内容不得进入直接授权目录。
-- push 网络：Runtime 默认无网络；每次 `git push` 需要确认并获得短时、单用途、绑定精确 HTTPS scheme/host/port 的网络能力、时限、流量上限和尽可能短期且仓库范围最小的凭据。代理复核 DNS、IP 和重定向并拒绝 loopback、私网和 metadata 地址。应用层仍检查 upstream、remote 和 ref 以减少误操作，但 Broker 不解析 Git 协议，host 级网络边界不承诺限制仓库路径或 ref；首版不开放 SSH push。
-- Windows 启动与身份：采用独立薄层 C++ supervisor 启动并监督 Node.js AppContainer Runtime，负责 profile/SID、ACL 或 BFS、最小环境、process/Job handle、资源、等待、取消和清理，不实现 agent、Git 或通用 Broker。每次启动持久化 `runtimeInstanceId`、supervisor/Runtime PID、进程创建时间、AppContainer SID 摘要、Job instance ID、映像摘要和状态；IPC 以启动时 process handle、创建时间、PID、token SID、映像、Job 归属和 nonce 联合证明，PID 单独不构成身份。服务重启后不能重新证明同一实例时标记 interrupted/unknown，不接管复用 PID。
-- 取消与上下文：Sandbox 开启和关闭使用同一产品语义：终止进程树但不回滚已发生的工作区/Git 副作用；确认终止记为 `cancelled`，无法确认记为 `unknown`，绝不自动重放。保存 runtime instance/PID、执行是否开始、时间、受限部分输出、`sideEffects: may_have_occurred` 与 `replayAllowed: false`，作为工具结果或恢复事件追加到 session，并在下一次模型请求中与历史一并发送，要求先核对当前文件和 Git 状态。
+- push 网络：Runtime 默认无网络；每次 `git push` 需要确认并获得绑定精确 HTTPS scheme/host/port、时限、流量上限和尽可能短期且仓库范围最小凭据的单用途能力。D093 将其强制机制收紧为独立 Push Runner、WFP 默认拒绝和 Broker CONNECT 代理，并禁止 Git 跟随重定向。应用层仍检查 upstream、remote 和 ref 以减少误操作，但 Broker 不解析 Git 协议，host 级网络边界不承诺限制仓库路径或 ref；首版不开放 SSH push。
+- Windows 启动与身份：采用独立薄层 C++ supervisor 启动并监督 Node.js AppContainer Runtime，负责 profile/SID、最小环境、process/Job handle、资源、等待、取消和清理，不实现 agent、Git 或通用 Broker。目录授权的具体机制由 D093 收紧为最小 ACL。每次启动持久化 `runtimeInstanceId`、supervisor/Runtime PID、进程创建时间、AppContainer SID 摘要、Job instance ID、映像摘要和状态；IPC 以启动时 process handle、创建时间、PID、token SID、映像、Job 归属和 nonce 联合证明，PID 单独不构成身份。服务重启后不能重新证明同一实例时标记 interrupted/unknown，不接管复用 PID。
+- 取消与上下文：Sandbox 开启和关闭使用同一产品语义：终止进程树但不回滚已发生的工作区/Git 副作用；确认终止记为 `cancelled`，无法确认记为 `unknown`，绝不自动重放。保存执行实例/PID、执行是否开始、时间、受限部分输出、`sideEffects: may_have_occurred` 与 `replayAllowed: false`，作为工具结果或恢复事件追加到 session，并在下一次模型请求中与历史一并发送，要求先核对当前文件和 Git 状态；D093 将实例字段统一为 `executionInstance`，避免非 Sandbox 模式伪造 Runtime 身份。
 - 影响：D091 的 AppContainer/Broker 总体边界继续有效，但 Broker adapter 清单移除 Git，新增 Runtime 原生监督记录、host 级 push egress 和统一取消持久化。同步更新 requirements、architecture、development、testing、verification 与权威设计；所有内容仍是后续目标，不能描述为当前实现或验证结果。
+
+## D093：收紧 push egress、supervisor 与实例恢复契约
+
+- 日期：2026-09-19
+- 状态：根据安全审查补足可执行机制；仅文档设计，尚未实现或验证。
+- push 强制机制：AppContainer 网络 capability 不作为 host allowlist。每次 push 创建新的单用途 Push Runner 和 SID，不加载 agent loop 或 shell；Broker 先终止普通 Runtime 并锁定工作区，再以固定 Git 映像、规范 argv、最小环境和禁用 hooks/外部 helper/非 HTTPS protocol/重定向的配置执行。WFP 对 Runner SID 默认拒绝全部直接出站，只允许本次 Broker CONNECT 代理端点；代理仅接受获准 host/port，负责 DNS/IP/私网/metadata/时限/字节数检查和加密字节转发，不解密或解析 Git。任一安装、自检或撤销状态不确定均安全失败。
+- supervisor 与孤儿：supervisor 从固定安装路径启动并核对签名、版本和映像哈希，只接受 Broker 私有继承 handle 或同等强度通道上的固定 schema；Runtime 不能连接控制面，IPC 不返回原始 handle。控制通道带 heartbeat/租约；Broker 断开、租约过期、身份变化或实例无法复证时关闭带 `KILL_ON_JOB_CLOSE` 的 Job 并撤销 WFP/ACL。失败持久化为 `orphaned` 安全告警；对账完成前锁定 task/workspace，不创建替代 Runtime。
+- 文件授权：首版只接受授权根的最小 ACL ACE，明确禁止 `broadFileSystemAccess`。删除未定义的 “BFS” 备选；Brokered File System 或其他替代方案只有在另行定义平台 API、对象/重解析/撤销语义并证明不宽于 ACL 后才能采用。
+- 统一恢复模型：session 使用 `executionInstance`，包含 `mode: appcontainer | host-process`、`instanceId`、可空 `pid`、`createdAt`，仅 AppContainer 模式附 `sandboxRuntimeInstanceId`；不为非 Sandbox 执行伪造 Runtime 字段。取消、未知、副作用与禁止重放语义保持 D092 不变。
+- 分层声明：A1--A4 只允许声明无网络本地工作区 profile；A5 验收后才增加受限 HTTPS push；A6 验收后才增加已验证取消与资源边界。只有 A1--A6 全部通过真实 Windows 夹具后，才能无 profile 限定地声明 Windows 原生 Sandbox 完成。
+- 可观察性影响：新增 supervisor control/runtime lease、Push Runner、WFP egress lease、CONNECT proxy 和 orphaned cleanup 的安全摘要 tracing；trace/log 不记录凭据、原始 host/IP、Git 内容或完整命令。同步更新 requirements、architecture、development、recovery、testing 与 verification，所有机制仍是未实现目标。
