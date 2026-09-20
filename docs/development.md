@@ -45,6 +45,8 @@ Node.js 24，pnpm 11.22.0（packageManager 固定）。提交 pnpm-lock.yaml，�
 
 `supervisor-protocol.ts` 是 Broker→C++ supervisor 的固定控制面：仅能 self-check、按 `agent-runtime | push-runner` 启动已安装的固定 Runtime、终止指定 instance 或关闭 supervisor。`launch_runtime` 只携带有界 AccessManifest 和业务关联 ID，不接受任意 executable/argv/command、SID、ACL、端口或原始 handle；响应也只返回 PID、创建时间和 generation/Job/capability 摘要。当前已实现 strict schema 与请求/响应关联客户端；真实私有 stdio/pipe transport、二进制哈希及父进程核验仍必须在 C++ supervisor 接入时完成。
 
+`supervisor-channel.ts` 在已建立的私有 input/output handle 上提供 64 KiB 上限的 JSONL 帧、并发 requestId 路由和 AbortSignal 等待取消。超限、非法 JSON、缺失或未请求 requestId 会使整条通道失败，上层必须把可能已启动的实例记为 unknown/orphaned。Abort 只表示 Broker 不再等待，不等于 Runtime 已终止；取消仍必须另发 `terminate_runtime` 并获得清理结果。
+
 访问门禁在服务启动时读取 `CODEATELIER_WEB_PASSWORD_ENABLED` 与 `CODEATELIER_WEB_PASSWORD`：默认关闭；设为 `true` 时密码不能为空，否则服务拒绝启动。启用后，浏览器必须先在门禁页提交正确密码，服务才会发放仅本进程有效的 HttpOnly、SameSite=Strict cookie，并允许读取 bootstrap、会话、SSE 及其他 API；密码不会发送到前端构建环境、持久化设置或日志。关闭或重启服务会轮换该 cookie，需再次验证。它是单一共享密码，不提供账户、用户身份、角色、找回密码、限流或公网安全保证。
 
 思考等级在“模型与设置”中选择，保存为 `reasoningEffort`，每次主任务 Responses 请求显式发送 `reasoning.effort`，主任务和上下文摘要共用。默认 high，旧配置缺少字段时采用环境默认值或 high。例如 `.env` 中设置 `CODEATELIER_REASONING_EFFORT=high`；已保存偏好优先，保存后用于后续调用。辅助模型标识由 `CODEATELIER_AUXILIARY_MODEL` 决定，其推理强度 `auxiliaryReasoningEffort` 可按同一规则保存。服务或模型不支持所选等级时按现有错误流程报告，不静默降级。低成本审批不会以主模型替代未配置的辅助模型。

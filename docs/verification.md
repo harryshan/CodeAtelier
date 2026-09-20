@@ -236,6 +236,8 @@
 - 该增量在宿主权限下完成 `pnpm check`：38 个测试文件、262 项通过、1 项跳过，typecheck、ESLint、Prettier 和生产构建通过。普通 Codex 外层 Sandbox 中的定向运行仅在既有 Windows 进程树取消用例上超时并留下 `EBUSY`，同一用例在宿主权限下通过；这是外层 Job 影响，不弱化产品断言。
 - 恢复与 supervisor 控制契约的下一增量已完成：中断调用在下次模型请求中携带 execution instance 安全摘要和 `replayAllowed:false`；strict supervisor schema 拒绝任意 executable/command/SID/handle，并验证 requestId 相关性、响应字段和固定错误。定向 typecheck、lint 及 recovery/supervisor 11 项测试通过；这不表示真实 C++ 二进制或私有 transport 已完成。
 - 随后的宿主权限 `pnpm check` 全部通过：39 个测试文件、265 项通过、1 项跳过，typecheck、ESLint、Prettier 和生产构建通过；仅保留 Vite 已知的 bundle-size 警告。
+- supervisor 通道再增加有界 JSONL framing、并发乱序响应路由、本地等待取消和未请求/超限响应的整体失败。定向 supervisor protocol/channel 7 项用例通过；PassThrough 只模拟已建立的私有 handle，不代表 Windows handle 继承、二进制校验或父进程身份已验证。
+- 通道增量的宿主权限 `pnpm check` 全部通过：40 个测试文件、269 项通过、1 项跳过，typecheck、ESLint、Prettier 和生产构建通过；仅保留 Vite 已知的 bundle-size 警告。
 
 - 新增 [专用 Sandbox 用户最小验证](../experiments/windows-sandbox-user-demo/README.md)：提升脚本创建随机临时本地账户，为两个实例预置不同 execution SID，并为两个根预置不同 root capability ACE，再以同一账户启动固定 bootstrap。夹具核对共享 account SID、独立 execution/root capability、活动根跨任务可读、直接进程/后代只写各自根，并在 `finally` 精确删除运行目录和账户；密码不进入 argv、环境、文件或输出。该入口是 W2 第一阶段夹具，不覆盖共享 grant、Broker/supervisor 控制面、WFP 或 Git。
 - 2026-09-20 首次管理员运行中，两个实例及其后代分别完成跨根读取、自己根写入与对方根写拒绝，但两次 launcher 的 logon SID 同为 `S-1-5-5-0-488199`，触发旧断言。检查确认 `CAProbe*` 账户为 0 且对应运行目录不存在，证明异常清理有效。该证据支持临时账户和文件 root capability 的窄组合，同时推翻“显式凭据启动产生不同 logon SID”的假设；不能记为 W2 通过。
