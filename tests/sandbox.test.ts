@@ -55,20 +55,19 @@ it("parses the startup-only sandbox switch strictly and exposes an honest initia
       .initialStatus,
   ).toMatchObject({ enabled: false, mode: "non-isolated" });
   expect(
-    sandboxConfiguration({ CODEATELIER_SANDBOX_ENABLED: "true" }).initialStatus,
+    sandboxConfiguration({ CODEATELIER_SANDBOX_ENABLED: "true" }, "win32")
+      .initialStatus,
   ).toMatchObject({ enabled: true, mode: "unknown" });
   expect(() =>
     sandboxConfiguration({ CODEATELIER_SANDBOX_ENABLED: "yes" }),
   ).toThrow("CODEATELIER_SANDBOX_ENABLED");
 
   vi.stubEnv("CODEATELIER_SANDBOX_ENABLED", "true");
+  const expectedHostStatus = sandboxConfiguration().initialStatus;
   const config = new Config(await temp());
   vi.stubEnv("CODEATELIER_SANDBOX_ENABLED", "false");
 
-  expect(config.publicValue().sandbox).toMatchObject({
-    enabled: true,
-    mode: "unknown",
-  });
+  expect(config.publicValue().sandbox).toEqual(expectedHostStatus);
 });
 
 it("keeps the Windows sandbox implementation disabled on macOS and Linux", () => {
@@ -98,13 +97,13 @@ it("selects the native dedicated-user runtime for enabled Windows", () => {
   expect(commandShell({}, () => false, "win32", false)).toBeUndefined();
   expect(
     createSandboxRuntime(
-      sandboxConfiguration({ CODEATELIER_SANDBOX_ENABLED: "true" }),
+      sandboxConfiguration({ CODEATELIER_SANDBOX_ENABLED: "true" }, "win32"),
       "win32",
     ),
   ).toBeInstanceOf(NativeWindowsSandboxRuntime);
   expect(
     createSandboxRuntime(
-      sandboxConfiguration({ CODEATELIER_SANDBOX_ENABLED: "true" }),
+      sandboxConfiguration({ CODEATELIER_SANDBOX_ENABLED: "true" }, "win32"),
       "linux",
     ),
   ).toBeUndefined();
@@ -172,7 +171,7 @@ it("allows all workspace paths while rejecting links that escape the workspace",
 
 it("falls back to host execution when no runtime is available", async () => {
   const broker = new SandboxBroker(
-    sandboxConfiguration({ CODEATELIER_SANDBOX_ENABLED: "true" }),
+    sandboxConfiguration({ CODEATELIER_SANDBOX_ENABLED: "true" }, "win32"),
   );
   const executeHost = vi.fn(async () => ({
     output: "host fallback",
@@ -213,7 +212,7 @@ it("keeps one task on host fallback after self-check fails", async () => {
     execute: vi.fn(),
   };
   const broker = new SandboxBroker(
-    sandboxConfiguration({ CODEATELIER_SANDBOX_ENABLED: "true" }),
+    sandboxConfiguration({ CODEATELIER_SANDBOX_ENABLED: "true" }, "win32"),
     runtime,
   );
   const executeHost = vi.fn(async () => ({
@@ -258,7 +257,7 @@ it("does not replay a command on the host after runtime execution starts", async
     }),
   };
   const broker = new SandboxBroker(
-    sandboxConfiguration({ CODEATELIER_SANDBOX_ENABLED: "true" }),
+    sandboxConfiguration({ CODEATELIER_SANDBOX_ENABLED: "true" }, "win32"),
     runtime,
   );
   const executeHost = vi.fn();
@@ -343,7 +342,7 @@ it("dispatches only to a runtime that passed self-check", async () => {
     })),
   };
   const broker = new SandboxBroker(
-    sandboxConfiguration({ CODEATELIER_SANDBOX_ENABLED: "true" }),
+    sandboxConfiguration({ CODEATELIER_SANDBOX_ENABLED: "true" }, "win32"),
     runtime,
   );
   const executeHost = vi.fn();
