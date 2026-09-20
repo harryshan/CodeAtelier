@@ -231,6 +231,8 @@
 
 ## Windows Sandbox 探针与专用用户目标的验证状态
 
+- 新增 [专用 Sandbox 用户最小验证](../experiments/windows-sandbox-user-demo/README.md)：提升脚本创建随机临时本地账户，为两个根预置不同 capability ACE，再以同一账户的两个显式凭据登录启动固定 bootstrap。夹具将核对相同 account SID、不同 logon SID、活动根跨任务可读、直接进程/后代只写各自 capability 根，并在 `finally` 精确删除运行目录和账户；密码不进入 argv、环境、文件或输出。该入口是 W2 第一阶段夹具，不覆盖并发、同 SID 私有对象攻击、共享 grant、WFP 或 Git。
+- 2026-09-20 该夹具及共享 C++ 探针以 MSVC `/W4 /WX` 构建通过，两个 PowerShell 入口经解析器检查无语法错误。普通 Codex 进程和批准的宿主进程都不是管理员，均在创建账户前安全拒绝；随后发起的 UAC 包装运行没有在当前自动化通道中完成交互，等待被终止。检查未发现 `CAProbe*` 残留账户，也没有成功报告。因此这里记录的是“夹具就绪、提升实测未完成”，不是专用账户边界通过。
 - 新增 [restricted-token 最小可行性探针](../experiments/windows-restricted-token-demo/README.md)，使用真实 `CreateRestrictedToken`、临时 capability SID/ACL、token default DACL、`SeChangeNotifyPrivilege`、suspended process 和 Job。它是手动 feasibility demo，不接入产品、不进入默认测试，也不构成 supervisor 或 Sandbox profile。
 - 2026-09-20 在 Windows `10.0.26200`、MSVC `19.52.36725` 上，普通 Codex 工具运行的 launcher 父进程自报 `restricted=yes`、6 个 restricted SID、medium integrity、`appContainer=no`、`inJob=yes`；嵌套 `CreateRestrictedToken` 返回错误 87 且目标没有启动。该结果记录为当前 Codex Sandbox 对实验的干扰，不用于判定目标设计。
 - 同一二进制经批准以宿主权限运行时，launcher 父进程为 `restricted=no`、0 个 restricted SID、medium integrity、`appContainer=no`，但仍为 `inJob=yes`。目标和后代均为 `restricted=yes`、3 个 restricting SID、medium integrity、`inJob=yes`；成功读取临时兄弟目录文件和 `C:\Windows\win.ini`，修改安装根 ACE 前的 `existing.txt`，创建 `direct-write.txt`/`nested-write.txt`，对未授权兄弟目录的两次创建均返回 `ERROR_ACCESS_DENIED`，最终夹具检查 `reads=2 allowedWrites=3 deniedWrites=2 nestedProcess=yes` 通过并清理临时目录。
@@ -239,5 +241,6 @@
 - 新增 [网络与 Broker IPC 最小探针](../experiments/windows-network-ipc-demo/README.md)。普通 Codex restricted 父 token 下 IPC 子探针仍在 `CreateRestrictedToken` 得到错误 87；经批准的宿主权限运行中，合法 restricted client 的 PID、创建时间、execution SID、映像、Job 与 nonce 联合证明通过，同用户、同映像且知道同一 nonce 的 Job 外 client 被拒绝。它只证明一次 pipe 连接的 Broker 联合身份核验可行，不完成 W3，也不阻止直接 socket。
 - 同一网络探针的 TCP 回环 baseline 在普通和宿主权限运行中均成功；两种运行都在 `FwpmSubLayerAdd0` 得到 `ERROR_ACCESS_DENIED`，说明当前 medium-integrity 验证环境不能安装动态 WFP policy。SDK 10.0.28000.0 条件审计同时确认 user-mode `ALE_AUTH_CONNECT` filter 没有 PID、创建时间或 Job 条件，`ALE_APP_ID` 只是规范化映像路径。D099 不再按 execution instance 或映像放行，而改用安装期创建的稳定专用账户 SID：持久 WFP 只允许该 SID 连接固定 Broker relay/proxy 端口，任务级 host/ref 权限由代理 lease 再校验。这个方案不需要自研 callout driver，但专用账户 SID 条件、持久规则、提升安装和绕过夹具尚未实测，因此 W1/W5 仍未完成，不能由 IPC 探针替代。
 - D100 允许同一专用账户的 1～4 个不同工作区任务并发，但现有探针没有验证同 SID 实例之间的 process/thread/token/Job handle 防护、活动根跨任务读取、capability 写入隔离、共享 ACE 引用计数、实例级代理 lease 或 orphaned generation 排空。因此当前证据不能支持 Sandbox 并发声明。
+- 为支持上述专用账户夹具，restricted-token 原生探针新增由提升编排端预置 capability SID 的入口，并在 context 输出 account/logon SID；旧的当前用户入口在批准的 medium-integrity 宿主环境再次完整通过，仍显示外层 `inJob=yes`。这只回归了既有 restricted-token 行为，不替代尚未完成的管理员账户实测。
 - 探针以 MSVC `/W4 /WX` 构建通过；本轮 `pnpm check` 在普通 Codex 进程沙箱中因三个取消/超时夹具无法终止子进程而失败，改在批准的宿主权限下完整通过：37 个测试文件、255 项通过、1 项跳过，类型、ESLint、Prettier 和生产构建均通过。两次结果分开记录，不把解除 Codex 外层限制当作产品 Sandbox 能力。
 - 上一节的 WSL2 无害夹具和本节两个 demo 仍仅可作为旧实现或组件的局部事实；它们不能作为专用用户 fallback、阶段完成或跨平台系统隔离证据。

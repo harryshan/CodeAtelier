@@ -55,6 +55,7 @@ pnpm test:e2e
 - [需求与范围](docs/requirements.md)
 - [架构](docs/architecture.md)
 - [Windows 专用用户 Sandbox Runtime 与 Broker 架构（目标设计，尚未实现）](docs/windows-integrity-sandbox.md)
+- [Windows 专用 Sandbox 用户最小验证](experiments/windows-sandbox-user-demo/README.md)
 - [Windows Restricted-Token 最小可行性探针](experiments/windows-restricted-token-demo/README.md)
 - [旧 WSL2 Sandbox 实施档案](docs/sandbox.md)
 - [上下文压缩与历史追溯](docs/context-management.md)

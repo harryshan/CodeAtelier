@@ -5,10 +5,11 @@
  *
  * 代码结构按执行顺序组织：
  * 1. Win32 错误、handle/SID 生命周期和命令行转义辅助函数。
- * 2. token/Job 诊断，明确显示调用者是否已被 Codex 或其它宿主限制。
+ * 2. token/Job/用户与 logon SID 诊断，明确显示调用者是否已被 Codex 或其它宿主限制。
  * 3. capability SID、临时目录 ACL、restricted token 与 Job 的创建函数。
  * 4. probe 与 nested-probe 验证工作区外读取、指定根写入、外部写拒绝和后代继承。
- * 5. launcher 组装上述步骤；wmain 只负责模式分派和稳定退出码。
+ * 5. launcher 组装上述步骤；专用账户模式接受由高权限编排端预置的 capability SID，
+ *    不允许专用账户 bootstrap 修改目录 ACL；wmain 只负责模式分派和稳定退出码。
  *
  * 该程序只修改夹具传入的临时可写根 DACL，目录随后由夹具整体删除。它不安装 WFP、Broker、
  * 私有 desktop 或持久 supervisor，因而不能证明完整 W1--W2，更不能证明 W3--W6。
@@ -171,6 +172,8 @@ bool QueryCurrentToken(UniqueHandle* token) {
   return true;
 }
 
+std::wstring SidToString(PSID sid);
+
 std::wstring QueryIntegrityLevel(HANDLE token) {
   DWORD required = 0;
   GetTokenInformation(token, TokenIntegrityLevel, nullptr, 0, &required);
@@ -220,6 +223,46 @@ DWORD QueryRestrictedSidCount(HANDLE token) {
   return groups->GroupCount;
 }
 
+std::wstring QueryTokenUserSid(HANDLE token) {
+  DWORD required = 0;
+  GetTokenInformation(token, TokenUser, nullptr, 0, &required);
+  if (required == 0) {
+    return L"unavailable";
+  }
+
+  std::vector<BYTE> buffer(required);
+  if (!GetTokenInformation(token, TokenUser, buffer.data(), required,
+                           &required)) {
+    return L"unavailable";
+  }
+
+  auto* user = reinterpret_cast<TOKEN_USER*>(buffer.data());
+  return SidToString(user->User.Sid);
+}
+
+std::wstring QueryTokenLogonSid(HANDLE token) {
+  DWORD required = 0;
+  GetTokenInformation(token, TokenGroups, nullptr, 0, &required);
+  if (required == 0) {
+    return L"unavailable";
+  }
+
+  std::vector<BYTE> buffer(required);
+  if (!GetTokenInformation(token, TokenGroups, buffer.data(), required,
+                           &required)) {
+    return L"unavailable";
+  }
+
+  auto* groups = reinterpret_cast<TOKEN_GROUPS*>(buffer.data());
+  for (DWORD index = 0; index < groups->GroupCount; ++index) {
+    if ((groups->Groups[index].Attributes & SE_GROUP_LOGON_ID) ==
+        SE_GROUP_LOGON_ID) {
+      return SidToString(groups->Groups[index].Sid);
+    }
+  }
+  return L"unavailable";
+}
+
 void PrintProcessContext(const std::wstring& label) {
   UniqueHandle token;
   if (!QueryCurrentToken(&token)) {
@@ -240,6 +283,8 @@ void PrintProcessContext(const std::wstring& label) {
   }
 
   std::wcout << L"CONTEXT " << label << L" pid=" << GetCurrentProcessId()
+             << L" userSid=" << QueryTokenUserSid(token.get())
+             << L" logonSid=" << QueryTokenLogonSid(token.get())
              << L" restricted="
              << (IsTokenRestricted(token.get()) ? L"yes" : L"no")
              << L" restrictedSidCount="
@@ -633,24 +678,23 @@ int RunProbe(const std::wstring& read_path,
   return read && system_read && modified && allowed && denied && nested ? 0 : 21;
 }
 
-int RunLauncher(const std::wstring& read_path,
-                const std::wstring& system_read_path,
-                const std::wstring& write_root, const std::wstring& deny_root) {
+int LaunchRestrictedProbe(PSID capability_sid, bool install_capability_ace,
+                          const std::wstring& read_path,
+                          const std::wstring& system_read_path,
+                          const std::wstring& write_root,
+                          const std::wstring& deny_root) {
   PrintProcessContext(L"launcher-parent");
 
-  SidPointer capability_sid = CreateCapabilitySid();
-  if (!capability_sid) {
-    return 11;
-  }
   std::wcout << L"INFO capabilitySid="
-             << SidToString(capability_sid.get()) << L"\n";
+             << SidToString(capability_sid) << L"\n";
 
-  if (!GrantCapabilityToDirectory(write_root, capability_sid.get())) {
+  if (install_capability_ace &&
+      !GrantCapabilityToDirectory(write_root, capability_sid)) {
     return 12;
   }
 
   UniqueHandle restricted_token;
-  if (!CreateRestrictedPrimaryToken(capability_sid.get(), &restricted_token)) {
+  if (!CreateRestrictedPrimaryToken(capability_sid, &restricted_token)) {
     return 13;
   }
   std::wcout << L"PASS restricted-token-created restricted="
@@ -720,11 +764,47 @@ int RunLauncher(const std::wstring& read_path,
   return 0;
 }
 
+int RunLauncher(const std::wstring& read_path,
+                const std::wstring& system_read_path,
+                const std::wstring& write_root, const std::wstring& deny_root) {
+  SidPointer capability_sid = CreateCapabilitySid();
+  if (!capability_sid) {
+    return 11;
+  }
+  return LaunchRestrictedProbe(capability_sid.get(), true, read_path,
+                               system_read_path, write_root, deny_root);
+}
+
+int RunDedicatedAccountLauncher(const std::wstring& capability_sid_text,
+                                const std::wstring& read_path,
+                                const std::wstring& system_read_path,
+                                const std::wstring& write_root,
+                                const std::wstring& deny_root) {
+  PSID raw_capability_sid = nullptr;
+  if (!ConvertStringSidToSidW(capability_sid_text.c_str(),
+                              &raw_capability_sid)) {
+    PrintFailure(L"ConvertStringSidToSid(capability)", GetLastError());
+    return 11;
+  }
+  LocalPointer capability_sid(raw_capability_sid);
+  if (!IsValidSid(capability_sid.get())) {
+    std::wcerr << L"FAIL invalid externally supplied capability SID\n";
+    return 11;
+  }
+
+  return LaunchRestrictedProbe(capability_sid.get(), false, read_path,
+                               system_read_path, write_root, deny_root);
+}
+
 }  // namespace
 
 int wmain(int argc, wchar_t* argv[]) {
   if (argc == 6 && std::wstring(argv[1]) == L"--launch") {
     return RunLauncher(argv[2], argv[3], argv[4], argv[5]);
+  }
+  if (argc == 7 && std::wstring(argv[1]) == L"--dedicated-account-launch") {
+    return RunDedicatedAccountLauncher(argv[2], argv[3], argv[4], argv[5],
+                                       argv[6]);
   }
   if (argc == 6 && std::wstring(argv[1]) == L"--probe") {
     return RunProbe(argv[2], argv[3], argv[4], argv[5]);
@@ -735,6 +815,9 @@ int wmain(int argc, wchar_t* argv[]) {
 
   std::wcerr
       << L"Usage: restricted-token-demo.exe --launch <read-file> "
-         L"<system-read-file> <write-root> <deny-root>\n";
+         L"<system-read-file> <write-root> <deny-root>\n"
+         L"   or: restricted-token-demo.exe --dedicated-account-launch "
+         L"<capability-sid> <read-file> <system-read-file> <write-root> "
+         L"<deny-root>\n";
   return 2;
 }

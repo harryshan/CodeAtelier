@@ -178,6 +178,8 @@ W1--W3 通过后才能声明“Windows 专用用户 Sandbox：宿主用户私有
 
 [restricted-token demo](../experiments/windows-restricted-token-demo/README.md) 已证明当前机器上普通 Win32 restricted token、Job 和正常 DACL 写限制的窄组合可运行，但它派生自当前用户并使用 capability SID，已不代表目标账户/文件身份模型。
 
+[dedicated sandbox user demo](../experiments/windows-sandbox-user-demo/README.md) 已提供真实临时本地账户、两个独立 logon SID、两个根 capability、跨根读取/写拒绝与后代继承的 W2 第一阶段夹具。其 MSVC 构建和旧入口回归已通过；真实账户运行要求管理员 token，普通和批准的宿主 medium-integrity 进程均在创建账户前安全拒绝，当前自动化环境未完成 UAC 交互，因此这些专用账户边界仍是待运行假设，不能标记 W1/W2 通过。
+
 [network/IPC demo](../experiments/windows-network-ipc-demo/README.md) 已证明 Named Pipe 可联合核对 PID、创建时间、restricted token、execution SID、映像、Job 和 nonce，并证明普通 medium-integrity Broker 无权安装 WFP policy。其 APP_ID 路径过滤实验和“需要 callout driver”的旧推论已被本设计取代：目标改用可由内建 WFP 用户条件匹配的专用账户 SID。
 
 平台契约依据：Microsoft 文档确认 `CreateProcessWithLogonW` 默认不加载用户 profile，且可在创建时为 process/thread 提供 security descriptor；access token 包含标识当前 logon session 的 logon SID 和用于新对象的 default DACL；restricted token 对 securable object 执行普通 SID 与 restricting SID 两次访问检查。实现仍必须在目标 Windows 版本上验证每次显式凭据启动得到的 logon SID/LUID、`WRITE_RESTRICTED` 例外及对象类型覆盖，不能只依赖文档推断。
