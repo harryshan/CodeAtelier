@@ -9,15 +9,15 @@ Windows Runtime 使用安装程序预先创建的单一低权限本地账户 `Co
 目标能力：
 
 - 不继承宿主交互用户的 profile、凭据和仅授予该用户的文件权限；AccessManifest 再向专用账户增加工作区、显式只读根、精确 Git 配置图和产品 Runtime 依赖的访问权。它不是纯读取 allowlist：`Everyone`、`Authenticated Users`、机器级安装目录或其他既有 DACL 仍可能允许读取，必须在 UI 中明确。
-- 写访问同时经过专用账户 DACL 与 `WRITE_RESTRICTED` token 的 restricting SID 检查；每个实例拥有独立 execution capability，每个可写根另使用独立 root capability SID/ACE。Windows 可能为同一账户的多次显式凭据启动复用 logon SID，故只记录它用于诊断/兼容，绝不作为实例授权身份。目标写范围是工作区、显式可写根和实例临时目录。若兼容启动需要 `Everyone` 等宽泛 restricting SID，写根上任何能被它匹配的写 ACE 都会破坏实例隔离；预检必须拒绝这类根，且不能证明完整组合时不得启用 Sandbox 并发。
+- 写访问同时经过专用账户 DACL 与 `WRITE_RESTRICTED` token 的 restricting SID 检查；每个实例拥有独立 execution capability，每个可写根另使用独立 root capability SID/ACE。Windows 可能为同一账户的多次显式凭据启动复用 logon SID，故只记录它用于诊断/兼容，绝不作为文件写入 capability。目标写范围是工作区、显式可写根和实例临时目录。若兼容启动需要 `Everyone` 等宽泛 restricting SID，写根上任何能被它匹配的写 ACE 都会破坏根 capability；预检必须拒绝这类根，且不能证明完整组合时不得启用 Sandbox 并发。
 - 工作区内部不额外保护 `.git`、`.env` 或其他子路径；命令可以修改、删除或泄露工作区内的可访问内容，取消不回滚。
 - 机器级 WFP 规则按专用账户 SID 阻止直接出站，只允许连接受控回环 relay/proxy 端口；模型和获准网络由 Broker 代理。
 - 全部 Git 在 Runtime 内执行，Broker 不执行 Git。Git 读取已授权的 system、宿主 global/include、local 和 worktree 配置；配置、hook、helper 和 remote helper 都视为不可信代码。
 - Broker IPC、回环代理和凭据管道必须再次验证 execution instance；账户 SID 只是机器级隔离身份，不单独授权任务能力。
 
-Sandbox 模式沿用现有全局并发设置：不同真实工作区最多同时运行 1～4 个任务，同一真实工作区仍严格串行。每个 execution instance 使用独立 capability SID、Job、private desktop、临时目录、IPC nonce 和 proxy lease；Agent Runtime 切换为同任务 Push Runner 时只要求该任务的原 Job 全部退出，不暂停其它工作区任务。本文仍只使用一个本地账户，不设计账户池。
+Sandbox 模式沿用现有全局并发设置：不同真实工作区最多同时运行 1～4 个任务，同一真实工作区仍严格串行。每个 execution instance 使用独立 capability SID、Job、private desktop、临时目录、IPC nonce 和 proxy lease；Agent Runtime 切换为同任务 Push Runner 时只要求该任务的原 Job 全部退出，不暂停其它工作区任务。本文仍只使用一个本地账户，不设计账户池，也不因 Sandbox 启用而把全部对话全局串行。
 
-单账户并发不提供任务间读取隔离。为了让该账户访问每个活动工作区，所有同账户 Runtime 都可能通过账户 SID 读取其它并发任务当前投影的工作区、Git 配置和 read roots；`WRITE_RESTRICTED` 的每实例 capability SID 只把写检查限制到本实例可写根。产品 UI 必须明确该边界，Broker/session API 仍禁止跨任务访问，但不能把它描述成 OS 级任务保密性。
+单账户并发不提供任务间 OS 安全隔离。为了让该账户访问每个活动工作区，所有同账户 Runtime 都可能通过账户 SID 读取其它并发任务当前投影的工作区、Git 配置和 read roots；同账户 peer 还可能打开、终止、注入、调试或检查其它 Runtime/Job/desktop/命名对象。`WRITE_RESTRICTED` 的每实例 capability SID 只承诺把直接及后代文件写检查限制到本实例可写根，不承诺进程或对象隔离。Broker/session API 仍按任务路由以维持正常产品行为，但不宣称抵抗恶意 peer 冒用或干扰另一个任务；需要该保证时必须改用账户池、AppContainer 或 VM profile。
 
 该 profile 提供宿主完整性和相对宿主交互用户的有限文件机密性，但不承诺“只可读取授权根”。它不抵抗管理员、SYSTEM、内核/驱动漏洞、`Everyone`/`Authenticated Users` 等既有读取权、弱或 null DACL、用户主动授予的读取根、继承/重解析错误、已泄露句柄或获准 host 的数据接收。
 
@@ -72,7 +72,7 @@ Broker、supervisor、安装程序和 Sandbox Process 是不同边界。运行�
 
 Broker 为单一账户维护一个 account generation 和最多 1～4 个活动 instance lease；每项记录 SID 摘要、instance/task/workspace、创建时间、Job ID、execution/root capability SID 集合和 lease epoch。调度器在发放 lease 前复核不同工作区、全局并发上限及所有活动授权状态。supervisor 以 `CreateProcessWithLogonW` 且不使用 `LOGON_WITH_PROFILE` 启动固定 runner；每次启动记录实际 logon SID/LUID，但不要求唯一，也不以其授权。runner 再从专用账户 token 创建 `WRITE_RESTRICTED` primary token：移除非必要 privilege/group，并加入本实例独立 execution SID、本次可写根 capability SID 与经实测不可省略的 logon/Everyone 等最小兼容 SID。目标以 suspended 状态创建，绑定本实例 Job、desktop 和 mitigation 后才恢复执行；不能证明 token SID 集合与 AccessManifest 一致时终止启动。
 
-同账户的恶意 Runtime 不得打开或注入其它实例的 bootstrap runner、supervisor、process/thread/token/Job。Broker 在 `CreateProcessWithLogonW` 创建时即提供只允许 Broker/SYSTEM 的 process/thread security descriptor，并保持 runner suspended，避免先创建后收紧 DACL 的竞态；runner 为 restricted token 设置显式 default DACL，仅向共享账户 SID 和本实例 execution SID 授予所需访问，不向可能共享的 logon SID 或 Everyone 授予通用对象权限。任意后代创建的 process/thread/token/Job/pipe/命名对象必须通过“账户 SID 普通检查 + 本实例 execution SID restricting 检查”。私有 desktop/window station 也使用同样的双重身份。该机制及同 SID 进程间的 handle、debug、window message 和命名对象攻击必须实测；不能证明时 Sandbox 并发不可启用。安装验收还必须证明两段启动在支持的 Windows/域策略上不需要运行时提升。
+bootstrap runner 的创建控制面和 supervisor 必须只允许 Broker/SYSTEM；Sandbox Runtime 不得连接 supervisor、取得其高权限 handle 或请求任意 SID/路径/ACL/进程操作。runner 为 restricted token 设置显式 default DACL，仅向共享账户 SID 和本实例 execution SID 授予正常运行所需访问，不向可能共享的 logon SID、Everyone 或 root capability 授予新对象通用权限。后代 process/thread/token/Job/pipe/命名对象和 private desktop/window station 继续使用最小 DACL 以减少偶然干扰，但不把它们描述成对同账户恶意 peer 的隔离边界。peer 的 handle、debug、window message、注入和命名对象访问必须观测并记录为残余风险，不再作为禁止 Sandbox 并发的门槛。安装验收仍须证明两段启动在支持的 Windows/域策略上不需要运行时提升。
 
 所有后代必须留在 `KILL_ON_JOB_CLOSE` Job。计划任务、BITS、服务、COM、父进程伪装和现存宿主进程代写必须作为逃逸夹具验证。即使后代逃离 Job，只要仍使用专用账户 SID，持久 WFP 仍应阻止其直接外网；这不免除进程和文件逃逸修复。
 
@@ -111,7 +111,7 @@ Sandbox 的 `HOME`、`USERPROFILE` 和 `XDG_CONFIG_HOME` 指向本次 lease 的�
 
 supervisor 只接受 Broker 创建的私有继承控制 handle 或同等强度通道上的固定 schema；Runtime 不能连接 supervisor 控制面，IPC 不返回原始 process、Job、token 或文件 handle。Broker 断连、heartbeat/租约过期或实例身份无法复证时，supervisor 关闭本实例 Job；任一实例失败进入 `orphaned` 后隔离 account generation，并排空其它活动实例。
 
-Runtime 与 Broker 使用任务专属 Named Pipe。pipe DACL 同时要求宿主 Broker 身份，或专用账户 SID 加本实例 execution SID；Broker 再从连接取得真实 PID，联合核对启动时 process handle、创建时间、账户 generation、restricted token/capability SID、实际映像、实例 Job、nonce、task/tool-call、kind 和 lease epoch。PID、账户 SID、logon SID、pipe 名称、端口或 Runtime 自报字段都不单独授权；同账户另一活动实例必须因 execution capability/Job/nonce/lease 不匹配而被拒绝。
+Runtime 与 Broker 使用任务专属 Named Pipe。pipe DACL 同时要求宿主 Broker 身份，或专用账户 SID 加本实例 execution SID；Broker 再从连接取得真实 PID，联合核对启动时 process handle、创建时间、账户 generation、restricted token/capability SID、实际映像、实例 Job、nonce、task/tool-call、kind 和 lease epoch。PID、账户 SID、logon SID、pipe 名称、端口或 Runtime 自报字段都不单独授权；正常的另一实例连接必须因 execution capability/Job/nonce/lease 不匹配而被拒绝，以保证路由和审计正确。由于恶意 peer 可能注入或操纵合法目标 Runtime，这不是任务间对抗性认证边界；真正的安全边界是任何 Sandbox 进程都不能越过 typed Broker operation、宿主 ACL 与 WFP fence。
 
 Broker 只提供参数受限的 typed operation：
 
@@ -161,9 +161,9 @@ Git 配置若指定自定义 proxy、remote helper 或非登记 transport，只�
 
 | 阶段           | 交付物                                                                                      | 必要证据                                                                                                                                     |
 | -------------- | ------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| W0：契约       | AccessManifest、executionInstance、1～4 并发/同工作区串行、跨任务读取风险、禁用模式兼容     | 当前实现与目标 profile 不混淆；开关失败关闭                                                                                                  |
+| W0：契约       | AccessManifest、executionInstance、1～4 并发/同工作区串行、跨任务读取/进程干扰风险、禁用模式兼容 | 当前实现与目标 profile 不混淆；开关失败关闭                                                                                               |
 | W1：安装与身份 | 单一账户、secret、本地策略、WFP fence、自检/卸载                                            | 宿主用户网络不受影响；Sandbox SID 的 V4/V6 直接出站均阻断；loopback 只到固定端点                                                             |
-| W2：文件与监督 | ACL/grant table、`WRITE_RESTRICTED` token/default DACL、每实例 execution/root capability/desktop/Job | 并发实例互相可读但不可越权写；共享 logon/宽泛兼容 SID 不绕过 capability；私有对象不被同账户实例打开；共享 ACE 正确引用计数；孤儿 generation 全量排空 |
+| W2：文件与监督 | ACL/grant table、`WRITE_RESTRICTED` token/default DACL、每实例 execution/root capability/desktop/Job | 并发实例互相可读且可能互相干扰，但直接及后代不可跨 capability 根写入；共享 logon/宽泛兼容 SID 不绕过写边界；共享 ACE 正确引用计数；孤儿 generation 全量排空 |
 | W3：Broker IPC | pipe 身份、typed capability、配额、模型/session adapter                                     | 重放、错误映像/Job/token、畸形帧安全拒绝                                                                                                     |
 | W4：外部写入   | 版本化单对象写入、结果清洗、审批绑定                                                        | TOCTOU、reparse、对象替换、敏感日志和超限失败路径                                                                                            |
 | W5：Git push   | PushSpec、单用途 Runner、relay/proxy、短期凭据                                              | 无 WFP 临时放宽；其它进程不能复用；仅确认 host 可达；真实 Git 配置绕过失败关闭                                                               |
@@ -172,15 +172,15 @@ Git 配置若指定自定义 proxy、remote helper 或非登记 transport，只�
 
 W1--W3 通过后才能声明“Windows 专用用户 Sandbox：宿主用户私有权限不继承、显式根授权、目标写边界、无直接命令网络、Broker 能力认证”；不得声明纯读取 allowlist。W5 前不支持受限 push，W6 前不声明已验证取消和资源边界。管理员安装成功不等于 Runtime 验收完成。
 
-必测项包括：密码/策略轮换、欢迎屏幕隐藏、远程/网络/服务登录拒绝、本地程序化 logon、域策略覆盖、UAC 拒绝、1～4 个不同工作区并发、同工作区串行、跨任务读取可见性/写入拒绝、同 SID process/thread/token/Job/desktop/命名对象攻击、共享 ACE 引用计数、单实例取消与 generation 级排空、Broker/机器重启、ACL 原对象 rename/move/replace/delete-recreate、弱/null DACL、Everyone/Users 写、显式 deny、继承关闭、junction/symlink/mount point、UNC/其它盘、hard link、机器级与用户级工具、Git includeIf/helper/hook/remote helper、IPv4/IPv6/TCP/UDP/DNS/loopback/listen、代理复用和卸载残留。
+必测项包括：密码/策略轮换、欢迎屏幕隐藏、远程/网络/服务登录拒绝、本地程序化 logon、域策略覆盖、UAC 拒绝、1～4 个不同工作区并发、同工作区串行、跨任务读取可见性/直接及后代写入拒绝、同 SID process/thread/token/Job/desktop/命名对象访问结果记录、Runtime 对 Broker/supervisor 控制面的拒绝、共享 ACE 引用计数、单实例取消与 generation 级排空、Broker/机器重启、ACL 原对象 rename/move/replace/delete-recreate、弱/null DACL、Everyone/Users 写、显式 deny、继承关闭、junction/symlink/mount point、UNC/其它盘、hard link、机器级与用户级工具、Git includeIf/helper/hook/remote helper、IPv4/IPv6/TCP/UDP/DNS/loopback/listen、代理复用和卸载残留。
 
 ## 10. 已有证据与待验证范围
 
 [restricted-token demo](../experiments/windows-restricted-token-demo/README.md) 已证明当前机器上普通 Win32 restricted token、Job 和正常 DACL 写限制的窄组合可运行，但它派生自当前用户并使用 capability SID，已不代表目标账户/文件身份模型。
 
-[dedicated sandbox user demo](../experiments/windows-sandbox-user-demo/README.md) 的首次管理员运行已真实创建临时本地账户，并通过两个实例的跨根读取、各自根直接/后代写入和跨根写拒绝；它同时证明两次显式凭据启动复用了相同 logon SID，推翻了 logon SID 唯一假设。修订夹具随后以独立 execution/root capability SID 和收紧的 account/execution default DACL 通过管理员复测，报告 `distinctExecutionSids=yes logonSidReused=true crossRead=yes ownWrite=yes crossWriteDenied=yes nestedProcess=yes`；两轮结束后账户与运行目录均清理。该证据完成 W2 的顺序文件访问第一阶段，但不覆盖真正并发和私有对象攻击，因此不能标记整个 W2 通过。
+[dedicated sandbox user demo](../experiments/windows-sandbox-user-demo/README.md) 的首次管理员运行已真实创建临时本地账户，并通过两个实例的跨根读取、各自根直接/后代写入和跨根写拒绝；它同时证明两次显式凭据启动复用了相同 logon SID，推翻了 logon SID 唯一假设。修订夹具随后以独立 execution/root capability SID 和收紧的 account/execution default DACL 通过管理员复测，报告 `distinctExecutionSids=yes logonSidReused=true crossRead=yes ownWrite=yes crossWriteDenied=yes nestedProcess=yes`；两轮结束后账户与运行目录均清理。该证据完成 W2 的顺序文件访问第一阶段，真正并发文件写入矩阵仍待按新契约复测。
 
-后续真正并发夹具证明 peer 可成功取得 `PROCESS_TERMINATE`，即使目标 process DACL 同时列出共享账户 SID 与目标 execution SID。原因是 `WRITE_RESTRICTED` 只在评估写访问时考虑 restricting SID，不能假设它覆盖所有 process/thread/Job 权限；当前单账户并发边界已失败。完整 restriction + shared-read 候选又使未修改后代 `CreateProcess` 和未显式投影读取失败，且加入宽泛兼容 SID 会重新引入公共写面。D100 的并发产品目标因此需要重新决策；在替代机制通过前，任何实现都必须 fail closed，不得启用 Sandbox 并发。
+后续真正并发夹具证明 peer 可成功取得 `PROCESS_TERMINATE`，即使目标 process DACL 同时列出共享账户 SID 与目标 execution SID。原因是 `WRITE_RESTRICTED` 只在评估写访问时考虑 restricting SID，不能假设它覆盖所有 process/thread/Job 权限。D100 已确认不同对话无需彼此构成 OS 安全边界，因此该结果改记为接受风险；夹具保留 process/thread/Job 危险 open 的观察输出，但通过条件改为两个 Runtime 同时存活时仍保持跨根读取、各自根直接/后代写入和跨根写拒绝。
 
 [network/IPC demo](../experiments/windows-network-ipc-demo/README.md) 已证明 Named Pipe 可联合核对 PID、创建时间、restricted token、execution SID、映像、Job 和 nonce，并证明普通 medium-integrity Broker 无权安装 WFP policy。其 APP_ID 路径过滤实验和“需要 callout driver”的旧推论已被本设计取代：目标改用可由内建 WFP 用户条件匹配的专用账户 SID。
 
@@ -191,7 +191,7 @@ W1--W3 通过后才能声明“Windows 专用用户 Sandbox：宿主用户私有
 - [Restricted Tokens](https://learn.microsoft.com/en-us/windows/win32/secauthz/restricted-tokens)
 - [Process Security and Access Rights](https://learn.microsoft.com/en-us/windows/win32/procthread/process-security-and-access-rights)
 
-尚未实测：持久账户安装/专用 profile、按 SID 的持久 WFP allow/block、自检与卸载、独立 execution SID的真正并发隔离、同账户对象攻击、共享 ACL grant table、宿主 global Git config 授权图、真实 Git/Node/PowerShell/编译器兼容、relay/proxy、凭据、ACL 撤销、取消/恢复和资源上限。现有 Codex 外层 Sandbox 会干扰嵌套 token/Job/WFP 测试；所有结果必须分别标记“Codex 沙箱内”“批准的宿主权限”“真正提升安装环境”。
+尚未实测：持久账户安装/专用 profile、按 SID 的持久 WFP allow/block、自检与卸载、新契约下真正并发的文件写入边界、共享 ACL grant table、宿主 global Git config 授权图、真实 Git/Node/PowerShell/编译器兼容、relay/proxy、凭据、ACL 撤销、取消/恢复和资源上限。现有 Codex 外层 Sandbox 会干扰嵌套 token/Job/WFP 测试；所有结果必须分别标记“Codex 沙箱内”“批准的宿主权限”“真正提升安装环境”。
 
 ## 11. 与现有实现的关系
 

@@ -10,7 +10,7 @@
 - 两个工作区都向账户授予普通 `Modify`，但分别只向自己的 root capability 授权；
 - 固定 bootstrap 从专用账户 token 创建 `WRITE_RESTRICTED` primary token，随后才启动待测 Runtime；
 - bootstrap 从创建时即为 Runtime process/thread 和命名 Job 安装“共享账户 SID + 本实例 execution SID”的显式 DACL；
-- 两个 Runtime 通过工作区文件屏障保持同时存活，并互相尝试 terminate/inject/duplicate-handle/改 DACL、thread terminate/suspend/set-context 和 Job terminate/assign；这些危险 open 必须全部返回 `ERROR_ACCESS_DENIED`；
+- 两个 Runtime 通过工作区文件屏障保持同时存活，并观察 peer 的 terminate/inject/duplicate-handle/改 DACL、thread terminate/suspend/set-context 和 Job terminate/assign open 结果；不同对话不要求对象隔离，因此允许或拒绝都如实记录但不实际执行攻击；
 - instance A/B 可读取对方活动工作区，能由直接进程和后代写自己的根，但不能写对方根；
 - capability ACE 由提升的编排端预置，专用账户 bootstrap 不修改 ACL。
 
@@ -30,15 +30,15 @@ pwsh -File experiments/windows-sandbox-user-demo/run-demo.ps1 -Mode run
 
 ## 输出与外层 Codex Sandbox
 
-`CONTEXT launcher-parent` 必须显示专用账户 SID、实际 logon SID 和未限制的固定 bootstrap；`INFO` 必须显示各自不同的 execution/root capability SID，`concurrent-restricted-probe` 与 `nested-probe` 必须显示 restricted token。双方还必须各自输出 peer process/thread/Job dangerous access denied 与 `concurrent-peer-object-isolation`。最终 `DEMO PASS` 会如实报告 `logonSidReused=true|false`；logon SID 是否复用不再决定通过，因为实例身份由 execution SID 承担。
+`CONTEXT launcher-parent` 必须显示专用账户 SID、实际 logon SID 和未限制的固定 bootstrap；`INFO` 必须显示各自不同的 execution/root capability SID，`concurrent-restricted-probe` 与 `nested-probe` 必须显示 restricted token。双方还必须各自输出 peer process/thread/Job dangerous open 的 allowed/denied 观察值及 `concurrent-file-write-isolation peerObjectIsolation=not-required`。最终 `DEMO PASS` 会如实报告 `logonSidReused=true|false`；logon SID 是否复用不再决定通过，因为文件写入能力由 execution/root capability 承担。
 
 构建结果不受管理员权限影响。运行阶段不能在普通 Codex 命令 Sandbox 中冒充成功：脚本首先检查管理员 token，真实创建账户还会触发 Windows 自身权限检查。即便经 Codex 宿主批准运行，若进程仍处于外层 Job，Job 相关输出仍只能说明嵌套环境下可运行，不能算作独立 supervisor/Job 的完整证据。
 
 ## 尚未证明
 
-该探针当前扩展为两个实例真正并发。管理员实测中，peer 的 `OpenProcess(PROCESS_TERMINATE)`（access `1`）成功，探针以 45 安全失败；这证明 `WRITE_RESTRICTED` 的 root capability 可以约束文件写，却不能把共享账户的全部 process 权限变成实例私有。当前单账户并发方案因此未通过，不能启用。它也不覆盖：
+该探针当前扩展为两个实例真正并发。管理员实测中，peer 的 `OpenProcess(PROCESS_TERMINATE)`（access `1`）成功，旧探针以 45 失败；这证明 `WRITE_RESTRICTED` 的 root capability 可以约束文件写，却不能把共享账户的全部 process 权限变成实例私有。用户已确认不同对话无需互相隔离，因此修订探针把这类 dangerous open 改为只观察、不执行且不参与通过判定；真正的并发通过条件是双方同时存活时仍能各自直接/后代写自己的根、不能写对方根。它也不覆盖：
 
-- 已泄漏 handle、token handle、debug、窗口消息、普通命名对象和 desktop 隔离；
+- peer 可取得的 handle/token/debug/窗口消息/普通命名对象/desktop 权限范围，以及 Broker/supervisor 控制面能否抵抗 Sandbox Runtime；
 - 复杂继承、deny/弱 DACL、reparse point、hard link、UNC、其它卷、路径替换及原对象撤销；
 - 持久账户安装、secret 保存、本地登录策略、profile/environment 最小化、升级/卸载和 orphaned generation；
 - Broker IPC、模型/session capability、WFP、直接 socket、relay/CONNECT、凭据或 Git push；
@@ -47,4 +47,4 @@ pwsh -File experiments/windows-sandbox-user-demo/run-demo.ps1 -Mode run
 
 2026-09-20 的首次管理员运行证明两次显式凭据启动复用了同一个 logon SID `S-1-5-5-0-488199`，因此推翻了“每实例 logon SID 唯一”的假设。该次运行在最终身份断言前已经通过双方跨根读取、各自根直接/后代写入、跨根写拒绝，并成功清理账户和目录。修订后的探针改用独立 execution SID；token restricting SID 为 execution、root capability、logon 和 Everyone，但 default DACL 已收紧为共享账户 SID 加本实例 execution SID，不再给共享 logon/Everyone 新对象通用权限。第二次管理员运行最终报告 `distinctExecutionSids=yes logonSidReused=true crossRead=yes ownWrite=yes crossWriteDenied=yes nestedProcess=yes`，且复测后没有残留临时账户或运行目录。
 
-logon 和 Everyone 仍暂时作为未修改 Win32 启动的兼容 restricting SID。通过本实验不能证明它们对所有工具和对象都安全；W2 仍必须用弱 ACL、显式私有对象和同 SID 攻击夹具证明 execution/root capability 没有被绕过，否则实现应失败关闭。
+logon 和 Everyone 仍暂时作为未修改 Win32 启动的兼容 restricting SID。通过本实验不能证明它们对所有文件 ACL 都安全；W2 仍必须用弱/null DACL、公共写 ACE、复杂继承和重解析点夹具证明 execution/root capability 文件写边界没有被绕过，否则实现应失败关闭。同账户 process/thread/Job/desktop/命名对象不属于任务间安全边界，但 Broker/supervisor 控制面和 WFP fence 仍必须拒绝任何 Sandbox Runtime 绕过。

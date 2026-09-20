@@ -33,4 +33,4 @@ pwsh -File experiments/windows-restricted-token-demo/run-demo.ps1
 
 探针为兼容启动使用 execution、root capability、logon、Everyone 四个 restricting SID；管理员专用账户实测证明不同显式凭据启动可能复用 logon SID，因此 default DACL 已收紧为共享账户 SID 与本实例 execution SID，不再向 logon/Everyone 授予新对象通用权限。它仍没有逐项证明 logon/Everyone restricting SID 对所有工具都不可省略，也没有证明 default DACL 对全部 Win32 对象的继承语义；产品控制管道和 supervisor 对象仍须使用显式私有 DACL 与客户端身份验证。
 
-因此它不能把 W1 或 W2 标记为完成，也不能支持专用账户安装、并发 instance lease、同 SID 进程对象隔离、显式读写 ACL 或网络边界的产品声明。
+因此它不能把 W1 或 W2 标记为完成，也不能支持专用账户安装、并发 instance lease、显式读写 ACL 或网络边界的产品声明。D100 已明确同 SID 对话之间不要求进程对象隔离；并发入口只观察相关 open 结果，用于记录残余干扰风险。

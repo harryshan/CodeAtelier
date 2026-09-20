@@ -703,67 +703,82 @@ bool ReadIdentity(const std::filesystem::path& root, PeerIdentity* identity) {
   return true;
 }
 
-bool VerifyProcessAccessDenied(DWORD process_id) {
+bool ObservePeerProcessAccess(DWORD process_id) {
   constexpr std::array<DWORD, 4> kDangerousAccess = {
       PROCESS_TERMINATE,
       PROCESS_CREATE_THREAD | PROCESS_VM_OPERATION | PROCESS_VM_WRITE,
       PROCESS_DUP_HANDLE,
       WRITE_DAC | WRITE_OWNER,
   };
+  size_t allowed_count = 0;
+  size_t denied_count = 0;
   for (DWORD access : kDangerousAccess) {
     UniqueHandle process(OpenProcess(access, FALSE, process_id));
     if (process) {
-      std::wcerr << L"FAIL dangerous OpenProcess succeeded pid=" << process_id
-                 << L" access=" << access << L"\n";
-      return false;
+      ++allowed_count;
+      std::wcout << L"OBSERVE peer-process-dangerous-open access=" << access
+                 << L" result=allowed\n";
+      continue;
     }
-    if (GetLastError() != ERROR_ACCESS_DENIED) {
-      PrintFailure(L"OpenProcess returned unexpected error", GetLastError());
-      return false;
+    DWORD error = GetLastError();
+    if (error == ERROR_ACCESS_DENIED) {
+      ++denied_count;
+      std::wcout << L"OBSERVE peer-process-dangerous-open access=" << access
+                 << L" result=denied\n";
+      continue;
     }
+    PrintFailure(L"OpenProcess returned unexpected error", error);
+    return false;
   }
-  std::wcout << L"PASS peer-process-dangerous-access-denied count="
-             << kDangerousAccess.size() << L"\n";
+  std::wcout << L"OBSERVE peer-process-dangerous-open allowed="
+             << allowed_count << L" denied=" << denied_count << L"\n";
   return true;
 }
 
-bool VerifyThreadAccessDenied(DWORD thread_id) {
+bool ObservePeerThreadAccess(DWORD thread_id) {
   constexpr std::array<DWORD, 3> kDangerousAccess = {
       THREAD_TERMINATE,
       THREAD_SUSPEND_RESUME | THREAD_SET_CONTEXT,
       WRITE_DAC | WRITE_OWNER,
   };
+  size_t allowed_count = 0;
+  size_t denied_count = 0;
   for (DWORD access : kDangerousAccess) {
     UniqueHandle thread(OpenThread(access, FALSE, thread_id));
     if (thread) {
-      std::wcerr << L"FAIL dangerous OpenThread succeeded tid=" << thread_id
-                 << L" access=" << access << L"\n";
-      return false;
+      ++allowed_count;
+      std::wcout << L"OBSERVE peer-thread-dangerous-open access=" << access
+                 << L" result=allowed\n";
+      continue;
     }
-    if (GetLastError() != ERROR_ACCESS_DENIED) {
-      PrintFailure(L"OpenThread returned unexpected error", GetLastError());
-      return false;
+    DWORD error = GetLastError();
+    if (error == ERROR_ACCESS_DENIED) {
+      ++denied_count;
+      std::wcout << L"OBSERVE peer-thread-dangerous-open access=" << access
+                 << L" result=denied\n";
+      continue;
     }
+    PrintFailure(L"OpenThread returned unexpected error", error);
+    return false;
   }
-  std::wcout << L"PASS peer-thread-dangerous-access-denied count="
-             << kDangerousAccess.size() << L"\n";
+  std::wcout << L"OBSERVE peer-thread-dangerous-open allowed=" << allowed_count
+             << L" denied=" << denied_count << L"\n";
   return true;
 }
 
-bool VerifyJobAccessDenied(const std::wstring& job_name) {
+bool ObservePeerJobAccess(const std::wstring& job_name) {
   UniqueHandle job(OpenJobObjectW(JOB_OBJECT_TERMINATE | JOB_OBJECT_ASSIGN_PROCESS |
                                       WRITE_DAC | WRITE_OWNER,
                                   FALSE, job_name.c_str()));
   if (job) {
-    std::wcerr << L"FAIL dangerous OpenJobObject succeeded name=" << job_name
-               << L"\n";
-    return false;
+    std::wcout << L"OBSERVE peer-job-dangerous-open allowed=1 denied=0\n";
+    return true;
   }
   if (GetLastError() != ERROR_ACCESS_DENIED) {
     PrintFailure(L"OpenJobObject returned unexpected error", GetLastError());
     return false;
   }
-  std::wcout << L"PASS peer-job-dangerous-access-denied\n";
+  std::wcout << L"OBSERVE peer-job-dangerous-open allowed=0 denied=1\n";
   return true;
 }
 
@@ -942,20 +957,20 @@ int RunConcurrentProbe(const std::wstring& read_path,
   if (!ReadIdentity(peer_root, &peer)) {
     return 42;
   }
-  if (!WriteMarker(own_root / L"attack-ready.txt") ||
-      !WaitForPath(peer_root / L"attack-ready.txt")) {
+  if (!WriteMarker(own_root / L"peer-observation-ready.txt") ||
+      !WaitForPath(peer_root / L"peer-observation-ready.txt")) {
     return 43;
   }
 
-  bool process_denied = VerifyProcessAccessDenied(peer.process_id);
-  bool thread_denied = VerifyThreadAccessDenied(peer.thread_id);
-  bool job_denied = VerifyJobAccessDenied(peer.job_name);
+  bool process_observed = ObservePeerProcessAccess(peer.process_id);
+  bool thread_observed = ObservePeerThreadAccess(peer.thread_id);
+  bool job_observed = ObservePeerJobAccess(peer.job_name);
 
-  if (!WriteMarker(own_root / L"attack-done.txt") ||
-      !WaitForPath(peer_root / L"attack-done.txt")) {
+  if (!WriteMarker(own_root / L"peer-observation-done.txt") ||
+      !WaitForPath(peer_root / L"peer-observation-done.txt")) {
     return 44;
   }
-  if (!process_denied || !thread_denied || !job_denied) {
+  if (!process_observed || !thread_observed || !job_observed) {
     return 45;
   }
 
@@ -964,7 +979,8 @@ int RunConcurrentProbe(const std::wstring& read_path,
   if (file_result != 0) {
     return file_result;
   }
-  std::wcout << L"PASS concurrent-peer-object-isolation\n";
+  std::wcout << L"PASS concurrent-file-write-isolation"
+             << L" peerObjectIsolation=not-required\n";
   return 0;
 }
 
