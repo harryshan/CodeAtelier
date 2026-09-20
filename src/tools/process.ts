@@ -83,6 +83,7 @@ export async function executeProcess(
   onOutput: (s: string) => void,
   environment: NodeJS.ProcessEnv = {},
   onProcessStarted?: (pid: number) => void,
+  standardInput?: Buffer,
 ) {
   signal.throwIfAborted();
 
@@ -147,6 +148,10 @@ export async function executeProcess(
 
         return;
       }
+    }
+
+    if (standardInput) {
+      child.stdin.end(standardInput);
     }
 
     const timer = setTimeout(() => {

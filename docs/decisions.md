@@ -826,7 +826,7 @@
 ## D099：采用单一专用 Sandbox 用户
 
 - 日期：2026-09-20
-- 状态：主体继续有效；其中“Sandbox 全局串行”和账户排他租约已由 D100 替代。仅文档设计，尚未授权或完成产品实现。既有 restricted-token 与 IPC demo 只是组件级证据，账户、ACL 和 WFP 目标均未完成验收。
+- 状态：主体继续有效；其中“Sandbox 全局串行”和账户排他租约已由 D100 替代。用户已授权产品实现；原生安装、ACL/Job/desktop、Git 投影、受限工具路由和 CONNECT relay 已进入代码，但尚未完成提升环境端到端验收，不能宣称完整可用。
 - 账户与并发：Windows 一次性提升安装创建单一低权限本地账户 `CodeAtelierSandbox`，将随机口令以宿主 Broker 用户可解密的系统保护存储保存，并配置最小组成员、登录权和环境。首版由非提升 Broker 以 `CreateProcessWithLogonW` 且不加载 profile 启动固定 runner，因此保留该 API 所需的本地 logon，隐藏欢迎屏幕入口并禁止远程/网络/服务登录；域策略不兼容时安装失败。所有 Agent Runtime、Push Runner、Git、hook、helper 与后代都使用该账户的 restricted token 和 Job。D100 允许该账户按现有上限并发运行 1～4 个不同工作区任务，同一工作区和同一会话仍串行；Agent Runtime 切换为 Push Runner 前只须证明同任务原 Job 全部退出。
 - 文件边界：Broker 向 AccessManifest 中的工作区、显式 read/write roots、产品 Runtime 依赖、专用临时目录和精确 Git config/include 图投影最小 ACL；可写根另以 `WRITE_RESTRICTED` token 的独立 capability SID 约束。专用账户不继承只授予宿主交互用户的 profile/凭据权限，但 `Everyone`、`Authenticated Users` 和其它既有机器 ACL 可能允许额外读取，因此不承诺纯读取 allowlist。工作区内部不额外保护 `.git`、`.env` 或其他子路径；全部 Git 在 Runtime 内执行，Broker 不运行 Git。宿主 `%USERPROFILE%\.gitconfig`、`%USERPROFILE%\.config\git\config` 及对当前工作区成立的 include/includeIf 图只读授权；Sandbox 使用逐租约私有可写 HOME，`GIT_CONFIG_GLOBAL` 聚合入口按 D102 位于独立只读投影根。helper、证书、签名程序或其他引用对象不自动授权。宿主 Credential Manager、SSH agent 和用户证书私钥不继承。
 - 网络与 push：提升安装按专用账户 SID 建立持久 WFP 默认拒绝规则，只允许固定 Broker relay/CONNECT proxy 端口；普通 Runtime 和 Push Runner 都不能直接出站，push 时也不临时放宽 WFP。任务级代理联合验证账户 SID、PID、创建时间、Job、kind-specific instance ID、nonce、lease 与调用摘要，再按逐次确认的 HTTPS host/port、DNS/IP 类别、期限和字节上限转发。应用层 PushSpec 仍用于确认预期 remote/ref，但 host 级边界不保证仓库 path/ref 或上传内容。该方案不使用自研 WFP callout driver。
@@ -849,7 +849,7 @@
 - 日期：2026-09-20
 - 状态：顺序与真正并发的专用账户文件写入夹具均已在管理员环境通过；产品尚未实现，复杂 ACL、共享 grant、Broker/supervisor、WFP 与恢复边界仍待验证。
 - 证据：专用账户夹具以同一随机本地账户顺序执行两个显式凭据启动。两次 bootstrap、restricted probe 与后代的 account SID 相同，logon SID 也都为 `S-1-5-5-0-488199`；双方仍分别通过跨根读取、自己根直接/后代写入和对方根写拒绝。脚本随后因旧的“logon SID 必须不同”断言失败，但 `finally` 成功删除临时账户与运行目录。该结果证明文件 root capability 有效，同时证伪 D100 中对每次启动产生独立 logon SID 的依赖。
-- 决定：logon SID 只记录为诊断和启动兼容信息，可以在活动实例间共享，不参与文件写入 capability 或 executionInstance 标识。每个 execution instance 由 Broker 生成不可复用的 execution SID；每个可写根继续使用独立 root capability SID。restricted token 可暂时保留经兼容性实测所需的 logon/Everyone restricting SID。execution SID 用于文件写检查、正常 IPC 路由和审计，但不宣称能阻止同账户恶意 peer 打开或操纵另一个 Runtime。
+- 决定：logon SID 只记录为诊断和启动兼容信息，可以在活动实例间共享，不参与文件写入 capability 或 executionInstance 标识。每个 execution instance 由 Broker 生成不可复用的 execution SID；每个可写根继续使用独立 root capability SID。产品 token 的 restricting SID 已收紧为 execution/root capability，不加入 logon/Everyone；`WRITE_RESTRICTED` 只把该列表用于写访问，因此普通读取仍按专用账户的正常 SID/DACL 决定。execution SID 用于文件写检查、正常 IPC 路由和审计，但不宣称能阻止同账户恶意 peer 打开或操纵另一个 Runtime。
 - default DACL：Runtime token default DACL 必须同时满足普通检查和 restricting 检查，因此最小候选为共享账户 SID 加本实例 execution SID；不得向共享 logon SID、Everyone 或 root capability 授予新对象通用权限。bootstrap runner 和 supervisor 控制面仍由 Broker/SYSTEM-only 显式 security descriptor 保护。Runtime 后代对象 DACL 继续采用最小权限以减少偶然干扰，但 peer 访问成功不再阻塞并发。
 - 验收影响：W2/W3/W5 的实例身份夹具不再断言 logon SID 唯一，而必须刻意覆盖“多个实例共享同一 logon SID”。execution SID 不同、双方直接及后代写入不能跨 root capability 是 W2 必测项；peer process/thread/Job access 作为残余风险观测。pipe/proxy 的 task/instance 校验仍须保证正常路由与审计，但不宣称抵抗已能注入或操纵合法 peer 的恶意 Runtime。
 - 修订复测：第二次管理员运行以新的临时账户完成，最终报告 `distinctExecutionSids=yes logonSidReused=true crossRead=yes ownWrite=yes crossWriteDenied=yes nestedProcess=yes`。运行后再次确认没有 `CAProbe*` 账户或 `run-*` 目录残留。这完成 W2 的顺序文件访问第一阶段，不证明两个 Runtime 同时存活时的文件写入矩阵、Broker/supervisor 控制面、IPC 或共享 grant 生命周期。
@@ -859,7 +859,7 @@
 ## D102：Git 聚合配置位于 Broker 只读投影根
 
 - 日期：2026-09-20
-- 状态：已确认；产品尚未实现。
+- 状态：已确认；Broker 只读投影目录、聚合文件、Git include 图和原生逐对象 ACL 已实现，尚待提升环境用宿主真实配置验收。
 - 决定：逐租约 `HOME`、`USERPROFILE` 与 `XDG_CONFIG_HOME` 保持 Runtime 可写，但 `GIT_CONFIG_GLOBAL` 指向 Broker 控制的独立只读投影根。聚合 config 本身及父目录都不得由 Runtime 写入、删除或替换；聚合文件按固定顺序 include 两个宿主 global 入口，宿主 include/includeIf 文件仍按 AccessManifest 精确只读授权。
 - 原因：仅把聚合文件标记只读、同时放在 Runtime 可写 HOME 中不足以形成边界，Runtime 或 Git 可通过父目录 lock/rename 替换对象。真实 Git 最小夹具已验证 system、两个 global 入口、匹配 includeIf、local、worktree 的顺序，显式 `GIT_CONFIG_GLOBAL` 忽略私有 HOME decoy，且只读投影拒绝 `git config --global`。
 - 影响：Broker/supervisor 实现必须把配置投影根作为独立只读授权对象纳入 lease 和清理账本；写入或对象身份无法证明时 Sandbox Git 安全拒绝。该夹具不替代宿主真实配置图、逐文件 ACL、helper/证书或 push 验收。

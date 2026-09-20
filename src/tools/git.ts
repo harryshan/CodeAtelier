@@ -56,6 +56,23 @@ export type GitExecutor = (
   onOutput: (text: string) => void,
 ) => Promise<GitProcessResult>;
 
+export interface GitPushSpec {
+  remote: string;
+  remoteUrl: string;
+  host: string;
+  refspec: string;
+}
+
+export type GitPushExecutor = (
+  spec: GitPushSpec,
+  args: string[],
+  cwd: string,
+  signal: AbortSignal,
+  timeoutMs: number,
+  outputLimit: number,
+  onOutput: (text: string) => void,
+) => Promise<GitProcessResult>;
+
 interface WorkspacePaths {
   paths: string[];
   hasDotenvTemplate: boolean;
@@ -147,6 +164,7 @@ export class GitToolRunner {
           GIT_EDITOR: "true",
         },
       ),
+    private executePush?: GitPushExecutor,
   ) {}
 
   async execute(
@@ -511,13 +529,36 @@ export class GitToolRunner {
       );
     }
 
-    return this.run([
+    const args = [
       "push",
       "--porcelain",
       "--no-verify",
       remote,
       `HEAD:${merge}`,
-    ]);
+    ];
+    if (this.executePush) {
+      const url = new URL(remoteUrl);
+      if (url.protocol !== "https:") {
+        throw new Error("Sandbox Push Runner 首版只支持 HTTPS remote。");
+      }
+
+      return this.executePush(
+        {
+          remote,
+          remoteUrl,
+          host: url.hostname.toLocaleLowerCase(),
+          refspec: `HEAD:${merge}`,
+        },
+        args,
+        this.ctx.root,
+        this.ctx.signal,
+        this.ctx.settings.commandTimeoutMs,
+        this.ctx.settings.outputChars,
+        (text) => this.ctx.emit("git_output", { text }),
+      );
+    }
+
+    return this.run(args);
   }
 
   private async valueFromGit(args: string[]) {

@@ -16,6 +16,8 @@ const root = (id: string, character: string) => ({
   rootId: id,
   path: `C:\\sandbox\\${id}`,
   objectIdentityDigest: digest(character),
+  deviceId: "1",
+  fileId: character.charCodeAt(0).toString(),
 });
 
 function manifest(

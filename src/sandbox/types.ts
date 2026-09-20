@@ -63,7 +63,7 @@ export type ExecutionProcessKind =
 
 export interface ExecutionInstanceRecord {
   executionInstanceId: string;
-  kind: "agent-runtime" | "push-runner";
+  kind?: "agent-runtime" | "push-runner";
   mode: ExecutionInstanceMode;
   state: ExecutionInstanceState;
   createdAt: string;
@@ -86,6 +86,8 @@ export interface SandboxCommand {
   sessionId: string;
   taskId: string;
   executionInstanceId: string;
+  kind?: "agent-runtime" | "push-runner";
+  networkHost?: string;
   command: string;
   args: string[];
   cwd: string;
@@ -96,6 +98,28 @@ export interface SandboxCommand {
   onProcessStarted: (pid: number, kind: ExecutionProcessKind) => void;
 }
 
+export interface SandboxNativeAccess {
+  manifest: import("./supervisor-protocol.js").AccessManifest;
+  leaseEpoch?: number;
+  installObjectIdentityDigests: string[];
+  gitGlobalConfigPath?: string;
+  proxyUrl?: string;
+  proxyToken?: string;
+}
+
+export interface SandboxPreparedAccess {
+  readOnlyRoots: string[];
+  readWriteRoots: string[];
+  gitConfigFiles: string[];
+  gitGlobalConfigPath?: string;
+  cleanup(): Promise<void>;
+}
+
+export type SandboxRevokeRoot =
+  import("./supervisor-protocol.js").AccessManifest["writeRoots"][number] & {
+    objectType: "directory" | "file";
+  };
+
 export interface SandboxRuntime {
   selfCheck(
     signal: AbortSignal,
@@ -105,14 +129,21 @@ export interface SandboxRuntime {
     workspaceProtection: "direct-path";
     accountGenerationDigest?: string;
   }>;
+  prepareAccess?(
+    command: SandboxCommand,
+    workspace: SandboxWorkspace,
+  ): Promise<SandboxPreparedAccess>;
   execute(
     command: SandboxCommand,
     workspace: SandboxWorkspace,
+    access?: SandboxNativeAccess,
   ): Promise<{
     output: string;
     exitCode: number | null;
     truncated: boolean;
   }>;
+  revokeAccess?(roots: SandboxRevokeRoot[], signal: AbortSignal): Promise<void>;
+  shutdown?(): Promise<void>;
 }
 
 export class SandboxUnavailableError extends Error {

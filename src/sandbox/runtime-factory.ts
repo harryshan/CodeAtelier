@@ -11,15 +11,17 @@
 import type { Logger } from "pino";
 import type { SandboxConfiguration, SandboxRuntime } from "./types.js";
 import { NativeWindowsSandboxRuntime } from "./native-windows-runtime.js";
+import type { TraceRecorder } from "../tracing/recorder.js";
 
 export function createSandboxRuntime(
   configuration: SandboxConfiguration,
   platform = process.platform,
   log?: Logger,
+  traces?: TraceRecorder,
 ): SandboxRuntime | undefined {
   if (!configuration.enabled || platform !== "win32") {
     return undefined;
   }
 
-  return new NativeWindowsSandboxRuntime(process.env, undefined, log);
+  return new NativeWindowsSandboxRuntime(process.env, undefined, log, traces);
 }

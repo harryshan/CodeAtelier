@@ -100,6 +100,44 @@ export class ToolRunner {
           exitCode: result.exitCode,
           truncated: result.truncated,
         })),
+      async (spec, args, cwd, signal, timeoutMs, outputLimit, onOutput) => {
+        if (this.sandbox.status.requested) {
+          const allowed = await this.ctx.approvals.request(
+            {
+              sessionId: this.ctx.sessionId,
+              taskId: this.ctx.taskId,
+              tool: "git_push",
+              description: `允许单次 HTTPS push 到 ${spec.host}，目标 ${spec.refspec}。该主机可接收仓库内容，Git 配置及其子进程会在本次网络窗口内运行。`,
+            },
+            signal,
+          );
+          if (!allowed) {
+            throw new Error("用户拒绝了 Sandbox Git push。 ");
+          }
+        }
+
+        return this.executeProcessWithSandbox({
+          command: this.resolveExecutable("git"),
+          args,
+          cwd,
+          signal,
+          timeoutMs,
+          outputLimit,
+          onOutput,
+          executionKind: "push-runner",
+          networkHost: spec.host,
+          environment: {
+            GIT_TERMINAL_PROMPT: "0",
+            GIT_PAGER: "cat",
+            PAGER: "cat",
+            GIT_EDITOR: "true",
+          },
+        }).then((result) => ({
+          output: result.output,
+          exitCode: result.exitCode,
+          truncated: result.truncated,
+        }));
+      },
     );
     this.editor = new FileEditor({
       root: ctx.root,
@@ -192,12 +230,14 @@ export class ToolRunner {
     outputLimit: number;
     onOutput: (text: string) => void;
     environment?: NodeJS.ProcessEnv;
+    executionKind?: "agent-runtime" | "push-runner";
+    networkHost?: string;
   }) {
     const executionInstanceId = randomUUID();
     const createdAt = new Date().toISOString();
     let record: ExecutionInstanceRecord = {
       executionInstanceId,
-      kind: "agent-runtime",
+      kind: input.executionKind ?? "agent-runtime",
       mode: this.executionMode(this.sandbox.status),
       state: "created",
       createdAt,
@@ -240,6 +280,8 @@ export class ToolRunner {
           sessionId: this.ctx.sessionId,
           taskId: this.ctx.taskId,
           executionInstanceId,
+          kind: input.executionKind ?? "agent-runtime",
+          networkHost: input.networkHost,
           ...input,
           onProcessStarted: processStarted,
         },

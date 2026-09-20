@@ -55,7 +55,10 @@ function Assert-ContainedPath {
 }
 
 function Set-StateDirectoryAcl {
-    param([string]$Path)
+    param(
+        [string]$Path,
+        [Security.Principal.SecurityIdentifier]$SandboxAccountSid
+    )
 
     $Acl = [Security.AccessControl.DirectorySecurity]::new()
     $Acl.SetAccessRuleProtection($true, $false)
@@ -75,6 +78,14 @@ function Set-StateDirectoryAcl {
         )
         [void]$Acl.AddAccessRule($Rule)
     }
+    $SandboxTraverseRule = [Security.AccessControl.FileSystemAccessRule]::new(
+        $SandboxAccountSid,
+        [Security.AccessControl.FileSystemRights]::ReadAndExecute,
+        [Security.AccessControl.InheritanceFlags]::None,
+        [Security.AccessControl.PropagationFlags]::None,
+        [Security.AccessControl.AccessControlType]::Allow
+    )
+    [void]$Acl.AddAccessRule($SandboxTraverseRule)
     Set-Acl -LiteralPath $Path -AclObject $Acl
 }
 
@@ -135,6 +146,18 @@ function Invoke-NetworkManager {
     }
 }
 
+function Invoke-Supervisor {
+    param([string[]]$Arguments)
+
+    if (-not (Test-Path -LiteralPath $Supervisor -PathType Leaf)) {
+        throw "缺少原生 Sandbox supervisor；不能安全清理 ACL journal。"
+    }
+    & $Supervisor @Arguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "原生 Sandbox supervisor 失败，退出码 $LASTEXITCODE。"
+    }
+}
+
 function Set-WelcomeAccountHidden {
     New-Item -Path $WelcomeRegistry -Force | Out-Null
     New-ItemProperty -Path $WelcomeRegistry -Name $AccountName -PropertyType DWord -Value 0 -Force | Out-Null
@@ -161,6 +184,8 @@ function Remove-Installation {
     $State = $null
     if (Test-Path -LiteralPath $StatePath -PathType Leaf) {
         $State = Read-InstallationState
+        Invoke-Supervisor -Arguments @("--terminate-account-processes", $StatePath, $NetworkManager)
+        Invoke-Supervisor -Arguments @("--revoke-journal", $StatePath, $NetworkManager)
     }
 
     if (Test-Path -LiteralPath $NetworkManager -PathType Leaf) {
@@ -220,7 +245,12 @@ function Install-Sandbox {
         Set-WelcomeAccountHidden
 
         New-Item -ItemType Directory -Force -Path $DataRoot | Out-Null
-        Set-StateDirectoryAcl -Path $DataRoot
+        Set-StateDirectoryAcl -Path $DataRoot -SandboxAccountSid $Account.SID
+        foreach ($RuntimeDirectoryName in @("grants", "instances", "projections")) {
+            $RuntimeDirectory = Join-Path $DataRoot $RuntimeDirectoryName
+            New-Item -ItemType Directory -Force -Path $RuntimeDirectory | Out-Null
+            Set-StateDirectoryAcl -Path $RuntimeDirectory -SandboxAccountSid $Account.SID
+        }
         $State = [ordered]@{
             version = "1"
             accountName = $AccountName

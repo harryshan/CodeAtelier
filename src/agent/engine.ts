@@ -136,7 +136,12 @@ export class Engine {
     );
     this.sandbox = new SandboxBroker(
       config.sandbox,
-      createSandboxRuntime(config.sandbox, process.platform, this.sandboxLog),
+      createSandboxRuntime(
+        config.sandbox,
+        process.platform,
+        this.sandboxLog,
+        this.traces,
+      ),
       this.sandboxLog,
     );
     this.memories = new ProjectMemoryService(config.directory, log);
@@ -511,6 +516,7 @@ export class Engine {
       }
 
       await Promise.all(active.map((item) => item.done));
+      await this.sandbox.shutdown();
     } finally {
       this.closing = false;
     }

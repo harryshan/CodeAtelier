@@ -33,10 +33,29 @@ it("encodes a bounded binary command request and rejects unsafe shapes", () => {
     args: ["/d", "/c", "echo ok"],
     privateDirectory: "C:\\private",
     timeoutMs: 1000,
+    access: {
+      leaseEpoch: 1,
+      installObjectIdentityDigests: ["a".repeat(64)],
+      manifest: {
+        manifestDigest: "b".repeat(64),
+        workspaceRootId: "workspace",
+        readRoots: [],
+        writeRoots: [
+          {
+            rootId: "workspace",
+            path: "C:\\workspace",
+            objectIdentityDigest: "a".repeat(64),
+            deviceId: "1",
+            fileId: "2",
+          },
+        ],
+        gitConfigFiles: [],
+      },
+    },
   });
 
   expect(frame.readUInt32LE(0)).toBe(0x42534143);
-  expect(frame.readUInt32LE(4)).toBe(1);
+  expect(frame.readUInt32LE(4)).toBe(2);
   expect(frame.includes(Buffer.from("instance-1"))).toBe(true);
   expect(frame.includes(Buffer.from("echo ok"))).toBe(true);
   expect(() =>
@@ -68,6 +87,7 @@ it("accepts only matching installed binary digests and native attestation", asyn
     [
       "version=1",
       "generationId=12345678-1234-1234-1234-123456789abc",
+      "relayPortV4=42871",
       `supervisorSha256=${digest("supervisor")}`,
       `networkSha256=${digest("network")}`,
     ].join("\n"),

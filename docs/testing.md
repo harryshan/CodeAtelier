@@ -73,7 +73,7 @@
 
 真实 Git 配置投影探针已通过 system、两个 global 入口、匹配 includeIf、local、worktree 的加载顺序；显式 `GIT_CONFIG_GLOBAL` 忽略私有 HOME decoy，Broker 只读投影根拒绝 global 写入。该结果只验证配置栈机制，不替代宿主真实配置图解析、专用账户逐文件 ACL、helper/证书或 push 集成。
 
-产品实现新增无管理员副作用的 Sandbox 单元覆盖：AccessManifest 对工作区、显式读写根和 Git 配置文件固定对象身份并拒绝链接/模式冲突；Git 配置图按两个 global 入口递归解析 `include` 与适用的 `gitdir/gitdir/i includeIf`，对循环、未知条件、链接和资源上限安全拒绝；account generation 状态机验证 1～4 个不同工作区并发、同工作区串行、共享 grant 引用计数、epoch 防重放和整代 quarantine；ToolRunner 回归夹具证明受限 Git 的仓库探测和实际 action 都经过配置的 Sandbox Runtime。原生构建脚本已在本机 MSVC x64 下生成 WFP manager 与 restricted runner；PowerShell build/install/recover 均通过语法解析。上述结果仍不等同于提升安装、产品 Runtime 或真实 ACL/WFP 集成通过。
+产品实现新增无管理员副作用的 Sandbox 单元覆盖：AccessManifest 对工作区、显式读写根和 Git 配置文件固定卷/file ID 并拒绝链接/模式冲突；Git 配置图按两个 global 入口递归解析 `include` 与适用的 `gitdir/gitdir/i includeIf`，对循环、未知条件、链接和资源上限安全拒绝；account generation 状态机验证 1～4 个不同工作区并发、同工作区串行、共享 grant 引用计数、epoch 防重放和整代 quarantine；ToolRunner 回归夹具证明受限 Git 的仓库探测和实际 action 都经过配置的 Sandbox Runtime；CONNECT relay 夹具验证 proxy token、精确 host、私网 DNS 和 lease 撤销。原生构建脚本已在本机 MSVC x64 下生成 WFP manager 与 supervisor，后者含逐对象 ACL/journal、收紧的 WRITE_RESTRICTED token、private desktop、Job 与同 Job askpass pipe；PowerShell build/install/recover 均通过语法解析。上述结果仍不等同于提升安装、真实 ACL/WFP/CONNECT 或 Git push 集成通过。
 
 原生 Runtime 增量另覆盖：固定 magic/version 的有界二进制执行帧、绝对路径/argv/时限边界、installation state 与两个原生二进制 SHA-256 复核、原生自检成功/篡改拒绝，以及 factory 从 WSL 参考实现切换到专用账户 Runtime。MSVC 已成功构建同一二进制的 supervisor/bootstrap：固定 self-check/execute/bootstrap 模式、DPAPI 解密、账户/WFP 自检、PID 核对 Named Pipe、restricted token、Job、Broker stdin 断连取消和唯一 SID ACE 撤销。真实提升安装被当前非管理员自动化上下文拒绝，UAC 子进程未获确认且只读复核证明没有创建账户或 state；因此这里仍只记录“构建与无副作用契约通过”，不记录产品 E2E 通过。
 

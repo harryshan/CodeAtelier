@@ -26,6 +26,8 @@ const manifestRootSchema = z
     rootId: identifier,
     path: canonicalPath,
     objectIdentityDigest: digest,
+    deviceId: z.string().regex(/^\d+$/),
+    fileId: z.string().regex(/^\d+$/),
   })
   .strict();
 

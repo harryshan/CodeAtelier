@@ -22,11 +22,13 @@ import type {
   ExecutionInstanceRecord,
   SandboxStage,
   SandboxStatus,
+  SandboxPreparedAccess,
 } from "./types.js";
 import { SandboxUnavailableError } from "./types.js";
 import { WorkspaceView } from "./workspace-view.js";
 import { buildAccessManifest } from "./access-manifest.js";
 import { AccountGenerationRegistry } from "./account-generation.js";
+import type { AccessManifest } from "./supervisor-protocol.js";
 
 export class SandboxBroker {
   private latestStatus: SandboxStatus;
@@ -48,6 +50,10 @@ export class SandboxBroker {
   /** Engine 在任务结束时释放按任务固定的 fallback 决策，避免长期服务积累已完成 taskId。 */
   releaseTask(taskId: string) {
     this.fallbackTasks.delete(taskId);
+  }
+
+  async shutdown() {
+    await this.runtime?.shutdown?.();
   }
 
   /** ToolRunner 持久化同一份安全摘要时，专用日志同步留下可按 instance 追踪的状态。 */
@@ -98,6 +104,70 @@ export class SandboxBroker {
           ? String(code).slice(0, 80)
           : undefined,
     };
+  }
+
+  private rootsForGrantRevocation(
+    manifest: AccessManifest,
+    identities: string[],
+  ) {
+    const requested = new Set(identities);
+    const roots = [
+      ...manifest.readRoots.map((root) => ({
+        ...root,
+        objectType: "directory" as const,
+      })),
+      ...manifest.writeRoots.map((root) => ({
+        ...root,
+        objectType: "directory" as const,
+      })),
+      ...manifest.gitConfigFiles.map((root) => ({
+        ...root,
+        objectType: "file" as const,
+      })),
+    ].filter((root) => requested.delete(root.objectIdentityDigest));
+
+    if (requested.size > 0) {
+      throw new Error("AccessManifest 无法解析待撤销的共享授权。");
+    }
+
+    return roots;
+  }
+
+  private async releaseAccess(
+    command: SandboxCommand,
+    manifest: AccessManifest,
+    acquired: NonNullable<ReturnType<AccountGenerationRegistry["acquire"]>>,
+  ) {
+    if (!this.accountGeneration) {
+      return;
+    }
+
+    const released = this.accountGeneration.releaseWithManifest(
+      command.executionInstanceId,
+      acquired.lease.epoch,
+      manifest,
+    );
+    const roots = this.rootsForGrantRevocation(
+      manifest,
+      released.revoke.map((grant) => grant.objectIdentityDigest),
+    );
+    if (roots.length > 0) {
+      if (!this.runtime?.revokeAccess) {
+        this.accountGeneration.quarantine("acl_cleanup");
+        throw new Error("平台 Runtime 未实现共享 ACL 撤销。");
+      }
+
+      await this.runtime.revokeAccess(roots, AbortSignal.timeout(20_000));
+    }
+
+    this.log?.info({
+      event: "sandbox.root_revoke.completed",
+      module: "sandbox",
+      sessionId: command.sessionId,
+      taskId: command.taskId,
+      executionInstanceId: command.executionInstanceId,
+      grantRevokeCount: released.revoke.length,
+    });
   }
 
   private async executeFallback(
@@ -234,6 +304,7 @@ export class SandboxBroker {
 
     let checked: Awaited<ReturnType<SandboxRuntime["selfCheck"]>>;
     let manifest: Awaited<ReturnType<typeof buildAccessManifest>>;
+    let prepared: SandboxPreparedAccess | undefined;
     let acquired: ReturnType<AccountGenerationRegistry["acquire"]> | undefined;
     try {
       this.log?.debug({
@@ -250,7 +321,13 @@ export class SandboxBroker {
         throw new Error("平台 runtime 未证明直接受保护路径防护。");
       }
 
-      manifest = await buildAccessManifest({ workspaceRoot: workspace.root });
+      prepared = await this.runtime.prepareAccess?.(command, workspace);
+      manifest = await buildAccessManifest({
+        workspaceRoot: workspace.root,
+        readOnlyRoots: prepared?.readOnlyRoots,
+        readWriteRoots: prepared?.readWriteRoots,
+        gitConfigFiles: prepared?.gitConfigFiles,
+      });
       command.signal.throwIfAborted();
       const generationDigest = checked.accountGenerationDigest;
       if (generationDigest) {
@@ -272,11 +349,12 @@ export class SandboxBroker {
 
       acquired = this.accountGeneration?.acquire({
         executionInstanceId: command.executionInstanceId,
-        kind: "agent-runtime",
+        kind: command.kind ?? "agent-runtime",
         taskId: command.taskId,
         accessManifest: manifest,
       });
     } catch (error) {
+      await prepared?.cleanup().catch(() => {});
       if (command.signal.aborted) {
         throw error;
       }
@@ -345,22 +423,18 @@ export class SandboxBroker {
         executionInstanceId: command.executionInstanceId,
         level: checked.level,
       });
-      const result = await this.runtime.execute(command, workspace);
-      if (acquired && this.accountGeneration) {
-        const released = this.accountGeneration.releaseWithManifest(
-          command.executionInstanceId,
-          acquired.lease.epoch,
-          manifest,
-        );
-        this.log?.info({
-          event: "sandbox.root_revoke.completed",
-          module: "sandbox",
-          sessionId: command.sessionId,
-          taskId: command.taskId,
-          executionInstanceId: command.executionInstanceId,
-          grantRevokeCount: released.revoke.length,
-        });
+      const result = await this.runtime.execute(command, workspace, {
+        manifest,
+        leaseEpoch: acquired?.lease.epoch,
+        installObjectIdentityDigests:
+          acquired?.install.map((grant) => grant.objectIdentityDigest) ?? [],
+        gitGlobalConfigPath: prepared?.gitGlobalConfigPath,
+      });
+      if (acquired) {
+        await this.releaseAccess(command, manifest, acquired);
       }
+
+      await prepared?.cleanup();
 
       this.record("collecting", onStage);
       this.record("completed", onStage);
@@ -378,17 +452,15 @@ export class SandboxBroker {
       return { result, status: this.latestStatus };
     } catch (error) {
       if (command.signal.aborted) {
-        if (acquired && this.accountGeneration) {
+        if (acquired) {
           try {
-            this.accountGeneration.releaseWithManifest(
-              command.executionInstanceId,
-              acquired.lease.epoch,
-              manifest,
-            );
+            await this.releaseAccess(command, manifest, acquired);
           } catch {
-            this.accountGeneration.quarantine("ledger_inconsistent");
+            this.accountGeneration?.quarantine("acl_cleanup");
           }
         }
+
+        await prepared?.cleanup().catch(() => {});
 
         throw error;
       }

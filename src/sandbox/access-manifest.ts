@@ -83,6 +83,8 @@ async function canonicalRoot(input: string, expectFile = false) {
     rootId: digest(`root\0${identity}`).slice(0, 32),
     path: canonicalPath,
     objectIdentityDigest: digest(`object\0${identity}`),
+    deviceId: objectInfo.dev.toString(),
+    fileId: objectInfo.ino.toString(),
   };
 }
 

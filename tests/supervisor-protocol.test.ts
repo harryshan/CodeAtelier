@@ -27,6 +27,8 @@ const manifest: AccessManifest = {
       rootId: "workspace",
       path: "G:\\project",
       objectIdentityDigest: hash,
+      deviceId: "1",
+      fileId: "2",
     },
   ],
   gitConfigFiles: [],

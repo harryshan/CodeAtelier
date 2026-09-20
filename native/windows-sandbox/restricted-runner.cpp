@@ -19,6 +19,7 @@
 #undef wmain
 
 #include <wincrypt.h>
+#include <TlHelp32.h>
 
 #include <atomic>
 #include <map>
@@ -27,13 +28,22 @@
 namespace {
 
 constexpr uint32_t kRequestMagic = 0x42534143;
-constexpr uint32_t kRequestVersion = 1;
+constexpr uint32_t kRequestVersion = 2;
 constexpr DWORD kCleanupFailureExitCode = 70;
 constexpr DWORD kSelfCheckFailureExitCode = 71;
 constexpr DWORD kProtocolFailureExitCode = 72;
 constexpr size_t kMaximumStringBytes = 64 * 1024;
 constexpr uint32_t kMaximumArguments = 64;
+constexpr uint32_t kMaximumRoots = 96;
 constexpr char kDpapiEntropy[] = "CodeAtelier.WindowsSandbox.Secret.v1";
+
+struct ProductRoot {
+  uint32_t flags = 0;
+  std::wstring path;
+  std::wstring device_id;
+  std::wstring file_id;
+  std::wstring identity_digest;
+};
 
 struct ProductRequest {
   std::wstring execution_instance_id;
@@ -42,6 +52,13 @@ struct ProductRequest {
   std::vector<std::wstring> arguments;
   std::wstring private_directory;
   DWORD timeout_ms = 0;
+  std::wstring manifest_digest;
+  std::wstring git_global_config;
+  std::wstring proxy_url;
+  std::wstring proxy_token;
+  std::wstring askpass_pipe;
+  DWORD lease_epoch = 0;
+  std::vector<ProductRoot> roots;
 };
 
 struct InstallationState {
@@ -165,9 +182,40 @@ bool ReadProductRequest(HANDLE handle, ProductRequest* request) {
     }
     request->arguments.push_back(std::move(argument));
   }
+  uint32_t root_count = 0;
+  if (!ReadFramedString(handle, &request->manifest_digest) ||
+      !ReadFramedString(handle, &request->git_global_config) ||
+      !ReadFramedString(handle, &request->proxy_url) ||
+      !ReadFramedString(handle, &request->proxy_token) ||
+      !ReadFramedString(handle, &request->askpass_pipe) ||
+      !ReadExact(handle, &request->lease_epoch, sizeof(request->lease_epoch)) ||
+      !ReadExact(handle, &root_count, sizeof(root_count)) ||
+      root_count > kMaximumRoots) {
+    return false;
+  }
+  request->roots.clear();
+  for (uint32_t index = 0; index < root_count; ++index) {
+    ProductRoot root;
+    if (!ReadExact(handle, &root.flags, sizeof(root.flags)) ||
+        (root.flags & ~7u) != 0 || !ReadFramedString(handle, &root.path) ||
+        !ReadFramedString(handle, &root.device_id) ||
+        !ReadFramedString(handle, &root.file_id) ||
+        !ReadFramedString(handle, &root.identity_digest) || root.path.empty() ||
+        root.device_id.empty() || root.file_id.empty() ||
+        root.identity_digest.size() != 64) {
+      return false;
+    }
+    request->roots.push_back(std::move(root));
+  }
   return !request->execution_instance_id.empty() &&
          !request->working_directory.empty() && !request->executable.empty() &&
-         !request->private_directory.empty() && request->timeout_ms > 0;
+         !request->private_directory.empty() && request->timeout_ms > 0 &&
+         !request->manifest_digest.empty() && request->lease_epoch > 0 &&
+         !request->git_global_config.empty() && !request->roots.empty() &&
+         (request->proxy_url.empty()
+              ? request->proxy_token.empty() && request->askpass_pipe.empty()
+              : (!request->proxy_token.empty() ||
+                 !request->askpass_pipe.empty()));
 }
 
 bool WriteProductRequest(HANDLE handle, const ProductRequest& request) {
@@ -187,7 +235,103 @@ bool WriteProductRequest(HANDLE handle, const ProductRequest& request) {
       return false;
     }
   }
+  uint32_t root_count = static_cast<uint32_t>(request.roots.size());
+  if (!WriteFramedString(handle, request.manifest_digest) ||
+      !WriteFramedString(handle, request.git_global_config) ||
+      !WriteFramedString(handle, request.proxy_url) ||
+      !WriteFramedString(handle, request.proxy_token) ||
+      !WriteFramedString(handle, request.askpass_pipe) ||
+      !WriteExact(handle, &request.lease_epoch, sizeof(request.lease_epoch)) ||
+      !WriteExact(handle, &root_count, sizeof(root_count))) {
+    return false;
+  }
+  for (const ProductRoot& root : request.roots) {
+    if (!WriteExact(handle, &root.flags, sizeof(root.flags)) ||
+        !WriteFramedString(handle, root.path) ||
+        !WriteFramedString(handle, root.device_id) ||
+        !WriteFramedString(handle, root.file_id) ||
+        !WriteFramedString(handle, root.identity_digest)) {
+      return false;
+    }
+  }
   return true;
+}
+
+bool ReadRevokeRoots(HANDLE handle, std::vector<ProductRoot>* roots) {
+  uint32_t magic = 0;
+  uint32_t version = 0;
+  uint32_t root_count = 0;
+  if (!ReadExact(handle, &magic, sizeof(magic)) ||
+      !ReadExact(handle, &version, sizeof(version)) ||
+      !ReadExact(handle, &root_count, sizeof(root_count)) ||
+      magic != kRequestMagic || version != kRequestVersion || root_count == 0 ||
+      root_count > kMaximumRoots) {
+    return false;
+  }
+  roots->clear();
+  for (uint32_t index = 0; index < root_count; ++index) {
+    ProductRoot root;
+    if (!ReadExact(handle, &root.flags, sizeof(root.flags)) ||
+        (root.flags & ~2u) != 0 || !ReadFramedString(handle, &root.path) ||
+        !ReadFramedString(handle, &root.device_id) ||
+        !ReadFramedString(handle, &root.file_id) ||
+        !ReadFramedString(handle, &root.identity_digest) || root.path.empty() ||
+        root.device_id.empty() || root.file_id.empty() ||
+        root.identity_digest.size() != 64) {
+      return false;
+    }
+    roots->push_back(std::move(root));
+  }
+  return true;
+}
+
+bool IsDigest(const std::wstring& value) {
+  return value.size() == 64 &&
+         std::all_of(value.begin(), value.end(), [](wchar_t character) {
+           return (character >= L'0' && character <= L'9') ||
+                  (character >= L'a' && character <= L'f');
+         });
+}
+
+std::filesystem::path GrantJournalPath(const std::wstring& state_path,
+                                       const ProductRoot& root) {
+  return std::filesystem::path(state_path).parent_path() / L"grants" /
+         (root.identity_digest + L".grant");
+}
+
+bool WriteGrantJournal(const std::wstring& state_path,
+                       const ProductRoot& root) {
+  if (!IsDigest(root.identity_digest)) {
+    return false;
+  }
+  std::filesystem::path journal_path = GrantJournalPath(state_path, root);
+  UniqueHandle journal(CreateFileW(
+      journal_path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
+      FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, nullptr));
+  if (!journal) {
+    return false;
+  }
+  uint32_t root_count = 1;
+  return WriteExact(journal.get(), &kRequestMagic, sizeof(kRequestMagic)) &&
+         WriteExact(journal.get(), &kRequestVersion,
+                    sizeof(kRequestVersion)) &&
+         WriteExact(journal.get(), &root_count, sizeof(root_count)) &&
+         WriteExact(journal.get(), &root.flags, sizeof(root.flags)) &&
+         WriteFramedString(journal.get(), root.path) &&
+         WriteFramedString(journal.get(), root.device_id) &&
+         WriteFramedString(journal.get(), root.file_id) &&
+         WriteFramedString(journal.get(), root.identity_digest) &&
+         FlushFileBuffers(journal.get());
+}
+
+bool RemoveGrantJournal(const std::wstring& state_path,
+                        const ProductRoot& root) {
+  if (!IsDigest(root.identity_digest)) {
+    return false;
+  }
+  std::filesystem::path journal_path = GrantJournalPath(state_path, root);
+  return DeleteFileW(journal_path.c_str()) != FALSE ||
+         GetLastError() == ERROR_FILE_NOT_FOUND;
 }
 
 std::wstring Trim(const std::wstring& value) {
@@ -361,23 +505,46 @@ bool VerifyInstallation(const InstallationState& state,
   return RunFixedProcess(network_manager, L"--wfp-persistent-verify");
 }
 
-class WorkspaceGrant {
+class ObjectGrant {
  public:
-  bool Install(const std::wstring& directory, PSID account_sid,
-               PSID capability_sid) {
+  bool Install(const std::wstring& object_path, bool expect_file,
+               bool writable, bool install_account, PSID account_sid,
+               PSID capability_sid, const std::wstring& expected_device = L"",
+               const std::wstring& expected_file = L"") {
     handle_.reset(CreateFileW(
-        directory.c_str(), READ_CONTROL | WRITE_DAC,
+        object_path.c_str(), READ_CONTROL | WRITE_DAC,
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
         OPEN_EXISTING,
-        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+        (expect_file ? 0 : FILE_FLAG_BACKUP_SEMANTICS) |
+            FILE_FLAG_OPEN_REPARSE_POINT,
+        nullptr));
     if (!handle_) {
       return false;
     }
     BY_HANDLE_FILE_INFORMATION information{};
     if (!GetFileInformationByHandle(handle_.get(), &information) ||
         (information.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0 ||
-        (information.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0) {
+        (((information.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) ==
+         expect_file)) {
       return false;
+    }
+    if (!expected_device.empty() && !expected_file.empty()) {
+      wchar_t* end = nullptr;
+      unsigned long long expected_device_value =
+          wcstoull(expected_device.c_str(), &end, 10);
+      if (end == expected_device.c_str() || *end != L'\0') {
+        return false;
+      }
+      unsigned long long expected_file_value =
+          wcstoull(expected_file.c_str(), &end, 10);
+      unsigned long long actual_file_value =
+          (static_cast<unsigned long long>(information.nFileIndexHigh) << 32) |
+          information.nFileIndexLow;
+      if (end == expected_file.c_str() || *end != L'\0' ||
+          expected_device_value != information.dwVolumeSerialNumber ||
+          expected_file_value != actual_file_value) {
+        return false;
+      }
     }
 
     PACL old_acl = nullptr;
@@ -386,41 +553,124 @@ class WorkspaceGrant {
                                    DACL_SECURITY_INFORMATION, nullptr, nullptr,
                                    &old_acl, nullptr, &descriptor);
     LocalPointer owned_descriptor(descriptor);
-    if (result != ERROR_SUCCESS || HasExplicitSid(old_acl, account_sid) ||
-        HasExplicitSid(old_acl, capability_sid)) {
+    if (result != ERROR_SUCCESS) {
       return false;
     }
 
-    std::array<EXPLICIT_ACCESSW, 2> entries{};
-    std::array<PSID, 2> sids = {account_sid, capability_sid};
-    for (size_t index = 0; index < entries.size(); ++index) {
-      entries[index].grfAccessPermissions =
-          FILE_GENERIC_READ | FILE_GENERIC_WRITE | FILE_GENERIC_EXECUTE | DELETE;
-      entries[index].grfAccessMode = GRANT_ACCESS;
-      entries[index].grfInheritance = SUB_CONTAINERS_AND_OBJECTS_INHERIT;
-      entries[index].Trustee.TrusteeForm = TRUSTEE_IS_SID;
-      entries[index].Trustee.TrusteeType = TRUSTEE_IS_UNKNOWN;
-      entries[index].Trustee.ptstrName = static_cast<LPWSTR>(sids[index]);
+    bool has_account = HasExplicitSid(old_acl, account_sid);
+    if ((install_account && has_account) || (!install_account && !has_account) ||
+        (writable && HasExplicitSid(old_acl, capability_sid))) {
+      return false;
+    }
+
+    std::vector<EXPLICIT_ACCESSW> entries;
+    std::vector<PSID> sids;
+    if (install_account) {
+      sids.push_back(account_sid);
+    }
+    if (writable) {
+      sids.push_back(capability_sid);
+    }
+    for (PSID sid : sids) {
+      EXPLICIT_ACCESSW entry{};
+      entry.grfAccessPermissions =
+          FILE_GENERIC_READ | FILE_GENERIC_EXECUTE |
+          (writable ? FILE_GENERIC_WRITE | DELETE : 0);
+      entry.grfAccessMode = GRANT_ACCESS;
+      entry.grfInheritance =
+          expect_file ? NO_INHERITANCE : SUB_CONTAINERS_AND_OBJECTS_INHERIT;
+      entry.Trustee.TrusteeForm = TRUSTEE_IS_SID;
+      entry.Trustee.TrusteeType = TRUSTEE_IS_UNKNOWN;
+      entry.Trustee.ptstrName = static_cast<LPWSTR>(sid);
+      entries.push_back(entry);
     }
     PACL new_acl = nullptr;
-    result = SetEntriesInAclW(static_cast<ULONG>(entries.size()), entries.data(),
-                              old_acl, &new_acl);
+    result = entries.empty()
+                 ? ERROR_SUCCESS
+                 : SetEntriesInAclW(static_cast<ULONG>(entries.size()),
+                                    entries.data(), old_acl, &new_acl);
     LocalPointer owned_acl(new_acl);
-    if (result != ERROR_SUCCESS ||
+    if (result != ERROR_SUCCESS || (!entries.empty() &&
         SetSecurityInfo(handle_.get(), SE_FILE_OBJECT,
                         DACL_SECURITY_INFORMATION, nullptr, nullptr, new_acl,
-                        nullptr) != ERROR_SUCCESS) {
+                        nullptr) != ERROR_SUCCESS)) {
       return false;
     }
     account_sid_.resize(GetLengthSid(account_sid));
-    capability_sid_.resize(GetLengthSid(capability_sid));
-    return CopySid(static_cast<DWORD>(account_sid_.size()), account_sid_.data(),
-                   account_sid) &&
-           CopySid(static_cast<DWORD>(capability_sid_.size()),
-                   capability_sid_.data(), capability_sid);
+    remove_account_ = install_account;
+    remove_capability_ = writable;
+    if (writable) {
+      capability_sid_.resize(GetLengthSid(capability_sid));
+    }
+    return CopySid(static_cast<DWORD>(account_sid_.size()),
+                   account_sid_.data(), account_sid) &&
+           (!writable ||
+            CopySid(static_cast<DWORD>(capability_sid_.size()),
+                    capability_sid_.data(), capability_sid));
   }
 
-  bool Revoke() {
+  bool RevokeInstance() {
+    return Revoke(false);
+  }
+
+  bool RevokeAll() {
+    return Revoke(true);
+  }
+
+  static bool RevokeAccount(const std::wstring& object_path, bool expect_file,
+                            PSID account_sid,
+                            const std::wstring& expected_device,
+                            const std::wstring& expected_file) {
+    ObjectGrant grant;
+    if (!grant.OpenAndVerify(object_path, expect_file, expected_device,
+                             expected_file)) {
+      return false;
+    }
+    grant.account_sid_.resize(GetLengthSid(account_sid));
+    grant.remove_account_ = true;
+    return CopySid(static_cast<DWORD>(grant.account_sid_.size()),
+                   grant.account_sid_.data(), account_sid) &&
+           grant.Revoke(true);
+  }
+
+ private:
+  bool OpenAndVerify(const std::wstring& object_path, bool expect_file,
+                     const std::wstring& expected_device,
+                     const std::wstring& expected_file) {
+    handle_.reset(CreateFileW(
+        object_path.c_str(), READ_CONTROL | WRITE_DAC,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+        OPEN_EXISTING,
+        (expect_file ? 0 : FILE_FLAG_BACKUP_SEMANTICS) |
+            FILE_FLAG_OPEN_REPARSE_POINT,
+        nullptr));
+    if (!handle_) {
+      return false;
+    }
+    BY_HANDLE_FILE_INFORMATION information{};
+    if (!GetFileInformationByHandle(handle_.get(), &information) ||
+        (information.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0 ||
+        (((information.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) ==
+         expect_file)) {
+      return false;
+    }
+    wchar_t* end = nullptr;
+    unsigned long long expected_device_value =
+        wcstoull(expected_device.c_str(), &end, 10);
+    if (end == expected_device.c_str() || *end != L'\0') {
+      return false;
+    }
+    unsigned long long expected_file_value =
+        wcstoull(expected_file.c_str(), &end, 10);
+    unsigned long long actual_file_value =
+        (static_cast<unsigned long long>(information.nFileIndexHigh) << 32) |
+        information.nFileIndexLow;
+    return end != expected_file.c_str() && *end == L'\0' &&
+           expected_device_value == information.dwVolumeSerialNumber &&
+           expected_file_value == actual_file_value;
+  }
+
+  bool Revoke(bool include_account) {
     if (!handle_) {
       return true;
     }
@@ -433,14 +683,25 @@ class WorkspaceGrant {
     if (result != ERROR_SUCCESS) {
       return false;
     }
-    std::array<EXPLICIT_ACCESSW, 2> entries{};
-    std::array<PSID, 2> sids = {account_sid_.data(), capability_sid_.data()};
-    for (size_t index = 0; index < entries.size(); ++index) {
-      entries[index].grfAccessMode = REVOKE_ACCESS;
-      entries[index].grfInheritance = NO_INHERITANCE;
-      entries[index].Trustee.TrusteeForm = TRUSTEE_IS_SID;
-      entries[index].Trustee.TrusteeType = TRUSTEE_IS_UNKNOWN;
-      entries[index].Trustee.ptstrName = static_cast<LPWSTR>(sids[index]);
+    std::vector<EXPLICIT_ACCESSW> entries;
+    std::vector<PSID> sids;
+    if (include_account && remove_account_) {
+      sids.push_back(account_sid_.data());
+    }
+    if (remove_capability_) {
+      sids.push_back(capability_sid_.data());
+    }
+    for (PSID sid : sids) {
+      EXPLICIT_ACCESSW entry{};
+      entry.grfAccessMode = REVOKE_ACCESS;
+      entry.grfInheritance = NO_INHERITANCE;
+      entry.Trustee.TrusteeForm = TRUSTEE_IS_SID;
+      entry.Trustee.TrusteeType = TRUSTEE_IS_UNKNOWN;
+      entry.Trustee.ptstrName = static_cast<LPWSTR>(sid);
+      entries.push_back(entry);
+    }
+    if (entries.empty()) {
+      return true;
     }
     PACL new_acl = nullptr;
     result = SetEntriesInAclW(static_cast<ULONG>(entries.size()), entries.data(),
@@ -452,7 +713,6 @@ class WorkspaceGrant {
                            nullptr) == ERROR_SUCCESS;
   }
 
- private:
   static bool HasExplicitSid(PACL acl, PSID sid) {
     if (acl == nullptr) {
       return true;
@@ -476,6 +736,8 @@ class WorkspaceGrant {
   UniqueHandle handle_;
   std::vector<BYTE> account_sid_;
   std::vector<BYTE> capability_sid_;
+  bool remove_account_ = false;
+  bool remove_capability_ = false;
 };
 
 bool BuildPipeSecurity(PSID account_sid, SECURITY_ATTRIBUTES* attributes,
@@ -494,6 +756,80 @@ bool BuildPipeSecurity(PSID account_sid, SECURITY_ATTRIBUTES* attributes,
   attributes->lpSecurityDescriptor = raw;
   attributes->bInheritHandle = FALSE;
   return true;
+}
+
+class UniqueDesktop {
+ public:
+  UniqueDesktop() = default;
+  explicit UniqueDesktop(HDESK handle) : handle_(handle) {}
+  ~UniqueDesktop() {
+    if (handle_ != nullptr) {
+      CloseDesktop(handle_);
+    }
+  }
+  UniqueDesktop(const UniqueDesktop&) = delete;
+  UniqueDesktop& operator=(const UniqueDesktop&) = delete;
+  HDESK get() const { return handle_; }
+  explicit operator bool() const { return handle_ != nullptr; }
+  void reset(HDESK handle) {
+    if (handle_ != nullptr) {
+      CloseDesktop(handle_);
+    }
+    handle_ = handle;
+  }
+
+ private:
+  HDESK handle_ = nullptr;
+};
+
+bool CreatePrivateDesktop(PSID account_sid, PSID execution_sid,
+                          PSID capability_sid, std::wstring* desktop_name,
+                          UniqueDesktop* desktop) {
+  std::wstring current_sid = CurrentUserSidString();
+  std::wstring sddl =
+      L"D:P(A;;GA;;;SY)(A;;GA;;;" + current_sid + L")(A;;GA;;;" +
+      SidToString(account_sid) + L")(A;;GA;;;" +
+      SidToString(execution_sid) + L")(A;;GA;;;" +
+      SidToString(capability_sid) + L")";
+  PSECURITY_DESCRIPTOR raw = nullptr;
+  if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
+          sddl.c_str(), SDDL_REVISION_1, &raw, nullptr)) {
+    return false;
+  }
+  LocalPointer descriptor(raw);
+  SECURITY_ATTRIBUTES attributes{};
+  attributes.nLength = sizeof(attributes);
+  attributes.lpSecurityDescriptor = raw;
+  GUID identifier{};
+  wchar_t identifier_text[40]{};
+  if (CoCreateGuid(&identifier) != S_OK ||
+      StringFromGUID2(identifier, identifier_text,
+                      static_cast<int>(std::size(identifier_text))) == 0) {
+    return false;
+  }
+  *desktop_name = L"CodeAtelierSandbox-" + std::wstring(identifier_text);
+  desktop->reset(CreateDesktopW(desktop_name->c_str(), nullptr, nullptr, 0,
+                                GENERIC_ALL, &attributes));
+  return static_cast<bool>(*desktop);
+}
+
+bool ConfigureProductJob(SECURITY_ATTRIBUTES* security_attributes,
+                         DWORD timeout_ms, UniqueHandle* job) {
+  job->reset(CreateJobObjectW(security_attributes, nullptr));
+  if (!*job) {
+    return false;
+  }
+  JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
+  limits.BasicLimitInformation.LimitFlags =
+      JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_ACTIVE_PROCESS |
+      JOB_OBJECT_LIMIT_JOB_MEMORY | JOB_OBJECT_LIMIT_JOB_TIME |
+      JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION;
+  limits.BasicLimitInformation.ActiveProcessLimit = 128;
+  limits.BasicLimitInformation.PerJobUserTimeLimit.QuadPart =
+      static_cast<LONGLONG>(timeout_ms) * 10000LL * 4LL;
+  limits.JobMemoryLimit = 8ULL * 1024ULL * 1024ULL * 1024ULL;
+  return SetInformationJobObject(job->get(), JobObjectExtendedLimitInformation,
+                                 &limits, sizeof(limits)) != FALSE;
 }
 
 std::wstring MakeProductPipeName() {
@@ -518,7 +854,10 @@ std::wstring BuildCommandLine(const std::wstring& executable,
   return command_line;
 }
 
-bool SetPrivateEnvironment(const std::wstring& private_directory) {
+bool SetPrivateEnvironment(const std::wstring& private_directory,
+                           const std::wstring& git_global_config,
+                           const std::wstring& proxy_url,
+                           const std::wstring& askpass_pipe) {
   std::array<const wchar_t*, 5> names = {L"HOME", L"USERPROFILE",
                                           L"XDG_CONFIG_HOME", L"TEMP",
                                           L"TMP"};
@@ -534,12 +873,195 @@ bool SetPrivateEnvironment(const std::wstring& private_directory) {
   SetEnvironmentVariableW(L"GIT_PAGER", L"cat");
   SetEnvironmentVariableW(L"PAGER", L"cat");
   SetEnvironmentVariableW(L"GIT_EDITOR", L"true");
+  if (!git_global_config.empty() &&
+      !SetEnvironmentVariableW(L"GIT_CONFIG_GLOBAL",
+                               git_global_config.c_str())) {
+    return false;
+  }
+  if (!proxy_url.empty()) {
+    if (askpass_pipe.empty() || proxy_url.rfind(L"http://127.0.0.1:", 0) != 0) {
+      return false;
+    }
+    std::wstring authenticated_proxy =
+        L"http://codeatelier@" + proxy_url.substr(7);
+    std::wstring executable = CurrentExecutablePath();
+    if (!SetEnvironmentVariableW(L"HTTPS_PROXY", authenticated_proxy.c_str()) ||
+        !SetEnvironmentVariableW(L"https_proxy", authenticated_proxy.c_str()) ||
+        !SetEnvironmentVariableW(L"GIT_ASKPASS", executable.c_str()) ||
+        !SetEnvironmentVariableW(L"GIT_ASKPASS_REQUIRE", L"force") ||
+        !SetEnvironmentVariableW(L"CODEATELIER_ASKPASS_PIPE",
+                                 askpass_pipe.c_str())) {
+      return false;
+    }
+  } else {
+    SetEnvironmentVariableW(L"HTTPS_PROXY", nullptr);
+    SetEnvironmentVariableW(L"https_proxy", nullptr);
+    SetEnvironmentVariableW(L"CODEATELIER_ASKPASS_PIPE", nullptr);
+  }
   return true;
+}
+
+bool ProcessBelongsToJob(DWORD process_id, HANDLE job) {
+  UniqueHandle process(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE,
+                                   process_id));
+  BOOL belongs = FALSE;
+  return process && IsProcessInJob(process.get(), job, &belongs) && belongs;
+}
+
+void ServeAskpass(const std::wstring& pipe_name,
+                  SECURITY_ATTRIBUTES* security, HANDLE job,
+                  const std::wstring& token,
+                  const std::shared_ptr<std::atomic_bool>& stop,
+                  const std::shared_ptr<std::atomic_bool>& ready) {
+  while (!stop->load()) {
+    UniqueHandle pipe(CreateNamedPipeW(
+        pipe_name.c_str(), PIPE_ACCESS_DUPLEX,
+        PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT |
+            PIPE_REJECT_REMOTE_CLIENTS,
+        1, 4096, 4096, 5000, security));
+    if (!pipe) {
+      return;
+    }
+    ready->store(true);
+    if (!ConnectNamedPipe(pipe.get(), nullptr) &&
+        GetLastError() != ERROR_PIPE_CONNECTED) {
+      return;
+    }
+    if (stop->load()) {
+      return;
+    }
+    ULONG client_pid = 0;
+    BYTE request_kind = 0;
+    if (GetNamedPipeClientProcessId(pipe.get(), &client_pid) &&
+        ProcessBelongsToJob(client_pid, job) &&
+        ReadExact(pipe.get(), &request_kind, sizeof(request_kind))) {
+      if (request_kind == 'U') {
+        WriteFramedString(pipe.get(), L"codeatelier");
+      } else if (request_kind == 'P') {
+        WriteFramedString(pipe.get(), token);
+      }
+    }
+    FlushFileBuffers(pipe.get());
+    DisconnectNamedPipe(pipe.get());
+  }
+}
+
+void StopAskpass(const std::wstring& pipe_name,
+                 const std::shared_ptr<std::atomic_bool>& stop,
+                 std::thread* thread) {
+  if (!thread->joinable()) {
+    return;
+  }
+  stop->store(true);
+  UniqueHandle wake(CreateFileW(pipe_name.c_str(), GENERIC_READ | GENERIC_WRITE,
+                                0, nullptr, OPEN_EXISTING, 0, nullptr));
+  thread->join();
+}
+
+int RunAskpass(const std::wstring& prompt) {
+  wchar_t pipe_name[512]{};
+  DWORD length = GetEnvironmentVariableW(L"CODEATELIER_ASKPASS_PIPE", pipe_name,
+                                         static_cast<DWORD>(std::size(pipe_name)));
+  std::wstring lowered = prompt;
+  std::transform(lowered.begin(), lowered.end(), lowered.begin(), towlower);
+  if (length == 0 || length >= std::size(pipe_name) ||
+      (lowered.find(L"127.0.0.1") == std::wstring::npos &&
+       lowered.find(L"proxy") == std::wstring::npos) ||
+      !WaitNamedPipeW(pipe_name, 10000)) {
+    return 1;
+  }
+  UniqueHandle pipe(CreateFileW(pipe_name, GENERIC_READ | GENERIC_WRITE, 0,
+                                nullptr, OPEN_EXISTING, 0, nullptr));
+  if (!pipe) {
+    return 1;
+  }
+  BYTE kind = lowered.find(L"username") != std::wstring::npos ? 'U' : 'P';
+  std::wstring response;
+  if (!WriteExact(pipe.get(), &kind, sizeof(kind)) ||
+      !ReadFramedString(pipe.get(), &response) || response.empty()) {
+    return 1;
+  }
+  std::wcout << response << L"\n";
+  return 0;
+}
+
+// WRITE_RESTRICTED 仅在写访问时检查 restricting SID。产品 token 只放入本实例
+// execution/root capability；不能加入 Everyone，否则公共可写对象会绕过写根边界。
+bool CreateProductRestrictedPrimaryToken(PSID execution_sid,
+                                         PSID capability_sid,
+                                         UniqueHandle* restricted_token) {
+  HANDLE raw_current = nullptr;
+  if (!OpenProcessToken(GetCurrentProcess(),
+                        TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY | TOKEN_QUERY |
+                            TOKEN_ADJUST_DEFAULT | TOKEN_ADJUST_PRIVILEGES |
+                            TOKEN_ADJUST_SESSIONID,
+                        &raw_current)) {
+    return false;
+  }
+  UniqueHandle current_token(raw_current);
+  DWORD user_size = 0;
+  GetTokenInformation(current_token.get(), TokenUser, nullptr, 0, &user_size);
+  if (user_size == 0) {
+    return false;
+  }
+  std::vector<BYTE> user_buffer(user_size);
+  if (!GetTokenInformation(current_token.get(), TokenUser, user_buffer.data(),
+                           user_size, &user_size)) {
+    return false;
+  }
+  auto* token_user = reinterpret_cast<TOKEN_USER*>(user_buffer.data());
+  std::array<SID_AND_ATTRIBUTES, 2> restricting_sids{};
+  restricting_sids[0].Sid = execution_sid;
+  restricting_sids[1].Sid = capability_sid;
+  HANDLE raw_restricted = nullptr;
+  if (!CreateRestrictedToken(current_token.get(), kRestrictedTokenFlags, 0,
+                             nullptr, 0, nullptr,
+                             static_cast<DWORD>(restricting_sids.size()),
+                             restricting_sids.data(), &raw_restricted)) {
+    return false;
+  }
+  restricted_token->reset(raw_restricted);
+
+  std::array<EXPLICIT_ACCESSW, 2> entries{};
+  std::array<PSID, 2> sids = {token_user->User.Sid, execution_sid};
+  for (size_t index = 0; index < entries.size(); ++index) {
+    entries[index].grfAccessPermissions = GENERIC_ALL;
+    entries[index].grfAccessMode = GRANT_ACCESS;
+    entries[index].grfInheritance = NO_INHERITANCE;
+    entries[index].Trustee.TrusteeForm = TRUSTEE_IS_SID;
+    entries[index].Trustee.TrusteeType = TRUSTEE_IS_UNKNOWN;
+    entries[index].Trustee.ptstrName = static_cast<LPWSTR>(sids[index]);
+  }
+  PACL default_dacl = nullptr;
+  DWORD result = SetEntriesInAclW(static_cast<ULONG>(entries.size()),
+                                  entries.data(), nullptr, &default_dacl);
+  LocalPointer owned_dacl(default_dacl);
+  TOKEN_DEFAULT_DACL default_dacl_info{};
+  default_dacl_info.DefaultDacl = default_dacl;
+  if (result != ERROR_SUCCESS ||
+      !SetTokenInformation(restricted_token->get(), TokenDefaultDacl,
+                           &default_dacl_info, sizeof(default_dacl_info))) {
+    return false;
+  }
+
+  LUID change_notify{};
+  if (!LookupPrivilegeValueW(nullptr, SE_CHANGE_NOTIFY_NAME, &change_notify)) {
+    return false;
+  }
+  TOKEN_PRIVILEGES privileges{};
+  privileges.PrivilegeCount = 1;
+  privileges.Privileges[0].Luid = change_notify;
+  privileges.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+  SetLastError(ERROR_SUCCESS);
+  return AdjustTokenPrivileges(restricted_token->get(), FALSE, &privileges, 0,
+                               nullptr, nullptr) &&
+         GetLastError() != ERROR_NOT_ALL_ASSIGNED;
 }
 
 int RunProductBootstrap(const std::wstring& pipe_name,
                         const std::wstring& execution_sid_text,
-                        const std::wstring& capability_sid_text) {
+                        const std::wstring& capability_sid_text,
+                        const std::wstring& desktop_name) {
   PSID raw_execution_sid = nullptr;
   PSID raw_capability_sid = nullptr;
   if (!ConvertStringSidToSidW(execution_sid_text.c_str(), &raw_execution_sid) ||
@@ -559,12 +1081,14 @@ int RunProductBootstrap(const std::wstring& pipe_name,
   }
   ProductRequest request;
   if (!ReadProductRequest(pipe.get(), &request) ||
-      !SetPrivateEnvironment(request.private_directory)) {
+      !SetPrivateEnvironment(request.private_directory,
+                             request.git_global_config, request.proxy_url,
+                             request.askpass_pipe)) {
     return 24;
   }
   UniqueHandle restricted_token;
-  if (!CreateRestrictedPrimaryToken(execution_sid.get(), capability_sid.get(),
-                                    &restricted_token)) {
+  if (!CreateProductRestrictedPrimaryToken(
+          execution_sid.get(), capability_sid.get(), &restricted_token)) {
     return 25;
   }
   std::wstring command_line =
@@ -575,6 +1099,7 @@ int RunProductBootstrap(const std::wstring& pipe_name,
   STARTUPINFOW startup{};
   startup.cb = sizeof(startup);
   startup.dwFlags = STARTF_USESTDHANDLES;
+  startup.lpDesktop = const_cast<LPWSTR>(desktop_name.c_str());
   startup.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
   startup.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
   startup.hStdError = GetStdHandle(STD_OUTPUT_HANDLE);
@@ -642,25 +1167,85 @@ int RunProductSupervisor(const std::wstring& state_path,
     return kSelfCheckFailureExitCode;
   }
 
-  WorkspaceGrant workspace_grant;
-  WorkspaceGrant private_grant;
-  if (!workspace_grant.Install(request.working_directory, account_sid.data(),
-                               capability_sid.get()) ||
-      !private_grant.Install(request.private_directory, account_sid.data(),
-                             capability_sid.get())) {
-    workspace_grant.Revoke();
+  std::vector<ObjectGrant> manifest_grants;
+  std::vector<ProductRoot> journaled_roots;
+  manifest_grants.reserve(request.roots.size());
+  bool working_directory_granted = false;
+  bool git_global_config_granted = false;
+  bool manifest_valid = true;
+  for (const ProductRoot& root : request.roots) {
+    bool writable = (root.flags & 1u) != 0;
+    bool expect_file = (root.flags & 2u) != 0;
+    bool install_account = (root.flags & 4u) != 0;
+    if (expect_file && writable) {
+      manifest_valid = false;
+      break;
+    }
+    working_directory_granted =
+        working_directory_granted ||
+        (writable && _wcsicmp(root.path.c_str(),
+                              request.working_directory.c_str()) == 0);
+    git_global_config_granted =
+        git_global_config_granted ||
+        (expect_file && _wcsicmp(root.path.c_str(),
+                                 request.git_global_config.c_str()) == 0);
+    ObjectGrant grant;
+    if (install_account && !WriteGrantJournal(state_path, root)) {
+      manifest_valid = false;
+      break;
+    }
+    if (install_account) {
+      journaled_roots.push_back(root);
+    }
+    if (!grant.Install(root.path, expect_file, writable, install_account,
+                       account_sid.data(), capability_sid.get(),
+                       root.device_id, root.file_id)) {
+      manifest_valid = false;
+      break;
+    }
+    manifest_grants.push_back(std::move(grant));
+  }
+  ObjectGrant private_grant;
+  if (!manifest_valid || !working_directory_granted ||
+      !git_global_config_granted ||
+      !private_grant.Install(request.private_directory, false, true, true,
+                             account_sid.data(), capability_sid.get())) {
+    for (ObjectGrant& grant : manifest_grants) {
+      grant.RevokeAll();
+    }
+    for (const ProductRoot& root : journaled_roots) {
+      RemoveGrantJournal(state_path, root);
+    }
+    private_grant.RevokeAll();
     SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
     std::wcerr << L"CODEATELIER_SUPERVISOR_ERROR category=manifest\n";
     return kSelfCheckFailureExitCode;
   }
+
+  auto revoke_failed_launch = [&]() {
+    bool clean = private_grant.RevokeAll();
+    for (ObjectGrant& grant : manifest_grants) {
+      clean = grant.RevokeAll() && clean;
+    }
+    for (const ProductRoot& root : journaled_roots) {
+      clean = RemoveGrantJournal(state_path, root) && clean;
+    }
+    return clean;
+  };
+  auto revoke_instance = [&]() {
+    bool clean = private_grant.RevokeAll();
+    for (ObjectGrant& grant : manifest_grants) {
+      clean = grant.RevokeInstance() && clean;
+    }
+    return clean;
+  };
 
   SECURITY_ATTRIBUTES pipe_security{};
   LocalPointer pipe_descriptor;
   std::wstring pipe_name = MakeProductPipeName();
   if (pipe_name.empty() ||
       !BuildPipeSecurity(account_sid.data(), &pipe_security, &pipe_descriptor)) {
-    private_grant.Revoke();
-    workspace_grant.Revoke();
+    revoke_failed_launch();
     SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
     return kSelfCheckFailureExitCode;
   }
@@ -670,26 +1255,62 @@ int RunProductSupervisor(const std::wstring& state_path,
           PIPE_REJECT_REMOTE_CLIENTS,
       1, 64 * 1024, 64 * 1024, 5000, &pipe_security));
   if (!pipe) {
-    private_grant.Revoke();
-    workspace_grant.Revoke();
+    revoke_failed_launch();
     SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
     return kSelfCheckFailureExitCode;
   }
 
   PrivateObjectSecurity object_security;
   UniqueHandle job;
+  std::wstring desktop_name;
+  UniqueDesktop desktop;
   if (!object_security.Initialize(execution_sid.get()) ||
-      !ConfigureJob(object_security.attributes(), L"", &job)) {
-    private_grant.Revoke();
-    workspace_grant.Revoke();
+      !ConfigureProductJob(object_security.attributes(), request.timeout_ms,
+                           &job) ||
+      !CreatePrivateDesktop(account_sid.data(), execution_sid.get(),
+                            capability_sid.get(), &desktop_name, &desktop)) {
+    revoke_failed_launch();
     SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
     return kSelfCheckFailureExitCode;
   }
 
+  auto askpass_stop = std::make_shared<std::atomic_bool>(false);
+  auto askpass_ready = std::make_shared<std::atomic_bool>(false);
+  std::thread askpass_thread;
+  if (!request.proxy_url.empty()) {
+    request.askpass_pipe = MakeProductPipeName();
+    if (request.askpass_pipe.empty()) {
+      revoke_failed_launch();
+      SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
+      return kSelfCheckFailureExitCode;
+    }
+    askpass_thread = std::thread(ServeAskpass, request.askpass_pipe,
+                                 &pipe_security, job.get(), request.proxy_token,
+                                 askpass_stop, askpass_ready);
+    auto ready_deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!askpass_ready->load() &&
+           std::chrono::steady_clock::now() < ready_deadline) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    if (!askpass_ready->load()) {
+      StopAskpass(request.askpass_pipe, askpass_stop, &askpass_thread);
+      revoke_failed_launch();
+      SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
+      return kSelfCheckFailureExitCode;
+    }
+    SecureZeroMemory(request.proxy_token.data(),
+                     request.proxy_token.size() * sizeof(wchar_t));
+    request.proxy_token.clear();
+  }
+  auto stop_askpass = [&]() {
+    StopAskpass(request.askpass_pipe, askpass_stop, &askpass_thread);
+  };
+
   std::wstring executable = CurrentExecutablePath();
   std::vector<std::wstring> bootstrap_arguments = {
       L"--bootstrap", pipe_name, SidToString(execution_sid.get()),
-      SidToString(capability_sid.get())};
+      SidToString(capability_sid.get()), desktop_name};
   std::wstring command_line =
       BuildCommandLine(executable, bootstrap_arguments);
   std::vector<wchar_t> mutable_command(command_line.begin(),
@@ -702,6 +1323,7 @@ int RunProductSupervisor(const std::wstring& state_path,
   startup.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
   startup.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
   startup.hStdError = GetStdHandle(STD_ERROR_HANDLE);
+  startup.lpDesktop = const_cast<LPWSTR>(desktop_name.c_str());
   PROCESS_INFORMATION bootstrap{};
   BOOL created = CreateProcessWithLogonW(
       state.account_name.c_str(), L".", password.c_str(), 0,
@@ -711,8 +1333,8 @@ int RunProductSupervisor(const std::wstring& state_path,
   SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
   password.clear();
   if (!created) {
-    private_grant.Revoke();
-    workspace_grant.Revoke();
+    stop_askpass();
+    revoke_failed_launch();
     std::wcerr << L"CODEATELIER_SUPERVISOR_ERROR category=launch\n";
     return kSelfCheckFailureExitCode;
   }
@@ -723,7 +1345,8 @@ int RunProductSupervisor(const std::wstring& state_path,
       !ConnectAndSendRequest(pipe.get(), bootstrap.dwProcessId, request)) {
     TerminateJobObject(job.get(), kSelfCheckFailureExitCode);
     WaitForSingleObject(bootstrap_process.get(), 5000);
-    bool clean = private_grant.Revoke() && workspace_grant.Revoke();
+    stop_askpass();
+    bool clean = revoke_failed_launch();
     return clean ? kSelfCheckFailureExitCode : kCleanupFailureExitCode;
   }
 
@@ -747,7 +1370,8 @@ int RunProductSupervisor(const std::wstring& state_path,
   }
   DWORD exit_code = 1;
   GetExitCodeProcess(bootstrap_process.get(), &exit_code);
-  bool clean = private_grant.Revoke() && workspace_grant.Revoke();
+  stop_askpass();
+  bool clean = revoke_instance();
   if (!clean) {
     std::wcerr << L"CODEATELIER_SUPERVISOR_ERROR category=cleanup\n";
     return kCleanupFailureExitCode;
@@ -773,17 +1397,177 @@ int RunProductSelfCheck(const std::wstring& state_path,
   return 0;
 }
 
+int RunProductRevoke(const std::wstring& state_path,
+                     const std::wstring& network_manager) {
+  std::vector<ProductRoot> roots;
+  InstallationState state;
+  std::wstring password;
+  if (!ReadRevokeRoots(GetStdHandle(STD_INPUT_HANDLE), &roots) ||
+      !ReadInstallationState(state_path, &state) ||
+      !VerifyInstallation(state, network_manager, &password)) {
+    SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
+    std::wcerr << L"CODEATELIER_SUPERVISOR_ERROR category=self_check\n";
+    return kSelfCheckFailureExitCode;
+  }
+  SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
+  std::vector<BYTE> account_sid;
+  if (!LookupAccountSid(state.account_name, &account_sid)) {
+    return kSelfCheckFailureExitCode;
+  }
+  for (const ProductRoot& root : roots) {
+    if (!ObjectGrant::RevokeAccount(root.path, (root.flags & 2u) != 0,
+                                    account_sid.data(), root.device_id,
+                                    root.file_id)) {
+      std::wcerr << L"CODEATELIER_SUPERVISOR_ERROR category=cleanup\n";
+      return kCleanupFailureExitCode;
+    }
+    if (!RemoveGrantJournal(state_path, root)) {
+      std::wcerr << L"CODEATELIER_SUPERVISOR_ERROR category=cleanup\n";
+      return kCleanupFailureExitCode;
+    }
+  }
+  std::wcout << L"CODEATELIER_REVOKE_OK count=" << roots.size() << L"\n";
+  return 0;
+}
+
+int RunProductRevokeJournal(const std::wstring& state_path,
+                            const std::wstring& network_manager) {
+  InstallationState state;
+  std::wstring password;
+  if (!ReadInstallationState(state_path, &state) ||
+      !VerifyInstallation(state, network_manager, &password)) {
+    SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
+    return kSelfCheckFailureExitCode;
+  }
+  SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
+  std::vector<BYTE> account_sid;
+  if (!LookupAccountSid(state.account_name, &account_sid)) {
+    return kSelfCheckFailureExitCode;
+  }
+  std::filesystem::path directory =
+      std::filesystem::path(state_path).parent_path() / L"grants";
+  std::error_code error;
+  if (!std::filesystem::exists(directory, error)) {
+    return error ? kCleanupFailureExitCode : 0;
+  }
+  size_t revoked = 0;
+  for (const auto& entry : std::filesystem::directory_iterator(directory, error)) {
+    if (error || !entry.is_regular_file(error) || error ||
+        entry.path().extension() != L".grant") {
+      return kCleanupFailureExitCode;
+    }
+    UniqueHandle journal(CreateFileW(
+        entry.path().c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
+        nullptr));
+    BY_HANDLE_FILE_INFORMATION information{};
+    std::vector<ProductRoot> roots;
+    if (!journal || !GetFileInformationByHandle(journal.get(), &information) ||
+        (information.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0 ||
+        !ReadRevokeRoots(journal.get(), &roots) || roots.size() != 1 ||
+        entry.path().stem().wstring() != roots[0].identity_digest ||
+        !ObjectGrant::RevokeAccount(
+            roots[0].path, (roots[0].flags & 2u) != 0, account_sid.data(),
+            roots[0].device_id, roots[0].file_id)) {
+      return kCleanupFailureExitCode;
+    }
+    journal.reset();
+    if (!DeleteFileW(entry.path().c_str())) {
+      return kCleanupFailureExitCode;
+    }
+    revoked += 1;
+  }
+  std::wcout << L"CODEATELIER_REVOKE_JOURNAL_OK count=" << revoked << L"\n";
+  return 0;
+}
+
+bool ProcessTokenMatches(HANDLE process, PSID account_sid) {
+  HANDLE raw_token = nullptr;
+  if (!OpenProcessToken(process, TOKEN_QUERY, &raw_token)) {
+    return false;
+  }
+  UniqueHandle token(raw_token);
+  DWORD size = 0;
+  GetTokenInformation(token.get(), TokenUser, nullptr, 0, &size);
+  if (size == 0) {
+    return false;
+  }
+  std::vector<BYTE> buffer(size);
+  if (!GetTokenInformation(token.get(), TokenUser, buffer.data(), size, &size)) {
+    return false;
+  }
+  return EqualSid(reinterpret_cast<TOKEN_USER*>(buffer.data())->User.Sid,
+                  account_sid) != FALSE;
+}
+
+int TerminateAccountProcesses(const std::wstring& state_path,
+                              const std::wstring& network_manager) {
+  InstallationState state;
+  std::wstring password;
+  if (!ReadInstallationState(state_path, &state) ||
+      !VerifyInstallation(state, network_manager, &password)) {
+    SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
+    return kSelfCheckFailureExitCode;
+  }
+  SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
+  std::vector<BYTE> account_sid;
+  if (!LookupAccountSid(state.account_name, &account_sid)) {
+    return kSelfCheckFailureExitCode;
+  }
+  UniqueHandle snapshot(CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0));
+  if (!snapshot) {
+    return kCleanupFailureExitCode;
+  }
+  PROCESSENTRY32W entry{};
+  entry.dwSize = sizeof(entry);
+  size_t terminated = 0;
+  if (Process32FirstW(snapshot.get(), &entry)) {
+    do {
+      UniqueHandle process(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION |
+                                           PROCESS_TERMINATE | SYNCHRONIZE,
+                                       FALSE, entry.th32ProcessID));
+      if (process && ProcessTokenMatches(process.get(), account_sid.data())) {
+        if (!TerminateProcess(process.get(), 70) ||
+            WaitForSingleObject(process.get(), 5000) != WAIT_OBJECT_0) {
+          return kCleanupFailureExitCode;
+        }
+        terminated += 1;
+      }
+    } while (Process32NextW(snapshot.get(), &entry));
+  }
+  std::wcout << L"CODEATELIER_ACCOUNT_PROCESSES_TERMINATED count="
+             << terminated << L"\n";
+  return 0;
+}
+
 }  // namespace
 
 int wmain(int argc, wchar_t* argv[]) {
+  if (argc == 2) {
+    wchar_t pipe_name[2]{};
+    if (GetEnvironmentVariableW(L"CODEATELIER_ASKPASS_PIPE", pipe_name,
+                                static_cast<DWORD>(std::size(pipe_name))) > 0) {
+      return RunAskpass(argv[1]);
+    }
+  }
   if (argc == 4 && std::wstring(argv[1]) == L"--self-check") {
     return RunProductSelfCheck(argv[2], argv[3]);
+  }
+  if (argc == 4 && std::wstring(argv[1]) == L"--revoke") {
+    return RunProductRevoke(argv[2], argv[3]);
+  }
+  if (argc == 4 && std::wstring(argv[1]) == L"--revoke-journal") {
+    return RunProductRevokeJournal(argv[2], argv[3]);
+  }
+  if (argc == 4 &&
+      std::wstring(argv[1]) == L"--terminate-account-processes") {
+    return TerminateAccountProcesses(argv[2], argv[3]);
   }
   if (argc == 4 && std::wstring(argv[1]) == L"--execute") {
     return RunProductSupervisor(argv[2], argv[3]);
   }
-  if (argc == 5 && std::wstring(argv[1]) == L"--bootstrap") {
-    return RunProductBootstrap(argv[2], argv[3], argv[4]);
+  if (argc == 6 && std::wstring(argv[1]) == L"--bootstrap") {
+    return RunProductBootstrap(argv[2], argv[3], argv[4], argv[5]);
   }
   std::wcerr
       << L"CodeAtelier Sandbox supervisor accepts only fixed product modes.\n";

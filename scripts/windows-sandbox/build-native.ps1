@@ -45,7 +45,7 @@ $RunnerSource = Join-Path $RepositoryRoot "native\windows-sandbox\restricted-run
 $NetworkOutput = Join-Path $OutputRoot "codeatelier-sandbox-network.exe"
 $RunnerOutput = Join-Path $OutputRoot "codeatelier-sandbox-supervisor.exe"
 $NetworkLibraries = "fwpuclnt.lib ws2_32.lib advapi32.lib ole32.lib"
-$RunnerLibraries = "advapi32.lib userenv.lib ole32.lib crypt32.lib"
+$RunnerLibraries = "advapi32.lib userenv.lib user32.lib ole32.lib crypt32.lib"
 
 function Invoke-MsvcBuild {
     param(

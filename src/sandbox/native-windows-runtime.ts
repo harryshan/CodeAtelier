@@ -14,19 +14,23 @@
 
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import { readFile, rm, mkdtemp } from "node:fs/promises";
-import os from "node:os";
+import { mkdir, readFile, rm, mkdtemp, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { Logger } from "pino";
 import { executeProcess, TerminalTextSanitizer } from "../tools/process.js";
 import type {
   SandboxCommand,
+  SandboxNativeAccess,
+  SandboxRevokeRoot,
   SandboxRuntime,
   SandboxWorkspace,
 } from "./types.js";
+import { discoverGitConfigGraph } from "./git-config-graph.js";
+import { SandboxHttpsRelay, type IssuedRelayLease } from "./https-relay.js";
+import type { TraceRecorder } from "../tracing/recorder.js";
 
 const REQUEST_MAGIC = 0x42534143;
-const REQUEST_VERSION = 1;
+const REQUEST_VERSION = 2;
 const CLEANUP_FAILURE_EXIT_CODE = 70;
 const SELF_CHECK_FAILURE_EXIT_CODE = 71;
 const PROTOCOL_FAILURE_EXIT_CODE = 72;
@@ -37,12 +41,14 @@ interface InstallationPaths {
   supervisor: string;
   networkManager: string;
   state: string;
+  dataRoot: string;
 }
 
 interface InstallationMetadata {
   generationId: string;
   supervisorSha256: string;
   networkSha256: string;
+  relayPortV4: number;
 }
 
 export class NativeWindowsSandboxError extends Error {
@@ -71,6 +77,7 @@ function installationPaths(
     supervisor: path.join(nativeRoot, "codeatelier-sandbox-supervisor.exe"),
     networkManager: path.join(nativeRoot, "codeatelier-sandbox-network.exe"),
     state,
+    dataRoot: state ? path.dirname(state) : "",
   };
 }
 
@@ -97,16 +104,20 @@ function parseState(content: string): InstallationMetadata {
   const generationId = values.get("generationId") ?? "";
   const supervisorSha256 = values.get("supervisorSha256") ?? "";
   const networkSha256 = values.get("networkSha256") ?? "";
+  const relayPortV4 = Number(values.get("relayPortV4"));
   if (
     values.get("version") !== "1" ||
     !/^[0-9a-f-]{36}$/i.test(generationId) ||
     !/^[a-f0-9]{64}$/i.test(supervisorSha256) ||
-    !/^[a-f0-9]{64}$/i.test(networkSha256)
+    !/^[a-f0-9]{64}$/i.test(networkSha256) ||
+    !Number.isInteger(relayPortV4) ||
+    relayPortV4 < 1024 ||
+    relayPortV4 > 65_535
   ) {
     throw new NativeWindowsSandboxError("installation state 版本或摘要无效。");
   }
 
-  return { generationId, supervisorSha256, networkSha256 };
+  return { generationId, supervisorSha256, networkSha256, relayPortV4 };
 }
 
 async function fileSha256(file: string) {
@@ -134,6 +145,7 @@ export function encodeNativeSandboxRequest(input: {
   args: string[];
   privateDirectory: string;
   timeoutMs: number;
+  access?: SandboxNativeAccess;
 }) {
   if (
     !input.executionInstanceId ||
@@ -158,6 +170,30 @@ export function encodeNativeSandboxRequest(input: {
   timeout.writeUInt32LE(input.timeoutMs);
   const argumentCount = Buffer.allocUnsafe(4);
   argumentCount.writeUInt32LE(input.args.length);
+  const leaseEpoch = Buffer.allocUnsafe(4);
+  leaseEpoch.writeUInt32LE(input.access?.leaseEpoch ?? 0);
+  const manifestDigest = input.access?.manifest.manifestDigest ?? "";
+  const installIdentities = new Set(
+    input.access?.installObjectIdentityDigests ?? [],
+  );
+  const roots = input.access
+    ? [
+        ...input.access.manifest.readRoots.map((root) => ({
+          ...root,
+          flags: 0,
+        })),
+        ...input.access.manifest.writeRoots.map((root) => ({
+          ...root,
+          flags: 1,
+        })),
+        ...input.access.manifest.gitConfigFiles.map((root) => ({
+          ...root,
+          flags: 2,
+        })),
+      ]
+    : [];
+  const rootCount = Buffer.allocUnsafe(4);
+  rootCount.writeUInt32LE(roots.length);
 
   return Buffer.concat([
     header,
@@ -168,18 +204,105 @@ export function encodeNativeSandboxRequest(input: {
     timeout,
     argumentCount,
     ...input.args.map(framedString),
+    framedString(manifestDigest),
+    framedString(input.access?.gitGlobalConfigPath ?? ""),
+    framedString(input.access?.proxyUrl ?? ""),
+    framedString(input.access?.proxyToken ?? ""),
+    framedString(""),
+    leaseEpoch,
+    rootCount,
+    ...roots.flatMap((root) => {
+      const flags = Buffer.allocUnsafe(4);
+      flags.writeUInt32LE(
+        root.flags | (installIdentities.has(root.objectIdentityDigest) ? 4 : 0),
+      );
+
+      return [
+        flags,
+        framedString(root.path),
+        framedString(root.deviceId),
+        framedString(root.fileId),
+        framedString(root.objectIdentityDigest),
+      ];
+    }),
+  ]);
+}
+
+function encodeNativeAccessRevocation(roots: SandboxRevokeRoot[]) {
+  const header = Buffer.allocUnsafe(12);
+  header.writeUInt32LE(REQUEST_MAGIC, 0);
+  header.writeUInt32LE(REQUEST_VERSION, 4);
+  header.writeUInt32LE(roots.length, 8);
+
+  return Buffer.concat([
+    header,
+    ...roots.flatMap((root) => {
+      const flags = Buffer.allocUnsafe(4);
+      flags.writeUInt32LE(root.objectType === "file" ? 2 : 0);
+
+      return [
+        flags,
+        framedString(root.path),
+        framedString(root.deviceId),
+        framedString(root.fileId),
+        framedString(root.objectIdentityDigest),
+      ];
+    }),
   ]);
 }
 
 export class NativeWindowsSandboxRuntime implements SandboxRuntime {
   private paths: InstallationPaths;
+  private environment: NodeJS.ProcessEnv;
+  private metadata?: InstallationMetadata;
+  private relay?: SandboxHttpsRelay;
 
   constructor(
     environment: NodeJS.ProcessEnv = process.env,
     private runSelfCheck = executeProcess,
     private log?: Logger,
+    private traces?: TraceRecorder,
   ) {
+    this.environment = environment;
     this.paths = installationPaths(environment);
+  }
+
+  async prepareAccess(command: SandboxCommand, workspace: SandboxWorkspace) {
+    if (!this.paths.dataRoot) {
+      throw new NativeWindowsSandboxError("Sandbox 数据目录不可用。");
+    }
+
+    const profileDirectory = this.environment.USERPROFILE;
+    if (!profileDirectory || !path.isAbsolute(profileDirectory)) {
+      throw new NativeWindowsSandboxError("宿主用户 profile 路径不可用。");
+    }
+
+    command.signal.throwIfAborted();
+    const graph = await discoverGitConfigGraph({
+      profileDirectory,
+      workspaceRoot: workspace.root,
+    });
+    const projectionRoot = path.join(this.paths.dataRoot, "projections");
+    await mkdir(projectionRoot, { recursive: true });
+    const directory = await mkdtemp(path.join(projectionRoot, "lease-"));
+    const aggregate = path.join(directory, "global.gitconfig");
+    try {
+      await writeFile(aggregate, graph.aggregate, {
+        encoding: "utf8",
+        flag: "wx",
+      });
+    } catch (error) {
+      await rm(directory, { recursive: true, force: true }).catch(() => {});
+      throw error;
+    }
+
+    return {
+      readOnlyRoots: [directory],
+      readWriteRoots: [],
+      gitConfigFiles: [...graph.files, aggregate],
+      gitGlobalConfigPath: aggregate,
+      cleanup: () => rm(directory, { recursive: true, force: true }),
+    };
   }
 
   async selfCheck(signal: AbortSignal, _workspace: SandboxWorkspace) {
@@ -206,6 +329,8 @@ export class NativeWindowsSandboxRuntime implements SandboxRuntime {
       ) {
         throw new NativeWindowsSandboxError("原生二进制摘要与安装记录不一致。");
       }
+
+      this.metadata = metadata;
     } catch (error) {
       if (error instanceof NativeWindowsSandboxError) {
         throw error;
@@ -247,11 +372,57 @@ export class NativeWindowsSandboxRuntime implements SandboxRuntime {
     };
   }
 
-  async execute(command: SandboxCommand, _workspace: SandboxWorkspace) {
+  async execute(
+    command: SandboxCommand,
+    _workspace: SandboxWorkspace,
+    access?: SandboxNativeAccess,
+  ) {
     void _workspace;
-    const privateDirectory = await mkdtemp(
-      path.join(os.tmpdir(), "codeatelier-sandbox-"),
-    );
+    const instancesRoot = path.join(this.paths.dataRoot, "instances");
+    await mkdir(instancesRoot, { recursive: true });
+    const privateDirectory = await mkdtemp(path.join(instancesRoot, "lease-"));
+    let relayLease: IssuedRelayLease | undefined;
+    let pushSpan: ReturnType<TraceRecorder["startSpan"]> | undefined;
+    if (command.kind === "push-runner") {
+      if (!command.networkHost || !access || !this.metadata) {
+        throw new NativeWindowsSandboxError(
+          "Push Runner 缺少已确认的网络目标。",
+        );
+      }
+
+      this.relay ??= new SandboxHttpsRelay(this.metadata.relayPortV4, this.log);
+      await this.relay.start();
+      this.traces?.instant(
+        command.taskId,
+        "broker.relay_attest",
+        "sandbox",
+        "Sandbox broker",
+        { executionInstanceId: command.executionInstanceId },
+      );
+      relayLease = this.relay.issueLease(
+        command.networkHost,
+        command.timeoutMs,
+      );
+      access = {
+        ...access,
+        proxyUrl: relayLease.proxyUrl,
+        proxyToken: relayLease.token,
+      };
+      this.traces?.instant(
+        command.taskId,
+        "sandbox.proxy_lease.issued",
+        "sandbox",
+        "Sandbox broker",
+        { executionInstanceId: command.executionInstanceId },
+      );
+      pushSpan = this.traces?.startSpan(command.taskId, {
+        name: "sandbox.push_runner",
+        category: "sandbox",
+        track: "Sandbox runtime",
+        attributes: { executionInstanceId: command.executionInstanceId },
+      });
+    }
+
     const frame = encodeNativeSandboxRequest({
       executionInstanceId: command.executionInstanceId,
       cwd: command.cwd,
@@ -259,15 +430,73 @@ export class NativeWindowsSandboxRuntime implements SandboxRuntime {
       args: command.args,
       privateDirectory,
       timeoutMs: command.timeoutMs,
+      access,
     });
 
     try {
-      return await this.spawnSupervisor(command, frame);
+      const result = await this.spawnSupervisor(command, frame);
+      if (pushSpan) {
+        this.traces?.endSpan(pushSpan, "ok", { exitCode: result.exitCode });
+        pushSpan = undefined;
+      }
+
+      return result;
+    } catch (error) {
+      if (pushSpan) {
+        this.traces?.endSpan(
+          pushSpan,
+          command.signal.aborted ? "cancelled" : "error",
+        );
+        pushSpan = undefined;
+      }
+
+      throw error;
     } finally {
+      if (relayLease) {
+        this.relay?.revoke(relayLease);
+        this.traces?.instant(
+          command.taskId,
+          "sandbox.proxy_lease.revoked",
+          "sandbox",
+          "Sandbox broker",
+          { executionInstanceId: command.executionInstanceId },
+        );
+      }
+
       await rm(privateDirectory, { recursive: true, force: true }).catch(
         () => {},
       );
     }
+  }
+
+  async revokeAccess(roots: SandboxRevokeRoot[], signal: AbortSignal) {
+    if (roots.length === 0) {
+      return;
+    }
+
+    const result = await executeProcess(
+      this.paths.supervisor,
+      ["--revoke", this.paths.state, this.paths.networkManager],
+      process.cwd(),
+      signal,
+      20_000,
+      4_096,
+      () => {},
+      {},
+      undefined,
+      encodeNativeAccessRevocation(roots),
+    );
+    if (
+      result.exitCode !== 0 ||
+      !result.output.includes("CODEATELIER_REVOKE_OK")
+    ) {
+      throw new NativeWindowsSandboxError("共享 ACL 撤销失败。");
+    }
+  }
+
+  async shutdown() {
+    await this.relay?.close();
+    this.relay = undefined;
   }
 
   private spawnSupervisor(command: SandboxCommand, frame: Buffer) {
