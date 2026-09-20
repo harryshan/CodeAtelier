@@ -28,6 +28,7 @@
 
 #include <array>
 #include <atomic>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -830,6 +831,48 @@ int RunDatagramClient(int address_family, const std::wstring& port_text,
              : 21;
 }
 
+bool FindHostNonLoopbackAddress(int address_family, u_short port,
+                                sockaddr_storage* address,
+                                int* address_length) {
+  char host_name[256]{};
+  if (gethostname(host_name, sizeof(host_name)) != 0) {
+    return false;
+  }
+  addrinfo hints{};
+  hints.ai_family = address_family;
+  hints.ai_socktype = SOCK_STREAM;
+  addrinfo* addresses = nullptr;
+  if (getaddrinfo(host_name, nullptr, &hints, &addresses) != 0) {
+    return false;
+  }
+  bool found = false;
+  for (addrinfo* current = addresses; current != nullptr;
+       current = current->ai_next) {
+    if (current->ai_family == AF_INET) {
+      auto* candidate = reinterpret_cast<sockaddr_in*>(current->ai_addr);
+      if ((ntohl(candidate->sin_addr.s_addr) >> 24) != 127) {
+        std::memcpy(address, candidate, sizeof(*candidate));
+        reinterpret_cast<sockaddr_in*>(address)->sin_port = htons(port);
+        *address_length = sizeof(*candidate);
+        found = true;
+        break;
+      }
+    } else if (current->ai_family == AF_INET6) {
+      auto* candidate = reinterpret_cast<sockaddr_in6*>(current->ai_addr);
+      if (memcmp(&candidate->sin6_addr, &in6addr_loopback,
+                 sizeof(in6addr_loopback)) != 0) {
+        std::memcpy(address, candidate, sizeof(*candidate));
+        reinterpret_cast<sockaddr_in6*>(address)->sin6_port = htons(port);
+        *address_length = sizeof(*candidate);
+        found = true;
+        break;
+      }
+    }
+  }
+  freeaddrinfo(addresses);
+  return found;
+}
+
 int RunExternalTcpClient(int address_family, const std::wstring& port_text) {
   WSADATA data{};
   if (WSAStartup(MAKEWORD(2, 2), &data) != 0) {
@@ -840,25 +883,44 @@ int RunExternalTcpClient(int address_family, const std::wstring& port_text) {
       socket(address_family, SOCK_STREAM, IPPROTO_TCP));
   u_long nonblocking = 1;
   ioctlsocket(socket_handle.get(), FIONBIO, &nonblocking);
-  int result = SOCKET_ERROR;
-  if (address_family == AF_INET) {
-    sockaddr_in address{};
-    address.sin_family = AF_INET;
-    address.sin_port = htons(static_cast<u_short>(port));
-    InetPtonW(AF_INET, L"192.0.2.1", &address.sin_addr);
-    result = connect(socket_handle.get(), reinterpret_cast<sockaddr*>(&address),
-                     sizeof(address));
-  } else {
-    sockaddr_in6 address{};
-    address.sin6_family = AF_INET6;
-    address.sin6_port = htons(static_cast<u_short>(port));
-    InetPtonW(AF_INET6, L"2001:db8::1", &address.sin6_addr);
-    result = connect(socket_handle.get(), reinterpret_cast<sockaddr*>(&address),
-                     sizeof(address));
+  sockaddr_storage address{};
+  int address_length = 0;
+  if (!FindHostNonLoopbackAddress(address_family, static_cast<u_short>(port),
+                                  &address, &address_length)) {
+    WSACleanup();
+    std::wcerr << L"FAIL no non-loopback host address\n";
+    return 21;
   }
+  int result = connect(socket_handle.get(), reinterpret_cast<sockaddr*>(&address),
+                       address_length);
   int error = result == 0 ? 0 : WSAGetLastError();
+  if (result == SOCKET_ERROR && error == WSAEWOULDBLOCK) {
+    fd_set writable{};
+    fd_set exceptional{};
+    FD_SET(socket_handle.get(), &writable);
+    FD_SET(socket_handle.get(), &exceptional);
+    timeval timeout{};
+    timeout.tv_sec = 2;
+    int selected =
+        select(0, nullptr, &writable, &exceptional, &timeout);
+    if (selected > 0) {
+      int socket_error = 0;
+      int error_length = sizeof(socket_error);
+      if (getsockopt(socket_handle.get(), SOL_SOCKET, SO_ERROR,
+                     reinterpret_cast<char*>(&socket_error),
+                     &error_length) == 0) {
+        error = socket_error;
+        result = socket_error == 0 ? 0 : SOCKET_ERROR;
+      } else {
+        error = WSAGetLastError();
+      }
+    } else {
+      error = selected == 0 ? WSAETIMEDOUT : WSAGetLastError();
+    }
+  }
   WSACleanup();
-  return ReportSocketResult(L"TCP_EXTERNAL", address_family, result, error);
+  return ReportSocketResult(L"TCP_NON_LOOPBACK", address_family, result,
+                            error);
 }
 
 int RunListenProbe(int address_family) {
@@ -1155,6 +1217,51 @@ bool AddUserFilter(HANDLE engine, const GUID& sublayer_key,
   return true;
 }
 
+bool AddLoopbackUserPermit(HANDLE engine, const GUID& sublayer_key,
+                           const GUID& layer_key,
+                           FWP_BYTE_BLOB* user_descriptor,
+                           u_short remote_port, bool ipv6,
+                           const wchar_t* name) {
+  UINT32 loopback_v4 = 0x7f000001;
+  FWP_BYTE_ARRAY16 loopback_v6{};
+  loopback_v6.byteArray16[15] = 1;
+  std::array<FWPM_FILTER_CONDITION0, 3> conditions{};
+  conditions[0].fieldKey = FWPM_CONDITION_ALE_USER_ID;
+  conditions[0].matchType = FWP_MATCH_EQUAL;
+  conditions[0].conditionValue.type = FWP_SECURITY_DESCRIPTOR_TYPE;
+  conditions[0].conditionValue.sd = user_descriptor;
+  conditions[1].fieldKey = FWPM_CONDITION_IP_REMOTE_PORT;
+  conditions[1].matchType = FWP_MATCH_EQUAL;
+  conditions[1].conditionValue.type = FWP_UINT16;
+  conditions[1].conditionValue.uint16 = remote_port;
+  conditions[2].fieldKey = FWPM_CONDITION_IP_REMOTE_ADDRESS;
+  conditions[2].matchType = FWP_MATCH_EQUAL;
+  if (ipv6) {
+    conditions[2].conditionValue.type = FWP_BYTE_ARRAY16_TYPE;
+    conditions[2].conditionValue.byteArray16 = &loopback_v6;
+  } else {
+    conditions[2].conditionValue.type = FWP_UINT32;
+    conditions[2].conditionValue.uint32 = loopback_v4;
+  }
+
+  UINT8 weight = 15;
+  FWPM_FILTER0 filter{};
+  filter.displayData.name = const_cast<wchar_t*>(name);
+  filter.layerKey = layer_key;
+  filter.subLayerKey = sublayer_key;
+  filter.weight.type = FWP_UINT8;
+  filter.weight.uint8 = weight;
+  filter.numFilterConditions = static_cast<UINT32>(conditions.size());
+  filter.filterCondition = conditions.data();
+  filter.action.type = FWP_ACTION_PERMIT;
+  DWORD result = FwpmFilterAdd0(engine, &filter, nullptr, nullptr);
+  if (result != ERROR_SUCCESS) {
+    PrintFailure(L"FwpmFilterAdd0(loopback permit)", result);
+    return false;
+  }
+  return true;
+}
+
 bool AddRawEndpointBlock(HANDLE engine, const GUID& sublayer_key,
                          const GUID& layer_key,
                          FWP_BYTE_BLOB* user_descriptor,
@@ -1237,20 +1344,19 @@ bool InstallDynamicUserFence(const std::wstring& user_name,
   descriptor_blob.size = descriptor_size;
   descriptor_blob.data = static_cast<UINT8*>(raw_descriptor);
 
-  constexpr UINT8 kAllowWeight = 15;
   constexpr UINT8 kBlockWeight = 14;
-  if (!AddUserFilter(engine->get(), sublayer_key,
-                     FWPM_LAYER_ALE_AUTH_CONNECT_V4, &descriptor_blob,
-                     allowed_v4_port, true, kAllowWeight, FWP_ACTION_PERMIT,
-                     L"CodeAtelier allow one user IPv4 relay port") ||
+  if (!AddLoopbackUserPermit(engine->get(), sublayer_key,
+                             FWPM_LAYER_ALE_AUTH_CONNECT_V4, &descriptor_blob,
+                             allowed_v4_port, false,
+                             L"CodeAtelier allow user IPv4 loopback relay") ||
       !AddUserFilter(engine->get(), sublayer_key,
                      FWPM_LAYER_ALE_AUTH_CONNECT_V4, &descriptor_blob, 0, false,
                      kBlockWeight, FWP_ACTION_BLOCK,
                      L"CodeAtelier block other user IPv4 connections") ||
-      !AddUserFilter(engine->get(), sublayer_key,
-                     FWPM_LAYER_ALE_AUTH_CONNECT_V6, &descriptor_blob,
-                     allowed_v6_port, true, kAllowWeight, FWP_ACTION_PERMIT,
-                     L"CodeAtelier allow one user IPv6 relay port") ||
+      !AddLoopbackUserPermit(engine->get(), sublayer_key,
+                             FWPM_LAYER_ALE_AUTH_CONNECT_V6, &descriptor_blob,
+                             allowed_v6_port, true,
+                             L"CodeAtelier allow user IPv6 loopback relay") ||
       !AddUserFilter(engine->get(), sublayer_key,
                      FWPM_LAYER_ALE_AUTH_CONNECT_V6, &descriptor_blob, 0, false,
                      kBlockWeight, FWP_ACTION_BLOCK,

@@ -6,7 +6,7 @@
 
 1. `--ipc` 验证 Broker 能否通过任务专属 Named Pipe 取得真实客户端 PID，并联合核对进程创建时间、restricted token、execution SID、映像和 Job。夹具随后让同用户、同映像、知道相同 nonce 但不属于目标 Job 的进程连接，Broker 必须拒绝。
 2. `--wfp` 验证 WFP 内建 `FWPM_CONDITION_ALE_APP_ID` filter 的实际粒度。动态 filter 阻止探针映像连接本机回环 listener；目标实例和同映像兄弟实例都应被阻止，而复制到新路径的同一程序仍可连接。
-3. `wfp-user` 编排器创建随机临时低权限账户，以 `FWPM_CONDITION_ALE_USER_ID` 在 V4/V6 `ALE_AUTH_CONNECT` 层安装端口 allow 与其余 connect block，在 `ALE_AUTH_LISTEN` 阻止 listen，并在 `ALE_RESOURCE_ASSIGNMENT` 只阻止 raw endpoint。矩阵覆盖 TCP、带 controller ACK 的 UDP 回环交付、保留 TEST-NET 地址的非阻塞 TCP connect、listen/raw，以及普通账户进程和 restricted Runtime 的网络后代；宿主用户的 connect/listen 必须不受影响。controller 正常关闭和被强制终止后，编排器都要求同一账户重新连接成功，以实证 dynamic session 规则已撤销。账户密码只留在 PowerShell 内存，账户和目录在 `finally` 中清理。
+3. `wfp-user` 编排器创建随机临时低权限账户，以 `FWPM_CONDITION_ALE_USER_ID` 在 V4/V6 `ALE_AUTH_CONNECT` 层安装“loopback 地址 + relay 端口”allow 与其余 connect block，在 `ALE_AUTH_LISTEN` 阻止 listen，并在 `ALE_RESOURCE_ASSIGNMENT` 只阻止 raw endpoint。矩阵覆盖 TCP、带 controller ACK 的 UDP 回环交付、本机真实可达非回环 IPv4 listener、listen/raw，以及普通账户进程和 restricted Runtime 的网络后代；宿主用户的 connect/listen 必须不受影响。controller 正常关闭和被强制终止后，编排器都要求同一账户重新连接成功，以实证 dynamic session 规则已撤销。账户密码只留在 PowerShell 内存，账户和目录在 `finally` 中清理。
 
 运行 IPC 探针：
 

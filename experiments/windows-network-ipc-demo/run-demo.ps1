@@ -270,6 +270,7 @@ function Invoke-WfpUserProbe {
     $crashController = $null
     $cleanupV4Listener = $null
     $cleanupV6Listener = $null
+    $nonLoopbackListener = $null
 
     try {
         $account = New-LocalUser `
@@ -353,13 +354,18 @@ function Invoke-WfpUserProbe {
         Invoke-NetworkClientProbe -Executable $probeExecutable -ClientMode "--listen-probe-v6" `
             -Port 0 -WorkingDirectory $runRoot -ExpectedExitCode 0
 
+        $nonLoopbackListener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Any, 0)
+        $nonLoopbackListener.Start()
+        $nonLoopbackPort = ([Net.IPEndPoint]$nonLoopbackListener.LocalEndpoint).Port
+        Invoke-NetworkClientProbe -Executable $probeExecutable -ClientMode "--external-client" `
+            -Port $nonLoopbackPort -WorkingDirectory $runRoot -ExpectedExitCode 0
+
         $extendedCases = @(
             [pscustomobject]@{ Mode = "--udp-client"; Port = $allowedV4Port; ExitCode = 0 },
             [pscustomobject]@{ Mode = "--udp-client-v6"; Port = $allowedV6Port; ExitCode = 0 },
             [pscustomobject]@{ Mode = "--udp-client"; Port = $deniedV4Port; ExitCode = 20 },
             [pscustomobject]@{ Mode = "--udp-client-v6"; Port = $deniedV6Port; ExitCode = 20 },
-            [pscustomobject]@{ Mode = "--external-client"; Port = 443; ExitCode = 20 },
-            [pscustomobject]@{ Mode = "--external-client-v6"; Port = 443; ExitCode = 20 },
+            [pscustomobject]@{ Mode = "--external-client"; Port = $nonLoopbackPort; ExitCode = 20 },
             [pscustomobject]@{ Mode = "--listen-probe"; Port = 0; ExitCode = 20 },
             [pscustomobject]@{ Mode = "--listen-probe-v6"; Port = 0; ExitCode = 20 },
             [pscustomobject]@{ Mode = "--raw-probe"; Port = 0; ExitCode = 20 },
@@ -373,6 +379,8 @@ function Invoke-WfpUserProbe {
                 -Port $case.Port -WorkingDirectory $runRoot -ExpectedExitCode $case.ExitCode `
                 -UserName $accountName -Password $securePassword -RestrictedTree
         }
+        $nonLoopbackListener.Stop()
+        $nonLoopbackListener = $null
 
         Set-Content -LiteralPath (Join-Path $controlDirectory "done.txt") -Value "done"
         [void](Complete-ProbeProcess -RunningProcess $controller -ExpectedExitCode 0)
@@ -463,6 +471,9 @@ function Invoke-WfpUserProbe {
         }
         if ($null -ne $cleanupV6Listener) {
             $cleanupV6Listener.Stop()
+        }
+        if ($null -ne $nonLoopbackListener) {
+            $nonLoopbackListener.Stop()
         }
 
         if ($null -ne $controller) {
