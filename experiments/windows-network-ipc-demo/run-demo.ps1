@@ -158,6 +158,37 @@ function Complete-ProbeProcess {
     return $stdout
 }
 
+function Invoke-NetworkClientProbe {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Executable,
+        [Parameter(Mandatory)]
+        [ValidateSet("--network-client", "--network-client-v6")]
+        [string]$ClientMode,
+        [Parameter(Mandatory)]
+        [int]$Port,
+        [Parameter(Mandatory)]
+        [string]$WorkingDirectory,
+        [Parameter(Mandatory)]
+        [int]$ExpectedExitCode,
+        [string]$UserName,
+        [Security.SecureString]$Password
+    )
+
+    $client = Start-ProbeProcess `
+        -Executable $Executable `
+        -Arguments @($ClientMode, "$Port") `
+        -WorkingDirectory $WorkingDirectory `
+        -UserName $UserName `
+        -Password $Password
+    try {
+        [void](Complete-ProbeProcess -RunningProcess $client -ExpectedExitCode $ExpectedExitCode)
+    }
+    finally {
+        $client.Process.Dispose()
+    }
+}
+
 function Find-VsDevCmd {
     $installer = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
     if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) {
@@ -216,6 +247,8 @@ function Invoke-WfpUserProbe {
     $securePassword = ConvertTo-SecureString $plainPassword -AsPlainText -Force
     $accountCreated = $false
     $controller = $null
+    $cleanupV4Listener = $null
+    $cleanupV6Listener = $null
 
     try {
         $account = New-LocalUser `
@@ -255,48 +288,71 @@ function Invoke-WfpUserProbe {
         }
 
         $ports = @(Get-Content -LiteralPath $readyPath)
-        if ($ports.Count -ne 2) {
+        if ($ports.Count -ne 4) {
             throw "WFP user controller 端口文件格式无效。"
         }
-        $allowedPort = [int]$ports[0]
-        $deniedPort = [int]$ports[1]
+        $allowedV4Port = [int]$ports[0]
+        $deniedV4Port = [int]$ports[1]
+        $allowedV6Port = [int]$ports[2]
+        $deniedV6Port = [int]$ports[3]
 
-        $hostClient = Start-ProbeProcess `
-            -Executable $probeExecutable `
-            -Arguments @("--network-client", "$deniedPort") `
-            -WorkingDirectory $runRoot
-        [void](Complete-ProbeProcess -RunningProcess $hostClient -ExpectedExitCode 0)
-        $hostClient.Process.Dispose()
+        Invoke-NetworkClientProbe -Executable $probeExecutable -ClientMode "--network-client" `
+            -Port $deniedV4Port -WorkingDirectory $runRoot -ExpectedExitCode 0
+        Invoke-NetworkClientProbe -Executable $probeExecutable -ClientMode "--network-client-v6" `
+            -Port $deniedV6Port -WorkingDirectory $runRoot -ExpectedExitCode 0
 
-        $sandboxAllowedClient = Start-ProbeProcess `
-            -Executable $probeExecutable `
-            -Arguments @("--network-client", "$allowedPort") `
-            -WorkingDirectory $runRoot `
-            -UserName $accountName `
-            -Password $securePassword
-        [void](Complete-ProbeProcess -RunningProcess $sandboxAllowedClient -ExpectedExitCode 0)
-        $sandboxAllowedClient.Process.Dispose()
-
-        $sandboxDeniedClient = Start-ProbeProcess `
-            -Executable $probeExecutable `
-            -Arguments @("--network-client", "$deniedPort") `
-            -WorkingDirectory $runRoot `
-            -UserName $accountName `
-            -Password $securePassword
-        [void](Complete-ProbeProcess -RunningProcess $sandboxDeniedClient -ExpectedExitCode 20)
-        $sandboxDeniedClient.Process.Dispose()
+        Invoke-NetworkClientProbe -Executable $probeExecutable -ClientMode "--network-client" `
+            -Port $allowedV4Port -WorkingDirectory $runRoot -ExpectedExitCode 0 `
+            -UserName $accountName -Password $securePassword
+        Invoke-NetworkClientProbe -Executable $probeExecutable -ClientMode "--network-client-v6" `
+            -Port $allowedV6Port -WorkingDirectory $runRoot -ExpectedExitCode 0 `
+            -UserName $accountName -Password $securePassword
+        Invoke-NetworkClientProbe -Executable $probeExecutable -ClientMode "--network-client" `
+            -Port $deniedV4Port -WorkingDirectory $runRoot -ExpectedExitCode 20 `
+            -UserName $accountName -Password $securePassword
+        Invoke-NetworkClientProbe -Executable $probeExecutable -ClientMode "--network-client-v6" `
+            -Port $deniedV6Port -WorkingDirectory $runRoot -ExpectedExitCode 20 `
+            -UserName $accountName -Password $securePassword
 
         Set-Content -LiteralPath (Join-Path $controlDirectory "done.txt") -Value "done"
         [void](Complete-ProbeProcess -RunningProcess $controller -ExpectedExitCode 0)
         $controller.Process.Dispose()
         $controller = $null
 
-        Write-Host "WFP_USER_DEMO PASS accountSid=$($sandboxSid.Value) hostUnaffected=yes allowedLoopbackPort=yes otherLoopbackPortBlocked=yes dynamicCleanup=yes"
+        $cleanupV4Listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
+        $cleanupV4Listener.Start()
+        $cleanupV4Port = ([Net.IPEndPoint]$cleanupV4Listener.LocalEndpoint).Port
+
+        $cleanupV6Listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::IPv6Loopback, 0)
+        $cleanupV6Listener.Server.DualMode = $false
+        $cleanupV6Listener.Start()
+        $cleanupV6Port = ([Net.IPEndPoint]$cleanupV6Listener.LocalEndpoint).Port
+
+        Invoke-NetworkClientProbe -Executable $probeExecutable -ClientMode "--network-client" `
+            -Port $cleanupV4Port -WorkingDirectory $runRoot -ExpectedExitCode 0 `
+            -UserName $accountName -Password $securePassword
+        Invoke-NetworkClientProbe -Executable $probeExecutable -ClientMode "--network-client-v6" `
+            -Port $cleanupV6Port -WorkingDirectory $runRoot -ExpectedExitCode 0 `
+            -UserName $accountName -Password $securePassword
+
+        $cleanupV4Listener.Stop()
+        $cleanupV4Listener = $null
+        $cleanupV6Listener.Stop()
+        $cleanupV6Listener = $null
+
+        Write-Host "WFP_USER_DEMO PASS accountSid=$($sandboxSid.Value) hostUnaffected=yes ipv4=yes ipv6=yes allowedLoopbackPort=yes otherLoopbackPortBlocked=yes dynamicCleanupVerified=yes"
     }
     finally {
         $plainPassword = $null
         $securePassword = $null
         $cleanupFailures = [Collections.Generic.List[string]]::new()
+
+        if ($null -ne $cleanupV4Listener) {
+            $cleanupV4Listener.Stop()
+        }
+        if ($null -ne $cleanupV6Listener) {
+            $cleanupV6Listener.Stop()
+        }
 
         if ($null -ne $controller) {
             try {

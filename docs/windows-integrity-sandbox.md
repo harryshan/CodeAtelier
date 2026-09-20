@@ -182,7 +182,7 @@ W1--W3 通过后才能声明“Windows 专用用户 Sandbox：宿主用户私有
 
 后续真正并发夹具证明 peer 可成功取得 `PROCESS_TERMINATE`，即使目标 process DACL 同时列出共享账户 SID 与目标 execution SID。原因是 `WRITE_RESTRICTED` 只在评估写访问时考虑 restricting SID，不能假设它覆盖所有 process/thread/Job 权限。D100 已确认不同对话无需彼此构成 OS 安全边界，因此该结果改记为接受风险；夹具保留 process/thread/Job 危险 open 的观察输出，但通过条件改为两个 Runtime 同时存活时仍保持跨根读取、各自根直接/后代写入和跨根写拒绝。
 
-[network/IPC demo](../experiments/windows-network-ipc-demo/README.md) 已证明 Named Pipe 可联合核对 PID、创建时间、restricted token、execution SID、映像、Job 和 nonce，并证明普通 medium-integrity Broker 无权安装 WFP policy。其 APP_ID 路径过滤实验和“需要 callout driver”的旧推论已被本设计取代：目标改用可由内建 WFP 用户条件匹配的专用账户 SID。
+[network/IPC demo](../experiments/windows-network-ipc-demo/README.md) 已证明 Named Pipe 可联合核对 PID、创建时间、restricted token、execution SID、映像、Job 和 nonce，并证明普通 medium-integrity Broker 无权安装 WFP policy。提升管理员下的动态 V4 `ALE_USER_ID` 矩阵已证明宿主用户不命中、临时专用账户只通一个获准回环端口且其它端口返回 `WSAEACCES`；临时账户和目录清理为 0。旧输出没有在 dynamic engine 关闭后重连，因此不把它计为 WFP 撤销实证；修订版 V4/V6 与关闭后重连尚待管理员复验。APP_ID 路径过滤实验和“需要 callout driver”的旧推论已被本设计取代：目标改用可由内建 WFP 用户条件匹配的专用账户 SID。
 
 平台契约依据：Microsoft 文档确认 `CreateProcessWithLogonW` 默认不加载用户 profile，且可在创建时为 process/thread 提供 security descriptor；access token 包含 logon SID 和用于新对象的 default DACL；restricted token 对 securable object 执行普通 SID 与 restricting SID 两次访问检查。实测表明同一账户的多次显式凭据启动可共享 logon SID，因此实现只记录其值，不将“每次唯一”作为平台契约。`WRITE_RESTRICTED` 例外、execution SID/default DACL 及对象类型覆盖仍必须逐项实测，不能只依赖文档推断。
 
@@ -191,7 +191,7 @@ W1--W3 通过后才能声明“Windows 专用用户 Sandbox：宿主用户私有
 - [Restricted Tokens](https://learn.microsoft.com/en-us/windows/win32/secauthz/restricted-tokens)
 - [Process Security and Access Rights](https://learn.microsoft.com/en-us/windows/win32/procthread/process-security-and-access-rights)
 
-尚未实测：持久账户安装/专用 profile、按 SID 的持久 WFP allow/block、自检与卸载、复杂 ACL/重解析/其它卷下的写边界、共享 ACL grant table、宿主 global Git config 授权图、真实 Git/Node/PowerShell/编译器兼容、relay/proxy、凭据、ACL 撤销、取消/恢复和资源上限。现有 Codex 外层 Sandbox 会干扰嵌套 token/Job/WFP 测试；所有结果必须分别标记“Codex 沙箱内”“批准的宿主权限”“真正提升安装环境”。
+尚未实测：持久账户安装/专用 profile、按 SID 的持久 WFP allow/block、自检与卸载、动态 fence 的双栈及关闭后重连修订、UDP/DNS/非回环/bind/listen/raw socket/restricted-token 后代、复杂 ACL/重解析/其它卷下的写边界、共享 ACL grant table、宿主 global Git config 授权图、真实 Git/Node/PowerShell/编译器兼容、relay/proxy、凭据、ACL 撤销、取消/恢复和资源上限。现有 Codex 外层 Sandbox 会干扰嵌套 token/Job/WFP 测试；所有结果必须分别标记“Codex 沙箱内”“批准的宿主权限”“真正提升安装环境”。
 
 ## 11. 与现有实现的关系
 

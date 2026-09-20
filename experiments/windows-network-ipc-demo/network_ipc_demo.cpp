@@ -6,8 +6,9 @@
  * 1. Win32 handle、SID、进程启动和 token 查询辅助函数。
  * 2. IPC client 与 Broker 侧命名管道身份核验，验证 PID、创建时间、restricted SID 和 Job。
  * 3. 网络 client、本机 TCP listener 与动态 WFP filter，验证内建 APP_ID 的实际作用范围。
- * 4. 专用账户 WFP controller，用 ALE_USER_ID 同时安装“固定回环端口允许 + 其它连接阻断”，
- *    并用控制目录与 PowerShell 编排器同步；编排器负责在临时账户下启动网络 client。
+ * 4. 专用账户 WFP controller，用 ALE_USER_ID 在 V4/V6 层分别安装“固定回环端口允许 +
+ *    其它连接阻断”，并用控制目录与 PowerShell 编排器同步；编排器负责在临时账户下启动
+ *    网络 client，并在 engine 关闭后验证两个地址族恢复连接。
  * 5. wmain 只负责模式分派，保持每个子进程入口参数固定且易审计。
  *
  * WFP filter 使用动态 session，engine handle 关闭后由 BFE 自动删除。探针只连接本机回环端口，
@@ -695,19 +696,30 @@ bool RunIpcProbe() {
   return passed;
 }
 
-int RunNetworkClient(const std::wstring& port_text) {
+int RunNetworkClient(int address_family, const std::wstring& port_text) {
   WSADATA data{};
   if (WSAStartup(MAKEWORD(2, 2), &data) != 0) {
     return kNetworkBlockedExitCode;
   }
   unsigned long port = std::stoul(port_text);
-  UniqueSocket socket_handle(socket(AF_INET, SOCK_STREAM, IPPROTO_TCP));
-  sockaddr_in address{};
-  address.sin_family = AF_INET;
-  address.sin_port = htons(static_cast<u_short>(port));
-  address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-  int result = connect(socket_handle.get(),
-                       reinterpret_cast<sockaddr*>(&address), sizeof(address));
+  UniqueSocket socket_handle(
+      socket(address_family, SOCK_STREAM, IPPROTO_TCP));
+  int result = SOCKET_ERROR;
+  if (address_family == AF_INET) {
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_port = htons(static_cast<u_short>(port));
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    result = connect(socket_handle.get(), reinterpret_cast<sockaddr*>(&address),
+                     sizeof(address));
+  } else {
+    sockaddr_in6 address{};
+    address.sin6_family = AF_INET6;
+    address.sin6_port = htons(static_cast<u_short>(port));
+    address.sin6_addr = in6addr_loopback;
+    result = connect(socket_handle.get(), reinterpret_cast<sockaddr*>(&address),
+                     sizeof(address));
+  }
   int error = result == 0 ? 0 : WSAGetLastError();
   if (result == 0) {
     char byte = 'x';
@@ -715,35 +727,57 @@ int RunNetworkClient(const std::wstring& port_text) {
   }
   WSACleanup();
   std::wcout << L"NETWORK_CLIENT pid=" << GetCurrentProcessId()
+             << L" family="
+             << (address_family == AF_INET ? L"ipv4" : L"ipv6")
              << L" connected=" << (result == 0 ? L"yes" : L"no")
              << L" error=" << error << L"\n";
   return result == 0 ? 0 : kNetworkBlockedExitCode;
 }
 
-bool StartLoopbackListener(UniqueSocket* listener, u_short* port) {
+bool StartLoopbackListener(int address_family, UniqueSocket* listener,
+                           u_short* port) {
   WSADATA data{};
   if (WSAStartup(MAKEWORD(2, 2), &data) != 0) {
     return false;
   }
-  *listener = UniqueSocket(socket(AF_INET, SOCK_STREAM, IPPROTO_TCP));
+  *listener =
+      UniqueSocket(socket(address_family, SOCK_STREAM, IPPROTO_TCP));
   if (!*listener) {
     return false;
   }
-  sockaddr_in address{};
-  address.sin_family = AF_INET;
-  address.sin_port = 0;
-  address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-  if (bind(listener->get(), reinterpret_cast<sockaddr*>(&address),
-           sizeof(address)) != 0 ||
-      listen(listener->get(), 8) != 0) {
-    return false;
+  if (address_family == AF_INET) {
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_port = 0;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (bind(listener->get(), reinterpret_cast<sockaddr*>(&address),
+             sizeof(address)) != 0 ||
+        listen(listener->get(), 8) != 0) {
+      return false;
+    }
+    int length = sizeof(address);
+    if (getsockname(listener->get(), reinterpret_cast<sockaddr*>(&address),
+                    &length) != 0) {
+      return false;
+    }
+    *port = ntohs(address.sin_port);
+  } else {
+    sockaddr_in6 address{};
+    address.sin6_family = AF_INET6;
+    address.sin6_port = 0;
+    address.sin6_addr = in6addr_loopback;
+    if (bind(listener->get(), reinterpret_cast<sockaddr*>(&address),
+             sizeof(address)) != 0 ||
+        listen(listener->get(), 8) != 0) {
+      return false;
+    }
+    int length = sizeof(address);
+    if (getsockname(listener->get(), reinterpret_cast<sockaddr*>(&address),
+                    &length) != 0) {
+      return false;
+    }
+    *port = ntohs(address.sin6_port);
   }
-  int length = sizeof(address);
-  if (getsockname(listener->get(), reinterpret_cast<sockaddr*>(&address),
-                  &length) != 0) {
-    return false;
-  }
-  *port = ntohs(address.sin_port);
   return true;
 }
 
@@ -828,7 +862,8 @@ bool InstallDynamicAppIdBlock(const std::wstring& image,
 }
 
 bool AddUserFilter(HANDLE engine, const GUID& sublayer_key,
-                   FWP_BYTE_BLOB* user_descriptor, u_short remote_port,
+                   const GUID& layer_key, FWP_BYTE_BLOB* user_descriptor,
+                   u_short remote_port,
                    bool match_port, UINT8 weight, FWP_ACTION_TYPE action,
                    const wchar_t* name) {
   std::array<FWPM_FILTER_CONDITION0, 2> conditions{};
@@ -845,7 +880,7 @@ bool AddUserFilter(HANDLE engine, const GUID& sublayer_key,
 
   FWPM_FILTER0 filter{};
   filter.displayData.name = const_cast<wchar_t*>(name);
-  filter.layerKey = FWPM_LAYER_ALE_AUTH_CONNECT_V4;
+  filter.layerKey = layer_key;
   filter.subLayerKey = sublayer_key;
   filter.weight.type = FWP_UINT8;
   filter.weight.uint8 = weight;
@@ -861,7 +896,8 @@ bool AddUserFilter(HANDLE engine, const GUID& sublayer_key,
 }
 
 bool InstallDynamicUserFence(const std::wstring& user_name,
-                             u_short allowed_port,
+                             u_short allowed_v4_port,
+                             u_short allowed_v6_port,
                              UniqueWfpEngine* engine) {
   FWPM_SESSION0 session{};
   session.flags = FWPM_SESSION_FLAG_DYNAMIC;
@@ -911,19 +947,30 @@ bool InstallDynamicUserFence(const std::wstring& user_name,
 
   constexpr UINT8 kAllowWeight = 15;
   constexpr UINT8 kBlockWeight = 14;
-  if (!AddUserFilter(engine->get(), sublayer_key, &descriptor_blob, allowed_port,
-                     true, kAllowWeight, FWP_ACTION_PERMIT,
-                     L"CodeAtelier allow one user relay port") ||
-      !AddUserFilter(engine->get(), sublayer_key, &descriptor_blob, 0, false,
+  if (!AddUserFilter(engine->get(), sublayer_key,
+                     FWPM_LAYER_ALE_AUTH_CONNECT_V4, &descriptor_blob,
+                     allowed_v4_port, true, kAllowWeight, FWP_ACTION_PERMIT,
+                     L"CodeAtelier allow one user IPv4 relay port") ||
+      !AddUserFilter(engine->get(), sublayer_key,
+                     FWPM_LAYER_ALE_AUTH_CONNECT_V4, &descriptor_blob, 0, false,
                      kBlockWeight, FWP_ACTION_BLOCK,
-                     L"CodeAtelier block other user connections")) {
+                     L"CodeAtelier block other user IPv4 connections") ||
+      !AddUserFilter(engine->get(), sublayer_key,
+                     FWPM_LAYER_ALE_AUTH_CONNECT_V6, &descriptor_blob,
+                     allowed_v6_port, true, kAllowWeight, FWP_ACTION_PERMIT,
+                     L"CodeAtelier allow one user IPv6 relay port") ||
+      !AddUserFilter(engine->get(), sublayer_key,
+                     FWPM_LAYER_ALE_AUTH_CONNECT_V6, &descriptor_blob, 0, false,
+                     kBlockWeight, FWP_ACTION_BLOCK,
+                     L"CodeAtelier block other user IPv6 connections")) {
     return false;
   }
   return true;
 }
 
 bool PublishUserFencePorts(const std::filesystem::path& control_directory,
-                           u_short allowed_port, u_short denied_port) {
+                           u_short allowed_v4_port, u_short denied_v4_port,
+                           u_short allowed_v6_port, u_short denied_v6_port) {
   std::filesystem::path temporary = control_directory / L"ports.tmp";
   std::filesystem::path ready = control_directory / L"ports.ready";
   std::wofstream stream(temporary, std::ios::out | std::ios::trunc);
@@ -931,7 +978,10 @@ bool PublishUserFencePorts(const std::filesystem::path& control_directory,
     std::wcerr << L"FAIL create user fence ports file\n";
     return false;
   }
-  stream << allowed_port << L"\n" << denied_port << L"\n";
+  stream << allowed_v4_port << L"\n"
+         << denied_v4_port << L"\n"
+         << allowed_v6_port << L"\n"
+         << denied_v6_port << L"\n";
   stream.close();
   if (!stream.good()) {
     std::wcerr << L"FAIL write user fence ports file\n";
@@ -961,25 +1011,39 @@ bool WaitForUserFenceDone(const std::filesystem::path& control_directory) {
 bool RunWfpUserController(const std::wstring& user_name,
                           const std::wstring& control_directory_text) {
   std::filesystem::path control_directory(control_directory_text);
-  UniqueSocket allowed_listener;
-  UniqueSocket denied_listener;
-  u_short allowed_port = 0;
-  u_short denied_port = 0;
-  if (!StartLoopbackListener(&allowed_listener, &allowed_port) ||
-      !StartLoopbackListener(&denied_listener, &denied_port)) {
+  UniqueSocket allowed_v4_listener;
+  UniqueSocket denied_v4_listener;
+  UniqueSocket allowed_v6_listener;
+  UniqueSocket denied_v6_listener;
+  u_short allowed_v4_port = 0;
+  u_short denied_v4_port = 0;
+  u_short allowed_v6_port = 0;
+  u_short denied_v6_port = 0;
+  if (!StartLoopbackListener(AF_INET, &allowed_v4_listener,
+                             &allowed_v4_port) ||
+      !StartLoopbackListener(AF_INET, &denied_v4_listener, &denied_v4_port) ||
+      !StartLoopbackListener(AF_INET6, &allowed_v6_listener,
+                             &allowed_v6_port) ||
+      !StartLoopbackListener(AF_INET6, &denied_v6_listener,
+                             &denied_v6_port)) {
     PrintFailure(L"start user fence loopback listeners", WSAGetLastError());
     return false;
   }
 
   UniqueWfpEngine engine;
-  if (!InstallDynamicUserFence(user_name, allowed_port, &engine) ||
-      !PublishUserFencePorts(control_directory, allowed_port, denied_port)) {
+  if (!InstallDynamicUserFence(user_name, allowed_v4_port, allowed_v6_port,
+                               &engine) ||
+      !PublishUserFencePorts(control_directory, allowed_v4_port,
+                             denied_v4_port, allowed_v6_port,
+                             denied_v6_port)) {
     WSACleanup();
     return false;
   }
   std::wcout << L"WFP_USER_CONTROLLER READY user=" << user_name
-             << L" allowedPort=" << allowed_port
-             << L" deniedPort=" << denied_port << L"\n";
+             << L" allowedV4Port=" << allowed_v4_port
+             << L" deniedV4Port=" << denied_v4_port
+             << L" allowedV6Port=" << allowed_v6_port
+             << L" deniedV6Port=" << denied_v6_port << L"\n";
   bool completed = WaitForUserFenceDone(control_directory);
   std::wcout << L"WFP_USER_CONTROLLER "
              << (completed ? L"PASS" : L"FAIL") << L"\n";
@@ -991,7 +1055,8 @@ bool RunWfpProbe() {
   std::wstring image = CurrentExecutablePath();
   UniqueSocket listener;
   u_short port = 0;
-  if (image.empty() || !StartLoopbackListener(&listener, &port)) {
+  if (image.empty() ||
+      !StartLoopbackListener(AF_INET, &listener, &port)) {
     PrintFailure(L"start loopback listener", WSAGetLastError());
     return false;
   }
@@ -1042,7 +1107,10 @@ int wmain(int argc, wchar_t** argv) {
     return RunIpcClient(argv[2], argv[3], argv[4]);
   }
   if (argc == 3 && std::wstring(argv[1]) == L"--network-client") {
-    return RunNetworkClient(argv[2]);
+    return RunNetworkClient(AF_INET, argv[2]);
+  }
+  if (argc == 3 && std::wstring(argv[1]) == L"--network-client-v6") {
+    return RunNetworkClient(AF_INET6, argv[2]);
   }
   if (argc == 2 && std::wstring(argv[1]) == L"--ipc") {
     return RunIpcProbe() ? 0 : 1;
@@ -1055,6 +1123,7 @@ int wmain(int argc, wchar_t** argv) {
   }
 
   std::wcerr << L"usage: network_ipc_demo.exe --ipc | --wfp | "
+                L"--network-client[-v6] <port> | "
                 L"--wfp-user-controller <user> <control-directory>\n";
   return 2;
 }
