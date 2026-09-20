@@ -103,7 +103,7 @@ Git 在真实工作区运行，local/worktree 配置和工作区内 hook/helper/
 
 Broker 的受限解析器只建立文件授权图，不计算 push 目标、不执行 Git、helper 或外部程序。循环、数量/深度超限、UNC、设备路径、reparse point、对象替换或无法稳定打开时拒绝启动。配置文件只读，因此 `git config --global` 默认失败；写 global config 属于工作区外写入。
 
-Sandbox 的 `HOME`、`USERPROFILE` 和 `XDG_CONFIG_HOME` 指向本次 lease 的私有目录。产品在该目录生成只包含两个宿主 global config 入口、顺序固定的只读聚合 config，并以 `GIT_CONFIG_GLOBAL` 指向它；Git 自身继续解析获准文件中的 include/includeIf，Broker 预解析仅用于先建立授权图。该机制替代默认 global 文件发现，但不禁用 system、local/worktree config，也不对白名单键。两个入口的顺序、与 system/local/worktree 的优先级、includeIf 路径条件、helper 和证书路径必须用真实 Git 夹具证明；不能证明等价时 Sandbox Git 安全拒绝，而不是改用宿主 HOME。
+Sandbox 的 `HOME`、`USERPROFILE` 和 `XDG_CONFIG_HOME` 指向本次 lease 的私有可写目录。顺序固定的聚合 config 位于 Broker 控制、Runtime 只读且父目录不可写的投影根，并以 `GIT_CONFIG_GLOBAL` 指向它；不能把聚合文件放进可写 HOME 后只收紧文件 ACL，因为 Git/Runtime 仍可能通过父目录替换对象。Git 自身继续解析获准文件中的 include/includeIf，Broker 预解析仅用于先建立授权图。该机制替代默认 global 文件发现，但不禁用 system、local/worktree config，也不对白名单键。真实 Git 最小夹具已通过 system、两个 global 入口、匹配 includeIf、local、worktree 的加载顺序，并证明私有 HOME decoy 不加载、global 写入失败；宿主真实配置图、helper 和证书路径仍须在实现阶段验证，不能证明等价时安全拒绝。
 
 宿主用户的 Credential Manager、SSH agent、用户证书私钥和 per-user helper 状态不会自动可用。HTTPS push 凭据由 Broker 的固定 askpass/credential adapter 按 lease 提供；真实配置中的 helper 仍可能运行，但只能看到 Sandbox 身份获准访问的状态。首版不支持 SSH push。
 
@@ -172,9 +172,11 @@ Git 配置若指定自定义 proxy、remote helper 或非登记 transport，只�
 
 W1--W3 通过后才能声明“Windows 专用用户 Sandbox：宿主用户私有权限不继承、显式根授权、目标写边界、无直接命令网络、Broker 能力认证”；不得声明纯读取 allowlist。W5 前不支持受限 push，W6 前不声明已验证取消和资源边界。管理员安装成功不等于 Runtime 验收完成。
 
-必测项包括：密码/策略轮换、欢迎屏幕隐藏、远程/网络/服务登录拒绝、本地程序化 logon、域策略覆盖、UAC 拒绝、1～4 个不同工作区并发、同工作区串行、跨任务读取可见性/直接及后代写入拒绝、同 SID process/thread/token/Job/desktop/命名对象访问结果记录、Runtime 对 Broker/supervisor 控制面的拒绝、共享 ACE 引用计数、单实例取消与 generation 级排空、Broker/机器重启、ACL 原对象 rename/move/replace/delete-recreate、弱/null DACL、Everyone/Users 写、显式 deny、继承关闭、junction/symlink/mount point、UNC/其它盘、hard link、机器级与用户级工具、Git includeIf/helper/hook/remote helper、IPv4/IPv6/TCP/UDP/DNS/loopback/listen、代理复用和卸载残留。
+实现阶段按新增安全边界做风险驱动验收，不再把穷举平台边角作为开始实现的前置条件。每阶段的最小门槛是：W0 安装/卸载与禁用兼容；W1 宿主不受影响、Sandbox 直连拒绝、固定 relay 可达；W2 获准根可写、未获准根直接及后代写拒绝、两个并发实例和清理；W3 合法实例通过、错误实例/重放拒绝；W5 真实 Git 对绑定 host 成功且错误 host 失败；W6 正常取消和强制终止都留下可恢复账本并完成进程树清理。复杂 ACL、重解析、更多协议、机器重启和故障注入只在对应实现触及该风险或已有证据显示不确定时增加，不能用测试数量替代机制判断。
 
 ## 10. 已有证据与待验证范围
+
+机制可行性结论：已足够开始产品实现。当前机器上的探针已分别证明专用账户/`WRITE_RESTRICTED` 写根与并发、按账户 SID 的动态和持久 WFP fence、联合 IPC 身份→一次性 host lease→relay，以及真实 Git 配置投影顺序和只读聚合根。后续验证应随 W0--W6 实现增量进行，不再继续扩展独立可行性探针；这些证据仍不表示 Sandbox 已成为当前可用产品功能。
 
 [restricted-token demo](../experiments/windows-restricted-token-demo/README.md) 已证明当前机器上普通 Win32 restricted token、Job 和正常 DACL 写限制的窄组合可运行，但它派生自当前用户并使用 capability SID，已不代表目标账户/文件身份模型。
 
@@ -182,7 +184,7 @@ W1--W3 通过后才能声明“Windows 专用用户 Sandbox：宿主用户私有
 
 后续真正并发夹具证明 peer 可成功取得 `PROCESS_TERMINATE`，即使目标 process DACL 同时列出共享账户 SID 与目标 execution SID。原因是 `WRITE_RESTRICTED` 只在评估写访问时考虑 restricting SID，不能假设它覆盖所有 process/thread/Job 权限。D100 已确认不同对话无需彼此构成 OS 安全边界，因此该结果改记为接受风险；夹具保留 process/thread/Job 危险 open 的观察输出，但通过条件改为两个 Runtime 同时存活时仍保持跨根读取、各自根直接/后代写入和跨根写拒绝。
 
-[network/IPC demo](../experiments/windows-network-ipc-demo/README.md) 已证明 Named Pipe 可联合核对 PID、创建时间、restricted token、execution SID、映像、Job 和 nonce；独立的最小 relay 状态机也已通过错误 lease 拒绝、一次成功和消费后重放拒绝。提升管理员下的动态 V4/V6 `ALE_USER_ID` 矩阵已证明 permit 可绑定账户 SID、loopback 地址与 relay 端口；TCP、带 ACK 的 UDP、真实非回环 IPv4、listen 和 raw bind 在普通账户与 restricted 后代路径均符合 fence，宿主不命中。dynamic engine 正常关闭或 controller 被强制终止后连接恢复，临时账户和目录清理为 0。持久生命周期探针也已证明 8 条规则在安装进程退出后可枚举自检并继续执行相同核心 fence，正常卸载后连接恢复且重复清理为空。这三个组件尚未组合成产品 relay，lease 探针也不代表安全凭据传输或真实 CONNECT/Git。APP_ID 路径过滤实验和“需要 callout driver”的旧推论已被本设计取代：目标改用可由内建 WFP 用户条件匹配的专用账户 SID。
+[network/IPC demo](../experiments/windows-network-ipc-demo/README.md) 已证明 Named Pipe 可联合核对 PID、创建时间、restricted token、execution SID、映像、Job 和 nonce，并只向合法 restricted client 返回一次性 host-bound lease；该客户端随后成功访问 relay，Job 外同映像客户端被拒。独立状态机还证明错误 lease、错误 host 与消费后重放均拒绝。提升管理员下的动态 V4/V6 `ALE_USER_ID` 矩阵已证明 permit 可绑定账户 SID、loopback 地址与 relay 端口；TCP、带 ACK 的 UDP、真实非回环 IPv4、listen 和 raw bind 在普通账户与 restricted 后代路径均符合 fence，宿主不命中。dynamic engine 正常关闭或 controller 被强制终止后连接恢复，临时账户和目录清理为 0。持久生命周期探针也已证明 8 条规则在安装进程退出后可枚举自检并继续执行相同核心 fence，正常卸载后连接恢复且重复清理为空。这些仍是机制探针，不代表真实 CONNECT/Git 已完成。APP_ID 路径过滤实验和“需要 callout driver”的旧推论已被本设计取代：目标改用可由内建 WFP 用户条件匹配的专用账户 SID。
 
 平台契约依据：Microsoft 文档确认 `CreateProcessWithLogonW` 默认不加载用户 profile，且可在创建时为 process/thread 提供 security descriptor；access token 包含 logon SID 和用于新对象的 default DACL；restricted token 对 securable object 执行普通 SID 与 restricting SID 两次访问检查。实测表明同一账户的多次显式凭据启动可共享 logon SID，因此实现只记录其值，不将“每次唯一”作为平台契约。`WRITE_RESTRICTED` 例外、execution SID/default DACL 及对象类型覆盖仍必须逐项实测，不能只依赖文档推断。
 
@@ -191,7 +193,7 @@ W1--W3 通过后才能声明“Windows 专用用户 Sandbox：宿主用户私有
 - [Restricted Tokens](https://learn.microsoft.com/en-us/windows/win32/secauthz/restricted-tokens)
 - [Process Security and Access Rights](https://learn.microsoft.com/en-us/windows/win32/procthread/process-security-and-access-rights)
 
-尚未实测：产品持久账户安装/专用 profile、WFP 安装器的 BFE/机器重启、升级、篡改与故障恢复、独立恢复脚本删除真实对象、真实 DNS/DoH、非回环 UDP、UDP 入站/ICMP/组播/广播/其它 socket API、更深或逃逸后代、复杂 ACL/重解析/其它卷下的写边界、共享 ACL grant table、宿主 global Git config 授权图、真实 Git/Node/PowerShell/编译器兼容、relay/proxy、凭据、ACL 撤销、取消/恢复和资源上限。现有 Codex 外层 Sandbox 会干扰嵌套 token/Job/WFP 测试；所有结果必须分别标记“Codex 沙箱内”“批准的宿主权限”“真正提升安装环境”。
+尚未实测：产品持久账户安装/专用 profile、WFP 安装器的 BFE/机器重启、升级、篡改与故障恢复、独立恢复脚本删除真实对象、复杂 ACL/重解析/其它卷下的写边界、共享 ACL grant table、宿主真实 global Git config 授权图与 helper/证书、真实 Node/PowerShell/编译器兼容、CONNECT/HTTPS/Git push、凭据、ACL 撤销、取消/恢复和资源上限。现有 Codex 外层 Sandbox 会干扰嵌套 token/Job/WFP 测试；所有结果必须分别标记“Codex 沙箱内”“批准的宿主权限”“真正提升安装环境”。
 
 ## 11. 与现有实现的关系
 

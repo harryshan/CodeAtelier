@@ -4,8 +4,8 @@
 
 该实验把 WFP、Broker 身份和 relay 授权分开验证：
 
-1. `--ipc` 验证 Broker 能否通过任务专属 Named Pipe 取得真实客户端 PID，并联合核对进程创建时间、restricted token、execution SID、映像和 Job。夹具随后让同用户、同映像、知道相同 nonce 但不属于目标 Job 的进程连接，Broker 必须拒绝。
-2. `--relay` 验证最小一次性 relay lease：错误证明拒绝，正确证明只成功一次，消费后的同一证明重放被拒绝。为保持探针简单，证明通过子进程 argv 传递；这不代表产品凭据传输方案，产品仍须使用已认证私有 IPC。
+1. `--ipc` 验证 Broker 能否通过任务专属 Named Pipe 取得真实客户端 PID，并联合核对进程创建时间、restricted token、execution SID、映像和 Job。合法 restricted client 通过后从 pipe 收到一次性 lease，并用它连接绑定 host 的 relay；同用户、同映像、知道相同 nonce 但不属于目标 Job 的进程必须被拒绝。
+2. `--relay` 验证最小一次性且绑定 host 的 relay lease：错误证明、错误 host 和消费后的重放均拒绝，正确证明只成功一次。独立状态机探针为保持简单仍通过子进程 argv 传递证明；组合 `--ipc` 探针则只通过认证 pipe 返回 lease。两者均不实现 HTTP CONNECT、DNS 或 TLS。
 3. `--wfp` 验证 WFP 内建 `FWPM_CONDITION_ALE_APP_ID` filter 的实际粒度。动态 filter 阻止探针映像连接本机回环 listener；目标实例和同映像兄弟实例都应被阻止，而复制到新路径的同一程序仍可连接。
 4. `wfp-user` 编排器创建随机临时低权限账户，以 `FWPM_CONDITION_ALE_USER_ID` 在 V4/V6 `ALE_AUTH_CONNECT` 层安装“loopback 地址 + relay 端口”allow 与其余 connect block，在 `ALE_AUTH_LISTEN` 阻止 listen，并在 `ALE_RESOURCE_ASSIGNMENT` 只阻止 raw endpoint。矩阵覆盖 TCP、带 controller ACK 的 UDP 回环交付、本机真实可达非回环 IPv4 listener、listen/raw，以及普通账户进程和 restricted Runtime 的网络后代；宿主用户的 connect/listen 必须不受影响。controller 正常关闭和被强制终止后，编排器都要求同一账户重新连接成功，以实证 dynamic session 规则已撤销。账户密码只留在 PowerShell 内存，账户和目录在 `finally` 中清理。
 5. `wfp-persistent` 使用专用测试 provider/sublayer GUID，在一个 WFP 事务中安装 8 条 persistent filters。安装进程退出后，新进程枚举并严格检查 provider、sublayer、filter 数量、persistent flags 和关联 GUID，再运行 V4/V6 connect、listen/raw fence。卸载后自检必须失败、原被拒端口必须恢复连接；`finally` 始终再次按已知 GUID 清理机器策略、账户和目录。

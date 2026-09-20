@@ -536,9 +536,20 @@ bool WaitForExit(PROCESS_INFORMATION* process, DWORD* exit_code) {
   return true;
 }
 
+bool StartLoopbackListener(int address_family, UniqueSocket* listener,
+                           u_short* port);
+int RunRelayLeaseClient(const std::wstring& port_text,
+                        const std::wstring& lease_text,
+                        const std::wstring& target_host,
+                        bool expected_accept);
+bool ServeRelayLeaseOnce(SOCKET listener, const std::wstring& expected_lease,
+                         const std::wstring& expected_host);
+
 int RunIpcClient(const std::wstring& pipe_name,
                  const std::wstring& nonce,
-                 const std::wstring& expected_reply) {
+                 const std::wstring& expected_reply,
+                 const std::wstring& relay_port,
+                 const std::wstring& relay_host) {
   if (!WaitNamedPipeW(pipe_name.c_str(), 5000)) {
     PrintFailure(L"WaitNamedPipe", GetLastError());
     return 10;
@@ -557,7 +568,7 @@ int RunIpcClient(const std::wstring& pipe_name,
     PrintFailure(L"WriteFile(pipe nonce)", GetLastError());
     return 12;
   }
-  wchar_t reply[16]{};
+  wchar_t reply[128]{};
   DWORD read = 0;
   if (!ReadFile(pipe.get(), reply, sizeof(reply) - sizeof(wchar_t), &read,
                 nullptr)) {
@@ -565,6 +576,14 @@ int RunIpcClient(const std::wstring& pipe_name,
     return 13;
   }
   std::wstring actual(reply, read / sizeof(wchar_t));
+  constexpr wchar_t kLeasePrefix[] = L"LEASE:";
+  if (expected_reply == L"LEASE" &&
+      actual.starts_with(kLeasePrefix) && !relay_port.empty() &&
+      !relay_host.empty()) {
+    return RunRelayLeaseClient(relay_port,
+                               actual.substr(std::size(kLeasePrefix) - 1),
+                               relay_host, true);
+  }
   return actual == expected_reply ? 0 : 14;
 }
 
@@ -576,6 +595,7 @@ bool ServeOnePipeClient(const std::wstring& pipe_name,
                         PSID execution_sid,
                         const std::wstring& expected_image,
                         const std::wstring& nonce,
+                        const std::wstring& accepted_reply,
                         bool should_accept) {
   UniqueHandle pipe(CreateNamedPipeW(
       pipe_name.c_str(), PIPE_ACCESS_DUPLEX,
@@ -627,7 +647,7 @@ bool ServeOnePipeClient(const std::wstring& pipe_name,
   bool identity_matches = client_pid == expected_pid && same_creation &&
                           same_image && in_expected_job && restricted &&
                           execution_sid_present && nonce_matches;
-  std::wstring reply = identity_matches ? L"ACCEPT" : L"REJECT";
+  std::wstring reply = identity_matches ? accepted_reply : L"REJECT";
   DWORD written = 0;
   WriteFile(pipe.get(), reply.data(),
             static_cast<DWORD>(reply.size() * sizeof(wchar_t)), &written,
@@ -642,7 +662,8 @@ bool ServeOnePipeClient(const std::wstring& pipe_name,
              << L" restricted=" << (restricted ? L"yes" : L"no")
              << L" executionSid=" << (execution_sid_present ? L"yes" : L"no")
              << L" nonce=" << (nonce_matches ? L"yes" : L"no")
-             << L" decision=" << reply << L"\n";
+             << L" decision=" << (identity_matches ? L"ACCEPT" : L"REJECT")
+             << L"\n";
   return identity_matches == should_accept;
 }
 
@@ -671,9 +692,23 @@ bool RunIpcProbe() {
 
   std::wstring pipe_name = MakePipeName();
   std::wstring nonce = L"fixed-demo-nonce-known-to-both-clients";
+  UniqueSocket relay_listener;
+  u_short relay_port = 0;
+  GUID lease_guid{};
+  wchar_t lease_buffer[64]{};
+  if (!StartLoopbackListener(AF_INET, &relay_listener, &relay_port) ||
+      CoCreateGuid(&lease_guid) != S_OK ||
+      StringFromGUID2(lease_guid, lease_buffer,
+                      static_cast<int>(std::size(lease_buffer))) == 0) {
+    std::wcerr << L"FAIL initialize IPC relay lease\n";
+    return false;
+  }
+  std::wstring relay_lease(lease_buffer);
+  std::wstring relay_host = L"git.example.test";
   PROCESS_INFORMATION trusted{};
   std::wstring trusted_args = L"--ipc-client " + QuoteArgument(pipe_name) +
-                              L" " + QuoteArgument(nonce) + L" ACCEPT";
+                              L" " + QuoteArgument(nonce) + L" LEASE " +
+                              std::to_wstring(relay_port) + L" " + relay_host;
   if (!LaunchProcess(image, trusted_args, restricted_token.get(), job.get(),
                      &trusted)) {
     return false;
@@ -682,7 +717,10 @@ bool RunIpcProbe() {
   UniqueHandle trusted_thread(trusted.hThread);
   bool trusted_verified = ServeOnePipeClient(
       pipe_name, &security, trusted_process.get(), trusted.dwProcessId, job.get(),
-      execution_sid.get(), image, nonce, true);
+      execution_sid.get(), image, nonce, L"LEASE:" + relay_lease, true);
+  bool relay_lease_delivered =
+      trusted_verified && ServeRelayLeaseOnce(
+          relay_listener.get(), relay_lease, relay_host);
   DWORD trusted_exit = 0;
   bool trusted_exited = WaitForExit(&trusted, &trusted_exit);
 
@@ -696,21 +734,22 @@ bool RunIpcProbe() {
   UniqueHandle rogue_thread(rogue.hThread);
   bool rogue_rejected = ServeOnePipeClient(
       pipe_name, &security, trusted_process.get(), trusted.dwProcessId, job.get(),
-      execution_sid.get(), image, nonce, false);
+      execution_sid.get(), image, nonce, L"ACCEPT", false);
   DWORD rogue_exit = 0;
   bool rogue_exited = WaitForExit(&rogue, &rogue_exit);
 
-  bool passed = trusted_verified && trusted_exited && trusted_exit == 0 &&
+  bool passed = trusted_verified && relay_lease_delivered && trusted_exited &&
+                trusted_exit == 0 &&
                 rogue_rejected && rogue_exited && rogue_exit == 0;
   std::wcout << L"IPC_DEMO " << (passed ? L"PASS" : L"FAIL")
              << L" trustedAccepted=" << (trusted_verified ? L"yes" : L"no")
+             << L" relayLeaseDelivered="
+             << (relay_lease_delivered ? L"yes" : L"no")
              << L" sameUserSameImageRogueRejected="
              << (rogue_rejected ? L"yes" : L"no") << L"\n";
+  WSACleanup();
   return passed;
 }
-
-bool StartLoopbackListener(int address_family, UniqueSocket* listener,
-                           u_short* port);
 
 int RunNetworkClient(int address_family, const std::wstring& port_text) {
   WSADATA data{};
@@ -1117,6 +1156,7 @@ std::string AsciiLease(const std::wstring& value) {
 
 int RunRelayLeaseClient(const std::wstring& port_text,
                         const std::wstring& lease_text,
+                        const std::wstring& target_host,
                         bool expected_accept) {
   WSADATA data{};
   if (WSAStartup(MAKEWORD(2, 2), &data) != 0) {
@@ -1131,6 +1171,8 @@ int RunRelayLeaseClient(const std::wstring& port_text,
   address.sin_port = htons(static_cast<u_short>(std::stoul(port_text)));
   address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
   std::string lease = AsciiLease(lease_text);
+  lease.push_back('\t');
+  lease.append(AsciiLease(target_host));
   lease.push_back('\n');
   bool connected = connect(socket_handle.get(),
                            reinterpret_cast<sockaddr*>(&address),
@@ -1165,11 +1207,33 @@ bool ReceiveRelayLease(SOCKET socket_handle, std::string* lease) {
   return false;
 }
 
+bool RelayRequestMatches(const std::string& request,
+                         const std::wstring& expected_lease,
+                         const std::wstring& expected_host) {
+  return request == AsciiLease(expected_lease) + "\t" +
+                        AsciiLease(expected_host);
+}
+
+bool ServeRelayLeaseOnce(SOCKET listener, const std::wstring& expected_lease,
+                         const std::wstring& expected_host) {
+  UniqueSocket client(accept(listener, nullptr, nullptr));
+  std::string presented;
+  if (!client || !ReceiveRelayLease(client.get(), &presented)) {
+    return false;
+  }
+  bool accepted = RelayRequestMatches(
+      presented, expected_lease, expected_host);
+  char response = accepted ? '1' : '0';
+  return SendSocketBytes(client.get(), &response, 1) && accepted;
+}
+
 bool LaunchRelayLeaseClient(const std::wstring& image, u_short port,
                             const std::wstring& lease,
+                            const std::wstring& target_host,
                             bool expected_accept) {
   std::wstring arguments = L"--relay-lease-client " +
       std::to_wstring(port) + L" " + QuoteArgument(lease) + L" " +
+      QuoteArgument(target_host) + L" " +
       (expected_accept ? L"ACCEPT" : L"REJECT");
   PROCESS_INFORMATION process{};
   if (!LaunchProcess(image, arguments, nullptr, nullptr, &process)) {
@@ -1186,18 +1250,28 @@ bool RunRelayLeaseProbe() {
   UniqueSocket listener;
   u_short port = 0;
   GUID lease_guid{};
+  GUID host_check_lease_guid{};
   wchar_t lease_buffer[64]{};
+  wchar_t host_check_lease_buffer[64]{};
   if (image.empty() ||
       !StartLoopbackListener(AF_INET, &listener, &port) ||
       CoCreateGuid(&lease_guid) != S_OK ||
+      CoCreateGuid(&host_check_lease_guid) != S_OK ||
       StringFromGUID2(lease_guid, lease_buffer,
-                      static_cast<int>(std::size(lease_buffer))) == 0) {
+                      static_cast<int>(std::size(lease_buffer))) == 0 ||
+      StringFromGUID2(host_check_lease_guid, host_check_lease_buffer,
+                      static_cast<int>(std::size(host_check_lease_buffer))) ==
+          0) {
     return false;
   }
   std::wstring lease(lease_buffer);
-  std::array<bool, 3> decisions{};
+  std::wstring host_check_lease(host_check_lease_buffer);
+  std::wstring allowed_host = L"git.example.test";
+  std::wstring denied_host = L"other.example.test";
+  std::array<bool, 5> decisions{};
   bool server_ok = true;
   bool consumed = false;
+  bool host_check_consumed = false;
   std::thread server([&]() {
     for (size_t attempt = 0; attempt < decisions.size(); ++attempt) {
       UniqueSocket client(accept(listener.get(), nullptr, nullptr));
@@ -1206,9 +1280,16 @@ bool RunRelayLeaseProbe() {
         server_ok = false;
         return;
       }
-      bool accepted = !consumed && presented == AsciiLease(lease);
-      if (accepted) {
+      bool primary_accepted = !consumed && RelayRequestMatches(
+          presented, lease, allowed_host);
+      bool host_check_accepted = !host_check_consumed && RelayRequestMatches(
+          presented, host_check_lease, allowed_host);
+      bool accepted = primary_accepted || host_check_accepted;
+      if (primary_accepted) {
         consumed = true;
+      }
+      if (host_check_accepted) {
+        host_check_consumed = true;
       }
       decisions[attempt] = accepted;
       char response = accepted ? '1' : '0';
@@ -1220,16 +1301,28 @@ bool RunRelayLeaseProbe() {
   });
 
   bool wrong_rejected = LaunchRelayLeaseClient(
-      image, port, lease + L"-wrong", false);
-  bool accepted_once = LaunchRelayLeaseClient(image, port, lease, true);
-  bool replay_rejected = LaunchRelayLeaseClient(image, port, lease, false);
+      image, port, lease + L"-wrong", allowed_host, false);
+  bool accepted_once = LaunchRelayLeaseClient(
+      image, port, lease, allowed_host, true);
+  bool replay_rejected = LaunchRelayLeaseClient(
+      image, port, lease, allowed_host, false);
+  bool wrong_host_rejected = LaunchRelayLeaseClient(
+      image, port, host_check_lease, denied_host, false);
+  bool bound_host_accepted = LaunchRelayLeaseClient(
+      image, port, host_check_lease, allowed_host, true);
   server.join();
   bool passed = server_ok && wrong_rejected && accepted_once &&
-      replay_rejected && !decisions[0] && decisions[1] && !decisions[2];
+      replay_rejected && wrong_host_rejected && bound_host_accepted &&
+      !decisions[0] && decisions[1] && !decisions[2] && !decisions[3] &&
+      decisions[4];
   std::wcout << L"RELAY_LEASE_DEMO " << (passed ? L"PASS" : L"FAIL")
              << L" wrongRejected=" << (wrong_rejected ? L"yes" : L"no")
              << L" acceptedOnce=" << (accepted_once ? L"yes" : L"no")
              << L" replayRejected=" << (replay_rejected ? L"yes" : L"no")
+             << L" wrongHostRejected="
+             << (wrong_host_rejected ? L"yes" : L"no")
+             << L" boundHostAccepted="
+             << (bound_host_accepted ? L"yes" : L"no")
              << L"\n";
   WSACleanup();
   return passed;
@@ -1943,8 +2036,11 @@ bool RunWfpProbe() {
 }  // namespace
 
 int wmain(int argc, wchar_t** argv) {
-  if (argc == 5 && std::wstring(argv[1]) == L"--ipc-client") {
-    return RunIpcClient(argv[2], argv[3], argv[4]);
+  if ((argc == 5 || argc == 7) &&
+      std::wstring(argv[1]) == L"--ipc-client") {
+    return RunIpcClient(argv[2], argv[3], argv[4],
+                        argc == 7 ? argv[5] : L"",
+                        argc == 7 ? argv[6] : L"");
   }
   if (argc == 3 && std::wstring(argv[1]) == L"--network-client") {
     return RunNetworkClient(AF_INET, argv[2]);
@@ -1952,9 +2048,9 @@ int wmain(int argc, wchar_t** argv) {
   if (argc == 3 && std::wstring(argv[1]) == L"--network-client-v6") {
     return RunNetworkClient(AF_INET6, argv[2]);
   }
-  if (argc == 5 && std::wstring(argv[1]) == L"--relay-lease-client") {
-    return RunRelayLeaseClient(argv[2], argv[3],
-                               std::wstring(argv[4]) == L"ACCEPT");
+  if (argc == 6 && std::wstring(argv[1]) == L"--relay-lease-client") {
+    return RunRelayLeaseClient(argv[2], argv[3], argv[4],
+                               std::wstring(argv[5]) == L"ACCEPT");
   }
   if (argc == 3 && std::wstring(argv[1]) == L"--udp-client") {
     return RunDatagramClient(AF_INET, argv[2], false);
