@@ -36,7 +36,7 @@ pwsh -File experiments/windows-network-ipc-demo/run-demo.ps1 -Mode wfp-user
 
 - IPC 通过只能证明 Broker 可以认证一次已连接的客户端，并据此决定是否执行 typed capability。它不能阻止 Runtime 直接创建网络 socket，也不能替代 WFP。
 - WFP 通过会证明 `ALE_APP_ID` 是映像路径级而不是 execution instance 级：同路径的所有实例同时命中，复制/其它子进程映像不命中。这是内建 user-mode filter 不足以绑定任意 Runtime 进程树的反例，不是目标网络 Sandbox 已实现。
-- `wfp-user` 通过只证明动态 V4/V6 ALE 层下，上述账户身份和规则组合能覆盖被测 TCP connect、UDP 回环实际交付、TCP listen、raw endpoint 及 restricted Runtime 的直接网络后代，并证明 controller 正常关闭或被强制终止后同一账户恢复连接。UDP 的 `sendto()` 成功不视为放行：获准端口必须收到 controller ACK，拒绝端口必须无法收到。raw 项还会受到低权限账户本身的 Winsock 权限限制。它不覆盖真实 DNS resolver/DoH、非回环 UDP 交付、UDP 入站、ICMP、组播/广播、其它 socket API、更深或逃逸后代、持久 provider/sublayer、规则篡改、BFE/机器重启或卸载残留。
+- `wfp-user` 通过只证明动态 V4/V6 ALE 层下，上述账户身份和规则组合能覆盖被测 TCP connect、UDP 回环实际交付、TCP listen、raw endpoint bind 及 restricted Runtime 的直接网络后代，并证明 controller 正常关闭或被强制终止后同一账户恢复连接。UDP 的 `sendto()` 成功不视为放行：获准端口必须收到 controller ACK，拒绝端口必须无法收到；raw socket 创建成功也不视为放行，必须继续验证 bind。它不覆盖真实 DNS resolver/DoH、非回环 UDP 交付、UDP 入站、ICMP 数据交付、组播/广播、其它 socket API、更深或逃逸后代、持久 provider/sublayer、规则篡改、BFE/机器重启或卸载残留。
 - 产品采用 Windows 可原生匹配的专用账户 SID：WFP 对该 SID 永久拒绝直接出站，只允许固定 Broker relay/proxy 端口；代理再用账户 SID、PID、创建时间、Job、execution instance、nonce 和 lease 判定本次连接可用的 host/ref。这样不需要在 ALE 层识别每个任务实例，也不需要自研 callout driver。仍须在提升环境实测完整 V4/V6、协议、持久规则生命周期、服务重启和绕过路径，验证失败前不得声明“无命令网络”。
 - IPC 探针沿用 restricted-token 文件 demo 已发现的 logon/Everyone 启动兼容组合。该组合尚未完成最小化，探针也不验证 malformed frame、重放、配额、Broker 重启和 PID reuse。
 

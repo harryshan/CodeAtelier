@@ -941,10 +941,32 @@ int RunRawProbe(int address_family) {
   UniqueSocket socket_handle(socket(address_family, SOCK_RAW,
                                     address_family == AF_INET ? IPPROTO_ICMP
                                                               : IPPROTO_ICMPV6));
-  int result = socket_handle ? 0 : SOCKET_ERROR;
-  int error = result == 0 ? 0 : WSAGetLastError();
+  bool created = static_cast<bool>(socket_handle);
+  int result = SOCKET_ERROR;
+  int error = created ? 0 : WSAGetLastError();
+  if (created && address_family == AF_INET) {
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    result = bind(socket_handle.get(), reinterpret_cast<sockaddr*>(&address),
+                  sizeof(address));
+    error = result == 0 ? 0 : WSAGetLastError();
+  } else if (created) {
+    sockaddr_in6 address{};
+    address.sin6_family = AF_INET6;
+    address.sin6_addr = in6addr_loopback;
+    result = bind(socket_handle.get(), reinterpret_cast<sockaddr*>(&address),
+                  sizeof(address));
+    error = result == 0 ? 0 : WSAGetLastError();
+  }
   WSACleanup();
-  return ReportSocketResult(L"RAW_PROBE", address_family, result, error);
+  std::wcout << L"RAW_PROBE pid=" << GetCurrentProcessId() << L" family="
+             << (address_family == AF_INET ? L"ipv4" : L"ipv6")
+             << L" created=" << (created ? L"yes" : L"no")
+             << L" bound=" << (result == 0 ? L"yes" : L"no")
+             << L" error=" << error << L"\n";
+  return result == 0 ? 0
+                     : (error == WSAEACCES ? kNetworkBlockedExitCode : 21);
 }
 
 int RunNetworkDescendant(const std::wstring& client_mode,
