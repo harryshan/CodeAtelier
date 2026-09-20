@@ -5,8 +5,9 @@
 它在真实 Windows 本地账户和 DACL 上验证以下窄组合：
 
 - 创建一个随机、可丢弃的本地低权限账户，并加入内建 `Users` 组；
-- 用同一账户启动两个独立登录会话，核对用户 SID 相同而 logon SID 不同；
-- 两个工作区都向账户授予普通 `Modify`，但分别只向 capability A/B 授权；
+- 用同一账户启动两个 execution instance，核对用户 SID 相同并记录 Windows 是否复用 logon SID；
+- 每个实例使用独立 execution SID，每个工作区另使用独立 root capability SID；
+- 两个工作区都向账户授予普通 `Modify`，但分别只向自己的 root capability 授权；
 - 固定 bootstrap 从专用账户 token 创建 `WRITE_RESTRICTED` primary token，随后才启动待测 Runtime；
 - instance A/B 可读取对方活动工作区，能由直接进程和后代写自己的根，但不能写对方根；
 - capability ACE 由提升的编排端预置，专用账户 bootstrap 不修改 ACL。
@@ -27,13 +28,13 @@ pwsh -File experiments/windows-sandbox-user-demo/run-demo.ps1 -Mode run
 
 ## 输出与外层 Codex Sandbox
 
-`CONTEXT launcher-parent` 必须显示专用账户 SID、每次不同的 logon SID 和未限制的固定 bootstrap；`restricted-probe` 与 `nested-probe` 必须显示 restricted token。最终 `DEMO PASS` 只表示上述文件访问矩阵成立。
+`CONTEXT launcher-parent` 必须显示专用账户 SID、实际 logon SID 和未限制的固定 bootstrap；`INFO` 必须显示各自不同的 execution/root capability SID，`restricted-probe` 与 `nested-probe` 必须显示 restricted token。最终 `DEMO PASS` 会如实报告 `logonSidReused=true|false`；logon SID 是否复用不再决定通过，因为实例身份由 execution SID 承担。
 
 构建结果不受管理员权限影响。运行阶段不能在普通 Codex 命令 Sandbox 中冒充成功：脚本首先检查管理员 token，真实创建账户还会触发 Windows 自身权限检查。即便经 Codex 宿主批准运行，若进程仍处于外层 Job，Job 相关输出仍只能说明嵌套环境下可运行，不能算作独立 supervisor/Job 的完整证据。
 
 ## 尚未证明
 
-该探针按顺序启动两个实例，只证明不同 logon SID 与写 capability 的访问矩阵，不证明 1～4 个实例真正并发、同工作区排队或共享 ACE 引用计数。它也不覆盖：
+该探针按顺序启动两个实例，只证明独立 execution/root capability 与文件访问矩阵，不证明 1～4 个实例真正并发、同工作区排队或共享 ACE 引用计数。它也不覆盖：
 
 - 同账户实例间 process/thread/token handle、debug、窗口消息、命名对象和 desktop 隔离；
 - 复杂继承、deny/弱 DACL、reparse point、hard link、UNC、其它卷、路径替换及原对象撤销；
@@ -42,4 +43,6 @@ pwsh -File experiments/windows-sandbox-user-demo/run-demo.ps1 -Mode run
 - Node、PowerShell、Git、编译器和真实仓库配置兼容矩阵；
 - 取消、资源上限、服务重启对账及产品 tracing。
 
-此外，bootstrap 当前沿用旧探针为启动兼容加入的 logon SID 和 Everyone restricting SID/default DACL。通过本实验不能证明这些宽泛 SID 对所有工具都安全；W2 仍必须用弱 ACL、私有对象和同 SID 攻击夹具证明 root capability 没有被绕过，否则实现应失败关闭。
+2026-09-20 的首次管理员运行证明两次显式凭据启动复用了同一个 logon SID `S-1-5-5-0-488199`，因此推翻了“每实例 logon SID 唯一”的假设。该次运行在最终身份断言前已经通过双方跨根读取、各自根直接/后代写入、跨根写拒绝，并成功清理账户和目录。修订后的探针改用独立 execution SID；token restricting SID 为 execution、root capability、logon 和 Everyone，但 default DACL 已收紧为共享账户 SID 加本实例 execution SID，不再给共享 logon/Everyone 新对象通用权限。
+
+logon 和 Everyone 仍暂时作为未修改 Win32 启动的兼容 restricting SID。通过本实验不能证明它们对所有工具和对象都安全；W2 仍必须用弱 ACL、显式私有对象和同 SID 攻击夹具证明 execution/root capability 没有被绕过，否则实现应失败关闭。

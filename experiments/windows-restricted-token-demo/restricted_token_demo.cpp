@@ -6,9 +6,10 @@
  * 代码结构按执行顺序组织：
  * 1. Win32 错误、handle/SID 生命周期和命令行转义辅助函数。
  * 2. token/Job/用户与 logon SID 诊断，明确显示调用者是否已被 Codex 或其它宿主限制。
- * 3. capability SID、临时目录 ACL、restricted token 与 Job 的创建函数。
+ * 3. execution/root capability SID、临时目录 ACL、restricted token 与 Job 的创建函数；
+ *    token default DACL 只组合普通账户 SID 和本实例 execution SID，不依赖 logon SID 唯一。
  * 4. probe 与 nested-probe 验证工作区外读取、指定根写入、外部写拒绝和后代继承。
- * 5. launcher 组装上述步骤；专用账户模式接受由高权限编排端预置的 capability SID，
+ * 5. launcher 组装上述步骤；专用账户模式接受由高权限编排端预置的 execution/root SID，
  *    不允许专用账户 bootstrap 修改目录 ACL；wmain 只负责模式分派和稳定退出码。
  *
  * 该程序只修改夹具传入的临时可写根 DACL，目录随后由夹具整体删除。它不安装 WFP、Broker、
@@ -372,7 +373,7 @@ bool GrantCapabilityToDirectory(const std::wstring& directory, PSID sid) {
   return true;
 }
 
-bool CreateRestrictedPrimaryToken(PSID capability_sid,
+bool CreateRestrictedPrimaryToken(PSID execution_sid, PSID root_capability_sid,
                                   UniqueHandle* restricted_token) {
   UniqueHandle current_token;
   HANDLE raw_current_token = nullptr;
@@ -421,6 +422,20 @@ bool CreateRestrictedPrimaryToken(PSID capability_sid,
     return false;
   }
 
+  DWORD user_size = 0;
+  GetTokenInformation(current_token.get(), TokenUser, nullptr, 0, &user_size);
+  if (user_size == 0) {
+    PrintFailure(L"GetTokenInformation(TokenUser size)", GetLastError());
+    return false;
+  }
+  std::vector<BYTE> user_buffer(user_size);
+  if (!GetTokenInformation(current_token.get(), TokenUser, user_buffer.data(),
+                           user_size, &user_size)) {
+    PrintFailure(L"GetTokenInformation(TokenUser)", GetLastError());
+    return false;
+  }
+  auto* token_user = reinterpret_cast<TOKEN_USER*>(user_buffer.data());
+
   DWORD everyone_sid_size = SECURITY_MAX_SID_SIZE;
   std::vector<BYTE> everyone_sid(everyone_sid_size);
   if (!CreateWellKnownSid(WinWorldSid, nullptr, everyone_sid.data(),
@@ -429,10 +444,11 @@ bool CreateRestrictedPrimaryToken(PSID capability_sid,
     return false;
   }
 
-  std::array<SID_AND_ATTRIBUTES, 3> restricting_sids{};
-  restricting_sids[0].Sid = capability_sid;
-  restricting_sids[1].Sid = logon_sid.data();
-  restricting_sids[2].Sid = everyone_sid.data();
+  std::array<SID_AND_ATTRIBUTES, 4> restricting_sids{};
+  restricting_sids[0].Sid = execution_sid;
+  restricting_sids[1].Sid = root_capability_sid;
+  restricting_sids[2].Sid = logon_sid.data();
+  restricting_sids[3].Sid = everyone_sid.data();
 
   HANDLE raw_restricted_token = nullptr;
   if (!CreateRestrictedToken(current_token.get(), kRestrictedTokenFlags, 0,
@@ -445,11 +461,10 @@ bool CreateRestrictedPrimaryToken(PSID capability_sid,
   }
   restricted_token->reset(raw_restricted_token);
 
-  std::array<EXPLICIT_ACCESSW, 3> default_dacl_entries{};
-  std::array<PSID, 3> default_dacl_sids = {
-      capability_sid,
-      static_cast<PSID>(logon_sid.data()),
-      static_cast<PSID>(everyone_sid.data()),
+  std::array<EXPLICIT_ACCESSW, 2> default_dacl_entries{};
+  std::array<PSID, 2> default_dacl_sids = {
+      token_user->User.Sid,
+      execution_sid,
   };
   for (size_t index = 0; index < default_dacl_entries.size(); ++index) {
     default_dacl_entries[index].grfAccessPermissions = GENERIC_ALL;
@@ -678,23 +693,26 @@ int RunProbe(const std::wstring& read_path,
   return read && system_read && modified && allowed && denied && nested ? 0 : 21;
 }
 
-int LaunchRestrictedProbe(PSID capability_sid, bool install_capability_ace,
+int LaunchRestrictedProbe(PSID execution_sid, PSID root_capability_sid,
+                          bool install_capability_ace,
                           const std::wstring& read_path,
                           const std::wstring& system_read_path,
                           const std::wstring& write_root,
                           const std::wstring& deny_root) {
   PrintProcessContext(L"launcher-parent");
 
-  std::wcout << L"INFO capabilitySid="
-             << SidToString(capability_sid) << L"\n";
+  std::wcout << L"INFO executionSid=" << SidToString(execution_sid)
+             << L" rootCapabilitySid=" << SidToString(root_capability_sid)
+             << L"\n";
 
   if (install_capability_ace &&
-      !GrantCapabilityToDirectory(write_root, capability_sid)) {
+      !GrantCapabilityToDirectory(write_root, root_capability_sid)) {
     return 12;
   }
 
   UniqueHandle restricted_token;
-  if (!CreateRestrictedPrimaryToken(capability_sid, &restricted_token)) {
+  if (!CreateRestrictedPrimaryToken(execution_sid, root_capability_sid,
+                                    &restricted_token)) {
     return 13;
   }
   std::wcout << L"PASS restricted-token-created restricted="
@@ -767,33 +785,47 @@ int LaunchRestrictedProbe(PSID capability_sid, bool install_capability_ace,
 int RunLauncher(const std::wstring& read_path,
                 const std::wstring& system_read_path,
                 const std::wstring& write_root, const std::wstring& deny_root) {
-  SidPointer capability_sid = CreateCapabilitySid();
-  if (!capability_sid) {
+  SidPointer execution_sid = CreateCapabilitySid();
+  SidPointer root_capability_sid = CreateCapabilitySid();
+  if (!execution_sid || !root_capability_sid) {
     return 11;
   }
-  return LaunchRestrictedProbe(capability_sid.get(), true, read_path,
-                               system_read_path, write_root, deny_root);
+  return LaunchRestrictedProbe(execution_sid.get(), root_capability_sid.get(),
+                               true, read_path, system_read_path, write_root,
+                               deny_root);
 }
 
-int RunDedicatedAccountLauncher(const std::wstring& capability_sid_text,
+int RunDedicatedAccountLauncher(const std::wstring& execution_sid_text,
+                                const std::wstring& root_capability_sid_text,
                                 const std::wstring& read_path,
                                 const std::wstring& system_read_path,
                                 const std::wstring& write_root,
                                 const std::wstring& deny_root) {
-  PSID raw_capability_sid = nullptr;
-  if (!ConvertStringSidToSidW(capability_sid_text.c_str(),
-                              &raw_capability_sid)) {
-    PrintFailure(L"ConvertStringSidToSid(capability)", GetLastError());
+  PSID raw_execution_sid = nullptr;
+  if (!ConvertStringSidToSidW(execution_sid_text.c_str(),
+                              &raw_execution_sid)) {
+    PrintFailure(L"ConvertStringSidToSid(execution)", GetLastError());
     return 11;
   }
-  LocalPointer capability_sid(raw_capability_sid);
-  if (!IsValidSid(capability_sid.get())) {
+  LocalPointer execution_sid(raw_execution_sid);
+
+  PSID raw_root_capability_sid = nullptr;
+  if (!ConvertStringSidToSidW(root_capability_sid_text.c_str(),
+                              &raw_root_capability_sid)) {
+    PrintFailure(L"ConvertStringSidToSid(root capability)", GetLastError());
+    return 11;
+  }
+  LocalPointer root_capability_sid(raw_root_capability_sid);
+
+  if (!IsValidSid(execution_sid.get()) ||
+      !IsValidSid(root_capability_sid.get())) {
     std::wcerr << L"FAIL invalid externally supplied capability SID\n";
     return 11;
   }
 
-  return LaunchRestrictedProbe(capability_sid.get(), false, read_path,
-                               system_read_path, write_root, deny_root);
+  return LaunchRestrictedProbe(execution_sid.get(), root_capability_sid.get(),
+                               false, read_path, system_read_path, write_root,
+                               deny_root);
 }
 
 }  // namespace
@@ -802,9 +834,9 @@ int wmain(int argc, wchar_t* argv[]) {
   if (argc == 6 && std::wstring(argv[1]) == L"--launch") {
     return RunLauncher(argv[2], argv[3], argv[4], argv[5]);
   }
-  if (argc == 7 && std::wstring(argv[1]) == L"--dedicated-account-launch") {
+  if (argc == 8 && std::wstring(argv[1]) == L"--dedicated-account-launch") {
     return RunDedicatedAccountLauncher(argv[2], argv[3], argv[4], argv[5],
-                                       argv[6]);
+                                       argv[6], argv[7]);
   }
   if (argc == 6 && std::wstring(argv[1]) == L"--probe") {
     return RunProbe(argv[2], argv[3], argv[4], argv[5]);
@@ -817,7 +849,7 @@ int wmain(int argc, wchar_t* argv[]) {
       << L"Usage: restricted-token-demo.exe --launch <read-file> "
          L"<system-read-file> <write-root> <deny-root>\n"
          L"   or: restricted-token-demo.exe --dedicated-account-launch "
-         L"<capability-sid> <read-file> <system-read-file> <write-root> "
-         L"<deny-root>\n";
+         L"<execution-sid> <root-capability-sid> <read-file> "
+         L"<system-read-file> <write-root> <deny-root>\n";
   return 2;
 }

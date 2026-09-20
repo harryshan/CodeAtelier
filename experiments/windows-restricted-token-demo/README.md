@@ -4,7 +4,7 @@
 
 该实验用真实 Windows API 验证目标设计最核心、也最容易先证伪的组合：
 
-- `CreateRestrictedToken(DISABLE_MAX_PRIVILEGE | LUA_TOKEN | WRITE_RESTRICTED)`，限制 SID 同时包含写根 capability、当前 logon SID 和 Everyone SID；
+- `CreateRestrictedToken(DISABLE_MAX_PRIVILEGE | LUA_TOKEN | WRITE_RESTRICTED)`，限制 SID 同时包含每实例 execution SID、写根 capability、当前 logon SID 和 Everyone SID；
 - 一个临时可写根的独立 capability SID 与继承 ACE；
 - 含上述 SID 的 token default DACL，以及唯一重新启用的 `SeChangeNotifyPrivilege`；
 - 当前用户可读但未授权写入的兄弟目录；
@@ -31,6 +31,6 @@ pwsh -File experiments/windows-restricted-token-demo/run-demo.ps1
 - WFP 默认拒绝、Push Runner、relay、CONNECT host 边界或凭据；
 - Git/Node/PowerShell/编译器的真实兼容矩阵。
 
-探针为兼容启动使用 capability、logon、Everyone 三个 restricting SID，并把三者写入 token default DACL；它没有逐项证明 logon/Everyone 对所有工具都不可省略。尤其是 default DACL 的 Everyone `GENERIC_ALL` 会影响 Runtime 新建对象，产品控制管道必须另用显式私有 DACL 和客户端身份验证，不能复用该默认值。
+探针为兼容启动使用 execution、root capability、logon、Everyone 四个 restricting SID；管理员专用账户实测证明不同显式凭据启动可能复用 logon SID，因此 default DACL 已收紧为共享账户 SID 与本实例 execution SID，不再向 logon/Everyone 授予新对象通用权限。它仍没有逐项证明 logon/Everyone restricting SID 对所有工具都不可省略，也没有证明 default DACL 对全部 Win32 对象的继承语义；产品控制管道和 supervisor 对象仍须使用显式私有 DACL 与客户端身份验证。
 
 因此它不能把 W1 或 W2 标记为完成，也不能支持专用账户安装、并发 instance lease、同 SID 进程对象隔离、显式读写 ACL 或网络边界的产品声明。

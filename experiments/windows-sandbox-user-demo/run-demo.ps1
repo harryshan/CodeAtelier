@@ -1,8 +1,9 @@
 # 本脚本验证 CodeAtelier 单一专用 Windows Sandbox 账户的最小文件边界，不接入产品运行时。
 # 执行顺序：build 复用 restricted-token 原生探针；run 检查管理员上下文，创建随机临时本地账户；
-# 为两个临时工作区安装共享账户写权限和不同 capability SID；以同一账户的两个独立登录会话启动
-# 固定 bootstrap；bootstrap 创建 WRITE_RESTRICTED token 和 Job 后运行直接/后代探针；脚本核对同一用户 SID、
-# 不同 logon SID、跨根读取、各自根写入和跨根写拒绝；finally 只删除本次随机账户和已验证的运行目录。
+# 为两个临时工作区安装共享账户写权限、不同 execution SID 和 root capability SID；以同一账户启动
+# 两个 execution instance；bootstrap 创建 WRITE_RESTRICTED token 和 Job 后运行直接/后代探针；脚本核对
+# 共享用户身份、独立 execution identity、跨根读取、各自根写入和跨根写拒绝，并记录 logon SID 是否复用；
+# finally 只删除本次随机账户和已验证的运行目录。
 # 密码只存在于当前 PowerShell 进程的内存和 SecureString 中，不进入 argv、环境、文件或输出。
 
 [CmdletBinding()]
@@ -116,7 +117,9 @@ function Invoke-AccountProbe {
         [Parameter(Mandatory)]
         [Security.SecureString]$Password,
         [Parameter(Mandatory)]
-        [string]$CapabilitySid,
+        [string]$ExecutionSid,
+        [Parameter(Mandatory)]
+        [string]$RootCapabilitySid,
         [Parameter(Mandatory)]
         [string]$ReadPath,
         [Parameter(Mandatory)]
@@ -141,7 +144,8 @@ function Invoke-AccountProbe {
 
     foreach ($argument in @(
             "--dedicated-account-launch",
-            $CapabilitySid,
+            $ExecutionSid,
+            $RootCapabilitySid,
             $ReadPath,
             $SystemReadPath,
             $WriteRoot,
@@ -179,10 +183,19 @@ function Invoke-AccountProbe {
     if (-not $context.Success) {
         throw "探针输出缺少 launcher 身份证据。"
     }
+    $identity = [regex]::Match(
+        $stdout,
+        'INFO executionSid=(?<executionSid>\S+) rootCapabilitySid=(?<rootCapabilitySid>\S+)'
+    )
+    if (-not $identity.Success) {
+        throw "探针输出缺少 execution/root capability 身份证据。"
+    }
 
     return [pscustomobject]@{
         UserSid = $context.Groups["userSid"].Value
         LogonSid = $context.Groups["logonSid"].Value
+        ExecutionSid = $identity.Groups["executionSid"].Value
+        RootCapabilitySid = $identity.Groups["rootCapabilitySid"].Value
         Output = $stdout
     }
 }
@@ -221,10 +234,14 @@ function Invoke-Demo {
         Add-LocalGroupMember -SID "S-1-5-32-545" -Member $account
 
         $sandboxSid = [Security.Principal.SecurityIdentifier]::new($account.SID.Value)
-        $capabilityAText = New-CapabilitySidText
-        $capabilityBText = New-CapabilitySidText
-        $capabilityA = [Security.Principal.SecurityIdentifier]::new($capabilityAText)
-        $capabilityB = [Security.Principal.SecurityIdentifier]::new($capabilityBText)
+        $executionAText = New-CapabilitySidText
+        $executionBText = New-CapabilitySidText
+        $rootCapabilityAText = New-CapabilitySidText
+        $rootCapabilityBText = New-CapabilitySidText
+        $executionA = [Security.Principal.SecurityIdentifier]::new($executionAText)
+        $executionB = [Security.Principal.SecurityIdentifier]::new($executionBText)
+        $rootCapabilityA = [Security.Principal.SecurityIdentifier]::new($rootCapabilityAText)
+        $rootCapabilityB = [Security.Principal.SecurityIdentifier]::new($rootCapabilityBText)
 
         $workspaceA = Join-Path $runRoot "workspace-a"
         $workspaceB = Join-Path $runRoot "workspace-b"
@@ -238,19 +255,19 @@ function Invoke-Demo {
         Set-ProbeDirectoryAcl `
             -Path $runRoot `
             -SandboxSid $sandboxSid `
-            -CapabilitySid @($capabilityA, $capabilityB) `
+            -CapabilitySid @($executionA, $executionB) `
             -SandboxRights ReadAndExecute `
             -CapabilityRights ReadAndExecute
         Set-ProbeDirectoryAcl `
             -Path $workspaceA `
             -SandboxSid $sandboxSid `
-            -CapabilitySid $capabilityA `
+            -CapabilitySid $rootCapabilityA `
             -SandboxRights Modify `
             -CapabilityRights Modify
         Set-ProbeDirectoryAcl `
             -Path $workspaceB `
             -SandboxSid $sandboxSid `
-            -CapabilitySid $capabilityB `
+            -CapabilitySid $rootCapabilityB `
             -SandboxRights Modify `
             -CapabilityRights Modify
 
@@ -260,7 +277,8 @@ function Invoke-Demo {
             -Executable $probeExecutable `
             -UserName $accountName `
             -Password $securePassword `
-            -CapabilitySid $capabilityAText `
+            -ExecutionSid $executionAText `
+            -RootCapabilitySid $rootCapabilityAText `
             -ReadPath (Join-Path $workspaceB "readable.txt") `
             -SystemReadPath $systemReadPath `
             -WriteRoot $workspaceA `
@@ -269,7 +287,8 @@ function Invoke-Demo {
             -Executable $probeExecutable `
             -UserName $accountName `
             -Password $securePassword `
-            -CapabilitySid $capabilityBText `
+            -ExecutionSid $executionBText `
+            -RootCapabilitySid $rootCapabilityBText `
             -ReadPath (Join-Path $workspaceA "readable.txt") `
             -SystemReadPath $systemReadPath `
             -WriteRoot $workspaceB `
@@ -278,8 +297,14 @@ function Invoke-Demo {
         if ($resultA.UserSid -ne $sandboxSid.Value -or $resultB.UserSid -ne $sandboxSid.Value) {
             throw "bootstrap 没有以预期的专用账户 SID 运行。"
         }
-        if ($resultA.LogonSid -eq $resultB.LogonSid) {
-            throw "两个 execution instance 意外复用了同一 logon SID。"
+        if ($resultA.ExecutionSid -ne $executionAText -or $resultB.ExecutionSid -ne $executionBText) {
+            throw "bootstrap 没有使用预期的 execution SID。"
+        }
+        if (
+            $resultA.RootCapabilitySid -ne $rootCapabilityAText -or
+            $resultB.RootCapabilitySid -ne $rootCapabilityBText
+        ) {
+            throw "bootstrap 没有使用预期的 root capability SID。"
         }
 
         foreach ($workspace in @($workspaceA, $workspaceB)) {
@@ -296,7 +321,8 @@ function Invoke-Demo {
             }
         }
 
-        Write-Host "DEMO PASS accountSid=$($sandboxSid.Value) distinctLogonSids=yes crossRead=yes ownWrite=yes crossWriteDenied=yes nestedProcess=yes"
+        $logonSidReused = $resultA.LogonSid -eq $resultB.LogonSid
+        Write-Host "DEMO PASS accountSid=$($sandboxSid.Value) distinctExecutionSids=yes logonSidReused=$($logonSidReused.ToString().ToLowerInvariant()) crossRead=yes ownWrite=yes crossWriteDenied=yes nestedProcess=yes"
     }
     finally {
         $plainPassword = $null

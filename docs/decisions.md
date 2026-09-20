@@ -836,9 +836,18 @@
 ## D100：单一 Sandbox 账户允许跨工作区并发
 
 - 日期：2026-09-20
-- 状态：用户确认目标设计；仅文档设计，尚未实现或验证。
+- 状态：用户确认目标设计；D101 已用独立 execution SID 替代“每实例 logon SID”身份假设。仅文档设计，尚未实现或完整验证。
 - 并发决定：撤销 D099 的 Sandbox 全局串行。Sandbox 与 host-process 模式统一沿用现有 `maxConcurrentTasks` 1～4 设置；不同真实工作区可并发，同一真实工作区、同一会话仍串行。仍只创建一个 `CodeAtelierSandbox` 账户，不引入账户池。Agent Runtime 切换为 Push Runner 时只停止并替换同一任务实例，其它工作区任务继续。
-- 每实例边界：每个 execution instance 获得独立 `WRITE_RESTRICTED` token、execution/logon SID、根 capability SID、Job、private desktop、逐租约 HOME/temp、Named Pipe nonce、proxy lease 和 kind-specific ID。token default DACL、desktop/window station、pipe 及后代 process/thread/token/Job/命名对象必须同时要求共享账户 SID 和本实例 capability；bootstrap runner 从创建时即使用只允许 Broker/SYSTEM 的 DACL，不能先创建后收紧。WFP 继续按共享账户 SID 永久阻止直接出站，Broker 以 account generation、capability SID、PID/创建时间、映像、Job、nonce 和 lease 区分同账户连接。同 SID 进程注入、debug、window message 和命名对象攻击必须真实验证。
+- 每实例边界：每个 execution instance 获得独立 `WRITE_RESTRICTED` token、execution SID、根 capability SID、Job、private desktop、逐租约 HOME/temp、Named Pipe nonce、proxy lease 和 kind-specific ID；实际 logon SID 仅观测，具体授权语义由 D101 收紧。token default DACL、desktop/window station、pipe 及后代 process/thread/token/Job/命名对象必须同时要求共享账户 SID 和本实例 capability；bootstrap runner 从创建时即使用只允许 Broker/SYSTEM 的 DACL，不能先创建后收紧。WFP 继续按共享账户 SID 永久阻止直接出站，Broker 以 account generation、capability SID、PID/创建时间、映像、Job、nonce 和 lease 区分同账户连接。同 SID 进程注入、debug、window message 和命名对象攻击必须真实验证。
 - 接受的读取风险：账户 SID 的 ACL 是所有活动 AccessManifest 的并集，因此一个并发 Runtime 可能读取其它活动任务的工作区、Git 配置、显式 read roots 和逐租约目录。Broker/session API 仍禁止跨任务访问，但本方案不提供任务间 OS 级读取保密；UI 和能力声明必须明确。每实例 capability 只用于写检查，必须证明实例 A 不能写实例 B 的根；若 `Everyone` 等兼容 restricting SID 能匹配任一有效写 ACE，预检必须拒绝该根，不能降级为共享写入。需要任务间保密时必须使用未来的账户池、AppContainer 或 VM profile，不能由本设计推导。
 - ACL 与失败处理：账户 SID 的共享 ACE 使用以稳定对象身份、访问模式和 ACE delta 为键的引用计数 grant table；每实例 capability ACE 独立撤销，最后一个共享引用释放后才撤销账户 ACE。任一实例的 Job、代理、凭据、ACL 或对象对账无法证明完成时，将整个 account generation 标记 `orphaned/quarantined`，冻结新 Sandbox 任务并终止、对账全部活动实例；不能只清理故障工作区后继续复用账户。
 - 验收影响：W0/W2/W3/W5/W6 增加 1～4 实例并发、同工作区排队、跨任务读取可见/写入拒绝、共享 ACE 生命周期、同 SID 进程对象攻击、不同实例 pipe/proxy 复用拒绝、本任务 push 切换不打断其它任务、单实例取消和 generation 级故障排空夹具。现有 demo 没有覆盖这些结论，不构成并发能力证据。
+
+## D101：logon SID 不作为实例身份
+
+- 日期：2026-09-20
+- 状态：实机验证后的当前决定；修订夹具待管理员复测，产品尚未实现。
+- 证据：专用账户夹具以同一随机本地账户顺序执行两个显式凭据启动。两次 bootstrap、restricted probe 与后代的 account SID 相同，logon SID 也都为 `S-1-5-5-0-488199`；双方仍分别通过跨根读取、自己根直接/后代写入和对方根写拒绝。脚本随后因旧的“logon SID 必须不同”断言失败，但 `finally` 成功删除临时账户与运行目录。该结果证明文件 root capability 有效，同时证伪 D100 中对每次启动产生独立 logon SID 的依赖。
+- 决定：logon SID 只记录为诊断和启动兼容信息，可以在活动实例间共享，不参与实例授权。每个 execution instance 由 Broker 生成不可复用的 execution SID；每个可写根继续使用独立 root capability SID。restricted token 可暂时保留经兼容性实测所需的 logon/Everyone restricting SID，但所有私有对象、IPC、desktop 和代理身份只接受 execution SID、进程/Job/nonce/lease 等联合证明，不能因 account/logon SID 匹配而授权。
+- default DACL：Runtime token default DACL 必须同时满足普通检查和 restricting 检查，因此最小候选为共享账户 SID 加本实例 execution SID；不得向共享 logon SID、Everyone 或 root capability 授予新对象通用权限。bootstrap runner 仍由 Broker/SYSTEM-only 显式 security descriptor 保护。该 default DACL 只通过了当前用户 restricted-token 回归；专用账户后代创建、process/thread/token/Job/pipe/命名对象及跨实例攻击仍必须实测，失败时禁止 Sandbox 并发。
+- 验收影响：W2/W3/W5 的实例身份夹具不再断言 logon SID 唯一，而必须刻意覆盖“多个实例共享同一 logon SID”。只有 execution SID 不同且 A 无法打开、注入或复用 B 的对象、pipe 和代理 lease 才算通过。文档、session 诊断可以保存 logon SID 摘要，但不能把它呈现为隔离边界。
