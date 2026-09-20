@@ -3,8 +3,8 @@
  * SupervisorProtocolClient 负责业务 schema；本类只负责 framing、requestId 路由、取消和传输故障扩散。
  *
  * 1. request 在写入前限制 UTF-8 帧大小，同一 requestId 不得并发复用。
- * 2. consume 按换行分帧，允许响应乱序返回，但拒绝超限、非 JSON、缺 requestId 和未请求响应。
- * 3. 请求取消只停止 Broker 等待；真实 Runtime 终止必须另发 terminate_runtime，不伪造已清理。
+ * 2. consume 按换行分帧，允许响应乱序返回，但拒绝超限、非 JSON、缺 requestId 和真正未请求响应。
+ * 3. 请求取消只停止 Broker 等待，已取消 requestId 的首个迟到响应会被丢弃；真实 Runtime 终止必须另发 terminate_runtime。
  * 4. 任一帧或 stream 故障会使全部 pending 请求失败，上层将已启动实例按 unknown/orphaned 处理。
  *
  * 创建子进程、校验二进制与父进程、设置 handle 继承列表是后续 Windows launcher 的职责。
@@ -30,6 +30,7 @@ export class JsonLineSupervisorChannel implements SupervisorControlChannel {
   private buffer = "";
   private failure?: SupervisorProtocolError;
   private pending = new Map<string, PendingRequest>();
+  private ignoredResponses = new Set<string>();
 
   constructor(
     private input: Readable,
@@ -49,7 +50,10 @@ export class JsonLineSupervisorChannel implements SupervisorControlChannel {
       return Promise.reject(this.failure);
     }
 
-    if (this.pending.has(request.requestId)) {
+    if (
+      this.pending.has(request.requestId) ||
+      this.ignoredResponses.has(request.requestId)
+    ) {
       return Promise.reject(
         new SupervisorProtocolError("Supervisor requestId 正在使用。"),
       );
@@ -65,6 +69,7 @@ export class JsonLineSupervisorChannel implements SupervisorControlChannel {
     return new Promise((resolve, reject) => {
       const aborted = () => {
         this.pending.delete(request.requestId);
+        this.ignoredResponses.add(request.requestId);
         reject(signal.reason ?? new Error("任务已取消"));
       };
 
@@ -126,6 +131,10 @@ export class JsonLineSupervisorChannel implements SupervisorControlChannel {
 
       const pending = this.pending.get(requestId);
       if (!pending) {
+        if (this.ignoredResponses.delete(requestId)) {
+          continue;
+        }
+
         this.fail("Supervisor 返回了未请求的响应。");
 
         return;
@@ -153,5 +162,6 @@ export class JsonLineSupervisorChannel implements SupervisorControlChannel {
     }
 
     this.pending.clear();
+    this.ignoredResponses.clear();
   }
 }

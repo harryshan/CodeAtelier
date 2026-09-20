@@ -2,7 +2,7 @@
  * 验证 supervisor JSONL 通道的有界 framing、并发路由和故障扩散。
  *
  * 1. 两个并发请求可以以相反顺序返回，仍按 requestId 匹配。
- * 2. AbortSignal 只取消本地等待，后续迟到响应被视为传输协议错误。
+ * 2. AbortSignal 只取消本地等待，已取消请求的首个迟到响应会被丢弃而不破坏其它并发请求。
  * 3. 超限帧、非法 JSON 和未请求 requestId 都会拒绝全部 pending 请求。
  *
  * PassThrough 只模拟已建立的私有 handle，不验证 Windows handle 继承或进程身份。
@@ -45,16 +45,27 @@ it("routes concurrent out-of-order responses by request id", async () => {
   await expect(second).resolves.toMatchObject({ result: "second-result" });
 });
 
-it("rejects a cancelled wait without treating it as runtime termination", async () => {
+it("discards one late cancelled response without terminating another wait", async () => {
   const fromSupervisor = new PassThrough();
   const toSupervisor = new PassThrough();
   const channel = new JsonLineSupervisorChannel(fromSupervisor, toSupervisor);
   const controller = new AbortController();
   const pending = channel.request(request("cancelled"), controller.signal);
+  const active = channel.request(
+    request("active"),
+    new AbortController().signal,
+  );
 
   controller.abort(new Error("cancel wait"));
+  fromSupervisor.write(
+    `${JSON.stringify({ requestId: "cancelled", result: "late" })}\n`,
+  );
+  fromSupervisor.write(
+    `${JSON.stringify({ requestId: "active", result: "complete" })}\n`,
+  );
 
   await expect(pending).rejects.toThrow("cancel wait");
+  await expect(active).resolves.toMatchObject({ result: "complete" });
 });
 
 it("fails every pending request after an unsolicited response", async () => {
