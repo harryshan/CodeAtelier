@@ -4,17 +4,17 @@ Builds and runs the Windows network and Broker IPC feasibility probes.
 
 .DESCRIPTION
 The script locates MSVC, builds network_ipc_demo.cpp into the repository-local
-ignored .local directory, then runs the named-pipe identity probe, dynamic WFP
-probes, or the dedicated-user persistent WFP lifecycle probe. WFP modes need
-elevated BFE policy access. Dynamic filters are removed when the controller exits;
-the persistent mode removes its fixed test GUID objects in finally. User modes
-create and precisely clean up one random local account, whose password stays in
-this PowerShell process.
+ignored .local directory, then runs the named-pipe identity probe, one-time relay
+lease probe, dynamic WFP probes, or the dedicated-user persistent WFP lifecycle
+probe. WFP modes need elevated BFE policy access. Dynamic filters are removed
+when the controller exits; the persistent mode removes its fixed test GUID
+objects in finally. User modes create and precisely clean up one random local
+account, whose password stays in this PowerShell process.
 #>
 
 [CmdletBinding()]
 param(
-    [ValidateSet("all", "build", "ipc", "wfp", "wfp-user", "wfp-persistent")]
+    [ValidateSet("all", "build", "ipc", "relay", "wfp", "wfp-user", "wfp-persistent")]
     [string]$Mode = "all"
 )
 
@@ -241,7 +241,7 @@ function Build-Demo {
 function Invoke-Probe {
     param(
         [Parameter(Mandatory)]
-        [ValidateSet("ipc", "wfp")]
+        [ValidateSet("ipc", "relay", "wfp")]
         [string]$Probe
     )
 
@@ -642,6 +642,9 @@ if ($Mode -in @("all", "build")) {
 }
 if ($Mode -in @("all", "ipc")) {
     Invoke-Probe -Probe ipc
+}
+if ($Mode -eq "relay") {
+    Invoke-Probe -Probe relay
 }
 if ($Mode -in @("all", "wfp")) {
     Invoke-Probe -Probe wfp

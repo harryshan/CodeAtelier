@@ -10,8 +10,9 @@
  *    层安装端口允许及其余操作阻断，并用控制目录与 PowerShell 编排器同步；编排器负责在
  *    临时账户下启动普通 client 和 restricted Runtime 的网络后代，并验证 engine 正常关闭或
  *    controller 被终止后两个地址族均恢复连接。
- * 5. 持久 WFP 入口用固定测试 GUID 安装、枚举自检和删除 provider/sublayer/filters。
- * 6. wmain 只负责模式分派，保持每个子进程入口参数固定且易审计。
+ * 5. relay lease 探针验证错误证明拒绝、一次成功和消费后重放拒绝。
+ * 6. 持久 WFP 入口用固定测试 GUID 安装、枚举自检和删除 provider/sublayer/filters。
+ * 7. wmain 只负责模式分派，保持每个子进程入口参数固定且易审计。
  *
  * WFP filter 使用动态 session，engine handle 关闭后由 BFE 自动删除。探针只连接本机回环端口，
  * 不访问互联网。WFP 模式需要有权向 BFE 添加 filter；普通非提升用户预期会安全失败。
@@ -1090,6 +1091,150 @@ bool StartLoopbackListener(int address_family, UniqueSocket* listener,
   return true;
 }
 
+bool SendSocketBytes(SOCKET socket_handle, const char* bytes, int length) {
+  int sent = 0;
+  while (sent < length) {
+    int result = send(socket_handle, bytes + sent, length - sent, 0);
+    if (result <= 0) {
+      return false;
+    }
+    sent += result;
+  }
+  return true;
+}
+
+std::string AsciiLease(const std::wstring& value) {
+  std::string result;
+  result.reserve(value.size());
+  for (wchar_t character : value) {
+    if (character > 0x7f) {
+      return {};
+    }
+    result.push_back(static_cast<char>(character));
+  }
+  return result;
+}
+
+int RunRelayLeaseClient(const std::wstring& port_text,
+                        const std::wstring& lease_text,
+                        bool expected_accept) {
+  WSADATA data{};
+  if (WSAStartup(MAKEWORD(2, 2), &data) != 0) {
+    return 31;
+  }
+  UniqueSocket socket_handle(socket(AF_INET, SOCK_STREAM, IPPROTO_TCP));
+  DWORD timeout = 2000;
+  setsockopt(socket_handle.get(), SOL_SOCKET, SO_RCVTIMEO,
+             reinterpret_cast<const char*>(&timeout), sizeof(timeout));
+  sockaddr_in address{};
+  address.sin_family = AF_INET;
+  address.sin_port = htons(static_cast<u_short>(std::stoul(port_text)));
+  address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  std::string lease = AsciiLease(lease_text);
+  lease.push_back('\n');
+  bool connected = connect(socket_handle.get(),
+                           reinterpret_cast<sockaddr*>(&address),
+                           sizeof(address)) == 0;
+  bool sent = connected && SendSocketBytes(
+      socket_handle.get(), lease.data(), static_cast<int>(lease.size()));
+  char response = 0;
+  bool received = sent && recv(socket_handle.get(), &response, 1, 0) == 1;
+  bool accepted = received && response == '1';
+  bool passed = received && accepted == expected_accept;
+  std::wcout << L"RELAY_LEASE_CLIENT pid=" << GetCurrentProcessId()
+             << L" expected=" << (expected_accept ? L"accept" : L"reject")
+             << L" result=" << (accepted ? L"accepted" : L"rejected")
+             << L"\n";
+  WSACleanup();
+  return passed ? 0 : 31;
+}
+
+bool ReceiveRelayLease(SOCKET socket_handle, std::string* lease) {
+  constexpr size_t kMaximumLeaseLength = 128;
+  while (lease->size() < kMaximumLeaseLength) {
+    char byte = 0;
+    int received = recv(socket_handle, &byte, 1, 0);
+    if (received != 1) {
+      return false;
+    }
+    if (byte == '\n') {
+      return true;
+    }
+    lease->push_back(byte);
+  }
+  return false;
+}
+
+bool LaunchRelayLeaseClient(const std::wstring& image, u_short port,
+                            const std::wstring& lease,
+                            bool expected_accept) {
+  std::wstring arguments = L"--relay-lease-client " +
+      std::to_wstring(port) + L" " + QuoteArgument(lease) + L" " +
+      (expected_accept ? L"ACCEPT" : L"REJECT");
+  PROCESS_INFORMATION process{};
+  if (!LaunchProcess(image, arguments, nullptr, nullptr, &process)) {
+    return false;
+  }
+  UniqueHandle owned_process(process.hProcess);
+  UniqueHandle owned_thread(process.hThread);
+  DWORD exit_code = 0;
+  return WaitForExit(&process, &exit_code) && exit_code == 0;
+}
+
+bool RunRelayLeaseProbe() {
+  std::wstring image = CurrentExecutablePath();
+  UniqueSocket listener;
+  u_short port = 0;
+  GUID lease_guid{};
+  wchar_t lease_buffer[64]{};
+  if (image.empty() ||
+      !StartLoopbackListener(AF_INET, &listener, &port) ||
+      CoCreateGuid(&lease_guid) != S_OK ||
+      StringFromGUID2(lease_guid, lease_buffer,
+                      static_cast<int>(std::size(lease_buffer))) == 0) {
+    return false;
+  }
+  std::wstring lease(lease_buffer);
+  std::array<bool, 3> decisions{};
+  bool server_ok = true;
+  bool consumed = false;
+  std::thread server([&]() {
+    for (size_t attempt = 0; attempt < decisions.size(); ++attempt) {
+      UniqueSocket client(accept(listener.get(), nullptr, nullptr));
+      std::string presented;
+      if (!client || !ReceiveRelayLease(client.get(), &presented)) {
+        server_ok = false;
+        return;
+      }
+      bool accepted = !consumed && presented == AsciiLease(lease);
+      if (accepted) {
+        consumed = true;
+      }
+      decisions[attempt] = accepted;
+      char response = accepted ? '1' : '0';
+      if (!SendSocketBytes(client.get(), &response, 1)) {
+        server_ok = false;
+        return;
+      }
+    }
+  });
+
+  bool wrong_rejected = LaunchRelayLeaseClient(
+      image, port, lease + L"-wrong", false);
+  bool accepted_once = LaunchRelayLeaseClient(image, port, lease, true);
+  bool replay_rejected = LaunchRelayLeaseClient(image, port, lease, false);
+  server.join();
+  bool passed = server_ok && wrong_rejected && accepted_once &&
+      replay_rejected && !decisions[0] && decisions[1] && !decisions[2];
+  std::wcout << L"RELAY_LEASE_DEMO " << (passed ? L"PASS" : L"FAIL")
+             << L" wrongRejected=" << (wrong_rejected ? L"yes" : L"no")
+             << L" acceptedOnce=" << (accepted_once ? L"yes" : L"no")
+             << L" replayRejected=" << (replay_rejected ? L"yes" : L"no")
+             << L"\n";
+  WSACleanup();
+  return passed;
+}
+
 bool StartUdpEchoSocket(int address_family, u_short port,
                         UniqueSocket* socket_handle) {
   *socket_handle =
@@ -1807,6 +1952,10 @@ int wmain(int argc, wchar_t** argv) {
   if (argc == 3 && std::wstring(argv[1]) == L"--network-client-v6") {
     return RunNetworkClient(AF_INET6, argv[2]);
   }
+  if (argc == 5 && std::wstring(argv[1]) == L"--relay-lease-client") {
+    return RunRelayLeaseClient(argv[2], argv[3],
+                               std::wstring(argv[4]) == L"ACCEPT");
+  }
   if (argc == 3 && std::wstring(argv[1]) == L"--udp-client") {
     return RunDatagramClient(AF_INET, argv[2], false);
   }
@@ -1850,6 +1999,9 @@ int wmain(int argc, wchar_t** argv) {
   if (argc == 2 && std::wstring(argv[1]) == L"--wfp") {
     return RunWfpProbe() ? 0 : 1;
   }
+  if (argc == 2 && std::wstring(argv[1]) == L"--relay") {
+    return RunRelayLeaseProbe() ? 0 : 1;
+  }
   if (argc == 4 && std::wstring(argv[1]) == L"--wfp-user-controller") {
     return RunWfpUserController(argv[2], argv[3]) ? 0 : 1;
   }
@@ -1867,7 +2019,7 @@ int wmain(int argc, wchar_t** argv) {
     return RemovePersistentFence() ? 0 : 1;
   }
 
-  std::wcerr << L"usage: network_ipc_demo.exe --ipc | --wfp | "
+  std::wcerr << L"usage: network_ipc_demo.exe --ipc | --wfp | --relay | "
                 L"--network-client[-v6] <port> | "
                 L"--restricted-network-launch <client-mode> <port> | "
                 L"--wfp-user-controller <user> <control-directory>\n";

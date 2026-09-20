@@ -2,17 +2,19 @@
 
 状态：IPC 结论仍是当前目标的局部依据；`ALE_APP_ID` 粒度结论则用于否定按映像/实例放行。D099 已选择单一专用账户 SID 作为稳定的 WFP 隔离身份，任务级授权留在认证代理，不再要求自研 callout driver。本实验现增加临时专用账户的动态 `ALE_USER_ID` fence；它用于验证身份与规则组合，不代表产品持久安装已经完成。
 
-该实验把两个安全问题分开验证：
+该实验把 WFP、Broker 身份和 relay 授权分开验证：
 
 1. `--ipc` 验证 Broker 能否通过任务专属 Named Pipe 取得真实客户端 PID，并联合核对进程创建时间、restricted token、execution SID、映像和 Job。夹具随后让同用户、同映像、知道相同 nonce 但不属于目标 Job 的进程连接，Broker 必须拒绝。
-2. `--wfp` 验证 WFP 内建 `FWPM_CONDITION_ALE_APP_ID` filter 的实际粒度。动态 filter 阻止探针映像连接本机回环 listener；目标实例和同映像兄弟实例都应被阻止，而复制到新路径的同一程序仍可连接。
-3. `wfp-user` 编排器创建随机临时低权限账户，以 `FWPM_CONDITION_ALE_USER_ID` 在 V4/V6 `ALE_AUTH_CONNECT` 层安装“loopback 地址 + relay 端口”allow 与其余 connect block，在 `ALE_AUTH_LISTEN` 阻止 listen，并在 `ALE_RESOURCE_ASSIGNMENT` 只阻止 raw endpoint。矩阵覆盖 TCP、带 controller ACK 的 UDP 回环交付、本机真实可达非回环 IPv4 listener、listen/raw，以及普通账户进程和 restricted Runtime 的网络后代；宿主用户的 connect/listen 必须不受影响。controller 正常关闭和被强制终止后，编排器都要求同一账户重新连接成功，以实证 dynamic session 规则已撤销。账户密码只留在 PowerShell 内存，账户和目录在 `finally` 中清理。
-4. `wfp-persistent` 使用专用测试 provider/sublayer GUID，在一个 WFP 事务中安装 8 条 persistent filters。安装进程退出后，新进程枚举并严格检查 provider、sublayer、filter 数量、persistent flags 和关联 GUID，再运行 V4/V6 connect、listen/raw fence。卸载后自检必须失败、原被拒端口必须恢复连接；`finally` 始终再次按已知 GUID 清理机器策略、账户和目录。
+2. `--relay` 验证最小一次性 relay lease：错误证明拒绝，正确证明只成功一次，消费后的同一证明重放被拒绝。为保持探针简单，证明通过子进程 argv 传递；这不代表产品凭据传输方案，产品仍须使用已认证私有 IPC。
+3. `--wfp` 验证 WFP 内建 `FWPM_CONDITION_ALE_APP_ID` filter 的实际粒度。动态 filter 阻止探针映像连接本机回环 listener；目标实例和同映像兄弟实例都应被阻止，而复制到新路径的同一程序仍可连接。
+4. `wfp-user` 编排器创建随机临时低权限账户，以 `FWPM_CONDITION_ALE_USER_ID` 在 V4/V6 `ALE_AUTH_CONNECT` 层安装“loopback 地址 + relay 端口”allow 与其余 connect block，在 `ALE_AUTH_LISTEN` 阻止 listen，并在 `ALE_RESOURCE_ASSIGNMENT` 只阻止 raw endpoint。矩阵覆盖 TCP、带 controller ACK 的 UDP 回环交付、本机真实可达非回环 IPv4 listener、listen/raw，以及普通账户进程和 restricted Runtime 的网络后代；宿主用户的 connect/listen 必须不受影响。controller 正常关闭和被强制终止后，编排器都要求同一账户重新连接成功，以实证 dynamic session 规则已撤销。账户密码只留在 PowerShell 内存，账户和目录在 `finally` 中清理。
+5. `wfp-persistent` 使用专用测试 provider/sublayer GUID，在一个 WFP 事务中安装 8 条 persistent filters。安装进程退出后，新进程枚举并严格检查 provider、sublayer、filter 数量、persistent flags 和关联 GUID，再运行 V4/V6 connect、listen/raw fence。卸载后自检必须失败、原被拒端口必须恢复连接；`finally` 始终再次按已知 GUID 清理机器策略、账户和目录。
 
 运行 IPC 探针：
 
 ```powershell
 pwsh -File experiments/windows-network-ipc-demo/run-demo.ps1 -Mode ipc
+pwsh -File experiments/windows-network-ipc-demo/run-demo.ps1 -Mode relay
 ```
 
 运行 WFP 探针需要向 Base Filtering Engine 添加 filter 的管理权限，必须从提升的 PowerShell 单独执行：
