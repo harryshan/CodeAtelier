@@ -1430,13 +1430,22 @@ bool OpenPersistentEngine(UniqueWfpEngine* engine) {
   return true;
 }
 
+FWPM_FILTER_ENUM_TEMPLATE0 PersistentFilterEnumTemplate() {
+  FWPM_FILTER_ENUM_TEMPLATE0 filter_template{};
+  filter_template.providerKey = const_cast<GUID*>(&kPersistentProvider);
+  // A zero actionMask matches no action types and BFE rejects the template as
+  // FWP_E_NEVER_MATCH. UINT32_MAX explicitly means to ignore action type.
+  filter_template.actionMask = UINT32_MAX;
+  return filter_template;
+}
+
 bool RemovePersistentFence() {
   UniqueWfpEngine engine;
   if (!OpenPersistentEngine(&engine)) {
     return false;
   }
-  FWPM_FILTER_ENUM_TEMPLATE0 filter_template{};
-  filter_template.providerKey = const_cast<GUID*>(&kPersistentProvider);
+  FWPM_FILTER_ENUM_TEMPLATE0 filter_template =
+      PersistentFilterEnumTemplate();
   HANDLE enum_handle = nullptr;
   DWORD result = FwpmFilterCreateEnumHandle0(engine.get(), &filter_template,
                                              &enum_handle);
@@ -1484,8 +1493,8 @@ bool VerifyPersistentFence() {
   WfpPointer owned_provider(provider);
   WfpPointer owned_sublayer(sublayer);
 
-  FWPM_FILTER_ENUM_TEMPLATE0 filter_template{};
-  filter_template.providerKey = const_cast<GUID*>(&kPersistentProvider);
+  FWPM_FILTER_ENUM_TEMPLATE0 filter_template =
+      PersistentFilterEnumTemplate();
   HANDLE enum_handle = nullptr;
   UINT32 count = 0;
   FWPM_FILTER0** entries = nullptr;

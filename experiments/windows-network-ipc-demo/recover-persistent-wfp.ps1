@@ -144,7 +144,10 @@ public static class CodeAtelierWfpRecovery
             Marshal.StructureToPtr(providerKey, providerPointer, false);
             FilterEnumTemplate template = new FilterEnumTemplate
             {
-                ProviderKey = providerPointer
+                ProviderKey = providerPointer,
+                // Zero matches no action types. MaxValue tells BFE to ignore
+                // action type while retaining the provider constraint.
+                ActionMask = UInt32.MaxValue
             };
             RequireSuccess(
                 FwpmFilterCreateEnumHandle0(engine, ref template, out enumHandle),

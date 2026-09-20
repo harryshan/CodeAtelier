@@ -65,6 +65,8 @@
 
 独立恢复脚本的 AST、嵌入 C# 编译和 `-WhatIf` 已通过；它按固定 provider 枚举删除 filters 后再删除 sublayer/provider，并把账户/目录清理限制为 `CAPersist[8 位十六进制]` 与仓库内 `persistent-run-[32 位十六进制]`。真正持久对象存在时的恢复效果、部分对象缺失、删除失败和重复执行仍须在管理员生命周期运行中验证。
 
+首次管理员生命周期运行在安装前预清理暴露枚举模板缺陷：`actionMask=0` 会得到 `FWP_E_NEVER_MATCH`。原生清理/自检与独立恢复脚本已统一显式使用 `0xFFFFFFFF` 枚举该 provider 的所有 action；需重跑管理员生命周期入口确认空状态清理、安装后自检和真实恢复。
+
 ## 自举验收
 
 `tests/bootstrap.test.ts` 覆盖固定测试命令的精确审批及错误路径、参数、shell、非命令请求拒绝。真实源码任务使用独立的手动脚本，不依赖默认 CI 密钥；准备模式不调用模型。运行与判定见 [bootstrap.md](bootstrap.md)。脚本也纳入 TypeScript 检查。
