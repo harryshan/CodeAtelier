@@ -231,7 +231,7 @@
 
 ## Windows Sandbox 探针与专用用户目标的验证状态
 
-- 2026-09-20 目标契约改为可用性优先：启动前自检或可证明尚无 Sandbox 副作用的 provision 失败时，未来产品须明确警告并以 `host-process` executionInstance 自动继续；命令已启动、结果未知或清理不确定时仍不得自动重放。当前 WSL2 `SandboxBroker` 尚未实现该 fallback，仍保持历史 fail-closed 行为；本条只记录设计变化，不是验证通过。
+- 2026-09-20 目标契约改为可用性优先后，通用 `SandboxBroker` 已完成第一阶段实现：关闭时仍调用原宿主执行器；缺 Runtime、工作区 preflight 或自检在命令启动前失败时，状态变为 `host-process-fallback`，同一任务固定使用宿主执行器；Runtime execute 已开始后的异常变为 `unknown` 且不调用宿主执行器。UI/历史显示醒目警告，Bootstrap 返回 Broker 最新状态，生命周期写入独立 `sandbox.log`。`runtime-broker.ts` 增加绑定 execution instance/请求摘要/30 秒期限的一次性命令 grant，以及不向 Runtime 暴露 API 配置的模型代理；模型 trace 标记 `windows-sandbox-user`、instance、kind 和 `brokered=true`，不含 prompt、instructions、delta 或结果原文。定向 typecheck 与 4 个测试文件共 20 项先通过；普通 Codex Sandbox 中的完整检查仍有 3 个既有进程终止用例超时，随后在宿主权限下 `pnpm check` 全部通过：38 个文件、261 项通过、1 项跳过，类型、ESLint、Prettier 和生产构建通过。UI 变更另以宿主权限完成 Chromium E2E，23 项全部通过；普通 Codex Sandbox 中首次 E2E 的 23 项也均显示通过但 runner 收尾未退出。专用账户、supervisor、真实 pipe 身份、ACL/WFP 产品安装和 relay 尚未实现。
 
 - 新增 [专用 Sandbox 用户最小验证](../experiments/windows-sandbox-user-demo/README.md)：提升脚本创建随机临时本地账户，为两个实例预置不同 execution SID，并为两个根预置不同 root capability ACE，再以同一账户启动固定 bootstrap。夹具核对共享 account SID、独立 execution/root capability、活动根跨任务可读、直接进程/后代只写各自根，并在 `finally` 精确删除运行目录和账户；密码不进入 argv、环境、文件或输出。该入口是 W2 第一阶段夹具，不覆盖共享 grant、Broker/supervisor 控制面、WFP 或 Git。
 - 2026-09-20 首次管理员运行中，两个实例及其后代分别完成跨根读取、自己根写入与对方根写拒绝，但两次 launcher 的 logon SID 同为 `S-1-5-5-0-488199`，触发旧断言。检查确认 `CAProbe*` 账户为 0 且对应运行目录不存在，证明异常清理有效。该证据支持临时账户和文件 root capability 的窄组合，同时推翻“显式凭据启动产生不同 logon SID”的假设；不能记为 W2 通过。

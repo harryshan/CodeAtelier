@@ -6,8 +6,8 @@
  * 1. 配置用例检查空值/false 保留 non-isolated，以及非法值和 true 的 unknown 初始状态。
  * 2. Broker 关闭时调用传入的既有宿主执行器，并记录可审计但不含命令内容的生命周期阶段。
  * 3. S1 WorkspaceView 以真实临时目录验证直接受保护项、链接逃逸和普通路径的策略边界。
- * 4. 启用而没有 runtime 时拒绝，不调用宿主执行器；测试 runtime 必须声明并接收工作区保护契约。
- * 5. Windows inspect 路径只交给 WSL 固定 POSIX shell 形状，测试启动器清空环境、传递真实根及拒绝其他形状。
+ * 4. 启用而没有 runtime 或自检失败时明确回退宿主，同一任务保持 fallback；runtime 执行已开始后的失败不重放。
+ * 5. 测试 runtime 必须声明并接收工作区保护契约；Windows inspect 路径只交给 WSL 固定 POSIX shell 形状。
  *
  * 用例不启动真实 shell、不访问网络或用户项目。它证明策略、请求形状与安全失败；实际 WSL2 bubblewrap
  * 隔离只能由平台夹具和验证记录证明，不能推广为 Windows 原生或其他平台的 OS 级隔离。
@@ -30,6 +30,8 @@ afterEach(() => vi.unstubAllEnvs());
 
 function command() {
   return {
+    sessionId: "session-1",
+    taskId: "task-1",
     command: "shell",
     args: ["-c", "echo safe"],
     cwd: process.cwd(),
@@ -146,26 +148,108 @@ it("rejects direct protected targets and links that escape the workspace", async
   );
 });
 
-it("fails closed without a verified runtime and never falls back to host execution", async () => {
+it("falls back to host execution when no runtime is available", async () => {
   const broker = new SandboxBroker(
     sandboxConfiguration({ CODEATELIER_SANDBOX_ENABLED: "true" }),
   );
   const executeHost = vi.fn(async () => ({
-    output: "must not run",
+    output: "host fallback",
     exitCode: 0,
     truncated: false,
   }));
   const stages: SandboxStage[] = [];
 
-  await expect(
-    broker.executeCommand(command(), executeHost, (stage) =>
-      stages.push(stage),
-    ),
-  ).rejects.toMatchObject({ code: "SANDBOX_UNAVAILABLE" });
+  const outcome = await broker.executeCommand(command(), executeHost, (stage) =>
+    stages.push(stage),
+  );
 
+  expect(outcome).toMatchObject({
+    result: { output: "host fallback", exitCode: 0 },
+    status: {
+      mode: "host-process-fallback",
+      requested: true,
+      applied: false,
+      failureCategory: "runtime_missing",
+    },
+  });
+  expect(executeHost).toHaveBeenCalledOnce();
+  expect(stages).toEqual([
+    "policy_resolved",
+    "provisioning",
+    "fallback_selected",
+    "executing",
+    "collecting",
+    "completed",
+  ]);
+});
+
+it("keeps one task on host fallback after self-check fails", async () => {
+  const runtime: SandboxRuntime = {
+    selfCheck: vi.fn(async () => {
+      throw new Error("probe failed");
+    }),
+    execute: vi.fn(),
+  };
+  const broker = new SandboxBroker(
+    sandboxConfiguration({ CODEATELIER_SANDBOX_ENABLED: "true" }),
+    runtime,
+  );
+  const executeHost = vi.fn(async () => ({
+    output: "host",
+    exitCode: 0,
+    truncated: false,
+  }));
+  const firstStages: SandboxStage[] = [];
+
+  await broker.executeCommand(command(), executeHost, (stage) =>
+    firstStages.push(stage),
+  );
+  const secondStages: SandboxStage[] = [];
+  await broker.executeCommand(command(), executeHost, (stage) =>
+    secondStages.push(stage),
+  );
+
+  expect(runtime.selfCheck).toHaveBeenCalledOnce();
+  expect(runtime.execute).not.toHaveBeenCalled();
+  expect(executeHost).toHaveBeenCalledTimes(2);
+  expect(firstStages).toContain("fallback_selected");
+  expect(secondStages).toEqual([
+    "policy_resolved",
+    "executing",
+    "collecting",
+    "completed",
+  ]);
+
+  broker.releaseTask("task-1");
+  await broker.executeCommand(command(), executeHost, () => {});
+  expect(runtime.selfCheck).toHaveBeenCalledTimes(2);
+});
+
+it("does not replay a command on the host after runtime execution starts", async () => {
+  const runtime: SandboxRuntime = {
+    selfCheck: vi.fn(async () => ({
+      level: "test-isolation",
+      workspaceProtection: "direct-path" as const,
+    })),
+    execute: vi.fn(async () => {
+      throw new Error("result unknown");
+    }),
+  };
+  const broker = new SandboxBroker(
+    sandboxConfiguration({ CODEATELIER_SANDBOX_ENABLED: "true" }),
+    runtime,
+  );
+  const executeHost = vi.fn();
+
+  await expect(
+    broker.executeCommand(command(), executeHost, () => {}),
+  ).rejects.toMatchObject({ code: "SANDBOX_UNAVAILABLE" });
   expect(executeHost).not.toHaveBeenCalled();
-  expect(broker.status.mode).toBe("unknown");
-  expect(stages).toEqual(["policy_resolved", "provisioning", "failed"]);
+  expect(broker.status).toMatchObject({
+    mode: "unknown",
+    applied: false,
+    failureCategory: "runtime_execution",
+  });
 });
 
 it("passes only fixed WSL launcher arguments to the inspect runtime", async () => {

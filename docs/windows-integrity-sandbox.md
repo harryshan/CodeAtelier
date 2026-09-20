@@ -169,7 +169,7 @@ Sandbox 是优先执行模式，不是任务可用性的硬前置条件。每次
 
 | 阶段           | 交付物                                                                                      | 必要证据                                                                                                                                     |
 | -------------- | ------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| W0：契约       | AccessManifest、executionInstance、1～4 并发/同工作区串行、跨任务读取/进程干扰风险、禁用模式兼容与宿主 fallback | 当前实现与目标 profile 不混淆；自检前失败醒目提示并记录实际 `host-process`，已执行/未知结果不重放                                          |
+| W0：契约       | 已部分实现：公开实际状态、按任务宿主 fallback、执行后不重放、独立日志、Runtime→Broker 命令 grant/模型代理；仍缺目标 executionInstance/AccessManifest 持久账本 | 关闭路径保持兼容；自检前失败醒目提示并记录宿主 fallback；grant 精确绑定且单次消费；Sandbox 模型 trace 不含原文；已执行/未知结果不重放 |
 | W1：安装与身份 | 单一账户、secret、本地策略、WFP fence、自检/卸载                                            | 宿主用户网络不受影响；Sandbox SID 的 V4/V6 直接出站均阻断；loopback 只到固定端点                                                             |
 | W2：文件与监督 | ACL/grant table、`WRITE_RESTRICTED` token/default DACL、每实例 execution/root capability/desktop/Job | 并发实例互相可读且可能互相干扰，但直接及后代不可跨 capability 根写入；共享 logon/宽泛兼容 SID 不绕过写边界；共享 ACE 正确引用计数；孤儿 generation 全量排空 |
 | W3：Broker IPC | pipe 身份、typed capability、配额、模型/session adapter                                     | 重放、错误映像/Job/token、畸形帧安全拒绝                                                                                                     |
@@ -205,4 +205,4 @@ W1--W3 通过后才能声明“Windows 专用用户 Sandbox：宿主用户私有
 
 ## 11. 与现有实现的关系
 
-现有 WSL2 bubblewrap `inspect` Runtime 是历史实现，不是 fallback 或验收替代。迁移期间 UI 必须区分 `legacy-wsl2-inspect`、`windows-sandbox-user`、`host-process-fallback`、`non-isolated` 和 `unknown`。目标 Runtime 在启动前自检或无 Sandbox 副作用的 provision 失败时，必须明确告知用户后自动转为宿主权限；`host-process-fallback` 不得被渲染或统计为隔离。当前历史 WSL2 代码仍按旧契约安全拒绝，直到目标执行账本、提示和 fallback 一起实现；账户、WFP、ACL、Job、IPC 或代理在执行后变为未知时仍不能自动重放当前操作。
+现有 WSL2 bubblewrap `inspect` Runtime 是迁移期参考，不是目标专用用户 Runtime 或验收替代。UI 已区分 `sandboxed`、`host-process-fallback`、`non-isolated` 和 `unknown`；启动前失败会明确告知用户后自动转为宿主 shell，执行开始后的错误不重放。传输无关的 Runtime→Broker 命令 grant 与模型代理已实现，但真实 `legacy-wsl2-inspect`/`windows-sandbox-user` profile 名称、executionInstance 持久账本、supervisor 和 Named Pipe 身份仍待后续阶段接入。

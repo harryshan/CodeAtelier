@@ -5,7 +5,8 @@
  * 1. 检查日志过滤、紧凑纯文本关联字段和凭据遮盖；afterEach 恢复模拟对象。
  * 2. 记录带错误码、原因链和堆栈的 Error，确认诊断细节保留但不泄露凭据。
  * 3. 增大已有日志以触发轮转，核对新文件和归档数量。
- * 4. 让日志目标无法写入，确认只出现固定提示，任务没有崩溃、原始内容没有泄露。
+ * 4. Sandbox logger 写入独立 sandbox.log 且不镜像 stdout，避免与普通运行日志混合。
+ * 5. 让日志目标无法写入，确认只出现固定提示，任务没有崩溃、原始内容没有泄露。
  */
 
 import { it, expect, vi, afterEach } from "vitest";
@@ -17,7 +18,7 @@ import {
   readdir,
 } from "node:fs/promises";
 import path from "node:path";
-import { createLogger } from "../src/logging/logger.js";
+import { createLogger, createSandboxLogger } from "../src/logging/logger.js";
 import { temp } from "./fixtures/helpers.js";
 
 afterEach(() => vi.restoreAllMocks());
@@ -109,6 +110,33 @@ it("rotates oversized logs and retains only four archives", async () => {
   ]);
   expect(await readFile(file + ".4", "utf8")).toBe("archive3");
   expect(await readFile(file, "utf8")).toMatch(/INFO\s+app new/);
+});
+
+it("stores detailed sandbox lifecycle logs in a separate file", async () => {
+  const output = vi
+    .spyOn(process.stdout, "write")
+    .mockImplementation(() => true);
+  const root = await temp();
+  const log = createSandboxLogger(root, "debug");
+
+  log.debug({
+    event: "sandbox.self_check_started",
+    module: "sandbox",
+    taskId: "task-1",
+    requested: true,
+  });
+  log.warn({
+    event: "sandbox.fallback_selected",
+    module: "sandbox",
+    taskId: "task-1",
+    category: "runtime_self_check",
+  });
+
+  const saved = await readFile(path.join(root, "logs/sandbox.log"), "utf8");
+  expect(saved).toContain("sandbox.self_check_started");
+  expect(saved).toContain("sandbox.fallback_selected");
+  expect(saved).toContain("task=task-1");
+  expect(output).not.toHaveBeenCalled();
 });
 
 it("log storage failure does not crash the task or expose the original payload", async () => {

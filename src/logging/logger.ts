@@ -4,7 +4,8 @@
  *
  * 1. serializeError 提取 Error 的名称、消息、受控元数据、原因链和堆栈，避免调用方只记录 errorName。
  * 2. formatLogRecord 将 Pino 的内部记录转换为“时间 级别 模块 事件 | 键=值”的格式，省去应用、进程等固定噪声。
- * 3. createLogger 准备 logs 目录和 Writable 输出流，在格式化前按当前密钥列表脱敏，并按数量上限轮转旧文件。
+ * 3. createFileLogger 准备 logs 目录和 Writable 输出流，在格式化前按当前密钥列表脱敏，并按数量上限轮转旧文件。
+ * 4. createLogger 写入 app.log 并镜像到 stdout；createSandboxLogger 单独写入 sandbox.log，避免安全诊断淹没普通日志。
  *
  * Pino 的内部流仍使用结构化记录以执行字段脱敏；落盘和输出绝不保留 JSON。日志写失败时只输出固定提示，
  * 不能把原始内容带出来，也不能因此中断任务。会话历史另存于 Store，不从日志恢复。
@@ -256,10 +257,29 @@ export function createLogger(
   level: string,
   getSecrets: () => string[] = () => [],
 ) {
+  return createFileLogger(directory, level, "app.log", true, getSecrets);
+}
+
+/** 为 Sandbox/Broker 生命周期创建独立日志；调用方仍须避免传入命令、路径、SID、端口和凭据原文。 */
+export function createSandboxLogger(
+  directory: string,
+  level: string,
+  getSecrets: () => string[] = () => [],
+) {
+  return createFileLogger(directory, level, "sandbox.log", false, getSecrets);
+}
+
+function createFileLogger(
+  directory: string,
+  level: string,
+  fileName: string,
+  mirrorToStdout: boolean,
+  getSecrets: () => string[],
+) {
   const folder = path.join(directory, "logs");
 
   mkdirSync(folder, { recursive: true });
-  const file = path.join(folder, "app.log");
+  const file = path.join(folder, fileName);
   // 日志写失败也要让任务继续，错误提示不能带出原始日志内容。
   const output = new Writable({
     write(chunk, _encoding, done) {
@@ -286,7 +306,10 @@ export function createLogger(
         }
 
         appendFileSync(file, line, { mode: 0o600 });
-        process.stdout.write(line);
+        if (mirrorToStdout) {
+          process.stdout.write(line);
+        }
+
         done();
       } catch {
         process.stderr.write("CodeAtelier: log output unavailable\n");

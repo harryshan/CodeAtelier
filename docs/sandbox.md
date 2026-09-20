@@ -8,7 +8,7 @@
 
 - 由显式环境变量 `CODEATELIER_SANDBOX_ENABLED` 控制启用，未设置或设为 `false` 时关闭。只接受明确的 `true` 或 `false`；非法值在启动时报告配置错误。默认关闭。
 - 开关关闭时保持当前 V1 行为完全一致：原有工具契约、审批及辅助模型分流、真实工作区读写、Git、并发、取消、恢复和历史流程均不经过 sandbox broker；不创建隔离 runtime，不增加对现有任务的 sandbox 前置条件。原有安全局限照常说明。
-- 开关开启时，所有受其覆盖的命令必须通过已验证的隔离后端。后端不可用、创建或自检失败、执行状态未知时安全失败，绝不暗中退回 V1 宿主权限执行。UI 和历史明确显示本任务的模式；开关不能把旧任务的实际执行方式追认成隔离。
+- 开关开启时优先使用已验证的隔离后端。后端缺失、工作区 preflight 或 Runtime 自检在命令启动前失败时，Broker 明确记录 `host-process-fallback`、在 UI/历史警告后自动使用原有宿主路径继续；不得把 fallback 冒充隔离。Runtime 执行已经开始后的失败或未知结果仍安全停止，绝不在宿主权限下自动重放。
 - 开关只在后端启动时读取，运行中改动环境变量不影响既有任务；重启或受监督重载后新任务使用新值。切换时不得自动重放中断任务。
 
 模型服务请求仍由宿主后端发起，模型 API key 不进入 runtime。用户可显式选择的非隔离模式、默认 profile 和各平台最低等级仍需实施前确定；无论产品入口如何设计，都不能把关闭开关的运行显示为已隔离。
@@ -98,9 +98,9 @@ Broker 是宿主文件、受限 Git、网络例外和进程管理的可信入口
 | Windows | 专用低权限账户、显式 read/write ACL、restricted token、Job Object、按账户 SID 的 WFP | 短生命周期 VM                    | 安装/租约、弱 ACL、reparse point、网络、全部后代及 CPU/内存/PID 等可验证资源 |
 | macOS   | 受支持、签名且审查过策略的系统隔离 helper                                            | Virtualization Framework 受管 VM | entitlement、共享目录、网络、进程清理及可验证资源                            |
 
-等级以行为验收定义，不按组件名称推断。可先完成 Linux 参考后端；Windows、macOS 通过各自真实平台测试后才启用相同等级。无法实施工作区外隔离、受保护路径排除、进程树终止或默认网络拒绝时，相关 profile 不可用且不得静默回退。
+等级以行为验收定义，不按组件名称推断。可先完成 Linux 参考后端；Windows、macOS 通过各自真实平台测试后才启用相同等级。无法实施工作区外隔离、受保护路径排除、进程树终止或默认网络拒绝时，相关 profile 不可宣称可用；若走宿主 fallback，必须明确显示实际未隔离状态。
 
-当前 Windows 仅注册 WSL2 的 `wsl2-bubblewrap-inspect` 参考后端。它在每次命令前使用 `bwrap` 自检 user/PID/IPC/UTS/network namespace、只读工作区 `/opt`、私有 `/tmp`、`/home`、`/root`、`/run`、`/mnt` 与 `/sys`、新建 `/proc` 和最小 `/dev`，并以 `--clearenv` 清空命令环境。真实 `.git` 遮蔽为私有空目录，现有 `.env`/`.env.*` 映射为空设备：命令不能读取原始内容或写入原路径，但父目录仍可列出名称。WSL、`bwrap`、路径转换或任一自检失败时，Broker 状态回到 `unknown` 并拒绝该命令。它不是 Windows 原生 Runtime，尚无 cgroup/rlimit 资源限制、受控网络例外、外部文件或完整受保护路径别名防护。
+当前 Windows 仅注册 WSL2 的 `wsl2-bubblewrap-inspect` 参考后端。它在每次命令前使用 `bwrap` 自检 user/PID/IPC/UTS/network namespace、只读工作区 `/opt`、私有 `/tmp`、`/home`、`/root`、`/run`、`/mnt` 与 `/sys`、新建 `/proc` 和最小 `/dev`，并以 `--clearenv` 清空命令环境。真实 `.git` 遮蔽为私有空目录，现有 `.env`/`.env.*` 映射为空设备：命令不能读取原始内容或写入原路径，但父目录仍可列出名称。WSL、`bwrap`、路径转换或任一自检在命令启动前失败时，Broker 将本任务固定为 `host-process-fallback`，改用原 Windows shell；执行开始后的失败仍返回 `unknown` 且不重放。它不是 Windows 原生 Runtime，尚无 cgroup/rlimit 资源限制、受控网络例外、外部文件或完整受保护路径别名防护。
 
 ## 4. 网络、依赖和 Git
 
@@ -127,7 +127,7 @@ UI 显示实际 `sandboxed`、`non-isolated` 或 `unknown` 状态、平台等级
 
 | 阶段              | 交付物                                                                                                                                             | 必要证据                                                                                                                                                                                                             |
 | ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| S0：开关和契约    | 已实现：默认关闭的环境变量、公开模式状态、SandboxBroker 安全失败分流和阶段事件                                                                     | 关闭时沿用 V1 宿主命令；开启而无已验证 runtime 时拒绝执行、不回退；配置、Broker、命令分流与 tracing 测试                                                                                                             |
+| S0：开关和契约    | 已实现：默认关闭的环境变量、公开真实模式、按任务宿主 fallback、执行后不重放、独立 Sandbox 日志、阶段事件和 Runtime→Broker 协议核心                 | 关闭时沿用 V1 宿主命令；开启而无已验证 runtime/自检失败时警告并回到宿主 shell；执行失败不重放；命令 grant、Broker 模型 trace、配置与日志测试                                                                    |
 | S1：工作区视图    | 已实现：Broker 规范化真实根目录并向 Runtime 传递 `.env`、`.git` 直接保护契约；当前 WSL2 inspect Runtime 以只读 `/opt` 和启动时遮蔽落实直接路径边界 | WorkspaceView 单元测试覆盖直接受保护目标、名称仍可列出、工作区外链接逃逸和普通路径；本机 Runtime 夹具验证只读工作区和真实 `.git/config` 不可见。仍须补齐并发变化、取消和完整文件系统别名实测；祖先与别名风险继续记录 |
 | S2：Linux 参考    | 部分实现：Windows 上的 WSL2 bubblewrap `inspect` runtime，包含只读工作区、默认无网络、私有环境与基础进程 namespace                                 | 已实测该平台夹具的只读映射、隐藏宿主挂载/home、最小设备和独立 `/proc`；仍缺 cgroup/rlimit、fork/取消、真实构建与资源验收，故不宣称 S2 完成或 Windows 原生隔离                                                        |
 | S3：外部文件      | Broker 受限读取、结果可见范围、专用外部写入                                                                                                        | 对象替换、跨任务隔离、模型/历史/Replay Case 可见性提示及捕获测试                                                                                                                                                     |
@@ -149,12 +149,12 @@ UI 显示实际 `sandboxed`、`non-isolated` 或 `unknown` 状态、平台等级
 
 ### 8.1 已归档的当前边界
 
-当前后端只在 Windows、显式启用 `CODEATELIER_SANDBOX_ENABLED=true` 且每次自检成功时使用 `wsl2-bubblewrap-inspect`。命令固定以 POSIX `/bin/sh -c` 在 WSL2 中执行，工作区只读映射为 `/opt`；`edit_files` 和受限 `git` 仍是既有宿主真实工作区工具，不受这个 Runtime 隔离。缺少 WSL2、`bwrap`、路径转换或自检任一项时必须安全失败，不回退宿主 shell。
+当前后端只在 Windows、显式启用 `CODEATELIER_SANDBOX_ENABLED=true` 且每次自检成功时使用 `wsl2-bubblewrap-inspect`。命令固定以 POSIX `/bin/sh -c` 在 WSL2 中执行，工作区只读映射为 `/opt`；`edit_files` 和受限 `git` 仍是既有宿主真实工作区工具，不受这个 Runtime 隔离。缺少 WSL2、`bwrap`、路径转换或启动前自检任一项时显示警告并自动使用原有 Windows shell；任务历史、Bootstrap 状态和工具结果均标记 `host-process-fallback`。Runtime 执行开始后的错误不回退。
 
 本机证据和精确运行环境记录在 [verification.md](verification.md)。它们只证明该 Windows 主机上的无害夹具，不能替代下列行为验收，也不扩大为其他 WSL 发行版、Linux、macOS 或 Windows 原生实现的承诺。
 
 ### 8.2 迁移说明
 
-本节原有的 WSL2 后续工作清单已被 [Windows 专用用户 Sandbox Runtime 与 Broker 架构](windows-integrity-sandbox.md) 的 Windows 实施路线替代。不得继续扩展 WSL2 Runtime、将其作为专用用户 fallback，或用其夹具结果证明账户安装、ACL、IPC、网络、进程树、资源或 Broker 边界。目标架构在启动前自检或未启动 Runtime 的 provision 失败时，会明确提示并自动切换到普通宿主执行；这是新的 `host-process` 功能降级，不是回退到本节的 WSL2 Runtime，也尚未由当前代码实现。命令已启动或状态未知时仍禁止自动重放。
+本节原有的 WSL2 后续工作清单已被 [Windows 专用用户 Sandbox Runtime 与 Broker 架构](windows-integrity-sandbox.md) 的 Windows 实施路线替代。不得继续扩展 WSL2 Runtime、将其作为专用用户 fallback，或用其夹具结果证明账户安装、ACL、IPC、网络、进程树、资源或 Broker 边界。当前 Broker 已实现启动前明确提示并切换普通宿主执行的通用 `host-process-fallback`，不是回退到 WSL2；目标专用用户 Runtime 后续复用同一状态、日志与恢复契约。命令已启动或状态未知时仍禁止自动重放。
 
 迁移涉及新的执行、取消、资源或 Broker 行为时，必须同步更新 [windows-integrity-sandbox.md](windows-integrity-sandbox.md)、[testing.md](testing.md)、[verification.md](verification.md) 和决策记录，并接入安全摘要 tracing。

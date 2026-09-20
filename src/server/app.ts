@@ -156,10 +156,14 @@ export async function createApp(
     return {
       token,
       ...config.publicValue(),
+      sandbox: engine.sandbox.status,
       active: engine.activeTasks,
     };
   });
-  app.get("/api/settings", async () => config.publicValue());
+  app.get("/api/settings", async () => ({
+    ...config.publicValue(),
+    sandbox: engine.sandbox.status,
+  }));
   app.put("/api/settings", async (req) => {
     if (engine.hasActiveTasks) {
       throw new Error("请等待运行中或排队中的任务结束后再修改设置。");
@@ -167,8 +171,9 @@ export async function createApp(
 
     config.update(req.body);
     log.level = config.settings.logLevel;
+    engine.sandboxLog.level = config.settings.logLevel;
 
-    return config.publicValue();
+    return { ...config.publicValue(), sandbox: engine.sandbox.status };
   });
   app.get("/api/sessions", async () => store.list());
   app.post("/api/sessions", async (req) => {

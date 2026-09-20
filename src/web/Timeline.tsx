@@ -298,6 +298,7 @@ function eventHasTimelineContent(
     "context_budget",
     "model_usage",
     "approval_assessed",
+    "sandbox_fallback",
     "notice",
   ].includes(event.type);
 }
@@ -474,6 +475,15 @@ function TimelineEvent({
       <div role="status" className={s.notice}>
         {decisionLabels[event.data.decision] || "低成本审批模型已完成评估"}：
         {event.data.reason}
+      </div>
+    );
+  }
+
+  if (event.type === "sandbox_fallback") {
+    return (
+      <div role="alert" className={s.sandboxWarning}>
+        <strong>Sandbox 未生效，已自动使用宿主权限继续。</strong>
+        <span>{event.data.reason}</span>
       </div>
     );
   }

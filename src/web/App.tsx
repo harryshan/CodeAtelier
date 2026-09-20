@@ -75,6 +75,16 @@ export default function App() {
     bottom.current?.scrollIntoView({ behavior: "smooth" });
   }, [data?.events.length, data?.approvals.length]);
 
+  // Sandbox 的实际模式可能在任务 preflight 后改变；历史事件立即更新徽标，不等待 SSE 重连。
+  useEffect(() => {
+    const latest = data?.events.findLast(
+      (event) => event.type === "sandbox_stage",
+    );
+    if (latest?.data?.mode) {
+      setSandbox(latest.data as SandboxStatus);
+    }
+  }, [data?.events]);
+
   useEffect(() => {
     if (!mobileSidebarOpen) {
       return;
@@ -473,9 +483,11 @@ export default function App() {
             >
               {sandbox?.mode === "sandboxed"
                 ? `已隔离${sandbox.level ? `：${sandbox.level}` : ""}`
-                : sandbox?.mode === "non-isolated"
-                  ? "未隔离"
-                  : "隔离不可用"}
+                : sandbox?.mode === "host-process-fallback"
+                  ? "Sandbox 失败：宿主运行"
+                  : sandbox?.mode === "non-isolated"
+                    ? "未隔离"
+                    : "隔离不可用"}
             </span>
             <span className={s.status}>
               {active

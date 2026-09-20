@@ -334,6 +334,19 @@
   border-color: #775d37;
   color: #e2bd7b;
 }
+.sandboxWarning {
+  display: grid;
+  gap: 6px;
+  padding: 12px 14px;
+  border: 1px solid #a76b3a;
+  border-radius: 8px;
+  background: #3a2418;
+  color: #f0c18d;
+  font-size: 12px;
+}
+.sandboxWarning strong {
+  color: #ffd5a6;
+}
 .status {
   color: #98c2ae;
   font-size: 11px;

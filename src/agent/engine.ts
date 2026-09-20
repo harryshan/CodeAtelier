@@ -67,6 +67,7 @@ import {
   type ToolGraphNode,
 } from "../tools/tool-graph.js";
 import { redactJson, redactText } from "../logging/redact.js";
+import { createSandboxLogger } from "../logging/logger.js";
 import { tracedModelProvider } from "../tracing/model-provider.js";
 import { TraceArchive } from "../tracing/archive.js";
 import { TraceRecorder } from "../tracing/recorder.js";
@@ -96,8 +97,10 @@ export class Engine {
   readonly traces = new TraceRecorder();
   /** 已结束任务的 trace 另行按会话/任务写入数据目录，服务重启后仍可下载。 */
   readonly traceArchive: TraceArchive;
-  /** SandboxBroker 在整个任务内复用；启用时不会因为某个调用失败而回退为宿主执行。 */
+  /** SandboxBroker 在任务内固定安全 fallback；执行已开始后的未知结果仍不会重放。 */
   readonly sandbox: SandboxBroker;
+  /** Sandbox 安装、自检、Runtime、Broker 和 fallback 生命周期写入独立 sandbox.log。 */
+  readonly sandboxLog: Logger;
   /** 项目记忆只写入平台数据目录；任务开始时读取固定 bundle，工具调用时执行受限维护操作。 */
   readonly memories: ProjectMemoryService;
 
@@ -126,9 +129,15 @@ export class Engine {
     private factory?: ModelProviderFactory,
   ) {
     this.traceArchive = new TraceArchive(config.directory, log);
+    this.sandboxLog = createSandboxLogger(
+      config.directory,
+      config.settings.logLevel,
+      () => [config.apiKey],
+    );
     this.sandbox = new SandboxBroker(
       config.sandbox,
       createSandboxRuntime(config.sandbox),
+      this.sandboxLog,
     );
     this.memories = new ProjectMemoryService(config.directory, log);
     this.approvals = new ApprovalManager(
@@ -1505,6 +1514,7 @@ export class Engine {
       }
 
       this.traces.discardTask(task.id);
+      this.sandbox.releaseTask(task.id);
 
       emit("task_end", { status });
       log.info({ event: "task.finished", status });

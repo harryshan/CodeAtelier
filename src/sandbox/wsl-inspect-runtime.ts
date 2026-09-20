@@ -9,7 +9,7 @@
  * 2. 文件系统仅向命令映射只读工作区到 /opt；/mnt、home、root、run、tmp 与 sys 都是私有 tmpfs，/proc 和
  *    /dev 由 bubblewrap 新建。现有 .git 和 .env* 分别遮蔽为临时目录或空设备，避免透露真实受保护内容。
  * 3. selfCheck 在实际后端执行无害探针，验证工作区只读、宿主挂载/home 不可见、环境清空及受保护路径遮蔽；
- *    失败只返回固定说明，不让路径或命令进入公开 Sandbox 状态。
+ *    失败只返回固定说明，不让路径或命令进入公开 Sandbox 状态；Broker 可在命令尚未启动时显式 fallback。
  * 4. execute 只接受 ToolRunner 在 Windows Sandbox 模式下生成的 /bin/sh -c 形状，并复用调用方的取消、
  *    输出和墙钟时间限制。它尚未实现 cgroup/rlimit 资源限制、外部文件或网络例外，不能宣称完成完整 S2。
  */

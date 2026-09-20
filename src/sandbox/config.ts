@@ -4,7 +4,7 @@
  *
  * 1. sandboxConfiguration 严格接受未设置、true 或 false，并为浏览器准备不含敏感信息的初始状态。
  * 2. 未设置或 false 表示保留 V1 宿主执行，状态明确标为 non-isolated。
- * 3. true 表示请求隔离但尚未证明运行时可用，初始状态必须是 unknown，避免启动时错误宣称已隔离。
+ * 3. true 表示请求隔离但尚未证明运行时可用，初始状态必须是 unknown；Broker preflight 后才改为 sandboxed 或显式 fallback。
  *
  * 非法值会在服务构造 Config 时立即失败；运行中环境变化不会改写已经创建的配置。
  */
@@ -24,6 +24,8 @@ export function sandboxConfiguration(
       enabled: false,
       initialStatus: {
         enabled: false,
+        requested: false,
+        applied: false,
         mode: "non-isolated",
         platform,
         level: null,
@@ -37,6 +39,8 @@ export function sandboxConfiguration(
       enabled: true,
       initialStatus: {
         enabled: true,
+        requested: true,
+        applied: false,
         mode: "unknown",
         platform,
         level: null,

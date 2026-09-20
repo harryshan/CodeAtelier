@@ -867,7 +867,7 @@
 ## D103：Sandbox 启动失败自动回退宿主执行
 
 - 日期：2026-09-20
-- 状态：用户确认；替代 D074、D081、D084、D091、D094、D097、D099 中“启用后任何自检失败都拒绝整个任务”的部分，历史 WSL2 当前实现暂不改变。
+- 状态：用户确认；替代 D074、D081、D084、D091、D094、D097、D099 中“启用后任何自检失败都拒绝整个任务”的部分。通用 Broker fallback、独立日志和 Runtime→Broker 协议核心已实现；专用用户 Runtime 仍待后续阶段。
 - 决定：Windows 专用用户目标 Runtime 在启动前只读 preflight 失败，或事务化 provision 失败后账本能证明 Runtime 尚未启动、临时 ACL/对象已完整回滚、代理/凭据未签发且没有其它遗留 Sandbox 副作用时，Broker 必须显示醒目的未隔离提示、持久化受限失败类别，并自动创建 `executionInstance.mode=host-process` 继续任务。记录同时保留 `sandboxRequested=true` 与 `sandboxApplied=false`；UI、日志、历史和统计不得把 fallback 冒充 Sandbox 成功，也不要求用户再次确认。
 - 未知结果边界：若 Agent Runtime、Push Runner 或后代已经启动，工具结果未知，或 Job、ACL、代理 lease、凭据及账户状态无法证明清理完成，则当前调用不得在宿主模式自动重放。系统记录 `unknown/orphaned`，隔离并排空 account generation；确认同一工作区不再有可能写入的孤儿进程后，后续任务才可带警告地以宿主模式继续。
-- 原因与影响：用户明确选择功能可用性优先于 Sandbox fail-closed。fallback 继续使用宿主模式现有审批、路径、Git、取消和恢复规则，但不具备专用账户文件边界、无直接网络或受限 push 保证。W0 必须增加自检前 fallback、提示/账本/trace 以及执行后不重放的成对验收。当前 `CODEATELIER_SANDBOX_ENABLED`/WSL2 代码仍按历史 fail-closed 契约运行，直到上述产品状态和恢复边界一并实现。
+- 原因与影响：用户明确选择功能可用性优先于 Sandbox fail-closed。fallback 继续使用宿主模式现有审批、路径、Git、取消和恢复规则，但不具备专用账户文件边界、无直接网络或受限 push 保证。当前实现已覆盖自检前 fallback、UI/历史状态、独立 `sandbox.log`、执行后不重放，以及 Runtime→Broker 一次性命令 grant/模型 trace；事务化 ACL provision、executionInstance 持久账本和 orphaned generation 仍须随专用用户 Runtime 实现。

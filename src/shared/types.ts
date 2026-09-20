@@ -61,10 +61,17 @@ export interface Approval {
 
 export interface SandboxStatus {
   enabled: boolean;
-  mode: "non-isolated" | "sandboxed" | "unknown";
+  requested: boolean;
+  applied: boolean;
+  mode: "non-isolated" | "sandboxed" | "host-process-fallback" | "unknown";
   platform: string;
   level: string | null;
   reason?: string;
+  failureCategory?:
+    | "runtime_missing"
+    | "workspace_preflight"
+    | "runtime_self_check"
+    | "runtime_execution";
 }
 
 export interface Settings {

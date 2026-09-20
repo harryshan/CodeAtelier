@@ -270,12 +270,19 @@ export class ToolRunner {
     }
 
     if (name === "run_command") {
-      const shell = commandShell(
+      const hostShell = commandShell(
+        process.env,
+        undefined,
+        process.platform,
+        false,
+      );
+      const runtimeShell = commandShell(
         process.env,
         undefined,
         process.platform,
         this.sandbox.status.enabled && process.platform === "win32",
       );
+      const shell = runtimeShell ?? hostShell;
       const cwd = this.ctx.root;
 
       if (!shell) {
@@ -310,6 +317,8 @@ export class ToolRunner {
       startExecution();
       const outcome = await this.sandbox.executeCommand(
         {
+          sessionId: this.ctx.sessionId,
+          taskId: this.ctx.taskId,
           command: shell.command,
           args: [...shell.args, args.command],
           cwd,
@@ -318,18 +327,32 @@ export class ToolRunner {
           outputLimit: this.ctx.settings.outputChars,
           onOutput: (text) => this.ctx.emit("command_output", { text }),
         },
-        () =>
-          executeProcess(
-            shell.command,
-            [...shell.args, args.command],
+        () => {
+          if (!hostShell) {
+            throw new Error(
+              "Sandbox fallback 需要宿主命令 shell，但当前平台未找到。",
+            );
+          }
+
+          return executeProcess(
+            hostShell.command,
+            [...hostShell.args, args.command],
             cwd,
             this.ctx.signal,
             this.ctx.settings.commandTimeoutMs,
             this.ctx.settings.outputChars,
             (text) => this.ctx.emit("command_output", { text }),
-          ),
+          );
+        },
         (stage, status) => {
           this.ctx.emit("sandbox_stage", { stage, ...status });
+          if (stage === "fallback_selected") {
+            this.ctx.emit("sandbox_fallback", {
+              text: `Sandbox 不可用，本任务已自动改用宿主权限继续：${status.reason ?? "未提供原因。"}`,
+              ...status,
+            });
+          }
+
           this.ctx.onSandboxStage?.(stage, status);
         },
       );
