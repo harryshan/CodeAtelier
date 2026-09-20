@@ -1,0 +1,241 @@
+/**
+ * 管理单一 Windows Sandbox 账户 generation 的并发实例租约与共享 ACL grant 引用。
+ * SandboxBroker 在原生 provision 前取得 lease，在 Job、代理与 ACL 全部清理后释放；恢复代码读取快照判断能否继续复用账户。
+ *
+ * 1. acquire 强制 1～4 个不同工作区并发、同一规范工作区串行，并为每个实例分配单调 lease epoch。
+ * 2. grant table 以对象身份和访问模式计数；首个引用要求原生层安装 ACE，最后一个引用要求撤销。
+ * 3. release 只接受同 instance/epoch 的 lease，返回本次应撤销的对象，防止迟到清理破坏新实例。
+ * 4. quarantine 在未知进程、ACL、代理或凭据状态下冻结 generation，并返回所有仍需终止和对账的实例。
+ * 5. snapshot 只暴露摘要和计数，可写入 session/log/trace；不包含原始路径、SID、命令或凭据。
+ *
+ * 本模块不执行进程或 ACL 操作。调用方只有在原生层证明 release 返回的清理全部成功后，才能把 lease 视为 clean。
+ */
+
+import { randomUUID } from "node:crypto";
+import type { AccessManifest } from "./supervisor-protocol.js";
+
+export type AccountGenerationState = "healthy" | "draining" | "quarantined";
+
+export interface SandboxInstanceLease {
+  executionInstanceId: string;
+  kind: "agent-runtime" | "push-runner";
+  taskId: string;
+  workspaceRootId: string;
+  manifestDigest: string;
+  epoch: number;
+}
+
+interface GrantReference {
+  objectIdentityDigest: string;
+  mode: "read" | "write";
+  references: number;
+}
+
+export interface AccountGenerationSnapshot {
+  generationId: string;
+  generationDigest: string;
+  state: AccountGenerationState;
+  nextLeaseEpoch: number;
+  activeInstanceCount: number;
+  activeInstances: Array<
+    Pick<
+      SandboxInstanceLease,
+      | "executionInstanceId"
+      | "kind"
+      | "workspaceRootId"
+      | "manifestDigest"
+      | "epoch"
+    >
+  >;
+  grantCount: number;
+  quarantineCategory?: SandboxGenerationFailure;
+}
+
+export type SandboxGenerationFailure =
+  | "process_unknown"
+  | "acl_cleanup"
+  | "proxy_cleanup"
+  | "credential_cleanup"
+  | "identity_mismatch"
+  | "ledger_inconsistent";
+
+export class AccountGenerationError extends Error {
+  readonly code = "SANDBOX_ACCOUNT_GENERATION";
+
+  constructor(reason: string) {
+    super(`Sandbox account generation 拒绝操作：${reason}`);
+    this.name = "AccountGenerationError";
+  }
+}
+
+function grantKey(identity: string, mode: "read" | "write") {
+  return `${mode}:${identity}`;
+}
+
+function manifestGrants(manifest: AccessManifest) {
+  return [
+    ...manifest.readRoots.map((root) => ({
+      objectIdentityDigest: root.objectIdentityDigest,
+      mode: "read" as const,
+    })),
+    ...manifest.gitConfigFiles.map((root) => ({
+      objectIdentityDigest: root.objectIdentityDigest,
+      mode: "read" as const,
+    })),
+    ...manifest.writeRoots.map((root) => ({
+      objectIdentityDigest: root.objectIdentityDigest,
+      mode: "write" as const,
+    })),
+  ];
+}
+
+export class AccountGenerationRegistry {
+  readonly generationId = randomUUID();
+  private state: AccountGenerationState = "healthy";
+  private nextLeaseEpoch = 1;
+  private active = new Map<string, SandboxInstanceLease>();
+  private grants = new Map<string, GrantReference>();
+  private quarantineCategory?: SandboxGenerationFailure;
+
+  constructor(
+    readonly generationDigest: string,
+    private maximumConcurrentInstances: number,
+  ) {
+    if (
+      !/^[a-f0-9]{64}$/.test(generationDigest) ||
+      !Number.isInteger(maximumConcurrentInstances) ||
+      maximumConcurrentInstances < 1 ||
+      maximumConcurrentInstances > 4
+    ) {
+      throw new AccountGenerationError("generation 摘要或并发上限无效。");
+    }
+  }
+
+  acquire(input: {
+    executionInstanceId: string;
+    kind: "agent-runtime" | "push-runner";
+    taskId: string;
+    accessManifest: AccessManifest;
+  }) {
+    if (this.state !== "healthy") {
+      throw new AccountGenerationError("generation 已停止发放新租约。");
+    }
+
+    if (this.active.has(input.executionInstanceId)) {
+      throw new AccountGenerationError("execution instance 已持有租约。");
+    }
+
+    if (this.active.size >= this.maximumConcurrentInstances) {
+      throw new AccountGenerationError("已达到 Sandbox 并发上限。");
+    }
+
+    if (
+      [...this.active.values()].some(
+        (lease) =>
+          lease.workspaceRootId === input.accessManifest.workspaceRootId,
+      )
+    ) {
+      throw new AccountGenerationError("同一工作区已有活动 Sandbox 实例。");
+    }
+
+    const lease: SandboxInstanceLease = Object.freeze({
+      executionInstanceId: input.executionInstanceId,
+      kind: input.kind,
+      taskId: input.taskId,
+      workspaceRootId: input.accessManifest.workspaceRootId,
+      manifestDigest: input.accessManifest.manifestDigest,
+      epoch: this.nextLeaseEpoch++,
+    });
+    const install: GrantReference[] = [];
+
+    for (const grant of manifestGrants(input.accessManifest)) {
+      const key = grantKey(grant.objectIdentityDigest, grant.mode);
+      const current = this.grants.get(key);
+
+      if (current) {
+        current.references += 1;
+      } else {
+        const reference = { ...grant, references: 1 };
+        this.grants.set(key, reference);
+        install.push({ ...reference });
+      }
+    }
+
+    this.active.set(lease.executionInstanceId, lease);
+
+    return { lease, install };
+  }
+
+  beginDrain() {
+    if (this.state === "healthy") {
+      this.state = "draining";
+    }
+  }
+
+  /** release 必须带回 acquire 时的不可变 manifest，不能只凭 instanceId 猜测应撤销哪些 ACE。 */
+  releaseWithManifest(
+    executionInstanceId: string,
+    epoch: number,
+    manifest: AccessManifest,
+  ) {
+    const lease = this.active.get(executionInstanceId);
+    if (
+      !lease ||
+      lease.epoch !== epoch ||
+      lease.manifestDigest !== manifest.manifestDigest
+    ) {
+      throw new AccountGenerationError("租约与 AccessManifest 账本不匹配。");
+    }
+
+    const revoke: GrantReference[] = [];
+    for (const grant of manifestGrants(manifest)) {
+      const key = grantKey(grant.objectIdentityDigest, grant.mode);
+      const current = this.grants.get(key);
+
+      if (!current || current.references < 1) {
+        this.quarantine("ledger_inconsistent");
+        throw new AccountGenerationError("共享 ACL grant 账本不一致。");
+      }
+
+      current.references -= 1;
+      if (current.references === 0) {
+        this.grants.delete(key);
+        revoke.push({ ...current });
+      }
+    }
+
+    this.active.delete(executionInstanceId);
+
+    return {
+      lease,
+      revoke,
+      generationEmpty: this.active.size === 0,
+    };
+  }
+
+  quarantine(category: SandboxGenerationFailure) {
+    this.state = "quarantined";
+    this.quarantineCategory = category;
+
+    return [...this.active.values()];
+  }
+
+  snapshot(): AccountGenerationSnapshot {
+    return {
+      generationId: this.generationId,
+      generationDigest: this.generationDigest,
+      state: this.state,
+      nextLeaseEpoch: this.nextLeaseEpoch,
+      activeInstanceCount: this.active.size,
+      activeInstances: [...this.active.values()].map((lease) => ({
+        executionInstanceId: lease.executionInstanceId,
+        kind: lease.kind,
+        workspaceRootId: lease.workspaceRootId,
+        manifestDigest: lease.manifestDigest,
+        epoch: lease.epoch,
+      })),
+      grantCount: this.grants.size,
+      quarantineCategory: this.quarantineCategory,
+    };
+  }
+}
