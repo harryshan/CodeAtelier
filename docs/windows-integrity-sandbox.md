@@ -178,7 +178,7 @@ W1--W3 通过后才能声明“Windows 专用用户 Sandbox：宿主用户私有
 
 [restricted-token demo](../experiments/windows-restricted-token-demo/README.md) 已证明当前机器上普通 Win32 restricted token、Job 和正常 DACL 写限制的窄组合可运行，但它派生自当前用户并使用 capability SID，已不代表目标账户/文件身份模型。
 
-[dedicated sandbox user demo](../experiments/windows-sandbox-user-demo/README.md) 的首次管理员运行已真实创建临时本地账户，并通过两个实例的跨根读取、各自根直接/后代写入和跨根写拒绝；它同时证明两次显式凭据启动复用了相同 logon SID，推翻了 logon SID 唯一假设。修订夹具随后以独立 execution/root capability SID 和收紧的 account/execution default DACL 通过管理员复测，报告 `distinctExecutionSids=yes logonSidReused=true crossRead=yes ownWrite=yes crossWriteDenied=yes nestedProcess=yes`；两轮结束后账户与运行目录均清理。该证据完成 W2 的顺序文件访问第一阶段，真正并发文件写入矩阵仍待按新契约复测。
+[dedicated sandbox user demo](../experiments/windows-sandbox-user-demo/README.md) 的首次管理员运行已真实创建临时本地账户，并通过两个实例的跨根读取、各自根直接/后代写入和跨根写拒绝；它同时证明两次显式凭据启动复用了相同 logon SID，推翻了 logon SID 唯一假设。修订夹具随后以独立 execution/root capability SID 和收紧的 account/execution default DACL 通过管理员顺序复测。按 D100 新契约的第三次管理员运行让两个 Runtime 真正同时存活；双方均保持跨根读取、各自根直接/后代写入和跨根写拒绝，最终报告 `concurrent=yes peerObjectIsolation=not-required crossRead=yes ownWrite=yes crossWriteDenied=yes nestedProcess=yes`。复测后账户与运行目录均清理。该证据通过 W2 的正常 DACL 双实例并发文件矩阵，不覆盖复杂 ACL、共享 grant、控制面或网络边界。
 
 后续真正并发夹具证明 peer 可成功取得 `PROCESS_TERMINATE`，即使目标 process DACL 同时列出共享账户 SID 与目标 execution SID。原因是 `WRITE_RESTRICTED` 只在评估写访问时考虑 restricting SID，不能假设它覆盖所有 process/thread/Job 权限。D100 已确认不同对话无需彼此构成 OS 安全边界，因此该结果改记为接受风险；夹具保留 process/thread/Job 危险 open 的观察输出，但通过条件改为两个 Runtime 同时存活时仍保持跨根读取、各自根直接/后代写入和跨根写拒绝。
 
@@ -191,7 +191,7 @@ W1--W3 通过后才能声明“Windows 专用用户 Sandbox：宿主用户私有
 - [Restricted Tokens](https://learn.microsoft.com/en-us/windows/win32/secauthz/restricted-tokens)
 - [Process Security and Access Rights](https://learn.microsoft.com/en-us/windows/win32/procthread/process-security-and-access-rights)
 
-尚未实测：持久账户安装/专用 profile、按 SID 的持久 WFP allow/block、自检与卸载、新契约下真正并发的文件写入边界、共享 ACL grant table、宿主 global Git config 授权图、真实 Git/Node/PowerShell/编译器兼容、relay/proxy、凭据、ACL 撤销、取消/恢复和资源上限。现有 Codex 外层 Sandbox 会干扰嵌套 token/Job/WFP 测试；所有结果必须分别标记“Codex 沙箱内”“批准的宿主权限”“真正提升安装环境”。
+尚未实测：持久账户安装/专用 profile、按 SID 的持久 WFP allow/block、自检与卸载、复杂 ACL/重解析/其它卷下的写边界、共享 ACL grant table、宿主 global Git config 授权图、真实 Git/Node/PowerShell/编译器兼容、relay/proxy、凭据、ACL 撤销、取消/恢复和资源上限。现有 Codex 外层 Sandbox 会干扰嵌套 token/Job/WFP 测试；所有结果必须分别标记“Codex 沙箱内”“批准的宿主权限”“真正提升安装环境”。
 
 ## 11. 与现有实现的关系
 

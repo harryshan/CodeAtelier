@@ -847,10 +847,11 @@
 ## D101：logon SID 不作为实例身份
 
 - 日期：2026-09-20
-- 状态：修订夹具已在管理员环境通过；产品尚未实现，并发文件写入边界仍待按 D100 新契约复测。
+- 状态：顺序与真正并发的专用账户文件写入夹具均已在管理员环境通过；产品尚未实现，复杂 ACL、共享 grant、Broker/supervisor、WFP 与恢复边界仍待验证。
 - 证据：专用账户夹具以同一随机本地账户顺序执行两个显式凭据启动。两次 bootstrap、restricted probe 与后代的 account SID 相同，logon SID 也都为 `S-1-5-5-0-488199`；双方仍分别通过跨根读取、自己根直接/后代写入和对方根写拒绝。脚本随后因旧的“logon SID 必须不同”断言失败，但 `finally` 成功删除临时账户与运行目录。该结果证明文件 root capability 有效，同时证伪 D100 中对每次启动产生独立 logon SID 的依赖。
 - 决定：logon SID 只记录为诊断和启动兼容信息，可以在活动实例间共享，不参与文件写入 capability 或 executionInstance 标识。每个 execution instance 由 Broker 生成不可复用的 execution SID；每个可写根继续使用独立 root capability SID。restricted token 可暂时保留经兼容性实测所需的 logon/Everyone restricting SID。execution SID 用于文件写检查、正常 IPC 路由和审计，但不宣称能阻止同账户恶意 peer 打开或操纵另一个 Runtime。
 - default DACL：Runtime token default DACL 必须同时满足普通检查和 restricting 检查，因此最小候选为共享账户 SID 加本实例 execution SID；不得向共享 logon SID、Everyone 或 root capability 授予新对象通用权限。bootstrap runner 和 supervisor 控制面仍由 Broker/SYSTEM-only 显式 security descriptor 保护。Runtime 后代对象 DACL 继续采用最小权限以减少偶然干扰，但 peer 访问成功不再阻塞并发。
 - 验收影响：W2/W3/W5 的实例身份夹具不再断言 logon SID 唯一，而必须刻意覆盖“多个实例共享同一 logon SID”。execution SID 不同、双方直接及后代写入不能跨 root capability 是 W2 必测项；peer process/thread/Job access 作为残余风险观测。pipe/proxy 的 task/instance 校验仍须保证正常路由与审计，但不宣称抵抗已能注入或操纵合法 peer 的恶意 Runtime。
 - 修订复测：第二次管理员运行以新的临时账户完成，最终报告 `distinctExecutionSids=yes logonSidReused=true crossRead=yes ownWrite=yes crossWriteDenied=yes nestedProcess=yes`。运行后再次确认没有 `CAProbe*` 账户或 `run-*` 目录残留。这完成 W2 的顺序文件访问第一阶段，不证明两个 Runtime 同时存活时的文件写入矩阵、Broker/supervisor 控制面、IPC 或共享 grant 生命周期。
 - 并发对象证据：真正同时运行两个 Runtime 后，peer 的 `OpenProcess(PROCESS_TERMINATE)` 成功，旧探针以 45 失败。`WRITE_RESTRICTED` 只对 Windows 归类为写访问的权限执行 restricting-SID 检查，不能把共享账户 SID 的全部 process 权限与 execution SID 做交集。用户随后确认不同对话无需互相隔离，因此该结果改为 D100 的接受风险；不再尝试会破坏未修改后代和普通读取兼容性的完整 restriction，也不据此降级文件 root capability、Broker/supervisor 边界或 WFP 验收。
+- 并发文件复测：按新契约运行时，两个 Runtime 同时存活并共享 account/logon SID；双方均观察到 `PROCESS_TERMINATE` 可打开，而 process 注入/duplicate/DACL、thread dangerous access 和 Job dangerous access 均被拒绝。双方随后都通过跨根读取、自己的 existing/direct/nested 写入、对方根 direct/nested 写拒绝，最终报告 `concurrent=yes peerObjectIsolation=not-required crossRead=yes ownWrite=yes crossWriteDenied=yes nestedProcess=yes`。复测后 `CAProbe*` 账户和 `run-*` 目录均为 0。该证据通过 W2 的正常 DACL 双实例并发文件矩阵，不证明复杂 ACL、共享 grant、控制面或网络边界。

@@ -47,4 +47,6 @@ pwsh -File experiments/windows-sandbox-user-demo/run-demo.ps1 -Mode run
 
 2026-09-20 的首次管理员运行证明两次显式凭据启动复用了同一个 logon SID `S-1-5-5-0-488199`，因此推翻了“每实例 logon SID 唯一”的假设。该次运行在最终身份断言前已经通过双方跨根读取、各自根直接/后代写入、跨根写拒绝，并成功清理账户和目录。修订后的探针改用独立 execution SID；token restricting SID 为 execution、root capability、logon 和 Everyone，但 default DACL 已收紧为共享账户 SID 加本实例 execution SID，不再给共享 logon/Everyone 新对象通用权限。第二次管理员运行最终报告 `distinctExecutionSids=yes logonSidReused=true crossRead=yes ownWrite=yes crossWriteDenied=yes nestedProcess=yes`，且复测后没有残留临时账户或运行目录。
 
+按 D100 新契约的第三次管理员运行让两个 Runtime 真正同时存活。双方均观察到 `OpenProcess(PROCESS_TERMINATE)` allowed，而 process 注入/duplicate/DACL、thread dangerous access 和 Job dangerous access denied；随后双方都通过跨根读取、自己的 direct/nested 写入和对方根 direct/nested 写拒绝。最终报告 `concurrent=yes peerObjectIsolation=not-required crossRead=yes ownWrite=yes crossWriteDenied=yes nestedProcess=yes`，只读复核确认 `CAProbe*` 账户和 `run-*` 目录均为 0。
+
 logon 和 Everyone 仍暂时作为未修改 Win32 启动的兼容 restricting SID。通过本实验不能证明它们对所有文件 ACL 都安全；W2 仍必须用弱/null DACL、公共写 ACE、复杂继承和重解析点夹具证明 execution/root capability 文件写边界没有被绕过，否则实现应失败关闭。同账户 process/thread/Job/desktop/命名对象不属于任务间安全边界，但 Broker/supervisor 控制面和 WFP fence 仍必须拒绝任何 Sandbox Runtime 绕过。

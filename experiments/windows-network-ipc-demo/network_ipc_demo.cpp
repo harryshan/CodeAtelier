@@ -6,7 +6,9 @@
  * 1. Win32 handle、SID、进程启动和 token 查询辅助函数。
  * 2. IPC client 与 Broker 侧命名管道身份核验，验证 PID、创建时间、restricted SID 和 Job。
  * 3. 网络 client、本机 TCP listener 与动态 WFP filter，验证内建 APP_ID 的实际作用范围。
- * 4. wmain 只负责模式分派，保持每个子进程入口参数固定且易审计。
+ * 4. 专用账户 WFP controller，用 ALE_USER_ID 同时安装“固定回环端口允许 + 其它连接阻断”，
+ *    并用控制目录与 PowerShell 编排器同步；编排器负责在临时账户下启动网络 client。
+ * 5. wmain 只负责模式分派，保持每个子进程入口参数固定且易审计。
  *
  * WFP filter 使用动态 session，engine handle 关闭后由 BFE 自动删除。探针只连接本机回环端口，
  * 不访问互联网。WFP 模式需要有权向 BFE 添加 filter；普通非提升用户预期会安全失败。
@@ -24,6 +26,7 @@
 
 #include <array>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -824,6 +827,166 @@ bool InstallDynamicAppIdBlock(const std::wstring& image,
   return true;
 }
 
+bool AddUserFilter(HANDLE engine, const GUID& sublayer_key,
+                   FWP_BYTE_BLOB* user_descriptor, u_short remote_port,
+                   bool match_port, UINT8 weight, FWP_ACTION_TYPE action,
+                   const wchar_t* name) {
+  std::array<FWPM_FILTER_CONDITION0, 2> conditions{};
+  conditions[0].fieldKey = FWPM_CONDITION_ALE_USER_ID;
+  conditions[0].matchType = FWP_MATCH_EQUAL;
+  conditions[0].conditionValue.type = FWP_SECURITY_DESCRIPTOR_TYPE;
+  conditions[0].conditionValue.sd = user_descriptor;
+  if (match_port) {
+    conditions[1].fieldKey = FWPM_CONDITION_IP_REMOTE_PORT;
+    conditions[1].matchType = FWP_MATCH_EQUAL;
+    conditions[1].conditionValue.type = FWP_UINT16;
+    conditions[1].conditionValue.uint16 = remote_port;
+  }
+
+  FWPM_FILTER0 filter{};
+  filter.displayData.name = const_cast<wchar_t*>(name);
+  filter.layerKey = FWPM_LAYER_ALE_AUTH_CONNECT_V4;
+  filter.subLayerKey = sublayer_key;
+  filter.weight.type = FWP_UINT8;
+  filter.weight.uint8 = weight;
+  filter.numFilterConditions = match_port ? 2 : 1;
+  filter.filterCondition = conditions.data();
+  filter.action.type = action;
+  DWORD result = FwpmFilterAdd0(engine, &filter, nullptr, nullptr);
+  if (result != ERROR_SUCCESS) {
+    PrintFailure(L"FwpmFilterAdd0(user fence)", result);
+    return false;
+  }
+  return true;
+}
+
+bool InstallDynamicUserFence(const std::wstring& user_name,
+                             u_short allowed_port,
+                             UniqueWfpEngine* engine) {
+  FWPM_SESSION0 session{};
+  session.flags = FWPM_SESSION_FLAG_DYNAMIC;
+  session.displayData.name =
+      const_cast<wchar_t*>(L"CodeAtelier user SID WFP demo");
+  HANDLE raw_engine = nullptr;
+  DWORD result = FwpmEngineOpen0(nullptr, RPC_C_AUTHN_WINNT, nullptr, &session,
+                                 &raw_engine);
+  if (result != ERROR_SUCCESS) {
+    PrintFailure(L"FwpmEngineOpen0(user fence)", result);
+    return false;
+  }
+  engine->reset(raw_engine);
+
+  GUID sublayer_key{};
+  if (CoCreateGuid(&sublayer_key) != S_OK) {
+    std::wcerr << L"FAIL CoCreateGuid(user fence sublayer)\n";
+    return false;
+  }
+  FWPM_SUBLAYER0 sublayer{};
+  sublayer.subLayerKey = sublayer_key;
+  sublayer.displayData.name =
+      const_cast<wchar_t*>(L"CodeAtelier dynamic user fence sublayer");
+  sublayer.weight = 0x101;
+  result = FwpmSubLayerAdd0(engine->get(), &sublayer, nullptr);
+  if (result != ERROR_SUCCESS) {
+    PrintFailure(L"FwpmSubLayerAdd0(user fence requires elevation)", result);
+    return false;
+  }
+
+  EXPLICIT_ACCESS_W access{};
+  BuildExplicitAccessWithNameW(&access, const_cast<wchar_t*>(user_name.c_str()),
+                               FWP_ACTRL_MATCH_FILTER, GRANT_ACCESS, 0);
+  ULONG descriptor_size = 0;
+  PSECURITY_DESCRIPTOR raw_descriptor = nullptr;
+  result = BuildSecurityDescriptorW(nullptr, nullptr, 1, &access, 0, nullptr,
+                                    nullptr, &descriptor_size,
+                                    &raw_descriptor);
+  LocalPointer descriptor(raw_descriptor);
+  if (result != ERROR_SUCCESS) {
+    PrintFailure(L"BuildSecurityDescriptorW(user fence)", result);
+    return false;
+  }
+  FWP_BYTE_BLOB descriptor_blob{};
+  descriptor_blob.size = descriptor_size;
+  descriptor_blob.data = static_cast<UINT8*>(raw_descriptor);
+
+  constexpr UINT8 kAllowWeight = 15;
+  constexpr UINT8 kBlockWeight = 14;
+  if (!AddUserFilter(engine->get(), sublayer_key, &descriptor_blob, allowed_port,
+                     true, kAllowWeight, FWP_ACTION_PERMIT,
+                     L"CodeAtelier allow one user relay port") ||
+      !AddUserFilter(engine->get(), sublayer_key, &descriptor_blob, 0, false,
+                     kBlockWeight, FWP_ACTION_BLOCK,
+                     L"CodeAtelier block other user connections")) {
+    return false;
+  }
+  return true;
+}
+
+bool PublishUserFencePorts(const std::filesystem::path& control_directory,
+                           u_short allowed_port, u_short denied_port) {
+  std::filesystem::path temporary = control_directory / L"ports.tmp";
+  std::filesystem::path ready = control_directory / L"ports.ready";
+  std::wofstream stream(temporary, std::ios::out | std::ios::trunc);
+  if (!stream) {
+    std::wcerr << L"FAIL create user fence ports file\n";
+    return false;
+  }
+  stream << allowed_port << L"\n" << denied_port << L"\n";
+  stream.close();
+  if (!stream.good()) {
+    std::wcerr << L"FAIL write user fence ports file\n";
+    return false;
+  }
+  if (!MoveFileExW(temporary.c_str(), ready.c_str(),
+                   MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+    PrintFailure(L"publish user fence ports", GetLastError());
+    return false;
+  }
+  return true;
+}
+
+bool WaitForUserFenceDone(const std::filesystem::path& control_directory) {
+  std::filesystem::path done = control_directory / L"done.txt";
+  constexpr DWORD kAttempts = 300;
+  for (DWORD attempt = 0; attempt < kAttempts; ++attempt) {
+    if (std::filesystem::exists(done)) {
+      return true;
+    }
+    Sleep(100);
+  }
+  std::wcerr << L"FAIL timed out waiting for user fence completion\n";
+  return false;
+}
+
+bool RunWfpUserController(const std::wstring& user_name,
+                          const std::wstring& control_directory_text) {
+  std::filesystem::path control_directory(control_directory_text);
+  UniqueSocket allowed_listener;
+  UniqueSocket denied_listener;
+  u_short allowed_port = 0;
+  u_short denied_port = 0;
+  if (!StartLoopbackListener(&allowed_listener, &allowed_port) ||
+      !StartLoopbackListener(&denied_listener, &denied_port)) {
+    PrintFailure(L"start user fence loopback listeners", WSAGetLastError());
+    return false;
+  }
+
+  UniqueWfpEngine engine;
+  if (!InstallDynamicUserFence(user_name, allowed_port, &engine) ||
+      !PublishUserFencePorts(control_directory, allowed_port, denied_port)) {
+    WSACleanup();
+    return false;
+  }
+  std::wcout << L"WFP_USER_CONTROLLER READY user=" << user_name
+             << L" allowedPort=" << allowed_port
+             << L" deniedPort=" << denied_port << L"\n";
+  bool completed = WaitForUserFenceDone(control_directory);
+  std::wcout << L"WFP_USER_CONTROLLER "
+             << (completed ? L"PASS" : L"FAIL") << L"\n";
+  WSACleanup();
+  return completed;
+}
+
 bool RunWfpProbe() {
   std::wstring image = CurrentExecutablePath();
   UniqueSocket listener;
@@ -887,7 +1050,11 @@ int wmain(int argc, wchar_t** argv) {
   if (argc == 2 && std::wstring(argv[1]) == L"--wfp") {
     return RunWfpProbe() ? 0 : 1;
   }
+  if (argc == 4 && std::wstring(argv[1]) == L"--wfp-user-controller") {
+    return RunWfpUserController(argv[2], argv[3]) ? 0 : 1;
+  }
 
-  std::wcerr << L"usage: network_ipc_demo.exe --ipc | --wfp\n";
+  std::wcerr << L"usage: network_ipc_demo.exe --ipc | --wfp | "
+                L"--wfp-user-controller <user> <control-directory>\n";
   return 2;
 }
