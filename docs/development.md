@@ -146,6 +146,8 @@ Git 不经 `run_command` 执行，而使用单一 `git` 工具；模型可以主
 
 上述两段是未启用专用用户 Sandbox 时的当前产品行为。目标模式改为全部 Git 在 Runtime 内运行，工作区内部不保护 `.git`、`.env` 或其他子路径，Broker 不运行 Git。专用账户正常加载 system、local 和 worktree Git 配置；Broker 解析宿主 `%USERPROFILE%\.gitconfig`、`%USERPROFILE%\.config\git\config` 及对当前工作区成立的 include/includeIf 图，只给原对象精确只读 ACL，并在 Broker 控制、Runtime 不可写的投影根生成顺序固定的逐租约聚合文件，以 `GIT_CONFIG_GLOBAL` 让 Git 加载它们。聚合文件及父目录都不能由 Runtime 替换；Sandbox 的 `HOME`/`USERPROFILE`/`XDG_CONFIG_HOME` 仍指向逐租约私有可写目录，不授予整个宿主 profile。helper、证书或签名程序等配置引用对象不会自动获得访问权。普通 Agent Runtime 无直接命令网络；push 前由 Runtime 用 Git 查询获得当前 upstream/URL/OID/ref，Broker 只校验并记录用户逐次确认的预期 PushSpec，再终止普通 Runtime并锁定账户/工作区。单用途 Push Runner 在真实仓库上运行，不使用 shadow directory 或配置键白名单。持久 WFP fence 与 relay/CONNECT 代理只承诺实际网络不超出获准 HTTPS host；配置、hooks/helper 和 Git 子进程仍可读写工作区、读取 AccessManifest 内容及专用账户通过既有公共 ACL 可读的对象，并观察短期凭据。取消记录以 executionInstance 及 `agent-runtime | push-runner` kind 保存 cancelled/unknown/orphaned、部分输出和“副作用可能已发生/禁止重放”；非 Sandbox 模式不伪造专用账户字段。
 
+Windows 原生安装命令是显式维护入口，不属于服务启动或默认测试：`pnpm sandbox:native:build` 只构建二进制；`pnpm sandbox:install`、`sandbox:verify`、`sandbox:uninstall` 与 `sandbox:recover` 由用户在 UAC 提升环境运行。服务不得自行提权或自动安装。当前只有构建、状态机与恢复边界落地，在 supervisor/ACL/IPC 接线和提升验收完成前，启用开关仍必须自检失败并按既有契约明确回退宿主。
+
 ## 常见问题
 
 - 模型返回“不支持 Responses”：核对服务公布的完整模型标识；配置原样传递，不自动转换简称。任务通知会显示服务实际返回的错误 message/reason/code（脱敏、最多 1200 个字符）；服务未给出细节时明确提示，避免猜测原因。
