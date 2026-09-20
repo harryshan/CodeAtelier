@@ -32,6 +32,7 @@ function command() {
   return {
     sessionId: "session-1",
     taskId: "task-1",
+    executionInstanceId: "execution-1",
     command: "shell",
     args: ["-c", "echo safe"],
     cwd: process.cwd(),
@@ -39,6 +40,7 @@ function command() {
     timeoutMs: 1000,
     outputLimit: 1000,
     onOutput: () => {},
+    onProcessStarted: () => {},
   };
 }
 
@@ -286,6 +288,8 @@ it("passes only fixed WSL launcher arguments to the inspect runtime", async () =
     10_000,
     1_000,
     expect.any(Function),
+    {},
+    undefined,
   );
   expect(runProcess).toHaveBeenLastCalledWith(
     "wsl.exe",
@@ -294,6 +298,8 @@ it("passes only fixed WSL launcher arguments to the inspect runtime", async () =
     expect.any(AbortSignal),
     1_000,
     1_000,
+    expect.any(Function),
+    {},
     expect.any(Function),
   );
   expect(() =>

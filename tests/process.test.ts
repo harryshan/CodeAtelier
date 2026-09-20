@@ -3,7 +3,8 @@
  *
  * 1. 启动不存在的程序，检查错误包含子进程实际报错及超时资源清理。
  * 2. 分两次输出一个 UTF-8 字符，检查解码完整、颜色控制符跨 chunk 清理、子进程颜色环境和模型密钥隔离。
- * 3. 收到输出后取消进程，确认以取消错误结束。
+ * 3. PID 回调必须在进程结束前提供真实正数，供 Sandbox 执行账本持久化。
+ * 4. 收到输出后取消进程，确认以取消错误结束。
  *
  * 用例结束后恢复环境变量；程序和参数直接传给执行器，不经过 shell 拼接。
  */
@@ -52,6 +53,25 @@ it("preserves split UTF-8 output and does not inherit the model API key", async 
   expect(result.output).toContain("中文KEY_ABSENT");
   expect(chunks.join("")).toBe(result.output);
   expect(result.exitCode).toBe(0);
+});
+
+it("reports the spawned process id before completion", async () => {
+  const processIds: number[] = [];
+  const result = await executeProcess(
+    process.execPath,
+    ["-e", "setTimeout(() => process.exit(0), 20)"],
+    await temp(),
+    new AbortController().signal,
+    5000,
+    1000,
+    () => {},
+    {},
+    (pid) => processIds.push(pid),
+  );
+
+  expect(result.exitCode).toBe(0);
+  expect(processIds).toHaveLength(1);
+  expect(processIds[0]).toBeGreaterThan(0);
 });
 
 it("removes split terminal controls and sets no-color child environment", async () => {

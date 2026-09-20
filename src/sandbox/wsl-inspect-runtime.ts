@@ -121,6 +121,7 @@ export class WslInspectRuntime implements SandboxRuntime {
     outputLimit: number,
     onOutput: (text: string) => void,
     command = "",
+    onProcessStarted?: (pid: number) => void,
   ) {
     return this.runProcess(
       WSL_EXECUTABLE,
@@ -139,6 +140,8 @@ export class WslInspectRuntime implements SandboxRuntime {
       timeoutMs,
       outputLimit,
       onOutput,
+      {},
+      onProcessStarted,
     );
   }
 
@@ -179,6 +182,7 @@ export class WslInspectRuntime implements SandboxRuntime {
       command.outputLimit,
       command.onOutput,
       commandText(command),
+      (pid) => command.onProcessStarted(pid, "runtime-launcher"),
     );
   }
 }

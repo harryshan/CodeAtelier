@@ -19,6 +19,7 @@ import type {
   SandboxConfiguration,
   SandboxRuntime,
   SandboxFailureCategory,
+  ExecutionInstanceRecord,
   SandboxStage,
   SandboxStatus,
 } from "./types.js";
@@ -44,6 +45,24 @@ export class SandboxBroker {
   /** Engine 在任务结束时释放按任务固定的 fallback 决策，避免长期服务积累已完成 taskId。 */
   releaseTask(taskId: string) {
     this.fallbackTasks.delete(taskId);
+  }
+
+  /** ToolRunner 持久化同一份安全摘要时，专用日志同步留下可按 instance 追踪的状态。 */
+  recordExecutionInstance(record: ExecutionInstanceRecord) {
+    this.log?.info({
+      event: "sandbox.execution_instance",
+      module: "sandbox",
+      executionInstanceId: record.executionInstanceId,
+      kind: record.kind,
+      mode: record.mode,
+      state: record.state,
+      pid: record.pid,
+      pidKind: record.pidKind,
+      requested: record.sandboxRequested,
+      applied: record.sandboxApplied,
+      failureCategory: record.failureCategory,
+      sideEffectsPossible: record.sideEffectsPossible,
+    });
   }
 
   private record(
@@ -105,6 +124,7 @@ export class SandboxBroker {
       module: "sandbox",
       sessionId: command.sessionId,
       taskId: command.taskId,
+      executionInstanceId: command.executionInstanceId,
       category,
       requested: true,
       applied: false,
@@ -121,6 +141,7 @@ export class SandboxBroker {
         module: "sandbox",
         sessionId: command.sessionId,
         taskId: command.taskId,
+        executionInstanceId: command.executionInstanceId,
         category,
         exitCode: result.exitCode,
         truncated: result.truncated,
@@ -134,6 +155,7 @@ export class SandboxBroker {
         module: "sandbox",
         sessionId: command.sessionId,
         taskId: command.taskId,
+        executionInstanceId: command.executionInstanceId,
         category,
         ...this.errorMetadata(hostError),
       });
@@ -156,6 +178,7 @@ export class SandboxBroker {
       module: "sandbox",
       sessionId: command.sessionId,
       taskId: command.taskId,
+      executionInstanceId: command.executionInstanceId,
       requested: this.configuration.enabled,
     });
 
@@ -213,6 +236,7 @@ export class SandboxBroker {
         module: "sandbox",
         sessionId: command.sessionId,
         taskId: command.taskId,
+        executionInstanceId: command.executionInstanceId,
       });
       checked = await this.runtime.selfCheck(command.signal, workspace);
       command.signal.throwIfAborted();
@@ -230,6 +254,7 @@ export class SandboxBroker {
         module: "sandbox",
         sessionId: command.sessionId,
         taskId: command.taskId,
+        executionInstanceId: command.executionInstanceId,
         ...this.errorMetadata(error),
       });
 
@@ -254,6 +279,7 @@ export class SandboxBroker {
       module: "sandbox",
       sessionId: command.sessionId,
       taskId: command.taskId,
+      executionInstanceId: command.executionInstanceId,
       level: checked.level,
     });
 
@@ -264,6 +290,7 @@ export class SandboxBroker {
         module: "sandbox",
         sessionId: command.sessionId,
         taskId: command.taskId,
+        executionInstanceId: command.executionInstanceId,
         level: checked.level,
       });
       const result = await this.runtime.execute(command, workspace);
@@ -274,6 +301,7 @@ export class SandboxBroker {
         module: "sandbox",
         sessionId: command.sessionId,
         taskId: command.taskId,
+        executionInstanceId: command.executionInstanceId,
         level: checked.level,
         exitCode: result.exitCode,
         truncated: result.truncated,
@@ -301,6 +329,7 @@ export class SandboxBroker {
         module: "sandbox",
         sessionId: command.sessionId,
         taskId: command.taskId,
+        executionInstanceId: command.executionInstanceId,
         ...this.errorMetadata(error),
       });
       throw new SandboxUnavailableError(

@@ -654,7 +654,7 @@ export class Engine {
         emit,
         sandbox: this.sandbox,
         memory: this.memories,
-        onSandboxStage: (stage, status) => {
+        onSandboxStage: (stage, status, executionInstanceId) => {
           this.traces.instant(
             task.id,
             `sandbox.${stage}`,
@@ -664,6 +664,24 @@ export class Engine {
               mode: status.mode,
               enabled: status.enabled,
               level: status.level,
+              executionInstanceId,
+            },
+          );
+        },
+        onExecutionInstance: (record) => {
+          this.traces.instant(
+            task.id,
+            `sandbox.execution_instance.${record.state}`,
+            "sandbox",
+            "Main thread",
+            {
+              executionInstanceId: record.executionInstanceId,
+              kind: record.kind,
+              mode: record.mode,
+              pidKind: record.pidKind,
+              requested: record.sandboxRequested,
+              applied: record.sandboxApplied,
+              sideEffectsPossible: record.sideEffectsPossible,
             },
           );
         },

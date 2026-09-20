@@ -328,6 +328,9 @@ it("starts tool duration after command approval instead of when the call is requ
     const sandboxStages = events
       .filter((event) => event.type === "sandbox_stage")
       .map((event) => event.data.stage);
+    const executionInstances = events
+      .filter((event) => event.type === "execution_instance")
+      .map((event) => event.data);
     const trace = await fixture.engine.savedTrace(task);
     const traceEvents = trace ? JSON.parse(trace).traceEvents : [];
 
@@ -338,10 +341,30 @@ it("starts tool duration after command approval instead of when the call is requ
       "collecting",
       "completed",
     ]);
+    expect(executionInstances.map((record) => record.state)).toEqual([
+      "created",
+      "running",
+      "completed",
+    ]);
+    expect(
+      new Set(executionInstances.map((record) => record.executionInstanceId))
+        .size,
+    ).toBe(1);
+    expect(executionInstances[1]).toMatchObject({
+      mode: "host-process",
+      pidKind: "host-process",
+      sandboxRequested: false,
+      sandboxApplied: false,
+    });
+    expect(executionInstances[1].pid).toBeGreaterThan(0);
     expect(traceEvents).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ name: "sandbox.policy_resolved", ph: "i" }),
         expect.objectContaining({ name: "sandbox.completed", ph: "i" }),
+        expect.objectContaining({
+          name: "sandbox.execution_instance.running",
+          ph: "i",
+        }),
       ]),
     );
   } finally {

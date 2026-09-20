@@ -14,7 +14,7 @@
  */
 
 import { readFile, readdir } from "node:fs/promises";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { MAX_READ_LINES, parseToolArguments } from "./registry.js";
 import type { Settings } from "../shared/types.js";
@@ -27,7 +27,12 @@ import { FileEditor } from "./file-editor.js";
 import { GitToolRunner, containsGitCommand } from "./git.js";
 import { SandboxBroker } from "../sandbox/broker.js";
 import { sandboxConfiguration } from "../sandbox/config.js";
-import type { SandboxStage, SandboxStatus } from "../sandbox/types.js";
+import type {
+  ExecutionInstanceMode,
+  ExecutionInstanceRecord,
+  SandboxStage,
+  SandboxStatus,
+} from "../sandbox/types.js";
 
 const ignored = new Set([
   ".git",
@@ -48,7 +53,12 @@ export interface ToolContext {
   emit: (type: string, data: any) => void;
   sandbox?: SandboxBroker;
   memory?: ProjectMemoryService;
-  onSandboxStage?: (stage: SandboxStage, status: SandboxStatus) => void;
+  onSandboxStage?: (
+    stage: SandboxStage,
+    status: SandboxStatus,
+    executionInstanceId: string,
+  ) => void;
+  onExecutionInstance?: (record: ExecutionInstanceRecord) => void;
 }
 
 interface ToolRunnerState {
@@ -101,6 +111,29 @@ export class ToolRunner {
       line.replaceAll("\r", "␍").replaceAll("\t", "→").replaceAll(" ", "·") +
       "↵"
     );
+  }
+
+  private executionMode(status: SandboxStatus): ExecutionInstanceMode {
+    if (
+      status.mode === "non-isolated" ||
+      status.mode === "host-process-fallback"
+    ) {
+      return "host-process";
+    }
+
+    if (status.mode !== "sandboxed") {
+      return "unknown";
+    }
+
+    if (status.level === "wsl2-bubblewrap-inspect") {
+      return "legacy-wsl2-inspect";
+    }
+
+    if (status.level?.startsWith("windows-sandbox-user")) {
+      return "windows-sandbox-user";
+    }
+
+    return "sandbox-runtime";
   }
 
   /** 压缩用的只读版本探测；不申请额外权限，也不更新编辑所需的读取凭证。 */
@@ -315,49 +348,125 @@ export class ToolRunner {
 
       // 命令授权结束才开始计时；Broker 的自检和实际执行都属于本次命令，不把审批等待计入其中。
       startExecution();
-      const outcome = await this.sandbox.executeCommand(
-        {
-          sessionId: this.ctx.sessionId,
-          taskId: this.ctx.taskId,
-          command: shell.command,
-          args: [...shell.args, args.command],
-          cwd,
-          signal: this.ctx.signal,
-          timeoutMs: this.ctx.settings.commandTimeoutMs,
-          outputLimit: this.ctx.settings.outputChars,
-          onOutput: (text) => this.ctx.emit("command_output", { text }),
-        },
-        () => {
-          if (!hostShell) {
-            throw new Error(
-              "Sandbox fallback 需要宿主命令 shell，但当前平台未找到。",
-            );
-          }
+      const executionInstanceId = randomUUID();
+      const createdAt = new Date().toISOString();
+      let record: ExecutionInstanceRecord = {
+        executionInstanceId,
+        kind: "agent-runtime",
+        mode: this.executionMode(this.sandbox.status),
+        state: "created",
+        createdAt,
+        updatedAt: createdAt,
+        sandboxRequested: this.sandbox.status.requested,
+        sandboxApplied: this.sandbox.status.applied,
+      };
 
-          return executeProcess(
-            hostShell.command,
-            [...hostShell.args, args.command],
+      const publish = (next: Partial<ExecutionInstanceRecord>) => {
+        record = {
+          ...record,
+          ...next,
+          updatedAt: new Date().toISOString(),
+        };
+        this.ctx.emit("execution_instance", record);
+        this.ctx.onExecutionInstance?.(record);
+        this.sandbox.recordExecutionInstance(record);
+      };
+
+      const processStarted = (
+        pid: number,
+        pidKind: ExecutionInstanceRecord["pidKind"],
+      ) => {
+        const status = this.sandbox.status;
+        publish({
+          state: "running",
+          mode: this.executionMode(status),
+          sandboxRequested: status.requested,
+          sandboxApplied: status.applied,
+          failureCategory: status.failureCategory,
+          pid,
+          pidKind,
+        });
+      };
+
+      publish({});
+
+      try {
+        const outcome = await this.sandbox.executeCommand(
+          {
+            sessionId: this.ctx.sessionId,
+            taskId: this.ctx.taskId,
+            executionInstanceId,
+            command: shell.command,
+            args: [...shell.args, args.command],
             cwd,
-            this.ctx.signal,
-            this.ctx.settings.commandTimeoutMs,
-            this.ctx.settings.outputChars,
-            (text) => this.ctx.emit("command_output", { text }),
-          );
-        },
-        (stage, status) => {
-          this.ctx.emit("sandbox_stage", { stage, ...status });
-          if (stage === "fallback_selected") {
-            this.ctx.emit("sandbox_fallback", {
-              text: `Sandbox 不可用，本任务已自动改用宿主权限继续：${status.reason ?? "未提供原因。"}`,
+            signal: this.ctx.signal,
+            timeoutMs: this.ctx.settings.commandTimeoutMs,
+            outputLimit: this.ctx.settings.outputChars,
+            onOutput: (text) => this.ctx.emit("command_output", { text }),
+            onProcessStarted: processStarted,
+          },
+          () => {
+            if (!hostShell) {
+              throw new Error(
+                "Sandbox fallback 需要宿主命令 shell，但当前平台未找到。",
+              );
+            }
+
+            return executeProcess(
+              hostShell.command,
+              [...hostShell.args, args.command],
+              cwd,
+              this.ctx.signal,
+              this.ctx.settings.commandTimeoutMs,
+              this.ctx.settings.outputChars,
+              (text) => this.ctx.emit("command_output", { text }),
+              {},
+              (pid) => processStarted(pid, "host-process"),
+            );
+          },
+          (stage, status) => {
+            this.ctx.emit("sandbox_stage", {
+              stage,
+              executionInstanceId,
               ...status,
             });
-          }
+            if (stage === "fallback_selected") {
+              this.ctx.emit("sandbox_fallback", {
+                text: `Sandbox 不可用，本任务已自动改用宿主权限继续：${status.reason ?? "未提供原因。"}`,
+                executionInstanceId,
+                ...status,
+              });
+            }
 
-          this.ctx.onSandboxStage?.(stage, status);
-        },
-      );
+            this.ctx.onSandboxStage?.(stage, status, executionInstanceId);
+          },
+        );
+        publish({
+          state: "completed",
+          mode: this.executionMode(outcome.status),
+          sandboxRequested: outcome.status.requested,
+          sandboxApplied: outcome.status.applied,
+          failureCategory: outcome.status.failureCategory,
+        });
 
-      return { ...outcome.result, sandbox: outcome.status };
+        return { ...outcome.result, sandbox: outcome.status };
+      } catch (error) {
+        const status = this.sandbox.status;
+        const started = record.state === "running";
+        publish({
+          state: this.ctx.signal.aborted
+            ? "cancelled"
+            : started || status.mode === "unknown"
+              ? "unknown"
+              : "failed",
+          mode: this.executionMode(status),
+          sandboxRequested: status.requested,
+          sandboxApplied: status.applied,
+          failureCategory: status.failureCategory,
+          sideEffectsPossible: started || status.mode === "unknown",
+        });
+        throw error;
+      }
     }
 
     if (name === "read_file") {
