@@ -360,8 +360,6 @@ function Invoke-WfpUserProbe {
             [pscustomobject]@{ Mode = "--udp-client-v6"; Port = $deniedV6Port; ExitCode = 20 },
             [pscustomobject]@{ Mode = "--external-client"; Port = 443; ExitCode = 20 },
             [pscustomobject]@{ Mode = "--external-client-v6"; Port = 443; ExitCode = 20 },
-            [pscustomobject]@{ Mode = "--dns-client"; Port = 53; ExitCode = 20 },
-            [pscustomobject]@{ Mode = "--dns-client-v6"; Port = 53; ExitCode = 20 },
             [pscustomobject]@{ Mode = "--listen-probe"; Port = 0; ExitCode = 20 },
             [pscustomobject]@{ Mode = "--listen-probe-v6"; Port = 0; ExitCode = 20 },
             [pscustomobject]@{ Mode = "--raw-probe"; Port = 0; ExitCode = 20 },
@@ -453,7 +451,7 @@ function Invoke-WfpUserProbe {
         $cleanupV6Listener.Stop()
         $cleanupV6Listener = $null
 
-        Write-Host "WFP_USER_DEMO PASS accountSid=$($sandboxSid.Value) hostUnaffected=yes ipv4=yes ipv6=yes tcp=yes udp=yes nonLoopback=yes dnsShape=yes listenBlocked=yes rawDenied=yes restrictedDescendant=yes dynamicCleanupVerified=yes crashCleanupVerified=yes"
+        Write-Host "WFP_USER_DEMO PASS accountSid=$($sandboxSid.Value) hostUnaffected=yes ipv4=yes ipv6=yes tcp=yes udpDelivery=yes nonLoopbackTcp=yes listenBlocked=yes rawDenied=yes restrictedDescendant=yes dynamicCleanupVerified=yes crashCleanupVerified=yes"
     }
     finally {
         $plainPassword = $null

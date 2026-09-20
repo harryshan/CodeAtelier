@@ -27,11 +27,13 @@
 #include <ws2tcpip.h>
 
 #include <array>
+#include <atomic>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -772,30 +774,60 @@ int RunDatagramClient(int address_family, const std::wstring& port_text,
   unsigned long port = std::stoul(port_text);
   UniqueSocket socket_handle(
       socket(address_family, SOCK_DGRAM, IPPROTO_UDP));
+  DWORD receive_timeout = 1000;
+  setsockopt(socket_handle.get(), SOL_SOCKET, SO_RCVTIMEO,
+             reinterpret_cast<const char*>(&receive_timeout),
+             sizeof(receive_timeout));
   char byte = 'x';
-  int result = SOCKET_ERROR;
+  int send_result = SOCKET_ERROR;
+  sockaddr_storage destination{};
+  int destination_length = 0;
   if (address_family == AF_INET) {
-    sockaddr_in address{};
+    auto& address = reinterpret_cast<sockaddr_in&>(destination);
     address.sin_family = AF_INET;
     address.sin_port = htons(static_cast<u_short>(port));
     InetPtonW(AF_INET, external ? L"192.0.2.1" : L"127.0.0.1",
               &address.sin_addr);
-    result = sendto(socket_handle.get(), &byte, 1, 0,
-                    reinterpret_cast<sockaddr*>(&address), sizeof(address));
+    destination_length = sizeof(address);
   } else {
-    sockaddr_in6 address{};
+    auto& address = reinterpret_cast<sockaddr_in6&>(destination);
     address.sin6_family = AF_INET6;
     address.sin6_port = htons(static_cast<u_short>(port));
     InetPtonW(AF_INET6, external ? L"2001:db8::1" : L"::1",
               &address.sin6_addr);
-    result = sendto(socket_handle.get(), &byte, 1, 0,
-                    reinterpret_cast<sockaddr*>(&address), sizeof(address));
+    destination_length = sizeof(address);
   }
-  int error = result == SOCKET_ERROR ? WSAGetLastError() : 0;
+  send_result = sendto(socket_handle.get(), &byte, 1, 0,
+                       reinterpret_cast<sockaddr*>(&destination),
+                       destination_length);
+  int send_error = send_result == SOCKET_ERROR ? WSAGetLastError() : 0;
+  int receive_result = SOCKET_ERROR;
+  int receive_error = 0;
+  if (send_result != SOCKET_ERROR && !external) {
+    char reply = 0;
+    receive_result = recv(socket_handle.get(), &reply, 1, 0);
+    receive_error =
+        receive_result == SOCKET_ERROR ? WSAGetLastError() : 0;
+  }
   WSACleanup();
-  return ReportSocketResult(external ? L"UDP_EXTERNAL" : L"UDP_CLIENT",
-                            address_family,
-                            result == SOCKET_ERROR ? SOCKET_ERROR : 0, error);
+  if (external) {
+    return ReportSocketResult(L"UDP_EXTERNAL", address_family,
+                              send_result == SOCKET_ERROR ? SOCKET_ERROR : 0,
+                              send_error);
+  }
+  bool delivered = receive_result == 1;
+  int final_error = send_error != 0 ? send_error : receive_error;
+  std::wcout << L"UDP_CLIENT pid=" << GetCurrentProcessId() << L" family="
+             << (address_family == AF_INET ? L"ipv4" : L"ipv6")
+             << L" sent=" << (send_result == 1 ? L"yes" : L"no")
+             << L" delivered=" << (delivered ? L"yes" : L"no")
+             << L" error=" << final_error << L"\n";
+  if (delivered) {
+    return 0;
+  }
+  return final_error == WSAEACCES || final_error == WSAETIMEDOUT
+             ? kNetworkBlockedExitCode
+             : 21;
 }
 
 int RunExternalTcpClient(int address_family, const std::wstring& port_text) {
@@ -967,6 +999,46 @@ bool StartLoopbackListener(int address_family, UniqueSocket* listener,
     *port = ntohs(address.sin6_port);
   }
   return true;
+}
+
+bool StartUdpEchoSocket(int address_family, u_short port,
+                        UniqueSocket* socket_handle) {
+  *socket_handle =
+      UniqueSocket(socket(address_family, SOCK_DGRAM, IPPROTO_UDP));
+  if (!*socket_handle) {
+    return false;
+  }
+  DWORD timeout = 100;
+  setsockopt(socket_handle->get(), SOL_SOCKET, SO_RCVTIMEO,
+             reinterpret_cast<const char*>(&timeout), sizeof(timeout));
+  if (address_family == AF_INET) {
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_port = htons(port);
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    return bind(socket_handle->get(), reinterpret_cast<sockaddr*>(&address),
+                sizeof(address)) == 0;
+  }
+  sockaddr_in6 address{};
+  address.sin6_family = AF_INET6;
+  address.sin6_port = htons(port);
+  address.sin6_addr = in6addr_loopback;
+  return bind(socket_handle->get(), reinterpret_cast<sockaddr*>(&address),
+              sizeof(address)) == 0;
+}
+
+void RunUdpEchoLoop(SOCKET socket_handle, std::atomic_bool* stop) {
+  while (!stop->load()) {
+    sockaddr_storage peer{};
+    int peer_length = sizeof(peer);
+    char byte = 0;
+    int received = recvfrom(socket_handle, &byte, 1, 0,
+                            reinterpret_cast<sockaddr*>(&peer), &peer_length);
+    if (received == 1) {
+      sendto(socket_handle, &byte, 1, 0,
+             reinterpret_cast<sockaddr*>(&peer), peer_length);
+    }
+  }
 }
 
 bool LaunchNetworkClient(const std::wstring& image,
@@ -1266,12 +1338,39 @@ bool RunWfpUserController(const std::wstring& user_name,
     return false;
   }
 
+  UniqueSocket allowed_v4_udp;
+  UniqueSocket denied_v4_udp;
+  UniqueSocket allowed_v6_udp;
+  UniqueSocket denied_v6_udp;
+  if (!StartUdpEchoSocket(AF_INET, allowed_v4_port, &allowed_v4_udp) ||
+      !StartUdpEchoSocket(AF_INET, denied_v4_port, &denied_v4_udp) ||
+      !StartUdpEchoSocket(AF_INET6, allowed_v6_port, &allowed_v6_udp) ||
+      !StartUdpEchoSocket(AF_INET6, denied_v6_port, &denied_v6_udp)) {
+    PrintFailure(L"start user fence UDP echo sockets", WSAGetLastError());
+    WSACleanup();
+    return false;
+  }
+
   UniqueWfpEngine engine;
   if (!InstallDynamicUserFence(user_name, allowed_v4_port, allowed_v6_port,
-                               &engine) ||
-      !PublishUserFencePorts(control_directory, allowed_v4_port,
+                               &engine)) {
+    WSACleanup();
+    return false;
+  }
+
+  std::atomic_bool stop_udp = false;
+  std::array<std::thread, 4> udp_threads = {
+      std::thread(RunUdpEchoLoop, allowed_v4_udp.get(), &stop_udp),
+      std::thread(RunUdpEchoLoop, denied_v4_udp.get(), &stop_udp),
+      std::thread(RunUdpEchoLoop, allowed_v6_udp.get(), &stop_udp),
+      std::thread(RunUdpEchoLoop, denied_v6_udp.get(), &stop_udp)};
+  if (!PublishUserFencePorts(control_directory, allowed_v4_port,
                              denied_v4_port, allowed_v6_port,
                              denied_v6_port)) {
+    stop_udp.store(true);
+    for (std::thread& thread : udp_threads) {
+      thread.join();
+    }
     WSACleanup();
     return false;
   }
@@ -1281,6 +1380,10 @@ bool RunWfpUserController(const std::wstring& user_name,
              << L" allowedV6Port=" << allowed_v6_port
              << L" deniedV6Port=" << denied_v6_port << L"\n";
   bool completed = WaitForUserFenceDone(control_directory);
+  stop_udp.store(true);
+  for (std::thread& thread : udp_threads) {
+    thread.join();
+  }
   std::wcout << L"WFP_USER_CONTROLLER "
              << (completed ? L"PASS" : L"FAIL") << L"\n";
   WSACleanup();
