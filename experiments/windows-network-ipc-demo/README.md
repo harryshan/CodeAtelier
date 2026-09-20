@@ -41,6 +41,8 @@ pwsh -File experiments/windows-network-ipc-demo/run-demo.ps1 -Mode wfp-persisten
 
 预期最终输出 `WFP_PERSISTENT_DEMO PASS`，包含 `processExitPersistence=yes`、`enumerateSelfCheck=yes`、`tcpFence=yes`、`listenRawFence=yes` 和 `uninstallRecovery=yes`。该入口会短暂写入机器级持久 WFP policy；只应在可恢复的测试机上执行，运行前后都按固定测试 GUID 清理。
 
+2026-09-20 的提升运行已得到上述完整 PASS：安装进程退出后枚举到 8 条规则，V4/V6 允许端口成功，拒绝端口、listen 和 raw bind 均返回 `10013`；卸载删除 8 条规则，自检转为 0 条且 V4/V6 连接恢复，`finally` 再次报告 0 条。运行后只读复核确认 `CAPersist[8 位十六进制]` 账户和 `persistent-run-[32 位十六进制]` 目录均为 0。
+
 ### 独立恢复
 
 若探针、PowerShell 或机器在持久规则安装后异常退出，先从管理员 PowerShell 预览：

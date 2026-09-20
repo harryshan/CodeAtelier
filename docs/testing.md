@@ -57,17 +57,17 @@
 - endLine 小于 startLine 时返回成功空读取。现在拒绝无效范围，避免将错误输入当作成功读取。
 - 原结构化 JSON 日志的 token/password 等字段未被文本脱敏识别。增加内部字段脱敏，测试包含嵌套字段和转义引号；当前落盘前再格式化为纯文本，不泄露凭据。
 
-测试清单不等于穷尽所有输入或保证没有缺陷。当前 Windows WSL2 `inspect` 仅有历史的 bubblewrap 只读绑定与基本命名空间/环境夹具；restricted-token 和网络/IPC demo 也只是被 Codex 外层 Sandbox 明确区分的局部证据。专用账户动态 `ALE_USER_ID` V4/V6 TCP 回环 fence 的管理员矩阵已通过：宿主不受影响、专用账户每个地址族只通获准端口、其它端口返回 `WSAEACCES`；相同结果也由 restricted Runtime 的直接网络后代复现。dynamic engine 关闭后同一账户的两个地址族均恢复连接，账户和目录清理为 0。扩展运行进一步证明 UDP 拒绝端口在普通及 restricted 后代中均无法收到 ACK，V4/V6 listen 也在两条路径中均返回 `10013`；TEST-NET TCP 的初始 `10035` 和仅创建 raw socket 都不能作为最终结论。当前修订将 allow 收紧为 loopback 地址加端口，用本机真实非回环 IPv4 listener 建立宿主及 restricted 后代的无 WFP正向基线，并把 raw 探针推进到 bind；restricted 后代的 V4/V6 raw bind 无 WFP 基线均通过。TCP、UDP 回环交付、真实非回环 IPv4、raw bind、正常/强制终止清理的完整提升运行仍待取得；即使通过也不等于持久 WFP 产品安装。目标架构的一次性提升安装、单一专用账户、并发 instance lease/grant table、显式 ACL 投影/撤销、精确 Git config 图、Runtime 身份、Broker IPC、按账户 SID 的持久 WFP fence、真实 Git 配置下的 host 级网络边界、认证 relay/credential pipe、短期凭据、Job 后代清理、kind-specific executionInstance、资源限制及外部写入均尚未实现或测试，必须各自以真实 Windows 夹具验证。该 profile 明确允许同账户并发任务读取、终止、注入或检查其它活动 Runtime/授权根，也无法保护既有公共 ACL 对象的机密性；不同对话不是彼此的安全边界。每实例 capability 只承诺经验证的直接及后代文件写入限制，不保证 Git 配置/hooks/helper 无副作用或仓库 path/ref 级网络边界。能力声明须分别对应 W0 安装、W1 身份/网络、W2 文件/监督、W3 Broker IPC、W4 本地 Runtime、W5 受限 push 和 W6 取消/资源边界，不能用较早阶段推断较晚能力。另仍未进行断电/磁盘损坏恢复、真实模型质量统计、全浏览器矩阵、其他平台 OS 级 sandbox、访问密码抗暴力破解评估或长期压力测试。应用层权限和单一密码门禁都不是系统沙箱或公网安全保证；不得将通过现有测试描述成上述能力已经验证。
+测试清单不等于穷尽所有输入或保证没有缺陷。当前 Windows WSL2 `inspect` 仅有历史的 bubblewrap 只读绑定与基本命名空间/环境夹具；restricted-token 和网络/IPC demo 也只是被 Codex 外层 Sandbox 明确区分的局部证据。专用账户动态 `ALE_USER_ID` V4/V6 TCP 回环 fence 的管理员矩阵已通过：宿主不受影响、专用账户每个地址族只通获准端口、其它端口返回 `WSAEACCES`；相同结果也由 restricted Runtime 的直接网络后代复现。dynamic engine 关闭后同一账户的两个地址族均恢复连接，账户和目录清理为 0。扩展运行进一步证明 UDP 拒绝端口在普通及 restricted 后代中均无法收到 ACK，V4/V6 listen 也在两条路径中均返回 `10013`；TEST-NET TCP 的初始 `10035` 和仅创建 raw socket 都不能作为最终结论。allow 已收紧为 loopback 地址加端口，并以本机真实非回环 IPv4 listener 和 raw bind 建立正反基线；完整动态与持久生命周期结果见下。目标架构的一次性提升安装、单一专用账户、并发 instance lease/grant table、显式 ACL 投影/撤销、精确 Git config 图、Runtime 身份、Broker IPC、产品持久 WFP fence、真实 Git 配置下的 host 级网络边界、认证 relay/credential pipe、短期凭据、Job 后代清理、kind-specific executionInstance、资源限制及外部写入仍须分别实现和验证，不能由探针结果替代。该 profile 明确允许同账户并发任务读取、终止、注入或检查其它活动 Runtime/授权根，也无法保护既有公共 ACL 对象的机密性；不同对话不是彼此的安全边界。每实例 capability 只承诺经验证的直接及后代文件写入限制，不保证 Git 配置/hooks/helper 无副作用或仓库 path/ref 级网络边界。能力声明须分别对应 W0 安装、W1 身份/网络、W2 文件/监督、W3 Broker IPC、W4 本地 Runtime、W5 受限 push 和 W6 取消/资源边界，不能用较早阶段推断较晚能力。另仍未进行断电/磁盘损坏恢复、真实模型质量统计、全浏览器矩阵、其他平台 OS 级 sandbox、访问密码抗暴力破解评估或长期压力测试。应用层权限和单一密码门禁都不是系统沙箱或公网安全保证；不得将通过现有测试描述成上述能力已经验证。
 
-更新：上述“完整提升运行仍待取得”已由后续管理员结果取代。动态 WFP 扩展矩阵现已完整通过 TCP、带 ACK 的 UDP 回环交付、真实本机非回环 IPv4、V4/V6 listen/raw bind、普通账户与 restricted 后代，以及正常关闭/强制终止清理；临时账户和目录清理为 0。尚未完成的是持久 WFP 安装/自检/升级/卸载及真实 DNS、非回环 UDP、UDP 入站、ICMP、组播/广播等剩余路径。
+更新：上述“完整提升运行仍待取得”已由后续管理员结果取代。动态 WFP 扩展矩阵现已完整通过 TCP、带 ACK 的 UDP 回环交付、真实本机非回环 IPv4、V4/V6 listen/raw bind、普通账户与 restricted 后代，以及正常关闭/强制终止清理；临时账户和目录清理为 0。持久 WFP 探针的进程退出后存续、枚举自检、核心 fence、卸载恢复与幂等清理也已通过。尚未完成的是产品安装器/升级/重启/篡改/故障恢复，以及真实 DNS、非回环 UDP、UDP 入站、ICMP、组播/广播等剩余路径。
 
-持久生命周期手动夹具现已完成构建但尚未管理员运行。它覆盖事务安装、安装进程退出后枚举自检、核心 fence、卸载后自检失败与连接恢复，并在 `finally` 重复清理固定测试 GUID；BFE/机器重启、篡改修复、幂等安装、版本升级、故障注入和卸载中断仍不在本轮通过条件内。
+持久生命周期手动夹具已在管理员环境完整通过：预清理 0 条、事务安装 8 条、安装进程退出后枚举自检 8 条；V4/V6 获准连接成功，其它连接、listen 和 raw bind 均以 `10013` 拒绝；卸载删除 8 条，自检按预期失败为 0 条，原拒绝端口恢复；`finally` 再次幂等清理 0 条。只读复核确认临时账户和目录为 0。BFE/机器重启、篡改修复、重复安装、版本升级、故障注入和卸载中断仍未覆盖。
 
-独立恢复脚本的 AST、嵌入 C# 编译和 `-WhatIf` 已通过；它按固定 provider 枚举删除 filters 后再删除 sublayer/provider，并把账户/目录清理限制为 `CAPersist[8 位十六进制]` 与仓库内 `persistent-run-[32 位十六进制]`。真正持久对象存在时的恢复效果、部分对象缺失、删除失败和重复执行仍须在管理员生命周期运行中验证。
+独立恢复脚本的 AST、嵌入 C# 编译和 `-WhatIf` 已通过；它分页枚举 filter 快照，只选择固定 provider 后删除 filters、sublayer/provider，并把账户/目录清理限制为 `CAPersist[8 位十六进制]` 与仓库内 `persistent-run-[32 位十六进制]`。生命周期夹具已验证同算法的原生清理器能删除真实持久对象并重复清理空状态，但嵌入 C# 恢复路径对真实对象的删除、部分对象缺失、删除失败和重复执行仍须单独验证。
 
-首次管理员生命周期运行在安装前预清理暴露枚举模板缺陷：`actionMask=0` 会得到 `FWP_E_NEVER_MATCH`。原生清理/自检与独立恢复脚本已统一显式使用 `0xFFFFFFFF` 枚举该 provider 的所有 action；需重跑管理员生命周期入口确认空状态清理、安装后自检和真实恢复。
+首次管理员生命周期运行在安装前预清理暴露枚举模板缺陷：`actionMask=0` 会得到 `FWP_E_NEVER_MATCH`。中间修订显式使用 `0xFFFFFFFF` 后继续暴露零 GUID `layerKey` 不是跨层通配。
 
-第二次管理员运行进一步证明部分模板中的零 GUID `layerKey` 也不是跨层通配，会返回 `FWP_E_LAYER_NOT_FOUND`。枚举现改为 null template 的完整快照并分页读取，删除前逐项核对固定 provider GUID；需再次重跑管理员入口。
+第二次管理员运行进一步证明部分模板中的零 GUID `layerKey` 会返回 `FWP_E_LAYER_NOT_FOUND`。枚举随后改为 null template 的完整快照并分页读取，删除前逐项核对固定 provider GUID；第三次管理员运行已通过上述完整生命周期。
 
 ## 自举验收
 
