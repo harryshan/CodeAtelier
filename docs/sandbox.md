@@ -155,6 +155,6 @@ UI 显示实际 `sandboxed`、`non-isolated` 或 `unknown` 状态、平台等级
 
 ### 8.2 迁移说明
 
-本节原有的 WSL2 后续工作清单已被 [Windows 专用用户 Sandbox Runtime 与 Broker 架构](windows-integrity-sandbox.md) 的 Windows 实施路线替代。不得继续扩展 WSL2 Runtime、将其作为专用用户 fallback，或用其夹具结果证明账户安装、ACL、IPC、网络、进程树、资源或 Broker 边界。
+本节原有的 WSL2 后续工作清单已被 [Windows 专用用户 Sandbox Runtime 与 Broker 架构](windows-integrity-sandbox.md) 的 Windows 实施路线替代。不得继续扩展 WSL2 Runtime、将其作为专用用户 fallback，或用其夹具结果证明账户安装、ACL、IPC、网络、进程树、资源或 Broker 边界。目标架构在启动前自检或未启动 Runtime 的 provision 失败时，会明确提示并自动切换到普通宿主执行；这是新的 `host-process` 功能降级，不是回退到本节的 WSL2 Runtime，也尚未由当前代码实现。命令已启动或状态未知时仍禁止自动重放。
 
 迁移涉及新的执行、取消、资源或 Broker 行为时，必须同步更新 [windows-integrity-sandbox.md](windows-integrity-sandbox.md)、[testing.md](testing.md)、[verification.md](verification.md) 和决策记录，并接入安全摘要 tracing。

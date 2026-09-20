@@ -66,7 +66,7 @@ Broker、supervisor、安装程序和 Sandbox Process 是不同边界。运行�
 - 不加载宿主用户 profile，不继承其 cookie、SSH agent、凭据管理器、证书私钥或已打开 handle。默认不加载持久 Sandbox profile hive；每个 lease 使用新建的私有 `HOME`/`USERPROFILE`/`XDG_CONFIG_HOME`/`TEMP` 目录。若真实工具兼容性迫使加载专用账户 profile/HKCU，必须先定义可证明的逐租约重置流程，重置失败即隔离账户，不能让前一任务持久化配置影响下一任务。
 - 卸载前必须证明无活跃租约，再撤销 WFP、ACL、profile、secret 和账户；任一步骤失败都报告遗留安全状态。
 
-安装程序在 `ALE_AUTH_CONNECT_V4/V6` 安装按账户 SID 匹配的持久规则：只允许受控的固定 loopback relay/proxy 端口范围，拒绝其它出站连接。UDP、IPv6、raw socket、DNS、bind/listen 和 loopback 必须逐项验证；默认不开放任意 loopback 或开发服务器端口。启动前自检账户 SID、规则 ID、层、权重、动作、端口和 V4/V6 覆盖；状态未知或被策略软件覆盖时 Sandbox 不启动。
+安装程序在 `ALE_AUTH_CONNECT_V4/V6` 安装按账户 SID 匹配的持久规则：只允许受控的固定 loopback relay/proxy 端口范围，拒绝其它出站连接。UDP、IPv6、raw socket、DNS、bind/listen 和 loopback 必须逐项验证；默认不开放任意 loopback 或开发服务器端口。启动前自检账户 SID、规则 ID、层、权重、动作、端口和 V4/V6 覆盖；状态未知或被策略软件覆盖时 Sandbox 不启动，任务按第 7 节的可证明安全 fallback 契约转为宿主执行。
 
 ### 3.2 实例租约、两段启动与清理
 
@@ -141,6 +141,14 @@ Git 配置若指定自定义 proxy、remote helper 或非登记 transport，只�
 
 ## 7. 生命周期、取消与恢复
 
+Sandbox 是优先执行模式，不是任务可用性的硬前置条件。每次任务先在创建任何 Runtime 或投影可写 ACL 前完成只读 preflight；后续 ACL、临时目录和实例对象通过事务化 provision 账本建立。preflight 失败，或 provision 失败后账本能证明 Runtime 尚未启动、全部临时授权已撤销、代理/凭据未签发且没有遗留 Sandbox 副作用时，Broker 必须：
+
+1. 在任务时间线和全局状态区显示醒目警告，说明本任务将以宿主用户权限运行且不具备文件、进程或网络隔离；不要求用户再次确认，自动继续。
+2. 持久化受限的失败类别、`sandboxRequested=true`、`sandboxApplied=false` 和 `executionInstance.mode=host-process`；不得记录敏感路径、SID、端口或凭据，也不得把状态显示为 `sandboxed`。
+3. 继续沿用宿主模式原有的工具审批、路径检查、Git、取消、并发和恢复规则。fallback 不获得 Sandbox 的写根、无网络或专用 Git push 保证。
+
+自动 fallback 只允许发生在能够证明目标操作尚未执行时。若 Runtime/Push Runner 或其后代已经启动、工具结果未知，或 Job、ACL、代理 lease、凭据及账户状态的清理无法证明完成，当前工具调用不得在宿主模式自动重放。系统记录 `unknown/orphaned`、隔离 account generation 并排空活动实例；只有确认同一工作区不再存在可能继续写入的 Sandbox 进程后，后续任务才可按带警告的宿主模式继续。这样优先保证后续功能可用，同时不以重复执行换取表面成功。
+
 统一记录 `executionInstance`：
 
 - `mode: windows-sandbox-user | host-process`
@@ -155,13 +163,13 @@ Git 配置若指定自定义 proxy、remote helper 或非登记 transport，只�
 
 目标 tracing 至少覆盖 `sandbox.install_attest`、`sandbox.account_generation`、`sandbox.instance_lease`、`sandbox.root_project`、`sandbox.runtime_provision`、`sandbox.supervisor_control`、`sandbox.pushspec_prepare`、`sandbox.push_runner`、`sandbox.proxy_lease`、`broker.relay_attest`、`broker.credential_issue`、`broker.proxy_connect`、`broker.result_sanitize`、`sandbox.root_revoke` 和 `sandbox.instance_release`。
 
-日志/trace 只保存状态、耗时、数量、kind/profile、关联 ID 和不可逆摘要；不得保存密码、凭据、DPAPI blob、完整 SID、pipe/端口、原始路径、host/IP、命令、源码或工具输出。账户/WFP 自检失败、无法终止、无法撤销 ACE、账户污染或额外访问面必须作为安全告警并 fail closed。
+日志/trace 只保存状态、耗时、数量、kind/profile、关联 ID 和不可逆摘要；不得保存密码、凭据、DPAPI blob、完整 SID、pipe/端口、原始路径、host/IP、命令、源码或工具输出。账户/WFP 自检失败必须作为安全告警，并在尚未执行 Sandbox 副作用时进入明确的 `host-process` fallback；无法终止、无法撤销 ACE、账户污染或结果未知仍对当前操作 fail closed，不得自动重放，直到故障 generation 隔离和排空完成。
 
 ## 9. 实施与验收
 
 | 阶段           | 交付物                                                                                      | 必要证据                                                                                                                                     |
 | -------------- | ------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| W0：契约       | AccessManifest、executionInstance、1～4 并发/同工作区串行、跨任务读取/进程干扰风险、禁用模式兼容 | 当前实现与目标 profile 不混淆；开关失败关闭                                                                                               |
+| W0：契约       | AccessManifest、executionInstance、1～4 并发/同工作区串行、跨任务读取/进程干扰风险、禁用模式兼容与宿主 fallback | 当前实现与目标 profile 不混淆；自检前失败醒目提示并记录实际 `host-process`，已执行/未知结果不重放                                          |
 | W1：安装与身份 | 单一账户、secret、本地策略、WFP fence、自检/卸载                                            | 宿主用户网络不受影响；Sandbox SID 的 V4/V6 直接出站均阻断；loopback 只到固定端点                                                             |
 | W2：文件与监督 | ACL/grant table、`WRITE_RESTRICTED` token/default DACL、每实例 execution/root capability/desktop/Job | 并发实例互相可读且可能互相干扰，但直接及后代不可跨 capability 根写入；共享 logon/宽泛兼容 SID 不绕过写边界；共享 ACE 正确引用计数；孤儿 generation 全量排空 |
 | W3：Broker IPC | pipe 身份、typed capability、配额、模型/session adapter                                     | 重放、错误映像/Job/token、畸形帧安全拒绝                                                                                                     |
@@ -172,7 +180,7 @@ Git 配置若指定自定义 proxy、remote helper 或非登记 transport，只�
 
 W1--W3 通过后才能声明“Windows 专用用户 Sandbox：宿主用户私有权限不继承、显式根授权、目标写边界、无直接命令网络、Broker 能力认证”；不得声明纯读取 allowlist。W5 前不支持受限 push，W6 前不声明已验证取消和资源边界。管理员安装成功不等于 Runtime 验收完成。
 
-实现阶段按新增安全边界做风险驱动验收，不再把穷举平台边角作为开始实现的前置条件。每阶段的最小门槛是：W0 安装/卸载与禁用兼容；W1 宿主不受影响、Sandbox 直连拒绝、固定 relay 可达；W2 获准根可写、未获准根直接及后代写拒绝、两个并发实例和清理；W3 合法实例通过、错误实例/重放拒绝；W5 真实 Git 对绑定 host 成功且错误 host 失败；W6 正常取消和强制终止都留下可恢复账本并完成进程树清理。复杂 ACL、重解析、更多协议、机器重启和故障注入只在对应实现触及该风险或已有证据显示不确定时增加，不能用测试数量替代机制判断。
+实现阶段按新增安全边界做风险驱动验收，不再把穷举平台边角作为开始实现的前置条件。每阶段的最小门槛是：W0 安装/卸载、禁用兼容、自检失败提示与安全宿主 fallback；W1 宿主不受影响、Sandbox 直连拒绝、固定 relay 可达；W2 获准根可写、未获准根直接及后代写拒绝、两个并发实例和清理；W3 合法实例通过、错误实例/重放拒绝；W5 真实 Git 对绑定 host 成功且错误 host 失败；W6 正常取消和强制终止都留下可恢复账本并完成进程树清理。W0 必须分别验证“任何 Runtime 启动前自动 fallback”和“命令已启动/结果未知时不重放”；复杂 ACL、重解析、更多协议、机器重启和故障注入只在对应实现触及该风险或已有证据显示不确定时增加，不能用测试数量替代机制判断。
 
 ## 10. 已有证据与待验证范围
 
@@ -197,4 +205,4 @@ W1--W3 通过后才能声明“Windows 专用用户 Sandbox：宿主用户私有
 
 ## 11. 与现有实现的关系
 
-现有 WSL2 bubblewrap `inspect` Runtime 是历史实现，不是 fallback 或验收替代。迁移期间 UI 必须区分 `legacy-wsl2-inspect`、`windows-sandbox-user`、`non-isolated` 和 `unknown`。账户、WFP、ACL、Job、IPC 或代理自检任一失败时 Sandbox 模式安全拒绝，不能静默转为宿主权限。
+现有 WSL2 bubblewrap `inspect` Runtime 是历史实现，不是 fallback 或验收替代。迁移期间 UI 必须区分 `legacy-wsl2-inspect`、`windows-sandbox-user`、`host-process-fallback`、`non-isolated` 和 `unknown`。目标 Runtime 在启动前自检或无 Sandbox 副作用的 provision 失败时，必须明确告知用户后自动转为宿主权限；`host-process-fallback` 不得被渲染或统计为隔离。当前历史 WSL2 代码仍按旧契约安全拒绝，直到目标执行账本、提示和 fallback 一起实现；账户、WFP、ACL、Job、IPC 或代理在执行后变为未知时仍不能自动重放当前操作。

@@ -231,6 +231,8 @@
 
 ## Windows Sandbox 探针与专用用户目标的验证状态
 
+- 2026-09-20 目标契约改为可用性优先：启动前自检或可证明尚无 Sandbox 副作用的 provision 失败时，未来产品须明确警告并以 `host-process` executionInstance 自动继续；命令已启动、结果未知或清理不确定时仍不得自动重放。当前 WSL2 `SandboxBroker` 尚未实现该 fallback，仍保持历史 fail-closed 行为；本条只记录设计变化，不是验证通过。
+
 - 新增 [专用 Sandbox 用户最小验证](../experiments/windows-sandbox-user-demo/README.md)：提升脚本创建随机临时本地账户，为两个实例预置不同 execution SID，并为两个根预置不同 root capability ACE，再以同一账户启动固定 bootstrap。夹具核对共享 account SID、独立 execution/root capability、活动根跨任务可读、直接进程/后代只写各自根，并在 `finally` 精确删除运行目录和账户；密码不进入 argv、环境、文件或输出。该入口是 W2 第一阶段夹具，不覆盖共享 grant、Broker/supervisor 控制面、WFP 或 Git。
 - 2026-09-20 首次管理员运行中，两个实例及其后代分别完成跨根读取、自己根写入与对方根写拒绝，但两次 launcher 的 logon SID 同为 `S-1-5-5-0-488199`，触发旧断言。检查确认 `CAProbe*` 账户为 0 且对应运行目录不存在，证明异常清理有效。该证据支持临时账户和文件 root capability 的窄组合，同时推翻“显式凭据启动产生不同 logon SID”的假设；不能记为 W2 通过。
 - 修订版改用独立 execution SID 作为实例身份、root capability SID 作为写根身份，兼容 restricting SID 仍包含 logon/Everyone，但 token default DACL 已从 root/logon/Everyone 收紧为共享账户 SID 加本实例 execution SID。C++ `/W4 /WX` 构建和旧当前用户入口回归通过：restricted probe/后代均为 4 个 restricting SID，读写矩阵不变。随后管理员复测最终报告 `distinctExecutionSids=yes logonSidReused=true crossRead=yes ownWrite=yes crossWriteDenied=yes nestedProcess=yes`；复测后 `CAProbe*` 账户和 `run-*` 目录计数均为 0。该结果完成 W2 的顺序文件访问第一阶段；真正并发的文件写入矩阵当时尚未得到结果。
