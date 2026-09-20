@@ -347,7 +347,7 @@ it("automatically pushes only the checked configured upstream", async () => {
     ["config", "--get", "branch.main.merge"],
     ["remote", "get-url", "--push", "origin"],
     ["rev-parse", "HEAD"],
-    ["push", "--porcelain", "origin", "HEAD:refs/heads/main"],
+    ["push", "--porcelain", "origin", `${"a".repeat(40)}:refs/heads/main`],
   ]);
   expect(schemas.git.safeParse({ action: "push", force: true }).success).toBe(
     false,

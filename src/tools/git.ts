@@ -535,7 +535,7 @@ export class GitToolRunner {
       throw new Error("无法确定待推送提交的对象 ID。");
     }
 
-    const args = ["push", "--porcelain", remote, `HEAD:${merge}`];
+    const args = ["push", "--porcelain", remote, `${objectId}:${merge}`];
     if (this.executePush) {
       const url = new URL(remoteUrl);
       if (url.protocol !== "https:") {

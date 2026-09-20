@@ -1379,6 +1379,7 @@ int RunProductSupervisor(const std::wstring& state_path,
   std::vector<ProductRoot> journaled_roots;
   manifest_grants.reserve(request.roots.size());
   bool working_directory_granted = false;
+  bool private_directory_granted = false;
   bool git_global_config_granted = false;
   bool manifest_valid = true;
   for (const ProductRoot& root : request.roots) {
@@ -1393,6 +1394,10 @@ int RunProductSupervisor(const std::wstring& state_path,
         working_directory_granted ||
         (writable && _wcsicmp(root.path.c_str(),
                               request.working_directory.c_str()) == 0);
+    private_directory_granted =
+        private_directory_granted ||
+        (writable && _wcsicmp(root.path.c_str(),
+                              request.private_directory.c_str()) == 0);
     git_global_config_granted =
         git_global_config_granted ||
         (expect_file && _wcsicmp(root.path.c_str(),
@@ -1413,25 +1418,21 @@ int RunProductSupervisor(const std::wstring& state_path,
     }
     manifest_grants.push_back(std::move(grant));
   }
-  ObjectGrant private_grant;
   if (!manifest_valid || !working_directory_granted ||
-      !git_global_config_granted ||
-      !private_grant.Install(request.private_directory, false, true, true,
-                             account_sid.data(), capability_sid.get())) {
+      !private_directory_granted || !git_global_config_granted) {
     for (ObjectGrant& grant : manifest_grants) {
       grant.RevokeAll();
     }
     for (const ProductRoot& root : journaled_roots) {
       RemoveGrantJournal(state_path, root);
     }
-    private_grant.RevokeAll();
     SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
     std::wcerr << L"CODEATELIER_SUPERVISOR_ERROR category=manifest\n";
     return kSelfCheckFailureExitCode;
   }
 
   auto revoke_failed_launch = [&]() {
-    bool clean = private_grant.RevokeAll();
+    bool clean = true;
     for (ObjectGrant& grant : manifest_grants) {
       clean = grant.RevokeAll() && clean;
     }
@@ -1441,7 +1442,7 @@ int RunProductSupervisor(const std::wstring& state_path,
     return clean;
   };
   auto revoke_instance = [&]() {
-    bool clean = private_grant.RevokeAll();
+    bool clean = true;
     for (ObjectGrant& grant : manifest_grants) {
       clean = grant.RevokeInstance() && clean;
     }
