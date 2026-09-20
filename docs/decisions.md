@@ -826,9 +826,19 @@
 ## D099：采用单一专用 Sandbox 用户
 
 - 日期：2026-09-20
-- 状态：用户已确认目标设计；仅文档设计，尚未授权或完成产品实现。既有 restricted-token 与 IPC demo 只是组件级证据，账户、ACL 和 WFP 目标均未完成验收。
+- 状态：主体继续有效；其中“Sandbox 全局串行”和账户排他租约已由 D100 替代。仅文档设计，尚未授权或完成产品实现。既有 restricted-token 与 IPC demo 只是组件级证据，账户、ACL 和 WFP 目标均未完成验收。
 - 账户与并发：Windows 一次性提升安装创建单一低权限本地账户 `CodeAtelierSandbox`，将随机口令以宿主 Broker 用户可解密的系统保护存储保存，并配置最小组成员、登录权和环境。首版由非提升 Broker 以 `CreateProcessWithLogonW` 且不加载 profile 启动固定 runner，因此保留该 API 所需的本地 logon，隐藏欢迎屏幕入口并禁止远程/网络/服务登录；域策略不兼容时安装失败。所有 Agent Runtime、Push Runner、Git、hook、helper 与后代都使用该账户的 restricted token 和 Job。一个 SID 不能同时持有多个任务的 ACL，因此 Sandbox 模式跨会话和工作区全局串行；非 Sandbox 模式继续使用现有 1--4 并发。Agent Runtime 切换为 Push Runner 前必须证明原 Job 全部退出。
 - 文件边界：Broker 向 AccessManifest 中的工作区、显式 read/write roots、产品 Runtime 依赖、专用临时目录和精确 Git config/include 图投影最小 ACL；可写根另以 `WRITE_RESTRICTED` token 的独立 capability SID 约束。专用账户不继承只授予宿主交互用户的 profile/凭据权限，但 `Everyone`、`Authenticated Users` 和其它既有机器 ACL 可能允许额外读取，因此不承诺纯读取 allowlist。工作区内部不额外保护 `.git`、`.env` 或其他子路径；全部 Git 在 Runtime 内执行，Broker 不运行 Git。宿主 `%USERPROFILE%\.gitconfig`、`%USERPROFILE%\.config\git\config` 及对当前工作区成立的 include/includeIf 图只读授权，Sandbox 使用逐租约私有 HOME 与 `GIT_CONFIG_GLOBAL` 聚合入口；helper、证书、签名程序或其他引用对象不自动授权。宿主 Credential Manager、SSH agent 和用户证书私钥不继承。
 - 网络与 push：提升安装按专用账户 SID 建立持久 WFP 默认拒绝规则，只允许固定 Broker relay/CONNECT proxy 端口；普通 Runtime 和 Push Runner 都不能直接出站，push 时也不临时放宽 WFP。任务级代理联合验证账户 SID、PID、创建时间、Job、kind-specific instance ID、nonce、lease 与调用摘要，再按逐次确认的 HTTPS host/port、DNS/IP 类别、期限和字节上限转发。应用层 PushSpec 仍用于确认预期 remote/ref，但 host 级边界不保证仓库 path/ref 或上传内容。该方案不使用自研 WFP callout driver。
 - 监督与恢复：Broker 以全局账户 lease 防止并发，通过私有 supervisor 控制面管理进程/Job handle、heartbeat、ACL 原对象和清理。终止进程树、关闭代理 lease、撤销 ACL 与复核 WFP/账户状态全部成功后才释放账户；任一步无法证明时记录 `orphaned` 并隔离账户，所有后续 Sandbox 任务安全失败，直到修复或重新安装。`executionInstance.mode` 为 `windows-sandbox-user | host-process`，并用 `kind: agent-runtime | push-runner` 与对应 kind-specific ID；取消/unknown/orphaned、部分输出、可能副作用和禁止自动重放随 session 进入下一轮。
 - 非目标与验收：首版不使用 AppContainer、`broadFileSystemAccess`、实验性的 `CreateProcessInSandbox`/BFS、Chromium Target hook 或自研内核驱动，也不以旧 WSL2 Runtime 作为 fallback。W0--W7 分别验收安装、账户/WFP、文件/监督、Broker IPC、本地 Runtime、受限 push、取消/资源与产品集成；较早阶段不能证明较晚能力。权威设计及夹具清单见 [windows-integrity-sandbox.md](windows-integrity-sandbox.md)。
+
+## D100：单一 Sandbox 账户允许跨工作区并发
+
+- 日期：2026-09-20
+- 状态：用户确认目标设计；仅文档设计，尚未实现或验证。
+- 并发决定：撤销 D099 的 Sandbox 全局串行。Sandbox 与 host-process 模式统一沿用现有 `maxConcurrentTasks` 1～4 设置；不同真实工作区可并发，同一真实工作区、同一会话仍串行。仍只创建一个 `CodeAtelierSandbox` 账户，不引入账户池。Agent Runtime 切换为 Push Runner 时只停止并替换同一任务实例，其它工作区任务继续。
+- 每实例边界：每个 execution instance 获得独立 `WRITE_RESTRICTED` token、execution/logon SID、根 capability SID、Job、private desktop、逐租约 HOME/temp、Named Pipe nonce、proxy lease 和 kind-specific ID。token default DACL、desktop/window station、pipe 及后代 process/thread/token/Job/命名对象必须同时要求共享账户 SID 和本实例 capability；bootstrap runner 从创建时即使用只允许 Broker/SYSTEM 的 DACL，不能先创建后收紧。WFP 继续按共享账户 SID 永久阻止直接出站，Broker 以 account generation、capability SID、PID/创建时间、映像、Job、nonce 和 lease 区分同账户连接。同 SID 进程注入、debug、window message 和命名对象攻击必须真实验证。
+- 接受的读取风险：账户 SID 的 ACL 是所有活动 AccessManifest 的并集，因此一个并发 Runtime 可能读取其它活动任务的工作区、Git 配置、显式 read roots 和逐租约目录。Broker/session API 仍禁止跨任务访问，但本方案不提供任务间 OS 级读取保密；UI 和能力声明必须明确。每实例 capability 只用于写检查，必须证明实例 A 不能写实例 B 的根；若 `Everyone` 等兼容 restricting SID 能匹配任一有效写 ACE，预检必须拒绝该根，不能降级为共享写入。需要任务间保密时必须使用未来的账户池、AppContainer 或 VM profile，不能由本设计推导。
+- ACL 与失败处理：账户 SID 的共享 ACE 使用以稳定对象身份、访问模式和 ACE delta 为键的引用计数 grant table；每实例 capability ACE 独立撤销，最后一个共享引用释放后才撤销账户 ACE。任一实例的 Job、代理、凭据、ACL 或对象对账无法证明完成时，将整个 account generation 标记 `orphaned/quarantined`，冻结新 Sandbox 任务并终止、对账全部活动实例；不能只清理故障工作区后继续复用账户。
+- 验收影响：W0/W2/W3/W5/W6 增加 1～4 实例并发、同工作区排队、跨任务读取可见/写入拒绝、共享 ACE 生命周期、同 SID 进程对象攻击、不同实例 pipe/proxy 复用拒绝、本任务 push 切换不打断其它任务、单实例取消和 generation 级故障排空夹具。现有 demo 没有覆盖这些结论，不构成并发能力证据。

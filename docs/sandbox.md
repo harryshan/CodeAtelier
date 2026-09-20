@@ -1,6 +1,6 @@
 # 旧 WSL2 Sandbox 实施档案（已被专用用户目标架构替代）
 
-状态：本文保留当前仓库中 WSL2 bubblewrap `inspect` Runtime 的已实现行为、本机夹具证据和历史阶段记录，供迁移与事实核对使用；它不再是未来 Sandbox 的权威设计。Windows 后续目标架构以 [Windows 专用用户 Sandbox Runtime 与 Broker 架构](windows-integrity-sandbox.md) 为准：单一低权限本地账户通过显式 ACL 获得任务文件访问，以 restricted token/Job 运行全部 Git 和命令；Broker 不执行 Git，只代理模型、存储、外部写入与受限网络等宿主能力。按该账户 SID 的持久 WFP fence 阻止直接出站，Sandbox 模式全局串行。该目标尚未实现或验证，本文记录不构成专用用户 Sandbox 能力的证据。
+状态：本文保留当前仓库中 WSL2 bubblewrap `inspect` Runtime 的已实现行为、本机夹具证据和历史阶段记录，供迁移与事实核对使用；它不再是未来 Sandbox 的权威设计。Windows 后续目标架构以 [Windows 专用用户 Sandbox Runtime 与 Broker 架构](windows-integrity-sandbox.md) 为准：单一低权限本地账户通过显式 ACL 获得任务文件访问，以每实例 restricted token/capability/Job 运行全部 Git 和命令；Broker 不执行 Git，只代理模型、存储、外部写入与受限网络等宿主能力。按该账户 SID 的持久 WFP fence 阻止直接出站；Sandbox 沿用 1～4 个不同工作区并发和同工作区串行，接受同账户活动根跨任务可读、但不可越权写的边界。该目标尚未实现或验证，本文记录不构成专用用户 Sandbox 能力的证据。
 
 ## 1. 目标、开关与兼容性
 

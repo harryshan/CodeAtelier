@@ -33,4 +33,4 @@ pwsh -File experiments/windows-restricted-token-demo/run-demo.ps1
 
 探针为兼容启动使用 capability、logon、Everyone 三个 restricting SID，并把三者写入 token default DACL；它没有逐项证明 logon/Everyone 对所有工具都不可省略。尤其是 default DACL 的 Everyone `GENERIC_ALL` 会影响 Runtime 新建对象，产品控制管道必须另用显式私有 DACL 和客户端身份验证，不能复用该默认值。
 
-因此它不能把 W1 或 W2 标记为完成，也不能支持专用账户安装、显式读写 ACL、全局租约或网络边界的产品声明。
+因此它不能把 W1 或 W2 标记为完成，也不能支持专用账户安装、并发 instance lease、同 SID 进程对象隔离、显式读写 ACL 或网络边界的产品声明。

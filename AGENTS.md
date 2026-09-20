@@ -11,7 +11,7 @@
 - 保持清晰的目录、模块与代码文件结构。
 - 保持完善且与开发同步更新的文档。
 - **初版功能边界已确认**，以 docs/requirements.md 第 2、5 节为范围与验收依据；用户已授权开始实现；当前按 Node.js 24、React/Vite、Fastify、SQLite、Pino 技术方案开发。
-- 第一版使用 Web UI 作为用户交互界面，支持 Windows、macOS 和 Linux，优先完成读代码、修改与验证闭环。原 CLI 方向已被替代。后续 Windows Sandbox 使用单一专用低权限本地账户、restricted token/Job、显式文件 ACL 与按账户 SID 的 WFP；Runtime 执行全部 Git，Broker 不执行 Git。Sandbox 模式下任务全局串行。不能据此夸大为当前可用或跨平台实现。
+- 第一版使用 Web UI 作为用户交互界面，支持 Windows、macOS 和 Linux，优先完成读代码、修改与验证闭环。原 CLI 方向已被替代。后续 Windows Sandbox 使用单一专用低权限本地账户、per-instance restricted token/Job/capability、显式文件 ACL 与按账户 SID 的 WFP；Runtime 执行全部 Git，Broker 不执行 Git。Sandbox 模式沿用 1～4 个不同工作区并发和同工作区串行。不能据此夸大为当前可用或跨平台实现。
 - 默认采用本机后端 + 本机浏览器访问并监听回环地址；用户显式配置后可在受信任局域网监听，仍不提供公网部署、多用户账户或权限分级。Web UI 可由环境变量启用单一访问密码门禁；此限制针对 UI 和后端服务的入站访问，不限制已配置的模型 API 调用。
 - 跨平台设计需覆盖路径、shell、进程取消和文件权限差异；不得将单一系统验证描述为全平台验证。具体系统版本与浏览器支持矩阵待定。
 - 首个模型服务为用户自建 Responses API server，预留其他提供商接口；实际端点、模型标识与 Bearer API key 仅在本地 .env 配置，不写入源码、示例或文档；示例仅使用占位值。模型标识原样传递，不内置特定服务的简称转换。
@@ -20,7 +20,7 @@
 - 会话内上下文压缩已授权：保留用户原文、历史快照与未知执行状态，摘要不提升权限；细节见 docs/context-management.md。已接入服务模型容量与实际 usage，token 预算与备用字符模式见 docs/model-tokens.md。
 - 提供 Web UI“关闭服务”入口及终端 Ctrl+C 退出方式；关闭时停止任务并保存为可恢复中断，保留历史和已修改文件。服务关闭流程必须覆盖鉴权、清理与端口释放测试。
 - 初版仅单 agent；不同真实工作目录的会话最多可并行运行 2 个编码任务（可在设置中调为 1～4），同一工作目录始终串行排队。直接修改选定工作目录，不自动创建 worktree 或一键回滚。页面关闭后后端仍运行时任务可继续。
-- 不扩展初版范围到多 agent、MCP、插件、浏览器自动化、向量检索、完整 IDE、交互式终端或云端。Windows 专用用户 Runtime、独立 C++ supervisor 与 Broker 是已确认的后续 Sandbox 目标架构：一次性提升安装创建 `CodeAtelierSandbox` 账户及按其 SID 的持久 WFP fence；每次任务向该账户投影工作区、显式 read/write roots 和精确只读 Git config graph，并用 `WRITE_RESTRICTED`/根 capability 限制目标写范围。专用账户不继承宿主用户私有权限，但 `Everyone`/`Authenticated Users` 等既有 ACL 可能允许额外读取，不能宣称纯读取 allowlist。工作区内不额外保护 `.git`/`.env`，全部 Git 在 Runtime 内执行，Broker 不运行 Git。普通 Runtime 默认无直接命令网络；push 使用逐次确认的 PushSpec、互斥 Push Runner、认证 relay/CONNECT 代理与短期凭据，WFP 不临时放宽。账户租约或 ACL 清理不确定时全局停止 Sandbox 任务。取消结果以区分 Agent Runtime/Push Runner 的 executionInstance 写入 session。首版不依赖 AppContainer、自研 WFP callout driver、实验性的 `CreateProcessInSandbox`/Bound File System 或 Chromium Target hook。在另行授权实现并完成分层平台验收前，不得将其当作当前可用功能或跨平台系统级沙箱。
+- 不扩展初版范围到多 agent、MCP、插件、浏览器自动化、向量检索、完整 IDE、交互式终端或云端。Windows 专用用户 Runtime、独立 C++ supervisor 与 Broker 是已确认的后续 Sandbox 目标架构：一次性提升安装创建 `CodeAtelierSandbox` 账户及按其 SID 的持久 WFP fence；每次任务向该账户投影工作区、显式 read/write roots 和精确只读 Git config graph，并用独立 `WRITE_RESTRICTED`/根 capability、Job、desktop、IPC 与 proxy lease 限制目标写入和能力。Sandbox 沿用 1～4 个不同工作区并发、同工作区串行；同账户实例会形成活动授权根的读取并集，不提供任务间 OS 级读取隔离，但其它实例必须不能越权写入。专用账户不继承宿主用户私有权限，`Everyone`/`Authenticated Users` 等既有 ACL 也可能允许额外读取，不能宣称纯读取 allowlist。工作区内不额外保护 `.git`/`.env`，全部 Git 在 Runtime 内执行，Broker 不运行 Git。普通 Runtime 默认无直接命令网络；push 使用逐次确认的 PushSpec、同任务互斥 Push Runner、认证 relay/CONNECT 代理与短期凭据，WFP 不临时放宽。任一实例租约或 ACL 清理不确定时隔离账户 generation、停止新任务并排空其它活动 Sandbox 实例。取消结果以区分 Agent Runtime/Push Runner 的 executionInstance 写入 session。首版不依赖 AppContainer、自研 WFP callout driver、实验性的 `CreateProcessInSandbox`/Bound File System 或 Chromium Target hook。在另行授权实现并完成分层平台验收前，不得将其当作当前可用功能或跨平台系统级沙箱。
 
 ## 需求的权威来源
 
