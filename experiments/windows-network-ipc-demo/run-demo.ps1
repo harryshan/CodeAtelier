@@ -4,16 +4,17 @@ Builds and runs the Windows network and Broker IPC feasibility probes.
 
 .DESCRIPTION
 The script locates MSVC, builds network_ipc_demo.cpp into the repository-local
-ignored .local directory, then runs the named-pipe identity probe, the dynamic
-WFP APP_ID probe, or the dedicated-user WFP fence probe. WFP modes need elevated
-BFE policy access and use only loopback TCP listeners. Dynamic filters are removed
-when the controller process exits. The dedicated-user mode creates and precisely
-cleans up one random local account; its password stays in this PowerShell process.
+ignored .local directory, then runs the named-pipe identity probe, dynamic WFP
+probes, or the dedicated-user persistent WFP lifecycle probe. WFP modes need
+elevated BFE policy access. Dynamic filters are removed when the controller exits;
+the persistent mode removes its fixed test GUID objects in finally. User modes
+create and precisely clean up one random local account, whose password stays in
+this PowerShell process.
 #>
 
 [CmdletBinding()]
 param(
-    [ValidateSet("all", "build", "ipc", "wfp", "wfp-user")]
+    [ValidateSet("all", "build", "ipc", "wfp", "wfp-user", "wfp-persistent")]
     [string]$Mode = "all"
 )
 
@@ -538,6 +539,104 @@ function Invoke-WfpUserProbe {
     }
 }
 
+function Invoke-PersistentWfpProbe {
+    Assert-Administrator
+    if (-not (Test-Path -LiteralPath $executablePath -PathType Leaf)) {
+        throw "探针不存在，请先使用 -Mode build。"
+    }
+
+    New-Item -ItemType Directory -Force -Path $buildRoot | Out-Null
+    $runRoot = Join-Path $buildRoot ("persistent-run-" + [guid]::NewGuid().ToString("N"))
+    Assert-PathContained -Path $runRoot -Root $buildRoot
+    $accountName = "CAPersist" + [guid]::NewGuid().ToString("N").Substring(0, 8)
+    $plainPassword = New-ProbePassword
+    $securePassword = ConvertTo-SecureString $plainPassword -AsPlainText -Force
+    $accountCreated = $false
+    $listeners = [Collections.Generic.List[Net.Sockets.TcpListener]]::new()
+
+    try {
+        & $executablePath --wfp-persistent-remove
+        if ($LASTEXITCODE -ne 0) {
+            throw "无法清理已知 persistent WFP 探针对象。"
+        }
+
+        $account = New-LocalUser -Name $accountName -Password $securePassword `
+            -AccountNeverExpires -PasswordNeverExpires -UserMayNotChangePassword `
+            -Description "Disposable CodeAtelier persistent WFP probe"
+        $accountCreated = $true
+        Add-LocalGroupMember -SID "S-1-5-32-545" -Member $account
+        $sandboxSid = [Security.Principal.SecurityIdentifier]::new($account.SID.Value)
+        New-Item -ItemType Directory -Path $runRoot | Out-Null
+        Copy-Item -LiteralPath $executablePath -Destination (Join-Path $runRoot "persistent-probe.exe")
+        Set-UserFenceDirectoryAcl -Path $runRoot -SandboxSid $sandboxSid
+        $probeExecutable = Join-Path $runRoot "persistent-probe.exe"
+
+        $allowedV4 = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
+        $allowedV6 = [Net.Sockets.TcpListener]::new([Net.IPAddress]::IPv6Loopback, 0)
+        $allowedV6.Server.DualMode = $false
+        $deniedV4 = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
+        $deniedV6 = [Net.Sockets.TcpListener]::new([Net.IPAddress]::IPv6Loopback, 0)
+        $deniedV6.Server.DualMode = $false
+        foreach ($listener in @($allowedV4, $allowedV6, $deniedV4, $deniedV6)) {
+            $listener.Start()
+            $listeners.Add($listener)
+        }
+        $allowedV4Port = ([Net.IPEndPoint]$allowedV4.LocalEndpoint).Port
+        $allowedV6Port = ([Net.IPEndPoint]$allowedV6.LocalEndpoint).Port
+        $deniedV4Port = ([Net.IPEndPoint]$deniedV4.LocalEndpoint).Port
+        $deniedV6Port = ([Net.IPEndPoint]$deniedV6.LocalEndpoint).Port
+        $qualifiedAccountName = "$env:COMPUTERNAME\$accountName"
+
+        & $executablePath --wfp-persistent-install $qualifiedAccountName $allowedV4Port $allowedV6Port
+        if ($LASTEXITCODE -ne 0) { throw "persistent WFP 安装失败。" }
+        & $executablePath --wfp-persistent-verify
+        if ($LASTEXITCODE -ne 0) { throw "persistent WFP 进程退出后自检失败。" }
+
+        $cases = @(
+            [pscustomobject]@{ Mode = "--network-client"; Port = $allowedV4Port; ExitCode = 0 },
+            [pscustomobject]@{ Mode = "--network-client-v6"; Port = $allowedV6Port; ExitCode = 0 },
+            [pscustomobject]@{ Mode = "--network-client"; Port = $deniedV4Port; ExitCode = 20 },
+            [pscustomobject]@{ Mode = "--network-client-v6"; Port = $deniedV6Port; ExitCode = 20 },
+            [pscustomobject]@{ Mode = "--listen-probe"; Port = 0; ExitCode = 20 },
+            [pscustomobject]@{ Mode = "--listen-probe-v6"; Port = 0; ExitCode = 20 },
+            [pscustomobject]@{ Mode = "--raw-probe"; Port = 0; ExitCode = 20 },
+            [pscustomobject]@{ Mode = "--raw-probe-v6"; Port = 0; ExitCode = 20 }
+        )
+        foreach ($case in $cases) {
+            Invoke-NetworkClientProbe -Executable $probeExecutable -ClientMode $case.Mode `
+                -Port $case.Port -WorkingDirectory $runRoot -ExpectedExitCode $case.ExitCode `
+                -UserName $accountName -Password $securePassword
+        }
+
+        & $executablePath --wfp-persistent-remove
+        if ($LASTEXITCODE -ne 0) { throw "persistent WFP 卸载失败。" }
+        & $executablePath --wfp-persistent-verify
+        if ($LASTEXITCODE -eq 0) { throw "卸载后 persistent WFP 自检意外成功。" }
+
+        Invoke-NetworkClientProbe -Executable $probeExecutable -ClientMode "--network-client" `
+            -Port $deniedV4Port -WorkingDirectory $runRoot -ExpectedExitCode 0 `
+            -UserName $accountName -Password $securePassword
+        Invoke-NetworkClientProbe -Executable $probeExecutable -ClientMode "--network-client-v6" `
+            -Port $deniedV6Port -WorkingDirectory $runRoot -ExpectedExitCode 0 `
+            -UserName $accountName -Password $securePassword
+
+        Write-Host "WFP_PERSISTENT_DEMO PASS accountSid=$($sandboxSid.Value) processExitPersistence=yes enumerateSelfCheck=yes tcpFence=yes listenRawFence=yes uninstallRecovery=yes"
+    }
+    finally {
+        $plainPassword = $null
+        $securePassword = $null
+        foreach ($listener in $listeners) { $listener.Stop() }
+        & $executablePath --wfp-persistent-remove
+        if ($accountCreated) {
+            Remove-LocalUser -Name $accountName -ErrorAction SilentlyContinue
+        }
+        Assert-PathContained -Path $runRoot -Root $buildRoot
+        if (Test-Path -LiteralPath $runRoot) {
+            Remove-Item -LiteralPath $runRoot -Recurse -Force
+        }
+    }
+}
+
 if ($Mode -in @("all", "build")) {
     Build-Demo
 }
@@ -549,4 +648,7 @@ if ($Mode -in @("all", "wfp")) {
 }
 if ($Mode -eq "wfp-user") {
     Invoke-WfpUserProbe
+}
+if ($Mode -eq "wfp-persistent") {
+    Invoke-PersistentWfpProbe
 }

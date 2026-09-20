@@ -10,7 +10,8 @@
  *    层安装端口允许及其余操作阻断，并用控制目录与 PowerShell 编排器同步；编排器负责在
  *    临时账户下启动普通 client 和 restricted Runtime 的网络后代，并验证 engine 正常关闭或
  *    controller 被终止后两个地址族均恢复连接。
- * 5. wmain 只负责模式分派，保持每个子进程入口参数固定且易审计。
+ * 5. 持久 WFP 入口用固定测试 GUID 安装、枚举自检和删除 provider/sublayer/filters。
+ * 6. wmain 只负责模式分派，保持每个子进程入口参数固定且易审计。
  *
  * WFP filter 使用动态 session，engine handle 关闭后由 BFE 自动删除。探针只连接本机回环端口，
  * 不访问互联网。WFP 模式需要有权向 BFE 添加 filter；普通非提升用户预期会安全失败。
@@ -42,6 +43,10 @@ namespace {
 constexpr DWORD kRestrictedTokenFlags =
     DISABLE_MAX_PRIVILEGE | LUA_TOKEN | WRITE_RESTRICTED;
 constexpr DWORD kNetworkBlockedExitCode = 20;
+const GUID kPersistentProvider = {0x9e201d5a, 0x9dc9, 0x4ae1,
+                                  {0x89, 0xe5, 0x43, 0x65, 0xdf, 0x7f, 0x22, 0x01}};
+const GUID kPersistentSublayer = {0x2d283465, 0xf136, 0x45ac,
+                                  {0xa8, 0xba, 0xdf, 0x3a, 0xaa, 0x3b, 0x22, 0x02}};
 
 class UniqueHandle {
  public:
@@ -1209,7 +1214,8 @@ bool AddUserFilter(HANDLE engine, const GUID& sublayer_key,
                    const GUID& layer_key, FWP_BYTE_BLOB* user_descriptor,
                    u_short remote_port,
                    bool match_port, UINT8 weight, FWP_ACTION_TYPE action,
-                   const wchar_t* name) {
+                   const wchar_t* name, UINT32 flags = 0,
+                   const GUID* provider_key = nullptr) {
   std::array<FWPM_FILTER_CONDITION0, 2> conditions{};
   conditions[0].fieldKey = FWPM_CONDITION_ALE_USER_ID;
   conditions[0].matchType = FWP_MATCH_EQUAL;
@@ -1224,6 +1230,8 @@ bool AddUserFilter(HANDLE engine, const GUID& sublayer_key,
 
   FWPM_FILTER0 filter{};
   filter.displayData.name = const_cast<wchar_t*>(name);
+  filter.flags = flags;
+  filter.providerKey = const_cast<GUID*>(provider_key);
   filter.layerKey = layer_key;
   filter.subLayerKey = sublayer_key;
   filter.weight.type = FWP_UINT8;
@@ -1243,7 +1251,8 @@ bool AddLoopbackUserPermit(HANDLE engine, const GUID& sublayer_key,
                            const GUID& layer_key,
                            FWP_BYTE_BLOB* user_descriptor,
                            u_short remote_port, bool ipv6,
-                           const wchar_t* name) {
+                           const wchar_t* name, UINT32 flags = 0,
+                           const GUID* provider_key = nullptr) {
   UINT32 loopback_v4 = 0x7f000001;
   FWP_BYTE_ARRAY16 loopback_v6{};
   loopback_v6.byteArray16[15] = 1;
@@ -1269,6 +1278,8 @@ bool AddLoopbackUserPermit(HANDLE engine, const GUID& sublayer_key,
   UINT8 weight = 15;
   FWPM_FILTER0 filter{};
   filter.displayData.name = const_cast<wchar_t*>(name);
+  filter.flags = flags;
+  filter.providerKey = const_cast<GUID*>(provider_key);
   filter.layerKey = layer_key;
   filter.subLayerKey = sublayer_key;
   filter.weight.type = FWP_UINT8;
@@ -1287,7 +1298,8 @@ bool AddLoopbackUserPermit(HANDLE engine, const GUID& sublayer_key,
 bool AddRawEndpointBlock(HANDLE engine, const GUID& sublayer_key,
                          const GUID& layer_key,
                          FWP_BYTE_BLOB* user_descriptor,
-                         const wchar_t* name) {
+                         const wchar_t* name, UINT32 flags = 0,
+                         const GUID* provider_key = nullptr) {
   std::array<FWPM_FILTER_CONDITION0, 2> conditions{};
   conditions[0].fieldKey = FWPM_CONDITION_ALE_USER_ID;
   conditions[0].matchType = FWP_MATCH_EQUAL;
@@ -1301,6 +1313,8 @@ bool AddRawEndpointBlock(HANDLE engine, const GUID& sublayer_key,
   UINT8 weight = 14;
   FWPM_FILTER0 filter{};
   filter.displayData.name = const_cast<wchar_t*>(name);
+  filter.flags = flags;
+  filter.providerKey = const_cast<GUID*>(provider_key);
   filter.layerKey = layer_key;
   filter.subLayerKey = sublayer_key;
   filter.weight.type = FWP_UINT8;
@@ -1401,6 +1415,192 @@ bool InstallDynamicUserFence(const std::wstring& user_name,
                            L"CodeAtelier block user IPv6 raw endpoint")) {
     return false;
   }
+  return true;
+}
+
+bool OpenPersistentEngine(UniqueWfpEngine* engine) {
+  HANDLE raw_engine = nullptr;
+  DWORD result = FwpmEngineOpen0(nullptr, RPC_C_AUTHN_WINNT, nullptr, nullptr,
+                                 &raw_engine);
+  if (result != ERROR_SUCCESS) {
+    PrintFailure(L"FwpmEngineOpen0(persistent)", result);
+    return false;
+  }
+  engine->reset(raw_engine);
+  return true;
+}
+
+bool RemovePersistentFence() {
+  UniqueWfpEngine engine;
+  if (!OpenPersistentEngine(&engine)) {
+    return false;
+  }
+  FWPM_FILTER_ENUM_TEMPLATE0 filter_template{};
+  filter_template.providerKey = const_cast<GUID*>(&kPersistentProvider);
+  HANDLE enum_handle = nullptr;
+  DWORD result = FwpmFilterCreateEnumHandle0(engine.get(), &filter_template,
+                                             &enum_handle);
+  if (result != ERROR_SUCCESS) {
+    PrintFailure(L"FwpmFilterCreateEnumHandle0(persistent)", result);
+    return false;
+  }
+  FWPM_FILTER0** entries = nullptr;
+  UINT32 count = 0;
+  result = FwpmFilterEnum0(engine.get(), enum_handle, 100, &entries, &count);
+  if (result == ERROR_SUCCESS) {
+    for (UINT32 index = 0; index < count; ++index) {
+      FwpmFilterDeleteById0(engine.get(), entries[index]->filterId);
+    }
+  }
+  if (entries != nullptr) {
+    FwpmFreeMemory0(reinterpret_cast<void**>(&entries));
+  }
+  FwpmFilterDestroyEnumHandle0(engine.get(), enum_handle);
+  DWORD sublayer_result =
+      FwpmSubLayerDeleteByKey0(engine.get(), &kPersistentSublayer);
+  DWORD provider_result =
+      FwpmProviderDeleteByKey0(engine.get(), &kPersistentProvider);
+  bool removed = (sublayer_result == ERROR_SUCCESS ||
+                  sublayer_result == FWP_E_SUBLAYER_NOT_FOUND) &&
+                 (provider_result == ERROR_SUCCESS ||
+                  provider_result == FWP_E_PROVIDER_NOT_FOUND);
+  std::wcout << L"WFP_PERSISTENT_REMOVE "
+             << (removed ? L"PASS" : L"FAIL") << L" filters=" << count
+             << L"\n";
+  return removed;
+}
+
+bool VerifyPersistentFence() {
+  UniqueWfpEngine engine;
+  if (!OpenPersistentEngine(&engine)) {
+    return false;
+  }
+  FWPM_PROVIDER0* provider = nullptr;
+  FWPM_SUBLAYER0* sublayer = nullptr;
+  DWORD provider_result =
+      FwpmProviderGetByKey0(engine.get(), &kPersistentProvider, &provider);
+  DWORD sublayer_result =
+      FwpmSubLayerGetByKey0(engine.get(), &kPersistentSublayer, &sublayer);
+  WfpPointer owned_provider(provider);
+  WfpPointer owned_sublayer(sublayer);
+
+  FWPM_FILTER_ENUM_TEMPLATE0 filter_template{};
+  filter_template.providerKey = const_cast<GUID*>(&kPersistentProvider);
+  HANDLE enum_handle = nullptr;
+  UINT32 count = 0;
+  FWPM_FILTER0** entries = nullptr;
+  DWORD result = FwpmFilterCreateEnumHandle0(engine.get(), &filter_template,
+                                             &enum_handle);
+  if (result == ERROR_SUCCESS) {
+    result = FwpmFilterEnum0(engine.get(), enum_handle, 100, &entries, &count);
+    FwpmFilterDestroyEnumHandle0(engine.get(), enum_handle);
+  }
+  bool filters_valid = result == ERROR_SUCCESS && count == 8;
+  for (UINT32 index = 0; filters_valid && index < count; ++index) {
+    filters_valid =
+        (entries[index]->flags & FWPM_FILTER_FLAG_PERSISTENT) != 0 &&
+        entries[index]->providerKey != nullptr &&
+        IsEqualGUID(*entries[index]->providerKey, kPersistentProvider) &&
+        IsEqualGUID(entries[index]->subLayerKey, kPersistentSublayer);
+  }
+  if (entries != nullptr) {
+    FwpmFreeMemory0(reinterpret_cast<void**>(&entries));
+  }
+  bool passed = provider_result == ERROR_SUCCESS &&
+                sublayer_result == ERROR_SUCCESS &&
+                (provider->flags & FWPM_PROVIDER_FLAG_PERSISTENT) != 0 &&
+                (sublayer->flags & FWPM_SUBLAYER_FLAG_PERSISTENT) != 0 &&
+                filters_valid;
+  std::wcout << L"WFP_PERSISTENT_VERIFY "
+             << (passed ? L"PASS" : L"FAIL") << L" filters=" << count
+             << L"\n";
+  return passed;
+}
+
+bool InstallPersistentFence(const std::wstring& user_name,
+                            u_short allowed_v4_port,
+                            u_short allowed_v6_port) {
+  UniqueWfpEngine engine;
+  if (!OpenPersistentEngine(&engine)) {
+    return false;
+  }
+  if (FwpmTransactionBegin0(engine.get(), 0) != ERROR_SUCCESS) {
+    return false;
+  }
+  FWPM_PROVIDER0 provider{};
+  provider.providerKey = kPersistentProvider;
+  provider.displayData.name =
+      const_cast<wchar_t*>(L"CodeAtelier persistent WFP probe provider");
+  provider.flags = FWPM_PROVIDER_FLAG_PERSISTENT;
+  DWORD result = FwpmProviderAdd0(engine.get(), &provider, nullptr);
+  if (result != ERROR_SUCCESS) {
+    FwpmTransactionAbort0(engine.get());
+    PrintFailure(L"FwpmProviderAdd0(persistent)", result);
+    return false;
+  }
+  FWPM_SUBLAYER0 sublayer{};
+  sublayer.subLayerKey = kPersistentSublayer;
+  sublayer.displayData.name =
+      const_cast<wchar_t*>(L"CodeAtelier persistent WFP probe sublayer");
+  sublayer.flags = FWPM_SUBLAYER_FLAG_PERSISTENT;
+  sublayer.providerKey = const_cast<GUID*>(&kPersistentProvider);
+  sublayer.weight = 0x102;
+  result = FwpmSubLayerAdd0(engine.get(), &sublayer, nullptr);
+  if (result != ERROR_SUCCESS) {
+    FwpmTransactionAbort0(engine.get());
+    PrintFailure(L"FwpmSubLayerAdd0(persistent)", result);
+    return false;
+  }
+
+  EXPLICIT_ACCESS_W access{};
+  BuildExplicitAccessWithNameW(&access, const_cast<wchar_t*>(user_name.c_str()),
+                               FWP_ACTRL_MATCH_FILTER, GRANT_ACCESS, 0);
+  ULONG descriptor_size = 0;
+  PSECURITY_DESCRIPTOR raw_descriptor = nullptr;
+  result = BuildSecurityDescriptorW(nullptr, nullptr, 1, &access, 0, nullptr,
+                                    nullptr, &descriptor_size,
+                                    &raw_descriptor);
+  LocalPointer descriptor(raw_descriptor);
+  FWP_BYTE_BLOB descriptor_blob{descriptor_size,
+                                static_cast<UINT8*>(raw_descriptor)};
+  constexpr UINT8 kBlockWeight = 14;
+  constexpr UINT32 kFlags = FWPM_FILTER_FLAG_PERSISTENT;
+  bool added = result == ERROR_SUCCESS &&
+      AddLoopbackUserPermit(engine.get(), kPersistentSublayer,
+          FWPM_LAYER_ALE_AUTH_CONNECT_V4, &descriptor_blob, allowed_v4_port,
+          false, L"CodeAtelier persistent IPv4 loopback permit", kFlags,
+          &kPersistentProvider) &&
+      AddUserFilter(engine.get(), kPersistentSublayer,
+          FWPM_LAYER_ALE_AUTH_CONNECT_V4, &descriptor_blob, 0, false,
+          kBlockWeight, FWP_ACTION_BLOCK, L"CodeAtelier persistent IPv4 block",
+          kFlags, &kPersistentProvider) &&
+      AddLoopbackUserPermit(engine.get(), kPersistentSublayer,
+          FWPM_LAYER_ALE_AUTH_CONNECT_V6, &descriptor_blob, allowed_v6_port,
+          true, L"CodeAtelier persistent IPv6 loopback permit", kFlags,
+          &kPersistentProvider) &&
+      AddUserFilter(engine.get(), kPersistentSublayer,
+          FWPM_LAYER_ALE_AUTH_CONNECT_V6, &descriptor_blob, 0, false,
+          kBlockWeight, FWP_ACTION_BLOCK, L"CodeAtelier persistent IPv6 block",
+          kFlags, &kPersistentProvider) &&
+      AddUserFilter(engine.get(), kPersistentSublayer,
+          FWPM_LAYER_ALE_AUTH_LISTEN_V4, &descriptor_blob, 0, false,
+          kBlockWeight, FWP_ACTION_BLOCK, L"CodeAtelier persistent IPv4 listen",
+          kFlags, &kPersistentProvider) &&
+      AddUserFilter(engine.get(), kPersistentSublayer,
+          FWPM_LAYER_ALE_AUTH_LISTEN_V6, &descriptor_blob, 0, false,
+          kBlockWeight, FWP_ACTION_BLOCK, L"CodeAtelier persistent IPv6 listen",
+          kFlags, &kPersistentProvider) &&
+      AddRawEndpointBlock(engine.get(), kPersistentSublayer,
+          FWPM_LAYER_ALE_RESOURCE_ASSIGNMENT_V4, &descriptor_blob,
+          L"CodeAtelier persistent IPv4 raw", kFlags, &kPersistentProvider) &&
+      AddRawEndpointBlock(engine.get(), kPersistentSublayer,
+          FWPM_LAYER_ALE_RESOURCE_ASSIGNMENT_V6, &descriptor_blob,
+          L"CodeAtelier persistent IPv6 raw", kFlags, &kPersistentProvider);
+  if (!added || FwpmTransactionCommit0(engine.get()) != ERROR_SUCCESS) {
+    FwpmTransactionAbort0(engine.get());
+    return false;
+  }
+  std::wcout << L"WFP_PERSISTENT_INSTALL PASS filters=8\n";
   return true;
 }
 
@@ -1624,6 +1824,19 @@ int wmain(int argc, wchar_t** argv) {
   }
   if (argc == 4 && std::wstring(argv[1]) == L"--wfp-user-controller") {
     return RunWfpUserController(argv[2], argv[3]) ? 0 : 1;
+  }
+  if (argc == 5 && std::wstring(argv[1]) == L"--wfp-persistent-install") {
+    return InstallPersistentFence(argv[2],
+                                  static_cast<u_short>(std::stoul(argv[3])),
+                                  static_cast<u_short>(std::stoul(argv[4])))
+               ? 0
+               : 1;
+  }
+  if (argc == 2 && std::wstring(argv[1]) == L"--wfp-persistent-verify") {
+    return VerifyPersistentFence() ? 0 : 1;
+  }
+  if (argc == 2 && std::wstring(argv[1]) == L"--wfp-persistent-remove") {
+    return RemovePersistentFence() ? 0 : 1;
   }
 
   std::wcerr << L"usage: network_ipc_demo.exe --ipc | --wfp | "
