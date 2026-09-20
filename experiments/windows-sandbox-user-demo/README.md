@@ -43,6 +43,6 @@ pwsh -File experiments/windows-sandbox-user-demo/run-demo.ps1 -Mode run
 - Node、PowerShell、Git、编译器和真实仓库配置兼容矩阵；
 - 取消、资源上限、服务重启对账及产品 tracing。
 
-2026-09-20 的首次管理员运行证明两次显式凭据启动复用了同一个 logon SID `S-1-5-5-0-488199`，因此推翻了“每实例 logon SID 唯一”的假设。该次运行在最终身份断言前已经通过双方跨根读取、各自根直接/后代写入、跨根写拒绝，并成功清理账户和目录。修订后的探针改用独立 execution SID；token restricting SID 为 execution、root capability、logon 和 Everyone，但 default DACL 已收紧为共享账户 SID 加本实例 execution SID，不再给共享 logon/Everyone 新对象通用权限。
+2026-09-20 的首次管理员运行证明两次显式凭据启动复用了同一个 logon SID `S-1-5-5-0-488199`，因此推翻了“每实例 logon SID 唯一”的假设。该次运行在最终身份断言前已经通过双方跨根读取、各自根直接/后代写入、跨根写拒绝，并成功清理账户和目录。修订后的探针改用独立 execution SID；token restricting SID 为 execution、root capability、logon 和 Everyone，但 default DACL 已收紧为共享账户 SID 加本实例 execution SID，不再给共享 logon/Everyone 新对象通用权限。第二次管理员运行最终报告 `distinctExecutionSids=yes logonSidReused=true crossRead=yes ownWrite=yes crossWriteDenied=yes nestedProcess=yes`，且复测后没有残留临时账户或运行目录。
 
 logon 和 Everyone 仍暂时作为未修改 Win32 启动的兼容 restricting SID。通过本实验不能证明它们对所有工具和对象都安全；W2 仍必须用弱 ACL、显式私有对象和同 SID 攻击夹具证明 execution/root capability 没有被绕过，否则实现应失败关闭。

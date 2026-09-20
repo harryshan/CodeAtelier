@@ -178,7 +178,7 @@ W1--W3 通过后才能声明“Windows 专用用户 Sandbox：宿主用户私有
 
 [restricted-token demo](../experiments/windows-restricted-token-demo/README.md) 已证明当前机器上普通 Win32 restricted token、Job 和正常 DACL 写限制的窄组合可运行，但它派生自当前用户并使用 capability SID，已不代表目标账户/文件身份模型。
 
-[dedicated sandbox user demo](../experiments/windows-sandbox-user-demo/README.md) 的首次管理员运行已真实创建临时本地账户，并通过两个实例的跨根读取、各自根直接/后代写入和跨根写拒绝；异常后账户与运行目录均已清理。它同时证明两次显式凭据启动复用了相同 logon SID，推翻了 logon SID 唯一假设。修订夹具已改用独立 execution/root capability SID并收紧 default DACL；该版本仍待管理员复测，且不覆盖真正并发和私有对象攻击，因此不能标记 W2 通过。
+[dedicated sandbox user demo](../experiments/windows-sandbox-user-demo/README.md) 的首次管理员运行已真实创建临时本地账户，并通过两个实例的跨根读取、各自根直接/后代写入和跨根写拒绝；它同时证明两次显式凭据启动复用了相同 logon SID，推翻了 logon SID 唯一假设。修订夹具随后以独立 execution/root capability SID 和收紧的 account/execution default DACL 通过管理员复测，报告 `distinctExecutionSids=yes logonSidReused=true crossRead=yes ownWrite=yes crossWriteDenied=yes nestedProcess=yes`；两轮结束后账户与运行目录均清理。该证据完成 W2 的顺序文件访问第一阶段，但不覆盖真正并发和私有对象攻击，因此不能标记整个 W2 通过。
 
 [network/IPC demo](../experiments/windows-network-ipc-demo/README.md) 已证明 Named Pipe 可联合核对 PID、创建时间、restricted token、execution SID、映像、Job 和 nonce，并证明普通 medium-integrity Broker 无权安装 WFP policy。其 APP_ID 路径过滤实验和“需要 callout driver”的旧推论已被本设计取代：目标改用可由内建 WFP 用户条件匹配的专用账户 SID。
 
