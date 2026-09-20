@@ -298,6 +298,18 @@ it("restores recorded tool results and marks unknown calls after a database rest
     callId: "known",
     result: { exitCode: 0, output: "already done" },
   });
+  store.event(session.id, task.id, "execution_instance", {
+    callId: "unknown",
+    executionInstanceId: "execution-before-crash",
+    kind: "agent-runtime",
+    mode: "windows-sandbox-user",
+    state: "unknown",
+    pid: 4242,
+    pidKind: "runtime",
+    sandboxRequested: true,
+    sandboxApplied: true,
+    sideEffectsPossible: true,
+  });
   store.close();
   store = new Store(file);
   let inputs: any[] = [];
@@ -319,11 +331,23 @@ it("restores recorded tool results and marks unknown calls after a database rest
         (i) => i.call_id === "known" && i.type === "function_call_output",
       ).output,
     ).toContain("already done");
-    expect(
+    const interruptedOutput = JSON.parse(
       inputs.find(
         (i) => i.call_id === "unknown" && i.type === "function_call_output",
       ).output,
-    ).toContain("不可自动重放");
+    );
+    expect(interruptedOutput).toMatchObject({
+      replayAllowed: false,
+      executionInstance: {
+        executionInstanceId: "execution-before-crash",
+        mode: "windows-sandbox-user",
+        state: "unknown",
+        pid: 4242,
+        pidKind: "runtime",
+        sideEffectsPossible: true,
+      },
+    });
+    expect(interruptedOutput.message).toContain("不可自动重放");
     expect(
       store.events(session.id).filter((e) => e.type === "tool_start"),
     ).toHaveLength(0);
