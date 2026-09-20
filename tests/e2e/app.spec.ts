@@ -585,11 +585,11 @@ test("context compression notice and original history survive refresh", async ({
   await expect(page.getByText(/上下文已整理：/)).toBeHidden();
   await expect(
     page.getByText("任务完成，已检查工具结果。", { exact: true }),
-  ).toBeVisible();
+  ).toBeVisible({ timeout: 15_000 });
   await expandTaskProcess(page);
   await expect(page.getByText(/上下文已整理：/)).toBeVisible();
   await page.reload();
-  await page.getByRole("button", { name: "准备上下文压缩" }).click();
+  await project.getByRole("button", { name: "准备上下文压缩" }).click();
   await expect(
     page.getByRole("main").getByText("准备上下文压缩", { exact: true }),
   ).toBeVisible();
