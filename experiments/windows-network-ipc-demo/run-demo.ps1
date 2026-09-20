@@ -163,7 +163,20 @@ function Invoke-NetworkClientProbe {
         [Parameter(Mandatory)]
         [string]$Executable,
         [Parameter(Mandatory)]
-        [ValidateSet("--network-client", "--network-client-v6")]
+        [ValidateSet(
+            "--network-client",
+            "--network-client-v6",
+            "--udp-client",
+            "--udp-client-v6",
+            "--external-client",
+            "--external-client-v6",
+            "--dns-client",
+            "--dns-client-v6",
+            "--listen-probe",
+            "--listen-probe-v6",
+            "--raw-probe",
+            "--raw-probe-v6"
+        )]
         [string]$ClientMode,
         [Parameter(Mandatory)]
         [int]$Port,
@@ -254,6 +267,7 @@ function Invoke-WfpUserProbe {
     $securePassword = ConvertTo-SecureString $plainPassword -AsPlainText -Force
     $accountCreated = $false
     $controller = $null
+    $crashController = $null
     $cleanupV4Listener = $null
     $cleanupV6Listener = $null
 
@@ -334,6 +348,34 @@ function Invoke-WfpUserProbe {
             -Port $deniedV6Port -WorkingDirectory $runRoot -ExpectedExitCode 20 `
             -UserName $accountName -Password $securePassword -RestrictedTree
 
+        Invoke-NetworkClientProbe -Executable $probeExecutable -ClientMode "--listen-probe" `
+            -Port 0 -WorkingDirectory $runRoot -ExpectedExitCode 0
+        Invoke-NetworkClientProbe -Executable $probeExecutable -ClientMode "--listen-probe-v6" `
+            -Port 0 -WorkingDirectory $runRoot -ExpectedExitCode 0
+
+        $extendedCases = @(
+            [pscustomobject]@{ Mode = "--udp-client"; Port = $allowedV4Port; ExitCode = 0 },
+            [pscustomobject]@{ Mode = "--udp-client-v6"; Port = $allowedV6Port; ExitCode = 0 },
+            [pscustomobject]@{ Mode = "--udp-client"; Port = $deniedV4Port; ExitCode = 20 },
+            [pscustomobject]@{ Mode = "--udp-client-v6"; Port = $deniedV6Port; ExitCode = 20 },
+            [pscustomobject]@{ Mode = "--external-client"; Port = 443; ExitCode = 20 },
+            [pscustomobject]@{ Mode = "--external-client-v6"; Port = 443; ExitCode = 20 },
+            [pscustomobject]@{ Mode = "--dns-client"; Port = 53; ExitCode = 20 },
+            [pscustomobject]@{ Mode = "--dns-client-v6"; Port = 53; ExitCode = 20 },
+            [pscustomobject]@{ Mode = "--listen-probe"; Port = 0; ExitCode = 20 },
+            [pscustomobject]@{ Mode = "--listen-probe-v6"; Port = 0; ExitCode = 20 },
+            [pscustomobject]@{ Mode = "--raw-probe"; Port = 0; ExitCode = 20 },
+            [pscustomobject]@{ Mode = "--raw-probe-v6"; Port = 0; ExitCode = 20 }
+        )
+        foreach ($case in $extendedCases) {
+            Invoke-NetworkClientProbe -Executable $probeExecutable -ClientMode $case.Mode `
+                -Port $case.Port -WorkingDirectory $runRoot -ExpectedExitCode $case.ExitCode `
+                -UserName $accountName -Password $securePassword
+            Invoke-NetworkClientProbe -Executable $probeExecutable -ClientMode $case.Mode `
+                -Port $case.Port -WorkingDirectory $runRoot -ExpectedExitCode $case.ExitCode `
+                -UserName $accountName -Password $securePassword -RestrictedTree
+        }
+
         Set-Content -LiteralPath (Join-Path $controlDirectory "done.txt") -Value "done"
         [void](Complete-ProbeProcess -RunningProcess $controller -ExpectedExitCode 0)
         $controller.Process.Dispose()
@@ -354,13 +396,64 @@ function Invoke-WfpUserProbe {
         Invoke-NetworkClientProbe -Executable $probeExecutable -ClientMode "--network-client-v6" `
             -Port $cleanupV6Port -WorkingDirectory $runRoot -ExpectedExitCode 0 `
             -UserName $accountName -Password $securePassword
+        Invoke-NetworkClientProbe -Executable $probeExecutable -ClientMode "--listen-probe" `
+            -Port 0 -WorkingDirectory $runRoot -ExpectedExitCode 0 `
+            -UserName $accountName -Password $securePassword
+        Invoke-NetworkClientProbe -Executable $probeExecutable -ClientMode "--listen-probe-v6" `
+            -Port 0 -WorkingDirectory $runRoot -ExpectedExitCode 0 `
+            -UserName $accountName -Password $securePassword
+
+        $crashControlDirectory = Join-Path $runRoot "crash-control"
+        New-Item -ItemType Directory -Path $crashControlDirectory | Out-Null
+        $crashController = Start-ProbeProcess `
+            -Executable $probeExecutable `
+            -Arguments @("--wfp-user-controller", $qualifiedAccountName, $crashControlDirectory) `
+            -WorkingDirectory $runRoot
+        $crashReadyPath = Join-Path $crashControlDirectory "ports.ready"
+        $crashDeadline = [DateTime]::UtcNow.AddSeconds(10)
+        while (-not (Test-Path -LiteralPath $crashReadyPath -PathType Leaf)) {
+            if ($crashController.Process.HasExited) {
+                throw "WFP crash controller 在发布端口前退出。"
+            }
+            if ([DateTime]::UtcNow -ge $crashDeadline) {
+                throw "等待 WFP crash controller 发布端口超时。"
+            }
+            Start-Sleep -Milliseconds 100
+        }
+
+        Invoke-NetworkClientProbe -Executable $probeExecutable -ClientMode "--network-client" `
+            -Port $cleanupV4Port -WorkingDirectory $runRoot -ExpectedExitCode 20 `
+            -UserName $accountName -Password $securePassword
+        Invoke-NetworkClientProbe -Executable $probeExecutable -ClientMode "--network-client-v6" `
+            -Port $cleanupV6Port -WorkingDirectory $runRoot -ExpectedExitCode 20 `
+            -UserName $accountName -Password $securePassword
+
+        $crashController.Process.Kill($true)
+        $crashController.Process.WaitForExit()
+        $crashStdout = $crashController.StandardOutputTask.GetAwaiter().GetResult()
+        $crashStderr = $crashController.StandardErrorTask.GetAwaiter().GetResult()
+        if ($crashStdout) {
+            Write-Host $crashStdout.TrimEnd()
+        }
+        if ($crashStderr) {
+            Write-Warning $crashStderr.TrimEnd()
+        }
+        $crashController.Process.Dispose()
+        $crashController = $null
+
+        Invoke-NetworkClientProbe -Executable $probeExecutable -ClientMode "--network-client" `
+            -Port $cleanupV4Port -WorkingDirectory $runRoot -ExpectedExitCode 0 `
+            -UserName $accountName -Password $securePassword
+        Invoke-NetworkClientProbe -Executable $probeExecutable -ClientMode "--network-client-v6" `
+            -Port $cleanupV6Port -WorkingDirectory $runRoot -ExpectedExitCode 0 `
+            -UserName $accountName -Password $securePassword
 
         $cleanupV4Listener.Stop()
         $cleanupV4Listener = $null
         $cleanupV6Listener.Stop()
         $cleanupV6Listener = $null
 
-        Write-Host "WFP_USER_DEMO PASS accountSid=$($sandboxSid.Value) hostUnaffected=yes ipv4=yes ipv6=yes allowedLoopbackPort=yes otherLoopbackPortBlocked=yes restrictedDescendant=yes dynamicCleanupVerified=yes"
+        Write-Host "WFP_USER_DEMO PASS accountSid=$($sandboxSid.Value) hostUnaffected=yes ipv4=yes ipv6=yes tcp=yes udp=yes nonLoopback=yes dnsShape=yes listenBlocked=yes rawDenied=yes restrictedDescendant=yes dynamicCleanupVerified=yes crashCleanupVerified=yes"
     }
     finally {
         $plainPassword = $null
@@ -392,6 +485,19 @@ function Invoke-WfpUserProbe {
             }
             catch {
                 $cleanupFailures.Add("WFP controller 清理失败：$($_.Exception.Message)")
+            }
+        }
+
+        if ($null -ne $crashController) {
+            try {
+                if (-not $crashController.Process.HasExited) {
+                    $crashController.Process.Kill($true)
+                    $crashController.Process.WaitForExit()
+                }
+                $crashController.Process.Dispose()
+            }
+            catch {
+                $cleanupFailures.Add("WFP crash controller 清理失败：$($_.Exception.Message)")
             }
         }
 

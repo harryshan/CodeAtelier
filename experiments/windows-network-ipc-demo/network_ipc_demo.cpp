@@ -5,10 +5,11 @@
  * 代码结构按验证顺序组织：
  * 1. Win32 handle、SID、进程启动和 token 查询辅助函数。
  * 2. IPC client 与 Broker 侧命名管道身份核验，验证 PID、创建时间、restricted SID 和 Job。
- * 3. 网络 client、本机 TCP listener 与动态 WFP filter，验证内建 APP_ID 的实际作用范围。
- * 4. 专用账户 WFP controller，用 ALE_USER_ID 在 V4/V6 层分别安装“固定回环端口允许 +
- *    其它连接阻断”，并用控制目录与 PowerShell 编排器同步；编排器负责在临时账户下启动
- *    普通 client 和 restricted Runtime 的网络后代，并在 engine 关闭后验证两个地址族恢复连接。
+ * 3. TCP/UDP、回环/TEST-NET、listen/raw client 与动态 WFP filter，验证内建身份和层范围。
+ * 4. 专用账户 WFP controller，用 ALE_USER_ID 在 V4/V6 connect/listen/resource-assignment
+ *    层安装端口允许及其余操作阻断，并用控制目录与 PowerShell 编排器同步；编排器负责在
+ *    临时账户下启动普通 client 和 restricted Runtime 的网络后代，并验证 engine 正常关闭或
+ *    controller 被终止后两个地址族均恢复连接。
  * 5. wmain 只负责模式分派，保持每个子进程入口参数固定且易审计。
  *
  * WFP filter 使用动态 session，engine handle 关闭后由 BFE 自动删除。探针只连接本机回环端口，
@@ -699,6 +700,9 @@ bool RunIpcProbe() {
   return passed;
 }
 
+bool StartLoopbackListener(int address_family, UniqueSocket* listener,
+                           u_short* port);
+
 int RunNetworkClient(int address_family, const std::wstring& port_text) {
   WSADATA data{};
   if (WSAStartup(MAKEWORD(2, 2), &data) != 0) {
@@ -734,11 +738,119 @@ int RunNetworkClient(int address_family, const std::wstring& port_text) {
              << (address_family == AF_INET ? L"ipv4" : L"ipv6")
              << L" connected=" << (result == 0 ? L"yes" : L"no")
              << L" error=" << error << L"\n";
-  return result == 0 ? 0 : kNetworkBlockedExitCode;
+  return result == 0 ? 0
+                     : (error == WSAEACCES ? kNetworkBlockedExitCode : 21);
 }
 
 bool IsNetworkClientMode(const std::wstring& mode) {
-  return mode == L"--network-client" || mode == L"--network-client-v6";
+  return mode == L"--network-client" || mode == L"--network-client-v6" ||
+         mode == L"--udp-client" || mode == L"--udp-client-v6" ||
+         mode == L"--external-client" ||
+         mode == L"--external-client-v6" || mode == L"--dns-client" ||
+         mode == L"--dns-client-v6" || mode == L"--listen-probe" ||
+         mode == L"--listen-probe-v6" || mode == L"--raw-probe" ||
+         mode == L"--raw-probe-v6";
+}
+
+int ReportSocketResult(const wchar_t* operation, int address_family,
+                       int result, int error) {
+  std::wcout << operation << L" pid=" << GetCurrentProcessId()
+             << L" family="
+             << (address_family == AF_INET ? L"ipv4" : L"ipv6")
+             << L" allowed=" << (result == 0 ? L"yes" : L"no")
+             << L" error=" << error << L"\n";
+  return result == 0 ? 0
+                     : (error == WSAEACCES ? kNetworkBlockedExitCode : 21);
+}
+
+int RunDatagramClient(int address_family, const std::wstring& port_text,
+                      bool external) {
+  WSADATA data{};
+  if (WSAStartup(MAKEWORD(2, 2), &data) != 0) {
+    return 21;
+  }
+  unsigned long port = std::stoul(port_text);
+  UniqueSocket socket_handle(
+      socket(address_family, SOCK_DGRAM, IPPROTO_UDP));
+  char byte = 'x';
+  int result = SOCKET_ERROR;
+  if (address_family == AF_INET) {
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_port = htons(static_cast<u_short>(port));
+    InetPtonW(AF_INET, external ? L"192.0.2.1" : L"127.0.0.1",
+              &address.sin_addr);
+    result = sendto(socket_handle.get(), &byte, 1, 0,
+                    reinterpret_cast<sockaddr*>(&address), sizeof(address));
+  } else {
+    sockaddr_in6 address{};
+    address.sin6_family = AF_INET6;
+    address.sin6_port = htons(static_cast<u_short>(port));
+    InetPtonW(AF_INET6, external ? L"2001:db8::1" : L"::1",
+              &address.sin6_addr);
+    result = sendto(socket_handle.get(), &byte, 1, 0,
+                    reinterpret_cast<sockaddr*>(&address), sizeof(address));
+  }
+  int error = result == SOCKET_ERROR ? WSAGetLastError() : 0;
+  WSACleanup();
+  return ReportSocketResult(external ? L"UDP_EXTERNAL" : L"UDP_CLIENT",
+                            address_family,
+                            result == SOCKET_ERROR ? SOCKET_ERROR : 0, error);
+}
+
+int RunExternalTcpClient(int address_family, const std::wstring& port_text) {
+  WSADATA data{};
+  if (WSAStartup(MAKEWORD(2, 2), &data) != 0) {
+    return 21;
+  }
+  unsigned long port = std::stoul(port_text);
+  UniqueSocket socket_handle(
+      socket(address_family, SOCK_STREAM, IPPROTO_TCP));
+  u_long nonblocking = 1;
+  ioctlsocket(socket_handle.get(), FIONBIO, &nonblocking);
+  int result = SOCKET_ERROR;
+  if (address_family == AF_INET) {
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_port = htons(static_cast<u_short>(port));
+    InetPtonW(AF_INET, L"192.0.2.1", &address.sin_addr);
+    result = connect(socket_handle.get(), reinterpret_cast<sockaddr*>(&address),
+                     sizeof(address));
+  } else {
+    sockaddr_in6 address{};
+    address.sin6_family = AF_INET6;
+    address.sin6_port = htons(static_cast<u_short>(port));
+    InetPtonW(AF_INET6, L"2001:db8::1", &address.sin6_addr);
+    result = connect(socket_handle.get(), reinterpret_cast<sockaddr*>(&address),
+                     sizeof(address));
+  }
+  int error = result == 0 ? 0 : WSAGetLastError();
+  WSACleanup();
+  return ReportSocketResult(L"TCP_EXTERNAL", address_family, result, error);
+}
+
+int RunListenProbe(int address_family) {
+  UniqueSocket listener;
+  u_short port = 0;
+  bool started = StartLoopbackListener(address_family, &listener, &port);
+  int error = started ? 0 : WSAGetLastError();
+  WSACleanup();
+  return ReportSocketResult(L"LISTEN_PROBE", address_family,
+                            started ? 0 : SOCKET_ERROR, error);
+}
+
+int RunRawProbe(int address_family) {
+  WSADATA data{};
+  if (WSAStartup(MAKEWORD(2, 2), &data) != 0) {
+    return 21;
+  }
+  UniqueSocket socket_handle(socket(address_family, SOCK_RAW,
+                                    address_family == AF_INET ? IPPROTO_ICMP
+                                                              : IPPROTO_ICMPV6));
+  int result = socket_handle ? 0 : SOCKET_ERROR;
+  int error = result == 0 ? 0 : WSAGetLastError();
+  WSACleanup();
+  return ReportSocketResult(L"RAW_PROBE", address_family, result, error);
 }
 
 int RunNetworkDescendant(const std::wstring& client_mode,
@@ -971,6 +1083,38 @@ bool AddUserFilter(HANDLE engine, const GUID& sublayer_key,
   return true;
 }
 
+bool AddRawEndpointBlock(HANDLE engine, const GUID& sublayer_key,
+                         const GUID& layer_key,
+                         FWP_BYTE_BLOB* user_descriptor,
+                         const wchar_t* name) {
+  std::array<FWPM_FILTER_CONDITION0, 2> conditions{};
+  conditions[0].fieldKey = FWPM_CONDITION_ALE_USER_ID;
+  conditions[0].matchType = FWP_MATCH_EQUAL;
+  conditions[0].conditionValue.type = FWP_SECURITY_DESCRIPTOR_TYPE;
+  conditions[0].conditionValue.sd = user_descriptor;
+  conditions[1].fieldKey = FWPM_CONDITION_FLAGS;
+  conditions[1].matchType = FWP_MATCH_FLAGS_ALL_SET;
+  conditions[1].conditionValue.type = FWP_UINT32;
+  conditions[1].conditionValue.uint32 = FWP_CONDITION_FLAG_IS_RAW_ENDPOINT;
+
+  UINT8 weight = 14;
+  FWPM_FILTER0 filter{};
+  filter.displayData.name = const_cast<wchar_t*>(name);
+  filter.layerKey = layer_key;
+  filter.subLayerKey = sublayer_key;
+  filter.weight.type = FWP_UINT8;
+  filter.weight.uint8 = weight;
+  filter.numFilterConditions = static_cast<UINT32>(conditions.size());
+  filter.filterCondition = conditions.data();
+  filter.action.type = FWP_ACTION_BLOCK;
+  DWORD result = FwpmFilterAdd0(engine, &filter, nullptr, nullptr);
+  if (result != ERROR_SUCCESS) {
+    PrintFailure(L"FwpmFilterAdd0(raw endpoint)", result);
+    return false;
+  }
+  return true;
+}
+
 bool InstallDynamicUserFence(const std::wstring& user_name,
                              u_short allowed_v4_port,
                              u_short allowed_v6_port,
@@ -1038,7 +1182,23 @@ bool InstallDynamicUserFence(const std::wstring& user_name,
       !AddUserFilter(engine->get(), sublayer_key,
                      FWPM_LAYER_ALE_AUTH_CONNECT_V6, &descriptor_blob, 0, false,
                      kBlockWeight, FWP_ACTION_BLOCK,
-                     L"CodeAtelier block other user IPv6 connections")) {
+                     L"CodeAtelier block other user IPv6 connections") ||
+      !AddUserFilter(engine->get(), sublayer_key,
+                     FWPM_LAYER_ALE_AUTH_LISTEN_V4, &descriptor_blob, 0, false,
+                     kBlockWeight, FWP_ACTION_BLOCK,
+                     L"CodeAtelier block user IPv4 listen") ||
+      !AddUserFilter(engine->get(), sublayer_key,
+                     FWPM_LAYER_ALE_AUTH_LISTEN_V6, &descriptor_blob, 0, false,
+                     kBlockWeight, FWP_ACTION_BLOCK,
+                     L"CodeAtelier block user IPv6 listen") ||
+      !AddRawEndpointBlock(engine->get(), sublayer_key,
+                           FWPM_LAYER_ALE_RESOURCE_ASSIGNMENT_V4,
+                           &descriptor_blob,
+                           L"CodeAtelier block user IPv4 raw endpoint") ||
+      !AddRawEndpointBlock(engine->get(), sublayer_key,
+                           FWPM_LAYER_ALE_RESOURCE_ASSIGNMENT_V6,
+                           &descriptor_blob,
+                           L"CodeAtelier block user IPv6 raw endpoint")) {
     return false;
   }
   return true;
@@ -1187,6 +1347,36 @@ int wmain(int argc, wchar_t** argv) {
   }
   if (argc == 3 && std::wstring(argv[1]) == L"--network-client-v6") {
     return RunNetworkClient(AF_INET6, argv[2]);
+  }
+  if (argc == 3 && std::wstring(argv[1]) == L"--udp-client") {
+    return RunDatagramClient(AF_INET, argv[2], false);
+  }
+  if (argc == 3 && std::wstring(argv[1]) == L"--udp-client-v6") {
+    return RunDatagramClient(AF_INET6, argv[2], false);
+  }
+  if (argc == 3 && std::wstring(argv[1]) == L"--external-client") {
+    return RunExternalTcpClient(AF_INET, argv[2]);
+  }
+  if (argc == 3 && std::wstring(argv[1]) == L"--external-client-v6") {
+    return RunExternalTcpClient(AF_INET6, argv[2]);
+  }
+  if (argc == 3 && std::wstring(argv[1]) == L"--dns-client") {
+    return RunDatagramClient(AF_INET, argv[2], true);
+  }
+  if (argc == 3 && std::wstring(argv[1]) == L"--dns-client-v6") {
+    return RunDatagramClient(AF_INET6, argv[2], true);
+  }
+  if (argc == 3 && std::wstring(argv[1]) == L"--listen-probe") {
+    return RunListenProbe(AF_INET);
+  }
+  if (argc == 3 && std::wstring(argv[1]) == L"--listen-probe-v6") {
+    return RunListenProbe(AF_INET6);
+  }
+  if (argc == 3 && std::wstring(argv[1]) == L"--raw-probe") {
+    return RunRawProbe(AF_INET);
+  }
+  if (argc == 3 && std::wstring(argv[1]) == L"--raw-probe-v6") {
+    return RunRawProbe(AF_INET6);
   }
   if (argc == 4 && std::wstring(argv[1]) == L"--network-descendant") {
     return RunNetworkDescendant(argv[2], argv[3]);
