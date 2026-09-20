@@ -36,7 +36,7 @@ pwsh -File experiments/windows-sandbox-user-demo/run-demo.ps1 -Mode run
 
 ## 尚未证明
 
-该探针当前扩展为两个实例真正并发，但仍不证明 3～4 个实例、同工作区排队或共享 ACE 引用计数。新的并发对象攻击路径在管理员复测前只算夹具就绪，不算证据。它也不覆盖：
+该探针当前扩展为两个实例真正并发。管理员实测中，peer 的 `OpenProcess(PROCESS_TERMINATE)`（access `1`）成功，探针以 45 安全失败；这证明 `WRITE_RESTRICTED` 的 root capability 可以约束文件写，却不能把共享账户的全部 process 权限变成实例私有。当前单账户并发方案因此未通过，不能启用。它也不覆盖：
 
 - 已泄漏 handle、token handle、debug、窗口消息、普通命名对象和 desktop 隔离；
 - 复杂继承、deny/弱 DACL、reparse point、hard link、UNC、其它卷、路径替换及原对象撤销；

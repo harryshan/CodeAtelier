@@ -836,7 +836,7 @@
 ## D100：单一 Sandbox 账户允许跨工作区并发
 
 - 日期：2026-09-20
-- 状态：用户确认目标设计；D101 已用独立 execution SID 替代“每实例 logon SID”身份假设。仅文档设计，尚未实现或完整验证。
+- 状态：已被并发对象攻击夹具阻塞，不能按当前机制实现；等待在 Sandbox 全局串行、账户池或更高权限 token broker 之间重新确认。D101 的独立 execution SID 仍保留为 IPC/诊断身份，但不足以约束全部 process 权限。
 - 并发决定：撤销 D099 的 Sandbox 全局串行。Sandbox 与 host-process 模式统一沿用现有 `maxConcurrentTasks` 1～4 设置；不同真实工作区可并发，同一真实工作区、同一会话仍串行。仍只创建一个 `CodeAtelierSandbox` 账户，不引入账户池。Agent Runtime 切换为 Push Runner 时只停止并替换同一任务实例，其它工作区任务继续。
 - 每实例边界：每个 execution instance 获得独立 `WRITE_RESTRICTED` token、execution SID、根 capability SID、Job、private desktop、逐租约 HOME/temp、Named Pipe nonce、proxy lease 和 kind-specific ID；实际 logon SID 仅观测，具体授权语义由 D101 收紧。token default DACL、desktop/window station、pipe 及后代 process/thread/token/Job/命名对象必须同时要求共享账户 SID 和本实例 capability；bootstrap runner 从创建时即使用只允许 Broker/SYSTEM 的 DACL，不能先创建后收紧。WFP 继续按共享账户 SID 永久阻止直接出站，Broker 以 account generation、capability SID、PID/创建时间、映像、Job、nonce 和 lease 区分同账户连接。同 SID 进程注入、debug、window message 和命名对象攻击必须真实验证。
 - 接受的读取风险：账户 SID 的 ACL 是所有活动 AccessManifest 的并集，因此一个并发 Runtime 可能读取其它活动任务的工作区、Git 配置、显式 read roots 和逐租约目录。Broker/session API 仍禁止跨任务访问，但本方案不提供任务间 OS 级读取保密；UI 和能力声明必须明确。每实例 capability 只用于写检查，必须证明实例 A 不能写实例 B 的根；若 `Everyone` 等兼容 restricting SID 能匹配任一有效写 ACE，预检必须拒绝该根，不能降级为共享写入。需要任务间保密时必须使用未来的账户池、AppContainer 或 VM profile，不能由本设计推导。
@@ -852,3 +852,4 @@
 - default DACL：Runtime token default DACL 必须同时满足普通检查和 restricting 检查，因此最小候选为共享账户 SID 加本实例 execution SID；不得向共享 logon SID、Everyone 或 root capability 授予新对象通用权限。bootstrap runner 仍由 Broker/SYSTEM-only 显式 security descriptor 保护。该 default DACL 只通过了当前用户 restricted-token 回归；专用账户后代创建、process/thread/token/Job/pipe/命名对象及跨实例攻击仍必须实测，失败时禁止 Sandbox 并发。
 - 验收影响：W2/W3/W5 的实例身份夹具不再断言 logon SID 唯一，而必须刻意覆盖“多个实例共享同一 logon SID”。只有 execution SID 不同且 A 无法打开、注入或复用 B 的对象、pipe 和代理 lease 才算通过。文档、session 诊断可以保存 logon SID 摘要，但不能把它呈现为隔离边界。
 - 修订复测：第二次管理员运行以新的临时账户完成，最终报告 `distinctExecutionSids=yes logonSidReused=true crossRead=yes ownWrite=yes crossWriteDenied=yes nestedProcess=yes`。运行后再次确认没有 `CAProbe*` 账户或 `run-*` 目录残留。这完成 W2 的顺序文件访问第一阶段，不证明两个 Runtime 同时存活时的对象、Job、desktop、IPC 或共享 grant 隔离。
+- 并发证伪：真正同时运行两个 Runtime 后，peer 的 `OpenProcess(PROCESS_TERMINATE)` 成功，探针以 45 失败。`WRITE_RESTRICTED` 只对被 Windows 归类为写访问的权限执行 restricting-SID 检查，不能把共享账户 SID 的所有 process 权限与 execution SID 做交集。去掉该标志的完整 restriction + shared-read 候选虽然保留文件矩阵，却使未修改后代 `CreateProcess` 和未显式投影读取失败；补宽泛 `Users`/`Authenticated Users` SID 又会允许公共可写对象。故 execution SID 方案目前不能兑现 D100 的单账户安全并发，未通过前必须 fail closed。
