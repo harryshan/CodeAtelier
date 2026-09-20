@@ -243,9 +243,9 @@ it("routes every Git subprocess through the configured Sandbox Runtime", async (
     emit: () => {},
   });
 
-  await expect(runner.execute("git", { action: "status" })).resolves.toMatchObject(
-    { exitCode: 0, output: "## main" },
-  );
+  await expect(
+    runner.execute("git", { action: "status" }),
+  ).resolves.toMatchObject({ exitCode: 0, output: "## main" });
   expect(calls).toEqual([
     ["rev-parse", "--show-toplevel"],
     [
