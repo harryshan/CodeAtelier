@@ -55,7 +55,7 @@ pwsh -File experiments/windows-network-ipc-demo/recover-persistent-wfp.ps1 -What
 pwsh -File experiments/windows-network-ipc-demo/recover-persistent-wfp.ps1
 ```
 
-恢复脚本不依赖编译后的 EXE。它只枚举固定测试 provider `9e201d5a-9dc9-4ae1-89e5-4365df7f2201` 的 filters，随后删除固定 sublayer/provider，并只清理名称匹配 `CAPersist[8 位十六进制]` 的一次性账户及仓库 `.local/windows-network-ipc-demo/persistent-run-[32 位十六进制]` 目录；不会触碰其它 WFP provider、Firewall rule、账户或目录。
+恢复脚本不依赖编译后的 EXE。它分页枚举 filter 快照，但只选择并删除固定测试 provider `9e201d5a-9dc9-4ae1-89e5-4365df7f2201` 的 filters，随后删除固定 sublayer/provider，并只清理名称匹配 `CAPersist[8 位十六进制]` 的一次性账户及仓库 `.local/windows-network-ipc-demo/persistent-run-[32 位十六进制]` 目录；不会删除其它 WFP provider 的 filter、Firewall rule、账户或目录。
 
 ## 结论边界
 

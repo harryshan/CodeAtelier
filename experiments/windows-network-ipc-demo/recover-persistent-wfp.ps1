@@ -4,11 +4,11 @@ Recovers from an interrupted CodeAtelier persistent WFP feasibility run.
 
 .DESCRIPTION
 This standalone script does not depend on the demo executable. It opens BFE
-through fwpuclnt.dll, enumerates only filters owned by the probe's fixed provider
-GUID, deletes those filters, then deletes the fixed sublayer and provider. It
-also removes only disposable users matching CAPersist plus eight hex characters
-and persistent-run plus a 32-hex ID under this repository's ignored build
-directory. Supports -WhatIf for preview.
+through fwpuclnt.dll, enumerates a filter snapshot, selects only filters owned
+by the probe's fixed provider GUID, deletes those filters, then deletes the fixed
+sublayer and provider. It also removes only disposable users matching CAPersist
+plus eight hex characters and persistent-run plus a 32-hex ID under this
+repository's ignored build directory. Supports -WhatIf for preview.
 
 The script never searches for or removes arbitrary WFP providers, firewall
 rules, local users, or directories. Run it from an elevated PowerShell when
@@ -49,26 +49,30 @@ function Assert-PathContained {
 
 $nativeSource = @'
 using System;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
 
 public static class CodeAtelierWfpRecovery
 {
     private const uint RpcAuthnWinnt = 10;
+    private const uint FilterNotFound = 0x80320003;
     private const uint ProviderNotFound = 0x80320005;
     private const uint SublayerNotFound = 0x80320007;
 
     [StructLayout(LayoutKind.Sequential)]
-    private struct FilterEnumTemplate
+    private struct DisplayData
     {
-        public IntPtr ProviderKey;
-        public Guid LayerKey;
-        public int EnumType;
+        public IntPtr Name;
+        public IntPtr Description;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct FilterHeader
+    {
+        public Guid FilterKey;
+        public DisplayData DisplayData;
         public uint Flags;
-        public IntPtr ProviderContextTemplate;
-        public uint NumFilterConditions;
-        public IntPtr FilterCondition;
-        public uint ActionMask;
-        public IntPtr CalloutKey;
+        public IntPtr ProviderKey;
     }
 
     [DllImport("fwpuclnt.dll", CharSet = CharSet.Unicode)]
@@ -85,7 +89,7 @@ public static class CodeAtelierWfpRecovery
     [DllImport("fwpuclnt.dll")]
     private static extern uint FwpmFilterCreateEnumHandle0(
         IntPtr engine,
-        ref FilterEnumTemplate enumTemplate,
+        IntPtr enumTemplate,
         out IntPtr enumHandle);
 
     [DllImport("fwpuclnt.dll")]
@@ -131,39 +135,61 @@ public static class CodeAtelierWfpRecovery
     public static int Remove(Guid providerKey, Guid sublayerKey)
     {
         IntPtr engine = IntPtr.Zero;
-        IntPtr providerPointer = IntPtr.Zero;
         IntPtr enumHandle = IntPtr.Zero;
         IntPtr entries = IntPtr.Zero;
-        int deletedFilters = 0;
+        List<Guid> filterKeys = new List<Guid>();
         try
         {
             RequireSuccess(
                 FwpmEngineOpen0(null, RpcAuthnWinnt, IntPtr.Zero, IntPtr.Zero, out engine),
                 "FwpmEngineOpen0");
-            providerPointer = Marshal.AllocHGlobal(Marshal.SizeOf<Guid>());
-            Marshal.StructureToPtr(providerKey, providerPointer, false);
-            FilterEnumTemplate template = new FilterEnumTemplate
-            {
-                ProviderKey = providerPointer,
-                // Zero matches no action types. MaxValue tells BFE to ignore
-                // action type while retaining the provider constraint.
-                ActionMask = UInt32.MaxValue
-            };
             RequireSuccess(
-                FwpmFilterCreateEnumHandle0(engine, ref template, out enumHandle),
+                FwpmFilterCreateEnumHandle0(engine, IntPtr.Zero, out enumHandle),
                 "FwpmFilterCreateEnumHandle0");
-
-            uint returned;
-            RequireSuccess(
-                FwpmFilterEnum0(engine, enumHandle, 1024, out entries, out returned),
-                "FwpmFilterEnum0");
-            for (uint index = 0; index < returned; index++)
+            while (true)
             {
-                IntPtr filter = Marshal.ReadIntPtr(entries, checked((int)index * IntPtr.Size));
-                Guid filterKey = Marshal.PtrToStructure<Guid>(filter);
-                RequireSuccess(FwpmFilterDeleteByKey0(engine, ref filterKey),
-                               "FwpmFilterDeleteByKey0");
-                deletedFilters++;
+                uint returned;
+                RequireSuccess(
+                    FwpmFilterEnum0(engine, enumHandle, 256, out entries, out returned),
+                    "FwpmFilterEnum0");
+                try
+                {
+                    for (uint index = 0; index < returned; index++)
+                    {
+                        IntPtr filterPointer = Marshal.ReadIntPtr(
+                            entries, checked((int)index * IntPtr.Size));
+                        FilterHeader filter = Marshal.PtrToStructure<FilterHeader>(filterPointer);
+                        if (filter.ProviderKey != IntPtr.Zero &&
+                            Marshal.PtrToStructure<Guid>(filter.ProviderKey) == providerKey)
+                        {
+                            filterKeys.Add(filter.FilterKey);
+                        }
+                    }
+                }
+                finally
+                {
+                    if (entries != IntPtr.Zero)
+                    {
+                        FwpmFreeMemory0(ref entries);
+                    }
+                }
+                if (returned == 0)
+                {
+                    break;
+                }
+            }
+
+            RequireSuccess(FwpmFilterDestroyEnumHandle0(engine, enumHandle),
+                           "FwpmFilterDestroyEnumHandle0");
+            enumHandle = IntPtr.Zero;
+            foreach (Guid key in filterKeys)
+            {
+                Guid filterKey = key;
+                uint filterResult = FwpmFilterDeleteByKey0(engine, ref filterKey);
+                if (filterResult != 0 && filterResult != FilterNotFound)
+                {
+                    RequireSuccess(filterResult, "FwpmFilterDeleteByKey0");
+                }
             }
 
             uint sublayerResult = FwpmSubLayerDeleteByKey0(engine, ref sublayerKey);
@@ -176,7 +202,7 @@ public static class CodeAtelierWfpRecovery
             {
                 RequireSuccess(providerResult, "FwpmProviderDeleteByKey0");
             }
-            return deletedFilters;
+            return filterKeys.Count;
         }
         finally
         {
@@ -187,10 +213,6 @@ public static class CodeAtelierWfpRecovery
             if (enumHandle != IntPtr.Zero && engine != IntPtr.Zero)
             {
                 FwpmFilterDestroyEnumHandle0(engine, enumHandle);
-            }
-            if (providerPointer != IntPtr.Zero)
-            {
-                Marshal.FreeHGlobal(providerPointer);
             }
             if (engine != IntPtr.Zero)
             {

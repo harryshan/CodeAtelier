@@ -67,6 +67,8 @@
 
 首次管理员生命周期运行在安装前预清理暴露枚举模板缺陷：`actionMask=0` 会得到 `FWP_E_NEVER_MATCH`。原生清理/自检与独立恢复脚本已统一显式使用 `0xFFFFFFFF` 枚举该 provider 的所有 action；需重跑管理员生命周期入口确认空状态清理、安装后自检和真实恢复。
 
+第二次管理员运行进一步证明部分模板中的零 GUID `layerKey` 也不是跨层通配，会返回 `FWP_E_LAYER_NOT_FOUND`。枚举现改为 null template 的完整快照并分页读取，删除前逐项核对固定 provider GUID；需再次重跑管理员入口。
+
 ## 自举验收
 
 `tests/bootstrap.test.ts` 覆盖固定测试命令的精确审批及错误路径、参数、shell、非命令请求拒绝。真实源码任务使用独立的手动脚本，不依赖默认 CI 密钥；准备模式不调用模型。运行与判定见 [bootstrap.md](bootstrap.md)。脚本也纳入 TypeScript 检查。

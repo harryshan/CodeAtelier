@@ -1430,13 +1430,54 @@ bool OpenPersistentEngine(UniqueWfpEngine* engine) {
   return true;
 }
 
-FWPM_FILTER_ENUM_TEMPLATE0 PersistentFilterEnumTemplate() {
-  FWPM_FILTER_ENUM_TEMPLATE0 filter_template{};
-  filter_template.providerKey = const_cast<GUID*>(&kPersistentProvider);
-  // A zero actionMask matches no action types and BFE rejects the template as
-  // FWP_E_NEVER_MATCH. UINT32_MAX explicitly means to ignore action type.
-  filter_template.actionMask = UINT32_MAX;
-  return filter_template;
+bool EnumeratePersistentFilters(HANDLE engine, std::vector<GUID>* filter_keys,
+                                bool* all_filters_valid = nullptr) {
+  HANDLE enum_handle = nullptr;
+  // A null template is the documented wildcard. Zero-initialized layerKey and
+  // actionMask fields are not wildcards, so a partially populated template can
+  // fail with FWP_E_LAYER_NOT_FOUND or FWP_E_NEVER_MATCH.
+  DWORD result = FwpmFilterCreateEnumHandle0(engine, nullptr, &enum_handle);
+  if (result != ERROR_SUCCESS) {
+    PrintFailure(L"FwpmFilterCreateEnumHandle0(persistent)", result);
+    return false;
+  }
+
+  bool entries_valid = true;
+  while (true) {
+    FWPM_FILTER0** entries = nullptr;
+    UINT32 count = 0;
+    result = FwpmFilterEnum0(engine, enum_handle, 256, &entries, &count);
+    if (result != ERROR_SUCCESS) {
+      PrintFailure(L"FwpmFilterEnum0(persistent)", result);
+      if (entries != nullptr) {
+        FwpmFreeMemory0(reinterpret_cast<void**>(&entries));
+      }
+      FwpmFilterDestroyEnumHandle0(engine, enum_handle);
+      return false;
+    }
+    for (UINT32 index = 0; index < count; ++index) {
+      FWPM_FILTER0* filter = entries[index];
+      if (filter->providerKey == nullptr ||
+          !IsEqualGUID(*filter->providerKey, kPersistentProvider)) {
+        continue;
+      }
+      filter_keys->push_back(filter->filterKey);
+      entries_valid = entries_valid &&
+          (filter->flags & FWPM_FILTER_FLAG_PERSISTENT) != 0 &&
+          IsEqualGUID(filter->subLayerKey, kPersistentSublayer);
+    }
+    if (entries != nullptr) {
+      FwpmFreeMemory0(reinterpret_cast<void**>(&entries));
+    }
+    if (count == 0) {
+      break;
+    }
+  }
+  FwpmFilterDestroyEnumHandle0(engine, enum_handle);
+  if (all_filters_valid != nullptr) {
+    *all_filters_valid = entries_valid;
+  }
+  return true;
 }
 
 bool RemovePersistentFence() {
@@ -1444,37 +1485,30 @@ bool RemovePersistentFence() {
   if (!OpenPersistentEngine(&engine)) {
     return false;
   }
-  FWPM_FILTER_ENUM_TEMPLATE0 filter_template =
-      PersistentFilterEnumTemplate();
-  HANDLE enum_handle = nullptr;
-  DWORD result = FwpmFilterCreateEnumHandle0(engine.get(), &filter_template,
-                                             &enum_handle);
-  if (result != ERROR_SUCCESS) {
-    PrintFailure(L"FwpmFilterCreateEnumHandle0(persistent)", result);
+  std::vector<GUID> filter_keys;
+  if (!EnumeratePersistentFilters(engine.get(), &filter_keys)) {
     return false;
   }
-  FWPM_FILTER0** entries = nullptr;
-  UINT32 count = 0;
-  result = FwpmFilterEnum0(engine.get(), enum_handle, 100, &entries, &count);
-  if (result == ERROR_SUCCESS) {
-    for (UINT32 index = 0; index < count; ++index) {
-      FwpmFilterDeleteById0(engine.get(), entries[index]->filterId);
+  bool filters_removed = true;
+  for (GUID& filter_key : filter_keys) {
+    DWORD result = FwpmFilterDeleteByKey0(engine.get(), &filter_key);
+    if (result != ERROR_SUCCESS && result != FWP_E_FILTER_NOT_FOUND) {
+      PrintFailure(L"FwpmFilterDeleteByKey0(persistent)", result);
+      filters_removed = false;
     }
   }
-  if (entries != nullptr) {
-    FwpmFreeMemory0(reinterpret_cast<void**>(&entries));
-  }
-  FwpmFilterDestroyEnumHandle0(engine.get(), enum_handle);
   DWORD sublayer_result =
       FwpmSubLayerDeleteByKey0(engine.get(), &kPersistentSublayer);
   DWORD provider_result =
       FwpmProviderDeleteByKey0(engine.get(), &kPersistentProvider);
-  bool removed = (sublayer_result == ERROR_SUCCESS ||
+  bool removed = filters_removed &&
+                 (sublayer_result == ERROR_SUCCESS ||
                   sublayer_result == FWP_E_SUBLAYER_NOT_FOUND) &&
                  (provider_result == ERROR_SUCCESS ||
                   provider_result == FWP_E_PROVIDER_NOT_FOUND);
   std::wcout << L"WFP_PERSISTENT_REMOVE "
-             << (removed ? L"PASS" : L"FAIL") << L" filters=" << count
+             << (removed ? L"PASS" : L"FAIL") << L" filters="
+             << filter_keys.size()
              << L"\n";
   return removed;
 }
@@ -1493,35 +1527,20 @@ bool VerifyPersistentFence() {
   WfpPointer owned_provider(provider);
   WfpPointer owned_sublayer(sublayer);
 
-  FWPM_FILTER_ENUM_TEMPLATE0 filter_template =
-      PersistentFilterEnumTemplate();
-  HANDLE enum_handle = nullptr;
-  UINT32 count = 0;
-  FWPM_FILTER0** entries = nullptr;
-  DWORD result = FwpmFilterCreateEnumHandle0(engine.get(), &filter_template,
-                                             &enum_handle);
-  if (result == ERROR_SUCCESS) {
-    result = FwpmFilterEnum0(engine.get(), enum_handle, 100, &entries, &count);
-    FwpmFilterDestroyEnumHandle0(engine.get(), enum_handle);
-  }
-  bool filters_valid = result == ERROR_SUCCESS && count == 8;
-  for (UINT32 index = 0; filters_valid && index < count; ++index) {
-    filters_valid =
-        (entries[index]->flags & FWPM_FILTER_FLAG_PERSISTENT) != 0 &&
-        entries[index]->providerKey != nullptr &&
-        IsEqualGUID(*entries[index]->providerKey, kPersistentProvider) &&
-        IsEqualGUID(entries[index]->subLayerKey, kPersistentSublayer);
-  }
-  if (entries != nullptr) {
-    FwpmFreeMemory0(reinterpret_cast<void**>(&entries));
-  }
+  std::vector<GUID> filter_keys;
+  bool filter_entries_valid = false;
+  bool enumerated = EnumeratePersistentFilters(
+      engine.get(), &filter_keys, &filter_entries_valid);
+  bool filters_valid =
+      enumerated && filter_keys.size() == 8 && filter_entries_valid;
   bool passed = provider_result == ERROR_SUCCESS &&
                 sublayer_result == ERROR_SUCCESS &&
                 (provider->flags & FWPM_PROVIDER_FLAG_PERSISTENT) != 0 &&
                 (sublayer->flags & FWPM_SUBLAYER_FLAG_PERSISTENT) != 0 &&
                 filters_valid;
   std::wcout << L"WFP_PERSISTENT_VERIFY "
-             << (passed ? L"PASS" : L"FAIL") << L" filters=" << count
+             << (passed ? L"PASS" : L"FAIL") << L" filters="
+             << filter_keys.size()
              << L"\n";
   return passed;
 }
