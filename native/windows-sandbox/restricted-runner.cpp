@@ -530,6 +530,10 @@ bool SetPrivateEnvironment(const std::wstring& private_directory) {
   SetEnvironmentVariableW(L"CODEATELIER_API_KEY", nullptr);
   SetEnvironmentVariableW(L"OPENAI_API_KEY", nullptr);
   SetEnvironmentVariableW(L"GITHUB_TOKEN", nullptr);
+  SetEnvironmentVariableW(L"GIT_TERMINAL_PROMPT", L"0");
+  SetEnvironmentVariableW(L"GIT_PAGER", L"cat");
+  SetEnvironmentVariableW(L"PAGER", L"cat");
+  SetEnvironmentVariableW(L"GIT_EDITOR", L"true");
   return true;
 }
 

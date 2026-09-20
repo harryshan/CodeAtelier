@@ -15,11 +15,15 @@ import { expect, it } from "vitest";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { Config } from "../src/config/config.js";
+import { ApprovalManager } from "../src/permissions/approval-manager.js";
+import { SandboxBroker } from "../src/sandbox/broker.js";
+import type { SandboxRuntime } from "../src/sandbox/types.js";
 import {
   GitToolRunner,
   MAX_GIT_DIFF_OUTPUT_CHARS,
   type GitExecutor,
 } from "../src/tools/git.js";
+import { ToolRunner } from "../src/tools/tool-runner.js";
 import { schemas } from "../src/tools/registry.js";
 import { temp } from "./fixtures/helpers.js";
 
@@ -187,6 +191,71 @@ it("runs proactive read-only actions with fixed options", async () => {
     ],
   ]);
   expect(fixture.output).toHaveLength(5);
+});
+
+it("routes every Git subprocess through the configured Sandbox Runtime", async () => {
+  const root = await temp();
+  const config = new Config(await temp());
+  const calls: string[][] = [];
+  const runtime: SandboxRuntime = {
+    async selfCheck() {
+      return {
+        level: "test-sandbox",
+        workspaceProtection: "direct-path",
+      };
+    },
+    async execute(command) {
+      calls.push(command.args);
+      command.onProcessStarted(1234, "runtime");
+
+      return {
+        output:
+          command.args.join(" ") === "rev-parse --show-toplevel"
+            ? root
+            : "## main",
+        exitCode: 0,
+        truncated: false,
+      };
+    },
+  };
+  const sandbox = new SandboxBroker(
+    {
+      enabled: true,
+      initialStatus: {
+        enabled: true,
+        requested: true,
+        applied: false,
+        mode: "non-isolated",
+        platform: process.platform,
+        level: null,
+      },
+    },
+    runtime,
+  );
+  const runner = new ToolRunner({
+    root,
+    sessionId: "session",
+    taskId: "task",
+    signal: new AbortController().signal,
+    settings: config.settings,
+    approvals: new ApprovalManager(() => {}),
+    sandbox,
+    emit: () => {},
+  });
+
+  await expect(runner.execute("git", { action: "status" })).resolves.toMatchObject(
+    { exitCode: 0, output: "## main" },
+  );
+  expect(calls).toEqual([
+    ["rev-parse", "--show-toplevel"],
+    [
+      "--no-optional-locks",
+      "status",
+      "--short",
+      "--branch",
+      "--untracked-files=normal",
+    ],
+  ]);
 });
 
 it("caps long diff output independently from the general command output limit", async () => {

@@ -205,7 +205,7 @@ W1--W3 通过后才能声明“Windows 专用用户 Sandbox：宿主用户私有
 
 ## 11. 与现有实现的关系
 
-现有 WSL2 bubblewrap `inspect` Runtime 只保留为历史参考，Runtime factory 已改用 Windows 专用账户原生实现。UI 已区分 `sandboxed`、`host-process-fallback`、`non-isolated` 和 `unknown`；启动前失败会明确告知用户后自动转为宿主 shell，执行开始后的错误不重放。命令执行已持久化 executionInstance、实际模式、supervisor/Runtime PID 类型和结束状态。传输无关的 Runtime→Broker 命令 grant 与模型代理、AccessManifest 构建、Git global/include 文件图和 account generation/lease/grant table 已实现并有单元测试；原生 supervisor 已接 `run_command`，但安装尚未在产品固定账户上完成提升验收，Git/文件工具、完整 AccessManifest 和 push 仍未接入，故不能把当前增量描述为完整 Sandbox。
+现有 WSL2 bubblewrap `inspect` Runtime 只保留为历史参考，Runtime factory 已改用 Windows 专用账户原生实现。UI 已区分 `sandboxed`、`host-process-fallback`、`non-isolated` 和 `unknown`；启动前失败会明确告知用户后自动转为宿主 shell，执行开始后的错误不重放。命令执行已持久化 executionInstance、实际模式、supervisor/Runtime PID 类型和结束状态。传输无关的 Runtime→Broker 命令 grant 与模型代理、AccessManifest 构建、Git global/include 文件图和 account generation/lease/grant table 已实现并有单元测试；原生 supervisor 已接 `run_command`，受限 `git` 工具的所有本地子命令也复用同一 SandboxBroker、executionInstance、fallback 和取消路径。安装尚未在产品固定账户上完成提升验收；文件工具、完整 AccessManifest 和单用途 push/relay 仍未接入，故不能把当前增量描述为完整 Sandbox。
 
 原生安装工具入口：
 
