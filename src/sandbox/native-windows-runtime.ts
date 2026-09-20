@@ -4,7 +4,7 @@
  *
  * 1. installationPaths 解析 ProgramData 下受保护的产品副本或显式测试覆盖，不从工作区或模型输入选择可执行文件。
  * 2. selfCheck 严格读取受限 state 元数据、复核 supervisor/network SHA-256，再调用原生只读自检。
- * 3. encodeRequest 把唯一 execution instance、固定 shell argv、cwd、私有目录和时限编码为有界二进制帧。
+ * 3. prepareAccess 在 manifest 前创建 Git 投影和逐实例 HOME/TEMP，使私有目录也经过原对象 ACL/capability/journal；encodeRequest 再发送固定执行帧。
  * 4. execute 启动单实例 supervisor，stdout 作为工具输出流，stderr 只解析 runtime PID/创建时间、完成和固定错误类别。
  * 5. 取消或 JS 超时关闭继承 stdin；原生 supervisor 据此终止 Job 并撤销 ACL。清理失败码会抛出未知结果，绝不宿主重放。
  * 6. 临时 HOME/TEMP 只在原生确认撤销后删除；日志与错误不包含命令、路径、SID、端口、密码或工具输出。
@@ -286,25 +286,44 @@ export class NativeWindowsSandboxRuntime implements SandboxRuntime {
       workspaceRoot: workspace.root,
     });
     const projectionRoot = path.join(this.paths.dataRoot, "projections");
-    await mkdir(projectionRoot, { recursive: true });
+    const instancesRoot = path.join(this.paths.dataRoot, "instances");
+    await Promise.all([
+      mkdir(projectionRoot, { recursive: true }),
+      mkdir(instancesRoot, { recursive: true }),
+    ]);
     const directory = await mkdtemp(path.join(projectionRoot, "lease-"));
+    let privateDirectory: string | undefined;
     const aggregate = path.join(directory, "global.gitconfig");
     try {
+      privateDirectory = await mkdtemp(path.join(instancesRoot, "lease-"));
       await writeFile(aggregate, graph.aggregate, {
         encoding: "utf8",
         flag: "wx",
       });
     } catch (error) {
-      await rm(directory, { recursive: true, force: true }).catch(() => {});
+      await Promise.all([
+        rm(directory, { recursive: true, force: true }).catch(() => {}),
+        privateDirectory
+          ? rm(privateDirectory, { recursive: true, force: true }).catch(
+              () => {},
+            )
+          : Promise.resolve(),
+      ]);
       throw error;
     }
 
     return {
       readOnlyRoots: [directory],
-      readWriteRoots: [],
+      readWriteRoots: [privateDirectory],
       gitConfigFiles: [...graph.files, aggregate],
+      privateDirectory,
       gitGlobalConfigPath: aggregate,
-      cleanup: () => rm(directory, { recursive: true, force: true }),
+      cleanup: async () => {
+        await Promise.all([
+          rm(directory, { recursive: true, force: true }),
+          rm(privateDirectory, { recursive: true, force: true }),
+        ]);
+      },
     };
   }
 
@@ -381,9 +400,13 @@ export class NativeWindowsSandboxRuntime implements SandboxRuntime {
     access?: SandboxNativeAccess,
   ) {
     void _workspace;
-    const instancesRoot = path.join(this.paths.dataRoot, "instances");
-    await mkdir(instancesRoot, { recursive: true });
-    const privateDirectory = await mkdtemp(path.join(instancesRoot, "lease-"));
+    const privateDirectory = access?.privateDirectory;
+    if (!privateDirectory || !path.isAbsolute(privateDirectory)) {
+      throw new NativeWindowsSandboxError(
+        "执行请求缺少已授权的私有 HOME/TEMP。",
+      );
+    }
+
     let relayLease: IssuedRelayLease | undefined;
     let pushSpan: ReturnType<TraceRecorder["startSpan"]> | undefined;
     if (command.kind === "push-runner") {
@@ -466,10 +489,6 @@ export class NativeWindowsSandboxRuntime implements SandboxRuntime {
           { executionInstanceId: command.executionInstanceId },
         );
       }
-
-      await rm(privateDirectory, { recursive: true, force: true }).catch(
-        () => {},
-      );
     }
   }
 

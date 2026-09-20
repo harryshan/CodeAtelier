@@ -107,6 +107,7 @@ export interface SandboxNativeAccess {
   manifest: import("./supervisor-protocol.js").AccessManifest;
   leaseEpoch?: number;
   installObjectIdentityDigests: string[];
+  privateDirectory?: string;
   gitGlobalConfigPath?: string;
   proxyUrl?: string;
   proxyToken?: string;
@@ -117,6 +118,7 @@ export interface SandboxPreparedAccess {
   readOnlyRoots: string[];
   readWriteRoots: string[];
   gitConfigFiles: string[];
+  privateDirectory?: string;
   gitGlobalConfigPath?: string;
   cleanup(): Promise<void>;
 }

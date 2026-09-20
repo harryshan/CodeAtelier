@@ -4,11 +4,12 @@
  *
  * 1. 二进制帧固定 magic/version、UTF-8 字符串、超时和 argv，拒绝相对路径及超限字段。
  * 2. selfCheck 只有 state 中两个 SHA-256 与实际文件一致且原生自检成功时才报告 sandbox level。
- * 3. state 缺失、摘要篡改和原生拒绝都在 Runtime 启动前失败，允许 Broker 安全选择宿主 fallback。
+ * 3. prepareAccess 在 manifest 之前同时创建只读 Git 投影和逐实例可写 HOME/TEMP，cleanup 删除两者。
+ * 4. state 缺失、摘要篡改和原生拒绝都在 Runtime 启动前失败，允许 Broker 安全选择宿主 fallback。
  */
 
 import { createHash } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { access, mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -128,6 +129,41 @@ describe.skipIf(process.platform !== "win32")(
       await expect(
         runtime.selfCheck(new AbortController().signal, workspace(root)),
       ).rejects.toThrow("摘要");
+    });
+
+    it("projects the private HOME/TEMP as a writable manifest root", async () => {
+      const root = await temp();
+      const runtime = new NativeWindowsSandboxRuntime({
+        CODEATELIER_SANDBOX_STATE_PATH: path.join(root, "installation.state"),
+        CODEATELIER_SANDBOX_NATIVE_ROOT: path.join(root, "native"),
+        USERPROFILE: root,
+      });
+      const prepared = await runtime.prepareAccess(
+        {
+          sessionId: "session-1",
+          taskId: "task-1",
+          executionInstanceId: "instance-1",
+          command: "C:\\Windows\\System32\\cmd.exe",
+          args: [],
+          cwd: root,
+          signal: new AbortController().signal,
+          timeoutMs: 1000,
+          outputLimit: 1000,
+          onOutput: () => {},
+          onProcessStarted: () => {},
+        },
+        workspace(root),
+      );
+
+      expect(prepared.privateDirectory).toBe(prepared.readWriteRoots[0]);
+      expect(prepared.readOnlyRoots).toHaveLength(1);
+      await expect(access(prepared.privateDirectory!)).resolves.toBeUndefined();
+
+      const privateDirectory = prepared.privateDirectory!;
+      const projectionDirectory = prepared.readOnlyRoots[0]!;
+      await prepared.cleanup();
+      await expect(access(privateDirectory)).rejects.toThrow();
+      await expect(access(projectionDirectory)).rejects.toThrow();
     });
   },
 );

@@ -429,6 +429,7 @@ export class SandboxBroker {
         leaseEpoch: acquired?.lease.epoch,
         installObjectIdentityDigests:
           acquired?.install.map((grant) => grant.objectIdentityDigest) ?? [],
+        privateDirectory: prepared?.privateDirectory,
         gitGlobalConfigPath: prepared?.gitGlobalConfigPath,
       });
       if (acquired) {
