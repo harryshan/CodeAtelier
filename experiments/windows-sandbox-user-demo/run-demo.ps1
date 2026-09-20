@@ -1,9 +1,10 @@
 # 本脚本验证 CodeAtelier 单一专用 Windows Sandbox 账户的最小文件边界，不接入产品运行时。
 # 执行顺序：build 复用 restricted-token 原生探针；run 检查管理员上下文，创建随机临时本地账户；
 # 为两个临时工作区安装共享账户写权限、不同 execution SID 和 root capability SID；以同一账户启动
-# 两个 execution instance；bootstrap 创建 WRITE_RESTRICTED token 和 Job 后运行直接/后代探针；脚本核对
-# 共享用户身份、独立 execution identity、跨根读取、各自根写入和跨根写拒绝，并记录 logon SID 是否复用；
-# finally 只删除本次随机账户和已验证的运行目录。
+# 两个并发 execution instance；bootstrap 从创建时为 process/thread/Job 安装 account+execution 私有 DACL，
+# 再创建 WRITE_RESTRICTED token 和 Job。两个 Runtime 通过根内文件屏障保持同时存活，互相尝试危险的
+# OpenProcess/OpenThread/OpenJobObject，再验证跨根读取、各自根写入和跨根写拒绝；finally 终止仍存活的
+# 探针并只删除本次随机账户和已验证的运行目录。
 # 密码只存在于当前 PowerShell 进程的内存和 SecureString 中，不进入 argv、环境、文件或输出。
 
 [CmdletBinding()]
@@ -108,7 +109,7 @@ function New-ProbePassword {
     return "Aa1!$random"
 }
 
-function Invoke-AccountProbe {
+function Start-AccountProbe {
     param(
         [Parameter(Mandatory)]
         [string]$Executable,
@@ -127,7 +128,8 @@ function Invoke-AccountProbe {
         [Parameter(Mandatory)]
         [string]$WriteRoot,
         [Parameter(Mandatory)]
-        [string]$DenyRoot
+        [string]$DenyRoot,
+        [switch]$Concurrent
     )
 
     $startInfo = [Diagnostics.ProcessStartInfo]::new()
@@ -142,8 +144,14 @@ function Invoke-AccountProbe {
     $startInfo.UserName = $UserName
     $startInfo.Password = $Password.Copy()
 
+    $launcherMode = if ($Concurrent) {
+        "--dedicated-account-concurrent-launch"
+    }
+    else {
+        "--dedicated-account-launch"
+    }
     foreach ($argument in @(
-            "--dedicated-account-launch",
+            $launcherMode,
             $ExecutionSid,
             $RootCapabilitySid,
             $ReadPath,
@@ -162,9 +170,23 @@ function Invoke-AccountProbe {
 
     $stdoutTask = $process.StandardOutput.ReadToEndAsync()
     $stderrTask = $process.StandardError.ReadToEndAsync()
-    $process.WaitForExit()
-    $stdout = $stdoutTask.GetAwaiter().GetResult()
-    $stderr = $stderrTask.GetAwaiter().GetResult()
+
+    return [pscustomobject]@{
+        Process = $process
+        StandardOutputTask = $stdoutTask
+        StandardErrorTask = $stderrTask
+    }
+}
+
+function Complete-AccountProbe {
+    param(
+        [Parameter(Mandatory)]
+        [pscustomobject]$RunningProbe
+    )
+
+    $RunningProbe.Process.WaitForExit()
+    $stdout = $RunningProbe.StandardOutputTask.GetAwaiter().GetResult()
+    $stderr = $RunningProbe.StandardErrorTask.GetAwaiter().GetResult()
 
     if ($stdout) {
         Write-Host $stdout.TrimEnd()
@@ -172,8 +194,8 @@ function Invoke-AccountProbe {
     if ($stderr) {
         Write-Warning $stderr.TrimEnd()
     }
-    if ($process.ExitCode -ne 0) {
-        throw "专用账户探针失败，退出码 $($process.ExitCode)。"
+    if ($RunningProbe.Process.ExitCode -ne 0) {
+        throw "专用账户探针失败，退出码 $($RunningProbe.Process.ExitCode)。"
     }
 
     $context = [regex]::Match(
@@ -221,6 +243,8 @@ function Invoke-Demo {
     $plainPassword = New-ProbePassword
     $securePassword = ConvertTo-SecureString $plainPassword -AsPlainText -Force
     $accountCreated = $false
+    $runningA = $null
+    $runningB = $null
 
     try {
         $account = New-LocalUser `
@@ -273,7 +297,7 @@ function Invoke-Demo {
 
         $probeExecutable = Join-Path $runRoot "sandbox-user-probe.exe"
         $systemReadPath = Join-Path $env:SystemRoot "win.ini"
-        $resultA = Invoke-AccountProbe `
+        $runningA = Start-AccountProbe `
             -Executable $probeExecutable `
             -UserName $accountName `
             -Password $securePassword `
@@ -282,8 +306,9 @@ function Invoke-Demo {
             -ReadPath (Join-Path $workspaceB "readable.txt") `
             -SystemReadPath $systemReadPath `
             -WriteRoot $workspaceA `
-            -DenyRoot $workspaceB
-        $resultB = Invoke-AccountProbe `
+            -DenyRoot $workspaceB `
+            -Concurrent
+        $runningB = Start-AccountProbe `
             -Executable $probeExecutable `
             -UserName $accountName `
             -Password $securePassword `
@@ -292,7 +317,11 @@ function Invoke-Demo {
             -ReadPath (Join-Path $workspaceA "readable.txt") `
             -SystemReadPath $systemReadPath `
             -WriteRoot $workspaceB `
-            -DenyRoot $workspaceA
+            -DenyRoot $workspaceA `
+            -Concurrent
+
+        $resultA = Complete-AccountProbe -RunningProbe $runningA
+        $resultB = Complete-AccountProbe -RunningProbe $runningB
 
         if ($resultA.UserSid -ne $sandboxSid.Value -or $resultB.UserSid -ne $sandboxSid.Value) {
             throw "bootstrap 没有以预期的专用账户 SID 运行。"
@@ -305,6 +334,20 @@ function Invoke-Demo {
             $resultB.RootCapabilitySid -ne $rootCapabilityBText
         ) {
             throw "bootstrap 没有使用预期的 root capability SID。"
+        }
+        foreach ($result in @($resultA, $resultB)) {
+            if (-not $result.Output.Contains("PASS peer-process-dangerous-access-denied count=4")) {
+                throw "探针缺少 peer process 拒绝证据。"
+            }
+            if (-not $result.Output.Contains("PASS peer-thread-dangerous-access-denied count=3")) {
+                throw "探针缺少 peer thread 拒绝证据。"
+            }
+            if (-not $result.Output.Contains("PASS peer-job-dangerous-access-denied")) {
+                throw "探针缺少 peer Job 拒绝证据。"
+            }
+            if (-not $result.Output.Contains("PASS concurrent-peer-object-isolation")) {
+                throw "探针缺少并发对象隔离总结果。"
+            }
         }
 
         foreach ($workspace in @($workspaceA, $workspaceB)) {
@@ -322,12 +365,28 @@ function Invoke-Demo {
         }
 
         $logonSidReused = $resultA.LogonSid -eq $resultB.LogonSid
-        Write-Host "DEMO PASS accountSid=$($sandboxSid.Value) distinctExecutionSids=yes logonSidReused=$($logonSidReused.ToString().ToLowerInvariant()) crossRead=yes ownWrite=yes crossWriteDenied=yes nestedProcess=yes"
+        Write-Host "DEMO PASS accountSid=$($sandboxSid.Value) distinctExecutionSids=yes logonSidReused=$($logonSidReused.ToString().ToLowerInvariant()) concurrent=yes peerProcessDenied=yes peerThreadDenied=yes peerJobDenied=yes crossRead=yes ownWrite=yes crossWriteDenied=yes nestedProcess=yes"
     }
     finally {
         $plainPassword = $null
         $securePassword = $null
         $cleanupFailures = [Collections.Generic.List[string]]::new()
+
+        foreach ($runningProbe in @($runningA, $runningB)) {
+            if ($null -eq $runningProbe) {
+                continue
+            }
+            try {
+                if (-not $runningProbe.Process.HasExited) {
+                    $runningProbe.Process.Kill($true)
+                    $runningProbe.Process.WaitForExit()
+                }
+                $runningProbe.Process.Dispose()
+            }
+            catch {
+                $cleanupFailures.Add("并发探针进程清理失败：$($_.Exception.Message)")
+            }
+        }
 
         try {
             Assert-PathContained -Path $runRoot -Root $buildRoot

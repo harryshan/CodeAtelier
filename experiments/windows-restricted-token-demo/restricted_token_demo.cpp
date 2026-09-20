@@ -8,8 +8,10 @@
  * 2. token/Job/用户与 logon SID 诊断，明确显示调用者是否已被 Codex 或其它宿主限制。
  * 3. execution/root capability SID、临时目录 ACL、restricted token 与 Job 的创建函数；
  *    token default DACL 只组合普通账户 SID 和本实例 execution SID，不依赖 logon SID 唯一。
- * 4. probe 与 nested-probe 验证工作区外读取、指定根写入、外部写拒绝和后代继承。
- * 5. launcher 组装上述步骤；专用账户模式接受由高权限编排端预置的 execution/root SID，
+ * 4. probe 与 nested-probe 验证工作区外读取、指定根写入、外部写拒绝和后代继承；
+ *    concurrent-probe 用文件屏障保持两个实例同时存活，并攻击 peer process/thread/named Job。
+ * 5. launcher 从创建时为 process/thread/Job 安装 account+execution 私有 DACL；专用账户模式
+ *    接受由高权限编排端预置的 execution/root SID，
  *    不允许专用账户 bootstrap 修改目录 ACL；wmain 只负责模式分派和稳定退出码。
  *
  * 该程序只修改夹具传入的临时可写根 DACL，目录随后由夹具整体删除。它不安装 WFP、Broker、
@@ -23,10 +25,14 @@
 #include <sddl.h>
 
 #include <array>
+#include <chrono>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -93,6 +99,93 @@ struct SidDeleter {
 
 using LocalPointer = std::unique_ptr<void, LocalFreeDeleter>;
 using SidPointer = std::unique_ptr<void, SidDeleter>;
+
+void PrintFailure(const std::wstring& operation, DWORD error);
+bool QueryCurrentToken(UniqueHandle* token);
+
+class PrivateObjectSecurity {
+ public:
+  bool Initialize(PSID execution_sid) {
+    UniqueHandle token;
+    if (!QueryCurrentToken(&token)) {
+      return false;
+    }
+
+    DWORD user_size = 0;
+    GetTokenInformation(token.get(), TokenUser, nullptr, 0, &user_size);
+    if (user_size == 0) {
+      PrintFailure(L"GetTokenInformation(private TokenUser size)",
+                   GetLastError());
+      return false;
+    }
+    user_buffer_.resize(user_size);
+    if (!GetTokenInformation(token.get(), TokenUser, user_buffer_.data(),
+                             user_size, &user_size)) {
+      PrintFailure(L"GetTokenInformation(private TokenUser)", GetLastError());
+      return false;
+    }
+    auto* token_user = reinterpret_cast<TOKEN_USER*>(user_buffer_.data());
+
+    DWORD system_sid_size = SECURITY_MAX_SID_SIZE;
+    system_sid_.resize(system_sid_size);
+    if (!CreateWellKnownSid(WinLocalSystemSid, nullptr, system_sid_.data(),
+                            &system_sid_size)) {
+      PrintFailure(L"CreateWellKnownSid(LocalSystem)", GetLastError());
+      return false;
+    }
+
+    std::array<EXPLICIT_ACCESSW, 3> entries{};
+    std::array<PSID, 3> sids = {
+        token_user->User.Sid,
+        execution_sid,
+        static_cast<PSID>(system_sid_.data()),
+    };
+    for (size_t index = 0; index < entries.size(); ++index) {
+      entries[index].grfAccessPermissions = GENERIC_ALL;
+      entries[index].grfAccessMode = GRANT_ACCESS;
+      entries[index].grfInheritance = NO_INHERITANCE;
+      entries[index].Trustee.TrusteeForm = TRUSTEE_IS_SID;
+      entries[index].Trustee.TrusteeType = TRUSTEE_IS_UNKNOWN;
+      entries[index].Trustee.ptstrName = static_cast<LPWSTR>(sids[index]);
+    }
+
+    PACL raw_acl = nullptr;
+    DWORD result = SetEntriesInAclW(static_cast<ULONG>(entries.size()),
+                                    entries.data(), nullptr, &raw_acl);
+    if (result != ERROR_SUCCESS) {
+      PrintFailure(L"SetEntriesInAcl(private object)", result);
+      return false;
+    }
+    acl_.reset(raw_acl);
+
+    if (!InitializeSecurityDescriptor(&descriptor_,
+                                      SECURITY_DESCRIPTOR_REVISION)) {
+      PrintFailure(L"InitializeSecurityDescriptor(private object)",
+                   GetLastError());
+      return false;
+    }
+    if (!SetSecurityDescriptorDacl(&descriptor_, TRUE,
+                                   static_cast<PACL>(acl_.get()), FALSE)) {
+      PrintFailure(L"SetSecurityDescriptorDacl(private object)",
+                   GetLastError());
+      return false;
+    }
+
+    attributes_.nLength = sizeof(attributes_);
+    attributes_.lpSecurityDescriptor = &descriptor_;
+    attributes_.bInheritHandle = FALSE;
+    return true;
+  }
+
+  SECURITY_ATTRIBUTES* attributes() { return &attributes_; }
+
+ private:
+  std::vector<BYTE> user_buffer_;
+  std::vector<BYTE> system_sid_;
+  LocalPointer acl_;
+  SECURITY_DESCRIPTOR descriptor_{};
+  SECURITY_ATTRIBUTES attributes_{};
+};
 
 std::wstring FormatWindowsError(DWORD error) {
   if (error == ERROR_SUCCESS) {
@@ -516,8 +609,10 @@ bool CreateRestrictedPrimaryToken(PSID execution_sid, PSID root_capability_sid,
   return true;
 }
 
-bool ConfigureJob(UniqueHandle* job) {
-  job->reset(CreateJobObjectW(nullptr, nullptr));
+bool ConfigureJob(SECURITY_ATTRIBUTES* security_attributes,
+                  const std::wstring& name, UniqueHandle* job) {
+  const wchar_t* object_name = name.empty() ? nullptr : name.c_str();
+  job->reset(CreateJobObjectW(security_attributes, object_name));
   if (!*job) {
     PrintFailure(L"CreateJobObject", GetLastError());
     return false;
@@ -532,6 +627,143 @@ bool ConfigureJob(UniqueHandle* job) {
     PrintFailure(L"SetInformationJobObject", GetLastError());
     return false;
   }
+  return true;
+}
+
+struct PeerIdentity {
+  DWORD process_id = 0;
+  DWORD thread_id = 0;
+  std::wstring job_name;
+};
+
+bool WriteMarker(const std::filesystem::path& path) {
+  std::wofstream stream(path, std::ios::out | std::ios::trunc);
+  if (!stream) {
+    std::wcerr << L"FAIL create marker path=" << path.wstring() << L"\n";
+    return false;
+  }
+  stream << L"ready\n";
+  return stream.good();
+}
+
+bool WaitForPath(const std::filesystem::path& path) {
+  constexpr auto kTimeout = std::chrono::seconds(20);
+  constexpr auto kPollInterval = std::chrono::milliseconds(25);
+  auto deadline = std::chrono::steady_clock::now() + kTimeout;
+  while (std::chrono::steady_clock::now() < deadline) {
+    std::error_code error;
+    if (std::filesystem::is_regular_file(path, error) && !error) {
+      return true;
+    }
+    std::this_thread::sleep_for(kPollInterval);
+  }
+  std::wcerr << L"FAIL wait-for-path timeout path=" << path.wstring()
+             << L"\n";
+  return false;
+}
+
+bool WriteIdentity(const std::filesystem::path& root,
+                   const std::wstring& job_name) {
+  std::wofstream stream(root / L"instance.txt",
+                        std::ios::out | std::ios::trunc);
+  if (!stream) {
+    std::wcerr << L"FAIL create instance identity\n";
+    return false;
+  }
+  stream << GetCurrentProcessId() << L"\n"
+         << GetCurrentThreadId() << L"\n"
+         << job_name << L"\n";
+  if (!stream.good()) {
+    std::wcerr << L"FAIL write instance identity\n";
+    return false;
+  }
+  stream.close();
+  return WriteMarker(root / L"instance-ready.txt");
+}
+
+bool ReadIdentity(const std::filesystem::path& root, PeerIdentity* identity) {
+  if (!WaitForPath(root / L"instance-ready.txt")) {
+    return false;
+  }
+
+  std::wifstream stream(root / L"instance.txt");
+  if (!stream) {
+    std::wcerr << L"FAIL open peer instance identity\n";
+    return false;
+  }
+  stream >> identity->process_id;
+  stream >> identity->thread_id;
+  stream.ignore((std::numeric_limits<std::streamsize>::max)(), L'\n');
+  std::getline(stream, identity->job_name);
+  if (!stream || identity->process_id == 0 || identity->thread_id == 0 ||
+      identity->job_name.empty()) {
+    std::wcerr << L"FAIL parse peer instance identity\n";
+    return false;
+  }
+  return true;
+}
+
+bool VerifyProcessAccessDenied(DWORD process_id) {
+  constexpr std::array<DWORD, 4> kDangerousAccess = {
+      PROCESS_TERMINATE,
+      PROCESS_CREATE_THREAD | PROCESS_VM_OPERATION | PROCESS_VM_WRITE,
+      PROCESS_DUP_HANDLE,
+      WRITE_DAC | WRITE_OWNER,
+  };
+  for (DWORD access : kDangerousAccess) {
+    UniqueHandle process(OpenProcess(access, FALSE, process_id));
+    if (process) {
+      std::wcerr << L"FAIL dangerous OpenProcess succeeded pid=" << process_id
+                 << L" access=" << access << L"\n";
+      return false;
+    }
+    if (GetLastError() != ERROR_ACCESS_DENIED) {
+      PrintFailure(L"OpenProcess returned unexpected error", GetLastError());
+      return false;
+    }
+  }
+  std::wcout << L"PASS peer-process-dangerous-access-denied count="
+             << kDangerousAccess.size() << L"\n";
+  return true;
+}
+
+bool VerifyThreadAccessDenied(DWORD thread_id) {
+  constexpr std::array<DWORD, 3> kDangerousAccess = {
+      THREAD_TERMINATE,
+      THREAD_SUSPEND_RESUME | THREAD_SET_CONTEXT,
+      WRITE_DAC | WRITE_OWNER,
+  };
+  for (DWORD access : kDangerousAccess) {
+    UniqueHandle thread(OpenThread(access, FALSE, thread_id));
+    if (thread) {
+      std::wcerr << L"FAIL dangerous OpenThread succeeded tid=" << thread_id
+                 << L" access=" << access << L"\n";
+      return false;
+    }
+    if (GetLastError() != ERROR_ACCESS_DENIED) {
+      PrintFailure(L"OpenThread returned unexpected error", GetLastError());
+      return false;
+    }
+  }
+  std::wcout << L"PASS peer-thread-dangerous-access-denied count="
+             << kDangerousAccess.size() << L"\n";
+  return true;
+}
+
+bool VerifyJobAccessDenied(const std::wstring& job_name) {
+  UniqueHandle job(OpenJobObjectW(JOB_OBJECT_TERMINATE | JOB_OBJECT_ASSIGN_PROCESS |
+                                      WRITE_DAC | WRITE_OWNER,
+                                  FALSE, job_name.c_str()));
+  if (job) {
+    std::wcerr << L"FAIL dangerous OpenJobObject succeeded name=" << job_name
+               << L"\n";
+    return false;
+  }
+  if (GetLastError() != ERROR_ACCESS_DENIED) {
+    PrintFailure(L"OpenJobObject returned unexpected error", GetLastError());
+    return false;
+  }
+  std::wcout << L"PASS peer-job-dangerous-access-denied\n";
   return true;
 }
 
@@ -693,8 +925,52 @@ int RunProbe(const std::wstring& read_path,
   return read && system_read && modified && allowed && denied && nested ? 0 : 21;
 }
 
+int RunConcurrentProbe(const std::wstring& read_path,
+                       const std::wstring& system_read_path,
+                       const std::wstring& write_root,
+                       const std::wstring& deny_root,
+                       const std::wstring& job_name) {
+  PrintProcessContext(L"concurrent-restricted-probe");
+
+  std::filesystem::path own_root(write_root);
+  std::filesystem::path peer_root(deny_root);
+  if (!WriteIdentity(own_root, job_name)) {
+    return 41;
+  }
+
+  PeerIdentity peer;
+  if (!ReadIdentity(peer_root, &peer)) {
+    return 42;
+  }
+  if (!WriteMarker(own_root / L"attack-ready.txt") ||
+      !WaitForPath(peer_root / L"attack-ready.txt")) {
+    return 43;
+  }
+
+  bool process_denied = VerifyProcessAccessDenied(peer.process_id);
+  bool thread_denied = VerifyThreadAccessDenied(peer.thread_id);
+  bool job_denied = VerifyJobAccessDenied(peer.job_name);
+
+  if (!WriteMarker(own_root / L"attack-done.txt") ||
+      !WaitForPath(peer_root / L"attack-done.txt")) {
+    return 44;
+  }
+  if (!process_denied || !thread_denied || !job_denied) {
+    return 45;
+  }
+
+  int file_result =
+      RunProbe(read_path, system_read_path, write_root, deny_root);
+  if (file_result != 0) {
+    return file_result;
+  }
+  std::wcout << L"PASS concurrent-peer-object-isolation\n";
+  return 0;
+}
+
 int LaunchRestrictedProbe(PSID execution_sid, PSID root_capability_sid,
                           bool install_capability_ace,
+                          bool concurrent_probe,
                           const std::wstring& read_path,
                           const std::wstring& system_read_path,
                           const std::wstring& write_root,
@@ -720,8 +996,17 @@ int LaunchRestrictedProbe(PSID execution_sid, PSID root_capability_sid,
              << L" restrictedSidCount="
              << QueryRestrictedSidCount(restricted_token.get()) << L"\n";
 
+  PrivateObjectSecurity private_security;
+  if (!private_security.Initialize(execution_sid)) {
+    return 14;
+  }
+
+  std::wstring job_name;
+  if (concurrent_probe) {
+    job_name = L"Local\\CodeAtelierProbeJob-" + SidToString(execution_sid);
+  }
   UniqueHandle job;
-  if (!ConfigureJob(&job)) {
+  if (!ConfigureJob(private_security.attributes(), job_name, &job)) {
     return 14;
   }
 
@@ -730,10 +1015,16 @@ int LaunchRestrictedProbe(PSID execution_sid, PSID root_capability_sid,
     PrintFailure(L"GetModuleFileName", GetLastError());
     return 15;
   }
-  std::wstring command_line =
-      QuoteArgument(executable) + L" --probe " + QuoteArgument(read_path) +
-      L" " + QuoteArgument(system_read_path) + L" " +
-      QuoteArgument(write_root) + L" " + QuoteArgument(deny_root);
+  std::wstring probe_mode =
+      concurrent_probe ? L" --concurrent-probe " : L" --probe ";
+  std::wstring command_line = QuoteArgument(executable) + probe_mode +
+                              QuoteArgument(read_path) + L" " +
+                              QuoteArgument(system_read_path) + L" " +
+                              QuoteArgument(write_root) + L" " +
+                              QuoteArgument(deny_root);
+  if (concurrent_probe) {
+    command_line += L" " + QuoteArgument(job_name);
+  }
   std::vector<wchar_t> mutable_command(command_line.begin(), command_line.end());
   mutable_command.push_back(L'\0');
 
@@ -743,8 +1034,8 @@ int LaunchRestrictedProbe(PSID execution_sid, PSID root_capability_sid,
   DWORD creation_flags = CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT;
   if (!CreateProcessAsUserW(
           restricted_token.get(), executable.c_str(), mutable_command.data(),
-          nullptr, nullptr, FALSE, creation_flags, nullptr, write_root.c_str(),
-          &startup, &process)) {
+          private_security.attributes(), private_security.attributes(), FALSE,
+          creation_flags, nullptr, write_root.c_str(), &startup, &process)) {
     PrintFailure(L"CreateProcessAsUser(restricted probe)", GetLastError());
     return 16;
   }
@@ -791,12 +1082,13 @@ int RunLauncher(const std::wstring& read_path,
     return 11;
   }
   return LaunchRestrictedProbe(execution_sid.get(), root_capability_sid.get(),
-                               true, read_path, system_read_path, write_root,
-                               deny_root);
+                               true, false, read_path, system_read_path,
+                               write_root, deny_root);
 }
 
 int RunDedicatedAccountLauncher(const std::wstring& execution_sid_text,
                                 const std::wstring& root_capability_sid_text,
+                                bool concurrent_probe,
                                 const std::wstring& read_path,
                                 const std::wstring& system_read_path,
                                 const std::wstring& write_root,
@@ -824,8 +1116,8 @@ int RunDedicatedAccountLauncher(const std::wstring& execution_sid_text,
   }
 
   return LaunchRestrictedProbe(execution_sid.get(), root_capability_sid.get(),
-                               false, read_path, system_read_path, write_root,
-                               deny_root);
+                               false, concurrent_probe, read_path,
+                               system_read_path, write_root, deny_root);
 }
 
 }  // namespace
@@ -835,11 +1127,19 @@ int wmain(int argc, wchar_t* argv[]) {
     return RunLauncher(argv[2], argv[3], argv[4], argv[5]);
   }
   if (argc == 8 && std::wstring(argv[1]) == L"--dedicated-account-launch") {
-    return RunDedicatedAccountLauncher(argv[2], argv[3], argv[4], argv[5],
-                                       argv[6], argv[7]);
+    return RunDedicatedAccountLauncher(argv[2], argv[3], false, argv[4],
+                                       argv[5], argv[6], argv[7]);
+  }
+  if (argc == 8 &&
+      std::wstring(argv[1]) == L"--dedicated-account-concurrent-launch") {
+    return RunDedicatedAccountLauncher(argv[2], argv[3], true, argv[4],
+                                       argv[5], argv[6], argv[7]);
   }
   if (argc == 6 && std::wstring(argv[1]) == L"--probe") {
     return RunProbe(argv[2], argv[3], argv[4], argv[5]);
+  }
+  if (argc == 7 && std::wstring(argv[1]) == L"--concurrent-probe") {
+    return RunConcurrentProbe(argv[2], argv[3], argv[4], argv[5], argv[6]);
   }
   if (argc == 4 && std::wstring(argv[1]) == L"--nested-probe") {
     return RunNestedProbe(argv[2], argv[3]);
@@ -850,6 +1150,8 @@ int wmain(int argc, wchar_t* argv[]) {
          L"<system-read-file> <write-root> <deny-root>\n"
          L"   or: restricted-token-demo.exe --dedicated-account-launch "
          L"<execution-sid> <root-capability-sid> <read-file> "
-         L"<system-read-file> <write-root> <deny-root>\n";
+         L"<system-read-file> <write-root> <deny-root>\n"
+         L"   or: replace --dedicated-account-launch with "
+         L"--dedicated-account-concurrent-launch\n";
   return 2;
 }

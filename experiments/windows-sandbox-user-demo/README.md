@@ -5,10 +5,12 @@
 它在真实 Windows 本地账户和 DACL 上验证以下窄组合：
 
 - 创建一个随机、可丢弃的本地低权限账户，并加入内建 `Users` 组；
-- 用同一账户启动两个 execution instance，核对用户 SID 相同并记录 Windows 是否复用 logon SID；
+- 用同一账户并发启动两个 execution instance，核对用户 SID 相同并记录 Windows 是否复用 logon SID；
 - 每个实例使用独立 execution SID，每个工作区另使用独立 root capability SID；
 - 两个工作区都向账户授予普通 `Modify`，但分别只向自己的 root capability 授权；
 - 固定 bootstrap 从专用账户 token 创建 `WRITE_RESTRICTED` primary token，随后才启动待测 Runtime；
+- bootstrap 从创建时即为 Runtime process/thread 和命名 Job 安装“共享账户 SID + 本实例 execution SID”的显式 DACL；
+- 两个 Runtime 通过工作区文件屏障保持同时存活，并互相尝试 terminate/inject/duplicate-handle/改 DACL、thread terminate/suspend/set-context 和 Job terminate/assign；这些危险 open 必须全部返回 `ERROR_ACCESS_DENIED`；
 - instance A/B 可读取对方活动工作区，能由直接进程和后代写自己的根，但不能写对方根；
 - capability ACE 由提升的编排端预置，专用账户 bootstrap 不修改 ACL。
 
@@ -28,15 +30,15 @@ pwsh -File experiments/windows-sandbox-user-demo/run-demo.ps1 -Mode run
 
 ## 输出与外层 Codex Sandbox
 
-`CONTEXT launcher-parent` 必须显示专用账户 SID、实际 logon SID 和未限制的固定 bootstrap；`INFO` 必须显示各自不同的 execution/root capability SID，`restricted-probe` 与 `nested-probe` 必须显示 restricted token。最终 `DEMO PASS` 会如实报告 `logonSidReused=true|false`；logon SID 是否复用不再决定通过，因为实例身份由 execution SID 承担。
+`CONTEXT launcher-parent` 必须显示专用账户 SID、实际 logon SID 和未限制的固定 bootstrap；`INFO` 必须显示各自不同的 execution/root capability SID，`concurrent-restricted-probe` 与 `nested-probe` 必须显示 restricted token。双方还必须各自输出 peer process/thread/Job dangerous access denied 与 `concurrent-peer-object-isolation`。最终 `DEMO PASS` 会如实报告 `logonSidReused=true|false`；logon SID 是否复用不再决定通过，因为实例身份由 execution SID 承担。
 
 构建结果不受管理员权限影响。运行阶段不能在普通 Codex 命令 Sandbox 中冒充成功：脚本首先检查管理员 token，真实创建账户还会触发 Windows 自身权限检查。即便经 Codex 宿主批准运行，若进程仍处于外层 Job，Job 相关输出仍只能说明嵌套环境下可运行，不能算作独立 supervisor/Job 的完整证据。
 
 ## 尚未证明
 
-该探针按顺序启动两个实例，只证明独立 execution/root capability 与文件访问矩阵，不证明 1～4 个实例真正并发、同工作区排队或共享 ACE 引用计数。它也不覆盖：
+该探针当前扩展为两个实例真正并发，但仍不证明 3～4 个实例、同工作区排队或共享 ACE 引用计数。新的并发对象攻击路径在管理员复测前只算夹具就绪，不算证据。它也不覆盖：
 
-- 同账户实例间 process/thread/token handle、debug、窗口消息、命名对象和 desktop 隔离；
+- 已泄漏 handle、token handle、debug、窗口消息、普通命名对象和 desktop 隔离；
 - 复杂继承、deny/弱 DACL、reparse point、hard link、UNC、其它卷、路径替换及原对象撤销；
 - 持久账户安装、secret 保存、本地登录策略、profile/environment 最小化、升级/卸载和 orphaned generation；
 - Broker IPC、模型/session capability、WFP、直接 socket、relay/CONNECT、凭据或 Git push；
