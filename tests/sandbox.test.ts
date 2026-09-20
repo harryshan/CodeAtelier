@@ -5,7 +5,7 @@
  *
  * 1. 配置用例检查空值/false 保留 non-isolated，以及非法值和 true 的 unknown 初始状态。
  * 2. Broker 关闭时调用传入的既有宿主执行器，并记录可审计但不含命令内容的生命周期阶段。
- * 3. S1 WorkspaceView 以真实临时目录验证直接受保护项、链接逃逸和普通路径的策略边界。
+ * 3. S1 WorkspaceView 以真实临时目录验证整个工作区（含 .git/.env）可访问，同时拒绝链接逃逸。
  * 4. 启用而没有 runtime 或自检失败时明确回退宿主，同一任务保持 fallback；runtime 执行已开始后的失败不重放。
  * 5. 测试 runtime 必须声明并接收工作区保护契约；Windows inspect 路径只交给 WSL 固定 POSIX shell 形状。
  *
@@ -116,7 +116,7 @@ it("uses the existing host executor only while sandbox is explicitly disabled", 
   ]);
 });
 
-it("rejects direct protected targets and links that escape the workspace", async () => {
+it("allows all workspace paths while rejecting links that escape the workspace", async () => {
   const root = await temp();
   const outside = await temp();
   const view = await WorkspaceView.open(root);
@@ -131,15 +131,15 @@ it("rejects direct protected targets and links that escape the workspace", async
 
   expect(view.descriptor()).toMatchObject({
     root,
-    protectedPaths: [".env", ".git"],
+    protectedPaths: [],
     protection: "direct-path",
   });
-  await expect(view.resolveDirectPath(".env.local")).rejects.toMatchObject({
-    code: "SANDBOX_WORKSPACE_REJECTED",
-  });
-  await expect(view.resolveDirectPath(".git/config")).rejects.toMatchObject({
-    code: "SANDBOX_WORKSPACE_REJECTED",
-  });
+  await expect(view.resolveDirectPath(".env.local")).resolves.toBe(
+    path.join(root, ".env.local"),
+  );
+  await expect(view.resolveDirectPath(".git/config")).resolves.toBe(
+    path.join(root, ".git", "config"),
+  );
   await expect(
     view.resolveDirectPath("outside-link/file.txt"),
   ).rejects.toMatchObject({
@@ -338,7 +338,7 @@ it("dispatches only to a runtime that passed self-check", async () => {
     expect.any(AbortSignal),
     expect.objectContaining({
       root: await WorkspaceView.open(process.cwd()).then((view) => view.root),
-      protectedPaths: [".env", ".git"],
+      protectedPaths: [],
       protection: "direct-path",
     }),
   );

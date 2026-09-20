@@ -4,9 +4,10 @@
  * 文件系统边界实际落实 descriptor 的受保护路径规则，不能把本类的路径检查当作 OS 级隔离替代。
  *
  * 1. WorkspaceView.open 规范化并确认作为命令 cwd 的工作区根目录存在且为目录。
- * 2. descriptor 提供真实根目录、直接受保护名称及声明的保护等级，供 Runtime 建立受限挂载或 ACL。
- * 3. resolveDirectPath 供 Runtime 适配器和集成测试在任何实际访问前重新核对候选路径，拒绝工作区外、
- *    受保护项和解析链接后的逃逸；它有意不承诺祖先目录操作或硬链接等别名防护。
+ * 2. descriptor 提供真实根目录及声明的保护等级，供迁移期 Runtime 建立受限挂载或 ACL；最终 Windows
+ *    Runtime 使用 AccessManifest。工作区内 `.git`、`.env` 与普通路径相同，不施加额外保护。
+ * 3. resolveDirectPath 供 Runtime 适配器和集成测试在任何实际访问前重新核对候选路径，拒绝工作区外
+ *    和解析链接后的逃逸；它有意不承诺祖先目录操作或硬链接等别名防护。
  *
  * 错误消息不包含用户输入或宿主绝对路径，以免被工具历史、任务事件或 trace 意外暴露。当前没有平台
  * Runtime 注册，因此此模块只建立 S1 策略契约，不能独立允许命令在宿主执行。
@@ -16,14 +17,6 @@ import { realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import { canonical, inside } from "../tools/paths.js";
 import type { SandboxWorkspace } from "./types.js";
-
-const protectedPathNames = [".env", ".git"] as const;
-
-function protectedDirectPath(relative: string) {
-  return relative.split(/[\\/]/).some((part) => {
-    return /^\.git$/i.test(part) || /^\.env(?:\.|$)/i.test(part);
-  });
-}
 
 export class SandboxWorkspaceError extends Error {
   readonly code = "SANDBOX_WORKSPACE_REJECTED";
@@ -61,7 +54,7 @@ export class WorkspaceView {
   descriptor(): SandboxWorkspace {
     return {
       root: this.root,
-      protectedPaths: [...protectedPathNames],
+      protectedPaths: [],
       protection: "direct-path",
     };
   }
@@ -81,10 +74,6 @@ export class WorkspaceView {
       throw new SandboxWorkspaceError("目标位于工作区外。");
     }
 
-    if (protectedDirectPath(path.relative(this.root, lexical))) {
-      throw new SandboxWorkspaceError("目标属于受保护路径。");
-    }
-
     let resolved: string;
 
     try {
@@ -95,10 +84,6 @@ export class WorkspaceView {
 
     if (!inside(this.root, resolved)) {
       throw new SandboxWorkspaceError("目标经链接解析后位于工作区外。");
-    }
-
-    if (protectedDirectPath(path.relative(this.root, resolved))) {
-      throw new SandboxWorkspaceError("目标属于受保护路径。");
     }
 
     return resolved;
