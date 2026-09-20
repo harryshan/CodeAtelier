@@ -59,6 +59,8 @@
 
 测试清单不等于穷尽所有输入或保证没有缺陷。当前 Windows WSL2 `inspect` 仅有历史的 bubblewrap 只读绑定与基本命名空间/环境夹具；restricted-token 和网络/IPC demo 也只是被 Codex 外层 Sandbox 明确区分的局部证据。专用账户动态 `ALE_USER_ID` V4/V6 TCP 回环 fence 的管理员矩阵已通过：宿主不受影响、专用账户每个地址族只通获准端口、其它端口返回 `WSAEACCES`；相同结果也由 restricted Runtime 的直接网络后代复现。dynamic engine 关闭后同一账户的两个地址族均恢复连接，账户和目录清理为 0。扩展运行进一步证明 UDP 拒绝端口在普通及 restricted 后代中均无法收到 ACK，V4/V6 listen 也在两条路径中均返回 `10013`；TEST-NET TCP 的初始 `10035` 和仅创建 raw socket 都不能作为最终结论。当前修订将 allow 收紧为 loopback 地址加端口，用本机真实非回环 IPv4 listener 建立宿主及 restricted 后代的无 WFP正向基线，并把 raw 探针推进到 bind；restricted 后代的 V4/V6 raw bind 无 WFP 基线均通过。TCP、UDP 回环交付、真实非回环 IPv4、raw bind、正常/强制终止清理的完整提升运行仍待取得；即使通过也不等于持久 WFP 产品安装。目标架构的一次性提升安装、单一专用账户、并发 instance lease/grant table、显式 ACL 投影/撤销、精确 Git config 图、Runtime 身份、Broker IPC、按账户 SID 的持久 WFP fence、真实 Git 配置下的 host 级网络边界、认证 relay/credential pipe、短期凭据、Job 后代清理、kind-specific executionInstance、资源限制及外部写入均尚未实现或测试，必须各自以真实 Windows 夹具验证。该 profile 明确允许同账户并发任务读取、终止、注入或检查其它活动 Runtime/授权根，也无法保护既有公共 ACL 对象的机密性；不同对话不是彼此的安全边界。每实例 capability 只承诺经验证的直接及后代文件写入限制，不保证 Git 配置/hooks/helper 无副作用或仓库 path/ref 级网络边界。能力声明须分别对应 W0 安装、W1 身份/网络、W2 文件/监督、W3 Broker IPC、W4 本地 Runtime、W5 受限 push 和 W6 取消/资源边界，不能用较早阶段推断较晚能力。另仍未进行断电/磁盘损坏恢复、真实模型质量统计、全浏览器矩阵、其他平台 OS 级 sandbox、访问密码抗暴力破解评估或长期压力测试。应用层权限和单一密码门禁都不是系统沙箱或公网安全保证；不得将通过现有测试描述成上述能力已经验证。
 
+更新：上述“完整提升运行仍待取得”已由后续管理员结果取代。动态 WFP 扩展矩阵现已完整通过 TCP、带 ACK 的 UDP 回环交付、真实本机非回环 IPv4、V4/V6 listen/raw bind、普通账户与 restricted 后代，以及正常关闭/强制终止清理；临时账户和目录清理为 0。尚未完成的是持久 WFP 安装/自检/升级/卸载及真实 DNS、非回环 UDP、UDP 入站、ICMP、组播/广播等剩余路径。
+
 ## 自举验收
 
 `tests/bootstrap.test.ts` 覆盖固定测试命令的精确审批及错误路径、参数、shell、非命令请求拒绝。真实源码任务使用独立的手动脚本，不依赖默认 CI 密钥；准备模式不调用模型。运行与判定见 [bootstrap.md](bootstrap.md)。脚本也纳入 TypeScript 检查。
