@@ -1,5 +1,7 @@
 # Windows Restricted-Token 最小验证
 
+状态：D099 已将产品文件身份改为单一专用低权限账户和显式 ACL。本实验不再验证目标文件边界；它只保留为 restricted token、Job 与后代继承的局部可行性证据。输出必须继续区分 Codex 外层 Sandbox/Job 的影响。
+
 该实验用真实 Windows API 验证目标设计最核心、也最容易先证伪的组合：
 
 - `CreateRestrictedToken(DISABLE_MAX_PRIVILEGE | LUA_TOKEN | WRITE_RESTRICTED)`，限制 SID 同时包含写根 capability、当前 logon SID 和 Everyone SID；
@@ -31,4 +33,4 @@ pwsh -File experiments/windows-restricted-token-demo/run-demo.ps1
 
 探针为兼容启动使用 capability、logon、Everyone 三个 restricting SID，并把三者写入 token default DACL；它没有逐项证明 logon/Everyone 对所有工具都不可省略。尤其是 default DACL 的 Everyone `GENERIC_ALL` 会影响 Runtime 新建对象，产品控制管道必须另用显式私有 DACL 和客户端身份验证，不能复用该默认值。
 
-因此它不能把 W1 或 W2 标记为完成，也不能支持“全盘只有指定根可写”的产品声明。
+因此它不能把 W1 或 W2 标记为完成，也不能支持专用账户安装、显式读写 ACL、全局租约或网络边界的产品声明。

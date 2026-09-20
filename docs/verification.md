@@ -1,6 +1,6 @@
 # 初版验证记录
 
-日期：2026-09-07；后续条目按各自日期补充。以下区分实际验证和计划覆盖，不将构建成功等同于跨平台运行成功。**当前 Windows restricted-token Runtime 与 Broker 目标架构尚未实现或验证；本文件中的 WSL2 条目仅是被替代路线的历史证据，不能用于宣称 restricted-token 能力。**
+日期：2026-09-07；后续条目按各自日期补充。以下区分实际验证和计划覆盖，不将构建成功等同于跨平台运行成功。**当前 Windows 专用用户 Runtime 与 Broker 目标架构尚未实现或验证；本文件中的 WSL2 与 restricted-token demo 条目只是历史或局部证据，不能用于宣称专用用户 Sandbox 能力。**
 
 ## 本机实际验证
 
@@ -229,14 +229,14 @@
 - `WslInspectRuntime` 的实际 `selfCheck` 成功；隔离命令返回 `sandbox-ok`，独立边界命令验证 `/mnt/g`、`/home/root/.ssh`、真实 `.git/config` 与 `/sys/class/net` 不可见，且工作区写探针失败后返回 `boundary-ok`。本轮 `pnpm check` 通过：类型、ESLint、Prettier、36 个测试文件的 250 项通过和 1 项跳过，以及测试生产构建；构建仍有前端 bundle 大小警告。
 - 未验证 Windows 原生 restricted token/Job Object、其他 WSL 发行版、Linux/macOS、受保护路径的全部别名、cgroup/rlimit、fork/取消、资源消耗或真实构建；不将该夹具描述为完整 S2 或跨平台系统隔离。
 
-## Restricted-token 目标架构的验证状态
+## Windows Sandbox 探针与专用用户目标的验证状态
 
 - 新增 [restricted-token 最小可行性探针](../experiments/windows-restricted-token-demo/README.md)，使用真实 `CreateRestrictedToken`、临时 capability SID/ACL、token default DACL、`SeChangeNotifyPrivilege`、suspended process 和 Job。它是手动 feasibility demo，不接入产品、不进入默认测试，也不构成 supervisor 或 Sandbox profile。
 - 2026-09-20 在 Windows `10.0.26200`、MSVC `19.52.36725` 上，普通 Codex 工具运行的 launcher 父进程自报 `restricted=yes`、6 个 restricted SID、medium integrity、`appContainer=no`、`inJob=yes`；嵌套 `CreateRestrictedToken` 返回错误 87 且目标没有启动。该结果记录为当前 Codex Sandbox 对实验的干扰，不用于判定目标设计。
 - 同一二进制经批准以宿主权限运行时，launcher 父进程为 `restricted=no`、0 个 restricted SID、medium integrity、`appContainer=no`，但仍为 `inJob=yes`。目标和后代均为 `restricted=yes`、3 个 restricting SID、medium integrity、`inJob=yes`；成功读取临时兄弟目录文件和 `C:\Windows\win.ini`，修改安装根 ACE 前的 `existing.txt`，创建 `direct-write.txt`/`nested-write.txt`，对未授权兄弟目录的两次创建均返回 `ERROR_ACCESS_DENIED`，最终夹具检查 `reads=2 allowedWrites=3 deniedWrites=2 nestedProcess=yes` 通过并清理临时目录。
 - 首次宿主探针只加入 capability SID 时，目标在进入 `wmain` 前以 `0xC0000142` 退出；加入当前 logon SID、Everyone SID、相应 token default DACL，并只重新启用 `SeChangeNotifyPrivilege` 后通过。这证明普通 Win32 启动需要额外兼容 SID，也意味着 Everyone/logon 可写 DACL 是实际剩余写面，而不是可以忽略的异常。
-- 该结果仅支持“正常 DACL 对象上的核心 `WRITE_RESTRICTED`/capability 组合可运行”这一窄结论。由于批准运行仍在 Codex 外层 Job 中，它不证明完全独立的 Job 行为；也未验证完整 supervisor、私有 desktop、COM/RPC/宿主代写、PID/IPC 身份、弱/null DACL、Users/Everyone/logon 写 ACL、复杂继承、existing child、rename/move/replace/delete-recreate、reparse/hard link/UNC/其它盘、真实 Git/Node/PowerShell、WFP、relay、凭据、取消/恢复或资源限制。必要结论仍须按 W1--W4、W5、W6 profile 分层。
+- 该结果仅支持“正常 DACL 对象上的核心 restricted token/Job 组合可运行”这一窄结论。由于批准运行仍在 Codex 外层 Job 中，它不证明完全独立的 Job 行为；D099 又把文件身份改为专用账户和显式 ACL，因此 capability SID、当前用户广泛读取与弱 DACL 结论不再是产品方案的直接验收证据。完整 supervisor、私有 desktop、COM/RPC/宿主代写、PID/IPC 身份、复杂 ACL/重解析/其它盘、真实 Git/Node/PowerShell、WFP、relay、凭据、取消/恢复和资源限制仍须按 W0--W6 分层验证。
 - 新增 [网络与 Broker IPC 最小探针](../experiments/windows-network-ipc-demo/README.md)。普通 Codex restricted 父 token 下 IPC 子探针仍在 `CreateRestrictedToken` 得到错误 87；经批准的宿主权限运行中，合法 restricted client 的 PID、创建时间、execution SID、映像、Job 与 nonce 联合证明通过，同用户、同映像且知道同一 nonce 的 Job 外 client 被拒绝。它只证明一次 pipe 连接的 Broker 联合身份核验可行，不完成 W3，也不阻止直接 socket。
-- 同一网络探针的 TCP 回环 baseline 在普通和宿主权限运行中均成功；两种运行都在 `FwpmSubLayerAdd0` 得到 `ERROR_ACCESS_DENIED`，说明当前 medium-integrity 验证环境不能安装动态 WFP policy。SDK 10.0.28000.0 条件审计同时确认 user-mode `ALE_AUTH_CONNECT` filter 没有 PID、创建时间或 Job 条件，`ALE_APP_ID` 只是规范化映像路径。管理员环境中的 APP_ID 动态 filter 实测与自有 callout driver 均未完成，因此 W1 的无命令网络及 W5 仍阻塞，不能由已通过的 IPC 探针替代。
+- 同一网络探针的 TCP 回环 baseline 在普通和宿主权限运行中均成功；两种运行都在 `FwpmSubLayerAdd0` 得到 `ERROR_ACCESS_DENIED`，说明当前 medium-integrity 验证环境不能安装动态 WFP policy。SDK 10.0.28000.0 条件审计同时确认 user-mode `ALE_AUTH_CONNECT` filter 没有 PID、创建时间或 Job 条件，`ALE_APP_ID` 只是规范化映像路径。D099 不再按 execution instance 或映像放行，而改用安装期创建的稳定专用账户 SID：持久 WFP 只允许该 SID 连接固定 Broker relay/proxy 端口，任务级 host/ref 权限由代理 lease 再校验。这个方案不需要自研 callout driver，但专用账户 SID 条件、持久规则、提升安装和绕过夹具尚未实测，因此 W1/W5 仍未完成，不能由 IPC 探针替代。
 - 探针以 MSVC `/W4 /WX` 构建通过；本轮 `pnpm check` 在普通 Codex 进程沙箱中因三个取消/超时夹具无法终止子进程而失败，改在批准的宿主权限下完整通过：37 个测试文件、255 项通过、1 项跳过，类型、ESLint、Prettier 和生产构建均通过。两次结果分开记录，不把解除 Codex 外层限制当作产品 Sandbox 能力。
-- 上一节的 WSL2 无害夹具仍仅可作为旧实现的历史事实；它不能作为 restricted-token fallback、阶段完成或跨平台系统隔离证据。
+- 上一节的 WSL2 无害夹具和本节两个 demo 仍仅可作为旧实现或组件的局部事实；它们不能作为专用用户 fallback、阶段完成或跨平台系统隔离证据。

@@ -1,6 +1,6 @@
-# 旧 WSL2 Sandbox 实施档案（已被 restricted-token 目标架构替代）
+# 旧 WSL2 Sandbox 实施档案（已被专用用户目标架构替代）
 
-状态：本文保留当前仓库中 WSL2 bubblewrap `inspect` Runtime 的已实现行为、本机夹具证据和历史阶段记录，供迁移与事实核对使用；它不再是未来 Sandbox 的权威设计。Windows 后续目标架构以 [Windows Restricted-Token Runtime 与 Broker 架构](windows-integrity-sandbox.md) 为准：Agent Runtime 沿用当前用户读取权限，以 `WRITE_RESTRICTED` token 和可写根 capability SID/ACL 限制普通对象写入，并执行全部 Git；Broker 不执行 Git，只代理模型、存储、外部写入与受限网络等宿主能力。该目标尚未实现或验证，本文记录不构成 restricted-token 能力的证据。
+状态：本文保留当前仓库中 WSL2 bubblewrap `inspect` Runtime 的已实现行为、本机夹具证据和历史阶段记录，供迁移与事实核对使用；它不再是未来 Sandbox 的权威设计。Windows 后续目标架构以 [Windows 专用用户 Sandbox Runtime 与 Broker 架构](windows-integrity-sandbox.md) 为准：单一低权限本地账户通过显式 ACL 获得任务文件访问，以 restricted token/Job 运行全部 Git 和命令；Broker 不执行 Git，只代理模型、存储、外部写入与受限网络等宿主能力。按该账户 SID 的持久 WFP fence 阻止直接出站，Sandbox 模式全局串行。该目标尚未实现或验证，本文记录不构成专用用户 Sandbox 能力的证据。
 
 ## 1. 目标、开关与兼容性
 
@@ -92,11 +92,11 @@ Broker 是宿主文件、受限 Git、网络例外和进程管理的可信入口
 
 当前已确认的默认 profile 是 **`inspect`**。它只读映射真实工作区；需要写入工作区的构建、测试、安装或代码生成命令会失败。Windows 主机的 inspect 命令由 WSL2 Linux Runtime 以 POSIX `/bin/sh -c` 解释，不使用 PowerShell/cmd 语法或 Windows 路径；模型指令必须如实说明该差异。
 
-| 平台    | 候选基线                                                               | 更强候选                         | 关键验收                                                           |
-| ------- | ---------------------------------------------------------------------- | -------------------------------- | ------------------------------------------------------------------ |
-| Linux   | rootless namespace、受限挂载、seccomp/Landlock、cgroup v2 的可验证组合 | KVM/microVM 或受管 VM            | 工作区边界、受保护路径、网络、后代进程和 CPU/内存/PID 等可验证资源 |
-| Windows | `WRITE_RESTRICTED` token、写根 capability SID/ACL、Job Object、WFP     | 短生命周期 VM                    | 弱 ACL、reparse point、网络、全部后代及 CPU/内存/PID 等可验证资源  |
-| macOS   | 受支持、签名且审查过策略的系统隔离 helper                              | Virtualization Framework 受管 VM | entitlement、共享目录、网络、进程清理及可验证资源                  |
+| 平台    | 候选基线                                                                             | 更强候选                         | 关键验收                                                                     |
+| ------- | ------------------------------------------------------------------------------------ | -------------------------------- | ---------------------------------------------------------------------------- |
+| Linux   | rootless namespace、受限挂载、seccomp/Landlock、cgroup v2 的可验证组合               | KVM/microVM 或受管 VM            | 工作区边界、受保护路径、网络、后代进程和 CPU/内存/PID 等可验证资源           |
+| Windows | 专用低权限账户、显式 read/write ACL、restricted token、Job Object、按账户 SID 的 WFP | 短生命周期 VM                    | 安装/租约、弱 ACL、reparse point、网络、全部后代及 CPU/内存/PID 等可验证资源 |
+| macOS   | 受支持、签名且审查过策略的系统隔离 helper                                            | Virtualization Framework 受管 VM | entitlement、共享目录、网络、进程清理及可验证资源                            |
 
 等级以行为验收定义，不按组件名称推断。可先完成 Linux 参考后端；Windows、macOS 通过各自真实平台测试后才启用相同等级。无法实施工作区外隔离、受保护路径排除、进程树终止或默认网络拒绝时，相关 profile 不可用且不得静默回退。
 
@@ -155,6 +155,6 @@ UI 显示实际 `sandboxed`、`non-isolated` 或 `unknown` 状态、平台等级
 
 ### 8.2 迁移说明
 
-本节原有的 WSL2 后续工作清单已被 [Windows Restricted-Token Runtime 与 Broker 架构](windows-integrity-sandbox.md) 的 Windows 实施路线替代。不得继续扩展 WSL2 Runtime、将其作为 restricted-token fallback，或用其夹具结果证明 restricted token、写根 ACL、IPC、网络、进程树、资源或 Broker 边界。
+本节原有的 WSL2 后续工作清单已被 [Windows 专用用户 Sandbox Runtime 与 Broker 架构](windows-integrity-sandbox.md) 的 Windows 实施路线替代。不得继续扩展 WSL2 Runtime、将其作为专用用户 fallback，或用其夹具结果证明账户安装、ACL、IPC、网络、进程树、资源或 Broker 边界。
 
 迁移涉及新的执行、取消、资源或 Broker 行为时，必须同步更新 [windows-integrity-sandbox.md](windows-integrity-sandbox.md)、[testing.md](testing.md)、[verification.md](verification.md) 和决策记录，并接入安全摘要 tracing。

@@ -1,6 +1,6 @@
 # 架构
 
-当前初版为单进程本机后端、浏览器单页应用、单 agent；不同真实工作目录的会话默认最多两个任务并行，同一目录严格串行。Windows Sandbox 的目标架构改为 restricted-token Agent Runtime 与宿主 Broker Host，详见 [Windows Restricted-Token Runtime 与 Broker 架构](windows-integrity-sandbox.md)；该目标尚未实现，不能把本段当前进程结构解释为已隔离。核心机制自行实现，没有引入 agent 编排框架。
+当前初版为单进程本机后端、浏览器单页应用、单 agent；不同真实工作目录的会话默认最多两个任务并行，同一目录严格串行。Windows Sandbox 的目标架构改为单一专用低权限账户中的 Agent Runtime 与宿主 Broker Host，详见 [Windows 专用用户 Sandbox Runtime 与 Broker 架构](windows-integrity-sandbox.md)；Sandbox 模式因账户独占而全局串行。该目标尚未实现，不能把本段当前进程结构解释为已隔离。核心机制自行实现，没有引入 agent 编排框架。
 
 ## 模块与数据流
 
@@ -9,18 +9,18 @@ Browser / Web UI
   ↕ HTTP、SSE（宿主 Server）
 Broker Host（可信宿主边界）
   ├─ 策略、审批、AccessManifest、SandboxProcessRecord、执行账本与 tracing
-  ├─ C++ restricted-token supervisor、控制租约与 Job 生命周期
+  ├─ C++ supervisor、专用账户租约与 Job 生命周期
   ├─ 参数受限的 model / storage / network / external adapters
   └─ 经认证、固定 schema 的 IPC
        ↕
-Sandbox Process（每任务互斥 restricted token）
+Sandbox Process（单一 CodeAtelierSandbox 账户的独占租约）
   ├─ Agent Runtime：agent loop、工具计划、本地 Git 与命令；无网络
   ├─ Push Runner：真实 Git 配置与认证 relay；无 agent loop
-  ├─ 当前工作区及用户显式可写根（capability SID/ACL，包含 .git/.env）
-  └─ 当前用户可读范围；私有临时目录；不继承宿主密钥、handle 或完整环境
+  ├─ 账户既有读取权 + 工作区、显式 read/write roots 与精确只读 Git config/include 图
+  └─ WRITE_RESTRICTED 根 capability、产品依赖与私有临时目录；不继承宿主 profile/凭据
 ```
 
-以下文件职责描述当前实现；restricted-token/Broker 目标模块和迁移边界以 [windows-integrity-sandbox.md](windows-integrity-sandbox.md) 为准。无论当前还是目标架构，前端都不能导入文件、进程或密钥实现。
+以下文件职责描述当前实现；专用用户/Broker 目标模块和迁移边界以 [windows-integrity-sandbox.md](windows-integrity-sandbox.md) 为准。无论当前还是目标架构，前端都不能导入文件、进程或密钥实现。
 
 - `src/shared` 仅存浏览器和后端共享的数据契约。
 - `src/agent/engine.ts` 管理任务队列、全局并发上限、真实工作目录互斥、模型循环、停止条件与工具结果回传；同一会话也只允许一个运行中或排队任务。`context.ts` 负责上下文恢复，`instructions.ts` 负责根规则与模型指令构建。src/context/ 负责预算、摘要压缩、快照契约与历史原文读取，循环在完整工具批次完成后接入；压缩阶段之间让出事件循环。
@@ -30,7 +30,7 @@ Sandbox Process（每任务互斥 restricted token）
 - `src/server/local-security.ts` 在业务 API 前校验 Host、Origin、可选的环境访问密码与本机会话 token；密码门禁启用后，只有状态/登录路由可在未验证时访问，登录成功写入服务进程有效的 HttpOnly cookie。
 - `src/sessions/store.ts` 保存 sessions、tasks、events、context 和新任务的高保真 replay 捕获；任务的 createdAt、startedAt、finishedAt 分别表示入队、实际开始和结束，排队时间不计入会话累计运行时间。初始数据库结构位于 `schema.ts`。replay 捕获逐次保存模型 input/instructions/响应及完整脱敏工具参数/结果，导出时可从同一哈希的完整 `read_file` 页拼接 `edit_files` 的原始文件；只读到部分行或旧历史则明确拒绝真实文件物化。会话初始快照读取全量事件，SSE 后续刷新按 event ID 游标只读取新增事件；超过 64 KiB 的任一事件读取范围、活动上下文和历史快照由 `store-worker.ts` 在独立 Worker 线程解析或事务写入，小记录避免线程创建开销而同步读取。启动时将 queued/running/waiting 任务标为 interrupted 并记录结束时间。
 - `src/config` 将 .env/进程环境中的只读连接配置与 settings.json 中的非连接偏好合成为运行时设置，另管理内存密钥和平台数据目录；`src/sandbox/config.ts` 同时只在启动时严格读取 Sandbox 开关，避免它被浏览器设置或旧持久化偏好改变。访问门禁配置由 server/local-security.ts 在服务启动时单独读取，避免将密码纳入浏览器可见配置。
-- Sandbox 的目标模块以 `BrokerHost` 为宿主可信边界，并通过独立 C++ supervisor 从当前非提升用户创建 `WRITE_RESTRICTED` token。读取沿用当前用户 DACL；每个可写根拥有独立 capability SID，Broker 只向根对象投影对应写 ACE，Runtime token 只携带本次 AccessManifest 的根 SID。supervisor 同时持有 process/Job handle，配置私有 desktop、最小环境和缓解策略，并以 PID、创建时间、execution SID、限制标志、映像、Job 与 nonce 联合验证 IPC 身份。该 profile 保护普通宿主对象免受越界写入，但不限制当前用户原本的读取，不提供文件机密性。Runtime 内的 agent、全部 Git 和命令直接运行，Broker 不运行 Git；Git 正常加载 system/global/include/local/worktree 配置。普通 Agent Runtime 默认无命令网络；确认后的 push 先终止它，再由独立 `pushRunnerInstanceId` 的 Runner 执行已确认 PushSpec。只有 WFP 与 relay 能绑定本次 Runner 身份时才开放获准 HTTPS host。`SandboxProcessRecord.kind` 与 executionInstance 区分 Agent Runtime/Push Runner；取消状态随 session 进入下一轮，副作用不回滚、不重放。现有 WSL2 `inspect` 代码只是待迁移的历史实现，完整边界见 [windows-integrity-sandbox.md](windows-integrity-sandbox.md)。
+- Sandbox 的目标模块以 `BrokerHost` 为宿主可信边界。一次性提升安装创建单一 `CodeAtelierSandbox` 本地账户，并按其 SID 安装持久 WFP 默认拒绝规则；独立 C++ supervisor 以该账户的 `WRITE_RESTRICTED` token、根 capability、私有 desktop、最小环境和 Job 运行进程。Broker 通过原对象 handle 向 AccessManifest 中的工作区、显式 read/write roots、产品依赖和精确 Git config/include 图投影最小 ACL，并以账户 lease epoch、PID、创建时间、token SID、映像、Job 与 nonce 联合验证 IPC。专用账户不继承宿主用户私有权限，但既有公共/机器 ACL 仍可能允许额外读取；读取不是纯 allowlist。一个账户一次只服务一个 execution instance，因此 Sandbox 任务跨工作区全局串行；ACL、Job、代理或账户状态无法对账时隔离该账户并拒绝后续 Sandbox 启动。Runtime 内的 agent、全部 Git 和命令直接运行，Broker 不运行 Git；Git 正常加载已授权的 system/global/include/local/worktree 配置。WFP 始终阻止该账户直接出站，只允许固定 Broker relay/proxy 端口；确认后的 push 先终止 Agent Runtime，再由独立 `pushRunnerInstanceId` 的 Runner 经认证代理执行 PushSpec，WFP 不临时放宽。`SandboxProcessRecord.kind` 与 executionInstance 区分 Agent Runtime/Push Runner；取消状态随 session 进入下一轮，副作用不回滚、不重放。现有 WSL2 `inspect` 和 restricted-token demo 只是历史或局部证据，完整边界见 [windows-integrity-sandbox.md](windows-integrity-sandbox.md)。
 - `src/tracing` 默认只在任务运行期间于当前进程构造性能 timeline：Engine 在上下文计量/压缩、模型请求与退避、响应处理、工具计划、SandboxBroker 阶段、工具真实执行和工具结果持久化边界创建 span；`context.prepare` 与 `context.request` 保持各自边界；前者以下挂预算输入计量和已有的压缩阶段，后者以下挂实际请求计量阶段。模型、退避与响应处理仍是独立 span，模型包装器记录长度、数量、usage、错误类别和首包时间。Node 主事件循环执行的上下文、模型、响应、计划和持久化 span 汇集于 `Main thread`，并以 begin/end slice 表示这些内部阶段；`Task` 根是生命周期包络。工具批次/依赖属于 `Tool scheduler` 逻辑轨道，实际执行节点映射到最多 4 个可复用 `Tool worker` 并发槽位，而不为每个 call ID 创建一行。导出事件按时间排序，并用递增整数 ID 连接模型到工具的 flow，保证 Perfetto Trace Event JSON 兼容性。每个实际 tool span 保存经递归凭据脱敏后的结构化执行参数，因此 trace 是不得上传或提交的敏感本机诊断文件；它仍不保存提示词、模型/工具输出或凭据原文。高保真 replay payload 独立保存在 Store 的 `task_replays`，不混入 Perfetto；模型/工具 replay 只用于隔离测试，文件物化还必须验证完整读取版本。任务进入终态时 TraceArchive 以临时文件后 rename 的方式保存 `traces/<sessionId>/<taskId>.json`，然后立即释放内存记录，所以同一会话各任务不覆盖且没有完成 trace 缓存。`GET /api/tasks/:id/trace` 在本机 cookie 保护下只读取该文件；`GET /api/sessions/:id/traces` 只列出实际存在的文件，统计框据此显示下载入口。
 - `src/logging` 在 Pino 内部按字段脱敏后输出紧凑格式化纯文本，按级别筛选、保留受控错误详情并轮转文件。
 
@@ -78,7 +78,7 @@ Sandbox Process（每任务互斥 restricted token）
 
 文件操作解析真实路径，考虑符号链接与 Windows junction；工作区外或敏感路径询问用户。`edit_files` 的 create:true 只能新建不存在的路径，预检、审批等待后和写入前都会复核，拒绝覆盖期间出现的文件；它可创建父目录。create:false 的现存文件须先读取，精确修改时比对内容哈希，拒绝外部并发修改。临时文件写入后重命名，并保留已有文件的原模式。
 
-`run_command` 的模型参数只有 `{ command }`，执行器固定在会话工作区运行。Windows 内部按 `pwsh`、`powershell`、`cmd.exe` 的优先级检测真实可执行文件；macOS/Linux 使用已验证的 `/bin/sh`。执行器追加固定非交互参数，模型不提供、探测或回退 shell。完整复合命令可预先审批时，顺序命令、管道及安全的独立检查应合并为一条命令文本；无需人工输出分隔标记。执行器通过常见环境变量请求子程序关闭颜色，并在 stdout/stderr 各自的流状态中移除 ANSI、OSC 等终端控制序列，因而历史和 UI 仅接收纯文本。对少量完全匹配的固定验证命令允许会话授权；绑定命令文本、工作区及受限扫描得到的项目内容指纹。超大项目无法计算指纹时退回单次审批。直接 Git 程序名（包括复合命令中的 Git）被拒绝，改由 `git.ts` 提供单一 action 子集：状态、差异、历史、文件查看和分支只读，暂存/提交自动仅处理模型明确提供的工作区路径。`.env` 运行时配置和硬敏感路径始终拒绝；受控 dotenv 模板需为普通 UTF-8 文件，且经占位敏感变量和常见凭据字面量校验后才可暂存或提交，相关 diff/show 在输出前再次扫描。普通文件访问仍将模板视为需确认的敏感路径。推送自动仅使用当前分支经校验的 upstream。每次调用核对 worktree 根目录；全量差异先检查变更路径，文件内容读取必须带明确安全路径，revision 和 remote URL 采用保守白名单，Git 禁用 hooks、GPG、外部 diff/textconv 与交互提示。自动化不接受额外 Git 参数或目标，也不等同于系统隔离；可信仓库的 Git 过滤器等配置仍可能产生当前用户权限下的副作用。以上是当前未启用 restricted-token Sandbox 的行为。Windows 后续目标中，Runtime 沿用当前用户读取权限，以 `WRITE_RESTRICTED` token 和根 capability SID/ACL 只把 AccessManifest 中的根作为目标可写范围；Runtime 执行全部 Git，Broker 不运行 Git。普通 Agent Runtime 默认无命令网络，push 逐次确认预期 host/ref 后由新的 Push Runner 在真实仓库上执行。Runner 正常加载真实 Git 配置，因此 hooks/helper 和 Git 子进程可以读写获准根、读取其它当前用户可读文件，并可能将内容发送到获准 host。WFP 与 relay/CONNECT 代理只有在能绑定本次 Runner 身份时才开放网络；host 边界不限制上传内容、URL path 或 ref。supervisor 以私有控制面、heartbeat/租约和 process handle、PID、创建时间、execution SID、token 限制、映像、Job、nonce 联合监督进程；executionInstance 以 kind-specific ID 区分 Agent Runtime/Push Runner。相关 token、ACL、WFP/代理、真实 Git 配置绕过夹具和平台边界均尚未实现或验证；任何失败都必须安全拒绝，不能回退到 WSL2 或宿主完整权限。后续边界见 [windows-integrity-sandbox.md](windows-integrity-sandbox.md)，WSL2 历史事实见 [sandbox.md](sandbox.md)。
+`run_command` 的模型参数只有 `{ command }`，执行器固定在会话工作区运行。Windows 内部按 `pwsh`、`powershell`、`cmd.exe` 的优先级检测真实可执行文件；macOS/Linux 使用已验证的 `/bin/sh`。执行器追加固定非交互参数，模型不提供、探测或回退 shell。完整复合命令可预先审批时，顺序命令、管道及安全的独立检查应合并为一条命令文本；无需人工输出分隔标记。执行器通过常见环境变量请求子程序关闭颜色，并在 stdout/stderr 各自的流状态中移除 ANSI、OSC 等终端控制序列，因而历史和 UI 仅接收纯文本。对少量完全匹配的固定验证命令允许会话授权；绑定命令文本、工作区及受限扫描得到的项目内容指纹。超大项目无法计算指纹时退回单次审批。直接 Git 程序名（包括复合命令中的 Git）被拒绝，改由 `git.ts` 提供单一 action 子集：状态、差异、历史、文件查看和分支只读，暂存/提交自动仅处理模型明确提供的工作区路径。`.env` 运行时配置和硬敏感路径始终拒绝；受控 dotenv 模板需为普通 UTF-8 文件，且经占位敏感变量和常见凭据字面量校验后才可暂存或提交，相关 diff/show 在输出前再次扫描。普通文件访问仍将模板视为需确认的敏感路径。推送自动仅使用当前分支经校验的 upstream。每次调用核对 worktree 根目录；全量差异先检查变更路径，文件内容读取必须带明确安全路径，revision 和 remote URL 采用保守白名单，Git 禁用 hooks、GPG、外部 diff/textconv 与交互提示。自动化不接受额外 Git 参数或目标，也不等同于系统隔离；可信仓库的 Git 过滤器等配置仍可能产生当前用户权限下的副作用。以上是当前未启用 Sandbox 的行为。Windows 后续目标中，单一专用账户通过显式 ACL 访问工作区、read/write roots、产品依赖和精确只读 Git config/include 图；Runtime 执行全部 Git，Broker 不运行 Git。普通 Agent Runtime 无直接命令网络，push 逐次确认预期 host/ref 后由新的 Push Runner 在真实仓库上执行。Runner 正常加载已授权的真实 Git 配置，因此 hooks/helper 和 Git 子进程可以读写获准根、读取其它获准内容，并可能将内容发送到获准 host。按账户 SID 的持久 WFP fence 始终只允许固定 Broker relay/proxy 端口；host 边界不限制上传内容、URL path 或 ref。supervisor 以私有控制面、heartbeat/账户租约和 process handle、PID、创建时间、token SID、映像、Job、nonce 联合监督进程；executionInstance 以 kind-specific ID 区分 Agent Runtime/Push Runner。相关账户安装、ACL、WFP/代理、真实 Git 配置与恢复夹具均尚未实现或验证；任何失败都必须安全拒绝，不能回退到 WSL2 或宿主用户权限。后续边界见 [windows-integrity-sandbox.md](windows-integrity-sandbox.md)，WSL2 历史事实见 [sandbox.md](sandbox.md)。
 
 ## 补丁编辑的准确性边界
 

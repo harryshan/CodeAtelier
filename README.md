@@ -47,14 +47,14 @@ pnpm exec playwright install chromium
 pnpm test:e2e
 ```
 
-初版仍以应用层审批为主：低成本模型的 `approve` 结果不绕过执行器的路径、Git、提权和并发校验，关闭 Sandbox 时获准命令以本机用户权限运行，适用于你信任的项目。Windows 后续目标是 [Restricted-Token Runtime 与 Broker 架构](docs/windows-integrity-sandbox.md)：C++ supervisor 以 `WRITE_RESTRICTED` token、每个写根 capability SID/ACL、Job Object 和私有 desktop 运行未修改的 Node、Git、shell 与编译器。Runtime 沿用当前用户原本的读取能力，只把工作区、显式可写根和私有临时目录作为目标写边界；因此它主要保护宿主完整性，不保护文件机密性，用户 profile、其它源码和 Git 配置可能被读取并进入模型请求或获准网络。普通 Runtime 默认无命令网络；push 逐次确认 PushSpec 后切换到单用途 Runner，只有在 WFP 与认证 relay 能绑定本次 Runner 身份时才开放获准 HTTPS host。工作区内不额外保护 `.git`/`.env`，Broker 不运行 Git。该架构尚未实现或验证，不能通过现有环境变量启用；当前 WSL2 `inspect` 仅保留为历史记录，见 [旧 WSL2 Sandbox 档案](docs/sandbox.md)。当前模型仍只可主动调用单一、参数受限的 `git` 工具：它检查 worktree、路径、revision 和 upstream，并禁止强推、指定远程/分支目标、重置或创建 PR；Git 仓库配置仍不是系统沙箱。
+初版仍以应用层审批为主：低成本模型的 `approve` 结果不绕过执行器的路径、Git、提权和并发校验，关闭 Sandbox 时获准命令以本机用户权限运行，适用于你信任的项目。Windows 后续目标是 [专用用户 Sandbox Runtime 与 Broker 架构](docs/windows-integrity-sandbox.md)：一次性提升安装创建单一 `CodeAtelierSandbox` 低权限账户及按其 SID 的持久 WFP fence；C++ supervisor 再以 `WRITE_RESTRICTED` token、根 capability、Job Object、私有 desktop 和显式 ACL 运行未修改的 Node、Git、shell 与编译器。Runtime 不继承宿主用户私有 profile/凭据，并新增工作区、显式 read/write roots、产品依赖和精确只读宿主 Git config/include 图的权限；`Everyone`/`Authenticated Users` 等既有 ACL 仍可能允许额外读取，因此它不是纯读取 allowlist。工作区内不额外保护 `.git`/`.env`。普通 Runtime 无直接命令网络，模型和确认后的 HTTPS push 经认证 Broker proxy；WFP 在 push 时也不放宽。全部 Git 在 Runtime 内执行，Broker 不运行 Git。为避免一个账户同时持有多个任务授权，Sandbox 模式全局串行；非 Sandbox 模式保留现有并发。该架构尚未实现或验证，不能通过现有环境变量启用；当前 WSL2 `inspect` 仅保留为历史记录，见 [旧 WSL2 Sandbox 档案](docs/sandbox.md)。当前模型仍只可主动调用单一、参数受限的 `git` 工具：它检查 worktree、路径、revision 和 upstream，并禁止强推、指定远程/分支目标、重置或创建 PR；Git 仓库配置仍不是系统沙箱。
 
 ## 文档
 
 - [AGENTS.md](AGENTS.md)：开发 agent 的工作约定。
 - [需求与范围](docs/requirements.md)
 - [架构](docs/architecture.md)
-- [Windows Restricted-Token Runtime 与 Broker 架构（目标设计，尚未实现）](docs/windows-integrity-sandbox.md)
+- [Windows 专用用户 Sandbox Runtime 与 Broker 架构（目标设计，尚未实现）](docs/windows-integrity-sandbox.md)
 - [Windows Restricted-Token 最小可行性探针](experiments/windows-restricted-token-demo/README.md)
 - [旧 WSL2 Sandbox 实施档案](docs/sandbox.md)
 - [上下文压缩与历史追溯](docs/context-management.md)
