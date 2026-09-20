@@ -41,6 +41,22 @@ pwsh -File experiments/windows-network-ipc-demo/run-demo.ps1 -Mode wfp-persisten
 
 预期最终输出 `WFP_PERSISTENT_DEMO PASS`，包含 `processExitPersistence=yes`、`enumerateSelfCheck=yes`、`tcpFence=yes`、`listenRawFence=yes` 和 `uninstallRecovery=yes`。该入口会短暂写入机器级持久 WFP policy；只应在可恢复的测试机上执行，运行前后都按固定测试 GUID 清理。
 
+### 独立恢复
+
+若探针、PowerShell 或机器在持久规则安装后异常退出，先从管理员 PowerShell 预览：
+
+```powershell
+pwsh -File experiments/windows-network-ipc-demo/recover-persistent-wfp.ps1 -WhatIf
+```
+
+确认目标 GUID 后执行恢复；脚本默认会再次要求确认，也可显式使用 `-Confirm:$false`：
+
+```powershell
+pwsh -File experiments/windows-network-ipc-demo/recover-persistent-wfp.ps1
+```
+
+恢复脚本不依赖编译后的 EXE。它只枚举固定测试 provider `9e201d5a-9dc9-4ae1-89e5-4365df7f2201` 的 filters，随后删除固定 sublayer/provider，并只清理名称匹配 `CAPersist[8 位十六进制]` 的一次性账户及仓库 `.local/windows-network-ipc-demo/persistent-run-[32 位十六进制]` 目录；不会触碰其它 WFP provider、Firewall rule、账户或目录。
+
 ## 结论边界
 
 - IPC 通过只能证明 Broker 可以认证一次已连接的客户端，并据此决定是否执行 typed capability。它不能阻止 Runtime 直接创建网络 socket，也不能替代 WFP。
