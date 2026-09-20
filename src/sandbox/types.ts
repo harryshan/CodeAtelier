@@ -100,7 +100,11 @@ export interface SandboxRuntime {
   selfCheck(
     signal: AbortSignal,
     workspace: SandboxWorkspace,
-  ): Promise<{ level: string; workspaceProtection: "direct-path" }>;
+  ): Promise<{
+    level: string;
+    workspaceProtection: "direct-path";
+    accountGenerationDigest?: string;
+  }>;
   execute(
     command: SandboxCommand,
     workspace: SandboxWorkspace,

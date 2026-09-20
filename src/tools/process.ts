@@ -22,7 +22,7 @@ type TerminalControlState =
  * 终端控制序列可能被流任意拆分，不能对每个 chunk 单独正则替换。
  * 此状态机只保留可见字符；CSI 以最终字节结束，OSC/DCS 等字符串以 BEL 或 ST 结束。
  */
-class TerminalTextSanitizer {
+export class TerminalTextSanitizer {
   private state: TerminalControlState = "text";
 
   write(chunk: string) {

@@ -313,7 +313,7 @@ export class ToolRunner {
         process.env,
         undefined,
         process.platform,
-        this.sandbox.status.enabled && process.platform === "win32",
+        false,
       );
       const shell = runtimeShell ?? hostShell;
       const cwd = this.ctx.root;

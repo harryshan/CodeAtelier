@@ -30,7 +30,8 @@ param(
 $ErrorActionPreference = "Stop"
 $RepositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 $NetworkManager = Join-Path $RepositoryRoot "dist\native\windows-x64\codeatelier-sandbox-network.exe"
-$StatePath = Join-Path $DataRoot "installation.json"
+$Supervisor = Join-Path $RepositoryRoot "dist\native\windows-x64\codeatelier-sandbox-supervisor.exe"
+$StatePath = Join-Path $DataRoot "installation.state"
 $AccountDescription = "CodeAtelier dedicated sandbox runtime account"
 $WelcomeRegistry = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\SpecialAccounts\UserList"
 $DpapiEntropy = [Text.Encoding]::UTF8.GetBytes("CodeAtelier.WindowsSandbox.Secret.v1")
@@ -103,8 +104,20 @@ function Read-InstallationState {
     if (-not (Test-Path -LiteralPath $StatePath -PathType Leaf)) {
         throw "Sandbox installation state 不存在。"
     }
-    $State = Get-Content -LiteralPath $StatePath -Raw | ConvertFrom-Json
-    if ($State.version -ne 1 -or -not $State.accountSid -or -not $State.accountName) {
+    $Values = @{}
+    foreach ($Line in Get-Content -LiteralPath $StatePath) {
+        $Separator = $Line.IndexOf('=')
+        if ($Separator -lt 1) {
+            throw "Sandbox installation state 包含非法行。"
+        }
+        $Key = $Line.Substring(0, $Separator)
+        if ($Values.ContainsKey($Key)) {
+            throw "Sandbox installation state 包含重复字段。"
+        }
+        $Values[$Key] = $Line.Substring($Separator + 1)
+    }
+    $State = [pscustomobject]$Values
+    if ($State.version -ne "1" -or -not $State.accountSid -or -not $State.accountName) {
         throw "Sandbox installation state 版本或字段无效。"
     }
     return $State
@@ -113,8 +126,8 @@ function Read-InstallationState {
 function Invoke-NetworkManager {
     param([string[]]$Arguments)
 
-    if (-not (Test-Path -LiteralPath $NetworkManager -PathType Leaf)) {
-        throw "缺少原生 WFP manager；请先运行 pnpm sandbox:native:build。"
+    if (-not (Test-Path -LiteralPath $NetworkManager -PathType Leaf) -or -not (Test-Path -LiteralPath $Supervisor -PathType Leaf)) {
+        throw "缺少原生 WFP manager 或 supervisor；请先运行 pnpm sandbox:native:build。"
     }
     & $NetworkManager @Arguments
     if ($LASTEXITCODE -ne 0) {
@@ -184,6 +197,9 @@ function Remove-Installation {
 
 function Install-Sandbox {
     Assert-Administrator
+    if ($AccountName -notmatch '^[A-Za-z0-9_.-]{1,64}$') {
+        throw "Sandbox 账户名只允许 1～64 个 ASCII 字母、数字、点、下划线或连字符。"
+    }
     if (-not (Test-Path -LiteralPath $NetworkManager -PathType Leaf)) {
         throw "缺少原生 WFP manager；请先运行 pnpm sandbox:native:build。"
     }
@@ -206,18 +222,20 @@ function Install-Sandbox {
         New-Item -ItemType Directory -Force -Path $DataRoot | Out-Null
         Set-StateDirectoryAcl -Path $DataRoot
         $State = [ordered]@{
-            version = 1
+            version = "1"
             accountName = $AccountName
             accountSid = $Account.SID.Value
             generationId = [guid]::NewGuid().ToString("D")
-            relayPortV4 = $RelayPortV4
-            relayPortV6 = $RelayPortV6
+            relayPortV4 = [string]$RelayPortV4
+            relayPortV6 = [string]$RelayPortV6
             protectedPassword = Protect-Password -Password $Password
             installedBySid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
             installedAt = [DateTimeOffset]::UtcNow.ToString("O")
+            supervisorSha256 = (Get-FileHash -LiteralPath $Supervisor -Algorithm SHA256).Hash.ToLowerInvariant()
+            networkSha256 = (Get-FileHash -LiteralPath $NetworkManager -Algorithm SHA256).Hash.ToLowerInvariant()
         }
         $TemporaryState = "$StatePath.tmp"
-        $State | ConvertTo-Json | Set-Content -LiteralPath $TemporaryState -Encoding UTF8
+        $State.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" } | Set-Content -LiteralPath $TemporaryState -Encoding utf8NoBOM
         Move-Item -LiteralPath $TemporaryState -Destination $StatePath -Force
 
         Invoke-NetworkManager -Arguments @("--wfp-persistent-remove")

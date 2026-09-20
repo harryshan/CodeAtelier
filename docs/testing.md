@@ -75,6 +75,8 @@
 
 产品实现新增无管理员副作用的 Sandbox 单元覆盖：AccessManifest 对工作区、显式读写根和 Git 配置文件固定对象身份并拒绝链接/模式冲突；Git 配置图按两个 global 入口递归解析 `include` 与适用的 `gitdir/gitdir/i includeIf`，对循环、未知条件、链接和资源上限安全拒绝；account generation 状态机验证 1～4 个不同工作区并发、同工作区串行、共享 grant 引用计数、epoch 防重放和整代 quarantine。原生构建脚本已在本机 MSVC x64 下生成 WFP manager 与 restricted runner；PowerShell build/install/recover 均通过语法解析。上述结果仍不等同于提升安装、产品 Runtime 或真实 ACL/WFP 集成通过。
 
+原生 Runtime 增量另覆盖：固定 magic/version 的有界二进制执行帧、绝对路径/argv/时限边界、installation state 与两个原生二进制 SHA-256 复核、原生自检成功/篡改拒绝，以及 factory 从 WSL 参考实现切换到专用账户 Runtime。MSVC 已成功构建同一二进制的 supervisor/bootstrap：固定 self-check/execute/bootstrap 模式、DPAPI 解密、账户/WFP 自检、PID 核对 Named Pipe、restricted token、Job、Broker stdin 断连取消和唯一 SID ACE 撤销。真实提升安装被当前非管理员自动化上下文拒绝，UAC 子进程未获确认且只读复核证明没有创建账户或 state；因此这里仍只记录“构建与无副作用契约通过”，不记录产品 E2E 通过。
+
 ## 自举验收
 
 `tests/bootstrap.test.ts` 覆盖固定测试命令的精确审批及错误路径、参数、shell、非命令请求拒绝。真实源码任务使用独立的手动脚本，不依赖默认 CI 密钥；准备模式不调用模型。运行与判定见 [bootstrap.md](bootstrap.md)。脚本也纳入 TypeScript 检查。

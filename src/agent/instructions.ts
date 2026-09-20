@@ -51,7 +51,7 @@ export async function createInstructions(
 
   const sandboxShellGuidance =
     sandboxEnabled && process.platform === "win32"
-      ? "Sandbox inspect profile is enabled: run_command executes in a Linux WSL2 environment through POSIX /bin/sh -c, not PowerShell or cmd. Use POSIX command syntax and Linux paths relative to the workspace. Host search probes may not exist inside the sandbox; prefer grep or find when a POSIX search command is needed."
+      ? "Windows Sandbox mode is requested: when its native self-check succeeds, run_command uses the normal Windows shell syntax inside the dedicated restricted Runtime; if preflight safely falls back, the same command syntax continues under the host user with a visible warning."
       : "";
 
   const behavior = [

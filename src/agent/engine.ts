@@ -136,7 +136,7 @@ export class Engine {
     );
     this.sandbox = new SandboxBroker(
       config.sandbox,
-      createSandboxRuntime(config.sandbox),
+      createSandboxRuntime(config.sandbox, process.platform, this.sandboxLog),
       this.sandboxLog,
     );
     this.memories = new ProjectMemoryService(config.directory, log);

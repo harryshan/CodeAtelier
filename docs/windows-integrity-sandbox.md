@@ -171,7 +171,7 @@ Sandbox 是优先执行模式，不是任务可用性的硬前置条件。每次
 | -------------- | ------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
 | W0：契约       | 已部分实现：公开实际状态、按任务宿主 fallback、执行后不重放、独立日志、命令 executionInstance/PID 账本、Runtime→Broker 命令 grant/模型代理、不可变 AccessManifest、Git global/include 图和账户 generation/lease 状态机；仍缺原生 ACL/进程接线与 supervisor 恢复账本 | 关闭路径保持兼容；自检前失败醒目提示并记录宿主 fallback；grant 精确绑定且单次消费；Sandbox 模型 trace 不含原文；已执行/未知结果不重放 |
 | W1：安装与身份 | 已有产品构建与提升脚本：固定账户、CurrentUser DPAPI secret、状态 DACL、固定端口持久 WFP 的 install/verify/uninstall/recover；尚未以产品账户完成提升验收，也未接 Runtime supervisor | 宿主用户网络不受影响；Sandbox SID 的 V4/V6 直接出站均阻断；loopback 只到固定端点                                                             |
-| W2：文件与监督 | ACL/grant table、`WRITE_RESTRICTED` token/default DACL、每实例 execution/root capability/desktop/Job | 并发实例互相可读且可能互相干扰，但直接及后代不可跨 capability 根写入；共享 logon/宽泛兼容 SID 不绕过写边界；共享 ACE 正确引用计数；孤儿 generation 全量排空 |
+| W2：文件与监督 | 已接入单实例 supervisor：有界二进制控制帧、DPAPI 凭据、专用账户 bootstrap、`WRITE_RESTRICTED` token/default DACL、execution/root capability、原对象 handle、Job、Broker 断连终止和唯一 SID ACE 撤销；Broker 已使用 generation/lease/grant table。仍缺全部 manifest read/write root、Git config 投影、private desktop、低完整性补强和提升环境产品验收 | 并发实例互相可读且可能互相干扰，但直接及后代不可跨 capability 根写入；共享 logon/宽泛兼容 SID 不绕过写边界；共享 ACE 正确引用计数；孤儿 generation 全量排空 |
 | W3：Broker IPC | pipe 身份、typed capability、配额、模型/session adapter                                     | 重放、错误映像/Job/token、畸形帧安全拒绝                                                                                                     |
 | W4：外部写入   | 版本化单对象写入、结果清洗、审批绑定                                                        | TOCTOU、reparse、对象替换、敏感日志和超限失败路径                                                                                            |
 | W5：Git push   | PushSpec、单用途 Runner、relay/proxy、短期凭据                                              | 无 WFP 临时放宽；其它进程不能复用；仅确认 host 可达；真实 Git 配置绕过失败关闭                                                               |
@@ -205,7 +205,7 @@ W1--W3 通过后才能声明“Windows 专用用户 Sandbox：宿主用户私有
 
 ## 11. 与现有实现的关系
 
-现有 WSL2 bubblewrap `inspect` Runtime 是迁移期参考，不是目标专用用户 Runtime 或验收替代。UI 已区分 `sandboxed`、`host-process-fallback`、`non-isolated` 和 `unknown`；启动前失败会明确告知用户后自动转为宿主 shell，执行开始后的错误不重放。命令执行已持久化 executionInstance、实际模式、PID/类型和结束状态；WSL2 只能提供 launcher PID，目标 supervisor 必须提供真实 Runtime PID 及创建时间。传输无关的 Runtime→Broker 命令 grant 与模型代理、AccessManifest 构建、Git global/include 文件图和 account generation/lease/grant table 已实现并有单元测试；原生安装工具可构建但尚未在产品固定账户上完成提升验收，故 Runtime factory 仍不把它报告为可用 Sandbox。
+现有 WSL2 bubblewrap `inspect` Runtime 只保留为历史参考，Runtime factory 已改用 Windows 专用账户原生实现。UI 已区分 `sandboxed`、`host-process-fallback`、`non-isolated` 和 `unknown`；启动前失败会明确告知用户后自动转为宿主 shell，执行开始后的错误不重放。命令执行已持久化 executionInstance、实际模式、supervisor/Runtime PID 类型和结束状态。传输无关的 Runtime→Broker 命令 grant 与模型代理、AccessManifest 构建、Git global/include 文件图和 account generation/lease/grant table 已实现并有单元测试；原生 supervisor 已接 `run_command`，但安装尚未在产品固定账户上完成提升验收，Git/文件工具、完整 AccessManifest 和 push 仍未接入，故不能把当前增量描述为完整 Sandbox。
 
 原生安装工具入口：
 
@@ -219,4 +219,4 @@ pnpm sandbox:uninstall
 pnpm sandbox:recover
 ```
 
-`sandbox:native:build` 只在 `dist/native/windows-x64` 生成启用 CFG/ASLR/DEP 的 fence manager 与 restricted runner，不修改机器。安装脚本固定使用 `CodeAtelierSandbox`、DPAPI 保护的随机密码、`%ProgramData%\CodeAtelier\Sandbox` 受限状态目录和 42871/42872 回环端口；同名非产品账户会安全拒绝。恢复脚本只删除已记录 SID 且产品描述匹配的账户、固定 WFP GUID 对象、欢迎屏幕值和受控 ProgramData 子目录，不扫描或重置整机防火墙。
+`sandbox:native:build` 只在 `dist/native/windows-x64` 生成启用 CFG/ASLR/DEP 的 fence manager 与 supervisor/bootstrap，不修改机器。安装脚本固定使用 `CodeAtelierSandbox`、DPAPI 保护的随机密码、`%ProgramData%\CodeAtelier\Sandbox\installation.state` 受限状态文件、安装时原生二进制 SHA-256 和 42871/42872 回环端口；同名非产品账户会安全拒绝。恢复脚本只删除已记录 SID 且产品描述匹配的账户、固定 WFP GUID 对象、欢迎屏幕值和受控 ProgramData 子目录，不扫描或重置整机防火墙。

@@ -20,6 +20,7 @@ import { Config } from "../src/config/config.js";
 import { SandboxBroker } from "../src/sandbox/broker.js";
 import { sandboxConfiguration } from "../src/sandbox/config.js";
 import { createSandboxRuntime } from "../src/sandbox/runtime-factory.js";
+import { NativeWindowsSandboxRuntime } from "../src/sandbox/native-windows-runtime.js";
 import { WorkspaceView } from "../src/sandbox/workspace-view.js";
 import { WslInspectRuntime } from "../src/sandbox/wsl-inspect-runtime.js";
 import { commandShell } from "../src/tools/command-shell.js";
@@ -70,7 +71,7 @@ it("parses the startup-only sandbox switch strictly and exposes an honest initia
   });
 });
 
-it("selects the WSL POSIX shell shape only for enabled Windows sandbox commands", () => {
+it("selects the native dedicated-user runtime for enabled Windows", () => {
   expect(commandShell({}, () => false, "win32", true)).toEqual({
     command: "/bin/sh",
     args: ["-c"],
@@ -81,7 +82,7 @@ it("selects the WSL POSIX shell shape only for enabled Windows sandbox commands"
       sandboxConfiguration({ CODEATELIER_SANDBOX_ENABLED: "true" }),
       "win32",
     ),
-  ).toBeInstanceOf(WslInspectRuntime);
+  ).toBeInstanceOf(NativeWindowsSandboxRuntime);
   expect(
     createSandboxRuntime(
       sandboxConfiguration({ CODEATELIER_SANDBOX_ENABLED: "true" }),

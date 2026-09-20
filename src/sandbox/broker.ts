@@ -25,10 +25,13 @@ import type {
 } from "./types.js";
 import { SandboxUnavailableError } from "./types.js";
 import { WorkspaceView } from "./workspace-view.js";
+import { buildAccessManifest } from "./access-manifest.js";
+import { AccountGenerationRegistry } from "./account-generation.js";
 
 export class SandboxBroker {
   private latestStatus: SandboxStatus;
   private fallbackTasks = new Map<string, SandboxStatus>();
+  private accountGeneration?: AccountGenerationRegistry;
 
   constructor(
     private configuration: SandboxConfiguration,
@@ -230,6 +233,8 @@ export class SandboxBroker {
     }
 
     let checked: Awaited<ReturnType<SandboxRuntime["selfCheck"]>>;
+    let manifest: Awaited<ReturnType<typeof buildAccessManifest>>;
+    let acquired: ReturnType<AccountGenerationRegistry["acquire"]> | undefined;
     try {
       this.log?.debug({
         event: "sandbox.self_check_started",
@@ -244,6 +249,33 @@ export class SandboxBroker {
       if (checked.workspaceProtection !== "direct-path") {
         throw new Error("平台 runtime 未证明直接受保护路径防护。");
       }
+
+      manifest = await buildAccessManifest({ workspaceRoot: workspace.root });
+      command.signal.throwIfAborted();
+      const generationDigest = checked.accountGenerationDigest;
+      if (generationDigest) {
+        if (
+          this.accountGeneration &&
+          this.accountGeneration.generationDigest !== generationDigest
+        ) {
+          this.accountGeneration.quarantine("identity_mismatch");
+          throw new Error(
+            "Sandbox account generation 在服务运行期间发生变化。",
+          );
+        }
+
+        this.accountGeneration ??= new AccountGenerationRegistry(
+          generationDigest,
+          4,
+        );
+      }
+
+      acquired = this.accountGeneration?.acquire({
+        executionInstanceId: command.executionInstanceId,
+        kind: "agent-runtime",
+        taskId: command.taskId,
+        accessManifest: manifest,
+      });
     } catch (error) {
       if (command.signal.aborted) {
         throw error;
@@ -283,6 +315,26 @@ export class SandboxBroker {
       level: checked.level,
     });
 
+    if (acquired) {
+      this.log?.info({
+        event: "sandbox.instance_lease.acquired",
+        module: "sandbox",
+        sessionId: command.sessionId,
+        taskId: command.taskId,
+        executionInstanceId: command.executionInstanceId,
+        leaseEpoch: acquired.lease.epoch,
+        grantInstallCount: acquired.install.length,
+      });
+      this.log?.info({
+        event: "sandbox.root_project.started",
+        module: "sandbox",
+        sessionId: command.sessionId,
+        taskId: command.taskId,
+        executionInstanceId: command.executionInstanceId,
+        rootCount: manifest.writeRoots.length + manifest.readRoots.length,
+      });
+    }
+
     try {
       this.record("executing", onStage);
       this.log?.info({
@@ -294,6 +346,22 @@ export class SandboxBroker {
         level: checked.level,
       });
       const result = await this.runtime.execute(command, workspace);
+      if (acquired && this.accountGeneration) {
+        const released = this.accountGeneration.releaseWithManifest(
+          command.executionInstanceId,
+          acquired.lease.epoch,
+          manifest,
+        );
+        this.log?.info({
+          event: "sandbox.root_revoke.completed",
+          module: "sandbox",
+          sessionId: command.sessionId,
+          taskId: command.taskId,
+          executionInstanceId: command.executionInstanceId,
+          grantRevokeCount: released.revoke.length,
+        });
+      }
+
       this.record("collecting", onStage);
       this.record("completed", onStage);
       this.log?.info({
@@ -310,6 +378,18 @@ export class SandboxBroker {
       return { result, status: this.latestStatus };
     } catch (error) {
       if (command.signal.aborted) {
+        if (acquired && this.accountGeneration) {
+          try {
+            this.accountGeneration.releaseWithManifest(
+              command.executionInstanceId,
+              acquired.lease.epoch,
+              manifest,
+            );
+          } catch {
+            this.accountGeneration.quarantine("ledger_inconsistent");
+          }
+        }
+
         throw error;
       }
 
@@ -323,6 +403,19 @@ export class SandboxBroker {
         reason: "平台 Sandbox 执行失败且结果可能未知；当前操作未自动重放。",
         failureCategory: "runtime_execution",
       };
+      if (acquired && this.accountGeneration) {
+        const affected = this.accountGeneration.quarantine("process_unknown");
+        this.log?.error({
+          event: "sandbox.account_generation.quarantined",
+          module: "sandbox",
+          sessionId: command.sessionId,
+          taskId: command.taskId,
+          executionInstanceId: command.executionInstanceId,
+          affectedInstanceCount: affected.length,
+          category: "process_unknown",
+        });
+      }
+
       this.record("failed", onStage);
       this.log?.error({
         event: "sandbox.runtime_execute_failed",
