@@ -172,12 +172,19 @@ function Invoke-NetworkClientProbe {
         [Parameter(Mandatory)]
         [int]$ExpectedExitCode,
         [string]$UserName,
-        [Security.SecureString]$Password
+        [Security.SecureString]$Password,
+        [switch]$RestrictedTree
     )
 
+    $clientArguments = if ($RestrictedTree) {
+        @("--restricted-network-launch", $ClientMode, "$Port")
+    }
+    else {
+        @($ClientMode, "$Port")
+    }
     $client = Start-ProbeProcess `
         -Executable $Executable `
-        -Arguments @($ClientMode, "$Port") `
+        -Arguments $clientArguments `
         -WorkingDirectory $WorkingDirectory `
         -UserName $UserName `
         -Password $Password
@@ -314,6 +321,19 @@ function Invoke-WfpUserProbe {
             -Port $deniedV6Port -WorkingDirectory $runRoot -ExpectedExitCode 20 `
             -UserName $accountName -Password $securePassword
 
+        Invoke-NetworkClientProbe -Executable $probeExecutable -ClientMode "--network-client" `
+            -Port $allowedV4Port -WorkingDirectory $runRoot -ExpectedExitCode 0 `
+            -UserName $accountName -Password $securePassword -RestrictedTree
+        Invoke-NetworkClientProbe -Executable $probeExecutable -ClientMode "--network-client-v6" `
+            -Port $allowedV6Port -WorkingDirectory $runRoot -ExpectedExitCode 0 `
+            -UserName $accountName -Password $securePassword -RestrictedTree
+        Invoke-NetworkClientProbe -Executable $probeExecutable -ClientMode "--network-client" `
+            -Port $deniedV4Port -WorkingDirectory $runRoot -ExpectedExitCode 20 `
+            -UserName $accountName -Password $securePassword -RestrictedTree
+        Invoke-NetworkClientProbe -Executable $probeExecutable -ClientMode "--network-client-v6" `
+            -Port $deniedV6Port -WorkingDirectory $runRoot -ExpectedExitCode 20 `
+            -UserName $accountName -Password $securePassword -RestrictedTree
+
         Set-Content -LiteralPath (Join-Path $controlDirectory "done.txt") -Value "done"
         [void](Complete-ProbeProcess -RunningProcess $controller -ExpectedExitCode 0)
         $controller.Process.Dispose()
@@ -340,7 +360,7 @@ function Invoke-WfpUserProbe {
         $cleanupV6Listener.Stop()
         $cleanupV6Listener = $null
 
-        Write-Host "WFP_USER_DEMO PASS accountSid=$($sandboxSid.Value) hostUnaffected=yes ipv4=yes ipv6=yes allowedLoopbackPort=yes otherLoopbackPortBlocked=yes dynamicCleanupVerified=yes"
+        Write-Host "WFP_USER_DEMO PASS accountSid=$($sandboxSid.Value) hostUnaffected=yes ipv4=yes ipv6=yes allowedLoopbackPort=yes otherLoopbackPortBlocked=yes restrictedDescendant=yes dynamicCleanupVerified=yes"
     }
     finally {
         $plainPassword = $null

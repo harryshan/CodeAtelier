@@ -8,7 +8,7 @@
  * 3. 网络 client、本机 TCP listener 与动态 WFP filter，验证内建 APP_ID 的实际作用范围。
  * 4. 专用账户 WFP controller，用 ALE_USER_ID 在 V4/V6 层分别安装“固定回环端口允许 +
  *    其它连接阻断”，并用控制目录与 PowerShell 编排器同步；编排器负责在临时账户下启动
- *    网络 client，并在 engine 关闭后验证两个地址族恢复连接。
+ *    普通 client 和 restricted Runtime 的网络后代，并在 engine 关闭后验证两个地址族恢复连接。
  * 5. wmain 只负责模式分派，保持每个子进程入口参数固定且易审计。
  *
  * WFP filter 使用动态 session，engine handle 关闭后由 BFE 自动删除。探针只连接本机回环端口，
@@ -301,7 +301,7 @@ bool TokenContainsRestrictedSid(HANDLE token, PSID expected_sid) {
   return false;
 }
 
-bool CreateIpcRestrictedToken(PSID execution_sid, UniqueHandle* output) {
+bool CreateProbeRestrictedToken(PSID execution_sid, UniqueHandle* output) {
   UniqueHandle source;
   HANDLE raw_source = nullptr;
   if (!OpenProcessToken(GetCurrentProcess(),
@@ -314,7 +314,9 @@ bool CreateIpcRestrictedToken(PSID execution_sid, UniqueHandle* output) {
   source.reset(raw_source);
 
   std::vector<BYTE> logon_sid;
-  if (!QueryLogonSid(source.get(), &logon_sid)) {
+  std::vector<BYTE> user_sid;
+  if (!QueryLogonSid(source.get(), &logon_sid) ||
+      !QueryCurrentUserSid(&user_sid)) {
     PrintFailure(L"QueryLogonSid", GetLastError());
     return false;
   }
@@ -326,10 +328,11 @@ bool CreateIpcRestrictedToken(PSID execution_sid, UniqueHandle* output) {
     return false;
   }
 
-  std::array<SID_AND_ATTRIBUTES, 3> restricting{};
+  std::array<SID_AND_ATTRIBUTES, 4> restricting{};
   restricting[0].Sid = execution_sid;
-  restricting[1].Sid = logon_sid.data();
-  restricting[2].Sid = everyone_sid.data();
+  restricting[1].Sid = user_sid.data();
+  restricting[2].Sid = logon_sid.data();
+  restricting[3].Sid = everyone_sid.data();
   HANDLE raw_restricted = nullptr;
   if (!CreateRestrictedToken(source.get(), kRestrictedTokenFlags, 0, nullptr, 0,
                              nullptr, static_cast<DWORD>(restricting.size()),
@@ -643,7 +646,7 @@ bool RunIpcProbe() {
 
   UniqueHandle restricted_token;
   UniqueHandle job;
-  if (!CreateIpcRestrictedToken(execution_sid.get(), &restricted_token) ||
+  if (!CreateProbeRestrictedToken(execution_sid.get(), &restricted_token) ||
       !ConfigureJob(&job)) {
     return false;
   }
@@ -732,6 +735,79 @@ int RunNetworkClient(int address_family, const std::wstring& port_text) {
              << L" connected=" << (result == 0 ? L"yes" : L"no")
              << L" error=" << error << L"\n";
   return result == 0 ? 0 : kNetworkBlockedExitCode;
+}
+
+bool IsNetworkClientMode(const std::wstring& mode) {
+  return mode == L"--network-client" || mode == L"--network-client-v6";
+}
+
+int RunNetworkDescendant(const std::wstring& client_mode,
+                         const std::wstring& port_text) {
+  if (!IsNetworkClientMode(client_mode)) {
+    return 2;
+  }
+  HANDLE raw_token = nullptr;
+  if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &raw_token)) {
+    PrintFailure(L"OpenProcessToken(network descendant)", GetLastError());
+    return 21;
+  }
+  UniqueHandle token(raw_token);
+  if (!IsTokenRestricted(token.get())) {
+    std::wcerr << L"FAIL network descendant token is not restricted\n";
+    return 22;
+  }
+
+  std::wstring image = CurrentExecutablePath();
+  PROCESS_INFORMATION child{};
+  std::wstring arguments = client_mode + L" " + QuoteArgument(port_text);
+  if (image.empty() ||
+      !LaunchProcess(image, arguments, nullptr, nullptr, &child)) {
+    return 23;
+  }
+  UniqueHandle child_process(child.hProcess);
+  UniqueHandle child_thread(child.hThread);
+  DWORD child_exit = 0;
+  if (!WaitForExit(&child, &child_exit)) {
+    return 24;
+  }
+  std::wcout << L"RESTRICTED_NETWORK_PARENT pid=" << GetCurrentProcessId()
+             << L" restricted=yes descendantPid=" << child.dwProcessId
+             << L" descendantExit=" << child_exit << L"\n";
+  return static_cast<int>(child_exit);
+}
+
+int RunRestrictedNetworkLauncher(const std::wstring& client_mode,
+                                 const std::wstring& port_text) {
+  if (!IsNetworkClientMode(client_mode)) {
+    return 2;
+  }
+  std::wstring image = CurrentExecutablePath();
+  SidPointer execution_sid = CreateRandomSid();
+  UniqueHandle restricted_token;
+  UniqueHandle job;
+  if (image.empty() || !execution_sid ||
+      !CreateProbeRestrictedToken(execution_sid.get(), &restricted_token) ||
+      !ConfigureJob(&job)) {
+    return 25;
+  }
+
+  PROCESS_INFORMATION runtime{};
+  std::wstring arguments = L"--network-descendant " + client_mode + L" " +
+                           QuoteArgument(port_text);
+  if (!LaunchProcess(image, arguments, restricted_token.get(), job.get(),
+                     &runtime)) {
+    return 26;
+  }
+  UniqueHandle runtime_process(runtime.hProcess);
+  UniqueHandle runtime_thread(runtime.hThread);
+  DWORD runtime_exit = 0;
+  if (!WaitForExit(&runtime, &runtime_exit)) {
+    return 27;
+  }
+  std::wcout << L"RESTRICTED_NETWORK_LAUNCHER pid=" << GetCurrentProcessId()
+             << L" runtimePid=" << runtime.dwProcessId
+             << L" runtimeExit=" << runtime_exit << L"\n";
+  return static_cast<int>(runtime_exit);
 }
 
 bool StartLoopbackListener(int address_family, UniqueSocket* listener,
@@ -1112,6 +1188,13 @@ int wmain(int argc, wchar_t** argv) {
   if (argc == 3 && std::wstring(argv[1]) == L"--network-client-v6") {
     return RunNetworkClient(AF_INET6, argv[2]);
   }
+  if (argc == 4 && std::wstring(argv[1]) == L"--network-descendant") {
+    return RunNetworkDescendant(argv[2], argv[3]);
+  }
+  if (argc == 4 &&
+      std::wstring(argv[1]) == L"--restricted-network-launch") {
+    return RunRestrictedNetworkLauncher(argv[2], argv[3]);
+  }
   if (argc == 2 && std::wstring(argv[1]) == L"--ipc") {
     return RunIpcProbe() ? 0 : 1;
   }
@@ -1124,6 +1207,7 @@ int wmain(int argc, wchar_t** argv) {
 
   std::wcerr << L"usage: network_ipc_demo.exe --ipc | --wfp | "
                 L"--network-client[-v6] <port> | "
+                L"--restricted-network-launch <client-mode> <port> | "
                 L"--wfp-user-controller <user> <control-directory>\n";
   return 2;
 }
