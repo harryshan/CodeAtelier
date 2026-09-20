@@ -685,6 +685,7 @@ export class Engine {
               kind: record.kind,
               mode: record.mode,
               pidKind: record.pidKind,
+              processCreationTime100ns: record.processCreationTime100ns,
               requested: record.sandboxRequested,
               applied: record.sandboxApplied,
               sideEffectsPossible: record.sideEffectsPossible,

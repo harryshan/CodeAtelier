@@ -107,7 +107,7 @@ export class ToolRunner {
               sessionId: this.ctx.sessionId,
               taskId: this.ctx.taskId,
               tool: "git_push",
-              description: `允许单次 HTTPS push 到 ${spec.host}，目标 ${spec.refspec}。该主机可接收仓库内容，Git 配置及其子进程会在本次网络窗口内运行。`,
+              description: `允许单次 HTTPS push 到 ${spec.host}，目标 ${spec.refspec}，当前对象 ${spec.objectId.slice(0, 12)}。该主机可接收仓库内容，Git 配置、hook 及其子进程会在本次网络窗口内运行。`,
             },
             signal,
           );
@@ -260,6 +260,7 @@ export class ToolRunner {
     const processStarted = (
       pid: number,
       pidKind: ExecutionInstanceRecord["pidKind"],
+      processCreationTime100ns?: string,
     ) => {
       const status = this.sandbox.status;
       publish({
@@ -270,6 +271,7 @@ export class ToolRunner {
         failureCategory: status.failureCategory,
         pid,
         pidKind,
+        processCreationTime100ns,
       });
     };
 

@@ -3,12 +3,13 @@
  * TypeScript Broker 只以固定 argv 启动 self-check/execute，执行请求通过继承 stdin 的有界二进制帧传入；
  * supervisor 使用 DPAPI state、工作区 ACL、Job 和私有 Named Pipe 启动同一二进制的 bootstrap 模式。
  *
- * 1. self-check 核对 state 所属宿主 SID、专用账户 SID/密码、WFP 持久规则和原生二进制存在性。
+ * 1. self-check 核对 state 所属宿主 SID、专用账户 SID/密码、拒绝登录权、WFP 持久规则和原生二进制存在性。
  * 2. execute 生成 execution/root capability SID，向已打开的工作区原对象安装账户与 capability ACE。
  * 3. CreateProcessWithLogonW 以固定 bootstrap 入口启动专用账户进程，先分配 KILL_ON_JOB_CLOSE Job 再恢复。
- * 4. bootstrap 通过只允许宿主/SYSTEM/专用账户且核对 PID 的 Named Pipe 取得命令，创建 WRITE_RESTRICTED token 后启动真实工具。
+ * 4. bootstrap 使用专用账户自身的全新环境块，通过只允许宿主/SYSTEM/专用账户且核对 PID 的 Named Pipe 取得命令，创建 WRITE_RESTRICTED token 后启动真实工具。
  * 5. Broker stdin 关闭、超时或异常会终止 Job；正常/异常退出都按唯一 SID 撤销本次 ACE，清理不确定返回专用错误码。
- * 6. stdout 只承载工具 stdout/stderr；stderr 只输出有界控制记录，不记录命令、路径、SID、密码或工具内容。
+ * 6. Push Runner 仅从宿主 Credential Manager 读取绑定 host 的 HTTPS 凭据，并经同 Job askpass pipe 交付；proxy token 和凭据不进入 argv、配置或工作区。
+ * 7. stdout 只承载工具 stdout/stderr；stderr 只输出有界控制记录，不记录命令、路径、SID、密码或工具内容。
  *
  * restricted token、default DACL、Job 和 capability SID 的底层算法复用已验证探针源；通过宏重命名其 wmain，
  * 探针入口不会暴露在产品二进制的顶层命令分派中。该 supervisor 不提升权限，也不创建账户或 WFP 规则。
@@ -20,6 +21,9 @@
 
 #include <wincrypt.h>
 #include <TlHelp32.h>
+#include <wincred.h>
+#include <ntsecapi.h>
+#include <userenv.h>
 
 #include <atomic>
 #include <map>
@@ -32,6 +36,8 @@ constexpr uint32_t kRequestVersion = 2;
 constexpr DWORD kCleanupFailureExitCode = 70;
 constexpr DWORD kSelfCheckFailureExitCode = 71;
 constexpr DWORD kProtocolFailureExitCode = 72;
+constexpr NTSTATUS kStatusObjectNameNotFound =
+    static_cast<NTSTATUS>(0xC0000034L);
 constexpr size_t kMaximumStringBytes = 64 * 1024;
 constexpr uint32_t kMaximumArguments = 64;
 constexpr uint32_t kMaximumRoots = 96;
@@ -55,6 +61,7 @@ struct ProductRequest {
   std::wstring manifest_digest;
   std::wstring git_global_config;
   std::wstring proxy_url;
+  std::wstring proxy_host;
   std::wstring proxy_token;
   std::wstring askpass_pipe;
   DWORD lease_epoch = 0;
@@ -186,6 +193,7 @@ bool ReadProductRequest(HANDLE handle, ProductRequest* request) {
   if (!ReadFramedString(handle, &request->manifest_digest) ||
       !ReadFramedString(handle, &request->git_global_config) ||
       !ReadFramedString(handle, &request->proxy_url) ||
+      !ReadFramedString(handle, &request->proxy_host) ||
       !ReadFramedString(handle, &request->proxy_token) ||
       !ReadFramedString(handle, &request->askpass_pipe) ||
       !ReadExact(handle, &request->lease_epoch, sizeof(request->lease_epoch)) ||
@@ -213,9 +221,11 @@ bool ReadProductRequest(HANDLE handle, ProductRequest* request) {
          !request->manifest_digest.empty() && request->lease_epoch > 0 &&
          !request->git_global_config.empty() && !request->roots.empty() &&
          (request->proxy_url.empty()
-              ? request->proxy_token.empty() && request->askpass_pipe.empty()
-              : (!request->proxy_token.empty() ||
-                 !request->askpass_pipe.empty()));
+              ? request->proxy_host.empty() && request->proxy_token.empty() &&
+                    request->askpass_pipe.empty()
+              : (!request->proxy_host.empty() &&
+                 (!request->proxy_token.empty() ||
+                  !request->askpass_pipe.empty())));
 }
 
 bool WriteProductRequest(HANDLE handle, const ProductRequest& request) {
@@ -239,6 +249,7 @@ bool WriteProductRequest(HANDLE handle, const ProductRequest& request) {
   if (!WriteFramedString(handle, request.manifest_digest) ||
       !WriteFramedString(handle, request.git_global_config) ||
       !WriteFramedString(handle, request.proxy_url) ||
+      !WriteFramedString(handle, request.proxy_host) ||
       !WriteFramedString(handle, request.proxy_token) ||
       !WriteFramedString(handle, request.askpass_pipe) ||
       !WriteExact(handle, &request.lease_epoch, sizeof(request.lease_epoch)) ||
@@ -479,11 +490,80 @@ bool RunFixedProcess(const std::wstring& executable,
   return GetExitCodeProcess(process_handle.get(), &exit_code) && exit_code == 0;
 }
 
+std::array<const wchar_t*, 4> RequiredDenyRights() {
+  return {L"SeDenyNetworkLogonRight", L"SeDenyBatchLogonRight",
+          L"SeDenyServiceLogonRight", L"SeDenyRemoteInteractiveLogonRight"};
+}
+
+LSA_UNICODE_STRING LsaString(const wchar_t* value) {
+  LSA_UNICODE_STRING result{};
+  result.Buffer = const_cast<PWSTR>(value);
+  result.Length = static_cast<USHORT>(wcslen(value) * sizeof(wchar_t));
+  result.MaximumLength = result.Length + sizeof(wchar_t);
+  return result;
+}
+
+bool AccountRightsMatch(PSID account_sid) {
+  LSA_OBJECT_ATTRIBUTES attributes{};
+  attributes.Length = sizeof(attributes);
+  LSA_HANDLE policy = nullptr;
+  if (LsaOpenPolicy(nullptr, &attributes, POLICY_LOOKUP_NAMES, &policy) != 0) {
+    return false;
+  }
+  PLSA_UNICODE_STRING rights = nullptr;
+  ULONG count = 0;
+  NTSTATUS status = LsaEnumerateAccountRights(policy, account_sid, &rights,
+                                               &count);
+  std::vector<std::wstring> actual;
+  if (status == 0) {
+    for (ULONG index = 0; index < count; ++index) {
+      actual.emplace_back(rights[index].Buffer,
+                          rights[index].Length / sizeof(wchar_t));
+    }
+    LsaFreeMemory(rights);
+  }
+  LsaClose(policy);
+  if (status != 0) {
+    return false;
+  }
+  for (const wchar_t* required : RequiredDenyRights()) {
+    if (std::find(actual.begin(), actual.end(), required) == actual.end()) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool ConfigureAccountRights(PSID account_sid, bool remove) {
+  LSA_OBJECT_ATTRIBUTES attributes{};
+  attributes.Length = sizeof(attributes);
+  LSA_HANDLE policy = nullptr;
+  if (LsaOpenPolicy(nullptr, &attributes,
+                    POLICY_LOOKUP_NAMES | POLICY_CREATE_ACCOUNT,
+                    &policy) != 0) {
+    return false;
+  }
+  auto names = RequiredDenyRights();
+  std::array<LSA_UNICODE_STRING, 4> rights{};
+  for (size_t index = 0; index < names.size(); ++index) {
+    rights[index] = LsaString(names[index]);
+  }
+  NTSTATUS status =
+      remove ? LsaRemoveAccountRights(policy, account_sid, FALSE, rights.data(),
+                                      static_cast<ULONG>(rights.size()))
+             : LsaAddAccountRights(policy, account_sid, rights.data(),
+                                   static_cast<ULONG>(rights.size()));
+  LsaClose(policy);
+  return status == 0 || (remove && status == kStatusObjectNameNotFound);
+}
+
 bool VerifyInstallation(const InstallationState& state,
                         const std::wstring& network_manager,
-                        std::wstring* password) {
+                        std::wstring* password,
+                        bool require_account_rights = true,
+                        bool require_wfp = true) {
   if (CurrentUserSidString() != state.installed_by_sid ||
-      !std::filesystem::is_regular_file(network_manager)) {
+      (require_wfp && !std::filesystem::is_regular_file(network_manager))) {
     return false;
   }
   std::vector<BYTE> account_sid;
@@ -502,7 +582,9 @@ bool VerifyInstallation(const InstallationState& state,
     return false;
   }
   logon_token.reset(raw_token);
-  return RunFixedProcess(network_manager, L"--wfp-persistent-verify");
+  return (!require_account_rights || AccountRightsMatch(account_sid.data())) &&
+         (!require_wfp ||
+          RunFixedProcess(network_manager, L"--wfp-persistent-verify"));
 }
 
 class ObjectGrant {
@@ -782,6 +864,34 @@ class UniqueDesktop {
   HDESK handle_ = nullptr;
 };
 
+class UniqueEnvironment {
+ public:
+  ~UniqueEnvironment() {
+    if (value_ != nullptr) {
+      DestroyEnvironmentBlock(value_);
+    }
+  }
+  void** address() { return &value_; }
+  void* get() const { return value_; }
+
+ private:
+  void* value_ = nullptr;
+};
+
+bool BuildSandboxEnvironment(const std::wstring& account_name,
+                             const std::wstring& password,
+                             UniqueEnvironment* environment) {
+  HANDLE raw_token = nullptr;
+  if (!LogonUserW(account_name.c_str(), L".", password.c_str(),
+                  LOGON32_LOGON_INTERACTIVE, LOGON32_PROVIDER_DEFAULT,
+                  &raw_token)) {
+    return false;
+  }
+  UniqueHandle token(raw_token);
+  return CreateEnvironmentBlock(environment->address(), token.get(), FALSE) !=
+         FALSE;
+}
+
 bool CreatePrivateDesktop(PSID account_sid, PSID execution_sid,
                           PSID capability_sid, std::wstring* desktop_name,
                           UniqueDesktop* desktop) {
@@ -857,6 +967,7 @@ std::wstring BuildCommandLine(const std::wstring& executable,
 bool SetPrivateEnvironment(const std::wstring& private_directory,
                            const std::wstring& git_global_config,
                            const std::wstring& proxy_url,
+                           const std::wstring& proxy_host,
                            const std::wstring& askpass_pipe) {
   std::array<const wchar_t*, 5> names = {L"HOME", L"USERPROFILE",
                                           L"XDG_CONFIG_HOME", L"TEMP",
@@ -869,6 +980,22 @@ bool SetPrivateEnvironment(const std::wstring& private_directory,
   SetEnvironmentVariableW(L"CODEATELIER_API_KEY", nullptr);
   SetEnvironmentVariableW(L"OPENAI_API_KEY", nullptr);
   SetEnvironmentVariableW(L"GITHUB_TOKEN", nullptr);
+  SetEnvironmentVariableW(L"ALL_PROXY", nullptr);
+  SetEnvironmentVariableW(L"all_proxy", nullptr);
+  SetEnvironmentVariableW(L"HTTP_PROXY", nullptr);
+  SetEnvironmentVariableW(L"http_proxy", nullptr);
+  SetEnvironmentVariableW(L"GIT_PROXY_COMMAND", nullptr);
+  SetEnvironmentVariableW(L"GIT_SSH", nullptr);
+  SetEnvironmentVariableW(L"GIT_SSH_COMMAND", nullptr);
+  SetEnvironmentVariableW(L"SSH_AUTH_SOCK", nullptr);
+  SetEnvironmentVariableW(L"GIT_CONFIG_SYSTEM", nullptr);
+  SetEnvironmentVariableW(L"GIT_CONFIG_NOSYSTEM", nullptr);
+  SetEnvironmentVariableW(L"GIT_CONFIG_COUNT", nullptr);
+  for (size_t index = 0; index < 64; ++index) {
+    std::wstring suffix = std::to_wstring(index);
+    SetEnvironmentVariableW((L"GIT_CONFIG_KEY_" + suffix).c_str(), nullptr);
+    SetEnvironmentVariableW((L"GIT_CONFIG_VALUE_" + suffix).c_str(), nullptr);
+  }
   SetEnvironmentVariableW(L"GIT_TERMINAL_PROMPT", L"0");
   SetEnvironmentVariableW(L"GIT_PAGER", L"cat");
   SetEnvironmentVariableW(L"PAGER", L"cat");
@@ -890,15 +1017,75 @@ bool SetPrivateEnvironment(const std::wstring& private_directory,
         !SetEnvironmentVariableW(L"GIT_ASKPASS", executable.c_str()) ||
         !SetEnvironmentVariableW(L"GIT_ASKPASS_REQUIRE", L"force") ||
         !SetEnvironmentVariableW(L"CODEATELIER_ASKPASS_PIPE",
-                                 askpass_pipe.c_str())) {
+                                 askpass_pipe.c_str()) ||
+        !SetEnvironmentVariableW(L"CODEATELIER_PUSH_HOST",
+                                 proxy_host.c_str())) {
       return false;
     }
   } else {
     SetEnvironmentVariableW(L"HTTPS_PROXY", nullptr);
     SetEnvironmentVariableW(L"https_proxy", nullptr);
     SetEnvironmentVariableW(L"CODEATELIER_ASKPASS_PIPE", nullptr);
+    SetEnvironmentVariableW(L"CODEATELIER_PUSH_HOST", nullptr);
   }
   return true;
+}
+
+struct HostCredential {
+  std::wstring username;
+  std::wstring password;
+};
+
+std::wstring CredentialSecret(const CREDENTIALW& credential) {
+  if (credential.CredentialBlob == nullptr ||
+      credential.CredentialBlobSize == 0) {
+    return L"";
+  }
+  bool likely_utf16 =
+      credential.CredentialBlobSize % sizeof(wchar_t) == 0;
+  if (likely_utf16) {
+    size_t zero_high_bytes = 0;
+    for (DWORD index = 1; index < credential.CredentialBlobSize; index += 2) {
+      zero_high_bytes += credential.CredentialBlob[index] == 0 ? 1 : 0;
+    }
+    likely_utf16 = zero_high_bytes * 4 >= credential.CredentialBlobSize;
+  }
+  if (likely_utf16) {
+    size_t character_count =
+        credential.CredentialBlobSize / sizeof(wchar_t);
+    const wchar_t* characters =
+        reinterpret_cast<const wchar_t*>(credential.CredentialBlob);
+    while (character_count > 0 && characters[character_count - 1] == L'\0') {
+      character_count -= 1;
+    }
+    return std::wstring(characters, characters + character_count);
+  }
+  std::string utf8(
+      reinterpret_cast<const char*>(credential.CredentialBlob),
+      credential.CredentialBlobSize);
+  return Utf8ToWide(utf8);
+}
+
+bool LoadHostCredential(const std::wstring& host, HostCredential* output) {
+  std::array<std::wstring, 3> targets = {
+      L"git:https://" + host, L"git:https://" + host + L"/",
+      L"LegacyGeneric:target=git:https://" + host};
+  for (const std::wstring& target : targets) {
+    PCREDENTIALW credential = nullptr;
+    if (!CredReadW(target.c_str(), CRED_TYPE_GENERIC, 0, &credential)) {
+      continue;
+    }
+    std::wstring secret = CredentialSecret(*credential);
+    std::wstring username =
+        credential->UserName == nullptr ? L"" : credential->UserName;
+    CredFree(credential);
+    if (!secret.empty()) {
+      output->username = username.empty() ? L"oauth2" : username;
+      output->password = std::move(secret);
+      return true;
+    }
+  }
+  return false;
 }
 
 bool ProcessBelongsToJob(DWORD process_id, HANDLE job) {
@@ -911,6 +1098,7 @@ bool ProcessBelongsToJob(DWORD process_id, HANDLE job) {
 void ServeAskpass(const std::wstring& pipe_name,
                   SECURITY_ATTRIBUTES* security, HANDLE job,
                   const std::wstring& token,
+                  const std::shared_ptr<HostCredential>& host_credential,
                   const std::shared_ptr<std::atomic_bool>& stop,
                   const std::shared_ptr<std::atomic_bool>& ready) {
   while (!stop->load()) {
@@ -939,6 +1127,10 @@ void ServeAskpass(const std::wstring& pipe_name,
         WriteFramedString(pipe.get(), L"codeatelier");
       } else if (request_kind == 'P') {
         WriteFramedString(pipe.get(), token);
+      } else if (request_kind == 'u' && !host_credential->username.empty()) {
+        WriteFramedString(pipe.get(), host_credential->username);
+      } else if (request_kind == 'p' && !host_credential->password.empty()) {
+        WriteFramedString(pipe.get(), host_credential->password);
       }
     }
     FlushFileBuffers(pipe.get());
@@ -964,10 +1156,16 @@ int RunAskpass(const std::wstring& prompt) {
                                          static_cast<DWORD>(std::size(pipe_name)));
   std::wstring lowered = prompt;
   std::transform(lowered.begin(), lowered.end(), lowered.begin(), towlower);
+  wchar_t host[512]{};
+  DWORD host_length = GetEnvironmentVariableW(
+      L"CODEATELIER_PUSH_HOST", host, static_cast<DWORD>(std::size(host)));
+  bool proxy_prompt = lowered.find(L"127.0.0.1") != std::wstring::npos ||
+                      lowered.find(L"proxy") != std::wstring::npos;
+  bool host_prompt = host_length > 0 && host_length < std::size(host) &&
+                     lowered.find(L"https://" + std::wstring(host)) !=
+                         std::wstring::npos;
   if (length == 0 || length >= std::size(pipe_name) ||
-      (lowered.find(L"127.0.0.1") == std::wstring::npos &&
-       lowered.find(L"proxy") == std::wstring::npos) ||
-      !WaitNamedPipeW(pipe_name, 10000)) {
+      (!proxy_prompt && !host_prompt) || !WaitNamedPipeW(pipe_name, 10000)) {
     return 1;
   }
   UniqueHandle pipe(CreateFileW(pipe_name, GENERIC_READ | GENERIC_WRITE, 0,
@@ -975,7 +1173,9 @@ int RunAskpass(const std::wstring& prompt) {
   if (!pipe) {
     return 1;
   }
-  BYTE kind = lowered.find(L"username") != std::wstring::npos ? 'U' : 'P';
+  bool username_prompt = lowered.find(L"username") != std::wstring::npos;
+  BYTE kind = proxy_prompt ? (username_prompt ? 'U' : 'P')
+                           : (username_prompt ? 'u' : 'p');
   std::wstring response;
   if (!WriteExact(pipe.get(), &kind, sizeof(kind)) ||
       !ReadFramedString(pipe.get(), &response) || response.empty()) {
@@ -1083,6 +1283,7 @@ int RunProductBootstrap(const std::wstring& pipe_name,
   if (!ReadProductRequest(pipe.get(), &request) ||
       !SetPrivateEnvironment(request.private_directory,
                              request.git_global_config, request.proxy_url,
+                             request.proxy_host,
                              request.askpass_pipe)) {
     return 24;
   }
@@ -1113,8 +1314,15 @@ int RunProductBootstrap(const std::wstring& pipe_name,
   }
   UniqueHandle process_handle(process.hProcess);
   UniqueHandle thread_handle(process.hThread);
+  FILETIME created{}, exited{}, kernel{}, user{};
+  ULARGE_INTEGER created_value{};
+  if (GetProcessTimes(process_handle.get(), &created, &exited, &kernel,
+                      &user)) {
+    created_value.LowPart = created.dwLowDateTime;
+    created_value.HighPart = created.dwHighDateTime;
+  }
   std::wcerr << L"CODEATELIER_RUNTIME_STARTED pid=" << process.dwProcessId
-             << L"\n";
+             << L" created100ns=" << created_value.QuadPart << L"\n";
   std::wcerr.flush();
   if (ResumeThread(thread_handle.get()) == static_cast<DWORD>(-1)) {
     TerminateProcess(process_handle.get(), 27);
@@ -1276,8 +1484,10 @@ int RunProductSupervisor(const std::wstring& state_path,
 
   auto askpass_stop = std::make_shared<std::atomic_bool>(false);
   auto askpass_ready = std::make_shared<std::atomic_bool>(false);
+  auto host_credential = std::make_shared<HostCredential>();
   std::thread askpass_thread;
   if (!request.proxy_url.empty()) {
+    LoadHostCredential(request.proxy_host, host_credential.get());
     request.askpass_pipe = MakeProductPipeName();
     if (request.askpass_pipe.empty()) {
       revoke_failed_launch();
@@ -1286,7 +1496,7 @@ int RunProductSupervisor(const std::wstring& state_path,
     }
     askpass_thread = std::thread(ServeAskpass, request.askpass_pipe,
                                  &pipe_security, job.get(), request.proxy_token,
-                                 askpass_stop, askpass_ready);
+                                 host_credential, askpass_stop, askpass_ready);
     auto ready_deadline =
         std::chrono::steady_clock::now() + std::chrono::seconds(5);
     while (!askpass_ready->load() &&
@@ -1305,6 +1515,9 @@ int RunProductSupervisor(const std::wstring& state_path,
   }
   auto stop_askpass = [&]() {
     StopAskpass(request.askpass_pipe, askpass_stop, &askpass_thread);
+    SecureZeroMemory(host_credential->password.data(),
+                     host_credential->password.size() * sizeof(wchar_t));
+    host_credential->password.clear();
   };
 
   std::wstring executable = CurrentExecutablePath();
@@ -1325,10 +1538,19 @@ int RunProductSupervisor(const std::wstring& state_path,
   startup.hStdError = GetStdHandle(STD_ERROR_HANDLE);
   startup.lpDesktop = const_cast<LPWSTR>(desktop_name.c_str());
   PROCESS_INFORMATION bootstrap{};
+  UniqueEnvironment sandbox_environment;
+  if (!BuildSandboxEnvironment(state.account_name, password,
+                               &sandbox_environment)) {
+    stop_askpass();
+    revoke_failed_launch();
+    SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
+    return kSelfCheckFailureExitCode;
+  }
   BOOL created = CreateProcessWithLogonW(
       state.account_name.c_str(), L".", password.c_str(), 0,
       executable.c_str(), mutable_command.data(),
-      CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW, nullptr,
+      CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW,
+      sandbox_environment.get(),
       request.working_directory.c_str(), &startup, &bootstrap);
   SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
   password.clear();
@@ -1435,7 +1657,7 @@ int RunProductRevokeJournal(const std::wstring& state_path,
   InstallationState state;
   std::wstring password;
   if (!ReadInstallationState(state_path, &state) ||
-      !VerifyInstallation(state, network_manager, &password)) {
+      !VerifyInstallation(state, network_manager, &password, false, false)) {
     SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
     return kSelfCheckFailureExitCode;
   }
@@ -1505,7 +1727,7 @@ int TerminateAccountProcesses(const std::wstring& state_path,
   InstallationState state;
   std::wstring password;
   if (!ReadInstallationState(state_path, &state) ||
-      !VerifyInstallation(state, network_manager, &password)) {
+      !VerifyInstallation(state, network_manager, &password, false, false)) {
     SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
     return kSelfCheckFailureExitCode;
   }
@@ -1540,6 +1762,27 @@ int TerminateAccountProcesses(const std::wstring& state_path,
   return 0;
 }
 
+int RunAccountRights(const std::wstring& state_path,
+                     const std::wstring& network_manager, bool remove) {
+  InstallationState state;
+  std::wstring password;
+  if (!ReadInstallationState(state_path, &state) ||
+      !VerifyInstallation(state, network_manager, &password, false, !remove)) {
+    SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
+    return kSelfCheckFailureExitCode;
+  }
+  SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
+  std::vector<BYTE> account_sid;
+  if (!LookupAccountSid(state.account_name, &account_sid) ||
+      !ConfigureAccountRights(account_sid.data(), remove) ||
+      (!remove && !AccountRightsMatch(account_sid.data()))) {
+    return kCleanupFailureExitCode;
+  }
+  std::wcout << L"CODEATELIER_ACCOUNT_RIGHTS "
+             << (remove ? L"REMOVED" : L"INSTALLED") << L"\n";
+  return 0;
+}
+
 }  // namespace
 
 int wmain(int argc, wchar_t* argv[]) {
@@ -1562,6 +1805,12 @@ int wmain(int argc, wchar_t* argv[]) {
   if (argc == 4 &&
       std::wstring(argv[1]) == L"--terminate-account-processes") {
     return TerminateAccountProcesses(argv[2], argv[3]);
+  }
+  if (argc == 4 && std::wstring(argv[1]) == L"--install-account-rights") {
+    return RunAccountRights(argv[2], argv[3], false);
+  }
+  if (argc == 4 && std::wstring(argv[1]) == L"--remove-account-rights") {
+    return RunAccountRights(argv[2], argv[3], true);
   }
   if (argc == 4 && std::wstring(argv[1]) == L"--execute") {
     return RunProductSupervisor(argv[2], argv[3]);

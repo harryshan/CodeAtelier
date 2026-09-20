@@ -2,14 +2,14 @@
  * 把 SandboxBroker 的已审批命令交给 Windows 专用账户 C++ supervisor，并保持禁用/失败时的宿主路径不变。
  * Runtime factory 仅在 Windows 且开关开启时创建本类；selfCheck 必须同时验证安装 state、二进制摘要、账户凭据与 WFP。
  *
- * 1. installationPaths 解析固定产品路径或显式测试覆盖，不从工作区或模型输入选择可执行文件。
+ * 1. installationPaths 解析 ProgramData 下受保护的产品副本或显式测试覆盖，不从工作区或模型输入选择可执行文件。
  * 2. selfCheck 严格读取受限 state 元数据、复核 supervisor/network SHA-256，再调用原生只读自检。
  * 3. encodeRequest 把唯一 execution instance、固定 shell argv、cwd、私有目录和时限编码为有界二进制帧。
- * 4. execute 启动单实例 supervisor，stdout 作为工具输出流，stderr 只解析 runtime PID、完成和固定错误类别。
+ * 4. execute 启动单实例 supervisor，stdout 作为工具输出流，stderr 只解析 runtime PID/创建时间、完成和固定错误类别。
  * 5. 取消或 JS 超时关闭继承 stdin；原生 supervisor 据此终止 Job 并撤销 ACL。清理失败码会抛出未知结果，绝不宿主重放。
  * 6. 临时 HOME/TEMP 只在原生确认撤销后删除；日志与错误不包含命令、路径、SID、端口、密码或工具输出。
  *
- * 该实现当前承载 run_command；Git 与文件工具接入同一 Runtime transport 前，产品文档仍不得宣称完整 Sandbox 已完成。
+ * 该实现当前承载 run_command 和全部 Git 子进程；文件读写仍由 Broker 的固定 schema 与快照编辑器执行。
  */
 
 import { createHash } from "node:crypto";
@@ -63,10 +63,12 @@ export class NativeWindowsSandboxError extends Error {
 function installationPaths(
   environment: NodeJS.ProcessEnv = process.env,
 ): InstallationPaths {
+  const programData = environment.ProgramData;
   const nativeRoot = environment.CODEATELIER_SANDBOX_NATIVE_ROOT
     ? path.resolve(environment.CODEATELIER_SANDBOX_NATIVE_ROOT)
-    : path.resolve(process.cwd(), "dist", "native", "windows-x64");
-  const programData = environment.ProgramData;
+    : programData
+      ? path.join(programData, "CodeAtelier", "Sandbox", "bin")
+      : "";
   const state = environment.CODEATELIER_SANDBOX_STATE_PATH
     ? path.resolve(environment.CODEATELIER_SANDBOX_STATE_PATH)
     : programData
@@ -207,6 +209,7 @@ export function encodeNativeSandboxRequest(input: {
     framedString(manifestDigest),
     framedString(input.access?.gitGlobalConfigPath ?? ""),
     framedString(input.access?.proxyUrl ?? ""),
+    framedString(input.access?.proxyHost ?? ""),
     framedString(input.access?.proxyToken ?? ""),
     framedString(""),
     leaseEpoch,
@@ -406,6 +409,7 @@ export class NativeWindowsSandboxRuntime implements SandboxRuntime {
       access = {
         ...access,
         proxyUrl: relayLease.proxyUrl,
+        proxyHost: command.networkHost,
         proxyToken: relayLease.token,
       };
       this.traces?.instant(
@@ -565,11 +569,11 @@ export class NativeWindowsSandboxRuntime implements SandboxRuntime {
       child.stderr.on("data", (chunk: string) => {
         control = (control + chunk).slice(-16_384);
         for (const match of control.matchAll(
-          /CODEATELIER_RUNTIME_STARTED pid=(\d+)/g,
+          /CODEATELIER_RUNTIME_STARTED pid=(\d+) created100ns=(\d+)/g,
         )) {
           const pid = Number(match[1]);
           if (Number.isSafeInteger(pid) && pid > 0) {
-            command.onProcessStarted(pid, "runtime");
+            command.onProcessStarted(pid, "runtime", match[2]);
             this.log?.info({
               event: "sandbox.runtime_provision.completed",
               module: "sandbox",

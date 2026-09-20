@@ -29,7 +29,7 @@ API 地址、主模型和可选辅助模型没有内置默认值；它们的唯�
 - 可配置模型、步骤和上下文限制；结构化分级日志；已完成或运行中的任务可经受保护的本机接口导出 Perfetto 时间线，用于分析模型、上下文和工具的耗时与关键路径。trace 只记录安全摘要，不保存可重放的原始 prompt 或工具输出。任务开始后另会捕获受保护的本地 replay case，可手动导出并在新目录中复建经完整读取验证的编辑前文件；详情见 [任务 Replay Case](docs/replay-cases.md)。
 - 单一受限 `git` 工具：查看状态、差异、历史、文件和分支；自动暂存/提交指定安全路径，并推送当前分支已校验的 upstream。
 
-当前为初版实现。真实模型已在隔离示例项目完成修复 bug、补充测试和运行验证。详细验证范围见 [验证记录](docs/verification.md)。
+当前为初版实现。真实模型已在隔离示例项目完成修复 bug、补充测试和运行验证。Windows 专用用户 Sandbox 仍为显式开启、需管理员安装的预览能力；macOS/Linux 不加载该实现，即使设置开关也保持原有 non-isolated 路径。详细验证范围见 [验证记录](docs/verification.md)。
 
 ## 开发
 
@@ -47,14 +47,14 @@ pnpm exec playwright install chromium
 pnpm test:e2e
 ```
 
-初版仍以应用层审批为主：低成本模型的 `approve` 结果不绕过执行器的路径、Git、提权和并发校验，关闭 Sandbox 时获准命令以本机用户权限运行，适用于你信任的项目。Windows 正在实现 [专用用户 Sandbox Runtime 与 Broker 架构](docs/windows-integrity-sandbox.md)：一次性提升安装创建单一 `CodeAtelierSandbox` 低权限账户及按其 SID 的持久 WFP fence；C++ supervisor 再以每实例 `WRITE_RESTRICTED` token、根 capability、Job Object、私有 desktop 和显式 ACL 运行未修改的 Git、shell 与编译器。Runtime 不继承宿主用户私有 profile/凭据，并新增工作区、显式 read/write roots、产品依赖和精确只读宿主 Git config/include 图的权限；`Everyone`/`Authenticated Users` 等既有 ACL 仍可能允许额外读取，因此它不是纯读取 allowlist。Sandbox 沿用 1～4 个不同工作区并发和同工作区串行；单账户使活动授权根形成跨任务读取并集，同账户 peer 还可能终止、注入或检查其它 Runtime。不同对话不是彼此的 OS 安全边界；每实例 capability 只承诺经验证的直接及后代文件写入限制。工作区内不额外保护 `.git`/`.env`。普通 Runtime 无直接命令网络，确认后的 HTTPS push 使用认证 Broker CONNECT relay；WFP 在 push 时也不放宽。`run_command` 和全部 Git 已接入原生 Runtime，ACL/配置投影、恢复 journal、relay 与 tracing 也已有实现和局部测试；产品固定账户的提升安装、真实 ACL/WFP/CONNECT/push 及仓库凭据仍未完成端到端验收，因此目前不能把 Sandbox 描述为完整可用。当前 WSL2 `inspect` 仅保留为历史记录，见 [旧 WSL2 Sandbox 档案](docs/sandbox.md)。当前模型仍只可主动调用单一、参数受限的 `git` 工具：它检查 worktree、路径、revision 和 upstream，并禁止强推、指定远程/分支目标、重置或创建 PR；Git 仓库配置仍不是系统沙箱。
+初版仍以应用层审批为主：低成本模型的 `approve` 结果不绕过执行器的路径、Git、提权和并发校验，关闭 Sandbox 时获准命令以本机用户权限运行，适用于你信任的项目。Windows 正在实现 [专用用户 Sandbox Runtime 与 Broker 架构](docs/windows-integrity-sandbox.md)：一次性提升安装创建单一 `CodeAtelierSandbox` 低权限账户及按其 SID 的持久 WFP fence，把原生 supervisor/WFP manager 复制到受保护的 ProgramData 目录，并配置拒绝网络、batch、service 和远程交互登录权；C++ supervisor 再以每实例 `WRITE_RESTRICTED` token、根 capability、Job Object、私有 desktop 和显式 ACL 运行未修改的 Git、shell 与编译器。Runtime 不继承宿主用户私有 profile/凭据，并新增工作区、显式 read/write roots、产品依赖和精确只读宿主 Git config/include 图的权限；`Everyone`/`Authenticated Users` 等既有 ACL 仍可能允许额外读取，因此它不是纯读取 allowlist。Sandbox 沿用 1～4 个不同工作区并发和同工作区串行；单账户使活动授权根形成跨任务读取并集，同账户 peer 还可能终止、注入或检查其它 Runtime。不同对话不是彼此的 OS 安全边界；每实例 capability 只承诺经验证的直接及后代文件写入限制。工作区内不额外保护 `.git`/`.env`。普通 Runtime 无直接命令网络，确认后的 HTTPS push 使用认证 Broker CONNECT relay；WFP 在 push 时也不放宽。`run_command` 和全部 Git 已接入原生 Runtime，ACL/配置投影、恢复 journal、relay、Credential Manager askpass 适配和 tracing 也已有实现和局部测试；产品固定账户的提升安装、真实 ACL/WFP/CONNECT/push 仍未完成端到端验收，因此目前不能把 Sandbox 描述为完整可用。当前 WSL2 `inspect` 仅保留为历史记录，见 [旧 WSL2 Sandbox 档案](docs/sandbox.md)。当前模型仍只可主动调用单一、参数受限的 `git` 工具：它检查 worktree、路径、revision 和 upstream，并禁止强推、指定远程/分支目标、重置或创建 PR；Git 仓库配置仍不是系统沙箱。
 
 ## 文档
 
 - [AGENTS.md](AGENTS.md)：开发 agent 的工作约定。
 - [需求与范围](docs/requirements.md)
 - [架构](docs/architecture.md)
-- [Windows 专用用户 Sandbox Runtime 与 Broker 架构（目标设计，尚未实现）](docs/windows-integrity-sandbox.md)
+- [Windows 专用用户 Sandbox Runtime 与 Broker 架构（预览实现，待提升验收）](docs/windows-integrity-sandbox.md)
 - [Windows 专用 Sandbox 用户最小验证](experiments/windows-sandbox-user-demo/README.md)
 - [Windows Restricted-Token 最小可行性探针](experiments/windows-restricted-token-demo/README.md)
 - [旧 WSL2 Sandbox 实施档案](docs/sandbox.md)

@@ -4,7 +4,8 @@
  *
  * 1. sandboxConfiguration 严格接受未设置、true 或 false，并为浏览器准备不含敏感信息的初始状态。
  * 2. 未设置或 false 表示保留 V1 宿主执行，状态明确标为 non-isolated。
- * 3. true 表示请求隔离但尚未证明运行时可用，初始状态必须是 unknown；Broker preflight 后才改为 sandboxed 或显式 fallback。
+ * 3. true 只在 Windows 请求专用账户隔离；macOS/Linux 明确保持 non-isolated，不加载或尝试 Windows 后端。
+ * 4. Windows true 表示请求隔离但尚未证明运行时可用，Broker preflight 后才改为 sandboxed 或显式 fallback。
  *
  * 非法值会在服务构造 Config 时立即失败；运行中环境变化不会改写已经创建的配置。
  */
@@ -15,9 +16,9 @@ export const SANDBOX_ENABLED_ENVIRONMENT = "CODEATELIER_SANDBOX_ENABLED";
 
 export function sandboxConfiguration(
   environment: NodeJS.ProcessEnv = process.env,
+  platform = process.platform,
 ): SandboxConfiguration {
   const raw = environment[SANDBOX_ENABLED_ENVIRONMENT];
-  const platform = process.platform;
 
   if (raw === undefined || raw === "" || raw === "false") {
     return {
@@ -35,6 +36,21 @@ export function sandboxConfiguration(
   }
 
   if (raw === "true") {
+    if (platform !== "win32") {
+      return {
+        enabled: false,
+        initialStatus: {
+          enabled: false,
+          requested: false,
+          applied: false,
+          mode: "non-isolated",
+          platform,
+          level: null,
+          reason: "Windows 专用账户 Sandbox 在 macOS/Linux 上已禁用。",
+        },
+      };
+    }
+
     return {
       enabled: true,
       initialStatus: {

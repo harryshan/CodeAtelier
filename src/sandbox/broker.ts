@@ -67,6 +67,7 @@ export class SandboxBroker {
       state: record.state,
       pid: record.pid,
       pidKind: record.pidKind,
+      processCreationTime100ns: record.processCreationTime100ns,
       requested: record.sandboxRequested,
       applied: record.sandboxApplied,
       failureCategory: record.failureCategory,

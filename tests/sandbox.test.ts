@@ -71,6 +71,25 @@ it("parses the startup-only sandbox switch strictly and exposes an honest initia
   });
 });
 
+it("keeps the Windows sandbox implementation disabled on macOS and Linux", () => {
+  for (const platform of ["darwin", "linux"] as const) {
+    expect(
+      sandboxConfiguration({ CODEATELIER_SANDBOX_ENABLED: "true" }, platform),
+    ).toEqual({
+      enabled: false,
+      initialStatus: {
+        enabled: false,
+        requested: false,
+        applied: false,
+        mode: "non-isolated",
+        platform,
+        level: null,
+        reason: "Windows 专用账户 Sandbox 在 macOS/Linux 上已禁用。",
+      },
+    });
+  }
+});
+
 it("selects the native dedicated-user runtime for enabled Windows", () => {
   expect(commandShell({}, () => false, "win32", true)).toEqual({
     command: "/bin/sh",

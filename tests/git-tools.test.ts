@@ -63,6 +63,7 @@ async function createFixture(options: FixtureOptions = {}) {
         "remote get-url --push origin",
         options.remoteUrl ?? "https://example.test/repo.git",
       ],
+      ["rev-parse HEAD", "a".repeat(40)],
       [
         "--no-optional-locks diff --name-only -z --no-ext-diff --no-textconv --",
         "",
@@ -345,7 +346,8 @@ it("automatically pushes only the checked configured upstream", async () => {
     ["config", "--get", "branch.main.remote"],
     ["config", "--get", "branch.main.merge"],
     ["remote", "get-url", "--push", "origin"],
-    ["push", "--porcelain", "--no-verify", "origin", "HEAD:refs/heads/main"],
+    ["rev-parse", "HEAD"],
+    ["push", "--porcelain", "origin", "HEAD:refs/heads/main"],
   ]);
   expect(schemas.git.safeParse({ action: "push", force: true }).success).toBe(
     false,

@@ -31,6 +31,7 @@ function interruptedExecutionOutput(record: any) {
       state: record.state,
       pid: Number.isSafeInteger(record.pid) ? record.pid : undefined,
       pidKind: record.pidKind,
+      processCreationTime100ns: record.processCreationTime100ns,
       sandboxRequested: record.sandboxRequested === true,
       sandboxApplied: record.sandboxApplied === true,
       failureCategory: record.failureCategory,

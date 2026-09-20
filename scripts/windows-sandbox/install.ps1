@@ -5,8 +5,9 @@ Installs, verifies, repairs, or uninstalls the CodeAtelier Windows Sandbox accou
 .DESCRIPTION
 This is the only elevated product entrypoint for persistent Sandbox machine
 state. It creates one fixed low-privilege local account, protects its random
-password with CurrentUser DPAPI, installs the account-SID WFP fence through the
-fixed native manager, and writes a versioned state file with a restrictive ACL.
+password with CurrentUser DPAPI, installs deny-logon rights and the account-SID
+WFP fence, copies the native binaries into a protected ProgramData directory,
+and writes a versioned state file with a restrictive ACL and binary hashes.
 
 Install/Repair are transactional at the script level: a failure invokes the
 same narrow recovery routine and reports any residual objects. Verify is read
@@ -29,8 +30,11 @@ param(
 
 $ErrorActionPreference = "Stop"
 $RepositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
-$NetworkManager = Join-Path $RepositoryRoot "dist\native\windows-x64\codeatelier-sandbox-network.exe"
-$Supervisor = Join-Path $RepositoryRoot "dist\native\windows-x64\codeatelier-sandbox-supervisor.exe"
+$BuildNetworkManager = Join-Path $RepositoryRoot "dist\native\windows-x64\codeatelier-sandbox-network.exe"
+$BuildSupervisor = Join-Path $RepositoryRoot "dist\native\windows-x64\codeatelier-sandbox-supervisor.exe"
+$InstalledBinaryRoot = Join-Path $DataRoot "bin"
+$NetworkManager = Join-Path $InstalledBinaryRoot "codeatelier-sandbox-network.exe"
+$Supervisor = Join-Path $InstalledBinaryRoot "codeatelier-sandbox-supervisor.exe"
 $StatePath = Join-Path $DataRoot "installation.state"
 $AccountDescription = "CodeAtelier dedicated sandbox runtime account"
 $WelcomeRegistry = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\SpecialAccounts\UserList"
@@ -89,6 +93,25 @@ function Set-StateDirectoryAcl {
     Set-Acl -LiteralPath $Path -AclObject $Acl
 }
 
+function Set-BinaryDirectoryAcl {
+    param(
+        [string]$Path,
+        [Security.Principal.SecurityIdentifier]$SandboxAccountSid
+    )
+
+    Set-StateDirectoryAcl -Path $Path -SandboxAccountSid $SandboxAccountSid
+    $Acl = Get-Acl -LiteralPath $Path
+    $Rule = [Security.AccessControl.FileSystemAccessRule]::new(
+        $SandboxAccountSid,
+        [Security.AccessControl.FileSystemRights]::ReadAndExecute,
+        [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit,
+        [Security.AccessControl.PropagationFlags]::None,
+        [Security.AccessControl.AccessControlType]::Allow
+    )
+    [void]$Acl.AddAccessRule($Rule)
+    Set-Acl -LiteralPath $Path -AclObject $Acl
+}
+
 function New-RandomPassword {
     $Random = [Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerator]::GetBytes(48))
     return "Ca1!$Random"
@@ -138,7 +161,7 @@ function Invoke-NetworkManager {
     param([string[]]$Arguments)
 
     if (-not (Test-Path -LiteralPath $NetworkManager -PathType Leaf) -or -not (Test-Path -LiteralPath $Supervisor -PathType Leaf)) {
-        throw "缺少原生 WFP manager 或 supervisor；请先运行 pnpm sandbox:native:build。"
+        throw "受保护安装目录缺少原生 WFP manager 或 supervisor。"
     }
     & $NetworkManager @Arguments
     if ($LASTEXITCODE -ne 0) {
@@ -176,6 +199,7 @@ function Test-Installation {
         throw "专用账户身份与 installation state 不匹配。"
     }
     Invoke-NetworkManager -Arguments @("--wfp-persistent-verify")
+    Invoke-Supervisor -Arguments @("--self-check", $StatePath, $NetworkManager)
     Write-Host "SANDBOX_INSTALL_VERIFY PASS version=1"
 }
 
@@ -186,6 +210,7 @@ function Remove-Installation {
         $State = Read-InstallationState
         Invoke-Supervisor -Arguments @("--terminate-account-processes", $StatePath, $NetworkManager)
         Invoke-Supervisor -Arguments @("--revoke-journal", $StatePath, $NetworkManager)
+        Invoke-Supervisor -Arguments @("--remove-account-rights", $StatePath, $NetworkManager)
     }
 
     if (Test-Path -LiteralPath $NetworkManager -PathType Leaf) {
@@ -225,7 +250,7 @@ function Install-Sandbox {
     if ($AccountName -notmatch '^[A-Za-z0-9_.-]{1,64}$') {
         throw "Sandbox 账户名只允许 1～64 个 ASCII 字母、数字、点、下划线或连字符。"
     }
-    if (-not (Test-Path -LiteralPath $NetworkManager -PathType Leaf)) {
+    if (-not (Test-Path -LiteralPath $BuildNetworkManager -PathType Leaf) -or -not (Test-Path -LiteralPath $BuildSupervisor -PathType Leaf)) {
         throw "缺少原生 WFP manager；请先运行 pnpm sandbox:native:build。"
     }
 
@@ -251,6 +276,10 @@ function Install-Sandbox {
             New-Item -ItemType Directory -Force -Path $RuntimeDirectory | Out-Null
             Set-StateDirectoryAcl -Path $RuntimeDirectory -SandboxAccountSid $Account.SID
         }
+        New-Item -ItemType Directory -Force -Path $InstalledBinaryRoot | Out-Null
+        Set-BinaryDirectoryAcl -Path $InstalledBinaryRoot -SandboxAccountSid $Account.SID
+        Copy-Item -LiteralPath $BuildNetworkManager -Destination $NetworkManager
+        Copy-Item -LiteralPath $BuildSupervisor -Destination $Supervisor
         $State = [ordered]@{
             version = "1"
             accountName = $AccountName
@@ -270,6 +299,7 @@ function Install-Sandbox {
 
         Invoke-NetworkManager -Arguments @("--wfp-persistent-remove")
         Invoke-NetworkManager -Arguments @("--wfp-persistent-install", $AccountName, [string]$RelayPortV4, [string]$RelayPortV6)
+        Invoke-Supervisor -Arguments @("--install-account-rights", $StatePath, $NetworkManager)
         Test-Installation
         Write-Host "SANDBOX_INSTALL PASS version=1"
     }

@@ -72,6 +72,7 @@ export interface ExecutionInstanceRecord {
   sandboxApplied: boolean;
   pid?: number;
   pidKind?: ExecutionProcessKind;
+  processCreationTime100ns?: string;
   failureCategory?: SandboxFailureCategory;
   sideEffectsPossible?: boolean;
 }
@@ -95,7 +96,11 @@ export interface SandboxCommand {
   timeoutMs: number;
   outputLimit: number;
   onOutput: (text: string) => void;
-  onProcessStarted: (pid: number, kind: ExecutionProcessKind) => void;
+  onProcessStarted: (
+    pid: number,
+    kind: ExecutionProcessKind,
+    processCreationTime100ns?: string,
+  ) => void;
 }
 
 export interface SandboxNativeAccess {
@@ -105,6 +110,7 @@ export interface SandboxNativeAccess {
   gitGlobalConfigPath?: string;
   proxyUrl?: string;
   proxyToken?: string;
+  proxyHost?: string;
 }
 
 export interface SandboxPreparedAccess {

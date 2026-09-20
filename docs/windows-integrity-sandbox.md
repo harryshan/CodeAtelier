@@ -1,6 +1,6 @@
 # Windows 专用用户 Sandbox Runtime 与 Broker 架构
 
-状态：已确认的 Windows Sandbox 目标设计，正在按 W0--W6 实现，尚未完成平台验收或成为默认可用能力。本文替代 D098 的“当前用户 restricted-token 广泛读取”设计；现有 WSL2 `inspect` 和 Windows feasibility demo 只保留为历史或局部证据。
+状态：Windows 专用用户 Sandbox 的预览实现已接入命令与 Git 路径，正在按 W0--W6 验收；固定账户的提升安装和真实 push 尚未完成平台验收，因此它不是默认可用能力。macOS/Linux 明确禁用本实现和相关原生测试，继续使用既有 non-isolated 路径。本文替代 D098 的“当前用户 restricted-token 广泛读取”设计；现有 WSL2 `inspect` 和 Windows feasibility demo 只保留为历史或局部证据。
 
 ## 1. 目标与安全边界
 
@@ -63,6 +63,7 @@ Broker、supervisor、安装程序和 Sandbox Process 是不同边界。运行�
 
 - 使用随机高熵密码；密码只以 Windows DPAPI/等价系统保护形式保存，存储 DACL 只允许 SYSTEM 和安装该实例的宿主用户，绝不进入 argv、环境、日志、session 或工作区。
 - 不加入 Administrators。首版使用普通 Broker 可调用的 `CreateProcessWithLogonW` 创建本地账户进程，因此不能同时配置 `SeDenyInteractiveLogonRight`；账户以高熵秘密、隐藏欢迎屏幕入口、禁止远程交互/网络/服务登录和 WFP fence 降低被其它入口使用的风险。若本机或域策略禁止这种本地 logon，安装失败；后续若改用提升服务与 batch logon，必须另行审计高权限控制面。
+- 安装器把构建产物复制到 `%ProgramData%\CodeAtelier\Sandbox\bin`，DACL 只允许安装用户、Administrators 和 SYSTEM 修改，Sandbox 账户仅可读取/执行；state 记录安装副本摘要，运行时不执行工作区 `dist` 下可被项目修改的二进制。
 - 不加载宿主用户 profile，不继承其 cookie、SSH agent、凭据管理器、证书私钥或已打开 handle。默认不加载持久 Sandbox profile hive；每个 lease 使用新建的私有 `HOME`/`USERPROFILE`/`XDG_CONFIG_HOME`/`TEMP` 目录。若真实工具兼容性迫使加载专用账户 profile/HKCU，必须先定义可证明的逐租约重置流程，重置失败即隔离账户，不能让前一任务持久化配置影响下一任务。
 - 卸载前必须证明无活跃租约，再撤销 WFP、ACL、profile、secret 和账户；任一步骤失败都报告遗留安全状态。
 
@@ -105,7 +106,7 @@ Broker 的受限解析器只建立文件授权图，不计算 push 目标、不�
 
 Sandbox 的 `HOME`、`USERPROFILE` 和 `XDG_CONFIG_HOME` 指向本次 lease 的私有可写目录。顺序固定的聚合 config 位于 Broker 控制、Runtime 只读且父目录不可写的投影根，并以 `GIT_CONFIG_GLOBAL` 指向它；不能把聚合文件放进可写 HOME 后只收紧文件 ACL，因为 Git/Runtime 仍可能通过父目录替换对象。Git 自身继续解析获准文件中的 include/includeIf，Broker 预解析仅用于先建立授权图。该机制替代默认 global 文件发现，但不禁用 system、local/worktree config，也不对白名单键。真实 Git 最小夹具已通过 system、两个 global 入口、匹配 includeIf、local、worktree 的加载顺序，并证明私有 HOME decoy 不加载、global 写入失败；宿主真实配置图、helper 和证书路径仍须在实现阶段验证，不能证明等价时安全拒绝。
 
-宿主用户的 Credential Manager、SSH agent、用户证书私钥和 per-user helper 状态不会自动可用。HTTPS push 凭据由 Broker 的固定 askpass/credential adapter 按 lease 提供；真实配置中的 helper 仍可能运行，但只能看到 Sandbox 身份获准访问的状态。首版不支持 SSH push。
+宿主用户的 Credential Manager、SSH agent、用户证书私钥和 per-user helper 状态不会自动可用。当前 HTTPS adapter 由宿主 supervisor 只查询与确认 host 对应的 Windows Credential Manager `git:https://<host>` 常用目标，并经只允许同 Job 客户端连接的 askpass pipe 返回；凭据和 proxy token 不进入 argv、环境值、Git 配置、工作区、session 或日志。它不承诺兼容所有 Git Credential Manager 存储形式；找不到凭据时 push 安全失败，真实配置中的 helper 仍可能运行但只能看到 Sandbox 身份获准访问的状态。首版不支持 SSH push。
 
 ## 5. 进程、IPC 与 Broker 能力
 
@@ -170,11 +171,11 @@ Sandbox 是优先执行模式，不是任务可用性的硬前置条件。每次
 | 阶段           | 交付物                                                                                      | 必要证据                                                                                                                                     |
 | -------------- | ------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
 | W0：契约       | 已部分实现：公开实际状态、按任务宿主 fallback、执行后不重放、独立日志、命令 executionInstance/PID 账本、Runtime→Broker 命令 grant/模型代理、不可变 AccessManifest、Git global/include 图和账户 generation/lease 状态机；仍缺原生 ACL/进程接线与 supervisor 恢复账本 | 关闭路径保持兼容；自检前失败醒目提示并记录宿主 fallback；grant 精确绑定且单次消费；Sandbox 模型 trace 不含原文；已执行/未知结果不重放 |
-| W1：安装与身份 | 已有产品构建与提升脚本：固定账户、CurrentUser DPAPI secret、状态 DACL、固定端口持久 WFP 的 install/verify/uninstall/recover；尚未以产品账户完成提升验收，也未接 Runtime supervisor | 宿主用户网络不受影响；Sandbox SID 的 V4/V6 直接出站均阻断；loopback 只到固定端点                                                             |
+| W1：安装与身份 | 已有产品构建与提升脚本：固定账户、CurrentUser DPAPI secret、状态/安装副本 DACL、四项拒绝登录权、固定端口持久 WFP 的 install/verify/uninstall/recover；Runtime 使用受保护安装副本及其摘要。尚未以产品账户完成提升验收 | 宿主用户网络不受影响；Sandbox SID 的 V4/V6 直接出站均阻断；loopback 只到固定端点                                                             |
 | W2：文件与监督 | 已接入 supervisor：二进制 manifest 携带卷/file ID，专用账户 bootstrap 使用仅含 execution/root capability 的 `WRITE_RESTRICTED` token、私有 desktop、Job 与逐对象 ACL；账户 ACE 按 grant table 引用计数，独立 journal 支持崩溃/卸载撤销。Git config 与只读聚合根已纳入 manifest。仍缺提升环境产品验收和复杂对象替换夹具 | 并发实例互相可读且可能互相干扰，但直接及后代不可跨 capability 根写入；共享 logon/宽泛公共 DACL 不绕过写边界；共享 ACE 正确引用计数；孤儿 generation 全量排空 |
 | W3：Broker IPC | pipe 身份、typed capability、配额、模型/session adapter                                     | 重放、错误映像/Job/token、畸形帧安全拒绝                                                                                                     |
 | W4：外部写入   | 版本化单对象写入、结果清洗、审批绑定                                                        | TOCTOU、reparse、对象替换、敏感日志和超限失败路径                                                                                            |
-| W5：Git push   | 已实现 HTTPS PushSpec 分流、逐次审批、`push-runner` executionInstance、固定端口 CONNECT relay、精确 host/DNS/IP/期限/字节限制和只向同 Job askpass helper 交付 proxy token；宿主仓库凭据 adapter 与真实 remote 验收仍缺失 | 无 WFP 临时放宽；其它进程不能复用；仅确认 host 可达；真实 Git 配置绕过失败关闭                                                               |
+| W5：Git push   | 已实现带 source OID 的 HTTPS PushSpec 分流、逐次审批、`push-runner` executionInstance、固定端口 CONNECT relay、精确 host/DNS/IP/期限/字节限制，以及只向同 Job askpass helper 交付 proxy token 和 host-bound WinCred 凭据；其它凭据后端与真实 remote 验收仍缺失 | 无 WFP 临时放宽；其它进程不能复用；仅确认 host 可达；真实 Git 配置绕过失败关闭                                                               |
 | W6：取消与资源 | 已接 Job 的后代终止、PID/内存/CPU/墙钟和输出限制，并持久化 cancelled/unknown；仍缺提升环境强制终止、服务崩溃和整代排空验收 | cancelled/unknown 进入下一轮；后代终止、ACL/账户对账和资源上限真实验证                                                                       |
 | W7：其它平台   | macOS/Linux 对应实现                                                                        | 各平台独立证明，不继承 Windows 结论                                                                                                          |
 
@@ -205,7 +206,7 @@ W1--W3 通过后才能声明“Windows 专用用户 Sandbox：宿主用户私有
 
 ## 11. 与现有实现的关系
 
-现有 WSL2 bubblewrap `inspect` Runtime 只保留为历史参考，Runtime factory 已改用 Windows 专用账户原生实现。UI 已区分 `sandboxed`、`host-process-fallback`、`non-isolated` 和 `unknown`；启动前失败会明确告知用户后自动转为宿主 shell，执行开始后的错误不重放。命令执行已持久化 executionInstance、实际模式、supervisor/Runtime PID 类型和结束状态。传输无关的 Runtime→Broker 命令 grant 与模型代理、完整 AccessManifest/Git 配置投影、account generation/lease/grant table、原生 ACL journal、私有 desktop/Job、受限 Git 路由和认证 CONNECT relay 已接入并有无管理员副作用测试。安装尚未在产品固定账户上完成提升验收；工作区文件工具仍由 Broker 的固定 schema/快照编辑器执行，push 还缺宿主仓库凭据 adapter 和真实 remote 验收，故不能把当前增量描述为完整 Sandbox。
+现有 WSL2 bubblewrap `inspect` Runtime 只保留为历史参考，Runtime factory 已改用 Windows 专用账户原生实现；macOS/Linux 配置会关闭该工厂路径，两个 Windows 原生测试文件也整组跳过。UI 已区分 `sandboxed`、`host-process-fallback`、`non-isolated` 和 `unknown`；启动前失败会明确告知用户后自动转为宿主 shell，执行开始后的错误不重放。命令执行已持久化 executionInstance、实际模式、supervisor/Runtime PID、进程创建时间和结束状态。传输无关的 Runtime→Broker 命令 grant 与模型代理、完整 AccessManifest/Git 配置投影、account generation/lease/grant table、原生 ACL journal、私有 desktop/Job、受限 Git 路由、认证 CONNECT relay 和 WinCred askpass 已接入并有无管理员副作用测试。安装尚未在产品固定账户上完成提升验收；工作区文件工具仍由 Broker 的固定 schema/快照编辑器执行，真实 remote push 尚未验收，故不能把当前增量描述为完整 Sandbox。
 
 原生安装工具入口：
 

@@ -9,7 +9,7 @@
  * 3. workspacePaths 解析真实路径、拒绝敏感/.git/绝对或选项式路径；受控 dotenv 模板需通过内容校验，目录递归检查后代。
  * 4. diff/show/log 仅接受安全 revision 和受校验路径；完整 diff 使用独立硬输出上限，模板相关 diff/show 在输出前再次扫描，避免泄露历史凭据。
  * 5. push 从当前分支的 upstream 配置推导唯一 remote 与 refs/heads 目标，拒绝本地、ext 等不安全 URL，
- *    并禁用 hooks、交互认证提示、GPG 签名和外部 diff/textconv。
+ *    commit 禁用 hooks/GPG，push 保留仓库 hook 语义；两者都禁用交互终端、分页和外部 diff/textconv。
  *
  * Git 仍以当前用户权限访问可信工作区，应用层校验不是操作系统沙箱。add、commit 与 push 由用户授权
  * 自动执行；取消或进程中断时结果可能未知，恢复前必须通过 git 的 status/diff/log 重新核实，不能重放。
@@ -61,6 +61,7 @@ export interface GitPushSpec {
   remoteUrl: string;
   host: string;
   refspec: string;
+  objectId: string;
 }
 
 export type GitPushExecutor = (
@@ -509,6 +510,7 @@ export class GitToolRunner {
       "--push",
       remote,
     ]);
+    const objectId = await this.valueFromGit(["rev-parse", "HEAD"]);
 
     if (!safeRevision(branch) || !/^[A-Za-z0-9._-]+$/.test(remote)) {
       throw new Error(
@@ -529,13 +531,11 @@ export class GitToolRunner {
       );
     }
 
-    const args = [
-      "push",
-      "--porcelain",
-      "--no-verify",
-      remote,
-      `HEAD:${merge}`,
-    ];
+    if (!/^[a-f0-9]{40,64}$/i.test(objectId)) {
+      throw new Error("无法确定待推送提交的对象 ID。");
+    }
+
+    const args = ["push", "--porcelain", remote, `HEAD:${merge}`];
     if (this.executePush) {
       const url = new URL(remoteUrl);
       if (url.protocol !== "https:") {
@@ -548,6 +548,7 @@ export class GitToolRunner {
           remoteUrl,
           host: url.hostname.toLocaleLowerCase(),
           refspec: `HEAD:${merge}`,
+          objectId: objectId.toLocaleLowerCase(),
         },
         args,
         this.ctx.root,
