@@ -149,7 +149,7 @@ export class ToolRunner {
             signal,
           );
           if (!allowed) {
-            throw new Error("用户拒绝了 Sandbox Git push。 ");
+            throw new Error("Sandbox Git push 审批未通过。 ");
           }
         }
 

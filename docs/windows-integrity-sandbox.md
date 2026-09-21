@@ -152,7 +152,7 @@ IPC 通过只证明 Broker 能拒绝未授权 capability；它不构成直接网
 
 每次 push：
 
-1. Agent Runtime 用真实 Git 配置查询预期 upstream、HTTPS URL、source OID 和目标 ref；Broker 规范化为 PushSpec，并由用户逐次确认 host/port、时限、字节上限和“该 host 可能收到 Runner 所有可读内容”的风险。
+1. Agent Runtime 用真实 Git 配置查询预期 upstream、HTTPS URL、source OID 和目标 ref；Broker 规范化为 PushSpec，并沿用低成本模型的 `approve | human review | reject` 逐次审批 host/port、时限、字节上限和“该 host 可能收到 Runner 所有可读内容”的风险；只有 `human review` 才移交用户点击确认。
 2. Agent Runtime 确认 push 是当前工具批次的唯一节点后，通过认证 Runtime IPC 提交 PushSpec，并让 agent loop 在该请求上同步阻塞。Broker 在同一任务下创建新的 `pushRunnerInstanceId`，只运行固定 Git push 入口，不加载 agent loop 或任意 shell；原 Agent Runtime 及其 Job 保持存活，但不获得 Runner 的网络 lease、代理 token、askpass 通道或凭据。其它工作区的 Agent Runtime/Push Runner 可继续运行。
 3. Git 连接同 Job 内固定 relay 的一次性 loopback 端点。relay 通过私有 pipe 向 Broker 证明账户 SID、PID/创建时间、固定映像、父进程/Job、PushSpec 摘要和未消费 lease。
 4. Broker CONNECT 代理只连接确认的 HTTPS host/port；每个新连接重新解析 DNS，拒绝 loopback、link-local、私网、multicast、保留地址和 metadata endpoint，并执行时限/流量上限。代理不解密 TLS、不解析 Git，因此不承诺 URL path、仓库或 ref 边界。

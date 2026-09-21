@@ -967,7 +967,7 @@ export class Engine {
       signal,
     );
     if (!allowed) {
-      throw new Error("用户拒绝了 Sandbox Git push。");
+      throw new Error("Sandbox Git push 审批未通过。");
     }
 
     const executionInstanceId = randomUUID();
@@ -1157,7 +1157,7 @@ export class Engine {
       signal,
     );
     if (!allowed) {
-      throw new Error("用户拒绝了扩展权限命令。");
+      throw new Error("扩展权限命令审批未通过。");
     }
 
     const executionInstanceId = randomUUID();
