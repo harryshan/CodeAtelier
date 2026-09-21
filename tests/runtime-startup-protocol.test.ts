@@ -165,7 +165,7 @@ it.skipIf(process.platform !== "win32")(
           exitCode: 0,
           truncated: false,
         }),
-        executeCapabilityCommand: async () => ({
+        prepareCapabilityCommand: async () => async () => ({
           executionInstanceId: "capability-test",
           output: "",
           exitCode: 0,

@@ -6,8 +6,8 @@
  * 2. start 保存用户消息为 queued；调度器在全局并发上限内启动不同工作区的任务，并对相同真实工作区保持互斥。
  * 3. resume 继续最后一个可恢复任务；cancel 处理用户取消，close 处理服务关闭。
  * 4. 首条 prompt 先用辅助模型生成标题；run 再读取历史和项目规则，准备工具及上下文预算。
- * 5. 为压缩提供 ToolRunner 的安全文件哈希探测；每轮记录上下文准备和请求计量、模型重试、实际模型请求和响应处理，再记录服务实报用量。完整响应保存后校验工具 DAG，再按拓扑关系调度。
- * 6. 宿主模式的危险调用仍经过审批分流；Sandbox Runtime 已有能力内工具免审批，push 与扩展权限命令由 Broker 调用相同的低成本模型三级审批并持久化决定。
+ * 5. 为压缩提供 ToolRunner 的安全文件哈希探测；每轮记录上下文准备和请求计量、模型重试、实际模型请求和响应处理，再记录服务实报用量。完整响应保存后校验工具 DAG，节点先完成准备/审批，实际执行才取得有界 worker 槽。
+ * 6. 宿主模式的危险调用仍经过审批分流；Sandbox Runtime 已有能力内工具免审批，push 与扩展权限命令由 Broker 调用相同的低成本模型三级审批并持久化决定；扩展命令用一次性两阶段 IPC 授权把审批等待留在执行队列外。
  * 7. 工具批次、节点状态和结果都附带批次/调用标识；ToolRunner 确认实际执行开始后才记录工具耗时，并在可复用调度轨道显示执行和结果持久化；退出时将安全 trace 写入会话/任务文件、释放运行期记录并发出 task_end。
  *
  * 模型请求可以重试，但已经执行的工具不能跟着重跑。数据库回滚也撤销不了文件修改或
@@ -818,13 +818,13 @@ export class Engine {
               settings,
               emit,
             ),
-          executeCapabilityCommand: (
+          prepareCapabilityCommand: (
             _runtime,
             request,
             toolCallId,
             requestSignal,
           ) =>
-            this.executeRuntimeCapabilityCommand(
+            this.prepareRuntimeCapabilityCommand(
               task,
               workspace,
               request,
@@ -1118,10 +1118,11 @@ export class Engine {
   }
 
   /**
-   * Broker 审核 Runtime 声明的最小扩展权限，并在独立 restricted Runner 中执行命令。
-   * 声明只接受现有递归目录根和单一 HTTPS host；任何启动前失败都禁止回退到宿主用户权限。
+   * Broker 审核 Runtime 声明的最小扩展权限，返回只可调用一次的 restricted Runner 启动闭包。
+   * 声明只接受现有递归目录根和单一 HTTPS host；调用方取得 Tool worker 槽后才执行闭包，
+   * 且任何启动前失败都禁止回退到宿主用户权限。
    */
-  private async executeRuntimeCapabilityCommand(
+  private async prepareRuntimeCapabilityCommand(
     task: Task,
     workspace: string,
     request: CapabilityCommandRequest,
@@ -1129,7 +1130,7 @@ export class Engine {
     signal: AbortSignal,
     settings: Settings,
     emit: (type: string, data: any) => void,
-  ): Promise<CapabilityCommandResult> {
+  ): Promise<(signal: AbortSignal) => Promise<CapabilityCommandResult>> {
     const normalizeRoots = (roots: string[]) => {
       const seen = new Set<string>();
 
@@ -1216,95 +1217,98 @@ export class Engine {
       throw new Error("扩展权限命令审批未通过。");
     }
 
-    const executionInstanceId = randomUUID();
-    const createdAt = new Date().toISOString();
-    let started = false;
-    const publish = (
-      state:
-        | "created"
-        | "running"
-        | "completed"
-        | "failed"
-        | "cancelled"
-        | "unknown",
-      extra: Record<string, unknown> = {},
-    ) => {
-      const status = this.sandbox.statusFor(task.id, executionInstanceId);
-      const record = {
-        executionInstanceId,
-        toolCallId,
-        kind: "capability-runner" as const,
-        mode:
-          status.mode === "sandboxed"
-            ? ("windows-sandbox-user" as const)
-            : status.mode === "unknown"
-              ? ("unknown" as const)
-              : ("host-process" as const),
-        state,
-        createdAt,
-        updatedAt: new Date().toISOString(),
-        sandboxRequested: true,
-        sandboxApplied: status.mode === "sandboxed",
-        failureCategory: status.failureCategory,
-        ...extra,
-      };
-      emit("execution_instance", record);
-      this.sandbox.recordExecutionInstance(record);
-    };
-
-    publish("created");
-    try {
-      const outcome = await this.sandbox.executeCommand(
-        {
-          sessionId: task.sessionId,
-          taskId: task.id,
+    return async (executionSignal) => {
+      executionSignal.throwIfAborted();
+      const executionInstanceId = randomUUID();
+      const createdAt = new Date().toISOString();
+      let started = false;
+      const publish = (
+        state:
+          | "created"
+          | "running"
+          | "completed"
+          | "failed"
+          | "cancelled"
+          | "unknown",
+        extra: Record<string, unknown> = {},
+      ) => {
+        const status = this.sandbox.statusFor(task.id, executionInstanceId);
+        const record = {
           executionInstanceId,
           toolCallId,
-          kind: "capability-runner",
-          networkHost,
-          readOnlyRoots,
-          readWriteRoots,
-          reviewedAccessManifest: reviewedManifest,
-          command: shell.command,
-          args: [...shell.args, request.command],
-          cwd: workspace,
-          signal,
-          timeoutMs: settings.commandTimeoutMs,
-          outputLimit: settings.outputChars,
-          onOutput: (text) => emit("capability_output", { text }),
-          onProcessStarted: (pid, pidKind, processCreationTime100ns) => {
-            started = true;
-            publish("running", { pid, pidKind, processCreationTime100ns });
-          },
-        },
-        async () => {
-          throw new Error("扩展权限 Runner 禁止宿主权限 fallback。");
-        },
-        (stage, status) =>
-          emit("sandbox_stage", {
-            stage,
-            executionInstanceId,
-            ...status,
-          }),
-        { allowHostFallback: false },
-      );
-      publish(outcome.result.exitCode === 0 ? "completed" : "failed", {
-        sideEffectsPossible: outcome.result.exitCode !== 0,
-      });
+          kind: "capability-runner" as const,
+          mode:
+            status.mode === "sandboxed"
+              ? ("windows-sandbox-user" as const)
+              : status.mode === "unknown"
+                ? ("unknown" as const)
+                : ("host-process" as const),
+          state,
+          createdAt,
+          updatedAt: new Date().toISOString(),
+          sandboxRequested: true,
+          sandboxApplied: status.mode === "sandboxed",
+          failureCategory: status.failureCategory,
+          ...extra,
+        };
+        emit("execution_instance", record);
+        this.sandbox.recordExecutionInstance(record);
+      };
 
-      return { executionInstanceId, ...outcome.result };
-    } catch (error) {
-      const status = this.sandbox.statusFor(task.id, executionInstanceId);
-      publish(
-        status.mode === "unknown"
-          ? "unknown"
-          : signal.aborted
-            ? "cancelled"
-            : "failed",
-        { sideEffectsPossible: started || status.mode === "unknown" },
-      );
-      throw error;
-    }
+      publish("created");
+      try {
+        const outcome = await this.sandbox.executeCommand(
+          {
+            sessionId: task.sessionId,
+            taskId: task.id,
+            executionInstanceId,
+            toolCallId,
+            kind: "capability-runner",
+            networkHost,
+            readOnlyRoots,
+            readWriteRoots,
+            reviewedAccessManifest: reviewedManifest,
+            command: shell.command,
+            args: [...shell.args, request.command],
+            cwd: workspace,
+            signal: executionSignal,
+            timeoutMs: settings.commandTimeoutMs,
+            outputLimit: settings.outputChars,
+            onOutput: (text) => emit("capability_output", { text }),
+            onProcessStarted: (pid, pidKind, processCreationTime100ns) => {
+              started = true;
+              publish("running", { pid, pidKind, processCreationTime100ns });
+            },
+          },
+          async () => {
+            throw new Error("扩展权限 Runner 禁止宿主权限 fallback。");
+          },
+          (stage, status) =>
+            emit("sandbox_stage", {
+              stage,
+              executionInstanceId,
+              ...status,
+            }),
+          { allowHostFallback: false },
+        );
+        publish(outcome.result.exitCode === 0 ? "completed" : "failed", {
+          sideEffectsPossible: outcome.result.exitCode !== 0,
+        });
+
+        return { executionInstanceId, ...outcome.result };
+      } catch (error) {
+        const status = this.sandbox.statusFor(task.id, executionInstanceId);
+        publish(
+          status.mode === "unknown"
+            ? "unknown"
+            : executionSignal.aborted
+              ? "cancelled"
+              : "failed",
+          { sideEffectsPossible: started || status.mode === "unknown" },
+        );
+        throw error;
+      }
+    };
   }
 
   private async run(
@@ -2169,26 +2173,40 @@ export class Engine {
         });
         try {
           await executeToolGraph(graph, {
-            execute: async (node, slot) => {
+            execute: async (node, acquireExecutionSlot) => {
               signal.throwIfAborted();
+              let slot: number | undefined;
               let executionStartedAt: number | undefined;
               let toolSpan: ReturnType<TraceRecorder["startSpan"]>;
               let result: any;
 
+              const startExecution = async () => {
+                slot ??= await acquireExecutionSlot();
+                executionStartedAt = Date.now();
+                toolSpan = this.traces.startSpan(task.id, {
+                  name:
+                    node.name === "memory_apply"
+                      ? "memory.apply"
+                      : node.name === historyDefinition.name
+                        ? "tool.read_context_history"
+                        : `tool.${node.name}`,
+                  category: node.name === "memory_apply" ? "memory" : "tool",
+                  track: `Tool worker ${slot + 1}`,
+                  attributes: {
+                    batchId,
+                    callId: node.callId,
+                    nodeId: node.nodeId,
+                    parameters:
+                      node.name === "memory_apply"
+                        ? undefined
+                        : traceToolParameters(node.arguments),
+                  },
+                });
+              };
+
               try {
                 if (node.name === historyDefinition.name) {
-                  executionStartedAt = Date.now();
-                  toolSpan = this.traces.startSpan(task.id, {
-                    name: "tool.read_context_history",
-                    category: "tool",
-                    track: `Tool worker ${slot + 1}`,
-                    attributes: {
-                      batchId,
-                      callId: node.callId,
-                      nodeId: node.nodeId,
-                      parameters: traceToolParameters(node.arguments),
-                    },
-                  });
+                  await startExecution();
                   result = await readContextHistoryAsync(
                     this.store,
                     session.id,
@@ -2198,27 +2216,7 @@ export class Engine {
                 } else {
                   result = await runner
                     .forCall(node.callId)
-                    .execute(node.name, node.arguments, () => {
-                      executionStartedAt = Date.now();
-                      toolSpan = this.traces.startSpan(task.id, {
-                        name:
-                          node.name === "memory_apply"
-                            ? "memory.apply"
-                            : `tool.${node.name}`,
-                        category:
-                          node.name === "memory_apply" ? "memory" : "tool",
-                        track: `Tool worker ${slot + 1}`,
-                        attributes: {
-                          batchId,
-                          callId: node.callId,
-                          nodeId: node.nodeId,
-                          parameters:
-                            node.name === "memory_apply"
-                              ? undefined
-                              : traceToolParameters(node.arguments),
-                        },
-                      });
-                    });
+                    .execute(node.name, node.arguments, startExecution);
                 }
               } catch (error: any) {
                 if (signal.aborted) {

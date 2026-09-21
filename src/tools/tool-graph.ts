@@ -4,8 +4,8 @@
  * 不访问文件、数据库、权限或模型，因此可独立验证图结构和失败传播。
  *
  * 1. createToolGraph 校验节点 ID、依赖引用及环，保留模型原始顺序作为稳定调度优先级。
- * 2. executeToolGraph 使用 Kahn 入度算法：所有前置成功的节点才进入 ready 队列，最多同时运行
- *    maxConcurrency 个节点；每个运行节点同时获得一个可复用的稳定并发槽位，供调用方合并性能轨道。
+ * 2. executeToolGraph 使用 Kahn 入度算法：所有前置成功的节点先并发完成参数检查和审批准备，只有
+ *    调用方明确开始实际执行时才进入 ready 队列并占用最多 maxConcurrency 个稳定槽位。
  * 3. 前置失败时 blockDescendants 会递归阻断所有后继节点；被阻断节点不会调用 execute，避免把失败或
  *    未知副作用当成可继续使用的前置条件。
  *
@@ -29,6 +29,7 @@ export interface ToolGraph {
 
 export type ToolGraphNodeState =
   | "waiting_dependencies"
+  | "preparing"
   | "queued"
   | "executing"
   | "succeeded"
@@ -117,7 +118,10 @@ export async function executeToolGraph(
   graph: ToolGraph,
   options: {
     maxConcurrency?: number;
-    execute: (node: ToolGraphNode, slot: number) => Promise<boolean>;
+    execute: (
+      node: ToolGraphNode,
+      acquireExecutionSlot: () => Promise<number>,
+    ) => Promise<boolean>;
     block: (
       node: ToolGraphNode,
       failedDependency: ToolGraphNode,
@@ -135,7 +139,7 @@ export async function executeToolGraph(
     .sort((left, right) => left.ordinal - right.ordinal);
   const active = new Map<
     string,
-    Promise<{ node: ToolGraphNode; slot: number; succeeded: boolean }>
+    Promise<{ node: ToolGraphNode; succeeded: boolean }>
   >();
   const maxConcurrency = Math.max(
     1,
@@ -148,6 +152,12 @@ export async function executeToolGraph(
     { length: maxConcurrency },
     (_, index) => index,
   );
+  const slotWaiters: Array<{
+    node: ToolGraphNode;
+    resolve: (slot: number) => void;
+  }> = [];
+  const heldSlots = new Map<string, number>();
+  const slotPromises = new Map<string, Promise<number>>();
 
   const update = (node: ToolGraphNode, state: ToolGraphNodeState) => {
     states.set(node.nodeId, state);
@@ -157,7 +167,46 @@ export async function executeToolGraph(
   const enqueue = (node: ToolGraphNode) => {
     ready.push(node);
     ready.sort((left, right) => left.ordinal - right.ordinal);
+    update(node, "preparing");
+  };
+
+  const assignSlots = () => {
+    while (availableSlots.length && slotWaiters.length) {
+      const waiter = slotWaiters.shift()!;
+      const slot = availableSlots.shift()!;
+      heldSlots.set(waiter.node.nodeId, slot);
+      update(waiter.node, "executing");
+      waiter.resolve(slot);
+    }
+  };
+
+  const acquireExecutionSlot = (node: ToolGraphNode) => {
+    const existing = slotPromises.get(node.nodeId);
+    if (existing) {
+      return existing;
+    }
+
     update(node, "queued");
+    const pending = new Promise<number>((resolve) => {
+      slotWaiters.push({ node, resolve });
+      slotWaiters.sort((left, right) => left.node.ordinal - right.node.ordinal);
+      assignSlots();
+    });
+    slotPromises.set(node.nodeId, pending);
+
+    return pending;
+  };
+
+  const releaseExecutionSlot = (node: ToolGraphNode) => {
+    const slot = heldSlots.get(node.nodeId);
+    if (slot === undefined) {
+      return;
+    }
+
+    heldSlots.delete(node.nodeId);
+    availableSlots.push(slot);
+    availableSlots.sort((left, right) => left - right);
+    assignSlots();
   };
 
   const blockDescendants = async (
@@ -183,28 +232,26 @@ export async function executeToolGraph(
   };
 
   for (const node of graph.nodes) {
-    update(node, node.dependsOn.length ? "waiting_dependencies" : "queued");
+    update(node, node.dependsOn.length ? "waiting_dependencies" : "preparing");
   }
 
   while (active.size || ready.length) {
-    while (active.size < maxConcurrency && ready.length) {
+    // 参数检查和审批等待不消耗执行槽；单批最多 20 个节点，准备阶段仍有固定上界。
+    while (ready.length) {
       const node = ready.shift()!;
       if (states.get(node.nodeId) === "blocked") {
         continue;
       }
 
-      const slot = availableSlots.shift()!;
-      update(node, "executing");
       const execution = options
-        .execute(node, slot)
-        .then((succeeded) => ({ node, slot, succeeded }));
+        .execute(node, () => acquireExecutionSlot(node))
+        .then((succeeded) => ({ node, succeeded }));
       active.set(node.nodeId, execution);
     }
 
     const completed = await Promise.race(active.values());
     active.delete(completed.node.nodeId);
-    availableSlots.push(completed.slot);
-    availableSlots.sort((left, right) => left - right);
+    releaseExecutionSlot(completed.node);
 
     if (!completed.succeeded) {
       update(completed.node, "failed");

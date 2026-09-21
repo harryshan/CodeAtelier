@@ -201,7 +201,7 @@ it("runs the model and tool loop in an independent Agent Runtime process", async
         exitCode: 0,
         truncated: false,
       }),
-      executeCapabilityCommand: async () => ({
+      prepareCapabilityCommand: async () => async () => ({
         executionInstanceId: "capability-test",
         output: "",
         exitCode: 0,

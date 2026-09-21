@@ -58,7 +58,7 @@ it("restores and saves task context through the Broker session adapter", async (
         exitCode: 0,
         truncated: false,
       }),
-      executeCapabilityCommand: async () => ({
+      prepareCapabilityCommand: async () => async () => ({
         executionInstanceId: "capability-test",
         output: "",
         exitCode: 0,

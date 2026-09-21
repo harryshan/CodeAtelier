@@ -3,7 +3,7 @@
  * 这里只验证 TypeScript 分流，不替代 Windows token/Job 或 Push Runner 夹具。
  *
  * 1. 普通 run_command 在既有 Runtime 权限内不再审批，使用本进程 shell并发布 sandboxed_tool_process PID。
- * 2. Git push 查询在 Runtime 内完成，但结构化 PushSpec 经注入 adapter 等待独立 Push Runner，不嵌套 supervisor。
+ * 2. 扩展权限调用先由 adapter 准备，取得执行槽后才消费准备结果；Git push 查询在 Runtime 内完成，但结构化 PushSpec 经注入 adapter 等待独立 Push Runner。
  * 3. 注入的旧 SandboxBroker 若被调用会使测试失败，防止迁移后继续每条命令启动 supervisor。
  */
 
@@ -57,12 +57,13 @@ it("runs ordinary commands inside the existing Agent Runtime boundary", async ()
 it("routes an explicit permission request to one broker capability runner", async () => {
   const root = await temp();
   const config = new Config(await temp());
-  const runWithPermissions = vi.fn(async () => ({
+  const executePrepared = vi.fn(async () => ({
     executionInstanceId: "capability-1",
     output: "elevated-result",
     exitCode: 0,
     truncated: false,
   }));
+  const prepareRunWithPermissions = vi.fn(async () => executePrepared);
   const runner = new ToolRunner({
     root,
     sessionId: "session-1",
@@ -71,7 +72,7 @@ it("routes an explicit permission request to one broker capability runner", asyn
     settings: config.settings,
     approvals: { request: vi.fn(async () => false) },
     executionBoundary: "agent-runtime",
-    runWithPermissions,
+    prepareRunWithPermissions,
     emit: () => {},
   });
   const request = {
@@ -90,11 +91,12 @@ it("routes an explicit permission request to one broker capability runner", asyn
     executionInstanceId: "capability-1",
     output: "elevated-result",
   });
-  expect(runWithPermissions).toHaveBeenCalledWith(
+  expect(prepareRunWithPermissions).toHaveBeenCalledWith(
     request,
     expect.any(AbortSignal),
     "capability-call",
   );
+  expect(executePrepared).toHaveBeenCalledOnce();
 });
 
 it("waits for the broker push adapter while the agent runtime remains alive", async () => {

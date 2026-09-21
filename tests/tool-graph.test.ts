@@ -2,9 +2,10 @@
  * 验证工具调用图的纯调度行为，不启动模型、文件系统、命令或审批服务。
  * 工具图调度器由 Engine 调用，本文件以可控异步回调检查拓扑并发、失败阻断和结构拒绝。
  *
- * 1. 分叉后的根节点应在同一并发窗口启动并占用不同的可复用并发槽位，汇聚节点仅在全部前置成功后执行。
- * 2. 前置失败会阻断全部后继，但不影响没有依赖关系的节点。
- * 3. 重复 ID、未知依赖和环必须在执行回调前拒绝，避免无效计划产生副作用。
+ * 1. 分叉后的根节点应在同一准备窗口启动，实际执行时占用不同的可复用并发槽位，汇聚节点仅在全部前置成功后执行。
+ * 2. 等待审批的节点不占执行槽；独立节点可以先完成，依赖节点仍不能越过审批结果。
+ * 3. 前置失败会阻断全部后继，但不影响没有依赖关系的节点。
+ * 4. 重复 ID、未知依赖和环必须在执行回调前拒绝，避免无效计划产生副作用。
  *
  * 这些测试只观察调度器对调用方的状态和回调，不重复测试 ToolRunner 的路径、权限或文件快照校验。
  */
@@ -45,7 +46,8 @@ it("runs independent nodes concurrently and starts a join only after all depende
 
   await executeToolGraph(graph, {
     maxConcurrency: 2,
-    async execute(current, slot) {
+    async execute(current, acquireExecutionSlot) {
+      const slot = await acquireExecutionSlot();
       started.push(current.nodeId);
       slots.set(current.nodeId, slot);
       active++;
@@ -81,7 +83,8 @@ it("blocks descendants after a failed dependency while retaining independent exe
 
   const states = await executeToolGraph(graph, {
     maxConcurrency: 2,
-    async execute(current) {
+    async execute(current, acquireExecutionSlot) {
+      await acquireExecutionSlot();
       executed.push(current.nodeId);
 
       return current.nodeId !== "fails";
@@ -97,6 +100,57 @@ it("blocks descendants after a failed dependency while retaining independent exe
   expect(states.get("fails")).toBe("failed");
   expect(states.get("independent")).toBe("succeeded");
   expect(states.get("blocked")).toBe("blocked");
+});
+
+it("lets an independent node use the worker while another node waits for approval", async () => {
+  const graph = createToolGraph([
+    node("approval", [], 0),
+    node("independent", [], 1),
+    node("dependent", ["approval"], 2),
+  ]);
+  let approve!: () => void;
+  const approved = new Promise<void>((resolve) => {
+    approve = resolve;
+  });
+  const order: string[] = [];
+  const states: string[] = [];
+
+  const running = executeToolGraph(graph, {
+    maxConcurrency: 1,
+    async execute(current, acquireExecutionSlot) {
+      if (current.nodeId === "approval") {
+        order.push("approval-waiting");
+        await approved;
+      }
+
+      await acquireExecutionSlot();
+      order.push(current.nodeId);
+
+      return true;
+    },
+    async block() {
+      throw new Error("成功分支不应阻断节点。");
+    },
+    state(current, state) {
+      if (current.nodeId === "approval") {
+        states.push(state);
+      }
+    },
+  });
+
+  await expect.poll(() => order).toContain("independent");
+  expect(order).not.toContain("approval");
+  expect(order).not.toContain("dependent");
+  expect(states.at(-1)).toBe("preparing");
+
+  approve();
+  await running;
+
+  expect(order.indexOf("independent")).toBeLessThan(order.indexOf("approval"));
+  expect(order.indexOf("approval")).toBeLessThan(order.indexOf("dependent"));
+  expect(states).toEqual(
+    expect.arrayContaining(["preparing", "queued", "executing", "succeeded"]),
+  );
 });
 
 it.each([

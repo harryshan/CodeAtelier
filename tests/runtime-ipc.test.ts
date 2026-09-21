@@ -3,7 +3,7 @@
  * 内存流用例覆盖协议错误，独立 Node fixture 覆盖 model request/delta/response 跨进程，但不冒充 Windows Named Pipe 身份验收。
  *
  * 1. 双向 PassThrough peer 完成请求并拒绝未知响应、畸形 JSON 和超限半帧。
- * 2. RuntimeGitPushClient 只发送有界 PushSpec，并校验 Broker 返回的固定进程结果。
+ * 2. RuntimeGitPushClient 只发送有界 PushSpec；RuntimeCapabilityClient 先准备审批、再用连接内一次性授权执行，且授权不可重放。
  * 3. AbortSignal 发送 request_cancel，中止远端同 requestId handler；竞态迟到响应不会破坏后续请求。
  * 4. Runtime trace 与 session event 只接受固定类型；Runtime 不能伪造 Broker execution/sandbox/终态事件，合法消息触发 observer 异常也安全关闭。
  * 5. 子进程经继承 stdio 请求模型，Broker test adapter 流式回传 delta 和最终结果，进程正常退出。
@@ -90,19 +90,21 @@ it("sends only a structured push spec to the broker", async () => {
 it("sends a bounded capability command with its reason and tool call", async () => {
   const leftToRight = new PassThrough();
   const rightToLeft = new PassThrough();
-  let received: unknown;
+  const received: unknown[] = [];
   const right = new RuntimeIpcPeer({
     input: leftToRight,
     output: rightToLeft,
     handleRequest: async (request) => {
-      received = request;
+      received.push(request);
 
-      return {
-        executionInstanceId: "capability-1",
-        output: "done",
-        exitCode: 0,
-        truncated: false,
-      };
+      return request.operation === "prepare_run_with_permissions"
+        ? { authorizationId: "authorization-1" }
+        : {
+            executionInstanceId: "capability-1",
+            output: "done",
+            exitCode: 0,
+            truncated: false,
+          };
     },
   });
   const left = new RuntimeIpcPeer({ input: rightToLeft, output: leftToRight });
@@ -117,21 +119,114 @@ it("sends a bounded capability command with its reason and tool call", async () 
   };
 
   await expect(
-    new RuntimeCapabilityClient(left).execute(
-      request,
-      "capability-call",
-      new AbortController().signal,
-    ),
+    (
+      await new RuntimeCapabilityClient(left).prepare(
+        request,
+        "capability-call",
+        new AbortController().signal,
+      )
+    )(),
   ).resolves.toMatchObject({
     executionInstanceId: "capability-1",
     output: "done",
   });
-  expect(received).toMatchObject({
-    operation: "run_with_permissions",
-    body: { toolCallId: "capability-call", request },
-  });
+  expect(received).toEqual([
+    expect.objectContaining({
+      operation: "prepare_run_with_permissions",
+      body: { toolCallId: "capability-call", request },
+    }),
+    expect.objectContaining({
+      operation: "run_with_permissions",
+      body: {
+        toolCallId: "capability-call",
+        authorizationId: "authorization-1",
+      },
+    }),
+  ]);
   right.end();
   left.end();
+});
+
+it("keeps an approved capability command inactive until its one-time authorization is consumed", async () => {
+  const runtimeToBroker = new PassThrough();
+  const brokerToRuntime = new PassThrough();
+  const identity = {
+    sessionId: "session-1",
+    taskId: "task-1",
+    executionInstanceId: "runtime-1",
+    kind: "agent-runtime" as const,
+  };
+  const gateway = new RuntimeBrokerGateway(
+    {
+      authorize: () => true,
+      approveCommand: async () => ({ approved: true }),
+      modelProvider: () => ({
+        model: "unused",
+        provider: { run: async () => ({ output: [], text: "" }) },
+      }),
+    },
+    new TraceRecorder(),
+  );
+  let executions = 0;
+  new RuntimeIpcBrokerSession(
+    { input: runtimeToBroker, output: brokerToRuntime },
+    identity,
+    "0123456789abcdef0123456789abcdef",
+    gateway,
+    {
+      requestApproval: async () => ({ approved: true }),
+      executeGitPush: async () => ({
+        output: "",
+        exitCode: 0,
+        truncated: false,
+      }),
+      prepareCapabilityCommand: async () => async () => {
+        executions++;
+
+        return {
+          executionInstanceId: "capability-test",
+          output: "executed",
+          exitCode: 0,
+          truncated: false,
+        };
+      },
+      applyMemory: async () => ({ applied: true }),
+      appendSessionEvent: async () => undefined,
+      saveContext: async () => undefined,
+      readContext: async () => [],
+      readEvents: async () => [],
+      latestContextSnapshot: async () => undefined,
+      readContextSnapshot: async () => undefined,
+      compactContext: async () => undefined,
+      runtimeCompleted: async () => undefined,
+    },
+  );
+  const peer = await connectAgentRuntime(
+    { input: brokerToRuntime, output: runtimeToBroker },
+    identity,
+    "0123456789abcdef0123456789abcdef",
+    AbortSignal.timeout(1_000),
+  );
+  const execute = await new RuntimeCapabilityClient(peer).prepare(
+    {
+      command: "external-tool --version",
+      permissions: {
+        readRoots: [],
+        writeRoots: [],
+        httpsHost: "example.test",
+      },
+      reason: "验证两阶段授权。",
+    },
+    "capability-call",
+    AbortSignal.timeout(1_000),
+  );
+
+  expect(executions).toBe(0);
+  await expect(execute()).resolves.toMatchObject({ output: "executed" });
+  expect(executions).toBe(1);
+  await expect(execute()).rejects.toBeInstanceOf(RuntimeIpcError);
+  expect(executions).toBe(1);
+  peer.end();
 });
 
 it("fails the channel on malformed input", async () => {
@@ -300,7 +395,7 @@ it("rejects an instance or nonce mismatch before serving requests", async () => 
         exitCode: 0,
         truncated: false,
       }),
-      executeCapabilityCommand: async () => ({
+      prepareCapabilityCommand: async () => async () => ({
         executionInstanceId: "capability-test",
         output: "",
         exitCode: 0,
@@ -360,7 +455,7 @@ it("closes a broker session when any event arrives before runtime hello", async 
         exitCode: 0,
         truncated: false,
       }),
-      executeCapabilityCommand: async () => ({
+      prepareCapabilityCommand: async () => async () => ({
         executionInstanceId: "capability-test",
         output: "",
         exitCode: 0,
@@ -457,7 +552,7 @@ it("proxies a model request across a real child process", async () => {
         exitCode: 0,
         truncated: false,
       }),
-      executeCapabilityCommand: async () => ({
+      prepareCapabilityCommand: async () => async () => ({
         executionInstanceId: "capability-test",
         output: "",
         exitCode: 0,

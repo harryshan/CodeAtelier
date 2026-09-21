@@ -4,11 +4,11 @@
  *
  * 1. start 接受 Broker 绑定任务的安全设置，恢复 session 上下文并在工作区生成指令和文件工具。
  * 2. ContextManager 在 Runtime 内计量/压缩，快照读写经 RuntimeSessionClient 回到 Broker。
- * 3. 每轮模型调用经 RuntimeModelProvider 代理并保留有界重试/上下文超限恢复；工具 DAG、文件编辑、命令和非 push Git 均由 Runtime 内 ToolRunner 执行。
+ * 3. 每轮模型调用经 RuntimeModelProvider 代理并保留有界重试/上下文超限恢复；工具 DAG 先并行准备已就绪节点，审批通过后才取得有界 worker 槽执行文件编辑、命令和非 push Git。
  * 4. UI/session 事件按单连接顺序排队；无效 DAG 在无副作用时回传模型修正，工具结果保存后才进入下一轮，取消或持久化失败不会盲目重放。
  * 5. 终态同时返回给 start_task 调用方并主动写 runtime_complete；Broker 仍结合进程/Job/ACL 清理决定最终可信状态。
  *
- * Push Runner 必须独占当前工具批次；扩展权限 Runner 可与无依赖的普通工具并行。两者都由结构化 Runtime IPC adapter 等待结果；context/tool/model tracing 经固定 schema 回到 Broker，但提升环境验收仍未完成，不能据此宣称 W3/W4/W5 完成。
+ * Push Runner 必须独占当前工具批次；扩展权限 Runner 先经 IPC 审批取得一次性授权，获得 worker 槽后才启动，因而可与无依赖的普通工具正确并行。两者都由结构化 Runtime IPC adapter 等待结果；context/tool/model tracing 经固定 schema 回到 Broker，但提升环境验收仍未完成，不能据此宣称 W3/W4/W5 完成。
  */
 
 import { createBudget } from "../context/token-budget.js";
@@ -130,12 +130,12 @@ export class AgentRuntimeService {
 
           return gitPush.execute(spec, toolCallId, pushSignal);
         },
-        runWithPermissions: (request, requestSignal, toolCallId) => {
+        prepareRunWithPermissions: (request, requestSignal, toolCallId) => {
           if (!toolCallId) {
             throw new Error("扩展权限请求缺少工具调用标识。");
           }
 
-          return capability.execute(request, toolCallId, requestSignal);
+          return capability.prepare(request, toolCallId, requestSignal);
         },
         executionBoundary: "agent-runtime",
         parentExecutionInstanceId: this.identity.executionInstanceId,
@@ -342,7 +342,7 @@ export class AgentRuntimeService {
           batchId,
         );
         await executeToolGraph(graph, {
-          execute: async (node) => {
+          execute: async (node, acquireExecutionSlot) => {
             signal.throwIfAborted();
             events.emit("tool_start", {
               name: node.name,
@@ -354,17 +354,21 @@ export class AgentRuntimeService {
             });
             let result: unknown;
             try {
-              result =
-                node.name === historyDefinition.name
-                  ? await readContextHistoryAsync(
-                      session,
-                      this.identity.sessionId,
-                      node.arguments,
-                      input.settings.outputChars,
-                    )
-                  : await runner
-                      .forCall(node.callId)
-                      .execute(node.name, node.arguments);
+              if (node.name === historyDefinition.name) {
+                await acquireExecutionSlot();
+                result = await readContextHistoryAsync(
+                  session,
+                  this.identity.sessionId,
+                  node.arguments,
+                  input.settings.outputChars,
+                );
+              } else {
+                result = await runner
+                  .forCall(node.callId)
+                  .execute(node.name, node.arguments, async () => {
+                    await acquireExecutionSlot();
+                  });
+              }
             } catch (error) {
               signal.throwIfAborted();
               result = {

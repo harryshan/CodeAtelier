@@ -1,6 +1,6 @@
 /**
  * 验证时间线工具卡片对 DAG 状态事件的纯映射。
- * ToolDisplayStatus 由 Timeline 调用；测试以最小持久化 Event 序列覆盖初始未调度、等待 slot、执行、依赖阻断及跨批次隔离，
+ * ToolDisplayStatus 由 Timeline 调用；测试以最小持久化 Event 序列覆盖初始未调度、准备或审批、等待 slot、执行、依赖阻断及跨批次隔离，
  * 不渲染浏览器、不依赖 SSE。断言直接覆盖用户可见中文状态和样式类别。
  *
  * 1. event 构造器生成同一工具开始与可选 tool_state 历史。
@@ -26,6 +26,16 @@ const start = event(1, "tool_start", { callId: "call", batchId: "batch" });
 
 it.each([
   [[], { label: "等待调度", tone: "waiting" }],
+  [
+    [
+      event(2, "tool_state", {
+        callId: "call",
+        batchId: "batch",
+        state: "preparing",
+      }),
+    ],
+    { label: "检查参数或等待审批", tone: "waiting" },
+  ],
   [
     [
       event(2, "tool_state", {

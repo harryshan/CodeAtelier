@@ -5,7 +5,8 @@
  * 1. model_capabilities/model_run 委托 RuntimeBrokerGateway，使模型 endpoint/key 永远留在 Broker Host。
  * 2. model_run 把 provider delta 作为关联原 requestId 的事件回传，再返回完整 ModelResult。
  * 3. approval、结构化 Git push、扩展权限命令和 session 操作只调用显式 handlers，不暴露 Store 或任意宿主方法名。
- * 4. git_push/run_with_permissions 在同一请求上等待独立 Runner；请求取消只中止该 Runner，不结束健康的 Agent Runtime。
+ * 4. 扩展权限命令先审批并保存在当前认证连接的一次性表中，Runtime 获得执行槽后才消费 authorizationId；
+ *    git_push 仍在单一请求上等待独立 Runner，请求取消只中止对应 Runner，不结束健康的 Agent Runtime。
  * 5. runtime_complete 是 Runtime 的完成报告；Broker 仍须结合进程退出、Job 和 cleanup 账本决定可信终态。
  */
 
@@ -13,6 +14,7 @@ import type {
   RuntimeBrokerGateway,
   RuntimeExecutionIdentity,
 } from "./runtime-capability-core.js";
+import { randomUUID } from "node:crypto";
 import type { Readable, Writable } from "node:stream";
 import { RuntimeIpcPeer } from "./runtime-ipc-peer.js";
 import type {
@@ -46,12 +48,12 @@ export interface RuntimeIpcBrokerHandlers {
     toolCallId: string,
     signal: AbortSignal,
   ): Promise<GitProcessResult>;
-  executeCapabilityCommand(
+  prepareCapabilityCommand(
     identity: RuntimeExecutionIdentity,
     request: CapabilityCommandRequest,
     toolCallId: string,
     signal: AbortSignal,
-  ): Promise<CapabilityCommandResult>;
+  ): Promise<(signal: AbortSignal) => Promise<CapabilityCommandResult>>;
   applyMemory(
     identity: RuntimeExecutionIdentity,
     request: unknown,
@@ -95,6 +97,13 @@ export class RuntimeIpcBrokerSession {
   private runtimeReady: Promise<void>;
   private resolveRuntimeReady!: () => void;
   private rejectRuntimeReady!: (error: Error) => void;
+  private preparedCapabilityCommands = new Map<
+    string,
+    {
+      toolCallId: string;
+      execute: (signal: AbortSignal) => Promise<CapabilityCommandResult>;
+    }
+  >();
 
   constructor(
     streams: { input: Readable; output: Writable },
@@ -116,6 +125,7 @@ export class RuntimeIpcBrokerSession {
     this.peer = new RuntimeIpcPeer({
       ...streams,
       onClose: (error) => {
+        this.preparedCapabilityCommands.clear();
         if (!this.authenticated) {
           this.rejectReady(error);
         }
@@ -172,6 +182,7 @@ export class RuntimeIpcBrokerSession {
   }
 
   cancel(reason: string) {
+    this.preparedCapabilityCommands.clear();
     this.peer.event({ type: "event", event: "cancel", reason });
   }
 
@@ -255,13 +266,41 @@ export class RuntimeIpcBrokerSession {
           request.body.toolCallId,
           signal,
         );
-      case "run_with_permissions":
-        return this.handlers.executeCapabilityCommand(
+      case "prepare_run_with_permissions": {
+        if (this.preparedCapabilityCommands.size >= 20) {
+          throw new Error("待执行的扩展权限授权超过单批工具上限。");
+        }
+
+        const execute = await this.handlers.prepareCapabilityCommand(
           this.identity,
           request.body.request,
           request.body.toolCallId,
           signal,
         );
+        signal.throwIfAborted();
+        const authorizationId = randomUUID();
+        this.preparedCapabilityCommands.set(authorizationId, {
+          toolCallId: request.body.toolCallId,
+          execute,
+        });
+
+        return { authorizationId };
+      }
+
+      case "run_with_permissions": {
+        const prepared = this.preparedCapabilityCommands.get(
+          request.body.authorizationId,
+        );
+        if (!prepared || prepared.toolCallId !== request.body.toolCallId) {
+          throw new Error("扩展权限授权不存在、已失效或不属于当前工具调用。");
+        }
+
+        // 消费发生在启动前；失败、取消或未知结果都不能重放同一授权。
+        this.preparedCapabilityCommands.delete(request.body.authorizationId);
+
+        return prepared.execute(signal);
+      }
+
       case "memory_apply":
         return this.handlers.applyMemory(this.identity, request.body.request);
       case "session_append_event":

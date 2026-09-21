@@ -4,7 +4,7 @@
  *
  * 1. ignored 列出遍历时跳过的目录；ToolContext 定义依赖，readHashes 记住本任务读过的文件版本；forCall 共享该状态但隔离事件关联。
  * 2. currentFileHash 仅探测安全工作区文件的字节哈希，不更新读取凭证；access 解析路径并申请必要的权限；entries 限量遍历，commandGrant 为可复用命令计算指纹。
- * 3. execute 先通过 parseToolArguments 校验参数并解开 Git 的 request 包装（兼容历史扁平调用）。统一的精确编辑和显式新建文件均分流给共享读取哈希的 FileEditor，已有文件成功编辑后会作废对应哈希；普通 Runtime 工具在既有 AccessManifest 内不再审批，越界命令必须经 run_with_permissions adapter 交给 Broker 复核、审批和独立 Runner。
+ * 3. execute 先通过 parseToolArguments 校验参数并解开 Git 的 request 包装（兼容历史扁平调用）。统一的精确编辑和显式新建文件均分流给共享读取哈希的 FileEditor，已有文件成功编辑后会作废对应哈希；普通 Runtime 工具在既有 AccessManifest 内不再审批，越界命令先经 run_with_permissions adapter 交给 Broker 复核与审批，取得执行槽后才消费一次性授权启动独立 Runner。
  * 4. 每个 execution instance 只读取 Broker 为该 task/instance 保存的状态；并发任务的 fallback/unknown 不会污染其它 PID、session 或 trace 记录。
  * 5. 只读分支只处理读取；目录浏览和代码搜索均由 run_command 在审批后执行。read_file 在主线程完成安全访问和异步字节读取，再交给任务共享的有界 Worker 池进行全文哈希、字节行扫描和格式化，按 500 行分页返回 contentHash 供压缩比较，并在内部记录哈希供后续修改核对。
  *
@@ -76,12 +76,12 @@ export interface ToolContext {
     signal: AbortSignal,
     toolCallId?: string,
   ) => Promise<GitProcessResult>;
-  /** Runtime 只声明可强制落实的扩展根/host；Broker 重新审批并启动独立 capability runner。 */
-  runWithPermissions?: (
+  /** Runtime 只声明可强制落实的扩展根/host；Broker 重新审批，返回取得执行槽后才可消费的一次性 Runner 授权。 */
+  prepareRunWithPermissions?: (
     request: CapabilityCommandRequest,
     signal: AbortSignal,
     toolCallId?: string,
-  ) => Promise<CapabilityCommandResult>;
+  ) => Promise<() => Promise<CapabilityCommandResult>>;
   /** Agent Runtime 内的工具进程已处于任务 Job/token，不得再次调用 Broker 的逐工具 Sandbox。 */
   executionBoundary?: "broker-host" | "agent-runtime";
   /** Agent Runtime 内普通工具进程的父 execution instance，供恢复把 call 与常驻 Runtime 关联。 */
@@ -200,7 +200,7 @@ export class ToolRunner {
    */
   forCall(callId: string) {
     const parentGitPush = this.ctx.gitPush;
-    const parentRunWithPermissions = this.ctx.runWithPermissions;
+    const parentPrepareRunWithPermissions = this.ctx.prepareRunWithPermissions;
 
     return new ToolRunner(
       {
@@ -209,9 +209,9 @@ export class ToolRunner {
         gitPush: parentGitPush
           ? (spec, signal) => parentGitPush(spec, signal, callId)
           : undefined,
-        runWithPermissions: parentRunWithPermissions
+        prepareRunWithPermissions: parentPrepareRunWithPermissions
           ? (request, signal) =>
-              parentRunWithPermissions(request, signal, callId)
+              parentPrepareRunWithPermissions(request, signal, callId)
           : undefined,
         emit: (type, data) => this.ctx.emit(type, { ...data, callId }),
       },
@@ -564,16 +564,14 @@ export class ToolRunner {
   async execute(
     name: string,
     raw: unknown,
-    onExecutionStart?: () => void,
+    onExecutionStart?: () => Promise<void>,
   ): Promise<any> {
     this.ctx.signal.throwIfAborted();
     const args: any = parseToolArguments(name, raw);
-    let executionStarted = false;
-    const startExecution = () => {
-      if (!executionStarted) {
-        executionStarted = true;
-        onExecutionStart?.();
-      }
+    let executionStart: Promise<void> | undefined;
+    const startExecution = async () => {
+      executionStart ??= onExecutionStart?.() ?? Promise.resolve();
+      await executionStart;
     };
 
     if (name === "memory_apply") {
@@ -581,7 +579,7 @@ export class ToolRunner {
         throw new Error("项目记忆服务不可用。");
       }
 
-      startExecution();
+      await startExecution();
 
       return this.ctx.memory.apply(
         {
@@ -604,7 +602,7 @@ export class ToolRunner {
     if (name === "run_with_permissions") {
       if (
         this.ctx.executionBoundary !== "agent-runtime" ||
-        !this.ctx.runWithPermissions
+        !this.ctx.prepareRunWithPermissions
       ) {
         throw new Error(
           "run_with_permissions 只可由已认证的 Agent Runtime 请求。",
@@ -615,9 +613,13 @@ export class ToolRunner {
         throw new Error("Git 操作必须使用受限的 git 工具。");
       }
 
-      startExecution();
+      const execute = await this.ctx.prepareRunWithPermissions(
+        args,
+        this.ctx.signal,
+      );
+      await startExecution();
 
-      return this.ctx.runWithPermissions(args, this.ctx.signal);
+      return execute();
     }
 
     if (name === "read_file" && args.endLine < args.startLine) {
@@ -669,7 +671,7 @@ export class ToolRunner {
       }
 
       // 命令授权结束才开始计时；Broker 的自检和实际执行都属于本次命令，不把审批等待计入其中。
-      startExecution();
+      await startExecution();
 
       return this.executeProcessWithSandbox({
         command: shell.command,
@@ -684,7 +686,7 @@ export class ToolRunner {
 
     if (name === "read_file") {
       const file = await this.access(args.path);
-      startExecution();
+      await startExecution();
       await regularFile(file, 2 * 1024 * 1024);
       const bytes = await readFile(file, { signal: this.ctx.signal });
       const buffer =

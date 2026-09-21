@@ -170,10 +170,10 @@ export class GitToolRunner {
 
   async execute(
     request: GitRequest,
-    onExecutionStart?: () => void,
+    onExecutionStart?: () => Promise<void>,
   ): Promise<any> {
     this.ctx.signal.throwIfAborted();
-    onExecutionStart?.();
+    await onExecutionStart?.();
     await this.ensureRepository();
 
     switch (request.action) {

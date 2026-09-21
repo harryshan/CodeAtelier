@@ -239,7 +239,7 @@ export class FileEditor {
     return { path: edit.path, changed: edit.before !== edit.after, diff };
   }
 
-  async editMany(inputs: FileEdit[], onExecutionStart?: () => void) {
+  async editMany(inputs: FileEdit[], onExecutionStart?: () => Promise<void>) {
     const batchId = randomUUID();
     const files: FileResult[] = inputs.map((input) => ({
       path: input.path,
@@ -343,7 +343,7 @@ export class FileEditor {
     }
 
     // 全部可写条目已完成审批和快照复核，下一步才开始记录写入耗时。
-    onExecutionStart?.();
+    await onExecutionStart?.();
     this.ctx.emit("edit_progress", {
       batchId,
       files: files.map((file) => ({ ...file })),

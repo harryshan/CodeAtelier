@@ -6,7 +6,8 @@
  * 2. grantKey 原样绑定审批语义，但不能改变 operation；Broker ApprovalManager 决定是否允许复用。
  * 3. RuntimeMemoryClient 不接收宿主路径，Broker handler 固定使用 identity 对应工作区和项目记忆服务。
  * 4. RuntimeGitPushClient 只发送 GitToolRunner 已解析的 PushSpec 和当前 toolCallId；Broker 重建固定 git push 参数并独立启动 Runner。
- * 5. RuntimeCapabilityClient 发送命令、结构化最小权限、理由和 toolCallId；Broker 必须重新审批并在独立 Runner 落实权限。
+ * 5. RuntimeCapabilityClient 先发送命令、结构化最小权限、理由和 toolCallId 完成 Broker 审批；调用方取得
+ *    Tool worker 槽后才用一次性 authorizationId 启动独立 Runner，审批等待不会占用执行槽。
  */
 
 import type { Approval } from "../shared/types.js";
@@ -71,17 +72,31 @@ export class RuntimeGitPushClient {
 export class RuntimeCapabilityClient {
   constructor(private peer: RuntimeIpcPeer) {}
 
-  async execute(
+  async prepare(
     request: CapabilityCommandRequest,
     toolCallId: string,
     signal: AbortSignal,
   ) {
-    const result = await this.peer.request(
-      "run_with_permissions",
+    const prepared = (await this.peer.request(
+      "prepare_run_with_permissions",
       { toolCallId, request },
       signal,
-    );
+    )) as { authorizationId?: unknown };
+    if (
+      typeof prepared.authorizationId !== "string" ||
+      !prepared.authorizationId
+    ) {
+      throw new Error("Broker 未返回有效的扩展权限授权标识。");
+    }
 
-    return capabilityCommandResultSchema.parse(result);
+    return async () => {
+      const result = await this.peer.request(
+        "run_with_permissions",
+        { toolCallId, authorizationId: prepared.authorizationId },
+        signal,
+      );
+
+      return capabilityCommandResultSchema.parse(result);
+    };
   }
 }
