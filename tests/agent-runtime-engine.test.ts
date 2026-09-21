@@ -7,7 +7,8 @@
  * 3. Engine 等待 Runtime 终态与 clean 退出，再把任务和 execution instance 记为 completed。
  * 4. 扩展权限命令经低成本模型审批后，把规范化根和 host 交给独立 capability runner，并将结果送回 agent loop。
  * 5. Runtime IPC 在可信终态前断开时，Engine 以 unknown 关闭 launcher 并持久化可能副作用。
- * 6. launcher 证明 Runtime 尚未启动且 provision 已回滚时，Engine 明确记录 host fallback 并继续宿主 loop。
+ * 6. 已启动 Push Runner 的 clean cancellation 仍记录远端副作用可能已经发生。
+ * 7. launcher 证明 Runtime 尚未启动且 provision 已回滚时，Engine 明确记录 host fallback 并继续宿主 loop。
  */
 
 import { spawn } from "node:child_process";
@@ -425,6 +426,70 @@ it("records unknown when Runtime IPC closes before a trusted terminal result", a
             (event.data as any).sideEffectsPossible === true,
         ),
     ).toBe(true);
+  } finally {
+    await engine.close();
+    store.close();
+  }
+});
+
+it("records possible side effects when a started Push Runner is cancelled", async () => {
+  const root = await temp();
+  const config = new Config(await temp());
+  config.sandbox.enabled = true;
+  const store = new Store(path.join(config.directory, "db"));
+  const session = store.create(root, "push cancellation test");
+  const task = store.createTask(session.id);
+  const controller = new AbortController();
+  const engine = new Engine(store, config, pino({ enabled: false }), () => ({
+    async run() {
+      return { text: "", output: [] };
+    },
+  }));
+  const events: Array<{ type: string; data: any }> = [];
+  vi.spyOn(engine.approvals, "request").mockResolvedValue(true);
+  vi.spyOn(engine.sandbox, "statusFor").mockReturnValue({
+    enabled: true,
+    requested: true,
+    applied: true,
+    mode: "sandboxed",
+    platform: process.platform,
+    level: "test",
+  });
+  vi.spyOn(engine.sandbox, "executeCommand").mockImplementation(
+    async (command) => {
+      command.onProcessStarted(53, "runtime");
+      controller.abort(new Error("cancel push"));
+      throw controller.signal.reason;
+    },
+  );
+
+  try {
+    await expect(
+      (engine as any).executeRuntimeGitPush(
+        task,
+        root,
+        {
+          remote: "origin",
+          remoteUrl: "https://example.com/repository.git",
+          host: "example.com",
+          refspec: "HEAD:refs/heads/main",
+          objectId: "a".repeat(40),
+        },
+        "push-call",
+        controller.signal,
+        config.settings,
+        (type: string, data: any) => events.push({ type, data }),
+      ),
+    ).rejects.toThrow("cancel push");
+
+    expect(events).toContainEqual({
+      type: "execution_instance",
+      data: expect.objectContaining({
+        kind: "push-runner",
+        state: "cancelled",
+        sideEffectsPossible: true,
+      }),
+    });
   } finally {
     await engine.close();
     store.close();

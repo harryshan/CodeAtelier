@@ -980,6 +980,7 @@ export class Engine {
 
     const executionInstanceId = randomUUID();
     const createdAt = new Date().toISOString();
+    let started = false;
     const publish = (
       state:
         | "created"
@@ -1036,8 +1037,10 @@ export class Engine {
           timeoutMs: settings.commandTimeoutMs,
           outputLimit: settings.outputChars,
           onOutput: (text) => emit("git_output", { text }),
-          onProcessStarted: (pid, pidKind, processCreationTime100ns) =>
-            publish("running", { pid, pidKind, processCreationTime100ns }),
+          onProcessStarted: (pid, pidKind, processCreationTime100ns) => {
+            started = true;
+            publish("running", { pid, pidKind, processCreationTime100ns });
+          },
         },
         async () => {
           throw new Error("Push Runner 禁止宿主 Git fallback。");
@@ -1063,7 +1066,7 @@ export class Engine {
           : signal.aborted
             ? "cancelled"
             : "failed",
-        { sideEffectsPossible: status.mode === "unknown" },
+        { sideEffectsPossible: started || status.mode === "unknown" },
       );
       throw error;
     }
