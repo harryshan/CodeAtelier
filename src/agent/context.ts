@@ -10,7 +10,14 @@
  * 这里只补齐协议要求的调用与结果，不会重跑工具。修改文件前仍须读取磁盘上的当前内容。
  */
 
-import type { Store } from "../sessions/store.js";
+import type { Event } from "../shared/types.js";
+
+/** Runtime 可通过 IPC 实现此窄接口；Broker 内现有 Store 也结构兼容。 */
+export interface TaskContextStore {
+  contextAsync(sessionId: string): Promise<any[]>;
+  eventsAsync(sessionId: string): Promise<Event[]>;
+  saveContext(sessionId: string, input: any[]): void | Promise<void>;
+}
 
 function interruptedExecutionOutput(record: any) {
   if (!record || typeof record.executionInstanceId !== "string") {
@@ -42,7 +49,7 @@ function interruptedExecutionOutput(record: any) {
 
 /** 补齐缺失的工具结果，再追加本轮用户消息。不会重新执行工具。 */
 export async function prepareTaskContext(
-  store: Store,
+  store: TaskContextStore,
   sessionId: string,
   prompt: string,
 ): Promise<any[]> {
@@ -85,7 +92,7 @@ export async function prepareTaskContext(
   }
 
   input.push({ role: "user", content: prompt });
-  store.saveContext(sessionId, input);
+  await store.saveContext(sessionId, input);
 
   return input;
 }

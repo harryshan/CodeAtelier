@@ -1,0 +1,397 @@
+/**
+ * 在常驻 Agent Runtime 进程内运行模型/工具循环；Broker Host 只通过 Runtime IPC 提供模型、session、审批和项目记忆能力。
+ * 本服务不打开宿主 SQLite、不读取模型 endpoint/key，也不创建第二层 SandboxBroker；普通命令和 Git 子进程直接继承 Runtime 的 token/Job。
+ *
+ * 1. start 接受 Broker 绑定任务的安全设置，恢复 session 上下文并在工作区生成指令和文件工具。
+ * 2. ContextManager 在 Runtime 内计量/压缩，快照读写经 RuntimeSessionClient 回到 Broker。
+ * 3. 每轮模型调用经 RuntimeModelProvider 代理；工具 DAG、文件编辑、命令和非 push Git 均由 Runtime 内 ToolRunner 执行。
+ * 4. UI/session 事件按单连接顺序排队；工具结果保存后才进入下一轮，取消或持久化失败不会盲目重放。
+ * 5. 终态同时返回给 start_task 调用方并主动写 runtime_complete；Broker 仍结合进程/Job/ACL 清理决定最终可信状态。
+ *
+ * Push Runner 切换、replay capture 与完整跨进程 tracing 仍需由后续 Broker adapter 接入；在此之前产品不能宣称 W3/W4 完成。
+ */
+
+import { createBudget } from "../context/token-budget.js";
+import { ContextManager } from "../context/context-manager.js";
+import {
+  historyDefinition,
+  parseScheduledHistoryArguments,
+  readContextHistoryAsync,
+} from "../context/history.js";
+import { prepareTaskContext } from "../agent/context.js";
+import { createInstructions } from "../agent/instructions.js";
+import { definitions, parseScheduledToolArguments } from "../tools/registry.js";
+import {
+  createToolGraph,
+  executeToolGraph,
+  type ToolGraphNode,
+} from "../tools/tool-graph.js";
+import { ToolRunner } from "../tools/tool-runner.js";
+import { RuntimeIpcError, type RuntimeIpcPeer } from "./runtime-ipc-peer.js";
+import type {
+  RuntimeIpcRequest,
+  RuntimeTaskSettings,
+} from "./runtime-ipc-protocol.js";
+import type { RuntimeExecutionIdentity } from "./runtime-capability-core.js";
+import { RuntimeModelProvider } from "./runtime-model-provider.js";
+import { RuntimeSessionClient } from "./runtime-session-client.js";
+import {
+  RuntimeApprovalClient,
+  RuntimeMemoryClient,
+} from "./runtime-tool-adapters.js";
+
+interface StartTaskInput {
+  workspace: string;
+  prompt: string;
+  settings: RuntimeTaskSettings;
+  memoryText?: string;
+}
+
+type RuntimeTaskStatus = "completed" | "failed" | "cancelled" | "interrupted";
+
+export class AgentRuntimeService {
+  private running = false;
+
+  constructor(
+    private peer: RuntimeIpcPeer,
+    private identity: RuntimeExecutionIdentity,
+  ) {
+    peer.setRequestHandler((request, signal) => this.handle(request, signal));
+  }
+
+  private handle(request: RuntimeIpcRequest, signal: AbortSignal) {
+    if (request.operation !== "start_task") {
+      throw new RuntimeIpcError("Agent Runtime 只接受 start_task 请求。");
+    }
+
+    if (this.running) {
+      throw new RuntimeIpcError("Agent Runtime 已有运行中的任务。");
+    }
+
+    this.running = true;
+
+    return this.run(request.body, signal).finally(() => {
+      this.running = false;
+    });
+  }
+
+  private async run(input: StartTaskInput, signal: AbortSignal) {
+    const session = new RuntimeSessionClient(this.peer, signal);
+    const events = new OrderedRuntimeEvents(session);
+    const provider = new RuntimeModelProvider(this.peer, "task");
+    const compactionProvider = new RuntimeModelProvider(
+      this.peer,
+      "compaction",
+    );
+    let status: RuntimeTaskStatus = "completed";
+    let failure: string | undefined;
+
+    try {
+      const modelInput = await prepareTaskContext(
+        session,
+        this.identity.sessionId,
+        input.prompt,
+      );
+      const instructions = [
+        await createInstructions(input.workspace, undefined, true),
+        input.memoryText,
+      ]
+        .filter(Boolean)
+        .join("\n\n");
+      const capabilities = await provider.getCapabilities(signal);
+      const budget = createBudget(
+        capabilities,
+        input.settings.contextChars,
+        input.settings.maxOutputTokens,
+      );
+      const toolSettings = runtimeToolSettings(input.settings);
+      const runner = new ToolRunner({
+        root: input.workspace,
+        sessionId: this.identity.sessionId,
+        taskId: this.identity.taskId,
+        signal,
+        settings: toolSettings,
+        approvals: new RuntimeApprovalClient(this.peer),
+        memory: new RuntimeMemoryClient(this.peer, signal),
+        executionBoundary: "agent-runtime",
+        emit: (type, data) => events.emit(type, data),
+      });
+      const tools = [...definitions, historyDefinition];
+      const context = new ContextManager({
+        store: session,
+        sessionId: this.identity.sessionId,
+        model: input.settings.model,
+        limit: budget.limit,
+        currentFileHash: (file) => runner.currentFileHash(file),
+        measure: budget.measure,
+        measurement: budget.measurement,
+        unit: budget.unit,
+        maxOutputTokens: budget.outputTokens,
+        provider: compactionProvider,
+        signal,
+        clean: (text) => text,
+        notice: (text) => events.emit("notice", { text }),
+        report: (event, data) => events.emit(event, data),
+        onModelRequest: () =>
+          events.emit("model_request", { purpose: "compaction" }),
+        onUsage: (usage) =>
+          events.emit("model_usage", { ...usage, purpose: "compaction" }),
+      });
+      let currentInput = modelInput;
+
+      this.peer.event({
+        type: "event",
+        event: "runtime_state",
+        state: "running",
+      });
+      for (let step = 1; step <= input.settings.maxSteps; step++) {
+        signal.throwIfAborted();
+        currentInput = await context.prepare(currentInput, instructions, tools);
+        events.emit("model_request", { purpose: "task", step, attempt: 1 });
+        const response = await provider.run(
+          currentInput,
+          instructions,
+          tools,
+          signal,
+          (text) => events.emit("delta", { text, step, attempt: 1 }),
+          { maxOutputTokens: budget.outputTokens },
+        );
+        if (response.usage) {
+          budget.observeUsage?.(
+            response.usage.input_tokens,
+            currentInput,
+            instructions,
+            tools,
+          );
+          events.emit("model_usage", {
+            ...response.usage,
+            purpose: "task",
+            step,
+            attempt: 1,
+          });
+        }
+
+        currentInput.push(...response.output);
+        await session.saveContext(this.identity.sessionId, currentInput);
+        if (response.text) {
+          events.emit("assistant", { text: response.text, step, attempt: 1 });
+        }
+
+        const calls = response.output.filter(
+          (item: any) => item.type === "function_call",
+        );
+        if (!calls.length) {
+          if (!response.text) {
+            throw new Error("模型未返回文本或工具调用。");
+          }
+
+          await events.flush();
+          break;
+        }
+
+        const graph = buildRuntimeToolGraph(calls);
+        events.emit("tool_batch_planned", {
+          nodes: graph.nodes.map((node) => ({
+            callId: node.callId,
+            nodeId: node.nodeId,
+            name: node.name,
+            dependsOn: node.dependsOn,
+            ordinal: node.ordinal,
+          })),
+        });
+        const persistence = new OrderedContextPersistence(
+          session,
+          this.identity.sessionId,
+          currentInput,
+          input.settings.outputChars,
+          events,
+        );
+        await executeToolGraph(graph, {
+          execute: async (node) => {
+            signal.throwIfAborted();
+            events.emit("tool_start", {
+              name: node.name,
+              callId: node.callId,
+              nodeId: node.nodeId,
+              dependsOn: node.dependsOn,
+              args: node.arguments,
+            });
+            let result: unknown;
+            try {
+              result =
+                node.name === historyDefinition.name
+                  ? await readContextHistoryAsync(
+                      session,
+                      this.identity.sessionId,
+                      node.arguments,
+                      input.settings.outputChars,
+                    )
+                  : await runner
+                      .forCall(node.callId)
+                      .execute(node.name, node.arguments);
+            } catch (error) {
+              signal.throwIfAborted();
+              result = {
+                error:
+                  error instanceof Error
+                    ? error.message.slice(0, 2_000)
+                    : "工具执行失败。",
+              };
+            }
+
+            await persistence.save(node, result);
+
+            return toolSucceeded(result);
+          },
+          block: async (node, failedDependency) => {
+            await persistence.save(node, {
+              error: `依赖工具 ${failedDependency.nodeId} 未成功，未执行当前调用。`,
+              code: "dependency_failed",
+              failedDependency: failedDependency.nodeId,
+            });
+          },
+          state: (node, state) =>
+            events.emit("tool_state", {
+              nodeId: node.nodeId,
+              callId: node.callId,
+              state,
+            }),
+        });
+        await persistence.flush();
+        await events.flush();
+
+        if (step === input.settings.maxSteps) {
+          throw new Error("已达到最大模型调用次数，任务停止。");
+        }
+      }
+    } catch (error) {
+      status = signal.aborted ? "cancelled" : "failed";
+      failure = signal.aborted
+        ? "任务已取消，可手动恢复。"
+        : error instanceof Error
+          ? error.message.slice(0, 2_000)
+          : "任务失败。";
+      events.emit("notice", { text: failure, status });
+    }
+
+    await events.flush();
+    await this.peer.request(
+      "runtime_complete",
+      { status, failure },
+      AbortSignal.timeout(10_000),
+    );
+    this.peer.event({
+      type: "event",
+      event: "runtime_state",
+      state: "stopping",
+    });
+
+    return { status, failure };
+  }
+}
+
+function runtimeToolSettings(settings: RuntimeTaskSettings) {
+  return {
+    baseUrl: "broker://model",
+    model: settings.model,
+    maxSteps: settings.maxSteps,
+    maxConcurrentTasks: 1,
+    commandTimeoutMs: settings.commandTimeoutMs,
+    requestTimeoutMs: 300_000,
+    idleTimeoutMs: 60_000,
+    maxOutputTokens: settings.maxOutputTokens,
+    contextChars: settings.contextChars,
+    outputChars: settings.outputChars,
+    logLevel: "info",
+  };
+}
+
+function buildRuntimeToolGraph(calls: any[]) {
+  return createToolGraph(
+    calls.map((call, ordinal) => {
+      const raw = JSON.parse(call.arguments);
+      const scheduled =
+        call.name === historyDefinition.name
+          ? parseScheduledHistoryArguments(raw, `call-${ordinal + 1}`)
+          : parseScheduledToolArguments(call.name, raw, `call-${ordinal + 1}`);
+
+      return {
+        callId: call.call_id,
+        nodeId: scheduled.execution.id,
+        name: call.name,
+        arguments: scheduled.arguments,
+        dependsOn: scheduled.execution.dependsOn,
+        ordinal,
+      };
+    }),
+  );
+}
+
+function toolSucceeded(result: any) {
+  return (
+    !result?.error &&
+    (result?.exitCode === undefined || result.exitCode === 0) &&
+    !result?.files?.some(
+      (file: any) => file.status === "failed" || file.status === "unknown",
+    )
+  );
+}
+
+class OrderedRuntimeEvents {
+  private pending = Promise.resolve();
+
+  constructor(private session: RuntimeSessionClient) {}
+
+  emit(type: string, data: unknown) {
+    this.pending = this.pending.then(() =>
+      this.session.appendEvent(type, data),
+    );
+  }
+
+  flush() {
+    return this.pending;
+  }
+}
+
+class OrderedContextPersistence {
+  private pending = Promise.resolve();
+
+  constructor(
+    private session: RuntimeSessionClient,
+    private sessionId: string,
+    private input: any[],
+    private outputChars: number,
+    private events: OrderedRuntimeEvents,
+  ) {}
+
+  save(node: ToolGraphNode, result: unknown) {
+    this.pending = this.pending.then(async () => {
+      let output = JSON.stringify(result);
+      if (output.length > this.outputChars) {
+        output = JSON.stringify({
+          truncated: true,
+          text: output.slice(0, this.outputChars),
+        });
+      }
+
+      this.events.emit("tool_result", {
+        name: node.name,
+        callId: node.callId,
+        nodeId: node.nodeId,
+        result,
+      });
+      this.input.push({
+        type: "function_call_output",
+        call_id: node.callId,
+        output,
+      });
+      await this.session.saveContext(this.sessionId, this.input);
+    });
+
+    return this.pending;
+  }
+
+  flush() {
+    return this.pending;
+  }
+}

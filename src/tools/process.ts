@@ -123,10 +123,27 @@ export async function executeProcess(
       stopped = true;
       if (child.pid) {
         if (process.platform === "win32") {
-          spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], {
-            windowsHide: true,
-            stdio: "ignore",
-          }).on("error", () => child.kill());
+          const killer = spawn(
+            "taskkill",
+            ["/pid", String(child.pid), "/T", "/F"],
+            {
+              windowsHide: true,
+              stdio: "ignore",
+            },
+          );
+          const fallback = setTimeout(() => child.kill(), 1_000);
+
+          fallback.unref();
+          killer.once("error", () => {
+            clearTimeout(fallback);
+            child.kill();
+          });
+          killer.once("close", (code) => {
+            clearTimeout(fallback);
+            if (code !== 0) {
+              child.kill();
+            }
+          });
         } else {
           try {
             process.kill(-child.pid, "SIGKILL");

@@ -1,6 +1,6 @@
 # 初版验证记录
 
-日期：2026-09-07；后续条目按各自日期补充。以下区分实际验证和计划覆盖，不将构建成功等同于跨平台运行成功。**Windows 专用用户 Runtime 的产品代码、安装器、ACL/Job、持久 WFP、journal、CONNECT relay 与命令/Git 子进程路由已经接入，但尚未完成固定账户提升环境端到端验收。agent loop、真实 Runtime→Broker Named Pipe transport 和模型/session adapter 尚未接入；WSL2 与 restricted-token demo 仍只是历史或局部证据。代码存在、单测或 native build 通过都不能扩展成 W0--W6 完成或跨平台 Sandbox 能力。**
+日期：2026-09-07；后续条目按各自日期补充。以下区分实际验证和计划覆盖，不将构建成功等同于跨平台运行成功。**Windows 专用用户 Runtime 的产品代码、安装器、ACL/Job、持久 WFP、journal、CONNECT relay 与命令/Git 子进程路由已经接入，但尚未完成固定账户提升环境端到端验收。AgentRuntimeService、Engine launcher 分流与模型/session/审批 adapter 已在独立 Node 子进程 stdio harness 通过；真实 Sandbox Supervisor launcher、联合身份验证 Named Pipe、Push Runner 切换和提升环境取消/恢复仍未接入产品路径。WSL2 与 restricted-token demo 仍只是历史或局部证据。代码存在、stdio 跨进程测试、单测或 native build 通过都不能扩展成 W0--W6 完成或跨平台 Sandbox 能力。**
 
 ## 本机实际验证
 
@@ -278,6 +278,6 @@
 - account generation 的 release 改为 prepare/native revoke/commit 两阶段；原生撤销成功前 active lease 和 grant 引用不减少，失败会保留 orphan 对账对象并 quarantine。共享 grant 增加 `provisioning/installed/failed` 状态，后继 lease 在首个 supervisor 回报 Runtime started 前等待，首个 provision 失败时等待者失败并回滚未启动引用。并发回归覆盖共享 read root 的第二个 Runtime 不会抢先执行。
 - unknown/orphaned 不再只改内存标志：Broker 调用 Runtime generation drain，先关闭 relay，再运行固定的 `--terminate-account-processes` 与 `--revoke-journal`；服务监听前主动运行同一恢复步骤，从原生持久 ACL journal 对账上次崩溃遗留，失败会保留为后续 Sandbox fallback。内存 generation 继续保持 quarantined，不因 drain 返回成功而在本进程复用。execution instance/session 账本与原生 journal 分别保存审计事实和可撤销对象；仍未完成机器断电、损坏 journal、真实多实例强制终止及提升环境重启夹具。
 - Broker 状态从全局 `latestStatus` 改为 task/execution-instance 映射；并发测试让任务 A 停在 host fallback，同时任务 B 完成 sandbox 路径，并分别核对状态不串扰。Bootstrap 只公开启动配置，具体执行事实以 execution instance 与工具结果为准。
-- 当前 agent loop/文件工具仍在 Broker Host 的 Node 进程；C++ Sandbox Supervisor 每次只启动一条命令或 Git 的 Sandboxed Tool Process，它不是 Agent Runtime。`runtime-capability-core.ts` 仍是未接 transport 的协议核心。W3 Named Pipe 身份、模型/session/审批 adapter、模型代理进程边界和常驻 Agent Runtime 内 agent loop 继续列为未实现，相关协议测试不能证明真实边界。
-- 2026-09-21 开始恢复原始进程边界：capability core 与 Runtime IPC 已拆名；新增 8 MiB 有界双向 request/response/event framing、instance/nonce 握手、Broker model/session/approval adapter 和 Runtime 侧 `ModelProvider`。独立 Node fixture 已跨进程完成模型能力查询、delta 流和最终结果，并回报 runtime completed；畸形 JSON和取消也有回归。该 fixture 使用继承 stdio、当前用户和模拟 provider，只证明应用协议可跨进程，不证明 Windows Named Pipe 身份或 agent loop 已进入专用账户。
+- 默认产品组装仍由 Broker Host 的 Node 进程运行 agent loop/文件工具；C++ Sandbox Supervisor 每次只启动一条命令或 Git 的 Sandboxed Tool Process，它不是 Agent Runtime。但 Engine 已增加显式 `AgentRuntimeLauncher` 分流，`AgentRuntimeService` 已在独立 Node 子进程中完成上下文、模型轮次、工具 DAG、文件读取与终态回报；第二轮模型请求已观察到 Runtime 产生的工具结果。
+- 2026-09-21 恢复原始进程边界的应用层增量已通过：capability core 与 Runtime IPC 已拆名；新增 8 MiB 有界双向 request/response/event framing、instance/nonce 握手、Broker model/session/approval/memory adapter、Runtime 侧 `ModelProvider`、session/context client 和 Runtime 内 ToolRunner。独立 Node fixture 跨进程完成模型能力查询、delta 流、文件工具、命令、session 持久化和 runtime completed；畸形 JSON、取消与 clean 退出也有回归。该 fixture 使用继承 stdio、当前用户和模拟 provider，只证明 loop 与 adapter 的真实进程分离，不证明 Windows Named Pipe 的 PID/Job/token/capability/generation/nonce/lease 联合身份，也不证明 agent loop 已进入专用账户。
 - 产品 WFP manager 不再从 `experiments` 目录 include 实现。共享实现迁到 `native/windows-sandbox/network-fence-implementation.cpp`；实验入口变为薄包装，产品构建定义 `CODEATELIER_PRODUCT_WFP_ONLY`，只分派 persistent install/verify/remove。MSVC `/W4` 产品构建通过，且产物对实验参数 `--ipc` 返回 2 和固定拒绝文本；这改善代码归属与命令面审计，不替代提升 WFP 行为矩阵。

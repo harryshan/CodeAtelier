@@ -1,10 +1,10 @@
 # 架构
 
-当前初版为单进程本机后端、浏览器单页应用、单 agent；不同真实工作目录的会话默认最多两个任务并行，同一目录严格串行。Windows Sandbox 的预览实现目前只把逐工具 Sandboxed Tool Process 放入单一专用低权限账户；目标仍是该账户中的常驻 Agent Runtime 与宿主 Broker Host，严格术语和完成判据见 [Windows 专用用户 Sandbox Runtime 与 Broker 架构](windows-integrity-sandbox.md#0-术语进程和完成条件)。Sandbox 模式沿用相同的 1～4 个不同工作区并发和同工作区串行。它仍待常驻 Runtime、真实 IPC 和固定账户提升验收，macOS/Linux 明确不加载此后端，不能把普通当前进程结构或逐命令隔离解释为完整 Agent Runtime。核心机制自行实现，没有引入 agent 编排框架。
+当前初版为本机后端、浏览器单页应用、单 agent；不同真实工作目录的会话默认最多两个任务并行，同一目录严格串行。Windows Sandbox 仍处于迁移态：默认产品组装仍使用逐工具 Sandboxed Tool Process；代码已实现可注入 launcher 的常驻 Agent Runtime 路径，并在独立 Node 子进程中跑通 agent loop、文件工具及 model/session/approval IPC adapter。但是服务组装尚未提供 Windows 产品 launcher，该路径还没有从真实 Sandbox Supervisor 启动，也没有经过联合身份验证的 Named Pipe 和固定账户提升验收。严格术语和完成判据见 [Windows 专用用户 Sandbox Runtime 与 Broker 架构](windows-integrity-sandbox.md#0-术语进程和完成条件)。Sandbox 模式沿用 1～4 个不同工作区并发和同工作区串行；macOS/Linux 明确不加载这套 Windows 后端。核心机制自行实现，没有引入 agent 编排框架。
 
 ## 模块与数据流
 
-下图是仍在分阶段接线的目标进程边界，不是当前调用栈的完成态。当前产品的 agent loop 与文件工具仍在宿主 Node 进程中；只有每个 `run_command`/Git 子进程通过固定二进制帧交给原生 supervisor。`runtime-capability-core.ts` 的 command grant/模型代理只是传输无关协议核心，尚无真实 Runtime→Broker Named Pipe transport，也不能据此声称模型密钥或 agent loop 已移入 Sandbox。
+下图是正在分阶段接线的目标进程边界。`AgentRuntimeService` 与 Engine 的 launcher 分流已跑通该调用栈，但目前只有独立 Node 子进程 stdio harness 证据；默认 `createApp` 仍未注入 Windows launcher，因此现行产品调用栈仍是宿主 agent loop 与逐命令 supervisor。`runtime-capability-core.ts` 是传输无关协议核心；`runtime-ipc-*` 已是有界应用层协议，但尚未接到联合验证 PID/Job/token/generation/nonce/lease 的真实 Named Pipe transport。
 
 ```text
 Browser / Web UI
@@ -16,13 +16,13 @@ Broker Host（可信宿主边界）
   └─ 经认证、固定 schema 的 IPC
        ↕
 Sandbox Process（单一 CodeAtelierSandbox 账户；每实例独立 lease/capability/Job）
-  ├─ Agent Runtime：常驻 Node.js agent loop、工具计划、文件工具、本地 Git 与命令；无直接网络（目标；尚未接线）
+  ├─ Agent Runtime：常驻 Node.js agent loop、工具计划、文件工具、本地 Git 与命令；无直接网络（应用层已接线；Windows 启动/传输未接入产品）
   ├─ Push Runner：真实 Git 配置与认证 relay；无 agent loop
   ├─ 账户既有读取权 + 工作区、显式 read/write roots 与精确只读 Git config/include 图
   └─ WRITE_RESTRICTED 根 capability、产品依赖与私有临时目录；不继承宿主 profile/凭据
 ```
 
-当前过渡调用链则是 `Broker Host 中的 Engine/ToolRunner → C++ Sandbox Supervisor → 单次 Sandboxed Tool Process`。这里的 Sandboxed Tool Process 只是一条 shell/Git 命令及其后代，不是 Agent Runtime；`runtime-capability-core.ts` 也只是同进程可测试的 capability protocol core，不是 Runtime IPC。后续实现必须删除这两个命名捷径，而不是把目标定义降低为逐命令隔离。
+默认产品的过渡调用链仍是 `Broker Host 中的 Engine/ToolRunner → C++ Sandbox Supervisor → 单次 Sandboxed Tool Process`。已实现但尚未产品组装的调用链是 `Broker Engine → AgentRuntimeLauncher → 独立 AgentRuntimeService → 工具子进程`，其中模型、session、审批和记忆通过 Runtime IPC adapter 回到 Broker。只有第二条链从真实 Supervisor 启动且传输身份完成验证后，才满足 Agent Runtime 目标。
 
 以下文件职责描述当前实现；专用用户/Broker 目标模块和迁移边界以 [windows-integrity-sandbox.md](windows-integrity-sandbox.md) 为准。无论当前还是目标架构，前端都不能导入文件、进程或密钥实现。
 
@@ -34,7 +34,7 @@ Sandbox Process（单一 CodeAtelierSandbox 账户；每实例独立 lease/capab
 - `src/server/local-security.ts` 在业务 API 前校验 Host、Origin、可选的环境访问密码与本机会话 token；密码门禁启用后，只有状态/登录路由可在未验证时访问，登录成功写入服务进程有效的 HttpOnly cookie。
 - `src/sessions/store.ts` 保存 sessions、tasks、events、context 和新任务的高保真 replay 捕获；任务的 createdAt、startedAt、finishedAt 分别表示入队、实际开始和结束，排队时间不计入会话累计运行时间。初始数据库结构位于 `schema.ts`。replay 捕获逐次保存模型 input/instructions/响应及完整脱敏工具参数/结果，导出时可从同一哈希的完整 `read_file` 页拼接 `edit_files` 的原始文件；只读到部分行或旧历史则明确拒绝真实文件物化。会话初始快照读取全量事件，SSE 后续刷新按 event ID 游标只读取新增事件；超过 64 KiB 的任一事件读取范围、活动上下文和历史快照由 `store-worker.ts` 在独立 Worker 线程解析或事务写入，小记录避免线程创建开销而同步读取。启动时将 queued/running/waiting 任务标为 interrupted 并记录结束时间。
 - `src/config` 将 .env/进程环境中的只读连接配置与 settings.json 中的非连接偏好合成为运行时设置，另管理内存密钥和平台数据目录；`src/sandbox/config.ts` 同时只在启动时严格读取 Sandbox 开关，避免它被浏览器设置或旧持久化偏好改变。访问门禁配置由 server/local-security.ts 在服务启动时单独读取，避免将密码纳入浏览器可见配置。
-- Sandbox 的目标模块以 `BrokerHost` 为宿主可信边界。一次性提升安装创建单一 `CodeAtelierSandbox` 本地账户，并按其 SID 安装持久 WFP 默认拒绝规则；独立 C++ supervisor 为每个 execution instance 创建该账户的 `WRITE_RESTRICTED` token、根 capability、私有 desktop、最小环境和 Job。Broker 通过原对象 handle 向 AccessManifest 中的工作区、显式 read/write roots、产品依赖和精确 Git config/include 图投影最小 ACL。当前产品已把命令/Git 子进程、ACL journal、Job、relay 和 generation drain 接到原生路径；agent loop、真实 Runtime→Broker Named Pipe 身份、模型/session adapter 仍是 W3 后续工作。Sandbox 沿用 1～4 个不同工作区并发和同工作区串行；账户 SID 使所有并发实例可能读取活动 manifest 的授权根，同账户 peer 也可能终止、注入或检查其它 Runtime。不同对话不是彼此的 OS 安全边界，每实例 capability 只承诺经验证的直接及后代文件写入限制。专用账户不继承宿主用户私有权限，但既有公共/机器 ACL 仍可能允许额外读取。共享账户 ACE 使用 provision 等待与 prepare/native revoke/commit 两阶段 grant table；任一实例 ACL、Job、代理或账户状态无法对账时隔离 account generation，原生终止整代账户进程并按持久 journal 撤销 ACL。全部 Git 与命令在 Runtime 内执行，Broker 不运行 Git；当前 agent loop 和文件工具仍在宿主。现有 WSL2 `inspect` 和 restricted-token demo 只是历史或局部证据，完整边界见 [windows-integrity-sandbox.md](windows-integrity-sandbox.md)。
+- Sandbox 的目标模块以 `BrokerHost` 为宿主可信边界。一次性提升安装创建单一 `CodeAtelierSandbox` 本地账户，并按其 SID 安装持久 WFP 默认拒绝规则；独立 C++ supervisor 为每个 execution instance 创建该账户的 `WRITE_RESTRICTED` token、根 capability、私有 desktop、最小环境和 Job。Broker 通过原对象 handle 向 AccessManifest 中的工作区、显式 read/write roots、产品依赖和精确 Git config/include 图投影最小 ACL。当前产品已把命令/Git 子进程、ACL journal、Job、relay 和 generation drain 接到原生路径；AgentRuntimeService、Engine launcher 分流及 model/session/approval/memory adapter 已实现并通过跨进程 harness，但真实 Supervisor launcher 和身份绑定 Named Pipe 仍是 W3/W4 后续工作。Sandbox 沿用 1～4 个不同工作区并发和同工作区串行；账户 SID 使所有并发实例可能读取活动 manifest 的授权根，同账户 peer 也可能终止、注入或检查其它 Runtime。不同对话不是彼此的 OS 安全边界，每实例 capability 只承诺经验证的直接及后代文件写入限制。专用账户不继承宿主用户私有权限，但既有公共/机器 ACL 仍可能允许额外读取。共享账户 ACE 使用 provision 等待与 prepare/native revoke/commit 两阶段 grant table；任一实例 ACL、Job、代理或账户状态无法对账时隔离 account generation，原生终止整代账户进程并按持久 journal 撤销 ACL。全部 Git 与命令在 Runtime 内执行，Broker 不运行 Git；默认产品组装在 Windows launcher 接入前仍保留宿主 loop 兼容路径。现有 WSL2 `inspect` 和 restricted-token demo 只是历史或局部证据，完整边界见 [windows-integrity-sandbox.md](windows-integrity-sandbox.md)。
 - `src/tracing` 默认只在任务运行期间于当前进程构造性能 timeline：Engine 在上下文计量/压缩、模型请求与退避、响应处理、工具计划、SandboxBroker 阶段、工具真实执行和工具结果持久化边界创建 span；`context.prepare` 与 `context.request` 保持各自边界；前者以下挂预算输入计量和已有的压缩阶段，后者以下挂实际请求计量阶段。模型、退避与响应处理仍是独立 span，模型包装器记录长度、数量、usage、错误类别和首包时间。Node 主事件循环执行的上下文、模型、响应、计划和持久化 span 汇集于 `Main thread`，并以 begin/end slice 表示这些内部阶段；`Task` 根是生命周期包络。工具批次/依赖属于 `Tool scheduler` 逻辑轨道，实际执行节点映射到最多 4 个可复用 `Tool worker` 并发槽位，而不为每个 call ID 创建一行。导出事件按时间排序，并用递增整数 ID 连接模型到工具的 flow，保证 Perfetto Trace Event JSON 兼容性。每个实际 tool span 保存经递归凭据脱敏后的结构化执行参数，因此 trace 是不得上传或提交的敏感本机诊断文件；它仍不保存提示词、模型/工具输出或凭据原文。高保真 replay payload 独立保存在 Store 的 `task_replays`，不混入 Perfetto；模型/工具 replay 只用于隔离测试，文件物化还必须验证完整读取版本。任务进入终态时 TraceArchive 以临时文件后 rename 的方式保存 `traces/<sessionId>/<taskId>.json`，然后立即释放内存记录，所以同一会话各任务不覆盖且没有完成 trace 缓存。`GET /api/tasks/:id/trace` 在本机 cookie 保护下只读取该文件；`GET /api/sessions/:id/traces` 只列出实际存在的文件，统计框据此显示下载入口。
 - `src/logging` 在 Pino 内部按字段脱敏后输出紧凑格式化纯文本，按级别筛选、保留受控错误详情并轮转文件。
 
@@ -54,7 +54,7 @@ Sandbox Process（单一 CodeAtelierSandbox 账户；每实例独立 lease/capab
 | config/settings.ts / config.ts / data-directory.ts                                     | 连接/偏好参数 schema、仅保存偏好的配置加载、内存密钥与平台数据目录                                                                                                                                |
 | tracing/recorder.ts / archive.ts / model-provider.ts                                   | 任务 span、模型安全摘要、Sandbox execution/instance/kind、跨轨道 flow、Trace Event JSON 导出，以及按会话/任务安全落盘；模型包装器保持 Provider 契约与取消语义                                     |
 | sandbox/broker.ts / runtime-capability-core.ts                                         | Sandbox 优先/宿主 fallback 分流；命令 executionInstance/PID/创建时间账本；Runtime→Broker 的一次性命令审批 grant 与宿主模型代理 capability core                                                        |
-| sandbox/runtime-ipc-*.ts / agent-runtime-connection.ts / runtime-model-provider.ts     | 有界双向 request/response/event framing、instance/nonce 握手、Broker model/session/approval adapter 与 Runtime 侧模型代理；独立进程 stdio harness 已通过，但 Windows transport 身份和 agent loop 尚未接线 |
+| sandbox/runtime-ipc-*.ts / agent-runtime-*.ts / runtime-model-provider.ts              | 有界双向 framing、instance/nonce 握手、Broker model/session/approval/memory adapter、Runtime 侧完整 agent loop 及 Engine launcher 分流；独立进程 stdio harness 已通过，但 Windows Supervisor launcher 与联合身份 transport 尚未接入产品 |
 | sandbox/native-windows-runtime.ts / C++ supervisor                                     | 受保护安装副本自检、有界二进制执行帧、专用账户/restricted token/ACL/Job/desktop、取消、恢复 journal、Git relay 与同 Job askpass；仍待提升环境产品验收                                             |
 | sandbox/supervisor-protocol.ts / supervisor-channel.ts                                 | 更高层 Broker→Runtime strict typed operation 与私有 handle framing；不暴露任意命令/SID/ACL/handle，当前命令执行走更窄的原生固定帧，模型代理 transport 留作后续 agent loop 接入路径                |
 | logging/logger.ts / redact.ts                                                          | 日志创建、错误详情序列化、格式化输出与轮转、纯文本脱敏                                                                                                                                            |

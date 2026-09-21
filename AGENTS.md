@@ -11,7 +11,7 @@
 - 保持清晰的目录、模块与代码文件结构。
 - 保持完善且与开发同步更新的文档。
 - **初版功能边界已确认**，以 docs/requirements.md 第 2、5 节为范围与验收依据；用户已授权开始实现；当前按 Node.js 24、React/Vite、Fastify、SQLite、Pino 技术方案开发。
-- 第一版使用 Web UI 作为用户交互界面，支持 Windows、macOS 和 Linux，优先完成读代码、修改与验证闭环。原 CLI 方向已被替代。后续 Windows Sandbox 使用单一专用低权限本地账户、per-instance restricted token/Job/capability、显式文件 ACL 与按账户 SID 的 WFP；Runtime 执行全部 Git，Broker 不执行 Git。Sandbox 模式沿用 1～4 个不同工作区并发和同工作区串行。通用 Broker 的宿主 fallback、独立日志、命令 executionInstance/PID 账本与 Runtime→Broker 命令 grant/模型 trace 协议核心已开始实现；专用账户/supervisor/ACL/WFP 产品集成仍不可描述为当前可用或跨平台实现。
+- 第一版使用 Web UI 作为用户交互界面，支持 Windows、macOS 和 Linux，优先完成读代码、修改与验证闭环。原 CLI 方向已被替代。后续 Windows Sandbox 使用单一专用低权限本地账户、per-instance restricted token/Job/capability、显式文件 ACL 与按账户 SID 的 WFP；Runtime 执行全部 Git，Broker 不执行 Git。Sandbox 模式沿用 1～4 个不同工作区并发和同工作区串行。应用层 AgentRuntimeService、Engine launcher 分流与 model/session/approval/memory adapter 已在独立 Node 子进程 harness 跑通；默认产品组装仍缺真实 Windows Supervisor launcher 和联合身份验证 Named Pipe，因此专用账户 Runtime 仍不可描述为当前可用或跨平台实现。
 - 默认采用本机后端 + 本机浏览器访问并监听回环地址；用户显式配置后可在受信任局域网监听，仍不提供公网部署、多用户账户或权限分级。Web UI 可由环境变量启用单一访问密码门禁；此限制针对 UI 和后端服务的入站访问，不限制已配置的模型 API 调用。
 - 跨平台设计需覆盖路径、shell、进程取消和文件权限差异；不得将单一系统验证描述为全平台验证。具体系统版本与浏览器支持矩阵待定。
 - 首个模型服务为用户自建 Responses API server，预留其他提供商接口；实际端点、模型标识与 Bearer API key 仅在本地 .env 配置，不写入源码、示例或文档；示例仅使用占位值。模型标识原样传递，不内置特定服务的简称转换。

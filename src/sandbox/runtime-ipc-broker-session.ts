@@ -16,13 +16,18 @@ import type { Readable, Writable } from "node:stream";
 import { RuntimeIpcPeer } from "./runtime-ipc-peer.js";
 import type { RuntimeIpcRequest } from "./runtime-ipc-protocol.js";
 import { RUNTIME_IPC_PROTOCOL_VERSION } from "./runtime-ipc-protocol.js";
+import type { RuntimeTaskSettings } from "./runtime-ipc-protocol.js";
 
 export interface RuntimeIpcBrokerHandlers {
   requestApproval(
     identity: RuntimeExecutionIdentity,
-    input: { tool: string; description: string },
+    input: { tool: string; description: string; grantKey?: string },
     signal: AbortSignal,
   ): Promise<{ approved: boolean }>;
+  applyMemory(
+    identity: RuntimeExecutionIdentity,
+    request: unknown,
+  ): Promise<unknown>;
   appendSessionEvent(
     identity: RuntimeExecutionIdentity,
     eventType: string,
@@ -33,6 +38,17 @@ export interface RuntimeIpcBrokerHandlers {
     input: unknown[],
   ): Promise<void>;
   readContext(identity: RuntimeExecutionIdentity): Promise<unknown[]>;
+  readEvents(identity: RuntimeExecutionIdentity): Promise<unknown[]>;
+  latestContextSnapshot(identity: RuntimeExecutionIdentity): Promise<unknown>;
+  readContextSnapshot(
+    identity: RuntimeExecutionIdentity,
+    snapshotId: string,
+  ): Promise<unknown>;
+  compactContext(
+    identity: RuntimeExecutionIdentity,
+    snapshot: unknown,
+    input: unknown[],
+  ): Promise<void>;
   runtimeCompleted(
     identity: RuntimeExecutionIdentity,
     result: {
@@ -45,6 +61,12 @@ export interface RuntimeIpcBrokerHandlers {
 export class RuntimeIpcBrokerSession {
   readonly peer: RuntimeIpcPeer;
   private authenticated = false;
+  private ready: Promise<void>;
+  private resolveReady!: () => void;
+  private rejectReady!: (error: Error) => void;
+  private runtimeReady: Promise<void>;
+  private resolveRuntimeReady!: () => void;
+  private rejectRuntimeReady!: (error: Error) => void;
 
   constructor(
     streams: { input: Readable; output: Writable },
@@ -53,13 +75,37 @@ export class RuntimeIpcBrokerSession {
     private gateway: RuntimeBrokerGateway,
     private handlers: RuntimeIpcBrokerHandlers,
   ) {
+    this.ready = new Promise((resolve, reject) => {
+      this.resolveReady = resolve;
+      this.rejectReady = reject;
+    });
+    this.runtimeReady = new Promise((resolve, reject) => {
+      this.resolveRuntimeReady = resolve;
+      this.rejectRuntimeReady = reject;
+    });
+    void this.ready.catch(() => undefined);
+    void this.runtimeReady.catch(() => undefined);
     this.peer = new RuntimeIpcPeer({
       ...streams,
+      onClose: (error) => {
+        if (!this.authenticated) {
+          this.rejectReady(error);
+        }
+
+        this.rejectRuntimeReady(error);
+      },
+      onEvent: (event) => {
+        if (event.event === "runtime_state" && event.state === "ready") {
+          this.resolveRuntimeReady();
+        }
+      },
       onHandshake: (message) => {
         if (message.type !== "runtime_hello") {
           this.peer.end("Runtime IPC 握手方向无效。");
+
           return;
         }
+
         if (
           this.authenticated ||
           message.sessionId !== this.identity.sessionId ||
@@ -68,9 +114,12 @@ export class RuntimeIpcBrokerSession {
           message.nonce !== this.nonce
         ) {
           this.peer.end("Runtime IPC 握手身份不匹配。");
+
           return;
         }
+
         this.authenticated = true;
+        this.resolveReady();
         this.peer.handshake({
           type: "broker_hello",
           protocolVersion: RUNTIME_IPC_PROTOCOL_VERSION,
@@ -85,11 +134,53 @@ export class RuntimeIpcBrokerSession {
     this.peer.event({ type: "event", event: "cancel", reason });
   }
 
+  async startTask(
+    input: {
+      workspace: string;
+      prompt: string;
+      settings: RuntimeTaskSettings;
+      memoryText?: string;
+    },
+    signal: AbortSignal,
+  ) {
+    await this.waitFor(this.ready, signal);
+    await this.waitFor(this.runtimeReady, signal);
+
+    return this.peer.request("start_task", input, signal);
+  }
+
+  private waitFor(ready: Promise<void>, signal: AbortSignal) {
+    signal.throwIfAborted();
+
+    return new Promise<void>((resolve, reject) => {
+      const aborted = () => {
+        cleanup();
+        reject(signal.reason ?? new Error("任务已取消"));
+      };
+
+      const cleanup = () => signal.removeEventListener("abort", aborted);
+      signal.addEventListener("abort", aborted, { once: true });
+      ready.then(
+        () => {
+          cleanup();
+          resolve();
+        },
+        (error) => {
+          cleanup();
+          reject(error);
+        },
+      );
+    });
+  }
+
   private async handle(request: RuntimeIpcRequest, signal: AbortSignal) {
     if (!this.authenticated) {
       throw new Error("Runtime IPC 尚未完成握手。");
     }
+
     switch (request.operation) {
+      case "start_task":
+        throw new Error("Broker Host 不接受 start_task 请求。");
       case "model_capabilities":
         return this.gateway.requestModelCapabilities(
           this.identity,
@@ -115,20 +206,42 @@ export class RuntimeIpcBrokerSession {
           request.body,
           signal,
         );
+      case "memory_apply":
+        return this.handlers.applyMemory(this.identity, request.body.request);
       case "session_append_event":
         await this.handlers.appendSessionEvent(
           this.identity,
           request.body.eventType,
           request.body.data,
         );
+
         return { saved: true };
       case "session_save_context":
         await this.handlers.saveContext(this.identity, request.body.input);
+
         return { saved: true };
       case "session_read_context":
         return this.handlers.readContext(this.identity);
+      case "session_read_events":
+        return this.handlers.readEvents(this.identity);
+      case "session_latest_snapshot":
+        return this.handlers.latestContextSnapshot(this.identity);
+      case "session_read_snapshot":
+        return this.handlers.readContextSnapshot(
+          this.identity,
+          request.body.snapshotId,
+        );
+      case "session_compact":
+        await this.handlers.compactContext(
+          this.identity,
+          request.body.snapshot,
+          request.body.input,
+        );
+
+        return { saved: true };
       case "runtime_complete":
         await this.handlers.runtimeCompleted(this.identity, request.body);
+
         return { recorded: true };
     }
   }

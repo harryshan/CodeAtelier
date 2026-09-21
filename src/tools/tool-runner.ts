@@ -20,8 +20,7 @@ import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { MAX_READ_LINES, parseToolArguments } from "./registry.js";
 import type { Settings } from "../shared/types.js";
-import type { ProjectMemoryService } from "../memory/service.js";
-import { ApprovalManager } from "../permissions/approval-manager.js";
+import type { Approval } from "../shared/types.js";
 import { resolveTarget, regularFile, sensitive, inside } from "./paths.js";
 import { executeProcess } from "./process.js";
 import { commandShell } from "./command-shell.js";
@@ -51,10 +50,23 @@ export interface ToolContext {
   taskId: string;
   signal: AbortSignal;
   settings: Settings;
-  approvals: ApprovalManager;
+  approvals: {
+    request(
+      data: Omit<Approval, "id" | "repeatable">,
+      signal: AbortSignal,
+      grantKey?: string,
+    ): Promise<boolean>;
+  };
   emit: (type: string, data: any) => void;
   sandbox?: SandboxBroker;
-  memory?: ProjectMemoryService;
+  memory?: {
+    apply(
+      scope: { workspace: string; sessionId: string; taskId: string },
+      request: unknown,
+    ): Promise<unknown>;
+  };
+  /** Agent Runtime 内的工具进程已处于任务 Job/token，不得再次调用 Broker 的逐工具 Sandbox。 */
+  executionBoundary?: "broker-host" | "agent-runtime";
   onSandboxStage?: (
     stage: SandboxStage,
     status: SandboxStatus,
@@ -234,6 +246,38 @@ export class ToolRunner {
     executionKind?: "agent-runtime" | "push-runner";
     networkHost?: string;
   }) {
+    if (this.ctx.executionBoundary === "agent-runtime") {
+      if (input.executionKind === "push-runner") {
+        throw new Error(
+          "Agent Runtime 不能直接执行 push；必须先由 Broker 切换到单用途 Push Runner。",
+        );
+      }
+
+      const result = await executeProcess(
+        input.command,
+        input.args,
+        input.cwd,
+        input.signal,
+        input.timeoutMs,
+        input.outputLimit,
+        input.onOutput,
+        input.environment ?? {},
+        (pid) => this.ctx.emit("sandboxed_tool_process", { pid }),
+      );
+
+      return {
+        ...result,
+        sandbox: {
+          enabled: true,
+          requested: true,
+          applied: true,
+          mode: "sandboxed" as const,
+          platform: process.platform,
+          level: "windows-sandbox-user-agent-runtime",
+        },
+      };
+    }
+
     const executionInstanceId = randomUUID();
     const createdAt = new Date().toISOString();
     const initialStatus = this.sandbox.statusFor(

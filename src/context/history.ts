@@ -11,6 +11,7 @@
 
 import { z } from "zod";
 import type { Store } from "../sessions/store.js";
+import type { ContextSnapshot } from "./types.js";
 import { scheduledParameters } from "../tools/registry.js";
 
 const schema = z
@@ -61,7 +62,12 @@ export function readContextHistory(
 
 /** Engine 调用此版本；Store 在 Worker 中解析大型快照，调用期间 HTTP 服务仍可处理其它请求。 */
 export async function readContextHistoryAsync(
-  store: Store,
+  store: {
+    contextSnapshotAsync(
+      sessionId: string,
+      snapshotId: string,
+    ): Promise<ContextSnapshot | undefined>;
+  },
   sessionId: string,
   args: unknown,
   outputChars: number,

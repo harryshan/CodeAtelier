@@ -29,6 +29,7 @@ function peers() {
     handleRequest: async (request) => ({ operation: request.operation }),
   });
   const left = new RuntimeIpcPeer({ input: rightToLeft, output: leftToRight });
+
   return { left, right, leftToRight, rightToLeft };
 }
 
@@ -90,9 +91,14 @@ it("rejects an instance or nonce mismatch before serving requests", async () => 
     gateway,
     {
       requestApproval: async () => ({ approved: true }),
+      applyMemory: async () => ({ applied: true }),
       appendSessionEvent: async () => undefined,
       saveContext: async () => undefined,
       readContext: async () => [],
+      readEvents: async () => [],
+      latestContextSnapshot: async () => undefined,
+      readContextSnapshot: async () => undefined,
+      compactContext: async () => undefined,
       runtimeCompleted: async () => undefined,
     },
   );
@@ -139,6 +145,7 @@ it("proxies a model request across a real child process", async () => {
           },
           async run(_input, _instructions, _tools, _signal, onDelta) {
             onDelta("hello");
+
             return { output: [], text: "hello" };
           },
         },
@@ -154,9 +161,14 @@ it("proxies a model request across a real child process", async () => {
     gateway,
     {
       requestApproval: async () => ({ approved: true }),
+      applyMemory: async () => ({ applied: true }),
       appendSessionEvent: async () => undefined,
       saveContext: async () => undefined,
       readContext: async () => [],
+      readEvents: async () => [],
+      latestContextSnapshot: async () => undefined,
+      readContextSnapshot: async () => undefined,
+      compactContext: async () => undefined,
       runtimeCompleted: async (_runtime, result) => {
         completed = result.status === "completed";
       },

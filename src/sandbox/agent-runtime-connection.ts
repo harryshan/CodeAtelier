@@ -52,8 +52,10 @@ export async function connectAgentRuntime(
         settled = true;
         rejectHandshake(error);
         peer.end(error.message);
+
         return;
       }
+
       settled = true;
       resolveHandshake();
     },
@@ -67,8 +69,10 @@ export async function connectAgentRuntime(
           : new RuntimeIpcError("Runtime IPC 握手已取消。"),
       );
     }
+
     peer.end("Runtime IPC 握手已取消。");
   };
+
   signal.addEventListener("abort", aborted, { once: true });
   peer.handshake({
     type: "runtime_hello",
@@ -80,6 +84,7 @@ export async function connectAgentRuntime(
   });
   try {
     await handshake;
+
     return peer;
   } finally {
     signal.removeEventListener("abort", aborted);

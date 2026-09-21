@@ -21,6 +21,21 @@ const requestBase = {
   requestId: identifier,
 };
 
+export const runtimeTaskSettingsSchema = z
+  .object({
+    model: identifier,
+    maxSteps: z.number().int().min(1).max(1_000),
+    commandTimeoutMs: z
+      .number()
+      .int()
+      .positive()
+      .max(24 * 60 * 60 * 1_000),
+    maxOutputTokens: z.number().int().positive().max(2_000_000).optional(),
+    contextChars: z.number().int().min(10_000).max(2_000_000),
+    outputChars: z.number().int().min(1_000).max(100_000),
+  })
+  .strict();
+
 export const runtimeHelloSchema = z
   .object({
     type: z.literal("runtime_hello"),
@@ -41,6 +56,20 @@ export const brokerHelloSchema = z
   .strict();
 
 export const runtimeRequestSchema = z.discriminatedUnion("operation", [
+  z
+    .object({
+      ...requestBase,
+      operation: z.literal("start_task"),
+      body: z
+        .object({
+          workspace: z.string().min(1).max(32_767),
+          prompt: boundedText,
+          settings: runtimeTaskSettingsSchema,
+          memoryText: z.string().max(100_000).optional(),
+        })
+        .strict(),
+    })
+    .strict(),
   z
     .object({
       ...requestBase,
@@ -76,8 +105,16 @@ export const runtimeRequestSchema = z.discriminatedUnion("operation", [
         .object({
           tool: identifier,
           description: z.string().min(1).max(32_000),
+          grantKey: z.string().min(1).max(64_000).optional(),
         })
         .strict(),
+    })
+    .strict(),
+  z
+    .object({
+      ...requestBase,
+      operation: z.literal("memory_apply"),
+      body: z.object({ request: z.unknown() }).strict(),
     })
     .strict(),
   z
@@ -104,6 +141,36 @@ export const runtimeRequestSchema = z.discriminatedUnion("operation", [
   z
     .object({
       ...requestBase,
+      operation: z.literal("session_read_events"),
+      body: z.object({}).strict(),
+    })
+    .strict(),
+  z
+    .object({
+      ...requestBase,
+      operation: z.literal("session_latest_snapshot"),
+      body: z.object({}).strict(),
+    })
+    .strict(),
+  z
+    .object({
+      ...requestBase,
+      operation: z.literal("session_read_snapshot"),
+      body: z.object({ snapshotId: identifier }).strict(),
+    })
+    .strict(),
+  z
+    .object({
+      ...requestBase,
+      operation: z.literal("session_compact"),
+      body: z
+        .object({ snapshot: z.unknown(), input: z.array(z.unknown()) })
+        .strict(),
+    })
+    .strict(),
+  z
+    .object({
+      ...requestBase,
       operation: z.literal("runtime_complete"),
       body: z
         .object({
@@ -121,7 +188,7 @@ export const runtimeResponseSchema = z.discriminatedUnion("ok", [
       type: z.literal("response"),
       requestId: identifier,
       ok: z.literal(true),
-      value: z.unknown(),
+      value: z.unknown().optional(),
     })
     .strict(),
   z
@@ -177,3 +244,4 @@ export type RuntimeIpcResponse = z.infer<typeof runtimeResponseSchema>;
 export type RuntimeIpcEvent = z.infer<typeof runtimeEventSchema>;
 export type RuntimeIpcMessage = z.infer<typeof runtimeIpcMessageSchema>;
 export type RuntimeIpcOperation = RuntimeIpcRequest["operation"];
+export type RuntimeTaskSettings = z.infer<typeof runtimeTaskSettingsSchema>;

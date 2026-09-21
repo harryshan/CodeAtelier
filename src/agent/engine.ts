@@ -33,7 +33,7 @@ import {
 import { prepareTaskContext } from "./context.js";
 import { createInstructions } from "./instructions.js";
 import { retryModel } from "../providers/retry.js";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import type { Logger } from "pino";
 import { Store } from "../sessions/store.js";
@@ -73,6 +73,12 @@ import { TraceArchive } from "../tracing/archive.js";
 import { TraceRecorder } from "../tracing/recorder.js";
 import type { TraceSpan } from "../tracing/types.js";
 import type { Task, TaskStatus } from "../shared/types.js";
+import type { AgentRuntimeLauncher } from "../sandbox/agent-runtime-launcher.js";
+import {
+  RuntimeBrokerGateway,
+  type RuntimeExecutionIdentity,
+} from "../sandbox/runtime-capability-core.js";
+import { RuntimeIpcBrokerSession } from "../sandbox/runtime-ipc-broker-session.js";
 
 // 标题请求没有工具或文件副作用；服务未提供可分类原因时，允许比主任务多一次诊断性重试。
 const titleRetryOptions = { retries: 3, retryUnknownErrors: true };
@@ -127,6 +133,7 @@ export class Engine {
     public config: Config,
     private log: Logger,
     private factory?: ModelProviderFactory,
+    private agentRuntimeLauncher?: AgentRuntimeLauncher,
   ) {
     this.traceArchive = new TraceArchive(config.directory, log);
     this.sandboxLog = createSandboxLogger(
@@ -598,6 +605,235 @@ export class Engine {
     }
   }
 
+  /**
+   * Broker 路径只启动/监督 Runtime 并实现固定 adapter；模型轮次、上下文和工具 DAG 均由子进程 AgentRuntimeService 发起。
+   * 注入 launcher 仅用于已经完成进程身份验证的 transport；普通子进程 launcher 只能用于测试，不得在产品配置中冒充 Sandbox。
+   */
+  private async runInAgentRuntime(
+    task: Task,
+    workspace: string,
+    prompt: string,
+    settings: Settings,
+    signal: AbortSignal,
+    emit: (type: string, data: any) => void,
+  ): Promise<{ status: TaskStatus; failure?: string }> {
+    const launcher = this.agentRuntimeLauncher!;
+    const executionInstanceId = randomUUID();
+    const identity: RuntimeExecutionIdentity = {
+      sessionId: task.sessionId,
+      taskId: task.id,
+      executionInstanceId,
+      kind: "agent-runtime",
+    };
+    const nonce = randomBytes(32).toString("hex");
+    let authorized = true;
+    let launched:
+      Awaited<ReturnType<AgentRuntimeLauncher["launch"]>> | undefined;
+    let cleaned = false;
+    let closeAttempted = false;
+    const createdAt = new Date().toISOString();
+    const publishExecution = (
+      state:
+        | "created"
+        | "running"
+        | "completed"
+        | "failed"
+        | "cancelled"
+        | "unknown",
+      extra: Record<string, unknown> = {},
+    ) => {
+      const record = {
+        executionInstanceId,
+        kind: "agent-runtime" as const,
+        mode: "windows-sandbox-user" as const,
+        state,
+        createdAt,
+        updatedAt: new Date().toISOString(),
+        sandboxRequested: true,
+        sandboxApplied: state !== "created",
+        ...extra,
+      };
+      emit("execution_instance", record);
+      this.sandbox.recordExecutionInstance(record);
+    };
+
+    publishExecution("created");
+    try {
+      launched = await launcher.launch({
+        identity,
+        nonce,
+        workspace,
+        signal,
+      });
+      publishExecution("running", {
+        pid: launched.pid,
+        pidKind: "runtime",
+        processCreationTime100ns: launched.processCreationTime100ns,
+        accountGenerationDigest: launched.accountGenerationDigest,
+      });
+      const gateway = new RuntimeBrokerGateway(
+        {
+          authorize: (candidate) => authorized && candidate === identity,
+          approveCommand: async (_runtime, request, requestSignal) => ({
+            approved: await this.approvals.request(
+              {
+                sessionId: task.sessionId,
+                taskId: task.id,
+                tool: "command",
+                description: `允许在工作区执行命令：${request.command}`,
+              },
+              requestSignal,
+            ),
+          }),
+          modelProvider: (_runtime, purpose) => {
+            const selected =
+              purpose === "compaction" && settings.auxiliaryModel
+                ? auxiliarySettings(settings)
+                : settings;
+            const provider =
+              this.factory?.(
+                selected,
+                purpose === "compaction" ? "auxiliary" : "task",
+              ) ?? new ResponsesProvider(selected, this.config.apiKey);
+
+            return {
+              model: selected.model,
+              provider: this.replayProvider(task, provider, () => ({
+                purpose,
+              })),
+            };
+          },
+        },
+        this.traces,
+        this.sandboxLog,
+      );
+      let reported:
+        | {
+            status: TaskStatus;
+            failure?: string;
+          }
+        | undefined;
+      const broker = new RuntimeIpcBrokerSession(
+        { input: launched.input, output: launched.output },
+        identity,
+        nonce,
+        gateway,
+        {
+          requestApproval: async (_runtime, request, requestSignal) => ({
+            approved: await this.approvals.request(
+              {
+                sessionId: task.sessionId,
+                taskId: task.id,
+                tool: request.tool,
+                description: request.description,
+              },
+              requestSignal,
+              request.grantKey,
+            ),
+          }),
+          applyMemory: (_runtime, request) =>
+            this.memories.apply(
+              {
+                workspace,
+                sessionId: task.sessionId,
+                taskId: task.id,
+              },
+              request,
+            ),
+          appendSessionEvent: async (_runtime, type, data) => {
+            emit(type, data);
+          },
+          saveContext: async (_runtime, input) => {
+            this.store.saveContext(task.sessionId, input);
+          },
+          readContext: () => this.store.contextAsync(task.sessionId),
+          readEvents: () => this.store.eventsAsync(task.sessionId),
+          latestContextSnapshot: () =>
+            this.store.latestContextSnapshotAsync(task.sessionId),
+          readContextSnapshot: (_runtime, snapshotId) =>
+            this.store.contextSnapshotAsync(task.sessionId, snapshotId),
+          compactContext: async (_runtime, snapshot, input) => {
+            await this.store.compactContextAsync(snapshot as any, input);
+          },
+          runtimeCompleted: async (_runtime, result) => {
+            reported = result;
+          },
+        },
+      );
+      const cancelled = () => broker.cancel("Broker 任务已取消。");
+      signal.addEventListener("abort", cancelled, { once: true });
+      const memory = await this.memories.retrieve(workspace, prompt);
+      try {
+        const response = (await broker.startTask(
+          {
+            workspace,
+            prompt,
+            settings: {
+              model: settings.model,
+              maxSteps: settings.maxSteps,
+              commandTimeoutMs: settings.commandTimeoutMs,
+              maxOutputTokens: settings.maxOutputTokens,
+              contextChars: settings.contextChars,
+              outputChars: settings.outputChars,
+            },
+            memoryText: memory.bundle?.text,
+          },
+          signal,
+        )) as { status?: TaskStatus; failure?: string };
+        const status = reported?.status ?? response.status;
+        if (
+          status !== "completed" &&
+          status !== "failed" &&
+          status !== "cancelled" &&
+          status !== "interrupted"
+        ) {
+          throw new Error("Agent Runtime 未返回有效任务终态。");
+        }
+
+        closeAttempted = true;
+        const cleanup = await launched.close(
+          status === "completed"
+            ? "completed"
+            : signal.aborted
+              ? "cancel"
+              : "failed",
+        );
+        cleaned = cleanup === "clean";
+        authorized = false;
+        if (!cleaned) {
+          publishExecution("unknown", { sideEffectsPossible: true });
+          throw new Error(
+            "Agent Runtime 清理结果未知，账户 generation 必须隔离。",
+          );
+        }
+
+        publishExecution(
+          status === "completed"
+            ? "completed"
+            : status === "cancelled" || status === "interrupted"
+              ? "cancelled"
+              : "failed",
+          { sideEffectsPossible: false },
+        );
+
+        return { status, failure: reported?.failure ?? response.failure };
+      } finally {
+        signal.removeEventListener("abort", cancelled);
+      }
+    } finally {
+      authorized = false;
+      if (launched && !closeAttempted) {
+        closeAttempted = true;
+        const cleanup = await launched
+          .close(signal.aborted ? "cancel" : "failed")
+          .catch(() => "orphaned" as const);
+        if (cleanup !== "clean") {
+          publishExecution("unknown", { sideEffectsPossible: true });
+        }
+      }
+    }
+  }
+
   private async run(
     task: Task,
     prompt: string,
@@ -646,6 +882,21 @@ export class Engine {
       });
       if (generateTitle) {
         await this.generateTitle(task, prompt, settings, signal, log);
+      }
+
+      if (this.agentRuntimeLauncher && this.config.sandbox.enabled) {
+        const result = await this.runInAgentRuntime(
+          task,
+          session.workspace,
+          prompt,
+          settings,
+          signal,
+          emit,
+        );
+        status = result.status;
+        failure = result.failure;
+
+        return;
       }
 
       let input = await prepareTaskContext(this.store, session.id, prompt);

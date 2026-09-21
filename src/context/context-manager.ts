@@ -20,8 +20,20 @@ import { summarize } from "./compactor.js";
 import { CompactionWorkerClient } from "./compaction-worker-client.js";
 import { probeReadHashes, type ReadHashCandidate } from "./read-projection.js";
 import type { ContextSnapshot } from "./types.js";
-import type { Store } from "../sessions/store.js";
 import type { ModelProvider } from "../providers/model-provider.js";
+
+/** Broker Store 与 Runtime IPC session client 共同实现，避免压缩逻辑直接依赖 SQLite。 */
+export interface ContextStore {
+  latestContextSnapshotAsync(
+    sessionId: string,
+  ): Promise<ContextSnapshot | undefined>;
+  eventsAsync(sessionId: string): Promise<unknown[]>;
+  compactContextAsync(snapshot: ContextSnapshot, input: any[]): Promise<void>;
+  contextSnapshotAsync(
+    sessionId: string,
+    snapshotId: string,
+  ): Promise<ContextSnapshot | undefined>;
+}
 
 type ContextTraceAttributes = Record<
   string,
@@ -39,7 +51,7 @@ export interface ContextTrace {
 }
 
 interface Options {
-  store: Store;
+  store: ContextStore;
   sessionId: string;
   model: string;
   limit: number;

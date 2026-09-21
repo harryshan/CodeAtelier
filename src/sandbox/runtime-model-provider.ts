@@ -42,10 +42,12 @@ export class RuntimeModelProvider implements ModelProvider {
     if (value === undefined || value === null) {
       return undefined;
     }
+
     const parsed = capabilitiesSchema.safeParse(value);
     if (!parsed.success) {
       throw new RuntimeIpcError("Broker 返回了无效模型能力。");
     }
+
     return parsed.data;
   }
 
@@ -81,6 +83,7 @@ export class RuntimeModelProvider implements ModelProvider {
       if (!parsed.success) {
         throw new RuntimeIpcError("Broker 返回了无效模型结果。");
       }
+
       return parsed.data;
     } finally {
       remove();
