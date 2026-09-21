@@ -16,7 +16,7 @@ Broker Host（可信宿主边界）
   └─ 经认证、固定 schema 的 IPC
        ↕
 Sandbox Process（单一 CodeAtelierSandbox 账户；每实例独立 lease/capability/Job）
-  ├─ Agent Runtime：常驻 Node.js agent loop、工具计划、文件工具、本地 Git 与命令；无直接网络（应用层已接线；Windows 启动/传输未接入产品）
+  ├─ Agent Runtime：常驻 Node.js agent loop、工具计划、文件工具、本地 Git 与命令；无直接网络（Windows 启动/传输已接入，待提升环境验收）
   ├─ Push Runner：真实 Git 配置与认证 relay；无 agent loop
   ├─ 账户既有读取权 + 工作区、显式 read/write roots 与精确只读 Git config/include 图
   └─ WRITE_RESTRICTED 根 capability、产品依赖与私有临时目录；不继承宿主 profile/凭据
@@ -54,7 +54,7 @@ Windows 启用时的产品调用链现为 `Broker Engine → SandboxBroker launc
 | config/settings.ts / config.ts / data-directory.ts                                     | 连接/偏好参数 schema、仅保存偏好的配置加载、内存密钥与平台数据目录                                                                                                                                                                      |
 | tracing/recorder.ts / archive.ts / model-provider.ts                                   | 任务 span、模型安全摘要、Sandbox execution/instance/kind、跨轨道 flow、Trace Event JSON 导出，以及按会话/任务安全落盘；模型包装器保持 Provider 契约与取消语义                                                                           |
 | sandbox/broker.ts / runtime-capability-core.ts                                         | Sandbox 优先/宿主 fallback 分流；命令 executionInstance/PID/创建时间账本；Runtime→Broker 的一次性命令审批 grant 与宿主模型代理 capability core                                                                                          |
-| sandbox/runtime-ipc-\*.ts / agent-runtime-\*.ts / runtime-model-provider.ts            | 有界双向 framing、instance/nonce 握手、Broker model/session/approval/memory adapter、Runtime 侧完整 agent loop 及 Engine launcher 分流；独立进程 stdio harness 已通过，但 Windows Supervisor launcher 与联合身份 transport 尚未接入产品 |
+| sandbox/runtime-ipc-\*.ts / agent-runtime-\*.ts / runtime-model-provider.ts            | 有界双向 framing、instance/nonce 握手、Broker model/session/approval/memory adapter、Runtime 侧完整 agent loop 及 Engine launcher 分流；Windows Supervisor launcher 与联合身份 transport 已接入，独立 harness 已通过，仍待提升环境产品验收 |
 | sandbox/native-windows-runtime.ts / C++ supervisor                                     | 受保护安装副本自检、有界二进制执行帧、专用账户/restricted token/ACL/Job/desktop、取消、恢复 journal、Git relay 与同 Job askpass；仍待提升环境产品验收                                                                                   |
 | sandbox/supervisor-protocol.ts / supervisor-channel.ts                                 | 更高层 Broker→Runtime strict typed operation 与私有 handle framing；不暴露任意命令/SID/ACL/handle，当前命令执行走更窄的原生固定帧，模型代理 transport 留作后续 agent loop 接入路径                                                      |
 | logging/logger.ts / redact.ts                                                          | 日志创建、错误详情序列化、格式化输出与轮转、纯文本脱敏                                                                                                                                                                                  |

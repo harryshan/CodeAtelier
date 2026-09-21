@@ -486,6 +486,7 @@ export class SandboxBroker implements AgentRuntimeLauncher {
       if (!runtimeStarted) {
         throw new Error("Supervisor 未确认 Agent Runtime 联合身份验证完成。");
       }
+
       if (
         launched.accountGenerationDigest !== checked.accountGenerationDigest
       ) {

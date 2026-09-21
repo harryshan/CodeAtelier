@@ -18,6 +18,7 @@
 - 浏览器测试操作真实 Web UI 与测试后端，覆盖消息、历史、权限、设置、恢复与重连。
 - `pnpm test`、`pnpm test:coverage`、`pnpm test:watch`、`pnpm test:e2e` 和 `pnpm check` 都经 `scripts/test-runner.ts` 启动：Vitest 子进程仅接收固定测试环境白名单，Vite 的 test 模式禁止读取 dotenv；Playwright 测试后端直接以 Node/tsx 启动，不解析包管理器的系统路径。测试不继承本机 `.env`、系统中的 CodeAtelier 配置或真实 API key；模型只可使用注入式模拟值和本机测试 HTTP/SSE 服务。
 - `pnpm build` 与 `pnpm build:test` 还会生成 `dist/runtime/windows-x64` 下的 Node 24 Agent Runtime/compaction Worker bundle 和 SHA-256 manifest；构建成功只验证 bundle 可生成，不代表安装器已把它复制到受保护目录或 native Supervisor 已核对并启动它。
+- `pnpm sandbox:runtime:verify` 是安装完成后显式运行的 Windows 产品链路验收：它使用模拟模型，经默认 Engine/SandboxBroker/native Supervisor 在专用账户 Agent Runtime 内创建临时文件，再验证主动取消与 lease 清理。该命令不属于 `test`/`check`，不会访问模型服务或 remote；只有在真实安装环境运行并输出 PASS 才构成对应平台证据。
 - 真实模型 smoke 测试独立运行，需要本地提供密钥；不作为日常离线测试前提。不对用户项目进行测试性写入。
 
 ## 代码覆盖率
@@ -81,7 +82,7 @@
 
 原生 Runtime 增量另覆盖：固定 magic/version 的有界二进制执行帧、绝对路径/argv/时限边界、v2 installation state 与 supervisor、WFP manager、Node 24、Runtime entry、compaction worker 五个 SHA-256 复核，以及原生自检成功/任一 Runtime bundle 篡改拒绝。MSVC 已成功构建同一二进制的 supervisor/bootstrap：固定 self-check/execute/bootstrap 模式、DPAPI 解密、账户/WFP/Runtime bundle 自检、PID 核对 Named Pipe、restricted token、Job、Broker stdin 断连取消和唯一 SID ACE 撤销。安装脚本通过 PowerShell AST 解析；真实提升安装仍未执行，因此这里只记录“构建、静态安装契约与无管理员副作用回归通过”，不记录产品 E2E 通过。
 
-`sandbox-agent-runtime-launcher.test.ts` 覆盖产品 launcher 的三条关键状态边界：Runtime started 后才提交共享 grant；clean close 后执行 native revoke、commit 和私有目录清理；启动前 self-check 失败才允许显式宿主 fallback；started 后 close 返回 orphaned 时 quarantine 并调用整代排空。`agent-runtime-engine.test.ts` 另证明 Engine 只捕获 `AgentRuntimeFallbackError` 继续宿主 loop，并把 execution instance 记为 `host-process`/`sandboxApplied=false`。C++ 任务 pipe 的 PID、创建时间、Job、账户、restricted SID、固定映像检查及字节代理目前由 MSVC `/W4` 构建覆盖，仍须提升环境故障注入验证真实拒绝与取消行为。
+`sandbox-agent-runtime-launcher.test.ts` 覆盖产品 launcher 的关键状态边界：Runtime started 后才提交共享 grant；clean close 后执行 native revoke、commit 和私有目录清理；启动前 self-check 失败才允许显式宿主 fallback；started 后 close 返回 orphaned 或 generation 摘要不一致时 quarantine 并调用整代排空。`agent-runtime-engine.test.ts` 另证明 Engine 只捕获 `AgentRuntimeFallbackError` 继续宿主 loop，并把 execution instance 记为 `host-process`/`sandboxApplied=false`。C++ 任务 pipe 的 PID、创建时间、Job、账户、restricted SID、固定映像检查及字节代理目前由 MSVC `/W4` 构建覆盖；安装后可用 `pnpm sandbox:runtime:verify` 验证真实完成、取消和 clean release，错误客户端及恢复故障注入仍需提升环境矩阵。
 
 ## 自举验收
 

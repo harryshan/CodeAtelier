@@ -23,6 +23,7 @@
     "test:watch": "tsx scripts/test-runner.ts watch",
     "sandbox:native:build": "tsx scripts/windows-sandbox/run.ts build",
     "sandbox:runtime:build": "tsx scripts/windows-sandbox/build-runtime.ts",
+    "sandbox:runtime:verify": "tsx scripts/windows-sandbox/verify-agent-runtime.ts",
     "sandbox:install": "tsx scripts/windows-sandbox/run.ts install",
     "sandbox:verify": "tsx scripts/windows-sandbox/run.ts verify",
     "sandbox:uninstall": "tsx scripts/windows-sandbox/run.ts uninstall",
