@@ -4,13 +4,14 @@
  *
  * 1. 检查根节点为 object、禁止 oneOf，再递归遍历工具定义及数组项，核对 strict 对象的属性均为必填且禁止额外属性。
  * 2. 检查每个新调用的 execution/arguments 调度信封，及唯一 edit_files 工具的 create 分支、带版本和行范围的已有文件补丁、可见空白读取和 run_command 的单一 command 字符串。
- * 3. 检查单一 git 工具的 discriminated action 契约；每个 action 只接受自身所需字段，不能混入任意选项。
+ * 3. 检查单一 git 工具的 discriminated action 契约，以及内置网页搜索与本地函数工具保持分离。
  */
 
 import { expect, it } from "vitest";
 import {
   definitions,
   schemas,
+  webSearchTool,
   parseScheduledToolArguments,
   parseToolArguments,
 } from "../src/tools/registry.js";
@@ -95,6 +96,12 @@ it("requires a strict DAG execution envelope for new model calls", () => {
       "fallback",
     ),
   ).toThrow();
+});
+
+it("declares built-in web search separately from local function tools", () => {
+  expect(webSearchTool).toEqual({ type: "web_search" });
+  expect(definitions).not.toContainEqual(webSearchTool);
+  expect(schemas).not.toHaveProperty("web_search");
 });
 
 it("exposes only edit_files for file writes and no directory or search tool", () => {

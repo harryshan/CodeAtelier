@@ -5,7 +5,7 @@
  * 1. getCapabilities 查询模型列表，按完整模型 ID 查找并校验容量信息。
  * 2. run 检查密钥，创建关闭 SDK 重试的客户端，并接上取消、总超时和空闲超时。
  * 3. 请求带上思考等级、并行工具调用偏好、流式选项和可选输出上限；文本 delta 交给界面，item.done 暂存完整输出项。
- * 4. 收到 completed 后才返回结果。优先使用 completed.output，服务未填时按索引收集 item.done。
+ * 4. 收到 completed 后才返回结果。优先使用 completed.output，服务未填时按索引收集 item.done；网页搜索的 URL 引用会转为安全可点击的 Markdown 来源。
  * 5. 将流错误和连接异常转成 ModelError，最后清理计时器和监听。
  *
  * 半截文本和未收齐的工具参数不能算成功响应。重试统一交给上层，避免 SDK 与 Engine 重复重试。
@@ -16,6 +16,59 @@ import OpenAI from "openai";
 import { ModelError, modelError, modelErrorMessage } from "./model-error.js";
 import type { Settings } from "../shared/types.js";
 import type { ModelProvider, ModelResult } from "./model-provider.js";
+
+/** 仅接受公开 HTTP(S) 引用，并转义标题，避免不可信网页元数据改变 Markdown 结构。 */
+function appendWebSearchCitations(text: string, output: any[]) {
+  const citations = new Map<string, string>();
+
+  for (const item of output) {
+    if (item.type !== "message") {
+      continue;
+    }
+
+    for (const content of item.content ?? []) {
+      if (content.type !== "output_text") {
+        continue;
+      }
+
+      for (const annotation of content.annotations ?? []) {
+        if (
+          annotation.type !== "url_citation" ||
+          typeof annotation.url !== "string"
+        ) {
+          continue;
+        }
+
+        try {
+          const url = new URL(annotation.url);
+          if (url.protocol !== "http:" && url.protocol !== "https:") {
+            continue;
+          }
+
+          const title = String(annotation.title ?? url.hostname)
+            .replace(/[\\[\\]\\\\]/g, "\\\\$&")
+            .replace(/\s+/g, " ")
+            .trim();
+          if (!citations.has(url.href)) {
+            citations.set(url.href, title || url.hostname);
+          }
+        } catch {
+          // 服务返回的引用 URL 也属于不可信数据；格式无效时只忽略该引用。
+        }
+      }
+    }
+  }
+
+  if (!text || !citations.size) {
+    return text;
+  }
+
+  const sources = [...citations].map(
+    ([url, title]) => `- [${title}](<${url}>)`,
+  );
+
+  return `${text}\n\n### Sources\n${sources.join("\n")}`;
+}
 
 export class ResponsesProvider implements ModelProvider {
   constructor(
@@ -201,7 +254,7 @@ export class ResponsesProvider implements ModelProvider {
 
       return {
         output,
-        text: finalText || text,
+        text: appendWebSearchCitations(finalText, output) || text,
         usage: parseUsage(completedResponse.usage),
       };
     } catch (error) {

@@ -205,6 +205,26 @@ it("creates independent files through one unified batch returned in one model re
   }
 });
 
+it("includes the built-in web search tool in host task requests", async () => {
+  const fixture = await createFixture({
+    async run(_input, _instructions, tools) {
+      expect(tools).toContainEqual({ type: "web_search" });
+
+      return done;
+    },
+  });
+
+  try {
+    fixture.engine.start(fixture.session.id, "find current public information");
+    await fixture.engine.active?.done;
+
+    expect(fixture.store.tasks(fixture.session.id)[0].status).toBe("completed");
+  } finally {
+    await fixture.engine.close();
+    fixture.store.close();
+  }
+});
+
 it("persists a complex-task plan after inspection and before executing its next tool call", async () => {
   let calls = 0;
   const plan = "## 计划摘要\n1. 读取目标文件。\n2. 核对结果。";

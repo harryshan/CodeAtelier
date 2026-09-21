@@ -60,7 +60,11 @@ import { ToolRunner } from "../tools/tool-runner.js";
 import { ProjectMemoryService } from "../memory/service.js";
 import { SandboxBroker } from "../sandbox/broker.js";
 import { createSandboxRuntime } from "../sandbox/runtime-factory.js";
-import { definitions, parseScheduledToolArguments } from "../tools/registry.js";
+import {
+  definitions,
+  parseScheduledToolArguments,
+  webSearchTool,
+} from "../tools/registry.js";
 import {
   createToolGraph,
   DEFAULT_TOOL_CONCURRENCY,
@@ -1586,7 +1590,8 @@ export class Engine {
         });
       };
 
-      const tools = [...definitions, historyDefinition];
+      // web_search 由 Responses 服务在单次模型请求内完成；仅本地 function_call 才进入后续 DAG。
+      const tools = [...definitions, webSearchTool, historyDefinition];
       let compactionSpan: TraceSpan | undefined;
       let contextTraceParent: TraceSpan | undefined;
       const contextStageSpans: Array<TraceSpan | undefined> = [];

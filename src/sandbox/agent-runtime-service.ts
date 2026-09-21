@@ -23,7 +23,11 @@ import {
 } from "../context/history.js";
 import { prepareTaskContext } from "../agent/context.js";
 import { createInstructions } from "../agent/instructions.js";
-import { definitions, parseScheduledToolArguments } from "../tools/registry.js";
+import {
+  definitions,
+  parseScheduledToolArguments,
+  webSearchTool,
+} from "../tools/registry.js";
 import {
   createToolGraph,
   executeToolGraph,
@@ -141,7 +145,8 @@ export class AgentRuntimeService {
         parentExecutionInstanceId: this.identity.executionInstanceId,
         emit: (type, data) => events.emit(type, data),
       });
-      const tools = [...definitions, historyDefinition];
+      // 内置网页搜索在 Broker 代理的 Responses 请求中完成，不会伪装为 Runtime 本地工具调用。
+      const tools = [...definitions, webSearchTool, historyDefinition];
       const context = new ContextManager({
         store: session,
         sessionId: this.identity.sessionId,

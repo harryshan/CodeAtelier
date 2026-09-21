@@ -98,8 +98,9 @@ it("moves the Engine agent loop into the launched Runtime process", async () => 
         },
       };
     },
-    async run(input) {
+    async run(input, _instructions, tools) {
       modelCalls += 1;
+      expect(tools).toContainEqual({ type: "web_search" });
       if (modelCalls === 1) {
         return {
           text: "",

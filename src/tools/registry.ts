@@ -4,10 +4,10 @@
  * 1. schemas 定义读文件、统一的多文件快照编辑（含显式新建文件）、Sandbox 内命令、一次性扩展权限命令和单一受限 Git 操作的参数；目录浏览和代码搜索均由 run_command 执行。
  * 2. gitRequestSchema 用 request 包裹各 action 的普通联合，适配模型 strict schema；parseToolArguments 同时兼容历史扁平参数。
  * 3. scheduledParameters 为新模型调用增加 execution（节点 ID 和依赖）信封；parseScheduledToolArguments 解开并严格校验它。
- * 4. descriptions 向模型说明各工具的用途、限制和 DAG 参数约定。
- * 5. definitions 将带调度信封的 schema 转成 Responses API 需要的函数工具声明。
+ * 4. descriptions 向模型说明本地函数工具的用途、限制和 DAG 参数约定。
+ * 5. definitions 将带调度信封的 schema 转成 Responses API 需要的函数工具声明；webSearchTool 单独声明由模型服务执行的内置网页搜索。
  *
- * 这里只有定义，没有执行逻辑。增加工具时，还要在 ToolRunner 中补上实现和权限检查。
+ * 本地函数工具没有执行逻辑时，还要在 ToolRunner 中补上实现和权限检查。内置网页搜索没有本地执行器、审批或 DAG 节点，其网络行为由配置的 Responses 服务负责。
  */
 
 import { z } from "zod";
@@ -184,6 +184,9 @@ const descriptions: Record<string, string> = {
     "Maintain the current project's historical Markdown memory without a user approval. The service accepts only up to 16 structured create, update, or archive operations bound to this task and workspace. expectedVersion must be the memory version supplied in the historical reference (or null for an empty file). Each create/update must include a concise source and reason; file facts require both a relative path and current SHA-256. archive removes an entry from future retrieval but does not physically delete it. Do not use this tool for source code, tool output, credentials, arbitrary Markdown, another project, workspace files, commands, or project-wide deletion. On a version conflict, read the next task's current memory reference and decide again; never blindly retry.",
   git: "Put the action and its fields inside the request object, e.g. {request:{action:status}}. Perform one safe Git action in the session workspace. Actions: status; diff (explicit staged, paths, contextLines); log (revision, paths, limit); show (revision and explicit paths); branch; add (paths); commit (message and paths); push. When the current context already contains the complete edit process and relevant verification, do not casually request a full diff with empty paths: use the known changed paths and minimal context unless reconciling unknown/external changes or performing a necessary final repository-wide review. Full diff output has a fixed context limit and may be truncated. This tool automatically validates that the workspace is the repository root, permits only safe paths/revisions and a configured HTTPS/SSH upstream, and disables hooks, GPG signing, external diff/text conversion and interactive prompts. Use it proactively for Git work; do not invoke Git through run_command. It accepts no arbitrary subcommand, option, remote, branch target, force, reset, clean, checkout, merge, rebase, tag, stash, clone, or PR operation. Inspect status/diff/log before writes and do not replay an interrupted add, commit, or push without rechecking.",
 };
+
+/** OpenAI Responses 内置网页搜索；它不是本地 function_call，不能交给 ToolRunner 或 DAG 调度。 */
+export const webSearchTool = { type: "web_search" } as const;
 
 export const definitions = Object.entries(schemas).map(([name, schema]) => ({
   type: "function" as const,

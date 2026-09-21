@@ -898,3 +898,11 @@
 - 执行边界：审批通过后 Broker 编排新的单用途 `capability-runner` execution instance，以专用账户、独立 restricted token/Job/capability/private directory 运行；声明根进入该 Runner 的 AccessManifest，HTTPS host 进入短期 CONNECT relay lease。Broker **不以宿主交互用户 token 执行 LLM 命令**，不授予宿主 profile、凭据、任意网络或未声明路径。网络 Runner 只得到自身短期、host-bound proxy token；Git push 仍使用更窄的 PushSpec/Push Runner/WinCred askpass 路径，不允许借通用工具绕过。
 - 失败与审计：拒绝审批时不创建 Runner。启动前检查失败禁止宿主 fallback；启动后取消、结果未知或 Job/ACL/代理清理不确定继续按 D103/D105 隔离并排空 generation，绝不自动重放。命令输出、退出码、截断标志和 executionInstance 返回 Runtime；session、日志和 trace 用同一 `toolCallId` 关联。工具 trace 按现有规则保存经统一密钥脱敏的完整参数，包括命令、理由、路径和 host；Sandbox 生命周期 trace 仍只记安全摘要，任何 trace 都不记录代理 token、凭据或工具输出。
 - 明确限制：文件根是递归目录能力，不是单文件版本化补丁；命令可能读出根内任何对象、改写可写根内任何对象，并把可读内容发送到获准 host。不存在的目标、单文件创建、多个网络 host、非 HTTPS、私网/loopback、原始 socket、监听、设备、注册表、服务、提权或宿主凭据不由本版本通用能力支持；需要新增权限类型时必须先增加可强制的 schema、实现和验收，不能只增加自由文本声明。
+
+## D107：通过 Responses 内置工具提供网页检索
+
+- 日期：2026-09-22
+- 状态：用户要求实现。
+- 决定：主任务向支持 OpenAI Responses 协议的模型服务发送 `{ type: "web_search" }` 内置工具。它由模型服务执行，不注册为本地 function tool、不经过 ToolRunner 或 DAG 调度。`output_text.annotations` 的合法 HTTP(S) `url_citation` 按 URL 去重后以可点击 Markdown 来源追加到回答；无效协议或 URL 忽略。
+- 原因：用户要求按 OpenAI 文档接入网页检索，并让 agent 能在需要时使用 `curl` 取得公开网页正文。
+- 边界与影响：网页搜索与抓取结果均是不可信数据，不能成为指令或权限依据。`curl` 仍是受现有命令边界约束的本机命令；在 Windows Agent Runtime 中访问公开网页须用 `run_with_permissions` 声明唯一的 HTTPS host，不能绕过被拒绝的网络请求。此能力不引入浏览器自动化、私网访问、凭据或任意网络；不支持内置工具的自建服务会按既有模型错误流程明确失败。宿主 Engine 和 Agent Runtime 共用声明，provider/loop/schema 回归覆盖请求、引用和分流。现有模型请求、响应处理与失败/取消 span 已覆盖这次远程模型调用；由于 `web_search` 没有本地执行器且服务不提供可独立记录的本地生命周期，不新增伪造的本地工具 span。

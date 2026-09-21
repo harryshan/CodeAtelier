@@ -86,6 +86,11 @@ describe("files and permissions", () => {
       command: "C:\\Tools\\pwsh.exe",
       args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"],
     });
+    expect(instructions).toContain(
+      "Use the built-in web_search tool for current public web information",
+    );
+    expect(instructions).toContain("curl is available");
+    expect(instructions).toContain("requires run_with_permissions");
     expect(instructions).toContain("Use progressive code reading");
     expect(instructions).toContain(
       "Search before reading ordinary code or files",

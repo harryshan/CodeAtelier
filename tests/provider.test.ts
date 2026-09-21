@@ -5,7 +5,7 @@
  * 1. completed.output 为空时，从 item.done 收集完整工具调用。
  * 2. 检查文本流、缺失完成事件，以及 failed、incomplete 和 error 的错误分类与服务实际错误信息。
  * 3. completed.output 有内容时应优先使用，最终消息正文也优先于暂存文本。
- * 4. 检查空响应处理，以及 maxOutputTokens、reasoningEffort 和并行工具调用偏好是否正确发出。
+ * 4. 检查网页搜索 URL 引用转为可点击 Markdown 来源，以及 maxOutputTokens、reasoningEffort、内置网页搜索和并行工具调用偏好是否正确发出。
  *
  * 只收到部分流不能算成功，必须等 completed。
  */
@@ -177,6 +177,49 @@ it("prefers completed output over fallback items and preserves final message tex
   );
 });
 
+it("renders web search URL citations as deduplicated Markdown sources", async () => {
+  const message = {
+    type: "message",
+    content: [
+      {
+        type: "output_text",
+        text: "OpenAI provides web search.",
+        annotations: [
+          {
+            type: "url_citation",
+            title: "OpenAI web search documentation",
+            url: "https://platform.openai.com/docs/guides/tools-web-search",
+          },
+          {
+            type: "url_citation",
+            title: "Duplicate title is ignored",
+            url: "https://platform.openai.com/docs/guides/tools-web-search",
+          },
+          {
+            type: "url_citation",
+            title: "Invalid protocol",
+            url: "file:///private.txt",
+          },
+        ],
+      },
+    ],
+  };
+
+  await withServer(
+    [{ type: "response.completed", response: { output: [message] } }],
+    async (baseUrl) => {
+      const result = await new ResponsesProvider(
+        { ...settings, baseUrl },
+        "key",
+      ).run([], "", [], new AbortController().signal, () => {});
+
+      expect(result.text).toBe(
+        "OpenAI provides web search.\n\n### Sources\n- [OpenAI web search documentation](<https://platform.openai.com/docs/guides/tools-web-search>)",
+      );
+    },
+  );
+});
+
 it("classifies empty completion as retryable and explicit output limit as permanent", async () => {
   for (const [event, code, retryable] of [
     [
@@ -208,11 +251,12 @@ it("classifies empty completion as retryable and explicit output limit as perman
 });
 
 it.each([undefined, "low", "medium", "high"] as const)(
-  "forwards effort %s, output cap, parallel tool preference and parses model metadata",
+  "forwards effort %s, output cap, web search tool, parallel tool preference and parses model metadata",
   async (reasoningEffort) => {
     let requestedLimit: unknown;
     let requestedReasoning: unknown;
     let requestedParallelToolCalls: unknown;
+    let requestedTools: unknown;
     const server = createServer(async (req, res) => {
       if (req.url === "/v1/models") {
         res.setHeader("content-type", "application/json");
@@ -245,6 +289,7 @@ it.each([undefined, "low", "medium", "high"] as const)(
       requestedLimit = request.max_output_tokens;
       requestedReasoning = request.reasoning;
       requestedParallelToolCalls = request.parallel_tool_calls;
+      requestedTools = request.tools;
       res.writeHead(200, { "content-type": "text/event-stream" });
       res.end(
         "data: " +
@@ -288,7 +333,7 @@ it.each([undefined, "low", "medium", "high"] as const)(
       const result = await provider.run(
         [],
         "",
-        [],
+        [{ type: "web_search" }],
         new AbortController().signal,
         () => {},
         { maxOutputTokens: 16384 },
@@ -296,6 +341,7 @@ it.each([undefined, "low", "medium", "high"] as const)(
       expect(requestedLimit).toBe(16384);
       expect(requestedReasoning).toEqual({ effort: reasoningEffort ?? "high" });
       expect(requestedParallelToolCalls).toBe(true);
+      expect(requestedTools).toContainEqual({ type: "web_search" });
       expect(result.usage).toEqual({
         input_tokens: 10,
         output_tokens: 5,
