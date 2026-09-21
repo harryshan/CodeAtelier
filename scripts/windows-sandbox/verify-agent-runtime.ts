@@ -1,16 +1,19 @@
 /**
  * 在已安装的 Windows Sandbox 上运行真实 Agent Runtime 产品链路验收，而不是只检查安装文件和账户状态。
- * 本脚本由用户显式执行，不属于 pnpm test/check，也不调用真实模型、网络、凭据、Git remote 或管理员安装操作。
+ * 本脚本由用户显式执行，不属于 pnpm test/check，也不调用真实模型、外部网络、真实凭据或管理员安装操作。
  *
  * 1. 在仓库 .local 下建立一次性工作区和 Broker 数据库，并强制启用 Windows Sandbox 产品组装。
  * 2. 用内存模型驱动固定 Agent Runtime 创建标记文件，核对 agent loop、Runtime IPC、文件工具与 clean grant release。
- * 3. 再让模型请求保持进行中并主动取消任务，核对 Job 终止、cancelled 归因和 generation lease 清空。
- * 4. 只有两条链路均为 windows-sandbox-user 且没有 fallback/unknown 才输出 PASS；失败现场保留供人工对账。
+ * 3. 初始化一次性 Git 仓库，把 HTTPS remote 指向 relay 必须拒绝的 127.0.0.1；验证 Runtime 阻塞等待独立 Push Runner、审批、失败结果回传和 clean lease release，全程不连接公网。
+ * 4. 再让模型请求保持进行中并主动取消任务，核对 Job 终止、cancelled 归因和 generation lease 清空。
+ * 5. 只有三条链路均为 windows-sandbox-user 且没有 fallback/unknown 才输出 PASS；失败现场保留供人工对账。
  */
 
+import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rm } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { promisify } from "node:util";
 import pino from "pino";
 import { Engine } from "../../src/agent/engine.js";
 import { Config } from "../../src/config/config.js";
@@ -20,6 +23,8 @@ import { Store } from "../../src/sessions/store.js";
 const verificationTimeoutMs = 60_000;
 const markerName = "agent-runtime-marker.txt";
 const markerContent = "written-by-installed-agent-runtime\n";
+const blockedRemote = "https://127.0.0.1/codeatelier-verification.git";
+const runFile = promisify(execFile);
 
 function fail(message: string): never {
   throw new Error(`SANDBOX_AGENT_RUNTIME_VERIFY FAIL ${message}`);
@@ -68,6 +73,58 @@ function assertCancelledRuntime(store: Store, sessionId: string) {
   ) {
     fail("cancelled task did not prove clean Runtime shutdown");
   }
+}
+
+function assertBlockedPushRunner(store: Store, sessionId: string) {
+  const events = store.events(sessionId);
+  const executions = executionEvents(store, sessionId);
+  const pushStates = executions
+    .filter((event) => event.kind === "push-runner")
+    .map((event) => event.state);
+  if (
+    !pushStates.includes("running") ||
+    !pushStates.includes("failed") ||
+    pushStates.includes("unknown") ||
+    executions.some(
+      (event) =>
+        event.kind === "push-runner" &&
+        event.toolCallId !== "runtime-blocked-push",
+    ) ||
+    !executions.some(
+      (event) =>
+        event.kind === "agent-runtime" &&
+        event.mode === "windows-sandbox-user" &&
+        event.state === "completed",
+    ) ||
+    !events.some(
+      (event) =>
+        event.type === "approval_assessed" &&
+        (event.data as Record<string, unknown>).tool === "git_push" &&
+        (event.data as Record<string, unknown>).decision === "approve",
+    ) ||
+    events.some(
+      (event) =>
+        event.type === "sandbox_warning" || event.type === "sandbox_fallback",
+    )
+  ) {
+    fail("blocked push did not use one clean independent Push Runner");
+  }
+}
+
+async function initializeGitFixture(workspace: string) {
+  await writeFile(path.join(workspace, "seed.txt"), "sandbox push fixture\n");
+  const git = async (...args: string[]) => {
+    await runFile("git", args, { cwd: workspace, windowsHide: true });
+  };
+
+  await git("init", "-b", "main");
+  await git("config", "user.name", "CodeAtelier Sandbox Verification");
+  await git("config", "user.email", "sandbox-verification@example.invalid");
+  await git("add", "seed.txt");
+  await git("commit", "-m", "sandbox push fixture");
+  await git("remote", "add", "origin", blockedRemote);
+  await git("config", "branch.main.remote", "origin");
+  await git("config", "branch.main.merge", "refs/heads/main");
 }
 
 function completedProvider(): ModelProvider {
@@ -137,6 +194,61 @@ function cancelledProvider(entered: () => void): ModelProvider {
   };
 }
 
+function approvalProvider(): ModelProvider {
+  return {
+    async run() {
+      return {
+        text: JSON.stringify({
+          decision: "approve",
+          reason: "固定安装态 Push Runner 验证。",
+        }),
+        output: [],
+      };
+    },
+  };
+}
+
+function blockedPushProvider(): ModelProvider {
+  let calls = 0;
+
+  return {
+    async getCapabilities() {
+      return {
+        limits: {
+          max_context_window_tokens: 32_000,
+          max_output_tokens: 1_024,
+        },
+      };
+    },
+    async run(input) {
+      calls += 1;
+      if (calls === 1) {
+        return {
+          text: "",
+          output: [
+            {
+              type: "function_call",
+              call_id: "runtime-blocked-push",
+              name: "git",
+              arguments: JSON.stringify({ request: { action: "push" } }),
+            },
+          ],
+        };
+      }
+
+      const serialized = JSON.stringify(input);
+      if (
+        !serialized.includes("runtime-blocked-push") ||
+        !serialized.includes('"exitCode"')
+      ) {
+        fail("Push Runner result did not return to the blocked Agent Runtime");
+      }
+
+      return { text: "blocked push verification complete", output: [] };
+    },
+  };
+}
+
 async function waitFor(signal: Promise<void>, label: string) {
   let timer: NodeJS.Timeout | undefined;
   try {
@@ -178,6 +290,7 @@ async function main() {
   const workspace = path.join(root, "workspace");
   const dataDirectory = path.join(root, "broker-data");
   await mkdir(workspace, { recursive: true });
+  await initializeGitFixture(workspace);
 
   const config = new Config(dataDirectory);
   config.settings.maxSteps = 4;
@@ -218,6 +331,31 @@ async function main() {
       fail("completed Runtime left an active generation lease");
     }
 
+    await engine.close();
+    engine = undefined;
+    const pushModel = blockedPushProvider();
+    const pushSession = store.create(workspace, "Runtime push probe");
+    engine = new Engine(
+      store,
+      config,
+      pino({ enabled: false }),
+      (_settings, purpose) =>
+        purpose === "approval" ? approvalProvider() : pushModel,
+    );
+    const pushTask = engine.start(
+      pushSession.id,
+      "Attempt the fixed verification push and report its bounded failure.",
+    );
+    await waitFor(engine.active!.done, "blocked Push Runner task");
+    if (store.task(pushTask.id)?.status !== "completed") {
+      fail("blocked push result did not return to a completed Runtime task");
+    }
+
+    assertBlockedPushRunner(store, pushSession.id);
+    if (engine.sandbox.accountGenerationSnapshot()?.activeInstanceCount !== 0) {
+      fail("blocked Push Runner left an active generation lease");
+    }
+
     let resolveEntered!: () => void;
     const entered = new Promise<void>((resolve) => {
       resolveEntered = resolve;
@@ -251,7 +389,7 @@ async function main() {
 
     passed = true;
     process.stdout.write(
-      "SANDBOX_AGENT_RUNTIME_VERIFY PASS completion=yes cancellation=yes cleanup=yes\n",
+      "SANDBOX_AGENT_RUNTIME_VERIFY PASS completion=yes pushRunnerBlocked=yes cancellation=yes cleanup=yes\n",
     );
   } finally {
     await engine?.close().catch(() => undefined);

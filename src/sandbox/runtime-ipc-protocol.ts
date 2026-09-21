@@ -146,7 +146,9 @@ export const runtimeRequestSchema = z.discriminatedUnion("operation", [
     .object({
       ...requestBase,
       operation: z.literal("git_push"),
-      body: z.object({ spec: runtimeGitPushSpecSchema }).strict(),
+      body: z
+        .object({ toolCallId: identifier, spec: runtimeGitPushSpecSchema })
+        .strict(),
     })
     .strict(),
   z

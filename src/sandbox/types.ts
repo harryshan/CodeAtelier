@@ -11,7 +11,7 @@
  * 6. drainGeneration 是 unknown/orphaned 后的整代账户排空入口，必须终止账户进程并按持久 journal 对账。
  * 7. launchAgentRuntime 只接受 Broker 已完成 manifest/lease provision 的固定 Runtime 身份和 nonce，不接受模型可选 executable。
  * 8. SandboxStage 仅记录无敏感内容的生命周期事实，供事件与 tracing 关联。
- * 9. ExecutionInstanceRecord 持久化实际进程模式、PID 种类和恢复状态，不保存命令、路径或输出。
+ * 9. ExecutionInstanceRecord 持久化实际进程模式、PID 种类、恢复状态和可选 toolCallId，不保存命令、路径或输出。
  *
  * 状态中的原因不得包含命令、工作区路径、外部文件内容或凭据。平台后端必须在 selfCheck 成功后才可返回
  * sandboxed；只有命令尚未启动且 provision 无遗留副作用时才可返回 host-process-fallback。
@@ -66,6 +66,7 @@ export type ExecutionProcessKind =
 
 export interface ExecutionInstanceRecord {
   executionInstanceId: string;
+  toolCallId?: string;
   kind?: "agent-runtime" | "push-runner";
   mode: ExecutionInstanceMode;
   state: ExecutionInstanceState;
@@ -90,6 +91,7 @@ export interface SandboxCommand {
   sessionId: string;
   taskId: string;
   executionInstanceId: string;
+  toolCallId?: string;
   kind?: "agent-runtime" | "push-runner";
   networkHost?: string;
   command: string;

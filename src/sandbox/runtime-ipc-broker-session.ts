@@ -29,6 +29,7 @@ export interface RuntimeIpcBrokerHandlers {
   executeGitPush(
     identity: RuntimeExecutionIdentity,
     spec: GitPushSpec,
+    toolCallId: string,
     signal: AbortSignal,
   ): Promise<GitProcessResult>;
   applyMemory(
@@ -217,6 +218,7 @@ export class RuntimeIpcBrokerSession {
         return this.handlers.executeGitPush(
           this.identity,
           request.body.spec,
+          request.body.toolCallId,
           signal,
         );
       case "memory_apply":

@@ -596,6 +596,7 @@ it("runs one push runner beside its blocked agent runtime without host fallback"
       cwd: root,
       kind: "push-runner",
       executionInstanceId: "push-a",
+      toolCallId: "push-call",
       networkHost: "example.test",
     },
     executeHost,

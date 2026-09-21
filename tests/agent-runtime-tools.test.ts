@@ -82,6 +82,7 @@ it("waits for the broker push adapter while the agent runtime remains alive", as
     exitCode: 0,
     truncated: false,
   }));
+  const events: Array<{ type: string; data: any }> = [];
   const runner = new ToolRunner({
     root,
     sessionId: "session-1",
@@ -92,11 +93,11 @@ it("waits for the broker push adapter while the agent runtime remains alive", as
     sandbox: { executeCommand } as never,
     executionBoundary: "agent-runtime",
     gitPush,
-    emit: () => {},
+    emit: (type, data) => events.push({ type, data }),
   });
 
   await expect(
-    runner.execute("git", { request: { action: "push" } }),
+    runner.forCall("push-call").execute("git", { request: { action: "push" } }),
   ).resolves.toMatchObject({ output: "push-complete", exitCode: 0 });
   expect(gitPush).toHaveBeenCalledWith(
     expect.objectContaining({
@@ -106,6 +107,8 @@ it("waits for the broker push adapter while the agent runtime remains alive", as
       refspec: "HEAD:refs/heads/main",
     }),
     expect.any(AbortSignal),
+    "push-call",
   );
   expect(executeCommand).not.toHaveBeenCalled();
+  expect(events.filter((event) => event.type === "git_output")).toEqual([]);
 });

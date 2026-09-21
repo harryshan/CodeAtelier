@@ -741,11 +741,12 @@ export class Engine {
         nonce,
         gateway,
         {
-          executeGitPush: (_runtime, spec, requestSignal) =>
+          executeGitPush: (_runtime, spec, toolCallId, requestSignal) =>
             this.executeRuntimeGitPush(
               task,
               workspace,
               spec,
+              toolCallId,
               requestSignal,
               settings,
               emit,
@@ -874,6 +875,7 @@ export class Engine {
     task: Task,
     workspace: string,
     spec: GitPushSpec,
+    toolCallId: string,
     signal: AbortSignal,
     settings: Settings,
     emit: (type: string, data: any) => void,
@@ -917,6 +919,7 @@ export class Engine {
       const status = this.sandbox.statusFor(task.id, executionInstanceId);
       const record = {
         executionInstanceId,
+        toolCallId,
         kind: "push-runner" as const,
         mode:
           status.mode === "sandboxed"
@@ -944,6 +947,7 @@ export class Engine {
           sessionId: task.sessionId,
           taskId: task.id,
           executionInstanceId,
+          toolCallId,
           kind: "push-runner",
           networkHost: spec.host,
           command: resolveExecutablePath("git"),

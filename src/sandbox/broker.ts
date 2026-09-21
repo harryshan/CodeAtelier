@@ -111,6 +111,7 @@ export class SandboxBroker implements AgentRuntimeLauncher {
       event: "sandbox.execution_instance",
       module: "sandbox",
       executionInstanceId: record.executionInstanceId,
+      toolCallId: record.toolCallId,
       kind: record.kind,
       mode: record.mode,
       state: record.state,

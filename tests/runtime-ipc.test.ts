@@ -68,9 +68,16 @@ it("sends only a structured push spec to the broker", async () => {
   };
 
   await expect(
-    new RuntimeGitPushClient(left).execute(spec, new AbortController().signal),
+    new RuntimeGitPushClient(left).execute(
+      spec,
+      "push-call",
+      new AbortController().signal,
+    ),
   ).resolves.toEqual({ output: "pushed", exitCode: 0, truncated: false });
-  expect(received).toMatchObject({ operation: "git_push", body: { spec } });
+  expect(received).toMatchObject({
+    operation: "git_push",
+    body: { toolCallId: "push-call", spec },
+  });
   right.end();
   left.end();
 });

@@ -220,7 +220,7 @@ W1--W3 通过后才能声明“Windows 专用用户 Sandbox：宿主用户私有
 - [Restricted Tokens](https://learn.microsoft.com/en-us/windows/win32/secauthz/restricted-tokens)
 - [Process Security and Access Rights](https://learn.microsoft.com/en-us/windows/win32/procthread/process-security-and-access-rights)
 
-尚未实测：产品持久账户提升安装、WFP 安装器的 BFE/机器重启、升级和篡改恢复、复杂 ACL/重解析/其它卷下的写边界、共享 ACL/journal 的真实并发与崩溃恢复、宿主真实 global Git config/helper/证书、真实 Node/PowerShell/编译器兼容、CONNECT 到公网 HTTPS、真实 Git push 与仓库凭据、强制取消和资源上限。安装完成后可显式运行 `pnpm sandbox:runtime:verify`，用模拟模型验证默认产品链中的 agent loop、文件写入、主动取消与 clean lease release；该命令的代码或静态检查本身不算平台通过。现有 Codex 外层 Sandbox 会干扰嵌套 token/Job/WFP 测试；所有结果必须分别标记“Codex 沙箱内”“批准的宿主权限”“真正提升安装环境”。
+尚未实测：产品持久账户提升安装、WFP 安装器的 BFE/机器重启、升级和篡改恢复、复杂 ACL/重解析/其它卷下的写边界、共享 ACL/journal 的真实并发与崩溃恢复、宿主真实 global Git config/helper/证书、真实 Node/PowerShell/编译器兼容、CONNECT 到公网 HTTPS、真实 Git push 与仓库凭据、强制取消和资源上限。安装完成后可显式运行 `pnpm sandbox:runtime:verify`，用模拟模型验证默认产品链中的 agent loop、文件写入、Agent Runtime 阻塞等待私网目标被 relay 拒绝的独立 Push Runner、主动取消与 clean lease release；该命令不访问公网，但代码、静态检查或私网拒绝通过本身都不能证明真实 remote push。现有 Codex 外层 Sandbox 会干扰嵌套 token/Job/WFP 测试；所有结果必须分别标记“Codex 沙箱内”“批准的宿主权限”“真正提升安装环境”。
 
 ## 11. 与现有实现的关系
 

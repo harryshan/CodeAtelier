@@ -5,7 +5,7 @@
  * 1. RuntimeApprovalClient 忽略调用方提供的 session/task 路由字段，Broker 使用已认证 identity 归属请求。
  * 2. grantKey 原样绑定审批语义，但不能改变 operation；Broker ApprovalManager 决定是否允许复用。
  * 3. RuntimeMemoryClient 不接收宿主路径，Broker handler 固定使用 identity 对应工作区和项目记忆服务。
- * 4. RuntimeGitPushClient 只发送 GitToolRunner 已解析的 PushSpec；Broker 重建固定 git push 参数并独立启动 Runner。
+ * 4. RuntimeGitPushClient 只发送 GitToolRunner 已解析的 PushSpec 和当前 toolCallId；Broker 重建固定 git push 参数并独立启动 Runner。
  */
 
 import type { Approval } from "../shared/types.js";
@@ -52,8 +52,12 @@ export class RuntimeMemoryClient {
 export class RuntimeGitPushClient {
   constructor(private peer: RuntimeIpcPeer) {}
 
-  async execute(spec: GitPushSpec, signal: AbortSignal) {
-    const result = await this.peer.request("git_push", { spec }, signal);
+  async execute(spec: GitPushSpec, toolCallId: string, signal: AbortSignal) {
+    const result = await this.peer.request(
+      "git_push",
+      { toolCallId, spec },
+      signal,
+    );
 
     return runtimeGitPushResultSchema.parse(result);
   }

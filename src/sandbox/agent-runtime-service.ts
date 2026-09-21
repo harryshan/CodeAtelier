@@ -108,6 +108,7 @@ export class AgentRuntimeService {
         input.settings.maxOutputTokens,
       );
       const toolSettings = runtimeToolSettings(input.settings);
+      const gitPush = new RuntimeGitPushClient(this.peer);
       const runner = new ToolRunner({
         root: input.workspace,
         sessionId: this.identity.sessionId,
@@ -116,8 +117,13 @@ export class AgentRuntimeService {
         settings: toolSettings,
         approvals: new RuntimeApprovalClient(this.peer),
         memory: new RuntimeMemoryClient(this.peer, signal),
-        gitPush: (spec, pushSignal) =>
-          new RuntimeGitPushClient(this.peer).execute(spec, pushSignal),
+        gitPush: (spec, pushSignal, toolCallId) => {
+          if (!toolCallId) {
+            throw new Error("Push Runner 请求缺少工具调用标识。");
+          }
+
+          return gitPush.execute(spec, toolCallId, pushSignal);
+        },
         executionBoundary: "agent-runtime",
         emit: (type, data) => events.emit(type, data),
       });

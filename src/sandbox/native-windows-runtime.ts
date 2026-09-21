@@ -541,7 +541,10 @@ export class NativeWindowsSandboxRuntime implements SandboxRuntime {
         "broker.relay_attest",
         "sandbox",
         "Sandbox broker",
-        { executionInstanceId: command.executionInstanceId },
+        {
+          executionInstanceId: command.executionInstanceId,
+          toolCallId: command.toolCallId,
+        },
       );
       relayLease = this.relay.issueLease(
         command.networkHost,
@@ -558,13 +561,19 @@ export class NativeWindowsSandboxRuntime implements SandboxRuntime {
         "sandbox.proxy_lease.issued",
         "sandbox",
         "Sandbox broker",
-        { executionInstanceId: command.executionInstanceId },
+        {
+          executionInstanceId: command.executionInstanceId,
+          toolCallId: command.toolCallId,
+        },
       );
       pushSpan = this.traces?.startSpan(command.taskId, {
         name: "sandbox.push_runner",
         category: "sandbox",
         track: "Sandbox runtime",
-        attributes: { executionInstanceId: command.executionInstanceId },
+        attributes: {
+          executionInstanceId: command.executionInstanceId,
+          toolCallId: command.toolCallId,
+        },
       });
     }
 

@@ -18,7 +18,7 @@
 - 浏览器测试操作真实 Web UI 与测试后端，覆盖消息、历史、权限、设置、恢复与重连。
 - `pnpm test`、`pnpm test:coverage`、`pnpm test:watch`、`pnpm test:e2e` 和 `pnpm check` 都经 `scripts/test-runner.ts` 启动：Vitest 子进程仅接收固定测试环境白名单，Vite 的 test 模式禁止读取 dotenv；Playwright 测试后端直接以 Node/tsx 启动，不解析包管理器的系统路径。测试不继承本机 `.env`、系统中的 CodeAtelier 配置或真实 API key；模型只可使用注入式模拟值和本机测试 HTTP/SSE 服务。
 - `pnpm build` 与 `pnpm build:test` 还会生成 `dist/runtime/windows-x64` 下的 Node 24 Agent Runtime/compaction Worker bundle 和 SHA-256 manifest；构建成功只验证 bundle 可生成，不代表安装器已把它复制到受保护目录或 native Supervisor 已核对并启动它。
-- `pnpm sandbox:runtime:verify` 是安装完成后显式运行的 Windows 产品链路验收：它使用模拟模型，经默认 Engine/SandboxBroker/native Supervisor 在专用账户 Agent Runtime 内创建临时文件，再验证主动取消与 lease 清理。该命令不属于 `test`/`check`，不会访问模型服务或 remote；只有在真实安装环境运行并输出 PASS 才构成对应平台证据。
+- `pnpm sandbox:runtime:verify` 是安装完成后显式运行的 Windows 产品链路验收：它使用模拟模型，经默认 Engine/SandboxBroker/native Supervisor 在专用账户 Agent Runtime 内创建临时文件；随后初始化一次性 Git 仓库，把 HTTPS remote 固定为 relay 必须拒绝的 `127.0.0.1`，验证 Runtime 阻塞等待独立 Push Runner、自动测试审批、私网拒绝结果回传和 lease 清理；最后验证主动取消。该命令不属于 `test`/`check`，不会访问模型服务、外部网络、真实 remote 或凭据；只有在真实安装环境运行并输出 PASS 才构成对应平台证据。
 - 真实模型 smoke 测试独立运行，需要本地提供密钥；不作为日常离线测试前提。不对用户项目进行测试性写入。
 
 ## 代码覆盖率
@@ -174,8 +174,8 @@ context-request.test.ts 覆盖低于阈值时重复读取结果原样发送、�
 ### Agent Runtime 阻塞等待 Push Runner
 
 - `tests/agent-runtime-service.test.ts` 在执行任何节点前拒绝含 push 和其它调用的同一工具批次；单独 push 可形成有效图。
-- `tests/agent-runtime-tools.test.ts` 用真实临时 Git worktree 完成 upstream/OID 查询，随后验证 Runtime 只调用结构化 push adapter、同步取得结果，且不嵌套逐工具 SandboxBroker。
-- `tests/runtime-ipc.test.ts` 验证 `git_push` 只携带有界 PushSpec、返回值受固定 schema 校验；请求级取消继续只中止对应 handler。
+- `tests/agent-runtime-tools.test.ts` 用真实临时 Git worktree 完成 upstream/OID 查询，随后验证 Runtime 只调用结构化 push adapter、同步取得结果，且不嵌套逐工具 SandboxBroker；Broker 已实时持久化的输出不会被 Runtime 在最终响应后重复发射。
+- `tests/runtime-ipc.test.ts` 验证 `git_push` 只携带有界 PushSpec 和当前 `toolCallId`、返回值受固定 schema 校验；请求级取消继续只中止对应 handler。
 - `tests/sandbox-account-generation.test.ts` 验证已占用任务并发名额的 Agent Runtime 可在同一工作区重叠一个 Push Runner，但第二个 Runner 或新任务仍受并发约束。
 - `tests/sandbox.test.ts` 验证 Push Runner 后端缺失时不调用宿主 executor。真实 relay、凭据、hook/helper、取消清理和 remote push 仍须在固定账户提升环境手动验收。
 

@@ -69,6 +69,7 @@ export interface ToolContext {
   gitPush?: (
     spec: GitPushSpec,
     signal: AbortSignal,
+    toolCallId?: string,
   ) => Promise<GitProcessResult>;
   /** Agent Runtime 内的工具进程已处于任务 Job/token，不得再次调用 Broker 的逐工具 Sandbox。 */
   executionBoundary?: "broker-host" | "agent-runtime";
@@ -124,12 +125,7 @@ export class ToolRunner {
             throw new Error("Agent Runtime 未连接独立 Push Runner adapter。");
           }
 
-          const result = await this.ctx.gitPush(spec, signal);
-          if (result.output) {
-            onOutput(result.output);
-          }
-
-          return result;
+          return this.ctx.gitPush(spec, signal);
         }
 
         if (this.sandbox.statusFor(this.ctx.taskId).requested) {
@@ -184,10 +180,15 @@ export class ToolRunner {
    * 子实例共享本任务读取哈希；已有文件成功编辑后，FileEditor 会作废其凭证，后继 edit_files 必须先重新读取。
    */
   forCall(callId: string) {
+    const parentGitPush = this.ctx.gitPush;
+
     return new ToolRunner(
       {
         ...this.ctx,
         sandbox: this.sandbox,
+        gitPush: parentGitPush
+          ? (spec, signal) => parentGitPush(spec, signal, callId)
+          : undefined,
         emit: (type, data) => this.ctx.emit(type, { ...data, callId }),
       },
       { readHashes: this.readHashes },
