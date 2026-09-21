@@ -13,7 +13,7 @@
 | **Push Runner** | 同任务普通 Agent Runtime 停止后创建的单用途受限进程，只执行一次已确认的 Git push，不加载 agent loop 或任意通用工具入口。 | 协议、relay 和原生部件已部分实现；真实 remote push 尚未完成提升验收。 |
 | **Sandbox Supervisor** | 已安装且受保护的固定 C++ 控制进程。它验证安装状态、创建 restricted token/Job/desktop、启动或终止 Agent Runtime/Push Runner，并完成 ACL journal 与 generation 清理；不解释模型输出，不运行 agent loop。 | 现有二进制已承载逐工具 process launch；常驻 Runtime 控制协议尚未接线。 |
 | **Sandboxed Tool Process** | 由当前过渡实现为单次 `run_command` 或 Git 调用启动的 shell、Git 或其后代。它受专用账户、token、Job、ACL 和 WFP 约束，但**不是 Agent Runtime**，结束后不保留 agent 状态。 | 当前真实产品调用路径。迁移完成后由 Agent Runtime 直接创建并监督，不再由 Broker 为每条命令启动。 |
-| **Runtime IPC** | Agent Runtime 与 Broker Host 间的任务专属、认证、固定 schema 双向通道。连接身份必须联合验证 PID/创建时间、Job、token/capability、generation、nonce 和 lease；模型/session/审批 adapter 运行在其上。 | `runtime-broker.ts` 只有传输无关 capability 核心；真实 Named Pipe transport 和 adapter 尚未接入。 |
+| **Runtime IPC** | Agent Runtime 与 Broker Host 间的任务专属、认证、固定 schema 双向通道。连接身份必须联合验证 PID/创建时间、Job、token/capability、generation、nonce 和 lease；模型/session/审批 adapter 运行在其上。 | `runtime-capability-core.ts` 只有传输无关 capability 核心；真实 Named Pipe transport 和 adapter 尚未接入。 |
 | **Supervisor Control Channel** | Broker Host 到 Sandbox Supervisor 的私有启动/终止控制通道。它只管理固定 Runtime kind 和 AccessManifest，不承载模型、工具或任意命令请求。 | TypeScript schema/channel 已有；现有逐工具二进制帧不是该目标控制通道。 |
 
 “Runtime”单独出现时只指 **Agent Runtime** 或 **Push Runner**，不能再指单条命令、Git 子进程、C++ supervisor、协议核心或历史 WSL2 launcher。`executionInstance` 是持久化归因记录，也不是进程名称。单元测试构造的内存对象必须称为 protocol core、mock transport 或 test harness，不能记作 Runtime IPC 已完成。

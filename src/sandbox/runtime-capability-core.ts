@@ -1,5 +1,5 @@
 /**
- * 为未来 Windows Runtime→Broker 私有 IPC 定义并实现传输无关的 typed capability 网关。
+ * 为 Windows Runtime→Broker 私有 IPC 提供传输无关的 typed capability 核心。
  * supervisor/Named Pipe 层负责取得真实连接身份并构造 RuntimeExecutionIdentity；本模块不打开 pipe、
  * 不信任 Runtime 自报 PID/SID，也不直接启动进程，而是把已认证请求接到现有审批与模型提供者。
  *
@@ -8,7 +8,8 @@
  * 3. requestModel 从宿主选择 ModelProvider，Runtime 永远拿不到 API 地址或密钥；模型调用沿用 tracedModelProvider 并标记 Sandbox execution。
  * 4. authorize 回调用真实 pipe/process/Job/token 联合证明连接；日志和 trace 只记录数量、决策、kind 和关联 ID，不记录命令、路径、prompt 或输出。
  *
- * 当前产品尚未接入 Named Pipe transport。本模块是 W0 的可测试协议核心，不代表 W1--W3 身份证明或
+ * 当前产品尚未接入 Named Pipe transport。本模块只是 capability core，不是 Agent Runtime、Runtime IPC
+ * 或进程启动器，也不代表 W1--W3 身份证明或
  * Windows supervisor 已完成；任何 transport 在调用本模块前仍必须完成权威身份核验。
  */
 
@@ -238,6 +239,18 @@ export class RuntimeBrokerGateway {
     });
 
     return accepted;
+  }
+
+  async requestModelCapabilities(
+    identity: RuntimeExecutionIdentity,
+    purpose: RuntimeModelRequest["purpose"],
+    signal: AbortSignal,
+  ) {
+    this.assertAuthorized(identity);
+    signal.throwIfAborted();
+    const selected = this.handlers.modelProvider(identity, purpose);
+
+    return selected.provider.getCapabilities?.(signal);
   }
 
   async requestModel(

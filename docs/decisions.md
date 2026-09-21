@@ -876,6 +876,6 @@
 
 - 日期：2026-09-21
 - 状态：用户确认；澄清而非替代 D091、D092、D099--D103。逐命令/Git 隔离是迁移实现，不是目标架构变更。
-- 术语决定：`Agent Runtime` 只指每任务一个、在专用账户 restricted token/Job 中承载完整 agent loop、上下文处理、工具 DAG、文件工具、普通命令和非 push Git 的常驻 Node.js 进程。当前 C++ supervisor 为一次工具调用启动的 shell/Git 及后代统一称为 `Sandboxed Tool Process`；C++ 固定控制进程称为 `Sandbox Supervisor`；`runtime-broker.ts` 在接入真实传输前称为 Runtime→Broker capability protocol core；`Runtime IPC` 只指经过联合进程身份验证的真实任务专属通道。上述术语不能互换。
+- 术语决定：`Agent Runtime` 只指每任务一个、在专用账户 restricted token/Job 中承载完整 agent loop、上下文处理、工具 DAG、文件工具、普通命令和非 push Git 的常驻 Node.js 进程。当前 C++ supervisor 为一次工具调用启动的 shell/Git 及后代统一称为 `Sandboxed Tool Process`；C++ 固定控制进程称为 `Sandbox Supervisor`；`runtime-capability-core.ts` 在接入真实传输前称为 Runtime→Broker capability protocol core；`Runtime IPC` 只指经过联合进程身份验证的真实任务专属通道。上述术语不能互换。
 - 实现决定：继续实现最初边界，不把当前逐工具 supervisor 路径固化为最终架构。Broker Host 保留调度、模型密钥、session 持久化、审批、长期恢复账本和固定宿主能力；Agent Runtime 发起模型轮次与工具执行，通过认证 Runtime IPC 使用 model/session/approval adapter。Broker 不运行 Git，模型密钥和宿主数据库不进入 Runtime。Push Runner 仍是无 agent loop 的单用途进程。
 - 完成与声明：只有常驻 Agent Runtime 已从真实 Sandbox Supervisor 启动、agent loop 和文件工具确实位于该进程、跨边界调用走真实认证 IPC，且取消、断连、unknown/orphaned 与 generation 恢复通过对应验收后，才能声明 Agent Runtime 或 W3/W4 完成。协议类单测、mock transport、逐命令专用账户子进程和目标图均不能单独支持该声明。

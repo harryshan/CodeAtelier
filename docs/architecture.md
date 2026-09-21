@@ -4,7 +4,7 @@
 
 ## 模块与数据流
 
-下图是仍在分阶段接线的目标进程边界，不是当前调用栈的完成态。当前产品的 agent loop 与文件工具仍在宿主 Node 进程中；只有每个 `run_command`/Git 子进程通过固定二进制帧交给原生 supervisor。`runtime-broker.ts` 的 command grant/模型代理只是传输无关协议核心，尚无真实 Runtime→Broker Named Pipe transport，也不能据此声称模型密钥或 agent loop 已移入 Sandbox。
+下图是仍在分阶段接线的目标进程边界，不是当前调用栈的完成态。当前产品的 agent loop 与文件工具仍在宿主 Node 进程中；只有每个 `run_command`/Git 子进程通过固定二进制帧交给原生 supervisor。`runtime-capability-core.ts` 的 command grant/模型代理只是传输无关协议核心，尚无真实 Runtime→Broker Named Pipe transport，也不能据此声称模型密钥或 agent loop 已移入 Sandbox。
 
 ```text
 Browser / Web UI
@@ -22,7 +22,7 @@ Sandbox Process（单一 CodeAtelierSandbox 账户；每实例独立 lease/capab
   └─ WRITE_RESTRICTED 根 capability、产品依赖与私有临时目录；不继承宿主 profile/凭据
 ```
 
-当前过渡调用链则是 `Broker Host 中的 Engine/ToolRunner → C++ Sandbox Supervisor → 单次 Sandboxed Tool Process`。这里的 Sandboxed Tool Process 只是一条 shell/Git 命令及其后代，不是 Agent Runtime；`runtime-broker.ts` 也只是同进程可测试的 capability protocol core，不是 Runtime IPC。后续实现必须删除这两个命名捷径，而不是把目标定义降低为逐命令隔离。
+当前过渡调用链则是 `Broker Host 中的 Engine/ToolRunner → C++ Sandbox Supervisor → 单次 Sandboxed Tool Process`。这里的 Sandboxed Tool Process 只是一条 shell/Git 命令及其后代，不是 Agent Runtime；`runtime-capability-core.ts` 也只是同进程可测试的 capability protocol core，不是 Runtime IPC。后续实现必须删除这两个命名捷径，而不是把目标定义降低为逐命令隔离。
 
 以下文件职责描述当前实现；专用用户/Broker 目标模块和迁移边界以 [windows-integrity-sandbox.md](windows-integrity-sandbox.md) 为准。无论当前还是目标架构，前端都不能导入文件、进程或密钥实现。
 
@@ -53,7 +53,8 @@ Sandbox Process（单一 CodeAtelierSandbox 账户；每实例独立 lease/capab
 | providers/model-error.ts / retry.ts                                                    | 错误分类与有界重试策略                                                                                                                                                                            |
 | config/settings.ts / config.ts / data-directory.ts                                     | 连接/偏好参数 schema、仅保存偏好的配置加载、内存密钥与平台数据目录                                                                                                                                |
 | tracing/recorder.ts / archive.ts / model-provider.ts                                   | 任务 span、模型安全摘要、Sandbox execution/instance/kind、跨轨道 flow、Trace Event JSON 导出，以及按会话/任务安全落盘；模型包装器保持 Provider 契约与取消语义                                     |
-| sandbox/broker.ts / runtime-broker.ts                                                  | Sandbox 优先/宿主 fallback 分流；命令 executionInstance/PID/创建时间账本；Runtime→Broker 的一次性命令审批 grant 与宿主模型代理协议核心；后者保留为 agent loop 后续接入点                          |
+| sandbox/broker.ts / runtime-capability-core.ts                                         | Sandbox 优先/宿主 fallback 分流；命令 executionInstance/PID/创建时间账本；Runtime→Broker 的一次性命令审批 grant 与宿主模型代理 capability core                                                        |
+| sandbox/runtime-ipc-*.ts / agent-runtime-connection.ts / runtime-model-provider.ts     | 有界双向 request/response/event framing、instance/nonce 握手、Broker model/session/approval adapter 与 Runtime 侧模型代理；独立进程 stdio harness 已通过，但 Windows transport 身份和 agent loop 尚未接线 |
 | sandbox/native-windows-runtime.ts / C++ supervisor                                     | 受保护安装副本自检、有界二进制执行帧、专用账户/restricted token/ACL/Job/desktop、取消、恢复 journal、Git relay 与同 Job askpass；仍待提升环境产品验收                                             |
 | sandbox/supervisor-protocol.ts / supervisor-channel.ts                                 | 更高层 Broker→Runtime strict typed operation 与私有 handle framing；不暴露任意命令/SID/ACL/handle，当前命令执行走更窄的原生固定帧，模型代理 transport 留作后续 agent loop 接入路径                |
 | logging/logger.ts / redact.ts                                                          | 日志创建、错误详情序列化、格式化输出与轮转、纯文本脱敏                                                                                                                                            |
