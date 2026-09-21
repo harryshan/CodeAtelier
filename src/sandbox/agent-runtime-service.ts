@@ -8,7 +8,7 @@
  * 4. UI/session 事件按单连接顺序排队；无效 DAG 在无副作用时回传模型修正，工具结果保存后才进入下一轮，取消或持久化失败不会盲目重放。
  * 5. 终态同时返回给 start_task 调用方并主动写 runtime_complete；Broker 仍结合进程/Job/ACL 清理决定最终可信状态。
  *
- * Push Runner 切换、replay capture 与完整跨进程 tracing 仍需由后续 Broker adapter 接入；在此之前产品不能宣称 W3/W4 完成。
+ * Push Runner 切换与完整跨进程 tracing 仍需由后续 Broker adapter 接入；模型与工具 replay 已由 Broker 捕获，但在 Windows 产品 transport 完成前仍不能宣称 W3/W4 完成。
  */
 
 import { createBudget } from "../context/token-budget.js";
@@ -40,6 +40,7 @@ import {
   RuntimeApprovalClient,
   RuntimeMemoryClient,
 } from "./runtime-tool-adapters.js";
+import { randomUUID } from "node:crypto";
 
 interface StartTaskInput {
   workspace: string;
@@ -230,6 +231,7 @@ export class AgentRuntimeService {
           break;
         }
 
+        const batchId = randomUUID();
         let graph;
         try {
           graph = buildRuntimeToolGraph(calls);
@@ -240,6 +242,14 @@ export class AgentRuntimeService {
           for (const [ordinal, call] of calls.entries()) {
             const result = { error: `工具调用图无效：${message}` };
 
+            events.emit("tool_start", {
+              name: call.name,
+              callId: call.call_id,
+              batchId,
+              nodeId: `invalid-${ordinal + 1}`,
+              dependsOn: [],
+              args: call.arguments,
+            });
             currentInput.push({
               type: "function_call_output",
               call_id: call.call_id,
@@ -248,6 +258,7 @@ export class AgentRuntimeService {
             events.emit("tool_result", {
               name: call.name,
               callId: call.call_id,
+              batchId,
               nodeId: `invalid-${ordinal + 1}`,
               result,
             });
@@ -260,6 +271,7 @@ export class AgentRuntimeService {
         }
 
         events.emit("tool_batch_planned", {
+          batchId,
           nodes: graph.nodes.map((node) => ({
             callId: node.callId,
             nodeId: node.nodeId,
@@ -274,6 +286,7 @@ export class AgentRuntimeService {
           currentInput,
           input.settings.outputChars,
           events,
+          batchId,
         );
         await executeToolGraph(graph, {
           execute: async (node) => {
@@ -281,6 +294,7 @@ export class AgentRuntimeService {
             events.emit("tool_start", {
               name: node.name,
               callId: node.callId,
+              batchId,
               nodeId: node.nodeId,
               dependsOn: node.dependsOn,
               args: node.arguments,
@@ -431,6 +445,7 @@ class OrderedContextPersistence {
     private input: any[],
     private outputChars: number,
     private events: OrderedRuntimeEvents,
+    private batchId: string,
   ) {}
 
   save(node: ToolGraphNode, result: unknown) {
@@ -446,6 +461,7 @@ class OrderedContextPersistence {
       this.events.emit("tool_result", {
         name: node.name,
         callId: node.callId,
+        batchId: this.batchId,
         nodeId: node.nodeId,
         result,
       });

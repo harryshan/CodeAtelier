@@ -616,6 +616,7 @@ export class Engine {
     settings: Settings,
     signal: AbortSignal,
     emit: (type: string, data: any) => void,
+    captureToolEvent: (type: string, data: any) => void,
   ): Promise<{ status: TaskStatus; failure?: string }> {
     const launcher = this.agentRuntimeLauncher!;
     const executionInstanceId = randomUUID();
@@ -741,6 +742,7 @@ export class Engine {
               request,
             ),
           appendSessionEvent: async (_runtime, type, data) => {
+            captureToolEvent(type, data);
             emit(type, data);
           },
           saveContext: async (_runtime, input) => {
@@ -885,6 +887,28 @@ export class Engine {
       }
 
       if (this.agentRuntimeLauncher && this.config.sandbox.enabled) {
+        const captureRuntimeToolEvent = (type: string, data: any) => {
+          if (type === "tool_start") {
+            this.store.startReplayTool(
+              task.id,
+              cleanReplay({
+                name: data.name,
+                callId: data.callId,
+                batchId: data.batchId,
+                nodeId: data.nodeId,
+                dependsOn: data.dependsOn,
+                arguments: data.args,
+              }),
+            );
+          } else if (type === "tool_result") {
+            this.store.finishReplayTool(
+              task.id,
+              data.callId,
+              cleanReplay(data.result),
+            );
+          }
+        };
+
         const result = await this.runInAgentRuntime(
           task,
           session.workspace,
@@ -892,6 +916,7 @@ export class Engine {
           settings,
           signal,
           emit,
+          captureRuntimeToolEvent,
         );
         status = result.status;
         failure = result.failure;

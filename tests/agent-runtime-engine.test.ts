@@ -132,6 +132,15 @@ it("moves the Engine agent loop into the launched Runtime process", async () => 
     expect(modelCalls).toBe(2);
     expect(closeCalls).toBe(1);
     expect(Buffer.concat(errors).toString("utf8")).toBe("");
+    expect(store.replayCase(task.id)?.capture?.tools).toMatchObject([
+      {
+        callId: "runtime-read",
+        name: "read_file",
+        result: expect.objectContaining({
+          text: expect.stringContaining("from-runtime"),
+        }),
+      },
+    ]);
     expect(
       store
         .events(session.id)
