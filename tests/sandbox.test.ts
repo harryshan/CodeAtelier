@@ -24,6 +24,7 @@ import { createSandboxRuntime } from "../src/sandbox/runtime-factory.js";
 import {
   NativeWindowsSandboxCleanupError,
   NativeWindowsSandboxRuntime,
+  NativeWindowsSandboxTimeoutError,
 } from "../src/sandbox/native-windows-runtime.js";
 import { WorkspaceView } from "../src/sandbox/workspace-view.js";
 import { WslInspectRuntime } from "../src/sandbox/wsl-inspect-runtime.js";
@@ -426,6 +427,49 @@ it("treats cleanup failure during cancellation as unknown and drains the generat
     state: "quarantined",
     activeInstanceCount: 1,
     quarantineCategory: "acl_cleanup",
+  });
+});
+
+it("releases only the timed-out instance when the Supervisor proves cleanup", async () => {
+  const root = await temp();
+  const cleanup = vi.fn(async () => {});
+  const revokeAccess = vi.fn(async () => {});
+  const drainGeneration = vi.fn(async () => {});
+  const runtime: SandboxRuntime = {
+    selfCheck: vi.fn(async () => ({
+      level: "windows-sandbox-user-v1:test",
+      workspaceProtection: "direct-path" as const,
+      accountGenerationDigest: "f".repeat(64),
+    })),
+    prepareAccess: vi.fn(async () => ({
+      readOnlyRoots: [],
+      readWriteRoots: [],
+      gitConfigFiles: [],
+      cleanup,
+    })),
+    execute: vi.fn(async (runtimeCommand) => {
+      runtimeCommand.onAccessProvisioned?.();
+      throw new NativeWindowsSandboxTimeoutError();
+    }),
+    revokeAccess,
+    drainGeneration,
+  };
+  const broker = new SandboxBroker(
+    sandboxConfiguration({ CODEATELIER_SANDBOX_ENABLED: "true" }, "win32"),
+    runtime,
+  );
+
+  await expect(
+    broker.executeCommand({ ...command(), cwd: root }, vi.fn(), () => {}),
+  ).rejects.toMatchObject({ code: "WINDOWS_SANDBOX_EXECUTION_TIMEOUT" });
+  expect(revokeAccess).toHaveBeenCalledOnce();
+  expect(cleanup).toHaveBeenCalledOnce();
+  expect(drainGeneration).not.toHaveBeenCalled();
+  expect(broker.statusFor("task-1", "execution-1").mode).toBe("sandboxed");
+  expect(broker.accountGenerationSnapshot()).toMatchObject({
+    state: "healthy",
+    activeInstanceCount: 0,
+    grantCount: 0,
   });
 });
 

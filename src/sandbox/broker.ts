@@ -250,6 +250,14 @@ export class SandboxBroker implements AgentRuntimeLauncher {
     );
   }
 
+  private cleanExecutionStop(error: unknown) {
+    return (
+      error !== null &&
+      typeof error === "object" &&
+      Reflect.get(error, "code") === "WINDOWS_SANDBOX_EXECUTION_TIMEOUT"
+    );
+  }
+
   private async quarantineGeneration(
     command: SandboxCommand,
     category: "process_unknown" | "acl_cleanup" | "proxy_cleanup",
@@ -875,7 +883,10 @@ export class SandboxBroker implements AgentRuntimeLauncher {
         }
       }
 
-      if (command.signal.aborted && !this.cleanupFailure(failure)) {
+      if (
+        (command.signal.aborted || this.cleanExecutionStop(failure)) &&
+        !this.cleanupFailure(failure)
+      ) {
         if (acquired) {
           try {
             await this.releaseAccess(command, manifest, acquired);

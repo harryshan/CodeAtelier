@@ -107,6 +107,15 @@ export class NativeWindowsSandboxCleanupError extends NativeWindowsSandboxError 
   }
 }
 
+export class NativeWindowsSandboxTimeoutError extends NativeWindowsSandboxError {
+  override readonly code = "WINDOWS_SANDBOX_EXECUTION_TIMEOUT";
+
+  constructor() {
+    super("命令超时，Sandbox Job 已终止且实例清理完成。");
+    this.name = "NativeWindowsSandboxTimeoutError";
+  }
+}
+
 function installationPaths(
   environment: NodeJS.ProcessEnv = process.env,
 ): InstallationPaths {
@@ -1059,7 +1068,7 @@ export class NativeWindowsSandboxRuntime implements SandboxRuntime {
           });
           reject(command.signal.reason ?? new Error("任务已取消"));
         } else if (completion === "timed_out") {
-          reject(new Error("命令超时，Sandbox Job 已终止。"));
+          reject(new NativeWindowsSandboxTimeoutError());
         } else if (completion === "security_rejected") {
           reject(new NativeWindowsSandboxError("supervisor 安全拒绝了执行。"));
         } else {
