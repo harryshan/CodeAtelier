@@ -4,7 +4,7 @@
  *
  * 1. request 生成不可复用 requestId、注册取消监听并等待精确匹配的 response；本地取消发送 request_cancel 以中止远端 handler。
  * 2. consume 逐帧校验 schema 和大小；非法帧、重复/未知 response 或半帧断开会关闭整条连接。
- * 3. 收到 request 后调用固定 handler，返回受限错误；收到 event 时只分派已注册监听器。
+ * 3. 收到 request 后调用固定 handler，返回受限错误；event/handshake observer 抛错时安全关闭通道，不能形成未处理拒绝。
  * 4. 已取消 requestId 使用有界 tombstone 忽略竞态中的迟到响应，其他未知响应仍关闭连接。
  * 5. close 使全部 pending/handling 请求失败并移除监听，避免断连后把未知操作当成成功或继续等待。
  */
@@ -259,7 +259,9 @@ export class RuntimeIpcPeer {
         return;
       }
 
-      void this.dispatch(parsed.data);
+      void this.dispatch(parsed.data).catch(() => {
+        this.close("Runtime IPC 消息分发失败。");
+      });
     }
 
     if (Buffer.byteLength(this.buffer, "utf8") > this.maxFrameBytes) {

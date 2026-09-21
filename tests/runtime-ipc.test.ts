@@ -5,7 +5,7 @@
  * 1. 双向 PassThrough peer 完成请求并拒绝未知响应、畸形 JSON 和超限半帧。
  * 2. RuntimeGitPushClient 只发送有界 PushSpec，并校验 Broker 返回的固定进程结果。
  * 3. AbortSignal 发送 request_cancel，中止远端同 requestId handler；竞态迟到响应不会破坏后续请求。
- * 4. Runtime trace event 只接受固定 context 阶段和有界元数据，任意名称或文本字段关闭通道。
+ * 4. Runtime trace event 只接受固定 context 阶段和有界元数据，任意名称或文本字段关闭通道；合法消息触发 observer 异常也安全关闭而非产生未处理拒绝。
  * 5. 子进程经继承 stdio 请求模型，Broker test adapter 流式回传 delta 和最终结果，进程正常退出。
  */
 
@@ -179,6 +179,31 @@ it("accepts only bounded context trace events", async () => {
   await expect(
     peer.request("session_read_context", {}, new AbortController().signal),
   ).rejects.toBeInstanceOf(RuntimeIpcError);
+});
+
+it("closes the channel when an event observer rejects the message", async () => {
+  const input = new PassThrough();
+  const output = new PassThrough();
+  const peer = new RuntimeIpcPeer({
+    input,
+    output,
+    onEvent: () => {
+      throw new Error("semantic trace failure");
+    },
+  });
+  input.write(
+    `${JSON.stringify({
+      type: "event",
+      event: "trace_span_start",
+      spanId: "span-1",
+      name: "context.prepare",
+      attributes: { step: 1 },
+    })}\n`,
+  );
+
+  await expect(
+    peer.request("session_read_context", {}, new AbortController().signal),
+  ).rejects.toThrow("Runtime IPC 消息分发失败");
 });
 
 it("cancels a pending request", async () => {
