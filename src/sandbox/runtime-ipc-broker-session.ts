@@ -122,16 +122,16 @@ export class RuntimeIpcBrokerSession {
         this.rejectRuntimeReady(error);
       },
       onEvent: (event) => {
+        if (!this.authenticated) {
+          this.peer.end("Runtime IPC 事件早于身份认证。");
+
+          return;
+        }
+
         if (
           event.event === "trace_span_start" ||
           event.event === "trace_span_end"
         ) {
-          if (!this.authenticated) {
-            this.peer.end("Runtime IPC trace 事件早于身份认证。");
-
-            return;
-          }
-
           this.handlers.traceSpan?.(event);
         }
 
@@ -215,6 +215,7 @@ export class RuntimeIpcBrokerSession {
 
   private async handle(request: RuntimeIpcRequest, signal: AbortSignal) {
     if (!this.authenticated) {
+      this.peer.end("Runtime IPC 请求早于身份认证。");
       throw new Error("Runtime IPC 尚未完成握手。");
     }
 

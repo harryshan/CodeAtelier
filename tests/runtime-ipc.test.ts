@@ -306,6 +306,82 @@ it("rejects an instance or nonce mismatch before serving requests", async () => 
   ).rejects.toBeInstanceOf(RuntimeIpcError);
 });
 
+it("closes a broker session when any event arrives before runtime hello", async () => {
+  const runtimeToBroker = new PassThrough();
+  const brokerToRuntime = new PassThrough();
+  const identity = {
+    sessionId: "session-1",
+    taskId: "task-1",
+    executionInstanceId: "runtime-1",
+    kind: "agent-runtime" as const,
+  };
+  const traces = new TraceRecorder();
+  const gateway = new RuntimeBrokerGateway(
+    {
+      authorize: () => true,
+      approveCommand: async () => ({ approved: true }),
+      modelProvider: () => ({
+        model: "unused",
+        provider: { run: async () => ({ output: [], text: "" }) },
+      }),
+    },
+    traces,
+  );
+  const session = new RuntimeIpcBrokerSession(
+    { input: runtimeToBroker, output: brokerToRuntime },
+    identity,
+    "0123456789abcdef0123456789abcdef",
+    gateway,
+    {
+      requestApproval: async () => ({ approved: true }),
+      executeGitPush: async () => ({
+        output: "",
+        exitCode: 0,
+        truncated: false,
+      }),
+      executeCapabilityCommand: async () => ({
+        executionInstanceId: "capability-test",
+        output: "",
+        exitCode: 0,
+        truncated: false,
+      }),
+      applyMemory: async () => ({ applied: true }),
+      appendSessionEvent: async () => undefined,
+      saveContext: async () => undefined,
+      readContext: async () => [],
+      readEvents: async () => [],
+      latestContextSnapshot: async () => undefined,
+      readContextSnapshot: async () => undefined,
+      compactContext: async () => undefined,
+      runtimeCompleted: async () => undefined,
+    },
+  );
+
+  runtimeToBroker.write(
+    `${JSON.stringify({
+      type: "event",
+      event: "runtime_state",
+      state: "ready",
+    })}\n`,
+  );
+  await expect(
+    session.startTask(
+      {
+        workspace: "C:\\workspace",
+        prompt: "test",
+        settings: {
+          model: "test",
+          maxSteps: 1,
+          commandTimeoutMs: 1_000,
+          contextChars: 1_000,
+          outputChars: 1_000,
+        },
+      },
+      AbortSignal.timeout(1_000),
+    ),
+  ).rejects.toThrow("事件早于身份认证");
+});
+
 it("proxies a model request across a real child process", async () => {
   const child = spawn(
     process.execPath,
