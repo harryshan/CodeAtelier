@@ -6,12 +6,14 @@
  * 2. 子进程运行 read_file 工具 DAG，Broker 仅提供模型、session、审批和记忆 adapter。
  * 3. Engine 等待 Runtime 终态与 clean 退出，再把任务和 execution instance 记为 completed。
  * 4. 扩展权限命令经低成本模型审批后，把规范化根和 host 交给独立 capability runner，并将结果送回 agent loop。
- * 5. launcher 证明 Runtime 尚未启动且 provision 已回滚时，Engine 明确记录 host fallback 并继续宿主 loop。
+ * 5. Runtime IPC 在可信终态前断开时，Engine 以 unknown 关闭 launcher 并持久化可能副作用。
+ * 6. launcher 证明 Runtime 尚未启动且 provision 已回滚时，Engine 明确记录 host fallback 并继续宿主 loop。
  */
 
 import { spawn } from "node:child_process";
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
+import { PassThrough } from "node:stream";
 import pino from "pino";
 import { expect, it, vi } from "vitest";
 import { Engine } from "../src/agent/engine.js";
@@ -358,6 +360,71 @@ it("reviews and executes a capability command through the Broker", async () => {
 
     expect(trace).toContain("external-tool --version");
     expect(trace).toContain("EXAMPLE.COM");
+  } finally {
+    await engine.close();
+    store.close();
+  }
+});
+
+it("records unknown when Runtime IPC closes before a trusted terminal result", async () => {
+  const root = await temp();
+  const config = new Config(await temp());
+  config.sandbox.enabled = true;
+  config.sandbox.initialStatus = {
+    enabled: true,
+    requested: true,
+    applied: false,
+    mode: "unknown",
+    platform: process.platform,
+    level: null,
+  };
+  const store = new Store(path.join(config.directory, "db"));
+  const session = store.create(root, "runtime disconnect test");
+  const close = vi.fn(async () => "clean" as const);
+  const launcher: AgentRuntimeLauncher = {
+    async launch() {
+      const input = new PassThrough();
+      const output = new PassThrough();
+      input.end();
+
+      return {
+        input,
+        output,
+        pid: 52,
+        close,
+      };
+    },
+  };
+  const provider: ModelProvider = {
+    async run() {
+      throw new Error("Broker model adapter must not run after disconnect.");
+    },
+  };
+  const engine = new Engine(
+    store,
+    config,
+    pino({ enabled: false }),
+    () => provider,
+    launcher,
+  );
+
+  try {
+    const task = engine.start(session.id, "disconnect before result");
+    await engine.active?.done;
+
+    expect(store.task(task.id)?.status).toBe("failed");
+    expect(close).toHaveBeenCalledWith("unknown");
+    expect(
+      store
+        .events(session.id)
+        .some(
+          (event) =>
+            event.type === "execution_instance" &&
+            (event.data as any).kind === "agent-runtime" &&
+            (event.data as any).state === "unknown" &&
+            (event.data as any).sideEffectsPossible === true,
+        ),
+    ).toBe(true);
   } finally {
     await engine.close();
     store.close();

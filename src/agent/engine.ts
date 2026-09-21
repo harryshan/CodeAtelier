@@ -883,13 +883,15 @@ export class Engine {
         }
 
         closeAttempted = true;
-        const cleanup = await launched.close(
-          status === "completed"
-            ? "completed"
-            : signal.aborted
-              ? "cancel"
-              : "failed",
-        );
+        const cleanup = await launched
+          .close(
+            status === "completed"
+              ? "completed"
+              : signal.aborted
+                ? "cancel"
+                : "failed",
+          )
+          .catch(() => "orphaned" as const);
         cleaned = cleanup === "clean";
         authorized = false;
         if (!cleaned) {
@@ -905,7 +907,10 @@ export class Engine {
             : status === "cancelled" || status === "interrupted"
               ? "cancelled"
               : "failed",
-          { sideEffectsPossible: false },
+          {
+            sideEffectsPossible:
+              status === "cancelled" || status === "interrupted",
+          },
         );
 
         return { status, failure: reported?.failure ?? response.failure };
@@ -923,11 +928,14 @@ export class Engine {
       runtimeContextSpans.clear();
       if (launched && !closeAttempted) {
         closeAttempted = true;
+        const closeReason = signal.aborted ? "cancel" : "unknown";
         const cleanup = await launched
-          .close(signal.aborted ? "cancel" : "failed")
+          .close(closeReason)
           .catch(() => "orphaned" as const);
-        if (cleanup !== "clean") {
+        if (closeReason === "unknown" || cleanup !== "clean") {
           publishExecution("unknown", { sideEffectsPossible: true });
+        } else {
+          publishExecution("cancelled", { sideEffectsPossible: true });
         }
       }
     }

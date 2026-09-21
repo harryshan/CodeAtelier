@@ -505,7 +505,7 @@ export class SandboxBroker implements AgentRuntimeLauncher {
             const nativeCleanup = await launched
               .close(reason)
               .catch(() => "orphaned" as const);
-            if (nativeCleanup !== "clean") {
+            if (reason === "unknown" || nativeCleanup !== "clean") {
               await this.quarantineGeneration(command, "process_unknown");
 
               return "orphaned";

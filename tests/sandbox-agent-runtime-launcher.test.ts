@@ -5,7 +5,7 @@
  * 1. 正常启动必须在 Runtime started 后提交共享 grant，close 时先关闭进程再原生撤销并清理私有目录。
  * 2. self-check 在 Runtime 创建前失败时允许显式 host-process fallback，不留下活动 lease。
  * 3. Supervisor 回传的 generation 摘要必须与 preflight 一致，否则按已启动 Runtime 的 unknown 处理。
- * 4. 已启动 Runtime 的 close 若无法证明 clean，必须 quarantine 并调用整代排空，绝不降级成 fallback。
+ * 4. 已启动 Runtime 的 close 若无法证明 clean，或 Broker 未取得可信任务终态，必须 quarantine 并调用整代排空，绝不降级成 fallback。
  */
 
 import { PassThrough } from "node:stream";
@@ -196,6 +196,62 @@ describe("SandboxBroker Agent Runtime launcher", () => {
 
     await expect(launched.close("failed")).resolves.toBe("orphaned");
     expect(drainGeneration).toHaveBeenCalledOnce();
+    expect(broker.accountGenerationSnapshot()?.state).toBe("quarantined");
+  });
+
+  it("quarantines a generation when the Runtime result is unknown even after clean native shutdown", async () => {
+    const files = await fixture();
+    const nativeClose = vi.fn(async () => "clean" as const);
+    const revokeAccess = vi.fn(async () => {});
+    const cleanup = vi.fn(async () => {});
+    const drainGeneration = vi.fn(async () => {});
+    const runtime: SandboxRuntime = {
+      selfCheck: vi.fn(async () => ({
+        level: "windows-sandbox-user-test",
+        workspaceProtection: "direct-path" as const,
+        accountGenerationDigest: "d".repeat(64),
+      })),
+      prepareAccess: vi.fn(async () => ({
+        readOnlyRoots: [],
+        readWriteRoots: [files.privateDirectory],
+        gitConfigFiles: [files.gitConfig],
+        privateDirectory: files.privateDirectory,
+        gitGlobalConfigPath: files.gitConfig,
+        cleanup,
+      })),
+      execute: vi.fn(async () => ({
+        output: "",
+        exitCode: 0,
+        truncated: false,
+      })),
+      launchAgentRuntime: vi.fn(async (command) => {
+        command.onAccessProvisioned?.();
+        const transport = new PassThrough();
+
+        return {
+          input: transport,
+          output: transport,
+          pid: 45,
+          accountGenerationDigest: "d".repeat(64),
+          close: nativeClose,
+        };
+      }),
+      revokeAccess,
+      drainGeneration,
+    };
+    const broker = new SandboxBroker(configuration(), runtime);
+    const launched = await broker.launch({
+      identity: identity(),
+      nonce: "e".repeat(64),
+      workspace: files.workspace,
+      signal: new AbortController().signal,
+    });
+
+    await expect(launched.close("unknown")).resolves.toBe("orphaned");
+    expect(nativeClose).toHaveBeenCalledWith("unknown");
+    expect(drainGeneration).toHaveBeenCalledOnce();
+    expect(revokeAccess).not.toHaveBeenCalled();
+    expect(cleanup).not.toHaveBeenCalled();
     expect(broker.accountGenerationSnapshot()?.state).toBe("quarantined");
   });
 

@@ -4,7 +4,7 @@
  *
  * 1. launch 输入只含 Broker 生成的任务/instance/nonce 和工作区，不能接受模型提供的 executable 或 argv。
  * 2. 返回流在 launcher 完成 PID/创建时间、Job、token/capability、generation 和 nonce 绑定后才可使用。
- * 3. close 必须等待进程树与租约清理并返回 clean/orphaned；orphaned 触发 generation 隔离，不能按正常取消处理。
+ * 3. close 必须等待进程树与租约清理并返回 clean/orphaned；unknown 表示 Runtime 已启动但 Broker 未取得可信终态，必须隔离 generation，即使 native 进程清理本身成功。
  * 4. AgentRuntimeFallbackError 只表示 Runtime 尚未启动且 provision 已证明回滚，Engine 才可继续宿主 agent loop。
  */
 
@@ -18,7 +18,7 @@ export interface LaunchedAgentRuntime {
   processCreationTime100ns?: string;
   accountGenerationDigest?: string;
   close(
-    reason: "completed" | "cancel" | "shutdown" | "failed",
+    reason: "completed" | "cancel" | "shutdown" | "failed" | "unknown",
   ): Promise<"clean" | "orphaned">;
 }
 
