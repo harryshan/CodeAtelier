@@ -63,7 +63,11 @@ export class RuntimeSessionClient {
     )) as ContextSnapshot | undefined;
   }
 
-  async compactContextAsync(snapshot: ContextSnapshot, input: any[]) {
+  async compactContextAsync(
+    _sessionId: string,
+    snapshot: ContextSnapshot,
+    input: any[],
+  ) {
     await this.peer.request(
       "session_compact",
       { snapshot, input },

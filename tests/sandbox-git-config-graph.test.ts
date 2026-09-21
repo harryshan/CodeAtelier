@@ -1,6 +1,6 @@
 /**
  * 验证 Windows Sandbox 的宿主 Git global/include 图解析与聚合入口生成。
- * 临时夹具覆盖标准入口顺序、相对 include、条件 include、循环去重和安全拒绝，不调用真实 Git。
+ * 临时夹具覆盖标准入口顺序、相对 include、条件 include、循环去重和安全拒绝；冲突优先级用本机真实 Git 验证。
  *
  * 1. 匹配当前 workspace 的 gitdir/i 文件进入图，不匹配条件不授权。
  * 2. 两个 global 入口保持固定聚合顺序，私有 Sandbox HOME 不参与发现。
@@ -9,6 +9,7 @@
 
 import { expect, it } from "vitest";
 import { mkdir, symlink, writeFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
 import path from "node:path";
 import {
   discoverGitConfigGraph,
@@ -42,10 +43,81 @@ it("discovers ordered global, relative and matching conditional includes", async
     workspaceRoot: workspace,
   });
 
-  expect(graph.entryFiles).toEqual([first, second]);
-  expect(graph.files).toEqual([first, relative, conditional, second]);
-  expect(graph.aggregate).toBe(renderGitGlobalAggregate([first, second]));
+  expect(graph.entryFiles).toEqual([second, first]);
+  expect(graph.files).toEqual([second, first, relative, conditional]);
+  expect(graph.aggregate).toBe(renderGitGlobalAggregate([second, first]));
   expect(graph.aggregate).not.toContain(skipped);
+});
+
+function runGit(args: string[], environment: NodeJS.ProcessEnv) {
+  return new Promise<string>((resolve, reject) => {
+    const child = spawn("git", args, {
+      env: environment,
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+    });
+    let output = "";
+    let error = "";
+    child.stdout.setEncoding("utf8").on("data", (chunk) => (output += chunk));
+    child.stderr.setEncoding("utf8").on("data", (chunk) => (error += chunk));
+    child.once("error", reject);
+    child.once("close", (code) => {
+      if (code === 0) {
+        resolve(output.trim());
+      } else {
+        reject(new Error(error || `git 退出码 ${code}`));
+      }
+    });
+  });
+}
+
+it("preserves Git native XDG then home global precedence", async () => {
+  const root = await temp();
+  const profile = path.join(root, "profile");
+  const xdg = path.join(profile, ".config");
+  const workspace = path.join(root, "workspace");
+  const xdgConfig = path.join(xdg, "git", "config");
+  const homeConfig = path.join(profile, ".gitconfig");
+  await mkdir(path.dirname(xdgConfig), { recursive: true });
+  await mkdir(workspace);
+  await writeFile(xdgConfig, "[test]\n  precedence = xdg\n");
+  await writeFile(homeConfig, "[test]\n  precedence = home\n");
+  const graph = await discoverGitConfigGraph({
+    profileDirectory: profile,
+    workspaceRoot: workspace,
+  });
+  const aggregate = path.join(root, "aggregate.gitconfig");
+  await writeFile(aggregate, graph.aggregate);
+  const environment = {
+    ...process.env,
+    HOME: profile,
+    USERPROFILE: profile,
+    XDG_CONFIG_HOME: xdg,
+    GIT_CONFIG_NOSYSTEM: "1",
+  };
+
+  const nativeValue = await runGit(
+    ["config", "--global", "--includes", "--get", "test.precedence"],
+    environment,
+  );
+  const aggregateValue = await runGit(
+    [
+      "-c",
+      `include.path=${aggregate}`,
+      "config",
+      "--includes",
+      "--get",
+      "test.precedence",
+    ],
+    {
+      ...environment,
+      HOME: path.join(root, "empty-home"),
+      XDG_CONFIG_HOME: path.join(root, "empty-xdg"),
+    },
+  );
+
+  expect(nativeValue).toBe("home");
+  expect(aggregateValue).toBe(nativeValue);
 });
 
 it("deduplicates include cycles", async () => {

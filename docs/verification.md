@@ -299,3 +299,9 @@
 - Supervisor 增加带固定错误码的 clean timeout 结果：只有 native 已确认 Job 终止且未报告 cleanup failure 时，Broker 才按受控停止撤销 ACL、提交 lease 并清理私有目录，不再把其它健康实例一并 quarantine；超时调用自身仍失败并由 execution instance 保留可能副作用。cleanup exit 70/控制帧、ACL revoke 或私有目录清理失败仍升级为 unknown/orphaned 与整代 drain。编排回归已覆盖两条分支，真实强制墙钟终止与后代清理仍待 W6 提升环境验收。
 - 常驻 Agent Runtime launcher 现与命令/Runner 路径使用同一 per-instance 状态事实：联合身份启动成功后写入 `sandboxed/applied=true/level`，无可信终态或清理失败写入 `unknown`，启动前完整回滚写入 `host-process-fallback`。Engine 同步发出 `sandbox_stage`，Web 当前会话徽标不再停留在进程启动时的全局 `unknown`。回归覆盖成功、fallback 和 unknown 状态；并发会话仍只展示用户当前打开会话的最新事件。
 - 本轮 Sandbox 收尾在宿主权限完成 `pnpm check`：52 个测试文件、343 项通过、1 项按平台跳过，TypeScript、ESLint、Prettier 与 production/runtime bundle build 全部通过；Chromium E2E 23/23 通过。`pnpm sandbox:native:build` 以 MSVC C++20 `/W4` 成功生成 Supervisor 与产品 WFP manager，后者对实验参数 `--ipc` 输出固定拒绝并以 2 退出。上述结果证明代码、协议和无管理员副作用编排闭环，不替代固定账户提升安装、真实 ACL/WFP/CONNECT/remote、强制取消、崩溃与重启恢复矩阵。
+
+## 2026-09-21 Sandbox 审查修复验证
+
+- 15 项审查问题已落实到实现、回归或文档：跨会话 compact、审批对象身份、失败回滚证明、Job 分配失败、grant acquire/revoke 互斥、provision waiter 失败/取消、relay 首次启动与 socket 生命周期、Git global 优先级、execution instance 恢复关联、fallback 事件及实际安装说明均已修正。产品 WFP verify 现在从受保护 state 取得账户和 V4/V6 relay 端口，逐条核对八条持久规则的账户 security descriptor、layer、action、weight、地址、端口、raw flag 和唯一形状，而非只计数。
+- 当前 Codex Sandbox 中，TypeScript、ESLint、Prettier、production/runtime build 均通过；排除已确认被外层 Sandbox 阻止 `taskkill /T /F` 的 `shutdown.test.ts` 后，52 个测试文件为 349 项通过、1 项平台跳过。该关闭用例实际诊断得到 `taskkill` 的 `Access denied`，未修改产品逻辑或弱化断言。Chromium 23/23 用例均完成通过，但外层 Sandbox 同样阻止 runner 正常收尾，因此人工终止等待进程，不记为干净的 `pnpm test:e2e` 退出成功。
+- `pnpm sandbox:native:build` 以 MSVC C++20 `/W4` 无警告生成 Supervisor 和产品 WFP manager。没有运行 Evaluation，也没有提升安装或修改专用账户、WFP、持久 ACL；原生撤销失败、Job 失败、askpass 卡死、损坏/替换 WFP 规则及异常终止仍须在固定产品账户环境做故障注入，故不能据本轮结果将 W3--W6 标为平台验收完成。

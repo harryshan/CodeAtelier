@@ -7,7 +7,7 @@
  * 2. executeCommand 记录策略、preflight、fallback、执行和收集阶段；Sandbox 关闭时完全沿用既有宿主执行器。
  * 3. 启用时先建立 WorkspaceView 并调用 runtime.selfCheck；缺后端或启动前检查失败时按任务固定转为宿主执行。
  * 4. runtime.execute 开始后的异常绝不自动重放到宿主；unknown/orphaned 会冻结 generation 并调用原生整代排空。
- * 5. 共享 ACL 安装由 provision waiter 串行可见，释放由 prepare/native revoke/commit 两阶段协议保护账本。
+ * 5. 共享 ACL acquire 与 prepare/native revoke/commit 共用串行队列；provision waiter 可取消，安装者失败会拒绝全部等待者。
  * 6. 独立 Sandbox logger 只接收类别、阶段、关联 ID、耗时和结果，不记录命令、路径、SID、端口或输出。
  *
  * WorkspaceView 仍是历史 WSL2 Runtime 的契约；目标 Windows Runtime 将以 AccessManifest 取代它。fallback
@@ -42,7 +42,7 @@ export class SandboxBroker implements AgentRuntimeLauncher {
   private executionStatuses = new Map<string, SandboxStatus>();
   private executionTasks = new Map<string, string>();
   private accountGeneration?: AccountGenerationRegistry;
-  private releaseQueue = Promise.resolve();
+  private grantMutationQueue = Promise.resolve();
   private generationDrain?: Promise<void>;
 
   constructor(
@@ -206,52 +206,96 @@ export class SandboxBroker implements AgentRuntimeLauncher {
       return;
     }
 
-    const priorRelease = this.releaseQueue;
-    let finishRelease!: () => void;
-    this.releaseQueue = new Promise<void>((resolve) => {
-      finishRelease = resolve;
-    });
-    await priorRelease;
+    await this.withGrantMutation(async () => {
+      let release:
+        | ReturnType<AccountGenerationRegistry["prepareReleaseWithManifest"]>
+        | undefined;
+      try {
+        release = this.accountGeneration!.prepareReleaseWithManifest(
+          command.executionInstanceId,
+          acquired.lease.epoch,
+          manifest,
+        );
+        const roots = this.rootsForGrantRevocation(
+          manifest,
+          release.revoke.map((grant) => grant.objectIdentityDigest),
+        );
+        if (roots.length > 0) {
+          if (!this.runtime?.revokeAccess) {
+            throw new Error("平台 Runtime 未实现共享 ACL 撤销。");
+          }
 
-    let release:
-      | ReturnType<AccountGenerationRegistry["prepareReleaseWithManifest"]>
-      | undefined;
-    try {
-      release = this.accountGeneration.prepareReleaseWithManifest(
-        command.executionInstanceId,
-        acquired.lease.epoch,
-        manifest,
-      );
-      const roots = this.rootsForGrantRevocation(
-        manifest,
-        release.revoke.map((grant) => grant.objectIdentityDigest),
-      );
-      if (roots.length > 0) {
-        if (!this.runtime?.revokeAccess) {
-          throw new Error("平台 Runtime 未实现共享 ACL 撤销。");
+          await this.runtime.revokeAccess(roots, AbortSignal.timeout(20_000));
         }
 
-        await this.runtime.revokeAccess(roots, AbortSignal.timeout(20_000));
-      }
+        this.accountGeneration!.commitRelease(release.releaseId, manifest);
+        this.log?.info({
+          event: "sandbox.root_revoke.completed",
+          module: "sandbox",
+          sessionId: command.sessionId,
+          taskId: command.taskId,
+          executionInstanceId: command.executionInstanceId,
+          grantRevokeCount: release.revoke.length,
+        });
+      } catch (error) {
+        if (release) {
+          this.accountGeneration!.abortRelease(release.releaseId);
+        }
 
-      this.accountGeneration.commitRelease(release.releaseId, manifest);
-      this.log?.info({
-        event: "sandbox.root_revoke.completed",
-        module: "sandbox",
-        sessionId: command.sessionId,
-        taskId: command.taskId,
-        executionInstanceId: command.executionInstanceId,
-        grantRevokeCount: release.revoke.length,
-      });
-    } catch (error) {
-      if (release) {
-        this.accountGeneration.abortRelease(release.releaseId);
+        this.accountGeneration!.quarantine("acl_cleanup");
+        throw error;
       }
+    });
+  }
 
-      this.accountGeneration.quarantine("acl_cleanup");
-      throw error;
+  /** acquire 不能越过最后引用的原生撤销；队列槽覆盖撤销 I/O，避免新 lease 复用即将删除的 ACE。 */
+  private async withGrantMutation<T>(operation: () => Promise<T> | T) {
+    const prior = this.grantMutationQueue;
+    let finish!: () => void;
+    const current = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    this.grantMutationQueue = prior.then(() => current);
+    await prior;
+
+    try {
+      return await operation();
     } finally {
-      finishRelease();
+      finish();
+    }
+  }
+
+  private verifyReviewedManifest(
+    reviewed: AccessManifest | undefined,
+    current: AccessManifest,
+  ) {
+    if (!reviewed) {
+      return;
+    }
+
+    const rootsByPath = (roots: AccessManifest["readRoots"]) =>
+      new Map(
+        roots.map((root) => [
+          root.path.toLocaleLowerCase(),
+          root.objectIdentityDigest,
+        ]),
+      );
+    const currentReadRoots = rootsByPath(current.readRoots);
+    const currentWriteRoots = rootsByPath(current.writeRoots);
+    const unchanged = [
+      [reviewed.readRoots, currentReadRoots] as const,
+      [reviewed.writeRoots, currentWriteRoots] as const,
+    ].every(([reviewedRoots, currentRoots]) =>
+      reviewedRoots.every(
+        (root) =>
+          currentRoots.get(root.path.toLocaleLowerCase()) ===
+          root.objectIdentityDigest,
+      ),
+    );
+    if (!unchanged || reviewed.workspaceRootId !== current.workspaceRootId) {
+      throw new Error(
+        "扩展权限对象在审批后发生变化；必须基于当前对象重新审批。",
+      );
     }
   }
 
@@ -470,13 +514,15 @@ export class SandboxBroker implements AgentRuntimeLauncher {
         checked.accountGenerationDigest,
         4,
       );
-      acquired = this.accountGeneration.acquire({
-        executionInstanceId: command.executionInstanceId,
-        kind: "agent-runtime",
-        taskId: command.taskId,
-        accessManifest: manifest,
-      });
-      await acquired.waitForSharedProvision();
+      acquired = await this.withGrantMutation(() =>
+        this.accountGeneration!.acquire({
+          executionInstanceId: command.executionInstanceId,
+          kind: "agent-runtime",
+          taskId: command.taskId,
+          accessManifest: manifest!,
+        }),
+      );
+      await acquired.waitForSharedProvision(input.signal);
 
       command.onAccessProvisioned = () => {
         if (runtimeStarted) {
@@ -578,10 +624,16 @@ export class SandboxBroker implements AgentRuntimeLauncher {
 
       try {
         if (acquired && manifest && this.accountGeneration) {
-          this.accountGeneration.rollbackAcquire(
+          this.accountGeneration.markProvisionFailed(
             command.executionInstanceId,
             acquired.lease.epoch,
-            manifest,
+          );
+          await this.withGrantMutation(() =>
+            this.accountGeneration!.rollbackAcquire(
+              command.executionInstanceId,
+              acquired!.lease.epoch,
+              manifest!,
+            ),
           );
         }
 
@@ -741,6 +793,7 @@ export class SandboxBroker implements AgentRuntimeLauncher {
         readWriteRoots: prepared?.readWriteRoots,
         gitConfigFiles: prepared?.gitConfigFiles,
       });
+      this.verifyReviewedManifest(command.reviewedAccessManifest, manifest);
       command.signal.throwIfAborted();
       const generationDigest = checked.accountGenerationDigest;
       if (generationDigest) {
@@ -760,20 +813,30 @@ export class SandboxBroker implements AgentRuntimeLauncher {
         );
       }
 
-      acquired = this.accountGeneration?.acquire({
-        executionInstanceId: command.executionInstanceId,
-        kind: command.kind ?? "agent-runtime",
-        taskId: command.taskId,
-        accessManifest: manifest,
-      });
-      await acquired?.waitForSharedProvision();
+      acquired = this.accountGeneration
+        ? await this.withGrantMutation(() =>
+            this.accountGeneration!.acquire({
+              executionInstanceId: command.executionInstanceId,
+              kind: command.kind ?? "agent-runtime",
+              taskId: command.taskId,
+              accessManifest: manifest,
+            }),
+          )
+        : undefined;
+      await acquired?.waitForSharedProvision(command.signal);
     } catch (error) {
       if (acquired && this.accountGeneration) {
         try {
-          this.accountGeneration.rollbackAcquire(
+          this.accountGeneration.markProvisionFailed(
             command.executionInstanceId,
             acquired.lease.epoch,
-            manifest!,
+          );
+          await this.withGrantMutation(() =>
+            this.accountGeneration!.rollbackAcquire(
+              command.executionInstanceId,
+              acquired!.lease.epoch,
+              manifest!,
+            ),
           );
         } catch {
           await this.quarantineGeneration(command, "acl_cleanup");

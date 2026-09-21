@@ -96,6 +96,8 @@ export interface SandboxCommand {
   networkHost?: string;
   readOnlyRoots?: string[];
   readWriteRoots?: string[];
+  /** capability 审批时固定的对象身份；执行清单必须仍包含这些完全相同的根。 */
+  reviewedAccessManifest?: import("./supervisor-protocol.js").AccessManifest;
   command: string;
   args: string[];
   cwd: string;

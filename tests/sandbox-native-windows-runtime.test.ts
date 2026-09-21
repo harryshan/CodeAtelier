@@ -38,6 +38,7 @@ describe.skipIf(process.platform !== "win32")(
           aborted: true,
           timedOut: false,
           cleanupFailure: true,
+          cleanupProof: false,
           exitCode: 70,
         }),
       ).toBe("cleanup_unknown");
@@ -46,9 +47,19 @@ describe.skipIf(process.platform !== "win32")(
           aborted: true,
           timedOut: false,
           cleanupFailure: false,
+          cleanupProof: true,
           exitCode: 30,
         }),
       ).toBe("cancelled");
+      expect(
+        classifySupervisorClose({
+          aborted: false,
+          timedOut: false,
+          cleanupFailure: false,
+          cleanupProof: false,
+          exitCode: 0,
+        }),
+      ).toBe("cleanup_unknown");
     });
 
     it("encodes a bounded binary command request and rejects unsafe shapes", () => {

@@ -138,6 +138,7 @@ export class AgentRuntimeService {
           return capability.execute(request, toolCallId, requestSignal);
         },
         executionBoundary: "agent-runtime",
+        parentExecutionInstanceId: this.identity.executionInstanceId,
         emit: (type, data) => events.emit(type, data),
       });
       const tools = [...definitions, historyDefinition];

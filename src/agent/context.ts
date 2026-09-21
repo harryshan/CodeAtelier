@@ -3,7 +3,7 @@
  * 得到可以继续发给模型的历史记录。
  *
  * 1. 在线程外读取已保存的上下文和事件，找出缺少结果的 function_call，避免长历史阻塞 API 主线程。
- * 2. 从 tool_result 事件补回已知结果；结果缺失时附上最新 execution_instance 的模式、PID 类型和取消/未知状态。
+ * 2. 从 tool_result 事件补回已知结果；结果缺失时按 toolCallId（兼容旧 callId）关联 Runner，或由 sandboxed_tool_process 关联其父 Agent Runtime。
  * 3. 恢复输出明确禁止自动重放，但不携带命令、路径、输出或日志原文。
  * 4. 追加本轮用户消息并保存，供当前任务和下次恢复使用。
  *
@@ -70,12 +70,33 @@ export async function prepareTaskContext(
       .map((e) => [e.data.callId, e.data.result]),
   );
   const executionByCallId = new Map<string, any>();
+  const executionById = new Map<string, any>();
+  for (const event of events) {
+    if (event.type === "execution_instance") {
+      if (typeof event.data?.executionInstanceId === "string") {
+        executionById.set(event.data.executionInstanceId, event.data);
+      }
+
+      const callId = event.data?.toolCallId ?? event.data?.callId;
+      if (typeof callId === "string") {
+        executionByCallId.set(callId, event.data);
+      }
+    }
+  }
+
   for (const event of events) {
     if (
-      event.type === "execution_instance" &&
-      typeof event.data?.callId === "string"
+      event.type === "sandboxed_tool_process" &&
+      typeof event.data?.callId === "string" &&
+      typeof event.data?.parentExecutionInstanceId === "string"
     ) {
-      executionByCallId.set(event.data.callId, event.data);
+      const parent = executionById.get(event.data.parentExecutionInstanceId);
+      if (parent) {
+        executionByCallId.set(event.data.callId, {
+          ...parent,
+          toolPid: event.data.pid,
+        });
+      }
     }
   }
 

@@ -534,10 +534,25 @@ export class Store {
   }
 
   /** 快照和活动上下文在线程外序列化并在同一事务提交；主线程不会因大 JSON 或磁盘等待失去 API 响应。 */
-  async compactContextAsync(snapshot: ContextSnapshot, input: any[]) {
+  async compactContextAsync(
+    sessionId: string,
+    snapshot: ContextSnapshot,
+    input: any[],
+  ) {
+    if (snapshot.sessionId !== sessionId) {
+      throw new Error("压缩快照不属于目标会话。");
+    }
+
+    if (
+      snapshot.parentId !== null &&
+      !(await this.contextSnapshotAsync(sessionId, snapshot.parentId))
+    ) {
+      throw new Error("压缩快照的父快照不属于目标会话。");
+    }
+
     await this.runWorker<void>({
       operation: "compact",
-      sessionId: snapshot.sessionId,
+      sessionId,
       snapshot,
       input,
     });

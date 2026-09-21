@@ -3,11 +3,12 @@
  * Native supervisor 只把一次性凭据交给同一 Job 中的固定 askpass helper；Git 再以 Basic proxy auth
  * 连接本 relay。普通 Agent Runtime 即使能到达 WFP 放行端口，也没有有效 lease。
  *
- * 1. start 只监听 127.0.0.1 的安装端口，普通 HTTP 请求一律拒绝。
+ * 1. start 以共享 promise 串行首次监听，只绑定 127.0.0.1 的安装端口，普通 HTTP 请求一律拒绝。
  * 2. issueLease 绑定规范 host、期限、连接数和总字节；revoke 在 Push Runner 结束时立即失效。
  * 3. CONNECT 同时核对 Basic token、精确 host 和 443 端口，再解析全部 DNS 地址并拒绝非公网类别。
  * 4. relay 连接到已核验的具体 IP，TLS 仍由 Git 对原 host 完成；重定向到其它 host 会产生新的 CONNECT 并被拒绝。
- * 5. 日志只记录 lease ID/host 摘要、计数和结果，不记录 token、URL path、凭据或传输内容。
+ * 5. 任一 socket 结束都会关闭对端，并在两端终态后才移除 lease 账本；revoke 与期限始终能找到仍存活的连接。
+ * 6. 日志只记录 lease ID/host 摘要、计数和结果，不记录 token、URL path、凭据或传输内容。
  *
  * 这不是内容防泄漏边界：获准 host 可接收仓库内容，Push Runner 内的 Git 配置和子进程也可使用该 lease。
  */
@@ -28,6 +29,11 @@ interface RelayLease {
   connections: number;
   revoked: boolean;
   sockets: Set<{ client: Duplex; upstream: net.Socket }>;
+}
+
+export interface RelaySocketPair {
+  client: Duplex;
+  upstream: net.Socket;
 }
 
 export interface IssuedRelayLease {
@@ -118,8 +124,51 @@ function proxyToken(header: string | undefined) {
   }
 }
 
+/** 将 tunnel 两端作为一个清理单元；任一端退出立即销毁另一端，两端 close 后才释放账本。 */
+export function bindRelaySocketPair(
+  pair: RelaySocketPair,
+  lifetimeMs: number,
+  finished: () => void,
+) {
+  let clientClosed = false;
+  let upstreamClosed = false;
+  const lifetime = setTimeout(
+    () => {
+      pair.client.destroy();
+      pair.upstream.destroy();
+    },
+    Math.max(1, lifetimeMs),
+  );
+  const finish = () => {
+    if (!clientClosed || !upstreamClosed) {
+      return;
+    }
+
+    clearTimeout(lifetime);
+    finished();
+  };
+
+  pair.client.once("close", () => {
+    clientClosed = true;
+    if (!pair.upstream.destroyed) {
+      pair.upstream.destroy();
+    }
+
+    finish();
+  });
+  pair.upstream.once("close", () => {
+    upstreamClosed = true;
+    if (!pair.client.destroyed) {
+      pair.client.destroy();
+    }
+
+    finish();
+  });
+}
+
 export class SandboxHttpsRelay {
   private server?: http.Server;
+  private startPromise?: Promise<void>;
   private leases = new Map<string, RelayLease>();
   private actualPort?: number;
 
@@ -134,6 +183,19 @@ export class SandboxHttpsRelay {
       return;
     }
 
+    if (this.startPromise) {
+      return this.startPromise;
+    }
+
+    this.startPromise = this.listen();
+    try {
+      await this.startPromise;
+    } finally {
+      this.startPromise = undefined;
+    }
+  }
+
+  private async listen() {
     const server = http.createServer((_request, response) => {
       response.writeHead(405, { Connection: "close" });
       response.end();
@@ -203,7 +265,6 @@ export class SandboxHttpsRelay {
         pair.upstream.destroy();
       }
 
-      current.sockets.clear();
       this.leases.delete(lease.token);
       this.log?.info({
         event: "sandbox.proxy_lease.revoked",
@@ -305,19 +366,11 @@ export class SandboxHttpsRelay {
       port: 443,
       family: chosen.family,
     });
-    const pair = { client, upstream };
+    const pair: RelaySocketPair = { client, upstream };
     lease.sockets.add(pair);
-    const lifetime = setTimeout(
-      () => {
-        client.destroy();
-        upstream.destroy();
-      },
-      Math.max(1, lease.expiresAt - this.now()),
+    bindRelaySocketPair(pair, lease.expiresAt - this.now(), () =>
+      lease.sockets.delete(pair),
     );
-    const forget = () => {
-      clearTimeout(lifetime);
-      lease.sockets.delete(pair);
-    };
 
     const account = (chunk: Buffer) => {
       lease.remainingBytes -= chunk.length;
@@ -343,8 +396,6 @@ export class SandboxHttpsRelay {
       upstream.pipe(client);
     });
     upstream.once("error", () => this.reject(client, "502 Bad Gateway"));
-    upstream.once("close", forget);
-    client.once("close", forget);
     client.once("error", () => upstream.destroy());
     this.log?.info({
       event: "broker.proxy_connect.accepted",

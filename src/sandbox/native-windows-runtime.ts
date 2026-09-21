@@ -11,7 +11,7 @@
  * 7. drainGeneration 关闭 relay、终止该账户全部进程并按持久 journal 撤销 ACL，供在线 quarantine 与重启恢复共用。
  * 8. 临时 HOME/TEMP 只在原生确认撤销后删除；日志与错误不包含命令、路径、SID、端口、密码或工具输出。
  *
- * 该实现当前承载 run_command 和全部 Git 子进程；文件读写仍由 Broker 的固定 schema 与快照编辑器执行。
+ * 该实现既启动常驻 Agent Runtime，也启动独立 Push/Capability Runner；常驻 Runtime 承载完整 agent loop、文件工具、普通命令和非 push Git，Broker 保留模型、session、审批与恢复账本。
  */
 
 import { createHash } from "node:crypto";
@@ -45,9 +45,14 @@ export function classifySupervisorClose(input: {
   aborted: boolean;
   timedOut: boolean;
   cleanupFailure: boolean;
+  cleanupProof: boolean;
   exitCode: number | null;
 }) {
-  if (input.cleanupFailure || input.exitCode === CLEANUP_FAILURE_EXIT_CODE) {
+  if (
+    input.cleanupFailure ||
+    input.exitCode === CLEANUP_FAILURE_EXIT_CODE ||
+    !input.cleanupProof
+  ) {
     return "cleanup_unknown" as const;
   }
 
@@ -704,6 +709,8 @@ export class NativeWindowsSandboxRuntime implements SandboxRuntime {
     let runtimePid: number | undefined;
     let creationTime100ns: string | undefined;
     let cleanupFailure = false;
+    let rollbackReported = false;
+    let completionReported = false;
     let transportFailure = false;
     let childClosed = false;
     let settled = false;
@@ -732,6 +739,12 @@ export class NativeWindowsSandboxRuntime implements SandboxRuntime {
       control = (control + chunk).slice(-16_384);
       cleanupFailure ||= control.includes(
         "CODEATELIER_SUPERVISOR_ERROR category=cleanup",
+      );
+      rollbackReported ||= control.includes(
+        "CODEATELIER_SUPERVISOR_ROLLBACK_COMPLETE",
+      );
+      completionReported ||= control.includes(
+        "CODEATELIER_SUPERVISOR_COMPLETE",
       );
       const match =
         /CODEATELIER_RUNTIME_STARTED pid=(\d+) created100ns=(\d+)/.exec(
@@ -768,7 +781,9 @@ export class NativeWindowsSandboxRuntime implements SandboxRuntime {
       if (!settled) {
         settled = true;
         rejectStarted(
-          cleanupFailure || exitCode === CLEANUP_FAILURE_EXIT_CODE
+          cleanupFailure ||
+            exitCode === CLEANUP_FAILURE_EXIT_CODE ||
+            !rollbackReported
             ? new NativeWindowsSandboxCleanupError(
                 "Agent Runtime 启动前 ACL 或 Job 清理结果未知。",
               )
@@ -812,7 +827,8 @@ export class NativeWindowsSandboxRuntime implements SandboxRuntime {
 
           return cleanupFailure ||
             transportFailure ||
-            exitCode === CLEANUP_FAILURE_EXIT_CODE
+            exitCode === CLEANUP_FAILURE_EXIT_CODE ||
+            !completionReported
             ? "orphaned"
             : "clean";
         })();
@@ -951,6 +967,8 @@ export class NativeWindowsSandboxRuntime implements SandboxRuntime {
       let finished = false;
       let timedOut = false;
       let cleanupFailure = false;
+      let rollbackReported = false;
+      let completionReported = false;
       let accessProvisioned = false;
       const sanitizer = new TerminalTextSanitizer();
 
@@ -1013,6 +1031,12 @@ export class NativeWindowsSandboxRuntime implements SandboxRuntime {
         cleanupFailure ||= control.includes(
           "CODEATELIER_SUPERVISOR_ERROR category=cleanup",
         );
+        rollbackReported ||= control.includes(
+          "CODEATELIER_SUPERVISOR_ROLLBACK_COMPLETE",
+        );
+        completionReported ||= control.includes(
+          "CODEATELIER_SUPERVISOR_COMPLETE",
+        );
       });
       child.once("error", (error) => {
         if (finished) {
@@ -1042,6 +1066,9 @@ export class NativeWindowsSandboxRuntime implements SandboxRuntime {
           aborted: command.signal.aborted,
           timedOut,
           cleanupFailure,
+          cleanupProof: accessProvisioned
+            ? completionReported
+            : rollbackReported || completionReported,
           exitCode,
         });
         if (completion === "cleanup_unknown") {

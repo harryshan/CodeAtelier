@@ -271,8 +271,8 @@ export async function discoverGitConfigGraph(
   const maximumDepth = options.maxDepth ?? DEFAULT_MAX_DEPTH;
   const maximumBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
   const entryInputs = options.entryFiles ?? [
-    path.join(options.profileDirectory, ".gitconfig"),
     path.join(options.profileDirectory, ".config", "git", "config"),
+    path.join(options.profileDirectory, ".gitconfig"),
   ];
   const gitDirectory = path
     .join(await realpath(options.workspaceRoot), ".git")

@@ -9,8 +9,8 @@
  * 3. resolveDirectPath 供 Runtime 适配器和集成测试在任何实际访问前重新核对候选路径，拒绝工作区外
  *    和解析链接后的逃逸；它有意不承诺祖先目录操作或硬链接等别名防护。
  *
- * 错误消息不包含用户输入或宿主绝对路径，以免被工具历史、任务事件或 trace 意外暴露。当前没有平台
- * Runtime 注册，因此此模块只建立 S1 策略契约，不能独立允许命令在宿主执行。
+ * 错误消息不包含用户输入或宿主绝对路径，以免被工具历史、任务事件或 trace 意外暴露。现行 Windows
+ * Runtime 把本描述符作为 preflight 输入，再以 AccessManifest/原生对象身份落实权限；本类本身不构成隔离。
  */
 
 import { realpath, stat } from "node:fs/promises";

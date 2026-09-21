@@ -28,7 +28,11 @@ export interface ContextStore {
     sessionId: string,
   ): Promise<ContextSnapshot | undefined>;
   eventsAsync(sessionId: string): Promise<unknown[]>;
-  compactContextAsync(snapshot: ContextSnapshot, input: any[]): Promise<void>;
+  compactContextAsync(
+    sessionId: string,
+    snapshot: ContextSnapshot,
+    input: any[],
+  ): Promise<void>;
   contextSnapshotAsync(
     sessionId: string,
     snapshotId: string,
@@ -282,6 +286,7 @@ export class ContextManager {
       );
       options.signal.throwIfAborted();
       await options.store.compactContextAsync(
+        options.sessionId,
         fallback.snapshot,
         fallback.input,
       );
@@ -421,6 +426,7 @@ export class ContextManager {
       );
       options.signal.throwIfAborted();
       await options.store.compactContextAsync(
+        options.sessionId,
         finalized.snapshot,
         finalized.input,
       );

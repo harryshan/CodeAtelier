@@ -55,13 +55,18 @@ function restoreHistory(prefix: any[], snapshots: ContextSnapshot[]) {
   for (const ancestor of snapshots) {
     for (const projection of ancestor.projections ?? []) {
       const original = ancestor.source[projection.index];
+      if (!original || typeof original !== "object") {
+        continue;
+      }
+
+      const originalItem = original as Record<string, unknown>;
       for (const item of expanded) {
         if (
           item.type === "function_call_output" &&
-          item.call_id === original?.call_id &&
+          item.call_id === originalItem.call_id &&
           item.output === projection.output
         ) {
-          item.output = original.output;
+          item.output = originalItem.output;
         }
       }
     }

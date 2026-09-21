@@ -1,6 +1,6 @@
 # 旧 WSL2 Sandbox 实施档案（已被专用用户目标架构替代）
 
-状态：本文保留当前仓库中 WSL2 bubblewrap `inspect` Runtime 的已实现行为、本机夹具证据和历史阶段记录，供迁移与事实核对使用；它不再是未来 Sandbox 的权威设计。Windows 后续目标架构以 [Windows 专用用户 Sandbox Runtime 与 Broker 架构](windows-integrity-sandbox.md) 为准：单一低权限本地账户通过显式 ACL 获得任务文件访问，以每实例 restricted token/capability/Job 运行全部 Git 和命令；Broker 不执行 Git，只代理模型、存储、外部写入与受限网络等宿主能力。按该账户 SID 的持久 WFP fence 阻止直接出站；Sandbox 沿用 1～4 个不同工作区并发和同工作区串行，接受同账户活动根跨任务可读、但不可越权写的边界。该目标尚未实现或验证，本文记录不构成专用用户 Sandbox 能力的证据。
+状态：本文只保留仓库中旧 WSL2 bubblewrap `inspect` Runtime 的历史行为、本机夹具证据和阶段记录，供迁移与事实核对使用；下文所有“当前”均指当时的 WSL2 阶段，不描述现在的默认产品链。现行 Windows 目标与已接入代码以 [Windows 专用用户 Sandbox Runtime 与 Broker 架构](windows-integrity-sandbox.md) 为准；该实现仍未完成固定账户提升环境端到端验收，本文记录也不构成专用用户 Sandbox 能力证据。
 
 ## 1. 目标、开关与兼容性
 
@@ -100,7 +100,7 @@ Broker 是宿主文件、受限 Git、网络例外和进程管理的可信入口
 
 等级以行为验收定义，不按组件名称推断。可先完成 Linux 参考后端；Windows、macOS 通过各自真实平台测试后才启用相同等级。无法实施工作区外隔离、受保护路径排除、进程树终止或默认网络拒绝时，相关 profile 不可宣称可用；若走宿主 fallback，必须明确显示实际未隔离状态。
 
-当前 Windows 仅注册 WSL2 的 `wsl2-bubblewrap-inspect` 参考后端。它在每次命令前使用 `bwrap` 自检 user/PID/IPC/UTS/network namespace、只读工作区 `/opt`、私有 `/tmp`、`/home`、`/root`、`/run`、`/mnt` 与 `/sys`、新建 `/proc` 和最小 `/dev`，并以 `--clearenv` 清空命令环境。真实 `.git` 遮蔽为私有空目录，现有 `.env`/`.env.*` 映射为空设备：命令不能读取原始内容或写入原路径，但父目录仍可列出名称。WSL、`bwrap`、路径转换或任一自检在命令启动前失败时，Broker 将本任务固定为 `host-process-fallback`，改用原 Windows shell；执行开始后的失败仍返回 `unknown` 且不重放。它不是 Windows 原生 Runtime，尚无 cgroup/rlimit 资源限制、受控网络例外、外部文件或完整受保护路径别名防护。
+该历史阶段的 Windows 代码仅注册 WSL2 `wsl2-bubblewrap-inspect` 参考后端。它在每次命令前使用 `bwrap` 自检 user/PID/IPC/UTS/network namespace、只读工作区 `/opt`、私有 `/tmp`、`/home`、`/root`、`/run`、`/mnt` 与 `/sys`、新建 `/proc` 和最小 `/dev`，并以 `--clearenv` 清空命令环境。真实 `.git` 遮蔽为私有空目录，现有 `.env`/`.env.*` 映射为空设备。此段只记录旧实现，不代表现行默认 Windows launcher、文件边界或 Git 路径。
 
 ## 4. 网络、依赖和 Git
 

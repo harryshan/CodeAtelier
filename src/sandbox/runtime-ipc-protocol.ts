@@ -11,6 +11,7 @@
 
 import { z } from "zod";
 import { capabilityCommandRequestSchema } from "./capability-request.js";
+import { contextSnapshotSchema } from "../context/types.js";
 
 export const RUNTIME_IPC_PROTOCOL_VERSION = 1;
 export const MAX_RUNTIME_IPC_FRAME_BYTES = 8 * 1024 * 1024;
@@ -256,7 +257,10 @@ export const runtimeRequestSchema = z.discriminatedUnion("operation", [
       ...requestBase,
       operation: z.literal("session_compact"),
       body: z
-        .object({ snapshot: z.unknown(), input: z.array(z.unknown()) })
+        .object({
+          snapshot: contextSnapshotSchema,
+          input: z.array(z.unknown()).max(100_000),
+        })
         .strict(),
     })
     .strict(),

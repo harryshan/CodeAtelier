@@ -287,7 +287,7 @@ it("restores recorded tool results and marks unknown calls after a database rest
   store.event(session.id, task.id, "user", { text: "continue work" });
   store.saveContext(session.id, [
     { role: "user", content: "continue work" },
-    ...["known", "unknown"].map((call_id) => ({
+    ...["known", "unknown", "runtime-command"].map((call_id) => ({
       type: "function_call",
       call_id,
       name: "run_command",
@@ -299,9 +299,9 @@ it("restores recorded tool results and marks unknown calls after a database rest
     result: { exitCode: 0, output: "already done" },
   });
   store.event(session.id, task.id, "execution_instance", {
-    callId: "unknown",
+    toolCallId: "unknown",
     executionInstanceId: "execution-before-crash",
-    kind: "agent-runtime",
+    kind: "capability-runner",
     mode: "windows-sandbox-user",
     state: "unknown",
     pid: 4242,
@@ -309,6 +309,22 @@ it("restores recorded tool results and marks unknown calls after a database rest
     sandboxRequested: true,
     sandboxApplied: true,
     sideEffectsPossible: true,
+  });
+  store.event(session.id, task.id, "execution_instance", {
+    executionInstanceId: "parent-runtime",
+    kind: "agent-runtime",
+    mode: "windows-sandbox-user",
+    state: "unknown",
+    pid: 4343,
+    pidKind: "runtime",
+    sandboxRequested: true,
+    sandboxApplied: true,
+    sideEffectsPossible: true,
+  });
+  store.event(session.id, task.id, "sandboxed_tool_process", {
+    callId: "runtime-command",
+    pid: 4444,
+    parentExecutionInstanceId: "parent-runtime",
   });
   store.close();
   store = new Store(file);
@@ -348,6 +364,20 @@ it("restores recorded tool results and marks unknown calls after a database rest
       },
     });
     expect(interruptedOutput.message).toContain("不可自动重放");
+    const runtimeOutput = JSON.parse(
+      inputs.find(
+        (i) =>
+          i.call_id === "runtime-command" && i.type === "function_call_output",
+      ).output,
+    );
+    expect(runtimeOutput).toMatchObject({
+      replayAllowed: false,
+      executionInstance: {
+        executionInstanceId: "parent-runtime",
+        kind: "agent-runtime",
+        pid: 4343,
+      },
+    });
     expect(
       store.events(session.id).filter((e) => e.type === "tool_start"),
     ).toHaveLength(0);

@@ -868,7 +868,25 @@ export class Engine {
           readContextSnapshot: (_runtime, snapshotId) =>
             this.store.contextSnapshotAsync(task.sessionId, snapshotId),
           compactContext: async (_runtime, snapshot, input) => {
-            await this.store.compactContextAsync(snapshot as any, input);
+            if (snapshot.sessionId !== task.sessionId) {
+              throw new Error("Agent Runtime 压缩快照不属于认证会话。");
+            }
+
+            if (
+              snapshot.parentId !== null &&
+              !(await this.store.contextSnapshotAsync(
+                task.sessionId,
+                snapshot.parentId,
+              ))
+            ) {
+              throw new Error("Agent Runtime 压缩快照的父快照不属于认证会话。");
+            }
+
+            await this.store.compactContextAsync(
+              task.sessionId,
+              snapshot,
+              input,
+            );
           },
           runtimeCompleted: async (_runtime, result) => {
             reported = result;
@@ -1246,6 +1264,7 @@ export class Engine {
           networkHost,
           readOnlyRoots,
           readWriteRoots,
+          reviewedAccessManifest: reviewedManifest,
           command: shell.command,
           args: [...shell.args, request.command],
           cwd: workspace,
@@ -1442,7 +1461,7 @@ export class Engine {
             throw error;
           }
 
-          emit("sandbox_warning", {
+          emit("sandbox_fallback", {
             reason: error.message,
             mode: "host-process-fallback",
           });

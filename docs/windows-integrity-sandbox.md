@@ -235,7 +235,7 @@ pnpm sandbox:native:build
 pnpm sandbox:runtime:build
 # 若当前 PATH 中不是 Node.js 24，先指定要复制的可信 Node 24 executable
 $env:CODEATELIER_SANDBOX_RUNTIME_NODE = "C:\Program Files\nodejs\node.exe"
-# 以下命令触发 UAC 后在提升的 PowerShell 中运行
+# 以下命令不会自行触发 UAC；先另开“以管理员身份运行”的 PowerShell，进入仓库目录后执行
 pnpm sandbox:install
 pnpm sandbox:verify
 pnpm sandbox:uninstall

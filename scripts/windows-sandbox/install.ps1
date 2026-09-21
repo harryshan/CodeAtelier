@@ -326,7 +326,12 @@ function Test-Installation {
     if ($LASTEXITCODE -ne 0 -or $InstalledNodeVersion -notmatch '^v24\.') {
         throw "受保护 Agent Runtime Node 不是 Node.js 24。"
     }
-    Invoke-NetworkManager -Arguments @("--wfp-persistent-verify")
+    Invoke-NetworkManager -Arguments @(
+        "--wfp-persistent-verify",
+        $State.accountName,
+        $State.relayPortV4,
+        $State.relayPortV6
+    )
     Invoke-Supervisor -Arguments @("--self-check", $StatePath, $NetworkManager)
     Write-Host "SANDBOX_INSTALL_VERIFY PASS version=2"
 }

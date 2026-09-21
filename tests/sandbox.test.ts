@@ -7,15 +7,16 @@
  * 2. Broker 关闭时调用传入的既有宿主执行器，并记录可审计但不含命令内容的生命周期阶段。
  * 3. S1 WorkspaceView 以真实临时目录验证整个工作区（含 .git/.env）可访问，同时拒绝链接逃逸。
  * 4. 启用而没有 runtime 或自检失败时明确回退宿主，同一任务保持 fallback；runtime 执行已开始后的失败不重放。
- * 5. 同任务 Agent Runtime 可在阻塞期间重叠一个独立 Push Runner，且 Runner 启动失败不回退宿主 Git。
- * 6. 测试 runtime 必须声明并接收工作区保护契约；Windows inspect 路径只交给 WSL 固定 POSIX shell 形状。
+ * 5. 共享 grant acquire 不越过进行中的 native revoke；审批时对象身份变化会在 Runner provision 前拒绝。
+ * 6. 同任务 Agent Runtime 可在阻塞期间重叠一个独立 Push Runner，且 Runner 启动失败不回退宿主 Git。
+ * 7. 测试 runtime 必须声明并接收工作区保护契约；Windows inspect 路径只交给 WSL 固定 POSIX shell 形状。
  *
  * 用例不启动真实 shell、不访问网络或用户项目。它证明策略、请求形状与安全失败；实际 WSL2 bubblewrap
  * 隔离只能由平台夹具和验证记录证明，不能推广为 Windows 原生或其他平台的 OS 级隔离。
  */
 
 import { afterEach, expect, it, vi } from "vitest";
-import { mkdir, symlink } from "node:fs/promises";
+import { mkdir, rename, symlink } from "node:fs/promises";
 import path from "node:path";
 import { Config } from "../src/config/config.js";
 import { SandboxBroker } from "../src/sandbox/broker.js";
@@ -29,6 +30,7 @@ import {
 import { WorkspaceView } from "../src/sandbox/workspace-view.js";
 import { WslInspectRuntime } from "../src/sandbox/wsl-inspect-runtime.js";
 import { commandShell } from "../src/tools/command-shell.js";
+import { buildAccessManifest } from "../src/sandbox/access-manifest.js";
 import type {
   SandboxCommand,
   SandboxRuntime,
@@ -513,6 +515,126 @@ it("does not delete the lease ledger before native ACL revocation succeeds", asy
     quarantineCategory: "acl_cleanup",
   });
   expect(drainGeneration).toHaveBeenCalledOnce();
+});
+
+it("does not acquire a shared grant while its last native revoke is pending", async () => {
+  const firstRoot = await temp();
+  const secondRoot = await temp();
+  const sharedRoot = await temp();
+  let finishRevoke!: () => void;
+  const revokeBlocked = new Promise<void>((resolve) => {
+    finishRevoke = resolve;
+  });
+  const executeAccess: any[] = [];
+  const execute = vi.fn(async (runtimeCommand, _workspace, access) => {
+    executeAccess.push(access);
+    runtimeCommand.onAccessProvisioned?.();
+
+    return { output: "", exitCode: 0, truncated: false };
+  });
+  const revokeAccess = vi
+    .fn()
+    .mockImplementationOnce(async () => revokeBlocked)
+    .mockImplementation(async () => undefined);
+  const runtime: SandboxRuntime = {
+    selfCheck: vi.fn(async () => ({
+      level: "windows-sandbox-user-v1:test",
+      workspaceProtection: "direct-path" as const,
+      accountGenerationDigest: "9".repeat(64),
+    })),
+    prepareAccess: vi.fn(async () => ({
+      readOnlyRoots: [sharedRoot],
+      readWriteRoots: [],
+      gitConfigFiles: [],
+      cleanup: vi.fn(async () => {}),
+    })),
+    execute,
+    revokeAccess,
+    drainGeneration: vi.fn(async () => {}),
+  };
+  const broker = new SandboxBroker(
+    sandboxConfiguration({ CODEATELIER_SANDBOX_ENABLED: "true" }, "win32"),
+    runtime,
+  );
+  const first = broker.executeCommand(
+    {
+      ...command(),
+      taskId: "task-a",
+      executionInstanceId: "a",
+      cwd: firstRoot,
+    },
+    vi.fn(),
+    () => {},
+  );
+  await vi.waitFor(() => expect(revokeAccess).toHaveBeenCalledTimes(1));
+  const second = broker.executeCommand(
+    {
+      ...command(),
+      taskId: "task-b",
+      executionInstanceId: "b",
+      cwd: secondRoot,
+    },
+    vi.fn(),
+    () => {},
+  );
+
+  await Promise.resolve();
+  expect(execute).toHaveBeenCalledTimes(1);
+  finishRevoke();
+  await Promise.all([first, second]);
+  expect(executeAccess[1].installObjectIdentityDigests).toHaveLength(2);
+});
+
+it("rejects a capability root replaced after approval", async () => {
+  const workspace = await temp();
+  const external = await temp();
+  const reviewed = await buildAccessManifest({
+    workspaceRoot: workspace,
+    readOnlyRoots: [external],
+  });
+  const moved = `${external}-moved`;
+  const execute = vi.fn();
+  const runtime: SandboxRuntime = {
+    selfCheck: vi.fn(async () => ({
+      level: "windows-sandbox-user-v1:test",
+      workspaceProtection: "direct-path" as const,
+      accountGenerationDigest: "8".repeat(64),
+    })),
+    prepareAccess: vi.fn(async () => {
+      await rename(external, moved);
+      await mkdir(external);
+
+      return {
+        readOnlyRoots: [external],
+        readWriteRoots: [],
+        gitConfigFiles: [],
+        cleanup: vi.fn(async () => {}),
+      };
+    }),
+    execute,
+    revokeAccess: vi.fn(async () => {}),
+    drainGeneration: vi.fn(async () => {}),
+  };
+  const broker = new SandboxBroker(
+    sandboxConfiguration({ CODEATELIER_SANDBOX_ENABLED: "true" }, "win32"),
+    runtime,
+  );
+
+  await expect(
+    broker.executeCommand(
+      {
+        ...command(),
+        cwd: workspace,
+        kind: "capability-runner",
+        readOnlyRoots: [external],
+        reviewedAccessManifest: reviewed,
+      },
+      vi.fn(),
+      () => {},
+      { allowHostFallback: false },
+    ),
+  ).rejects.toThrow("启动前检查失败");
+  expect(execute).not.toHaveBeenCalled();
 });
 
 it("waits for the first native ACL provision before starting a shared-root lease", async () => {

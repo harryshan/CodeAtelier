@@ -76,6 +76,8 @@ struct InstallationState {
   std::wstring generation_id;
   std::wstring protected_password;
   std::wstring installed_by_sid;
+  uint16_t relay_port_v4 = 0;
+  uint16_t relay_port_v6 = 0;
   std::wstring runtime_node_sha256;
   std::wstring runtime_entry_sha256;
   std::wstring runtime_worker_sha256;
@@ -392,6 +394,24 @@ bool ReadInstallationState(const std::wstring& state_path,
   state->generation_id = values[L"generationId"];
   state->protected_password = values[L"protectedPassword"];
   state->installed_by_sid = values[L"installedBySid"];
+  if (state->version == 2) {
+    wchar_t* port_v4_end = nullptr;
+    wchar_t* port_v6_end = nullptr;
+    unsigned long relay_port_v4 =
+        std::wcstoul(values[L"relayPortV4"].c_str(), &port_v4_end, 10);
+    unsigned long relay_port_v6 =
+        std::wcstoul(values[L"relayPortV6"].c_str(), &port_v6_end, 10);
+    if (port_v4_end == values[L"relayPortV4"].c_str() ||
+        *port_v4_end != L'\0' ||
+        port_v6_end == values[L"relayPortV6"].c_str() ||
+        *port_v6_end != L'\0' || relay_port_v4 < 1024 ||
+        relay_port_v4 > 65535 || relay_port_v6 < 1024 ||
+        relay_port_v6 > 65535) {
+      return false;
+    }
+    state->relay_port_v4 = static_cast<uint16_t>(relay_port_v4);
+    state->relay_port_v6 = static_cast<uint16_t>(relay_port_v6);
+  }
   state->runtime_node_sha256 = values[L"runtimeNodeSha256"];
   state->runtime_entry_sha256 = values[L"runtimeEntrySha256"];
   state->runtime_worker_sha256 = values[L"runtimeWorkerSha256"];
@@ -682,7 +702,11 @@ bool VerifyInstallation(const InstallationState& state,
   logon_token.reset(raw_token);
   return (!require_account_rights || AccountRightsMatch(account_sid.data())) &&
          (!require_wfp ||
-          RunFixedProcess(network_manager, L"--wfp-persistent-verify"));
+          RunFixedProcess(
+              network_manager,
+              L"--wfp-persistent-verify " + QuoteArgument(state.account_name) +
+                  L" " + std::to_wstring(state.relay_port_v4) + L" " +
+                  std::to_wstring(state.relay_port_v6)));
 }
 
 class ObjectGrant {
@@ -1506,8 +1530,12 @@ void StopAskpass(const std::wstring& pipe_name,
     return;
   }
   stop->store(true);
+  // 唤醒尚未连接的 ConnectNamedPipe；CancelSynchronousIo 同时打断已经连接但
+  // 不发送完整请求或不读取响应的客户端所造成的 ReadFile/FlushFileBuffers 阻塞。
+  CancelSynchronousIo(thread->native_handle());
   UniqueHandle wake(CreateFileW(pipe_name.c_str(), GENERIC_READ | GENERIC_WRITE,
                                 0, nullptr, OPEN_EXISTING, 0, nullptr));
+  CancelSynchronousIo(thread->native_handle());
   thread->join();
 }
 
@@ -1928,29 +1956,34 @@ int RunProductSupervisor(const std::wstring& state_path,
     }
     manifest_grants.push_back(std::move(grant));
   }
-  if (!manifest_valid || !working_directory_granted ||
-      !private_directory_granted || !git_global_config_granted) {
-    for (ObjectGrant& grant : manifest_grants) {
-      grant.RevokeAll();
-    }
-    for (const ProductRoot& root : journaled_roots) {
-      RemoveGrantJournal(state_path, root);
-    }
-    SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
-    std::wcerr << L"CODEATELIER_SUPERVISOR_ERROR category=manifest\n";
-    return kSelfCheckFailureExitCode;
-  }
-
   auto revoke_failed_launch = [&]() {
     bool clean = true;
     for (ObjectGrant& grant : manifest_grants) {
       clean = grant.RevokeAll() && clean;
     }
-    for (const ProductRoot& root : journaled_roots) {
-      clean = RemoveGrantJournal(state_path, root) && clean;
+    // journal 是崩溃恢复定位原对象的最后证据；任何 ACE 撤销失败时必须完整保留。
+    if (clean) {
+      for (const ProductRoot& root : journaled_roots) {
+        clean = RemoveGrantJournal(state_path, root) && clean;
+      }
     }
     return clean;
   };
+  auto fail_launch = [&](DWORD requested_exit_code) {
+    bool clean = revoke_failed_launch();
+    if (!clean) {
+      std::wcerr << L"CODEATELIER_SUPERVISOR_ERROR category=cleanup\n";
+      return static_cast<int>(kCleanupFailureExitCode);
+    }
+    std::wcerr << L"CODEATELIER_SUPERVISOR_ROLLBACK_COMPLETE\n";
+    return static_cast<int>(requested_exit_code);
+  };
+  if (!manifest_valid || !working_directory_granted ||
+      !private_directory_granted || !git_global_config_granted) {
+    SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
+    std::wcerr << L"CODEATELIER_SUPERVISOR_ERROR category=manifest\n";
+    return fail_launch(kSelfCheckFailureExitCode);
+  }
   auto revoke_instance = [&]() {
     bool clean = true;
     for (ObjectGrant& grant : manifest_grants) {
@@ -1964,9 +1997,8 @@ int RunProductSupervisor(const std::wstring& state_path,
   std::wstring pipe_name = MakeProductPipeName();
   if (pipe_name.empty() ||
       !BuildPipeSecurity(account_sid.data(), &pipe_security, &pipe_descriptor)) {
-    revoke_failed_launch();
     SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
-    return kSelfCheckFailureExitCode;
+    return fail_launch(kSelfCheckFailureExitCode);
   }
   UniqueHandle pipe(CreateNamedPipeW(
       pipe_name.c_str(), PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE,
@@ -1974,9 +2006,8 @@ int RunProductSupervisor(const std::wstring& state_path,
           PIPE_REJECT_REMOTE_CLIENTS,
       1, 64 * 1024, 64 * 1024, 5000, &pipe_security));
   if (!pipe) {
-    revoke_failed_launch();
     SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
-    return kSelfCheckFailureExitCode;
+    return fail_launch(kSelfCheckFailureExitCode);
   }
 
   std::wstring runtime_pipe_name;
@@ -1984,9 +2015,8 @@ int RunProductSupervisor(const std::wstring& state_path,
   if (agent_runtime) {
     runtime_pipe_name = MakeAgentRuntimePipeName();
     if (runtime_pipe_name.empty()) {
-      revoke_failed_launch();
       SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
-      return kSelfCheckFailureExitCode;
+      return fail_launch(kSelfCheckFailureExitCode);
     }
     runtime_pipe.reset(CreateNamedPipeW(
         runtime_pipe_name.c_str(),
@@ -1995,9 +2025,8 @@ int RunProductSupervisor(const std::wstring& state_path,
             PIPE_REJECT_REMOTE_CLIENTS,
         1, 1024 * 1024, 1024 * 1024, 5000, &pipe_security));
     if (!runtime_pipe) {
-      revoke_failed_launch();
       SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
-      return kSelfCheckFailureExitCode;
+      return fail_launch(kSelfCheckFailureExitCode);
     }
     request.arguments = {state.runtime_entry_path, runtime_pipe_name};
     // 固定 Node/entry 从受保护目录启动，并以逐租约私有目录作为初始 CWD；
@@ -2014,9 +2043,8 @@ int RunProductSupervisor(const std::wstring& state_path,
                            &job) ||
       !CreatePrivateDesktop(account_sid.data(), execution_sid.get(),
                             capability_sid.get(), &desktop_name, &desktop)) {
-    revoke_failed_launch();
     SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
-    return kSelfCheckFailureExitCode;
+    return fail_launch(kSelfCheckFailureExitCode);
   }
 
   auto askpass_stop = std::make_shared<std::atomic_bool>(false);
@@ -2025,9 +2053,8 @@ int RunProductSupervisor(const std::wstring& state_path,
   std::thread askpass_thread;
   const bool environment_proxy = request.askpass_pipe == L"environment";
   if (!request.askpass_pipe.empty() && !environment_proxy) {
-    revoke_failed_launch();
     SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
-    return kProtocolFailureExitCode;
+    return fail_launch(kProtocolFailureExitCode);
   }
   request.askpass_pipe.clear();
   if (!request.proxy_url.empty()) {
@@ -2035,9 +2062,8 @@ int RunProductSupervisor(const std::wstring& state_path,
       LoadHostCredential(request.proxy_host, host_credential.get());
       request.askpass_pipe = MakeProductPipeName();
       if (request.askpass_pipe.empty()) {
-        revoke_failed_launch();
         SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
-        return kSelfCheckFailureExitCode;
+        return fail_launch(kSelfCheckFailureExitCode);
       }
       askpass_thread = std::thread(
           ServeAskpass, request.askpass_pipe, &pipe_security, job.get(),
@@ -2050,9 +2076,8 @@ int RunProductSupervisor(const std::wstring& state_path,
       }
       if (!askpass_ready->load()) {
         StopAskpass(request.askpass_pipe, askpass_stop, &askpass_thread);
-        revoke_failed_launch();
         SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
-        return kSelfCheckFailureExitCode;
+        return fail_launch(kSelfCheckFailureExitCode);
       }
       SecureZeroMemory(request.proxy_token.data(),
                        request.proxy_token.size() * sizeof(wchar_t));
@@ -2088,9 +2113,8 @@ int RunProductSupervisor(const std::wstring& state_path,
   if (!BuildSandboxEnvironment(state.account_name, password,
                                &sandbox_environment)) {
     stop_askpass();
-    revoke_failed_launch();
     SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
-    return kSelfCheckFailureExitCode;
+    return fail_launch(kSelfCheckFailureExitCode);
   }
   BOOL created = CreateProcessWithLogonW(
       state.account_name.c_str(), L".", password.c_str(), 0,
@@ -2102,20 +2126,30 @@ int RunProductSupervisor(const std::wstring& state_path,
   password.clear();
   if (!created) {
     stop_askpass();
-    revoke_failed_launch();
     std::wcerr << L"CODEATELIER_SUPERVISOR_ERROR category=launch\n";
-    return kSelfCheckFailureExitCode;
+    return fail_launch(kSelfCheckFailureExitCode);
   }
   UniqueHandle bootstrap_process(bootstrap.hProcess);
   UniqueHandle bootstrap_thread(bootstrap.hThread);
-  if (!AssignProcessToJobObject(job.get(), bootstrap_process.get()) ||
-      ResumeThread(bootstrap_thread.get()) == static_cast<DWORD>(-1) ||
-      !ConnectAndSendRequest(pipe.get(), bootstrap.dwProcessId, request)) {
-    TerminateJobObject(job.get(), kSelfCheckFailureExitCode);
-    WaitForSingleObject(bootstrap_process.get(), 5000);
+  bool assigned_to_job =
+      AssignProcessToJobObject(job.get(), bootstrap_process.get()) != FALSE;
+  bool bootstrap_ready =
+      assigned_to_job &&
+      ResumeThread(bootstrap_thread.get()) != static_cast<DWORD>(-1) &&
+      ConnectAndSendRequest(pipe.get(), bootstrap.dwProcessId, request);
+  if (!bootstrap_ready) {
+    bool terminated = assigned_to_job
+                          ? TerminateJobObject(job.get(),
+                                               kSelfCheckFailureExitCode) != FALSE
+                          : TerminateProcess(bootstrap_process.get(),
+                                             kSelfCheckFailureExitCode) != FALSE;
+    DWORD stopped = WaitForSingleObject(bootstrap_process.get(), 5000);
     stop_askpass();
-    bool clean = revoke_failed_launch();
-    return clean ? kSelfCheckFailureExitCode : kCleanupFailureExitCode;
+    if (!terminated || stopped != WAIT_OBJECT_0) {
+      std::wcerr << L"CODEATELIER_SUPERVISOR_ERROR category=cleanup\n";
+      return kCleanupFailureExitCode;
+    }
+    return fail_launch(kSelfCheckFailureExitCode);
   }
 
   if (agent_runtime) {
@@ -2127,15 +2161,23 @@ int RunProductSupervisor(const std::wstring& state_path,
         &proxy_result);
     if (!proxy_clean) {
       TerminateJobObject(job.get(), kProtocolFailureExitCode);
-      WaitForSingleObject(bootstrap_process.get(), 5000);
+      if (WaitForSingleObject(bootstrap_process.get(), 5000) != WAIT_OBJECT_0) {
+        stop_askpass();
+        std::wcerr << L"CODEATELIER_SUPERVISOR_ERROR category=cleanup\n";
+        return kCleanupFailureExitCode;
+      }
     }
     stop_askpass();
-    bool grants_clean = revoke_instance();
+    bool grants_clean = proxy_result.started ? revoke_instance()
+                                               : revoke_failed_launch();
     if (!grants_clean) {
       std::wcerr << L"CODEATELIER_SUPERVISOR_ERROR category=cleanup\n";
       return kCleanupFailureExitCode;
     }
     if (!proxy_clean) {
+      if (!proxy_result.started) {
+        std::wcerr << L"CODEATELIER_SUPERVISOR_ROLLBACK_COMPLETE\n";
+      }
       std::wcerr << L"CODEATELIER_SUPERVISOR_ERROR category=protocol\n";
       return kProtocolFailureExitCode;
     }
@@ -2160,7 +2202,11 @@ int RunProductSupervisor(const std::wstring& state_path,
       WaitForSingleObject(bootstrap_process.get(), request.timeout_ms + 10000);
   if (wait != WAIT_OBJECT_0) {
     TerminateJobObject(job.get(), 31);
-    WaitForSingleObject(bootstrap_process.get(), 5000);
+    if (WaitForSingleObject(bootstrap_process.get(), 5000) != WAIT_OBJECT_0) {
+      stop_askpass();
+      std::wcerr << L"CODEATELIER_SUPERVISOR_ERROR category=cleanup\n";
+      return kCleanupFailureExitCode;
+    }
   }
   DWORD exit_code = 1;
   GetExitCodeProcess(bootstrap_process.get(), &exit_code);

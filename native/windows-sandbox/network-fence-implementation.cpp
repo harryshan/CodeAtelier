@@ -1669,8 +1669,129 @@ bool OpenPersistentEngine(UniqueWfpEngine* engine) {
   return true;
 }
 
+const FWPM_FILTER_CONDITION0* FindCondition(const FWPM_FILTER0& filter,
+                                            const GUID& field_key) {
+  for (UINT32 index = 0; index < filter.numFilterConditions; ++index) {
+    if (IsEqualGUID(filter.filterCondition[index].fieldKey, field_key)) {
+      return &filter.filterCondition[index];
+    }
+  }
+  return nullptr;
+}
+
+bool DescriptorMatches(const FWP_BYTE_BLOB* actual,
+                       const FWP_BYTE_BLOB* expected) {
+  return actual != nullptr && expected != nullptr &&
+         actual->size == expected->size &&
+         std::memcmp(actual->data, expected->data, actual->size) == 0;
+}
+
+int ValidatePersistentFilter(const FWPM_FILTER0& filter,
+                             const FWP_BYTE_BLOB* expected_user,
+                             u_short allowed_v4_port,
+                             u_short allowed_v6_port) {
+  if (filter.displayData.name == nullptr || filter.providerKey == nullptr ||
+      !IsEqualGUID(*filter.providerKey, kPersistentProvider) ||
+      !IsEqualGUID(filter.subLayerKey, kPersistentSublayer) ||
+      (filter.flags & FWPM_FILTER_FLAG_PERSISTENT) == 0 ||
+      filter.weight.type != FWP_UINT8) {
+    return -1;
+  }
+  const FWPM_FILTER_CONDITION0* user =
+      FindCondition(filter, FWPM_CONDITION_ALE_USER_ID);
+  if (user == nullptr || user->matchType != FWP_MATCH_EQUAL ||
+      user->conditionValue.type != FWP_SECURITY_DESCRIPTOR_TYPE ||
+      !DescriptorMatches(user->conditionValue.sd, expected_user)) {
+    return -1;
+  }
+
+  std::wstring name(filter.displayData.name);
+  struct ExpectedFilter {
+    const wchar_t* name;
+    const GUID* layer;
+    FWP_ACTION_TYPE action;
+    UINT8 weight;
+    int index;
+  };
+  const std::array<ExpectedFilter, 8> expected = {{
+      {L"CodeAtelier persistent IPv4 loopback permit",
+       &FWPM_LAYER_ALE_AUTH_CONNECT_V4, FWP_ACTION_PERMIT, 15, 0},
+      {L"CodeAtelier persistent IPv4 block",
+       &FWPM_LAYER_ALE_AUTH_CONNECT_V4, FWP_ACTION_BLOCK, 14, 1},
+      {L"CodeAtelier persistent IPv6 loopback permit",
+       &FWPM_LAYER_ALE_AUTH_CONNECT_V6, FWP_ACTION_PERMIT, 15, 2},
+      {L"CodeAtelier persistent IPv6 block",
+       &FWPM_LAYER_ALE_AUTH_CONNECT_V6, FWP_ACTION_BLOCK, 14, 3},
+      {L"CodeAtelier persistent IPv4 listen", &FWPM_LAYER_ALE_AUTH_LISTEN_V4,
+       FWP_ACTION_BLOCK, 14, 4},
+      {L"CodeAtelier persistent IPv6 listen", &FWPM_LAYER_ALE_AUTH_LISTEN_V6,
+       FWP_ACTION_BLOCK, 14, 5},
+      {L"CodeAtelier persistent IPv4 raw",
+       &FWPM_LAYER_ALE_RESOURCE_ASSIGNMENT_V4, FWP_ACTION_BLOCK, 14, 6},
+      {L"CodeAtelier persistent IPv6 raw",
+       &FWPM_LAYER_ALE_RESOURCE_ASSIGNMENT_V6, FWP_ACTION_BLOCK, 14, 7},
+  }};
+  const ExpectedFilter* shape = nullptr;
+  for (const ExpectedFilter& candidate : expected) {
+    if (name == candidate.name) {
+      shape = &candidate;
+      break;
+    }
+  }
+  if (shape == nullptr || !IsEqualGUID(filter.layerKey, *shape->layer) ||
+      filter.action.type != shape->action ||
+      filter.weight.uint8 != shape->weight) {
+    return -1;
+  }
+
+  if (shape->index == 0 || shape->index == 2) {
+    const FWPM_FILTER_CONDITION0* port =
+        FindCondition(filter, FWPM_CONDITION_IP_REMOTE_PORT);
+    const FWPM_FILTER_CONDITION0* address =
+        FindCondition(filter, FWPM_CONDITION_IP_REMOTE_ADDRESS);
+    u_short expected_port = shape->index == 0 ? allowed_v4_port
+                                               : allowed_v6_port;
+    bool address_valid = false;
+    if (shape->index == 0) {
+      address_valid = address != nullptr &&
+                      address->conditionValue.type == FWP_UINT32 &&
+                      address->conditionValue.uint32 == 0x7f000001;
+    } else if (address != nullptr &&
+               address->conditionValue.type == FWP_BYTE_ARRAY16_TYPE &&
+               address->conditionValue.byteArray16 != nullptr) {
+      FWP_BYTE_ARRAY16 loopback{};
+      loopback.byteArray16[15] = 1;
+      address_valid = std::memcmp(address->conditionValue.byteArray16,
+                                  &loopback, sizeof(loopback)) == 0;
+    }
+    if (filter.numFilterConditions != 3 || port == nullptr ||
+        port->matchType != FWP_MATCH_EQUAL ||
+        port->conditionValue.type != FWP_UINT16 ||
+        port->conditionValue.uint16 != expected_port || !address_valid) {
+      return -1;
+    }
+  } else if (shape->index >= 6) {
+    const FWPM_FILTER_CONDITION0* flags =
+        FindCondition(filter, FWPM_CONDITION_FLAGS);
+    if (filter.numFilterConditions != 2 || flags == nullptr ||
+        flags->matchType != FWP_MATCH_FLAGS_ALL_SET ||
+        flags->conditionValue.type != FWP_UINT32 ||
+        flags->conditionValue.uint32 != FWP_CONDITION_FLAG_IS_RAW_ENDPOINT) {
+      return -1;
+    }
+  } else if (filter.numFilterConditions != 1) {
+    return -1;
+  }
+
+  return shape->index;
+}
+
 bool EnumeratePersistentFilters(HANDLE engine, std::vector<GUID>* filter_keys,
-                                bool* all_filters_valid = nullptr) {
+                                bool* all_filters_valid = nullptr,
+                                const FWP_BYTE_BLOB* expected_user = nullptr,
+                                u_short allowed_v4_port = 0,
+                                u_short allowed_v6_port = 0,
+                                UINT32* matched_filter_mask = nullptr) {
   HANDLE enum_handle = nullptr;
   // A null template is the documented wildcard. Zero-initialized layerKey and
   // actionMask fields are not wildcards, so a partially populated template can
@@ -1704,6 +1825,15 @@ bool EnumeratePersistentFilters(HANDLE engine, std::vector<GUID>* filter_keys,
       entries_valid = entries_valid &&
           (filter->flags & FWPM_FILTER_FLAG_PERSISTENT) != 0 &&
           IsEqualGUID(filter->subLayerKey, kPersistentSublayer);
+      if (expected_user != nullptr) {
+        int filter_index = ValidatePersistentFilter(*filter, expected_user,
+                                                    allowed_v4_port,
+                                                    allowed_v6_port);
+        entries_valid = entries_valid && filter_index >= 0;
+        if (filter_index >= 0 && matched_filter_mask != nullptr) {
+          *matched_filter_mask |= (1u << filter_index);
+        }
+      }
     }
     if (entries != nullptr) {
       FwpmFreeMemory0(reinterpret_cast<void**>(&entries));
@@ -1752,11 +1882,30 @@ bool RemovePersistentFence() {
   return removed;
 }
 
-bool VerifyPersistentFence() {
+bool VerifyPersistentFence(const std::wstring& user_name,
+                           u_short allowed_v4_port,
+                           u_short allowed_v6_port) {
   UniqueWfpEngine engine;
   if (!OpenPersistentEngine(&engine)) {
     return false;
   }
+  EXPLICIT_ACCESS_W access{};
+  BuildExplicitAccessWithNameW(&access, const_cast<wchar_t*>(user_name.c_str()),
+                               FWP_ACTRL_MATCH_FILTER, GRANT_ACCESS, 0);
+  ULONG descriptor_size = 0;
+  PSECURITY_DESCRIPTOR raw_descriptor = nullptr;
+  DWORD descriptor_result = BuildSecurityDescriptorW(
+      nullptr, nullptr, 1, &access, 0, nullptr, nullptr, &descriptor_size,
+      &raw_descriptor);
+  LocalPointer descriptor(raw_descriptor);
+  if (descriptor_result != ERROR_SUCCESS) {
+    PrintFailure(L"BuildSecurityDescriptorW(verify user fence)",
+                 descriptor_result);
+    return false;
+  }
+  FWP_BYTE_BLOB descriptor_blob{};
+  descriptor_blob.size = descriptor_size;
+  descriptor_blob.data = static_cast<UINT8*>(raw_descriptor);
   FWPM_PROVIDER0* provider = nullptr;
   FWPM_SUBLAYER0* sublayer = nullptr;
   DWORD provider_result =
@@ -1768,10 +1917,13 @@ bool VerifyPersistentFence() {
 
   std::vector<GUID> filter_keys;
   bool filter_entries_valid = false;
+  UINT32 matched_filter_mask = 0;
   bool enumerated = EnumeratePersistentFilters(
-      engine.get(), &filter_keys, &filter_entries_valid);
+      engine.get(), &filter_keys, &filter_entries_valid, &descriptor_blob,
+      allowed_v4_port, allowed_v6_port, &matched_filter_mask);
   bool filters_valid =
-      enumerated && filter_keys.size() == 8 && filter_entries_valid;
+      enumerated && filter_keys.size() == 8 && filter_entries_valid &&
+      matched_filter_mask == 0xff;
   bool passed = provider_result == ERROR_SUCCESS &&
                 sublayer_result == ERROR_SUCCESS &&
                 (provider->flags & FWPM_PROVIDER_FLAG_PERSISTENT) != 0 &&
@@ -2111,8 +2263,12 @@ int wmain(int argc, wchar_t** argv) {
                ? 0
                : 1;
   }
-  if (argc == 2 && std::wstring(argv[1]) == L"--wfp-persistent-verify") {
-    return VerifyPersistentFence() ? 0 : 1;
+  if (argc == 5 && std::wstring(argv[1]) == L"--wfp-persistent-verify") {
+    return VerifyPersistentFence(argv[2],
+                                 static_cast<u_short>(std::stoul(argv[3])),
+                                 static_cast<u_short>(std::stoul(argv[4])))
+               ? 0
+               : 1;
   }
   if (argc == 2 && std::wstring(argv[1]) == L"--wfp-persistent-remove") {
     return RemovePersistentFence() ? 0 : 1;

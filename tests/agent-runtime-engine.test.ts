@@ -548,7 +548,7 @@ it("continues in the host loop only for an explicit pre-start Runtime fallback",
     expect(
       store
         .events(session.id)
-        .some((event) => event.type === "sandbox_warning"),
+        .some((event) => event.type === "sandbox_fallback"),
     ).toBe(true);
     expect(
       store

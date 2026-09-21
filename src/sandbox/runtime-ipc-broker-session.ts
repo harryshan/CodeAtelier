@@ -26,6 +26,7 @@ import type {
   CapabilityCommandRequest,
   CapabilityCommandResult,
 } from "./capability-request.js";
+import type { ContextSnapshot } from "../context/types.js";
 
 export interface RuntimeIpcBrokerHandlers {
   traceSpan?(
@@ -73,7 +74,7 @@ export interface RuntimeIpcBrokerHandlers {
   ): Promise<unknown>;
   compactContext(
     identity: RuntimeExecutionIdentity,
-    snapshot: unknown,
+    snapshot: ContextSnapshot,
     input: unknown[],
   ): Promise<void>;
   runtimeCompleted(

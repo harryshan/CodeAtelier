@@ -83,6 +83,8 @@ export interface ToolContext {
   ) => Promise<CapabilityCommandResult>;
   /** Agent Runtime 内的工具进程已处于任务 Job/token，不得再次调用 Broker 的逐工具 Sandbox。 */
   executionBoundary?: "broker-host" | "agent-runtime";
+  /** Agent Runtime 内普通工具进程的父 execution instance，供恢复把 call 与常驻 Runtime 关联。 */
+  parentExecutionInstanceId?: string;
   onSandboxStage?: (
     stage: SandboxStage,
     status: SandboxStatus,
@@ -278,7 +280,11 @@ export class ToolRunner {
         input.outputLimit,
         input.onOutput,
         input.environment ?? {},
-        (pid) => this.ctx.emit("sandboxed_tool_process", { pid }),
+        (pid) =>
+          this.ctx.emit("sandboxed_tool_process", {
+            pid,
+            parentExecutionInstanceId: this.ctx.parentExecutionInstanceId,
+          }),
       );
 
       return {

@@ -5,17 +5,43 @@
  * 1. 缺失/错误 token 在解析目标前返回 407。
  * 2. 有效 lease 仍拒绝错误 host 和解析为回环地址的获准 host。
  * 3. IPv4/IPv6 地址分类拒绝私网、metadata 可达转换和隧道前缀，只接受普通公网单播。
- * 4. revoke 后同一 token 立即失效，防止 Push Runner 结束后重放。
+ * 4. 并发首次 start 共享一次监听；任一 tunnel 端关闭会确定性销毁对端并等待两端终态后清账。
+ * 5. revoke 后同一 token 立即失效，防止 Push Runner 结束后重放。
  *
  * 真实公网 DNS、TLS 和 Git push 留给提升后的产品集成测试；本文件不会建立外部连接。
  */
 
 import net from "node:net";
+import { PassThrough } from "node:stream";
 import { describe, expect, it } from "vitest";
 import {
   isPublicRelayAddress,
+  bindRelaySocketPair,
   SandboxHttpsRelay,
 } from "../src/sandbox/https-relay.js";
+
+it("shares one in-flight relay start across concurrent callers", async () => {
+  const relay = new SandboxHttpsRelay(0);
+  await expect(
+    Promise.all([relay.start(), relay.start(), relay.start()]),
+  ).resolves.toHaveLength(3);
+  const lease = relay.issueLease("example.com", 1_000);
+  expect(Number(new URL(lease.proxyUrl).port)).toBeGreaterThan(0);
+  relay.revoke(lease);
+  await relay.close();
+});
+
+it("keeps a socket pair tracked until both endpoints close", async () => {
+  const client = new PassThrough();
+  const upstream = new net.Socket();
+  let finished = 0;
+  bindRelaySocketPair({ client, upstream }, 10_000, () => (finished += 1));
+
+  client.destroy();
+  await new Promise<void>((resolve) => upstream.once("close", resolve));
+  expect(upstream.destroyed).toBe(true);
+  expect(finished).toBe(1);
+});
 
 it.each([
   ["8.8.8.8", true],

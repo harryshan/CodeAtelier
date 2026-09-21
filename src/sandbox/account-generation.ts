@@ -36,6 +36,39 @@ interface GrantReference {
   }>;
 }
 
+function waitForProvision(
+  waits: Promise<void>[],
+  signal?: AbortSignal,
+): Promise<void> {
+  const provisioned = Promise.all(waits).then(() => undefined);
+  if (!signal) {
+    return provisioned;
+  }
+
+  signal.throwIfAborted();
+
+  return new Promise<void>((resolve, reject) => {
+    const aborted = () => {
+      cleanup();
+      reject(signal.reason ?? new Error("Sandbox grant 等待已取消。"));
+    };
+
+    const cleanup = () => signal.removeEventListener("abort", aborted);
+
+    signal.addEventListener("abort", aborted, { once: true });
+    provisioned.then(
+      () => {
+        cleanup();
+        resolve();
+      },
+      (error) => {
+        cleanup();
+        reject(error);
+      },
+    );
+  });
+}
+
 export interface AccountGenerationRelease {
   releaseId: string;
   lease: SandboxInstanceLease;
@@ -209,7 +242,8 @@ export class AccountGenerationRegistry {
     return {
       lease,
       install,
-      waitForSharedProvision: () => Promise.all(waits).then(() => undefined),
+      waitForSharedProvision: (signal?: AbortSignal) =>
+        waitForProvision(waits, signal),
     };
   }
 

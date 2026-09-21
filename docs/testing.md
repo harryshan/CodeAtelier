@@ -199,3 +199,11 @@ context-request.test.ts 覆盖低于阈值时重复读取结果原样发送、�
 - tests/tool-projection.test.ts 覆盖旧搜索记录保留所有位置、目录首尾清单和省略计数、失败/截断命令诊断、只读 Git 输出、Git 写操作结果保留、写入 diff 与部分成功状态。
 - 覆盖来源缺失/歧义、格式未知、无退出码、已有归档和无收益结果不变；真实 SQLite 测试阈值、重启分页回读、后续摘要前展开全文及批次状态不丢失。
 - 模拟输出和模型仅验证归档契约，不证明真实模型一定能从摘录发现所有故障；Evaluation 仍仅由用户手动运行。
+
+## Sandbox 审查回归
+
+- `tests/sandbox-session-boundary.test.ts` 以两个真实 SQLite 会话验证 `session_compact` 的严格快照 schema、认证 session 绑定和父快照归属；跨会话写入不会改变任一会话。
+- `tests/sandbox.test.ts` 交错最后引用的 native revoke 与新 acquire，确认新 lease 等撤销完成后重装共享 ACE；同时验证 capability 审批后根对象被删除重建时，Runner 在 provision 前拒绝执行。
+- `tests/sandbox-account-generation.test.ts` 验证首个 provision 安装者失败会拒绝共享 waiter，且 waiter 可由自己的 AbortSignal 取消；`tests/sandbox-https-relay.test.ts` 验证并发首次 start 共用监听 promise，以及任一 tunnel 端关闭会销毁另一端并等待两端终态再移除账本。
+- `tests/sandbox-git-config-graph.test.ts` 用真实临时 Git 配置验证 XDG global 在前、home global 在后的原生覆盖顺序；`tests/recovery.test.ts` 验证 `toolCallId` 与旧 `callId` 兼容，并将 Runtime 内普通工具关联到父 Agent Runtime execution instance；`tests/agent-runtime-engine.test.ts` 验证启动前 fallback 写入 Web 已支持的 `sandbox_fallback` 事件。
+- `tests/sandbox-native-windows-runtime.test.ts` 验证缺少原生 rollback/completion 正向证明时一律归类 `cleanup_unknown`。C++ 构建检查 Supervisor 的失败回滚、Job 分配失败终止、askpass 同步 I/O 取消和 WFP 规则精确核对能够编译；这些不替代固定账户下的故障注入、持久 WFP 替换规则、恶意 askpass client 和崩溃恢复验收。
