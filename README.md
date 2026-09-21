@@ -24,7 +24,7 @@ API 地址、主模型和可选辅助模型没有内置默认值；它们的唯�
 - 可选的环境密码门禁：默认关闭；启用后必须先输入正确密码才会加载 Web UI，验证状态仅以服务进程有效的 HttpOnly cookie 保存。
 - 多轮会话、流式回复、历史消息与工具结果持久化；完成任务默认仅显示用户输入和最后一轮 agent 输出，计划、工具、diff 和通知可按需展开检查。任务输入框是所见即所得 Markdown 编辑器，输入规则原地转换为富文本并将生成的 Markdown 提交，用户与 agent 消息支持 GitHub Flavored Markdown（标题、列表、表格、任务列表、链接和代码围栏），不执行原始 HTML；首条用户消息会通过低成本辅助模型自动生成会话标题。手机浏览器可通过顶部菜单打开完整项目与会话侧栏，选择会话、点击遮罩或按 Escape 均会收起抽屉。
 - 通过受审批的命令浏览目录和搜索代码；按行读取文件时可显示不可见空白，并以统一的 `edit_files` 批量新建文件或执行带版本、行范围和上下文锚点的安全补丁，展示 diff。精确匹配失败时仅对普通文件的唯一候选进行受限空白规范化，歧义一律拒绝。
-- 原本需要确认的命令和工具使用先由低成本模型分为自动通过、人工确认或拒绝；模型不可用或未配置时保守保留人工确认，支持取消、超时、输出限制和单任务并发保护。
+- 非 Sandbox/宿主 fallback 中原本需要确认的命令和工具，先由低成本模型分为自动通过、移交人工或拒绝；模型不可用或未配置时保守移交人工。Sandbox Agent Runtime 已有能力内的工具免审批，越界命令由 `run_with_permissions` 携带命令、结构化权限和理由走同一三级审批，再交给独立 Capability Runner。两条路径都支持取消、超时和输出限制。
 - 模型瞬态错误自动重试；失败、取消和重启中断后可点击“恢复任务”，并补充恢复说明。已完成工具不重放，详见 [恢复机制](docs/recovery.md)。
 - 可配置模型、步骤和上下文限制；结构化分级日志；已完成或运行中的任务可经受保护的本机接口导出 Perfetto 时间线，用于分析模型、上下文和工具的耗时与关键路径。trace 只记录安全摘要，不保存可重放的原始 prompt 或工具输出。任务开始后另会捕获受保护的本地 replay case，可手动导出并在新目录中复建经完整读取验证的编辑前文件；详情见 [任务 Replay Case](docs/replay-cases.md)。
 - 单一受限 `git` 工具：查看状态、差异、历史、文件和分支；自动暂存/提交指定安全路径，并推送当前分支已校验的 upstream。
@@ -47,7 +47,9 @@ pnpm exec playwright install chromium
 pnpm test:e2e
 ```
 
-初版仍以应用层审批为主：低成本模型的 `approve` 结果不绕过执行器的路径、Git、提权和并发校验，关闭 Sandbox 时获准命令以本机用户权限运行，适用于你信任的项目。Windows 正在实现 [专用用户 Sandbox Runtime 与 Broker 架构](docs/windows-integrity-sandbox.md)：一次性提升安装创建单一 `CodeAtelierSandbox` 低权限账户及按其 SID 的持久 WFP fence，把原生 supervisor/WFP manager 复制到受保护的 ProgramData 目录，并配置拒绝网络、batch、service 和远程交互登录权；C++ supervisor 再以每实例 `WRITE_RESTRICTED` token、根 capability、Job Object、私有 desktop 和显式 ACL 运行未修改的 Git、shell 与编译器。Runtime 不继承宿主用户私有 profile/凭据，并新增工作区、显式 read/write roots、产品依赖和精确只读宿主 Git config/include 图的权限；`Everyone`/`Authenticated Users` 等既有 ACL 仍可能允许额外读取，因此它不是纯读取 allowlist。Sandbox 沿用 1～4 个不同工作区并发和同工作区串行；单账户使活动授权根形成跨任务读取并集，同账户 peer 还可能终止、注入或检查其它 Runtime。不同对话不是彼此的 OS 安全边界；每实例 capability 只承诺经验证的直接及后代文件写入限制。工作区内不额外保护 `.git`/`.env`。普通 Runtime 无直接命令网络，确认后的 HTTPS push 使用认证 Broker CONNECT relay；WFP 在 push 时也不放宽。`run_command` 和全部 Git 已接入原生 Runtime，ACL/配置投影、恢复 journal、relay、Credential Manager askpass 适配和 tracing 也已有实现和局部测试；产品固定账户的提升安装、真实 ACL/WFP/CONNECT/push 仍未完成端到端验收，因此目前不能把 Sandbox 描述为完整可用。当前 WSL2 `inspect` 仅保留为历史记录，见 [旧 WSL2 Sandbox 档案](docs/sandbox.md)。当前模型仍只可主动调用单一、参数受限的 `git` 工具：它检查 worktree、路径、revision 和 upstream，并禁止强推、指定远程/分支目标、重置或创建 PR；Git 仓库配置仍不是系统沙箱。
+初版仍以应用层审批为主：低成本模型的 `approve` 结果不绕过执行器的路径、Git、提权和并发校验，关闭 Sandbox 或启动前安全 fallback 时，获准命令以本机用户权限运行，适用于你信任的项目。Windows [专用用户 Sandbox Runtime 与 Broker 架构](docs/windows-integrity-sandbox.md) 已接入产品代码：一次性提升安装创建单一 `CodeAtelierSandbox` 低权限账户及按其 SID 的持久 WFP fence，把 Supervisor、WFP manager 和固定 Node 24 Runtime bundle 放入受保护的 ProgramData 目录。每个任务的常驻 Agent Runtime 在专用账户 restricted token/Job 中承载模型轮次、上下文、工具 DAG、文件工具、普通命令和非 push Git；模型密钥、宿主数据库与审批留在 Broker，经联合身份验证的任务专属 IPC 代理。独立 Push Runner 和 Capability Runner 分别获得单次网络/凭据或扩展文件能力，Broker 不以宿主 token 代运行 LLM 命令。AccessManifest、共享 ACL grant、原对象 journal、只读 Git 配置投影、CONNECT relay、Credential Manager askpass、generation drain 和跨进程 tracing 都已进入默认 Windows 组装及无管理员副作用回归。
+
+这仍是显式开启、需管理员安装的预览能力：固定账户下的提升安装、复杂 ACL、真实 WFP/CONNECT/remote push、Capability Runner 网络矩阵、强制取消、崩溃和重启恢复尚未完成分层端到端验收，因此不能称为稳定或跨平台 Sandbox。专用账户不继承宿主私有 profile/凭据，但公共 ACL 仍可能允许额外读取；单账户还使活动授权根形成跨任务读取并集，同账户 peer 可能终止、注入或检查其它 Runtime。不同对话不是 OS 安全边界；每实例 capability 只承诺经验证的直接及正常后代写根限制。工作区内不额外保护 `.git`/`.env`，WFP 在 push 或扩展网络请求时也不临时放宽。当前 WSL2 `inspect` 仅保留为历史记录，见 [旧 WSL2 Sandbox 档案](docs/sandbox.md)。产品的 `git` 工具仍限制为安全 action、当前分支已校验 upstream，并禁止强推、任意 remote/branch、重置或创建 PR。
 
 ## 文档
 

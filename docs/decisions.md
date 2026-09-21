@@ -247,7 +247,7 @@
 - 状态：用户要求增加配置，本次接入已有上下文摘要。
 - 决定：新增可选 auxiliaryModel 和 auxiliaryReasoningEffort，共用 API 地址与密钥；指定辅助模型时默认 low，留空沿用主模型及其思考等级。补充 D028 的主模型/摘要共用设置行为。
 - 原因：让辅助任务可以选择成本更低的模型，不硬编码模型或猜测价格。
-- 影响：摘要按辅助模型独立容量分块，主任务预算保持独立；失败保留历史，不隐式跨模型回退。首条用户 prompt 的标题生成已接入该配置：无工具、64 token 上限；可重试或无可分类原因的模型调用错误在首次失败后最多额外重试 3 次，已知认证或参数错误仍不重试；耗尽后保留“新对话”且不阻断主任务。模型辅助审批仍未启用，也不改变人工审批边界。
+- 影响：摘要按辅助模型独立容量分块，主任务预算保持独立；失败保留历史，不隐式跨模型回退。首条用户 prompt 的标题生成已接入该配置：无工具、64 token 上限；可重试或无可分类原因的模型调用错误在首次失败后最多额外重试 3 次，已知认证或参数错误仍不重试；耗尽后保留“新对话”且不阻断主任务。本决定作出时模型辅助审批尚未启用；后续 D054 已接入低成本模型的 `approve | human review | reject` 三级审批，D106 将同一机制用于 Sandbox 越界命令。
 
 ## D032：按项目组织多个对话
 
@@ -791,7 +791,7 @@
 ## D095：Push Runner 正常加载 Git 配置
 
 - 日期：2026-09-19
-- 状态：继续有效，但读取范围由 D099 收紧。Git 仍正常加载真实配置；宿主 global/include 配置重新采用 D096 的精确只读授权图，其他宿主 profile 文件默认不可读。仅文档设计，尚未实现或验证。
+- 状态：继续有效，但读取范围由 D099 收紧。真实仓库 Git、宿主 global/include 精确只读授权图和 Broker 只读聚合入口已实现；固定账户下的真实 helper/hook/remote 配置矩阵尚未提升验收。
 - 决定：Push Runner 不创建 shadow Git directory，不对真实 `.git/config`、include、URL rewrite、proxy、credential helper、hooks、filter、diff/textconv 或 remote helper 实施配置键白名单。Git 在真实仓库上运行，正常加载已授权的 system、宿主 global/include、local 和 worktree 配置；D099 后 Runner 不继承宿主 profile、环境凭据、SSH agent 或 handle，但仍可读取 AccessManifest 内容和专用账户通过既有公共 ACL 可读的对象。Broker 不运行 Git 或独立重现 Git 配置的运行时语义；普通 Agent Runtime 以受限 Git 查询提供预期 upstream/URL/OID/ref，Broker 只校验并持久化用户确认的 PushSpec。
 - 安全边界：PushSpec 只是预期行为和网络租约输入，不证明 Git 最终目标路径/ref 或子进程语义。仓库配置可改写 URL/代理/凭据流程，hooks/helper 和 Git 子进程可写获准根、读取其它实际可读文件并观察短期凭据。WFP 仍默认拒绝直接网络，relay/CONNECT 代理仍拒绝任何不等于逐次确认 HTTPS host/port 的实际连接；自定义代理或非登记 transport 只能使 push 失败，不能获得其他网络。因此获准 host 必须按可接收 Runner 所有实际可读内容来信任；凭据应尽可能限单一仓库、短时有效并在 Runner 结束后立即失效。
 - 验收影响：当前 W5 不再验收 shadow config origin 或拒绝恶意 local config；改为验证 include、URL rewrite、URL-specific proxy/helper、hooks 和 remote helper 实际执行时仍无法连接未获准 host，并验证配置导致不经 relay 时 push 安全失败。UI 必须显示 host 级而非仓库/ref 级保证，并提示 Git 配置/子进程、全部实际可读内容和凭据观察风险。同步更新 requirements、architecture、development、testing、verification 与 tracing 边界。
@@ -836,7 +836,7 @@
 ## D100：单一 Sandbox 账户允许跨工作区并发
 
 - 日期：2026-09-20
-- 状态：已确认。不同对话不要求相互构成 OS 安全边界；并发对象攻击夹具的结果改记为接受风险，不再阻塞单账户并发。产品实现与其余 W0--W7 验收仍未完成。
+- 状态：已确认。不同对话不要求相互构成 OS 安全边界；并发对象攻击夹具的结果改记为接受风险，不再阻塞单账户并发。产品的并发 lease、共享 grant 和 Runner 重叠编排已实现；W0--W7 的提升环境并发矩阵仍未完成。
 - 并发决定：撤销 D099 的 Sandbox 全局串行。Sandbox 与 host-process 模式统一沿用现有 `maxConcurrentTasks` 1～4 设置；不同真实工作区可并发，同一真实工作区、同一会话仍串行。仍只创建一个 `CodeAtelierSandbox` 账户，不引入账户池。D105 进一步明确：push 是当前工具批次的唯一节点，Agent Runtime 保持存活并同步等待独立 Push Runner，其它工作区任务继续。
 - 每实例边界：每个 execution instance 获得独立 `WRITE_RESTRICTED` token、execution SID、根 capability SID、Job、private desktop、逐租约 HOME/temp、Named Pipe nonce、proxy lease 和 kind-specific ID；实际 logon SID 仅观测。execution/root capability 的安全承诺只覆盖经验证的文件写入与 Broker 的正常路由/记账，不把同账户 process/thread/token/Job/desktop/命名对象变成对恶意 peer 的隔离边界。bootstrap runner 和 supervisor 控制面仍必须只允许 Broker/SYSTEM，Sandbox Runtime 不得直接取得高权限控制能力。WFP 继续按共享账户 SID 永久阻止直接出站。
 - 接受的 peer 风险：账户 SID 的 ACL 是所有活动 AccessManifest 的并集，因此一个并发 Runtime 可能读取其它活动任务的工作区、Git 配置、显式 read roots 和逐租约目录；同账户 peer 还可能打开、终止、注入、调试或检查其它 Runtime/Job/desktop/命名对象，并借此干扰任务或观察其能力。Broker/session API 仍按 task/instance 路由以保证正常产品行为，但不宣称抵抗恶意 peer 冒用另一个任务。UI 和能力声明必须明确不同对话不是 OS 安全边界。需要任务间保密或抗干扰时必须使用未来的账户池、AppContainer 或 VM profile。
@@ -847,7 +847,7 @@
 ## D101：logon SID 不作为实例身份
 
 - 日期：2026-09-20
-- 状态：顺序与真正并发的专用账户文件写入夹具均已在管理员环境通过；产品尚未实现，复杂 ACL、共享 grant、Broker/supervisor、WFP 与恢复边界仍待验证。
+- 状态：顺序与真正并发的专用账户文件写入夹具均已在管理员环境通过；产品 token、共享 grant、Broker/Supervisor、WFP 与恢复代码已接入，复杂 ACL 和完整提升环境边界仍待验证。
 - 证据：专用账户夹具以同一随机本地账户顺序执行两个显式凭据启动。两次 bootstrap、restricted probe 与后代的 account SID 相同，logon SID 也都为 `S-1-5-5-0-488199`；双方仍分别通过跨根读取、自己根直接/后代写入和对方根写拒绝。脚本随后因旧的“logon SID 必须不同”断言失败，但 `finally` 成功删除临时账户与运行目录。该结果证明文件 root capability 有效，同时证伪 D100 中对每次启动产生独立 logon SID 的依赖。
 - 决定：logon SID 只记录为诊断和启动兼容信息，可以在活动实例间共享，不参与文件写入 capability 或 executionInstance 标识。每个 execution instance 由 Broker 生成不可复用的 execution SID；每个可写根继续使用独立 root capability SID。产品 token 的 restricting SID 已收紧为 execution/root capability，不加入 logon/Everyone；`WRITE_RESTRICTED` 只把该列表用于写访问，因此普通读取仍按专用账户的正常 SID/DACL 决定。execution SID 用于文件写检查、正常 IPC 路由和审计，但不宣称能阻止同账户恶意 peer 打开或操纵另一个 Runtime。
 - default DACL：Runtime token default DACL 必须同时满足普通检查和 restricting 检查，因此最小候选为共享账户 SID 加本实例 execution SID；不得向共享 logon SID、Everyone 或 root capability 授予新对象通用权限。bootstrap runner 和 supervisor 控制面仍由 Broker/SYSTEM-only 显式 security descriptor 保护。Runtime 后代对象 DACL 继续采用最小权限以减少偶然干扰，但 peer 访问成功不再阻塞并发。
@@ -867,16 +867,16 @@
 ## D103：Sandbox 启动失败自动回退宿主执行
 
 - 日期：2026-09-20
-- 状态：用户确认；替代 D074、D081、D084、D091、D094、D097、D099 中“启用后任何自检失败都拒绝整个任务”的部分。通用 Broker fallback、独立日志和 Runtime→Broker 协议核心已实现；专用用户 Runtime 仍待后续阶段。
+- 状态：用户确认；替代 D074、D081、D084、D091、D094、D097、D099 中“启用后任何自检失败都拒绝整个任务”的部分。Broker fallback、独立日志、常驻专用用户 Agent Runtime launcher 与真实 Runtime IPC 已接入默认 Windows 组装；固定账户提升环境验收仍待完成。
 - 决定：Windows 专用用户目标 Runtime 在启动前只读 preflight 失败，或事务化 provision 失败后账本能证明 Runtime 尚未启动、临时 ACL/对象已完整回滚、代理/凭据未签发且没有其它遗留 Sandbox 副作用时，Broker 必须显示醒目的未隔离提示、持久化受限失败类别，并自动创建 `executionInstance.mode=host-process` 继续任务。记录同时保留 `sandboxRequested=true` 与 `sandboxApplied=false`；UI、日志、历史和统计不得把 fallback 冒充 Sandbox 成功，也不要求用户再次确认。
 - 未知结果边界：若 Agent Runtime、Push Runner 或后代已经启动，工具结果未知，或 Job、ACL、代理 lease、凭据及账户状态无法证明清理完成，则当前调用不得在宿主模式自动重放。系统记录 `unknown/orphaned`，隔离并排空 account generation；确认同一工作区不再有可能写入的孤儿进程后，后续任务才可带警告地以宿主模式继续。
-- 原因与影响：用户明确选择功能可用性优先于 Sandbox fail-closed。fallback 继续使用宿主模式现有审批、路径、Git、取消和恢复规则，但不具备专用账户文件边界、无直接网络或受限 push 保证。当前实现已覆盖自检前 fallback、UI/历史状态、独立 `sandbox.log`、执行后不重放，以及 Runtime→Broker 一次性命令 grant/模型 trace；事务化 ACL provision、executionInstance 持久账本和 orphaned generation 仍须随专用用户 Runtime 实现。
+- 原因与影响：用户明确选择功能可用性优先于 Sandbox fail-closed。fallback 继续使用宿主模式现有审批、路径、Git、取消和恢复规则，但不具备专用账户文件边界、无直接网络或受限 push 保证。当前实现已覆盖自检前 fallback、UI/历史状态、独立 `sandbox.log`、执行后不重放、两阶段 ACL provision/release、executionInstance 持久事实、unknown/orphaned generation drain 与 Runtime→Broker tracing；真实崩溃、重启和损坏 journal 仍须提升环境验收。
 
 ## D104：恢复常驻 Agent Runtime 的原始进程边界并固定术语
 
 - 日期：2026-09-21
-- 状态：用户确认；澄清而非替代 D091、D092、D099--D103。逐命令/Git 隔离是迁移实现，不是目标架构变更。
-- 术语决定：`Agent Runtime` 只指每任务一个、在专用账户 restricted token/Job 中承载完整 agent loop、上下文处理、工具 DAG、文件工具、普通命令和非 push Git 的常驻 Node.js 进程。当前 C++ supervisor 为一次工具调用启动的 shell/Git 及后代统一称为 `Sandboxed Tool Process`；C++ 固定控制进程称为 `Sandbox Supervisor`；`runtime-capability-core.ts` 在接入真实传输前称为 Runtime→Broker capability protocol core；`Runtime IPC` 只指经过联合进程身份验证的真实任务专属通道。上述术语不能互换。
+- 状态：用户确认；澄清而非替代 D091、D092、D099--D103。常驻 Agent Runtime、Broker adapters、认证 transport 和默认 Engine 分流已实现；固定账户提升环境的 W3/W4 验收尚未完成。
+- 术语决定：`Agent Runtime` 只指每任务一个、在专用账户 restricted token/Job 中承载完整 agent loop、上下文处理、工具 DAG、文件工具、普通命令和非 push Git 的常驻 Node.js 进程。`Sandboxed Tool Process` 只指 Sandbox Supervisor 为一次 Runner 调用启动的 shell/Git/其它命令及后代；同一固定 C++ 控制程序还负责启动和监督常驻 Agent Runtime，但二者不能混称。C++ 固定控制进程称为 `Sandbox Supervisor`；`runtime-capability-core.ts` 是 Broker capability/adapter 核心，真实跨进程请求走联合身份验证的任务专属 `Runtime IPC`。上述术语不能互换。
 - 实现决定：继续实现最初边界，不把当前逐工具 supervisor 路径固化为最终架构。Broker Host 保留调度、模型密钥、session 持久化、审批、长期恢复账本和固定宿主能力；Agent Runtime 发起模型轮次与工具执行，通过认证 Runtime IPC 使用 model/session/approval adapter。Broker 不运行 Git，模型密钥和宿主数据库不进入 Runtime。Push Runner 仍是无 agent loop 的单用途进程。
 - 完成与声明：只有常驻 Agent Runtime 已从真实 Sandbox Supervisor 启动、agent loop 和文件工具确实位于该进程、跨边界调用走真实认证 IPC，且取消、断连、unknown/orphaned 与 generation 恢复通过对应验收后，才能声明 Agent Runtime 或 W3/W4 完成。协议类单测、mock transport、逐命令专用账户子进程和目标图均不能单独支持该声明。
 
