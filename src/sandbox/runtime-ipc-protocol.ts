@@ -5,7 +5,7 @@
  *
  * 1. runtimeRequestSchema 限定 Runtime 可请求的模型、审批、session adapter、结构化 Git PushSpec 和一次性 capability command；后者只能声明 Broker 可强制落实的根/host。
  * 2. runtimeResponseSchema 关联原 requestId；错误只返回受限 code/message 与模型重试元数据，避免泄露宿主异常对象。
- * 3. runtimeEventSchema 承载模型 delta、任务取消、请求级取消和 Runtime 生命周期通知；大对象仍受 transport 帧上限约束。
+ * 3. runtimeEventSchema 承载模型 delta、任务取消、请求级取消、Runtime 生命周期和固定 context trace span；trace 名称与属性不是任意日志通道。
  * 4. hello schema 绑定协议版本、任务和 instance；其中 Runtime 自报字段只用于一致性核对，不能替代 transport 身份。
  */
 
@@ -17,6 +17,23 @@ export const MAX_RUNTIME_IPC_FRAME_BYTES = 8 * 1024 * 1024;
 
 const identifier = z.string().min(1).max(120);
 const boundedText = z.string().max(2_000_000);
+const runtimeTraceAttributesSchema = z
+  .object({
+    step: z.number().int().positive().max(1_000).optional(),
+    attempt: z.number().int().positive().max(100).optional(),
+    force: z.boolean().optional(),
+    inputItems: z.number().int().nonnegative().max(2_000_000).optional(),
+    toolCount: z.number().int().nonnegative().max(10_000).optional(),
+    amount: z.number().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
+    errorName: z.string().min(1).max(120).optional(),
+  })
+  .strict();
+const runtimeTraceNameSchema = z.enum([
+  "context.prepare",
+  "context.prepare.measure_request_view",
+  "context.request",
+  "context.request.measure_input",
+]);
 const requestBase = {
   type: z.literal("request"),
   requestId: identifier,
@@ -293,6 +310,25 @@ export const runtimeEventSchema = z.discriminatedUnion("event", [
       type: z.literal("event"),
       event: z.literal("runtime_state"),
       state: z.enum(["ready", "running", "stopping"]),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("event"),
+      event: z.literal("trace_span_start"),
+      spanId: identifier,
+      parentSpanId: identifier.optional(),
+      name: runtimeTraceNameSchema,
+      attributes: runtimeTraceAttributesSchema,
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("event"),
+      event: z.literal("trace_span_end"),
+      spanId: identifier,
+      status: z.enum(["cancelled", "error", "ok"]),
+      attributes: runtimeTraceAttributesSchema,
     })
     .strict(),
 ]);

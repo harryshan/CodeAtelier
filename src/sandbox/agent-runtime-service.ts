@@ -8,11 +8,14 @@
  * 4. UI/session 事件按单连接顺序排队；无效 DAG 在无副作用时回传模型修正，工具结果保存后才进入下一轮，取消或持久化失败不会盲目重放。
  * 5. 终态同时返回给 start_task 调用方并主动写 runtime_complete；Broker 仍结合进程/Job/ACL 清理决定最终可信状态。
  *
- * Push Runner 必须独占当前工具批次；扩展权限 Runner 可与无依赖的普通工具并行。两者都由结构化 Runtime IPC adapter 等待结果；完整跨进程 tracing 和提升环境验收仍未完成，不能据此宣称 W3/W4/W5 完成。
+ * Push Runner 必须独占当前工具批次；扩展权限 Runner 可与无依赖的普通工具并行。两者都由结构化 Runtime IPC adapter 等待结果；context/tool/model tracing 经固定 schema 回到 Broker，但提升环境验收仍未完成，不能据此宣称 W3/W4/W5 完成。
  */
 
 import { createBudget } from "../context/token-budget.js";
-import { ContextManager } from "../context/context-manager.js";
+import {
+  ContextManager,
+  type ContextTrace,
+} from "../context/context-manager.js";
 import {
   historyDefinition,
   parseScheduledHistoryArguments,
@@ -87,6 +90,7 @@ export class AgentRuntimeService {
       this.peer,
       "compaction",
     );
+    const trace = new RuntimeContextTrace(this.peer);
     let status: RuntimeTaskStatus = "completed";
     let failure: string | undefined;
 
@@ -152,6 +156,7 @@ export class AgentRuntimeService {
         clean: (text) => text,
         notice: (text) => events.emit("notice", { text }),
         report: (event, data) => events.emit(event, data),
+        trace,
         onModelRequest: () =>
           events.emit("model_request", { purpose: "compaction" }),
         onUsage: (usage) =>
@@ -167,7 +172,21 @@ export class AgentRuntimeService {
       });
       for (let step = 1; step <= input.settings.maxSteps; step++) {
         signal.throwIfAborted();
-        currentInput = await context.prepare(currentInput, instructions, tools);
+        const prepareSpan = trace.start("context.prepare", { step });
+        try {
+          currentInput = await context.prepare(
+            currentInput,
+            instructions,
+            tools,
+          );
+          trace.end(prepareSpan, "ok", { inputItems: currentInput.length });
+        } catch (error) {
+          trace.end(prepareSpan, signal.aborted ? "cancelled" : "error", {
+            errorName: error instanceof Error ? error.name : typeof error,
+          });
+          throw error;
+        }
+
         let requestInput = currentInput;
         let attemptOffset = 0;
         let attempt = 0;
@@ -175,11 +194,26 @@ export class AgentRuntimeService {
           retryModel(
             async (currentAttempt) => {
               attempt = attemptOffset + currentAttempt;
-              requestInput = context.request(
-                currentInput,
-                instructions,
-                tools,
-              ).input;
+              const requestSpan = trace.start("context.request", {
+                step,
+                attempt,
+              });
+              try {
+                requestInput = context.request(
+                  currentInput,
+                  instructions,
+                  tools,
+                ).input;
+                trace.end(requestSpan, "ok", {
+                  inputItems: requestInput.length,
+                });
+              } catch (error) {
+                trace.end(requestSpan, signal.aborted ? "cancelled" : "error", {
+                  errorName: error instanceof Error ? error.name : typeof error,
+                });
+                throw error;
+              }
+
               events.emit("model_request", { purpose: "task", step, attempt });
 
               return provider.run(
@@ -445,6 +479,64 @@ function toolSucceeded(result: any) {
       (file: any) => file.status === "failed" || file.status === "unknown",
     )
   );
+}
+
+/** Runtime 只可上报固定 context 阶段和有界数值元数据；协议 schema 会拒绝任意名称或文本属性。 */
+class RuntimeContextTrace implements ContextTrace {
+  private stack: string[] = [];
+
+  constructor(private peer: RuntimeIpcPeer) {}
+
+  start(
+    name: string,
+    attributes: Record<string, boolean | number | string | undefined> = {},
+  ) {
+    const spanId = randomUUID();
+    const parentSpanId = this.stack.at(-1);
+    this.peer.event({
+      type: "event",
+      event: "trace_span_start",
+      spanId,
+      parentSpanId,
+      name: name as
+        | "context.prepare"
+        | "context.prepare.measure_request_view"
+        | "context.request"
+        | "context.request.measure_input",
+      attributes,
+    });
+    this.stack.push(spanId);
+
+    return spanId;
+  }
+
+  end(
+    handle: unknown,
+    status: "cancelled" | "error" | "ok",
+    attributes: Record<string, boolean | number | string | undefined> = {},
+  ) {
+    if (typeof handle !== "string") {
+      throw new Error("Agent Runtime trace span handle 无效。");
+    }
+
+    const index = this.stack.lastIndexOf(handle);
+    if (index < 0) {
+      throw new Error("Agent Runtime trace span 已结束或不存在。");
+    }
+
+    this.stack.splice(index, 1);
+    this.peer.event({
+      type: "event",
+      event: "trace_span_end",
+      spanId: handle,
+      status,
+      attributes,
+    });
+  }
+
+  currentSpanId() {
+    return this.stack.at(-1);
+  }
 }
 
 class OrderedRuntimeEvents {

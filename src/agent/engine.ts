@@ -632,6 +632,7 @@ export class Engine {
     captureToolEvent: (type: string, data: any) => void,
   ): Promise<{ status: TaskStatus; failure?: string }> {
     const launcher = this.agentRuntimeLauncher!;
+    const runtimeContextSpans = new Map<string, TraceSpan | undefined>();
     const executionInstanceId = randomUUID();
     const identity: RuntimeExecutionIdentity = {
       sessionId: task.sessionId,
@@ -747,6 +748,43 @@ export class Engine {
         nonce,
         gateway,
         {
+          traceSpan: (event) => {
+            if (event.event === "trace_span_start") {
+              if (runtimeContextSpans.has(event.spanId)) {
+                throw new Error("Agent Runtime trace span 标识重复。");
+              }
+
+              const parent = event.parentSpanId
+                ? runtimeContextSpans.get(event.parentSpanId)
+                : undefined;
+              if (event.parentSpanId && !parent) {
+                throw new Error("Agent Runtime trace parent 不存在。");
+              }
+
+              runtimeContextSpans.set(
+                event.spanId,
+                this.traces.startSpan(task.id, {
+                  name: event.name,
+                  category: "context",
+                  track: "Main thread",
+                  parentSpanId: parent?.id,
+                  attributes: event.attributes,
+                }),
+              );
+
+              return;
+            }
+
+            const span = runtimeContextSpans.get(event.spanId);
+            if (!span) {
+              throw new Error(
+                "Agent Runtime trace span 终态没有对应开始事件。",
+              );
+            }
+
+            this.traces.endSpan(span, event.status, event.attributes);
+            runtimeContextSpans.delete(event.spanId);
+          },
           executeGitPush: (_runtime, spec, toolCallId, requestSignal) =>
             this.executeRuntimeGitPush(
               task,
@@ -876,6 +914,13 @@ export class Engine {
       }
     } finally {
       authorized = false;
+      for (const span of runtimeContextSpans.values()) {
+        this.traces.endSpan(span, signal.aborted ? "cancelled" : "error", {
+          incomplete: true,
+        });
+      }
+
+      runtimeContextSpans.clear();
       if (launched && !closeAttempted) {
         closeAttempted = true;
         const cleanup = await launched

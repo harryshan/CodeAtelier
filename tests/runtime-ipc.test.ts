@@ -5,7 +5,8 @@
  * 1. 双向 PassThrough peer 完成请求并拒绝未知响应、畸形 JSON 和超限半帧。
  * 2. RuntimeGitPushClient 只发送有界 PushSpec，并校验 Broker 返回的固定进程结果。
  * 3. AbortSignal 发送 request_cancel，中止远端同 requestId handler；竞态迟到响应不会破坏后续请求。
- * 4. 子进程经继承 stdio 请求模型，Broker test adapter 流式回传 delta 和最终结果，进程正常退出。
+ * 4. Runtime trace event 只接受固定 context 阶段和有界元数据，任意名称或文本字段关闭通道。
+ * 5. 子进程经继承 stdio 请求模型，Broker test adapter 流式回传 delta 和最终结果，进程正常退出。
  */
 
 import { spawn } from "node:child_process";
@@ -137,6 +138,44 @@ it("fails the channel on malformed input", async () => {
   const output = new PassThrough();
   const peer = new RuntimeIpcPeer({ input, output });
   input.write("not-json\n");
+  await expect(
+    peer.request("session_read_context", {}, new AbortController().signal),
+  ).rejects.toBeInstanceOf(RuntimeIpcError);
+});
+
+it("accepts only bounded context trace events", async () => {
+  const input = new PassThrough();
+  const output = new PassThrough();
+  const events: unknown[] = [];
+  const peer = new RuntimeIpcPeer({
+    input,
+    output,
+    onEvent: (event) => events.push(event),
+  });
+  input.write(
+    `${JSON.stringify({
+      type: "event",
+      event: "trace_span_start",
+      spanId: "span-1",
+      name: "context.prepare",
+      attributes: { step: 1, inputItems: 3 },
+    })}\n`,
+  );
+  await expect.poll(() => events).toHaveLength(1);
+  expect(events[0]).toMatchObject({
+    event: "trace_span_start",
+    name: "context.prepare",
+  });
+
+  input.write(
+    `${JSON.stringify({
+      type: "event",
+      event: "trace_span_start",
+      spanId: "span-2",
+      name: "arbitrary.runtime.log",
+      attributes: { secret: "not allowed" },
+    })}\n`,
+  );
   await expect(
     peer.request("session_read_context", {}, new AbortController().signal),
   ).rejects.toBeInstanceOf(RuntimeIpcError);

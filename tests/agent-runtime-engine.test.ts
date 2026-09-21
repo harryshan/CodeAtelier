@@ -149,6 +149,24 @@ it("moves the Engine agent loop into the launched Runtime process", async () => 
     expect(
       trace.traceEvents.some((event: any) => event.name === "tool.read_file"),
     ).toBe(true);
+    for (const name of [
+      "context.prepare",
+      "context.prepare.measure_request_view",
+      "context.request",
+      "context.request.measure_input",
+    ]) {
+      expect(
+        trace.traceEvents.some(
+          (event: any) => event.name === name && event.ph === "B",
+        ),
+      ).toBe(true);
+      expect(
+        trace.traceEvents.some(
+          (event: any) => event.name === name && event.ph === "E",
+        ),
+      ).toBe(true);
+    }
+
     expect(
       trace.traceEvents.some(
         (event: any) => event.args?.name === "Agent Runtime tools",

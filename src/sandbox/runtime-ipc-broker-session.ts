@@ -15,7 +15,10 @@ import type {
 } from "./runtime-capability-core.js";
 import type { Readable, Writable } from "node:stream";
 import { RuntimeIpcPeer } from "./runtime-ipc-peer.js";
-import type { RuntimeIpcRequest } from "./runtime-ipc-protocol.js";
+import type {
+  RuntimeIpcEvent,
+  RuntimeIpcRequest,
+} from "./runtime-ipc-protocol.js";
 import { RUNTIME_IPC_PROTOCOL_VERSION } from "./runtime-ipc-protocol.js";
 import type { RuntimeTaskSettings } from "./runtime-ipc-protocol.js";
 import type { GitPushSpec, GitProcessResult } from "../tools/git.js";
@@ -25,6 +28,12 @@ import type {
 } from "./capability-request.js";
 
 export interface RuntimeIpcBrokerHandlers {
+  traceSpan?(
+    event: Extract<
+      RuntimeIpcEvent,
+      { event: "trace_span_start" | "trace_span_end" }
+    >,
+  ): void;
   requestApproval(
     identity: RuntimeExecutionIdentity,
     input: { tool: string; description: string; grantKey?: string },
@@ -113,6 +122,19 @@ export class RuntimeIpcBrokerSession {
         this.rejectRuntimeReady(error);
       },
       onEvent: (event) => {
+        if (
+          event.event === "trace_span_start" ||
+          event.event === "trace_span_end"
+        ) {
+          if (!this.authenticated) {
+            this.peer.end("Runtime IPC trace 事件早于身份认证。");
+
+            return;
+          }
+
+          this.handlers.traceSpan?.(event);
+        }
+
         if (event.event === "runtime_state" && event.state === "ready") {
           this.resolveRuntimeReady();
         }
