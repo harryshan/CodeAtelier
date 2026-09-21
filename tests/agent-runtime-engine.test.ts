@@ -141,6 +141,16 @@ it("moves the Engine agent loop into the launched Runtime process", async () => 
         }),
       },
     ]);
+    const trace = JSON.parse((await engine.savedTrace(task))!);
+
+    expect(
+      trace.traceEvents.some((event: any) => event.name === "tool.read_file"),
+    ).toBe(true);
+    expect(
+      trace.traceEvents.some(
+        (event: any) => event.args?.name === "Agent Runtime tools",
+      ),
+    ).toBe(true);
     expect(
       store
         .events(session.id)

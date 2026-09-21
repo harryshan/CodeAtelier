@@ -887,6 +887,8 @@ export class Engine {
       }
 
       if (this.agentRuntimeLauncher && this.config.sandbox.enabled) {
+        const runtimeToolSpans = new Map<string, TraceSpan | undefined>();
+        let runtimeCompactionSpan: TraceSpan | undefined;
         const captureRuntimeToolEvent = (type: string, data: any) => {
           if (type === "tool_start") {
             this.store.startReplayTool(
@@ -900,12 +902,64 @@ export class Engine {
                 arguments: data.args,
               }),
             );
+            runtimeToolSpans.set(
+              data.callId,
+              this.traces.startSpan(task.id, {
+                name: `tool.${String(data.name).slice(0, 80)}`,
+                category: "tool",
+                track: "Agent Runtime tools",
+                attributes: {
+                  batchId: data.batchId,
+                  callId: data.callId,
+                  nodeId: data.nodeId,
+                  executionInstanceId: undefined,
+                },
+              }),
+            );
           } else if (type === "tool_result") {
             this.store.finishReplayTool(
               task.id,
               data.callId,
               cleanReplay(data.result),
             );
+            const span = runtimeToolSpans.get(data.callId);
+
+            this.traces.endSpan(span, data.result?.error ? "error" : "ok");
+            runtimeToolSpans.delete(data.callId);
+          } else if (type === "tool_batch_planned") {
+            this.traces.instant(
+              task.id,
+              "tool.plan",
+              "tool",
+              "Agent Runtime tools",
+              {
+                batchId: data.batchId,
+                nodes: Array.isArray(data.nodes) ? data.nodes.length : 0,
+              },
+            );
+          } else if (type === "context.compaction_started") {
+            runtimeCompactionSpan = this.traces.startSpan(task.id, {
+              name: "context.compaction",
+              category: "context",
+              track: "Agent Runtime context",
+              attributes: {
+                stage: data.stage,
+                beforeAmount: data.beforeAmount,
+              },
+            });
+          } else if (
+            type === "context.compaction_completed" ||
+            type === "context.compaction_failed"
+          ) {
+            this.traces.endSpan(
+              runtimeCompactionSpan,
+              type.endsWith("failed") ? "error" : "ok",
+              {
+                stage: data.stage,
+                afterAmount: data.afterAmount,
+              },
+            );
+            runtimeCompactionSpan = undefined;
           }
         };
 
