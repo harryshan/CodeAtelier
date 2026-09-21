@@ -98,9 +98,13 @@ it("moves the Engine agent loop into the launched Runtime process", async () => 
         },
       };
     },
-    async run(input, _instructions, tools) {
+    async run(input, instructions, tools) {
       modelCalls += 1;
       expect(tools).toContainEqual({ type: "web_search" });
+      expect(tools.map((tool: any) => tool.name)).toContain(
+        "run_with_permissions",
+      );
+      expect(instructions).toContain("Windows Agent Runtime");
       if (modelCalls === 1) {
         return {
           text: "",
@@ -526,8 +530,14 @@ it("continues in the host loop only for an explicit pre-start Runtime fallback",
         },
       };
     },
-    async run() {
+    async run(_input, instructions, tools) {
       modelCalls += 1;
+
+      expect(instructions).not.toContain("run_with_permissions");
+      expect(instructions).not.toContain("Windows Agent Runtime");
+      expect(tools.map((tool: any) => tool.name)).not.toContain(
+        "run_with_permissions",
+      );
 
       return { text: "host fallback completed", output: [] };
     },

@@ -4,8 +4,8 @@
  * 1. schemas 定义读文件、统一的多文件快照编辑（含显式新建文件）、Sandbox 内命令、一次性扩展权限命令和单一受限 Git 操作的参数；目录浏览和代码搜索均由 run_command 执行。
  * 2. gitRequestSchema 用 request 包裹各 action 的普通联合，适配模型 strict schema；parseToolArguments 同时兼容历史扁平参数。
  * 3. scheduledParameters 为新模型调用增加 execution（节点 ID 和依赖）信封；parseScheduledToolArguments 解开并严格校验它。
- * 4. descriptions 向模型说明本地函数工具的用途、限制和 DAG 参数约定。
- * 5. definitions 将带调度信封的 schema 转成 Responses API 需要的函数工具声明；webSearchTool 单独声明由模型服务执行的内置网页搜索。
+ * 4. descriptions 向模型说明宿主可用函数工具的用途、限制和 DAG 参数约定；runtimeDescriptions 仅补充实际 Windows Agent Runtime 可用的 capability runner 规则。
+ * 5. definitions 与 runtimeDefinitions 分别生成宿主和 Runtime 可见的函数工具声明，防止 host-process 或启动前 fallback 看见不可执行的扩展权限工具；webSearchTool 单独声明由模型服务执行的内置网页搜索。
  *
  * 本地函数工具没有执行逻辑时，还要在 ToolRunner 中补上实现和权限检查。内置网页搜索没有本地执行器、审批或 DAG 节点，其网络行为由配置的 Responses 服务负责。
  */
@@ -177,7 +177,7 @@ const descriptions: Record<string, string> = {
   edit_files:
     "Create or edit 1-20 distinct files in one call. Whenever arguments are already known and modifications do not conflict or depend on other tool results, collect all files for the same logical change in this one call rather than splitting calls by file. For a new file use {path, create:true, content}; creation fails if that path already exists. For an existing file use {path, create:false, fileVersion, edits}; read it in this task first and copy its contentHash as fileVersion (legacy null is accepted only for old calls). After a successful existing-file edit, read that file again before editing it again. Provide 1-100 non-overlapping edits located in the ORIGINAL snapshot, never text produced by another edit. Each edit has oldText/newText and startLine/endLine. Default startLine/endLine to null and choose the shortest oldText unique in the entire file; use a narrow 1-based inclusive line range to disambiguate repeated text. A supplied range is a hard boundary. Exact matching runs first, then unique CRLF/LF-equivalent matching for every text file; only ordinary files allow broader unique whitespace-normalized matching. Line-ending matching keeps the matched source's uniform line-ending style in newText, using the file style when the match has no newline; no fallback rewrites whitespace outside the match. Ambiguous candidates and stale versions are rejected with structured diagnostics; do not replay them blindly. Files write sequentially, NOT as a cross-file transaction. The result lists every failed path and error together; inspect per-file statuses and current contents. Merge all changes to the same real path in one entry.",
   run_command:
-    "Execute one command string in the session workspace; inside an Agent Runtime's existing permissions this needs no additional approval. Use this tool for repository directory listings and searches: follow the environment-detected, performance-ordered command list in the task instructions, prefer its first suitable command, and combine multiple keywords into one multi-pattern search when supported. Provide the command to run directly, for example `pnpm test`; never wrap it in `pwsh -Command`, `powershell -Command`, `cmd /c`, `sh -c`, or another terminal invocation. CodeAtelier selects the platform shell, fixed noninteractive arguments, and workspace directory internally. A complete compound command may combine known sequential commands or pipelines; for independent checks or a check after a known edit, prefer separate calls in the same DAG response with the required dependencies. Do not add artificial output separators. Use another model response only when a prior result is needed to construct the next command or decide whether to run it. Command output disables colors and removes terminal control sequences. If the command needs a file root or HTTPS host that the Agent Runtime does not have, use run_with_permissions instead and declare the minimal recursive roots/host plus a concrete reason. Do not use direct Git commands, elevation, or destructive system operations.",
+    "Execute one command string in the session workspace. Use this tool for repository directory listings and searches: follow the environment-detected, performance-ordered command list in the task instructions, prefer its first suitable command, and combine multiple keywords into one multi-pattern search when supported. Provide the command to run directly, for example `pnpm test`; never wrap it in `pwsh -Command`, `powershell -Command`, `cmd /c`, `sh -c`, or another terminal invocation. CodeAtelier selects the platform shell, fixed noninteractive arguments, and workspace directory internally. A complete compound command may combine known sequential commands or pipelines; for independent checks or a check after a known edit, prefer separate calls in the same DAG response with the required dependencies. Do not add artificial output separators. Use another model response only when a prior result is needed to construct the next command or decide whether to run it. Command output disables colors and removes terminal control sequences. Do not use direct Git commands, elevation, or destructive system operations.",
   run_with_permissions:
     "Request one command in an independent capability runner after Broker review through the normal low-cost-model approval flow. Declare only permissions the command actually needs: readRoots and writeRoots are recursive existing directory roots, and httpsHost grants CONNECT only to that exact public host on port 443. Include a concrete reason explaining why ordinary run_command cannot succeed. The Broker revalidates every field; review may approve, reject, or require human confirmation. Approval does not grant host-user authority, credentials, arbitrary network, additional roots or persistence. This call may run beside independent tools in the same DAG batch. Use Git push through the git tool instead.",
   memory_apply:
@@ -188,14 +188,34 @@ const descriptions: Record<string, string> = {
 /** OpenAI Responses 内置网页搜索；它不是本地 function_call，不能交给 ToolRunner 或 DAG 调度。 */
 export const webSearchTool = { type: "web_search" } as const;
 
-export const definitions = Object.entries(schemas).map(([name, schema]) => ({
-  type: "function" as const,
-  name,
-  description:
-    descriptions[name] +
-    " Each call must use {execution:{id,dependsOn},arguments:{...}}. id is unique within this response; dependsOn lists only execution.id values from other tool calls returned in this same response that must succeed before this call starts. Never use node IDs, execution IDs, or tool call IDs from an earlier model response as dependencies. Include all calls with known arguments in this response, including dependent calls such as an edit followed by a known check. Dependencies control order and success gating only: another tool result cannot fill these arguments in the same response.",
-  parameters: z.toJSONSchema(
-    scheduledParameters(name === "git" ? gitRequestSchema : schema),
-  ),
-  strict: true,
-}));
+const runtimeOnlyTools = new Set(["run_with_permissions"]);
+
+const runtimeDescriptions: Partial<Record<keyof typeof schemas, string>> = {
+  run_command:
+    "Execute one command string in the session workspace. Commands within the Agent Runtime's existing AccessManifest and WFP permissions execute without approval. Use this tool for repository directory listings and searches: follow the environment-detected, performance-ordered command list in the task instructions, prefer its first suitable command, and combine multiple keywords into one multi-pattern search when supported. Provide the command to run directly, for example `pnpm test`; never wrap it in `pwsh -Command`, `powershell -Command`, `cmd /c`, `sh -c`, or another terminal invocation. CodeAtelier selects the platform shell, fixed noninteractive arguments, and workspace directory internally. A complete compound command may combine known sequential commands or pipelines; for independent checks or a check after a known edit, prefer separate calls in the same DAG response with the required dependencies. Do not add artificial output separators. Use another model response only when a prior result is needed to construct the next command or decide whether to run it. Command output disables colors and removes terminal control sequences. If the command needs a file root or HTTPS host that the Agent Runtime does not have, use run_with_permissions instead and declare the minimal recursive roots/host plus a concrete reason. Do not use direct Git commands, elevation, or destructive system operations.",
+};
+
+function createDefinitions(includeRuntimeOnlyTools = false) {
+  return Object.entries(schemas)
+    .filter(([name]) => includeRuntimeOnlyTools || !runtimeOnlyTools.has(name))
+    .map(([name, schema]) => ({
+      type: "function" as const,
+      name,
+      description:
+        (includeRuntimeOnlyTools
+          ? (runtimeDescriptions[name as keyof typeof schemas] ??
+            descriptions[name])
+          : descriptions[name]) +
+        " Each call must use {execution:{id,dependsOn},arguments:{...}}. id is unique within this response; dependsOn lists only execution.id values from other tool calls returned in this same response that must succeed before this call starts. Never use node IDs, execution IDs, or tool call IDs from an earlier model response as dependencies. Include all calls with known arguments in this response, including dependent calls such as an edit followed by a known check. Dependencies control order and success gating only: another tool result cannot fill these arguments in the same response.",
+      parameters: z.toJSONSchema(
+        scheduledParameters(name === "git" ? gitRequestSchema : schema),
+      ),
+      strict: true,
+    }));
+}
+
+/** 宿主与启动前 fallback 的模型只接收可在该路径执行的工具。 */
+export const definitions = createDefinitions();
+
+/** 仅常驻 Windows Agent Runtime 接收 capability runner 及对应命令说明。 */
+export const runtimeDefinitions = createDefinitions(true);

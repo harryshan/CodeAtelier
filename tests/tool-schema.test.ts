@@ -10,6 +10,7 @@
 import { expect, it } from "vitest";
 import {
   definitions,
+  runtimeDefinitions,
   schemas,
   webSearchTool,
   parseScheduledToolArguments,
@@ -102,6 +103,23 @@ it("declares built-in web search separately from local function tools", () => {
   expect(webSearchTool).toEqual({ type: "web_search" });
   expect(definitions).not.toContainEqual(webSearchTool);
   expect(schemas).not.toHaveProperty("web_search");
+});
+
+it("exposes capability requests only to the Agent Runtime", () => {
+  expect(definitions.map((definition) => definition.name)).not.toContain(
+    "run_with_permissions",
+  );
+  expect(runtimeDefinitions.map((definition) => definition.name)).toContain(
+    "run_with_permissions",
+  );
+  expect(
+    definitions.find((definition) => definition.name === "run_command")
+      ?.description,
+  ).not.toContain("AccessManifest");
+  expect(
+    runtimeDefinitions.find((definition) => definition.name === "run_command")
+      ?.description,
+  ).toContain("AccessManifest");
 });
 
 it("exposes only edit_files for file writes and no directory or search tool", () => {

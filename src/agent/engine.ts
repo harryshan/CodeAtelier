@@ -1521,11 +1521,8 @@ export class Engine {
           );
         },
       });
-      const baseInstructions = await createInstructions(
-        session.workspace,
-        undefined,
-        this.config.sandbox.enabled,
-      );
+      // Runtime 启动前 fallback 已回到宿主权限模型；不能沿用仅 Runtime 可执行的提示或工具。
+      const baseInstructions = await createInstructions(session.workspace);
       const memorySpan = this.traces.startSpan(task.id, {
         name: "memory.retrieve",
         category: "memory",

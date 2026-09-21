@@ -89,8 +89,8 @@ describe("files and permissions", () => {
     expect(instructions).toContain(
       "Use the built-in web_search tool for current public web information",
     );
-    expect(instructions).toContain("curl is available");
-    expect(instructions).toContain("requires run_with_permissions");
+    expect(instructions).not.toContain("run_with_permissions");
+    expect(instructions).not.toContain("Windows Agent Runtime");
     expect(instructions).toContain("Use progressive code reading");
     expect(instructions).toContain(
       "Search before reading ordinary code or files",
@@ -112,6 +112,20 @@ describe("files and permissions", () => {
     expect(instructions).toContain("do not casually request a full git diff");
     expect(instructions).not.toContain("C:\\\\Tools\\\\pwsh.exe");
     expect(instructions).not.toContain("CODEATELIER_STEP");
+  });
+
+  it("adds capability guidance only for the actual Agent Runtime", async () => {
+    const hostInstructions = await createInstructions(await temp());
+    const runtimeInstructions = await createInstructions(
+      await temp(),
+      undefined,
+      true,
+    );
+
+    expect(hostInstructions).not.toContain("run_with_permissions");
+    expect(hostInstructions).not.toContain("Windows Agent Runtime");
+    expect(runtimeInstructions).toContain("run_with_permissions");
+    expect(runtimeInstructions).toContain("Windows Agent Runtime");
   });
 
   it("guides known dependent tool calls into one response", async () => {
