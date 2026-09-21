@@ -1,6 +1,24 @@
 # Windows 专用用户 Sandbox Runtime 与 Broker 架构
 
-状态：Windows 专用用户 Sandbox 的预览实现已接入命令与 Git 路径，正在按 W0--W6 验收；固定账户的提升安装和真实 push 尚未完成平台验收，因此它不是默认可用能力。macOS/Linux 明确禁用本实现和相关原生测试，继续使用既有 non-isolated 路径。本文替代 D098 的“当前用户 restricted-token 广泛读取”设计；现有 WSL2 `inspect` 和 Windows feasibility demo 只保留为历史或局部证据。
+状态：Windows 专用用户 Sandbox 的预览实现已接入逐工具命令与 Git 子进程路径，正在向常驻 Agent Runtime 迁移并按 W0--W6 验收；固定账户的提升安装、真实 Runtime→Broker IPC 和真实 push 尚未完成平台验收，因此它不是默认可用能力。macOS/Linux 明确禁用本实现和相关原生测试，继续使用既有 non-isolated 路径。本文替代 D098 的“当前用户 restricted-token 广泛读取”设计；现有 WSL2 `inspect` 和 Windows feasibility demo 只保留为历史或局部证据。
+
+## 0. 术语、进程和完成条件
+
+本文中的名称表示不同的进程或协议层，不得互换使用：
+
+| 术语 | 严格含义 | 当前状态 |
+| ---- | -------- | -------- |
+| **Broker Host** | 运行于宿主交互用户、持有模型密钥、session 数据库、审批策略和长期恢复账本的可信 Node.js 进程。它不执行 Git，也不以宿主权限代替已启动的 Sandbox 操作。 | 已存在；当前还临时承载尚未迁出的 agent loop 和文件工具。 |
+| **Agent Runtime** | 每个任务一个、运行于 `CodeAtelierSandbox` restricted token/Job 中的常驻 Node.js 进程。它承载完整 agent loop、上下文准备、工具计划、文件工具、普通命令与非 push Git；只能通过认证 Runtime IPC 请求 Broker 模型、session、审批及其它固定宿主能力。 | **目标，尚未接入真实路径。** 只有这个进程启动并承载 loop 后，文档才能说“agent loop 在 Runtime 内”。 |
+| **Push Runner** | 同任务普通 Agent Runtime 停止后创建的单用途受限进程，只执行一次已确认的 Git push，不加载 agent loop 或任意通用工具入口。 | 协议、relay 和原生部件已部分实现；真实 remote push 尚未完成提升验收。 |
+| **Sandbox Supervisor** | 已安装且受保护的固定 C++ 控制进程。它验证安装状态、创建 restricted token/Job/desktop、启动或终止 Agent Runtime/Push Runner，并完成 ACL journal 与 generation 清理；不解释模型输出，不运行 agent loop。 | 现有二进制已承载逐工具 process launch；常驻 Runtime 控制协议尚未接线。 |
+| **Sandboxed Tool Process** | 由当前过渡实现为单次 `run_command` 或 Git 调用启动的 shell、Git 或其后代。它受专用账户、token、Job、ACL 和 WFP 约束，但**不是 Agent Runtime**，结束后不保留 agent 状态。 | 当前真实产品调用路径。迁移完成后由 Agent Runtime 直接创建并监督，不再由 Broker 为每条命令启动。 |
+| **Runtime IPC** | Agent Runtime 与 Broker Host 间的任务专属、认证、固定 schema 双向通道。连接身份必须联合验证 PID/创建时间、Job、token/capability、generation、nonce 和 lease；模型/session/审批 adapter 运行在其上。 | `runtime-broker.ts` 只有传输无关 capability 核心；真实 Named Pipe transport 和 adapter 尚未接入。 |
+| **Supervisor Control Channel** | Broker Host 到 Sandbox Supervisor 的私有启动/终止控制通道。它只管理固定 Runtime kind 和 AccessManifest，不承载模型、工具或任意命令请求。 | TypeScript schema/channel 已有；现有逐工具二进制帧不是该目标控制通道。 |
+
+“Runtime”单独出现时只指 **Agent Runtime** 或 **Push Runner**，不能再指单条命令、Git 子进程、C++ supervisor、协议核心或历史 WSL2 launcher。`executionInstance` 是持久化归因记录，也不是进程名称。单元测试构造的内存对象必须称为 protocol core、mock transport 或 test harness，不能记作 Runtime IPC 已完成。
+
+目标完成的最低判据是：Broker 只负责调度和固定宿主能力；每个 Sandbox 任务先启动一个常驻 Agent Runtime；模型轮次、上下文处理、工具 DAG、文件工具、普通命令及非 push Git 都由该 Runtime 发起；模型密钥和宿主数据库不进入 Runtime；所有跨边界请求经真实认证 Runtime IPC；取消、断连、cleanup unknown 和服务重启仍遵守 generation 隔离及禁止盲目重放契约。仅把命令/Git 子进程放进专用账户不满足该判据。
 
 ## 1. 目标与安全边界
 

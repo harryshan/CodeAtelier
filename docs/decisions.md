@@ -871,3 +871,11 @@
 - 决定：Windows 专用用户目标 Runtime 在启动前只读 preflight 失败，或事务化 provision 失败后账本能证明 Runtime 尚未启动、临时 ACL/对象已完整回滚、代理/凭据未签发且没有其它遗留 Sandbox 副作用时，Broker 必须显示醒目的未隔离提示、持久化受限失败类别，并自动创建 `executionInstance.mode=host-process` 继续任务。记录同时保留 `sandboxRequested=true` 与 `sandboxApplied=false`；UI、日志、历史和统计不得把 fallback 冒充 Sandbox 成功，也不要求用户再次确认。
 - 未知结果边界：若 Agent Runtime、Push Runner 或后代已经启动，工具结果未知，或 Job、ACL、代理 lease、凭据及账户状态无法证明清理完成，则当前调用不得在宿主模式自动重放。系统记录 `unknown/orphaned`，隔离并排空 account generation；确认同一工作区不再有可能写入的孤儿进程后，后续任务才可带警告地以宿主模式继续。
 - 原因与影响：用户明确选择功能可用性优先于 Sandbox fail-closed。fallback 继续使用宿主模式现有审批、路径、Git、取消和恢复规则，但不具备专用账户文件边界、无直接网络或受限 push 保证。当前实现已覆盖自检前 fallback、UI/历史状态、独立 `sandbox.log`、执行后不重放，以及 Runtime→Broker 一次性命令 grant/模型 trace；事务化 ACL provision、executionInstance 持久账本和 orphaned generation 仍须随专用用户 Runtime 实现。
+
+## D104：恢复常驻 Agent Runtime 的原始进程边界并固定术语
+
+- 日期：2026-09-21
+- 状态：用户确认；澄清而非替代 D091、D092、D099--D103。逐命令/Git 隔离是迁移实现，不是目标架构变更。
+- 术语决定：`Agent Runtime` 只指每任务一个、在专用账户 restricted token/Job 中承载完整 agent loop、上下文处理、工具 DAG、文件工具、普通命令和非 push Git 的常驻 Node.js 进程。当前 C++ supervisor 为一次工具调用启动的 shell/Git 及后代统一称为 `Sandboxed Tool Process`；C++ 固定控制进程称为 `Sandbox Supervisor`；`runtime-broker.ts` 在接入真实传输前称为 Runtime→Broker capability protocol core；`Runtime IPC` 只指经过联合进程身份验证的真实任务专属通道。上述术语不能互换。
+- 实现决定：继续实现最初边界，不把当前逐工具 supervisor 路径固化为最终架构。Broker Host 保留调度、模型密钥、session 持久化、审批、长期恢复账本和固定宿主能力；Agent Runtime 发起模型轮次与工具执行，通过认证 Runtime IPC 使用 model/session/approval adapter。Broker 不运行 Git，模型密钥和宿主数据库不进入 Runtime。Push Runner 仍是无 agent loop 的单用途进程。
+- 完成与声明：只有常驻 Agent Runtime 已从真实 Sandbox Supervisor 启动、agent loop 和文件工具确实位于该进程、跨边界调用走真实认证 IPC，且取消、断连、unknown/orphaned 与 generation 恢复通过对应验收后，才能声明 Agent Runtime 或 W3/W4 完成。协议类单测、mock transport、逐命令专用账户子进程和目标图均不能单独支持该声明。

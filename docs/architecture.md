@@ -1,6 +1,6 @@
 # 架构
 
-当前初版为单进程本机后端、浏览器单页应用、单 agent；不同真实工作目录的会话默认最多两个任务并行，同一目录严格串行。Windows Sandbox 的预览实现采用单一专用低权限账户中的工具 Runtime 与宿主 Broker Host，详见 [Windows 专用用户 Sandbox Runtime 与 Broker 架构](windows-integrity-sandbox.md)；Sandbox 模式沿用相同的 1～4 个不同工作区并发和同工作区串行。它仍待固定账户提升验收，macOS/Linux 明确不加载此后端，不能把普通当前进程结构解释为已隔离。核心机制自行实现，没有引入 agent 编排框架。
+当前初版为单进程本机后端、浏览器单页应用、单 agent；不同真实工作目录的会话默认最多两个任务并行，同一目录严格串行。Windows Sandbox 的预览实现目前只把逐工具 Sandboxed Tool Process 放入单一专用低权限账户；目标仍是该账户中的常驻 Agent Runtime 与宿主 Broker Host，严格术语和完成判据见 [Windows 专用用户 Sandbox Runtime 与 Broker 架构](windows-integrity-sandbox.md#0-术语进程和完成条件)。Sandbox 模式沿用相同的 1～4 个不同工作区并发和同工作区串行。它仍待常驻 Runtime、真实 IPC 和固定账户提升验收，macOS/Linux 明确不加载此后端，不能把普通当前进程结构或逐命令隔离解释为完整 Agent Runtime。核心机制自行实现，没有引入 agent 编排框架。
 
 ## 模块与数据流
 
@@ -16,11 +16,13 @@ Broker Host（可信宿主边界）
   └─ 经认证、固定 schema 的 IPC
        ↕
 Sandbox Process（单一 CodeAtelierSandbox 账户；每实例独立 lease/capability/Job）
-  ├─ Agent Runtime：agent loop、工具计划、本地 Git 与命令；无网络（目标；当前仅命令/Git 子进程）
+  ├─ Agent Runtime：常驻 Node.js agent loop、工具计划、文件工具、本地 Git 与命令；无直接网络（目标；尚未接线）
   ├─ Push Runner：真实 Git 配置与认证 relay；无 agent loop
   ├─ 账户既有读取权 + 工作区、显式 read/write roots 与精确只读 Git config/include 图
   └─ WRITE_RESTRICTED 根 capability、产品依赖与私有临时目录；不继承宿主 profile/凭据
 ```
+
+当前过渡调用链则是 `Broker Host 中的 Engine/ToolRunner → C++ Sandbox Supervisor → 单次 Sandboxed Tool Process`。这里的 Sandboxed Tool Process 只是一条 shell/Git 命令及其后代，不是 Agent Runtime；`runtime-broker.ts` 也只是同进程可测试的 capability protocol core，不是 Runtime IPC。后续实现必须删除这两个命名捷径，而不是把目标定义降低为逐命令隔离。
 
 以下文件职责描述当前实现；专用用户/Broker 目标模块和迁移边界以 [windows-integrity-sandbox.md](windows-integrity-sandbox.md) 为准。无论当前还是目标架构，前端都不能导入文件、进程或密钥实现。
 
