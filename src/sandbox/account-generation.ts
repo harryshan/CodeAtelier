@@ -3,7 +3,7 @@
  * SandboxBroker 在原生 provision 前取得 lease，在 Job、代理与 ACL 全部清理后释放；恢复代码读取快照判断能否继续复用账户。
  *
  * 1. acquire 强制 1～4 个不同任务工作区并发、同一规范工作区串行；同任务可在 Agent Runtime 阻塞期间重叠一个 Push Runner 或 capability runner，并为每个实例分配单调 lease epoch。
- * 2. grant table 以对象身份和访问模式计数；首个引用先进入 provisioning，后继 lease 必须等待原生安装完成。
+ * 2. grant table 以对象身份和访问模式计数；acquire 先完整预检再提交引用，首个引用进入 provisioning，后继 lease 必须等待原生安装完成。
  * 3. release 使用 prepare/commit 两阶段协议；原生撤销失败前不删除 lease 或 grant，防止 orphan 从账本消失。
  * 4. quarantine 在未知进程、ACL、代理或凭据状态下冻结 generation，并返回所有仍需终止和对账的实例。
  * 5. snapshot 只暴露摘要和计数，可写入 session/log/trace；不包含原始路径、SID、命令或凭据。
@@ -179,8 +179,18 @@ export class AccountGenerationRegistry {
       Pick<GrantReference, "objectIdentityDigest" | "mode">
     > = [];
     const waits: Promise<void>[] = [];
+    const requestedGrants = manifestGrants(input.accessManifest);
 
-    for (const grant of manifestGrants(input.accessManifest)) {
+    for (const grant of requestedGrants) {
+      const current = this.grants.get(
+        grantKey(grant.objectIdentityDigest, grant.mode),
+      );
+      if (current?.provisionState === "failed") {
+        throw new AccountGenerationError("共享 ACL grant 安装已经失败。");
+      }
+    }
+
+    for (const grant of requestedGrants) {
       const key = grantKey(grant.objectIdentityDigest, grant.mode);
       const current = this.grants.get(key);
 
@@ -192,8 +202,6 @@ export class AccountGenerationRegistry {
               current.waiters.push({ resolve, reject });
             }),
           );
-        } else if (current.provisionState === "failed") {
-          throw new AccountGenerationError("共享 ACL grant 安装已经失败。");
         }
       } else {
         const reference: GrantReference = {

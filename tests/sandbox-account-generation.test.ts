@@ -5,7 +5,8 @@
  * 1. 不同工作区在上限内可并发，同一工作区与超限请求拒绝；同任务阻塞的 Runtime 可重叠一个 Push Runner。
  * 2. 相同只读对象跨 manifest 只安装一次；后继 lease 等待首个原生 provision 完成。
  * 3. release 在原生撤销成功前保留 lease/grant，commit 后才减少引用并在最后一个 lease 撤销。
- * 4. epoch/manifest 重放拒绝，账本不一致会 quarantine 整个 generation。
+ * 4. 已失败的共享 grant 会在 acquire 改变任何引用前拒绝，避免不存在的 lease 泄漏引用。
+ * 5. epoch/manifest 重放拒绝，账本不一致会 quarantine 整个 generation。
  */
 
 import { expect, it } from "vitest";
@@ -210,5 +211,36 @@ it("keeps the lease and grants when native revocation is not committed", () => {
     activeInstanceCount: 1,
     grantCount: 2,
     quarantineCategory: "acl_cleanup",
+  });
+});
+
+it("rejects failed shared grants without leaking a reference", () => {
+  const registry = new AccountGenerationRegistry(digest("a"), 2);
+  const firstManifest = manifest("workspace-a", "b");
+  const first = registry.acquire({
+    executionInstanceId: "instance-a",
+    kind: "agent-runtime",
+    taskId: "task-a",
+    accessManifest: firstManifest,
+  });
+  registry.markProvisionFailed("instance-a", first.lease.epoch);
+
+  expect(() =>
+    registry.acquire({
+      executionInstanceId: "instance-b",
+      kind: "agent-runtime",
+      taskId: "task-b",
+      accessManifest: manifest("workspace-b", "c"),
+    }),
+  ).toThrow("安装已经失败");
+  expect(registry.snapshot()).toMatchObject({
+    activeInstanceCount: 1,
+    grantCount: 2,
+  });
+
+  registry.rollbackAcquire("instance-a", first.lease.epoch, firstManifest);
+  expect(registry.snapshot()).toMatchObject({
+    activeInstanceCount: 0,
+    grantCount: 0,
   });
 });
