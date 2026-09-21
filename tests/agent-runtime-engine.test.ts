@@ -5,7 +5,7 @@
  * 1. Engine 生成 instance/nonce，launcher 启动真实 Node 子进程并返回 IPC 流。
  * 2. 子进程运行 read_file 工具 DAG，Broker 仅提供模型、session、审批和记忆 adapter。
  * 3. Engine 等待 Runtime 终态与 clean 退出，再把任务和 execution instance 记为 completed。
- * 4. 扩展权限命令先等待人工审批，再把规范化根和 host 交给独立 capability runner，并将结果送回 agent loop。
+ * 4. 扩展权限命令经低成本模型审批后，把规范化根和 host 交给独立 capability runner，并将结果送回 agent loop。
  * 5. launcher 证明 Runtime 尚未启动且 provision 已回滚时，Engine 明确记录 host fallback 并继续宿主 loop。
  */
 
@@ -175,6 +175,7 @@ it("reviews and executes a capability command through the Broker", async () => {
   const external = await temp();
   const config = new Config(await temp());
   config.sandbox.enabled = true;
+  config.settings.auxiliaryModel = "approval-model";
   config.sandbox.initialStatus = {
     enabled: true,
     requested: true,
@@ -224,6 +225,7 @@ it("reviews and executes a capability command through the Broker", async () => {
     },
   };
   let modelCalls = 0;
+  let approvalCalls = 0;
   const provider: ModelProvider = {
     async getCapabilities() {
       return {
@@ -269,7 +271,20 @@ it("reviews and executes a capability command through the Broker", async () => {
     store,
     config,
     pino({ enabled: false }),
-    () => provider,
+    (_settings, purpose) =>
+      purpose === "approval"
+        ? {
+            async run(input) {
+              approvalCalls += 1;
+              expect(JSON.stringify(input)).toContain("example.com");
+
+              return {
+                text: '{"decision":"approve","reason":"权限声明明确"}',
+                output: [],
+              };
+            },
+          }
+        : provider,
     launcher,
   );
   const sandboxedStatus = {
@@ -304,15 +319,11 @@ it("reviews and executes a capability command through the Broker", async () => {
 
   try {
     const task = engine.start(session.id, "run external tool");
-    await expect.poll(() => engine.approvals.list(session.id)).toHaveLength(1);
-    expect(execute).not.toHaveBeenCalled();
-    expect(engine.approvals.list(session.id)[0].description).toContain(
-      "example.com",
-    );
-    engine.approvals.decide(engine.approvals.list(session.id)[0].id, "once");
     await engine.active?.done;
 
     expect(store.task(task.id)?.status).toBe("completed");
+    expect(approvalCalls).toBe(1);
+    expect(engine.approvals.list(session.id)).toEqual([]);
     expect(execute).toHaveBeenCalledOnce();
     expect(Buffer.concat(errors).toString("utf8")).toBe("");
     expect(
@@ -325,6 +336,10 @@ it("reviews and executes a capability command through the Broker", async () => {
             (event.data as any).state === "completed",
         ),
     ).toBe(true);
+    const trace = await engine.savedTrace(task);
+
+    expect(trace).toContain("external-tool --version");
+    expect(trace).toContain("EXAMPLE.COM");
   } finally {
     await engine.close();
     store.close();

@@ -8,7 +8,7 @@
  * 4. UI/session 事件按单连接顺序排队；无效 DAG 在无副作用时回传模型修正，工具结果保存后才进入下一轮，取消或持久化失败不会盲目重放。
  * 5. 终态同时返回给 start_task 调用方并主动写 runtime_complete；Broker 仍结合进程/Job/ACL 清理决定最终可信状态。
  *
- * Push Runner 与扩展权限 Runner 都必须独占当前工具批次，并由结构化 Runtime IPC adapter 同步等待；完整跨进程 tracing 和提升环境验收仍未完成，不能据此宣称 W3/W4/W5 完成。
+ * Push Runner 必须独占当前工具批次；扩展权限 Runner 可与无依赖的普通工具并行。两者都由结构化 Runtime IPC adapter 等待结果；完整跨进程 tracing 和提升环境验收仍未完成，不能据此宣称 W3/W4/W5 完成。
  */
 
 import { createBudget } from "../context/token-budget.js";
@@ -432,13 +432,6 @@ export function buildRuntimeToolGraph(calls: any[]) {
   );
   if (containsPush && nodes.length !== 1) {
     throw new Error("Git push 必须是当前工具批次的唯一调用。");
-  }
-
-  const containsCapabilityRequest = nodes.some(
-    (node) => node.name === "run_with_permissions",
-  );
-  if (containsCapabilityRequest && nodes.length !== 1) {
-    throw new Error("扩展权限命令必须是当前工具批次的唯一调用。");
   }
 
   return createToolGraph(nodes);

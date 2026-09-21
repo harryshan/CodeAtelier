@@ -7,7 +7,7 @@
  * 3. resume 继续最后一个可恢复任务；cancel 处理用户取消，close 处理服务关闭。
  * 4. 首条 prompt 先用辅助模型生成标题；run 再读取历史和项目规则，准备工具及上下文预算。
  * 5. 为压缩提供 ToolRunner 的安全文件哈希探测；每轮记录上下文准备和请求计量、模型重试、实际模型请求和响应处理，再记录服务实报用量。完整响应保存后校验工具 DAG，再按拓扑关系调度。
- * 6. 宿主模式的危险调用仍经过审批分流；Sandbox Runtime 已有能力内工具免审批，push 与扩展权限命令由 Broker 强制人工确认并持久化决定。
+ * 6. 宿主模式的危险调用仍经过审批分流；Sandbox Runtime 已有能力内工具免审批，push 与扩展权限命令由 Broker 调用相同的低成本模型三级审批并持久化决定。
  * 7. 工具批次、节点状态和结果都附带批次/调用标识；ToolRunner 确认实际执行开始后才记录工具耗时，并在可复用调度轨道显示执行和结果持久化；退出时将安全 trace 写入会话/任务文件、释放运行期记录并发出 task_end。
  *
  * 模型请求可以重试，但已经执行的工具不能跟着重跑。数据库回滚也撤销不了文件修改或
@@ -920,8 +920,6 @@ export class Engine {
         description: `允许单次 HTTPS push 到 ${spec.host}，目标 ${spec.refspec}，当前对象 ${spec.objectId.slice(0, 12)}。该主机可接收仓库内容，Git 配置、hook 及其子进程会在本次网络窗口内运行。`,
       },
       signal,
-      undefined,
-      { requireHuman: true },
     );
     if (!allowed) {
       throw new Error("用户拒绝了 Sandbox Git push。");
@@ -1112,8 +1110,6 @@ export class Engine {
         ),
       },
       signal,
-      undefined,
-      { requireHuman: true },
     );
     if (!allowed) {
       throw new Error("用户拒绝了扩展权限命令。");
@@ -1286,6 +1282,14 @@ export class Engine {
                   callId: data.callId,
                   nodeId: data.nodeId,
                   executionInstanceId: undefined,
+                  parameters:
+                    data.name === "run_with_permissions"
+                      ? JSON.parse(
+                          redactJson(JSON.stringify(data.args), [
+                            this.config.apiKey,
+                          ]),
+                        )
+                      : undefined,
                 },
               }),
             );
@@ -2045,28 +2049,10 @@ export class Engine {
           nodes: graph.nodes.length,
         });
 
-        const traceToolParameters = (name: string, arguments_: unknown) => {
-          if (name === "run_with_permissions") {
-            const request = arguments_ as {
-              permissions?: {
-                readRoots?: unknown[];
-                writeRoots?: unknown[];
-                httpsHost?: unknown;
-              };
-            };
-
-            return {
-              readRootCount: request.permissions?.readRoots?.length ?? 0,
-              writeRootCount: request.permissions?.writeRoots?.length ?? 0,
-              networkRequested:
-                typeof request.permissions?.httpsHost === "string",
-            };
-          }
-
-          return JSON.parse(
+        const traceToolParameters = (arguments_: unknown) =>
+          JSON.parse(
             redactJson(JSON.stringify(arguments_), [this.config.apiKey]),
           );
-        };
 
         const batchSpan = this.traces.startSpan(task.id, {
           name: "tool.batch",
@@ -2098,10 +2084,7 @@ export class Engine {
                       batchId,
                       callId: node.callId,
                       nodeId: node.nodeId,
-                      parameters: traceToolParameters(
-                        node.name,
-                        node.arguments,
-                      ),
+                      parameters: traceToolParameters(node.arguments),
                     },
                   });
                   result = await readContextHistoryAsync(
@@ -2130,7 +2113,7 @@ export class Engine {
                           parameters:
                             node.name === "memory_apply"
                               ? undefined
-                              : traceToolParameters(node.name, node.arguments),
+                              : traceToolParameters(node.arguments),
                         },
                       });
                     });

@@ -181,8 +181,8 @@ context-request.test.ts 覆盖低于阈值时重复读取结果原样发送、�
 
 ### Agent Runtime 扩展权限命令
 
-- `tests/agent-runtime-tools.test.ts` 验证普通 Runtime `run_command` 不请求审批；`run_with_permissions` 只把严格命令/权限/理由和当前 `toolCallId` 交给 adapter。`tests/agent-runtime-service.test.ts` 还验证扩展权限请求必须独占工具批次，避免 Runtime 等待 Broker 时并行执行其它节点。
-- `tests/agent-runtime-engine.test.ts` 通过真实 Runtime 子进程验证审批前不启动 capability runner，批准后 Broker 收到规范化读写根、host 与原工具调用 ID，并把独立 Runner 的输出和终态送回 agent loop/session。
+- `tests/agent-runtime-tools.test.ts` 验证普通 Runtime `run_command` 不请求审批；`run_with_permissions` 只把严格命令/权限/理由和当前 `toolCallId` 交给 adapter。`tests/agent-runtime-service.test.ts` 还验证扩展权限请求保留普通 DAG 并行语义，而 Git push 继续独占批次。
+- `tests/agent-runtime-engine.test.ts` 通过真实 Runtime 子进程验证低成本模型可自动批准 capability 请求，Broker 收到规范化读写根、host 与原工具调用 ID，并把独立 Runner 的输出和终态送回 agent loop/session；任务 trace 保留经统一脱敏后的完整工具参数。
 - `tests/runtime-ipc.test.ts` 验证扩展权限请求的有界 schema 与调用关联，空权限、额外字段或无效 host 在跨进程处理前拒绝。
 - `tests/sandbox.test.ts` 验证一个阻塞 Agent Runtime 可重叠一个 capability runner，审核后的读写根进入该 Runner 的 AccessManifest，且禁止调用宿主 fallback。
 - C++ Supervisor 为 capability runner 将短期 host-bound proxy token 仅放进该 Runner 的代理环境，不查询 WinCred；Push Runner 继续使用同 Job askpass。原生构建只验证代码与协议可编译，固定账户下的递归根 ACL、真实 HTTPS client、取消、proxy lease 撤销和 generation drain 仍需提升环境验收。

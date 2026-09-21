@@ -4,7 +4,7 @@
  *
  * 1. Broker 先返回一次可重试错误，再返回无效 DAG；Runtime 有界重试并把无副作用错误保存给下一轮修正。
  * 2. Broker 随后返回 read_file function_call，Agent Runtime 在自己的进程内执行 ToolRunner；最终模型轮次观察到文件结果。
- * 3. 含 push 或扩展权限命令的工具批次在执行任何节点前要求 Runner 请求是唯一调用，防止同步等待时并行执行其它工具。
+ * 3. 含 push 的工具批次在执行任何节点前要求 push 是唯一调用；扩展权限请求保留普通 DAG 并行语义。
  * 4. Runtime 主动报告 completed，Broker 收到后关闭通道并确认子进程干净退出。
  */
 
@@ -45,7 +45,7 @@ it("requires git push to be the only tool in its batch", () => {
   );
 });
 
-it("requires a capability command to be the only tool in its batch", () => {
+it("allows a capability command beside an independent tool", () => {
   const capability = {
     type: "function_call",
     call_id: "capability-call",
@@ -73,10 +73,7 @@ it("requires a capability command to be the only tool in its batch", () => {
     }),
   };
 
-  expect(buildRuntimeToolGraph([capability]).nodes).toHaveLength(1);
-  expect(() => buildRuntimeToolGraph([capability, read])).toThrow(
-    "扩展权限命令必须是当前工具批次的唯一调用",
-  );
+  expect(buildRuntimeToolGraph([capability, read]).nodes).toHaveLength(2);
 });
 
 it("runs the model and tool loop in an independent Agent Runtime process", async () => {
