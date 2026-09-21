@@ -2,7 +2,7 @@
  * 管理单一 Windows Sandbox 账户 generation 的并发实例租约与共享 ACL grant 引用。
  * SandboxBroker 在原生 provision 前取得 lease，在 Job、代理与 ACL 全部清理后释放；恢复代码读取快照判断能否继续复用账户。
  *
- * 1. acquire 强制 1～4 个不同工作区并发、同一规范工作区串行，并为每个实例分配单调 lease epoch。
+ * 1. acquire 强制 1～4 个不同任务工作区并发、同一规范工作区串行；同任务可在 Agent Runtime 阻塞期间重叠一个 Push Runner，并为每个实例分配单调 lease epoch。
  * 2. grant table 以对象身份和访问模式计数；首个引用先进入 provisioning，后继 lease 必须等待原生安装完成。
  * 3. release 使用 prepare/commit 两阶段协议；原生撤销失败前不删除 lease 或 grant，防止 orphan 从账本消失。
  * 4. quarantine 在未知进程、ACL、代理或凭据状态下冻结 generation，并返回所有仍需终止和对账的实例。
@@ -138,12 +138,28 @@ export class AccountGenerationRegistry {
       throw new AccountGenerationError("execution instance 已持有租约。");
     }
 
-    if (this.active.size >= this.maximumConcurrentInstances) {
+    const active = [...this.active.values()];
+    const sameTask = active.filter((lease) => lease.taskId === input.taskId);
+    const nestedPushRunner =
+      input.kind === "push-runner" &&
+      sameTask.some(
+        (lease) =>
+          lease.kind === "agent-runtime" &&
+          lease.workspaceRootId === input.accessManifest.workspaceRootId,
+      ) &&
+      !sameTask.some((lease) => lease.kind === "push-runner");
+    const activeTasks = new Set(active.map((lease) => lease.taskId));
+
+    if (
+      !nestedPushRunner &&
+      activeTasks.size >= this.maximumConcurrentInstances
+    ) {
       throw new AccountGenerationError("已达到 Sandbox 并发上限。");
     }
 
     if (
-      [...this.active.values()].some(
+      !nestedPushRunner &&
+      active.some(
         (lease) =>
           lease.workspaceRootId === input.accessManifest.workspaceRootId,
       )

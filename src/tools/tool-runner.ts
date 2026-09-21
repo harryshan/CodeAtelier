@@ -14,7 +14,6 @@
  * 用户审批期间文件仍可能变化，所以批准后也要复核。新任务及本任务内已成功修改的已有文件必须重新读文件，不能沿用旧哈希。
  */
 
-import { existsSync } from "node:fs";
 import { readFile, readdir } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
@@ -23,9 +22,10 @@ import type { Settings } from "../shared/types.js";
 import type { Approval } from "../shared/types.js";
 import { resolveTarget, regularFile, sensitive, inside } from "./paths.js";
 import { executeProcess } from "./process.js";
-import { commandShell } from "./command-shell.js";
+import { commandShell, resolveExecutablePath } from "./command-shell.js";
 import { FileEditor } from "./file-editor.js";
 import { GitToolRunner, containsGitCommand } from "./git.js";
+import type { GitProcessResult, GitPushSpec } from "./git.js";
 import { SandboxBroker } from "../sandbox/broker.js";
 import { sandboxConfiguration } from "../sandbox/config.js";
 import type {
@@ -65,6 +65,11 @@ export interface ToolContext {
       request: unknown,
     ): Promise<unknown>;
   };
+  /** Runtime 只提交结构化 PushSpec；Broker 在独立 Push Runner 中执行并同步返回结果。 */
+  gitPush?: (
+    spec: GitPushSpec,
+    signal: AbortSignal,
+  ) => Promise<GitProcessResult>;
   /** Agent Runtime 内的工具进程已处于任务 Job/token，不得再次调用 Broker 的逐工具 Sandbox。 */
   executionBoundary?: "broker-host" | "agent-runtime";
   onSandboxStage?: (
@@ -114,6 +119,19 @@ export class ToolRunner {
           truncated: result.truncated,
         })),
       async (spec, args, cwd, signal, timeoutMs, outputLimit, onOutput) => {
+        if (this.ctx.executionBoundary === "agent-runtime") {
+          if (!this.ctx.gitPush) {
+            throw new Error("Agent Runtime 未连接独立 Push Runner adapter。");
+          }
+
+          const result = await this.ctx.gitPush(spec, signal);
+          if (result.output) {
+            onOutput(result.output);
+          }
+
+          return result;
+        }
+
         if (this.sandbox.statusFor(this.ctx.taskId).requested) {
           const allowed = await this.ctx.approvals.request(
             {
@@ -212,25 +230,7 @@ export class ToolRunner {
 
   /** Windows 原生 Runtime 不能依赖宿主 PATH 搜索；只把 Broker 已解析的真实程序路径交给 supervisor。 */
   private resolveExecutable(command: string) {
-    if (path.isAbsolute(command) || process.platform !== "win32") {
-      return command;
-    }
-
-    const pathValue = Object.entries(process.env).find(
-      ([key]) => key.toLocaleLowerCase() === "path",
-    )?.[1];
-    const names = path.extname(command) ? [command] : [`${command}.exe`];
-    for (const directory of pathValue?.split(";") ?? []) {
-      const cleanDirectory = directory.trim().replace(/^"|"$/g, "");
-      for (const name of names) {
-        const candidate = path.win32.resolve(cleanDirectory, name);
-        if (existsSync(candidate)) {
-          return candidate;
-        }
-      }
-    }
-
-    return command;
+    return resolveExecutablePath(command);
   }
 
   /** run_command 与 Git 共享同一 executionInstance、fallback、取消、恢复、日志和 trace 生命周期。 */
@@ -249,7 +249,7 @@ export class ToolRunner {
     if (this.ctx.executionBoundary === "agent-runtime") {
       if (input.executionKind === "push-runner") {
         throw new Error(
-          "Agent Runtime 不能直接执行 push；必须先由 Broker 切换到单用途 Push Runner。",
+          "Agent Runtime 不能直接创建 Push Runner；必须经结构化 Runtime IPC 请求 Broker。",
         );
       }
 

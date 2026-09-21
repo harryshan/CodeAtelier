@@ -59,7 +59,7 @@
 - endLine 小于 startLine 时返回成功空读取。现在拒绝无效范围，避免将错误输入当作成功读取。
 - 原结构化 JSON 日志的 token/password 等字段未被文本脱敏识别。增加内部字段脱敏，测试包含嵌套字段和转义引号；当前落盘前再格式化为纯文本，不泄露凭据。
 - Windows Sandbox 回归现覆盖：cleanup failure 在同时取消时仍为 unknown；原生 ACL 撤销失败前 lease/grant 不从账本删除；共享 read root 的第二个 lease 等待首个原生 provision；unknown 调用整代账户 drain；任务 A fallback 与任务 B sandboxed 并发时状态不串扰；启动恢复/首次 self-check 依次执行账户进程终止、journal 撤销和安装自检。这些是无提升副作用的协议/编排测试，不替代固定账户下的真实 ACL、Job、WFP 或崩溃恢复验收。
-- `runtime-capability-core.test.ts` 只验证传输无关的 capability 状态机。`runtime-ipc.test.ts` 以独立 Node 子进程验证有界 framing、instance/nonce 握手和模型流；`runtime-startup-protocol.test.ts` 验证安装版入口只接受固定本机 pipe 命名空间及有界严格首帧，并在 Windows 用真实本机 Named Pipe 启动独立 Node 正式入口完成握手和模型终态；`runtime-session-client.test.ts`、`agent-runtime-tools.test.ts`、`agent-runtime-service.test.ts` 与 `agent-runtime-engine.test.ts` 进一步验证 session adapter、Runtime 内命令、完整模型/工具循环、模型重试元数据、无效 DAG 的无副作用修正及 Engine launcher 分流。这些自动回归仍不验证专用账户、Named Pipe client PID、token/capability、Job 或 generation，因此不能单独计入 W3/W4 完成。
+- `runtime-capability-core.test.ts` 只验证传输无关的 capability 状态机。`runtime-ipc.test.ts` 以独立 Node 子进程验证有界 framing、instance/nonce 握手和模型流；请求级取消会向远端发送关联 requestId 的 cancel 帧、终止对应 handler，并以有界 tombstone 忽略竞态迟到响应而不破坏后续请求。`runtime-startup-protocol.test.ts` 验证安装版入口只接受固定本机 pipe 命名空间及有界严格首帧，并在 Windows 用真实本机 Named Pipe 启动独立 Node 正式入口完成握手和模型终态；`runtime-session-client.test.ts`、`agent-runtime-tools.test.ts`、`agent-runtime-service.test.ts` 与 `agent-runtime-engine.test.ts` 进一步验证 session adapter、Runtime 内命令、完整模型/工具循环、模型重试元数据、无效 DAG 的无副作用修正及 Engine launcher 分流。这些自动回归仍不验证专用账户、Named Pipe client PID、token/capability、Job 或 generation，因此不能单独计入 W3/W4 完成。
 - 原生产品构建直接编译 `native/windows-sandbox/network-fence-implementation.cpp` 并定义 `CODEATELIER_PRODUCT_WFP_ONLY`；构建后手工冒烟确认实验参数 `--ipc` 以退出码 2 被拒。实验 demo 通过薄包装编译同一实现但不定义该宏，避免产品源从 experiment 目录反向依赖。
 
 测试清单不等于穷尽所有输入或保证没有缺陷。当前 Windows WSL2 `inspect` 仅有历史的 bubblewrap 只读绑定与基本命名空间/环境夹具；restricted-token 和网络/IPC demo 也只是被 Codex 外层 Sandbox 明确区分的局部证据。专用账户动态 `ALE_USER_ID` V4/V6 TCP 回环 fence 的管理员矩阵已通过：宿主不受影响、专用账户每个地址族只通获准端口、其它端口返回 `WSAEACCES`；相同结果也由 restricted Runtime 的直接网络后代复现。dynamic engine 关闭后同一账户的两个地址族均恢复连接，账户和目录清理为 0。扩展运行进一步证明 UDP 拒绝端口在普通及 restricted 后代中均无法收到 ACK，V4/V6 listen 也在两条路径中均返回 `10013`；TEST-NET TCP 的初始 `10035` 和仅创建 raw socket 都不能作为最终结论。allow 已收紧为 loopback 地址加端口，并以本机真实非回环 IPv4 listener 和 raw bind 建立正反基线；完整动态与持久生命周期结果见下。目标架构的一次性提升安装、单一专用账户、并发 instance lease/grant table、显式 ACL 投影/撤销、精确 Git config 图、Runtime 身份、Broker IPC、产品持久 WFP fence、真实 Git 配置下的 host 级网络边界、认证 relay/credential pipe、短期凭据、Job 后代清理、kind-specific executionInstance、资源限制及外部写入仍须分别实现和验证，不能由探针结果替代。该 profile 明确允许同账户并发任务读取、终止、注入或检查其它活动 Runtime/授权根，也无法保护既有公共 ACL 对象的机密性；不同对话不是彼此的安全边界。每实例 capability 只承诺经验证的直接及后代文件写入限制，不保证 Git 配置/hooks/helper 无副作用或仓库 path/ref 级网络边界。能力声明须分别对应 W0 安装、W1 身份/网络、W2 文件/监督、W3 Broker IPC、W4 本地 Runtime、W5 受限 push 和 W6 取消/资源边界，不能用较早阶段推断较晚能力。另仍未进行断电/磁盘损坏恢复、真实模型质量统计、全浏览器矩阵、其他平台 OS 级 sandbox、访问密码抗暴力破解评估或长期压力测试。应用层权限和单一密码门禁都不是系统沙箱或公网安全保证；不得将通过现有测试描述成上述能力已经验证。
@@ -170,6 +170,14 @@ context-request.test.ts 覆盖低于阈值时重复读取结果原样发送、�
 ### Git 模型参数兼容性
 
 模型侧 `git` 参数采用 `{ "request": { "action": "status" } }`，其他 action 的字段也放在 request 内。根节点为严格 object，request 使用嵌套 anyOf；避免服务拒绝根级 oneOf。执行前严格验证各 action 字段，再解包交给原 Git 执行器；历史扁平参数继续受原校验约束。tool-schema.test.ts 覆盖根节点、oneOf 禁用、包装解包、历史兼容和额外/非法字段拒绝。
+
+### Agent Runtime 阻塞等待 Push Runner
+
+- `tests/agent-runtime-service.test.ts` 在执行任何节点前拒绝含 push 和其它调用的同一工具批次；单独 push 可形成有效图。
+- `tests/agent-runtime-tools.test.ts` 用真实临时 Git worktree 完成 upstream/OID 查询，随后验证 Runtime 只调用结构化 push adapter、同步取得结果，且不嵌套逐工具 SandboxBroker。
+- `tests/runtime-ipc.test.ts` 验证 `git_push` 只携带有界 PushSpec、返回值受固定 schema 校验；请求级取消继续只中止对应 handler。
+- `tests/sandbox-account-generation.test.ts` 验证已占用任务并发名额的 Agent Runtime 可在同一工作区重叠一个 Push Runner，但第二个 Runner 或新任务仍受并发约束。
+- `tests/sandbox.test.ts` 验证 Push Runner 后端缺失时不调用宿主 executor。真实 relay、凭据、hook/helper、取消清理和 remote push 仍须在固定账户提升环境手动验收。
 
 ### 文件版本过期归档
 

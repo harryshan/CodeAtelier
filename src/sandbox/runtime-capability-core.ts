@@ -8,9 +8,9 @@
  * 3. requestModel 从宿主选择 ModelProvider，Runtime 永远拿不到 API 地址或密钥；模型调用沿用 tracedModelProvider 并标记 Sandbox execution。
  * 4. authorize 回调用真实 pipe/process/Job/token 联合证明连接；日志和 trace 只记录数量、决策、kind 和关联 ID，不记录命令、路径、prompt 或输出。
  *
- * 当前产品尚未接入 Named Pipe transport。本模块只是 capability core，不是 Agent Runtime、Runtime IPC
- * 或进程启动器，也不代表 W1--W3 身份证明或
- * Windows supervisor 已完成；任何 transport 在调用本模块前仍必须完成权威身份核验。
+ * Windows 产品已由 native Supervisor 在调用本模块前完成 Named Pipe 客户端联合身份核验；本模块仍只负责
+ * transport 之上的 capability，不是 Agent Runtime、进程启动器或 W1--W3 平台验收本身。测试用 mock/stdio
+ * transport 也不能凭借调用本模块而获得产品身份保证。
  */
 
 import { createHash, randomUUID } from "node:crypto";

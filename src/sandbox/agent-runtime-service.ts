@@ -8,7 +8,7 @@
  * 4. UI/session 事件按单连接顺序排队；无效 DAG 在无副作用时回传模型修正，工具结果保存后才进入下一轮，取消或持久化失败不会盲目重放。
  * 5. 终态同时返回给 start_task 调用方并主动写 runtime_complete；Broker 仍结合进程/Job/ACL 清理决定最终可信状态。
  *
- * Push Runner 切换与完整跨进程 tracing 仍需由后续 Broker adapter 接入；模型与工具 replay 已由 Broker 捕获，但在 Windows 产品 transport 完成前仍不能宣称 W3/W4 完成。
+ * Push Runner 由结构化 Runtime IPC adapter 同步等待；完整跨进程 tracing 和提升环境验收仍未完成，不能据此宣称 W3/W4/W5 完成。
  */
 
 import { createBudget } from "../context/token-budget.js";
@@ -38,6 +38,7 @@ import { retryModel } from "../providers/retry.js";
 import { RuntimeSessionClient } from "./runtime-session-client.js";
 import {
   RuntimeApprovalClient,
+  RuntimeGitPushClient,
   RuntimeMemoryClient,
 } from "./runtime-tool-adapters.js";
 import { randomUUID } from "node:crypto";
@@ -115,6 +116,8 @@ export class AgentRuntimeService {
         settings: toolSettings,
         approvals: new RuntimeApprovalClient(this.peer),
         memory: new RuntimeMemoryClient(this.peer, signal),
+        gitPush: (spec, pushSignal) =>
+          new RuntimeGitPushClient(this.peer).execute(spec, pushSignal),
         executionBoundary: "agent-runtime",
         emit: (type, data) => events.emit(type, data),
       });
@@ -389,25 +392,34 @@ function runtimeToolSettings(settings: RuntimeTaskSettings) {
   };
 }
 
-function buildRuntimeToolGraph(calls: any[]) {
-  return createToolGraph(
-    calls.map((call, ordinal) => {
-      const raw = JSON.parse(call.arguments);
-      const scheduled =
-        call.name === historyDefinition.name
-          ? parseScheduledHistoryArguments(raw, `call-${ordinal + 1}`)
-          : parseScheduledToolArguments(call.name, raw, `call-${ordinal + 1}`);
+export function buildRuntimeToolGraph(calls: any[]) {
+  const nodes = calls.map((call, ordinal) => {
+    const raw = JSON.parse(call.arguments);
+    const scheduled =
+      call.name === historyDefinition.name
+        ? parseScheduledHistoryArguments(raw, `call-${ordinal + 1}`)
+        : parseScheduledToolArguments(call.name, raw, `call-${ordinal + 1}`);
 
-      return {
-        callId: call.call_id,
-        nodeId: scheduled.execution.id,
-        name: call.name,
-        arguments: scheduled.arguments,
-        dependsOn: scheduled.execution.dependsOn,
-        ordinal,
-      };
-    }),
+    return {
+      callId: call.call_id,
+      nodeId: scheduled.execution.id,
+      name: call.name,
+      arguments: scheduled.arguments,
+      dependsOn: scheduled.execution.dependsOn,
+      ordinal,
+    };
+  });
+  const containsPush = nodes.some(
+    (node) =>
+      node.name === "git" &&
+      ((node.arguments as any).action === "push" ||
+        (node.arguments as any).request?.action === "push"),
   );
+  if (containsPush && nodes.length !== 1) {
+    throw new Error("Git push 必须是当前工具批次的唯一调用。");
+  }
+
+  return createToolGraph(nodes);
 }
 
 function toolSucceeded(result: any) {

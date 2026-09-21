@@ -770,8 +770,8 @@
 ## D093：收紧 push egress、supervisor 与实例恢复契约
 
 - 日期：2026-09-19
-- 状态：部分保留。单用途 Push Runner、WFP/relay、supervisor 租约、orphaned 和分层声明继续有效；D099 改用单一专用账户 SID 的持久 WFP fence，并由代理对 execution instance 做任务级认证。
-- push 强制机制：AppContainer 网络 capability 不作为 host allowlist。每次 push 创建新的单用途 Push Runner 和 SID，不加载 agent loop 或 shell；Broker 先终止普通 Runtime 并锁定工作区。WFP 对 Runner SID 默认拒绝全部直接出站，代理仅接受获准 host/port，负责 DNS/IP/私网/metadata/时限/字节数检查和加密字节转发，不解密或解析 Git。D094 增加 Runner relay 与连接身份证明；D095 随后撤销 shadow Git/配置隔离要求，但不改变 WFP 和 CONNECT host 边界。现行执行契约以 D095 与权威设计文档为准。任一安装、自检或撤销状态不确定均安全失败。
+- 状态：部分保留。单用途 Push Runner、WFP/relay、supervisor 租约、orphaned 和分层声明继续有效；D099 改用单一专用账户 SID 的持久 WFP fence，并由代理对 execution instance 做任务级认证；D105 删除 push 前终止普通 Runtime 的要求。
+- push 强制机制：AppContainer 网络 capability 不作为 host allowlist。每次 push 创建新的单用途 Push Runner 和 SID，不加载 agent loop 或 shell；按 D105，Agent Runtime 保持存活，其 agent loop 在认证 IPC 请求上同步阻塞，且 push 是当前工具批次的唯一节点。WFP 对 Runner SID 默认拒绝全部直接出站，代理仅接受获准 host/port，负责 DNS/IP/私网/metadata/时限/字节数检查和加密字节转发，不解密或解析 Git。D094 增加 Runner relay 与连接身份证明；D095 随后撤销 shadow Git/配置隔离要求，但不改变 WFP 和 CONNECT host 边界。现行执行契约以 D095、D105 与权威设计文档为准。任一安装、自检或撤销状态不确定均安全失败。
 - supervisor 与孤儿：supervisor 从固定安装路径启动并核对签名、版本和映像哈希，只接受 Broker 私有继承 handle 或同等强度通道上的固定 schema；Runtime 不能连接控制面，IPC 不返回原始 handle。控制通道带 heartbeat/租约；Broker 断开、租约过期、身份变化或实例无法复证时关闭带 `KILL_ON_JOB_CLOSE` 的 Job 并撤销 WFP/ACL。失败持久化为 `orphaned` 安全告警；对账完成前锁定 task/workspace，不创建替代 Runtime。
 - 文件授权：首版只接受授权根的最小 ACL ACE，明确禁止 `broadFileSystemAccess`。D097 进一步确认不依赖实验性的 `CreateProcessInSandbox` 或其 Bound File System（BFS）策略；BFS 或其他替代方案只有在另行定义平台 API、对象/重解析/生命周期语义并证明不宽于 ACL 后才能采用。
 - 统一恢复模型：本决定最初使用 `mode: appcontainer | host-process`，D098 曾改为 `windows-restricted-token`，D099 最终改为 `windows-sandbox-user | host-process`。kind 和二选一 `agentRuntimeInstanceId`/`pushRunnerInstanceId` 归因、不为非 Sandbox 执行伪造字段、取消/unknown/禁止重放语义继续有效。
@@ -827,7 +827,7 @@
 
 - 日期：2026-09-20
 - 状态：主体继续有效；其中“Sandbox 全局串行”和账户排他租约已由 D100 替代。用户已授权产品实现；原生安装、ACL/Job/desktop、Git 投影、受限工具路由和 CONNECT relay 已进入代码，但尚未完成提升环境端到端验收，不能宣称完整可用。
-- 账户与并发：Windows 一次性提升安装创建单一低权限本地账户 `CodeAtelierSandbox`，将随机口令以宿主 Broker 用户可解密的系统保护存储保存，并配置最小组成员、登录权和环境。首版由非提升 Broker 以 `CreateProcessWithLogonW` 且不加载 profile 启动固定 runner，因此保留该 API 所需的本地 logon，隐藏欢迎屏幕入口并禁止远程/网络/服务登录；域策略不兼容时安装失败。所有 Agent Runtime、Push Runner、Git、hook、helper 与后代都使用该账户的 restricted token 和 Job。D100 允许该账户按现有上限并发运行 1～4 个不同工作区任务，同一工作区和同一会话仍串行；Agent Runtime 切换为 Push Runner 前只须证明同任务原 Job 全部退出。
+- 账户与并发：Windows 一次性提升安装创建单一低权限本地账户 `CodeAtelierSandbox`，将随机口令以宿主 Broker 用户可解密的系统保护存储保存，并配置最小组成员、登录权和环境。首版由非提升 Broker 以 `CreateProcessWithLogonW` 且不加载 profile 启动固定 runner，因此保留该 API 所需的本地 logon，隐藏欢迎屏幕入口并禁止远程/网络/服务登录；域策略不兼容时安装失败。所有 Agent Runtime、Push Runner、Git、hook、helper 与后代都使用该账户的 restricted token 和 Job。D100 允许该账户按现有上限并发运行 1～4 个不同工作区任务，同一工作区和同一会话仍串行；D105 已撤销 push 前停止 Agent Runtime 并证明其 Job 为空的要求。
 - 文件边界：Broker 向 AccessManifest 中的工作区、显式 read/write roots、产品 Runtime 依赖、专用临时目录和精确 Git config/include 图投影最小 ACL；可写根另以 `WRITE_RESTRICTED` token 的独立 capability SID 约束。专用账户不继承只授予宿主交互用户的 profile/凭据权限，但 `Everyone`、`Authenticated Users` 和其它既有机器 ACL 可能允许额外读取，因此不承诺纯读取 allowlist。工作区内部不额外保护 `.git`、`.env` 或其他子路径；全部 Git 在 Runtime 内执行，Broker 不运行 Git。宿主 `%USERPROFILE%\.gitconfig`、`%USERPROFILE%\.config\git\config` 及对当前工作区成立的 include/includeIf 图只读授权；Sandbox 使用逐租约私有可写 HOME，`GIT_CONFIG_GLOBAL` 聚合入口按 D102 位于独立只读投影根。helper、证书、签名程序或其他引用对象不自动授权。宿主 Credential Manager、SSH agent 和用户证书私钥不继承。
 - 网络与 push：提升安装按专用账户 SID 建立持久 WFP 默认拒绝规则，只允许固定 Broker relay/CONNECT proxy 端口；普通 Runtime 和 Push Runner 都不能直接出站，push 时也不临时放宽 WFP。任务级代理联合验证账户 SID、PID、创建时间、Job、kind-specific instance ID、nonce、lease 与调用摘要，再按逐次确认的 HTTPS host/port、DNS/IP 类别、期限和字节上限转发。应用层 PushSpec 仍用于确认预期 remote/ref，但 host 级边界不保证仓库 path/ref 或上传内容。该方案不使用自研 WFP callout driver。
 - 监督与恢复：Broker 维护 account generation 和多个 instance lease，通过只允许 Broker 控制的 supervisor 控制面管理进程/Job handle、heartbeat、ACL 原对象和清理。正常取消只清理目标实例；若终止进程树、关闭代理 lease、撤销 ACL 或复核 WFP/账户状态任一步无法证明，则记录 `orphaned`、隔离整个 generation、冻结新 Sandbox 任务并排空其它活动实例。`executionInstance.mode` 为 `windows-sandbox-user | host-process`，并用 `kind: agent-runtime | push-runner` 与对应 kind-specific ID；取消/unknown/orphaned、部分输出、可能副作用和禁止自动重放随 session 进入下一轮。
@@ -837,12 +837,12 @@
 
 - 日期：2026-09-20
 - 状态：已确认。不同对话不要求相互构成 OS 安全边界；并发对象攻击夹具的结果改记为接受风险，不再阻塞单账户并发。产品实现与其余 W0--W7 验收仍未完成。
-- 并发决定：撤销 D099 的 Sandbox 全局串行。Sandbox 与 host-process 模式统一沿用现有 `maxConcurrentTasks` 1～4 设置；不同真实工作区可并发，同一真实工作区、同一会话仍串行。仍只创建一个 `CodeAtelierSandbox` 账户，不引入账户池。Agent Runtime 切换为 Push Runner 时只停止并替换同一任务实例，其它工作区任务继续。
+- 并发决定：撤销 D099 的 Sandbox 全局串行。Sandbox 与 host-process 模式统一沿用现有 `maxConcurrentTasks` 1～4 设置；不同真实工作区可并发，同一真实工作区、同一会话仍串行。仍只创建一个 `CodeAtelierSandbox` 账户，不引入账户池。D105 进一步明确：push 是当前工具批次的唯一节点，Agent Runtime 保持存活并同步等待独立 Push Runner，其它工作区任务继续。
 - 每实例边界：每个 execution instance 获得独立 `WRITE_RESTRICTED` token、execution SID、根 capability SID、Job、private desktop、逐租约 HOME/temp、Named Pipe nonce、proxy lease 和 kind-specific ID；实际 logon SID 仅观测。execution/root capability 的安全承诺只覆盖经验证的文件写入与 Broker 的正常路由/记账，不把同账户 process/thread/token/Job/desktop/命名对象变成对恶意 peer 的隔离边界。bootstrap runner 和 supervisor 控制面仍必须只允许 Broker/SYSTEM，Sandbox Runtime 不得直接取得高权限控制能力。WFP 继续按共享账户 SID 永久阻止直接出站。
 - 接受的 peer 风险：账户 SID 的 ACL 是所有活动 AccessManifest 的并集，因此一个并发 Runtime 可能读取其它活动任务的工作区、Git 配置、显式 read roots 和逐租约目录；同账户 peer 还可能打开、终止、注入、调试或检查其它 Runtime/Job/desktop/命名对象，并借此干扰任务或观察其能力。Broker/session API 仍按 task/instance 路由以保证正常产品行为，但不宣称抵抗恶意 peer 冒用另一个任务。UI 和能力声明必须明确不同对话不是 OS 安全边界。需要任务间保密或抗干扰时必须使用未来的账户池、AppContainer 或 VM profile。
 - 保留的写入边界：每实例 root capability 仍必须证明实例 A 不能直接或通过后代写实例 B 的授权根；若 `Everyone` 等兼容 restricting SID 能匹配任一有效写 ACE，预检必须拒绝该根，不能降级为共享写入。单账户 peer 可能通过终止或注入拥有 B 权限的进程间接影响 B，属于上一项接受风险，不应被描述为 capability 提供的对抗性实例隔离。
 - ACL 与失败处理：账户 SID 的共享 ACE 使用以稳定对象身份、访问模式和 ACE delta 为键的引用计数 grant table；每实例 capability ACE 独立撤销，最后一个共享引用释放后才撤销账户 ACE。任一实例的 Job、代理、凭据、ACL 或对象对账无法证明完成时，将整个 account generation 标记 `orphaned/quarantined`，冻结新 Sandbox 任务并终止、对账全部活动实例；不能只清理故障工作区后继续复用账户。
-- 验收影响：W0/W2/W3/W5/W6 增加 1～4 实例并发、同工作区排队、跨任务读取可见/直接及后代写入拒绝、共享 ACE 生命周期、本任务 push 切换不打断其它任务、单实例取消和 generation 级故障排空夹具。同 SID process/thread/Job 危险访问只记录实际结果并确认不会破坏测试编排，不再要求拒绝；真正必须拒绝的是 Runtime 对 Broker/supervisor 高权限控制面和专用账户 WFP fence 的绕过。
+- 验收影响：W0/W2/W3/W5/W6 增加 1～4 实例并发、同工作区排队、跨任务读取可见/直接及后代写入拒绝、共享 ACE 生命周期、本任务阻塞等待 Push Runner 不打断其它任务、单实例取消和 generation 级故障排空夹具。同 SID process/thread/Job 危险访问只记录实际结果并确认不会破坏测试编排，不再要求拒绝；真正必须拒绝的是 Runtime 对 Broker/supervisor 高权限控制面和专用账户 WFP fence 的绕过。
 
 ## D101：logon SID 不作为实例身份
 
@@ -879,3 +879,12 @@
 - 术语决定：`Agent Runtime` 只指每任务一个、在专用账户 restricted token/Job 中承载完整 agent loop、上下文处理、工具 DAG、文件工具、普通命令和非 push Git 的常驻 Node.js 进程。当前 C++ supervisor 为一次工具调用启动的 shell/Git 及后代统一称为 `Sandboxed Tool Process`；C++ 固定控制进程称为 `Sandbox Supervisor`；`runtime-capability-core.ts` 在接入真实传输前称为 Runtime→Broker capability protocol core；`Runtime IPC` 只指经过联合进程身份验证的真实任务专属通道。上述术语不能互换。
 - 实现决定：继续实现最初边界，不把当前逐工具 supervisor 路径固化为最终架构。Broker Host 保留调度、模型密钥、session 持久化、审批、长期恢复账本和固定宿主能力；Agent Runtime 发起模型轮次与工具执行，通过认证 Runtime IPC 使用 model/session/approval adapter。Broker 不运行 Git，模型密钥和宿主数据库不进入 Runtime。Push Runner 仍是无 agent loop 的单用途进程。
 - 完成与声明：只有常驻 Agent Runtime 已从真实 Sandbox Supervisor 启动、agent loop 和文件工具确实位于该进程、跨边界调用走真实认证 IPC，且取消、断连、unknown/orphaned 与 generation 恢复通过对应验收后，才能声明 Agent Runtime 或 W3/W4 完成。协议类单测、mock transport、逐命令专用账户子进程和目标图均不能单独支持该声明。
+
+## D105：Push Runner 期间保留并阻塞 Agent Runtime
+
+- 日期：2026-09-21
+- 状态：用户确认；替代 D093、D099、D100 和权威设计中“push 前停止或替换 Agent Runtime、确认原 Job 为空、之后恢复 Runtime”的要求，不改变独立 Push Runner、WFP、relay、凭据或失败边界。
+- 生命周期：Git push 必须是当前工具批次中唯一执行的节点。Agent Runtime 通过认证 Runtime IPC 提交已解析 PushSpec 后，其 agent loop 同步等待 Broker；等待期间不发起模型轮次、不执行其它工具，也不启动新的普通命令后代，但 Agent Runtime 进程和原 Job 保持存活。Broker 在独立 execution instance、restricted token、Job、capability、private directory 和 proxy lease 中启动一次性 Push Runner；结果和受限输出经同一 IPC 返回后，原 agent loop 继续。
+- 安全边界：Agent Runtime 不获得 relay lease、代理 token、askpass 通道或凭据；代理仍只接受经联合身份验证的 Push Runner。保留 Runtime 不新增跨任务隔离承诺，也不改变单一账户 peer 风险。独占批次消除正常调度路径中的同任务并行仓库修改，但不能把同账户恶意 peer 或外部宿主进程描述为已隔离。
+- 取消与失败：任务取消同时取消等待中的 IPC 请求和 Push Runner；只有 Runner Job、代理/凭据 lease、ACL 与 generation 清理全部可证明时返回 cancelled/failed 结果并允许 Runtime 继续或结束。Runner 已启动而结果或清理未知时，Agent Runtime 不自动重试 push；Broker 记录 Push Runner `unknown/orphaned`，隔离并排空整代账户，原 Runtime 也随 generation drain 结束。
+- 原因：终止并重建 Agent Runtime 需要额外的 agent loop 状态移交和待完成工具调用恢复，却不能在已接受的单账户 peer 模型下形成真正的对抗性进程隔离。保持 Runtime 阻塞可以直接返回工具结果，同时仍以独立 Runner 身份隔离网络和凭据能力。

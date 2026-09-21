@@ -80,6 +80,8 @@ import {
   type RuntimeExecutionIdentity,
 } from "../sandbox/runtime-capability-core.js";
 import { RuntimeIpcBrokerSession } from "../sandbox/runtime-ipc-broker-session.js";
+import { resolveExecutablePath } from "../tools/command-shell.js";
+import type { GitProcessResult, GitPushSpec } from "../tools/git.js";
 
 // 标题请求没有工具或文件副作用；服务未提供可分类原因时，允许比主任务多一次诊断性重试。
 const titleRetryOptions = { retries: 3, retryUnknownErrors: true };
@@ -739,6 +741,15 @@ export class Engine {
         nonce,
         gateway,
         {
+          executeGitPush: (_runtime, spec, requestSignal) =>
+            this.executeRuntimeGitPush(
+              task,
+              workspace,
+              spec,
+              requestSignal,
+              settings,
+              emit,
+            ),
           requestApproval: async (_runtime, request, requestSignal) => ({
             approved: await this.approvals.request(
               {
@@ -852,6 +863,131 @@ export class Engine {
           publishExecution("unknown", { sideEffectsPossible: true });
         }
       }
+    }
+  }
+
+  /**
+   * Agent Runtime 在此请求上保持存活并同步等待；只有独立 Push Runner 获得 relay/credential lease。
+   * Broker 从 PushSpec 重建固定参数，且明确禁止 Sandbox 启动失败时回退为宿主 Git。
+   */
+  private async executeRuntimeGitPush(
+    task: Task,
+    workspace: string,
+    spec: GitPushSpec,
+    signal: AbortSignal,
+    settings: Settings,
+    emit: (type: string, data: any) => void,
+  ): Promise<GitProcessResult> {
+    const remoteUrl = new URL(spec.remoteUrl);
+    if (
+      remoteUrl.protocol !== "https:" ||
+      remoteUrl.hostname.toLocaleLowerCase() !==
+        spec.host.toLocaleLowerCase() ||
+      remoteUrl.username ||
+      remoteUrl.password
+    ) {
+      throw new Error("PushSpec 的 HTTPS remote 与获准 host 不一致。");
+    }
+
+    const allowed = await this.approvals.request(
+      {
+        sessionId: task.sessionId,
+        taskId: task.id,
+        tool: "git_push",
+        description: `允许单次 HTTPS push 到 ${spec.host}，目标 ${spec.refspec}，当前对象 ${spec.objectId.slice(0, 12)}。该主机可接收仓库内容，Git 配置、hook 及其子进程会在本次网络窗口内运行。`,
+      },
+      signal,
+    );
+    if (!allowed) {
+      throw new Error("用户拒绝了 Sandbox Git push。");
+    }
+
+    const executionInstanceId = randomUUID();
+    const createdAt = new Date().toISOString();
+    const publish = (
+      state:
+        | "created"
+        | "running"
+        | "completed"
+        | "failed"
+        | "cancelled"
+        | "unknown",
+      extra: Record<string, unknown> = {},
+    ) => {
+      const status = this.sandbox.statusFor(task.id, executionInstanceId);
+      const record = {
+        executionInstanceId,
+        kind: "push-runner" as const,
+        mode:
+          status.mode === "sandboxed"
+            ? ("windows-sandbox-user" as const)
+            : status.mode === "unknown"
+              ? ("unknown" as const)
+              : ("host-process" as const),
+        state,
+        createdAt,
+        updatedAt: new Date().toISOString(),
+        sandboxRequested: true,
+        sandboxApplied: status.mode === "sandboxed",
+        failureCategory: status.failureCategory,
+        ...extra,
+      };
+      emit("execution_instance", record);
+      this.sandbox.recordExecutionInstance(record);
+    };
+
+    publish("created");
+    try {
+      const targetRef = spec.refspec.slice("HEAD:".length);
+      const outcome = await this.sandbox.executeCommand(
+        {
+          sessionId: task.sessionId,
+          taskId: task.id,
+          executionInstanceId,
+          kind: "push-runner",
+          networkHost: spec.host,
+          command: resolveExecutablePath("git"),
+          args: [
+            "push",
+            "--porcelain",
+            spec.remote,
+            `${spec.objectId}:${targetRef}`,
+          ],
+          cwd: workspace,
+          signal,
+          timeoutMs: settings.commandTimeoutMs,
+          outputLimit: settings.outputChars,
+          onOutput: (text) => emit("git_output", { text }),
+          onProcessStarted: (pid, pidKind, processCreationTime100ns) =>
+            publish("running", { pid, pidKind, processCreationTime100ns }),
+        },
+        async () => {
+          throw new Error("Push Runner 禁止宿主 Git fallback。");
+        },
+        (stage, status) =>
+          emit("sandbox_stage", {
+            stage,
+            executionInstanceId,
+            ...status,
+          }),
+        { allowHostFallback: false },
+      );
+      publish(outcome.result.exitCode === 0 ? "completed" : "failed", {
+        sideEffectsPossible: outcome.result.exitCode !== 0,
+      });
+
+      return outcome.result;
+    } catch (error) {
+      const status = this.sandbox.statusFor(task.id, executionInstanceId);
+      publish(
+        status.mode === "unknown"
+          ? "unknown"
+          : signal.aborted
+            ? "cancelled"
+            : "failed",
+        { sideEffectsPossible: status.mode === "unknown" },
+      );
+      throw error;
     }
   }
 

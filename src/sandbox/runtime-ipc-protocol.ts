@@ -3,9 +3,9 @@
  * Sandbox Supervisor/Windows transport 必须先把连接绑定到已验证的 PID、Job、token、generation、nonce 和 lease，
  * 然后才能把已认证字节流交给 RuntimeIpcPeer；测试用 stdio 只验证 framing 和跨进程路由，不构成 W3 证据。
  *
- * 1. runtimeRequestSchema 限定 Runtime 可请求的模型、审批和 session adapter，不提供任意宿主函数或路径入口。
+ * 1. runtimeRequestSchema 限定 Runtime 可请求的模型、审批、session adapter 和结构化 Git PushSpec，不提供任意宿主函数、命令或路径入口。
  * 2. runtimeResponseSchema 关联原 requestId；错误只返回受限 code/message 与模型重试元数据，避免泄露宿主异常对象。
- * 3. runtimeEventSchema 承载模型 delta、Broker 取消和 Runtime 生命周期通知；大对象仍受 transport 帧上限约束。
+ * 3. runtimeEventSchema 承载模型 delta、任务取消、请求级取消和 Runtime 生命周期通知；大对象仍受 transport 帧上限约束。
  * 4. hello schema 绑定协议版本、任务和 instance；其中 Runtime 自报字段只用于一致性核对，不能替代 transport 身份。
  */
 
@@ -20,6 +20,38 @@ const requestBase = {
   type: z.literal("request"),
   requestId: identifier,
 };
+
+export const runtimeGitPushSpecSchema = z
+  .object({
+    remote: z
+      .string()
+      .min(1)
+      .max(200)
+      .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/),
+    remoteUrl: z.string().url().max(32_767),
+    host: z.string().min(1).max(253),
+    refspec: z
+      .string()
+      .min(1)
+      .max(1_024)
+      .regex(/^HEAD:refs\/heads\/[A-Za-z0-9][A-Za-z0-9._/-]*$/)
+      .refine(
+        (value) =>
+          !value.includes("..") &&
+          !value.includes("//") &&
+          !value.endsWith("/"),
+      ),
+    objectId: z.string().regex(/^[a-f0-9]{40,64}$/i),
+  })
+  .strict();
+
+export const runtimeGitPushResultSchema = z
+  .object({
+    output: z.string().max(2_000_000),
+    exitCode: z.number().int().nullable(),
+    truncated: z.boolean(),
+  })
+  .strict();
 
 export const runtimeTaskSettingsSchema = z
   .object({
@@ -108,6 +140,13 @@ export const runtimeRequestSchema = z.discriminatedUnion("operation", [
           grantKey: z.string().min(1).max(64_000).optional(),
         })
         .strict(),
+    })
+    .strict(),
+  z
+    .object({
+      ...requestBase,
+      operation: z.literal("git_push"),
+      body: z.object({ spec: runtimeGitPushSpecSchema }).strict(),
     })
     .strict(),
   z
@@ -223,6 +262,14 @@ export const runtimeEventSchema = z.discriminatedUnion("event", [
     .object({
       type: z.literal("event"),
       event: z.literal("cancel"),
+      reason: z.string().min(1).max(1_000),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("event"),
+      event: z.literal("request_cancel"),
+      requestId: identifier,
       reason: z.string().min(1).max(1_000),
     })
     .strict(),

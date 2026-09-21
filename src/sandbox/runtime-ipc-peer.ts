@@ -2,10 +2,11 @@
  * 在一对已认证的双向字节流上实现 Agent Runtime IPC 的有界 JSONL request/response/event 路由。
  * Windows 产品 transport 负责先验证连接身份；本类只处理应用协议，不能单独证明 Named Pipe、PID 或 Job 边界。
  *
- * 1. request 生成不可复用 requestId、注册取消监听并等待精确匹配的 response。
+ * 1. request 生成不可复用 requestId、注册取消监听并等待精确匹配的 response；本地取消发送 request_cancel 以中止远端 handler。
  * 2. consume 逐帧校验 schema 和大小；非法帧、重复/未知 response 或半帧断开会关闭整条连接。
  * 3. 收到 request 后调用固定 handler，返回受限错误；收到 event 时只分派已注册监听器。
- * 4. close 使全部 pending 请求失败并移除监听，避免断连后把未知操作当成成功或继续等待。
+ * 4. 已取消 requestId 使用有界 tombstone 忽略竞态中的迟到响应，其他未知响应仍关闭连接。
+ * 5. close 使全部 pending/handling 请求失败并移除监听，避免断连后把未知操作当成成功或继续等待。
  */
 
 import { randomUUID } from "node:crypto";
@@ -64,6 +65,8 @@ export class RuntimeIpcPeer {
   private failure?: RuntimeIpcError;
   private pending = new Map<string, PendingRequest>();
   private handling = new Map<string, AbortController>();
+  private cancelledPending = new Set<string>();
+  private cancelledPendingOrder: string[] = [];
   private eventListeners = new Set<(event: RuntimeIpcEvent) => void>();
   private maxFrameBytes: number;
   private requestHandler?: RuntimeIpcPeerOptions["handleRequest"];
@@ -113,6 +116,18 @@ export class RuntimeIpcPeer {
     const result = new Promise<unknown>((resolve, reject) => {
       const aborted = () => {
         this.pending.delete(request.requestId);
+        this.rememberCancelledRequest(request.requestId);
+        try {
+          this.event({
+            type: "event",
+            event: "request_cancel",
+            requestId: request.requestId,
+            reason: "Runtime IPC 请求已取消。",
+          });
+        } catch {
+          /* send 已经通过 close 记录 transport 失败；保留原始取消原因。 */
+        }
+
         reject(
           signal.reason ?? new RuntimeIpcError("Runtime IPC 请求已取消。"),
         );
@@ -266,6 +281,12 @@ export class RuntimeIpcPeer {
         }
       }
 
+      if (message.event === "request_cancel") {
+        this.handling
+          .get(message.requestId)
+          ?.abort(new RuntimeIpcError(message.reason));
+      }
+
       this.options.onEvent?.(message);
       for (const listener of this.eventListeners) {
         listener(message);
@@ -296,13 +317,19 @@ export class RuntimeIpcPeer {
     this.handling.set(message.requestId, controller);
     try {
       const value = await this.requestHandler(message, controller.signal);
-      this.send({
-        type: "response",
-        requestId: message.requestId,
-        ok: true,
-        value,
-      });
+      if (!controller.signal.aborted) {
+        this.send({
+          type: "response",
+          requestId: message.requestId,
+          ok: true,
+          value,
+        });
+      }
     } catch (error) {
+      if (controller.signal.aborted) {
+        return;
+      }
+
       const retryable = Reflect.get(Object(error), "retryable");
       const status = Reflect.get(Object(error), "status");
       const retryAfterMs = Reflect.get(Object(error), "retryAfterMs");
@@ -343,6 +370,10 @@ export class RuntimeIpcPeer {
   private resolve(response: RuntimeIpcResponse) {
     const pending = this.pending.get(response.requestId);
     if (!pending) {
+      if (this.cancelledPending.delete(response.requestId)) {
+        return;
+      }
+
       this.close("Runtime IPC 收到未知或已取消请求的响应。");
 
       return;
@@ -366,6 +397,17 @@ export class RuntimeIpcPeer {
     }
   }
 
+  private rememberCancelledRequest(requestId: string) {
+    this.cancelledPending.add(requestId);
+    this.cancelledPendingOrder.push(requestId);
+    while (this.cancelledPendingOrder.length > 1_024) {
+      const expired = this.cancelledPendingOrder.shift();
+      if (expired) {
+        this.cancelledPending.delete(expired);
+      }
+    }
+  }
+
   private close(message: string) {
     if (this.failure) {
       return;
@@ -383,6 +425,8 @@ export class RuntimeIpcPeer {
 
     this.pending.clear();
     this.handling.clear();
+    this.cancelledPending.clear();
+    this.cancelledPendingOrder = [];
     this.eventListeners.clear();
     this.options.onClose?.(this.failure);
   }

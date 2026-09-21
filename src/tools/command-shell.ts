@@ -6,7 +6,8 @@
  * 1. WindowsShell 和候选表按 pwsh、Windows PowerShell、cmd 的确定顺序描述可用 shell。
  * 2. environmentValue、pathExecutables 与 detectWindowsShell 只检查服务进程可见的环境和真实文件，
  *    避免让模型通过命令探测或选择 shell。
- * 3. commandShell 为 Windows 返回检测结果；仅 Windows Sandbox inspect 模式固定传递 POSIX /bin/sh -c
+ * 3. resolveExecutablePath 为 Windows supervisor 把受信任程序名解析为宿主已存在的绝对路径，不执行程序。
+ * 4. commandShell 为 Windows 返回检测结果；仅 Windows Sandbox inspect 模式固定传递 POSIX /bin/sh -c
  *    形状给 WSL Runtime；macOS、Linux 等 POSIX 平台固定使用已验证的 /bin/sh -c。
  *
  * 选择 shell 本身不放宽审批、路径或进程权限。调用方仍须将完整命令作为一次副作用申请授权，
@@ -87,6 +88,28 @@ function pathExecutables(environment: NodeJS.ProcessEnv, executable: string) {
     .map((directory) => directory.trim().replace(/^"|"$/g, ""))
     .filter(Boolean)
     .map((directory) => path.win32.resolve(directory, executable));
+}
+
+/** Windows 原生 Sandbox 不依赖专用账户的 PATH；Broker 必须先解析可信 executable。 */
+export function resolveExecutablePath(
+  executable: string,
+  environment: NodeJS.ProcessEnv = process.env,
+  fileExists: (candidate: string) => boolean = existsSync,
+  platform = process.platform,
+) {
+  if (path.isAbsolute(executable) || platform !== "win32") {
+    return executable;
+  }
+
+  const names = path.extname(executable) ? [executable] : [`${executable}.exe`];
+  for (const name of names) {
+    const resolved = pathExecutables(environment, name).find(fileExists);
+    if (resolved) {
+      return resolved;
+    }
+  }
+
+  return executable;
 }
 
 /** 仅在 Windows 选择第一个真实存在的候选 shell，并返回绝对路径。 */

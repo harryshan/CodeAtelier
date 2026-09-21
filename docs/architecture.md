@@ -22,7 +22,7 @@ Sandbox Process（单一 CodeAtelierSandbox 账户；每实例独立 lease/capab
   └─ WRITE_RESTRICTED 根 capability、产品依赖与私有临时目录；不继承宿主 profile/凭据
 ```
 
-Windows 启用时的产品调用链现为 `Broker Engine → SandboxBroker launcher → C++ Sandbox Supervisor → Agent Runtime → 工具子进程`，模型、session、审批和记忆通过 Runtime IPC adapter 回到 Broker。安装版 Runtime 的 argv 只携带 Supervisor 生成的本机任务 pipe 名，identity/nonce 由有界首帧交付；产品 build 生成面向 Node 24 的单文件 Runtime 与独立 compaction Worker bundle，安装器把 Node 24 和 bundle 固定到受保护目录，TypeScript/native self-check 复核 v2 state 中的 SHA-256。逐工具 Sandboxed Tool Process 路径暂留作启动前 host fallback 后的兼容宿主 loop，不再是启用成功后的目标调用链。只有提升环境证明这条真实链路的身份、取消、清理与恢复后，才满足 Agent Runtime 完成条件。
+Windows 启用时的产品调用链现为 `Broker Engine → SandboxBroker launcher → C++ Sandbox Supervisor → Agent Runtime → 工具子进程`，模型、session、审批和记忆通过 Runtime IPC adapter 回到 Broker。Git push 是这条链的受限分支：`Agent Runtime（loop 阻塞）→ Runtime IPC PushSpec → Broker → Sandbox Supervisor → 独立 Push Runner`；原 Agent Runtime 保持存活，但不取得 Runner 的网络或凭据能力。安装版 Runtime 的 argv 只携带 Supervisor 生成的本机任务 pipe 名，identity/nonce 由有界首帧交付；产品 build 生成面向 Node 24 的单文件 Runtime 与独立 compaction Worker bundle，安装器把 Node 24 和 bundle 固定到受保护目录，TypeScript/native self-check 复核 v2 state 中的 SHA-256。逐工具 Sandboxed Tool Process 路径暂留作启动前 host fallback 后的兼容宿主 loop，不再是启用成功后的目标调用链。只有提升环境证明这条真实链路的身份、取消、清理与恢复后，才满足 Agent Runtime 完成条件。
 
 以下文件职责描述当前实现；专用用户/Broker 目标模块和迁移边界以 [windows-integrity-sandbox.md](windows-integrity-sandbox.md) 为准。无论当前还是目标架构，前端都不能导入文件、进程或密钥实现。
 

@@ -53,6 +53,11 @@ it("restores and saves task context through the Broker session adapter", async (
     gateway,
     {
       requestApproval: async () => ({ approved: true }),
+      executeGitPush: async () => ({
+        output: "",
+        exitCode: 0,
+        truncated: false,
+      }),
       applyMemory: async () => ({ applied: true }),
       appendSessionEvent: async () => undefined,
       saveContext: async (_runtime, input) => {

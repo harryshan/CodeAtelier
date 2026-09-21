@@ -4,7 +4,8 @@
  *
  * 1. Broker 先返回一次可重试错误，再返回无效 DAG；Runtime 有界重试并把无副作用错误保存给下一轮修正。
  * 2. Broker 随后返回 read_file function_call，Agent Runtime 在自己的进程内执行 ToolRunner；最终模型轮次观察到文件结果。
- * 3. Runtime 主动报告 completed，Broker 收到后关闭通道并确认子进程干净退出。
+ * 3. 含 push 的工具批次在执行任何节点前要求 push 是唯一调用，防止等待 Runner 时并行修改仓库。
+ * 4. Runtime 主动报告 completed，Broker 收到后关闭通道并确认子进程干净退出。
  */
 
 import { spawn } from "node:child_process";
@@ -16,6 +17,33 @@ import { RuntimeIpcBrokerSession } from "../src/sandbox/runtime-ipc-broker-sessi
 import { TraceRecorder } from "../src/tracing/recorder.js";
 import { ModelError } from "../src/providers/model-error.js";
 import { temp } from "./fixtures/helpers.js";
+import { buildRuntimeToolGraph } from "../src/sandbox/agent-runtime-service.js";
+
+it("requires git push to be the only tool in its batch", () => {
+  const push = {
+    type: "function_call",
+    call_id: "push-call",
+    name: "git",
+    arguments: JSON.stringify({
+      execution: { id: "push", dependsOn: [] },
+      arguments: { request: { action: "push" } },
+    }),
+  };
+  const read = {
+    type: "function_call",
+    call_id: "read-call",
+    name: "read_file",
+    arguments: JSON.stringify({
+      execution: { id: "read", dependsOn: [] },
+      arguments: { path: "sample.txt", startLine: 1, endLine: 1 },
+    }),
+  };
+
+  expect(buildRuntimeToolGraph([push]).nodes).toHaveLength(1);
+  expect(() => buildRuntimeToolGraph([push, read])).toThrow(
+    "Git push 必须是当前工具批次的唯一调用",
+  );
+});
 
 it("runs the model and tool loop in an independent Agent Runtime process", async () => {
   const workspace = await temp();
@@ -137,6 +165,11 @@ it("runs the model and tool loop in an independent Agent Runtime process", async
     gateway,
     {
       requestApproval: async () => ({ approved: true }),
+      executeGitPush: async () => ({
+        output: "",
+        exitCode: 0,
+        truncated: false,
+      }),
       applyMemory: async () => ({ applied: true }),
       appendSessionEvent: async (_runtime, type, data) => {
         events.push({ type, data });

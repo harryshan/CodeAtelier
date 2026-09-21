@@ -3,8 +3,9 @@
  * 内存流用例覆盖协议错误，独立 Node fixture 覆盖 model request/delta/response 跨进程，但不冒充 Windows Named Pipe 身份验收。
  *
  * 1. 双向 PassThrough peer 完成请求并拒绝未知响应、畸形 JSON 和超限半帧。
- * 2. AbortSignal 使等待者停止，连接随后收到该 requestId 响应时按未知结果关闭。
- * 3. 子进程经继承 stdio 请求模型，Broker test adapter 流式回传 delta 和最终结果，进程正常退出。
+ * 2. RuntimeGitPushClient 只发送有界 PushSpec，并校验 Broker 返回的固定进程结果。
+ * 3. AbortSignal 发送 request_cancel，中止远端同 requestId handler；竞态迟到响应不会破坏后续请求。
+ * 4. 子进程经继承 stdio 请求模型，Broker test adapter 流式回传 delta 和最终结果，进程正常退出。
  */
 
 import { spawn } from "node:child_process";
@@ -19,6 +20,7 @@ import { RuntimeIpcBrokerSession } from "../src/sandbox/runtime-ipc-broker-sessi
 import { RuntimeBrokerGateway } from "../src/sandbox/runtime-capability-core.js";
 import { TraceRecorder } from "../src/tracing/recorder.js";
 import { connectAgentRuntime } from "../src/sandbox/agent-runtime-connection.js";
+import { RuntimeGitPushClient } from "../src/sandbox/runtime-tool-adapters.js";
 
 function peers() {
   const leftToRight = new PassThrough();
@@ -43,6 +45,36 @@ it("routes a bounded request and response", async () => {
   expect(result).toEqual({ operation: "session_read_context" });
 });
 
+it("sends only a structured push spec to the broker", async () => {
+  const leftToRight = new PassThrough();
+  const rightToLeft = new PassThrough();
+  let received: unknown;
+  const right = new RuntimeIpcPeer({
+    input: leftToRight,
+    output: rightToLeft,
+    handleRequest: async (request) => {
+      received = request;
+
+      return { output: "pushed", exitCode: 0, truncated: false };
+    },
+  });
+  const left = new RuntimeIpcPeer({ input: rightToLeft, output: leftToRight });
+  const spec = {
+    remote: "origin",
+    remoteUrl: "https://example.com/repository.git",
+    host: "example.com",
+    refspec: "HEAD:refs/heads/main",
+    objectId: "a".repeat(40),
+  };
+
+  await expect(
+    new RuntimeGitPushClient(left).execute(spec, new AbortController().signal),
+  ).resolves.toEqual({ output: "pushed", exitCode: 0, truncated: false });
+  expect(received).toMatchObject({ operation: "git_push", body: { spec } });
+  right.end();
+  left.end();
+});
+
 it("fails the channel on malformed input", async () => {
   const input = new PassThrough();
   const output = new PassThrough();
@@ -56,11 +88,41 @@ it("fails the channel on malformed input", async () => {
 it("cancels a pending request", async () => {
   const leftToRight = new PassThrough();
   const rightToLeft = new PassThrough();
+  let resolveRemoteAbort!: () => void;
+  const remoteAborted = new Promise<void>((resolve) => {
+    resolveRemoteAbort = resolve;
+  });
+  const right = new RuntimeIpcPeer({
+    input: leftToRight,
+    output: rightToLeft,
+    handleRequest: async (request, signal) => {
+      if (request.operation !== "session_read_context") {
+        return { operation: request.operation };
+      }
+
+      return new Promise((_resolve, reject) => {
+        signal.addEventListener(
+          "abort",
+          () => {
+            resolveRemoteAbort();
+            reject(signal.reason);
+          },
+          { once: true },
+        );
+      });
+    },
+  });
   const left = new RuntimeIpcPeer({ input: rightToLeft, output: leftToRight });
   const controller = new AbortController();
   const pending = left.request("session_read_context", {}, controller.signal);
   controller.abort(new Error("cancelled"));
   await expect(pending).rejects.toThrow("cancelled");
+  await remoteAborted;
+  await expect(
+    left.request("session_read_events", {}, AbortSignal.timeout(1_000)),
+  ).resolves.toEqual({ operation: "session_read_events" });
+  right.end();
+  left.end();
 });
 
 it("rejects an instance or nonce mismatch before serving requests", async () => {
@@ -91,6 +153,11 @@ it("rejects an instance or nonce mismatch before serving requests", async () => 
     gateway,
     {
       requestApproval: async () => ({ approved: true }),
+      executeGitPush: async () => ({
+        output: "",
+        exitCode: 0,
+        truncated: false,
+      }),
       applyMemory: async () => ({ applied: true }),
       appendSessionEvent: async () => undefined,
       saveContext: async () => undefined,
@@ -161,6 +228,11 @@ it("proxies a model request across a real child process", async () => {
     gateway,
     {
       requestApproval: async () => ({ approved: true }),
+      executeGitPush: async () => ({
+        output: "",
+        exitCode: 0,
+        truncated: false,
+      }),
       applyMemory: async () => ({ applied: true }),
       appendSessionEvent: async () => undefined,
       saveContext: async () => undefined,

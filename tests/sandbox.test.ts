@@ -7,7 +7,8 @@
  * 2. Broker 关闭时调用传入的既有宿主执行器，并记录可审计但不含命令内容的生命周期阶段。
  * 3. S1 WorkspaceView 以真实临时目录验证整个工作区（含 .git/.env）可访问，同时拒绝链接逃逸。
  * 4. 启用而没有 runtime 或自检失败时明确回退宿主，同一任务保持 fallback；runtime 执行已开始后的失败不重放。
- * 5. 测试 runtime 必须声明并接收工作区保护契约；Windows inspect 路径只交给 WSL 固定 POSIX shell 形状。
+ * 5. 同任务 Agent Runtime 可在阻塞期间重叠一个独立 Push Runner，且 Runner 启动失败不回退宿主 Git。
+ * 6. 测试 runtime 必须声明并接收工作区保护契约；Windows inspect 路径只交给 WSL 固定 POSIX shell 形状。
  *
  * 用例不启动真实 shell、不访问网络或用户项目。它证明策略、请求形状与安全失败；实际 WSL2 bubblewrap
  * 隔离只能由平台夹具和验证记录证明，不能推广为 Windows 原生或其他平台的 OS 级隔离。
@@ -27,7 +28,11 @@ import {
 import { WorkspaceView } from "../src/sandbox/workspace-view.js";
 import { WslInspectRuntime } from "../src/sandbox/wsl-inspect-runtime.js";
 import { commandShell } from "../src/tools/command-shell.js";
-import type { SandboxRuntime, SandboxStage } from "../src/sandbox/types.js";
+import type {
+  SandboxCommand,
+  SandboxRuntime,
+  SandboxStage,
+} from "../src/sandbox/types.js";
 import { temp } from "./fixtures/helpers.js";
 
 afterEach(() => vi.unstubAllEnvs());
@@ -223,6 +228,24 @@ it("falls back to host execution when no runtime is available", async () => {
     "collecting",
     "completed",
   ]);
+});
+
+it("never falls back a push runner to host Git", async () => {
+  const broker = new SandboxBroker(
+    sandboxConfiguration({ CODEATELIER_SANDBOX_ENABLED: "true" }, "win32"),
+  );
+  const executeHost = vi.fn(async () => ({
+    output: "must not run",
+    exitCode: 0,
+    truncated: false,
+  }));
+
+  await expect(
+    broker.executeCommand(command(), executeHost, () => {}, {
+      allowHostFallback: false,
+    }),
+  ).rejects.toThrow("Broker 未执行宿主 Git");
+  expect(executeHost).not.toHaveBeenCalled();
 });
 
 it("keeps one task on host fallback after self-check fails", async () => {
@@ -515,6 +538,79 @@ it("waits for the first native ACL provision before starting a shared-root lease
   await vi.waitFor(() => expect(execute).toHaveBeenCalledTimes(2));
   finishFirst();
   await Promise.all([first, second]);
+});
+
+it("runs one push runner beside its blocked agent runtime without host fallback", async () => {
+  const root = await temp();
+  let finishRuntime!: () => void;
+  const runtimeBlocked = new Promise<void>((resolve) => {
+    finishRuntime = resolve;
+  });
+  const execute = vi.fn(async (runtimeCommand: SandboxCommand) => {
+    runtimeCommand.onAccessProvisioned?.();
+    if (runtimeCommand.kind === "agent-runtime") {
+      await runtimeBlocked;
+    }
+
+    return {
+      output: runtimeCommand.kind ?? "unknown",
+      exitCode: 0,
+      truncated: false,
+    };
+  });
+  const runtime: SandboxRuntime = {
+    selfCheck: vi.fn(async () => ({
+      level: "windows-sandbox-user-v1:test",
+      workspaceProtection: "direct-path" as const,
+      accountGenerationDigest: "d".repeat(64),
+    })),
+    prepareAccess: vi.fn(async () => ({
+      readOnlyRoots: [],
+      readWriteRoots: [],
+      gitConfigFiles: [],
+      cleanup: vi.fn(async () => {}),
+    })),
+    execute,
+    revokeAccess: vi.fn(async () => {}),
+    drainGeneration: vi.fn(async () => {}),
+  };
+  const broker = new SandboxBroker(
+    sandboxConfiguration({ CODEATELIER_SANDBOX_ENABLED: "true" }, "win32"),
+    runtime,
+  );
+  const agentRuntime = broker.executeCommand(
+    {
+      ...command(),
+      cwd: root,
+      kind: "agent-runtime",
+      executionInstanceId: "runtime-a",
+    },
+    vi.fn(),
+    () => {},
+  );
+  await vi.waitFor(() => expect(execute).toHaveBeenCalledTimes(1));
+  const executeHost = vi.fn();
+  const push = await broker.executeCommand(
+    {
+      ...command(),
+      cwd: root,
+      kind: "push-runner",
+      executionInstanceId: "push-a",
+      networkHost: "example.test",
+    },
+    executeHost,
+    () => {},
+    { allowHostFallback: false },
+  );
+
+  expect(push.result.output).toBe("push-runner");
+  expect(executeHost).not.toHaveBeenCalled();
+  expect(broker.accountGenerationSnapshot()?.activeInstances).toEqual([
+    expect.objectContaining({ executionInstanceId: "runtime-a" }),
+  ]);
+  finishRuntime();
+  await agentRuntime;
+  expect(broker.accountGenerationSnapshot()?.activeInstanceCount).toBe(0);
 });
 
 it("passes only fixed WSL launcher arguments to the inspect runtime", async () => {

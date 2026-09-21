@@ -581,6 +581,7 @@ export class SandboxBroker implements AgentRuntimeLauncher {
       truncated: boolean;
     }>,
     onStage: (stage: SandboxStage, status: SandboxStatus) => void,
+    options: { allowHostFallback?: boolean } = {},
   ) {
     const initialStatus = this.statusFor(
       command.taskId,
@@ -599,6 +600,12 @@ export class SandboxBroker implements AgentRuntimeLauncher {
     });
 
     if (!this.configuration.enabled) {
+      if (options.allowHostFallback === false) {
+        throw new SandboxUnavailableError(
+          "Push Runner 要求已启用 Sandbox；Broker 未执行宿主 Git。",
+        );
+      }
+
       this.record("executing", onStage, initialStatus);
       const result = await executeHost();
       this.record("collecting", onStage, initialStatus);
@@ -609,6 +616,12 @@ export class SandboxBroker implements AgentRuntimeLauncher {
 
     const priorFallback = this.fallbackTasks.get(command.taskId);
     if (priorFallback) {
+      if (options.allowHostFallback === false) {
+        throw new SandboxUnavailableError(
+          "本任务已经进入宿主 fallback，不能从 Agent Runtime 执行 Push Runner。",
+        );
+      }
+
       this.executionStatuses.set(command.executionInstanceId, priorFallback);
       this.record("executing", onStage, priorFallback);
       const result = await executeHost();
@@ -627,6 +640,12 @@ export class SandboxBroker implements AgentRuntimeLauncher {
         throw error;
       }
 
+      if (options.allowHostFallback === false) {
+        throw new SandboxUnavailableError(
+          "Push Runner 工作区检查失败；Broker 未执行宿主 Git。",
+        );
+      }
+
       return this.executeFallback(
         command,
         "workspace_preflight",
@@ -637,6 +656,12 @@ export class SandboxBroker implements AgentRuntimeLauncher {
 
     this.record("provisioning", onStage, initialStatus);
     if (!this.runtime) {
+      if (options.allowHostFallback === false) {
+        throw new SandboxUnavailableError(
+          "Push Runner 后端不可用；Broker 未执行宿主 Git。",
+        );
+      }
+
       return this.executeFallback(
         command,
         "runtime_missing",
@@ -723,6 +748,12 @@ export class SandboxBroker implements AgentRuntimeLauncher {
         executionInstanceId: command.executionInstanceId,
         ...this.errorMetadata(error),
       });
+
+      if (options.allowHostFallback === false) {
+        throw new SandboxUnavailableError(
+          "Push Runner 启动前检查失败；Broker 未执行宿主 Git。",
+        );
+      }
 
       return this.executeFallback(
         command,
