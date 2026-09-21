@@ -3,7 +3,7 @@
  * TypeScript Broker 只以固定 argv 启动 self-check/execute，执行请求通过继承 stdin 的有界二进制帧传入；
  * supervisor 使用 DPAPI state、工作区 ACL、Job 和私有 Named Pipe 启动同一二进制的 bootstrap 模式。
  *
- * 1. self-check 核对 state 所属宿主 SID、专用账户 SID/密码、拒绝登录权、WFP 持久规则和原生二进制存在性。
+ * 1. self-check 核对 state 所属宿主 SID、专用账户 SID/密码、拒绝登录权、WFP 持久规则，以及受保护 Node 24/Agent Runtime bundle 摘要。
  * 2. execute 生成 execution/root capability SID，向已打开的工作区原对象安装账户与 capability ACE。
  * 3. CreateProcessWithLogonW 以固定 bootstrap 入口启动专用账户进程，先分配 KILL_ON_JOB_CLOSE Job 再恢复。
  * 4. bootstrap 使用专用账户自身的全新环境块，通过只允许宿主/SYSTEM/专用账户且核对 PID 的 Named Pipe 取得命令，创建 WRITE_RESTRICTED token 后启动真实工具。
@@ -69,11 +69,18 @@ struct ProductRequest {
 };
 
 struct InstallationState {
+  int version = 0;
   std::wstring account_name;
   std::wstring account_sid;
   std::wstring generation_id;
   std::wstring protected_password;
   std::wstring installed_by_sid;
+  std::wstring runtime_node_sha256;
+  std::wstring runtime_entry_sha256;
+  std::wstring runtime_worker_sha256;
+  std::wstring runtime_node_path;
+  std::wstring runtime_entry_path;
+  std::wstring runtime_worker_path;
 };
 
 std::wstring Utf8ToWide(const std::string& value) {
@@ -374,17 +381,105 @@ bool ReadInstallationState(const std::wstring& state_path,
     }
     values.emplace(std::move(key), std::move(value));
   }
-  if (values[L"version"] != L"1") {
+  const std::wstring version = values[L"version"];
+  if (version != L"1" && version != L"2") {
     return false;
   }
+  state->version = version == L"2" ? 2 : 1;
   state->account_name = values[L"accountName"];
   state->account_sid = values[L"accountSid"];
   state->generation_id = values[L"generationId"];
   state->protected_password = values[L"protectedPassword"];
   state->installed_by_sid = values[L"installedBySid"];
-  return !state->account_name.empty() && !state->account_sid.empty() &&
-         !state->generation_id.empty() && !state->protected_password.empty() &&
-         !state->installed_by_sid.empty();
+  state->runtime_node_sha256 = values[L"runtimeNodeSha256"];
+  state->runtime_entry_sha256 = values[L"runtimeEntrySha256"];
+  state->runtime_worker_sha256 = values[L"runtimeWorkerSha256"];
+  std::filesystem::path runtime_root =
+      std::filesystem::path(state_path).parent_path() / L"runtime";
+  state->runtime_node_path = (runtime_root / L"node.exe").wstring();
+  state->runtime_entry_path =
+      (runtime_root / L"agent-runtime.mjs").wstring();
+  state->runtime_worker_path =
+      (runtime_root / L"compaction-worker.mjs").wstring();
+  bool base_valid = !state->account_name.empty() &&
+                    !state->account_sid.empty() &&
+                    !state->generation_id.empty() &&
+                    !state->protected_password.empty() &&
+                    !state->installed_by_sid.empty();
+  return base_valid &&
+         (state->version == 1 ||
+          (IsDigest(state->runtime_node_sha256) &&
+           IsDigest(state->runtime_entry_sha256) &&
+           IsDigest(state->runtime_worker_sha256)));
+}
+
+bool FileSha256(const std::wstring& path, std::wstring* digest) {
+  UniqueHandle file(CreateFileW(
+      path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+      FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+  BY_HANDLE_FILE_INFORMATION information{};
+  if (!file || !GetFileInformationByHandle(file.get(), &information) ||
+      (information.dwFileAttributes &
+       (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0) {
+    return false;
+  }
+
+  HCRYPTPROV provider = 0;
+  HCRYPTHASH hash = 0;
+  bool valid = CryptAcquireContextW(&provider, nullptr, nullptr, PROV_RSA_AES,
+                                    CRYPT_VERIFYCONTEXT) &&
+               CryptCreateHash(provider, CALG_SHA_256, 0, 0, &hash);
+  std::array<BYTE, 64 * 1024> buffer{};
+  while (valid) {
+    DWORD bytes_read = 0;
+    if (!ReadFile(file.get(), buffer.data(), static_cast<DWORD>(buffer.size()),
+                  &bytes_read, nullptr)) {
+      valid = false;
+      break;
+    }
+    if (bytes_read == 0) {
+      break;
+    }
+    valid = CryptHashData(hash, buffer.data(), bytes_read, 0) != FALSE;
+  }
+
+  std::array<BYTE, 32> hash_bytes{};
+  DWORD hash_size = static_cast<DWORD>(hash_bytes.size());
+  valid = valid &&
+          CryptGetHashParam(hash, HP_HASHVAL, hash_bytes.data(), &hash_size,
+                            0) != FALSE &&
+          hash_size == hash_bytes.size();
+  if (hash != 0) {
+    CryptDestroyHash(hash);
+  }
+  if (provider != 0) {
+    CryptReleaseContext(provider, 0);
+  }
+  if (!valid) {
+    return false;
+  }
+
+  constexpr wchar_t kHex[] = L"0123456789abcdef";
+  digest->clear();
+  digest->reserve(hash_bytes.size() * 2);
+  for (BYTE byte : hash_bytes) {
+    digest->push_back(kHex[byte >> 4]);
+    digest->push_back(kHex[byte & 0x0f]);
+  }
+  return true;
+}
+
+bool RuntimeBundleMatches(const InstallationState& state) {
+  std::wstring node_digest;
+  std::wstring entry_digest;
+  std::wstring worker_digest;
+  return state.version == 2 &&
+         FileSha256(state.runtime_node_path, &node_digest) &&
+         FileSha256(state.runtime_entry_path, &entry_digest) &&
+         FileSha256(state.runtime_worker_path, &worker_digest) &&
+         node_digest == state.runtime_node_sha256 &&
+         entry_digest == state.runtime_entry_sha256 &&
+         worker_digest == state.runtime_worker_sha256;
 }
 
 std::wstring CurrentUserSidString() {
@@ -561,9 +656,11 @@ bool VerifyInstallation(const InstallationState& state,
                         const std::wstring& network_manager,
                         std::wstring* password,
                         bool require_account_rights = true,
-                        bool require_wfp = true) {
+                        bool require_wfp = true,
+                        bool require_runtime_bundle = true) {
   if (CurrentUserSidString() != state.installed_by_sid ||
-      (require_wfp && !std::filesystem::is_regular_file(network_manager))) {
+      (require_wfp && !std::filesystem::is_regular_file(network_manager)) ||
+      (require_runtime_bundle && !RuntimeBundleMatches(state))) {
     return false;
   }
   std::vector<BYTE> account_sid;
@@ -1658,7 +1755,8 @@ int RunProductRevokeJournal(const std::wstring& state_path,
   InstallationState state;
   std::wstring password;
   if (!ReadInstallationState(state_path, &state) ||
-      !VerifyInstallation(state, network_manager, &password, false, false)) {
+      !VerifyInstallation(state, network_manager, &password, false, false,
+                          false)) {
     SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
     return kSelfCheckFailureExitCode;
   }
@@ -1728,7 +1826,8 @@ int TerminateAccountProcesses(const std::wstring& state_path,
   InstallationState state;
   std::wstring password;
   if (!ReadInstallationState(state_path, &state) ||
-      !VerifyInstallation(state, network_manager, &password, false, false)) {
+      !VerifyInstallation(state, network_manager, &password, false, false,
+                          false)) {
     SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
     return kSelfCheckFailureExitCode;
   }
@@ -1768,7 +1867,8 @@ int RunAccountRights(const std::wstring& state_path,
   InstallationState state;
   std::wstring password;
   if (!ReadInstallationState(state_path, &state) ||
-      !VerifyInstallation(state, network_manager, &password, false, !remove)) {
+      !VerifyInstallation(state, network_manager, &password, false, !remove,
+                          !remove)) {
     SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
     return kSelfCheckFailureExitCode;
   }

@@ -3,7 +3,7 @@
  * Runtime factory 仅在 Windows 且开关开启时创建本类；selfCheck 必须同时验证安装 state、二进制摘要、账户凭据与 WFP。
  *
  * 1. installationPaths 解析 ProgramData 下受保护的产品副本或显式测试覆盖，不从工作区或模型输入选择可执行文件。
- * 2. selfCheck 严格读取受限 state 元数据、复核 supervisor/network SHA-256，并在首次接单前排空旧账户进程和 ACL journal。
+ * 2. selfCheck 严格读取受限 state 元数据、复核 supervisor/network 与固定 Node 24/Runtime bundle SHA-256，并在首次接单前排空旧账户进程和 ACL journal。
  * 3. prepareAccess 在 manifest 前创建 Git 投影和逐实例 HOME/TEMP，使私有目录也经过原对象 ACL/capability/journal；encodeRequest 再发送固定执行帧。
  * 4. execute 启动单实例 supervisor，stdout 作为工具输出流，stderr 只解析 runtime PID/创建时间、完成和固定错误类别。
  * 5. runtime started 控制帧确认共享账户 ACE 已安装；并发 lease 在该确认前不会假定 grant 可用。
@@ -70,6 +70,9 @@ export function classifySupervisorClose(input: {
 interface InstallationPaths {
   supervisor: string;
   networkManager: string;
+  runtimeNode: string;
+  runtimeEntry: string;
+  runtimeWorker: string;
   state: string;
   dataRoot: string;
 }
@@ -78,6 +81,9 @@ interface InstallationMetadata {
   generationId: string;
   supervisorSha256: string;
   networkSha256: string;
+  runtimeNodeSha256: string;
+  runtimeEntrySha256: string;
+  runtimeWorkerSha256: string;
   relayPortV4: number;
 }
 
@@ -113,12 +119,17 @@ function installationPaths(
     : programData
       ? path.join(programData, "CodeAtelier", "Sandbox", "installation.state")
       : "";
+  const dataRoot = state ? path.dirname(state) : "";
+  const runtimeRoot = dataRoot ? path.join(dataRoot, "runtime") : "";
 
   return {
     supervisor: path.join(nativeRoot, "codeatelier-sandbox-supervisor.exe"),
     networkManager: path.join(nativeRoot, "codeatelier-sandbox-network.exe"),
+    runtimeNode: path.join(runtimeRoot, "node.exe"),
+    runtimeEntry: path.join(runtimeRoot, "agent-runtime.mjs"),
+    runtimeWorker: path.join(runtimeRoot, "compaction-worker.mjs"),
     state,
-    dataRoot: state ? path.dirname(state) : "",
+    dataRoot,
   };
 }
 
@@ -145,12 +156,18 @@ function parseState(content: string): InstallationMetadata {
   const generationId = values.get("generationId") ?? "";
   const supervisorSha256 = values.get("supervisorSha256") ?? "";
   const networkSha256 = values.get("networkSha256") ?? "";
+  const runtimeNodeSha256 = values.get("runtimeNodeSha256") ?? "";
+  const runtimeEntrySha256 = values.get("runtimeEntrySha256") ?? "";
+  const runtimeWorkerSha256 = values.get("runtimeWorkerSha256") ?? "";
   const relayPortV4 = Number(values.get("relayPortV4"));
   if (
-    values.get("version") !== "1" ||
+    values.get("version") !== "2" ||
     !/^[0-9a-f-]{36}$/i.test(generationId) ||
     !/^[a-f0-9]{64}$/i.test(supervisorSha256) ||
     !/^[a-f0-9]{64}$/i.test(networkSha256) ||
+    !/^[a-f0-9]{64}$/i.test(runtimeNodeSha256) ||
+    !/^[a-f0-9]{64}$/i.test(runtimeEntrySha256) ||
+    !/^[a-f0-9]{64}$/i.test(runtimeWorkerSha256) ||
     !Number.isInteger(relayPortV4) ||
     relayPortV4 < 1024 ||
     relayPortV4 > 65_535
@@ -158,7 +175,15 @@ function parseState(content: string): InstallationMetadata {
     throw new NativeWindowsSandboxError("installation state 版本或摘要无效。");
   }
 
-  return { generationId, supervisorSha256, networkSha256, relayPortV4 };
+  return {
+    generationId,
+    supervisorSha256,
+    networkSha256,
+    runtimeNodeSha256,
+    runtimeEntrySha256,
+    runtimeWorkerSha256,
+    relayPortV4,
+  };
 }
 
 async function fileSha256(file: string) {
@@ -381,15 +406,29 @@ export class NativeWindowsSandboxRuntime implements SandboxRuntime {
     let metadata: InstallationMetadata;
     try {
       metadata = parseState(await readFile(this.paths.state, "utf8"));
-      const [supervisorDigest, networkDigest] = await Promise.all([
+      const [
+        supervisorDigest,
+        networkDigest,
+        runtimeNodeDigest,
+        runtimeEntryDigest,
+        runtimeWorkerDigest,
+      ] = await Promise.all([
         fileSha256(this.paths.supervisor),
         fileSha256(this.paths.networkManager),
+        fileSha256(this.paths.runtimeNode),
+        fileSha256(this.paths.runtimeEntry),
+        fileSha256(this.paths.runtimeWorker),
       ]);
       if (
-        supervisorDigest !== metadata.supervisorSha256.toLocaleLowerCase() ||
-        networkDigest !== metadata.networkSha256.toLocaleLowerCase()
+        supervisorDigest !== metadata.supervisorSha256.toLowerCase() ||
+        networkDigest !== metadata.networkSha256.toLowerCase() ||
+        runtimeNodeDigest !== metadata.runtimeNodeSha256.toLowerCase() ||
+        runtimeEntryDigest !== metadata.runtimeEntrySha256.toLowerCase() ||
+        runtimeWorkerDigest !== metadata.runtimeWorkerSha256.toLowerCase()
       ) {
-        throw new NativeWindowsSandboxError("原生二进制摘要与安装记录不一致。");
+        throw new NativeWindowsSandboxError(
+          "原生二进制或 Agent Runtime 摘要与安装记录不一致。",
+        );
       }
 
       this.metadata = metadata;

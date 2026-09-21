@@ -3,7 +3,7 @@
  * 测试使用临时伪二进制与注入的 self-check executor，不创建账户、ACL、Job、Named Pipe 或 WFP 规则。
  *
  * 1. 二进制帧固定 magic/version、UTF-8 字符串、超时和 argv，拒绝相对路径及超限字段。
- * 2. selfCheck 只有 state 中两个 SHA-256、启动恢复排空与原生自检全部成功时才报告 sandbox level。
+ * 2. selfCheck 只有 state 中原生二进制、Node 24 和两个 Runtime bundle SHA-256、启动恢复排空与原生自检全部成功时才报告 sandbox level。
  * 3. prepareAccess 在 manifest 之前同时创建只读 Git 投影和逐实例可写 HOME/TEMP，cleanup 删除两者。
  * 4. state 缺失、摘要篡改和原生拒绝都在 Runtime 启动前失败，允许 Broker 安全选择宿主 fallback。
  */
@@ -103,17 +103,27 @@ describe.skipIf(process.platform !== "win32")(
         "codeatelier-sandbox-supervisor.exe",
       );
       const network = path.join(nativeRoot, "codeatelier-sandbox-network.exe");
-      await mkdir(nativeRoot);
+      const runtimeRoot = path.join(root, "runtime");
+      const runtimeNode = path.join(runtimeRoot, "node.exe");
+      const runtimeEntry = path.join(runtimeRoot, "agent-runtime.mjs");
+      const runtimeWorker = path.join(runtimeRoot, "compaction-worker.mjs");
+      await Promise.all([mkdir(nativeRoot), mkdir(runtimeRoot)]);
       await writeFile(supervisor, "supervisor");
       await writeFile(network, "network");
+      await writeFile(runtimeNode, "node-24");
+      await writeFile(runtimeEntry, "runtime-entry");
+      await writeFile(runtimeWorker, "runtime-worker");
       await writeFile(
         statePath,
         [
-          "version=1",
+          "version=2",
           "generationId=12345678-1234-1234-1234-123456789abc",
           "relayPortV4=42871",
           `supervisorSha256=${digest("supervisor")}`,
           `networkSha256=${digest("network")}`,
+          `runtimeNodeSha256=${digest("node-24")}`,
+          `runtimeEntrySha256=${digest("runtime-entry")}`,
+          `runtimeWorkerSha256=${digest("runtime-worker")}`,
         ].join("\n"),
       );
       const runSelfCheck = vi.fn(async (_file: string, args: string[]) => ({
@@ -152,6 +162,12 @@ describe.skipIf(process.platform !== "win32")(
       expect(runSelfCheck).toHaveBeenCalledTimes(3);
 
       await writeFile(network, "tampered");
+      await expect(
+        runtime.selfCheck(new AbortController().signal, workspace(root)),
+      ).rejects.toThrow("摘要");
+
+      await writeFile(network, "network");
+      await writeFile(runtimeEntry, "tampered");
       await expect(
         runtime.selfCheck(new AbortController().signal, workspace(root)),
       ).rejects.toThrow("摘要");
