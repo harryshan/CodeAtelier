@@ -22,7 +22,7 @@ Sandbox Process（单一 CodeAtelierSandbox 账户；每实例独立 lease/capab
   └─ WRITE_RESTRICTED 根 capability、产品依赖与私有临时目录；不继承宿主 profile/凭据
 ```
 
-默认产品的过渡调用链仍是 `Broker Host 中的 Engine/ToolRunner → C++ Sandbox Supervisor → 单次 Sandboxed Tool Process`。已实现但尚未产品组装的调用链是 `Broker Engine → AgentRuntimeLauncher → 独立 AgentRuntimeService → 工具子进程`，其中模型、session、审批和记忆通过 Runtime IPC adapter 回到 Broker。安装版 Runtime 已有固定 `agent-runtime-main` 入口和有界 Supervisor 首帧：argv 只携带本机任务 pipe 名，identity/nonce 不再依赖测试环境变量；但 C++ 尚未创建、认证并代理这条 pipe，也尚未安装不可变 Runtime bundle。只有第二条链从真实 Supervisor 启动且传输身份完成验证后，才满足 Agent Runtime 目标。
+默认产品的过渡调用链仍是 `Broker Host 中的 Engine/ToolRunner → C++ Sandbox Supervisor → 单次 Sandboxed Tool Process`。已实现但尚未产品组装的调用链是 `Broker Engine → AgentRuntimeLauncher → 独立 AgentRuntimeService → 工具子进程`，其中模型、session、审批和记忆通过 Runtime IPC adapter 回到 Broker。安装版 Runtime 已有固定 `agent-runtime-main` 入口和有界 Supervisor 首帧：argv 只携带本机任务 pipe 名，identity/nonce 不再依赖测试环境变量；产品 build 还会生成面向 Node 24 的单文件 Runtime 与独立 compaction Worker bundle 及 SHA-256 manifest，避免最终从工作区/pnpm symlink 图加载代码。但安装器尚未把 bundle/Node 复制进受保护目录，C++ 也尚未创建、认证并代理这条 pipe。只有第二条链从真实 Supervisor 启动且传输身份完成验证后，才满足 Agent Runtime 目标。
 
 以下文件职责描述当前实现；专用用户/Broker 目标模块和迁移边界以 [windows-integrity-sandbox.md](windows-integrity-sandbox.md) 为准。无论当前还是目标架构，前端都不能导入文件、进程或密钥实现。
 

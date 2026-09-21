@@ -33,7 +33,9 @@ export class CompactionWorkerClient {
   constructor() {
     const source = import.meta.url.endsWith(".ts")
       ? new URL("./compaction-worker.ts", import.meta.url)
-      : new URL("./compaction-worker.js", import.meta.url);
+      : import.meta.url.endsWith(".mjs")
+        ? new URL("./compaction-worker.mjs", import.meta.url)
+        : new URL("./compaction-worker.js", import.meta.url);
     this.worker = new Worker(source, {
       execArgv: source.pathname.endsWith(".ts")
         ? ["--import", "tsx"]
