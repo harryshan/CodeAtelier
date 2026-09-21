@@ -4,10 +4,10 @@
  * supervisor 使用 DPAPI state、工作区 ACL、Job 和私有 Named Pipe 启动同一二进制的 bootstrap 模式，并代理 Agent Runtime IPC。
  *
  * 1. self-check 核对 state 所属宿主 SID、专用账户 SID/密码、拒绝登录权、WFP 持久规则，以及受保护 Node 24/Agent Runtime bundle 摘要。
- * 2. execute 生成 execution/root capability SID，向已打开的工作区原对象安装账户与 capability ACE。
+ * 2. execute 生成 execution/root capability SID；共享账户 ACE 始终提供 normal-side 读写候选权限，每实例 capability ACE 再决定 WRITE_RESTRICTED token 实际可写的根。
  * 3. CreateProcessWithLogonW 以固定 bootstrap 入口启动专用账户进程，先分配 KILL_ON_JOB_CLOSE Job 再恢复。
  * 4. bootstrap 使用专用账户自身的全新环境块，通过只允许宿主/SYSTEM/专用账户且核对 PID 的 Named Pipe 取得命令，创建 WRITE_RESTRICTED token 后启动真实工具。
- * 5. Broker stdin 关闭、超时或异常会终止 Job；正常/异常退出都按唯一 SID 撤销本次 ACE，清理不确定返回专用错误码。
+ * 5. Broker stdin 关闭、超时或异常会终止 Job；正常/异常退出撤销本实例 capability ACE，共享账户 ACE 仅由 Broker 最后引用的两阶段 release 撤销，清理不确定返回专用错误码。
  * 6. Push Runner 仅从宿主 Credential Manager 读取绑定 host 的 HTTPS 凭据，并经同 Job askpass pipe 交付；capability runner 只把短期、host-bound proxy token 放入自身环境，不取得宿主凭据。
  * 7. Agent Runtime 模式只启动受保护 Node/entry，联合核对 pipe 客户端身份后发送启动首帧并代理原始 Broker 字节流；初始 CWD 使用私有目录。
  * 8. stdout 只承载工具输出或 Agent Runtime IPC；stderr 只输出有界控制记录，不记录命令、路径、SID、密码或工具内容。
@@ -744,24 +744,28 @@ class ObjectGrant {
     }
 
     std::vector<EXPLICIT_ACCESSW> entries;
-    std::vector<PSID> sids;
     if (install_account) {
-      sids.push_back(account_sid);
-    }
-    if (writable) {
-      sids.push_back(capability_sid);
-    }
-    for (PSID sid : sids) {
       EXPLICIT_ACCESSW entry{};
-      entry.grfAccessPermissions =
-          FILE_GENERIC_READ | FILE_GENERIC_EXECUTE |
-          (writable ? FILE_GENERIC_WRITE | DELETE : 0);
+      entry.grfAccessPermissions = FILE_GENERIC_READ | FILE_GENERIC_EXECUTE |
+                                   FILE_GENERIC_WRITE | DELETE;
       entry.grfAccessMode = GRANT_ACCESS;
       entry.grfInheritance =
           expect_file ? NO_INHERITANCE : SUB_CONTAINERS_AND_OBJECTS_INHERIT;
       entry.Trustee.TrusteeForm = TRUSTEE_IS_SID;
       entry.Trustee.TrusteeType = TRUSTEE_IS_UNKNOWN;
-      entry.Trustee.ptstrName = static_cast<LPWSTR>(sid);
+      entry.Trustee.ptstrName = static_cast<LPWSTR>(account_sid);
+      entries.push_back(entry);
+    }
+    if (writable) {
+      EXPLICIT_ACCESSW entry{};
+      entry.grfAccessPermissions = FILE_GENERIC_READ | FILE_GENERIC_EXECUTE |
+                                   FILE_GENERIC_WRITE | DELETE;
+      entry.grfAccessMode = GRANT_ACCESS;
+      entry.grfInheritance =
+          expect_file ? NO_INHERITANCE : SUB_CONTAINERS_AND_OBJECTS_INHERIT;
+      entry.Trustee.TrusteeForm = TRUSTEE_IS_SID;
+      entry.Trustee.TrusteeType = TRUSTEE_IS_UNKNOWN;
+      entry.Trustee.ptstrName = static_cast<LPWSTR>(capability_sid);
       entries.push_back(entry);
     }
     PACL new_acl = nullptr;

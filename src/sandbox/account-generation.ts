@@ -3,7 +3,7 @@
  * SandboxBroker 在原生 provision 前取得 lease，在 Job、代理与 ACL 全部清理后释放；恢复代码读取快照判断能否继续复用账户。
  *
  * 1. acquire 强制 1～4 个不同任务工作区并发、同一规范工作区串行；同任务可在 Agent Runtime 阻塞期间重叠一个 Push Runner 或 capability runner，并为每个实例分配单调 lease epoch。
- * 2. grant table 以对象身份和访问模式计数；acquire 先完整预检再提交引用，首个引用进入 provisioning，后继 lease 必须等待原生安装完成。
+ * 2. 共享账户 ACE 按对象身份计数，不按各实例的 read/write 用途拆分；acquire 先完整预检再提交引用，首个引用进入 provisioning，后继 lease 必须等待原生安装完成。
  * 3. release 使用 prepare/commit 两阶段协议；原生撤销失败前不删除 lease 或 grant，防止 orphan 从账本消失。
  * 4. quarantine 在未知进程、ACL、代理或凭据状态下冻结 generation，并返回所有仍需终止和对账的实例。
  * 5. snapshot 只暴露摘要和计数，可写入 session/log/trace；不包含原始路径、SID、命令或凭据。
@@ -27,7 +27,6 @@ export interface SandboxInstanceLease {
 
 interface GrantReference {
   objectIdentityDigest: string;
-  mode: "read" | "write";
   references: number;
   provisionState: "provisioning" | "installed" | "failed";
   installerExecutionInstanceId: string;
@@ -40,7 +39,7 @@ interface GrantReference {
 export interface AccountGenerationRelease {
   releaseId: string;
   lease: SandboxInstanceLease;
-  revoke: Array<Pick<GrantReference, "objectIdentityDigest" | "mode">>;
+  revoke: Array<Pick<GrantReference, "objectIdentityDigest">>;
 }
 
 export interface AccountGenerationSnapshot {
@@ -80,25 +79,16 @@ export class AccountGenerationError extends Error {
   }
 }
 
-function grantKey(identity: string, mode: "read" | "write") {
-  return `${mode}:${identity}`;
-}
-
 function manifestGrants(manifest: AccessManifest) {
   return [
-    ...manifest.readRoots.map((root) => ({
-      objectIdentityDigest: root.objectIdentityDigest,
-      mode: "read" as const,
-    })),
-    ...manifest.gitConfigFiles.map((root) => ({
-      objectIdentityDigest: root.objectIdentityDigest,
-      mode: "read" as const,
-    })),
-    ...manifest.writeRoots.map((root) => ({
-      objectIdentityDigest: root.objectIdentityDigest,
-      mode: "write" as const,
-    })),
-  ];
+    ...new Set(
+      [
+        ...manifest.readRoots,
+        ...manifest.gitConfigFiles,
+        ...manifest.writeRoots,
+      ].map((root) => root.objectIdentityDigest),
+    ),
+  ].map((objectIdentityDigest) => ({ objectIdentityDigest }));
 }
 
 export class AccountGenerationRegistry {
@@ -175,23 +165,19 @@ export class AccountGenerationRegistry {
       manifestDigest: input.accessManifest.manifestDigest,
       epoch: this.nextLeaseEpoch++,
     });
-    const install: Array<
-      Pick<GrantReference, "objectIdentityDigest" | "mode">
-    > = [];
+    const install: Array<Pick<GrantReference, "objectIdentityDigest">> = [];
     const waits: Promise<void>[] = [];
     const requestedGrants = manifestGrants(input.accessManifest);
 
     for (const grant of requestedGrants) {
-      const current = this.grants.get(
-        grantKey(grant.objectIdentityDigest, grant.mode),
-      );
+      const current = this.grants.get(grant.objectIdentityDigest);
       if (current?.provisionState === "failed") {
         throw new AccountGenerationError("共享 ACL grant 安装已经失败。");
       }
     }
 
     for (const grant of requestedGrants) {
-      const key = grantKey(grant.objectIdentityDigest, grant.mode);
+      const key = grant.objectIdentityDigest;
       const current = this.grants.get(key);
 
       if (current) {
@@ -214,7 +200,6 @@ export class AccountGenerationRegistry {
         this.grants.set(key, reference);
         install.push({
           objectIdentityDigest: reference.objectIdentityDigest,
-          mode: reference.mode,
         });
       }
     }
@@ -277,7 +262,7 @@ export class AccountGenerationRegistry {
     }
 
     for (const grant of manifestGrants(manifest)) {
-      const key = grantKey(grant.objectIdentityDigest, grant.mode);
+      const key = grant.objectIdentityDigest;
       const current = this.grants.get(key);
       if (!current || current.references < 1) {
         this.quarantine("ledger_inconsistent");
@@ -340,7 +325,7 @@ export class AccountGenerationRegistry {
 
     const revoke: AccountGenerationRelease["revoke"] = [];
     for (const grant of manifestGrants(manifest)) {
-      const key = grantKey(grant.objectIdentityDigest, grant.mode);
+      const key = grant.objectIdentityDigest;
       const current = this.grants.get(key);
 
       if (!current || current.references < 1) {
@@ -351,7 +336,6 @@ export class AccountGenerationRegistry {
       if (current.references === 1) {
         revoke.push({
           objectIdentityDigest: current.objectIdentityDigest,
-          mode: current.mode,
         });
       }
     }
@@ -375,7 +359,7 @@ export class AccountGenerationRegistry {
     }
 
     for (const grant of manifestGrants(manifest)) {
-      const key = grantKey(grant.objectIdentityDigest, grant.mode);
+      const key = grant.objectIdentityDigest;
       const current = this.grants.get(key);
       if (!current || current.references < 1) {
         this.quarantine("ledger_inconsistent");

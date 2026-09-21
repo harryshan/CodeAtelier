@@ -3,7 +3,7 @@
  * 测试只操作内存账本，不创建账户、进程、ACL 或 WFP 规则。
  *
  * 1. 不同工作区在上限内可并发，同一工作区与超限请求拒绝；同任务阻塞的 Runtime 可重叠一个 Push Runner。
- * 2. 相同只读对象跨 manifest 只安装一次；后继 lease 等待首个原生 provision 完成。
+ * 2. 相同对象跨 manifest、跨 read/write 用途只安装一次账户 ACE；后继 lease 等待首个原生 provision 完成。
  * 3. release 在原生撤销成功前保留 lease/grant，commit 后才减少引用并在最后一个 lease 撤销。
  * 4. 已失败的共享 grant 会在 acquire 改变任何引用前拒绝，避免不存在的 lease 泄漏引用。
  * 5. epoch/manifest 重放拒绝，账本不一致会 quarantine 整个 generation。
@@ -86,7 +86,6 @@ it("allows bounded different-workspace concurrency and reference-counts grants",
   expect(firstRelease.revoke).toEqual([
     expect.objectContaining({
       objectIdentityDigest: digest("b"),
-      mode: "write",
     }),
   ]);
   expect(registry.snapshot().activeInstanceCount).toBe(2);
@@ -99,6 +98,66 @@ it("allows bounded different-workspace concurrency and reference-counts grants",
   expect(secondRelease.revoke).toHaveLength(2);
   registry.commitRelease(secondRelease.releaseId, secondManifest);
   expect(registry.snapshot().activeInstanceCount).toBe(0);
+});
+
+it("shares one account grant when the same object is read-only and writable", async () => {
+  const registry = new AccountGenerationRegistry(digest("a"), 2);
+  const shared = root("shared-target", "f");
+  const readManifest: AccessManifest = {
+    manifestDigest: digest("b"),
+    workspaceRootId: "workspace-a",
+    readRoots: [shared],
+    writeRoots: [root("workspace-a", "c")],
+    gitConfigFiles: [],
+  };
+  const writeManifest: AccessManifest = {
+    manifestDigest: digest("d"),
+    workspaceRootId: "workspace-b",
+    readRoots: [],
+    writeRoots: [root("workspace-b", "e"), shared],
+    gitConfigFiles: [],
+  };
+  const reader = registry.acquire({
+    executionInstanceId: "reader",
+    kind: "agent-runtime",
+    taskId: "task-a",
+    accessManifest: readManifest,
+  });
+  const writer = registry.acquire({
+    executionInstanceId: "writer",
+    kind: "agent-runtime",
+    taskId: "task-b",
+    accessManifest: writeManifest,
+  });
+
+  expect(reader.install).toHaveLength(2);
+  expect(writer.install).toEqual([
+    expect.objectContaining({ objectIdentityDigest: digest("e") }),
+  ]);
+  registry.markProvisioned("reader", reader.lease.epoch);
+  await expect(writer.waitForSharedProvision()).resolves.toBeUndefined();
+
+  const readerRelease = registry.prepareReleaseWithManifest(
+    "reader",
+    reader.lease.epoch,
+    readManifest,
+  );
+  expect(readerRelease.revoke).toEqual([
+    expect.objectContaining({ objectIdentityDigest: digest("c") }),
+  ]);
+  registry.commitRelease(readerRelease.releaseId, readManifest);
+
+  const writerRelease = registry.prepareReleaseWithManifest(
+    "writer",
+    writer.lease.epoch,
+    writeManifest,
+  );
+  expect(writerRelease.revoke).toHaveLength(2);
+  registry.commitRelease(writerRelease.releaseId, writeManifest);
+  expect(registry.snapshot()).toMatchObject({
+    activeInstanceCount: 0,
+    grantCount: 0,
+  });
 });
 
 it("serializes the same workspace even when capacity remains", () => {

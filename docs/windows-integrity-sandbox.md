@@ -96,7 +96,7 @@ bootstrap runner 的创建控制面和 supervisor 必须只允许 Broker/SYSTEM�
 
 所有后代必须留在 `KILL_ON_JOB_CLOSE` Job。计划任务、BITS、服务、COM、父进程伪装和现存宿主进程代写必须作为逃逸夹具验证。即使后代逃离 Job，只要仍使用专用账户 SID，持久 WFP 仍应阻止其直接外网；这不免除进程和文件逃逸修复。
 
-每个实例 lease 释放前必须完成其 Job 终止、代理关闭、短期凭据失效、capability ACE 撤销和对象对账。账户 SID 的共享 read/normal-side ACE 由以对象身份和访问模式为键的引用计数 grant table 管理，只有最后一个引用释放时才撤销；不得因一个任务结束而破坏另一活动任务。任一步骤无法证明完成则账户 generation 进入 `orphaned/quarantined`：停止接受新任务，终止并对账该账户下全部活动实例，直到修复或重新安装；绝不只释放故障 workspace 后继续复用账户。
+每个实例 lease 释放前必须完成其 Job 终止、代理关闭、短期凭据失效、capability ACE 撤销和对象对账。账户 SID 的共享 normal-side ACE 由以对象身份为键的引用计数 grant table 管理；它始终提供读写候选权限，实际写入仍必须同时命中每实例 root capability ACE 与 `WRITE_RESTRICTED` token。同一对象被不同实例分别声明为 read/write 根时仍共享一个账户 grant，只有最后一个对象引用释放时才撤销；不得因一个任务结束而破坏另一活动任务。任一步骤无法证明完成则账户 generation 进入 `orphaned/quarantined`：停止接受新任务，终止并对账该账户下全部活动实例，直到修复或重新安装；绝不只释放故障 workspace 后继续复用账户。
 
 ## 4. 文件访问与 Git 配置
 
