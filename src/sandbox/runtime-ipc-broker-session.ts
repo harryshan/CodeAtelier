@@ -4,8 +4,8 @@
  *
  * 1. model_capabilities/model_run 委托 RuntimeBrokerGateway，使模型 endpoint/key 永远留在 Broker Host。
  * 2. model_run 把 provider delta 作为关联原 requestId 的事件回传，再返回完整 ModelResult。
- * 3. approval、结构化 Git push 和 session 操作只调用显式 handlers，不暴露 Store、任意方法名或宿主文件能力。
- * 4. git_push 在同一请求上等待独立 Push Runner；请求取消只中止该 Runner，不结束健康的 Agent Runtime。
+ * 3. approval、结构化 Git push、扩展权限命令和 session 操作只调用显式 handlers，不暴露 Store 或任意宿主方法名。
+ * 4. git_push/run_with_permissions 在同一请求上等待独立 Runner；请求取消只中止该 Runner，不结束健康的 Agent Runtime。
  * 5. runtime_complete 是 Runtime 的完成报告；Broker 仍须结合进程退出、Job 和 cleanup 账本决定可信终态。
  */
 
@@ -19,6 +19,10 @@ import type { RuntimeIpcRequest } from "./runtime-ipc-protocol.js";
 import { RUNTIME_IPC_PROTOCOL_VERSION } from "./runtime-ipc-protocol.js";
 import type { RuntimeTaskSettings } from "./runtime-ipc-protocol.js";
 import type { GitPushSpec, GitProcessResult } from "../tools/git.js";
+import type {
+  CapabilityCommandRequest,
+  CapabilityCommandResult,
+} from "./capability-request.js";
 
 export interface RuntimeIpcBrokerHandlers {
   requestApproval(
@@ -32,6 +36,12 @@ export interface RuntimeIpcBrokerHandlers {
     toolCallId: string,
     signal: AbortSignal,
   ): Promise<GitProcessResult>;
+  executeCapabilityCommand(
+    identity: RuntimeExecutionIdentity,
+    request: CapabilityCommandRequest,
+    toolCallId: string,
+    signal: AbortSignal,
+  ): Promise<CapabilityCommandResult>;
   applyMemory(
     identity: RuntimeExecutionIdentity,
     request: unknown,
@@ -218,6 +228,13 @@ export class RuntimeIpcBrokerSession {
         return this.handlers.executeGitPush(
           this.identity,
           request.body.spec,
+          request.body.toolCallId,
+          signal,
+        );
+      case "run_with_permissions":
+        return this.handlers.executeCapabilityCommand(
+          this.identity,
+          request.body.request,
           request.body.toolCallId,
           signal,
         );

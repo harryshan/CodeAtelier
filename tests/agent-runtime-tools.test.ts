@@ -2,7 +2,7 @@
  * 验证 ToolRunner 位于 Agent Runtime 时直接在既有 restricted token/Job 中创建工具进程，且不再嵌套调用逐工具 SandboxBroker。
  * 这里只验证 TypeScript 分流，不替代 Windows token/Job 或 Push Runner 夹具。
  *
- * 1. 普通 run_command 经审批后使用本进程 shell，发布 sandboxed_tool_process PID 并返回 sandboxed 状态。
+ * 1. 普通 run_command 在既有 Runtime 权限内不再审批，使用本进程 shell并发布 sandboxed_tool_process PID。
  * 2. Git push 查询在 Runtime 内完成，但结构化 PushSpec 经注入 adapter 等待独立 Push Runner，不嵌套 supervisor。
  * 3. 注入的旧 SandboxBroker 若被调用会使测试失败，防止迁移后继续每条命令启动 supervisor。
  */
@@ -24,13 +24,14 @@ it("runs ordinary commands inside the existing Agent Runtime boundary", async ()
     throw new Error("不应嵌套调用 SandboxBroker");
   });
   const events: Array<{ type: string; data: any }> = [];
+  const requestApproval = vi.fn(async () => false);
   const runner = new ToolRunner({
     root,
     sessionId: "session-1",
     taskId: "task-1",
     signal: new AbortController().signal,
     settings: config.settings,
-    approvals: { request: async () => true },
+    approvals: { request: requestApproval },
     sandbox: { executeCommand } as never,
     executionBoundary: "agent-runtime",
     emit: (type, data) => events.push({ type, data }),
@@ -46,10 +47,54 @@ it("runs ordinary commands inside the existing Agent Runtime boundary", async ()
     sandbox: { mode: "sandboxed", applied: true },
   });
   expect(executeCommand).not.toHaveBeenCalled();
+  expect(requestApproval).not.toHaveBeenCalled();
   expect(events).toContainEqual({
     type: "sandboxed_tool_process",
     data: { pid: expect.any(Number) },
   });
+});
+
+it("routes an explicit permission request to one broker capability runner", async () => {
+  const root = await temp();
+  const config = new Config(await temp());
+  const runWithPermissions = vi.fn(async () => ({
+    executionInstanceId: "capability-1",
+    output: "elevated-result",
+    exitCode: 0,
+    truncated: false,
+  }));
+  const runner = new ToolRunner({
+    root,
+    sessionId: "session-1",
+    taskId: "task-1",
+    signal: new AbortController().signal,
+    settings: config.settings,
+    approvals: { request: vi.fn(async () => false) },
+    executionBoundary: "agent-runtime",
+    runWithPermissions,
+    emit: () => {},
+  });
+  const request = {
+    command: "node external-task.js",
+    permissions: {
+      readRoots: [root],
+      writeRoots: [],
+      httpsHost: "example.test",
+    },
+    reason: "需要读取已审核的外部输入并调用固定服务。",
+  };
+
+  await expect(
+    runner.forCall("capability-call").execute("run_with_permissions", request),
+  ).resolves.toMatchObject({
+    executionInstanceId: "capability-1",
+    output: "elevated-result",
+  });
+  expect(runWithPermissions).toHaveBeenCalledWith(
+    request,
+    expect.any(AbortSignal),
+    "capability-call",
+  );
 });
 
 it("waits for the broker push adapter while the agent runtime remains alive", async () => {

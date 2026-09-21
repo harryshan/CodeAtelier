@@ -584,6 +584,9 @@ export class SandboxBroker implements AgentRuntimeLauncher {
     onStage: (stage: SandboxStage, status: SandboxStatus) => void,
     options: { allowHostFallback?: boolean } = {},
   ) {
+    const runnerLabel =
+      command.kind === "capability-runner" ? "扩展权限 Runner" : "Push Runner";
+    const deniedHostExecution = `${runnerLabel} 要求已启用 Sandbox；Broker 未以宿主身份执行命令。`;
     const initialStatus = this.statusFor(
       command.taskId,
       command.executionInstanceId,
@@ -602,9 +605,7 @@ export class SandboxBroker implements AgentRuntimeLauncher {
 
     if (!this.configuration.enabled) {
       if (options.allowHostFallback === false) {
-        throw new SandboxUnavailableError(
-          "Push Runner 要求已启用 Sandbox；Broker 未执行宿主 Git。",
-        );
+        throw new SandboxUnavailableError(deniedHostExecution);
       }
 
       this.record("executing", onStage, initialStatus);
@@ -619,7 +620,7 @@ export class SandboxBroker implements AgentRuntimeLauncher {
     if (priorFallback) {
       if (options.allowHostFallback === false) {
         throw new SandboxUnavailableError(
-          "本任务已经进入宿主 fallback，不能从 Agent Runtime 执行 Push Runner。",
+          `本任务已经进入宿主 fallback，不能从 Agent Runtime 执行 ${runnerLabel}。`,
         );
       }
 
@@ -643,7 +644,7 @@ export class SandboxBroker implements AgentRuntimeLauncher {
 
       if (options.allowHostFallback === false) {
         throw new SandboxUnavailableError(
-          "Push Runner 工作区检查失败；Broker 未执行宿主 Git。",
+          `${runnerLabel} 工作区检查失败；Broker 未以宿主身份执行命令。`,
         );
       }
 
@@ -659,7 +660,7 @@ export class SandboxBroker implements AgentRuntimeLauncher {
     if (!this.runtime) {
       if (options.allowHostFallback === false) {
         throw new SandboxUnavailableError(
-          "Push Runner 后端不可用；Broker 未执行宿主 Git。",
+          `${runnerLabel} 后端不可用；Broker 未以宿主身份执行命令。`,
         );
       }
 
@@ -752,7 +753,7 @@ export class SandboxBroker implements AgentRuntimeLauncher {
 
       if (options.allowHostFallback === false) {
         throw new SandboxUnavailableError(
-          "Push Runner 启动前检查失败；Broker 未执行宿主 Git。",
+          `${runnerLabel} 启动前检查失败；Broker 未以宿主身份执行命令。`,
         );
       }
 

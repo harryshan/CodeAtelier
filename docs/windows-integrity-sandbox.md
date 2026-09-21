@@ -11,18 +11,19 @@
 | **Broker Host**                | 运行于宿主交互用户、持有模型密钥、session 数据库、审批策略和长期恢复账本的可信 Node.js 进程。它不执行 Git，也不以宿主权限代替已启动的 Sandbox 操作。                                                                                             | 已存在；Windows 启用时默认通过 SandboxBroker launcher 管理 Agent Runtime provision、IPC adapter 和恢复账本。                                                                                                                                                                                                                           |
 | **Agent Runtime**              | 每个任务一个、运行于 `CodeAtelierSandbox` restricted token/Job 中的常驻 Node.js 进程。它承载完整 agent loop、上下文准备、工具计划、文件工具、普通命令与非 push Git；只能通过认证 Runtime IPC 请求 Broker 模型、session、审批及其它固定宿主能力。 | `AgentRuntimeService`、默认 Engine launcher 和 C++ Supervisor 启动路径已接入；独立 Node harness 已证明 loop 与文件工具不在 Broker 进程，native build 已通过。**固定账户提升环境的真实链路尚未验收，故仍不是产品完成态。**                                                                                                              |
 | **Push Runner**                | Agent Runtime 的 agent loop 阻塞等待期间创建的单用途受限进程，只执行一次已确认的 Git push，不加载 agent loop 或任意通用工具入口；Agent Runtime 不获得其网络 lease 或凭据。                                                                        | 协议、relay 和原生部件已部分实现；真实 remote push 尚未完成提升验收。                                                                                                                                                                                                                                                                  |
+| **Capability Runner**          | Agent Runtime 越界命令获用户确认后创建的一次性受限进程，只得到声明的递归读写根与一个 HTTPS host；Broker 编排它但不使用宿主 token 执行命令。                                                                                                    | 结构化工具、Runtime IPC、AccessManifest/relay 分流和 executionInstance 已接线；固定账户下 ACL、代理环境、取消和清理矩阵尚未提升验收。                                                                                                                                                                                                  |
 | **Sandbox Supervisor**         | 已安装且受保护的固定 C++ 控制进程。它验证安装状态、创建 restricted token/Job/desktop、启动或终止 Agent Runtime/Push Runner，并完成 ACL journal 与 generation 清理；不解释模型输出，不运行 agent loop。                                           | 已承载逐工具 process 与常驻 Agent Runtime 启动、任务 pipe 身份检查和字节代理；真实提升环境仍待验收。                                                                                                                                                                                                                                    |
 | **Sandboxed Tool Process**     | 由当前过渡实现为单次 `run_command` 或 Git 调用启动的 shell、Git 或其后代。它受专用账户、token、Job、ACL 和 WFP 约束，但**不是 Agent Runtime**，结束后不保留 agent 状态。                                                                         | 当前真实产品调用路径。迁移完成后由 Agent Runtime 直接创建并监督，不再由 Broker 为每条命令启动。                                                                                                                                                                                                                                        |
 | **Runtime IPC**                | Agent Runtime 与 Broker Host 间的任务专属、认证、固定 schema 双向通道。连接身份必须联合验证 PID/创建时间、Job、token/capability、generation、nonce 和 lease；模型/session/审批 adapter 运行在其上。                                              | C++ 已创建任务专属 pipe，并在转发首帧前验证 PID、创建时间、Job、账户 SID、restricted execution/root capability 和固定 Node 映像；Supervisor 再代理有界 Runtime IPC 字节流。nonce/lease 由 Broker manifest 账本与首帧握手绑定；尚缺提升环境中的错误客户端、取消、断连和恢复矩阵。                                                       |
 | **Supervisor Control Channel** | Broker Host 到 Sandbox Supervisor 的私有启动/终止控制通道。它只管理固定 Runtime kind 和 AccessManifest，不承载模型、工具或任意命令请求。                                                                                                         | TypeScript schema/channel 已有；现有逐工具二进制帧不是该目标控制通道。                                                                                                                                                                                                                                                                 |
 
-“Runtime”单独出现时只指 **Agent Runtime** 或 **Push Runner**，不能再指单条命令、Git 子进程、C++ supervisor、协议核心或历史 WSL2 launcher。`executionInstance` 是持久化归因记录，也不是进程名称。单元测试构造的内存对象必须称为 protocol core、mock transport 或 test harness，不能记作 Runtime IPC 已完成。
+“Runtime”单独出现时只指 **Agent Runtime**；其它进程必须完整写作 Push Runner 或 Capability Runner，不能把单条命令、Git 子进程、C++ supervisor、协议核心或历史 WSL2 launcher 混称 Runtime。`executionInstance` 是持久化归因记录，也不是进程名称。单元测试构造的内存对象必须称为 protocol core、mock transport 或 test harness，不能记作 Runtime IPC 已完成。
 
 目标完成的最低判据是：Broker 只负责调度和固定宿主能力；每个 Sandbox 任务先启动一个常驻 Agent Runtime；模型轮次、上下文处理、工具 DAG、文件工具、普通命令及非 push Git 都由该 Runtime 发起；模型密钥和宿主数据库不进入 Runtime；所有跨边界请求经真实认证 Runtime IPC；取消、断连、cleanup unknown 和服务重启仍遵守 generation 隔离及禁止盲目重放契约。仅把命令/Git 子进程放进专用账户不满足该判据。
 
 ## 1. 目标与安全边界
 
-Windows Runtime 使用安装程序预先创建的单一低权限本地账户 `CodeAtelierSandbox`。所有 Agent Runtime、Git、hook、helper 与后代都在该账户身份及其 restricted token/Job 中运行。宿主 Broker 保留模型密钥、会话存储、审批、外部写入和真实网络能力。
+Windows Runtime 使用安装程序预先创建的单一低权限本地账户 `CodeAtelierSandbox`。所有 Agent Runtime、Capability/Push Runner、Git、hook、helper 与后代都在该账户身份及其 restricted token/Job 中运行。宿主 Broker 保留模型密钥、会话存储、审批和真实网络代理；它不以宿主 token 执行 LLM 命令。
 
 目标能力：
 
@@ -53,14 +54,14 @@ Browser / Web UI
         |
 Broker Host（当前交互用户；可信策略与长期状态）
   |-- AccessManifest、审批、session、executionInstance、tracing
-  |-- model / storage / external.write / network proxy adapters
+  |-- model / storage / capability request / network proxy adapters
   |-- 专属 Named Pipe：验证 SID + PID/创建时间 + Job + nonce/lease
   |
   `-- C++ supervisor
         |-- CodeAtelierSandbox 账户 generation + 多实例 lease registry
         |-- CreateProcessWithLogonW（不加载 profile）两段启动 + restricted token
         |-- 私有 desktop、Job、mitigation、资源与取消
-        `-- Agent Runtime 或单用途 Push Runner
+        `-- Agent Runtime、单用途 Push Runner 或 Capability Runner
               |-- 账户既有读取权 + 工作区、显式 read/write roots、精确 Git config graph
               |-- 本地 Git、hook/helper、Node、shell、编译器
               `-- WFP：仅可达受控 loopback relay/proxy 端口
@@ -71,7 +72,7 @@ Broker Host（当前交互用户；可信策略与长期状态）
   `-- 安装/对账按账户 SID 的持久 WFP V4/V6 规则
 ```
 
-Broker、supervisor、安装程序和 Sandbox Process 是不同边界。运行时 Broker 默认不提升；账户/WFP/本地策略的创建、修复和删除只由显式 UAC 安装流程执行。任何组件不可把任意命令、SID、路径、ACL、socket 或原始 handle 暴露为通用高权限接口。
+Broker、supervisor、安装程序和 Sandbox Process 是不同边界。运行时 Broker 默认不提升；账户/WFP/本地策略的创建、修复和删除只由显式 UAC 安装流程执行。Runtime 只可通过 `run_with_permissions` 提交任意命令文本；真正可授予的权限仍限于严格 schema 中由 AccessManifest/WFP/relay 强制的根与 host，不能请求任意 SID、ACL、socket、宿主 token 或原始 handle。
 
 ## 3. 安装、账户与启动
 
@@ -134,13 +135,14 @@ Runtime 与 Broker 使用任务专属 Named Pipe。pipe DACL 同时要求宿主 
 
 Broker 只提供参数受限的 typed operation：
 
-| 类别              | 允许                                                    | 禁止                                              |
-| ----------------- | ------------------------------------------------------- | ------------------------------------------------- |
-| `model.request`   | 使用宿主固定模型配置发送受限 Responses 请求             | 暴露 API key、任意 URL/认证头或通用 HTTP tunnel   |
-| `external.write`  | 对用户确认的单一工作区外对象执行版本化创建/精确编辑     | 任意 shell、递归复制或目录级写入                  |
-| `network.fetch`   | 对明确批准的 HTTPS 读取执行 host/DNS/IP/重定向/大小审查 | 通用 socket、内网、metadata、监听或默认上传       |
-| `git.push.egress` | 管理 PushSpec、Push Runner、relay 和短期凭据            | 执行 Git、解析 Git 协议或承诺 path/ref 是网络边界 |
-| `session.store`   | 持久化本任务事件、结果和恢复账本                        | 读取或修改其它会话数据                            |
+| 类别                    | 允许                                                                 | 禁止                                                   |
+| ----------------------- | -------------------------------------------------------------------- | ------------------------------------------------------ |
+| `model.request`         | 使用宿主固定模型配置发送受限 Responses 请求                          | 暴露 API key、任意 URL/认证头或通用 HTTP tunnel        |
+| `run_with_permissions`  | 审批后在独立 Runner 执行命令；增加现存递归根和单一 HTTPS host:443    | 宿主 token、自由文本权限、私网、监听、凭据或未声明对象 |
+| `git.push.egress`       | 管理 PushSpec、Push Runner、relay 和短期凭据                         | 由 Broker 执行 Git、承诺 path/ref 是网络边界            |
+| `session.store`         | 持久化本任务事件、结果和恢复账本                                     | 读取或修改其它会话数据                                 |
+
+Agent Runtime 已有权限内的工具不调用审批 adapter；越界普通文件工具直接拒绝。`run_with_permissions` 的理由仅用于用户判断，不能改变权限。读写根是递归目录能力，获准命令可查看整个读根、修改整个写根，并可把所有可读数据发送给获准 host；因此审批 UI 必须完整展示三者。Capability Runner 只取得短期 host-bound proxy token，不查询宿主 WinCred；Git push 继续走更窄的专用协议。
 
 IPC 通过只证明 Broker 能拒绝未授权 capability；它不构成直接网络阻断。网络边界始终是账户 SID WFP fence。
 
@@ -192,7 +194,7 @@ Sandbox 是优先执行模式，不是任务可用性的硬前置条件。每次
 | W1：安装与身份              | 已有产品构建与提升脚本：固定账户、CurrentUser DPAPI secret、状态/安装副本 DACL、四项拒绝登录权、固定端口持久 WFP 的 install/verify/uninstall/recover；Node 24、Agent Runtime bundle 与原生程序使用受保护安装副本及 v2 state 摘要。尚未以产品账户完成提升验收                                                                                                                                                                                       | 宿主用户网络不受影响；Sandbox SID 的 V4/V6 直接出站均阻断；loopback 只到固定端点                                                    |
 | W2：文件与监督              | 已接入 supervisor：二进制 manifest 携带卷/file ID，专用账户 bootstrap 使用仅含 execution/root capability 的 `WRITE_RESTRICTED` token、私有 desktop、Job 与逐对象 ACL；账户 ACE 使用可等待 provision 和两阶段 release，独立 journal 支持崩溃/卸载/服务重启撤销。Git config 与只读聚合根已纳入 manifest。仍缺提升环境产品验收和复杂对象替换夹具                                                                                                      | 并发实例互相可读且可能互相干扰，但直接及后代不可跨 capability 根写入；共享 ACE 安装窗口与撤销失败保持账本；孤儿 generation 全量排空 |
 | W3：Broker IPC              | 已完成 typed capability、有界双向 framing、instance/nonce 握手、模型流及 model/session/approval/memory adapter；C++ Named Pipe transport、PID/创建时间/Job/account/restricted capability/固定映像联合检查、首帧和字节代理已接入默认 Windows launcher。仍缺固定账户提升环境的错误客户端、重放、取消、断连和恢复实测                                                                                                                                                | 重放、错误映像/Job/token、畸形帧安全拒绝；native build、协议单测或 stdio harness 不得冒充 Windows 身份边界                             |
-| W4：本地 Runtime 与外部写入 | `AgentRuntimeService` 已承载上下文、模型轮次、工具 DAG、文件工具、普通命令和非 push Git；Engine 默认 Windows launcher、Broker provision/fallback/quarantine 和 Supervisor 启动已接线。构建会生成 Node 24 单文件 Runtime、独立 compaction Worker 和摘要 manifest，安装器将 Node 24 与 bundle 固定到受保护目录并由双层 self-check 复核。结构化 PushSpec 与阻塞等待 Push Runner 的应用链已接入；仍缺提升环境产品链路、其余上下文阶段的完整跨进程 tracing 与版本化外部写入 adapter | 证明 loop/文件/Git 不在 Broker；TOCTOU、reparse、对象替换、敏感日志和超限失败路径                                                   |
+| W4：本地 Runtime 与扩展能力 | `AgentRuntimeService` 已承载上下文、模型轮次、工具 DAG、文件工具、普通命令和非 push Git；Runtime 内已有权限工具免审批。`run_with_permissions` 已将命令/根/HTTPS host/理由经认证 IPC 交给 Broker 重新审批，并以独立 capability runner、AccessManifest 和 relay 执行，禁止宿主 fallback。构建会生成并安装受保护 Node 24 Runtime bundle；仍缺提升环境 capability runner 的 ACL/代理/取消矩阵及其余上下文阶段完整跨进程 tracing | 证明 loop/文件/Git 不在 Broker；越界命令只能得到已审核根/host；TOCTOU、reparse、敏感日志和超限失败路径                            |
 | W5：Git push                | 已实现带 source OID 的 HTTPS PushSpec 分流、逐次审批、`push-runner` executionInstance、固定端口 CONNECT relay、精确 host/DNS/IP/期限/字节限制，以及只向同 Job askpass helper 交付 proxy token 和 host-bound WinCred 凭据；其它凭据后端与真实 remote 验收仍缺失                                                                                                                                                                                     | 无 WFP 临时放宽；其它进程不能复用；仅确认 host 可达；真实 Git 配置绕过失败关闭                                                      |
 | W6：取消与资源              | 已接 Job 的后代终止、PID/内存/CPU/墙钟和输出限制，并持久化 cancelled/unknown；cleanup failure 优先于取消，unknown 会关闭 relay、终止账户进程并按 journal 撤销 ACL，服务监听前先恢复旧 generation。仍缺提升环境强制终止、服务崩溃和整代排空验收                                                                                                                                                                                                     | cancelled/unknown 进入下一轮；后代终止、ACL/账户对账和资源上限真实验证                                                              |
 | W7：其它平台                | macOS/Linux 对应实现                                                                                                                                                                                                                                                                                                                                                                                                                               | 各平台独立证明，不继承 Windows 结论                                                                                                 |

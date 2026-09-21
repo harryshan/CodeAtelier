@@ -61,6 +61,10 @@ describe.skipIf(process.platform !== "win32")(
         timeoutMs: 1000,
         access: {
           leaseEpoch: 1,
+          proxyCredentialMode: "environment",
+          proxyUrl: "http://127.0.0.1:42871",
+          proxyHost: "example.test",
+          proxyToken: "short-lived-token",
           installObjectIdentityDigests: ["a".repeat(64)],
           manifest: {
             manifestDigest: "b".repeat(64),
@@ -84,6 +88,7 @@ describe.skipIf(process.platform !== "win32")(
       expect(frame.readUInt32LE(4)).toBe(2);
       expect(frame.includes(Buffer.from("instance-1"))).toBe(true);
       expect(frame.includes(Buffer.from("echo ok"))).toBe(true);
+      expect(frame.includes(Buffer.from("environment"))).toBe(true);
       expect(() =>
         encodeNativeSandboxRequest({
           executionInstanceId: "instance-1",
@@ -231,6 +236,8 @@ describe.skipIf(process.platform !== "win32")(
 
     it("projects the private HOME/TEMP as a writable manifest root", async () => {
       const root = await temp();
+      const readable = await temp();
+      const writable = await temp();
       const runtime = new NativeWindowsSandboxRuntime({
         CODEATELIER_SANDBOX_STATE_PATH: path.join(root, "installation.state"),
         CODEATELIER_SANDBOX_NATIVE_ROOT: path.join(root, "native"),
@@ -241,6 +248,9 @@ describe.skipIf(process.platform !== "win32")(
           sessionId: "session-1",
           taskId: "task-1",
           executionInstanceId: "instance-1",
+          kind: "capability-runner",
+          readOnlyRoots: [readable],
+          readWriteRoots: [writable],
           command: "C:\\Windows\\System32\\cmd.exe",
           args: [],
           cwd: root,
@@ -254,7 +264,12 @@ describe.skipIf(process.platform !== "win32")(
       );
 
       expect(prepared.privateDirectory).toBe(prepared.readWriteRoots[0]);
-      expect(prepared.readOnlyRoots).toHaveLength(1);
+      expect(prepared.readOnlyRoots).toEqual(
+        expect.arrayContaining([expect.any(String), readable]),
+      );
+      expect(prepared.readWriteRoots).toEqual(
+        expect.arrayContaining([prepared.privateDirectory, writable]),
+      );
       await expect(access(prepared.privateDirectory!)).resolves.toBeUndefined();
 
       const privateDirectory = prepared.privateDirectory!;

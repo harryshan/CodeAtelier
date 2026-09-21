@@ -3,13 +3,14 @@
  * Sandbox Supervisor/Windows transport 必须先把连接绑定到已验证的 PID、Job、token、generation、nonce 和 lease，
  * 然后才能把已认证字节流交给 RuntimeIpcPeer；测试用 stdio 只验证 framing 和跨进程路由，不构成 W3 证据。
  *
- * 1. runtimeRequestSchema 限定 Runtime 可请求的模型、审批、session adapter 和结构化 Git PushSpec，不提供任意宿主函数、命令或路径入口。
+ * 1. runtimeRequestSchema 限定 Runtime 可请求的模型、审批、session adapter、结构化 Git PushSpec 和一次性 capability command；后者只能声明 Broker 可强制落实的根/host。
  * 2. runtimeResponseSchema 关联原 requestId；错误只返回受限 code/message 与模型重试元数据，避免泄露宿主异常对象。
  * 3. runtimeEventSchema 承载模型 delta、任务取消、请求级取消和 Runtime 生命周期通知；大对象仍受 transport 帧上限约束。
  * 4. hello schema 绑定协议版本、任务和 instance；其中 Runtime 自报字段只用于一致性核对，不能替代 transport 身份。
  */
 
 import { z } from "zod";
+import { capabilityCommandRequestSchema } from "./capability-request.js";
 
 export const RUNTIME_IPC_PROTOCOL_VERSION = 1;
 export const MAX_RUNTIME_IPC_FRAME_BYTES = 8 * 1024 * 1024;
@@ -148,6 +149,18 @@ export const runtimeRequestSchema = z.discriminatedUnion("operation", [
       operation: z.literal("git_push"),
       body: z
         .object({ toolCallId: identifier, spec: runtimeGitPushSpecSchema })
+        .strict(),
+    })
+    .strict(),
+  z
+    .object({
+      ...requestBase,
+      operation: z.literal("run_with_permissions"),
+      body: z
+        .object({
+          toolCallId: identifier,
+          request: capabilityCommandRequestSchema,
+        })
         .strict(),
     })
     .strict(),

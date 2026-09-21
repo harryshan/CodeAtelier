@@ -888,3 +888,13 @@
 - 安全边界：Agent Runtime 不获得 relay lease、代理 token、askpass 通道或凭据；代理仍只接受经联合身份验证的 Push Runner。保留 Runtime 不新增跨任务隔离承诺，也不改变单一账户 peer 风险。独占批次消除正常调度路径中的同任务并行仓库修改，但不能把同账户恶意 peer 或外部宿主进程描述为已隔离。
 - 取消与失败：任务取消同时取消等待中的 IPC 请求和 Push Runner；只有 Runner Job、代理/凭据 lease、ACL 与 generation 清理全部可证明时返回 cancelled/failed 结果并允许 Runtime 继续或结束。Runner 已启动而结果或清理未知时，Agent Runtime 不自动重试 push；Broker 记录 Push Runner `unknown/orphaned`，隔离并排空整代账户，原 Runtime 也随 generation drain 结束。
 - 原因：终止并重建 Agent Runtime 需要额外的 agent loop 状态移交和待完成工具调用恢复，却不能在已接受的单账户 peer 模型下形成真正的对抗性进程隔离。保持 Runtime 阻塞可以直接返回工具结果，同时仍以独立 Runner 身份隔离网络和凭据能力。
+
+## D106：Runtime 内工具免审批，越界命令使用通用 capability runner
+
+- 日期：2026-09-21
+- 状态：用户确认并授权实现；替代目标 Sandbox 模式下“每条普通命令仍审批”和“外部写入只允许固定文件 adapter”的要求，不改变 Sandbox 关闭/宿主 fallback 的既有审批行为。
+- Runtime 内执行：Agent Runtime 已由 AccessManifest、restricted token、Job 和 WFP 限定；在这些既有权限内运行的 `read_file`、`edit_files`、`run_command`、非 push Git 和其它本地工具不再请求低成本模型或人工审批。路径落在 Runtime 授权根之外时普通文件工具直接拒绝，不能把一次审批误当成新增 ACL。
+- 通用请求：新增 `run_with_permissions`。LLM 必须提交命令、结构化最小权限和具体理由；当前可强制权限只有最多 16 个现存递归只读目录根、16 个现存递归可写目录根，以及一个精确公网 HTTPS host:443。该调用必须独占当前工具批次；Runtime 通过认证 IPC 提交当前 `toolCallId` 后同步阻塞，等待期间不能并行调度其它工具。Broker 不相信 Runtime 自报审批，在显示审批前先按 AccessManifest 规则打开现存目录、拒绝重解析入口并取得规范路径；批准后及原生授权前仍重新打开并核对对象身份，避免一次 UI 审批取代执行时校验。Broker 展示完整命令/规范权限/理由并取得用户审批。
+- 执行边界：审批通过后 Broker 编排新的单用途 `capability-runner` execution instance，以专用账户、独立 restricted token/Job/capability/private directory 运行；声明根进入该 Runner 的 AccessManifest，HTTPS host 进入短期 CONNECT relay lease。Broker **不以宿主交互用户 token 执行 LLM 命令**，不授予宿主 profile、凭据、任意网络或未声明路径。网络 Runner 只得到自身短期、host-bound proxy token；Git push 仍使用更窄的 PushSpec/Push Runner/WinCred askpass 路径，不允许借通用工具绕过。
+- 失败与审计：拒绝审批时不创建 Runner。启动前检查失败禁止宿主 fallback；启动后取消、结果未知或 Job/ACL/代理清理不确定继续按 D103/D105 隔离并排空 generation，绝不自动重放。命令输出、退出码、截断标志和 executionInstance 返回 Runtime；session、日志和 trace 用同一 `toolCallId` 关联，但 trace 不记录命令、理由、路径、host、输出或 token。
+- 明确限制：文件根是递归目录能力，不是单文件版本化补丁；命令可能读出根内任何对象、改写可写根内任何对象，并把可读内容发送到获准 host。不存在的目标、单文件创建、多个网络 host、非 HTTPS、私网/loopback、原始 socket、监听、设备、注册表、服务、提权或宿主凭据不由本版本通用能力支持；需要新增权限类型时必须先增加可强制的 schema、实现和验收，不能只增加自由文本声明。

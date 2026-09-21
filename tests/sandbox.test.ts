@@ -244,7 +244,7 @@ it("never falls back a push runner to host Git", async () => {
     broker.executeCommand(command(), executeHost, () => {}, {
       allowHostFallback: false,
     }),
-  ).rejects.toThrow("Broker 未执行宿主 Git");
+  ).rejects.toThrow("Broker 未以宿主身份执行命令");
   expect(executeHost).not.toHaveBeenCalled();
 });
 
@@ -609,6 +609,90 @@ it("runs one push runner beside its blocked agent runtime without host fallback"
   expect(broker.accountGenerationSnapshot()?.activeInstances).toEqual([
     expect.objectContaining({ executionInstanceId: "runtime-a" }),
   ]);
+  finishRuntime();
+  await agentRuntime;
+  expect(broker.accountGenerationSnapshot()?.activeInstanceCount).toBe(0);
+});
+
+it("projects reviewed roots into one capability runner beside its agent runtime", async () => {
+  const root = await temp();
+  const readable = await temp();
+  const writable = await temp();
+  let finishRuntime!: () => void;
+  const runtimeBlocked = new Promise<void>((resolve) => {
+    finishRuntime = resolve;
+  });
+  const execute = vi.fn(
+    async (runtimeCommand: SandboxCommand, _workspace, access) => {
+      runtimeCommand.onAccessProvisioned?.();
+      if (runtimeCommand.kind === "agent-runtime") {
+        await runtimeBlocked;
+      }
+
+      if (runtimeCommand.kind === "capability-runner") {
+        expect(access?.manifest.readRoots).toEqual([
+          expect.objectContaining({ path: readable }),
+        ]);
+        expect(access?.manifest.writeRoots).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ path: root }),
+            expect.objectContaining({ path: writable }),
+          ]),
+        );
+      }
+
+      return { output: "capability", exitCode: 0, truncated: false };
+    },
+  );
+  const runtime: SandboxRuntime = {
+    selfCheck: vi.fn(async () => ({
+      level: "windows-sandbox-user-v1:test",
+      workspaceProtection: "direct-path" as const,
+      accountGenerationDigest: "e".repeat(64),
+    })),
+    prepareAccess: vi.fn(async (runtimeCommand) => ({
+      readOnlyRoots: runtimeCommand.readOnlyRoots ?? [],
+      readWriteRoots: runtimeCommand.readWriteRoots ?? [],
+      gitConfigFiles: [],
+      cleanup: vi.fn(async () => {}),
+    })),
+    execute,
+    revokeAccess: vi.fn(async () => {}),
+    drainGeneration: vi.fn(async () => {}),
+  };
+  const broker = new SandboxBroker(
+    sandboxConfiguration({ CODEATELIER_SANDBOX_ENABLED: "true" }, "win32"),
+    runtime,
+  );
+  const agentRuntime = broker.executeCommand(
+    {
+      ...command(),
+      cwd: root,
+      kind: "agent-runtime",
+      executionInstanceId: "runtime-capability",
+    },
+    vi.fn(),
+    () => {},
+  );
+  await vi.waitFor(() => expect(execute).toHaveBeenCalledTimes(1));
+  const executeHost = vi.fn();
+  const capability = await broker.executeCommand(
+    {
+      ...command(),
+      cwd: root,
+      kind: "capability-runner",
+      executionInstanceId: "capability-a",
+      toolCallId: "capability-call",
+      readOnlyRoots: [readable],
+      readWriteRoots: [writable],
+    },
+    executeHost,
+    () => {},
+    { allowHostFallback: false },
+  );
+
+  expect(capability.result.output).toBe("capability");
+  expect(executeHost).not.toHaveBeenCalled();
   finishRuntime();
   await agentRuntime;
   expect(broker.accountGenerationSnapshot()?.activeInstanceCount).toBe(0);

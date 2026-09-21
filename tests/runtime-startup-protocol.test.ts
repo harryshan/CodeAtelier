@@ -138,7 +138,7 @@ it.skipIf(process.platform !== "win32")(
             async getCapabilities() {
               return {
                 limits: {
-                  max_context_window_tokens: 32_000,
+                  max_context_window_tokens: 64_000,
                   max_output_tokens: 1_024,
                 },
               };
@@ -161,6 +161,12 @@ it.skipIf(process.platform !== "win32")(
       {
         requestApproval: async () => ({ approved: true }),
         executeGitPush: async () => ({
+          output: "",
+          exitCode: 0,
+          truncated: false,
+        }),
+        executeCapabilityCommand: async () => ({
+          executionInstanceId: "capability-test",
           output: "",
           exitCode: 0,
           truncated: false,
@@ -189,7 +195,7 @@ it.skipIf(process.platform !== "win32")(
           maxSteps: 2,
           commandTimeoutMs: 10_000,
           maxOutputTokens: 1_024,
-          contextChars: 32_000,
+          contextChars: 64_000,
           outputChars: 10_000,
         },
       },

@@ -20,7 +20,10 @@ import { RuntimeIpcBrokerSession } from "../src/sandbox/runtime-ipc-broker-sessi
 import { RuntimeBrokerGateway } from "../src/sandbox/runtime-capability-core.js";
 import { TraceRecorder } from "../src/tracing/recorder.js";
 import { connectAgentRuntime } from "../src/sandbox/agent-runtime-connection.js";
-import { RuntimeGitPushClient } from "../src/sandbox/runtime-tool-adapters.js";
+import {
+  RuntimeCapabilityClient,
+  RuntimeGitPushClient,
+} from "../src/sandbox/runtime-tool-adapters.js";
 
 function peers() {
   const leftToRight = new PassThrough();
@@ -77,6 +80,53 @@ it("sends only a structured push spec to the broker", async () => {
   expect(received).toMatchObject({
     operation: "git_push",
     body: { toolCallId: "push-call", spec },
+  });
+  right.end();
+  left.end();
+});
+
+it("sends a bounded capability command with its reason and tool call", async () => {
+  const leftToRight = new PassThrough();
+  const rightToLeft = new PassThrough();
+  let received: unknown;
+  const right = new RuntimeIpcPeer({
+    input: leftToRight,
+    output: rightToLeft,
+    handleRequest: async (request) => {
+      received = request;
+
+      return {
+        executionInstanceId: "capability-1",
+        output: "done",
+        exitCode: 0,
+        truncated: false,
+      };
+    },
+  });
+  const left = new RuntimeIpcPeer({ input: rightToLeft, output: leftToRight });
+  const request = {
+    command: "node external-task.js",
+    permissions: {
+      readRoots: ["C:\\approved-read"],
+      writeRoots: ["C:\\approved-write"],
+      httpsHost: "example.test",
+    },
+    reason: "需要处理工作区外的已审核对象。",
+  };
+
+  await expect(
+    new RuntimeCapabilityClient(left).execute(
+      request,
+      "capability-call",
+      new AbortController().signal,
+    ),
+  ).resolves.toMatchObject({
+    executionInstanceId: "capability-1",
+    output: "done",
+  });
+  expect(received).toMatchObject({
+    operation: "run_with_permissions",
+    body: { toolCallId: "capability-call", request },
   });
   right.end();
   left.end();
@@ -165,6 +215,12 @@ it("rejects an instance or nonce mismatch before serving requests", async () => 
         exitCode: 0,
         truncated: false,
       }),
+      executeCapabilityCommand: async () => ({
+        executionInstanceId: "capability-test",
+        output: "",
+        exitCode: 0,
+        truncated: false,
+      }),
       applyMemory: async () => ({ applied: true }),
       appendSessionEvent: async () => undefined,
       saveContext: async () => undefined,
@@ -236,6 +292,12 @@ it("proxies a model request across a real child process", async () => {
     {
       requestApproval: async () => ({ approved: true }),
       executeGitPush: async () => ({
+        output: "",
+        exitCode: 0,
+        truncated: false,
+      }),
+      executeCapabilityCommand: async () => ({
+        executionInstanceId: "capability-test",
         output: "",
         exitCode: 0,
         truncated: false,

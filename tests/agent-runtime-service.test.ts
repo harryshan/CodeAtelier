@@ -4,7 +4,7 @@
  *
  * 1. Broker 先返回一次可重试错误，再返回无效 DAG；Runtime 有界重试并把无副作用错误保存给下一轮修正。
  * 2. Broker 随后返回 read_file function_call，Agent Runtime 在自己的进程内执行 ToolRunner；最终模型轮次观察到文件结果。
- * 3. 含 push 的工具批次在执行任何节点前要求 push 是唯一调用，防止等待 Runner 时并行修改仓库。
+ * 3. 含 push 或扩展权限命令的工具批次在执行任何节点前要求 Runner 请求是唯一调用，防止同步等待时并行执行其它工具。
  * 4. Runtime 主动报告 completed，Broker 收到后关闭通道并确认子进程干净退出。
  */
 
@@ -42,6 +42,40 @@ it("requires git push to be the only tool in its batch", () => {
   expect(buildRuntimeToolGraph([push]).nodes).toHaveLength(1);
   expect(() => buildRuntimeToolGraph([push, read])).toThrow(
     "Git push 必须是当前工具批次的唯一调用",
+  );
+});
+
+it("requires a capability command to be the only tool in its batch", () => {
+  const capability = {
+    type: "function_call",
+    call_id: "capability-call",
+    name: "run_with_permissions",
+    arguments: JSON.stringify({
+      execution: { id: "capability", dependsOn: [] },
+      arguments: {
+        command: "tool --version",
+        permissions: {
+          readRoots: ["C:\\external"],
+          writeRoots: [],
+          httpsHost: null,
+        },
+        reason: "读取工作区外的工具目录。",
+      },
+    }),
+  };
+  const read = {
+    type: "function_call",
+    call_id: "read-call",
+    name: "read_file",
+    arguments: JSON.stringify({
+      execution: { id: "read", dependsOn: [] },
+      arguments: { path: "sample.txt", startLine: 1, endLine: 1 },
+    }),
+  };
+
+  expect(buildRuntimeToolGraph([capability]).nodes).toHaveLength(1);
+  expect(() => buildRuntimeToolGraph([capability, read])).toThrow(
+    "扩展权限命令必须是当前工具批次的唯一调用",
   );
 });
 
@@ -96,7 +130,7 @@ it("runs the model and tool loop in an independent Agent Runtime process", async
           async getCapabilities() {
             return {
               limits: {
-                max_context_window_tokens: 32_000,
+                max_context_window_tokens: 64_000,
                 max_output_tokens: 1_024,
               },
             };
@@ -170,6 +204,12 @@ it("runs the model and tool loop in an independent Agent Runtime process", async
         exitCode: 0,
         truncated: false,
       }),
+      executeCapabilityCommand: async () => ({
+        executionInstanceId: "capability-test",
+        output: "",
+        exitCode: 0,
+        truncated: false,
+      }),
       applyMemory: async () => ({ applied: true }),
       appendSessionEvent: async (_runtime, type, data) => {
         events.push({ type, data });
@@ -198,7 +238,7 @@ it("runs the model and tool loop in an independent Agent Runtime process", async
           maxSteps: 5,
           commandTimeoutMs: 10_000,
           maxOutputTokens: 1_024,
-          contextChars: 32_000,
+          contextChars: 64_000,
           outputChars: 10_000,
         },
       },

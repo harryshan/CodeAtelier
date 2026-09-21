@@ -8,7 +8,7 @@
  * 3. CreateProcessWithLogonW 以固定 bootstrap 入口启动专用账户进程，先分配 KILL_ON_JOB_CLOSE Job 再恢复。
  * 4. bootstrap 使用专用账户自身的全新环境块，通过只允许宿主/SYSTEM/专用账户且核对 PID 的 Named Pipe 取得命令，创建 WRITE_RESTRICTED token 后启动真实工具。
  * 5. Broker stdin 关闭、超时或异常会终止 Job；正常/异常退出都按唯一 SID 撤销本次 ACE，清理不确定返回专用错误码。
- * 6. Push Runner 仅从宿主 Credential Manager 读取绑定 host 的 HTTPS 凭据，并经同 Job askpass pipe 交付；proxy token 和凭据不进入 argv、配置或工作区。
+ * 6. Push Runner 仅从宿主 Credential Manager 读取绑定 host 的 HTTPS 凭据，并经同 Job askpass pipe 交付；capability runner 只把短期、host-bound proxy token 放入自身环境，不取得宿主凭据。
  * 7. Agent Runtime 模式只启动受保护 Node/entry，联合核对 pipe 客户端身份后发送启动首帧并代理原始 Broker 字节流；初始 CWD 使用私有目录。
  * 8. stdout 只承载工具输出或 Agent Runtime IPC；stderr 只输出有界控制记录，不记录命令、路径、SID、密码或工具内容。
  *
@@ -1141,6 +1141,7 @@ bool SetPrivateEnvironment(const std::wstring& private_directory,
                            const std::wstring& git_global_config,
                            const std::wstring& proxy_url,
                            const std::wstring& proxy_host,
+                           const std::wstring& proxy_token,
                            const std::wstring& askpass_pipe) {
   std::array<const wchar_t*, 5> names = {L"HOME", L"USERPROFILE",
                                           L"XDG_CONFIG_HOME", L"TEMP",
@@ -1159,6 +1160,8 @@ bool SetPrivateEnvironment(const std::wstring& private_directory,
   SetEnvironmentVariableW(L"NODE_EXTRA_CA_CERTS", nullptr);
   SetEnvironmentVariableW(L"ALL_PROXY", nullptr);
   SetEnvironmentVariableW(L"all_proxy", nullptr);
+  SetEnvironmentVariableW(L"NO_PROXY", nullptr);
+  SetEnvironmentVariableW(L"no_proxy", nullptr);
   SetEnvironmentVariableW(L"HTTP_PROXY", nullptr);
   SetEnvironmentVariableW(L"http_proxy", nullptr);
   SetEnvironmentVariableW(L"GIT_PROXY_COMMAND", nullptr);
@@ -1183,21 +1186,36 @@ bool SetPrivateEnvironment(const std::wstring& private_directory,
     return false;
   }
   if (!proxy_url.empty()) {
-    if (askpass_pipe.empty() || proxy_url.rfind(L"http://127.0.0.1:", 0) != 0) {
+    if (proxy_url.rfind(L"http://127.0.0.1:", 0) != 0 ||
+        (proxy_token.empty() == askpass_pipe.empty())) {
       return false;
     }
-    std::wstring authenticated_proxy =
-        L"http://codeatelier@" + proxy_url.substr(7);
-    std::wstring executable = CurrentExecutablePath();
+    std::wstring authenticated_proxy = proxy_token.empty()
+                                           ? L"http://codeatelier@" +
+                                                 proxy_url.substr(7)
+                                           : L"http://codeatelier:" +
+                                                 proxy_token + L"@" +
+                                                 proxy_url.substr(7);
     if (!SetEnvironmentVariableW(L"HTTPS_PROXY", authenticated_proxy.c_str()) ||
         !SetEnvironmentVariableW(L"https_proxy", authenticated_proxy.c_str()) ||
-        !SetEnvironmentVariableW(L"GIT_ASKPASS", executable.c_str()) ||
-        !SetEnvironmentVariableW(L"GIT_ASKPASS_REQUIRE", L"force") ||
-        !SetEnvironmentVariableW(L"CODEATELIER_ASKPASS_PIPE",
-                                 askpass_pipe.c_str()) ||
+        !SetEnvironmentVariableW(L"HTTP_PROXY", authenticated_proxy.c_str()) ||
+        !SetEnvironmentVariableW(L"http_proxy", authenticated_proxy.c_str()) ||
         !SetEnvironmentVariableW(L"CODEATELIER_PUSH_HOST",
                                  proxy_host.c_str())) {
       return false;
+    }
+    if (!askpass_pipe.empty()) {
+      std::wstring executable = CurrentExecutablePath();
+      if (!SetEnvironmentVariableW(L"GIT_ASKPASS", executable.c_str()) ||
+          !SetEnvironmentVariableW(L"GIT_ASKPASS_REQUIRE", L"force") ||
+          !SetEnvironmentVariableW(L"CODEATELIER_ASKPASS_PIPE",
+                                   askpass_pipe.c_str())) {
+        return false;
+      }
+    } else {
+      SetEnvironmentVariableW(L"GIT_ASKPASS", nullptr);
+      SetEnvironmentVariableW(L"GIT_ASKPASS_REQUIRE", nullptr);
+      SetEnvironmentVariableW(L"CODEATELIER_ASKPASS_PIPE", nullptr);
     }
   } else {
     SetEnvironmentVariableW(L"HTTPS_PROXY", nullptr);
@@ -1540,10 +1558,13 @@ int RunProductBootstrap(const std::wstring& pipe_name,
   if (!ReadProductRequest(pipe.get(), &request) ||
       !SetPrivateEnvironment(request.private_directory,
                              request.git_global_config, request.proxy_url,
-                             request.proxy_host,
+                             request.proxy_host, request.proxy_token,
                              request.askpass_pipe)) {
     return 24;
   }
+  SecureZeroMemory(request.proxy_token.data(),
+                   request.proxy_token.size() * sizeof(wchar_t));
+  request.proxy_token.clear();
   UniqueHandle restricted_token;
   if (!CreateProductRestrictedPrimaryToken(
           execution_sid.get(), capability_sid.get(), &restricted_token)) {
@@ -1916,32 +1937,41 @@ int RunProductSupervisor(const std::wstring& state_path,
   auto askpass_ready = std::make_shared<std::atomic_bool>(false);
   auto host_credential = std::make_shared<HostCredential>();
   std::thread askpass_thread;
+  const bool environment_proxy = request.askpass_pipe == L"environment";
+  if (!request.askpass_pipe.empty() && !environment_proxy) {
+    revoke_failed_launch();
+    SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
+    return kProtocolFailureExitCode;
+  }
+  request.askpass_pipe.clear();
   if (!request.proxy_url.empty()) {
-    LoadHostCredential(request.proxy_host, host_credential.get());
-    request.askpass_pipe = MakeProductPipeName();
-    if (request.askpass_pipe.empty()) {
-      revoke_failed_launch();
-      SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
-      return kSelfCheckFailureExitCode;
+    if (!environment_proxy) {
+      LoadHostCredential(request.proxy_host, host_credential.get());
+      request.askpass_pipe = MakeProductPipeName();
+      if (request.askpass_pipe.empty()) {
+        revoke_failed_launch();
+        SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
+        return kSelfCheckFailureExitCode;
+      }
+      askpass_thread = std::thread(
+          ServeAskpass, request.askpass_pipe, &pipe_security, job.get(),
+          request.proxy_token, host_credential, askpass_stop, askpass_ready);
+      auto ready_deadline =
+          std::chrono::steady_clock::now() + std::chrono::seconds(5);
+      while (!askpass_ready->load() &&
+             std::chrono::steady_clock::now() < ready_deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      }
+      if (!askpass_ready->load()) {
+        StopAskpass(request.askpass_pipe, askpass_stop, &askpass_thread);
+        revoke_failed_launch();
+        SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
+        return kSelfCheckFailureExitCode;
+      }
+      SecureZeroMemory(request.proxy_token.data(),
+                       request.proxy_token.size() * sizeof(wchar_t));
+      request.proxy_token.clear();
     }
-    askpass_thread = std::thread(ServeAskpass, request.askpass_pipe,
-                                 &pipe_security, job.get(), request.proxy_token,
-                                 host_credential, askpass_stop, askpass_ready);
-    auto ready_deadline =
-        std::chrono::steady_clock::now() + std::chrono::seconds(5);
-    while (!askpass_ready->load() &&
-           std::chrono::steady_clock::now() < ready_deadline) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
-    if (!askpass_ready->load()) {
-      StopAskpass(request.askpass_pipe, askpass_stop, &askpass_thread);
-      revoke_failed_launch();
-      SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
-      return kSelfCheckFailureExitCode;
-    }
-    SecureZeroMemory(request.proxy_token.data(),
-                     request.proxy_token.size() * sizeof(wchar_t));
-    request.proxy_token.clear();
   }
   auto stop_askpass = [&]() {
     StopAskpass(request.askpass_pipe, askpass_stop, &askpass_thread);

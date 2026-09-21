@@ -10,7 +10,7 @@
  * 不能只按命令名称复用权限，文件变化后旧指纹对应的授权必须失效。
  */
 
-import { it, expect } from "vitest";
+import { it, expect, vi } from "vitest";
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { ApprovalManager } from "../src/permissions/approval-manager.js";
@@ -74,6 +74,30 @@ it("nonrepeatable requests reject session grants and remain pending", async () =
   manager.decide(id, "deny");
 
   expect(await pending).toBe(false);
+});
+
+it("forces human review for an expanded sandbox capability", async () => {
+  const classify = vi.fn(async () => ({
+    decision: "approve" as const,
+    reason: "would normally auto approve",
+  }));
+  const manager = new ApprovalManager(() => {}, classify);
+  const pending = manager.request(
+    { ...data, tool: "run_with_permissions" },
+    new AbortController().signal,
+    undefined,
+    { requireHuman: true },
+  );
+
+  expect(classify).not.toHaveBeenCalled();
+  expect(manager.list()).toMatchObject([
+    {
+      tool: "run_with_permissions",
+      reviewReason: "扩展 Sandbox 权限必须由用户人工确认。",
+    },
+  ]);
+  manager.decide(manager.list()[0].id, "deny");
+  await expect(pending).resolves.toBe(false);
 });
 
 it("already aborted signals never register approvals", async () => {

@@ -58,6 +58,12 @@ it("restores and saves task context through the Broker session adapter", async (
         exitCode: 0,
         truncated: false,
       }),
+      executeCapabilityCommand: async () => ({
+        executionInstanceId: "capability-test",
+        output: "",
+        exitCode: 0,
+        truncated: false,
+      }),
       applyMemory: async () => ({ applied: true }),
       appendSessionEvent: async () => undefined,
       saveContext: async (_runtime, input) => {

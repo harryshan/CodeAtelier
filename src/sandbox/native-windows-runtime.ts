@@ -277,7 +277,9 @@ export function encodeNativeSandboxRequest(input: {
     framedString(input.access?.proxyUrl ?? ""),
     framedString(input.access?.proxyHost ?? ""),
     framedString(input.access?.proxyToken ?? ""),
-    framedString(""),
+    framedString(
+      input.access?.proxyCredentialMode === "environment" ? "environment" : "",
+    ),
     leaseEpoch,
     rootCount,
     ...roots.flatMap((root) => {
@@ -414,8 +416,8 @@ export class NativeWindowsSandboxRuntime implements SandboxRuntime {
     }
 
     return {
-      readOnlyRoots: [directory],
-      readWriteRoots: [privateDirectory],
+      readOnlyRoots: [directory, ...(command.readOnlyRoots ?? [])],
+      readWriteRoots: [privateDirectory, ...(command.readWriteRoots ?? [])],
       gitConfigFiles: [...graph.files, aggregate],
       privateDirectory,
       gitGlobalConfigPath: aggregate,
@@ -526,11 +528,14 @@ export class NativeWindowsSandboxRuntime implements SandboxRuntime {
     }
 
     let relayLease: IssuedRelayLease | undefined;
-    let pushSpan: ReturnType<TraceRecorder["startSpan"]> | undefined;
-    if (command.kind === "push-runner") {
+    let runnerSpan: ReturnType<TraceRecorder["startSpan"]> | undefined;
+    const networkRunner =
+      command.kind === "push-runner" ||
+      (command.kind === "capability-runner" && command.networkHost);
+    if (networkRunner) {
       if (!command.networkHost || !access || !this.metadata) {
         throw new NativeWindowsSandboxError(
-          "Push Runner 缺少已确认的网络目标。",
+          "网络 Runner 缺少已确认的 HTTPS 目标。",
         );
       }
 
@@ -555,6 +560,8 @@ export class NativeWindowsSandboxRuntime implements SandboxRuntime {
         proxyUrl: relayLease.proxyUrl,
         proxyHost: command.networkHost,
         proxyToken: relayLease.token,
+        proxyCredentialMode:
+          command.kind === "capability-runner" ? "environment" : "askpass",
       };
       this.traces?.instant(
         command.taskId,
@@ -566,13 +573,19 @@ export class NativeWindowsSandboxRuntime implements SandboxRuntime {
           toolCallId: command.toolCallId,
         },
       );
-      pushSpan = this.traces?.startSpan(command.taskId, {
-        name: "sandbox.push_runner",
+      runnerSpan = this.traces?.startSpan(command.taskId, {
+        name:
+          command.kind === "capability-runner"
+            ? "sandbox.capability_runner"
+            : "sandbox.push_runner",
         category: "sandbox",
         track: "Sandbox runtime",
         attributes: {
           executionInstanceId: command.executionInstanceId,
           toolCallId: command.toolCallId,
+          readRootCount: command.readOnlyRoots?.length ?? 0,
+          writeRootCount: command.readWriteRoots?.length ?? 0,
+          network: Boolean(command.networkHost),
         },
       });
     }
@@ -589,19 +602,19 @@ export class NativeWindowsSandboxRuntime implements SandboxRuntime {
 
     try {
       const result = await this.spawnSupervisor(command, frame);
-      if (pushSpan) {
-        this.traces?.endSpan(pushSpan, "ok", { exitCode: result.exitCode });
-        pushSpan = undefined;
+      if (runnerSpan) {
+        this.traces?.endSpan(runnerSpan, "ok", { exitCode: result.exitCode });
+        runnerSpan = undefined;
       }
 
       return result;
     } catch (error) {
-      if (pushSpan) {
+      if (runnerSpan) {
         this.traces?.endSpan(
-          pushSpan,
+          runnerSpan,
           command.signal.aborted ? "cancelled" : "error",
         );
-        pushSpan = undefined;
+        runnerSpan = undefined;
       }
 
       throw error;

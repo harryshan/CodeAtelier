@@ -4,7 +4,7 @@
  *
  * 1. ignored 列出遍历时跳过的目录；ToolContext 定义依赖，readHashes 记住本任务读过的文件版本；forCall 共享该状态但隔离事件关联。
  * 2. currentFileHash 仅探测安全工作区文件的字节哈希，不更新读取凭证；access 解析路径并申请必要的权限；entries 限量遍历，commandGrant 为可复用命令计算指纹。
- * 3. execute 先通过 parseToolArguments 校验参数并解开 Git 的 request 包装（兼容历史扁平调用）。它在每次调用实际开始产生工具副作用或读取前回调 Engine，因此耗时不计入审批等待；统一的精确编辑和显式新建文件均分流给共享读取哈希的 FileEditor，已有文件成功编辑后会作废对应哈希，单一专用 Git 工具分流给 GitToolRunner；受限 memory_apply 仅写入平台数据目录的当前项目记忆；普通命令只接受一条命令文本，内部选择 shell、拒绝直接 Git，再申请审批并调用 executeProcess。
+ * 3. execute 先通过 parseToolArguments 校验参数并解开 Git 的 request 包装（兼容历史扁平调用）。统一的精确编辑和显式新建文件均分流给共享读取哈希的 FileEditor，已有文件成功编辑后会作废对应哈希；普通 Runtime 工具在既有 AccessManifest 内不再审批，越界命令必须经 run_with_permissions adapter 交给 Broker 复核、审批和独立 Runner。
  * 4. 每个 execution instance 只读取 Broker 为该 task/instance 保存的状态；并发任务的 fallback/unknown 不会污染其它 PID、session 或 trace 记录。
  * 5. 只读分支只处理读取；目录浏览和代码搜索均由 run_command 在审批后执行。读文件按 500 行分页，返回全文字节 contentHash 供压缩比较，并在内部记录文本哈希供后续修改核对。
  *
@@ -26,6 +26,10 @@ import { commandShell, resolveExecutablePath } from "./command-shell.js";
 import { FileEditor } from "./file-editor.js";
 import { GitToolRunner, containsGitCommand } from "./git.js";
 import type { GitProcessResult, GitPushSpec } from "./git.js";
+import type {
+  CapabilityCommandRequest,
+  CapabilityCommandResult,
+} from "../sandbox/capability-request.js";
 import { SandboxBroker } from "../sandbox/broker.js";
 import { sandboxConfiguration } from "../sandbox/config.js";
 import type {
@@ -71,6 +75,12 @@ export interface ToolContext {
     signal: AbortSignal,
     toolCallId?: string,
   ) => Promise<GitProcessResult>;
+  /** Runtime 只声明可强制落实的扩展根/host；Broker 重新审批并启动独立 capability runner。 */
+  runWithPermissions?: (
+    request: CapabilityCommandRequest,
+    signal: AbortSignal,
+    toolCallId?: string,
+  ) => Promise<CapabilityCommandResult>;
   /** Agent Runtime 内的工具进程已处于任务 Job/token，不得再次调用 Broker 的逐工具 Sandbox。 */
   executionBoundary?: "broker-host" | "agent-runtime";
   onSandboxStage?: (
@@ -181,6 +191,7 @@ export class ToolRunner {
    */
   forCall(callId: string) {
     const parentGitPush = this.ctx.gitPush;
+    const parentRunWithPermissions = this.ctx.runWithPermissions;
 
     return new ToolRunner(
       {
@@ -188,6 +199,10 @@ export class ToolRunner {
         sandbox: this.sandbox,
         gitPush: parentGitPush
           ? (spec, signal) => parentGitPush(spec, signal, callId)
+          : undefined,
+        runWithPermissions: parentRunWithPermissions
+          ? (request, signal) =>
+              parentRunWithPermissions(request, signal, callId)
           : undefined,
         emit: (type, data) => this.ctx.emit(type, { ...data, callId }),
       },
@@ -435,6 +450,18 @@ export class ToolRunner {
       throw new Error("初版不支持修改 Git 元数据。");
     }
 
+    if (this.ctx.executionBoundary === "agent-runtime") {
+      if (target.outside) {
+        throw new Error(
+          "目标位于 Agent Runtime 授权根之外；请使用 run_with_permissions 声明最小递归文件根、命令和理由。",
+        );
+      }
+
+      this.ctx.signal.throwIfAborted();
+
+      return target.path;
+    }
+
     if (
       target.outside ||
       target.sensitive ||
@@ -565,6 +592,25 @@ export class ToolRunner {
       return this.git.execute(args, startExecution);
     }
 
+    if (name === "run_with_permissions") {
+      if (
+        this.ctx.executionBoundary !== "agent-runtime" ||
+        !this.ctx.runWithPermissions
+      ) {
+        throw new Error(
+          "run_with_permissions 只可由已认证的 Agent Runtime 请求。",
+        );
+      }
+
+      if (containsGitCommand(args.command)) {
+        throw new Error("Git 操作必须使用受限的 git 工具。");
+      }
+
+      startExecution();
+
+      return this.ctx.runWithPermissions(args, this.ctx.signal);
+    }
+
     if (name === "read_file" && args.endLine < args.startLine) {
       throw new Error("endLine 不能小于 startLine。");
     }
@@ -591,17 +637,23 @@ export class ToolRunner {
         throw new Error("请使用受限的 git 工具。");
       }
 
-      const grant = await this.commandGrant(args.command, cwd);
-      const allowed = await this.ctx.approvals.request(
-        {
-          sessionId: this.ctx.sessionId,
-          taskId: this.ctx.taskId,
-          tool: name,
-          description: JSON.stringify({ command: args.command, cwd }, null, 2),
-        },
-        this.ctx.signal,
-        grant,
-      );
+      const allowed =
+        this.ctx.executionBoundary === "agent-runtime"
+          ? true
+          : await this.ctx.approvals.request(
+              {
+                sessionId: this.ctx.sessionId,
+                taskId: this.ctx.taskId,
+                tool: name,
+                description: JSON.stringify(
+                  { command: args.command, cwd },
+                  null,
+                  2,
+                ),
+              },
+              this.ctx.signal,
+              await this.commandGrant(args.command, cwd),
+            );
 
       if (!allowed) {
         throw new Error("用户拒绝执行命令。");

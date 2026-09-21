@@ -7,7 +7,7 @@
  * 3. resume 继续最后一个可恢复任务；cancel 处理用户取消，close 处理服务关闭。
  * 4. 首条 prompt 先用辅助模型生成标题；run 再读取历史和项目规则，准备工具及上下文预算。
  * 5. 为压缩提供 ToolRunner 的安全文件哈希探测；每轮记录上下文准备和请求计量、模型重试、实际模型请求和响应处理，再记录服务实报用量。完整响应保存后校验工具 DAG，再按拓扑关系调度。
- * 6. 每个实际工具调用仍经过低成本模型的自动通过、人工确认或拒绝分流；模型故障和无效输出保守降级为人工确认，并持久化可审计的决定。
+ * 6. 宿主模式的危险调用仍经过审批分流；Sandbox Runtime 已有能力内工具免审批，push 与扩展权限命令由 Broker 强制人工确认并持久化决定。
  * 7. 工具批次、节点状态和结果都附带批次/调用标识；ToolRunner 确认实际执行开始后才记录工具耗时，并在可复用调度轨道显示执行和结果持久化；退出时将安全 trace 写入会话/任务文件、释放运行期记录并发出 task_end。
  *
  * 模型请求可以重试，但已经执行的工具不能跟着重跑。数据库回滚也撤销不了文件修改或
@@ -35,6 +35,7 @@ import { createInstructions } from "./instructions.js";
 import { retryModel } from "../providers/retry.js";
 import { randomBytes, randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
+import path from "node:path";
 import type { Logger } from "pino";
 import { Store } from "../sessions/store.js";
 import { generateConversationTitle } from "../sessions/title-generator.js";
@@ -80,8 +81,13 @@ import {
   type RuntimeExecutionIdentity,
 } from "../sandbox/runtime-capability-core.js";
 import { RuntimeIpcBrokerSession } from "../sandbox/runtime-ipc-broker-session.js";
-import { resolveExecutablePath } from "../tools/command-shell.js";
+import { commandShell, resolveExecutablePath } from "../tools/command-shell.js";
 import type { GitProcessResult, GitPushSpec } from "../tools/git.js";
+import type {
+  CapabilityCommandRequest,
+  CapabilityCommandResult,
+} from "../sandbox/capability-request.js";
+import { buildAccessManifest } from "../sandbox/access-manifest.js";
 
 // 标题请求没有工具或文件副作用；服务未提供可分类原因时，允许比主任务多一次诊断性重试。
 const titleRetryOptions = { retries: 3, retryUnknownErrors: true };
@@ -751,6 +757,21 @@ export class Engine {
               settings,
               emit,
             ),
+          executeCapabilityCommand: (
+            _runtime,
+            request,
+            toolCallId,
+            requestSignal,
+          ) =>
+            this.executeRuntimeCapabilityCommand(
+              task,
+              workspace,
+              request,
+              toolCallId,
+              requestSignal,
+              settings,
+              emit,
+            ),
           requestApproval: async (_runtime, request, requestSignal) => ({
             approved: await this.approvals.request(
               {
@@ -899,6 +920,8 @@ export class Engine {
         description: `允许单次 HTTPS push 到 ${spec.host}，目标 ${spec.refspec}，当前对象 ${spec.objectId.slice(0, 12)}。该主机可接收仓库内容，Git 配置、hook 及其子进程会在本次网络窗口内运行。`,
       },
       signal,
+      undefined,
+      { requireHuman: true },
     );
     if (!allowed) {
       throw new Error("用户拒绝了 Sandbox Git push。");
@@ -990,6 +1013,197 @@ export class Engine {
             ? "cancelled"
             : "failed",
         { sideEffectsPossible: status.mode === "unknown" },
+      );
+      throw error;
+    }
+  }
+
+  /**
+   * Broker 审核 Runtime 声明的最小扩展权限，并在独立 restricted Runner 中执行命令。
+   * 声明只接受现有递归目录根和单一 HTTPS host；任何启动前失败都禁止回退到宿主用户权限。
+   */
+  private async executeRuntimeCapabilityCommand(
+    task: Task,
+    workspace: string,
+    request: CapabilityCommandRequest,
+    toolCallId: string,
+    signal: AbortSignal,
+    settings: Settings,
+    emit: (type: string, data: any) => void,
+  ): Promise<CapabilityCommandResult> {
+    const normalizeRoots = (roots: string[]) => {
+      const seen = new Set<string>();
+
+      return roots.map((root) => {
+        if (!path.isAbsolute(root)) {
+          throw new Error("扩展文件根必须是绝对路径。");
+        }
+
+        const normalized = path.resolve(root);
+        const key =
+          process.platform === "win32"
+            ? normalized.toLocaleLowerCase()
+            : normalized;
+        if (seen.has(key)) {
+          throw new Error("扩展权限包含重复文件根。");
+        }
+
+        seen.add(key);
+
+        return normalized;
+      });
+    };
+
+    const requestedReadRoots = normalizeRoots(request.permissions.readRoots);
+    const requestedWriteRoots = normalizeRoots(request.permissions.writeRoots);
+    const readKeys = new Set(
+      requestedReadRoots.map((root) =>
+        process.platform === "win32" ? root.toLocaleLowerCase() : root,
+      ),
+    );
+    if (
+      requestedWriteRoots.some((root) =>
+        readKeys.has(
+          process.platform === "win32" ? root.toLocaleLowerCase() : root,
+        ),
+      )
+    ) {
+      throw new Error("同一扩展文件根不能同时声明为只读和可写。");
+    }
+
+    // 审批前先以与正式 provision 相同的规则打开对象并取得规范路径；审批后
+    // Broker 和原生 supervisor 仍会重新打开并核对身份，防止审批替代执行时校验。
+    const reviewedManifest = await buildAccessManifest({
+      workspaceRoot: workspace,
+      readOnlyRoots: requestedReadRoots,
+      readWriteRoots: requestedWriteRoots,
+    });
+    const readOnlyRoots = reviewedManifest.readRoots.map((root) => root.path);
+    const readWriteRoots = reviewedManifest.writeRoots
+      .filter((root) => root.rootId !== reviewedManifest.workspaceRootId)
+      .map((root) => root.path);
+    if (readWriteRoots.length !== requestedWriteRoots.length) {
+      throw new Error("工作区已经属于 Agent Runtime 权限，不能重复申请。");
+    }
+
+    const networkHost = request.permissions.httpsHost?.toLocaleLowerCase();
+    const shell = commandShell(process.env, undefined, process.platform, false);
+    if (!shell) {
+      throw new Error("当前平台未找到 capability runner 可用的命令 shell。");
+    }
+
+    const allowed = await this.approvals.request(
+      {
+        sessionId: task.sessionId,
+        taskId: task.id,
+        tool: "run_with_permissions",
+        description: JSON.stringify(
+          {
+            command: request.command,
+            permissions: {
+              readRoots: readOnlyRoots,
+              writeRoots: readWriteRoots,
+              httpsHost: networkHost ?? null,
+            },
+            reason: request.reason,
+          },
+          null,
+          2,
+        ),
+      },
+      signal,
+      undefined,
+      { requireHuman: true },
+    );
+    if (!allowed) {
+      throw new Error("用户拒绝了扩展权限命令。");
+    }
+
+    const executionInstanceId = randomUUID();
+    const createdAt = new Date().toISOString();
+    let started = false;
+    const publish = (
+      state:
+        | "created"
+        | "running"
+        | "completed"
+        | "failed"
+        | "cancelled"
+        | "unknown",
+      extra: Record<string, unknown> = {},
+    ) => {
+      const status = this.sandbox.statusFor(task.id, executionInstanceId);
+      const record = {
+        executionInstanceId,
+        toolCallId,
+        kind: "capability-runner" as const,
+        mode:
+          status.mode === "sandboxed"
+            ? ("windows-sandbox-user" as const)
+            : status.mode === "unknown"
+              ? ("unknown" as const)
+              : ("host-process" as const),
+        state,
+        createdAt,
+        updatedAt: new Date().toISOString(),
+        sandboxRequested: true,
+        sandboxApplied: status.mode === "sandboxed",
+        failureCategory: status.failureCategory,
+        ...extra,
+      };
+      emit("execution_instance", record);
+      this.sandbox.recordExecutionInstance(record);
+    };
+
+    publish("created");
+    try {
+      const outcome = await this.sandbox.executeCommand(
+        {
+          sessionId: task.sessionId,
+          taskId: task.id,
+          executionInstanceId,
+          toolCallId,
+          kind: "capability-runner",
+          networkHost,
+          readOnlyRoots,
+          readWriteRoots,
+          command: shell.command,
+          args: [...shell.args, request.command],
+          cwd: workspace,
+          signal,
+          timeoutMs: settings.commandTimeoutMs,
+          outputLimit: settings.outputChars,
+          onOutput: (text) => emit("capability_output", { text }),
+          onProcessStarted: (pid, pidKind, processCreationTime100ns) => {
+            started = true;
+            publish("running", { pid, pidKind, processCreationTime100ns });
+          },
+        },
+        async () => {
+          throw new Error("扩展权限 Runner 禁止宿主权限 fallback。");
+        },
+        (stage, status) =>
+          emit("sandbox_stage", {
+            stage,
+            executionInstanceId,
+            ...status,
+          }),
+        { allowHostFallback: false },
+      );
+      publish(outcome.result.exitCode === 0 ? "completed" : "failed", {
+        sideEffectsPossible: outcome.result.exitCode !== 0,
+      });
+
+      return { executionInstanceId, ...outcome.result };
+    } catch (error) {
+      const status = this.sandbox.statusFor(task.id, executionInstanceId);
+      publish(
+        status.mode === "unknown"
+          ? "unknown"
+          : signal.aborted
+            ? "cancelled"
+            : "failed",
+        { sideEffectsPossible: started || status.mode === "unknown" },
       );
       throw error;
     }
@@ -1831,10 +2045,29 @@ export class Engine {
           nodes: graph.nodes.length,
         });
 
-        const traceToolParameters = (arguments_: unknown) =>
-          JSON.parse(
+        const traceToolParameters = (name: string, arguments_: unknown) => {
+          if (name === "run_with_permissions") {
+            const request = arguments_ as {
+              permissions?: {
+                readRoots?: unknown[];
+                writeRoots?: unknown[];
+                httpsHost?: unknown;
+              };
+            };
+
+            return {
+              readRootCount: request.permissions?.readRoots?.length ?? 0,
+              writeRootCount: request.permissions?.writeRoots?.length ?? 0,
+              networkRequested:
+                typeof request.permissions?.httpsHost === "string",
+            };
+          }
+
+          return JSON.parse(
             redactJson(JSON.stringify(arguments_), [this.config.apiKey]),
           );
+        };
+
         const batchSpan = this.traces.startSpan(task.id, {
           name: "tool.batch",
           category: "tool",
@@ -1865,7 +2098,10 @@ export class Engine {
                       batchId,
                       callId: node.callId,
                       nodeId: node.nodeId,
-                      parameters: traceToolParameters(node.arguments),
+                      parameters: traceToolParameters(
+                        node.name,
+                        node.arguments,
+                      ),
                     },
                   });
                   result = await readContextHistoryAsync(
@@ -1894,7 +2130,7 @@ export class Engine {
                           parameters:
                             node.name === "memory_apply"
                               ? undefined
-                              : traceToolParameters(node.arguments),
+                              : traceToolParameters(node.name, node.arguments),
                         },
                       });
                     });
