@@ -800,8 +800,8 @@
 
 - 日期：2026-09-19
 - 状态：由 D099 恢复并修订。专用账户不继承宿主 profile，必须维护精确只读的 global/include 授权图；config-origin 注入和真实 Git 优先级仍须实机验证。
-- 决定：Agent Runtime 与 Push Runner 的 `AccessManifest` 默认加入已存在的 `%USERPROFILE%\.gitconfig`、`%USERPROFILE%\.config\git\config` 及对当前工作区成立的 include/includeIf 文件。每个普通文件只获得精确只读 ACE，祖先目录只获得必需的 traverse 权限，不授权整个用户 profile。supervisor 从已验证 manifest 生成受控的 `HOME`/`USERPROFILE`/`XDG_CONFIG_HOME`，但不继承其他环境、凭据或 SSH agent。`git config --global` 等写入因 ACL 失败。
-- 解析与边界：Broker 的受限解析器只用于建立 include 文件授权图，不运行 Git、不导出 push 目标也不影响网络判定；循环、超限、重解析点、UNC/设备路径或无法稳定打开的目标使 Runtime 安全拒绝启动。helper、证书、签名程序等 config 引用对象不自动授权；缺权限时操作失败。每个 config 文件以 handle、卷/file ID 和 DACL delta 绑定原对象并按 D094 撤销。
+- 决定：Agent Runtime 与 Push Runner 的 `AccessManifest` 默认加入已存在的 `%USERPROFILE%\.gitconfig`、`%USERPROFILE%\.config\git\config` 及对当前工作区成立的 include/includeIf 文件。这些文件只作为 read root 使用；共享账户 ACE 的 normal-side 权限与真正写边界按 D100 处理，缺少实例 root capability 时 `WRITE_RESTRICTED` 检查拒绝写入。祖先目录只获得必需的 traverse 权限，不授权整个用户 profile。supervisor 从已验证 manifest 生成受控的 `HOME`/`USERPROFILE`/`XDG_CONFIG_HOME`，但不继承其他环境、凭据或 SSH agent。`git config --global` 等写入因 ACL 失败。
+- 解析与边界：Broker 的受限解析器只用于建立 include 文件授权图，不运行 Git、不导出 push 目标也不影响网络判定；循环、超限、重解析点、UNC/设备路径或无法稳定打开的目标使 Runtime 安全拒绝启动。helper、证书、签名程序等 config 引用对象不自动授权；缺权限时操作失败。每个 config 文件以 supervisor 原对象 handle、卷/file ID 和 journal 绑定；最终撤销先核对原路径，路径不再指向同一对象时只可按同卷 file ID 重开原对象，不能修改替换对象。
 - 风险与验收：global config/include 对 Runtime 内所有进程可读，可能进入模型上下文或会话；UI 必须明示默认授权并提醒不要存放明文凭据。A2 增加标准两路径、includeIf、只读/不可列举、路径替换、原对象撤销和未授权 profile 文件不可读夹具；A5 要在宿主 global config 生效的情况下重复 host 边界验收。
 
 ## D097：撤回全盘只读，固定经典 AppContainer 最小 ACL

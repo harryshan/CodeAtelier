@@ -821,6 +821,13 @@ class ObjectGrant {
   bool OpenAndVerify(const std::wstring& object_path, bool expect_file,
                      const std::wstring& expected_device,
                      const std::wstring& expected_file) {
+    unsigned long long expected_device_value = 0;
+    unsigned long long expected_file_value = 0;
+    if (!ParseUnsigned(expected_device, &expected_device_value) ||
+        !ParseUnsigned(expected_file, &expected_file_value)) {
+      return false;
+    }
+
     handle_.reset(CreateFileW(
         object_path.c_str(), READ_CONTROL | WRITE_DAC,
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
@@ -828,30 +835,105 @@ class ObjectGrant {
         (expect_file ? 0 : FILE_FLAG_BACKUP_SEMANTICS) |
             FILE_FLAG_OPEN_REPARSE_POINT,
         nullptr));
-    if (!handle_) {
+    if (handle_ &&
+        VerifyOpenedObject(handle_.get(), expect_file, expected_device_value,
+                           expected_file_value)) {
+      return true;
+    }
+
+    handle_.reset();
+    if (!OpenByFileId(object_path, expected_device_value, expected_file_value,
+                      expect_file)) {
       return false;
     }
+
+    return VerifyOpenedObject(handle_.get(), expect_file, expected_device_value,
+                              expected_file_value);
+  }
+
+  static bool ParseUnsigned(const std::wstring& value,
+                            unsigned long long* output) {
+    wchar_t* end = nullptr;
+    unsigned long long parsed = wcstoull(value.c_str(), &end, 10);
+    if (end == value.c_str() || *end != L'\0') {
+      return false;
+    }
+
+    *output = parsed;
+    return true;
+  }
+
+  static bool VerifyOpenedObject(HANDLE handle, bool expect_file,
+                                 unsigned long long expected_device,
+                                 unsigned long long expected_file) {
     BY_HANDLE_FILE_INFORMATION information{};
-    if (!GetFileInformationByHandle(handle_.get(), &information) ||
+    if (!GetFileInformationByHandle(handle, &information) ||
         (information.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0 ||
         (((information.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) ==
-         expect_file)) {
+          expect_file)) {
       return false;
     }
-    wchar_t* end = nullptr;
-    unsigned long long expected_device_value =
-        wcstoull(expected_device.c_str(), &end, 10);
-    if (end == expected_device.c_str() || *end != L'\0') {
-      return false;
-    }
-    unsigned long long expected_file_value =
-        wcstoull(expected_file.c_str(), &end, 10);
     unsigned long long actual_file_value =
         (static_cast<unsigned long long>(information.nFileIndexHigh) << 32) |
         information.nFileIndexLow;
-    return end != expected_file.c_str() && *end == L'\0' &&
-           expected_device_value == information.dwVolumeSerialNumber &&
-           expected_file_value == actual_file_value;
+    return expected_device == information.dwVolumeSerialNumber &&
+           expected_file == actual_file_value;
+  }
+
+  bool OpenByFileId(const std::wstring& object_path,
+                    unsigned long long expected_device,
+                    unsigned long long expected_file, bool expect_file) {
+    std::array<wchar_t, MAX_PATH> volume_path{};
+    if (!GetVolumePathNameW(object_path.c_str(), volume_path.data(),
+                            static_cast<DWORD>(volume_path.size()))) {
+      if (object_path.size() < 3 || object_path[1] != L':' ||
+          (object_path[2] != L'\\' && object_path[2] != L'/')) {
+        return false;
+      }
+
+      volume_path[0] = object_path[0];
+      volume_path[1] = L':';
+      volume_path[2] = L'\\';
+      volume_path[3] = L'\0';
+    }
+
+    std::array<wchar_t, MAX_PATH> volume_name{};
+    if (!GetVolumeNameForVolumeMountPointW(
+            volume_path.data(), volume_name.data(),
+            static_cast<DWORD>(volume_name.size()))) {
+      return false;
+    }
+
+    std::wstring volume_target(volume_name.data());
+    if (!volume_target.empty() && volume_target.back() == L'\\') {
+      volume_target.pop_back();
+    }
+
+    DWORD volume_serial = 0;
+    if (!GetVolumeInformationW(volume_path.data(), nullptr, 0, &volume_serial,
+                               nullptr, nullptr, nullptr, 0) ||
+        expected_device != volume_serial) {
+      return false;
+    }
+
+    UniqueHandle volume(CreateFileW(
+        volume_target.c_str(), FILE_READ_ATTRIBUTES,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+        OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr));
+    if (!volume) {
+      return false;
+    }
+
+    FILE_ID_DESCRIPTOR descriptor{};
+    descriptor.dwSize = sizeof(descriptor);
+    descriptor.Type = FileIdType;
+    descriptor.FileId.QuadPart = static_cast<LONGLONG>(expected_file);
+    handle_.reset(OpenFileById(
+        volume.get(), &descriptor, READ_CONTROL | WRITE_DAC,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+        (expect_file ? 0 : FILE_FLAG_BACKUP_SEMANTICS) |
+            FILE_FLAG_OPEN_REPARSE_POINT));
+    return static_cast<bool>(handle_);
   }
 
   bool Revoke(bool include_account) {

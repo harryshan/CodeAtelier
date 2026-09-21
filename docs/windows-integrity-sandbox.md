@@ -109,7 +109,7 @@ bootstrap runner 的创建控制面和 supervisor 必须只允许 Broker/SYSTEM�
 - `gitConfigFiles`：宿主用户实际存在的标准 global config 和经受限解析得到的 include/includeIf 普通文件图。
 - 每项包含规范路径、访问模式、卷标识、`FILE_ID_128`、重解析状态、原始 DACL 摘要和本次 ACE delta。
 
-Broker 以不跟随重解析点的方式打开原对象并保留 Broker-only handle。只读根为专用账户 SID 添加最小读取/遍历 ACE；可写根同时为专用账户 SID 和该实例的根 capability SID 添加所需 ACE，并在 token 中只放入本实例根 SID。账户 SID 的普通访问检查因此形成所有活动 manifest 的读取并集；写访问还必须通过 `WRITE_RESTRICTED` 的 capability 检查，另一实例只应能读而不能写本根。预检必须计算整个有效 DACL，拒绝 null DACL 或任何能被本 token 的宽泛兼容 restricting SID 匹配的写 ACE。根 ACE 带经过验证的 object/container 继承标志；预检枚举拒绝或显式处理关闭继承、deny ACE 与不能被继承覆盖的现存子对象，不能只改根后假设整棵树可用。不改 owner，不替换整体 DACL。撤销只作用于启动时记录的原对象/ACE delta 和 grant-table 引用；rename/move 后仍定位原对象，路径替换或删除重建的新对象不误改。无法定位、撤销或复证时锁定相关工作区并隔离整个账户 generation。
+Broker 先以不跟随重解析点的方式规范化对象并记录卷/file ID，supervisor 在安装 ACE 前重新打开、复核并在实例期保留原对象 handle。每个活动根都为专用账户 SID 添加共享的 normal-side 读写候选 ACE；可写根另外获得该实例独有的 root capability SID ACE，restricted token 只放入本实例 execution/root SID。账户 SID 的普通访问检查因此形成所有活动 manifest 的可读并集，但写访问还必须通过 `WRITE_RESTRICTED` 的 capability 检查；没有对应 root capability 的只读实例或另一实例只能读而不能直接写本根。预检必须计算整个有效 DACL，拒绝 null DACL 或任何能被本 token 的宽泛兼容 restricting SID 匹配的写 ACE。根 ACE 带经过验证的 object/container 继承标志；预检枚举拒绝或显式处理关闭继承、deny ACE 与不能被继承覆盖的现存子对象，不能只改根后假设整棵树可用。不改 owner，不替换整体 DACL。撤销先核对原路径；同卷 rename/move 后通过 journal 中的卷/file ID 和 `OpenFileById` 重开原对象，路径替换或删除重建的新对象不误改。无法定位、撤销或复证时锁定相关工作区并隔离整个账户 generation。
 
 专用账户不继承只授予宿主交互用户的 profile、其它源码和用户级工具权限，但仍可能通过 `Everyone`、`Authenticated Users` 或其它既有 DACL 读取系统/共享对象。缺少依赖时产品显示实际拒绝路径，由用户显式增加只读根或改用机器级安装；不得自动授权整个 `%USERPROFILE%`、盘符根、`Users` 目录、凭据目录或任意父目录。UI 必须同时显示显式 read roots 和“机器既有 ACL 可能额外允许读取”的限制；任何可读内容都可能进入模型请求、session 或获准网络。
 
