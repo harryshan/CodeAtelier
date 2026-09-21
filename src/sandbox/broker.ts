@@ -144,6 +144,19 @@ export class SandboxBroker implements AgentRuntimeLauncher {
     return `${prefix[category]}；已自动改用宿主权限。`;
   }
 
+  private unknownExecutionStatus(): SandboxStatus {
+    return {
+      enabled: true,
+      requested: true,
+      applied: false,
+      mode: "unknown",
+      platform: process.platform,
+      level: null,
+      reason: "Sandbox 实例结果或清理状态未知；账户 generation 已隔离。",
+      failureCategory: "runtime_execution",
+    };
+  }
+
   private errorMetadata(error: unknown) {
     const source = error && typeof error === "object" ? error : undefined;
     const code = source ? Reflect.get(source, "code") : undefined;
@@ -504,6 +517,16 @@ export class SandboxBroker implements AgentRuntimeLauncher {
         );
       }
 
+      const sandboxedStatus: SandboxStatus = {
+        enabled: true,
+        requested: true,
+        applied: true,
+        mode: "sandboxed",
+        platform: process.platform,
+        level: checked.level,
+      };
+      this.executionStatuses.set(command.executionInstanceId, sandboxedStatus);
+
       let closePromise: Promise<"clean" | "orphaned"> | undefined;
 
       return {
@@ -514,6 +537,10 @@ export class SandboxBroker implements AgentRuntimeLauncher {
               .close(reason)
               .catch(() => "orphaned" as const);
             if (reason === "unknown" || nativeCleanup !== "clean") {
+              this.executionStatuses.set(
+                command.executionInstanceId,
+                this.unknownExecutionStatus(),
+              );
               await this.quarantineGeneration(command, "process_unknown");
 
               return "orphaned";
@@ -536,6 +563,10 @@ export class SandboxBroker implements AgentRuntimeLauncher {
       };
     } catch (error) {
       if (runtimeStarted || this.cleanupFailure(error)) {
+        this.executionStatuses.set(
+          command.executionInstanceId,
+          this.unknownExecutionStatus(),
+        );
         await this.quarantineGeneration(
           command,
           this.cleanupFailure(error) ? "acl_cleanup" : "process_unknown",
@@ -556,6 +587,10 @@ export class SandboxBroker implements AgentRuntimeLauncher {
 
         await prepared?.cleanup();
       } catch {
+        this.executionStatuses.set(
+          command.executionInstanceId,
+          this.unknownExecutionStatus(),
+        );
         await this.quarantineGeneration(command, "acl_cleanup");
         throw new SandboxUnavailableError(
           "Agent Runtime provision 无法证明已回滚，禁止宿主重放。",

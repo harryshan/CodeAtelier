@@ -88,6 +88,7 @@ import type {
   CapabilityCommandResult,
 } from "../sandbox/capability-request.js";
 import { buildAccessManifest } from "../sandbox/access-manifest.js";
+import type { SandboxStatus } from "../sandbox/types.js";
 
 // 标题请求没有工具或文件副作用；服务未提供可分类原因时，允许比主任务多一次诊断性重试。
 const titleRetryOptions = { retries: 3, retryUnknownErrors: true };
@@ -672,6 +673,17 @@ export class Engine {
       this.sandbox.recordExecutionInstance(record);
     };
 
+    const publishSandboxStage = (
+      stage: "executing" | "completed" | "failed",
+      override?: SandboxStatus,
+    ) => {
+      const status =
+        override ?? this.sandbox.statusFor(task.id, executionInstanceId);
+      if (status.mode !== "unknown" || stage === "failed") {
+        emit("sandbox_stage", { stage, executionInstanceId, ...status });
+      }
+    };
+
     publishExecution("created");
     try {
       try {
@@ -689,6 +701,16 @@ export class Engine {
             failureCategory: "runtime_self_check",
             sideEffectsPossible: false,
           });
+          publishSandboxStage("failed", {
+            enabled: true,
+            requested: true,
+            applied: false,
+            mode: "host-process-fallback",
+            platform: process.platform,
+            level: null,
+            reason: error.message,
+            failureCategory: "runtime_self_check",
+          });
         }
 
         throw error;
@@ -700,6 +722,7 @@ export class Engine {
         processCreationTime100ns: launched.processCreationTime100ns,
         accountGenerationDigest: launched.accountGenerationDigest,
       });
+      publishSandboxStage("executing");
       const gateway = new RuntimeBrokerGateway(
         {
           authorize: (candidate) => authorized && candidate === identity,
@@ -896,6 +919,7 @@ export class Engine {
         authorized = false;
         if (!cleaned) {
           publishExecution("unknown", { sideEffectsPossible: true });
+          publishSandboxStage("failed");
           throw new Error(
             "Agent Runtime 清理结果未知，账户 generation 必须隔离。",
           );
@@ -912,6 +936,7 @@ export class Engine {
               status === "cancelled" || status === "interrupted",
           },
         );
+        publishSandboxStage(status === "completed" ? "completed" : "failed");
 
         return { status, failure: reported?.failure ?? response.failure };
       } finally {
@@ -934,8 +959,10 @@ export class Engine {
           .catch(() => "orphaned" as const);
         if (closeReason === "unknown" || cleanup !== "clean") {
           publishExecution("unknown", { sideEffectsPossible: true });
+          publishSandboxStage("failed");
         } else {
           publishExecution("cancelled", { sideEffectsPossible: true });
+          publishSandboxStage("failed");
         }
       }
     }

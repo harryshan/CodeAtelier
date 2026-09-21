@@ -555,6 +555,16 @@ it("continues in the host loop only for an explicit pre-start Runtime fallback",
         .events(session.id)
         .some(
           (event) =>
+            event.type === "sandbox_stage" &&
+            (event.data as any).stage === "failed" &&
+            (event.data as any).mode === "host-process-fallback",
+        ),
+    ).toBe(true);
+    expect(
+      store
+        .events(session.id)
+        .some(
+          (event) =>
             event.type === "execution_instance" &&
             (event.data as any).kind === "agent-runtime" &&
             (event.data as any).mode === "host-process" &&

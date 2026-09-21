@@ -115,6 +115,11 @@ describe("SandboxBroker Agent Runtime launcher", () => {
     });
 
     expect(broker.accountGenerationSnapshot()?.activeInstanceCount).toBe(1);
+    expect(broker.statusFor("task-1", "instance-1")).toMatchObject({
+      mode: "sandboxed",
+      applied: true,
+      level: "windows-sandbox-user-test",
+    });
     await expect(launched.close("completed")).resolves.toBe("clean");
     expect(nativeClose).toHaveBeenCalledWith("completed");
     expect(revokeAccess).toHaveBeenCalledOnce();
@@ -252,6 +257,11 @@ describe("SandboxBroker Agent Runtime launcher", () => {
     expect(drainGeneration).toHaveBeenCalledOnce();
     expect(revokeAccess).not.toHaveBeenCalled();
     expect(cleanup).not.toHaveBeenCalled();
+    expect(broker.statusFor("task-1", "instance-1")).toMatchObject({
+      mode: "unknown",
+      applied: false,
+      failureCategory: "runtime_execution",
+    });
     expect(broker.accountGenerationSnapshot()?.state).toBe("quarantined");
   });
 
