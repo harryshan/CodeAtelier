@@ -7,8 +7,10 @@
  * 2. SandboxConfiguration 是只读环境开关结果，不属于可持久化的 settings.json 偏好。
  * 3. SandboxWorkspace 描述真实工作区根与直接受保护路径；Runtime 必须以文件系统边界落实它，不能只信任命令文本。
  * 4. SandboxCommand 与 SandboxRuntime 划定 Broker 可交给平台后端的固定命令请求；运行时不能反向请求任意宿主操作。
- * 5. SandboxStage 仅记录无敏感内容的生命周期事实，供事件与 tracing 关联。
- * 6. ExecutionInstanceRecord 持久化实际进程模式、PID 种类和恢复状态，不保存命令、路径或输出。
+ * 5. onAccessProvisioned 只确认原生 ACL 已安装且 Runtime 已启动，供共享 grant 的等待者解除阻塞。
+ * 6. drainGeneration 是 unknown/orphaned 后的整代账户排空入口，必须终止账户进程并按持久 journal 对账。
+ * 7. SandboxStage 仅记录无敏感内容的生命周期事实，供事件与 tracing 关联。
+ * 8. ExecutionInstanceRecord 持久化实际进程模式、PID 种类和恢复状态，不保存命令、路径或输出。
  *
  * 状态中的原因不得包含命令、工作区路径、外部文件内容或凭据。平台后端必须在 selfCheck 成功后才可返回
  * sandboxed；只有命令尚未启动且 provision 无遗留副作用时才可返回 host-process-fallback。
@@ -101,6 +103,7 @@ export interface SandboxCommand {
     kind: ExecutionProcessKind,
     processCreationTime100ns?: string,
   ) => void;
+  onAccessProvisioned?: () => void;
 }
 
 export interface SandboxNativeAccess {
@@ -151,6 +154,11 @@ export interface SandboxRuntime {
     truncated: boolean;
   }>;
   revokeAccess?(roots: SandboxRevokeRoot[], signal: AbortSignal): Promise<void>;
+  drainGeneration?(
+    signal: AbortSignal,
+    context?: { taskId: string; executionInstanceId: string },
+  ): Promise<void>;
+  recoverStartup?(signal: AbortSignal): Promise<void>;
   shutdown?(): Promise<void>;
 }
 

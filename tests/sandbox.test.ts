@@ -20,7 +20,10 @@ import { Config } from "../src/config/config.js";
 import { SandboxBroker } from "../src/sandbox/broker.js";
 import { sandboxConfiguration } from "../src/sandbox/config.js";
 import { createSandboxRuntime } from "../src/sandbox/runtime-factory.js";
-import { NativeWindowsSandboxRuntime } from "../src/sandbox/native-windows-runtime.js";
+import {
+  NativeWindowsSandboxCleanupError,
+  NativeWindowsSandboxRuntime,
+} from "../src/sandbox/native-windows-runtime.js";
 import { WorkspaceView } from "../src/sandbox/workspace-view.js";
 import { WslInspectRuntime } from "../src/sandbox/wsl-inspect-runtime.js";
 import { commandShell } from "../src/tools/command-shell.js";
@@ -133,6 +136,24 @@ it("uses the existing host executor only while sandbox is explicitly disabled", 
     "collecting",
     "completed",
   ]);
+});
+
+it("runs generation recovery before an enabled service accepts work", async () => {
+  const recoverStartup = vi.fn(async () => {});
+  const runtime: SandboxRuntime = {
+    recoverStartup,
+    selfCheck: vi.fn(),
+    execute: vi.fn(),
+  };
+  const broker = new SandboxBroker(
+    sandboxConfiguration({ CODEATELIER_SANDBOX_ENABLED: "true" }, "win32"),
+    runtime,
+  );
+
+  await broker.recoverAtStartup();
+
+  expect(recoverStartup).toHaveBeenCalledOnce();
+  expect(recoverStartup).toHaveBeenCalledWith(expect.any(AbortSignal));
 });
 
 it("allows all workspace paths while rejecting links that escape the workspace", async () => {
@@ -266,11 +287,234 @@ it("does not replay a command on the host after runtime execution starts", async
     broker.executeCommand(command(), executeHost, () => {}),
   ).rejects.toMatchObject({ code: "SANDBOX_UNAVAILABLE" });
   expect(executeHost).not.toHaveBeenCalled();
-  expect(broker.status).toMatchObject({
+  expect(broker.statusFor("task-1", "execution-1")).toMatchObject({
     mode: "unknown",
     applied: false,
     failureCategory: "runtime_execution",
   });
+});
+
+it("keeps concurrent task execution statuses isolated", async () => {
+  const firstRoot = await temp();
+  const secondRoot = await temp();
+  let releaseFallback!: () => void;
+  const fallbackBlocked = new Promise<void>((resolve) => {
+    releaseFallback = resolve;
+  });
+  const runtime: SandboxRuntime = {
+    selfCheck: vi.fn(async (_signal, workspace) => {
+      if (workspace.root === firstRoot) {
+        throw new Error("first task preflight failed");
+      }
+
+      return {
+        level: "test-isolation",
+        workspaceProtection: "direct-path" as const,
+      };
+    }),
+    execute: vi.fn(async () => ({
+      output: "sandbox",
+      exitCode: 0,
+      truncated: false,
+    })),
+  };
+  const broker = new SandboxBroker(
+    sandboxConfiguration({ CODEATELIER_SANDBOX_ENABLED: "true" }, "win32"),
+    runtime,
+  );
+  const first = broker.executeCommand(
+    {
+      ...command(),
+      taskId: "task-a",
+      executionInstanceId: "instance-a",
+      cwd: firstRoot,
+    },
+    async () => {
+      await fallbackBlocked;
+
+      return { output: "host", exitCode: 0, truncated: false };
+    },
+    () => {},
+  );
+
+  await vi.waitFor(() => {
+    expect(broker.statusFor("task-a", "instance-a").mode).toBe(
+      "host-process-fallback",
+    );
+  });
+  const second = await broker.executeCommand(
+    {
+      ...command(),
+      taskId: "task-b",
+      executionInstanceId: "instance-b",
+      cwd: secondRoot,
+    },
+    vi.fn(),
+    () => {},
+  );
+
+  expect(second.status.mode).toBe("sandboxed");
+  expect(broker.statusFor("task-a", "instance-a").mode).toBe(
+    "host-process-fallback",
+  );
+  expect(broker.statusFor("task-b", "instance-b").mode).toBe("sandboxed");
+  releaseFallback();
+  await first;
+});
+
+it("treats cleanup failure during cancellation as unknown and drains the generation", async () => {
+  const root = await temp();
+  const controller = new AbortController();
+  const drainGeneration = vi.fn(async () => {});
+  const runtime: SandboxRuntime = {
+    selfCheck: vi.fn(async () => ({
+      level: "windows-sandbox-user-v1:test",
+      workspaceProtection: "direct-path" as const,
+      accountGenerationDigest: "a".repeat(64),
+    })),
+    prepareAccess: vi.fn(async () => ({
+      readOnlyRoots: [],
+      readWriteRoots: [],
+      gitConfigFiles: [],
+      cleanup: vi.fn(async () => {}),
+    })),
+    execute: vi.fn(async () => {
+      controller.abort(new Error("cancelled"));
+      throw new NativeWindowsSandboxCleanupError("ACL 或 Job 清理结果未知。");
+    }),
+    revokeAccess: vi.fn(async () => {}),
+    drainGeneration,
+  };
+  const broker = new SandboxBroker(
+    sandboxConfiguration({ CODEATELIER_SANDBOX_ENABLED: "true" }, "win32"),
+    runtime,
+  );
+
+  await expect(
+    broker.executeCommand(
+      { ...command(), cwd: root, signal: controller.signal },
+      vi.fn(),
+      () => {},
+    ),
+  ).rejects.toMatchObject({ code: "SANDBOX_UNAVAILABLE" });
+  expect(drainGeneration).toHaveBeenCalledOnce();
+  expect(broker.statusFor("task-1", "execution-1").mode).toBe("unknown");
+  expect(broker.accountGenerationSnapshot()).toMatchObject({
+    state: "quarantined",
+    activeInstanceCount: 1,
+    quarantineCategory: "acl_cleanup",
+  });
+});
+
+it("does not delete the lease ledger before native ACL revocation succeeds", async () => {
+  const root = await temp();
+  const drainGeneration = vi.fn(async () => {});
+  const runtime: SandboxRuntime = {
+    selfCheck: vi.fn(async () => ({
+      level: "windows-sandbox-user-v1:test",
+      workspaceProtection: "direct-path" as const,
+      accountGenerationDigest: "b".repeat(64),
+    })),
+    prepareAccess: vi.fn(async () => ({
+      readOnlyRoots: [],
+      readWriteRoots: [],
+      gitConfigFiles: [],
+      cleanup: vi.fn(async () => {}),
+    })),
+    execute: vi.fn(async (runtimeCommand) => {
+      runtimeCommand.onAccessProvisioned?.();
+
+      return { output: "", exitCode: 0, truncated: false };
+    }),
+    revokeAccess: vi.fn(async () => {
+      throw new Error("revoke failed");
+    }),
+    drainGeneration,
+  };
+  const broker = new SandboxBroker(
+    sandboxConfiguration({ CODEATELIER_SANDBOX_ENABLED: "true" }, "win32"),
+    runtime,
+  );
+
+  await expect(
+    broker.executeCommand({ ...command(), cwd: root }, vi.fn(), () => {}),
+  ).rejects.toMatchObject({ code: "SANDBOX_UNAVAILABLE" });
+  expect(broker.accountGenerationSnapshot()).toMatchObject({
+    state: "quarantined",
+    activeInstanceCount: 1,
+    grantCount: 1,
+    quarantineCategory: "acl_cleanup",
+  });
+  expect(drainGeneration).toHaveBeenCalledOnce();
+});
+
+it("waits for the first native ACL provision before starting a shared-root lease", async () => {
+  const firstRoot = await temp();
+  const secondRoot = await temp();
+  const sharedRoot = await temp();
+  let confirmFirstProvision!: () => void;
+  let finishFirst!: () => void;
+  const firstBlocked = new Promise<void>((resolve) => {
+    finishFirst = resolve;
+  });
+  const execute = vi.fn(async (runtimeCommand) => {
+    if (runtimeCommand.executionInstanceId === "instance-a") {
+      confirmFirstProvision = () => runtimeCommand.onAccessProvisioned?.();
+      await firstBlocked;
+    } else {
+      runtimeCommand.onAccessProvisioned?.();
+    }
+
+    return { output: "", exitCode: 0, truncated: false };
+  });
+  const runtime: SandboxRuntime = {
+    selfCheck: vi.fn(async () => ({
+      level: "windows-sandbox-user-v1:test",
+      workspaceProtection: "direct-path" as const,
+      accountGenerationDigest: "c".repeat(64),
+    })),
+    prepareAccess: vi.fn(async () => ({
+      readOnlyRoots: [sharedRoot],
+      readWriteRoots: [],
+      gitConfigFiles: [],
+      cleanup: vi.fn(async () => {}),
+    })),
+    execute,
+    revokeAccess: vi.fn(async () => {}),
+    drainGeneration: vi.fn(async () => {}),
+  };
+  const broker = new SandboxBroker(
+    sandboxConfiguration({ CODEATELIER_SANDBOX_ENABLED: "true" }, "win32"),
+    runtime,
+  );
+  const first = broker.executeCommand(
+    {
+      ...command(),
+      taskId: "task-a",
+      executionInstanceId: "instance-a",
+      cwd: firstRoot,
+    },
+    vi.fn(),
+    () => {},
+  );
+  await vi.waitFor(() => expect(execute).toHaveBeenCalledTimes(1));
+  const second = broker.executeCommand(
+    {
+      ...command(),
+      taskId: "task-b",
+      executionInstanceId: "instance-b",
+      cwd: secondRoot,
+    },
+    vi.fn(),
+    () => {},
+  );
+
+  await Promise.resolve();
+  expect(execute).toHaveBeenCalledTimes(1);
+  confirmFirstProvision();
+  await vi.waitFor(() => expect(execute).toHaveBeenCalledTimes(2));
+  finishFirst();
+  await Promise.all([first, second]);
 });
 
 it("passes only fixed WSL launcher arguments to the inspect runtime", async () => {

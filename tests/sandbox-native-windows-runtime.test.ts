@@ -3,7 +3,7 @@
  * 测试使用临时伪二进制与注入的 self-check executor，不创建账户、ACL、Job、Named Pipe 或 WFP 规则。
  *
  * 1. 二进制帧固定 magic/version、UTF-8 字符串、超时和 argv，拒绝相对路径及超限字段。
- * 2. selfCheck 只有 state 中两个 SHA-256 与实际文件一致且原生自检成功时才报告 sandbox level。
+ * 2. selfCheck 只有 state 中两个 SHA-256、启动恢复排空与原生自检全部成功时才报告 sandbox level。
  * 3. prepareAccess 在 manifest 之前同时创建只读 Git 投影和逐实例可写 HOME/TEMP，cleanup 删除两者。
  * 4. state 缺失、摘要篡改和原生拒绝都在 Runtime 启动前失败，允许 Broker 安全选择宿主 fallback。
  */
@@ -13,6 +13,7 @@ import { access, mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
+  classifySupervisorClose,
   encodeNativeSandboxRequest,
   NativeWindowsSandboxRuntime,
 } from "../src/sandbox/native-windows-runtime.js";
@@ -28,6 +29,25 @@ describe.skipIf(process.platform !== "win32")(
     function digest(content: string) {
       return createHash("sha256").update(content).digest("hex");
     }
+
+    it("prioritizes cleanup failure over an observed cancellation", () => {
+      expect(
+        classifySupervisorClose({
+          aborted: true,
+          timedOut: false,
+          cleanupFailure: true,
+          exitCode: 70,
+        }),
+      ).toBe("cleanup_unknown");
+      expect(
+        classifySupervisorClose({
+          aborted: true,
+          timedOut: false,
+          cleanupFailure: false,
+          exitCode: 30,
+        }),
+      ).toBe("cancelled");
+    });
 
     it("encodes a bounded binary command request and rejects unsafe shapes", () => {
       const frame = encodeNativeSandboxRequest({
@@ -96,8 +116,13 @@ describe.skipIf(process.platform !== "win32")(
           `networkSha256=${digest("network")}`,
         ].join("\n"),
       );
-      const runSelfCheck = vi.fn(async () => ({
-        output: "CODEATELIER_SELF_CHECK_OK generation=redacted\n",
+      const runSelfCheck = vi.fn(async (_file: string, args: string[]) => ({
+        output:
+          args[0] === "--terminate-account-processes"
+            ? "CODEATELIER_ACCOUNT_PROCESSES_TERMINATED count=0\n"
+            : args[0] === "--revoke-journal"
+              ? "CODEATELIER_REVOKE_JOURNAL_OK count=0\n"
+              : "CODEATELIER_SELF_CHECK_OK generation=redacted\n",
         exitCode: 0,
         truncated: false,
       }));
@@ -114,7 +139,7 @@ describe.skipIf(process.platform !== "win32")(
       ).resolves.toMatchObject({
         level: expect.stringMatching(/^windows-sandbox-user-v1:[a-f0-9]{12}$/),
       });
-      expect(runSelfCheck).toHaveBeenCalledWith(
+      expect(runSelfCheck).toHaveBeenLastCalledWith(
         supervisor,
         ["--self-check", statePath, network],
         process.cwd(),
@@ -124,6 +149,7 @@ describe.skipIf(process.platform !== "win32")(
         expect.any(Function),
         {},
       );
+      expect(runSelfCheck).toHaveBeenCalledTimes(3);
 
       await writeFile(network, "tampered");
       await expect(

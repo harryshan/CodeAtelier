@@ -3,8 +3,8 @@
  * SandboxBroker 在原生 provision 前取得 lease，在 Job、代理与 ACL 全部清理后释放；恢复代码读取快照判断能否继续复用账户。
  *
  * 1. acquire 强制 1～4 个不同工作区并发、同一规范工作区串行，并为每个实例分配单调 lease epoch。
- * 2. grant table 以对象身份和访问模式计数；首个引用要求原生层安装 ACE，最后一个引用要求撤销。
- * 3. release 只接受同 instance/epoch 的 lease，返回本次应撤销的对象，防止迟到清理破坏新实例。
+ * 2. grant table 以对象身份和访问模式计数；首个引用先进入 provisioning，后继 lease 必须等待原生安装完成。
+ * 3. release 使用 prepare/commit 两阶段协议；原生撤销失败前不删除 lease 或 grant，防止 orphan 从账本消失。
  * 4. quarantine 在未知进程、ACL、代理或凭据状态下冻结 generation，并返回所有仍需终止和对账的实例。
  * 5. snapshot 只暴露摘要和计数，可写入 session/log/trace；不包含原始路径、SID、命令或凭据。
  *
@@ -29,6 +29,18 @@ interface GrantReference {
   objectIdentityDigest: string;
   mode: "read" | "write";
   references: number;
+  provisionState: "provisioning" | "installed" | "failed";
+  installerExecutionInstanceId: string;
+  waiters: Array<{
+    resolve: () => void;
+    reject: (error: AccountGenerationError) => void;
+  }>;
+}
+
+export interface AccountGenerationRelease {
+  releaseId: string;
+  lease: SandboxInstanceLease;
+  revoke: Array<Pick<GrantReference, "objectIdentityDigest" | "mode">>;
 }
 
 export interface AccountGenerationSnapshot {
@@ -95,6 +107,7 @@ export class AccountGenerationRegistry {
   private nextLeaseEpoch = 1;
   private active = new Map<string, SandboxInstanceLease>();
   private grants = new Map<string, GrantReference>();
+  private pendingReleases = new Map<string, AccountGenerationRelease>();
   private quarantineCategory?: SandboxGenerationFailure;
 
   constructor(
@@ -146,7 +159,10 @@ export class AccountGenerationRegistry {
       manifestDigest: input.accessManifest.manifestDigest,
       epoch: this.nextLeaseEpoch++,
     });
-    const install: GrantReference[] = [];
+    const install: Array<
+      Pick<GrantReference, "objectIdentityDigest" | "mode">
+    > = [];
+    const waits: Promise<void>[] = [];
 
     for (const grant of manifestGrants(input.accessManifest)) {
       const key = grantKey(grant.objectIdentityDigest, grant.mode);
@@ -154,16 +170,110 @@ export class AccountGenerationRegistry {
 
       if (current) {
         current.references += 1;
+        if (current.provisionState === "provisioning") {
+          waits.push(
+            new Promise<void>((resolve, reject) => {
+              current.waiters.push({ resolve, reject });
+            }),
+          );
+        } else if (current.provisionState === "failed") {
+          throw new AccountGenerationError("共享 ACL grant 安装已经失败。");
+        }
       } else {
-        const reference = { ...grant, references: 1 };
+        const reference: GrantReference = {
+          ...grant,
+          references: 1,
+          provisionState: "provisioning",
+          installerExecutionInstanceId: lease.executionInstanceId,
+          waiters: [],
+        };
         this.grants.set(key, reference);
-        install.push({ ...reference });
+        install.push({
+          objectIdentityDigest: reference.objectIdentityDigest,
+          mode: reference.mode,
+        });
       }
     }
 
     this.active.set(lease.executionInstanceId, lease);
 
-    return { lease, install };
+    return {
+      lease,
+      install,
+      waitForSharedProvision: () => Promise.all(waits).then(() => undefined),
+    };
+  }
+
+  markProvisioned(executionInstanceId: string, epoch: number) {
+    const lease = this.requireLease(executionInstanceId, epoch);
+
+    for (const grant of this.grants.values()) {
+      if (
+        grant.installerExecutionInstanceId !== lease.executionInstanceId ||
+        grant.provisionState !== "provisioning"
+      ) {
+        continue;
+      }
+
+      grant.provisionState = "installed";
+      for (const waiter of grant.waiters.splice(0)) {
+        waiter.resolve();
+      }
+    }
+  }
+
+  markProvisionFailed(executionInstanceId: string, epoch: number) {
+    const lease = this.requireLease(executionInstanceId, epoch);
+    const error = new AccountGenerationError("共享 ACL grant 安装未能完成。");
+
+    for (const grant of this.grants.values()) {
+      if (
+        grant.installerExecutionInstanceId !== lease.executionInstanceId ||
+        grant.provisionState !== "provisioning"
+      ) {
+        continue;
+      }
+
+      grant.provisionState = "failed";
+      for (const waiter of grant.waiters.splice(0)) {
+        waiter.reject(error);
+      }
+    }
+  }
+
+  /** Runtime 尚未调用时可无原生副作用地回滚 acquire；已安装的 grant 必须走两阶段 release。 */
+  rollbackAcquire(
+    executionInstanceId: string,
+    epoch: number,
+    manifest: AccessManifest,
+  ) {
+    const lease = this.requireLease(executionInstanceId, epoch);
+    if (lease.manifestDigest !== manifest.manifestDigest) {
+      throw new AccountGenerationError("回滚租约与 AccessManifest 不匹配。");
+    }
+
+    for (const grant of manifestGrants(manifest)) {
+      const key = grantKey(grant.objectIdentityDigest, grant.mode);
+      const current = this.grants.get(key);
+      if (!current || current.references < 1) {
+        this.quarantine("ledger_inconsistent");
+        throw new AccountGenerationError("共享 ACL grant 账本不一致。");
+      }
+
+      current.references -= 1;
+      if (current.references === 0) {
+        if (current.provisionState === "installed") {
+          this.quarantine("ledger_inconsistent");
+          throw new AccountGenerationError(
+            "已安装 grant 不能按未启动路径回滚。",
+          );
+        }
+
+        this.grants.delete(key);
+      }
+    }
+
+    this.active.delete(executionInstanceId);
   }
 
   beginDrain() {
@@ -172,8 +282,17 @@ export class AccountGenerationRegistry {
     }
   }
 
-  /** release 必须带回 acquire 时的不可变 manifest，不能只凭 instanceId 猜测应撤销哪些 ACE。 */
-  releaseWithManifest(
+  private requireLease(executionInstanceId: string, epoch: number) {
+    const lease = this.active.get(executionInstanceId);
+    if (!lease || lease.epoch !== epoch) {
+      throw new AccountGenerationError("租约 epoch 与账本不匹配。");
+    }
+
+    return lease;
+  }
+
+  /** prepare 只冻结释放意图，不改引用或 active；Broker 必须串行执行 prepare/native revoke/commit。 */
+  prepareReleaseWithManifest(
     executionInstanceId: string,
     epoch: number,
     manifest: AccessManifest,
@@ -187,7 +306,15 @@ export class AccountGenerationRegistry {
       throw new AccountGenerationError("租约与 AccessManifest 账本不匹配。");
     }
 
-    const revoke: GrantReference[] = [];
+    if (
+      [...this.pendingReleases.values()].some(
+        (release) => release.lease.executionInstanceId === executionInstanceId,
+      )
+    ) {
+      throw new AccountGenerationError("租约已经在等待原生清理提交。");
+    }
+
+    const revoke: AccountGenerationRelease["revoke"] = [];
     for (const grant of manifestGrants(manifest)) {
       const key = grantKey(grant.objectIdentityDigest, grant.mode);
       const current = this.grants.get(key);
@@ -197,25 +324,59 @@ export class AccountGenerationRegistry {
         throw new AccountGenerationError("共享 ACL grant 账本不一致。");
       }
 
-      current.references -= 1;
-      if (current.references === 0) {
-        this.grants.delete(key);
-        revoke.push({ ...current });
+      if (current.references === 1) {
+        revoke.push({
+          objectIdentityDigest: current.objectIdentityDigest,
+          mode: current.mode,
+        });
       }
     }
 
-    this.active.delete(executionInstanceId);
-
-    return {
+    const release = {
+      releaseId: randomUUID(),
       lease,
       revoke,
-      generationEmpty: this.active.size === 0,
     };
+    this.pendingReleases.set(release.releaseId, release);
+
+    return release;
+  }
+
+  commitRelease(releaseId: string, manifest: AccessManifest) {
+    const release = this.pendingReleases.get(releaseId);
+    if (!release || release.lease.manifestDigest !== manifest.manifestDigest) {
+      throw new AccountGenerationError(
+        "释放提交与 AccessManifest 账本不匹配。",
+      );
+    }
+
+    for (const grant of manifestGrants(manifest)) {
+      const key = grantKey(grant.objectIdentityDigest, grant.mode);
+      const current = this.grants.get(key);
+      if (!current || current.references < 1) {
+        this.quarantine("ledger_inconsistent");
+        throw new AccountGenerationError("共享 ACL grant 账本不一致。");
+      }
+
+      current.references -= 1;
+      if (current.references === 0) {
+        this.grants.delete(key);
+      }
+    }
+
+    this.active.delete(release.lease.executionInstanceId);
+    this.pendingReleases.delete(releaseId);
+
+    return { lease: release.lease, generationEmpty: this.active.size === 0 };
+  }
+
+  abortRelease(releaseId: string) {
+    this.pendingReleases.delete(releaseId);
   }
 
   quarantine(category: SandboxGenerationFailure) {
     this.state = "quarantined";
-    this.quarantineCategory = category;
+    this.quarantineCategory ??= category;
 
     return [...this.active.values()];
   }

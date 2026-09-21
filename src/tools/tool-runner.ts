@@ -5,7 +5,8 @@
  * 1. ignored 列出遍历时跳过的目录；ToolContext 定义依赖，readHashes 记住本任务读过的文件版本；forCall 共享该状态但隔离事件关联。
  * 2. currentFileHash 仅探测安全工作区文件的字节哈希，不更新读取凭证；access 解析路径并申请必要的权限；entries 限量遍历，commandGrant 为可复用命令计算指纹。
  * 3. execute 先通过 parseToolArguments 校验参数并解开 Git 的 request 包装（兼容历史扁平调用）。它在每次调用实际开始产生工具副作用或读取前回调 Engine，因此耗时不计入审批等待；统一的精确编辑和显式新建文件均分流给共享读取哈希的 FileEditor，已有文件成功编辑后会作废对应哈希，单一专用 Git 工具分流给 GitToolRunner；受限 memory_apply 仅写入平台数据目录的当前项目记忆；普通命令只接受一条命令文本，内部选择 shell、拒绝直接 Git，再申请审批并调用 executeProcess。
- * 4. 只读分支只处理读取；目录浏览和代码搜索均由 run_command 在审批后执行。读文件按 500 行分页，返回全文字节 contentHash 供压缩比较，并在内部记录文本哈希供后续修改核对。
+ * 4. 每个 execution instance 只读取 Broker 为该 task/instance 保存的状态；并发任务的 fallback/unknown 不会污染其它 PID、session 或 trace 记录。
+ * 5. 只读分支只处理读取；目录浏览和代码搜索均由 run_command 在审批后执行。读文件按 500 行分页，返回全文字节 contentHash 供压缩比较，并在内部记录文本哈希供后续修改核对。
  *
  * 新建文件使用 edit_files 的 create:true 条目，已有文件只能用 create:false 的精确快照编辑；
  * FileEditor 会在写入前复核路径、存在性和读取版本，并以同目录临时文件替换目标。
@@ -101,7 +102,7 @@ export class ToolRunner {
           truncated: result.truncated,
         })),
       async (spec, args, cwd, signal, timeoutMs, outputLimit, onOutput) => {
-        if (this.sandbox.status.requested) {
+        if (this.sandbox.statusFor(this.ctx.taskId).requested) {
           const allowed = await this.ctx.approvals.request(
             {
               sessionId: this.ctx.sessionId,
@@ -235,15 +236,19 @@ export class ToolRunner {
   }) {
     const executionInstanceId = randomUUID();
     const createdAt = new Date().toISOString();
+    const initialStatus = this.sandbox.statusFor(
+      this.ctx.taskId,
+      executionInstanceId,
+    );
     let record: ExecutionInstanceRecord = {
       executionInstanceId,
       kind: input.executionKind ?? "agent-runtime",
-      mode: this.executionMode(this.sandbox.status),
+      mode: this.executionMode(initialStatus),
       state: "created",
       createdAt,
       updatedAt: createdAt,
-      sandboxRequested: this.sandbox.status.requested,
-      sandboxApplied: this.sandbox.status.applied,
+      sandboxRequested: initialStatus.requested,
+      sandboxApplied: initialStatus.applied,
     };
 
     const publish = (next: Partial<ExecutionInstanceRecord>) => {
@@ -262,7 +267,10 @@ export class ToolRunner {
       pidKind: ExecutionInstanceRecord["pidKind"],
       processCreationTime100ns?: string,
     ) => {
-      const status = this.sandbox.status;
+      const status = this.sandbox.statusFor(
+        this.ctx.taskId,
+        executionInstanceId,
+      );
       publish({
         state: "running",
         mode: this.executionMode(status),
@@ -326,14 +334,20 @@ export class ToolRunner {
 
       return { ...outcome.result, sandbox: outcome.status };
     } catch (error) {
-      const status = this.sandbox.status;
+      const status = this.sandbox.statusFor(
+        this.ctx.taskId,
+        executionInstanceId,
+      );
       const started = record.state === "running";
       publish({
-        state: input.signal.aborted
-          ? "cancelled"
-          : started || status.mode === "unknown"
+        state:
+          status.mode === "unknown"
             ? "unknown"
-            : "failed",
+            : input.signal.aborted
+              ? "cancelled"
+              : started
+                ? "unknown"
+                : "failed",
         mode: this.executionMode(status),
         sandboxRequested: status.requested,
         sandboxApplied: status.applied,

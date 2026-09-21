@@ -1,6 +1,6 @@
 # 初版验证记录
 
-日期：2026-09-07；后续条目按各自日期补充。以下区分实际验证和计划覆盖，不将构建成功等同于跨平台运行成功。**当前 Windows 专用用户 Runtime 与 Broker 目标架构尚未实现或验证；本文件中的 WSL2 与 restricted-token demo 条目只是历史或局部证据，不能用于宣称专用用户 Sandbox 能力。**
+日期：2026-09-07；后续条目按各自日期补充。以下区分实际验证和计划覆盖，不将构建成功等同于跨平台运行成功。**Windows 专用用户 Runtime 的产品代码、安装器、ACL/Job、持久 WFP、journal、CONNECT relay 与命令/Git 子进程路由已经接入，但尚未完成固定账户提升环境端到端验收。agent loop、真实 Runtime→Broker Named Pipe transport 和模型/session adapter 尚未接入；WSL2 与 restricted-token demo 仍只是历史或局部证据。代码存在、单测或 native build 通过都不能扩展成 W0--W6 完成或跨平台 Sandbox 能力。**
 
 ## 本机实际验证
 
@@ -271,3 +271,12 @@
 - 为支持上述专用账户夹具，restricted-token 原生探针新增由提升编排端预置 execution/root capability SID 的入口，并在 context 输出 account/logon SID；旧的当前用户入口在批准的 medium-integrity 宿主环境再次完整通过，仍显示外层 `inJob=yes`。这只回归了组件行为，不替代修订版管理员账户实测。
 - 探针以 MSVC `/W4 /WX` 构建通过；本轮 `pnpm check` 在普通 Codex 进程沙箱中因三个取消/超时夹具无法终止子进程而失败，改在批准的宿主权限下完整通过：37 个测试文件、255 项通过、1 项跳过，类型、ESLint、Prettier 和生产构建均通过。两次结果分开记录，不把解除 Codex 外层限制当作产品 Sandbox 能力。
 - 上一节的 WSL2 无害夹具和本节两个 demo 仍仅可作为旧实现或组件的局部事实；它们不能作为专用用户 fallback、阶段完成或跨平台系统隔离证据。
+
+## 2026-09-21 Sandbox 清理、generation 与并发账本审计
+
+- 静态复核确认并修复取消优先级缺陷：supervisor 的 cleanup 控制帧或退出码 70 现在先于 AbortSignal 分类；Broker 与 ToolRunner 都把该组合持久化为 `unknown`，不会显示普通 `cancelled`。纯函数回归覆盖“取消 + cleanup failure”与正常取消的分流。
+- account generation 的 release 改为 prepare/native revoke/commit 两阶段；原生撤销成功前 active lease 和 grant 引用不减少，失败会保留 orphan 对账对象并 quarantine。共享 grant 增加 `provisioning/installed/failed` 状态，后继 lease 在首个 supervisor 回报 Runtime started 前等待，首个 provision 失败时等待者失败并回滚未启动引用。并发回归覆盖共享 read root 的第二个 Runtime 不会抢先执行。
+- unknown/orphaned 不再只改内存标志：Broker 调用 Runtime generation drain，先关闭 relay，再运行固定的 `--terminate-account-processes` 与 `--revoke-journal`；服务监听前主动运行同一恢复步骤，从原生持久 ACL journal 对账上次崩溃遗留，失败会保留为后续 Sandbox fallback。内存 generation 继续保持 quarantined，不因 drain 返回成功而在本进程复用。execution instance/session 账本与原生 journal 分别保存审计事实和可撤销对象；仍未完成机器断电、损坏 journal、真实多实例强制终止及提升环境重启夹具。
+- Broker 状态从全局 `latestStatus` 改为 task/execution-instance 映射；并发测试让任务 A 停在 host fallback，同时任务 B 完成 sandbox 路径，并分别核对状态不串扰。Bootstrap 只公开启动配置，具体执行事实以 execution instance 与工具结果为准。
+- 当前 agent loop/文件工具仍在宿主 Node，原生 Runtime 每次只运行一条命令或 Git 子进程；`runtime-broker.ts` 仍是未接 transport 的协议核心。W3 Named Pipe 身份、模型代理进程边界和 Runtime 内 agent loop 继续列为未实现，相关协议测试不能证明真实边界。
+- 产品 WFP manager 不再从 `experiments` 目录 include 实现。共享实现迁到 `native/windows-sandbox/network-fence-implementation.cpp`；实验入口变为薄包装，产品构建定义 `CODEATELIER_PRODUCT_WFP_ONLY`，只分派 persistent install/verify/remove。MSVC `/W4` 产品构建通过，且产物对实验参数 `--ipc` 返回 2 和固定拒绝文本；这改善代码归属与命令面审计，不替代提升 WFP 行为矩阵。

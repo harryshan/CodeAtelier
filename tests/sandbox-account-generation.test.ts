@@ -3,8 +3,9 @@
  * 测试只操作内存账本，不创建账户、进程、ACL 或 WFP 规则。
  *
  * 1. 不同工作区在上限内可并发，同一工作区与超限请求拒绝。
- * 2. 相同只读对象跨 manifest 只安装一次，并仅在最后一个租约释放时撤销。
- * 3. epoch/manifest 重放拒绝，账本不一致会 quarantine 整个 generation。
+ * 2. 相同只读对象跨 manifest 只安装一次；后继 lease 等待首个原生 provision 完成。
+ * 3. release 在原生撤销成功前保留 lease/grant，commit 后才减少引用并在最后一个 lease 撤销。
+ * 4. epoch/manifest 重放拒绝，账本不一致会 quarantine 整个 generation。
  */
 
 import { expect, it } from "vitest";
@@ -33,7 +34,7 @@ function manifest(
   };
 }
 
-it("allows bounded different-workspace concurrency and reference-counts grants", () => {
+it("allows bounded different-workspace concurrency and reference-counts grants", async () => {
   const registry = new AccountGenerationRegistry(digest("a"), 2);
   const firstManifest = manifest("workspace-a", "b");
   const secondManifest = manifest("workspace-b", "c");
@@ -53,6 +54,15 @@ it("allows bounded different-workspace concurrency and reference-counts grants",
   expect(first.install).toHaveLength(2);
   expect(second.install).toHaveLength(1);
   expect(second.lease.epoch).toBe(first.lease.epoch + 1);
+  let secondReady = false;
+  const waiting = second.waitForSharedProvision().then(() => {
+    secondReady = true;
+  });
+  await Promise.resolve();
+  expect(secondReady).toBe(false);
+  registry.markProvisioned("instance-a", first.lease.epoch);
+  await waiting;
+  expect(secondReady).toBe(true);
   expect(registry.snapshot()).toMatchObject({
     state: "healthy",
     activeInstanceCount: 2,
@@ -67,7 +77,7 @@ it("allows bounded different-workspace concurrency and reference-counts grants",
     }),
   ).toThrow("并发上限");
 
-  const firstRelease = registry.releaseWithManifest(
+  const firstRelease = registry.prepareReleaseWithManifest(
     "instance-a",
     first.lease.epoch,
     firstManifest,
@@ -78,13 +88,16 @@ it("allows bounded different-workspace concurrency and reference-counts grants",
       mode: "write",
     }),
   ]);
-  const secondRelease = registry.releaseWithManifest(
+  expect(registry.snapshot().activeInstanceCount).toBe(2);
+  registry.commitRelease(firstRelease.releaseId, firstManifest);
+  const secondRelease = registry.prepareReleaseWithManifest(
     "instance-b",
     second.lease.epoch,
     secondManifest,
   );
   expect(secondRelease.revoke).toHaveLength(2);
-  expect(secondRelease.generationEmpty).toBe(true);
+  registry.commitRelease(secondRelease.releaseId, secondManifest);
+  expect(registry.snapshot().activeInstanceCount).toBe(0);
 });
 
 it("serializes the same workspace even when capacity remains", () => {
@@ -118,7 +131,7 @@ it("rejects stale release and quarantines inconsistent grant state", () => {
   });
 
   expect(() =>
-    registry.releaseWithManifest(
+    registry.prepareReleaseWithManifest(
       "instance-a",
       acquired.lease.epoch + 1,
       accessManifest,
@@ -141,4 +154,31 @@ it("rejects stale release and quarantines inconsistent grant state", () => {
       accessManifest: manifest("workspace-b", "c"),
     }),
   ).toThrow("停止发放");
+});
+
+it("keeps the lease and grants when native revocation is not committed", () => {
+  const registry = new AccountGenerationRegistry(digest("a"), 2);
+  const accessManifest = manifest("workspace-a", "b");
+  const acquired = registry.acquire({
+    executionInstanceId: "instance-a",
+    kind: "agent-runtime",
+    taskId: "task-a",
+    accessManifest,
+  });
+  registry.markProvisioned("instance-a", acquired.lease.epoch);
+
+  const release = registry.prepareReleaseWithManifest(
+    "instance-a",
+    acquired.lease.epoch,
+    accessManifest,
+  );
+  registry.abortRelease(release.releaseId);
+  registry.quarantine("acl_cleanup");
+
+  expect(registry.snapshot()).toMatchObject({
+    state: "quarantined",
+    activeInstanceCount: 1,
+    grantCount: 2,
+    quarantineCategory: "acl_cleanup",
+  });
 });

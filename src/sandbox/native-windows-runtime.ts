@@ -3,11 +3,13 @@
  * Runtime factory 仅在 Windows 且开关开启时创建本类；selfCheck 必须同时验证安装 state、二进制摘要、账户凭据与 WFP。
  *
  * 1. installationPaths 解析 ProgramData 下受保护的产品副本或显式测试覆盖，不从工作区或模型输入选择可执行文件。
- * 2. selfCheck 严格读取受限 state 元数据、复核 supervisor/network SHA-256，再调用原生只读自检。
+ * 2. selfCheck 严格读取受限 state 元数据、复核 supervisor/network SHA-256，并在首次接单前排空旧账户进程和 ACL journal。
  * 3. prepareAccess 在 manifest 前创建 Git 投影和逐实例 HOME/TEMP，使私有目录也经过原对象 ACL/capability/journal；encodeRequest 再发送固定执行帧。
  * 4. execute 启动单实例 supervisor，stdout 作为工具输出流，stderr 只解析 runtime PID/创建时间、完成和固定错误类别。
- * 5. 取消或 JS 超时关闭继承 stdin；原生 supervisor 据此终止 Job 并撤销 ACL。清理失败码会抛出未知结果，绝不宿主重放。
- * 6. 临时 HOME/TEMP 只在原生确认撤销后删除；日志与错误不包含命令、路径、SID、端口、密码或工具输出。
+ * 5. runtime started 控制帧确认共享账户 ACE 已安装；并发 lease 在该确认前不会假定 grant 可用。
+ * 6. 取消或 JS 超时关闭继承 stdin；清理失败优先于取消结果并抛出专用 unknown 错误，绝不宿主重放。
+ * 7. drainGeneration 关闭 relay、终止该账户全部进程并按持久 journal 撤销 ACL，供在线 quarantine 与重启恢复共用。
+ * 8. 临时 HOME/TEMP 只在原生确认撤销后删除；日志与错误不包含命令、路径、SID、端口、密码或工具输出。
  *
  * 该实现当前承载 run_command 和全部 Git 子进程；文件读写仍由 Broker 的固定 schema 与快照编辑器执行。
  */
@@ -37,6 +39,34 @@ const PROTOCOL_FAILURE_EXIT_CODE = 72;
 const MAXIMUM_ARGUMENTS = 64;
 const MAXIMUM_STRING_BYTES = 64 * 1024;
 
+export function classifySupervisorClose(input: {
+  aborted: boolean;
+  timedOut: boolean;
+  cleanupFailure: boolean;
+  exitCode: number | null;
+}) {
+  if (input.cleanupFailure || input.exitCode === CLEANUP_FAILURE_EXIT_CODE) {
+    return "cleanup_unknown" as const;
+  }
+
+  if (input.aborted) {
+    return "cancelled" as const;
+  }
+
+  if (input.timedOut) {
+    return "timed_out" as const;
+  }
+
+  if (
+    input.exitCode === SELF_CHECK_FAILURE_EXIT_CODE ||
+    input.exitCode === PROTOCOL_FAILURE_EXIT_CODE
+  ) {
+    return "security_rejected" as const;
+  }
+
+  return "completed" as const;
+}
+
 interface InstallationPaths {
   supervisor: string;
   networkManager: string;
@@ -52,11 +82,20 @@ interface InstallationMetadata {
 }
 
 export class NativeWindowsSandboxError extends Error {
-  readonly code = "WINDOWS_SANDBOX_NATIVE";
+  readonly code: string = "WINDOWS_SANDBOX_NATIVE";
 
   constructor(reason: string) {
     super(`Windows Sandbox Runtime 不可用：${reason}`);
     this.name = "NativeWindowsSandboxError";
+  }
+}
+
+export class NativeWindowsSandboxCleanupError extends NativeWindowsSandboxError {
+  override readonly code = "WINDOWS_SANDBOX_CLEANUP_UNKNOWN";
+
+  constructor(reason: string) {
+    super(reason);
+    this.name = "NativeWindowsSandboxCleanupError";
   }
 }
 
@@ -259,6 +298,7 @@ export class NativeWindowsSandboxRuntime implements SandboxRuntime {
   private environment: NodeJS.ProcessEnv;
   private metadata?: InstallationMetadata;
   private relay?: SandboxHttpsRelay;
+  private startupRecovery?: Promise<void>;
 
   constructor(
     environment: NodeJS.ProcessEnv = process.env,
@@ -360,6 +400,9 @@ export class NativeWindowsSandboxRuntime implements SandboxRuntime {
 
       throw new NativeWindowsSandboxError("安装状态或原生二进制不可读。");
     }
+
+    this.startupRecovery ??= this.drainGeneration(signal);
+    await this.startupRecovery;
 
     const result = await this.runSelfCheck(
       this.paths.supervisor,
@@ -517,6 +560,76 @@ export class NativeWindowsSandboxRuntime implements SandboxRuntime {
     }
   }
 
+  async drainGeneration(
+    signal: AbortSignal,
+    context?: { taskId: string; executionInstanceId: string },
+  ) {
+    const span = context
+      ? this.traces?.startSpan(context.taskId, {
+          name: "sandbox.account_generation.drain",
+          category: "sandbox",
+          track: "Sandbox runtime",
+          attributes: {
+            executionInstanceId: context.executionInstanceId,
+          },
+        })
+      : undefined;
+    await this.relay?.close();
+    this.relay = undefined;
+    const operations = [
+      {
+        argument: "--terminate-account-processes",
+        marker: "CODEATELIER_ACCOUNT_PROCESSES_TERMINATED",
+      },
+      {
+        argument: "--revoke-journal",
+        marker: "CODEATELIER_REVOKE_JOURNAL_OK",
+      },
+    ];
+
+    try {
+      for (const operation of operations) {
+        const result = await this.runSelfCheck(
+          this.paths.supervisor,
+          [operation.argument, this.paths.state, this.paths.networkManager],
+          process.cwd(),
+          signal,
+          20_000,
+          4_096,
+          () => {},
+          {},
+        );
+        if (
+          result.exitCode !== 0 ||
+          !result.output.includes(operation.marker)
+        ) {
+          throw new NativeWindowsSandboxCleanupError(
+            "account generation 排空或 ACL journal 对账失败。",
+          );
+        }
+      }
+
+      if (span) {
+        this.traces?.endSpan(span, "ok");
+      }
+    } catch (error) {
+      if (span) {
+        this.traces?.endSpan(span, signal.aborted ? "cancelled" : "error");
+      }
+
+      throw error;
+    }
+  }
+
+  /** 服务启动即完成上一进程 generation 对账；失败由 Broker 保留为后续命令的安全 fallback 原因。 */
+  async recoverStartup(signal: AbortSignal) {
+    await this.selfCheck(signal, {
+      root: this.paths.dataRoot,
+      protectedPaths: [],
+      protection: "direct-path",
+    });
+  }
+
   async shutdown() {
     await this.relay?.close();
     this.relay = undefined;
@@ -551,6 +664,7 @@ export class NativeWindowsSandboxRuntime implements SandboxRuntime {
       let finished = false;
       let timedOut = false;
       let cleanupFailure = false;
+      let accessProvisioned = false;
       const sanitizer = new TerminalTextSanitizer();
 
       if (child.pid !== undefined) {
@@ -592,6 +706,11 @@ export class NativeWindowsSandboxRuntime implements SandboxRuntime {
         )) {
           const pid = Number(match[1]);
           if (Number.isSafeInteger(pid) && pid > 0) {
+            if (!accessProvisioned) {
+              accessProvisioned = true;
+              command.onAccessProvisioned?.();
+            }
+
             command.onProcessStarted(pid, "runtime", match[2]);
             this.log?.info({
               event: "sandbox.runtime_provision.completed",
@@ -632,7 +751,26 @@ export class NativeWindowsSandboxRuntime implements SandboxRuntime {
         finished = true;
         clearTimeout(timer);
         command.signal.removeEventListener("abort", cancel);
-        if (command.signal.aborted) {
+        const completion = classifySupervisorClose({
+          aborted: command.signal.aborted,
+          timedOut,
+          cleanupFailure,
+          exitCode,
+        });
+        if (completion === "cleanup_unknown") {
+          this.log?.error({
+            event: "sandbox.instance_release.failed",
+            module: "sandbox",
+            sessionId: command.sessionId,
+            taskId: command.taskId,
+            executionInstanceId: command.executionInstanceId,
+            category: "cleanup",
+            cancellationRequested: command.signal.aborted,
+          });
+          reject(
+            new NativeWindowsSandboxCleanupError("ACL 或 Job 清理结果未知。"),
+          );
+        } else if (completion === "cancelled") {
           this.log?.info({
             event: "sandbox.instance_release.completed",
             module: "sandbox",
@@ -642,22 +780,9 @@ export class NativeWindowsSandboxRuntime implements SandboxRuntime {
             result: "cancelled",
           });
           reject(command.signal.reason ?? new Error("任务已取消"));
-        } else if (timedOut) {
+        } else if (completion === "timed_out") {
           reject(new Error("命令超时，Sandbox Job 已终止。"));
-        } else if (cleanupFailure || exitCode === CLEANUP_FAILURE_EXIT_CODE) {
-          this.log?.error({
-            event: "sandbox.instance_release.failed",
-            module: "sandbox",
-            sessionId: command.sessionId,
-            taskId: command.taskId,
-            executionInstanceId: command.executionInstanceId,
-            category: "cleanup",
-          });
-          reject(new NativeWindowsSandboxError("ACL 或 Job 清理结果未知。"));
-        } else if (
-          exitCode === SELF_CHECK_FAILURE_EXIT_CODE ||
-          exitCode === PROTOCOL_FAILURE_EXIT_CODE
-        ) {
+        } else if (completion === "security_rejected") {
           reject(new NativeWindowsSandboxError("supervisor 安全拒绝了执行。"));
         } else {
           this.log?.info({
