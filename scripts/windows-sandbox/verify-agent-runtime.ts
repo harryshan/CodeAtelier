@@ -4,9 +4,10 @@
  *
  * 1. 在仓库 .local 下建立一次性工作区和 Broker 数据库，并强制启用 Windows Sandbox 产品组装。
  * 2. 用内存模型驱动固定 Agent Runtime 创建标记文件，核对 agent loop、Runtime IPC、文件工具与 clean grant release。
- * 3. 初始化一次性 Git 仓库，把 HTTPS remote 指向 relay 必须拒绝的 127.0.0.1；验证 Runtime 阻塞等待独立 Push Runner、审批、失败结果回传和 clean lease release，全程不连接公网。
- * 4. 再让模型请求保持进行中并主动取消任务，核对 Job 终止、cancelled 归因和 generation lease 清空。
- * 5. 只有三条链路均为 windows-sandbox-user 且没有 fallback/unknown 才输出 PASS；失败现场保留供人工对账。
+ * 3. 请求 sibling 目录写权限，经低成本模型审批后用独立 Capability Runner 写入标记，核对结果回传、外部 ACL 和 clean release。
+ * 4. 初始化一次性 Git 仓库，把 HTTPS remote 指向 relay 必须拒绝的 127.0.0.1；验证 Runtime 阻塞等待独立 Push Runner、审批、失败结果回传和 clean lease release，全程不连接公网。
+ * 5. 再让模型请求保持进行中并主动取消任务，核对 Job 终止、cancelled 归因和 generation lease 清空。
+ * 6. 只有四条链路均为 windows-sandbox-user 且没有 fallback/unknown 才输出 PASS；失败现场保留供人工对账。
  */
 
 import { execFile } from "node:child_process";
@@ -19,10 +20,13 @@ import { Engine } from "../../src/agent/engine.js";
 import { Config } from "../../src/config/config.js";
 import type { ModelProvider } from "../../src/providers/model-provider.js";
 import { Store } from "../../src/sessions/store.js";
+import { commandShell } from "../../src/tools/command-shell.js";
 
 const verificationTimeoutMs = 60_000;
 const markerName = "agent-runtime-marker.txt";
 const markerContent = "written-by-installed-agent-runtime\n";
+const capabilityMarkerName = "capability-runner-marker.txt";
+const capabilityMarkerContent = "written-by-capability-runner";
 const blockedRemote = "https://127.0.0.1/codeatelier-verification.git";
 const runFile = promisify(execFile);
 
@@ -111,6 +115,43 @@ function assertBlockedPushRunner(store: Store, sessionId: string) {
   }
 }
 
+function assertCapabilityRunner(store: Store, sessionId: string) {
+  const events = store.events(sessionId);
+  const executions = executionEvents(store, sessionId);
+  const capabilityStates = executions
+    .filter((event) => event.kind === "capability-runner")
+    .map((event) => event.state);
+  if (
+    !capabilityStates.includes("running") ||
+    !capabilityStates.includes("failed") ||
+    capabilityStates.includes("unknown") ||
+    executions.some(
+      (event) =>
+        event.kind === "capability-runner" &&
+        event.toolCallId !== "runtime-capability-write",
+    ) ||
+    !executions.some(
+      (event) =>
+        event.kind === "agent-runtime" &&
+        event.mode === "windows-sandbox-user" &&
+        event.state === "completed",
+    ) ||
+    !events.some(
+      (event) =>
+        event.type === "approval_assessed" &&
+        (event.data as Record<string, unknown>).tool ===
+          "run_with_permissions" &&
+        (event.data as Record<string, unknown>).decision === "approve",
+    ) ||
+    events.some(
+      (event) =>
+        event.type === "sandbox_warning" || event.type === "sandbox_fallback",
+    )
+  ) {
+    fail("expanded write did not use one clean independent Capability Runner");
+  }
+}
+
 async function initializeGitFixture(workspace: string) {
   await writeFile(path.join(workspace, "seed.txt"), "sandbox push fixture\n");
   const git = async (...args: string[]) => {
@@ -134,7 +175,7 @@ function completedProvider(): ModelProvider {
     async getCapabilities() {
       return {
         limits: {
-          max_context_window_tokens: 32_000,
+          max_context_window_tokens: 64_000,
           max_output_tokens: 1_024,
         },
       };
@@ -177,7 +218,7 @@ function cancelledProvider(entered: () => void): ModelProvider {
     async getCapabilities() {
       return {
         limits: {
-          max_context_window_tokens: 32_000,
+          max_context_window_tokens: 64_000,
           max_output_tokens: 1_024,
         },
       };
@@ -200,12 +241,86 @@ function approvalProvider(): ModelProvider {
       return {
         text: JSON.stringify({
           decision: "approve",
-          reason: "固定安装态 Push Runner 验证。",
+          reason: "固定安装态 Sandbox Runner 验证。",
         }),
         output: [],
       };
     },
   };
+}
+
+function capabilityProvider(
+  externalDirectory: string,
+  command: string,
+): ModelProvider {
+  let calls = 0;
+
+  return {
+    async getCapabilities() {
+      return {
+        limits: {
+          max_context_window_tokens: 64_000,
+          max_output_tokens: 1_024,
+        },
+      };
+    },
+    async run(input) {
+      calls += 1;
+      if (calls === 1) {
+        return {
+          text: "",
+          output: [
+            {
+              type: "function_call",
+              call_id: "runtime-capability-write",
+              name: "run_with_permissions",
+              arguments: JSON.stringify({
+                command,
+                permissions: {
+                  readRoots: [],
+                  writeRoots: [externalDirectory],
+                  httpsHost: "127.0.0.1",
+                },
+                reason:
+                  "验证已安装 Capability Runner 的工作区外写入和认证 HTTPS relay 私网拒绝边界。",
+              }),
+            },
+          ],
+        };
+      }
+
+      const serialized = JSON.stringify(input);
+      if (
+        !serialized.includes("runtime-capability-write") ||
+        !serialized.includes("403") ||
+        serialized.includes('"exitCode":0')
+      ) {
+        fail("Capability Runner result did not return to Agent Runtime");
+      }
+
+      return { text: "capability verification complete", output: [] };
+    },
+  };
+}
+
+function capabilityProbeCommand(markerPath: string) {
+  const shell = commandShell(process.env, undefined, process.platform, false);
+  if (!shell) {
+    fail("no command shell is available for the Capability Runner probe");
+  }
+
+  const windowsRoot = process.env.SystemRoot ?? "C:\\Windows";
+  const curl = path.join(windowsRoot, "System32", "curl.exe");
+  const curlArguments =
+    '--fail --silent --show-error --connect-timeout 5 --max-time 10 "https://127.0.0.1/"';
+  if (path.basename(shell.command).toLocaleLowerCase() === "cmd.exe") {
+    return `echo ${capabilityMarkerContent} > "${markerPath}" & "${curl}" ${curlArguments}`;
+  }
+
+  const quotedMarker = markerPath.replaceAll("'", "''");
+  const quotedCurl = curl.replaceAll("'", "''");
+
+  return `Set-Content -LiteralPath '${quotedMarker}' -Value '${capabilityMarkerContent}' -NoNewline; & '${quotedCurl}' ${curlArguments}`;
 }
 
 function blockedPushProvider(): ModelProvider {
@@ -215,7 +330,7 @@ function blockedPushProvider(): ModelProvider {
     async getCapabilities() {
       return {
         limits: {
-          max_context_window_tokens: 32_000,
+          max_context_window_tokens: 64_000,
           max_output_tokens: 1_024,
         },
       };
@@ -288,13 +403,19 @@ async function main() {
     randomUUID(),
   );
   const workspace = path.join(root, "workspace");
+  const externalDirectory = path.join(root, "external-write");
+  const capabilityMarker = path.join(externalDirectory, capabilityMarkerName);
   const dataDirectory = path.join(root, "broker-data");
-  await mkdir(workspace, { recursive: true });
+  await Promise.all([
+    mkdir(workspace, { recursive: true }),
+    mkdir(externalDirectory, { recursive: true }),
+  ]);
   await initializeGitFixture(workspace);
 
   const config = new Config(dataDirectory);
   config.settings.maxSteps = 4;
   config.settings.commandTimeoutMs = 20_000;
+  config.settings.auxiliaryModel = "sandbox-verification-approval";
   const store = new Store(path.join(dataDirectory, "history.sqlite"));
   let passed = false;
   let engine: Engine | undefined;
@@ -329,6 +450,47 @@ async function main() {
     assertCompletedRuntime(store, completedSession.id);
     if (engine.sandbox.accountGenerationSnapshot()?.activeInstanceCount !== 0) {
       fail("completed Runtime left an active generation lease");
+    }
+
+    await engine.close();
+    engine = undefined;
+    const capabilityModel = capabilityProvider(
+      externalDirectory,
+      capabilityProbeCommand(capabilityMarker),
+    );
+    const capabilitySession = store.create(
+      workspace,
+      "Runtime capability probe",
+    );
+    engine = new Engine(
+      store,
+      config,
+      pino({ enabled: false }),
+      (_settings, purpose) =>
+        purpose === "approval" ? approvalProvider() : capabilityModel,
+    );
+    const capabilityTask = engine.start(
+      capabilitySession.id,
+      "Write the fixed marker and verify private HTTPS rejection through a reviewed Capability Runner.",
+    );
+    await waitFor(engine.active!.done, "Capability Runner task");
+    if (store.task(capabilityTask.id)?.status !== "completed") {
+      fail("Capability Runner task did not complete");
+    }
+
+    const capabilityBytes = await readFile(capabilityMarker);
+    if (
+      !capabilityBytes
+        .toString("utf8")
+        .replaceAll("\0", "")
+        .includes(capabilityMarkerContent)
+    ) {
+      fail("Capability Runner did not write the expected external marker");
+    }
+
+    assertCapabilityRunner(store, capabilitySession.id);
+    if (engine.sandbox.accountGenerationSnapshot()?.activeInstanceCount !== 0) {
+      fail("Capability Runner left an active generation lease");
     }
 
     await engine.close();
@@ -389,7 +551,7 @@ async function main() {
 
     passed = true;
     process.stdout.write(
-      "SANDBOX_AGENT_RUNTIME_VERIFY PASS completion=yes pushRunnerBlocked=yes cancellation=yes cleanup=yes\n",
+      "SANDBOX_AGENT_RUNTIME_VERIFY PASS completion=yes capabilityRunner=yes pushRunnerBlocked=yes cancellation=yes cleanup=yes\n",
     );
   } finally {
     await engine?.close().catch(() => undefined);
