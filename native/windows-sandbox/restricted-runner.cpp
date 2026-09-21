@@ -80,10 +80,12 @@ struct InstallationState {
   uint16_t relay_port_v6 = 0;
   std::wstring runtime_node_sha256;
   std::wstring runtime_entry_sha256;
-  std::wstring runtime_worker_sha256;
-  std::wstring runtime_node_path;
+     std::wstring runtime_worker_sha256;
+   std::wstring runtime_read_worker_sha256;
+   std::wstring runtime_node_path;
   std::wstring runtime_entry_path;
-  std::wstring runtime_worker_path;
+     std::wstring runtime_worker_path;
+   std::wstring runtime_read_worker_path;
 };
 
 std::wstring Utf8ToWide(const std::string& value) {
@@ -385,10 +387,10 @@ bool ReadInstallationState(const std::wstring& state_path,
     values.emplace(std::move(key), std::move(value));
   }
   const std::wstring version = values[L"version"];
-  if (version != L"1" && version != L"2") {
+  if (version != L"1" && version != L"2" && version != L"3") {
     return false;
   }
-  state->version = version == L"2" ? 2 : 1;
+  state->version = version == L"3" ? 3 : (version == L"2" ? 2 : 1);
   state->account_name = values[L"accountName"];
   state->account_sid = values[L"accountSid"];
   state->generation_id = values[L"generationId"];
@@ -415,6 +417,7 @@ bool ReadInstallationState(const std::wstring& state_path,
   state->runtime_node_sha256 = values[L"runtimeNodeSha256"];
   state->runtime_entry_sha256 = values[L"runtimeEntrySha256"];
   state->runtime_worker_sha256 = values[L"runtimeWorkerSha256"];
+  state->runtime_read_worker_sha256 = values[L"runtimeReadWorkerSha256"];
   std::filesystem::path runtime_root =
       std::filesystem::path(state_path).parent_path() / L"runtime";
   state->runtime_node_path = (runtime_root / L"node.exe").wstring();
@@ -422,16 +425,19 @@ bool ReadInstallationState(const std::wstring& state_path,
       (runtime_root / L"agent-runtime.mjs").wstring();
   state->runtime_worker_path =
       (runtime_root / L"compaction-worker.mjs").wstring();
+  state->runtime_read_worker_path =
+      (runtime_root / L"read-file-worker.mjs").wstring();
   bool base_valid = !state->account_name.empty() &&
                     !state->account_sid.empty() &&
                     !state->generation_id.empty() &&
                     !state->protected_password.empty() &&
                     !state->installed_by_sid.empty();
   return base_valid &&
-         (state->version == 1 ||
-          (IsDigest(state->runtime_node_sha256) &&
-           IsDigest(state->runtime_entry_sha256) &&
-           IsDigest(state->runtime_worker_sha256)));
+                   (state->version == 1 ||
+           (IsDigest(state->runtime_node_sha256) &&
+            IsDigest(state->runtime_entry_sha256) &&
+            IsDigest(state->runtime_worker_sha256) &&
+            (state->version == 2 || IsDigest(state->runtime_read_worker_sha256))));
 }
 
 bool FileSha256(const std::wstring& path, std::wstring* digest) {
@@ -494,13 +500,18 @@ bool RuntimeBundleMatches(const InstallationState& state) {
   std::wstring node_digest;
   std::wstring entry_digest;
   std::wstring worker_digest;
-  return state.version == 2 &&
+  std::wstring read_worker_digest;
+  return state.version >= 2 &&
          FileSha256(state.runtime_node_path, &node_digest) &&
          FileSha256(state.runtime_entry_path, &entry_digest) &&
          FileSha256(state.runtime_worker_path, &worker_digest) &&
+         (state.version == 2 ||
+          FileSha256(state.runtime_read_worker_path, &read_worker_digest)) &&
          node_digest == state.runtime_node_sha256 &&
          entry_digest == state.runtime_entry_sha256 &&
-         worker_digest == state.runtime_worker_sha256;
+         worker_digest == state.runtime_worker_sha256 &&
+         (state.version == 2 ||
+          read_worker_digest == state.runtime_read_worker_sha256);
 }
 
 std::wstring CurrentUserSidString() {

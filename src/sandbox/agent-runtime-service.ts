@@ -388,6 +388,7 @@ export class AgentRuntimeService {
           },
           state: (node, state) =>
             events.emit("tool_state", {
+              batchId,
               nodeId: node.nodeId,
               callId: node.callId,
               state,

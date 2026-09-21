@@ -179,16 +179,18 @@ describe.skipIf(process.platform !== "win32")(
       const runtimeNode = path.join(runtimeRoot, "node.exe");
       const runtimeEntry = path.join(runtimeRoot, "agent-runtime.mjs");
       const runtimeWorker = path.join(runtimeRoot, "compaction-worker.mjs");
+      const runtimeReadWorker = path.join(runtimeRoot, "read-file-worker.mjs");
       await Promise.all([mkdir(nativeRoot), mkdir(runtimeRoot)]);
       await writeFile(supervisor, "supervisor");
       await writeFile(network, "network");
       await writeFile(runtimeNode, "node-24");
       await writeFile(runtimeEntry, "runtime-entry");
       await writeFile(runtimeWorker, "runtime-worker");
+      await writeFile(runtimeReadWorker, "runtime-read-worker");
       await writeFile(
         statePath,
         [
-          "version=2",
+          "version=3",
           "generationId=12345678-1234-1234-1234-123456789abc",
           "relayPortV4=42871",
           `supervisorSha256=${digest("supervisor")}`,
@@ -196,6 +198,7 @@ describe.skipIf(process.platform !== "win32")(
           `runtimeNodeSha256=${digest("node-24")}`,
           `runtimeEntrySha256=${digest("runtime-entry")}`,
           `runtimeWorkerSha256=${digest("runtime-worker")}`,
+          `runtimeReadWorkerSha256=${digest("runtime-read-worker")}`,
         ].join("\n"),
       );
       const runSelfCheck = vi.fn(async (_file: string, args: string[]) => ({

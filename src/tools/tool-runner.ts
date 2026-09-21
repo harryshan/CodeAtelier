@@ -6,7 +6,7 @@
  * 2. currentFileHash 仅探测安全工作区文件的字节哈希，不更新读取凭证；access 解析路径并申请必要的权限；entries 限量遍历，commandGrant 为可复用命令计算指纹。
  * 3. execute 先通过 parseToolArguments 校验参数并解开 Git 的 request 包装（兼容历史扁平调用）。统一的精确编辑和显式新建文件均分流给共享读取哈希的 FileEditor，已有文件成功编辑后会作废对应哈希；普通 Runtime 工具在既有 AccessManifest 内不再审批，越界命令必须经 run_with_permissions adapter 交给 Broker 复核、审批和独立 Runner。
  * 4. 每个 execution instance 只读取 Broker 为该 task/instance 保存的状态；并发任务的 fallback/unknown 不会污染其它 PID、session 或 trace 记录。
- * 5. 只读分支只处理读取；目录浏览和代码搜索均由 run_command 在审批后执行。读文件按 500 行分页，返回全文字节 contentHash 供压缩比较，并在内部记录文本哈希供后续修改核对。
+ * 5. 只读分支只处理读取；目录浏览和代码搜索均由 run_command 在审批后执行。read_file 在主线程完成安全访问和异步字节读取，再交给任务共享的有界 Worker 池进行全文哈希、字节行扫描和格式化，按 500 行分页返回 contentHash 供压缩比较，并在内部记录哈希供后续修改核对。
  *
  * 新建文件使用 edit_files 的 create:true 条目，已有文件只能用 create:false 的精确快照编辑；
  * FileEditor 会在写入前复核路径、存在性和读取版本，并以同目录临时文件替换目标。
@@ -26,6 +26,7 @@ import { commandShell, resolveExecutablePath } from "./command-shell.js";
 import { FileEditor } from "./file-editor.js";
 import { GitToolRunner, containsGitCommand } from "./git.js";
 import type { GitProcessResult, GitPushSpec } from "./git.js";
+import { ReadFileWorkerPool } from "./read-file-worker-pool.js";
 import type {
   CapabilityCommandRequest,
   CapabilityCommandResult,
@@ -95,19 +96,25 @@ export interface ToolContext {
 
 interface ToolRunnerState {
   readHashes: Map<string, string>;
+  readFileWorkers: ReadFileWorkerPool;
 }
 
 export class ToolRunner {
   private readHashes: Map<string, string>;
+  private readFileWorkers: ReadFileWorkerPool;
   private git: GitToolRunner;
   private editor: FileEditor;
   private sandbox: SandboxBroker;
 
   constructor(
     private ctx: ToolContext,
-    state: ToolRunnerState = { readHashes: new Map<string, string>() },
+    state: ToolRunnerState = {
+      readHashes: new Map<string, string>(),
+      readFileWorkers: new ReadFileWorkerPool(),
+    },
   ) {
     this.readHashes = state.readHashes;
+    this.readFileWorkers = state.readFileWorkers;
     this.sandbox = ctx.sandbox ?? new SandboxBroker(sandboxConfiguration());
     this.git = new GitToolRunner(
       ctx,
@@ -208,19 +215,15 @@ export class ToolRunner {
           : undefined,
         emit: (type, data) => this.ctx.emit(type, { ...data, callId }),
       },
-      { readHashes: this.readHashes },
+      {
+        readHashes: this.readHashes,
+        readFileWorkers: this.readFileWorkers,
+      },
     );
   }
 
   private hash(value: string | Buffer) {
     return createHash("sha256").update(value).digest("hex");
-  }
-
-  private visibleWhitespace(line: string) {
-    return (
-      line.replaceAll("\r", "␍").replaceAll("\t", "→").replaceAll(" ", "·") +
-      "↵"
-    );
   }
 
   private executionMode(status: SandboxStatus): ExecutionInstanceMode {
@@ -683,47 +686,30 @@ export class ToolRunner {
       const file = await this.access(args.path);
       startExecution();
       await regularFile(file, 2 * 1024 * 1024);
-      const bytes = await readFile(file);
-      const text = bytes.toString("utf8");
-
-      if (text.includes("\0")) {
-        throw new Error("不支持二进制文件");
-      }
-
-      // 读取凭证使用返回给模型的全文字节哈希，避免文本重编码掩盖版本差异。
-      this.readHashes.set(file, this.hash(bytes));
-      const lines = text.split("\n");
-      // 区分文件自然结束和行数上限，模型才能安全地按 nextStartLine 继续读取。
-      const requestedEndLine = Math.min(args.endLine, lines.length);
-      const returnedEndLine = Math.min(
-        requestedEndLine,
-        args.startLine + MAX_READ_LINES - 1,
+      const bytes = await readFile(file, { signal: this.ctx.signal });
+      const buffer =
+        bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength
+          ? bytes.buffer
+          : bytes.buffer.slice(
+              bytes.byteOffset,
+              bytes.byteOffset + bytes.byteLength,
+            );
+      // Worker 只接收已由主线程授权且读取的字节；它不能用路径绕过权限、链接或大小检查。
+      const result = await this.readFileWorkers.process(
+        buffer as ArrayBuffer,
+        {
+          startLine: args.startLine,
+          endLine: args.endLine,
+          maxLines: MAX_READ_LINES,
+          whitespaceMode: args.whitespaceMode,
+        },
+        this.ctx.signal,
       );
-      const truncated = returnedEndLine < requestedEndLine;
-      const hasMore = returnedEndLine < lines.length;
 
-      return {
-        path: file,
-        contentHash: createHash("sha256").update(bytes).digest("hex"),
-        totalLines: lines.length,
-        returnedEndLine,
-        truncated,
-        hasMore,
-        nextStartLine: hasMore ? returnedEndLine + 1 : null,
-        text: lines
-          .slice(args.startLine - 1, returnedEndLine)
-          .map((line, index) => `${args.startLine + index}: ${line}`)
-          .join("\n"),
-        visibleText: args.whitespaceMode
-          ? lines
-              .slice(args.startLine - 1, returnedEndLine)
-              .map(
-                (line, index) =>
-                  `${args.startLine + index}: ${this.visibleWhitespace(line)}`,
-              )
-              .join("\n")
-          : undefined,
-      };
+      // 读取凭证使用 Worker 返回的全文字节哈希，避免文本重编码掩盖版本差异。
+      this.readHashes.set(file, result.contentHash);
+
+      return { path: file, ...result };
     }
 
     throw new Error("未知工具");

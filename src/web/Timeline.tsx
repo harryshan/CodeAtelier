@@ -4,7 +4,7 @@
  *
  * 1. labels 和 textResult 处理工具名称及结果的显示格式。
  * 2. 按任务、步骤和尝试次数合并流式文本；已有完整 assistant 事件时去掉对应的临时文本，未完成文本紧随其最后一个 delta，而非错误追加到时间线末尾。MarkdownMessage 负责安全渲染用户和 agent 文本。
- * 3. 合并同一编辑批次的逐文件最新状态；按调用 ID 聚合 run_command、git 的流式输出和最终结果，再显示其余工具、diff、预算和各类模型用量通知。
+ * 3. 合并同一编辑批次的逐文件最新状态；按调用 ID 聚合 run_command、git 的流式输出和最终结果，并把 tool_state 映射为等待依赖、等待槽位和执行中状态。
  * 4. 已完成任务默认仅保留用户输入和最后一条 agent 输出，将中间过程收纳为可展开区域；未完成、失败、取消和中断任务继续完整显示。
  * 5. 将可见条目及缓冲区交给虚拟列表；ResizeObserver 测得的高度用于在未渲染历史前后保留准确占位。
  * 6. 显示仍在接收的文本和待审批按钮，把用户选择发给后端。
@@ -26,6 +26,7 @@ import type { Snapshot, Event } from "../shared/types";
 import { api } from "./api";
 import s from "./app.module.css";
 import { MarkdownMessage } from "./MarkdownMessage";
+import { toolDisplayStatus, type ToolDisplayStatus } from "./tool-status";
 import { calculateVirtualTimelineRange } from "./timeline-virtualization";
 
 const labels: Record<string, string> = {
@@ -134,9 +135,11 @@ function toolOutputCards(events: Event[]) {
 function ToolOutputCard({
   start,
   state,
+  toolStatus,
 }: {
   start: Event;
   state: ToolOutputCardState;
+  toolStatus: ToolDisplayStatus;
 }) {
   const result = state.result?.data.result;
   const output =
@@ -147,7 +150,7 @@ function ToolOutputCard({
       ? result.exitCode === 0
         ? "已完成"
         : "退出码：" + (result.exitCode ?? "未知")
-      : "执行中";
+      : toolStatus.label;
   const target =
     start.data.args?.command ||
     start.data.args?.action ||
@@ -157,7 +160,7 @@ function ToolOutputCard({
   return (
     <details open className={s.outputCard}>
       <summary>
-        <span className={s.toolDot} />
+        <span className={`${s.toolDot} ${s[`toolDot${toolStatus.tone}`]}`} />
         {labels[start.data.name] || start.data.name} <code>{target}</code>
         <span className={s.outputStatus}>{status}</span>
       </summary>
@@ -307,10 +310,12 @@ function TimelineEvent({
   event,
   outputEvents,
   editBatches,
+  toolStatuses,
 }: {
   event: Event;
   outputEvents: ReturnType<typeof toolOutputCards>;
   editBatches: Map<string, EditBatch>;
+  toolStatuses: Map<number, ToolDisplayStatus>;
 }) {
   if (event.type === "user" || event.type === "assistant") {
     return (
@@ -332,16 +337,22 @@ function TimelineEvent({
   }
 
   if (event.type === "tool_start") {
+    const toolStatus = toolStatuses.get(event.id) ?? {
+      label: "等待调度",
+      tone: "waiting" as const,
+    };
     if (outputTypeForTool(event.data.name)) {
       const card = outputEvents.cards.get(event.id);
 
-      return card ? <ToolOutputCard start={event} state={card} /> : null;
+      return card ? (
+        <ToolOutputCard start={event} state={card} toolStatus={toolStatus} />
+      ) : null;
     }
 
     return (
       <details className={s.tool}>
         <summary>
-          <span className={s.toolDot} />
+          <span className={`${s.toolDot} ${s[`toolDot${toolStatus.tone}`]}`} />
           {labels[event.data.name] || event.data.name}
           <code>
             {event.data.args?.path ||
@@ -349,6 +360,7 @@ function TimelineEvent({
               event.data.args?.message ||
               ""}
           </code>
+          <span className={s.outputStatus}>{toolStatus.label}</span>
         </summary>
         <pre>{JSON.stringify(event.data.args, null, 2)}</pre>
       </details>
@@ -535,11 +547,13 @@ function TaskProcess({
   entries,
   outputEvents,
   editBatches,
+  toolStatuses,
 }: {
   data: Snapshot;
   entries: TimelineEntry[];
   outputEvents: ReturnType<typeof toolOutputCards>;
   editBatches: Map<string, EditBatch>;
+  toolStatuses: Map<number, ToolDisplayStatus>;
 }) {
   return (
     <details className={s.taskProcess} data-task-process>
@@ -553,6 +567,7 @@ function TaskProcess({
                 event={entry.event}
                 outputEvents={outputEvents}
                 editBatches={editBatches}
+                toolStatuses={toolStatuses}
               />
             );
           }
@@ -751,6 +766,13 @@ export function Timeline({
   }
 
   const outputEvents = toolOutputCards(data.events);
+  const toolStatuses = new Map<number, ToolDisplayStatus>();
+  for (const event of data.events) {
+    if (event.type === "tool_start") {
+      toolStatuses.set(event.id, toolDisplayStatus(data.events, event));
+    }
+  }
+
   const streamingAfterEvent = new Map<number, TimelineEntry[]>();
   for (const [key, state] of streaming) {
     const entries = streamingAfterEvent.get(state.lastEventId) ?? [];
@@ -820,6 +842,7 @@ export function Timeline({
               event={entry.event}
               outputEvents={outputEvents}
               editBatches={editBatches}
+              toolStatuses={toolStatuses}
             />
           )}
           {entry.kind === "streaming" && (
@@ -831,6 +854,7 @@ export function Timeline({
               entries={entry.entries}
               outputEvents={outputEvents}
               editBatches={editBatches}
+              toolStatuses={toolStatuses}
             />
           )}
           {entry.kind === "approval" && (

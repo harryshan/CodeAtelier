@@ -862,9 +862,17 @@
   display: inline-block;
   width: 6px;
   height: 6px;
-  background: #9fbcab;
   border-radius: 50%;
   margin-right: 10px;
+}
+.toolDotwaiting {
+  background: #d0aa70;
+}
+.toolDotrunning {
+  background: #79c9a7;
+}
+.toolDotblocked {
+  background: #d78181;
 }
 .outputCard {
   border-color: #3a554a;
