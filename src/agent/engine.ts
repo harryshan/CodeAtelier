@@ -74,6 +74,7 @@ import { TraceRecorder } from "../tracing/recorder.js";
 import type { TraceSpan } from "../tracing/types.js";
 import type { Task, TaskStatus } from "../shared/types.js";
 import type { AgentRuntimeLauncher } from "../sandbox/agent-runtime-launcher.js";
+import { AgentRuntimeFallbackError } from "../sandbox/agent-runtime-launcher.js";
 import {
   RuntimeBrokerGateway,
   type RuntimeExecutionIdentity,
@@ -151,6 +152,10 @@ export class Engine {
       ),
       this.sandboxLog,
     );
+    this.agentRuntimeLauncher ??=
+      config.sandbox.enabled && process.platform === "win32"
+        ? this.sandbox
+        : undefined;
     this.memories = new ProjectMemoryService(config.directory, log);
     this.approvals = new ApprovalManager(
       () => this.updateWaitingTaskStatuses(),
@@ -660,12 +665,26 @@ export class Engine {
 
     publishExecution("created");
     try {
-      launched = await launcher.launch({
-        identity,
-        nonce,
-        workspace,
-        signal,
-      });
+      try {
+        launched = await launcher.launch({
+          identity,
+          nonce,
+          workspace,
+          signal,
+        });
+      } catch (error) {
+        if (error instanceof AgentRuntimeFallbackError) {
+          publishExecution("failed", {
+            mode: "host-process",
+            sandboxApplied: false,
+            failureCategory: "runtime_self_check",
+            sideEffectsPossible: false,
+          });
+        }
+
+        throw error;
+      }
+
       publishExecution("running", {
         pid: launched.pid,
         pidKind: "runtime",
@@ -963,19 +982,30 @@ export class Engine {
           }
         };
 
-        const result = await this.runInAgentRuntime(
-          task,
-          session.workspace,
-          prompt,
-          settings,
-          signal,
-          emit,
-          captureRuntimeToolEvent,
-        );
-        status = result.status;
-        failure = result.failure;
+        try {
+          const result = await this.runInAgentRuntime(
+            task,
+            session.workspace,
+            prompt,
+            settings,
+            signal,
+            emit,
+            captureRuntimeToolEvent,
+          );
+          status = result.status;
+          failure = result.failure;
 
-        return;
+          return;
+        } catch (error) {
+          if (!(error instanceof AgentRuntimeFallbackError)) {
+            throw error;
+          }
+
+          emit("sandbox_warning", {
+            reason: error.message,
+            mode: "host-process-fallback",
+          });
+        }
       }
 
       let input = await prepareTaskContext(this.store, session.id, prompt);

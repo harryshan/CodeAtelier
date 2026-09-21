@@ -27,6 +27,8 @@ import type {
   SandboxRuntime,
   SandboxWorkspace,
 } from "./types.js";
+import type { LaunchedAgentRuntime } from "./agent-runtime-launcher.js";
+import type { RuntimeExecutionIdentity } from "./runtime-capability-core.js";
 import { discoverGitConfigGraph } from "./git-config-graph.js";
 import { SandboxHttpsRelay, type IssuedRelayLease } from "./https-relay.js";
 import type { TraceRecorder } from "../tracing/recorder.js";
@@ -293,6 +295,40 @@ export function encodeNativeSandboxRequest(input: {
       ];
     }),
   ]);
+}
+
+export function encodeNativeAgentRuntimeRequest(input: {
+  identity: RuntimeExecutionIdentity;
+  nonce: string;
+  cwd: string;
+  runtimeNode: string;
+  access: SandboxNativeAccess;
+}) {
+  const identifiers = [
+    input.identity.sessionId,
+    input.identity.taskId,
+    input.identity.executionInstanceId,
+  ];
+  if (
+    input.identity.kind !== "agent-runtime" ||
+    identifiers.some((value) => value.length < 1 || value.length > 120) ||
+    !/^[a-f0-9]{64}$/.test(input.nonce) ||
+    !path.isAbsolute(input.runtimeNode) ||
+    !input.access.privateDirectory ||
+    !input.access.gitGlobalConfigPath
+  ) {
+    throw new NativeWindowsSandboxError("Agent Runtime 启动字段无效。");
+  }
+
+  return encodeNativeSandboxRequest({
+    executionInstanceId: input.identity.executionInstanceId,
+    cwd: input.cwd,
+    command: input.runtimeNode,
+    args: [input.identity.sessionId, input.identity.taskId, input.nonce],
+    privateDirectory: input.access.privateDirectory,
+    timeoutMs: 7 * 24 * 60 * 60 * 1_000,
+    access: input.access,
+  });
 }
 
 function encodeNativeAccessRevocation(roots: SandboxRevokeRoot[]) {
@@ -572,6 +608,187 @@ export class NativeWindowsSandboxRuntime implements SandboxRuntime {
         );
       }
     }
+  }
+
+  /**
+   * 启动安装目录中的固定 Agent Runtime，并在 native supervisor 完成联合身份验证后才把原始 IPC 流交给 Broker。
+   * ACL/lease 的取得与最终撤销仍由 SandboxBroker 负责；本方法只拥有 Supervisor、Job 和 transport 生命周期。
+   */
+  async launchAgentRuntime(
+    command: SandboxCommand,
+    _workspace: SandboxWorkspace,
+    access: SandboxNativeAccess,
+    identity: RuntimeExecutionIdentity,
+    nonce: string,
+  ): Promise<LaunchedAgentRuntime> {
+    command.signal.throwIfAborted();
+    if (
+      identity.kind !== "agent-runtime" ||
+      identity.executionInstanceId !== command.executionInstanceId ||
+      identity.sessionId !== command.sessionId ||
+      identity.taskId !== command.taskId ||
+      !/^[a-f0-9]{64}$/.test(nonce) ||
+      !access.privateDirectory ||
+      !access.gitGlobalConfigPath
+    ) {
+      throw new NativeWindowsSandboxError(
+        "Agent Runtime 启动身份或私有目录无效。",
+      );
+    }
+
+    const frame = encodeNativeAgentRuntimeRequest({
+      identity,
+      nonce,
+      cwd: command.cwd,
+      runtimeNode: this.paths.runtimeNode,
+      access,
+    });
+    const child = spawn(
+      this.paths.supervisor,
+      ["--launch-agent-runtime", this.paths.state, this.paths.networkManager],
+      {
+        cwd: command.cwd,
+        windowsHide: true,
+        shell: false,
+        env: {
+          SystemRoot: process.env.SystemRoot,
+          WINDIR: process.env.WINDIR,
+          ComSpec: process.env.ComSpec,
+        },
+        stdio: ["pipe", "pipe", "pipe"],
+      },
+    );
+    if (!child.stdin || !child.stdout || !child.stderr) {
+      child.kill();
+      throw new NativeWindowsSandboxError(
+        "无法创建 Agent Runtime 私有 IPC handle。",
+      );
+    }
+
+    if (child.pid !== undefined) {
+      command.onProcessStarted(child.pid, "runtime-launcher");
+    }
+
+    let control = "";
+    let runtimePid: number | undefined;
+    let creationTime100ns: string | undefined;
+    let cleanupFailure = false;
+    let transportFailure = false;
+    let childClosed = false;
+    let settled = false;
+    let resolveStarted!: () => void;
+    let rejectStarted!: (error: Error) => void;
+    const started = new Promise<void>((resolve, reject) => {
+      resolveStarted = resolve;
+      rejectStarted = reject;
+    });
+    const closed = new Promise<number | null>((resolve) => {
+      child.once("close", (exitCode) => {
+        childClosed = true;
+        resolve(exitCode);
+      });
+    });
+    const abort = () => child.stdin.end();
+    command.signal.addEventListener("abort", abort, { once: true });
+    child.stdin.once("error", () => {
+      transportFailure ||= !childClosed;
+    });
+    child.stdout.once("error", () => {
+      transportFailure ||= !childClosed;
+    });
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk: string) => {
+      control = (control + chunk).slice(-16_384);
+      cleanupFailure ||= control.includes(
+        "CODEATELIER_SUPERVISOR_ERROR category=cleanup",
+      );
+      const match =
+        /CODEATELIER_RUNTIME_STARTED pid=(\d+) created100ns=(\d+)/.exec(
+          control,
+        );
+      if (!match || runtimePid !== undefined) {
+        return;
+      }
+
+      const parsedPid = Number(match[1]);
+      if (!Number.isSafeInteger(parsedPid) || parsedPid < 1) {
+        return;
+      }
+
+      runtimePid = parsedPid;
+      creationTime100ns = match[2];
+      command.onAccessProvisioned?.();
+      command.onProcessStarted(runtimePid, "runtime", creationTime100ns);
+      settled = true;
+      resolveStarted();
+    });
+    child.once("error", () => {
+      transportFailure = true;
+      if (!settled) {
+        settled = true;
+        rejectStarted(
+          new NativeWindowsSandboxError(
+            "无法启动已验证的 Agent Runtime supervisor。",
+          ),
+        );
+      }
+    });
+    void closed.then((exitCode) => {
+      if (!settled) {
+        settled = true;
+        rejectStarted(
+          cleanupFailure || exitCode === CLEANUP_FAILURE_EXIT_CODE
+            ? new NativeWindowsSandboxCleanupError(
+                "Agent Runtime 启动前 ACL 或 Job 清理结果未知。",
+              )
+            : new NativeWindowsSandboxError(
+                "Agent Runtime 在身份验证完成前退出。",
+              ),
+        );
+      }
+    });
+    child.stdin.write(frame, (error) => {
+      if (error) {
+        transportFailure = true;
+        child.stdin.end();
+      }
+    });
+
+    try {
+      await started;
+    } catch (error) {
+      command.signal.removeEventListener("abort", abort);
+      throw error;
+    }
+
+    let closePromise: Promise<"clean" | "orphaned"> | undefined;
+
+    return {
+      input: child.stdout,
+      output: child.stdin,
+      pid: runtimePid!,
+      processCreationTime100ns: creationTime100ns,
+      accountGenerationDigest: this.metadata?.generationId
+        ? createHash("sha256")
+            .update(this.metadata.generationId, "utf8")
+            .digest("hex")
+        : undefined,
+      close: () => {
+        closePromise ??= (async () => {
+          child.stdin.end();
+          const exitCode = await closed;
+          command.signal.removeEventListener("abort", abort);
+
+          return cleanupFailure ||
+            transportFailure ||
+            exitCode === CLEANUP_FAILURE_EXIT_CODE
+            ? "orphaned"
+            : "clean";
+        })();
+
+        return closePromise;
+      },
+    };
   }
 
   async revokeAccess(roots: SandboxRevokeRoot[], signal: AbortSignal) {

@@ -5,6 +5,7 @@
  * 1. Engine 生成 instance/nonce，launcher 启动真实 Node 子进程并返回 IPC 流。
  * 2. 子进程运行 read_file 工具 DAG，Broker 仅提供模型、session、审批和记忆 adapter。
  * 3. Engine 等待 Runtime 终态与 clean 退出，再把任务和 execution instance 记为 completed。
+ * 4. launcher 证明 Runtime 尚未启动且 provision 已回滚时，Engine 明确记录 host fallback 并继续宿主 loop。
  */
 
 import { spawn } from "node:child_process";
@@ -19,6 +20,7 @@ import type {
   AgentRuntimeLauncher,
   LaunchedAgentRuntime,
 } from "../src/sandbox/agent-runtime-launcher.js";
+import { AgentRuntimeFallbackError } from "../src/sandbox/agent-runtime-launcher.js";
 import { Store } from "../src/sessions/store.js";
 import { temp } from "./fixtures/helpers.js";
 
@@ -159,6 +161,77 @@ it("moves the Engine agent loop into the launched Runtime process", async () => 
             event.type === "execution_instance" &&
             (event.data as any).kind === "agent-runtime" &&
             (event.data as any).state === "completed",
+        ),
+    ).toBe(true);
+  } finally {
+    await engine.close();
+    store.close();
+  }
+});
+
+it("continues in the host loop only for an explicit pre-start Runtime fallback", async () => {
+  const root = await temp();
+  const config = new Config(await temp());
+  config.sandbox.enabled = true;
+  config.sandbox.initialStatus = {
+    enabled: true,
+    requested: true,
+    applied: false,
+    mode: "unknown",
+    platform: process.platform,
+    level: null,
+  };
+  const store = new Store(path.join(config.directory, "db"));
+  const session = store.create(root, "fallback test");
+  const launcher: AgentRuntimeLauncher = {
+    async launch() {
+      throw new AgentRuntimeFallbackError("preflight failed");
+    },
+  };
+  let modelCalls = 0;
+  const provider: ModelProvider = {
+    async getCapabilities() {
+      return {
+        limits: {
+          max_context_window_tokens: 32_000,
+          max_output_tokens: 1_024,
+        },
+      };
+    },
+    async run() {
+      modelCalls += 1;
+
+      return { text: "host fallback completed", output: [] };
+    },
+  };
+  const engine = new Engine(
+    store,
+    config,
+    pino({ enabled: false }),
+    () => provider,
+    launcher,
+  );
+
+  try {
+    const task = engine.start(session.id, "continue safely");
+    await engine.active?.done;
+
+    expect(store.task(task.id)?.status).toBe("completed");
+    expect(modelCalls).toBe(1);
+    expect(
+      store
+        .events(session.id)
+        .some((event) => event.type === "sandbox_warning"),
+    ).toBe(true);
+    expect(
+      store
+        .events(session.id)
+        .some(
+          (event) =>
+            event.type === "execution_instance" &&
+            (event.data as any).kind === "agent-runtime" &&
+            (event.data as any).mode === "host-process" &&
+            (event.data as any).sandboxApplied === false,
         ),
     ).toBe(true);
   } finally {

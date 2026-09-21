@@ -81,6 +81,8 @@
 
 原生 Runtime 增量另覆盖：固定 magic/version 的有界二进制执行帧、绝对路径/argv/时限边界、v2 installation state 与 supervisor、WFP manager、Node 24、Runtime entry、compaction worker 五个 SHA-256 复核，以及原生自检成功/任一 Runtime bundle 篡改拒绝。MSVC 已成功构建同一二进制的 supervisor/bootstrap：固定 self-check/execute/bootstrap 模式、DPAPI 解密、账户/WFP/Runtime bundle 自检、PID 核对 Named Pipe、restricted token、Job、Broker stdin 断连取消和唯一 SID ACE 撤销。安装脚本通过 PowerShell AST 解析；真实提升安装仍未执行，因此这里只记录“构建、静态安装契约与无管理员副作用回归通过”，不记录产品 E2E 通过。
 
+`sandbox-agent-runtime-launcher.test.ts` 覆盖产品 launcher 的三条关键状态边界：Runtime started 后才提交共享 grant；clean close 后执行 native revoke、commit 和私有目录清理；启动前 self-check 失败才允许显式宿主 fallback；started 后 close 返回 orphaned 时 quarantine 并调用整代排空。`agent-runtime-engine.test.ts` 另证明 Engine 只捕获 `AgentRuntimeFallbackError` 继续宿主 loop，并把 execution instance 记为 `host-process`/`sandboxApplied=false`。C++ 任务 pipe 的 PID、创建时间、Job、账户、restricted SID、固定映像检查及字节代理目前由 MSVC `/W4` 构建覆盖，仍须提升环境故障注入验证真实拒绝与取消行为。
+
 ## 自举验收
 
 `tests/bootstrap.test.ts` 覆盖固定测试命令的精确审批及错误路径、参数、shell、非命令请求拒绝。真实源码任务使用独立的手动脚本，不依赖默认 CI 密钥；准备模式不调用模型。运行与判定见 [bootstrap.md](bootstrap.md)。脚本也纳入 TypeScript 检查。

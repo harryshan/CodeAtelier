@@ -1,7 +1,7 @@
 /**
  * 实现 CodeAtelier Windows Sandbox 的单实例 C++ supervisor 与专用账户 bootstrap。
- * TypeScript Broker 只以固定 argv 启动 self-check/execute，执行请求通过继承 stdin 的有界二进制帧传入；
- * supervisor 使用 DPAPI state、工作区 ACL、Job 和私有 Named Pipe 启动同一二进制的 bootstrap 模式。
+ * TypeScript Broker 只以固定 argv 启动 self-check/execute/launch-agent-runtime，请求通过继承 stdin 的有界二进制帧传入；
+ * supervisor 使用 DPAPI state、工作区 ACL、Job 和私有 Named Pipe 启动同一二进制的 bootstrap 模式，并代理 Agent Runtime IPC。
  *
  * 1. self-check 核对 state 所属宿主 SID、专用账户 SID/密码、拒绝登录权、WFP 持久规则，以及受保护 Node 24/Agent Runtime bundle 摘要。
  * 2. execute 生成 execution/root capability SID，向已打开的工作区原对象安装账户与 capability ACE。
@@ -9,7 +9,8 @@
  * 4. bootstrap 使用专用账户自身的全新环境块，通过只允许宿主/SYSTEM/专用账户且核对 PID 的 Named Pipe 取得命令，创建 WRITE_RESTRICTED token 后启动真实工具。
  * 5. Broker stdin 关闭、超时或异常会终止 Job；正常/异常退出都按唯一 SID 撤销本次 ACE，清理不确定返回专用错误码。
  * 6. Push Runner 仅从宿主 Credential Manager 读取绑定 host 的 HTTPS 凭据，并经同 Job askpass pipe 交付；proxy token 和凭据不进入 argv、配置或工作区。
- * 7. stdout 只承载工具 stdout/stderr；stderr 只输出有界控制记录，不记录命令、路径、SID、密码或工具内容。
+ * 7. Agent Runtime 模式只启动受保护 Node/entry，联合核对 pipe 客户端身份后发送启动首帧并代理原始 Broker 字节流；初始 CWD 使用私有目录。
+ * 8. stdout 只承载工具输出或 Agent Runtime IPC；stderr 只输出有界控制记录，不记录命令、路径、SID、密码或工具内容。
  *
  * restricted token、default DACL、Job 和 capability SID 的底层算法复用已验证探针源；通过宏重命名其 wmain，
  * 探针入口不会暴露在产品二进制的顶层命令分派中。该 supervisor 不提升权限，也不创建账户或 WFP 规则。
@@ -1052,6 +1053,81 @@ std::wstring MakeProductPipeName() {
   return L"\\\\.\\pipe\\CodeAtelierSandbox-" + std::wstring(text);
 }
 
+std::wstring MakeAgentRuntimePipeName() {
+  GUID identifier{};
+  if (CoCreateGuid(&identifier) != S_OK) {
+    return L"";
+  }
+  wchar_t text[40]{};
+  if (StringFromGUID2(identifier, text, static_cast<int>(std::size(text))) ==
+      0) {
+    return L"";
+  }
+  return L"\\\\.\\pipe\\CodeAtelier.AgentRuntime." + std::wstring(text);
+}
+
+std::string JsonString(const std::wstring& value) {
+  std::string utf8 = WideToUtf8(value);
+  std::string escaped;
+  escaped.reserve(utf8.size() + 2);
+  escaped.push_back('"');
+  constexpr char kHex[] = "0123456789abcdef";
+  for (unsigned char character : utf8) {
+    switch (character) {
+      case '"':
+        escaped += "\\\"";
+        break;
+      case '\\':
+        escaped += "\\\\";
+        break;
+      case '\b':
+        escaped += "\\b";
+        break;
+      case '\f':
+        escaped += "\\f";
+        break;
+      case '\n':
+        escaped += "\\n";
+        break;
+      case '\r':
+        escaped += "\\r";
+        break;
+      case '\t':
+        escaped += "\\t";
+        break;
+      default:
+        if (character < 0x20) {
+          escaped += "\\u00";
+          escaped.push_back(kHex[character >> 4]);
+          escaped.push_back(kHex[character & 0x0f]);
+        } else {
+          escaped.push_back(static_cast<char>(character));
+        }
+    }
+  }
+  escaped.push_back('"');
+  return escaped;
+}
+
+bool WriteRuntimeStartupDescriptor(HANDLE pipe,
+                                   const std::wstring& session_id,
+                                   const std::wstring& task_id,
+                                   const std::wstring& execution_instance_id,
+                                   const std::wstring& nonce) {
+  std::string payload =
+      "{\"protocolVersion\":1,\"identity\":{\"sessionId\":" +
+      JsonString(session_id) + ",\"taskId\":" + JsonString(task_id) +
+      ",\"executionInstanceId\":" + JsonString(execution_instance_id) +
+      ",\"kind\":\"agent-runtime\"},\"nonce\":" + JsonString(nonce) +
+      "}";
+  if (payload.size() > kMaximumStringBytes) {
+    return false;
+  }
+  uint32_t size = static_cast<uint32_t>(payload.size());
+  return WriteExact(pipe, &size, sizeof(size)) &&
+         WriteExact(pipe, payload.data(), size);
+}
+
 std::wstring BuildCommandLine(const std::wstring& executable,
                               const std::vector<std::wstring>& arguments) {
   std::wstring command_line = QuoteArgument(executable);
@@ -1077,6 +1153,10 @@ bool SetPrivateEnvironment(const std::wstring& private_directory,
   SetEnvironmentVariableW(L"CODEATELIER_API_KEY", nullptr);
   SetEnvironmentVariableW(L"OPENAI_API_KEY", nullptr);
   SetEnvironmentVariableW(L"GITHUB_TOKEN", nullptr);
+  SetEnvironmentVariableW(L"NODE_OPTIONS", nullptr);
+  SetEnvironmentVariableW(L"NODE_PATH", nullptr);
+  SetEnvironmentVariableW(L"NODE_REPL_EXTERNAL_MODULE", nullptr);
+  SetEnvironmentVariableW(L"NODE_EXTRA_CA_CERTS", nullptr);
   SetEnvironmentVariableW(L"ALL_PROXY", nullptr);
   SetEnvironmentVariableW(L"all_proxy", nullptr);
   SetEnvironmentVariableW(L"HTTP_PROXY", nullptr);
@@ -1190,6 +1270,86 @@ bool ProcessBelongsToJob(DWORD process_id, HANDLE job) {
                                    process_id));
   BOOL belongs = FALSE;
   return process && IsProcessInJob(process.get(), job, &belongs) && belongs;
+}
+
+bool TokenContainsSid(HANDLE token, TOKEN_INFORMATION_CLASS information_class,
+                      PSID expected_sid) {
+  DWORD size = 0;
+  GetTokenInformation(token, information_class, nullptr, 0, &size);
+  if (size == 0) {
+    return false;
+  }
+  std::vector<BYTE> buffer(size);
+  if (!GetTokenInformation(token, information_class, buffer.data(), size,
+                           &size)) {
+    return false;
+  }
+  const TOKEN_GROUPS* groups =
+      reinterpret_cast<const TOKEN_GROUPS*>(buffer.data());
+  for (DWORD index = 0; index < groups->GroupCount; ++index) {
+    if (EqualSid(groups->Groups[index].Sid, expected_sid)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool VerifyAgentRuntimeClient(HANDLE pipe, HANDLE job, PSID account_sid,
+                              PSID execution_sid, PSID capability_sid,
+                              const std::wstring& expected_image,
+                              DWORD* process_id,
+                              ULONGLONG* creation_time_100ns) {
+  ULONG client_pid = 0;
+  if (!GetNamedPipeClientProcessId(pipe, &client_pid) || client_pid == 0 ||
+      !ProcessBelongsToJob(client_pid, job)) {
+    return false;
+  }
+  UniqueHandle process(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE,
+                                   client_pid));
+  HANDLE raw_token = nullptr;
+  if (!process || !OpenProcessToken(process.get(), TOKEN_QUERY, &raw_token)) {
+    return false;
+  }
+  UniqueHandle token(raw_token);
+  BOOL restricted = FALSE;
+  DWORD restricted_size = sizeof(restricted);
+  if (!GetTokenInformation(token.get(), TokenIsRestricted, &restricted,
+                           restricted_size, &restricted_size) ||
+      !restricted) {
+    return false;
+  }
+
+  DWORD user_size = 0;
+  GetTokenInformation(token.get(), TokenUser, nullptr, 0, &user_size);
+  std::vector<BYTE> user_buffer(user_size);
+  if (user_size == 0 ||
+      !GetTokenInformation(token.get(), TokenUser, user_buffer.data(),
+                           user_size, &user_size) ||
+      !EqualSid(reinterpret_cast<TOKEN_USER*>(user_buffer.data())->User.Sid,
+                account_sid) ||
+      !TokenContainsSid(token.get(), TokenRestrictedSids, execution_sid) ||
+      !TokenContainsSid(token.get(), TokenRestrictedSids, capability_sid)) {
+    return false;
+  }
+
+  std::vector<wchar_t> image(32768);
+  DWORD image_size = static_cast<DWORD>(image.size());
+  if (!QueryFullProcessImageNameW(process.get(), 0, image.data(), &image_size) ||
+      _wcsicmp(std::wstring(image.data(), image_size).c_str(),
+               expected_image.c_str()) != 0) {
+    return false;
+  }
+
+  FILETIME created{}, exited{}, kernel{}, user{};
+  ULARGE_INTEGER created_value{};
+  if (!GetProcessTimes(process.get(), &created, &exited, &kernel, &user)) {
+    return false;
+  }
+  created_value.LowPart = created.dwLowDateTime;
+  created_value.HighPart = created.dwHighDateTime;
+  *process_id = client_pid;
+  *creation_time_100ns = created_value.QuadPart;
+  return true;
 }
 
 void ServeAskpass(const std::wstring& pipe_name,
@@ -1400,7 +1560,12 @@ int RunProductBootstrap(const std::wstring& pipe_name,
   startup.lpDesktop = const_cast<LPWSTR>(desktop_name.c_str());
   startup.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
   startup.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
-  startup.hStdError = GetStdHandle(STD_OUTPUT_HANDLE);
+  const bool agent_runtime =
+      request.arguments.size() == 2 &&
+      request.arguments[1].rfind(L"\\\\.\\pipe\\CodeAtelier.AgentRuntime.",
+                                 0) == 0;
+  startup.hStdError = GetStdHandle(agent_runtime ? STD_ERROR_HANDLE
+                                                 : STD_OUTPUT_HANDLE);
   PROCESS_INFORMATION process{};
   if (!CreateProcessAsUserW(
           restricted_token.get(), request.executable.c_str(),
@@ -1418,9 +1583,11 @@ int RunProductBootstrap(const std::wstring& pipe_name,
     created_value.LowPart = created.dwLowDateTime;
     created_value.HighPart = created.dwHighDateTime;
   }
-  std::wcerr << L"CODEATELIER_RUNTIME_STARTED pid=" << process.dwProcessId
-             << L" created100ns=" << created_value.QuadPart << L"\n";
-  std::wcerr.flush();
+  if (!agent_runtime) {
+    std::wcerr << L"CODEATELIER_RUNTIME_STARTED pid=" << process.dwProcessId
+               << L" created100ns=" << created_value.QuadPart << L"\n";
+    std::wcerr.flush();
+  }
   if (ResumeThread(thread_handle.get()) == static_cast<DWORD>(-1)) {
     TerminateProcess(process_handle.get(), 27);
     return 27;
@@ -1449,8 +1616,127 @@ bool ConnectAndSendRequest(HANDLE pipe, DWORD expected_pid,
          client_pid == expected_pid && WriteProductRequest(pipe, request);
 }
 
+struct AgentRuntimeProxyResult {
+  bool started = false;
+  bool cancelled = false;
+  DWORD exit_code = 1;
+};
+
+bool RunAgentRuntimeProxy(HANDLE runtime_pipe, HANDLE bootstrap_process,
+                          HANDLE job, PSID account_sid, PSID execution_sid,
+                          PSID capability_sid,
+                          const InstallationState& state,
+                          const ProductRequest& request,
+                          const std::wstring& session_id,
+                          const std::wstring& task_id,
+                          const std::wstring& nonce,
+                          AgentRuntimeProxyResult* result) {
+  bool connected = false;
+  std::thread connector([&]() {
+    connected = ConnectNamedPipe(runtime_pipe, nullptr) != FALSE ||
+                GetLastError() == ERROR_PIPE_CONNECTED;
+  });
+  std::array<HANDLE, 2> connection_wait = {connector.native_handle(),
+                                            bootstrap_process};
+  DWORD connection_result = WaitForMultipleObjects(
+      static_cast<DWORD>(connection_wait.size()), connection_wait.data(),
+      FALSE, 10000);
+  if (connection_result != WAIT_OBJECT_0) {
+    CancelSynchronousIo(connector.native_handle());
+    connector.join();
+    return false;
+  }
+  connector.join();
+  if (!connected) {
+    return false;
+  }
+
+  DWORD runtime_pid = 0;
+  ULONGLONG creation_time_100ns = 0;
+  if (!VerifyAgentRuntimeClient(runtime_pipe, job, account_sid, execution_sid,
+                                capability_sid, state.runtime_node_path,
+                                &runtime_pid, &creation_time_100ns) ||
+      !WriteRuntimeStartupDescriptor(runtime_pipe, session_id, task_id,
+                                     request.execution_instance_id, nonce)) {
+    return false;
+  }
+
+  result->started = true;
+  std::wcerr << L"CODEATELIER_RUNTIME_STARTED pid=" << runtime_pid
+             << L" created100ns=" << creation_time_100ns << L"\n";
+  std::wcerr.flush();
+
+  HANDLE broker_input = GetStdHandle(STD_INPUT_HANDLE);
+  HANDLE broker_output = GetStdHandle(STD_OUTPUT_HANDLE);
+  auto stop = std::make_shared<std::atomic_bool>(false);
+  auto cancelled = std::make_shared<std::atomic_bool>(false);
+  auto proxy_failed = std::make_shared<std::atomic_bool>(false);
+  std::thread broker_to_runtime([=]() {
+    std::array<BYTE, 64 * 1024> buffer{};
+    while (!stop->load()) {
+      DWORD read = 0;
+      if (!ReadFile(broker_input, buffer.data(),
+                    static_cast<DWORD>(buffer.size()), &read, nullptr) ||
+          read == 0) {
+        if (!stop->exchange(true)) {
+          cancelled->store(true);
+          TerminateJobObject(job, 30);
+          CancelIoEx(runtime_pipe, nullptr);
+        }
+        return;
+      }
+      if (!WriteExact(runtime_pipe, buffer.data(), read)) {
+        if (!stop->exchange(true)) {
+          proxy_failed->store(true);
+          TerminateJobObject(job, 32);
+        }
+        return;
+      }
+    }
+  });
+  std::thread runtime_to_broker([=]() {
+    std::array<BYTE, 64 * 1024> buffer{};
+    while (!stop->load()) {
+      DWORD read = 0;
+      if (!ReadFile(runtime_pipe, buffer.data(),
+                    static_cast<DWORD>(buffer.size()), &read, nullptr) ||
+          read == 0) {
+        return;
+      }
+      if (!WriteExact(broker_output, buffer.data(), read)) {
+        if (!stop->exchange(true)) {
+          proxy_failed->store(true);
+          TerminateJobObject(job, 33);
+          CancelIoEx(runtime_pipe, nullptr);
+        }
+        return;
+      }
+    }
+  });
+
+  DWORD wait =
+      WaitForSingleObject(bootstrap_process, request.timeout_ms + 10000);
+  if (wait != WAIT_OBJECT_0) {
+    proxy_failed->store(true);
+    TerminateJobObject(job, 31);
+    WaitForSingleObject(bootstrap_process, 5000);
+  }
+  stop->store(true);
+  CancelSynchronousIo(broker_to_runtime.native_handle());
+  CancelIoEx(runtime_pipe, nullptr);
+  broker_to_runtime.join();
+  runtime_to_broker.join();
+
+  result->cancelled = cancelled->load();
+  if (!GetExitCodeProcess(bootstrap_process, &result->exit_code)) {
+    return false;
+  }
+  return !proxy_failed->load();
+}
+
 int RunProductSupervisor(const std::wstring& state_path,
-                         const std::wstring& network_manager) {
+                         const std::wstring& network_manager,
+                         bool agent_runtime = false) {
   ProductRequest request;
   if (!ReadProductRequest(GetStdHandle(STD_INPUT_HANDLE), &request)) {
     std::wcerr << L"CODEATELIER_SUPERVISOR_ERROR category=protocol\n";
@@ -1462,6 +1748,26 @@ int RunProductSupervisor(const std::wstring& state_path,
       !VerifyInstallation(state, network_manager, &password)) {
     std::wcerr << L"CODEATELIER_SUPERVISOR_ERROR category=self_check\n";
     return kSelfCheckFailureExitCode;
+  }
+  std::wstring runtime_session_id;
+  std::wstring runtime_task_id;
+  std::wstring runtime_nonce;
+  if (agent_runtime) {
+    if (_wcsicmp(request.executable.c_str(),
+                 state.runtime_node_path.c_str()) != 0 ||
+        request.arguments.size() != 3 || request.arguments[0].empty() ||
+        request.arguments[0].size() > 120 || request.arguments[1].empty() ||
+        request.arguments[1].size() > 120 ||
+        !IsDigest(request.arguments[2]) || !request.proxy_url.empty() ||
+        !request.proxy_host.empty() || !request.proxy_token.empty() ||
+        !request.askpass_pipe.empty()) {
+      SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
+      std::wcerr << L"CODEATELIER_SUPERVISOR_ERROR category=protocol\n";
+      return kProtocolFailureExitCode;
+    }
+    runtime_session_id = request.arguments[0];
+    runtime_task_id = request.arguments[1];
+    runtime_nonce = request.arguments[2];
   }
   std::vector<BYTE> account_sid;
   SidPointer execution_sid = CreateCapabilitySid();
@@ -1566,6 +1872,32 @@ int RunProductSupervisor(const std::wstring& state_path,
     return kSelfCheckFailureExitCode;
   }
 
+  std::wstring runtime_pipe_name;
+  UniqueHandle runtime_pipe;
+  if (agent_runtime) {
+    runtime_pipe_name = MakeAgentRuntimePipeName();
+    if (runtime_pipe_name.empty()) {
+      revoke_failed_launch();
+      SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
+      return kSelfCheckFailureExitCode;
+    }
+    runtime_pipe.reset(CreateNamedPipeW(
+        runtime_pipe_name.c_str(),
+        PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE,
+        PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT |
+            PIPE_REJECT_REMOTE_CLIENTS,
+        1, 1024 * 1024, 1024 * 1024, 5000, &pipe_security));
+    if (!runtime_pipe) {
+      revoke_failed_launch();
+      SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
+      return kSelfCheckFailureExitCode;
+    }
+    request.arguments = {state.runtime_entry_path, runtime_pipe_name};
+    // 固定 Node/entry 从受保护目录启动，并以逐租约私有目录作为初始 CWD；
+    // 真正工作区由经过认证的 start_task 帧交给 Runtime，避免 loader 在可写工作区起步。
+    request.working_directory = request.private_directory;
+  }
+
   PrivateObjectSecurity object_security;
   UniqueHandle job;
   std::wstring desktop_name;
@@ -1668,6 +2000,32 @@ int RunProductSupervisor(const std::wstring& state_path,
     stop_askpass();
     bool clean = revoke_failed_launch();
     return clean ? kSelfCheckFailureExitCode : kCleanupFailureExitCode;
+  }
+
+  if (agent_runtime) {
+    AgentRuntimeProxyResult proxy_result;
+    bool proxy_clean = RunAgentRuntimeProxy(
+        runtime_pipe.get(), bootstrap_process.get(), job.get(),
+        account_sid.data(), execution_sid.get(), capability_sid.get(), state,
+        request, runtime_session_id, runtime_task_id, runtime_nonce,
+        &proxy_result);
+    if (!proxy_clean) {
+      TerminateJobObject(job.get(), kProtocolFailureExitCode);
+      WaitForSingleObject(bootstrap_process.get(), 5000);
+    }
+    stop_askpass();
+    bool grants_clean = revoke_instance();
+    if (!grants_clean) {
+      std::wcerr << L"CODEATELIER_SUPERVISOR_ERROR category=cleanup\n";
+      return kCleanupFailureExitCode;
+    }
+    if (!proxy_clean) {
+      std::wcerr << L"CODEATELIER_SUPERVISOR_ERROR category=protocol\n";
+      return kProtocolFailureExitCode;
+    }
+    std::wcerr << L"CODEATELIER_SUPERVISOR_COMPLETE cancelled="
+               << (proxy_result.cancelled ? L"true" : L"false") << L"\n";
+    return static_cast<int>(proxy_result.exit_code & 0xff);
   }
 
   auto cancelled = std::make_shared<std::atomic_bool>(false);
@@ -1915,6 +2273,9 @@ int wmain(int argc, wchar_t* argv[]) {
   }
   if (argc == 4 && std::wstring(argv[1]) == L"--execute") {
     return RunProductSupervisor(argv[2], argv[3]);
+  }
+  if (argc == 4 && std::wstring(argv[1]) == L"--launch-agent-runtime") {
+    return RunProductSupervisor(argv[2], argv[3], true);
   }
   if (argc == 6 && std::wstring(argv[1]) == L"--bootstrap") {
     return RunProductBootstrap(argv[2], argv[3], argv[4], argv[5]);

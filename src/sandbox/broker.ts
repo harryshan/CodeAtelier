@@ -30,8 +30,14 @@ import { WorkspaceView } from "./workspace-view.js";
 import { buildAccessManifest } from "./access-manifest.js";
 import { AccountGenerationRegistry } from "./account-generation.js";
 import type { AccessManifest } from "./supervisor-protocol.js";
+import type {
+  AgentRuntimeLauncher,
+  LaunchedAgentRuntime,
+} from "./agent-runtime-launcher.js";
+import { AgentRuntimeFallbackError } from "./agent-runtime-launcher.js";
+import type { RuntimeExecutionIdentity } from "./runtime-capability-core.js";
 
-export class SandboxBroker {
+export class SandboxBroker implements AgentRuntimeLauncher {
   private fallbackTasks = new Map<string, SandboxStatus>();
   private executionStatuses = new Map<string, SandboxStatus>();
   private executionTasks = new Map<string, string>();
@@ -366,6 +372,203 @@ export class SandboxBroker {
         ...this.errorMetadata(hostError),
       });
       throw hostError;
+    }
+  }
+
+  /**
+   * 为 Engine 的常驻 agent loop 建立完整的 manifest/lease/ACL 生命周期。
+   * 只有 native Runtime 尚未启动且所有 provision 都已回滚时才抛出 AgentRuntimeFallbackError；
+   * 一旦收到 Runtime started 或清理证明失败，就进入 unknown/quarantine，禁止宿主重放整个任务。
+   */
+  async launch(input: {
+    identity: RuntimeExecutionIdentity;
+    nonce: string;
+    workspace: string;
+    signal: AbortSignal;
+  }): Promise<LaunchedAgentRuntime> {
+    const command: SandboxCommand = {
+      sessionId: input.identity.sessionId,
+      taskId: input.identity.taskId,
+      executionInstanceId: input.identity.executionInstanceId,
+      kind: "agent-runtime",
+      command: "",
+      args: [],
+      cwd: input.workspace,
+      signal: input.signal,
+      timeoutMs: 7 * 24 * 60 * 60 * 1_000,
+      outputLimit: 0,
+      onOutput: () => {},
+      onProcessStarted: () => {},
+    };
+    this.executionTasks.set(command.executionInstanceId, command.taskId);
+
+    let workspace: ReturnType<WorkspaceView["descriptor"]>;
+    let prepared: SandboxPreparedAccess | undefined;
+    let manifest: AccessManifest | undefined;
+    let acquired: ReturnType<AccountGenerationRegistry["acquire"]> | undefined;
+    let runtimeStarted = false;
+    try {
+      if (!this.configuration.enabled || !this.runtime?.launchAgentRuntime) {
+        throw new Error("当前平台缺少 Agent Runtime launcher。");
+      }
+
+      workspace = (await WorkspaceView.open(input.workspace)).descriptor();
+      const checked = await this.runtime.selfCheck(input.signal, workspace);
+      input.signal.throwIfAborted();
+      if (
+        checked.workspaceProtection !== "direct-path" ||
+        !checked.accountGenerationDigest
+      ) {
+        throw new Error("平台 Runtime 未证明账户 generation 与直接路径防护。");
+      }
+
+      prepared = await this.runtime.prepareAccess?.(command, workspace);
+      if (!prepared?.privateDirectory || !prepared.gitGlobalConfigPath) {
+        throw new Error("Agent Runtime 缺少私有目录或 Git 配置投影。");
+      }
+
+      manifest = await buildAccessManifest({
+        workspaceRoot: workspace.root,
+        readOnlyRoots: prepared.readOnlyRoots,
+        readWriteRoots: prepared.readWriteRoots,
+        gitConfigFiles: prepared.gitConfigFiles,
+      });
+      if (
+        this.accountGeneration &&
+        this.accountGeneration.generationDigest !==
+          checked.accountGenerationDigest
+      ) {
+        this.accountGeneration.quarantine("identity_mismatch");
+        throw new SandboxUnavailableError(
+          "Sandbox account generation 在服务运行期间发生变化。",
+        );
+      }
+
+      this.accountGeneration ??= new AccountGenerationRegistry(
+        checked.accountGenerationDigest,
+        4,
+      );
+      acquired = this.accountGeneration.acquire({
+        executionInstanceId: command.executionInstanceId,
+        kind: "agent-runtime",
+        taskId: command.taskId,
+        accessManifest: manifest,
+      });
+      await acquired.waitForSharedProvision();
+
+      command.onAccessProvisioned = () => {
+        if (runtimeStarted) {
+          return;
+        }
+
+        runtimeStarted = true;
+        this.accountGeneration?.markProvisioned(
+          command.executionInstanceId,
+          acquired!.lease.epoch,
+        );
+      };
+
+      const launched = await this.runtime.launchAgentRuntime(
+        command,
+        workspace,
+        {
+          manifest,
+          leaseEpoch: acquired.lease.epoch,
+          installObjectIdentityDigests: acquired.install.map(
+            (grant) => grant.objectIdentityDigest,
+          ),
+          privateDirectory: prepared.privateDirectory,
+          gitGlobalConfigPath: prepared.gitGlobalConfigPath,
+        },
+        input.identity,
+        input.nonce,
+      );
+      if (!runtimeStarted) {
+        throw new Error("Supervisor 未确认 Agent Runtime 联合身份验证完成。");
+      }
+      if (
+        launched.accountGenerationDigest !== checked.accountGenerationDigest
+      ) {
+        throw new Error(
+          "Supervisor 回传的 Sandbox account generation 不一致。",
+        );
+      }
+
+      let closePromise: Promise<"clean" | "orphaned"> | undefined;
+
+      return {
+        ...launched,
+        close: (reason) => {
+          closePromise ??= (async () => {
+            const nativeCleanup = await launched
+              .close(reason)
+              .catch(() => "orphaned" as const);
+            if (nativeCleanup !== "clean") {
+              await this.quarantineGeneration(command, "process_unknown");
+
+              return "orphaned";
+            }
+
+            try {
+              await this.releaseAccess(command, manifest!, acquired!);
+              await prepared!.cleanup();
+
+              return "clean";
+            } catch {
+              await this.quarantineGeneration(command, "acl_cleanup");
+
+              return "orphaned";
+            }
+          })();
+
+          return closePromise;
+        },
+      };
+    } catch (error) {
+      if (runtimeStarted || this.cleanupFailure(error)) {
+        await this.quarantineGeneration(
+          command,
+          this.cleanupFailure(error) ? "acl_cleanup" : "process_unknown",
+        );
+        throw new SandboxUnavailableError(
+          "Agent Runtime 已启动或清理结果未知，禁止宿主重放。",
+        );
+      }
+
+      try {
+        if (acquired && manifest && this.accountGeneration) {
+          this.accountGeneration.rollbackAcquire(
+            command.executionInstanceId,
+            acquired.lease.epoch,
+            manifest,
+          );
+        }
+
+        await prepared?.cleanup();
+      } catch {
+        await this.quarantineGeneration(command, "acl_cleanup");
+        throw new SandboxUnavailableError(
+          "Agent Runtime provision 无法证明已回滚，禁止宿主重放。",
+        );
+      }
+
+      if (input.signal.aborted) {
+        throw error;
+      }
+
+      const fallbackStatus: SandboxStatus = {
+        enabled: true,
+        requested: true,
+        applied: false,
+        mode: "host-process-fallback",
+        platform: process.platform,
+        level: null,
+        reason: "Agent Runtime 启动前检查失败；本任务未受 Sandbox 保护。",
+        failureCategory: "runtime_self_check",
+      };
+      this.fallbackTasks.set(command.taskId, fallbackStatus);
+      this.executionStatuses.set(command.executionInstanceId, fallbackStatus);
+      throw new AgentRuntimeFallbackError(fallbackStatus.reason);
     }
   }
 

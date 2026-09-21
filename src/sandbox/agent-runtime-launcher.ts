@@ -5,6 +5,7 @@
  * 1. launch 输入只含 Broker 生成的任务/instance/nonce 和工作区，不能接受模型提供的 executable 或 argv。
  * 2. 返回流在 launcher 完成 PID/创建时间、Job、token/capability、generation 和 nonce 绑定后才可使用。
  * 3. close 必须等待进程树与租约清理并返回 clean/orphaned；orphaned 触发 generation 隔离，不能按正常取消处理。
+ * 4. AgentRuntimeFallbackError 只表示 Runtime 尚未启动且 provision 已证明回滚，Engine 才可继续宿主 agent loop。
  */
 
 import type { Readable, Writable } from "node:stream";
@@ -28,4 +29,13 @@ export interface AgentRuntimeLauncher {
     workspace: string;
     signal: AbortSignal;
   }): Promise<LaunchedAgentRuntime>;
+}
+
+export class AgentRuntimeFallbackError extends Error {
+  readonly code = "SANDBOX_AGENT_RUNTIME_FALLBACK";
+
+  constructor(message = "Agent Runtime 启动前检查失败，允许宿主 fallback。") {
+    super(message);
+    this.name = "AgentRuntimeFallbackError";
+  }
 }

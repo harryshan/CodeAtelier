@@ -9,8 +9,9 @@
  * 4. SandboxCommand 与 SandboxRuntime 划定 Broker 可交给平台后端的固定命令请求；运行时不能反向请求任意宿主操作。
  * 5. onAccessProvisioned 只确认原生 ACL 已安装且 Runtime 已启动，供共享 grant 的等待者解除阻塞。
  * 6. drainGeneration 是 unknown/orphaned 后的整代账户排空入口，必须终止账户进程并按持久 journal 对账。
- * 7. SandboxStage 仅记录无敏感内容的生命周期事实，供事件与 tracing 关联。
- * 8. ExecutionInstanceRecord 持久化实际进程模式、PID 种类和恢复状态，不保存命令、路径或输出。
+ * 7. launchAgentRuntime 只接受 Broker 已完成 manifest/lease provision 的固定 Runtime 身份和 nonce，不接受模型可选 executable。
+ * 8. SandboxStage 仅记录无敏感内容的生命周期事实，供事件与 tracing 关联。
+ * 9. ExecutionInstanceRecord 持久化实际进程模式、PID 种类和恢复状态，不保存命令、路径或输出。
  *
  * 状态中的原因不得包含命令、工作区路径、外部文件内容或凭据。平台后端必须在 selfCheck 成功后才可返回
  * sandboxed；只有命令尚未启动且 provision 无遗留副作用时才可返回 host-process-fallback。
@@ -153,6 +154,13 @@ export interface SandboxRuntime {
     exitCode: number | null;
     truncated: boolean;
   }>;
+  launchAgentRuntime?(
+    command: SandboxCommand,
+    workspace: SandboxWorkspace,
+    access: SandboxNativeAccess,
+    identity: import("./runtime-capability-core.js").RuntimeExecutionIdentity,
+    nonce: string,
+  ): Promise<import("./agent-runtime-launcher.js").LaunchedAgentRuntime>;
   revokeAccess?(roots: SandboxRevokeRoot[], signal: AbortSignal): Promise<void>;
   drainGeneration?(
     signal: AbortSignal,

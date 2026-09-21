@@ -6,6 +6,7 @@
  * 2. selfCheck 只有 state 中原生二进制、Node 24 和两个 Runtime bundle SHA-256、启动恢复排空与原生自检全部成功时才报告 sandbox level。
  * 3. prepareAccess 在 manifest 之前同时创建只读 Git 投影和逐实例可写 HOME/TEMP，cleanup 删除两者。
  * 4. state 缺失、摘要篡改和原生拒绝都在 Runtime 启动前失败，允许 Broker 安全选择宿主 fallback。
+ * 5. Agent Runtime 启动帧只携带 Broker 身份、nonce 和已安装 Node 路径，不允许选择 Runtime kind 或任意 entry argv。
  */
 
 import { createHash } from "node:crypto";
@@ -14,6 +15,7 @@ import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
   classifySupervisorClose,
+  encodeNativeAgentRuntimeRequest,
   encodeNativeSandboxRequest,
   NativeWindowsSandboxRuntime,
 } from "../src/sandbox/native-windows-runtime.js";
@@ -92,6 +94,60 @@ describe.skipIf(process.platform !== "win32")(
           timeoutMs: 1000,
         }),
       ).toThrow("字段无效");
+    });
+
+    it("encodes only the fixed Agent Runtime launch identity", () => {
+      const frame = encodeNativeAgentRuntimeRequest({
+        identity: {
+          sessionId: "session-1",
+          taskId: "task-1",
+          executionInstanceId: "instance-1",
+          kind: "agent-runtime",
+        },
+        nonce: "c".repeat(64),
+        cwd: "C:\\workspace",
+        runtimeNode: "C:\\ProgramData\\CodeAtelier\\runtime\\node.exe",
+        access: {
+          leaseEpoch: 1,
+          privateDirectory: "C:\\private",
+          gitGlobalConfigPath: "C:\\gitconfig",
+          installObjectIdentityDigests: ["a".repeat(64)],
+          manifest: {
+            manifestDigest: "b".repeat(64),
+            workspaceRootId: "workspace",
+            readRoots: [],
+            writeRoots: [
+              {
+                rootId: "workspace",
+                path: "C:\\workspace",
+                objectIdentityDigest: "a".repeat(64),
+                deviceId: "1",
+                fileId: "2",
+              },
+            ],
+            gitConfigFiles: [],
+          },
+        },
+      });
+
+      expect(frame.includes(Buffer.from("session-1"))).toBe(true);
+      expect(frame.includes(Buffer.from("task-1"))).toBe(true);
+      expect(frame.includes(Buffer.from("c".repeat(64)))).toBe(true);
+      expect(frame.includes(Buffer.from("agent-runtime.mjs"))).toBe(false);
+      expect(() =>
+        encodeNativeAgentRuntimeRequest({
+          identity: {
+            sessionId: "session-1",
+            taskId: "task-1",
+            executionInstanceId: "instance-1",
+            kind: "push-runner",
+          },
+          nonce: "bad",
+          cwd: "C:\\workspace",
+          runtimeNode: "C:\\node.exe",
+          access: {} as never,
+        }),
+      ).toThrow("启动字段无效");
     });
 
     it("accepts only matching installed binary digests and native attestation", async () => {
