@@ -67,7 +67,23 @@ function publicIpv4(address: string) {
   );
 }
 
-function publicIp(address: string) {
+const globalIpv6 = new net.BlockList();
+globalIpv6.addSubnet("2000::", 3, "ipv6");
+
+const specialIpv6 = new net.BlockList();
+for (const [address, prefix] of [
+  ["2001::", 32],
+  ["2001:2::", 48],
+  ["2001:10::", 28],
+  ["2001:20::", 28],
+  ["2001:db8::", 32],
+  ["2002::", 16],
+] as const) {
+  specialIpv6.addSubnet(address, prefix, "ipv6");
+}
+
+/** Relay 只连接普通公网单播；转换/隧道/文档/本地地址均安全拒绝。 */
+export function isPublicRelayAddress(address: string) {
   if (net.isIPv4(address)) {
     return publicIpv4(address);
   }
@@ -81,14 +97,9 @@ function publicIp(address: string) {
     return publicIpv4(normalized.slice("::ffff:".length));
   }
 
-  return !(
-    normalized === "::" ||
-    normalized === "::1" ||
-    normalized.startsWith("fc") ||
-    normalized.startsWith("fd") ||
-    /^fe[89ab]/.test(normalized) ||
-    normalized.startsWith("ff") ||
-    normalized.startsWith("2001:db8:")
+  return (
+    globalIpv6.check(normalized, "ipv6") &&
+    !specialIpv6.check(normalized, "ipv6")
   );
 }
 
@@ -280,7 +291,7 @@ export class SandboxHttpsRelay {
 
     if (
       addresses.length === 0 ||
-      addresses.some(({ address }) => !publicIp(address))
+      addresses.some(({ address }) => !isPublicRelayAddress(address))
     ) {
       this.reject(client);
 
