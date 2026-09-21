@@ -7,11 +7,13 @@
  * 3. 保存排队、运行和终态任务后重启，确认所有未完成任务变为 interrupted。
  * 4. 大于同步阈值的事件和上下文由 Worker 读取，验证结果与同步接口相同且数据库可正常关闭。
  * 5. 逐步保存 replay 模型/工具捕获并导出单任务 case；旧事件只能形成明确的 legacy case。
+ * 6. 以小容量阈值触发新会话分片，确认旧分片的上下文仍可由 Worker 读取，并在重启后发现全部分片。
  *
  * 重启要保留已有终态和上下文，不能把其他会话的数据混进来。
  */
 
 import { it, expect } from "vitest";
+import { readdirSync } from "node:fs";
 import path from "node:path";
 import { Store } from "../src/sessions/store.js";
 import { temp } from "./fixtures/helpers.js";
@@ -205,6 +207,41 @@ it("restart interrupts active tasks but preserves terminal states and context", 
       "cancelled",
     ]);
     expect(store.context(session.id)[0].content).toBe("saved");
+  } finally {
+    store.close();
+  }
+});
+
+it("rotates new sessions into a later history shard while preserving old worker reads", async () => {
+  const root = await temp();
+  const file = path.join(root, "history.sqlite");
+  const maxShardBytes = 64 * 1024;
+  let store = new Store(file, { maxShardBytes });
+
+  try {
+    const first = store.create(root, "first");
+    const firstTask = store.createTask(first.id);
+    const content = "x".repeat(80 * 1024);
+    store.event(first.id, firstTask.id, "tool_result", { content });
+    store.saveContext(first.id, [{ role: "user", content }]);
+
+    const second = store.create(root, "second");
+    expect(readdirSync(root)).toContain("history-000001.sqlite");
+    expect(store.events(first.id)).toMatchObject([{ data: { content } }]);
+    await expect(store.contextAsync(first.id)).resolves.toEqual([
+      { role: "user", content },
+    ]);
+    expect(store.list().map((session) => session.id)).toEqual(
+      expect.arrayContaining([first.id, second.id]),
+    );
+
+    store.close();
+    store = new Store(file, { interruptActive: false, maxShardBytes });
+    expect(store.get(first.id)?.title).toBe("first");
+    expect(store.get(second.id)?.title).toBe("second");
+    await expect(store.contextAsync(first.id)).resolves.toEqual([
+      { role: "user", content },
+    ]);
   } finally {
     store.close();
   }

@@ -1,12 +1,12 @@
 /**
  * 用 SQLite 保存会话、任务、事件和模型上下文，供 Engine、HTTP 接口和 ContextManager 使用。
  *
- * 1. 构造器初始化数据库，把重启前未完成的任务标为 interrupted 并记录结束时间；transaction 包装提交和回滚。
- * 2. list/get/create 读写会话；标题状态的领取、完成或失败保证首条 prompt 只生成一次标题。
+ * 1. 构造器发现兼容的 history.sqlite 与后续容量分片，在每个文件初始化数据库并把重启前未完成的任务标为 interrupted；transaction 保持单次调用的同步提交和回滚边界。
+ * 2. list/get/create 跨分片定位或聚合会话；新会话在最新分片达到容量上限后进入新文件，已有会话始终写回其初始分片。标题状态的领取、完成或失败保证首条 prompt 只生成一次标题。
  * 3. tasks/task/createTask/status 读写任务状态；queuedTasks 和 hasUnfinishedTask 供 Engine 调度跨会话队列，event/events 保存和分页读取事件。
  * 4. task_replays 在任务开始后追加高保真模型/工具材料；replayCase 导出单任务的 captured 或 legacy case，不触发恢复或副作用。
  * 5. context/saveContext 读写当前模型历史；较大的 context、events 和快照可交给 store-worker 在线程外解析或原子写入，避免阻塞 HTTP 主线程。
- * 6. close 由应用退出流程调用，关闭数据库连接；Worker 自己打开短生命周期的 WAL 连接，不持有 Store 的连接。
+ * 6. close 由应用退出流程调用，关闭全部历史分片连接；Worker 自己打开目标会话分片的短生命周期 WAL 连接，不持有 Store 的连接。
  *
  * 事务只能回滚数据库，不能撤销文件修改或命令执行。恢复需要的未知状态和原始记录必须保留。
  */
@@ -18,81 +18,146 @@ import type {
   TaskReplayCapture,
   TaskReplayCase,
 } from "./replay-case.js";
-import { SCHEMA_SQL } from "./schema.js";
 import { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
 import { Worker } from "node:worker_threads";
 import type { Session, Task, TaskStatus, Event } from "../shared/types.js";
+import {
+  DEFAULT_HISTORY_SHARD_MAX_BYTES,
+  HistoryShards,
+} from "./history-shards.js";
 
 export class Store {
   db: DatabaseSync;
+  private readonly shards: HistoryShards;
+  private nextEventId: number;
 
   constructor(
-    private file: string,
-    options: { interruptActive?: boolean } = {},
+    file: string,
+    options: { interruptActive?: boolean; maxShardBytes?: number } = {},
   ) {
-    this.db = new DatabaseSync(file);
-    this.db.exec(SCHEMA_SQL);
-    this.migrate();
+    this.shards = new HistoryShards(
+      file,
+      options.maxShardBytes ?? DEFAULT_HISTORY_SHARD_MAX_BYTES,
+    );
+    this.db = this.shards.active().db;
+    for (const shard of this.shards.all) {
+      this.migrate(shard.db);
+    }
+
     // 导出历史必须保持只读；正常服务启动仍将无法确认结果的任务标为 interrupted。
     if (options.interruptActive ?? true) {
-      this.db
-        .prepare(
-          "UPDATE tasks SET status='interrupted',error='服务已重启，任务中断；未重放命令。',finishedAt=COALESCE(finishedAt,?) WHERE status IN ('queued','running','waiting')",
-        )
-        .run(new Date().toISOString());
+      const now = new Date().toISOString();
+      for (const shard of this.shards.all) {
+        shard.db
+          .prepare(
+            "UPDATE tasks SET status='interrupted',error='服务已重启，任务中断；未重放命令。',finishedAt=COALESCE(finishedAt,?) WHERE status IN ('queued','running','waiting')",
+          )
+          .run(now);
+      }
     }
+
+    // SQLite rowid 只在单一文件中单调；分片后显式分配全局事件游标，保持 SSE 增量读取兼容。
+    this.nextEventId = this.shards.maxEventId() + 1;
   }
 
   /** 将历史会话标为完成，避免升级后用旧消息意外覆盖用户原有标题。 */
-  private migrate() {
-    const columns = this.db
-      .prepare("PRAGMA table_info(sessions)")
-      .all() as Array<{ name: string }>;
+  private migrate(db: DatabaseSync) {
+    const columns = db.prepare("PRAGMA table_info(sessions)").all() as Array<{
+      name: string;
+    }>;
 
     if (!columns.some((column) => column.name === "titleState")) {
-      this.db.exec(
+      db.exec(
         "ALTER TABLE sessions ADD COLUMN titleState TEXT NOT NULL DEFAULT 'completed'",
       );
     }
 
-    const taskColumns = this.db
-      .prepare("PRAGMA table_info(tasks)")
-      .all() as Array<{ name: string }>;
+    const taskColumns = db.prepare("PRAGMA table_info(tasks)").all() as Array<{
+      name: string;
+    }>;
     if (!taskColumns.some((column) => column.name === "startedAt")) {
-      this.db.exec("ALTER TABLE tasks ADD COLUMN startedAt TEXT");
+      db.exec("ALTER TABLE tasks ADD COLUMN startedAt TEXT");
     }
 
     if (!taskColumns.some((column) => column.name === "finishedAt")) {
-      this.db.exec("ALTER TABLE tasks ADD COLUMN finishedAt TEXT");
+      db.exec("ALTER TABLE tasks ADD COLUMN finishedAt TEXT");
     }
   }
 
   /** 回调必须同步完成，不能在事务中等待网络或其他异步操作。 */
   transaction<T>(work: () => T): T {
-    this.db.exec("BEGIN IMMEDIATE");
+    const transactionShards = [...this.shards.all];
+    for (const shard of transactionShards) {
+      shard.db.exec("BEGIN IMMEDIATE");
+    }
+
     try {
       const value = work();
-
-      this.db.exec("COMMIT");
+      for (const shard of transactionShards) {
+        shard.db.exec("COMMIT");
+      }
 
       return value;
     } catch (error) {
-      this.db.exec("ROLLBACK");
+      for (const shard of transactionShards) {
+        shard.db.exec("ROLLBACK");
+      }
+
       throw error;
     }
   }
 
   list() {
-    return this.db
-      .prepare("SELECT * FROM sessions ORDER BY updatedAt DESC")
-      .all() as unknown as Session[];
+    return this.shards.all
+      .flatMap(
+        (shard) =>
+          shard.db
+            .prepare("SELECT * FROM sessions")
+            .all() as unknown as Session[],
+      )
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
   }
 
   get(id: string) {
-    return this.db
+    const shard = this.shards.findSession(id);
+    if (!shard) {
+      return undefined;
+    }
+
+    return shard.db
       .prepare("SELECT * FROM sessions WHERE id=?")
       .get(id) as unknown as Session | undefined;
+  }
+
+  private sessionShard(sessionId: string) {
+    return this.shards.findSession(sessionId);
+  }
+
+  private taskShard(taskId: string) {
+    return this.shards.findTask(taskId);
+  }
+
+  private selectSession(sessionId: string) {
+    const shard = this.sessionShard(sessionId);
+    if (!shard) {
+      throw new Error("会话不存在于历史分片中。");
+    }
+
+    this.db = shard.db;
+
+    return shard;
+  }
+
+  private selectTask(taskId: string) {
+    const shard = this.taskShard(taskId);
+    if (!shard) {
+      throw new Error("任务不存在于历史分片中。");
+    }
+
+    this.db = shard.db;
+
+    return shard;
   }
 
   /** 未提供标题的新会话等待其首条 prompt；显式标题只供内部固定用途，不会被模型覆盖。 */
@@ -102,6 +167,7 @@ export class Store {
     const manualTitle = title?.trim();
     const titleState = manualTitle ? "manual" : "pending";
 
+    this.db = this.shards.forNewSession().db;
     this.db
       .prepare(
         "INSERT INTO sessions(id,title,workspace,createdAt,updatedAt,titleState) VALUES(?,?,?,?,?,?)",
@@ -113,6 +179,7 @@ export class Store {
 
   /** 以条件更新领取标题任务，避免重试、恢复或并发调用使用后续 prompt 覆盖首条消息。 */
   startTitleGeneration(sessionId: string) {
+    this.selectSession(sessionId);
     const result = this.db
       .prepare(
         "UPDATE sessions SET titleState='generating' WHERE id=? AND titleState='pending'",
@@ -124,6 +191,7 @@ export class Store {
 
   /** 标题成功后与更新时间一起持久化，供会话列表和当前快照刷新。 */
   completeTitleGeneration(sessionId: string, title: string) {
+    this.selectSession(sessionId);
     const updatedAt = new Date().toISOString();
 
     this.db
@@ -137,6 +205,7 @@ export class Store {
 
   /** 辅助模型失败不影响编码任务，但标记终态以避免自动重试时使用后续 prompt。 */
   failTitleGeneration(sessionId: string) {
+    this.selectSession(sessionId);
     this.db
       .prepare(
         "UPDATE sessions SET titleState='failed' WHERE id=? AND titleState='generating'",
@@ -145,7 +214,12 @@ export class Store {
   }
 
   tasks(sessionId: string) {
-    return this.db
+    const shard = this.sessionShard(sessionId);
+    if (!shard) {
+      return [];
+    }
+
+    return shard.db
       .prepare(
         "SELECT * FROM tasks WHERE sessionId=? ORDER BY createdAt, rowid",
       )
@@ -154,8 +228,13 @@ export class Store {
 
   /** 首条消息判断只需要存在性，不能为此把长工具输出逐条 JSON.parse 到主线程。 */
   hasEvent(sessionId: string, type: string) {
+    const shard = this.sessionShard(sessionId);
+    if (!shard) {
+      return false;
+    }
+
     return Boolean(
-      this.db
+      shard.db
         .prepare("SELECT 1 FROM events WHERE sessionId=? AND type=? LIMIT 1")
         .get(sessionId, type),
     );
@@ -163,7 +242,12 @@ export class Store {
 
   /** 恢复只读取目标任务的一条已知事件；大历史继续通过 eventsAsync 在线程外读取。 */
   taskEvent(taskId: string, type: string) {
-    const row = this.db
+    const shard = this.taskShard(taskId);
+    if (!shard) {
+      return undefined;
+    }
+
+    const row = shard.db
       .prepare(
         "SELECT data FROM events WHERE taskId=? AND type=? ORDER BY id LIMIT 1",
       )
@@ -173,14 +257,24 @@ export class Store {
   }
 
   task(id: string) {
-    return this.db
+    const shard = this.taskShard(id);
+    if (!shard) {
+      return undefined;
+    }
+
+    return shard.db
       .prepare("SELECT * FROM tasks WHERE id=?")
       .get(id) as unknown as Task | undefined;
   }
 
   /** replay 导出只读取单个任务的事件，避免将同会话其他任务的历史混入 case。 */
   taskEvents(taskId: string) {
-    return this.db
+    const shard = this.taskShard(taskId);
+    if (!shard) {
+      return [];
+    }
+
+    return shard.db
       .prepare("SELECT * FROM events WHERE taskId=? ORDER BY id")
       .all(taskId)
       .map((row) => ({
@@ -194,6 +288,7 @@ export class Store {
     task: Task,
     capture: Omit<TaskReplayCapture, "modelExchanges" | "tools">,
   ) {
+    this.selectTask(task.id);
     const data: TaskReplayCapture = {
       ...capture,
       modelExchanges: [],
@@ -205,7 +300,12 @@ export class Store {
   }
 
   private replayCapture(taskId: string) {
-    const row = this.db
+    const shard = this.taskShard(taskId);
+    if (!shard) {
+      return undefined;
+    }
+
+    const row = shard.db
       .prepare("SELECT data FROM task_replays WHERE taskId=?")
       .get(taskId) as { data: string } | undefined;
 
@@ -213,6 +313,7 @@ export class Store {
   }
 
   private saveReplayCapture(taskId: string, capture: TaskReplayCapture) {
+    this.selectTask(taskId);
     this.db
       .prepare("UPDATE task_replays SET data=? WHERE taskId=?")
       .run(JSON.stringify(capture), taskId);
@@ -340,8 +441,13 @@ export class Store {
 
   /** 同一会话的上下文不能并发追加；不同会话的任务由 Engine 依据工作区和全局上限调度。 */
   hasUnfinishedTask(sessionId: string) {
+    const shard = this.sessionShard(sessionId);
+    if (!shard) {
+      return false;
+    }
+
     return Boolean(
-      this.db
+      shard.db
         .prepare(
           "SELECT 1 FROM tasks WHERE sessionId=? AND status IN ('queued','running','waiting') LIMIT 1",
         )
@@ -351,14 +457,20 @@ export class Store {
 
   /** 排队顺序按创建时间稳定；Engine 可跳过被相同工作区锁阻塞的项，避免空闲并发槽位闲置。 */
   queuedTasks() {
-    return this.db
-      .prepare(
-        "SELECT tasks.*,sessions.workspace FROM tasks JOIN sessions ON sessions.id=tasks.sessionId WHERE tasks.status='queued' ORDER BY tasks.createdAt,tasks.rowid",
+    return this.shards.all
+      .flatMap(
+        (shard) =>
+          shard.db
+            .prepare(
+              "SELECT tasks.*,sessions.workspace FROM tasks JOIN sessions ON sessions.id=tasks.sessionId WHERE tasks.status='queued'",
+            )
+            .all() as unknown as Array<Task & { workspace: string }>,
       )
-      .all() as unknown as Array<Task & { workspace: string }>;
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
   }
 
   createTask(sessionId: string) {
+    this.selectSession(sessionId);
     const task = {
       id: randomUUID(),
       sessionId,
@@ -377,6 +489,7 @@ export class Store {
 
   /** 首次进入 running 时记实际开始时间；排队等待不计入运行统计，终态只在真正结束时记录。 */
   status(id: string, status: TaskStatus, error?: string) {
+    this.selectTask(id);
     const finished = [
       "completed",
       "failed",
@@ -395,19 +508,22 @@ export class Store {
   }
 
   event(sessionId: string, taskId: string, type: string, data: unknown): Event {
+    this.selectSession(sessionId);
     const createdAt = new Date().toISOString();
-    const result = this.db
+    const id = this.nextEventId;
+    this.db
       .prepare(
-        "INSERT INTO events(sessionId,taskId,type,data,createdAt) VALUES(?,?,?,?,?)",
+        "INSERT INTO events(id,sessionId,taskId,type,data,createdAt) VALUES(?,?,?,?,?,?)",
       )
-      .run(sessionId, taskId, type, JSON.stringify(data), createdAt);
+      .run(id, sessionId, taskId, type, JSON.stringify(data), createdAt);
+    this.nextEventId++;
 
     this.db
       .prepare("UPDATE sessions SET updatedAt=? WHERE id=?")
       .run(createdAt, sessionId);
 
     return {
-      id: Number(result.lastInsertRowid),
+      id,
       sessionId,
       taskId,
       type,
@@ -417,7 +533,12 @@ export class Store {
   }
 
   events(sessionId: string, after = 0) {
-    return this.db
+    const shard = this.sessionShard(sessionId);
+    if (!shard) {
+      return [];
+    }
+
+    return shard.db
       .prepare("SELECT * FROM events WHERE sessionId=? AND id>? ORDER BY id")
       .all(sessionId, after)
       .map((r) => ({ ...r, data: JSON.parse(String(r.data)) })) as Event[];
@@ -431,11 +552,21 @@ export class Store {
     return this.serializedSize("events", sessionId, undefined, after) <
       64 * 1024
       ? this.events(sessionId, after)
-      : this.runWorker<Event[]>({ operation: "events", sessionId, after });
+      : this.runWorker<Event[]>({
+          operation: "events",
+          file: this.selectSession(sessionId).file,
+          sessionId,
+          after,
+        });
   }
 
   context(id: string): any[] {
-    const row = this.db
+    const shard = this.sessionShard(id);
+    if (!shard) {
+      return [];
+    }
+
+    const row = shard.db
       .prepare("SELECT items FROM context WHERE sessionId=?")
       .get(id);
 
@@ -446,10 +577,15 @@ export class Store {
   async contextAsync(id: string): Promise<any[]> {
     return this.serializedSize("context", id) < 64 * 1024
       ? this.context(id)
-      : this.runWorker<any[]>({ operation: "context", sessionId: id });
+      : this.runWorker<any[]>({
+          operation: "context",
+          file: this.selectSession(id).file,
+          sessionId: id,
+        });
   }
 
   saveContext(id: string, items: any[]) {
+    this.selectSession(id);
     this.db
       .prepare(
         "INSERT INTO context VALUES(?,?) ON CONFLICT(sessionId) DO UPDATE SET items=excluded.items",
@@ -458,7 +594,12 @@ export class Store {
   }
 
   latestContextSnapshot(sessionId: string): ContextSnapshot | undefined {
-    const row = this.db
+    const shard = this.sessionShard(sessionId);
+    if (!shard) {
+      return undefined;
+    }
+
+    const row = shard.db
       .prepare(
         "SELECT data FROM context_snapshots WHERE sessionId=? ORDER BY rowid DESC LIMIT 1",
       )
@@ -468,7 +609,12 @@ export class Store {
   }
 
   contextSnapshot(sessionId: string, id: string): ContextSnapshot | undefined {
-    const row = this.db
+    const shard = this.sessionShard(sessionId);
+    if (!shard) {
+      return undefined;
+    }
+
+    const row = shard.db
       .prepare("SELECT data FROM context_snapshots WHERE sessionId=? AND id=?")
       .get(sessionId, id);
 
@@ -481,6 +627,7 @@ export class Store {
       ? this.latestContextSnapshot(sessionId)
       : this.runWorker<ContextSnapshot | undefined>({
           operation: "latestSnapshot",
+          file: this.selectSession(sessionId).file,
           sessionId,
         });
   }
@@ -491,6 +638,7 @@ export class Store {
       ? this.contextSnapshot(sessionId, id)
       : this.runWorker<ContextSnapshot | undefined>({
           operation: "snapshot",
+          file: this.selectSession(sessionId).file,
           sessionId,
           snapshotId: id,
         });
@@ -503,8 +651,13 @@ export class Store {
     snapshotId?: string,
     after = 0,
   ) {
+    const shard = this.sessionShard(sessionId);
+    if (!shard) {
+      return 0;
+    }
+
     if (source === "events") {
-      const row = this.db
+      const row = shard.db
         .prepare(
           "SELECT COALESCE(SUM(length(data)), 0) AS size FROM events WHERE sessionId=? AND id>?",
         )
@@ -514,14 +667,14 @@ export class Store {
     }
 
     if (source === "context") {
-      const row = this.db
+      const row = shard.db
         .prepare("SELECT length(items) AS size FROM context WHERE sessionId=?")
         .get(sessionId) as { size: number | null } | undefined;
 
       return row?.size ?? 0;
     }
 
-    const row = this.db
+    const row = shard.db
       .prepare(
         source === "latestSnapshot"
           ? "SELECT length(data) AS size FROM context_snapshots WHERE sessionId=? ORDER BY rowid DESC LIMIT 1"
@@ -552,15 +705,17 @@ export class Store {
 
     await this.runWorker<void>({
       operation: "compact",
+      file: this.selectSession(sessionId).file,
       sessionId,
       snapshot,
       input,
     });
   }
 
-  /** Worker 只接受固定 operation 和本 Store 数据库路径，不能成为通用 SQL 或命令执行入口。 */
+  /** Worker 只接受固定 operation 和已定位的会话分片路径，不能成为通用 SQL 或命令执行入口。 */
   private async runWorker<T>(request: {
     operation: "context" | "events" | "latestSnapshot" | "snapshot" | "compact";
+    file: string;
     sessionId: string;
     snapshotId?: string;
     after?: number;
@@ -597,11 +752,11 @@ export class Store {
           }
         },
       );
-      worker.postMessage({ ...request, file: this.file });
+      worker.postMessage(request);
     });
   }
 
   close() {
-    this.db.close();
+    this.shards.close();
   }
 }

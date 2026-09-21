@@ -61,7 +61,7 @@ Node.js 24，pnpm 11.22.0（packageManager 固定）。提交 pnpm-lock.yaml，�
 - macOS：~/Library/Application Support/CodeAtelier
 - Linux：$XDG_DATA_HOME/CodeAtelier，未设置则 ~/.local/share/CodeAtelier
 
-目录包含 history.sqlite（及 SQLite WAL 文件）、settings.json、logs/app.log 和 traces/<sessionId>/<taskId>.json。历史会话、运行日志与 Perfetto trace 分开保存，不写入用户代码项目。
+目录包含首个兼容历史分片 history.sqlite（及其 SQLite WAL 文件）、按需新增的 history-000001.sqlite 等后续分片、settings.json、logs/app.log 和 traces/<sessionId>/<taskId>.json。Store 统计每个分片主库与 WAL 的实际字节数；默认到 1 GiB 后，下一次**新建会话**写入新的分片。已有会话始终位于其初始分片，避免跨文件外键与恢复语义变化；因此单个超长会话或不可分割的大写入可以略超该阈值，现有超限历史不会自动重分区。历史会话、运行日志与 Perfetto trace 分开保存，不写入用户代码项目。
 
 ### Perfetto tracing
 
