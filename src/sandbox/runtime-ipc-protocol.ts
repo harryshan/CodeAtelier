@@ -4,7 +4,7 @@
  * 然后才能把已认证字节流交给 RuntimeIpcPeer；测试用 stdio 只验证 framing 和跨进程路由，不构成 W3 证据。
  *
  * 1. runtimeRequestSchema 限定 Runtime 可请求的模型、审批和 session adapter，不提供任意宿主函数或路径入口。
- * 2. runtimeResponseSchema 关联原 requestId，错误只返回受限 code/message，避免泄露宿主异常对象。
+ * 2. runtimeResponseSchema 关联原 requestId；错误只返回受限 code/message 与模型重试元数据，避免泄露宿主异常对象。
  * 3. runtimeEventSchema 承载模型 delta、Broker 取消和 Runtime 生命周期通知；大对象仍受 transport 帧上限约束。
  * 4. hello schema 绑定协议版本、任务和 instance；其中 Runtime 自报字段只用于一致性核对，不能替代 transport 身份。
  */
@@ -200,6 +200,10 @@ export const runtimeResponseSchema = z.discriminatedUnion("ok", [
         .object({
           code: z.string().min(1).max(120),
           message: z.string().min(1).max(1_000),
+          retryable: z.boolean().optional(),
+          status: z.number().int().min(100).max(599).optional(),
+          retryAfterMs: z.number().int().min(0).max(30_000).optional(),
+          providerRequestId: z.string().min(1).max(128).optional(),
         })
         .strict(),
     })

@@ -31,6 +31,10 @@ export class RuntimeIpcError extends Error {
   constructor(
     message: string,
     readonly code = "SANDBOX_RUNTIME_IPC",
+    readonly retryable = false,
+    readonly status?: number,
+    readonly retryAfterMs?: number,
+    readonly providerRequestId?: string,
   ) {
     super(message);
     this.name = "RuntimeIpcError";
@@ -299,6 +303,11 @@ export class RuntimeIpcPeer {
         value,
       });
     } catch (error) {
+      const retryable = Reflect.get(Object(error), "retryable");
+      const status = Reflect.get(Object(error), "status");
+      const retryAfterMs = Reflect.get(Object(error), "retryAfterMs");
+      const providerRequestId = Reflect.get(Object(error), "requestId");
+
       this.send({
         type: "response",
         requestId: message.requestId,
@@ -309,6 +318,21 @@ export class RuntimeIpcPeer {
               ? String(Reflect.get(Object(error), "code")).slice(0, 120)
               : "RUNTIME_REQUEST_FAILED",
           message: "Broker 未能完成 Runtime IPC 请求。",
+          retryable: typeof retryable === "boolean" ? retryable : undefined,
+          status:
+            Number.isInteger(status) && status >= 100 && status <= 599
+              ? status
+              : undefined,
+          retryAfterMs:
+            Number.isInteger(retryAfterMs) &&
+            retryAfterMs >= 0 &&
+            retryAfterMs <= 30_000
+              ? retryAfterMs
+              : undefined,
+          providerRequestId:
+            typeof providerRequestId === "string"
+              ? providerRequestId.slice(0, 128)
+              : undefined,
         },
       });
     } finally {
@@ -330,7 +354,14 @@ export class RuntimeIpcPeer {
       pending.resolve(response.value);
     } else {
       pending.reject(
-        new RuntimeIpcError(response.error.message, response.error.code),
+        new RuntimeIpcError(
+          response.error.message,
+          response.error.code,
+          response.error.retryable,
+          response.error.status,
+          response.error.retryAfterMs,
+          response.error.providerRequestId,
+        ),
       );
     }
   }

@@ -4,8 +4,8 @@
  *
  * 1. start 接受 Broker 绑定任务的安全设置，恢复 session 上下文并在工作区生成指令和文件工具。
  * 2. ContextManager 在 Runtime 内计量/压缩，快照读写经 RuntimeSessionClient 回到 Broker。
- * 3. 每轮模型调用经 RuntimeModelProvider 代理；工具 DAG、文件编辑、命令和非 push Git 均由 Runtime 内 ToolRunner 执行。
- * 4. UI/session 事件按单连接顺序排队；工具结果保存后才进入下一轮，取消或持久化失败不会盲目重放。
+ * 3. 每轮模型调用经 RuntimeModelProvider 代理并保留有界重试/上下文超限恢复；工具 DAG、文件编辑、命令和非 push Git 均由 Runtime 内 ToolRunner 执行。
+ * 4. UI/session 事件按单连接顺序排队；无效 DAG 在无副作用时回传模型修正，工具结果保存后才进入下一轮，取消或持久化失败不会盲目重放。
  * 5. 终态同时返回给 start_task 调用方并主动写 runtime_complete；Broker 仍结合进程/Job/ACL 清理决定最终可信状态。
  *
  * Push Runner 切换、replay capture 与完整跨进程 tracing 仍需由后续 Broker adapter 接入；在此之前产品不能宣称 W3/W4 完成。
@@ -34,6 +34,7 @@ import type {
 } from "./runtime-ipc-protocol.js";
 import type { RuntimeExecutionIdentity } from "./runtime-capability-core.js";
 import { RuntimeModelProvider } from "./runtime-model-provider.js";
+import { retryModel } from "../providers/retry.js";
 import { RuntimeSessionClient } from "./runtime-session-client.js";
 import {
   RuntimeApprovalClient,
@@ -138,6 +139,7 @@ export class AgentRuntimeService {
           events.emit("model_usage", { ...usage, purpose: "compaction" }),
       });
       let currentInput = modelInput;
+      let overflowRetried = false;
 
       this.peer.event({
         type: "event",
@@ -147,19 +149,58 @@ export class AgentRuntimeService {
       for (let step = 1; step <= input.settings.maxSteps; step++) {
         signal.throwIfAborted();
         currentInput = await context.prepare(currentInput, instructions, tools);
-        events.emit("model_request", { purpose: "task", step, attempt: 1 });
-        const response = await provider.run(
-          currentInput,
-          instructions,
-          tools,
-          signal,
-          (text) => events.emit("delta", { text, step, attempt: 1 }),
-          { maxOutputTokens: budget.outputTokens },
-        );
+        let requestInput = currentInput;
+        let attemptOffset = 0;
+        let attempt = 0;
+        const requestModel = () =>
+          retryModel(
+            async (currentAttempt) => {
+              attempt = attemptOffset + currentAttempt;
+              requestInput = context.request(
+                currentInput,
+                instructions,
+                tools,
+              ).input;
+              events.emit("model_request", { purpose: "task", step, attempt });
+
+              return provider.run(
+                requestInput,
+                instructions,
+                tools,
+                signal,
+                (text) => events.emit("delta", { text, step, attempt }),
+                { maxOutputTokens: budget.outputTokens },
+              );
+            },
+            signal,
+            (error, failedAttempt, delayMs) =>
+              events.emit("notice", {
+                text: `${error.message} ${delayMs} ms 后重试（${failedAttempt}/2）。`,
+                code: error.code,
+                step,
+                attempt,
+              }),
+          );
+        const response = await requestModel().catch(async (error) => {
+          if (error?.code !== "context_length_exceeded" || overflowRetried) {
+            throw error;
+          }
+
+          attemptOffset = attempt;
+          overflowRetried = true;
+          currentInput = await context.prepare(
+            currentInput,
+            instructions,
+            tools,
+            true,
+          );
+
+          return requestModel();
+        });
         if (response.usage) {
           budget.observeUsage?.(
             response.usage.input_tokens,
-            currentInput,
+            requestInput,
             instructions,
             tools,
           );
@@ -167,14 +208,14 @@ export class AgentRuntimeService {
             ...response.usage,
             purpose: "task",
             step,
-            attempt: 1,
+            attempt,
           });
         }
 
         currentInput.push(...response.output);
         await session.saveContext(this.identity.sessionId, currentInput);
         if (response.text) {
-          events.emit("assistant", { text: response.text, step, attempt: 1 });
+          events.emit("assistant", { text: response.text, step, attempt });
         }
 
         const calls = response.output.filter(
@@ -189,7 +230,35 @@ export class AgentRuntimeService {
           break;
         }
 
-        const graph = buildRuntimeToolGraph(calls);
+        let graph;
+        try {
+          graph = buildRuntimeToolGraph(calls);
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message.slice(0, 2_000) : "未知错误";
+
+          for (const [ordinal, call] of calls.entries()) {
+            const result = { error: `工具调用图无效：${message}` };
+
+            currentInput.push({
+              type: "function_call_output",
+              call_id: call.call_id,
+              output: JSON.stringify(result),
+            });
+            events.emit("tool_result", {
+              name: call.name,
+              callId: call.call_id,
+              nodeId: `invalid-${ordinal + 1}`,
+              result,
+            });
+          }
+
+          await session.saveContext(this.identity.sessionId, currentInput);
+          await events.flush();
+
+          continue;
+        }
+
         events.emit("tool_batch_planned", {
           nodes: graph.nodes.map((node) => ({
             callId: node.callId,

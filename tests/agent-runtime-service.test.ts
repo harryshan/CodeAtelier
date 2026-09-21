@@ -2,8 +2,8 @@
  * 验证完整模型/工具轮次在独立 Agent Runtime 子进程中运行，而模型 provider、session 和完成账本留在 Broker 测试进程。
  * 此测试跨真实 Node 进程执行 read_file，并证明第二轮模型输入包含子进程工具结果；stdio harness 不替代 Windows transport 身份验收。
  *
- * 1. Broker 返回一次 read_file function_call，Agent Runtime 在自己的进程内执行 ToolRunner。
- * 2. Runtime 经 IPC 保存上下文和事件，第二次 brokered model call 观察到 function_call_output 后返回最终文本。
+ * 1. Broker 先返回一次可重试错误，再返回无效 DAG；Runtime 有界重试并把无副作用错误保存给下一轮修正。
+ * 2. Broker 随后返回 read_file function_call，Agent Runtime 在自己的进程内执行 ToolRunner；最终模型轮次观察到文件结果。
  * 3. Runtime 主动报告 completed，Broker 收到后关闭通道并确认子进程干净退出。
  */
 
@@ -14,6 +14,7 @@ import { expect, it } from "vitest";
 import { RuntimeBrokerGateway } from "../src/sandbox/runtime-capability-core.js";
 import { RuntimeIpcBrokerSession } from "../src/sandbox/runtime-ipc-broker-session.js";
 import { TraceRecorder } from "../src/tracing/recorder.js";
+import { ModelError } from "../src/providers/model-error.js";
 import { temp } from "./fixtures/helpers.js";
 
 it("runs the model and tool loop in an independent Agent Runtime process", async () => {
@@ -75,6 +76,31 @@ it("runs the model and tool loop in an independent Agent Runtime process", async
           async run(input) {
             modelCalls += 1;
             if (modelCalls === 1) {
+              throw new ModelError(
+                "temporary fixture failure",
+                true,
+                "http_503",
+                503,
+              );
+            }
+
+            if (modelCalls === 2) {
+              return {
+                text: "",
+                output: [
+                  {
+                    type: "function_call",
+                    call_id: "invalid-call",
+                    name: "read_file",
+                    arguments: "{",
+                  },
+                ],
+              };
+            }
+
+            if (modelCalls === 3) {
+              expect(JSON.stringify(input)).toContain("工具调用图无效");
+
               return {
                 text: "",
                 output: [
@@ -136,7 +162,7 @@ it("runs the model and tool loop in an independent Agent Runtime process", async
         prompt: "读取 sample.txt",
         settings: {
           model: "fixture-model",
-          maxSteps: 4,
+          maxSteps: 5,
           commandTimeoutMs: 10_000,
           maxOutputTokens: 1_024,
           contextChars: 32_000,
@@ -159,11 +185,12 @@ it("runs the model and tool loop in an independent Agent Runtime process", async
 
   expect(result).toEqual({ status: "completed" });
   expect(completed).toBe(true);
-  expect(modelCalls).toBe(2);
+  expect(modelCalls).toBe(4);
   expect(context.some((item) => item.type === "function_call_output")).toBe(
     true,
   );
   expect(events.some((event) => event.type === "assistant")).toBe(true);
+  expect(events.some((event) => event.type === "notice")).toBe(true);
   expect(Buffer.concat(errors).toString("utf8")).toBe("");
   expect(exit).toBe(0);
 });

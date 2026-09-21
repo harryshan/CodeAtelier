@@ -18,6 +18,7 @@ import {
   type ModelCapabilities,
 } from "../providers/model-metadata.js";
 import { RuntimeIpcError, RuntimeIpcPeer } from "./runtime-ipc-peer.js";
+import { ModelError } from "../providers/model-error.js";
 
 const modelResultSchema = z.object({
   output: z.array(z.unknown()),
@@ -85,6 +86,19 @@ export class RuntimeModelProvider implements ModelProvider {
       }
 
       return parsed.data;
+    } catch (error) {
+      if (error instanceof RuntimeIpcError) {
+        throw new ModelError(
+          error.message,
+          error.retryable,
+          error.code,
+          error.status,
+          error.retryAfterMs,
+          error.providerRequestId,
+        );
+      }
+
+      throw error;
     } finally {
       remove();
     }
