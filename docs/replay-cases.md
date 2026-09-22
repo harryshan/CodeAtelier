@@ -38,7 +38,9 @@ pnpm replay:export -- --data-dir C:\CodeAtelierData --task-id TASK_ID --output C
 
 `--list` 和导出都不会变更任务状态。`--output` 必须是一个不存在的新文件，避免覆盖其他本地 case。输出的 `source` 为 `captured` 或 `legacy`；导出本身不表示文件场景完整。
 
-在 TypeScript 改进测试中，先调用 `analyzeReplayWorkspace(caseFile)`。只有 `complete: true` 时，才调用 `materializeReplayWorkspace(caseFile, newDirectory)`；函数要求 `newDirectory` 尚不存在，只会写入被 `edit_files(create:false)` 所需、经哈希验证的读取文件。随后测试可以在该目录创建自己的 ToolRunner/Engine。不要把原 workspace 传入 replay，也不要执行已记录的 `run_command`、Git 或其他副作用工具。
+在 TypeScript 改进测试中，先调用 `analyzeReplayWorkspace(caseFile)`。只有 `complete: true` 时，才调用 `materializeReplayWorkspace(caseFile, newDirectory)`；函数要求 `newDirectory` 尚不存在，只会写入被 `edit_files(create:false)` 所需、经哈希验证的读取文件。
+
+随后测试可以在该目录创建自己的 ToolRunner/Engine。不要把原 workspace 传入 replay，也不要执行已记录的 `run_command`、Git 或其他副作用工具。
 
 对于只验证提示、上下文或模型循环的测试，使用 `new RecordedModelProvider(caseFile.capture)`；它逐项比较 input、instructions、工具 schema 和输出选项，然后返回记录的模型响应。它不会运行工具，测试必须自行提供受控工具层或只测试模型交互。
 

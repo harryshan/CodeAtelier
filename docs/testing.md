@@ -11,14 +11,27 @@
 5. 提交前运行 `pnpm check`（类型、lint、格式、单元/集成回归、构建）。UI、API、SSE 变更额外运行 `pnpm test:e2e`。
 6. 新增行为同步维护下表与验证记录；说明平台跳过、外部依赖和未验证范围。CI 在 Windows、macOS、Linux 跑核心检查，在 Linux Chromium 跑 UI 验收。
 
+## 共享执行逻辑回归
+
+- `model-loop.test.ts`：响应先保存再执行工具、轮次推进、普通重试上限、超限恢复的任务级次数及 attempt 连续编号、保存/工具失败不重放、取消与无效图/正常工具耗尽轮次的区分。
+- `model-tool-batch.test.ts`：两种执行模式的节点解析与依赖一致、Runtime push 独占而宿主维持原规则、退出码及多文件 failed/unknown 阻断 DAG 后继。
+- `execute-runner.test.ts`：Push Runner 和 Capability Runner 的实例标识、进程元数据、事件/账本一致、非零退出、启动前后失败、取消、unknown 优先级、命令构造失败和拒绝 host fallback。
+- `engine.test.ts`、`agent-runtime-service.test.ts`、`agent-runtime-engine.test.ts` 继续验证生产组装、真实 Node 子进程、工具结果回传、审批和取消记录；这些测试不替代专用账户提升环境验收。
+
 ## 测试分层
 
 - 单元测试验证配置、授权、错误分类等可独立观察的行为。
 - 集成回归使用真实临时文件、SQLite、子进程和本机 HTTP；模型通过可控适配器/SSE 服务注入预设请求与回复，验证上下文与副作用，而非只检查 mock 调用次数。
 - 浏览器测试操作真实 Web UI 与测试后端，覆盖消息、历史、权限、设置、恢复与重连。
-- `pnpm test`、`pnpm test:coverage`、`pnpm test:watch`、`pnpm test:e2e` 和 `pnpm check` 都经 `scripts/test-runner.ts` 启动：Vitest 子进程仅接收固定测试环境白名单，Vite 的 test 模式禁止读取 dotenv；Playwright 测试后端直接以 Node/tsx 启动，不解析包管理器的系统路径。测试不继承本机 `.env`、系统中的 CodeAtelier 配置或真实 API key；模型只可使用注入式模拟值和本机测试 HTTP/SSE 服务。
+- `pnpm test`、`pnpm test:coverage`、`pnpm test:watch`、`pnpm test:e2e` 和 `pnpm check` 都经 `scripts/test-runner.ts` 启动：Vitest 子进程仅接收固定测试环境白名单，Vite 的 test 模式禁止读取 dotenv；Playwright 测试后端直接以 Node/tsx 启动，不解析包管理器的系统路径。
+
+  测试不继承本机 `.env`、系统中的 CodeAtelier 配置或真实 API key；模型只可使用注入式模拟值和本机测试 HTTP/SSE 服务。
 - `pnpm build` 与 `pnpm build:test` 还会生成 `dist/runtime/windows-x64` 下的 Node 24 Agent Runtime、compaction Worker 与 read_file CPU Worker bundle 和 SHA-256 manifest；构建成功只验证 bundle 可生成，不代表安装器已把它复制到受保护目录或 native Supervisor 已核对并启动它。
-- `pnpm sandbox:runtime:verify` 是安装完成后显式运行的 Windows 产品链路验收：它使用模拟模型，经默认 Engine/SandboxBroker/native Supervisor 在专用账户 Agent Runtime 内创建工作区文件；随后由低成本模型夹具自动批准一次 `run_with_permissions`，让独立 Capability Runner 写入 sibling 目录，并用系统 `curl.exe` 经自身环境中的短期代理 token 请求获准但必须被 relay 以 403 拒绝的 `127.0.0.1`，从而核对外部 ACL、通用代理注入、私网拒绝、结果回传和 lease 清理。下一阶段初始化一次性 Git 仓库，对同一私网目标验证独立 Push Runner/askpass 路径；最后验证主动取消。该命令不属于 `test`/`check`，不会访问模型服务、外部网络、真实 remote 或凭据；只有在真实安装环境运行并输出 PASS 才构成对应平台证据。
+- `pnpm sandbox:runtime:verify` 是安装完成后显式运行的 Windows 产品链路验收：它使用模拟模型，经默认 Engine/SandboxBroker/native Supervisor 在专用账户 Agent Runtime 内创建工作区文件；
+
+  随后由低成本模型夹具自动批准一次 `run_with_permissions`，让独立 Capability Runner 写入 sibling 目录，并用系统 `curl.exe` 经自身环境中的短期代理 token 请求获准但必须被 relay 以 403 拒绝的 `127.0.0.1`，从而核对外部 ACL、通用代理注入、私网拒绝、结果回传和 lease 清理。
+
+  下一阶段初始化一次性 Git 仓库，对同一私网目标验证独立 Push Runner/askpass 路径；最后验证主动取消。该命令不属于 `test`/`check`，不会访问模型服务、外部网络、真实 remote 或凭据；只有在真实安装环境运行并输出 PASS 才构成对应平台证据。
 - 真实模型 smoke 测试独立运行，需要本地提供密钥；不作为日常离线测试前提。不对用户项目进行测试性写入。
 
 ## 代码覆盖率
@@ -30,60 +43,230 @@
 
 ## 已有功能覆盖
 
-| 功能                           | 主要测试                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | 核心行为                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 目录与命令搜索                 | files.test.ts、core.test.ts、tool-schema.test.ts                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | 不公开且拒绝已移除的 `search`、`list_files` 与 `write_file`；跨平台检测常见命令并按估计性能排序，将目录浏览/可用列表注入模型指令                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| 文件读取                       | files.test.ts、core.test.ts、read-file-worker.test.ts                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | 行号/范围/500 行限制、分页与截断元数据、无效范围、文件大小、二进制、链接越界                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| 新建与精确编辑                 | files.test.ts、multi-file-edit.test.ts、regressions.test.ts                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | create:true 嵌套创建、已有目标与创建期间出现目标的覆盖拒绝；create:false 的唯一/字面替换、任务内读取前置条件、并发修改、临时文件清理、POSIX 模式                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| 路径与工作区                   | paths.test.ts、core.test.ts                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | 路径前缀隔离、父目录越界、新建路径规范化、敏感组件、真实目录要求、Windows ADS                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| 权限                           | permissions.test.ts、model-approval.test.ts、core.test.ts                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | 单次/会话授权、低成本模型三级分流、失效或无模型时保守人工确认、跨会话隔离、内容变化后重新审批、取消、敏感文件/AGENTS.md、直接 Git 与提权限制                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| Git 工具                       | git-tools.test.ts、paths.test.ts、tool-schema.test.ts、e2e/app.spec.ts                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | 单一 action 契约、固定 status/diff/log/show/branch 参数、add/提交/推送自动执行、worktree/upstream/revision/敏感目录校验；运行时 dotenv 拒绝、受控 dotenv 模板的占位凭据校验与输出保护、暂存失败不提交、禁止额外选项，以及流式输出与退出状态的卡片聚合                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| 命令执行                       | process.test.ts、core.test.ts、permissions.test.ts、tool-schema.test.ts                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | 不存在的命令及子进程实际错误、输出与退出码、截断、UTF-8/ANSI 分块、颜色环境与控制符清理、API key 不继承、内部 Windows/POSIX shell 选择、单一 command 契约、复合命令合并、直接 Git/提权拒绝、取消和超时                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| Sandbox Broker 与专用用户目标  | sandbox.test.ts、sandbox-native-windows-runtime.test.ts、sandbox-https-relay.test.ts、runtime-capability-core.test.ts、runtime-ipc.test.ts、runtime-session-client.test.ts、runtime-startup-protocol.test.ts、agent-runtime-tools.test.ts、agent-runtime-service.test.ts、agent-runtime-engine.test.ts、supervisor-protocol.test.ts、process.test.ts、engine.test.ts、recovery.test.ts、logging.test.ts、config.test.ts、tracing.test.ts；手动 `experiments/windows-sandbox-user-demo/run-demo.ps1`、`experiments/windows-restricted-token-demo/run-demo.ps1`、`experiments/windows-network-ipc-demo/run-demo.ps1` 与 `experiments/windows-git-config-demo/run-demo.ps1` | 自动回归覆盖关闭时原宿主路径及其不公开 capability runner/Sandbox prompt、macOS/Linux 强制禁用 Windows 后端、缺 Runtime/自检失败的按任务 fallback 及其宿主工具定义、实际状态、执行开始后不重放、executionInstance 与实际子进程 PID/创建时间持久化、中断实例随下次模型请求发送且禁止自动重放、独立 `sandbox.log`、supervisor strict 操作/字段/响应关联、Runtime IPC 有界 framing/instance-nonce 握手/model-session-approval adapter、安装版 Runtime 的有界 Supervisor 首帧，以及真实 Node 子进程中的 agent loop、工具 DAG 和 Engine launcher 分流。Windows 专用 native runtime/relay 测试在非 Windows 整组跳过；组件探针已证明专用账户写根与双实例并发、restricted token/Job、动态及持久 WFP 核心 fence、联合 IPC 身份→host lease→relay、真实 Git 配置投影机制可行。stdio harness 和首帧 parser 都不能证明 Windows transport 身份；W1--W6 只按 [Windows Sandbox 分层门槛](windows-integrity-sandbox.md) 验证每层新增边界；产品提升集成通过前仍不得宣称专用用户 Sandbox 完整可用。 |
-| 模型协议与重试                 | provider.test.ts、recovery.test.ts                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | item.done 回退、失败/不完整事件、服务实际错误 message/reason/code 的脱敏保留、断流、超时、重试次数、HTTP 分类、取消退避、并行工具调用请求参数                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| 网页检索与来源引用              | provider.test.ts、engine.test.ts、agent-runtime-engine.test.ts、tool-schema.test.ts、core.test.ts                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | 主任务请求包含 OpenAI 内置 `web_search`，宿主与 Agent Runtime 路径一致；Responses URL 引用只接受 HTTP(S)、按 URL 去重并转为可点击 Markdown 来源；内置工具不注册为本地函数或 DAG 节点                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| agent 循环、任务调度与工具 DAG | tool-graph.test.ts、tool-status.test.ts、engine.test.ts、core.test.ts、recovery.test.ts、server.test.ts                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | 复杂任务先读取代码/文件并获得信息后才输出计划摘要的指令与随后执行、已知参数的依赖调用同轮提交指引（依赖只能引用本轮节点，禁止跨轮历史 ID）与过时顺序指令回归、工具往返、同轮 DAG 的稳定拓扑并发、审批准备与执行槽分离、单槽下独立节点越过审批等待、并发上限、重复/未知/环拒绝、失败后继阻断与反馈；跨会话不同工作目录并行、同目录排队、同会话互斥、取消/关闭队列、步骤/上下文预算、参数错误反馈、根规则、输出预算、跨任务重新读取、不重放副作用、工具耗时排除审批等待                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| 项目记忆                       | memory.test.ts、tool-schema.test.ts、engine.test.ts                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | 按真实工作区 SHA-256 隔离的 Markdown 文件、严格解析/安全降级、关键词检索、archive、版本冲突、敏感内容拒绝；模型无需人工确认的 `memory_apply` 契约、任务内写入、固定检索 bundle 与仅含操作数量的任务事件。项目管理 UI、来源哈希失效验证和手工恢复/清空待后续测试覆盖                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| 会话存储、标题与 Replay Case   | store.test.ts、recovery.test.ts、title-generation.test.ts、replay-case.test.ts                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | 隔离、事件顺序与游标、上下文、事务回滚、queued/running/waiting 重启中断、实际开始时间、标题状态迁移和恢复，以及大 JSON 的 Worker 读取；按小阈值触发的历史 SQLite 分片、新旧分片聚合、重启发现和旧分片 Worker 读取；逐次模型/工具捕获、legacy 历史标记、局部读取拒绝、哈希一致的分页读取重建和只写入新隔离目录                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| 会话统计                       | session-statistics.test.ts、e2e/app.spec.ts                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | 服务实报 token 的缓存/非缓存完整性、LLM 请求与任务轮次、工具成功率、任务累计运行时间、旧 usage 历史回退及默认折叠/展开展示                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| 模型设置                       | config.test.ts、regressions.test.ts                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | 连接只来自环境、settings.json 仅保存偏好、端点规范化、连接改动拒绝、参数边界、失败更新保持原状态、密钥内存存储、损坏配置不覆盖                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| 日志                           | logging.test.ts、core.test.ts                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | 级别过滤、紧凑纯文本格式、上下文字段、错误元数据/原因链/堆栈、凭据脱敏、轮转、存储故障降级                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| Perfetto tracing               | tracing.test.ts、agent-runtime-engine.test.ts、runtime-ipc.test.ts、tool-graph.test.ts、e2e/app.spec.ts                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | 宿主与真实 Runtime 子进程的 `context.prepare`/`context.request` 及计量子阶段、独立模型与响应处理、工具计划/持久化及 instant/flow 事件导出；Runtime trace IPC 只接受固定阶段和有界数值属性，任意名称/文本字段关闭通道；主线程嵌套 begin/end slice、Task 包络、时序排序、整数 flow ID、可复用工具轨道、实际 tool 的完整结构化参数及递归凭据脱敏、按 session/task 独立持久化、终态后释放内存、认证下载、仅显示真实文件的统计框入口、关联元数据与普通长属性限长                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| HTTP API、访问密码与监听范围   | access-password.test.ts、server.test.ts、listen-address.test.ts、core.test.ts                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | 环境开关默认关闭、非法开关/启用时缺少密码拒绝启动、正确/错误密码、HttpOnly 门禁 cookie、未验证 API 拒绝；会话初始快照与按 event ID 游标读取的增量事件、任务接口和参数校验、跨工作区并行与同工作区排队、默认 IPv4/IPv6 回环、显式 IPv4/IPv6 局域网通配监听、Host/Origin/cookie/token、运行/排队任务时的配置更新互斥、取消与恢复                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| 服务关闭                       | shutdown.test.ts、e2e/app.spec.ts                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | 关闭授权与确认、正在执行命令的中断保存、SSE 结束、端口释放、重复清理、实际入口进程退出、关闭页面与失败反馈                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| 开发服务重载                   | e2e/app.spec.ts                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | 从侧栏完整刷新页面，重新请求 bootstrap 并恢复可操作的本机界面；不把页面刷新误作服务器进程重启                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| Web UI                         | e2e/app.spec.ts、e2e/access-password.spec.ts、timeline-virtualization.test.ts                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | 访问密码开启时先显示门禁、错误密码不进入主页面且正确密码后加载主页面；建会话、首条消息标题更新、已完成任务默认只显示输入和最后一轮输出，展开后可检查工具/diff/通知/重试过程且刷新后重新默认折叠、历史续聊及隔离、项目内折叠和最近记录限制、审批与取消、有流式输出工具的卡片聚合与历史重载、设置、人工恢复、Markdown 输入规则原地转换为富文本且不显示独立预览、消息中的标题/链接/代码围栏/表格/任务列表及原始 HTML 拒绝、SSE 失效重连及切换会话时的加载反馈；手机视口可通过菜单完整打开侧栏，并由会话选择、遮罩或 Escape 收起；时间线按滚动位置和缓冲范围只创建可视条目，其余历史以准确高度占位                                                                                                                                                                                                                                                                                                                      |
+### 目录与命令搜索
 
-## 本轮复现并修复的缺陷
+主要测试：files.test.ts、core.test.ts、tool-schema.test.ts。
 
-- 文件名命中恰好填满第 100 个搜索结果后，仍继续追加内容命中，返回 101 条。该内置 `search` 已移除；历史记录继续可展示和归档，新的代码搜索改走受审批的命令。
+只公开当前工具契约，拒绝无执行器的工具名；跨平台检测常见命令并按估计性能排序，将目录浏览/可用列表注入模型指令
+
+### 文件读取
+
+主要测试：files.test.ts、core.test.ts、read-file-worker.test.ts。
+
+行号/范围/500 行限制、分页与截断元数据、无效范围、文件大小、二进制、链接越界
+
+### 新建与精确编辑
+
+主要测试：files.test.ts、multi-file-edit.test.ts、regressions.test.ts。
+
+create:true 嵌套创建、已有目标与创建期间出现目标的覆盖拒绝；create:false 的唯一/字面替换、任务内读取前置条件、并发修改、临时文件清理、POSIX 模式
+
+### 路径与工作区
+
+主要测试：paths.test.ts、core.test.ts。
+
+路径前缀隔离、父目录越界、新建路径规范化、敏感组件、真实目录要求、Windows ADS
+
+### 权限
+
+主要测试：permissions.test.ts、model-approval.test.ts、core.test.ts。
+
+单次/会话授权、低成本模型三级分流、失效或无模型时保守人工确认、跨会话隔离、内容变化后重新审批、取消、敏感文件/AGENTS.md、直接 Git 与提权限制
+
+### Git 工具
+
+主要测试：git-tools.test.ts、paths.test.ts、tool-schema.test.ts、e2e/app.spec.ts。
+
+单一 action 契约、固定 status/diff/log/show/branch 参数、add/提交/推送自动执行、worktree/upstream/revision/敏感目录校验；运行时 dotenv 拒绝、受控 dotenv 模板的占位凭据校验与输出保护、暂存失败不提交、禁止额外选项，以及流式输出与退出状态的卡片聚合
+
+### 命令执行
+
+主要测试：process.test.ts、core.test.ts、permissions.test.ts、tool-schema.test.ts。
+
+不存在的命令及子进程实际错误、输出与退出码、截断、UTF-8/ANSI 分块、颜色环境与控制符清理、API key 不继承、内部 Windows/POSIX shell 选择、单一 command 契约、复合命令合并、直接 Git/提权拒绝、取消和超时
+
+### Sandbox Broker 与专用用户目标
+
+主要测试按边界组织：
+
+- 执行和账本：sandbox.test.ts、sandbox-native-windows-runtime.test.ts、process.test.ts、engine.test.ts、recovery.test.ts。
+- 网络与协议：sandbox-https-relay.test.ts、runtime-capability-core.test.ts、runtime-ipc.test.ts、runtime-session-client.test.ts、runtime-startup-protocol.test.ts、supervisor-protocol.test.ts。
+- Agent Runtime：agent-runtime-tools.test.ts、agent-runtime-service.test.ts、agent-runtime-engine.test.ts。
+- 配置与诊断：logging.test.ts、config.test.ts、tracing.test.ts。
+- 手动组件探针：`experiments/windows-sandbox-user-demo`、`windows-restricted-token-demo`、`windows-network-ipc-demo`、`windows-git-config-demo` 中的 `run-demo.ps1`。路径后缀均相对于 `experiments/`。
+
+自动回归覆盖：
+
+- 关闭或非 Windows 时的宿主路径；启动前失败的按任务 fallback、宿主工具定义与实际状态。
+- 执行开始后不重放；executionInstance、PID/创建时间、中断状态、独立日志及恢复提示。
+- strict 协议操作与响应关联、有界 framing、instance/nonce 握手、model/session/approval adapter 和 Supervisor 首帧。
+- 独立 Node 子进程中的 agent loop、工具 DAG 和 Engine launcher 分流。
+
+Windows native runtime/relay 测试在非 Windows 整组跳过。stdio harness、首帧 parser 和组件探针不能证明产品 Windows transport 身份；完整能力须按 [W0--W6 分层门槛](windows-integrity-sandbox.md#9-实施与验收) 验收。
+
+### 模型协议与重试
+
+主要测试：provider.test.ts、recovery.test.ts。
+
+item.done 回退、失败/不完整事件、服务实际错误 message/reason/code 的脱敏保留、断流、超时、重试次数、HTTP 分类、取消退避、并行工具调用请求参数
+
+### 网页检索与来源引用
+
+主要测试：provider.test.ts、engine.test.ts、agent-runtime-engine.test.ts、tool-schema.test.ts、core.test.ts。
+
+主任务请求包含 OpenAI 内置 `web_search`，宿主与 Agent Runtime 路径一致；Responses URL 引用只接受 HTTP(S)、按 URL 去重并转为可点击 Markdown 来源；内置工具不注册为本地函数或 DAG 节点
+
+### agent 循环、任务调度与工具 DAG
+
+主要测试：tool-graph.test.ts、tool-status.test.ts、engine.test.ts、core.test.ts、recovery.test.ts、server.test.ts。
+
+复杂任务先读取代码/文件并获得信息后才输出计划摘要的指令与随后执行、已知参数的依赖调用同轮提交指引（依赖只能引用本轮节点，禁止跨轮历史 ID）与过时顺序指令回归、工具往返、同轮 DAG 的稳定拓扑并发、审批准备与执行槽分离、单槽下独立节点越过审批等待、并发上限、重复/未知/环拒绝、失败后继阻断与反馈；跨会话不同工作目录并行、同目录排队、同会话互斥、取消/关闭队列、步骤/上下文预算、参数错误反馈、根规则、输出预算、跨任务重新读取、不重放副作用、工具耗时排除审批等待
+
+### 项目记忆
+
+主要测试：memory.test.ts、tool-schema.test.ts、engine.test.ts。
+
+按真实工作区 SHA-256 隔离的 Markdown 文件、严格解析/安全降级、关键词检索、archive、版本冲突、敏感内容拒绝；模型无需人工确认的 `memory_apply` 契约、任务内写入、固定检索 bundle 与仅含操作数量的任务事件。项目管理 UI、来源哈希失效验证和手工恢复/清空待后续测试覆盖
+
+### 会话存储、标题与 Replay Case
+
+主要测试：store.test.ts、recovery.test.ts、title-generation.test.ts、replay-case.test.ts。
+
+隔离、事件顺序与游标、上下文、事务回滚、queued/running/waiting 重启中断、实际开始时间、标题状态迁移和恢复，以及大 JSON 的 Worker 读取；按小阈值触发的历史 SQLite 分片、新旧分片聚合、重启发现和旧分片 Worker 读取；逐次模型/工具捕获、legacy 历史标记、局部读取拒绝、哈希一致的分页读取重建和只写入新隔离目录
+
+### 会话统计
+
+主要测试：session-statistics.test.ts、e2e/app.spec.ts。
+
+服务实报 token 的缓存/非缓存完整性、LLM 请求与任务轮次、工具成功率、任务累计运行时间、旧 usage 历史回退及默认折叠/展开展示
+
+### 模型设置
+
+主要测试：config.test.ts、regressions.test.ts。
+
+连接只来自环境、settings.json 仅保存偏好、端点规范化、连接改动拒绝、参数边界、失败更新保持原状态、密钥内存存储、损坏配置不覆盖
+
+### 日志
+
+主要测试：logging.test.ts、core.test.ts。
+
+级别过滤、紧凑纯文本格式、上下文字段、错误元数据/原因链/堆栈、凭据脱敏、轮转、存储故障降级
+
+### Perfetto tracing
+
+主要测试：tracing.test.ts、agent-runtime-engine.test.ts、runtime-ipc.test.ts、tool-graph.test.ts、e2e/app.spec.ts。
+
+宿主与真实 Runtime 子进程的 `context.prepare`/`context.request` 及计量子阶段、独立模型与响应处理、工具计划/持久化及 instant/flow 事件导出；Runtime trace IPC 只接受固定阶段和有界数值属性，任意名称/文本字段关闭通道；主线程嵌套 begin/end slice、Task 包络、时序排序、整数 flow ID、可复用工具轨道、实际 tool 的完整结构化参数及递归凭据脱敏、按 session/task 独立持久化、终态后释放内存、认证下载、仅显示真实文件的统计框入口、关联元数据与普通长属性限长
+
+### HTTP API、访问密码与监听范围
+
+主要测试：access-password.test.ts、server.test.ts、listen-address.test.ts、core.test.ts。
+
+环境开关默认关闭、非法开关/启用时缺少密码拒绝启动、正确/错误密码、HttpOnly 门禁 cookie、未验证 API 拒绝；会话初始快照与按 event ID 游标读取的增量事件、任务接口和参数校验、跨工作区并行与同工作区排队、默认 IPv4/IPv6 回环、显式 IPv4/IPv6 局域网通配监听、Host/Origin/cookie/token、运行/排队任务时的配置更新互斥、取消与恢复
+
+### 服务关闭
+
+主要测试：shutdown.test.ts、e2e/app.spec.ts。
+
+关闭授权与确认、正在执行命令的中断保存、SSE 结束、端口释放、重复清理、实际入口进程退出、关闭页面与失败反馈
+
+### 开发服务重载
+
+主要测试：e2e/app.spec.ts。
+
+从侧栏完整刷新页面，重新请求 bootstrap 并恢复可操作的本机界面；不把页面刷新误作服务器进程重启
+
+### Web UI
+
+主要测试：e2e/app.spec.ts、e2e/access-password.spec.ts、timeline-virtualization.test.ts。
+
+访问密码开启时先显示门禁、错误密码不进入主页面且正确密码后加载主页面；
+
+建会话、首条消息标题更新、已完成任务默认只显示输入和最后一轮输出，展开后可检查工具/diff/通知/重试过程且刷新后重新默认折叠、历史续聊及隔离、项目内折叠和最近记录限制、审批与取消、有流式输出工具的卡片聚合与历史重载、设置、人工恢复、Markdown 输入规则原地转换为富文本且不显示独立预览、消息中的标题/链接/代码围栏/表格/任务列表及原始 HTML 拒绝、SSE 失效重连及切换会话时的加载反馈；
+
+手机视口可通过菜单完整打开侧栏，并由会话选择、遮罩或 Escape 收起；
+
+时间线按滚动位置和缓冲范围只创建可视条目，其余历史以准确高度占位
+
+## 关键缺陷回归
+
 - endLine 小于 startLine 时返回成功空读取。现在拒绝无效范围，避免将错误输入当作成功读取。
 - 原结构化 JSON 日志的 token/password 等字段未被文本脱敏识别。增加内部字段脱敏，测试包含嵌套字段和转义引号；当前落盘前再格式化为纯文本，不泄露凭据。
-- Windows Sandbox 回归现覆盖：cleanup failure 在同时取消时仍为 unknown；Supervisor 已证明 clean 的墙钟超时只释放当前 lease、不隔离其它实例；原生 ACL 撤销失败前 lease/grant 不从账本删除；共享对象的第二个 lease 等待首个原生 provision，read/write 用途交叉时仍只安装和最终撤销一个账户 grant；失败 grant 拒绝后不泄漏引用；unknown 调用整代账户 drain；任务 A fallback 与任务 B sandboxed 并发时状态不串扰；启动恢复/首次 self-check 依次执行账户进程终止、journal 撤销和安装自检。这些是无提升副作用的协议/编排测试，不替代固定账户下的真实 ACL、Job、WFP 或崩溃恢复验收。
-- `runtime-capability-core.test.ts` 只验证传输无关的 capability 状态机。`runtime-ipc.test.ts` 以独立 Node 子进程验证有界 framing、instance/nonce 握手和模型流；Broker 在匹配 `runtime_hello` 前收到任何 request/event 都关闭通道，observer 语义异常也转成连接失败；Runtime session adapter 只接受 Runtime 自有的模型/工具/上下文事件，不能伪造 Broker 的 execution instance、Sandbox 生命周期、fallback 或任务终态；请求级取消会向远端发送关联 requestId 的 cancel 帧、终止对应 handler，并以有界 tombstone 忽略竞态迟到响应而不破坏后续请求。`runtime-startup-protocol.test.ts` 验证安装版入口只接受固定本机 pipe 命名空间及有界严格首帧，并在 Windows 用真实本机 Named Pipe 启动独立 Node 正式入口完成握手和模型终态；`runtime-session-client.test.ts`、`agent-runtime-tools.test.ts`、`agent-runtime-service.test.ts` 与 `agent-runtime-engine.test.ts` 进一步验证 session adapter、Runtime 内命令、完整模型/工具循环、模型重试元数据、无效 DAG 的无副作用修正及 Engine launcher 分流。这些自动回归仍不验证专用账户、Named Pipe client PID、token/capability、Job 或 generation，因此不能单独计入 W3/W4 完成。
+- Windows Sandbox 回归现覆盖：cleanup failure 在同时取消时仍为 unknown；
+
+  Supervisor 已证明 clean 的墙钟超时只释放当前 lease、不隔离其它实例；
+
+  原生 ACL 撤销失败前 lease/grant 不从账本删除；
+
+  共享对象的第二个 lease 等待首个原生 provision，read/write 用途交叉时仍只安装和最终撤销一个账户 grant；
+
+  失败 grant 拒绝后不泄漏引用；
+
+  unknown 调用整代账户 drain；
+
+  任务 A fallback 与任务 B sandboxed 并发时状态不串扰；
+
+  启动恢复/首次 self-check 依次执行账户进程终止、journal 撤销和安装自检。
+
+  这些是无提升副作用的协议/编排测试，不替代固定账户下的真实 ACL、Job、WFP 或崩溃恢复验收。
+- `runtime-capability-core.test.ts` 只验证传输无关的 capability 状态机。
+
+  `runtime-ipc.test.ts` 以独立 Node 子进程验证有界 framing、instance/nonce 握手和模型流；
+
+  Broker 在匹配 `runtime_hello` 前收到任何 request/event 都关闭通道，observer 语义异常也转成连接失败；
+
+  Runtime session adapter 只接受 Runtime 自有的模型/工具/上下文事件，不能伪造 Broker 的 execution instance、Sandbox 生命周期、fallback 或任务终态；
+
+  请求级取消会向远端发送关联 requestId 的 cancel 帧、终止对应 handler，并以有界 tombstone 忽略竞态迟到响应而不破坏后续请求。
+
+  `runtime-startup-protocol.test.ts` 验证安装版入口只接受固定本机 pipe 命名空间及有界严格首帧，并在 Windows 用真实本机 Named Pipe 启动独立 Node 正式入口完成握手和模型终态；
+
+  `runtime-session-client.test.ts`、`agent-runtime-tools.test.ts`、`agent-runtime-service.test.ts` 与 `agent-runtime-engine.test.ts` 进一步验证 session adapter、Runtime 内命令、完整模型/工具循环、模型重试元数据、无效 DAG 的无副作用修正及 Engine launcher 分流。
+
+  这些自动回归仍不验证专用账户、Named Pipe client PID、token/capability、Job 或 generation，因此不能单独计入 W3/W4 完成。
 - 原生产品构建直接编译 `native/windows-sandbox/network-fence-implementation.cpp` 并定义 `CODEATELIER_PRODUCT_WFP_ONLY`；构建后手工冒烟确认实验参数 `--ipc` 以退出码 2 被拒。实验 demo 通过薄包装编译同一实现但不定义该宏，避免产品源从 experiment 目录反向依赖。
 
-测试清单不等于穷尽所有输入或保证没有缺陷。当前 Windows WSL2 `inspect` 仅有历史的 bubblewrap 只读绑定与基本命名空间/环境夹具；restricted-token 和网络/IPC demo 也只是被 Codex 外层 Sandbox 明确区分的局部证据。专用账户动态 `ALE_USER_ID` V4/V6 TCP 回环 fence 的管理员矩阵已通过：宿主不受影响、专用账户每个地址族只通获准端口、其它端口返回 `WSAEACCES`；相同结果也由 restricted Runtime 的直接网络后代复现。dynamic engine 关闭后同一账户的两个地址族均恢复连接，账户和目录清理为 0。扩展运行进一步证明 UDP 拒绝端口在普通及 restricted 后代中均无法收到 ACK，V4/V6 listen 也在两条路径中均返回 `10013`；TEST-NET TCP 的初始 `10035` 和仅创建 raw socket 都不能作为最终结论。allow 已收紧为 loopback 地址加端口，并以本机真实非回环 IPv4 listener 和 raw bind 建立正反基线；完整动态与持久生命周期结果见下。目标架构的一次性提升安装、单一专用账户、并发 instance lease/grant table、显式 ACL 投影/撤销、精确 Git config 图、Runtime 身份、Broker IPC、产品持久 WFP fence、真实 Git 配置下的 host 级网络边界、认证 relay/credential pipe、短期凭据、Job 后代清理、kind-specific executionInstance、资源限制及外部写入仍须分别实现和验证，不能由探针结果替代。该 profile 明确允许同账户并发任务读取、终止、注入或检查其它活动 Runtime/授权根，也无法保护既有公共 ACL 对象的机密性；不同对话不是彼此的安全边界。每实例 capability 只承诺经验证的直接及后代文件写入限制，不保证 Git 配置/hooks/helper 无副作用或仓库 path/ref 级网络边界。能力声明须分别对应 W0 安装、W1 身份/网络、W2 文件/监督、W3 Broker IPC、W4 本地 Runtime、W5 受限 push 和 W6 取消/资源边界，不能用较早阶段推断较晚能力。另仍未进行断电/磁盘损坏恢复、真实模型质量统计、全浏览器矩阵、其他平台 OS 级 sandbox、访问密码抗暴力破解评估或长期压力测试。应用层权限和单一密码门禁都不是系统沙箱或公网安全保证；不得将通过现有测试描述成上述能力已经验证。
+### Sandbox 证据边界
 
-更新：上述“完整提升运行仍待取得”已由后续管理员结果取代。动态 WFP 扩展矩阵现已完整通过 TCP、带 ACK 的 UDP 回环交付、真实本机非回环 IPv4、V4/V6 listen/raw bind、普通账户与 restricted 后代，以及正常关闭/强制终止清理；临时账户和目录清理为 0。持久 WFP 探针的进程退出后存续、枚举自检、核心 fence、卸载恢复与幂等清理也已通过。尚未完成的是产品安装器/升级/重启/篡改/故障恢复，以及真实 DNS、非回环 UDP、UDP 入站、ICMP、组播/广播等剩余路径。
+自动回归、组件探针和真实产品验收分别记录。测试清单不能证明专用账户 Sandbox 已完整可用；当前分层门槛见 [Windows Sandbox 架构](windows-integrity-sandbox.md#9-实施与验收)。
 
-持久生命周期手动夹具已在管理员环境完整通过：预清理 0 条、事务安装 8 条、安装进程退出后枚举自检 8 条；V4/V6 获准连接成功，其它连接、listen 和 raw bind 均以 `10013` 拒绝；卸载删除 8 条，自检按预期失败为 0 条，原拒绝端口恢复；`finally` 再次幂等清理 0 条。只读复核确认临时账户和目录为 0。BFE/机器重启、篡改修复、重复安装、版本升级、故障注入和卸载中断仍未覆盖。
+早期 WSL2、restricted-token、WFP、relay 和 Git 配置探针的运行过程已集中到 [历史验证记录](verification.md#sandbox-组件探针历史记录)。其中的“尚未实现”只描述当时状态。
 
-独立恢复脚本的 AST、嵌入 C# 编译和 `-WhatIf` 已通过；它分页枚举 filter 快照，只选择固定 provider 后删除 filters、sublayer/provider，并把账户/目录清理限制为 `CAPersist[8 位十六进制]` 与仓库内 `persistent-run-[32 位十六进制]`。生命周期夹具已验证同算法的原生清理器能删除真实持久对象并重复清理空状态，但嵌入 C# 恢复路径对真实对象的删除、部分对象缺失、删除失败和重复执行仍须单独验证。
+尚未覆盖的产品提升安装、真实 IPC/网络/push、取消与恢复矩阵，不能由构建或模拟测试替代。不同会话共用 Sandbox 账户，仍存在读取并集与 peer 干扰风险。
 
-首次管理员生命周期运行在安装前预清理暴露枚举模板缺陷：`actionMask=0` 会得到 `FWP_E_NEVER_MATCH`。中间修订显式使用 `0xFFFFFFFF` 后继续暴露零 GUID `layerKey` 不是跨层通配。
+### Sandbox 产品回归
 
-第二次管理员运行进一步证明部分模板中的零 GUID `layerKey` 会返回 `FWP_E_LAYER_NOT_FOUND`。枚举随后改为 null template 的完整快照并分页读取，删除前逐项核对固定 provider GUID；第三次管理员运行已通过上述完整生命周期。
+产品实现新增无管理员副作用的 Sandbox 单元覆盖：AccessManifest 对工作区、显式读写根、逐实例 HOME/TEMP 和 Git 配置文件固定卷/file ID 并拒绝链接/模式冲突；Runtime 在 manifest 前创建私有目录，确保它与工作区一样经过 ACL/capability/journal，而不是依赖 ProgramData 父目录写权。
 
-最小 relay lease 探针已在普通权限下通过错误证明、错误 host、消费后重放拒绝，以及登记 lease 对绑定 host 成功。组合探针进一步在批准的宿主权限下证明 restricted client 经 Named Pipe 联合身份验证后获得 lease 并访问绑定 host，Job 外同映像客户端被拒。加上已通过的 WFP 固定回环端口探针，身份、一次性 host lease 与内核端口 fence 的核心机制均已有证据；尚未实现产品 relay，也未验证 CONNECT/HTTPS 或真实 Git push。
+Git 配置图按两个 global 入口递归解析 `include` 与适用的 `gitdir/gitdir/i includeIf`，对循环、未知条件、链接和资源上限安全拒绝；
 
-真实 Git 配置投影探针已通过 system、两个 global 入口、匹配 includeIf、local、worktree 的加载顺序；显式 `GIT_CONFIG_GLOBAL` 忽略私有 HOME decoy，Broker 只读投影根拒绝 global 写入。该结果只验证配置栈机制，不替代宿主真实配置图解析、专用账户逐文件 ACL、helper/证书或 push 集成。
+account generation 状态机验证 1～4 个不同工作区并发、同工作区串行、共享 grant 引用计数、epoch 防重放和整代 quarantine；
 
-产品实现新增无管理员副作用的 Sandbox 单元覆盖：AccessManifest 对工作区、显式读写根、逐实例 HOME/TEMP 和 Git 配置文件固定卷/file ID 并拒绝链接/模式冲突；Runtime 在 manifest 前创建私有目录，确保它与工作区一样经过 ACL/capability/journal，而不是依赖 ProgramData 父目录写权。Git 配置图按两个 global 入口递归解析 `include` 与适用的 `gitdir/gitdir/i includeIf`，对循环、未知条件、链接和资源上限安全拒绝；account generation 状态机验证 1～4 个不同工作区并发、同工作区串行、共享 grant 引用计数、epoch 防重放和整代 quarantine；ToolRunner 回归夹具证明受限 Git 的仓库探测和实际 action 都经过配置的 Sandbox Runtime；CONNECT relay 夹具验证 proxy token、精确 host、私网 DNS、IPv4/IPv6 公网分类和 lease 撤销，其中 IPv6 只接受普通全球单播并拒绝 Teredo、6to4、NAT64、文档和本地前缀。原生构建脚本已在本机 MSVC x64 下生成 WFP manager 与 supervisor，后者含逐对象 ACL/journal、同卷 rename 后按 file ID 重开原对象的 revoke 回退、收紧的 WRITE_RESTRICTED token、private desktop、Job、账户拒绝登录权、专用账户环境块与同 Job askpass pipe；PowerShell build/install/recover 均通过语法解析。上述结果仍不等同于提升安装、真实 rename/ACL/WFP/CONNECT 或 Git push 集成通过。
+ToolRunner 回归夹具证明受限 Git 的仓库探测和实际 action 都经过配置的 Sandbox Runtime；
 
-原生 Runtime 增量另覆盖：固定 magic/version 的有界二进制执行帧、绝对路径/argv/时限边界、v2 installation state 与 supervisor、WFP manager、Node 24、Runtime entry、compaction worker 五个 SHA-256 复核，以及原生自检成功/任一 Runtime bundle 篡改拒绝。MSVC 已成功构建同一二进制的 supervisor/bootstrap：固定 self-check/execute/bootstrap 模式、DPAPI 解密、账户/WFP/Runtime bundle 自检、PID 核对 Named Pipe、restricted token、Job、Broker stdin 断连取消和唯一 SID ACE 撤销。安装脚本通过 PowerShell AST 解析；真实提升安装仍未执行，因此这里只记录“构建、静态安装契约与无管理员副作用回归通过”，不记录产品 E2E 通过。
+CONNECT relay 夹具验证 proxy token、精确 host、私网 DNS、IPv4/IPv6 公网分类和 lease 撤销，其中 IPv6 只接受普通全球单播并拒绝 Teredo、6to4、NAT64、文档和本地前缀。
 
-`sandbox-agent-runtime-launcher.test.ts` 覆盖产品 launcher 的关键状态边界：Runtime started 后才提交共享 grant并将该 execution instance 标为 `sandboxed`；clean close 后执行 native revoke、commit 和私有目录清理；启动前 self-check 失败才允许显式宿主 fallback；started 后 close 返回 orphaned、Broker 未取得可信 Runtime 终态（即使 native shutdown clean）或 generation 摘要不一致时写入 `unknown`、quarantine 并调用整代排空。`agent-runtime-engine.test.ts` 另证明 Engine 只捕获 `AgentRuntimeFallbackError` 继续宿主 loop，并把 execution instance 记为 `host-process`/`sandboxApplied=false`，同时发出供 Web 徽标使用的实际 `sandbox_stage`；已启动 Push Runner 即使 clean cancellation，也保留 `sideEffectsPossible=true`。C++ 任务 pipe 的 PID、创建时间、Job、账户、restricted SID、固定映像检查及字节代理目前由 MSVC `/W4` 构建覆盖；安装后可用 `pnpm sandbox:runtime:verify` 验证真实完成、取消和 clean release，错误客户端及恢复故障注入仍需提升环境矩阵。
+原生构建脚本已在本机 MSVC x64 下生成 WFP manager 与 supervisor，后者含逐对象 ACL/journal、同卷 rename 后按 file ID 重开原对象的 revoke 回退、收紧的 WRITE_RESTRICTED token、private desktop、Job、账户拒绝登录权、专用账户环境块与同 Job askpass pipe；PowerShell build/install/recover 均通过语法解析。
+
+上述结果仍不等同于提升安装、真实 rename/ACL/WFP/CONNECT 或 Git push 集成通过。
+
+原生 Runtime 增量另覆盖：固定 magic/version 的有界二进制执行帧、绝对路径/argv/时限边界、v2 installation state 与 supervisor、WFP manager、Node 24、Runtime entry、compaction worker 五个 SHA-256 复核，以及原生自检成功/任一 Runtime bundle 篡改拒绝。
+
+MSVC 已成功构建同一二进制的 supervisor/bootstrap：固定 self-check/execute/bootstrap 模式、DPAPI 解密、账户/WFP/Runtime bundle 自检、PID 核对 Named Pipe、restricted token、Job、Broker stdin 断连取消和唯一 SID ACE 撤销。
+
+安装脚本通过 PowerShell AST 解析；真实提升安装仍未执行，因此这里只记录“构建、静态安装契约与无管理员副作用回归通过”，不记录产品 E2E 通过。
+
+`sandbox-agent-runtime-launcher.test.ts` 覆盖产品 launcher 的关键状态边界：Runtime started 后才提交共享 grant并将该 execution instance 标为 `sandboxed`；
+
+clean close 后执行 native revoke、commit 和私有目录清理；
+
+启动前 self-check 失败才允许显式宿主 fallback；
+
+started 后 close 返回 orphaned、Broker 未取得可信 Runtime 终态（即使 native shutdown clean）或 generation 摘要不一致时写入 `unknown`、quarantine 并调用整代排空。
+
+`agent-runtime-engine.test.ts` 另证明 Engine 只捕获 `AgentRuntimeFallbackError` 继续宿主 loop，并把 execution instance 记为 `host-process`/`sandboxApplied=false`，同时发出供 Web 徽标使用的实际 `sandbox_stage`；已启动 Push Runner 即使 clean cancellation，也保留 `sideEffectsPossible=true`。
+
+C++ 任务 pipe 的 PID、创建时间、Job、账户、restricted SID、固定映像检查及字节代理目前由 MSVC `/W4` 构建覆盖；安装后可用 `pnpm sandbox:runtime:verify` 验证真实完成、取消和 clean release，错误客户端及恢复故障注入仍需提升环境矩阵。
 
 ## 自举验收
 
@@ -101,7 +284,9 @@ Worker 与主任务使用相同 token 计量和校准配置。e2e/app.spec.ts �
 
 ## token 容量与用量
 
-tokens.test.ts 覆盖容量预留、备用模式、中文/代码/工具与特殊 token 字面量、usage 校验、压缩计量一致性、输出预留传参、用量重启持久化和实报校准。session-statistics.test.ts 覆盖 model_request、实报缓存/非缓存聚合、旧 usage 回退、工具成功率和运行时长；e2e/app.spec.ts 覆盖统计默认折叠、展开后 token/LLM/工具展示、预算模式、服务实报用量及刷新保留。provider.test.ts 用本机 HTTP/SSE 验证模型容量和 usage 提取。真实服务最小探测见 model-tokens.md。
+tokens.test.ts 覆盖容量预留、备用模式、中文/代码/工具与特殊 token 字面量、usage 校验、压缩计量一致性、输出预留传参、用量重启持久化和实报校准。session-statistics.test.ts 覆盖 model_request、实报缓存/非缓存聚合、旧 usage 回退、工具成功率和运行时长；e2e/app.spec.ts 覆盖统计默认折叠、展开后 token/LLM/工具展示、预算模式、服务实报用量及刷新保留。
+
+provider.test.ts 用本机 HTTP/SSE 验证模型容量和 usage 提取。真实服务最小探测见 model-tokens.md。
 
 ## 渐进压缩覆盖
 
@@ -115,7 +300,9 @@ context-stages.test.ts 先复现旧实现遗漏长记录中间材料，再验证
 
 ## 完整请求与压缩覆盖
 
-context-request.test.ts 覆盖低于阈值时重复读取结果原样发送、原始输入计量、瞬态重试和新工具轮次保持完整历史。context-stages.test.ts 覆盖达到阈值后的读取去重、归档和摘要。context.test.ts 额外覆盖常规摘要在超预算失败时的保底视图：完整快照保留，活动输入保留用户原文与最新结论，并移除超长中间工具输出。git-tools.test.ts 覆盖 diff 独立输出硬上限；core.test.ts 覆盖模型收到避免无必要全量 diff 的指令。它们均属于普通功能回归，不启动 Evaluation。
+context-request.test.ts 覆盖低于阈值时重复读取结果原样发送、原始输入计量、瞬态重试和新工具轮次保持完整历史。context-stages.test.ts 覆盖达到阈值后的读取去重、归档和摘要。context.test.ts 额外覆盖常规摘要在超预算失败时的保底视图：完整快照保留，活动输入保留用户原文与最新结论，并移除超长中间工具输出。
+
+git-tools.test.ts 覆盖 diff 独立输出硬上限；core.test.ts 覆盖模型收到避免无必要全量 diff 的指令。它们均属于普通功能回归，不启动 Evaluation。
 
 评测报告手动回归 `scripts/swebench/test_report.py` 覆盖缺失数据不当作零或失败、官方回归测试失败、补丁头排除、缺失工具结果、非零测试退出和分位数样本口径。该套件不进入默认 test/check。另覆盖 list_files 数组形式的工具结果；2026-09-12 用户授权三题评测期间，报告回归 6 项通过。
 
@@ -145,10 +332,16 @@ context-request.test.ts 覆盖低于阈值时重复读取结果原样发送、�
 
 ## 严格工具契约
 
-- tests/tool-schema.test.ts 检查所有生产工具的 strict 对象声明：属性均列入 required，禁止额外属性；新调用的根节点包含严格的 `execution`（唯一 ID 与依赖列表）及 `arguments` 信封；单一 `git` 工具的每个 discriminated action 仅接受对应字段，diff 必须显式传 staged、paths 和 contextLines。此回归防止工具 schema 导致整轮模型请求被拒绝，不连接真实服务。
+- tests/tool-schema.test.ts 检查所有生产工具的 strict 对象声明：属性均列入 required，禁止额外属性；新调用的根节点包含严格的 `execution`（唯一 ID 与依赖列表）及 `arguments` 信封；单一 `git` 工具的每个 discriminated action 仅接受对应字段，diff 必须显式传 staged、paths 和 contextLines。
+
+  此回归防止工具 schema 导致整轮模型请求被拒绝，不连接真实服务。
 - tests/tool-graph.test.ts 验证独立根节点的拓扑并发与汇聚、失败节点对子孙的阻断，以及重复 ID、未知依赖和环在任何执行回调前拒绝；engine.test.ts 覆盖模型信封解析、阻断结果回传和批次事件持久化。
 
-统一文件编辑：`files.test.ts` 覆盖 create:true 的嵌套创建、已有路径与创建期间出现路径的覆盖拒绝，以及 create:false 单文件条目中的同快照多处替换和成功修改后必须重新读取；`multi-file-edit.test.ts` 覆盖单/多文件条目的逐文件预检、重复真实路径、外部修改、审批拒绝、行号消歧、重叠拒绝、CRLF、取消，以及单文件预检/写入故障后继续独立文件、汇总全部失败路径和未知状态。`tool-schema.test.ts` 递归检查唯一 `edit_files` 的 create 分支、无前后锚点的已有文件补丁及 strict 契约；`core.test.ts` 验证模型指令要求将参数已知、互不冲突的同一逻辑改动合并为单次 `edit_files` 调用；`engine.test.ts` 验证单次多文件调用及逐文件进度持久化；`e2e/app.spec.ts` 检查进度、diff 和刷新历史。已有 core 测试继续覆盖未读取及外部变化拒绝。
+统一文件编辑：`files.test.ts` 覆盖 create:true 的嵌套创建、已有路径与创建期间出现路径的覆盖拒绝，以及 create:false 单文件条目中的同快照多处替换和成功修改后必须重新读取；`multi-file-edit.test.ts` 覆盖单/多文件条目的逐文件预检、重复真实路径、外部修改、审批拒绝、行号消歧、重叠拒绝、CRLF、取消，以及单文件预检/写入故障后继续独立文件、汇总全部失败路径和未知状态。
+
+`tool-schema.test.ts` 递归检查唯一 `edit_files` 的 create 分支、无前后锚点的已有文件补丁及 strict 契约；`core.test.ts` 验证模型指令要求将参数已知、互不冲突的同一逻辑改动合并为单次 `edit_files` 调用；`engine.test.ts` 验证单次多文件调用及逐文件进度持久化；`e2e/app.spec.ts` 检查进度、diff 和刷新历史。
+
+已有 core 测试继续覆盖未读取及外部变化拒绝。
 
 行号搜索窗口回归：`multi-file-edit.test.ts` 覆盖行内/跨行片段、周围文本保留、末行 LF/CRLF、窗口内歧义（含重叠出现）、匹配跨出窗口、无范围外回退，以及多文件预检失败时独立有效文件仍可写入。
 
@@ -170,7 +363,9 @@ context-request.test.ts 覆盖低于阈值时重复读取结果原样发送、�
 
 ### Git 模型参数兼容性
 
-模型侧 `git` 参数采用 `{ "request": { "action": "status" } }`，其他 action 的字段也放在 request 内。根节点为严格 object，request 使用嵌套 anyOf；避免服务拒绝根级 oneOf。执行前严格验证各 action 字段，再解包交给原 Git 执行器；历史扁平参数继续受原校验约束。tool-schema.test.ts 覆盖根节点、oneOf 禁用、包装解包、历史兼容和额外/非法字段拒绝。
+模型侧 `git` 参数采用 `{ "request": { "action": "status" } }`，其他 action 的字段也放在 request 内。根节点为严格 object，request 使用嵌套 anyOf；避免服务拒绝根级 oneOf。执行前严格验证各 action 字段，再解包交给原 Git 执行器；历史扁平参数继续受原校验约束。
+
+tool-schema.test.ts 覆盖根节点、oneOf 禁用、包装解包、历史兼容和额外/非法字段拒绝。
 
 ### Agent Runtime 阻塞等待 Push Runner
 

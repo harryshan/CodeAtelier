@@ -17,9 +17,13 @@
 pwsh -File experiments/windows-restricted-token-demo/run-demo.ps1
 ```
 
-脚本使用本机 MSVC，构建产物和运行时目录位于已忽略的 `.local/windows-restricted-token-demo/`。每次运行创建两个同属当前用户的临时目录：探针必须读取外部目录中的现有文件及 `C:\Windows\win.ini`，修改安装根 ACE 前已经存在的文件，并由直接进程和后代在获准目录创建文件；它们在外部目录的创建都必须返回 `ERROR_ACCESS_DENIED`。临时目录最终整体删除，不给真实工作区或用户目录安装 ACE。
+脚本使用本机 MSVC，构建产物和运行时目录位于已忽略的 `.local/windows-restricted-token-demo/`。每次运行创建两个同属当前用户的临时目录：探针必须读取外部目录中的现有文件及 `C:\Windows\win.ini`，修改安装根 ACE 前已经存在的文件，并由直接进程和后代在获准目录创建文件；它们在外部目录的创建都必须返回 `ERROR_ACCESS_DENIED`。
 
-输出中的 `CONTEXT launcher-parent` 描述调用环境，`restricted-probe` 和 `nested-probe` 描述目标进程。比较普通 Codex 工具运行与批准的宿主权限运行时，重点核对 `restricted`、`appContainer`、`integrity` 和 `inJob`，避免把 Codex 自身 Sandbox/Job 的额外限制算成该设计的能力。批准运行只保证解除本轮文件/token Sandbox；如果输出仍是 `inJob=yes`，说明进程仍受 Codex 宿主的外层 Job 影响，不能据此验证完全独立的 Job 行为。
+临时目录最终整体删除，不给真实工作区或用户目录安装 ACE。
+
+输出中的 `CONTEXT launcher-parent` 描述调用环境，`restricted-probe` 和 `nested-probe` 描述目标进程。比较普通 Codex 工具运行与批准的宿主权限运行时，重点核对 `restricted`、`appContainer`、`integrity` 和 `inJob`，避免把 Codex 自身 Sandbox/Job 的额外限制算成该设计的能力。
+
+批准运行只保证解除本轮文件/token Sandbox；如果输出仍是 `inJob=yes`，说明进程仍受 Codex 宿主的外层 Job 影响，不能据此验证完全独立的 Job 行为。
 
 ## 不能证明的内容
 
@@ -31,6 +35,8 @@ pwsh -File experiments/windows-restricted-token-demo/run-demo.ps1
 - WFP 默认拒绝、Push Runner、relay、CONNECT host 边界或凭据；
 - Git/Node/PowerShell/编译器的真实兼容矩阵。
 
-探针为兼容启动使用 execution、root capability、logon、Everyone 四个 restricting SID；管理员专用账户实测证明不同显式凭据启动可能复用 logon SID，因此 default DACL 已收紧为共享账户 SID 与本实例 execution SID，不再向 logon/Everyone 授予新对象通用权限。它仍没有逐项证明 logon/Everyone restricting SID 对所有工具都不可省略，也没有证明 default DACL 对全部 Win32 对象的继承语义；产品控制管道和 supervisor 对象仍须使用显式私有 DACL 与客户端身份验证。
+探针为兼容启动使用 execution、root capability、logon、Everyone 四个 restricting SID；管理员专用账户实测证明不同显式凭据启动可能复用 logon SID，因此 default DACL 已收紧为共享账户 SID 与本实例 execution SID，不再向 logon/Everyone 授予新对象通用权限。
+
+它仍没有逐项证明 logon/Everyone restricting SID 对所有工具都不可省略，也没有证明 default DACL 对全部 Win32 对象的继承语义；产品控制管道和 supervisor 对象仍须使用显式私有 DACL 与客户端身份验证。
 
 因此它不能把 W1 或 W2 标记为完成，也不能支持专用账户安装、并发 instance lease、显式读写 ACL 或网络边界的产品声明。D100 已明确同 SID 对话之间不要求进程对象隔离；并发入口只观察相关 open 结果，用于记录残余干扰风险。

@@ -305,3 +305,29 @@
 - 15 项审查问题已落实到实现、回归或文档：跨会话 compact、审批对象身份、失败回滚证明、Job 分配失败、grant acquire/revoke 互斥、provision waiter 失败/取消、relay 首次启动与 socket 生命周期、Git global 优先级、execution instance 恢复关联、fallback 事件及实际安装说明均已修正。产品 WFP verify 现在从受保护 state 取得账户和 V4/V6 relay 端口，逐条核对八条持久规则的账户 security descriptor、layer、action、weight、地址、端口、raw flag 和唯一形状，而非只计数。
 - 当前 Codex Sandbox 中，TypeScript、ESLint、Prettier、production/runtime build 均通过；排除已确认被外层 Sandbox 阻止 `taskkill /T /F` 的 `shutdown.test.ts` 后，52 个测试文件为 349 项通过、1 项平台跳过。该关闭用例实际诊断得到 `taskkill` 的 `Access denied`，未修改产品逻辑或弱化断言。Chromium 23/23 用例均完成通过，但外层 Sandbox 同样阻止 runner 正常收尾，因此人工终止等待进程，不记为干净的 `pnpm test:e2e` 退出成功。
 - `pnpm sandbox:native:build` 以 MSVC C++20 `/W4` 无警告生成 Supervisor 和产品 WFP manager。没有运行 Evaluation，也没有提升安装或修改专用账户、WFP、持久 ACL；原生撤销失败、Job 失败、askpass 卡死、损坏/替换 WFP 规则及异常终止仍须在固定产品账户环境做故障注入，故不能据本轮结果将 W3--W6 标为平台验收完成。
+
+## 已移除工具的历史回归记录
+
+以下记录从测试说明迁入，仅用于保留历史，不代表当前工具接口。
+
+- 文件名命中恰好填满第 100 个搜索结果后，仍继续追加内容命中，返回 101 条。该内置 `search` 已移除；历史记录继续可展示和归档，新的代码搜索改走受审批的命令。
+
+## Sandbox 组件探针历史记录
+
+以下保留从测试说明迁入的阶段记录，原文中的“当前”“尚未实现”和“更新”均指各次探针阶段。现行状态与验收门槛见 [Windows Sandbox 架构](windows-integrity-sandbox.md)。
+
+测试清单不等于穷尽所有输入或保证没有缺陷。当前 Windows WSL2 `inspect` 仅有历史的 bubblewrap 只读绑定与基本命名空间/环境夹具；restricted-token 和网络/IPC demo 也只是被 Codex 外层 Sandbox 明确区分的局部证据。专用账户动态 `ALE_USER_ID` V4/V6 TCP 回环 fence 的管理员矩阵已通过：宿主不受影响、专用账户每个地址族只通获准端口、其它端口返回 `WSAEACCES`；相同结果也由 restricted Runtime 的直接网络后代复现。dynamic engine 关闭后同一账户的两个地址族均恢复连接，账户和目录清理为 0。扩展运行进一步证明 UDP 拒绝端口在普通及 restricted 后代中均无法收到 ACK，V4/V6 listen 也在两条路径中均返回 `10013`；TEST-NET TCP 的初始 `10035` 和仅创建 raw socket 都不能作为最终结论。allow 已收紧为 loopback 地址加端口，并以本机真实非回环 IPv4 listener 和 raw bind 建立正反基线；完整动态与持久生命周期结果见下。目标架构的一次性提升安装、单一专用账户、并发 instance lease/grant table、显式 ACL 投影/撤销、精确 Git config 图、Runtime 身份、Broker IPC、产品持久 WFP fence、真实 Git 配置下的 host 级网络边界、认证 relay/credential pipe、短期凭据、Job 后代清理、kind-specific executionInstance、资源限制及外部写入仍须分别实现和验证，不能由探针结果替代。该 profile 明确允许同账户并发任务读取、终止、注入或检查其它活动 Runtime/授权根，也无法保护既有公共 ACL 对象的机密性；不同对话不是彼此的安全边界。每实例 capability 只承诺经验证的直接及后代文件写入限制，不保证 Git 配置/hooks/helper 无副作用或仓库 path/ref 级网络边界。能力声明须分别对应 W0 安装、W1 身份/网络、W2 文件/监督、W3 Broker IPC、W4 本地 Runtime、W5 受限 push 和 W6 取消/资源边界，不能用较早阶段推断较晚能力。另仍未进行断电/磁盘损坏恢复、真实模型质量统计、全浏览器矩阵、其他平台 OS 级 sandbox、访问密码抗暴力破解评估或长期压力测试。应用层权限和单一密码门禁都不是系统沙箱或公网安全保证；不得将通过现有测试描述成上述能力已经验证。
+
+更新：上述“完整提升运行仍待取得”已由后续管理员结果取代。动态 WFP 扩展矩阵现已完整通过 TCP、带 ACK 的 UDP 回环交付、真实本机非回环 IPv4、V4/V6 listen/raw bind、普通账户与 restricted 后代，以及正常关闭/强制终止清理；临时账户和目录清理为 0。持久 WFP 探针的进程退出后存续、枚举自检、核心 fence、卸载恢复与幂等清理也已通过。尚未完成的是产品安装器/升级/重启/篡改/故障恢复，以及真实 DNS、非回环 UDP、UDP 入站、ICMP、组播/广播等剩余路径。
+
+持久生命周期手动夹具已在管理员环境完整通过：预清理 0 条、事务安装 8 条、安装进程退出后枚举自检 8 条；V4/V6 获准连接成功，其它连接、listen 和 raw bind 均以 `10013` 拒绝；卸载删除 8 条，自检按预期失败为 0 条，原拒绝端口恢复；`finally` 再次幂等清理 0 条。只读复核确认临时账户和目录为 0。BFE/机器重启、篡改修复、重复安装、版本升级、故障注入和卸载中断仍未覆盖。
+
+独立恢复脚本的 AST、嵌入 C# 编译和 `-WhatIf` 已通过；它分页枚举 filter 快照，只选择固定 provider 后删除 filters、sublayer/provider，并把账户/目录清理限制为 `CAPersist[8 位十六进制]` 与仓库内 `persistent-run-[32 位十六进制]`。生命周期夹具已验证同算法的原生清理器能删除真实持久对象并重复清理空状态，但嵌入 C# 恢复路径对真实对象的删除、部分对象缺失、删除失败和重复执行仍须单独验证。
+
+首次管理员生命周期运行在安装前预清理暴露枚举模板缺陷：`actionMask=0` 会得到 `FWP_E_NEVER_MATCH`。中间修订显式使用 `0xFFFFFFFF` 后继续暴露零 GUID `layerKey` 不是跨层通配。
+
+第二次管理员运行进一步证明部分模板中的零 GUID `layerKey` 会返回 `FWP_E_LAYER_NOT_FOUND`。枚举随后改为 null template 的完整快照并分页读取，删除前逐项核对固定 provider GUID；第三次管理员运行已通过上述完整生命周期。
+
+最小 relay lease 探针已在普通权限下通过错误证明、错误 host、消费后重放拒绝，以及登记 lease 对绑定 host 成功。组合探针进一步在批准的宿主权限下证明 restricted client 经 Named Pipe 联合身份验证后获得 lease 并访问绑定 host，Job 外同映像客户端被拒。加上已通过的 WFP 固定回环端口探针，身份、一次性 host lease 与内核端口 fence 的核心机制均已有证据；尚未实现产品 relay，也未验证 CONNECT/HTTPS 或真实 Git push。
+
+真实 Git 配置投影探针已通过 system、两个 global 入口、匹配 includeIf、local、worktree 的加载顺序；显式 `GIT_CONFIG_GLOBAL` 忽略私有 HOME decoy，Broker 只读投影根拒绝 global 写入。该结果只验证配置栈机制，不替代宿主真实配置图解析、专用账户逐文件 ACL、helper/证书或 push 集成。
