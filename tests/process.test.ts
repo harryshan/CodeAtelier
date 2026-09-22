@@ -4,7 +4,7 @@
  * 1. 启动不存在的程序，检查错误包含子进程实际报错及超时资源清理。
  * 2. 分两次输出一个 UTF-8 字符，检查解码完整、颜色控制符跨 chunk 清理、子进程颜色环境和模型密钥隔离。
  * 3. PID 回调必须在进程结束前提供真实正数，供 Sandbox 执行账本持久化。
- * 4. 收到输出后取消进程，确认以取消错误结束。
+ * 4. 输出持久化抛错、输入管道提前关闭时返回错误并停止进程；收到输出后取消进程，确认以取消错误结束。
  *
  * 用例结束后恢复环境变量；程序和参数直接传给执行器，不经过 shell 拼接。
  */
@@ -12,6 +12,40 @@
 import { it, expect, vi, afterEach } from "vitest";
 import { executeProcess } from "../src/tools/process.js";
 import { temp } from "./fixtures/helpers.js";
+
+it("rejects output persistence failures after stopping the child", async () => {
+  const failure = new Error("output persistence failed");
+  await expect(
+    executeProcess(
+      process.execPath,
+      ["-e", 'console.log("ready");setTimeout(() => process.exit(0), 300)'],
+      await temp(),
+      new AbortController().signal,
+      5000,
+      1000,
+      () => {
+        throw failure;
+      },
+    ),
+  ).rejects.toBe(failure);
+});
+
+it("handles a child closing stdin before the supplied input is consumed", async () => {
+  await expect(
+    executeProcess(
+      process.execPath,
+      ["-e", "process.exit(0)"],
+      await temp(),
+      new AbortController().signal,
+      5000,
+      1000,
+      () => {},
+      {},
+      undefined,
+      Buffer.alloc(4 * 1024 * 1024),
+    ),
+  ).rejects.toBeInstanceOf(Error);
+});
 
 afterEach(() => vi.unstubAllEnvs());
 

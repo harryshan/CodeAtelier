@@ -59,7 +59,7 @@
 
 主要测试：files.test.ts、multi-file-edit.test.ts、regressions.test.ts。
 
-create:true 嵌套创建、已有目标与创建期间出现目标的覆盖拒绝；create:false 的唯一/字面替换、任务内读取前置条件、并发修改、临时文件清理、POSIX 模式
+create:true 嵌套创建、已有目标及最后一次预检之后出现目标的覆盖拒绝；create:false 的唯一/字面替换、任务内读取前置条件、并发修改、临时文件清理、POSIX 模式
 
 ### 路径与工作区
 
@@ -83,7 +83,7 @@ create:true 嵌套创建、已有目标与创建期间出现目标的覆盖拒�
 
 主要测试：process.test.ts、core.test.ts、permissions.test.ts、tool-schema.test.ts。
 
-不存在的命令及子进程实际错误、输出与退出码、截断、UTF-8/ANSI 分块、颜色环境与控制符清理、API key 不继承、内部 Windows/POSIX shell 选择、单一 command 契约、复合命令合并、直接 Git/提权拒绝、取消和超时
+不存在的命令及子进程实际错误、输出与退出码、截断、UTF-8/ANSI 分块、颜色环境与控制符清理、API key 不继承、内部 Windows/POSIX shell 选择、单一 command 契约、复合命令合并、直接 Git/提权拒绝、取消和超时；输出持久化失败及 stdin 提前关闭不会产生未捕获异常，停止子进程后返回错误。
 
 ### Sandbox Broker 与专用用户目标
 
@@ -101,6 +101,7 @@ create:true 嵌套创建、已有目标与创建期间出现目标的覆盖拒�
 - 执行开始后不重放；executionInstance、PID/创建时间、中断状态、独立日志及恢复提示。
 - strict 协议操作与响应关联、有界 framing、instance/nonce 握手、model/session/approval adapter 和 Supervisor 首帧。
 - 独立 Node 子进程中的 agent loop、工具 DAG 和 Engine launcher 分流。
+- `sandbox-supervisor-failures.test.ts` 用内存管道验证 Runner/Agent Runtime 启动与输出回调故障、stdin 错误，以及清理证明缺失优先于原始错误；不启动原生账户。
 
 Windows native runtime/relay 测试在非 Windows 整组跳过。stdio harness、首帧 parser 和组件探针不能证明产品 Windows transport 身份；完整能力须按 [W0--W6 分层门槛](windows-integrity-sandbox.md#9-实施与验收) 验收。
 
@@ -131,6 +132,8 @@ item.done 回退、失败/不完整事件、服务实际错误 message/reason/co
 ### 会话存储、标题与 Replay Case
 
 主要测试：store.test.ts、recovery.test.ts、title-generation.test.ts、replay-case.test.ts。
+
+`store.test.ts` 用第二个真实 SQLite 连接锁住后续历史分片，验证事务取得部分锁后失败会释放前面分片，后续事务仍可提交。
 
 隔离、事件顺序与游标、上下文、事务回滚、queued/running/waiting 重启中断、实际开始时间、标题状态迁移和恢复，以及大 JSON 的 Worker 读取；按小阈值触发的历史 SQLite 分片、新旧分片聚合、重启发现和旧分片 Worker 读取；逐次模型/工具捕获、legacy 历史标记、局部读取拒绝、哈希一致的分页读取重建和只写入新隔离目录
 

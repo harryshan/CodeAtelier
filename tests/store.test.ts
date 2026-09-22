@@ -3,7 +3,7 @@
  * 通过关闭后重新创建 Store 验证磁盘记录，不使用数据库替身。
  *
  * 1. 创建两个会话，核对各自事件、读取游标和上下文。
- * 2. 在保存任务和事件的事务中制造失败，确认整笔事务回滚。
+ * 2. 后续分片取锁失败时释放已取得的事务；在保存任务和事件的事务中制造失败，确认整笔事务回滚。
  * 3. 保存排队、运行和终态任务后重启，确认所有未完成任务变为 interrupted。
  * 4. 大于同步阈值的事件和上下文由 Worker 读取，验证结果与同步接口相同且数据库可正常关闭。
  * 5. 逐步保存 replay 模型/工具捕获并导出单任务 case；旧事件只能形成明确的 legacy case。
@@ -14,9 +14,33 @@
 
 import { it, expect } from "vitest";
 import { readdirSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 import path from "node:path";
 import { Store } from "../src/sessions/store.js";
 import { temp } from "./fixtures/helpers.js";
+
+it("releases earlier shard transactions when a later shard is locked", async () => {
+  const root = await temp();
+  const file = path.join(root, "history.sqlite");
+  const store = new Store(file, { maxShardBytes: 1 });
+  const first = store.create(root, "first");
+  const firstDb = store.db;
+  store.create(root, "second");
+  const blocker = new DatabaseSync(path.join(root, "history-000001.sqlite"));
+
+  try {
+    blocker.exec("BEGIN IMMEDIATE");
+    expect(() => store.transaction(() => store.createTask(first.id))).toThrow();
+    expect(firstDb.isTransaction).toBe(false);
+    blocker.exec("ROLLBACK");
+
+    const task = store.transaction(() => store.createTask(first.id));
+    expect(store.task(task.id)?.status).toBe("queued");
+  } finally {
+    blocker.close();
+    store.close();
+  }
+});
 
 it("keeps sessions isolated and supports ordered event cursors", async () => {
   const root = await temp();

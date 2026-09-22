@@ -1,7 +1,7 @@
 /**
  * 用 SQLite 保存会话、任务、事件和模型上下文，供 Engine、HTTP 接口和 ContextManager 使用。
  *
- * 1. 构造器发现兼容的 history.sqlite 与后续容量分片，在每个文件初始化数据库并把重启前未完成的任务标为 interrupted；transaction 保持单次调用的同步提交和回滚边界。
+ * 1. 构造器发现兼容的 history.sqlite 与后续容量分片，在每个文件初始化数据库并把重启前未完成的任务标为 interrupted；transaction 同步提交，取锁或执行失败时释放本次已开启的事务。
  * 2. list/get/create 跨分片定位或聚合会话；新会话在最新分片达到容量上限后进入新文件，已有会话始终写回其初始分片。标题状态的领取、完成或失败保证首条 prompt 只生成一次标题。
  * 3. tasks/task/createTask/status 读写任务状态；queuedTasks 和 hasUnfinishedTask 供 Engine 调度跨会话队列，event/events 保存和分页读取事件。
  * 4. task_replays 在任务开始后追加高保真模型/工具材料；replayCase 导出单任务的 captured 或 legacy case，不触发恢复或副作用。
@@ -87,21 +87,40 @@ export class Store {
 
   /** 回调必须同步完成，不能在事务中等待网络或其他异步操作。 */
   transaction<T>(work: () => T): T {
-    const transactionShards = [...this.shards.all];
-    for (const shard of transactionShards) {
-      shard.db.exec("BEGIN IMMEDIATE");
-    }
-
+    const transactionShards: DatabaseSync[] = [];
     try {
+      // 后续分片可能正由压缩 Worker 写入；取锁失败也必须释放已取得的事务。
+      for (const shard of this.shards.all) {
+        shard.db.exec("BEGIN IMMEDIATE");
+        transactionShards.push(shard.db);
+      }
+
       const value = work();
-      for (const shard of transactionShards) {
-        shard.db.exec("COMMIT");
+      for (const db of transactionShards) {
+        db.exec("COMMIT");
       }
 
       return value;
     } catch (error) {
-      for (const shard of transactionShards) {
-        shard.db.exec("ROLLBACK");
+      const rollbackErrors: unknown[] = [];
+      for (const db of transactionShards.reverse()) {
+        try {
+          if (db.isTransaction) {
+            db.exec("ROLLBACK");
+          }
+        } catch (rollbackError) {
+          rollbackErrors.push(rollbackError);
+        }
+      }
+
+      if (rollbackErrors.length) {
+        throw new AggregateError(
+          [error, ...rollbackErrors],
+          "历史事务回滚失败。",
+          {
+            cause: error,
+          },
+        );
       }
 
       throw error;

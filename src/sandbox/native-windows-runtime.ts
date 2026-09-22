@@ -7,7 +7,7 @@
  * 3. prepareAccess 在 manifest 前创建 Git 投影和逐实例 HOME/TEMP，使私有目录也经过原对象 ACL/capability/journal；encodeRequest 再发送固定执行帧。
  * 4. execute 启动单实例 supervisor，stdout 作为工具输出流，stderr 只解析 runtime PID/创建时间、完成和固定错误类别。
  * 5. runtime started 控制帧确认共享账户 ACE 已安装；并发 lease 在该确认前不会假定 grant 可用。
- * 6. 取消或 JS 超时关闭继承 stdin；清理失败优先于取消结果并抛出专用 unknown 错误，绝不宿主重放。
+ * 6. 取消、JS 超时、管道或持久化回调失败关闭继承 stdin，并等待退出；清理证明缺失优先于原错误或取消结果，抛出专用 unknown 错误，绝不宿主重放。
  * 7. drainGeneration 关闭 relay、终止该账户全部进程并按持久 journal 撤销 ACL，供在线 quarantine 与重启恢复共用。
  * 8. 临时 HOME/TEMP 只在原生确认撤销后删除；日志与错误不包含命令、路径、SID、端口、密码或工具输出。
  *
@@ -711,10 +711,6 @@ export class NativeWindowsSandboxRuntime implements SandboxRuntime {
       );
     }
 
-    if (child.pid !== undefined) {
-      command.onProcessStarted(child.pid, "runtime-launcher");
-    }
-
     let control = "";
     let runtimePid: number | undefined;
     let creationTime100ns: string | undefined;
@@ -724,8 +720,10 @@ export class NativeWindowsSandboxRuntime implements SandboxRuntime {
     let transportFailure = false;
     let childClosed = false;
     let settled = false;
+    let startupFailure: unknown;
+    let startupFailed = false;
     let resolveStarted!: () => void;
-    let rejectStarted!: (error: Error) => void;
+    let rejectStarted!: (error: unknown) => void;
     const started = new Promise<void>((resolve, reject) => {
       resolveStarted = resolve;
       rejectStarted = reject;
@@ -737,6 +735,20 @@ export class NativeWindowsSandboxRuntime implements SandboxRuntime {
       });
     });
     const abort = () => child.stdin.end();
+    const notifyStarted = (callback: () => void) => {
+      if (startupFailed) {
+        return;
+      }
+
+      try {
+        callback();
+      } catch (error) {
+        startupFailed = true;
+        startupFailure = error;
+        abort();
+      }
+    };
+
     command.signal.addEventListener("abort", abort, { once: true });
     child.stdin.once("error", () => {
       transportFailure ||= !childClosed;
@@ -771,10 +783,14 @@ export class NativeWindowsSandboxRuntime implements SandboxRuntime {
 
       runtimePid = parsedPid;
       creationTime100ns = match[2];
-      command.onAccessProvisioned?.();
-      command.onProcessStarted(runtimePid, "runtime", creationTime100ns);
-      settled = true;
-      resolveStarted();
+      notifyStarted(() => {
+        command.onAccessProvisioned?.();
+        command.onProcessStarted(parsedPid, "runtime", match[2]);
+      });
+      if (!startupFailed) {
+        settled = true;
+        resolveStarted();
+      }
     });
     child.once("error", () => {
       transportFailure = true;
@@ -793,22 +809,36 @@ export class NativeWindowsSandboxRuntime implements SandboxRuntime {
         rejectStarted(
           cleanupFailure ||
             exitCode === CLEANUP_FAILURE_EXIT_CODE ||
-            !rollbackReported
+            !(runtimePid !== undefined ? completionReported : rollbackReported)
             ? new NativeWindowsSandboxCleanupError(
                 "Agent Runtime 启动前 ACL 或 Job 清理结果未知。",
               )
-            : new NativeWindowsSandboxError(
-                "Agent Runtime 在身份验证完成前退出。",
-              ),
+            : startupFailed
+              ? startupFailure
+              : new NativeWindowsSandboxError(
+                  "Agent Runtime 在身份验证完成前退出。",
+                ),
         );
       }
     });
-    child.stdin.write(frame, (error) => {
-      if (error) {
-        transportFailure = true;
-        child.stdin.end();
-      }
-    });
+    if (child.pid !== undefined) {
+      notifyStarted(() =>
+        command.onProcessStarted(child.pid!, "runtime-launcher"),
+      );
+    }
+
+    if (command.signal.aborted) {
+      abort();
+    }
+
+    if (!startupFailed && !command.signal.aborted) {
+      child.stdin.write(frame, (error) => {
+        if (error) {
+          transportFailure = true;
+          child.stdin.end();
+        }
+      });
+    }
 
     try {
       await started;
@@ -980,21 +1010,31 @@ export class NativeWindowsSandboxRuntime implements SandboxRuntime {
       let rollbackReported = false;
       let completionReported = false;
       let accessProvisioned = false;
+      let failed = false;
+      let failure: unknown;
       const sanitizer = new TerminalTextSanitizer();
-
-      if (child.pid !== undefined) {
-        command.onProcessStarted(child.pid, "runtime-launcher");
-        this.log?.info({
-          event: "sandbox.supervisor_control.started",
-          module: "sandbox",
-          sessionId: command.sessionId,
-          taskId: command.taskId,
-          executionInstanceId: command.executionInstanceId,
-          supervisorPid: child.pid,
-        });
-      }
-
       const cancel = () => child.stdin.end();
+      // 回调会写入 SQLite，不能让故障逃出 data 监听器；收尾仍必须等 Supervisor 清理证明。
+      const fail = (error: unknown) => {
+        if (finished || failed) {
+          return;
+        }
+
+        failed = true;
+        failure = error;
+        cancel();
+      };
+
+      const notify = (callback: () => void) => {
+        if (!failed) {
+          try {
+            callback();
+          } catch (error) {
+            fail(error);
+          }
+        }
+      };
+
       const timer = setTimeout(() => {
         timedOut = true;
         child.stdin.end();
@@ -1011,7 +1051,7 @@ export class NativeWindowsSandboxRuntime implements SandboxRuntime {
         );
         output += accepted;
         if (accepted) {
-          command.onOutput(accepted);
+          notify(() => command.onOutput(accepted));
         }
       });
       child.stderr.on("data", (chunk: string) => {
@@ -1023,10 +1063,10 @@ export class NativeWindowsSandboxRuntime implements SandboxRuntime {
           if (Number.isSafeInteger(pid) && pid > 0) {
             if (!accessProvisioned) {
               accessProvisioned = true;
-              command.onAccessProvisioned?.();
+              notify(() => command.onAccessProvisioned?.());
             }
 
-            command.onProcessStarted(pid, "runtime", match[2]);
+            notify(() => command.onProcessStarted(pid, "runtime", match[2]));
             this.log?.info({
               event: "sandbox.runtime_provision.completed",
               module: "sandbox",
@@ -1094,6 +1134,8 @@ export class NativeWindowsSandboxRuntime implements SandboxRuntime {
           reject(
             new NativeWindowsSandboxCleanupError("ACL 或 Job 清理结果未知。"),
           );
+        } else if (failed) {
+          reject(failure);
         } else if (completion === "cancelled") {
           this.log?.info({
             event: "sandbox.instance_release.completed",
@@ -1125,11 +1167,32 @@ export class NativeWindowsSandboxRuntime implements SandboxRuntime {
           });
         }
       });
-      child.stdin.write(frame, (error) => {
-        if (error && !finished) {
-          child.stdin.end();
-        }
-      });
+      child.stdin.on("error", fail);
+      child.stdout.on("error", fail);
+      child.stderr.on("error", fail);
+      if (child.pid !== undefined) {
+        notify(() => command.onProcessStarted(child.pid!, "runtime-launcher"));
+        this.log?.info({
+          event: "sandbox.supervisor_control.started",
+          module: "sandbox",
+          sessionId: command.sessionId,
+          taskId: command.taskId,
+          executionInstanceId: command.executionInstanceId,
+          supervisorPid: child.pid,
+        });
+      }
+
+      if (command.signal.aborted) {
+        cancel();
+      }
+
+      if (!failed && !command.signal.aborted) {
+        child.stdin.write(frame, (error) => {
+          if (error) {
+            fail(error);
+          }
+        });
+      }
     });
   }
 }

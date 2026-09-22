@@ -1,6 +1,6 @@
 /**
  * 使用真实 ToolRunner 和临时文件验证统一文件编辑工具，不访问模型或用户项目。
- * 1. 单/多文件的新建和已有编辑条目成功、后项校验失败、重复路径以及读取版本检查通过磁盘内容验证。
+ * 1. 最后一次预检后的新建竞争也不得覆盖外部文件；单/多文件编辑、后项校验失败、重复路径和读取版本通过磁盘内容验证。
  * 2. 行号限定搜索窗口，覆盖行内/跨行片段、重复文本、原始快照偏移、范围越界、重叠、所有文本文件的 CRLF/LF 等价定位、唯一空白候选和可修复诊断。
  * 3. 后续故障用例检查逐文件失败仍继续、版本校验、聚合错误、取消及部分写入，不假设跨文件原子性。
  */
@@ -9,14 +9,78 @@ import { expect, it, vi, afterEach } from "vitest";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import * as fs from "node:fs/promises";
-import { writeFileSync, renameSync } from "node:fs";
+import { writeFileSync, renameSync, linkSync, type PathLike } from "node:fs";
 import { ToolRunner } from "../src/tools/tool-runner.js";
 import { fileFixture } from "./fixtures/helpers.js";
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const original = await importOriginal<typeof import("node:fs/promises")>();
 
-  return { ...original, rename: vi.fn(original.rename) };
+  return {
+    ...original,
+    rename: vi.fn(original.rename),
+    link: vi.fn(original.link),
+    copyFile: vi.fn(original.copyFile),
+  };
+});
+
+it.each([false, true])(
+  "creates safely without hard-link support, competing target=%s",
+  async (competingTarget) => {
+    const { root, runner } = await fileFixture();
+    const target = path.join(root, "portable.txt");
+    vi.spyOn(fs, "link").mockImplementationOnce(async () => {
+      if (competingTarget) {
+        await writeFile(target, "external contents", { flag: "wx" });
+      }
+
+      throw Object.assign(new Error("hard links unsupported"), {
+        code: "ENOTSUP",
+      });
+    });
+    const result = await runner.execute("edit_files", {
+      files: [
+        { path: "portable.txt", create: true, content: "agent contents" },
+      ],
+    });
+
+    expect(await readFile(target, "utf8")).toBe(
+      competingTarget ? "external contents" : "agent contents",
+    );
+    expect(result.files[0].status).toBe(
+      competingTarget ? "unknown" : "written",
+    );
+    expect(await fs.readdir(root)).toEqual(["portable.txt"]);
+  },
+);
+
+it("preserves a file created after the final create preflight", async () => {
+  const { root, runner } = await fileFixture();
+  const target = path.join(root, "raced.txt");
+  const collide = (
+    source: PathLike,
+    destination: PathLike,
+    publish: typeof renameSync,
+  ) => {
+    writeFileSync(target, "external contents", { flag: "wx" });
+    publish(source, destination);
+  };
+
+  vi.spyOn(fs, "rename").mockImplementationOnce(async (source, destination) => {
+    collide(source, destination, renameSync);
+  });
+  vi.spyOn(fs, "link").mockImplementationOnce(async (source, destination) => {
+    collide(source, destination, linkSync);
+  });
+
+  const result = await runner.execute("edit_files", {
+    files: [{ path: "raced.txt", create: true, content: "agent contents" }],
+  });
+
+  expect(await readFile(target, "utf8")).toBe("external contents");
+  expect(result.error).toBeTruthy();
+  expect(result.files[0].status).not.toBe("written");
+  expect(await fs.readdir(root)).toEqual(["raced.txt"]);
 });
 
 /** 用统一工具的一个 files 条目覆盖单文件场景，并将该文件的失败恢复为测试断言需要的异常。 */

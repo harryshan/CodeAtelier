@@ -1,5 +1,9 @@
 # 初版验证记录
 
+## 仓库审查与高优先级修复（2026-09-23）
+
+修复文件新建竞争覆盖、历史分片取锁失败残留事务，以及进程持久化回调/管道异常逃逸。复现、修复和边界见 [本轮审查记录](repository-review-2026-09-23.md)。Windows 最终 `pnpm check` 通过：421 项通过、1 项跳过，类型/lint/格式/构建通过；Chromium E2E 23/23 通过且正常退出。未运行 Evaluation 或真实模型，未完成固定账户原生端到端验收。
+
 日期：2026-09-07；后续条目按各自日期补充。以下区分实际验证和计划覆盖，不将构建成功等同于跨平台运行成功。**Windows 专用用户 Runtime 的产品代码、受保护 bundle、安装器、ACL/Job、持久 WFP、journal、CONNECT relay、默认 Supervisor launcher 和联合身份 Named Pipe 已接入，但尚未完成固定账户提升环境端到端验收。AgentRuntimeService 与模型/session/审批 adapter 已在独立 Node 子进程 harness 通过；结构化 PushSpec、独立 Push Runner 和 Agent Runtime 阻塞等待链已接入应用代码，但真实安装下的错误 pipe 客户端、取消/恢复及 remote push 矩阵仍未验证。WSL2 与 restricted-token demo 仍只是历史或局部证据。代码存在、stdio 跨进程测试、单测或 native build 通过都不能扩展成 W0--W6 完成或跨平台 Sandbox 能力。**
 
 ## 本机实际验证

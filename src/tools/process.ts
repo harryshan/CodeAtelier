@@ -8,7 +8,7 @@
  * 3. onProcessStarted 在子进程获得 PID 后立即回传，使 session 能在命令结束前持久化恢复身份。
  * 4. stop 在 Windows 使用 taskkill，在 Unix 使用进程组终止子进程树；超时和取消都走这里。
  * 5. stdout、stderr 按 UTF-8 流式解码，append 保留限额内的可见内容并通知调用方。
- * 6. error 和 close 清理计时器及监听，返回结果或抛出取消、超时等错误；启动失败会保留子进程实际报错。
+ * 6. 输出/PID 回调和管道错误先停止子进程，等待 close 后再拒绝调用，避免未捕获异常结束整个服务；close 清理计时器和取消监听。
  *
  * 输出太长时只截断保存内容。非零退出码及 shell 写入 stderr 的实际错误照实返回，命令是否获准由执行前的审批负责。
  */
@@ -114,6 +114,8 @@ export async function executeProcess(
     let stopped = false;
     let timedOut = false;
     let finished = false;
+    let failed = false;
+    let failure: unknown;
     // 终止整棵进程树，避免任务结束后测试或构建子进程仍继续运行。
     const stop = () => {
       if (stopped) {
@@ -154,22 +156,15 @@ export async function executeProcess(
       }
     };
 
-    if (child.pid !== undefined && onProcessStarted) {
-      try {
-        onProcessStarted(child.pid);
-      } catch (error) {
-        stop();
-        child.on("error", () => {});
-        child.on("close", () => {});
-        reject(error);
-
+    const fail = (error: unknown) => {
+      if (finished || failed) {
         return;
       }
-    }
 
-    if (standardInput) {
-      child.stdin.end(standardInput);
-    }
+      failed = true;
+      failure = error;
+      stop();
+    };
 
     const timer = setTimeout(() => {
       timedOut = true;
@@ -183,6 +178,10 @@ export async function executeProcess(
     const stdoutText = new TerminalTextSanitizer();
     const stderrText = new TerminalTextSanitizer();
     const append = (sanitizer: TerminalTextSanitizer, chunk: string) => {
+      if (failed || finished) {
+        return;
+      }
+
       const text = sanitizer.write(chunk);
 
       size += text.length;
@@ -190,7 +189,11 @@ export async function executeProcess(
 
       output += accepted;
       if (accepted) {
-        onOutput(accepted);
+        try {
+          onOutput(accepted);
+        } catch (error) {
+          fail(error);
+        }
       }
     };
 
@@ -225,7 +228,9 @@ export async function executeProcess(
       }
 
       cleanup();
-      if (signal.aborted) {
+      if (failed) {
+        reject(failure);
+      } else if (signal.aborted) {
         reject(new Error("任务已取消"));
       } else if (timedOut) {
         reject(new Error("命令超时，已终止进程树。"));
@@ -233,5 +238,25 @@ export async function executeProcess(
         resolve({ output, exitCode: code, truncated: size > outputLimit });
       }
     });
+
+    child.stdin.on("error", fail);
+    child.stdout.on("error", fail);
+    child.stderr.on("error", fail);
+    // 先装好所有监听，再交给可能失败或触发取消的持久化回调。
+    try {
+      if (child.pid !== undefined) {
+        onProcessStarted?.(child.pid);
+      }
+
+      if (signal.aborted) {
+        stop();
+      }
+
+      if (standardInput && !stopped) {
+        child.stdin.end(standardInput);
+      }
+    } catch (error) {
+      fail(error);
+    }
   });
 }
