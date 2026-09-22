@@ -6,8 +6,8 @@
  * 2. start 保存用户消息为 queued；调度器在全局并发上限内启动不同工作区的任务，并对相同真实工作区保持互斥。
  * 3. resume 继续最后一个可恢复任务；cancel 处理用户取消，close 处理服务关闭。
  * 4. 首条 prompt 先用辅助模型生成标题；run 再读取历史和项目规则，准备工具及上下文预算。
- * 5. 为压缩提供 ToolRunner 的安全文件哈希探测；每轮记录上下文准备和请求计量、模型重试、实际模型请求和响应处理，再记录服务实报用量。完整响应保存后校验工具 DAG，节点先完成准备/审批，实际执行才取得有界 worker 槽。
- * 6. 宿主模式的危险调用仍经过审批分流；Sandbox Runtime 已有能力内工具免审批，push 与扩展权限命令由 Broker 调用相同的低成本模型三级审批并持久化决定；扩展命令用一次性两阶段 IPC 授权把审批等待留在执行队列外。
+ * 5. model-loop 共用轮次、重试和停止控制，model-tool-batch 共用计划与成功判断；Engine 保留宿主事务、replay 与 tracing。为压缩提供 ToolRunner 的安全文件哈希探测；每轮记录上下文准备和请求计量、模型重试、实际模型请求和响应处理，再记录服务实报用量。完整响应保存后校验工具 DAG，节点先完成准备/审批，实际执行才取得有界 worker 槽。
+ * 6. executeSandboxRunner 共用独立 Runner 状态与失败记录；本入口保留各自审批和命令构造。宿主模式的危险调用仍经过审批分流；Sandbox Runtime 已有能力内工具免审批，push 与扩展权限命令由 Broker 调用相同的低成本模型三级审批并持久化决定；扩展命令用一次性两阶段 IPC 授权把审批等待留在执行队列外。
  * 7. 工具批次、节点状态和结果都附带批次/调用标识；ToolRunner 确认实际执行开始后才记录工具耗时，并在可复用调度轨道显示执行和结果持久化；退出时将安全 trace 写入会话/任务文件、释放运行期记录并发出 task_end。
  *
  * 模型请求可以重试，但已经执行的工具不能跟着重跑。数据库回滚也撤销不了文件修改或
@@ -27,11 +27,16 @@ import {
 } from "../context/context-manager.js";
 import {
   historyDefinition,
-  parseScheduledHistoryArguments,
   readContextHistoryAsync,
 } from "../context/history.js";
 import { prepareTaskContext } from "./context.js";
 import { createInstructions } from "./instructions.js";
+import { runModelLoop } from "./model-loop.js";
+import {
+  buildModelToolGraph,
+  toolSucceeded,
+} from "../tools/model-tool-batch.js";
+import { executeSandboxRunner } from "../sandbox/execute-runner.js";
 import { retryModel } from "../providers/retry.js";
 import { randomBytes, randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
@@ -60,13 +65,8 @@ import { ToolRunner } from "../tools/tool-runner.js";
 import { ProjectMemoryService } from "../memory/service.js";
 import { SandboxBroker } from "../sandbox/broker.js";
 import { createSandboxRuntime } from "../sandbox/runtime-factory.js";
+import { definitions, webSearchTool } from "../tools/registry.js";
 import {
-  definitions,
-  parseScheduledToolArguments,
-  webSearchTool,
-} from "../tools/registry.js";
-import {
-  createToolGraph,
   DEFAULT_TOOL_CONCURRENCY,
   executeToolGraph,
   type ToolGraphNode,
@@ -1027,98 +1027,31 @@ export class Engine {
       throw new Error("Sandbox Git push 审批未通过。");
     }
 
-    const executionInstanceId = randomUUID();
-    const createdAt = new Date().toISOString();
-    let started = false;
-    const publish = (
-      state:
-        | "created"
-        | "running"
-        | "completed"
-        | "failed"
-        | "cancelled"
-        | "unknown",
-      extra: Record<string, unknown> = {},
-    ) => {
-      const status = this.sandbox.statusFor(task.id, executionInstanceId);
-      const record = {
-        executionInstanceId,
-        toolCallId,
-        kind: "push-runner" as const,
-        mode:
-          status.mode === "sandboxed"
-            ? ("windows-sandbox-user" as const)
-            : status.mode === "unknown"
-              ? ("unknown" as const)
-              : ("host-process" as const),
-        state,
-        createdAt,
-        updatedAt: new Date().toISOString(),
-        sandboxRequested: true,
-        sandboxApplied: status.mode === "sandboxed",
-        failureCategory: status.failureCategory,
-        ...extra,
-      };
-      emit("execution_instance", record);
-      this.sandbox.recordExecutionInstance(record);
-    };
+    const outcome = await executeSandboxRunner(this.sandbox, {
+      taskId: task.id,
+      toolCallId,
+      kind: "push-runner",
+      signal,
+      fallbackError: "Push Runner 禁止宿主 Git fallback。",
+      emit,
+      command: () => ({
+        sessionId: task.sessionId,
+        networkHost: spec.host,
+        command: resolveExecutablePath("git"),
+        args: [
+          "push",
+          "--porcelain",
+          spec.remote,
+          `${spec.objectId}:${spec.refspec.slice("HEAD:".length)}`,
+        ],
+        cwd: workspace,
+        timeoutMs: settings.commandTimeoutMs,
+        outputLimit: settings.outputChars,
+        onOutput: (text) => emit("git_output", { text }),
+      }),
+    });
 
-    publish("created");
-    try {
-      const targetRef = spec.refspec.slice("HEAD:".length);
-      const outcome = await this.sandbox.executeCommand(
-        {
-          sessionId: task.sessionId,
-          taskId: task.id,
-          executionInstanceId,
-          toolCallId,
-          kind: "push-runner",
-          networkHost: spec.host,
-          command: resolveExecutablePath("git"),
-          args: [
-            "push",
-            "--porcelain",
-            spec.remote,
-            `${spec.objectId}:${targetRef}`,
-          ],
-          cwd: workspace,
-          signal,
-          timeoutMs: settings.commandTimeoutMs,
-          outputLimit: settings.outputChars,
-          onOutput: (text) => emit("git_output", { text }),
-          onProcessStarted: (pid, pidKind, processCreationTime100ns) => {
-            started = true;
-            publish("running", { pid, pidKind, processCreationTime100ns });
-          },
-        },
-        async () => {
-          throw new Error("Push Runner 禁止宿主 Git fallback。");
-        },
-        (stage, status) =>
-          emit("sandbox_stage", {
-            stage,
-            executionInstanceId,
-            ...status,
-          }),
-        { allowHostFallback: false },
-      );
-      publish(outcome.result.exitCode === 0 ? "completed" : "failed", {
-        sideEffectsPossible: outcome.result.exitCode !== 0,
-      });
-
-      return outcome.result;
-    } catch (error) {
-      const status = this.sandbox.statusFor(task.id, executionInstanceId);
-      publish(
-        status.mode === "unknown"
-          ? "unknown"
-          : signal.aborted
-            ? "cancelled"
-            : "failed",
-        { sideEffectsPossible: started || status.mode === "unknown" },
-      );
-      throw error;
-    }
+    return outcome.result;
   }
 
   /**
@@ -1223,95 +1156,32 @@ export class Engine {
 
     return async (executionSignal) => {
       executionSignal.throwIfAborted();
-      const executionInstanceId = randomUUID();
-      const createdAt = new Date().toISOString();
-      let started = false;
-      const publish = (
-        state:
-          | "created"
-          | "running"
-          | "completed"
-          | "failed"
-          | "cancelled"
-          | "unknown",
-        extra: Record<string, unknown> = {},
-      ) => {
-        const status = this.sandbox.statusFor(task.id, executionInstanceId);
-        const record = {
-          executionInstanceId,
-          toolCallId,
-          kind: "capability-runner" as const,
-          mode:
-            status.mode === "sandboxed"
-              ? ("windows-sandbox-user" as const)
-              : status.mode === "unknown"
-                ? ("unknown" as const)
-                : ("host-process" as const),
-          state,
-          createdAt,
-          updatedAt: new Date().toISOString(),
-          sandboxRequested: true,
-          sandboxApplied: status.mode === "sandboxed",
-          failureCategory: status.failureCategory,
-          ...extra,
-        };
-        emit("execution_instance", record);
-        this.sandbox.recordExecutionInstance(record);
+      const outcome = await executeSandboxRunner(this.sandbox, {
+        taskId: task.id,
+        toolCallId,
+        kind: "capability-runner",
+        signal: executionSignal,
+        fallbackError: "扩展权限 Runner 禁止宿主权限 fallback。",
+        emit,
+        command: () => ({
+          sessionId: task.sessionId,
+          networkHost,
+          readOnlyRoots,
+          readWriteRoots,
+          reviewedAccessManifest: reviewedManifest,
+          command: shell.command,
+          args: [...shell.args, request.command],
+          cwd: workspace,
+          timeoutMs: settings.commandTimeoutMs,
+          outputLimit: settings.outputChars,
+          onOutput: (text) => emit("capability_output", { text }),
+        }),
+      });
+
+      return {
+        executionInstanceId: outcome.executionInstanceId,
+        ...outcome.result,
       };
-
-      publish("created");
-      try {
-        const outcome = await this.sandbox.executeCommand(
-          {
-            sessionId: task.sessionId,
-            taskId: task.id,
-            executionInstanceId,
-            toolCallId,
-            kind: "capability-runner",
-            networkHost,
-            readOnlyRoots,
-            readWriteRoots,
-            reviewedAccessManifest: reviewedManifest,
-            command: shell.command,
-            args: [...shell.args, request.command],
-            cwd: workspace,
-            signal: executionSignal,
-            timeoutMs: settings.commandTimeoutMs,
-            outputLimit: settings.outputChars,
-            onOutput: (text) => emit("capability_output", { text }),
-            onProcessStarted: (pid, pidKind, processCreationTime100ns) => {
-              started = true;
-              publish("running", { pid, pidKind, processCreationTime100ns });
-            },
-          },
-          async () => {
-            throw new Error("扩展权限 Runner 禁止宿主权限 fallback。");
-          },
-          (stage, status) =>
-            emit("sandbox_stage", {
-              stage,
-              executionInstanceId,
-              ...status,
-            }),
-          { allowHostFallback: false },
-        );
-        publish(outcome.result.exitCode === 0 ? "completed" : "failed", {
-          sideEffectsPossible: outcome.result.exitCode !== 0,
-        });
-
-        return { executionInstanceId, ...outcome.result };
-      } catch (error) {
-        const status = this.sandbox.statusFor(task.id, executionInstanceId);
-        publish(
-          status.mode === "unknown"
-            ? "unknown"
-            : executionSignal.aborted
-              ? "cancelled"
-              : "failed",
-          { sideEffectsPossible: started || status.mode === "unknown" },
-        );
-        throw error;
-      }
     };
   }
 
@@ -1779,323 +1649,318 @@ export class Engine {
         }
       };
 
-      let overflowRetried = false;
+      let requestInput = input;
+      let retryDelaySpan: ReturnType<TraceRecorder["startSpan"]>;
+      const outcome = await runModelLoop({
+        maxSteps: settings.maxSteps,
+        signal,
+        prepareStep: async (currentStep) => {
+          step = currentStep;
+          input = await prepareContext();
+          lastFlush = Date.now();
+          log.debug({ event: "model.started", step });
+          requestInput = input;
+          retryDelaySpan = undefined;
+        },
+        request: async (currentAttempt) => {
+          attempt = currentAttempt;
+          this.traces.endSpan(retryDelaySpan, "ok", { attempt });
+          retryDelaySpan = undefined;
 
-      for (step = 1; step <= settings.maxSteps; step++) {
-        signal.throwIfAborted();
-        input = await prepareContext();
+          const requestSpan = this.traces.startSpan(task.id, {
+            name: "context.request",
+            category: "context",
+            track: "Main thread",
+            attributes: { attempt, step },
+          });
+          let request;
+          contextTraceParent = requestSpan;
+          try {
+            request = context.request(input, instructions, tools);
+            requestInput = request.input;
+            this.traces.endSpan(requestSpan, "ok", {
+              afterAmount: request.after,
+              beforeAmount: request.before,
+              inputItems: request.input.length,
+            });
+          } catch (error) {
+            this.traces.endSpan(
+              requestSpan,
+              signal.aborted ? "cancelled" : "error",
+              {
+                errorName: error instanceof Error ? error.name : typeof error,
+              },
+            );
+            throw error;
+          } finally {
+            if (contextTraceParent === requestSpan) {
+              contextTraceParent = undefined;
+            }
+          }
 
-        lastFlush = Date.now();
-        log.debug({ event: "model.started", step });
-        // 这里只重试模型请求。完整响应保存成功后，才能执行其中的工具调用。
-        let attemptOffset = 0;
-        let requestInput = input;
-        let retryDelaySpan: ReturnType<TraceRecorder["startSpan"]>;
-        const requestModel = () =>
-          retryModel(
-            async (currentAttempt) => {
-              attempt = attemptOffset + currentAttempt;
-              this.traces.endSpan(retryDelaySpan, "ok", { attempt });
-              retryDelaySpan = undefined;
+          emit("model_request", { purpose: "task", step, attempt });
 
-              const requestSpan = this.traces.startSpan(task.id, {
-                name: "context.request",
-                category: "context",
-                track: "Main thread",
-                attributes: { attempt, step },
-              });
-              let request;
-              contextTraceParent = requestSpan;
-              try {
-                request = context.request(input, instructions, tools);
-                requestInput = request.input;
-                this.traces.endSpan(requestSpan, "ok", {
-                  afterAmount: request.after,
-                  beforeAmount: request.before,
-                  inputItems: request.input.length,
-                });
-              } catch (error) {
-                this.traces.endSpan(
-                  requestSpan,
-                  signal.aborted ? "cancelled" : "error",
-                  {
-                    errorName:
-                      error instanceof Error ? error.name : typeof error,
-                  },
-                );
-                throw error;
-              } finally {
-                if (contextTraceParent === requestSpan) {
-                  contextTraceParent = undefined;
-                }
+          return tracedModelProvider(
+            this.replayProvider(task, provider, () => ({
+              purpose: "task",
+              step,
+              attempt,
+            })),
+            this.traces,
+            {
+              taskId: task.id,
+              purpose: "task",
+              model: settings.model,
+              step,
+              attempt,
+            },
+          ).run(
+            requestInput,
+            instructions,
+            tools,
+            signal,
+            (delta) => {
+              buffer += delta;
+              if (Date.now() - lastFlush > 100 || buffer.length > 1000) {
+                flush();
               }
-
-              emit("model_request", { purpose: "task", step, attempt });
-
-              return tracedModelProvider(
-                this.replayProvider(task, provider, () => ({
-                  purpose: "task",
-                  step,
-                  attempt,
-                })),
-                this.traces,
-                {
-                  taskId: task.id,
-                  purpose: "task",
-                  model: settings.model,
-                  step,
-                  attempt,
-                },
-              ).run(
+            },
+            { maxOutputTokens: budget.outputTokens },
+          );
+        },
+        onRetry: (error, failedAttempt, delayMs) => {
+          flush();
+          emit("notice", {
+            text: `${error.message} ${delayMs} ms 后重试（${failedAttempt}/2）。`,
+            code: error.code,
+            step,
+            attempt,
+          });
+          retryDelaySpan = this.traces.startSpan(task.id, {
+            name: "llm.retry_delay",
+            category: "llm",
+            track: "Main thread",
+            attributes: {
+              delayMs,
+              failedAttempt,
+              step,
+            },
+          });
+          log.warn({
+            event: "model.retry",
+            step,
+            attempt,
+            delayMs,
+            code: error.code,
+            status: error.status,
+            requestId: error.requestId
+              ? redactText(error.requestId, [this.config.apiKey])
+              : undefined,
+            err: error,
+          });
+        },
+        prepareOverflow: async () => {
+          // 失败前收到的文本留在原 attempt 中，不能和下一次请求的回复拼在一起。
+          flush();
+          lastFlush = Date.now();
+          input = await prepareContext(true);
+        },
+        acceptResponse: (response, calls) => {
+          const responseSpan = this.traces.startSpan(task.id, {
+            name: "model.response_process",
+            category: "agent",
+            track: "Main thread",
+            attributes: { attempt, step },
+          });
+          try {
+            flush();
+            signal.throwIfAborted();
+            if (response.usage) {
+              budget.observeUsage?.(
+                response.usage.input_tokens,
                 requestInput,
                 instructions,
                 tools,
-                signal,
-                (delta) => {
-                  buffer += delta;
-                  if (Date.now() - lastFlush > 100 || buffer.length > 1000) {
-                    flush();
-                  }
-                },
-                { maxOutputTokens: budget.outputTokens },
               );
-            },
-            signal,
-            (error, failedAttempt, delayMs) => {
-              flush();
-              emit("notice", {
-                text: `${error.message} ${delayMs} ms 后重试（${failedAttempt}/2）。`,
-                code: error.code,
-                step,
-                attempt,
-              });
-              retryDelaySpan = this.traces.startSpan(task.id, {
-                name: "llm.retry_delay",
-                category: "llm",
-                track: "Main thread",
-                attributes: {
-                  delayMs,
-                  failedAttempt,
-                  step,
-                },
-              });
-              log.warn({
-                event: "model.retry",
-                step,
-                attempt,
-                delayMs,
-                code: error.code,
-                status: error.status,
-                requestId: error.requestId
-                  ? redactText(error.requestId, [this.config.apiKey])
-                  : undefined,
-                err: error,
-              });
-            },
-          );
-        const response = await requestModel().catch(async (error) => {
-          if (error?.code !== "context_length_exceeded" || overflowRetried) {
+              recordUsage(response.usage, "task");
+            }
+
+            input.push(...response.output);
+            this.store.saveContext(session.id, input);
+            if (response.text) {
+              emit("assistant", { text: response.text, step, attempt });
+            }
+
+            this.traces.endSpan(responseSpan, "ok", {
+              outputItems: response.output.length,
+              toolCalls: calls.length,
+            });
+          } catch (error) {
+            this.traces.endSpan(
+              responseSpan,
+              signal.aborted ? "cancelled" : "error",
+              {
+                errorName: error instanceof Error ? error.name : typeof error,
+              },
+            );
             throw error;
           }
 
-          // 失败前收到的文本留在原 attempt 中，不能和下一次请求的回复拼在一起。
-          flush();
-          attemptOffset = attempt;
-          lastFlush = Date.now();
-          overflowRetried = true;
-          input = await prepareContext(true);
+          log.info({ event: "model.completed", step, toolCount: calls.length });
+        },
+        executeTools: async (calls) => {
+          const batchId = randomUUID();
+          const modelSpan = this.traces.latestSpan(task.id, "llm");
+          const saveResult = (
+            node: ToolGraphNode,
+            result: any,
+            executionStartedAt?: number,
+          ) => {
+            let output = JSON.stringify(result);
 
-          return requestModel();
-        });
+            if (output.length > settings.outputChars) {
+              output = JSON.stringify({
+                truncated: true,
+                text: output.slice(0, settings.outputChars),
+              });
+            }
 
-        const responseSpan = this.traces.startSpan(task.id, {
-          name: "model.response_process",
-          category: "agent",
-          track: "Main thread",
-          attributes: { attempt, step },
-        });
-        let calls;
-        try {
-          flush();
-          signal.throwIfAborted();
-          if (response.usage) {
-            budget.observeUsage?.(
-              response.usage.input_tokens,
-              requestInput,
-              instructions,
-              tools,
-            );
-            recordUsage(response.usage, "task");
-          }
-
-          input.push(...response.output);
-          this.store.saveContext(session.id, input);
-          if (response.text) {
-            emit("assistant", { text: response.text, step, attempt });
-          }
-
-          calls = response.output.filter((i) => i.type === "function_call");
-          this.traces.endSpan(responseSpan, "ok", {
-            outputItems: response.output.length,
-            toolCalls: calls.length,
-          });
-        } catch (error) {
-          this.traces.endSpan(
-            responseSpan,
-            signal.aborted ? "cancelled" : "error",
-            {
-              errorName: error instanceof Error ? error.name : typeof error,
-            },
-          );
-          throw error;
-        }
-
-        log.info({ event: "model.completed", step, toolCount: calls.length });
-        if (!calls.length) {
-          if (!response.text) {
-            throw new Error("模型未返回文本或工具调用。");
-          }
-
-          return;
-        }
-
-        const batchId = randomUUID();
-        const modelSpan = this.traces.latestSpan(task.id, "llm");
-        const toolSucceeded = (result: any) =>
-          !result?.error &&
-          (result?.exitCode === undefined || result.exitCode === 0) &&
-          !result?.files?.some(
-            (file: any) =>
-              file.status === "failed" || file.status === "unknown",
-          );
-        const saveResult = (
-          node: ToolGraphNode,
-          result: any,
-          executionStartedAt?: number,
-        ) => {
-          let output = JSON.stringify(result);
-
-          if (output.length > settings.outputChars) {
-            output = JSON.stringify({
-              truncated: true,
-              text: output.slice(0, settings.outputChars),
+            output = redactJson(output, [this.config.apiKey]);
+            const durationMs =
+              executionStartedAt === undefined
+                ? 0
+                : Date.now() - executionStartedAt;
+            const persistenceSpan = this.traces.startSpan(task.id, {
+              name: "tool.result_persist",
+              category: "storage",
+              track: "Main thread",
+              attributes: {
+                batchId,
+                callId: node.callId,
+                nodeId: node.nodeId,
+              },
             });
-          }
+            // 工具副作用无法由 SQLite 回滚；每个并行节点完成后立即原子保存结果和模型反馈。
+            try {
+              this.store.transaction(() => {
+                emit("tool_result", {
+                  name: node.name,
+                  callId: node.callId,
+                  batchId,
+                  nodeId: node.nodeId,
+                  dependsOn: node.dependsOn,
+                  result: JSON.parse(output),
+                  durationMs,
+                });
+                // replay 保留执行器原始脱敏结果，不受模型上下文 outputChars 截断影响。
+                this.store.finishReplayTool(
+                  task.id,
+                  node.callId,
+                  cleanReplay(result),
+                );
+                input.push({
+                  type: "function_call_output",
+                  call_id: node.callId,
+                  output,
+                });
+                this.store.saveContext(session.id, input);
+              });
+              this.traces.endSpan(persistenceSpan, "ok", {
+                outputChars: output.length,
+              });
+            } catch (error) {
+              this.traces.endSpan(persistenceSpan, "error", {
+                errorName: error instanceof Error ? error.name : typeof error,
+              });
+              throw error;
+            }
 
-          output = redactJson(output, [this.config.apiKey]);
-          const durationMs =
-            executionStartedAt === undefined
-              ? 0
-              : Date.now() - executionStartedAt;
-          const persistenceSpan = this.traces.startSpan(task.id, {
-            name: "tool.result_persist",
-            category: "storage",
-            track: "Main thread",
-            attributes: {
-              batchId,
-              callId: node.callId,
+            log.info({
+              event: "tool.completed",
+              tool: node.name,
+              toolCallId: node.callId,
               nodeId: node.nodeId,
-            },
+              batchId,
+              durationMs,
+              ok: toolSucceeded(result),
+            });
+          };
+
+          const planningSpan = this.traces.startSpan(task.id, {
+            name: "tool.plan",
+            category: "tool",
+            track: "Main thread",
+            attributes: { batchId, calls: calls.length, step },
           });
-          // 工具副作用无法由 SQLite 回滚；每个并行节点完成后立即原子保存结果和模型反馈。
+          let graph;
+
           try {
-            this.store.transaction(() => {
-              emit("tool_result", {
+            graph = buildModelToolGraph(calls, { exclusivePush: false });
+          } catch (error: any) {
+            this.traces.endSpan(planningSpan, "error", {
+              errorName: error instanceof Error ? error.name : typeof error,
+            });
+            const message = redactText(error.message, [this.config.apiKey]);
+            // 图不可验证时整批没有副作用；每个原生调用都得到结果，模型可在下一轮修正计划。
+            for (const [ordinal, call] of calls.entries()) {
+              const node: ToolGraphNode = {
+                callId: call.call_id,
+                nodeId: `invalid-${ordinal + 1}`,
+                name: call.name,
+                arguments: call.arguments,
+                dependsOn: [],
+                ordinal,
+              };
+              emit("tool_start", {
                 name: node.name,
                 callId: node.callId,
                 batchId,
                 nodeId: node.nodeId,
                 dependsOn: node.dependsOn,
-                result: JSON.parse(output),
-                durationMs,
+                args: node.arguments,
               });
-              // replay 保留执行器原始脱敏结果，不受模型上下文 outputChars 截断影响。
-              this.store.finishReplayTool(
+              this.store.startReplayTool(
                 task.id,
-                node.callId,
-                cleanReplay(result),
+                cleanReplay({
+                  name: node.name,
+                  callId: node.callId,
+                  batchId,
+                  nodeId: node.nodeId,
+                  dependsOn: node.dependsOn,
+                  arguments: node.arguments,
+                }),
               );
-              input.push({
-                type: "function_call_output",
-                call_id: node.callId,
-                output,
-              });
-              this.store.saveContext(session.id, input);
-            });
-            this.traces.endSpan(persistenceSpan, "ok", {
-              outputChars: output.length,
-            });
-          } catch (error) {
-            this.traces.endSpan(persistenceSpan, "error", {
-              errorName: error instanceof Error ? error.name : typeof error,
-            });
-            throw error;
+              saveResult(node, { error: `工具调用图无效：${message}` });
+            }
+
+            return "invalid";
           }
 
-          log.info({
-            event: "tool.completed",
-            tool: node.name,
-            toolCallId: node.callId,
-            nodeId: node.nodeId,
+          emit("tool_batch_planned", {
             batchId,
-            durationMs,
-            ok: toolSucceeded(result),
+            nodes: graph.nodes.map((node) => ({
+              callId: node.callId,
+              nodeId: node.nodeId,
+              name: node.name,
+              dependsOn: node.dependsOn,
+              ordinal: node.ordinal,
+            })),
           });
-        };
-
-        const planningSpan = this.traces.startSpan(task.id, {
-          name: "tool.plan",
-          category: "tool",
-          track: "Main thread",
-          attributes: { batchId, calls: calls.length, step },
-        });
-        let graph;
-
-        try {
-          graph = createToolGraph(
-            calls.map((call, ordinal) => {
-              const raw = JSON.parse(call.arguments);
-              const scheduled =
-                call.name === historyDefinition.name
-                  ? parseScheduledHistoryArguments(raw, `call-${ordinal + 1}`)
-                  : parseScheduledToolArguments(
-                      call.name,
-                      raw,
-                      `call-${ordinal + 1}`,
-                    );
-
-              return {
-                callId: call.call_id,
-                nodeId: scheduled.execution.id,
-                name: call.name,
-                arguments: scheduled.arguments,
-                dependsOn: scheduled.execution.dependsOn,
-                ordinal,
-              };
-            }),
-          );
-        } catch (error: any) {
-          this.traces.endSpan(planningSpan, "error", {
-            errorName: error instanceof Error ? error.name : typeof error,
-          });
-          const message = redactText(error.message, [this.config.apiKey]);
-          // 图不可验证时整批没有副作用；每个原生调用都得到结果，模型可在下一轮修正计划。
-          for (const [ordinal, call] of calls.entries()) {
-            const node: ToolGraphNode = {
-              callId: call.call_id,
-              nodeId: `invalid-${ordinal + 1}`,
-              name: call.name,
-              arguments: call.arguments,
-              dependsOn: [],
-              ordinal,
-            };
+          for (const node of graph.nodes) {
             emit("tool_start", {
               name: node.name,
               callId: node.callId,
               batchId,
               nodeId: node.nodeId,
               dependsOn: node.dependsOn,
-              args: node.arguments,
+              args:
+                node.name === "memory_apply"
+                  ? {
+                      operationCount:
+                        (node.arguments as { operations?: unknown[] })
+                          .operations?.length ?? 0,
+                    }
+                  : node.arguments,
             });
             this.store.startReplayTool(
               task.id,
@@ -2108,211 +1973,173 @@ export class Engine {
                 arguments: node.arguments,
               }),
             );
-            saveResult(node, { error: `工具调用图无效：${message}` });
           }
 
-          continue;
-        }
-
-        emit("tool_batch_planned", {
-          batchId,
-          nodes: graph.nodes.map((node) => ({
-            callId: node.callId,
-            nodeId: node.nodeId,
-            name: node.name,
-            dependsOn: node.dependsOn,
-            ordinal: node.ordinal,
-          })),
-        });
-        for (const node of graph.nodes) {
-          emit("tool_start", {
-            name: node.name,
-            callId: node.callId,
-            batchId,
-            nodeId: node.nodeId,
-            dependsOn: node.dependsOn,
-            args:
-              node.name === "memory_apply"
-                ? {
-                    operationCount:
-                      (node.arguments as { operations?: unknown[] }).operations
-                        ?.length ?? 0,
-                  }
-                : node.arguments,
-          });
-          this.store.startReplayTool(
-            task.id,
-            cleanReplay({
-              name: node.name,
-              callId: node.callId,
-              batchId,
-              nodeId: node.nodeId,
-              dependsOn: node.dependsOn,
-              arguments: node.arguments,
-            }),
-          );
-        }
-
-        this.traces.endSpan(planningSpan, "ok", {
-          nodes: graph.nodes.length,
-        });
-
-        const traceToolParameters = (arguments_: unknown) =>
-          JSON.parse(
-            redactJson(JSON.stringify(arguments_), [this.config.apiKey]),
-          );
-
-        const batchSpan = this.traces.startSpan(task.id, {
-          name: "tool.batch",
-          category: "tool",
-          track: "Tool scheduler",
-          attributes: {
-            batchId,
-            lanes: Math.min(graph.nodes.length, DEFAULT_TOOL_CONCURRENCY),
+          this.traces.endSpan(planningSpan, "ok", {
             nodes: graph.nodes.length,
-            step,
-          },
-        });
-        try {
-          await executeToolGraph(graph, {
-            execute: async (node, acquireExecutionSlot) => {
-              signal.throwIfAborted();
-              let slot: number | undefined;
-              let executionStartedAt: number | undefined;
-              let toolSpan: ReturnType<TraceRecorder["startSpan"]>;
-              let result: any;
+          });
 
-              const startExecution = async () => {
-                slot ??= await acquireExecutionSlot();
-                executionStartedAt = Date.now();
-                toolSpan = this.traces.startSpan(task.id, {
-                  name:
-                    node.name === "memory_apply"
-                      ? "memory.apply"
-                      : node.name === historyDefinition.name
-                        ? "tool.read_context_history"
-                        : `tool.${node.name}`,
-                  category: node.name === "memory_apply" ? "memory" : "tool",
-                  track: `Tool worker ${slot + 1}`,
-                  attributes: {
+          const traceToolParameters = (arguments_: unknown) =>
+            JSON.parse(
+              redactJson(JSON.stringify(arguments_), [this.config.apiKey]),
+            );
+
+          const batchSpan = this.traces.startSpan(task.id, {
+            name: "tool.batch",
+            category: "tool",
+            track: "Tool scheduler",
+            attributes: {
+              batchId,
+              lanes: Math.min(graph.nodes.length, DEFAULT_TOOL_CONCURRENCY),
+              nodes: graph.nodes.length,
+              step,
+            },
+          });
+          try {
+            await executeToolGraph(graph, {
+              execute: async (node, acquireExecutionSlot) => {
+                signal.throwIfAborted();
+                let slot: number | undefined;
+                let executionStartedAt: number | undefined;
+                let toolSpan: ReturnType<TraceRecorder["startSpan"]>;
+                let result: any;
+
+                const startExecution = async () => {
+                  slot ??= await acquireExecutionSlot();
+                  executionStartedAt = Date.now();
+                  toolSpan = this.traces.startSpan(task.id, {
+                    name:
+                      node.name === "memory_apply"
+                        ? "memory.apply"
+                        : node.name === historyDefinition.name
+                          ? "tool.read_context_history"
+                          : `tool.${node.name}`,
+                    category: node.name === "memory_apply" ? "memory" : "tool",
+                    track: `Tool worker ${slot + 1}`,
+                    attributes: {
+                      batchId,
+                      callId: node.callId,
+                      nodeId: node.nodeId,
+                      parameters:
+                        node.name === "memory_apply"
+                          ? undefined
+                          : traceToolParameters(node.arguments),
+                    },
+                  });
+                };
+
+                try {
+                  if (node.name === historyDefinition.name) {
+                    await startExecution();
+                    result = await readContextHistoryAsync(
+                      this.store,
+                      session.id,
+                      node.arguments,
+                      settings.outputChars,
+                    );
+                  } else {
+                    result = await runner
+                      .forCall(node.callId)
+                      .execute(node.name, node.arguments, startExecution);
+                  }
+                } catch (error: any) {
+                  if (signal.aborted) {
+                    throw error;
+                  }
+
+                  result = {
+                    error: redactText(error.message, [this.config.apiKey]),
+                  };
+                  log.warn({
+                    event: "tool.failed",
+                    tool: node.name,
+                    toolCallId: node.callId,
+                    nodeId: node.nodeId,
+                    batchId,
+                    err: error,
+                  });
+                }
+
+                // 只记录匹配策略的计数；源码、oldText 和替换内容不进入 trace。
+                const editMatchModes: string[] =
+                  node.name === "edit_files" && Array.isArray(result?.files)
+                    ? result.files.flatMap((file: any) =>
+                        Array.isArray(file.matchModes) ? file.matchModes : [],
+                      )
+                    : [];
+                this.traces.link(modelSpan, toolSpan, "llm_to_tool");
+                this.traces.endSpan(
+                  toolSpan,
+                  toolSucceeded(result) ? "ok" : "error",
+                  {
+                    durationMs: executionStartedAt
+                      ? Date.now() - executionStartedAt
+                      : 0,
+                    editExactMatches:
+                      node.name === "edit_files"
+                        ? editMatchModes.filter((mode) => mode === "exact")
+                            .length
+                        : undefined,
+                    editLineEndingMatches:
+                      node.name === "edit_files"
+                        ? editMatchModes.filter(
+                            (mode) => mode === "normalized_line_endings",
+                          ).length
+                        : undefined,
+                    editWhitespaceMatches:
+                      node.name === "edit_files"
+                        ? editMatchModes.filter(
+                            (mode) => mode === "normalized_whitespace",
+                          ).length
+                        : undefined,
+                  },
+                );
+                saveResult(node, result, executionStartedAt);
+
+                return toolSucceeded(result);
+              },
+              block: async (node, failedDependency) => {
+                this.traces.instant(
+                  task.id,
+                  "tool.dependency_blocked",
+                  "tool",
+                  "Tool scheduler",
+                  {
                     batchId,
                     callId: node.callId,
                     nodeId: node.nodeId,
-                    parameters:
-                      node.name === "memory_apply"
-                        ? undefined
-                        : traceToolParameters(node.arguments),
+                    failedDependency: failedDependency.nodeId,
                   },
-                });
-              };
-
-              try {
-                if (node.name === historyDefinition.name) {
-                  await startExecution();
-                  result = await readContextHistoryAsync(
-                    this.store,
-                    session.id,
-                    node.arguments,
-                    settings.outputChars,
-                  );
-                } else {
-                  result = await runner
-                    .forCall(node.callId)
-                    .execute(node.name, node.arguments, startExecution);
-                }
-              } catch (error: any) {
-                if (signal.aborted) {
-                  throw error;
-                }
-
-                result = {
-                  error: redactText(error.message, [this.config.apiKey]),
-                };
-                log.warn({
-                  event: "tool.failed",
-                  tool: node.name,
-                  toolCallId: node.callId,
-                  nodeId: node.nodeId,
-                  batchId,
-                  err: error,
-                });
-              }
-
-              // 只记录匹配策略的计数；源码、oldText 和替换内容不进入 trace。
-              const editMatchModes: string[] =
-                node.name === "edit_files" && Array.isArray(result?.files)
-                  ? result.files.flatMap((file: any) =>
-                      Array.isArray(file.matchModes) ? file.matchModes : [],
-                    )
-                  : [];
-              this.traces.link(modelSpan, toolSpan, "llm_to_tool");
-              this.traces.endSpan(
-                toolSpan,
-                toolSucceeded(result) ? "ok" : "error",
-                {
-                  durationMs: executionStartedAt
-                    ? Date.now() - executionStartedAt
-                    : 0,
-                  editExactMatches:
-                    node.name === "edit_files"
-                      ? editMatchModes.filter((mode) => mode === "exact").length
-                      : undefined,
-                  editLineEndingMatches:
-                    node.name === "edit_files"
-                      ? editMatchModes.filter(
-                          (mode) => mode === "normalized_line_endings",
-                        ).length
-                      : undefined,
-                  editWhitespaceMatches:
-                    node.name === "edit_files"
-                      ? editMatchModes.filter(
-                          (mode) => mode === "normalized_whitespace",
-                        ).length
-                      : undefined,
-                },
-              );
-              saveResult(node, result, executionStartedAt);
-
-              return toolSucceeded(result);
-            },
-            block: async (node, failedDependency) => {
-              this.traces.instant(
-                task.id,
-                "tool.dependency_blocked",
-                "tool",
-                "Tool scheduler",
-                {
-                  batchId,
-                  callId: node.callId,
-                  nodeId: node.nodeId,
+                );
+                saveResult(node, {
+                  error: `依赖工具 ${failedDependency.nodeId} 未成功，未执行当前调用。`,
+                  code: "dependency_failed",
                   failedDependency: failedDependency.nodeId,
-                },
-              );
-              saveResult(node, {
-                error: `依赖工具 ${failedDependency.nodeId} 未成功，未执行当前调用。`,
-                code: "dependency_failed",
-                failedDependency: failedDependency.nodeId,
-              });
-            },
-            state: (node, state) =>
-              emit("tool_state", {
-                batchId,
-                nodeId: node.nodeId,
-                callId: node.callId,
-                state,
-              }),
-          });
-          this.traces.endSpan(batchSpan, "ok");
-        } catch (error) {
-          this.traces.endSpan(
-            batchSpan,
-            signal.aborted ? "cancelled" : "error",
-          );
-          throw error;
-        }
-      }
+                });
+              },
+              state: (node, state) =>
+                emit("tool_state", {
+                  batchId,
+                  nodeId: node.nodeId,
+                  callId: node.callId,
+                  state,
+                }),
+            });
+            this.traces.endSpan(batchSpan, "ok");
+          } catch (error) {
+            this.traces.endSpan(
+              batchSpan,
+              signal.aborted ? "cancelled" : "error",
+            );
+            throw error;
+          }
 
-      throw new Error("已达到最大模型调用次数，任务停止。");
+          return "executed";
+        },
+      });
+      if (outcome !== "completed") {
+        throw new Error("已达到最大模型调用次数，任务停止。");
+      }
     } catch (error: any) {
       flush();
       status = signal.aborted

@@ -17,7 +17,7 @@ import { RuntimeIpcBrokerSession } from "../src/sandbox/runtime-ipc-broker-sessi
 import { TraceRecorder } from "../src/tracing/recorder.js";
 import { ModelError } from "../src/providers/model-error.js";
 import { temp } from "./fixtures/helpers.js";
-import { buildRuntimeToolGraph } from "../src/sandbox/agent-runtime-service.js";
+import { buildModelToolGraph } from "../src/tools/model-tool-batch.js";
 
 it("requires git push to be the only tool in its batch", () => {
   const push = {
@@ -39,10 +39,12 @@ it("requires git push to be the only tool in its batch", () => {
     }),
   };
 
-  expect(buildRuntimeToolGraph([push]).nodes).toHaveLength(1);
-  expect(() => buildRuntimeToolGraph([push, read])).toThrow(
-    "Git push 必须是当前工具批次的唯一调用",
-  );
+  expect(
+    buildModelToolGraph([push], { exclusivePush: true }).nodes,
+  ).toHaveLength(1);
+  expect(() =>
+    buildModelToolGraph([push, read], { exclusivePush: true }),
+  ).toThrow("Git push 必须是当前工具批次的唯一调用");
 });
 
 it("allows a capability command beside an independent tool", () => {
@@ -73,7 +75,9 @@ it("allows a capability command beside an independent tool", () => {
     }),
   };
 
-  expect(buildRuntimeToolGraph([capability, read]).nodes).toHaveLength(2);
+  expect(
+    buildModelToolGraph([capability, read], { exclusivePush: true }).nodes,
+  ).toHaveLength(2);
 });
 
 it("runs the model and tool loop in an independent Agent Runtime process", async () => {

@@ -4,7 +4,7 @@
  *
  * 1. start 接受 Broker 绑定任务的安全设置，恢复 session 上下文并在工作区生成指令和文件工具。
  * 2. ContextManager 在 Runtime 内计量/压缩，快照读写经 RuntimeSessionClient 回到 Broker。
- * 3. 每轮模型调用经 RuntimeModelProvider 代理并保留有界重试/上下文超限恢复；工具 DAG 先并行准备已就绪节点，审批通过后才取得有界 worker 槽执行文件编辑、命令和非 push Git。
+ * 3. model-loop 共用轮次、有界重试和上下文超限恢复，model-tool-batch 共用工具计划与结果判定；每轮模型调用经 RuntimeModelProvider 代理；工具 DAG 先并行准备已就绪节点，审批通过后才取得有界 worker 槽执行文件编辑、命令和非 push Git。
  * 4. UI/session 事件按单连接顺序排队；无效 DAG 在无副作用时回传模型修正，工具结果保存后才进入下一轮，取消或持久化失败不会盲目重放。
  * 5. 终态同时返回给 start_task 调用方并主动写 runtime_complete；Broker 仍结合进程/Job/ACL 清理决定最终可信状态。
  *
@@ -18,21 +18,12 @@ import {
 } from "../context/context-manager.js";
 import {
   historyDefinition,
-  parseScheduledHistoryArguments,
   readContextHistoryAsync,
 } from "../context/history.js";
 import { prepareTaskContext } from "../agent/context.js";
 import { createInstructions } from "../agent/instructions.js";
-import {
-  parseScheduledToolArguments,
-  runtimeDefinitions,
-  webSearchTool,
-} from "../tools/registry.js";
-import {
-  createToolGraph,
-  executeToolGraph,
-  type ToolGraphNode,
-} from "../tools/tool-graph.js";
+import { runtimeDefinitions, webSearchTool } from "../tools/registry.js";
+import { executeToolGraph, type ToolGraphNode } from "../tools/tool-graph.js";
 import { ToolRunner } from "../tools/tool-runner.js";
 import { RuntimeIpcError, type RuntimeIpcPeer } from "./runtime-ipc-peer.js";
 import type {
@@ -41,7 +32,11 @@ import type {
 } from "./runtime-ipc-protocol.js";
 import type { RuntimeExecutionIdentity } from "./runtime-capability-core.js";
 import { RuntimeModelProvider } from "./runtime-model-provider.js";
-import { retryModel } from "../providers/retry.js";
+import { runModelLoop } from "../agent/model-loop.js";
+import {
+  buildModelToolGraph,
+  toolSucceeded,
+} from "../tools/model-tool-batch.js";
 import { RuntimeSessionClient } from "./runtime-session-client.js";
 import {
   RuntimeApprovalClient,
@@ -169,246 +164,234 @@ export class AgentRuntimeService {
           events.emit("model_usage", { ...usage, purpose: "compaction" }),
       });
       let currentInput = modelInput;
-      let overflowRetried = false;
+      let step = 0;
+      let attempt = 0;
+      let requestInput = currentInput;
 
       this.peer.event({
         type: "event",
         event: "runtime_state",
         state: "running",
       });
-      for (let step = 1; step <= input.settings.maxSteps; step++) {
-        signal.throwIfAborted();
-        const prepareSpan = trace.start("context.prepare", { step });
-        try {
-          currentInput = await context.prepare(
-            currentInput,
-            instructions,
-            tools,
-          );
-          trace.end(prepareSpan, "ok", { inputItems: currentInput.length });
-        } catch (error) {
-          trace.end(prepareSpan, signal.aborted ? "cancelled" : "error", {
-            errorName: error instanceof Error ? error.name : typeof error,
-          });
-          throw error;
-        }
-
-        let requestInput = currentInput;
-        let attemptOffset = 0;
-        let attempt = 0;
-        const requestModel = () =>
-          retryModel(
-            async (currentAttempt) => {
-              attempt = attemptOffset + currentAttempt;
-              const requestSpan = trace.start("context.request", {
-                step,
-                attempt,
-              });
-              try {
-                requestInput = context.request(
-                  currentInput,
-                  instructions,
-                  tools,
-                ).input;
-                trace.end(requestSpan, "ok", {
-                  inputItems: requestInput.length,
-                });
-              } catch (error) {
-                trace.end(requestSpan, signal.aborted ? "cancelled" : "error", {
-                  errorName: error instanceof Error ? error.name : typeof error,
-                });
-                throw error;
-              }
-
-              events.emit("model_request", { purpose: "task", step, attempt });
-
-              return provider.run(
-                requestInput,
-                instructions,
-                tools,
-                signal,
-                (text) => events.emit("delta", { text, step, attempt }),
-                { maxOutputTokens: budget.outputTokens },
-              );
-            },
-            signal,
-            (error, failedAttempt, delayMs) =>
-              events.emit("notice", {
-                text: `${error.message} ${delayMs} ms 后重试（${failedAttempt}/2）。`,
-                code: error.code,
-                step,
-                attempt,
-              }),
-          );
-        const response = await requestModel().catch(async (error) => {
-          if (error?.code !== "context_length_exceeded" || overflowRetried) {
+      const outcome = await runModelLoop({
+        maxSteps: input.settings.maxSteps,
+        signal,
+        prepareStep: async (currentStep) => {
+          step = currentStep;
+          const prepareSpan = trace.start("context.prepare", { step });
+          try {
+            currentInput = await context.prepare(
+              currentInput,
+              instructions,
+              tools,
+            );
+            trace.end(prepareSpan, "ok", { inputItems: currentInput.length });
+          } catch (error) {
+            trace.end(prepareSpan, signal.aborted ? "cancelled" : "error", {
+              errorName: error instanceof Error ? error.name : typeof error,
+            });
             throw error;
           }
 
-          attemptOffset = attempt;
-          overflowRetried = true;
+          requestInput = currentInput;
+        },
+        request: async (currentAttempt) => {
+          attempt = currentAttempt;
+          const requestSpan = trace.start("context.request", {
+            step,
+            attempt,
+          });
+          try {
+            requestInput = context.request(
+              currentInput,
+              instructions,
+              tools,
+            ).input;
+            trace.end(requestSpan, "ok", {
+              inputItems: requestInput.length,
+            });
+          } catch (error) {
+            trace.end(requestSpan, signal.aborted ? "cancelled" : "error", {
+              errorName: error instanceof Error ? error.name : typeof error,
+            });
+            throw error;
+          }
+
+          events.emit("model_request", { purpose: "task", step, attempt });
+
+          return provider.run(
+            requestInput,
+            instructions,
+            tools,
+            signal,
+            (text) => events.emit("delta", { text, step, attempt }),
+            { maxOutputTokens: budget.outputTokens },
+          );
+        },
+        onRetry: (error, failedAttempt, delayMs) =>
+          events.emit("notice", {
+            text: `${error.message} ${delayMs} ms 后重试（${failedAttempt}/2）。`,
+            code: error.code,
+            step,
+            attempt,
+          }),
+        prepareOverflow: async () => {
           currentInput = await context.prepare(
             currentInput,
             instructions,
             tools,
             true,
           );
-
-          return requestModel();
-        });
-        if (response.usage) {
-          budget.observeUsage?.(
-            response.usage.input_tokens,
-            requestInput,
-            instructions,
-            tools,
-          );
-          events.emit("model_usage", {
-            ...response.usage,
-            purpose: "task",
-            step,
-            attempt,
-          });
-        }
-
-        currentInput.push(...response.output);
-        await session.saveContext(this.identity.sessionId, currentInput);
-        if (response.text) {
-          events.emit("assistant", { text: response.text, step, attempt });
-        }
-
-        const calls = response.output.filter(
-          (item: any) => item.type === "function_call",
-        );
-        if (!calls.length) {
-          if (!response.text) {
-            throw new Error("模型未返回文本或工具调用。");
-          }
-
-          await events.flush();
-          break;
-        }
-
-        const batchId = randomUUID();
-        let graph;
-        try {
-          graph = buildRuntimeToolGraph(calls);
-        } catch (error) {
-          const message =
-            error instanceof Error ? error.message.slice(0, 2_000) : "未知错误";
-
-          for (const [ordinal, call] of calls.entries()) {
-            const result = { error: `工具调用图无效：${message}` };
-
-            events.emit("tool_start", {
-              name: call.name,
-              callId: call.call_id,
-              batchId,
-              nodeId: `invalid-${ordinal + 1}`,
-              dependsOn: [],
-              args: call.arguments,
-            });
-            currentInput.push({
-              type: "function_call_output",
-              call_id: call.call_id,
-              output: JSON.stringify(result),
-            });
-            events.emit("tool_result", {
-              name: call.name,
-              callId: call.call_id,
-              batchId,
-              nodeId: `invalid-${ordinal + 1}`,
-              result,
+        },
+        acceptResponse: async (response) => {
+          if (response.usage) {
+            budget.observeUsage?.(
+              response.usage.input_tokens,
+              requestInput,
+              instructions,
+              tools,
+            );
+            events.emit("model_usage", {
+              ...response.usage,
+              purpose: "task",
+              step,
+              attempt,
             });
           }
 
+          currentInput.push(...response.output);
           await session.saveContext(this.identity.sessionId, currentInput);
-          await events.flush();
+          if (response.text) {
+            events.emit("assistant", { text: response.text, step, attempt });
+          }
+        },
+        complete: () => events.flush(),
+        executeTools: async (calls) => {
+          const batchId = randomUUID();
+          let graph;
+          try {
+            graph = buildModelToolGraph(calls, { exclusivePush: true });
+          } catch (error) {
+            const message =
+              error instanceof Error
+                ? error.message.slice(0, 2_000)
+                : "未知错误";
 
-          continue;
-        }
+            for (const [ordinal, call] of calls.entries()) {
+              const result = { error: `工具调用图无效：${message}` };
 
-        events.emit("tool_batch_planned", {
-          batchId,
-          nodes: graph.nodes.map((node) => ({
-            callId: node.callId,
-            nodeId: node.nodeId,
-            name: node.name,
-            dependsOn: node.dependsOn,
-            ordinal: node.ordinal,
-          })),
-        });
-        const persistence = new OrderedContextPersistence(
-          session,
-          this.identity.sessionId,
-          currentInput,
-          input.settings.outputChars,
-          events,
-          batchId,
-        );
-        await executeToolGraph(graph, {
-          execute: async (node, acquireExecutionSlot) => {
-            signal.throwIfAborted();
-            events.emit("tool_start", {
-              name: node.name,
-              callId: node.callId,
-              batchId,
-              nodeId: node.nodeId,
-              dependsOn: node.dependsOn,
-              args: node.arguments,
-            });
-            let result: unknown;
-            try {
-              if (node.name === historyDefinition.name) {
-                await acquireExecutionSlot();
-                result = await readContextHistoryAsync(
-                  session,
-                  this.identity.sessionId,
-                  node.arguments,
-                  input.settings.outputChars,
-                );
-              } else {
-                result = await runner
-                  .forCall(node.callId)
-                  .execute(node.name, node.arguments, async () => {
-                    await acquireExecutionSlot();
-                  });
-              }
-            } catch (error) {
-              signal.throwIfAborted();
-              result = {
-                error:
-                  error instanceof Error
-                    ? error.message.slice(0, 2_000)
-                    : "工具执行失败。",
-              };
+              events.emit("tool_start", {
+                name: call.name,
+                callId: call.call_id,
+                batchId,
+                nodeId: `invalid-${ordinal + 1}`,
+                dependsOn: [],
+                args: call.arguments,
+              });
+              currentInput.push({
+                type: "function_call_output",
+                call_id: call.call_id,
+                output: JSON.stringify(result),
+              });
+              events.emit("tool_result", {
+                name: call.name,
+                callId: call.call_id,
+                batchId,
+                nodeId: `invalid-${ordinal + 1}`,
+                result,
+              });
             }
 
-            await persistence.save(node, result);
+            await session.saveContext(this.identity.sessionId, currentInput);
+            await events.flush();
 
-            return toolSucceeded(result);
-          },
-          block: async (node, failedDependency) => {
-            await persistence.save(node, {
-              error: `依赖工具 ${failedDependency.nodeId} 未成功，未执行当前调用。`,
-              code: "dependency_failed",
-              failedDependency: failedDependency.nodeId,
-            });
-          },
-          state: (node, state) =>
-            events.emit("tool_state", {
-              batchId,
-              nodeId: node.nodeId,
+            return "invalid";
+          }
+
+          events.emit("tool_batch_planned", {
+            batchId,
+            nodes: graph.nodes.map((node) => ({
               callId: node.callId,
-              state,
-            }),
-        });
-        await persistence.flush();
-        await events.flush();
+              nodeId: node.nodeId,
+              name: node.name,
+              dependsOn: node.dependsOn,
+              ordinal: node.ordinal,
+            })),
+          });
+          const persistence = new OrderedContextPersistence(
+            session,
+            this.identity.sessionId,
+            currentInput,
+            input.settings.outputChars,
+            events,
+            batchId,
+          );
+          await executeToolGraph(graph, {
+            execute: async (node, acquireExecutionSlot) => {
+              signal.throwIfAborted();
+              events.emit("tool_start", {
+                name: node.name,
+                callId: node.callId,
+                batchId,
+                nodeId: node.nodeId,
+                dependsOn: node.dependsOn,
+                args: node.arguments,
+              });
+              let result: unknown;
+              try {
+                if (node.name === historyDefinition.name) {
+                  await acquireExecutionSlot();
+                  result = await readContextHistoryAsync(
+                    session,
+                    this.identity.sessionId,
+                    node.arguments,
+                    input.settings.outputChars,
+                  );
+                } else {
+                  result = await runner
+                    .forCall(node.callId)
+                    .execute(node.name, node.arguments, async () => {
+                      await acquireExecutionSlot();
+                    });
+                }
+              } catch (error) {
+                signal.throwIfAborted();
+                result = {
+                  error:
+                    error instanceof Error
+                      ? error.message.slice(0, 2_000)
+                      : "工具执行失败。",
+                };
+              }
 
-        if (step === input.settings.maxSteps) {
-          throw new Error("已达到最大模型调用次数，任务停止。");
-        }
+              await persistence.save(node, result);
+
+              return toolSucceeded(result);
+            },
+            block: async (node, failedDependency) => {
+              await persistence.save(node, {
+                error: `依赖工具 ${failedDependency.nodeId} 未成功，未执行当前调用。`,
+                code: "dependency_failed",
+                failedDependency: failedDependency.nodeId,
+              });
+            },
+            state: (node, state) =>
+              events.emit("tool_state", {
+                batchId,
+                nodeId: node.nodeId,
+                callId: node.callId,
+                state,
+              }),
+          });
+          await persistence.flush();
+          await events.flush();
+
+          return "executed";
+        },
+      });
+      // 保留 Runtime 既有终态：最后一轮无效图反馈后自然结束，只有实际工具批次耗尽轮次才报错。
+      if (outcome === "step-limit") {
+        throw new Error("已达到最大模型调用次数，任务停止。");
       }
     } catch (error) {
       status = signal.aborted ? "cancelled" : "failed";
@@ -450,46 +433,6 @@ function runtimeToolSettings(settings: RuntimeTaskSettings) {
     outputChars: settings.outputChars,
     logLevel: "info",
   };
-}
-
-export function buildRuntimeToolGraph(calls: any[]) {
-  const nodes = calls.map((call, ordinal) => {
-    const raw = JSON.parse(call.arguments);
-    const scheduled =
-      call.name === historyDefinition.name
-        ? parseScheduledHistoryArguments(raw, `call-${ordinal + 1}`)
-        : parseScheduledToolArguments(call.name, raw, `call-${ordinal + 1}`);
-
-    return {
-      callId: call.call_id,
-      nodeId: scheduled.execution.id,
-      name: call.name,
-      arguments: scheduled.arguments,
-      dependsOn: scheduled.execution.dependsOn,
-      ordinal,
-    };
-  });
-  const containsPush = nodes.some(
-    (node) =>
-      node.name === "git" &&
-      ((node.arguments as any).action === "push" ||
-        (node.arguments as any).request?.action === "push"),
-  );
-  if (containsPush && nodes.length !== 1) {
-    throw new Error("Git push 必须是当前工具批次的唯一调用。");
-  }
-
-  return createToolGraph(nodes);
-}
-
-function toolSucceeded(result: any) {
-  return (
-    !result?.error &&
-    (result?.exitCode === undefined || result.exitCode === 0) &&
-    !result?.files?.some(
-      (file: any) => file.status === "failed" || file.status === "unknown",
-    )
-  );
 }
 
 /** Runtime 只可上报固定 context 阶段和有界数值元数据；协议 schema 会拒绝任意名称或文本属性。 */

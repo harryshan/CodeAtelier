@@ -169,6 +169,14 @@ Engine、Store 及其上下文/schema 辅助模块、共享数据契约、测试
 
    Timeline 将未被完整回复收敛的流式文本放回其最后一个 delta 后，避免旧断流残片错误显示在末尾；切换时立即显示“正在打开对话”，不把旧会话内容误当成新会话；重新连接只读状态，不会再次启动任务。
 
+### 宿主与 Sandbox 的共享执行逻辑
+
+`src/agent/model-loop.ts` 统一 Engine 与 AgentRuntimeService 的轮次推进、普通模型重试、任务内至多一次上下文超限恢复、连续 attempt 编号，以及响应保存后再执行工具的顺序。入口分别提供上下文准备、模型调用、响应保存和工具批次执行；宿主继续使用 Store 事务与 replay，Runtime 继续使用有序 IPC 事件和上下文保存队列。保存或工具失败不会进入模型重试，权限检查与进程边界不移动。
+
+`src/tools/model-tool-batch.ts` 共用 function_call 参数解析、DAG 节点构造和工具成功判定。Runtime 显式启用 push 独占批次检查，宿主保持既有规则。循环返回正常完成、普通批次耗尽轮次或无效图耗尽轮次：保留现存兼容差异，宿主对后两种结果均报步数上限；Runtime 在最后一轮无效图反馈后沿用自然完成，普通工具批次耗尽轮次仍报错。统一这项终态差异须另行作为行为修复处理。
+
+`src/sandbox/execute-runner.ts` 共用 Push Runner 与 Capability Runner 的 execution instance 创建、开始、结束及失败记录。Engine 保留两者各自的审批、命令和权限构造；命令构造在 created 后的异常边界内执行。共享入口固定禁止 host fallback，启动后失败或 unknown 保留可能副作用标记，不重放命令。既有模型、工具、Broker tracing 和安全事件继续由各实际执行边界记录，共享控制不另建重复 span，也不新增包含正文的属性。
+
 ## 历史与恢复
 
 上下文完整存储在本机；不依赖 previous_response_id 或服务端持久化。中断后旧对话可继续提问。先用已持久化工具结果修补缺失输出；没有记录的调用补充“执行结果未知”，不重放它。新任务必须重新读取文件。模型请求由 providers/retry 实施有界重试；人工恢复创建带来源记录的新任务，仅允许恢复会话最后一个失败、取消或中断任务。任务创建与用户消息、工具结果与上下文分别以 SQLite 事务保存。
