@@ -7,7 +7,7 @@
  * 2. prepare 在阈值前直接返回，达到阈值后启动 Worker；常规压缩失败且已达硬上限时改用受限保底视图。
  * 3. compact 读取快照链和事件，Worker 构建索引并给出受限文件版本候选；主线程只执行 ToolRunner 的
  *    权限内哈希探测、可取消的摘要模型请求和原子 SQLite 提交。
- * 4. 三个压缩级别仍依次验收 60% 目标与 10% 收益；保底视图完整保存原文快照，只保留用户输入、结论和近期批次；摘要、原文、执行账本和快照来源保持原有恢复契约。
+ * 4. 压缩成功后重置任务内计量缓存，再由下一请求计量新视图；三个级别与保底视图仍保留原文快照、执行账本和恢复契约。
  *
  * 摘要不能授予权限。取消会终止 Worker；数据库提交成功后即使界面通知失败也不能退回旧输入。
  */
@@ -61,6 +61,7 @@ interface Options {
   limit: number;
   currentFileHash?: (file: string) => Promise<string | undefined>;
   measure?: typeof contextSize;
+  resetMeasurement?: () => void;
   measurement?: ContextMeasurement;
   unit?: "tokens" | "characters";
   maxOutputTokens?: number;
@@ -225,6 +226,8 @@ export class ContextManager {
   }
 
   private completeCompaction(compacted: Compaction, before: number) {
+    // 压缩事务已提交，旧输入前缀不再有效；即使通知失败也必须清空缓存。
+    this.options.resetMeasurement?.();
     const snapshot = compacted.snapshot;
     const stage =
       snapshot.stage === "deduplicate"

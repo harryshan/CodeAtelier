@@ -1796,6 +1796,7 @@ export class Engine {
         limit: budget.limit,
         currentFileHash: (file) => runner.currentFileHash(file),
         measure: budget.measure,
+        resetMeasurement: budget.resetMeasurement,
         measurement: budget.measurement,
         unit: budget.unit,
         maxOutputTokens: budget.outputTokens,

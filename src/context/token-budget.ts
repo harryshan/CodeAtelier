@@ -4,8 +4,8 @@
  *
  * 1. ContextBudget 提供统一的大小计量、输入上限和输出预留，可选支持实际用量校准。
  * 2. createBudget 检查本地是否支持 o200k_base，再用用户窗口覆盖服务报告的窗口和输入容量，结合安全余量计算预算。
- * 3. 首次计量时加载编码器，计算完整请求的大小；observeUsage 根据服务返回的输入用量，
- *    必要时上调当前任务的估算比例。
+ * 3. token 计量将固定请求部分与各历史项分别编码；任务级缓存复用稳定前缀，只编码新增项。
+ * 4. 压缩成功后清理前缀缓存并重建基线；observeUsage 复用原始计数，仅上调任务内校准比例。
  *
  * 累计用量不是当前上下文大小。源码中的特殊 token 字面量按普通文本处理，不能让编码器误当控制标记。
  */
@@ -31,6 +31,7 @@ export interface ContextBudget {
   unit: "tokens" | "characters";
   limit: number;
   measure: Measure;
+  resetMeasurement?: () => void;
   measurement: ContextMeasurement;
   outputTokens?: number;
   contextWindowTokens?: number;
@@ -45,7 +46,20 @@ export interface ContextBudget {
 }
 
 /** 使用服务明确返回、本地也支持的 tokenizer；不能根据模型名字猜编码。 */
-/** 在调用线程计量完整请求；压缩 Worker 复用同一契约，不能改用不一致的字符近似。 */
+function tokenCount(text: string): number {
+  encoder ??= new Tiktoken(o200k);
+
+  return encoder.encode(text, [], []).length;
+}
+
+/** 每个协议项独立编码，使历史追加不必重新编码旧正文；边界合并仍属于本地估算误差。 */
+function itemTokens(item: any, index: number): number {
+  return tokenCount(
+    (index === 0 ? "" : ",") + (JSON.stringify(item) ?? "null"),
+  );
+}
+
+/** 主线程和压缩 Worker 使用同一分段计量口径；固定部分包括空 input 的 JSON 包装。 */
 export function measureContext(
   measurement: ContextMeasurement,
   input: any[],
@@ -56,12 +70,12 @@ export function measureContext(
     return contextSize(input, instructions, tools);
   }
 
-  encoder ??= new Tiktoken(o200k);
+  let raw = tokenCount(JSON.stringify({ input: [], instructions, tools }));
+  for (const [index, item] of input.entries()) {
+    raw += itemTokens(item, index);
+  }
 
-  return Math.ceil(
-    encoder.encode(JSON.stringify({ input, instructions, tools }), [], [])
-      .length * measurement.correction,
-  );
+  return Math.ceil(raw * measurement.correction);
 }
 
 export function createBudget(
@@ -115,14 +129,45 @@ export function createBudget(
     tokenizer: "o200k_base",
     correction: 1,
   };
+  let cache:
+    | {
+        input: any[];
+        instructions: string;
+        tools: any[];
+        length: number;
+        lastItem: any;
+        raw: number;
+      }
+    | undefined;
   const rawMeasure: Measure = (input, instructions, tools) => {
-    encoder ??= new Tiktoken(o200k);
+    // Engine 与 Runtime 在同一任务中只追加历史项；其它数组或配置变化重建基线。
+    // 最后一项的身份检查可发现常见的原位替换；任意旧项的原位改写须主动 reset。
+    const appendOnly =
+      cache !== undefined &&
+      cache.input === input &&
+      cache.instructions === instructions &&
+      (cache.tools === tools ||
+        (cache.tools.length === 0 && tools.length === 0)) &&
+      input.length >= cache.length &&
+      (cache.length === 0 || input[cache.length - 1] === cache.lastItem);
+    let raw = appendOnly
+      ? cache!.raw
+      : tokenCount(JSON.stringify({ input: [], instructions, tools }));
+    const start = appendOnly ? cache!.length : 0;
+    for (let index = start; index < input.length; index++) {
+      raw += itemTokens(input[index], index);
+    }
 
-    return encoder.encode(
-      JSON.stringify({ input, instructions, tools }),
-      [],
-      [],
-    ).length;
+    cache = {
+      input,
+      instructions,
+      tools,
+      length: input.length,
+      lastItem: input.at(-1),
+      raw,
+    };
+
+    return raw;
   };
 
   return {
@@ -133,9 +178,14 @@ export function createBudget(
     contextWindowTokens: window,
     safetyTokens,
     tokenizer: capabilities.tokenizer,
-    // 本地无法精确计算服务端的额外开销。源码里的特殊 token 字面量按普通文本计数。
+    // 分段编码和服务端协议包装均非精确计数；安全余量与用量校准仍不可省略。
     measure: (input, instructions, tools) =>
-      measureContext(measurement, input, instructions, tools),
+      Math.ceil(
+        rawMeasure(input, instructions, tools) * measurement.correction,
+      ),
+    resetMeasurement: () => {
+      cache = undefined;
+    },
     // 只上调当前任务的估算比例，不能因为一次用量较低就减少预留。
     observeUsage: (actualInput, input, instructions, tools) => {
       measurement.correction = Math.max(

@@ -6,13 +6,14 @@
  * 2. 检查 usage 校验拒绝非法数值，保留支持的明细。
  * 3. 在 ContextManager 中区分 token 预算和按字符记录的归档信息。
  * 4. 在 Engine 中核对输出限制参数、实际模型请求/usage 保存和容量查询失败后的回退。
- * 5. 检查实际输入用量只会上调当前任务的估算比例，不会被当成累计上下文大小。
+ * 5. 检查重复计量、追加增量、请求配置变化、压缩重建和实际用量校准。
  *
  * 缺少容量或用量时应使用对应的回退逻辑，不能编造零值。
  */
 
-import { expect, it } from "vitest";
-import { createBudget } from "../src/context/token-budget.js";
+import { expect, it, vi } from "vitest";
+import { Tiktoken } from "js-tiktoken/lite";
+import { createBudget, measureContext } from "../src/context/token-budget.js";
 import {
   parseUsage,
   capabilitiesSchema,
@@ -101,6 +102,47 @@ it("tokenizes Chinese, code, tools and special token literals without treating t
   ).toBeGreaterThan(amount);
 });
 
+it("reuses tokenized history across prepare, request and usage, only encoding appended records", () => {
+  const encode = vi.spyOn(Tiktoken.prototype, "encode");
+  try {
+    const budget = createBudget(capabilities, 180000);
+    const input = [{ role: "user", content: "first" }];
+    const initial = budget.measure(input, "rules", []);
+    const firstCalls = encode.mock.calls.length;
+
+    expect(budget.measure(input, "rules", [])).toBe(initial);
+    budget.observeUsage!(initial * 2, input, "rules", []);
+    expect(budget.measure(input, "rules", [])).toBe(initial * 2);
+    expect(encode).toHaveBeenCalledTimes(firstCalls);
+
+    input.push({ role: "assistant", content: "second" });
+    const appended = budget.measure(input, "rules", []);
+    expect(encode).toHaveBeenCalledTimes(firstCalls + 1);
+    expect(appended).toBeGreaterThan(initial * 2);
+    expect(budget.measure(input, "rules", [])).toBe(appended);
+    expect(encode).toHaveBeenCalledTimes(firstCalls + 1);
+
+    input[1] = { role: "assistant", content: "replaced with more text" };
+    expect(budget.measure(input, "rules", [])).toBeGreaterThan(appended);
+    expect(encode).toHaveBeenCalledTimes(firstCalls + 4);
+    expect(budget.measure(input, "new rules", [])).toBe(
+      measureContext(budget.measurement, input, "new rules", []),
+    );
+    expect(encode.mock.calls.length).toBeGreaterThan(firstCalls + 4);
+
+    const tools = [{ name: "read_file", description: "读取文件" }];
+    expect(budget.measure(input, "new rules", tools)).toBe(
+      measureContext(budget.measurement, input, "new rules", tools),
+    );
+    const changedArray = [...input, { role: "user", content: "third" }];
+    expect(budget.measure(changedArray, "new rules", tools)).toBe(
+      measureContext(budget.measurement, changedArray, "new rules", tools),
+    );
+  } finally {
+    encode.mockRestore();
+  }
+});
+
 it("validates usage, retains numeric details, and drops arbitrary attribution", () => {
   expect(
     parseUsage({
@@ -150,12 +192,14 @@ it("uses token measurement through compaction and keeps character archive metada
     180000,
   );
   let observedOutput = 0;
+  const reset = vi.fn(() => budget.resetMeasurement?.());
   const manager = new ContextManager({
     store,
     sessionId: session.id,
     model: "test",
     limit: budget.limit,
     measure: budget.measure,
+    resetMeasurement: reset,
     measurement: budget.measurement,
     unit: budget.unit,
     maxOutputTokens: budget.outputTokens,
@@ -186,12 +230,24 @@ it("uses token measurement through compaction and keeps character archive metada
       { role: "user", content: "继续" },
     ];
     const next = await manager.prepare(source, "rules", []);
+    expect(reset).toHaveBeenCalledTimes(1);
     const snapshot = store.latestContextSnapshot(session.id)!;
     expect(snapshot.budget?.unit).toBe("tokens");
     expect(snapshot.budget!.after).toBeLessThanOrEqual(budget.limit * 0.6);
     expect(snapshot.beforeChars).toBeGreaterThan(snapshot.budget!.before);
     expect(next.at(-1)).toEqual(source.at(-1));
     expect(observedOutput).toBe(budget.outputTokens);
+
+    const encode = vi.spyOn(Tiktoken.prototype, "encode");
+    try {
+      expect(budget.measure(next, "rules", [])).toBe(snapshot.budget!.after);
+      const freshCalls = encode.mock.calls.length;
+      expect(freshCalls).toBeGreaterThan(0);
+      expect(budget.measure(next, "rules", [])).toBe(snapshot.budget!.after);
+      expect(encode).toHaveBeenCalledTimes(freshCalls);
+    } finally {
+      encode.mockRestore();
+    }
   } finally {
     store.close();
   }
