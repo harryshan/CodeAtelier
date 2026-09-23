@@ -2,7 +2,7 @@
  * 检查模型容量、token 估算和实际 usage 如何传到预算管理与任务记录中。
  * 使用固定元数据、真实 tokenizer、模拟模型和临时 Store。
  *
- * 1. 检查输出预留、安全余量、未知编码回退，以及中文、代码和特殊字面量的计数。
+ * 1. 检查手动窗口覆盖、输出预留、安全余量、未知编码回退，以及中文、代码和特殊字面量的计数。
  * 2. 检查 usage 校验拒绝非法数值，保留支持的明细。
  * 3. 在 ContextManager 中区分 token 预算和按字符记录的归档信息。
  * 4. 在 Engine 中核对输出限制参数、实际模型请求/usage 保存和容量查询失败后的回退。
@@ -55,7 +55,29 @@ it("derives token capacity from metadata and reserves the actual output cap", ()
   );
   expect(limited.outputTokens).toBe(1000);
   expect(limited.limit).toBe(81400);
-  expect(createBudget(undefined, 12345).unit).toBe("characters");
+  const overridden = createBudget(
+    {
+      ...capabilities,
+      limits: {
+        ...capabilities.limits,
+        max_context_window_tokens: 100_000,
+        max_prompt_tokens: 90_000,
+      },
+    },
+    180_000,
+    16_384,
+    300_000,
+  );
+  expect(overridden).toMatchObject({
+    contextWindowTokens: 300_000,
+    safetyTokens: 15_000,
+    outputTokens: 16_384,
+    limit: 268_616,
+  });
+  expect(createBudget(capabilities, 180_000, 16_384, 50_000).limit).toBe(
+    31_116,
+  );
+  expect(createBudget(undefined, 12345, 16384, 300000).limit).toBe(12345);
   expect(
     createBudget({ ...capabilities, tokenizer: "unknown" }, 12345).limit,
   ).toBe(12345);
@@ -203,7 +225,12 @@ it("persists service usage and exposes the discovered capacity while sending the
     expect(
       store.events(session.id).find((event) => event.type === "context_budget")
         ?.data,
-    ).toMatchObject({ unit: "tokens", contextWindowTokens: 372000 });
+    ).toMatchObject({
+      unit: "tokens",
+      contextWindowTokens: 372000,
+      effectiveWindowTokens: 300000,
+      inputLimit: 268616,
+    });
     expect(
       store.events(session.id).find((event) => event.type === "model_request")
         ?.data,

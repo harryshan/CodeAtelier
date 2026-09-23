@@ -29,12 +29,16 @@ async function createInitialConversation(page: Page, workspace: string) {
   await page.getByRole("button", { name: "连接项目并新建对话" }).click();
 }
 
-async function expandTaskProcess(page: Page) {
-  await page
-    .locator("[data-task-process]")
-    .last()
-    .locator(":scope > summary")
-    .click();
+async function expandTaskProcess(page: Page, containedText?: RegExp) {
+  const process = containedText
+    ? page
+        .getByText(containedText)
+        .locator("xpath=ancestor::details[@data-task-process]")
+    : page.locator("[data-task-process]").last();
+  // 一次任务可有多个过程分组；按目标通知定位，并只保证展开，不要意外关掉已展开的分组。
+  if ((await process.getAttribute("open")) === null) {
+    await process.locator(":scope > summary").click();
+  }
 }
 
 test("create a session, edit a file, inspect diff and reload history", async ({
@@ -494,6 +498,10 @@ test("settings show the environment connection and save preferences without expo
   await page.getByRole("button", { name: "模型与设置" }).click();
   await expect(page.getByLabel("连接配置")).toContainText("test-model");
   await expect(page.getByLabel("思考等级")).toHaveValue("high");
+  await expect(page.getByLabel("上下文窗口上限（token）")).toHaveValue(
+    "300000",
+  );
+  await page.getByLabel("上下文窗口上限（token）").fill("240000");
   await page.getByLabel("思考等级").selectOption("medium");
   await page.getByLabel("辅助模型推理强度").selectOption("low");
   await page.getByLabel("API key", { exact: true }).fill("ui-test-secret");
@@ -505,15 +513,20 @@ test("settings show the environment connection and save preferences without expo
   const saved = await response.text();
   expect(saved).not.toContain("ui-test-secret");
   expect(JSON.parse(saved).settings.reasoningEffort).toBe("medium");
+  expect(JSON.parse(saved).settings.maxContextTokens).toBe(240000);
   expect(JSON.parse(saved).settings.auxiliaryModel).toBe("test-low-cost-model");
   await page.reload();
   await page.getByRole("button", { name: "模型与设置" }).click();
   await expect(page.getByLabel("思考等级")).toHaveValue("medium");
+  await expect(page.getByLabel("上下文窗口上限（token）")).toHaveValue(
+    "240000",
+  );
   await page.screenshot({ path: "test-results/settings.png", fullPage: true });
   await expect(page.getByLabel("连接配置")).toContainText(
     "test-low-cost-model",
   );
   await page.getByLabel("思考等级").selectOption("high");
+  await page.getByLabel("上下文窗口上限（token）").fill("300000");
   await page.getByRole("button", { name: "保存设置" }).click();
   await expect(page.getByRole("dialog")).toHaveCount(0);
 });
@@ -758,7 +771,7 @@ test("context compression notice and original history survive refresh", async ({
   await expect(
     page.getByText("任务完成，已检查工具结果。", { exact: true }),
   ).toBeVisible({ timeout: 15_000 });
-  await expandTaskProcess(page);
+  await expandTaskProcess(page, /上下文已整理：/);
   await expect(page.getByText(/上下文已整理：/)).toBeVisible();
   await page.reload();
   await project.getByRole("button", { name: "准备上下文压缩" }).click();
@@ -767,7 +780,7 @@ test("context compression notice and original history survive refresh", async ({
   ).toBeVisible();
   await expect(page.getByText("已准备长历史。", { exact: true })).toBeVisible();
   await expect(page.getByText(/上下文已整理：/)).toBeHidden();
-  await expandTaskProcess(page);
+  await expandTaskProcess(page, /上下文已整理：/);
   await expect(page.getByText(/上下文已整理：/)).toBeVisible();
 });
 
@@ -792,6 +805,12 @@ test("shows discovered token budget and persisted actual usage", async ({
   await page.getByText("上下文预算：token 模式", { exact: true }).click();
   await expect(
     page.getByText("服务公布窗口：372000 token", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("采用的窗口上限：300000 token", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("输入预算：268616", { exact: true }),
   ).toBeVisible();
   await expect(
     page.getByText("模型用量（服务实报）：输入 100 / 输出 20 token", {

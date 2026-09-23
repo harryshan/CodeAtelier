@@ -85,6 +85,7 @@ export class Config {
       commandTimeoutMs: 120000,
       requestTimeoutMs: 300000,
       idleTimeoutMs: 60000,
+      maxContextTokens: 300000,
       contextChars: 180000,
       outputChars: 32000,
       logLevel: process.env.CODEATELIER_LOG_LEVEL || "info",

@@ -47,7 +47,8 @@ type ReplaySettings = Pick<
   | "maxOutputTokens"
   | "contextChars"
   | "outputChars"
->;
+> &
+  Partial<Pick<Settings, "maxContextTokens">>;
 
 export interface RecordedModelExchange {
   id: string;
@@ -488,6 +489,7 @@ export function replaySettings(settings: Settings): ReplaySettings {
     requestTimeoutMs,
     idleTimeoutMs,
     maxOutputTokens,
+    maxContextTokens,
     contextChars,
     outputChars,
   } = settings;
@@ -502,6 +504,7 @@ export function replaySettings(settings: Settings): ReplaySettings {
     requestTimeoutMs,
     idleTimeoutMs,
     maxOutputTokens,
+    maxContextTokens,
     contextChars,
     outputChars,
   };

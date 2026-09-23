@@ -30,6 +30,7 @@
 输入估算包含序列化 input、instructions、tools，特殊 token 字面量当作普通文本。
 这是本地估算，不能精确复刻服务内部协议包装、隐藏开销和多模态计量。
 
+设置中的“上下文窗口上限（token）”默认 300000，保存后用于新任务，以该值代替服务公布的上下文窗口和输入容量参与预算计算（主模型及独立辅助摘要模型均适用）。服务仍负责实际容量校验；若设置高于真实窗口，请求可能被拒绝。容量发现失败或 tokenizer 不受支持时仍进入字符备用模式，此设置不会猜测 tokenizer，也不会改变服务公布的最大输出限制。
 maxOutputTokens 默认 16384，可在 Web UI“最大输出 token”中调整。
 实际输出上限取配置值、服务最大输出、窗口扣除安全余量与至少 1024 输入预留后的最小值；
 只有 token 模式发送 max_output_tokens，普通调用和摘要调用使用同一预留规则。
@@ -37,7 +38,7 @@ maxOutputTokens 默认 16384，可在 Web UI“最大输出 token”中调整。
 
 输入预算 = min(window - 实际输出上限, 服务最大输入或 window) - 安全余量。
 
-实测模型默认得到：372000 - 16384 - 18600 = 337016 token 输入预算。
+服务曾公布 372000 token 窗口；现在默认采用手动上限后得到：300000 - 16384 - 15000 = 268616 token 输入预算。
 达到输入预算 80% 时尝试压缩，目标降至 60% 以内；切分、摘要分块和压缩验收
 使用同一计量方式。token 模式下 contextChars 不再作为压缩阈值，仅用于发现失败的备用模式。
 摘要与恢复安全边界见 [context-management.md](context-management.md)。
@@ -53,7 +54,7 @@ ModelResult 返回可选 usage：input_tokens、output_tokens、total_tokens，
 缺失或异常用量不当作零，也不影响已完成响应；attribution 等未使用扩展字段不落盘。
 
 事件：
-- context_budget：本任务模式、窗口、输入预算、输出预留、安全余量。
+- context_budget：本任务模式、服务公布窗口与实际采用的窗口、输入预算、输出预留、安全余量；宿主和 Runtime 两条执行路径均记录。
 - model_request：每次实际发起的模型请求，用 purpose 区分任务、摘要、标题和审批；即使服务最终未提供 usage，也能正确统计调用次数与任务轮次。
 - model_usage：服务实报，用 purpose 区分任务、摘要、标题和审批。
 

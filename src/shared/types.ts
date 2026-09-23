@@ -114,6 +114,7 @@ export interface Settings {
   requestTimeoutMs: number;
   idleTimeoutMs: number;
   maxOutputTokens?: number;
+  maxContextTokens: number;
   contextChars: number;
   outputChars: number;
   logLevel: string;

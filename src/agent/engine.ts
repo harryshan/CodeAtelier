@@ -1112,6 +1112,7 @@ export class Engine {
               maxSteps: settings.maxSteps,
               commandTimeoutMs: settings.commandTimeoutMs,
               maxOutputTokens: settings.maxOutputTokens,
+              maxContextTokens: settings.maxContextTokens,
               contextChars: settings.contextChars,
               outputChars: settings.outputChars,
               subagentsEnabled: task.subagentsEnabled,
@@ -1688,12 +1689,14 @@ export class Engine {
         capabilities,
         settings.contextChars,
         settings.maxOutputTokens,
+        settings.maxContextTokens,
       );
       emit("context_budget", {
         model: settings.model,
         unit: budget.unit,
         inputLimit: budget.limit,
         contextWindowTokens: capabilities?.limits.max_context_window_tokens,
+        effectiveWindowTokens: budget.contextWindowTokens,
         modelMaxOutputTokens: capabilities?.limits.max_output_tokens,
         outputTokens: budget.outputTokens,
         safetyTokens: budget.safetyTokens,
@@ -1835,6 +1838,7 @@ export class Engine {
                 metadata,
                 settings.contextChars,
                 settings.maxOutputTokens,
+                settings.maxContextTokens,
               );
               log.info({
                 event: "context.summary_model_selected",

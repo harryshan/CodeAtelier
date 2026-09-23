@@ -522,6 +522,9 @@ function TimelineEvent({
             ? "服务公布窗口：" + event.data.contextWindowTokens + " token"
             : "服务未提供窗口容量"}
         </p>
+        {event.data.effectiveWindowTokens && (
+          <p>采用的窗口上限：{event.data.effectiveWindowTokens} token</p>
+        )}
         <p>输入预算：{event.data.inputLimit}</p>
         {event.data.outputTokens && (
           <p>

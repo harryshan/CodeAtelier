@@ -130,6 +130,7 @@ it("runs the model and tool loop in an independent Agent Runtime process", async
         provider: {
           async getCapabilities() {
             return {
+              tokenizer: "o200k_base",
               limits: {
                 max_context_window_tokens: 64_000,
                 max_output_tokens: 1_024,
@@ -239,6 +240,7 @@ it("runs the model and tool loop in an independent Agent Runtime process", async
           maxSteps: 5,
           commandTimeoutMs: 10_000,
           maxOutputTokens: 1_024,
+          maxContextTokens: 240_000,
           contextChars: 64_000,
           outputChars: 10_000,
         },
@@ -264,6 +266,11 @@ it("runs the model and tool loop in an independent Agent Runtime process", async
     true,
   );
   expect(events.some((event) => event.type === "assistant")).toBe(true);
+  expect(
+    events.find((event) => event.type === "context_budget")?.data,
+  ).toMatchObject({
+    effectiveWindowTokens: 240_000,
+  });
   expect(events.some((event) => event.type === "notice")).toBe(true);
   expect(Buffer.concat(errors).toString("utf8")).toBe("");
   expect(exit).toBe(0);

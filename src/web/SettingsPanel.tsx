@@ -220,6 +220,21 @@ export function SettingsPanel({
               />
             </label>
             <label>
+              上下文窗口上限（token）
+              <input
+                type="number"
+                min="4096"
+                max="2000000"
+                value={value.maxContextTokens ?? 300000}
+                onChange={(e) =>
+                  setValue({
+                    ...value,
+                    maxContextTokens: Number(e.target.value),
+                  })
+                }
+              />
+            </label>
+            <label>
               最大输出 token
               <input
                 type="number"
@@ -248,6 +263,10 @@ export function SettingsPanel({
               </select>
             </label>
           </div>
+          <p className={s.muted}>
+            上下文窗口上限替代服务公布的窗口和输入容量参与预算；高于模型实际容量时，请求仍可能被服务拒绝。服务未提供受支持的
+            tokenizer 时仍使用备用字符上限。
+          </p>
           {error && (
             <p role="alert" className={s.error}>
               {error}

@@ -3,7 +3,7 @@
  * 容量或 tokenizer 信息不可用时，继续使用字符预算。
  *
  * 1. ContextBudget 提供统一的大小计量、输入上限和输出预留，可选支持实际用量校准。
- * 2. createBudget 检查本地是否支持 o200k_base，再结合上下文窗口、输入上限和安全余量计算预算。
+ * 2. createBudget 检查本地是否支持 o200k_base，再用用户窗口覆盖服务报告的窗口和输入容量，结合安全余量计算预算。
  * 3. 首次计量时加载编码器，计算完整请求的大小；observeUsage 根据服务返回的输入用量，
  *    必要时上调当前任务的估算比例。
  *
@@ -68,6 +68,7 @@ export function createBudget(
   capabilities: ModelCapabilities | undefined,
   fallbackChars: number,
   requestedOutput = 16384,
+  maxContextTokens?: number,
 ): ContextBudget {
   if (!capabilities || capabilities.tokenizer !== "o200k_base") {
     const measurement: ContextMeasurement = { unit: "characters" };
@@ -81,7 +82,9 @@ export function createBudget(
     };
   }
 
-  const window = capabilities.limits.max_context_window_tokens;
+  // 显式设置同时替代服务报告的上下文窗口与输入容量；不能把旧 max_prompt_tokens 再作为硬上限。
+  const window =
+    maxContextTokens ?? capabilities.limits.max_context_window_tokens;
   const safetyTokens = Math.max(1024, Math.ceil(window * 0.05));
   const outputTokens = Math.min(
     requestedOutput,
@@ -91,7 +94,9 @@ export function createBudget(
   const limit =
     Math.min(
       window - outputTokens,
-      capabilities.limits.max_prompt_tokens ?? window,
+      maxContextTokens === undefined
+        ? (capabilities.limits.max_prompt_tokens ?? window)
+        : window,
     ) - safetyTokens;
   if (limit <= 0) {
     const measurement: ContextMeasurement = { unit: "characters" };

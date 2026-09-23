@@ -297,7 +297,7 @@ Worker 与主任务使用相同 token 计量和校准配置。e2e/app.spec.ts �
 
 ## token 容量与用量
 
-tokens.test.ts 覆盖容量预留、备用模式、中文/代码/工具与特殊 token 字面量、usage 校验、压缩计量一致性、输出预留传参、用量重启持久化和实报校准。session-statistics.test.ts 覆盖 model_request、实报缓存/非缓存聚合、旧 usage 回退、工具成功率和运行时长；e2e/app.spec.ts 覆盖统计默认折叠、展开后 token/LLM/工具展示、预算模式、服务实报用量及刷新保留。
+tokens.test.ts 覆盖手动窗口覆盖（默认 300000、服务窗口/输入上限较小时的替代）、容量预留、备用模式、中文/代码/工具与特殊 token 字面量、usage 校验、压缩计量一致性、输出预留传参、用量重启持久化和实报校准。session-statistics.test.ts 覆盖 model_request、实报缓存/非缓存聚合、旧 usage 回退、工具成功率和运行时长；e2e/app.spec.ts 覆盖统计默认折叠、展开后 token/LLM/工具展示、预算模式、服务实报用量及刷新保留。
 
 provider.test.ts 用本机 HTTP/SSE 验证模型容量和 usage 提取。真实服务最小探测见 model-tokens.md。
 

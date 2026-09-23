@@ -187,7 +187,19 @@ export class AgentRuntimeService {
         capabilities,
         input.settings.contextChars,
         input.settings.maxOutputTokens,
+        input.settings.maxContextTokens ?? 300_000,
       );
+      events.emit("context_budget", {
+        model: input.settings.model,
+        unit: budget.unit,
+        inputLimit: budget.limit,
+        contextWindowTokens: capabilities?.limits.max_context_window_tokens,
+        effectiveWindowTokens: budget.contextWindowTokens,
+        modelMaxOutputTokens: capabilities?.limits.max_output_tokens,
+        outputTokens: budget.outputTokens,
+        safetyTokens: budget.safetyTokens,
+        tokenizer: budget.tokenizer,
+      });
       const toolSettings = runtimeToolSettings(input.settings);
       const gitPush = new RuntimeGitPushClient(this.peer);
       const capability = new RuntimeCapabilityClient(this.peer);
@@ -542,6 +554,7 @@ function runtimeToolSettings(settings: RuntimeTaskSettings) {
     requestTimeoutMs: 300_000,
     idleTimeoutMs: 60_000,
     maxOutputTokens: settings.maxOutputTokens,
+    maxContextTokens: settings.maxContextTokens ?? 300_000,
     contextChars: settings.contextChars,
     outputChars: settings.outputChars,
     logLevel: "info",

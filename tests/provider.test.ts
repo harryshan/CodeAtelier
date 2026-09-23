@@ -23,6 +23,7 @@ const settings: Settings = {
   commandTimeoutMs: 1000,
   requestTimeoutMs: 3000,
   idleTimeoutMs: 1000,
+  maxContextTokens: 300000,
   contextChars: 10000,
   outputChars: 1000,
   logLevel: "info",

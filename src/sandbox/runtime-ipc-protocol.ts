@@ -55,6 +55,7 @@ const runtimeSessionEventTypeSchema = z.enum([
   "context.compaction_completed",
   "context.compaction_failed",
   "context.compaction_started",
+  "context_budget",
   "delta",
   "diff",
   "edit_progress",
@@ -115,6 +116,7 @@ export const runtimeTaskSettingsSchema = z
       .positive()
       .max(24 * 60 * 60 * 1_000),
     maxOutputTokens: z.number().int().positive().max(2_000_000).optional(),
+    maxContextTokens: z.number().int().min(4_096).max(2_000_000).optional(),
     contextChars: z.number().int().min(10_000).max(2_000_000),
     outputChars: z.number().int().min(1_000).max(100_000),
     subagentsEnabled: z.boolean().optional(),

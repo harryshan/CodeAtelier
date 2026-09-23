@@ -30,14 +30,20 @@ it("uses the explicit data directory and keeps the environment model authoritati
   expect(initial.settings.model).toBe("env-model");
   expect(initial.settings.maxSteps).toBe(100);
   expect(initial.settings.maxConcurrentTasks).toBe(2);
+  expect(initial.settings.maxContextTokens).toBe(300_000);
   initial.update({
-    settings: { ...initial.settings, reasoningEffort: "low" },
+    settings: {
+      ...initial.settings,
+      reasoningEffort: "low",
+      maxContextTokens: 240_000,
+    },
   });
   vi.stubEnv("CODEATELIER_MODEL", "next-environment-model");
 
   const reopened = new Config(root);
   expect(reopened.settings.model).toBe("next-environment-model");
   expect(reopened.settings.reasoningEffort).toBe("low");
+  expect(reopened.settings.maxContextTokens).toBe(240_000);
 });
 
 it("normalizes environment connections and persists only preferences and memory keys", async () => {
@@ -99,6 +105,9 @@ it.each([
   { idleTimeoutMs: 300001 },
   { requestTimeoutMs: 0 },
   { contextChars: 9999 },
+  { maxContextTokens: 4095 },
+  { maxContextTokens: 2_000_001 },
+  { maxContextTokens: 42.5 },
   { logLevel: "invalid" },
   { reasoningEffort: "invalid" },
 ])("rejects invalid preferences atomically: %j", async (invalid) => {
