@@ -93,6 +93,22 @@ it("creates isolated sessions and validates missing sessions and bad payloads", 
         })
       ).statusCode,
     ).toBe(400);
+    const enabled = await fixture.app.inject({
+      method: "POST",
+      url: `/api/sessions/${id}/tasks`,
+      headers: fixture.headers,
+      payload: { prompt: "investigate", subagentsEnabled: true },
+    });
+    expect(enabled.statusCode).toBe(409);
+    expect(enabled.json().error).toContain("尚未就绪");
+
+    const malformed = await fixture.app.inject({
+      method: "POST",
+      url: `/api/sessions/${id}/tasks`,
+      headers: fixture.headers,
+      payload: { prompt: "investigate", subagentsEnabled: "yes" },
+    });
+    expect(malformed.statusCode).toBe(400);
     expect(fixture.store.tasks(id)).toEqual([]);
   } finally {
     await fixture.app.close();
@@ -153,6 +169,7 @@ it("runs different workspaces in parallel while queueing the same workspace", as
 
     const first = await start(firstSession.id, "first task");
     expect(first.statusCode).toBe(200);
+    expect(first.json().subagentsEnabled).toBe(false);
     const firstTaskId = first.json().id;
     expect(() => fixture.engine.start(firstSession.id, "same session")).toThrow(
       "当前会话已有",

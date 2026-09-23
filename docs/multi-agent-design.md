@@ -1,6 +1,6 @@
 # 多 agent 协作设计草案
 
-状态：设计草案，尚未实施或纳入初版功能边界。本文针对用户提出的可选 subagent 功能；现行单 agent 范围、同真实工作区串行规则及 Windows Sandbox 的验收限制仍以 [需求](requirements.md)、[架构](architecture.md) 和 [决策记录](decisions.md) 为准。
+状态：D111 已授权实施，分阶段开发中，尚未作为可用功能开放。本文针对用户提出的可选 subagent；当前单 agent 能力、同真实工作区串行规则及 Windows Sandbox 的验收限制仍以 [需求](requirements.md)、[架构](architecture.md) 和 [决策记录](decisions.md) 为准。
 
 ## 目标和不可混淆的边界
 
@@ -109,4 +109,4 @@
 4. **一致性与 Sandbox 集成**：`collect` 与主会话工具结果原子落盘、重启后报告可重读、未知模型请求不盲重试、tracing、协议版本和固定事件、Windows 安装 bundle/摘要/清理验收。固定账户提升环境和跨平台验证各记真实证据，不能把 harness 或静态通过描述为已完成。
 5. **最后开放 UI**：仅在上述路径可用时展示 checkbox 与历史进度；验证勾选但主 agent 合理跳过分工、单 agent 对照、刷新、排队、取消、人工恢复和实际创建/收集报告。涉及 UI/HTTP/SSE 运行 `pnpm test:e2e`；每个实现增量提交前运行 `pnpm check`。Evaluation 仅在用户明确要求时手动运行。
 
-**已确认而非未决的取舍**：本方案不以恶意 Worker 线程、依赖代码或直接 Node API 为威胁模型；要获得对此类行为的 OS 级不可写承诺属于未来的独立进程/身份方案，不阻塞当前工具层实现计划。除该边界取舍外，多 agent 功能仍未获现行初版范围的实施授权，本文不改变现有单 agent 能力声明。
+**已确认而非未决的取舍**：本方案不以恶意 Worker 线程、依赖代码或直接 Node API 为威胁模型；要获得对此类行为的 OS 级不可写承诺属于未来的独立进程/身份方案。D111 已授权实施可选多 agent，但未完成或未验收的增量不改变现有单 agent 能力声明。

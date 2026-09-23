@@ -39,6 +39,7 @@ function replayCase(overrides: Partial<TaskReplayCase> = {}): TaskReplayCase {
     id: "task",
     sessionId: session.id,
     status: "completed" as const,
+    subagentsEnabled: false,
     createdAt: session.createdAt,
   };
 

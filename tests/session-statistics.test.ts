@@ -25,6 +25,7 @@ function task(overrides: Partial<Task> = {}): Task {
     id: "task-1",
     sessionId: "session-1",
     status: "completed",
+    subagentsEnabled: false,
     createdAt: startedAt,
     finishedAt,
     ...overrides,

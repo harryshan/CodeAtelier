@@ -8,6 +8,7 @@
  * 4. 大于同步阈值的事件和上下文由 Worker 读取，验证结果与同步接口相同且数据库可正常关闭。
  * 5. 逐步保存 replay 模型/工具捕获并导出单任务 case；旧事件只能形成明确的 legacy case。
  * 6. 以小容量阈值触发新会话分片，确认旧分片的上下文仍可由 Worker 读取，并在重启后发现全部分片。
+ * 7. 任务级 subagent 选择写入队列后保持布尔类型；模拟旧表缺列并检查跨分片迁移默认关闭。
  *
  * 重启要保留已有终态和上下文，不能把其他会话的数据混进来。
  */
@@ -231,6 +232,41 @@ it("restart interrupts active tasks but preserves terminal states and context", 
       "cancelled",
     ]);
     expect(store.context(session.id)[0].content).toBe("saved");
+  } finally {
+    store.close();
+  }
+});
+
+it("persists task-level subagent selection and migrates legacy shards without enabling it", async () => {
+  const root = await temp();
+  const file = path.join(root, "history.sqlite");
+  let store = new Store(file, { maxShardBytes: 1 });
+  const legacySession = store.create(root, "legacy");
+  const legacyTask = store.createTask(legacySession.id);
+  const currentSession = store.create(root, "current");
+  const selected = store.createTask(currentSession.id, true);
+
+  expect(store.task(selected.id)?.subagentsEnabled).toBe(true);
+  expect(
+    store.queuedTasks().find((task) => task.id === selected.id)
+      ?.subagentsEnabled,
+  ).toBe(true);
+  store.close();
+
+  // CREATE TABLE IF NOT EXISTS 不会为旧分片补列；迁移必须逐文件执行。
+  const oldDb = new DatabaseSync(file);
+  oldDb.exec("ALTER TABLE tasks DROP COLUMN subagentsEnabled");
+  oldDb.close();
+
+  store = new Store(file, { maxShardBytes: 1, interruptActive: false });
+  try {
+    expect(store.task(legacyTask.id)?.subagentsEnabled).toBe(false);
+    expect(store.tasks(legacySession.id)[0].subagentsEnabled).toBe(false);
+    expect(store.tasks(currentSession.id)[0].subagentsEnabled).toBe(true);
+    expect(
+      store.queuedTasks().find((task) => task.id === selected.id)
+        ?.subagentsEnabled,
+    ).toBe(true);
   } finally {
     store.close();
   }

@@ -3,7 +3,7 @@
  *
  * 1. 构造器发现兼容的 history.sqlite 与后续容量分片，在每个文件初始化数据库并把重启前未完成的任务标为 interrupted；transaction 同步提交，取锁或执行失败时释放本次已开启的事务。
  * 2. list/get/create 跨分片定位或聚合会话；新会话在最新分片达到容量上限后进入新文件，已有会话始终写回其初始分片。标题状态的领取、完成或失败保证首条 prompt 只生成一次标题。
- * 3. tasks/task/createTask/status 读写任务状态；queuedTasks 和 hasUnfinishedTask 供 Engine 调度跨会话队列，event/events 保存和分页读取事件。
+ * 3. tasks/task/createTask/status 读写任务状态与不可变的 subagent 选择；旧分片逐个迁移，SQLite 的 0/1 在各读取入口转换为布尔值。queuedTasks 和 hasUnfinishedTask 供 Engine 调度跨会话队列，event/events 保存和分页读取事件。
  * 4. task_replays 在任务开始后追加高保真模型/工具材料；replayCase 导出单任务的 captured 或 legacy case，不触发恢复或副作用。
  * 5. context/saveContext 读写当前模型历史；较大的 context、events 和快照可交给 store-worker 在线程外解析或原子写入，避免阻塞 HTTP 主线程。
  * 6. close 由应用退出流程调用，关闭全部历史分片连接；Worker 自己打开目标会话分片的短生命周期 WAL 连接，不持有 Store 的连接。
@@ -26,6 +26,8 @@ import {
   DEFAULT_HISTORY_SHARD_MAX_BYTES,
   HistoryShards,
 } from "./history-shards.js";
+
+type TaskRow = Omit<Task, "subagentsEnabled"> & { subagentsEnabled: number };
 
 export class Store {
   db: DatabaseSync;
@@ -82,6 +84,12 @@ export class Store {
 
     if (!taskColumns.some((column) => column.name === "finishedAt")) {
       db.exec("ALTER TABLE tasks ADD COLUMN finishedAt TEXT");
+    }
+
+    if (!taskColumns.some((column) => column.name === "subagentsEnabled")) {
+      db.exec(
+        "ALTER TABLE tasks ADD COLUMN subagentsEnabled INTEGER NOT NULL DEFAULT 0 CHECK (subagentsEnabled IN (0, 1))",
+      );
     }
   }
 
@@ -242,7 +250,8 @@ export class Store {
       .prepare(
         "SELECT * FROM tasks WHERE sessionId=? ORDER BY createdAt, rowid",
       )
-      .all(sessionId) as unknown as Task[];
+      .all(sessionId)
+      .map((row) => this.readTask(row as unknown as TaskRow));
   }
 
   /** 首条消息判断只需要存在性，不能为此把长工具输出逐条 JSON.parse 到主线程。 */
@@ -281,9 +290,9 @@ export class Store {
       return undefined;
     }
 
-    return shard.db
-      .prepare("SELECT * FROM tasks WHERE id=?")
-      .get(id) as unknown as Task | undefined;
+    const row = shard.db.prepare("SELECT * FROM tasks WHERE id=?").get(id);
+
+    return row ? this.readTask(row as unknown as TaskRow) : undefined;
   }
 
   /** replay 导出只读取单个任务的事件，避免将同会话其他任务的历史混入 case。 */
@@ -458,6 +467,11 @@ export class Store {
     };
   }
 
+  /** SQLite 布尔值必须在所有读路径转换，否则刷新后 UI 会把数字误当任务选项。 */
+  private readTask<T extends TaskRow>(row: T): Task & Omit<T, keyof TaskRow> {
+    return { ...row, subagentsEnabled: row.subagentsEnabled === 1 };
+  }
+
   /** 同一会话的上下文不能并发追加；不同会话的任务由 Engine 依据工作区和全局上限调度。 */
   hasUnfinishedTask(sessionId: string) {
     const shard = this.sessionShard(sessionId);
@@ -477,31 +491,40 @@ export class Store {
   /** 排队顺序按创建时间稳定；Engine 可跳过被相同工作区锁阻塞的项，避免空闲并发槽位闲置。 */
   queuedTasks() {
     return this.shards.all
-      .flatMap(
-        (shard) =>
-          shard.db
-            .prepare(
-              "SELECT tasks.*,sessions.workspace FROM tasks JOIN sessions ON sessions.id=tasks.sessionId WHERE tasks.status='queued'",
-            )
-            .all() as unknown as Array<Task & { workspace: string }>,
+      .flatMap((shard) =>
+        shard.db
+          .prepare(
+            "SELECT tasks.*,sessions.workspace FROM tasks JOIN sessions ON sessions.id=tasks.sessionId WHERE tasks.status='queued'",
+          )
+          .all()
+          .map((row) =>
+            this.readTask(row as unknown as TaskRow & { workspace: string }),
+          ),
       )
       .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
   }
 
-  createTask(sessionId: string) {
+  createTask(sessionId: string, subagentsEnabled = false) {
     this.selectSession(sessionId);
     const task = {
       id: randomUUID(),
       sessionId,
       status: "queued" as TaskStatus,
+      subagentsEnabled,
       createdAt: new Date().toISOString(),
     };
 
     this.db
       .prepare(
-        "INSERT INTO tasks(id,sessionId,status,createdAt) VALUES(?,?,?,?)",
+        "INSERT INTO tasks(id,sessionId,status,createdAt,subagentsEnabled) VALUES(?,?,?,?,?)",
       )
-      .run(task.id, sessionId, task.status, task.createdAt);
+      .run(
+        task.id,
+        sessionId,
+        task.status,
+        task.createdAt,
+        Number(subagentsEnabled),
+      );
 
     return task;
   }

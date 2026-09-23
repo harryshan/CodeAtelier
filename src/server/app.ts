@@ -4,7 +4,7 @@
  *
  * 1. 创建 Fastify、Store 和 Engine；若启用 Windows Sandbox，在监听前排空上次服务遗留的账户进程和 ACL journal。
  * 2. 先按监听范围注册来源与凭据检查、关闭/受监督重载接口和错误处理，再注册 bootstrap、设置接口。
- * 3. 会话和任务路由校验请求，创建待生成标题的会话，调用 Engine 启动、恢复、取消任务，列出或下载已保存的 Perfetto trace，或传递审批决定。
+ * 3. 会话和任务路由校验请求，创建待生成标题的会话；未就绪的 subagent 开关显式拒绝，调用 Engine 启动、恢复、取消任务，列出或下载已保存的 Perfetto trace，或传递审批决定。
  * 4. 接入 SSE，并提供构建后的网页；没有前端产物时显示开发提示。
  * 5. preClose 中断任务并结束 SSE，onClose 关闭数据库。
  *
@@ -206,13 +206,23 @@ export async function createApp(
 
     return engine.snapshot(id, after);
   });
-  app.post("/api/sessions/:id/tasks", async (req) => {
+  app.post("/api/sessions/:id/tasks", async (req, reply) => {
     const { id } = req.params as { id: string };
-    const { prompt } = z
-      .object({ prompt: z.string().trim().min(1).max(40000) })
+    const { prompt, subagentsEnabled } = z
+      .object({
+        prompt: z.string().trim().min(1).max(40000),
+        subagentsEnabled: z.boolean().default(false),
+      })
       .parse(req.body);
 
-    return engine.start(id, prompt);
+    // 在主从 loop、持久化和 Sandbox 均可用之前，不接受会默默退化为单 agent 的请求。
+    if (subagentsEnabled) {
+      return reply
+        .code(409)
+        .send({ error: "subagent 尚未就绪，不能启用本次任务。" });
+    }
+
+    return engine.start(id, prompt, { subagentsEnabled });
   });
   app.post("/api/tasks/:id/resume", async (req) => {
     const { instruction } = z

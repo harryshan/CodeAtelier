@@ -2,7 +2,7 @@
  * 定义 server、agent 和 web 共用的数据类型，使 API 两端使用一致的字段。
  * 这里不依赖后端的文件或数据库实现。
  *
- * 1. TaskStatus 和 TitleState 列出任务及自动标题状态，Session 和 Task 描述会话及其中的任务；Task 的 createdAt、startedAt 与 finishedAt 区分排队、实际运行和结束时间。
+ * 1. TaskStatus 和 TitleState 列出任务及自动标题状态，Session 和 Task 描述会话及其中的任务；Task 的 subagentsEnabled 是任务创建时固定的选择，createdAt、startedAt 与 finishedAt 区分排队、实际运行和结束时间。
  * 2. Event 表示有顺序的历史条目，Approval 表示待审批操作。
  * 3. Settings 描述公开配置，Snapshot 汇总页面需要的会话、事件、任务和审批。
  *
@@ -34,6 +34,7 @@ export interface Task {
   id: string;
   sessionId: string;
   status: TaskStatus;
+  subagentsEnabled: boolean;
   createdAt: string;
   startedAt?: string | null;
   finishedAt?: string | null;

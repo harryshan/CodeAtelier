@@ -3,7 +3,7 @@
  * HTTP 服务和手动评测都会创建 Engine；任务记录写入 Store，界面通过事件获知变化。
  *
  * 1. 构造器接好审批通知；snapshot 读取会话状态，emit 脱敏并保存事件。
- * 2. start 保存用户消息为 queued；调度器在全局并发上限内启动不同工作区的任务，并对相同真实工作区保持互斥。
+ * 2. start 原子保存用户消息和任务级 subagent 选择为 queued；多 agent 尚未就绪时拒绝开启。调度器在全局并发上限内启动不同工作区的任务，并对相同真实工作区保持互斥。
  * 3. resume 继续最后一个可恢复任务；cancel 处理用户取消，close 处理服务关闭。
  * 4. 首条 prompt 先用辅助模型生成标题；run 再读取历史和项目规则，准备工具及上下文预算。
  * 5. model-loop 共用轮次、重试和停止控制，model-tool-batch 共用计划与成功判断；Engine 保留宿主事务、replay 与 tracing。为压缩提供 ToolRunner 的安全文件哈希探测；每轮记录上下文准备和请求计量、模型重试、实际模型请求和响应处理，再记录服务实报用量。完整响应保存后校验工具 DAG，节点先完成准备/审批，实际执行才取得有界 worker 槽。
@@ -98,6 +98,11 @@ import type { SandboxStatus } from "../sandbox/types.js";
 const titleRetryOptions = { retries: 3, retryUnknownErrors: true };
 
 type ModelUsagePurpose = "task" | "compaction" | "title" | "approval";
+
+interface StartTaskOptions {
+  subagentsEnabled?: boolean;
+  recovery?: { sourceTaskId: string; originalPrompt: string };
+}
 
 type ActiveTask = {
   task: Task;
@@ -323,11 +328,11 @@ export class Engine {
     );
   }
 
-  start(
-    sessionId: string,
-    prompt: string,
-    recovery?: { sourceTaskId: string; originalPrompt: string },
-  ) {
+  start(sessionId: string, prompt: string, options: StartTaskOptions = {}) {
+    if (options.subagentsEnabled) {
+      throw new Error("subagent 尚未就绪，不能启用本次任务。");
+    }
+
     if (this.closing) {
       throw new Error("服务正在关闭，不能启动任务。");
     }
@@ -344,14 +349,17 @@ export class Engine {
         throw new Error("当前会话已有运行中或排队中的任务，请等待或取消。");
       }
 
-      const created = this.store.createTask(sessionId);
+      const created = this.store.createTask(
+        sessionId,
+        options.subagentsEnabled ?? false,
+      );
       const firstPrompt =
         session.titleState === "pending" &&
         !this.store.hasEvent(sessionId, "user");
 
       this.emit(created, "user", { text: prompt });
-      if (recovery) {
-        this.emit(created, "recovery", recovery);
+      if (options.recovery) {
+        this.emit(created, "recovery", options.recovery);
       }
 
       if (firstPrompt) {
@@ -497,7 +505,10 @@ export class Engine {
         prompt +
         "\n保留已完成的进度；先核实当前文件和不确定操作的状态，不要盲目重放命令。\n" +
         instruction,
-      { sourceTaskId: id, originalPrompt: prompt },
+      {
+        subagentsEnabled: task.subagentsEnabled,
+        recovery: { sourceTaskId: id, originalPrompt: prompt },
+      },
     );
   }
 
