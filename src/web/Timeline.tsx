@@ -4,7 +4,7 @@
  *
  * 1. labels 和 textResult 处理工具名称及结果的显示格式。
  * 2. 按任务、步骤和尝试次数合并流式文本；已有完整 assistant 事件时去掉对应的临时文本，未完成文本紧随其最后一个 delta，而非错误追加到时间线末尾。MarkdownMessage 负责安全渲染用户和 agent 文本。
- * 3. 合并同一编辑批次的逐文件最新状态；按调用 ID 聚合 run_command、git 的流式输出和最终结果，并把 tool_state 映射为等待依赖、等待槽位和执行中状态。
+ * 3. 合并同一编辑批次的逐文件最新状态；按调用 ID 聚合流式输出和结果；把 tool_state 及已保存的 subagent 选择、规划/状态/收集事件映射到页面。
  * 4. 已完成任务默认仅保留用户输入和最后一条 agent 输出，将中间过程收纳为可展开区域；未完成、失败、取消和中断任务继续完整显示。
  * 5. 将可见条目及缓冲区交给虚拟列表；ResizeObserver 测得的高度用于在未渲染历史前后保留准确占位。
  * 6. 显示仍在接收的文本和待审批按钮，把用户选择发给后端。
@@ -41,6 +41,7 @@ const labels: Record<string, string> = {
   write_file: "写入文件（旧记录）",
   run_command: "执行命令",
   git: "Git 操作",
+  subagent: "只读子代理协调",
   // 保留旧会话事件的中文标签；旧调用只展示，不会被新版 ToolRunner 执行。
   git_status: "Git 状态（旧记录）",
   git_diff: "Git 差异（旧记录）",
@@ -59,6 +60,7 @@ const modelUsagePurposeLabels: Record<string, string> = {
   compaction: "上下文摘要",
   title: "会话标题",
   approval: "工具审批",
+  subagent: "只读子任务",
 };
 
 const streamedToolOutputTypes: Record<string, string> = {
@@ -301,6 +303,9 @@ function eventHasTimelineContent(
     "context_budget",
     "model_usage",
     "approval_assessed",
+    "subagent_plan",
+    "subagent_state",
+    "subagent_collect",
     "sandbox_fallback",
     "notice",
   ].includes(event.type);
@@ -311,11 +316,13 @@ function TimelineEvent({
   outputEvents,
   editBatches,
   toolStatuses,
+  subagentTaskIds,
 }: {
   event: Event;
   outputEvents: ReturnType<typeof toolOutputCards>;
   editBatches: Map<string, EditBatch>;
   toolStatuses: Map<number, ToolDisplayStatus>;
+  subagentTaskIds: Set<string>;
 }) {
   if (event.type === "user" || event.type === "assistant") {
     return (
@@ -324,6 +331,9 @@ function TimelineEvent({
       >
         <div className={s.messageLabel}>
           {event.type === "user" ? "你" : "✳ CodeAtelier"}
+          {event.type === "user" && subagentTaskIds.has(event.taskId) && (
+            <small className={s.subagentBadge}>已启用只读子代理</small>
+          )}
           <time>
             {new Date(event.createdAt).toLocaleTimeString([], {
               hour: "2-digit",
@@ -333,6 +343,57 @@ function TimelineEvent({
         </div>
         <MarkdownMessage text={event.data.text} />
       </article>
+    );
+  }
+
+  if (event.type === "subagent_plan") {
+    const subtasks = Array.isArray(event.data?.subtasks)
+      ? event.data.subtasks
+      : [];
+    const ids = subtasks.map((plan: { id?: unknown }) =>
+      typeof plan.id === "string" ? plan.id : "未命名",
+    );
+
+    return (
+      <div className={s.notice} role="status">
+        已规划只读子任务（{ids.length}）：{ids.join("、")}
+      </div>
+    );
+  }
+
+  if (event.type === "subagent_state") {
+    const statuses: Record<string, string> = {
+      planned: "已规划",
+      queued: "排队中",
+      running: "调查中",
+      completed: "已完成",
+      failed: "失败",
+      cancelled: "已取消",
+      interrupted: "已中断",
+    };
+    const id = typeof event.data?.id === "string" ? event.data.id : "未知";
+    const status = statuses[String(event.data?.status)] ?? "未知状态";
+
+    return (
+      <div className={s.notice} role="status">
+        只读子任务 {id}：{status}
+      </div>
+    );
+  }
+
+  if (event.type === "subagent_collect") {
+    const ids = Array.isArray(event.data?.ids)
+      ? event.data.ids.filter(
+          (id: unknown): id is string => typeof id === "string",
+        )
+      : [];
+
+    return (
+      <div className={s.notice} role="status">
+        {ids.length
+          ? `已收集子任务报告：${ids.join("、")}`
+          : "本次没有新增子任务报告"}
+      </div>
     );
   }
 
@@ -548,12 +609,14 @@ function TaskProcess({
   outputEvents,
   editBatches,
   toolStatuses,
+  subagentTaskIds,
 }: {
   data: Snapshot;
   entries: TimelineEntry[];
   outputEvents: ReturnType<typeof toolOutputCards>;
   editBatches: Map<string, EditBatch>;
   toolStatuses: Map<number, ToolDisplayStatus>;
+  subagentTaskIds: Set<string>;
 }) {
   return (
     <details className={s.taskProcess} data-task-process>
@@ -568,6 +631,7 @@ function TaskProcess({
                 outputEvents={outputEvents}
                 editBatches={editBatches}
                 toolStatuses={toolStatuses}
+                subagentTaskIds={subagentTaskIds}
               />
             );
           }
@@ -717,6 +781,9 @@ export function Timeline({
   onError: (s: string) => void;
   scrollContainerRef: RefObject<HTMLDivElement | null>;
 }) {
+  const subagentTaskIds = new Set(
+    data.tasks.filter((task) => task.subagentsEnabled).map((task) => task.id),
+  );
   const active = data.tasks.find(
     (task) =>
       task.status === "queued" ||
@@ -843,6 +910,7 @@ export function Timeline({
               outputEvents={outputEvents}
               editBatches={editBatches}
               toolStatuses={toolStatuses}
+              subagentTaskIds={subagentTaskIds}
             />
           )}
           {entry.kind === "streaming" && (
@@ -855,6 +923,7 @@ export function Timeline({
               outputEvents={outputEvents}
               editBatches={editBatches}
               toolStatuses={toolStatuses}
+              subagentTaskIds={subagentTaskIds}
             />
           )}
           {entry.kind === "approval" && (

@@ -1,7 +1,7 @@
 /*
  * 使用真实临时工作区、SQLite 和 Worker 验证主任务的子任务协调闭环，不调用外部模型。
  *
- * 1. 逆序声明有依赖的两个计划，验证持久化先于线程、有限租约、文件读取、等待及只收集一次报告。
+ * 1. 逆序声明有依赖的两个计划，验证计划/状态持久化后通知页面刷新、有限租约、读取、等待及只收集一次报告。
  * 2. 敏感/越界范围拒绝时不创建任务；取消等待模型的 Worker 后归还资源并标记终态。
  * 3. 主任务关闭时与尚在登记计划的请求竞态，不能遗漏晚登记的 Worker。
  * 4. 等待在主任务取消时立刻停止，消息有界，存储回执失败不允许下一轮模型继续。
@@ -42,6 +42,7 @@ async function setup(provider: ModelProvider) {
   const task = store.createTask(session.id, true);
   store.status(task.id, "running");
   const trace: string[] = [];
+  const notifications: string[] = [];
   const coordinator = new SubagentCoordinator({
     taskId: task.id,
     workspace: root,
@@ -50,9 +51,11 @@ async function setup(provider: ModelProvider) {
     limits: new SubagentLimits(1),
     signal: new AbortController().signal,
     trace: (name, id, status) => trace.push(`${name}:${id}:${status}`),
+    onStateChange: () =>
+      notifications.push(store.events(session.id).at(-1)?.type ?? "missing"),
   });
 
-  return { root, store, task, coordinator, trace };
+  return { root, store, task, coordinator, trace, notifications };
 }
 
 it("runs separate loops in dependency order and persists reports for only one collection", async () => {
@@ -93,6 +96,8 @@ it("runs separate loops in dependency order and persists reports for only one co
         subtasks: [plan("second", ["first"]), plan("first")],
       }),
     ).resolves.toMatchObject({ subtasks: [{ id: "second" }, { id: "first" }] });
+    expect(fixture.notifications).toContain("subagent_plan");
+
     const done = await fixture.coordinator.execute({
       action: "await",
       subagentIds: ["second", "first"],
@@ -104,6 +109,9 @@ it("runs separate loops in dependency order and persists reports for only one co
         { id: "first", status: "completed" },
       ],
     });
+    expect(
+      fixture.notifications.filter((type) => type === "subagent_state").length,
+    ).toBeGreaterThanOrEqual(6);
     expect(order).toEqual([
       "start:first",
       "done:first",

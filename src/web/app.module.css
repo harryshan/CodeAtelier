@@ -2,8 +2,8 @@
  * 主页面、时间线和弹窗共用的 CSS Module，由各 React 组件引用。
  *
  * 1. 开头设置颜色、字体和基础控件样式，再定义双栏布局、侧栏和标题区。
- * 2. 项目分组标题、折叠控件、最近会话限制与会话按钮展示一项目多对话；随后是欢迎页、项目栏、右上角实际 sandbox 状态、可折叠会话统计与 Perfetto 下载链接、Markdown 对话消息、工具结果、diff 和通知。
- * 3. 审批按钮、所见即所得 Markdown 输入区、弹窗和字段网格对应页面中的操作与表单。
+ * 2. 项目分组与侧栏、欢迎页、实际 sandbox 状态、会话统计及 Perfetto 下载链接、带子任务徽标的 Markdown 对话消息、工具结果、diff 和通知。
+ * 3. 审批按钮、所见即所得 Markdown 输入区、按服务端门禁显示的子代理勾选、弹窗和字段网格对应页面操作。
  * 4. 末尾通过媒体查询调整窄屏间距和排列；手机端把完整侧栏改为带遮罩的导航抽屉，避免隐藏项目和会话操作。
  *
  * 修改类名时要同步 TSX 引用。按钮是否禁用由组件状态控制，不能只改成看起来不可用的样式。
@@ -715,6 +715,14 @@
   gap: 15px;
   margin-bottom: 12px;
 }
+.subagentBadge {
+  font-size: 10px;
+  font-weight: 400;
+  color: #bce1cd;
+  border: 1px solid #4e6f5d;
+  border-radius: 5px;
+  padding: 1px 6px;
+}
 .messageLabel time {
   font-size: 10px;
   color: #647f8a;
@@ -1020,8 +1028,21 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 10px;
   margin-top: 8px;
+}
+.subagentChoice {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #b9d4d0;
+  font-size: 11px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.subagentChoice input {
+  accent-color: #92c9b0;
 }
 .composerActions > span {
   font-size: 10px;

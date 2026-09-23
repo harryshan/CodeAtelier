@@ -14,6 +14,7 @@
  * 10. 已完成任务默认仅显示输入和最后一轮输出；中间工具、通知和重试文本收纳为可展开过程，未完成任务仍完整显示。
  * 11. 累积较长时间线后检查滚动窗口外只保留高度占位，滚动到另一端才创建对应消息节点。
  * 12. 在手机视口检查完整侧栏由菜单按钮打开，并可通过会话选择、遮罩或 Escape 关闭。
+ * 13. subagent 未开放时不显示复选框；模拟 bootstrap 就绪仅验证表单负载，历史任务和子进度可从持久事件重建，后端仍拒绝未验收的启用请求。
  *
  * 页面刷新或重连不能重新提交任务。这里不调用真实模型。
  */
@@ -79,6 +80,152 @@ test("create a session, edit a file, inspect diff and reload history", async ({
   expect(errors).toEqual([]);
 });
 
+test("keeps the subagent option hidden until the server passes its release gate", async ({
+  page,
+}) => {
+  const workspace = await realpath(
+    await mkdtemp(path.join(tmpdir(), "codeatelier-subagent-gate-")),
+  );
+  await page.goto("/");
+  await createInitialConversation(page, workspace);
+  await expect(
+    page.getByRole("checkbox", { name: "启用只读子代理" }),
+  ).toHaveCount(0);
+});
+
+test("prepares a one-task opt-in without letting a spoofed bootstrap bypass the backend gate", async ({
+  page,
+}) => {
+  const workspace = await realpath(
+    await mkdtemp(path.join(tmpdir(), "codeatelier-subagent-form-")),
+  );
+  await page.route("**/api/bootstrap", async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    await route.fulfill({
+      response,
+      json: { ...body, subagentsAvailable: true },
+    });
+  });
+  await page.goto("/");
+  await createInitialConversation(page, workspace);
+  const checkbox = page.getByRole("checkbox", { name: "启用只读子代理" });
+  await expect(checkbox).not.toBeChecked();
+  await checkbox.check();
+  let submitted: unknown;
+  await page.route("**/api/sessions/*/tasks", async (route) => {
+    submitted = route.request().postDataJSON();
+    await route.continue();
+  });
+  await page.getByLabel("任务描述").fill("分析代码");
+  await page.getByRole("button", { name: "开始执行" }).click();
+  await expect(page.getByRole("alert")).toContainText("subagent 尚未就绪");
+  expect(submitted).toEqual({ prompt: "分析代码", subagentsEnabled: true });
+  await expect(checkbox).toBeChecked();
+  await expect(page.getByLabel("任务描述")).toContainText("分析代码");
+  await checkbox.uncheck();
+  await page.getByRole("button", { name: "开始执行" }).click();
+  await expect(page.getByText("任务完成，已检查工具结果。")).toBeVisible();
+  expect(submitted).toEqual({ prompt: "分析代码", subagentsEnabled: false });
+  await expect(checkbox).not.toBeChecked();
+});
+
+test("rebuilds saved subagent selection and progress after refreshing a historical conversation", async ({
+  page,
+}) => {
+  const workspace = await realpath(
+    await mkdtemp(path.join(tmpdir(), "codeatelier-subagent-history-")),
+  );
+  await page.goto("/");
+  await createInitialConversation(page, workspace);
+
+  await page.route("**/api/sessions/*", async (route) => {
+    const request = route.request();
+    if (request.method() !== "GET" || request.url().includes("/events")) {
+      await route.continue();
+
+      return;
+    }
+
+    const response = await route.fetch();
+    const body = await response.json();
+    const sessionId = body.session.id;
+    const taskId = "stored-subagent-task";
+    const createdAt = "2026-09-23T12:00:00.000Z";
+    body.tasks = [
+      {
+        id: taskId,
+        sessionId,
+        createdAt,
+        startedAt: createdAt,
+        status: "interrupted",
+        subagentsEnabled: true,
+      },
+    ];
+    body.events = [
+      {
+        id: 1,
+        sessionId,
+        taskId,
+        type: "user",
+        data: { text: "检查代码" },
+        createdAt,
+      },
+      {
+        id: 2,
+        sessionId,
+        taskId,
+        type: "subagent_plan",
+        data: { subtasks: [{ id: "review", role: "reader", dependsOn: [] }] },
+        createdAt,
+      },
+      {
+        id: 3,
+        sessionId,
+        taskId,
+        type: "subagent_state",
+        data: { id: "review", status: "completed" },
+        createdAt,
+      },
+      {
+        id: 4,
+        sessionId,
+        taskId,
+        type: "subagent_collect",
+        data: { ids: ["review"] },
+        createdAt,
+      },
+    ];
+    await route.fulfill({ response, json: body });
+  });
+
+  const project = page.getByRole("group", { name: workspace, exact: true });
+  await page.reload();
+  await project.getByRole("button", { name: "新对话", exact: true }).click();
+  await expect(page.getByText("已启用只读子代理")).toBeVisible();
+  await expect(
+    page
+      .getByRole("status")
+      .filter({ hasText: "已规划只读子任务（1）：review" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("status").filter({ hasText: "只读子任务 review：已完成" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("status").filter({ hasText: "已收集子任务报告：review" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("checkbox", { name: "启用只读子代理" }),
+  ).toHaveCount(0);
+
+  await page.reload();
+  await project.getByRole("button", { name: "新对话", exact: true }).click();
+  await expect(page.getByText("已启用只读子代理")).toBeVisible();
+  await expect(
+    page.getByRole("status").filter({ hasText: "只读子任务 review：已完成" }),
+  ).toBeVisible();
+});
+
 test("opens and closes the complete navigation drawer on a phone viewport", async ({
   page,
 }) => {
@@ -98,7 +245,10 @@ test("opens and closes the complete navigation drawer on a phone viewport", asyn
   await expect(menuButton).toHaveAttribute("aria-expanded", "true");
   await expect(drawer).toBeVisible();
 
-  await drawer.getByRole("button", { name: "新对话", exact: true }).click();
+  await drawer
+    .getByRole("group", { name: workspace, exact: true })
+    .getByRole("button", { name: "新对话", exact: true })
+    .click();
   await expect(menuButton).toHaveAttribute("aria-expanded", "false");
   await expect(drawer).toBeHidden();
 

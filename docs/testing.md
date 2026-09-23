@@ -127,9 +127,9 @@ item.done 回退、失败/不完整事件、服务实际错误 message/reason/co
 
 ### 可选 subagent（内部双执行路径，尚未开放）
 
-主要测试：subagent-contracts.test.ts、subagent-limits.test.ts、subagent-readonly.test.ts、subagent-worker.test.ts、subagent-coordinator.test.ts、model-tool-batch.test.ts、engine-subagent.test.ts、agent-runtime-subagent.test.ts、runtime-subagent-ipc.test.ts、sandbox-native-windows-runtime.test.ts、store.test.ts、session-statistics.test.ts。
+主要测试：subagent-contracts.test.ts、subagent-limits.test.ts、subagent-readonly.test.ts、subagent-worker.test.ts、subagent-coordinator.test.ts、model-tool-batch.test.ts、engine-subagent.test.ts、agent-runtime-subagent.test.ts、runtime-subagent-ipc.test.ts、sandbox-native-windows-runtime.test.ts、store.test.ts、session-statistics.test.ts、server.test.ts、tests/e2e/app.spec.ts。
 
-已覆盖分工 action 严格校验、计划 DAG 与数量上限、单任务与跨 Runtime 的 Broker 全局 Worker lease、排队和取消；真实 SQLite 子计划、检查点、重复请求拒绝、重启中断与未知模型请求，以及与主工具反馈同分片提交的报告消费。晚完成、反馈截断或持久化失败不能误标已消费；子 Worker 只可用受限读取，读回执落盘失败立即停止，不继续模型轮次，主任务取消中断等待，每子任务消息数有界；双向 Worker 消息核对协议版本、任务/子任务归属和单调序号，跨任务父回执不能成为有效模型结果。宿主 Engine 与真实 Node Runtime 子进程的内部已标记任务均完成计划/等待/收集的模拟模型闭环；Broker IPC 拒绝未经登记的子模型、冒用主模型身份、写工具声明和重复 lease 释放，断连后留存租约直到实例确认清理。Worker 与主线程共用进程/身份，不抵御恶意代码直接使用 Node API；stdio 测试、bundle/MSVC 构建不等于固定账户提升环境或跨平台验收。HTTP/UI 仍拒绝开启，原生取消/恢复/故障矩阵尚需单独验收。
+已覆盖分工 action 严格校验、计划 DAG 与数量上限、单任务与跨 Runtime 的 Broker 全局 Worker lease、排队和取消；真实 SQLite 子计划、检查点、重复请求拒绝、重启中断与未知模型请求，以及与主工具反馈同分片提交的报告消费。晚完成、反馈截断或持久化失败不能误标已消费；子 Worker 只可用受限读取，读回执落盘失败立即停止，不继续模型轮次，主任务取消中断等待，每子任务消息数有界；双向 Worker 消息核对协议版本、任务/子任务归属和单调序号，跨任务父回执不能成为有效模型结果。宿主 Engine 与真实 Node Runtime 子进程的内部已标记任务均完成计划/等待/收集的模拟模型闭环；Broker IPC 拒绝未经登记的子模型、冒用主模型身份、写工具声明和重复 lease 释放，断连后留存租约直到实例确认清理。Worker 与主线程共用进程/身份，不抵御恶意代码直接使用 Node API；stdio 测试、bundle/MSVC 构建不等于固定账户提升环境或跨平台验收。Bootstrap、Engine 与 HTTP 共用默认 false 的发布门禁；Playwright 伪造 bootstrap true 只可检查 checkbox 与一次性请求，后端 409 拒绝启用且草稿不丢失。历史任务标记及子计划/状态/收集由持久化 Snapshot 重建、刷新后仍可见；Host/Runtime 在状态落盘后通知 SSE。真实发布仍待固定账户下取消、恢复及故障矩阵验收。
 
 ### 项目记忆
 

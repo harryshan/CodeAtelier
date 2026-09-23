@@ -65,9 +65,9 @@
 
 ## 7. 具体代码落点与接入顺序
 
-以下描述目标落点；任务开关迁移、内部 Store/Worker、宿主协调和 Runtime→Broker 的任务绑定 IPC/lease/bundle 已接入且通过独立进程 harness；UI 与固定账户提升环境、恢复/故障矩阵仍待完成，不能按本节目标推断现有功能已经可用：
+以下描述目标落点；任务开关迁移、内部 Store/Worker、宿主协调和 Runtime→Broker 的任务绑定 IPC/lease/bundle 已接入且通过独立进程 harness；前端勾选与历史进度已预置但默认发布门禁仍为 false；固定账户提升环境及恢复/故障矩阵仍待完成，不能按本节目标推断现有功能已经可用：
 
-- **UI/API**：`src/server/app.ts` 的任务 POST 用 Zod `subagentsEnabled: z.boolean().default(false)`，拒绝非布尔值；功能未就绪时显式拒绝 `true`。完成后才在 `src/web/App.tsx` 的 `send` 与输入框下方 `composerActions` 开放默认 `false` 的 checkbox；恢复按钮只提交 instruction，不读取当前 checkbox。更新 `src/shared/types.ts` 的 Task 和 `src/web/Timeline.tsx`，展示实际保存的选择与进度。
+- **UI/API**：`src/server/app.ts` 的任务 POST 用 Zod `subagentsEnabled: z.boolean().default(false)`，拒绝非布尔值；功能未就绪时显式拒绝 `true`。`src/web/App.tsx` 的 `send` 与输入框下方 `composerActions` 已预置默认 `false` 的 checkbox，但 bootstrap 返回未就绪时完全隐藏，伪造客户端仍会被 Engine/HTTP 拒绝；恢复按钮只提交 instruction，不读取当前 checkbox。更新 `src/shared/types.ts` 的 Task 和 `src/web/Timeline.tsx`，展示实际保存的选择与进度。
 - **任务创建与恢复**：在 `src/agent/engine.ts` 的 `start`、`resume`、`run` 和 `runInAgentRuntime` 接入开关。将新增开关及原有 recovery 一并收束到具名 `StartTaskOptions`（而非两个易错的位置参数），迁移已有 `start(sessionId, prompt, recovery?)` 调用方；创建任务和用户事件在同一事务保存选项。`resume` 从来源任务读取开关创建**新任务**，不依据 UI 当前表单状态或重启旧 Worker。主 loop 仅在功能就绪且任务开关为真时提供协调工具。
 - **存储/流式展示**：更新 `src/sessions/schema.ts`、`store.ts` 和 `src/server/session-events.ts`。`tasks.subagentsEnabled INTEGER NOT NULL DEFAULT 0`，逐分片 migration 兼容旧历史；子任务状态以 `(taskId, subagentId)` 唯一标识，同会话内保存有界检查点及请求 ID。进度和报告通过现有 `events` 全局游标进入快照/SSE，界面从持久化事件还原。主会话的 `collect` 工具结果与子报告消费状态需在宿主 Store 的同分片事务中提交；Runtime 经 Broker 提供固定的原子 adapter，不允许仅先写“已消费”再异步保存主模型输出。
 - **两条执行路径**：宿主 `Engine.run` 与 Sandbox `AgentRuntimeService.run` 都构造同一个任务级 `SubagentCoordinator`；前者用本地 Store/Provider adapter，后者经 RuntimeModelProvider 和有序 session IPC adapter。全局子任务 lease 与已登记子任务验证由服务进程的 Engine/Broker 掌握，Runtime 只持有本任务受限 adapter，Broker 不承载子 loop 或代做工作区工具。必须共用工具层协议与校验，不能只在宿主实现。

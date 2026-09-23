@@ -32,6 +32,7 @@ import {
 import { prepareTaskContext } from "./context.js";
 import { SubagentCoordinator } from "./subagent-coordinator.js";
 import { SubagentLimits } from "./subagent-limits.js";
+import { SUBAGENT_PUBLIC_READY } from "./subagent-readiness.js";
 import {
   subagentToolDefinition,
   type SubagentAction,
@@ -339,7 +340,7 @@ export class Engine {
   }
 
   start(sessionId: string, prompt: string, options: StartTaskOptions = {}) {
-    if (options.subagentsEnabled) {
+    if (options.subagentsEnabled && !SUBAGENT_PUBLIC_READY) {
       throw new Error("subagent 尚未就绪，不能启用本次任务。");
     }
 
@@ -825,17 +826,28 @@ export class Engine {
                 );
                 requestSignal.throwIfAborted();
 
-                return this.store.planSubagents(task.id, request.subtasks);
+                const planned = this.store.planSubagents(
+                  task.id,
+                  request.subtasks,
+                );
+                this.events.emit("change", task.sessionId);
+
+                return planned;
               case "list":
                 return this.store.subagents(task.id);
-              case "update":
-                return this.store.updateSubagent(
+              case "update": {
+                const updated = this.store.updateSubagent(
                   task.id,
                   request.subagentId,
                   request.status,
                   request.context,
                   request.report,
                 );
+                this.events.emit("change", task.sessionId);
+
+                return updated;
+              }
+
               case "request_start":
                 return this.store.startSubagentRequest(
                   task.id,
@@ -1621,6 +1633,7 @@ export class Engine {
           provider,
           limits: this.subagentLimits,
           signal,
+          onStateChange: () => this.events.emit("change", session.id),
           onModelRequest: (subagentId) =>
             emit("model_request", { purpose: "subagent", subagentId }),
           onUsage: (subagentId, usage) =>

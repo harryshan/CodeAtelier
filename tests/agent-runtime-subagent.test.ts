@@ -3,7 +3,7 @@
  *
  * 1. 在对外功能门禁仍关闭时，内部创建带开关的任务，通过注入的 stdio launcher 运行真实 Runtime loop。
  * 2. 主 loop 规划/等待/收集，子 Worker 只见三个受限读取工具，Broker 按任务身份登记并分配全局租约。
- * 3. 核对报告/模型反馈同分片持久化、子线程清理、追踪和源码未变；stdio 夹具不是专用账户验收。
+ * 3. 核对计划/状态落盘后及时通知 SSE 刷新、报告/主反馈同分片、线程清理、tracing 和源码未变；stdio 夹具不是专用账户验收。
  */
 
 import { spawn } from "node:child_process";
@@ -205,6 +205,18 @@ it("coordinates subagent Workers inside the Runtime through task-bound Broker IP
     () => provider,
     launcher,
   );
+  const refreshedSubagentStates: string[] = [];
+  engine.events.on("change", (sessionId) => {
+    if (sessionId !== session.id) {
+      return;
+    }
+
+    const latest = store.events(session.id).at(-1);
+
+    if (latest?.type === "subagent_state") {
+      refreshedSubagentStates.push(latest.data.status);
+    }
+  });
 
   try {
     const task = store.transaction(() => {
@@ -237,6 +249,8 @@ it("coordinates subagent Workers inside the Runtime through task-bound Broker IP
     ).toBe(true);
     expect(mainCalls).toBe(4);
     expect(childCalls).toBe(2);
+    expect(refreshedSubagentStates).toContain("running");
+    expect(refreshedSubagentStates).toContain("completed");
     expect(await readFile(source, "utf8")).toBe(
       "export const evidence = 42;\n",
     );

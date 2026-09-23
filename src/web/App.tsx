@@ -2,7 +2,7 @@
  * CodeAtelier 的主页面，负责选择会话、提交任务和打开设置等用户操作。
  * 通过 api 请求后端，通过 useSessionConnection 同步会话，再交给 Timeline 和 SettingsPanel 展示。
  *
- * 1. 状态和 effects 管理当前会话、表单、弹窗、加载状态、服务状态及自动滚动。
+ * 1. 状态和 effects 管理当前会话、一次性 subagent 勾选、服务端发布门禁、弹窗、加载状态及自动滚动。
  * 2. 按服务端返回的工作区路径分组展示会话；项目可独立折叠，展开时默认仅显示最近五个对话，并可按需显示更早记录；手机端以可关闭的抽屉呈现该侧栏。
  * 3. resume、reloadService、stopServer、createProject、createConversation 和 send 处理恢复、受确认的服务重载、关闭服务、连接项目、新建会话和发送消息，并显示操作结果。
  * 4. 服务关闭后显示重启说明；正常页面由侧栏或手机端导航抽屉、项目栏、实际 sandbox 模式、可折叠会话统计、会将已完成任务过程默认收纳的时间线或项目连接页、所见即所得 Markdown 任务编辑器组成。
@@ -40,6 +40,8 @@ export default function App() {
   >(() => new Set());
   const [workspace, setWorkspace] = useState("");
   const [prompt, setPrompt] = useState("");
+  const [subagentsAvailable, setSubagentsAvailable] = useState(false);
+  const [subagentsEnabled, setSubagentsEnabled] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [showShutdown, setShowShutdown] = useState(false);
@@ -64,12 +66,18 @@ export default function App() {
         setSettings(v.settings);
         setHasKey(v.hasApiKey);
         setSandbox(v.sandbox);
+        setSubagentsAvailable(v.subagentsAvailable);
 
         return sessions();
       })
       .then(setList)
       .catch((e) => setError(e.message));
   }, []);
+
+  // 未发送的勾选只属于当前草稿，切换对话不得把它带给另一任务。
+  useEffect(() => {
+    setSubagentsEnabled(false);
+  }, [selected]);
 
   useEffect(() => {
     bottom.current?.scrollIntoView({ behavior: "smooth" });
@@ -263,8 +271,12 @@ export default function App() {
     setBusy(true);
     setError("");
     try {
-      await api("/sessions/" + selected + "/tasks", { prompt });
+      await api("/sessions/" + selected + "/tasks", {
+        prompt,
+        subagentsEnabled: subagentsAvailable && subagentsEnabled,
+      });
       setPrompt("");
+      setSubagentsEnabled(false);
       setList(await sessions());
     } catch (e) {
       setError((e as Error).message);
@@ -642,6 +654,21 @@ export default function App() {
                 }}
               />
               <div className={s.composerActions}>
+                {subagentsAvailable && (
+                  <label className={s.subagentChoice}>
+                    <input
+                      type="checkbox"
+                      checked={
+                        active ? active.subagentsEnabled : subagentsEnabled
+                      }
+                      disabled={Boolean(active) || busy}
+                      onChange={(event) =>
+                        setSubagentsEnabled(event.target.checked)
+                      }
+                    />
+                    启用只读子代理
+                  </label>
+                )}
                 <span>↵ 发送 · Shift + ↵ 换行</span>
                 {active ? (
                   <button

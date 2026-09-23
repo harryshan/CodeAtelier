@@ -3,7 +3,7 @@
  * 统一补上 /api 前缀，并保存 bootstrap 返回的本机会话令牌。
  *
  * 1. api 组装方法、请求体和令牌，解析响应或抛出错误；收到 401 时刷新凭据并最多重试一次。
- * 2. bootstrap 获取公开配置，同时更新模块内的令牌。
+ * 2. bootstrap 获取公开配置与未就绪 subagent 门禁，同时更新模块内的令牌。
  * 3. sessions、snapshot 和 sessionTraceTaskIds 提供带类型的会话列表、快照及已保存 trace 清单读取函数。
  *
  * 401 表示请求在鉴权时已被拒绝，因此可以重试。网络错误无法确定写操作是否执行，不能自动重发。
@@ -61,6 +61,7 @@ export async function bootstrap() {
     token: string;
     settings: Settings;
     sandbox: SandboxStatus;
+    subagentsAvailable: boolean;
     hasApiKey: boolean;
   }>("/bootstrap");
 

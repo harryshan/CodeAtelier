@@ -1,7 +1,7 @@
 /*
  * 在主 agent 所在进程协调同任务只读 subagent，供宿主 Engine 与 Sandbox AgentRuntime 共用。
  *
- * 1. execute 校验主 agent 的结构化分工、消息、等待、收集与取消请求；持久化计划先于 Worker。
+ * 1. execute 校验主 agent 的结构化分工、消息、等待、收集与取消请求；计划/状态持久化后才通知页面刷新，持久化计划先于 Worker。
  * 2. runChild 等待依赖、获取全局租约、启动独立 Worker loop；逐方向核对版本、taskId/subagentId 和单调序号；线程只持有任务描述，模型与
  *    工作区读取在父进程按请求回执重新验证，所有请求和检查点先持久化再确认。
  * 3. stop/close 通知所有未完成子任务，并在退出或强制终止得到确认后归还租约；等待响应主任务取消，消息数有界。
@@ -107,6 +107,7 @@ interface CoordinatorOptions {
     status: string,
     durationMs: number,
   ) => void;
+  onStateChange?: () => void;
   onModelRequest?: (subagentId: string) => void;
   onUsage?: (subagentId: string, usage: ModelUsage) => void;
 }
@@ -162,6 +163,7 @@ export class SubagentCoordinator {
           this.options.taskId,
           request.subtasks,
         );
+        this.options.onStateChange?.();
         // 先登记全部节点，避免向后依赖在协程首个 await 前误判为未创建。
         const entries = request.subtasks.map((plan) => {
           const controller = new AbortController();
@@ -334,9 +336,11 @@ export class SubagentCoordinator {
 
       entry.controller.signal.throwIfAborted();
       await storage.updateSubagent(taskId, plan.id, "queued", []);
+      this.options.onStateChange?.();
       release = await limits.acquire(taskId, entry.controller.signal, plan.id);
       entry.controller.signal.throwIfAborted();
       await storage.updateSubagent(taskId, plan.id, "running", []);
+      this.options.onStateChange?.();
       status = await this.startWorker(plan, reader, entry);
     } catch (error) {
       status = entry.controller.signal.aborted ? "cancelled" : "failed";
@@ -358,6 +362,7 @@ export class SubagentCoordinator {
             ? error.message.slice(0, 250)
             : "subagent 启动失败。",
         );
+        this.options.onStateChange?.();
       }
     } finally {
       await release?.();
@@ -471,6 +476,7 @@ export class SubagentCoordinator {
               : record.context,
             report,
           );
+          this.options.onStateChange?.();
           resolve(status);
         })().catch(reject);
       });

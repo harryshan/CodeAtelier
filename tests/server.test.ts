@@ -3,7 +3,7 @@
  * createFixture 使用 createApp、临时数据库和可取消的等待模型。
  *
  * 1. 测试夹具通过 bootstrap 获取合法 Cookie 和 token。
- * 2. 检查不同会话的数据隔离，以及资源不存在和请求体非法时的状态码。
+ * 2. 检查不同会话的数据隔离，以及资源不存在、subagent 未就绪与请求体非法时的状态码。
  * 3. 检查不同工作区可并行、同工作区排队、全局上限与设置互斥，再检查取消与人工恢复。
  * 4. 用伪造 token 和异常 Origin 检查写请求被拒绝。
  *
@@ -53,6 +53,12 @@ it("creates isolated sessions and validates missing sessions and bad payloads", 
   const fixture = await createFixture();
 
   try {
+    const bootstrap = await fixture.app.inject({
+      url: "/api/bootstrap",
+      headers: fixture.headers,
+    });
+    expect(bootstrap.json().subagentsAvailable).toBe(false);
+
     const created = await fixture.app.inject({
       method: "POST",
       url: "/api/sessions",

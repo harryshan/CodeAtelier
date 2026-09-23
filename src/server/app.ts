@@ -4,7 +4,7 @@
  *
  * 1. 创建 Fastify、Store 和 Engine；若启用 Windows Sandbox，在监听前排空上次服务遗留的账户进程和 ACL journal。
  * 2. 先按监听范围注册来源与凭据检查、关闭/受监督重载接口和错误处理，再注册 bootstrap、设置接口。
- * 3. 会话和任务路由校验请求，创建待生成标题的会话；未就绪的 subagent 开关显式拒绝，调用 Engine 启动、恢复、取消任务，列出或下载已保存的 Perfetto trace，或传递审批决定。
+ * 3. bootstrap 报告与 Engine 一致的 subagent 发布门禁；会话和任务路由仍独立拒绝未就绪的勾选，处理启动、恢复、取消和 trace/审批。
  * 4. 接入 SSE，并提供构建后的网页；没有前端产物时显示开发提示。
  * 5. preClose 中断任务并结束 SSE，onClose 关闭数据库。
  *
@@ -25,6 +25,7 @@ import type { Logger } from "pino";
 import { Config } from "../config/config.js";
 import { Store } from "../sessions/store.js";
 import { Engine } from "../agent/engine.js";
+import { SUBAGENT_PUBLIC_READY } from "../agent/subagent-readiness.js";
 import type { ModelProviderFactory } from "../providers/model-provider.js";
 import { workspacePath } from "../tools/paths.js";
 
@@ -158,6 +159,7 @@ export async function createApp(
       token,
       ...config.publicValue(),
       sandbox: engine.sandbox.status,
+      subagentsAvailable: SUBAGENT_PUBLIC_READY,
       active: engine.activeTasks,
     };
   });
@@ -216,7 +218,7 @@ export async function createApp(
       .parse(req.body);
 
     // 在主从 loop、持久化和 Sandbox 均可用之前，不接受会默默退化为单 agent 的请求。
-    if (subagentsEnabled) {
+    if (subagentsEnabled && !SUBAGENT_PUBLIC_READY) {
       return reply
         .code(409)
         .send({ error: "subagent 尚未就绪，不能启用本次任务。" });
