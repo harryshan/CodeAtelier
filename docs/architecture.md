@@ -75,7 +75,7 @@ Engine 在任一节点产生副作用前校验整批 DAG，并以稳定拓扑顺
 
 ### 会话存储与 Replay Case
 
-`src/sessions/store.ts` 保存 sessions、tasks、events、context、新任务的高保真 replay 捕获以及尚未对外开放的子任务计划、检查点和请求结果账本；`src/agent/subagent-contracts.ts` 校验分工 action、计划 DAG 与数量上限，`subagent-limits.ts` 供宿主 Engine 共享公平的进程内 Worker 配额。`subagent-coordinator.ts` 在已标记任务内调度专属 Worker 并代理模型/只读请求；`subagent-worker.ts` 维护独立 loop。收集报告预览不消费，主工具结果与消费状态在同一分片事务中保存，截断的反馈保留报告。当前 HTTP/UI 仍不允许开启，Runtime 跨进程 lease 和 IPC 尚未接入。`history-shards.ts` 将既有 `history.sqlite` 作为首个兼容分片，并在最新分片（主库加 WAL）达到默认 1 GiB 后让**新会话**进入 `history-000001.sqlite` 等后续文件。
+`src/sessions/store.ts` 保存 sessions、tasks、events、context、新任务的高保真 replay 捕获以及尚未对外开放的子任务计划、检查点和请求结果账本；`src/agent/subagent-contracts.ts` 校验分工 action、计划 DAG 与数量上限，`subagent-limits.ts` 供宿主 Engine 共享公平的进程内 Worker 配额。`subagent-coordinator.ts` 在已标记任务内调度专属 Worker 并代理模型/只读请求；`subagent-worker.ts` 维护独立 loop。收集报告预览不消费，主工具结果与消费状态在同一分片事务中保存，截断的反馈保留报告。当前 HTTP/UI 仍不允许开启；Runtime 经已认证 IPC 回到 Broker 核验子身份、分配跨进程共享的 lease、持久化子请求及原子提交主回执，独立 stdio harness 已通过；受保护 Worker bundle 已接入安装摘要，但尚未完成专用账户提升环境端到端验收。`history-shards.ts` 将既有 `history.sqlite` 作为首个兼容分片，并在最新分片（主库加 WAL）达到默认 1 GiB 后让**新会话**进入 `history-000001.sqlite` 等后续文件。
 
 单个会话始终留在初始分片，因此保持 SQLite 外键、事务、恢复和 Worker 路径语义；单次不可分割写入或单个超长会话仍可能略超阈值，不承诺自动重新分区既有历史。任务的 createdAt、startedAt、finishedAt 分别表示入队、实际开始和结束，排队时间不计入会话累计运行时间。初始数据库结构位于 `schema.ts`。
 

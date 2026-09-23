@@ -4,6 +4,7 @@
  * 1. 逆序声明有依赖的两个计划，验证持久化先于线程、有限租约、文件读取、等待及只收集一次报告。
  * 2. 敏感/越界范围拒绝时不创建任务；取消等待模型的 Worker 后归还资源并标记终态。
  * 3. 主任务关闭时与尚在登记计划的请求竞态，不能遗漏晚登记的 Worker。
+ * 4. 等待在主任务取消时立刻停止，消息有界，存储回执失败不允许下一轮模型继续。
  *
  * 模拟 ModelProvider 是协议桩，不能作为真实 Windows 专用账户 Sandbox 验收证据。
  */
@@ -148,6 +149,7 @@ it("runs separate loops in dependency order and persists reports for only one co
           { type: "function_call_output", output: JSON.stringify(collected) },
         ]);
       },
+      fixture.store.collectSubagents(fixture.task.id, ["first", "second"]),
     );
     expect(
       fixture.store.subagents(fixture.task.id).map(({ consumed }) => consumed),
@@ -245,6 +247,148 @@ it("joins plans already registering when the parent task closes", async () => {
   } finally {
     releasePlan();
     await coordinator.close();
+    await fixture.coordinator.close();
+    fixture.store.close();
+  }
+});
+
+it("does not resume the child model when a read result cannot be persisted", async () => {
+  let modelCalls = 0;
+  const provider: ModelProvider = {
+    run: async () => {
+      modelCalls++;
+      if (modelCalls === 1) {
+        return {
+          output: [
+            {
+              type: "function_call",
+              call_id: "read-1",
+              name: "read_file",
+              arguments: JSON.stringify({
+                execution: { id: "read", dependsOn: [] },
+                arguments: { path: "src/example.ts", startLine: 1, endLine: 1 },
+              }),
+            },
+          ],
+          text: "",
+        };
+      }
+
+      return { output: [], text: "incorrect success" };
+    },
+  };
+  const fixture = await setup(provider);
+  const original = fixture.store.finishSubagentRequest.bind(fixture.store);
+  fixture.store.finishSubagentRequest = (...args) => {
+    if (args[2] === "read-1") {
+      throw new Error("simulated storage outage");
+    }
+
+    return original(...args);
+  };
+
+  try {
+    await fixture.coordinator.execute({
+      action: "plan",
+      subtasks: [plan("reader")],
+    });
+    await fixture.coordinator.execute({
+      action: "await",
+      subagentIds: ["reader"],
+      timeoutMs: 15_000,
+    });
+    expect(fixture.store.subagents(fixture.task.id)).toMatchObject([
+      { id: "reader", status: "failed" },
+    ]);
+    expect(modelCalls).toBe(1);
+    expect(
+      fixture.store.subagentRequest(fixture.task.id, "reader", "read-1")
+        ?.status,
+    ).toBe("started");
+  } finally {
+    await fixture.coordinator.close();
+    fixture.store.close();
+  }
+});
+
+it("stops waiting immediately when the main task is cancelled", async () => {
+  const provider: ModelProvider = {
+    run: async (_input, _instructions, _tools, signal) =>
+      new Promise((_resolve, reject) =>
+        signal.addEventListener("abort", () => reject(signal.reason), {
+          once: true,
+        }),
+      ),
+  };
+  const fixture = await setup(provider);
+  const controller = new AbortController();
+  const coordinator = new SubagentCoordinator({
+    taskId: fixture.task.id,
+    workspace: fixture.root,
+    storage: fixture.store,
+    provider,
+    limits: new SubagentLimits(1),
+    signal: controller.signal,
+  });
+  try {
+    await coordinator.execute({ action: "plan", subtasks: [plan("reader")] });
+    await coordinator.execute({
+      action: "await",
+      subagentIds: ["reader"],
+      timeoutMs: 100,
+    });
+    const waiting = coordinator.execute({
+      action: "await",
+      subagentIds: ["reader"],
+      timeoutMs: 500,
+    });
+    controller.abort(new Error("main task cancelled"));
+    await expect(waiting).rejects.toThrow("main task cancelled");
+  } finally {
+    await coordinator.close();
+    await fixture.coordinator.close();
+    fixture.store.close();
+  }
+});
+
+it("caps queued messages while a child model is blocked", async () => {
+  const provider: ModelProvider = {
+    run: async (_input, _instructions, _tools, signal) =>
+      new Promise((_resolve, reject) =>
+        signal.addEventListener("abort", () => reject(signal.reason), {
+          once: true,
+        }),
+      ),
+  };
+  const fixture = await setup(provider);
+  try {
+    await fixture.coordinator.execute({
+      action: "plan",
+      subtasks: [plan("reader")],
+    });
+    await fixture.coordinator.execute({
+      action: "await",
+      subagentIds: ["reader"],
+      timeoutMs: 100,
+    });
+    for (let index = 0; index < 16; index++) {
+      await expect(
+        fixture.coordinator.execute({
+          action: "message",
+          subagentId: "reader",
+          text: `note ${index}`,
+        }),
+      ).resolves.toMatchObject({ accepted: true });
+    }
+
+    await expect(
+      fixture.coordinator.execute({
+        action: "message",
+        subagentId: "reader",
+        text: "overflow",
+      }),
+    ).rejects.toThrow("消息上限");
+  } finally {
     await fixture.coordinator.close();
     fixture.store.close();
   }

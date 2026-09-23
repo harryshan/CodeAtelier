@@ -3,14 +3,14 @@
  * 测试使用临时伪二进制与注入的 self-check executor，不创建账户、ACL、Job、Named Pipe 或 WFP 规则。
  *
  * 1. 二进制帧固定 magic/version、UTF-8 字符串、超时和 argv，拒绝相对路径及超限字段。
- * 2. selfCheck 只有 state 中原生二进制、Node 24 和两个 Runtime bundle SHA-256、启动恢复排空与原生自检全部成功时才报告 sandbox level。
+ * 2. selfCheck 只有 state 中原生二进制、Node 24、entry/三种 Worker 摘要、启动恢复排空与原生自检全部成功时才报告 sandbox level。
  * 3. prepareAccess 在 manifest 之前同时创建只读 Git 投影和逐实例可写 HOME/TEMP，cleanup 删除两者。
  * 4. state 缺失、摘要篡改和原生拒绝都在 Runtime 启动前失败，允许 Broker 安全选择宿主 fallback。
  * 5. Agent Runtime 启动帧只携带 Broker 身份、nonce 和已安装 Node 路径，不允许选择 Runtime kind 或任意 entry argv。
  */
 
 import { createHash } from "node:crypto";
-import { access, mkdir, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -180,6 +180,10 @@ describe.skipIf(process.platform !== "win32")(
       const runtimeEntry = path.join(runtimeRoot, "agent-runtime.mjs");
       const runtimeWorker = path.join(runtimeRoot, "compaction-worker.mjs");
       const runtimeReadWorker = path.join(runtimeRoot, "read-file-worker.mjs");
+      const runtimeSubagentWorker = path.join(
+        runtimeRoot,
+        "subagent-worker.mjs",
+      );
       await Promise.all([mkdir(nativeRoot), mkdir(runtimeRoot)]);
       await writeFile(supervisor, "supervisor");
       await writeFile(network, "network");
@@ -187,10 +191,11 @@ describe.skipIf(process.platform !== "win32")(
       await writeFile(runtimeEntry, "runtime-entry");
       await writeFile(runtimeWorker, "runtime-worker");
       await writeFile(runtimeReadWorker, "runtime-read-worker");
+      await writeFile(runtimeSubagentWorker, "runtime-subagent-worker");
       await writeFile(
         statePath,
         [
-          "version=3",
+          "version=4",
           "generationId=12345678-1234-1234-1234-123456789abc",
           "relayPortV4=42871",
           `supervisorSha256=${digest("supervisor")}`,
@@ -199,6 +204,7 @@ describe.skipIf(process.platform !== "win32")(
           `runtimeEntrySha256=${digest("runtime-entry")}`,
           `runtimeWorkerSha256=${digest("runtime-worker")}`,
           `runtimeReadWorkerSha256=${digest("runtime-read-worker")}`,
+          `runtimeSubagentWorkerSha256=${digest("runtime-subagent-worker")}`,
         ].join("\n"),
       );
       const runSelfCheck = vi.fn(async (_file: string, args: string[]) => ({
@@ -236,6 +242,13 @@ describe.skipIf(process.platform !== "win32")(
       );
       expect(runSelfCheck).toHaveBeenCalledTimes(3);
 
+      const validState = await readFile(statePath, "utf8");
+      await writeFile(statePath, validState.replace("version=4", "version=3"));
+      await expect(
+        runtime.selfCheck(new AbortController().signal, workspace(root)),
+      ).rejects.toThrow("版本");
+      await writeFile(statePath, validState);
+
       await writeFile(network, "tampered");
       await expect(
         runtime.selfCheck(new AbortController().signal, workspace(root)),
@@ -243,6 +256,12 @@ describe.skipIf(process.platform !== "win32")(
 
       await writeFile(network, "network");
       await writeFile(runtimeEntry, "tampered");
+      await expect(
+        runtime.selfCheck(new AbortController().signal, workspace(root)),
+      ).rejects.toThrow("摘要");
+
+      await writeFile(runtimeEntry, "runtime-entry");
+      await writeFile(runtimeSubagentWorker, "tampered");
       await expect(
         runtime.selfCheck(new AbortController().signal, workspace(root)),
       ).rejects.toThrow("摘要");

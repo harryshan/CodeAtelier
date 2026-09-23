@@ -9,7 +9,7 @@
  * 5. 逐步保存 replay 模型/工具捕获并导出单任务 case；旧事件只能形成明确的 legacy case。
  * 6. 以小容量阈值触发新会话分片，确认旧分片的上下文仍可由 Worker 读取，并在重启后发现全部分片。
  * 7. 任务级 subagent 选择写入队列后保持布尔类型；模拟旧表缺列并检查跨分片迁移默认关闭。
- * 8. 子任务计划、检查点与请求回执真实落盘；重启中断未完成子任务并保留未知模型请求。
+ * 8. 子任务计划、检查点与请求回执真实落盘；重启中断未完成子任务并保留未知模型请求；迟到报告不得在主工具反馈仍为等待中时误标消费。
  *
  * 重启要保留已有终态和上下文，不能把其他会话的数据混进来。
  */
@@ -356,12 +356,17 @@ it("commits a finished subagent report with main feedback and keeps it readable"
     expect(store.collectSubagents(task.id, ["check"])).toMatchObject([
       { status: "completed", report: "evidence", consumed: false },
     ]);
-    store.commitSubagentCollect(task.id, ["check"], () => {
-      store.event(session.id, task.id, "tool_result", { report: "evidence" });
-      store.saveContext(session.id, [
-        { type: "function_call_output", output: "evidence" },
-      ]);
-    });
+    store.commitSubagentCollect(
+      task.id,
+      ["check"],
+      () => {
+        store.event(session.id, task.id, "tool_result", { report: "evidence" });
+        store.saveContext(session.id, [
+          { type: "function_call_output", output: "evidence" },
+        ]);
+      },
+      store.collectSubagents(task.id, ["check"]),
+    );
     expect(store.subagents(task.id)[0].consumed).toBe(true);
     expect(store.collectSubagents(task.id, ["check"])).toMatchObject([
       { status: "completed", report: "evidence", consumed: true },
@@ -399,15 +404,69 @@ it("leaves subagent reports available until main tool feedback commits atomicall
     ]);
     expect(store.subagents(task.id)[0].consumed).toBe(false);
     expect(() =>
-      store.commitSubagentCollect(task.id, ["check"], () => {
-        store.event(session.id, task.id, "tool_result", { report: "evidence" });
-        throw new Error("simulated main context failure");
-      }),
+      store.commitSubagentCollect(
+        task.id,
+        ["check"],
+        () => {
+          store.event(session.id, task.id, "tool_result", {
+            report: "evidence",
+          });
+          throw new Error("simulated main context failure");
+        },
+        store.collectSubagents(task.id, ["check"]),
+      ),
     ).toThrow("simulated main context failure");
     expect(store.subagents(task.id)[0].consumed).toBe(false);
     expect(
       store.events(session.id).filter((event) => event.type === "tool_result"),
     ).toEqual([]);
+  } finally {
+    store.close();
+  }
+});
+
+it("does not consume a report that completed after the delivered preview", async () => {
+  const root = await temp();
+  const store = new Store(path.join(root, "history.sqlite"));
+
+  try {
+    const session = store.create(root);
+    const task = store.createTask(session.id, true);
+    store.status(task.id, "running");
+    store.planSubagents(task.id, [
+      {
+        id: "late",
+        role: "reviewer",
+        objective: "inspect",
+        scope: ["."],
+        dependsOn: [],
+        deliverable: "evidence",
+      },
+    ]);
+    const delivered = store.collectSubagents(task.id, ["late"]);
+    expect(delivered).toMatchObject([{ status: "planned", report: null }]);
+
+    store.updateSubagent(task.id, "late", "completed", [], "late evidence");
+    store.commitSubagentCollect(
+      task.id,
+      ["late"],
+      () => {
+        store.event(session.id, task.id, "tool_result", { reports: delivered });
+        store.saveContext(session.id, [
+          {
+            type: "function_call_output",
+            output: JSON.stringify({ reports: delivered }),
+          },
+        ]);
+      },
+      delivered,
+    );
+    expect(store.subagents(task.id)).toMatchObject([
+      { id: "late", consumed: false },
+    ]);
+    expect(store.collectSubagents(task.id, ["late"])).toMatchObject([
+      { status: "completed", report: "late evidence", consumed: false },
+    ]);
   } finally {
     store.close();
   }

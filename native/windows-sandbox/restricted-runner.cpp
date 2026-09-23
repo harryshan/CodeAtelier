@@ -3,7 +3,7 @@
  * TypeScript Broker 只以固定 argv 启动 self-check/execute/launch-agent-runtime，请求通过继承 stdin 的有界二进制帧传入；
  * supervisor 使用 DPAPI state、工作区 ACL、Job 和私有 Named Pipe 启动同一二进制的 bootstrap 模式，并代理 Agent Runtime IPC。
  *
- * 1. self-check 核对 state 所属宿主 SID、专用账户 SID/密码、拒绝登录权、WFP 持久规则，以及受保护 Node 24/Agent Runtime bundle 摘要。
+ * 1. self-check 核对 state 所属宿主 SID、专用账户 SID/密码、拒绝登录权、WFP 持久规则，以及受保护 Node 24/Agent Runtime entry 和各 Worker bundle 摘要。
  * 2. execute 生成 execution/root capability SID；共享账户 ACE 始终提供 normal-side 读写候选权限，每实例 capability ACE 再决定 WRITE_RESTRICTED token 实际可写的根。
  * 3. CreateProcessWithLogonW 以固定 bootstrap 入口启动专用账户进程，先分配 KILL_ON_JOB_CLOSE Job 再恢复。
  * 4. bootstrap 使用专用账户自身的全新环境块，通过只允许宿主/SYSTEM/专用账户且核对 PID 的 Named Pipe 取得命令，创建 WRITE_RESTRICTED token 后启动真实工具。
@@ -80,12 +80,14 @@ struct InstallationState {
   uint16_t relay_port_v6 = 0;
   std::wstring runtime_node_sha256;
   std::wstring runtime_entry_sha256;
-     std::wstring runtime_worker_sha256;
-   std::wstring runtime_read_worker_sha256;
-   std::wstring runtime_node_path;
+  std::wstring runtime_worker_sha256;
+  std::wstring runtime_read_worker_sha256;
+  std::wstring runtime_subagent_worker_sha256;
+  std::wstring runtime_node_path;
   std::wstring runtime_entry_path;
-     std::wstring runtime_worker_path;
-   std::wstring runtime_read_worker_path;
+  std::wstring runtime_worker_path;
+  std::wstring runtime_read_worker_path;
+  std::wstring runtime_subagent_worker_path;
 };
 
 std::wstring Utf8ToWide(const std::string& value) {
@@ -387,10 +389,19 @@ bool ReadInstallationState(const std::wstring& state_path,
     values.emplace(std::move(key), std::move(value));
   }
   const std::wstring version = values[L"version"];
-  if (version != L"1" && version != L"2" && version != L"3") {
+  if (version != L"1" && version != L"2" && version != L"3" &&
+      version != L"4") {
     return false;
   }
-  state->version = version == L"3" ? 3 : (version == L"2" ? 2 : 1);
+  if (version == L"4") {
+    state->version = 4;
+  } else if (version == L"3") {
+    state->version = 3;
+  } else if (version == L"2") {
+    state->version = 2;
+  } else {
+    state->version = 1;
+  }
   state->account_name = values[L"accountName"];
   state->account_sid = values[L"accountSid"];
   state->generation_id = values[L"generationId"];
@@ -418,6 +429,7 @@ bool ReadInstallationState(const std::wstring& state_path,
   state->runtime_entry_sha256 = values[L"runtimeEntrySha256"];
   state->runtime_worker_sha256 = values[L"runtimeWorkerSha256"];
   state->runtime_read_worker_sha256 = values[L"runtimeReadWorkerSha256"];
+  state->runtime_subagent_worker_sha256 = values[L"runtimeSubagentWorkerSha256"];
   std::filesystem::path runtime_root =
       std::filesystem::path(state_path).parent_path() / L"runtime";
   state->runtime_node_path = (runtime_root / L"node.exe").wstring();
@@ -427,17 +439,22 @@ bool ReadInstallationState(const std::wstring& state_path,
       (runtime_root / L"compaction-worker.mjs").wstring();
   state->runtime_read_worker_path =
       (runtime_root / L"read-file-worker.mjs").wstring();
+  state->runtime_subagent_worker_path =
+      (runtime_root / L"subagent-worker.mjs").wstring();
   bool base_valid = !state->account_name.empty() &&
                     !state->account_sid.empty() &&
                     !state->generation_id.empty() &&
                     !state->protected_password.empty() &&
                     !state->installed_by_sid.empty();
   return base_valid &&
-                   (state->version == 1 ||
-           (IsDigest(state->runtime_node_sha256) &&
-            IsDigest(state->runtime_entry_sha256) &&
-            IsDigest(state->runtime_worker_sha256) &&
-            (state->version == 2 || IsDigest(state->runtime_read_worker_sha256))));
+         (state->version == 1 ||
+          (IsDigest(state->runtime_node_sha256) &&
+           IsDigest(state->runtime_entry_sha256) &&
+           IsDigest(state->runtime_worker_sha256) &&
+           (state->version == 2 ||
+            IsDigest(state->runtime_read_worker_sha256)) &&
+           (state->version < 4 ||
+            IsDigest(state->runtime_subagent_worker_sha256))));
 }
 
 bool FileSha256(const std::wstring& path, std::wstring* digest) {
@@ -501,17 +518,24 @@ bool RuntimeBundleMatches(const InstallationState& state) {
   std::wstring entry_digest;
   std::wstring worker_digest;
   std::wstring read_worker_digest;
+  std::wstring subagent_worker_digest;
+
   return state.version >= 2 &&
          FileSha256(state.runtime_node_path, &node_digest) &&
          FileSha256(state.runtime_entry_path, &entry_digest) &&
          FileSha256(state.runtime_worker_path, &worker_digest) &&
          (state.version == 2 ||
           FileSha256(state.runtime_read_worker_path, &read_worker_digest)) &&
+         (state.version < 4 ||
+          FileSha256(state.runtime_subagent_worker_path,
+                     &subagent_worker_digest)) &&
          node_digest == state.runtime_node_sha256 &&
          entry_digest == state.runtime_entry_sha256 &&
          worker_digest == state.runtime_worker_sha256 &&
          (state.version == 2 ||
-          read_worker_digest == state.runtime_read_worker_sha256);
+          read_worker_digest == state.runtime_read_worker_sha256) &&
+         (state.version < 4 ||
+          subagent_worker_digest == state.runtime_subagent_worker_sha256);
 }
 
 std::wstring CurrentUserSidString() {

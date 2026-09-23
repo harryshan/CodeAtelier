@@ -694,11 +694,12 @@ export class Store {
     }));
   }
 
-  /** 必须与主工具结果及 function_call_output 同一事务提交，写入失败时消费标记自动回滚。 */
+  /** 同一事务提交工具反馈与实际交付的报告；晚完成的报告不在旧预览中，不能误标消费。 */
   commitSubagentCollect(
     taskId: string,
     ids: string[],
     persistOutput: () => unknown,
+    deliveredReports: ReturnType<Store["collectSubagents"]>,
   ) {
     return this.transaction(() => {
       const reports = this.collectSubagents(taskId, ids);
@@ -711,9 +712,12 @@ export class Store {
       const statement = this.db.prepare(
         "UPDATE subagents SET consumed=1 WHERE taskId=? AND id=? AND consumed=0",
       );
-      const newlyConsumed = reports
-        .filter(({ report, consumed }) => report !== null && !consumed)
-        .map(({ id }) => id);
+      const newlyConsumed =
+        JSON.stringify(deliveredReports) === JSON.stringify(reports)
+          ? reports
+              .filter(({ report, consumed }) => report !== null && !consumed)
+              .map(({ id }) => id)
+          : [];
       for (const id of newlyConsumed) {
         statement.run(taskId, id);
       }

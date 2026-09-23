@@ -3,7 +3,7 @@
  * 它依赖 session-statistics 的纯投影、受保护的 trace 清单 API 和 App 的 CSS Module，不保存任何用户偏好。
  *
  * 1. useEffect 在切换会话时恢复折叠状态；仅在任务运行或等待审批时每秒刷新一次时钟。
- * 2. 折叠按钮只显示累计运行时间，避免干扰对话；展开后分组展示 token、LLM、工具和任务统计。
+ * 2. 折叠按钮只显示累计运行时间，避免干扰对话；展开后分组展示 token、主/子 LLM、工具和任务统计。
  * 3. Token 区域明确区分服务实报总量与可选缓存明细；缺少明细时显示未知，而非假定没有缓存。
  * 4. 工具成功率的分母是已完成结果，待审批或仍执行的调用单独显示，避免将进行中操作当作失败。
  * 5. 展开后读取当前会话真实存在的 trace 文件清单；只有同时结束且在清单中的任务才显示下载链接。
@@ -26,6 +26,7 @@ const purposeLabels = {
   compaction: "摘要",
   title: "标题",
   approval: "审批",
+  subagent: "子任务",
 };
 
 function toolSummary(calls: Record<string, number>) {

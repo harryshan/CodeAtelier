@@ -51,7 +51,8 @@ type ReplaySettings = Pick<
 
 export interface RecordedModelExchange {
   id: string;
-  purpose: "task" | "auxiliary" | "approval" | "compaction" | "title";
+  purpose:
+    "task" | "auxiliary" | "approval" | "compaction" | "title" | "subagent";
   step?: number;
   attempt?: number;
   input: any[];

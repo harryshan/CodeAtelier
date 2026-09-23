@@ -65,7 +65,7 @@
 
 ## 7. 具体代码落点与接入顺序
 
-以下描述目标落点；任务开关迁移、内部 Store/Worker 和宿主协调路径已部分完成，Sandbox Runtime/IPC、UI 和分层验收仍待实现，不能按本节目标推断现有功能已经可用：
+以下描述目标落点；任务开关迁移、内部 Store/Worker、宿主协调和 Runtime→Broker 的任务绑定 IPC/lease/bundle 已接入且通过独立进程 harness；UI 与固定账户提升环境、恢复/故障矩阵仍待完成，不能按本节目标推断现有功能已经可用：
 
 - **UI/API**：`src/server/app.ts` 的任务 POST 用 Zod `subagentsEnabled: z.boolean().default(false)`，拒绝非布尔值；功能未就绪时显式拒绝 `true`。完成后才在 `src/web/App.tsx` 的 `send` 与输入框下方 `composerActions` 开放默认 `false` 的 checkbox；恢复按钮只提交 instruction，不读取当前 checkbox。更新 `src/shared/types.ts` 的 Task 和 `src/web/Timeline.tsx`，展示实际保存的选择与进度。
 - **任务创建与恢复**：在 `src/agent/engine.ts` 的 `start`、`resume`、`run` 和 `runInAgentRuntime` 接入开关。将新增开关及原有 recovery 一并收束到具名 `StartTaskOptions`（而非两个易错的位置参数），迁移已有 `start(sessionId, prompt, recovery?)` 调用方；创建任务和用户事件在同一事务保存选项。`resume` 从来源任务读取开关创建**新任务**，不依据 UI 当前表单状态或重启旧 Worker。主 loop 仅在功能就绪且任务开关为真时提供协调工具。

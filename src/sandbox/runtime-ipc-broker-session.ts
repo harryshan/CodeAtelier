@@ -4,7 +4,7 @@
  *
  * 1. model_capabilities/model_run 委托 RuntimeBrokerGateway，使模型 endpoint/key 永远留在 Broker Host。
  * 2. model_run 把 provider delta 作为关联原 requestId 的事件回传，再返回完整 ModelResult。
- * 3. approval、结构化 Git push、扩展权限命令和 session 操作只调用显式 handlers，不暴露 Store 或任意宿主方法名。
+ * 3. approval、结构化 Git push、扩展权限命令、任务绑定子状态/租约和 session 操作只调用显式 handlers，不暴露 Store 或任意宿主方法名；未登记的子身份及写工具声明在模型调用前拒绝。
  * 4. 扩展权限命令先审批并保存在当前认证连接的一次性表中，Runtime 获得执行槽后才消费 authorizationId；
  *    git_push 仍在单一请求上等待独立 Runner，请求取消只中止对应 Runner，不结束健康的 Agent Runtime。
  * 5. runtime_complete 是 Runtime 的完成报告；Broker 仍须结合进程退出、Job 和 cleanup 账本决定可信终态。
@@ -22,6 +22,8 @@ import type {
   RuntimeIpcRequest,
 } from "./runtime-ipc-protocol.js";
 import { RUNTIME_IPC_PROTOCOL_VERSION } from "./runtime-ipc-protocol.js";
+import type { RuntimeSubagentStoreRequest } from "./runtime-ipc-protocol.js";
+import { subagentReadDefinitions } from "../agent/subagent-read-contract.js";
 import type { RuntimeTaskSettings } from "./runtime-ipc-protocol.js";
 import type { GitPushSpec, GitProcessResult } from "../tools/git.js";
 import type {
@@ -31,6 +33,28 @@ import type {
 import type { ContextSnapshot } from "../context/types.js";
 
 export interface RuntimeIpcBrokerHandlers {
+  subagentStore?(
+    identity: RuntimeExecutionIdentity,
+    request: RuntimeSubagentStoreRequest,
+    signal: AbortSignal,
+  ): Promise<unknown>;
+  acquireSubagentLease?(
+    identity: RuntimeExecutionIdentity,
+    subagentId: string,
+    signal: AbortSignal,
+  ): Promise<() => void>;
+  authorizeSubagentModel?(
+    identity: RuntimeExecutionIdentity,
+    subagentId: string,
+    requestId: string,
+  ): Promise<void>;
+  commitSubagentCollect?(
+    identity: RuntimeExecutionIdentity,
+    body: Extract<
+      RuntimeIpcRequest,
+      { operation: "session_commit_subagent_collect" }
+    >["body"],
+  ): Promise<void>;
   traceSpan?(
     event: Extract<
       RuntimeIpcEvent,
@@ -97,6 +121,11 @@ export class RuntimeIpcBrokerSession {
   private runtimeReady: Promise<void>;
   private resolveRuntimeReady!: () => void;
   private rejectRuntimeReady!: (error: Error) => void;
+  private readonly subagentLeases = new Map<
+    string,
+    { subagentId: string; release: () => void }
+  >();
+
   private preparedCapabilityCommands = new Map<
     string,
     {
@@ -186,6 +215,15 @@ export class RuntimeIpcBrokerSession {
     this.peer.event({ type: "event", event: "cancel", reason });
   }
 
+  /** 仅在 Supervisor 已确认该 execution instance 退出/清理后对账；断连不能提前释放仍可能运行的 Worker 额度。 */
+  releaseSubagentLeases() {
+    for (const lease of this.subagentLeases.values()) {
+      lease.release();
+    }
+
+    this.subagentLeases.clear();
+  }
+
   async startTask(
     input: {
       workspace: string;
@@ -240,7 +278,34 @@ export class RuntimeIpcBrokerSession {
           request.body.purpose,
           signal,
         );
-      case "model_run":
+      case "model_run": {
+        if (request.body.purpose === "subagent") {
+          const id = request.body.subagentId;
+          const childRequestId = request.body.subagentRequestId;
+          if (
+            !id ||
+            !childRequestId ||
+            ![...this.subagentLeases.values()].some(
+              (lease) => lease.subagentId === id,
+            ) ||
+            JSON.stringify(request.body.tools) !==
+              JSON.stringify(subagentReadDefinitions) ||
+            !this.handlers.authorizeSubagentModel
+          ) {
+            throw new Error(
+              "subagent 模型请求未获任务绑定授权或工具白名单无效。",
+            );
+          }
+
+          await this.handlers.authorizeSubagentModel(
+            this.identity,
+            id,
+            childRequestId,
+          );
+        } else if (request.body.subagentId || request.body.subagentRequestId) {
+          throw new Error("主任务模型请求不能冒用 subagent 身份。");
+        }
+
         return this.gateway.requestModel(
           this.identity,
           { requestId: request.requestId, ...request.body },
@@ -253,6 +318,8 @@ export class RuntimeIpcBrokerSession {
               text,
             }),
         );
+      }
+
       case "approval_request":
         return this.handlers.requestApproval(
           this.identity,
@@ -303,6 +370,57 @@ export class RuntimeIpcBrokerSession {
 
       case "memory_apply":
         return this.handlers.applyMemory(this.identity, request.body.request);
+      case "subagent_store":
+        if (!this.handlers.subagentStore) {
+          throw new Error("Broker 未启用任务绑定的 subagent 状态适配器。");
+        }
+
+        return this.handlers.subagentStore(this.identity, request.body, signal);
+      case "subagent_lease_acquire": {
+        if (!this.handlers.acquireSubagentLease) {
+          throw new Error("Broker 未启用 subagent 全局配额。");
+        }
+
+        const release = await this.handlers.acquireSubagentLease(
+          this.identity,
+          request.body.subagentId,
+          signal,
+        );
+        try {
+          signal.throwIfAborted();
+          const leaseId = randomUUID();
+          this.subagentLeases.set(leaseId, {
+            subagentId: request.body.subagentId,
+            release,
+          });
+
+          return { leaseId };
+        } catch (error) {
+          release();
+          throw error;
+        }
+      }
+
+      case "subagent_lease_release": {
+        const lease = this.subagentLeases.get(request.body.leaseId);
+        if (!lease) {
+          throw new Error("subagent 租约无效或已释放。");
+        }
+
+        this.subagentLeases.delete(request.body.leaseId);
+        lease.release();
+
+        return { released: true };
+      }
+
+      case "session_commit_subagent_collect":
+        if (!this.handlers.commitSubagentCollect) {
+          throw new Error("Broker 未启用子报告原子保存。");
+        }
+
+        await this.handlers.commitSubagentCollect(this.identity, request.body);
+
+        return { saved: true };
       case "session_append_event":
         await this.handlers.appendSessionEvent(
           this.identity,

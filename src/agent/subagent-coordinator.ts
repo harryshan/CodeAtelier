@@ -4,7 +4,8 @@
  * 1. execute 校验主 agent 的结构化分工、消息、等待、收集与取消请求；持久化计划先于 Worker。
  * 2. runChild 等待依赖、获取全局租约、启动独立 Worker loop；线程只持有任务描述，模型与
  *    工作区读取在父进程按请求回执重新验证，所有请求和检查点先持久化再确认。
- * 3. stop/close 通知所有未完成子任务，并在退出或强制终止得到确认后归还租约。
+ * 3. stop/close 通知所有未完成子任务，并在退出或强制终止得到确认后归还租约；等待响应主任务取消，消息数有界。
+ * 4. Broker/Store 检查点或请求结果持久化失败时终止 Worker，不能将未知的只读结果当成普通工具失败后继续模型轮次。
  *
  * 这是模型工具层的只读约束而非线程 OS 沙箱；未知执行结果不能被重放。
  */
@@ -30,9 +31,15 @@ import type {
   SubagentWorkerMessage,
   SubagentWorkerRequest,
 } from "./subagent-worker-protocol.js";
-import type { SubagentLimits } from "./subagent-limits.js";
 
 type Later<T> = T | Promise<T>;
+
+class SubagentPersistenceError extends Error {
+  constructor(cause: unknown) {
+    super("subagent 请求或检查点未能持久化，结果未知。", { cause });
+    this.name = "SubagentPersistenceError";
+  }
+}
 
 export interface SubagentStorage {
   planSubagents(taskId: string, plans: SubtaskPlan[]): Later<SubagentRecord[]>;
@@ -73,6 +80,7 @@ interface ActiveChild {
   controller: AbortController;
   worker?: Worker;
   done: Promise<void>;
+  messagesSent: number;
 }
 
 interface CoordinatorOptions {
@@ -80,7 +88,14 @@ interface CoordinatorOptions {
   workspace: string;
   storage: SubagentStorage;
   provider: ModelProvider;
-  limits: Pick<SubagentLimits, "acquire">;
+  limits: {
+    acquire(
+      taskId: string,
+      signal: AbortSignal,
+      subagentId?: string,
+    ): Promise<() => void | Promise<void>>;
+  };
+  providerFor?: (subagentId: string, requestId: string) => ModelProvider;
   signal: AbortSignal;
   trace?: (
     name: string,
@@ -146,7 +161,11 @@ export class SubagentCoordinator {
         // 先登记全部节点，避免向后依赖在协程首个 await 前误判为未创建。
         const entries = request.subtasks.map((plan) => {
           const controller = new AbortController();
-          const entry: ActiveChild = { controller, done: Promise.resolve() };
+          const entry: ActiveChild = {
+            controller,
+            done: Promise.resolve(),
+            messagesSent: 0,
+          };
           this.children.set(plan.id, entry);
 
           return entry;
@@ -182,11 +201,17 @@ export class SubagentCoordinator {
 
     if (request.action === "message") {
       const found = get(request.subagentId);
-      const worker = this.children.get(found.id)?.worker;
-      if (!worker || found.status !== "running") {
+      const active = this.children.get(found.id);
+      const worker = active?.worker;
+      if (!active || !worker || found.status !== "running") {
         return { delivered: false, status: found.status };
       }
 
+      if (active.messagesSent >= 16) {
+        throw new Error("subagent 消息上限为每个子任务 16 条。");
+      }
+
+      active.messagesSent++;
       worker.postMessage({
         kind: "message",
         text: request.text,
@@ -214,6 +239,7 @@ export class SubagentCoordinator {
     }
 
     request.subagentIds.forEach(get);
+    this.options.signal.throwIfAborted();
     const pending = request.subagentIds.map(
       (id) => this.children.get(id)?.done ?? Promise.resolve(),
     );
@@ -221,9 +247,20 @@ export class SubagentCoordinator {
     const timeout = new Promise<void>((resolve) => {
       timer = setTimeout(resolve, request.timeoutMs);
     });
+    let abortWaiting!: () => void;
+    const aborted = new Promise<never>((_resolve, reject) => {
+      abortWaiting = () =>
+        reject(this.options.signal.reason ?? new Error("主任务已取消。"));
+      this.options.signal.addEventListener("abort", abortWaiting, {
+        once: true,
+      });
+    });
     try {
-      await Promise.race([Promise.all(pending), timeout]);
+      this.options.signal.throwIfAborted();
+      await Promise.race([Promise.all(pending), timeout, aborted]);
+      this.options.signal.throwIfAborted();
     } finally {
+      this.options.signal.removeEventListener("abort", abortWaiting);
       clearTimeout(timer);
     }
 
@@ -292,7 +329,7 @@ export class SubagentCoordinator {
 
       entry.controller.signal.throwIfAborted();
       await storage.updateSubagent(taskId, plan.id, "queued", []);
-      release = await limits.acquire(taskId, entry.controller.signal);
+      release = await limits.acquire(taskId, entry.controller.signal, plan.id);
       entry.controller.signal.throwIfAborted();
       await storage.updateSubagent(taskId, plan.id, "running", []);
       status = await this.startWorker(plan, reader, entry);
@@ -318,7 +355,7 @@ export class SubagentCoordinator {
         );
       }
     } finally {
-      release?.();
+      await release?.();
       this.options.trace?.(
         "subagent.worker",
         plan.id,
@@ -412,6 +449,14 @@ export class SubagentCoordinator {
     });
   }
 
+  private async persist(operation: () => Later<unknown>) {
+    try {
+      await operation();
+    } catch (error) {
+      throw new SubagentPersistenceError(error);
+    }
+  }
+
   private async respond(
     id: string,
     reader: SubagentReadOnly,
@@ -452,7 +497,9 @@ export class SubagentCoordinator {
           })
           .strict()
           .parse(message.payload);
-        await storage.updateSubagent(taskId, id, "running", checkpoint.context);
+        await this.persist(() =>
+          storage.updateSubagent(taskId, id, "running", checkpoint.context),
+        );
         response(true, { ok: true });
 
         return;
@@ -467,7 +514,9 @@ export class SubagentCoordinator {
           })
           .strict()
           .parse(message.payload);
-        await storage.startSubagentRequest(taskId, id, call.requestId, "read");
+        await this.persist(() =>
+          storage.startSubagentRequest(taskId, id, call.requestId, "read"),
+        );
         const readStarted = Date.now();
         this.options.trace?.("subagent.tool.read", id, "started", 0);
         let result: unknown;
@@ -482,7 +531,20 @@ export class SubagentCoordinator {
           };
         }
 
-        await storage.finishSubagentRequest(taskId, id, call.requestId, result);
+        try {
+          await this.persist(() =>
+            storage.finishSubagentRequest(taskId, id, call.requestId, result),
+          );
+        } catch (error) {
+          this.options.trace?.(
+            "subagent.tool.read",
+            id,
+            "error",
+            Date.now() - readStarted,
+          );
+          throw error;
+        }
+
         this.options.trace?.(
           "subagent.tool.read",
           id,
@@ -512,12 +574,16 @@ export class SubagentCoordinator {
         throw new Error("subagent 模型输入超出安全预算。");
       }
 
-      await storage.startSubagentRequest(taskId, id, model.requestId, "model");
+      await this.persist(() =>
+        storage.startSubagentRequest(taskId, id, model.requestId, "model"),
+      );
       const startedAt = Date.now();
       this.options.trace?.("subagent.model", id, "started", 0);
       this.options.onModelRequest?.(id);
       try {
-        const result: ModelResult = await provider.run(
+        const selectedProvider =
+          this.options.providerFor?.(id, model.requestId) ?? provider;
+        const result: ModelResult = await selectedProvider.run(
           model.input,
           model.instructions,
           subagentReadDefinitions,
@@ -525,11 +591,8 @@ export class SubagentCoordinator {
           () => {},
           { maxOutputTokens: 2_048 },
         );
-        await storage.finishSubagentRequest(
-          taskId,
-          id,
-          model.requestId,
-          result,
+        await this.persist(() =>
+          storage.finishSubagentRequest(taskId, id, model.requestId, result),
         );
         if (result.usage) {
           this.options.onUsage?.(id, result.usage);
@@ -552,6 +615,10 @@ export class SubagentCoordinator {
         throw error;
       }
     } catch (error) {
+      if (error instanceof SubagentPersistenceError) {
+        throw error;
+      }
+
       response(
         false,
         error instanceof Error ? error.message : "subagent 请求失败。",

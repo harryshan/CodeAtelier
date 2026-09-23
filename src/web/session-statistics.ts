@@ -2,7 +2,7 @@
  * 从当前会话 Snapshot 的持久化任务与事件计算可展示统计，供 SessionStatistics 组件和单元测试共用。
  * 本模块只读取共享类型，不请求 API、不修改 React 状态，也不把缺失的服务数据伪造成零值。
  *
- * 1. sessionStatistics 聚合 service 实报的 token、模型请求、工具结果和任务状态；旧历史没有 model_request 时，仅以已有 usage 作保守回退。
+ * 1. sessionStatistics 聚合 service 实报的 token、按主任务/子任务区分的模型请求、工具结果和任务状态；旧历史没有 model_request 时，仅以已有 usage 作保守回退。
  * 2. 工具成功仅依据最终 tool_result 的错误和退出码判断；仍在审批或执行的调用不进入成功率分母。
  * 3. 运行时间使用 Task 的 startedAt、finishedAt 或 task_end 事件；排队等待不计入累计运行时间，运行中任务以调用方传入的当前时间持续累加。
  * 4. formatTokenCount 与 formatDuration 为组件提供一致、紧凑且不依赖语言环境的显示文本。
@@ -13,7 +13,8 @@
 
 import type { Event, Snapshot, Task, TaskStatus } from "../shared/types";
 
-export type ModelPurpose = "task" | "compaction" | "title" | "approval";
+export type ModelPurpose =
+  "task" | "compaction" | "title" | "approval" | "subagent";
 
 export interface SessionStatistics {
   inputTokens: number;
@@ -42,6 +43,7 @@ const modelPurposes: ModelPurpose[] = [
   "compaction",
   "title",
   "approval",
+  "subagent",
 ];
 
 function isModelPurpose(value: unknown): value is ModelPurpose {
@@ -120,6 +122,7 @@ export function sessionStatistics(
     compaction: 0,
     title: 0,
     approval: 0,
+    subagent: 0,
   };
   const rounds = new Set<string>();
 
@@ -226,7 +229,8 @@ export function sessionStatistics(
       modelRequestsByPurpose.task +
       modelRequestsByPurpose.compaction +
       modelRequestsByPurpose.title +
-      modelRequestsByPurpose.approval,
+      modelRequestsByPurpose.approval +
+      modelRequestsByPurpose.subagent,
     llmRounds: rounds.size,
     modelRequestsByPurpose,
     toolCalls: toolStarts.length,

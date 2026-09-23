@@ -4,18 +4,18 @@
 
 Node.js 24，pnpm 11.22.0（packageManager 固定）。提交 pnpm-lock.yaml，使用 pnpm install --frozen-lockfile 重现依赖。esbuild 的安装脚本在 pnpm-workspace.yaml 中明确允许。
 
-| 命令 | 用途 |
-| --- | --- |
-| pnpm dev | 后端源码监听，默认 `127.0.0.1:4142`；tsx watch 在源码更新后重启后端 |
-| pnpm dev:web | Vite 前端，默认 `127.0.0.1:5173`；读取相同监听地址并通过 HMR 更新前端模块 |
-| pnpm build | 编译后端和前端 |
-| pnpm start | 运行构建后的本机服务；由监督进程支持 UI 确认后的后端重载 |
-| pnpm typecheck / lint / test | 类型、静态规则、核心测试；test 只使用白名单测试环境 |
-| pnpm check | 类型、lint、核心测试、测试模式构建 |
-| pnpm test:e2e | 先进行不读取 dotenv 的测试模式构建，再启动独立模拟服务验证浏览器交互 |
-| node --env-file=.env --import tsx scripts/probe-model-capabilities.ts | 检查模型窗口、计数接口及真实 usage（少量模型调用） |
-| node --env-file=.env --import tsx scripts/probe-responses.ts | 使用环境变量密钥测试真实服务工具往返 |
-| node --env-file=.env --import tsx scripts/smoke-agent.ts | 在 .local 下创建隔离项目，真实模型修复并运行测试 |
+| 命令                                                                  | 用途                                                                      |
+| --------------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| pnpm dev                                                              | 后端源码监听，默认 `127.0.0.1:4142`；tsx watch 在源码更新后重启后端       |
+| pnpm dev:web                                                          | Vite 前端，默认 `127.0.0.1:5173`；读取相同监听地址并通过 HMR 更新前端模块 |
+| pnpm build                                                            | 编译后端和前端                                                            |
+| pnpm start                                                            | 运行构建后的本机服务；由监督进程支持 UI 确认后的后端重载                  |
+| pnpm typecheck / lint / test                                          | 类型、静态规则、核心测试；test 只使用白名单测试环境                       |
+| pnpm check                                                            | 类型、lint、核心测试、测试模式构建                                        |
+| pnpm test:e2e                                                         | 先进行不读取 dotenv 的测试模式构建，再启动独立模拟服务验证浏览器交互      |
+| node --env-file=.env --import tsx scripts/probe-model-capabilities.ts | 检查模型窗口、计数接口及真实 usage（少量模型调用）                        |
+| node --env-file=.env --import tsx scripts/probe-responses.ts          | 使用环境变量密钥测试真实服务工具往返                                      |
+| node --env-file=.env --import tsx scripts/smoke-agent.ts              | 在 .local 下创建隔离项目，真实模型修复并运行测试                          |
 
 脚本只接受环境变量密钥，不内置真实凭据；真实验证会消耗配置服务的模型额度。smoke-agent 只自动批准它自己创建的示例项目内固定 node --test 命令。
 
@@ -23,19 +23,19 @@ Node.js 24，pnpm 11.22.0（packageManager 固定）。提交 pnpm-lock.yaml，�
 
 后端启动时读取本地 `.env`。API 地址、主模型和可选辅助模型的唯一来源是 `.env` 或进程环境；无论是否已有 `settings.json`，都必须提供 API 地址和主模型，否则启动明确报错。设置界面只读显示连接字段，修改 `.env` 后须重启或重载服务。访问密码门禁也只在服务启动时读取环境变量，修改后同样须重启或重载。推荐通过 Web UI 为当前进程输入密钥，或使用环境变量；本地 `.env` 仅供开发使用，不提交 Git。
 
-| 环境变量 | 默认 / 用途 |
-| --- | --- |
-| CODEATELIER_BASE_URL | 无默认值；在 .env 填写实际 API Base URL |
-| CODEATELIER_MODEL | 无默认值；在 .env 填写服务公布的完整模型标识 |
-| CODEATELIER_REASONING_EFFORT | high；可选 low、medium、high |
-| CODEATELIER_API_KEY | 无默认值 |
-| CODEATELIER_DATA_DIR | 平台用户数据目录 |
-| CODEATELIER_PORT | 4142 |
-| CODEATELIER_LISTEN_ADDRESS | `127.0.0.1`；可选 `::1`、`0.0.0.0`（开放 IPv4 局域网）或 `::`（开放 IPv6 局域网） |
+| 环境变量                         | 默认 / 用途                                                                         |
+| -------------------------------- | ----------------------------------------------------------------------------------- |
+| CODEATELIER_BASE_URL             | 无默认值；在 .env 填写实际 API Base URL                                             |
+| CODEATELIER_MODEL                | 无默认值；在 .env 填写服务公布的完整模型标识                                        |
+| CODEATELIER_REASONING_EFFORT     | high；可选 low、medium、high                                                        |
+| CODEATELIER_API_KEY              | 无默认值                                                                            |
+| CODEATELIER_DATA_DIR             | 平台用户数据目录                                                                    |
+| CODEATELIER_PORT                 | 4142                                                                                |
+| CODEATELIER_LISTEN_ADDRESS       | `127.0.0.1`；可选 `::1`、`0.0.0.0`（开放 IPv4 局域网）或 `::`（开放 IPv6 局域网）   |
 | CODEATELIER_WEB_PASSWORD_ENABLED | false（未设置或空值）；显式值只能为 `true` 或 `false`，启用 Web UI 单一访问密码门禁 |
-| CODEATELIER_WEB_PASSWORD | 无默认值；开关为 `true` 时必须为非空密码，不写入设置、浏览器配置或日志 |
-| CODEATELIER_LOG_LEVEL | info |
-| CODEATELIER_SANDBOX_ENABLED | false；只接受明确的 `true` 或 `false`；启动后不可动态切换 |
+| CODEATELIER_WEB_PASSWORD         | 无默认值；开关为 `true` 时必须为非空密码，不写入设置、浏览器配置或日志              |
+| CODEATELIER_LOG_LEVEL            | info                                                                                |
+| CODEATELIER_SANDBOX_ENABLED      | false；只接受明确的 `true` 或 `false`；启动后不可动态切换                           |
 
 ### 配置来源与优先级
 
@@ -296,7 +296,7 @@ Windows 原生安装命令是显式维护入口，不属于服务启动或默认
 
 随后必须由用户**先打开“以管理员身份运行”的 PowerShell**，进入仓库目录，再运行 `pnpm sandbox:install`、`sandbox:verify`、`sandbox:uninstall` 或 `sandbox:recover`；`run.ts` 使用非 shell `spawn`，不会自行触发 UAC 或重新提升。
 
-安装器把 supervisor/WFP manager、Node 24、Agent Runtime entry 和 compaction worker 复制到受保护的 ProgramData 目录，并在 v2 state 记录五个安装副本摘要；TypeScript 和 native self-check 都复核摘要。安装器还配置专用账户的网络、batch、service 和远程交互拒绝登录权；服务不得自行提权或自动安装。
+安装器校验 v3 build manifest 后，把 supervisor/WFP manager、Node 24、Agent Runtime entry 和 compaction、read_file、subagent 三种 Worker 复制到受保护的 ProgramData 目录，并在 v4 state 记录安装副本摘要；旧 v3 安装须由用户显式 Repair，TypeScript 启动前与 native self-check 均拒绝旧状态或不匹配的摘要。安装器还配置专用账户的网络、batch、service 和远程交互拒绝登录权；服务不得自行提权或自动安装。
 
 macOS/Linux 调用这些命令只输出 `SKIP`，不启动 PowerShell 或任何 Windows 原生代码；设置 `CODEATELIER_SANDBOX_ENABLED=true` 也保持 non-isolated 宿主路径。Windows 上提升验收完成前，启用开关若自检失败仍按既有契约提示并回退宿主。
 

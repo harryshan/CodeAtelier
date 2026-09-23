@@ -4,7 +4,7 @@
  *
  * 1. getCapabilities 请求 Broker adapter 并用现有 schema 校验，缺失能力保持 undefined。
  * 2. run 在发送请求前订阅关联 requestId 的 model_delta，完成或失败后立即移除监听。
- * 3. 完整响应再次校验 ModelResult/usage；畸形 Broker 数据使当前任务失败，不能降级为直接联网。
+ * 3. 子模型请求附带 Broker 已登记的 subagent ID/请求 ID，完整响应再次校验 ModelResult/usage；畸形 Broker 数据使当前任务失败，不能降级为直接联网。
  */
 
 import { z } from "zod";
@@ -29,7 +29,8 @@ const modelResultSchema = z.object({
 export class RuntimeModelProvider implements ModelProvider {
   constructor(
     private peer: RuntimeIpcPeer,
-    private purpose: "task" | "compaction",
+    private purpose: "task" | "compaction" | "subagent",
+    private subagent?: { id: string; requestId: string },
   ) {}
 
   async getCapabilities(
@@ -64,6 +65,8 @@ export class RuntimeModelProvider implements ModelProvider {
       "model_run",
       {
         purpose: this.purpose,
+        subagentId: this.subagent?.id,
+        subagentRequestId: this.subagent?.requestId,
         input,
         instructions,
         tools,

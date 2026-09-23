@@ -1,5 +1,11 @@
 # 初版验证记录
 
+## 可选只读 subagent 内部接线（2026-09-23，尚未对外开放）
+
+- 宿主 Engine 与独立 Node Runtime 子进程 harness 已分别使用真实 SQLite、Worker thread 和模拟模型完成结构化分工、受限读取、等待、收集、原子反馈及线程退出；来源文件未被子任务修改。子模型 usage 在会话统计中单独归类。存储和协调器回归复现并修复晚完成报告误消费、读结果持久化失败后仍进入下一轮、等待不响应取消和消息队列无界的问题。
+- Runtime IPC v3 固定子身份与请求、拒绝伪造的写工具/模型用途、按认证执行实例持有全局 Worker lease；断连不预先归还，只有进程实例确认 clean 后对账。Windows bundle build manifest v3 增加独立 `subagent-worker.mjs`；TypeScript/C++/PowerShell 安装 state v4 要求其摘要，旧版本自检失败后按已有启动前安全回退条件处理，不冒称受 Sandbox 保护。已运行 TypeScript、PowerShell 语法、无管理员副作用的 Node harness、Runtime bundle/MSVC 构建与相应回归；具体最终全套测试结果另以本轮提交前检查为准。
+- **限制**：本轮没有对真实专用账户执行提升安装、更新 WFP 或写持久 ACL，亦未验证固定账户下子 Worker 的真实 Job/映像/取消、故障恢复和跨平台行为。Worker 与主线程共享 OS 身份，工具白名单不是恶意代码防护；HTTP/UI 仍拒绝启用 `subagentsEnabled:true`，不能把内部 harness 或原生编译通过表述为产品可用。
+
 ## 仓库审查与高优先级修复（2026-09-23）
 
 修复文件新建竞争覆盖、历史分片取锁失败残留事务，以及进程持久化回调/管道异常逃逸。复现、修复和边界见 [本轮审查记录](repository-review-2026-09-23.md)。Windows 最终 `pnpm check` 通过：421 项通过、1 项跳过，类型/lint/格式/构建通过；Chromium E2E 23/23 通过且正常退出。未运行 Evaluation 或真实模型，未完成固定账户原生端到端验收。

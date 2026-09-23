@@ -3,7 +3,7 @@
  * 测试只调用 web/session-statistics 的纯函数，不依赖浏览器、SQLite 或真实模型。
  *
  * 1. 首组使用新版 model_request、完整缓存明细、成功/失败/进行中工具和结束任务，验证聚合口径。
- * 2. 次组模拟升级前只有 model_usage 的历史及缺失缓存明细，验证保守回退而不把未知缓存写成零。
+ * 2. 子模型请求单独归类且包含总用量，不作为主模型轮次；历史 usage 只在没有请求记录时作保守回退。
  * 3. 末组验证运行中任务按传入时钟累加、排队任务不计运行时间，并检查紧凑格式化结果。
  *
  * 事件内容是最小可观察历史，不断言 React 组件的内部状态；真实 UI 的默认折叠和展开由 Playwright 覆盖。
@@ -121,6 +121,37 @@ it("aggregates recorded model requests, cache details, tool outcomes and complet
     activeTask: false,
   });
   expect(statistics.toolSuccessRate).toBe(0.5);
+});
+
+it("counts subagent model requests separately without creating main-agent rounds", () => {
+  const statistics = sessionStatistics(
+    snapshot(
+      [
+        event(1, "model_request", { purpose: "task", step: 1 }),
+        event(2, "model_request", {
+          purpose: "subagent",
+          subagentId: "reader",
+        }),
+        event(3, "model_usage", {
+          purpose: "subagent",
+          subagentId: "reader",
+          input_tokens: 19,
+          output_tokens: 4,
+          total_tokens: 23,
+          input_tokens_details: { cached_tokens: 2 },
+        }),
+      ],
+      [task({ subagentsEnabled: true })],
+    ),
+  );
+
+  expect(statistics.llmRequests).toBe(2);
+  expect(statistics.llmRounds).toBe(1);
+  expect(statistics.modelRequestsByPurpose).toMatchObject({
+    task: 1,
+    subagent: 1,
+  });
+  expect(statistics.totalTokens).toBe(23);
 });
 
 it("uses usage as a conservative legacy request fallback and leaves incomplete cache details unknown", () => {

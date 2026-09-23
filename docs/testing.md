@@ -27,7 +27,7 @@
 
   测试不继承本机 `.env`、系统中的 CodeAtelier 配置或真实 API key；模型只可使用注入式模拟值和本机测试 HTTP/SSE 服务。
 
-- `pnpm build` 与 `pnpm build:test` 还会生成 `dist/runtime/windows-x64` 下的 Node 24 Agent Runtime、compaction Worker 与 read_file CPU Worker bundle 和 SHA-256 manifest；构建成功只验证 bundle 可生成，不代表安装器已把它复制到受保护目录或 native Supervisor 已核对并启动它。
+- `pnpm build` 与 `pnpm build:test` 还会生成 `dist/runtime/windows-x64` 下的 Node 24 Agent Runtime、compaction/read_file/subagent 三种 Worker bundle 和 SHA-256 manifest；构建成功只验证 bundle 可生成，不代表安装器已把它复制到受保护目录或 native Supervisor 已核对并启动它。
 - `pnpm sandbox:runtime:verify` 是安装完成后显式运行的 Windows 产品链路验收：它使用模拟模型，经默认 Engine/SandboxBroker/native Supervisor 在专用账户 Agent Runtime 内创建工作区文件；
 
   随后由低成本模型夹具自动批准一次 `run_with_permissions`，让独立 Capability Runner 写入 sibling 目录，并用系统 `curl.exe` 经自身环境中的短期代理 token 请求获准但必须被 relay 以 403 拒绝的 `127.0.0.1`，从而核对外部 ACL、通用代理注入、私网拒绝、结果回传和 lease 清理。
@@ -125,11 +125,11 @@ item.done 回退、失败/不完整事件、服务实际错误 message/reason/co
 
 复杂任务先读取代码/文件并获得信息后才输出计划摘要的指令与随后执行、已知参数的依赖调用同轮提交指引（依赖只能引用本轮节点，禁止跨轮历史 ID）与过时顺序指令回归、工具往返、同轮 DAG 的稳定拓扑并发、审批准备与执行槽分离、单槽下独立节点越过审批等待、并发上限、重复/未知/环拒绝、失败后继阻断与反馈；跨会话不同工作目录并行、同目录排队、同会话互斥、取消/关闭队列、步骤/上下文预算、参数错误反馈、根规则、输出预算、跨任务重新读取、不重放副作用、工具耗时排除审批等待
 
-### 可选 subagent（内部宿主路径，尚未开放）
+### 可选 subagent（内部双执行路径，尚未开放）
 
-主要测试：subagent-contracts.test.ts、subagent-limits.test.ts、subagent-readonly.test.ts、subagent-worker.test.ts、subagent-coordinator.test.ts、model-tool-batch.test.ts、engine-subagent.test.ts、store.test.ts。
+主要测试：subagent-contracts.test.ts、subagent-limits.test.ts、subagent-readonly.test.ts、subagent-worker.test.ts、subagent-coordinator.test.ts、model-tool-batch.test.ts、engine-subagent.test.ts、agent-runtime-subagent.test.ts、runtime-subagent-ipc.test.ts、sandbox-native-windows-runtime.test.ts、store.test.ts、session-statistics.test.ts。
 
-已覆盖分工 action 严格校验、计划唯一 ID/无环/数量上限、单任务与宿主进程内全局租约及排队取消；Store 中的子计划、检查点、重复请求拒绝、重启中断与结果未知的模型请求；预览报告与主工具回执必须同分片事务持久化，失败可回滚，主模型反馈截断时不消费原报告。子 Worker 独立 loop、依赖顺序、受限模型代理及文件白名单；真实 Engine 的内部已标记任务可协调、等待并收集报告，且不修改文件。宿主路径的单元验证不代表可在 HTTP 选择启用；Sandbox Runtime、Broker 全局 lease、恢复和原生验收尚未完成。Worker 与主线程共享进程和权限，不提供针对恶意依赖的 OS 级只读保证。
+已覆盖分工 action 严格校验、计划 DAG 与数量上限、单任务与跨 Runtime 的 Broker 全局 Worker lease、排队和取消；真实 SQLite 子计划、检查点、重复请求拒绝、重启中断与未知模型请求，以及与主工具反馈同分片提交的报告消费。晚完成、反馈截断或持久化失败不能误标已消费；子 Worker 只可用受限读取，读回执落盘失败立即停止，不继续模型轮次，主任务取消中断等待，每子任务消息数有界。宿主 Engine 与真实 Node Runtime 子进程的内部已标记任务均完成计划/等待/收集的模拟模型闭环；Broker IPC 拒绝未经登记的子模型、冒用主模型身份、写工具声明和重复 lease 释放，断连后留存租约直到实例确认清理。Worker 与主线程共用进程/身份，不抵御恶意代码直接使用 Node API；stdio 测试、bundle/MSVC 构建不等于固定账户提升环境或跨平台验收。HTTP/UI 仍拒绝开启，原生取消/恢复/故障矩阵尚需单独验收。
 
 ### 项目记忆
 
@@ -143,7 +143,7 @@ item.done 回退、失败/不完整事件、服务实际错误 message/reason/co
 
 `store.test.ts` 用第二个真实 SQLite 连接锁住后续历史分片，验证事务取得部分锁后失败会释放前面分片，后续事务仍可提交。
 
-隔离、事件顺序与游标、上下文、事务回滚、queued/running/waiting 重启中断、实际开始时间、标题状态迁移和恢复，以及大 JSON 的 Worker 读取；按小阈值触发的历史 SQLite 分片、新旧分片聚合、重启发现和旧分片 Worker 读取；任务级 subagent 开关的布尔序列化、旧分片迁移默认关闭及未就绪请求明确拒绝（UI/子 loop 尚未启用）；逐次模型/工具捕获、legacy 历史标记、局部读取拒绝、哈希一致的分页读取重建和只写入新隔离目录
+隔离、事件顺序与游标、上下文、事务回滚、queued/running/waiting 重启中断、实际开始时间、标题状态迁移和恢复，以及大 JSON 的 Worker 读取；按小阈值触发的历史 SQLite 分片、新旧分片聚合、重启发现和旧分片 Worker 读取；任务级 subagent 开关的布尔序列化、旧分片迁移默认关闭及未开放请求明确拒绝（UI 尚未启用）；逐次模型/工具捕获、legacy 历史标记、局部读取拒绝、哈希一致的分页读取重建和只写入新隔离目录
 
 ### 会话统计
 

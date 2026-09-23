@@ -5,7 +5,7 @@
  *
  * 1. ModelTraceScope 固定任务、用途、模型和可选 step/attempt，作为单次调用的关联字段。
  * 2. tracedModelProvider 透传 capabilities，并在 run 前创建可由当前上下文阶段动态指定父 span 的 llm.request；第一个 delta 生成 instant，完成或失败结束 span。
- * 3. Sandbox Runtime 经 Broker 请求模型时可附 execution mode/instance/kind 和 brokered 标记，仍复用相同安全计量。
+ * 3. Sandbox Runtime 经 Broker 请求模型时可附 execution mode/instance/kind、subagentId 与 brokered 标记，仍复用相同安全计量。
  * 4. 不记录 input、instructions、tools、输出文本、服务错误消息或 API key 的原文；LLM span 位于 Node 主线程轨道，高保真 replay payload 由后续独立机制处理。
  */
 
@@ -14,7 +14,8 @@ import { TraceRecorder } from "./recorder.js";
 
 export interface ModelTraceScope {
   taskId: string;
-  purpose: "approval" | "compaction" | "task" | "title";
+  purpose: "approval" | "compaction" | "task" | "title" | "subagent";
+  subagentId?: string;
   model: string;
   step?: number;
   attempt?: number;
@@ -49,10 +50,13 @@ export function tracedModelProvider(
       const span = recorder.startSpan(scope.taskId, {
         name: "llm.request",
         category: "llm",
-        track: "Main thread",
+        track: scope.subagentId
+          ? `Subagent ${scope.subagentId} broker`
+          : "Main thread",
         parentSpanId,
         attributes: {
           purpose: scope.purpose,
+          subagentId: scope.subagentId,
           model: scope.model,
           step: scope.step,
           attempt: scope.attempt,

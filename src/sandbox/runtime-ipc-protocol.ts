@@ -3,7 +3,7 @@
  * Sandbox Supervisor/Windows transport 必须先把连接绑定到已验证的 PID、Job、token、generation、nonce 和 lease，
  * 然后才能把已认证字节流交给 RuntimeIpcPeer；测试用 stdio 只验证 framing 和跨进程路由，不构成 W3 证据。
  *
- * 1. runtimeRequestSchema 限定 Runtime 可请求的模型、审批、session adapter、结构化 Git PushSpec 和两阶段一次性 capability command；prepare 只完成审批，execute 只消费当前连接签发的 authorizationId，session event 只允许 Runtime 自有类型。
+ * 1. runtimeRequestSchema 限定 Runtime 可请求的模型、审批、session adapter、任务绑定子状态/租约、结构化 Git PushSpec 和两阶段一次性 capability command；prepare 只完成审批，execute 只消费当前连接签发的 authorizationId，session event 只允许 Runtime 自有类型。
  * 2. runtimeResponseSchema 关联原 requestId；错误只返回受限 code/message 与模型重试元数据，避免泄露宿主异常对象。
  * 3. runtimeEventSchema 承载模型 delta、任务取消、请求级取消、Runtime 生命周期和固定 context trace span；trace 名称与属性不是任意日志通道。
  * 4. hello schema 绑定协议版本、任务和 instance；其中 Runtime 自报字段只用于一致性核对，不能替代 transport 身份。
@@ -12,8 +12,9 @@
 import { z } from "zod";
 import { capabilityCommandRequestSchema } from "./capability-request.js";
 import { contextSnapshotSchema } from "../context/types.js";
+import { subtaskSchema } from "../agent/subagent-contracts.js";
 
-export const RUNTIME_IPC_PROTOCOL_VERSION = 2;
+export const RUNTIME_IPC_PROTOCOL_VERSION = 3;
 export const MAX_RUNTIME_IPC_FRAME_BYTES = 8 * 1024 * 1024;
 
 const identifier = z.string().min(1).max(120);
@@ -27,6 +28,13 @@ const runtimeTraceAttributesSchema = z
     toolCount: z.number().int().nonnegative().max(10_000).optional(),
     amount: z.number().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
     errorName: z.string().min(1).max(120).optional(),
+    subagentId: identifier.optional(),
+    durationMs: z
+      .number()
+      .int()
+      .nonnegative()
+      .max(24 * 60 * 60 * 1_000)
+      .optional(),
   })
   .strict();
 const runtimeTraceNameSchema = z.enum([
@@ -34,6 +42,9 @@ const runtimeTraceNameSchema = z.enum([
   "context.prepare.measure_request_view",
   "context.request",
   "context.request.measure_input",
+  "subagent.worker",
+  "subagent.model",
+  "subagent.tool.read",
 ]);
 const runtimeSessionEventTypeSchema = z.enum([
   "assistant",
@@ -103,6 +114,7 @@ export const runtimeTaskSettingsSchema = z
     maxOutputTokens: z.number().int().positive().max(2_000_000).optional(),
     contextChars: z.number().int().min(10_000).max(2_000_000),
     outputChars: z.number().int().min(1_000).max(100_000),
+    subagentsEnabled: z.boolean().optional(),
   })
   .strict();
 
@@ -124,6 +136,55 @@ export const brokerHelloSchema = z
     executionInstanceId: identifier,
   })
   .strict();
+
+export const runtimeSubagentStoreSchema = z.discriminatedUnion("action", [
+  z
+    .object({
+      action: z.literal("plan"),
+      subtasks: z.array(subtaskSchema).min(1).max(4),
+    })
+    .strict(),
+  z.object({ action: z.literal("list") }).strict(),
+  z
+    .object({
+      action: z.literal("update"),
+      subagentId: identifier,
+      status: z.enum([
+        "planned",
+        "queued",
+        "running",
+        "completed",
+        "failed",
+        "cancelled",
+        "interrupted",
+      ]),
+      context: z.array(z.unknown()).max(2_000),
+      report: z.string().max(32_000).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal("request_start"),
+      subagentId: identifier,
+      requestId: identifier,
+      kind: z.enum(["model", "read"]),
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal("request_finish"),
+      subagentId: identifier,
+      requestId: identifier,
+      result: z.unknown(),
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal("collect"),
+      ids: z.array(identifier).min(1).max(4),
+    })
+    .strict(),
+]);
 
 export const runtimeRequestSchema = z.discriminatedUnion("operation", [
   z
@@ -153,7 +214,9 @@ export const runtimeRequestSchema = z.discriminatedUnion("operation", [
       operation: z.literal("model_run"),
       body: z
         .object({
-          purpose: z.enum(["task", "compaction"]),
+          purpose: z.enum(["task", "compaction", "subagent"]),
+          subagentId: identifier.optional(),
+          subagentRequestId: identifier.optional(),
           input: z.array(z.unknown()),
           instructions: boundedText,
           tools: z.array(z.unknown()),
@@ -218,6 +281,48 @@ export const runtimeRequestSchema = z.discriminatedUnion("operation", [
       ...requestBase,
       operation: z.literal("memory_apply"),
       body: z.object({ request: z.unknown() }).strict(),
+    })
+    .strict(),
+  z
+    .object({
+      ...requestBase,
+      operation: z.literal("subagent_store"),
+      body: runtimeSubagentStoreSchema,
+    })
+    .strict(),
+  z
+    .object({
+      ...requestBase,
+      operation: z.literal("subagent_lease_acquire"),
+      body: z.object({ subagentId: identifier }).strict(),
+    })
+    .strict(),
+  z
+    .object({
+      ...requestBase,
+      operation: z.literal("subagent_lease_release"),
+      body: z.object({ leaseId: identifier }).strict(),
+    })
+    .strict(),
+  z
+    .object({
+      ...requestBase,
+      operation: z.literal("session_commit_subagent_collect"),
+      body: z
+        .object({
+          ids: z.array(identifier).min(1).max(4),
+          input: z.array(z.unknown()).max(100_000),
+          event: z
+            .object({
+              name: z.literal("subagent"),
+              callId: identifier,
+              batchId: identifier,
+              nodeId: identifier,
+              result: z.unknown(),
+            })
+            .strict(),
+        })
+        .strict(),
     })
     .strict(),
   z
@@ -384,3 +489,6 @@ export type RuntimeIpcEvent = z.infer<typeof runtimeEventSchema>;
 export type RuntimeIpcMessage = z.infer<typeof runtimeIpcMessageSchema>;
 export type RuntimeIpcOperation = RuntimeIpcRequest["operation"];
 export type RuntimeTaskSettings = z.infer<typeof runtimeTaskSettingsSchema>;
+export type RuntimeSubagentStoreRequest = z.infer<
+  typeof runtimeSubagentStoreSchema
+>;

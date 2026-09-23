@@ -68,6 +68,7 @@ import {
   type RecordedModelExchange,
 } from "../sessions/replay-case.js";
 import { ToolRunner } from "../tools/tool-runner.js";
+import { SubagentReadOnly } from "../tools/subagent-readonly.js";
 import { ProjectMemoryService } from "../memory/service.js";
 import { SandboxBroker } from "../sandbox/broker.js";
 import { createSandboxRuntime } from "../sandbox/runtime-factory.js";
@@ -671,7 +672,21 @@ export class Engine {
       Awaited<ReturnType<AgentRuntimeLauncher["launch"]>> | undefined;
     let cleaned = false;
     let closeAttempted = false;
+    let broker: RuntimeIpcBrokerSession | undefined;
     const createdAt = new Date().toISOString();
+    const assertSubagentTask = (candidate: RuntimeExecutionIdentity) => {
+      const current = this.store.task(task.id);
+      if (
+        !authorized ||
+        candidate !== identity ||
+        candidate.kind !== "agent-runtime" ||
+        !current?.subagentsEnabled ||
+        (current.status !== "running" && current.status !== "waiting")
+      ) {
+        throw new Error("Broker 子任务请求不属于当前活动任务与执行实例。");
+      }
+    };
+
     const publishExecution = (
       state:
         | "created"
@@ -789,12 +804,140 @@ export class Engine {
             failure?: string;
           }
         | undefined;
-      const broker = new RuntimeIpcBrokerSession(
+      const currentBroker = new RuntimeIpcBrokerSession(
         { input: launched.input, output: launched.output },
         identity,
         nonce,
         gateway,
         {
+          subagentStore: async (candidate, request, requestSignal) => {
+            assertSubagentTask(candidate);
+            switch (request.action) {
+              case "plan":
+                await Promise.all(
+                  request.subtasks.map((plan) =>
+                    SubagentReadOnly.create(
+                      workspace,
+                      plan.scope,
+                      requestSignal,
+                    ),
+                  ),
+                );
+                requestSignal.throwIfAborted();
+
+                return this.store.planSubagents(task.id, request.subtasks);
+              case "list":
+                return this.store.subagents(task.id);
+              case "update":
+                return this.store.updateSubagent(
+                  task.id,
+                  request.subagentId,
+                  request.status,
+                  request.context,
+                  request.report,
+                );
+              case "request_start":
+                return this.store.startSubagentRequest(
+                  task.id,
+                  request.subagentId,
+                  request.requestId,
+                  request.kind,
+                );
+              case "request_finish":
+                return this.store.finishSubagentRequest(
+                  task.id,
+                  request.subagentId,
+                  request.requestId,
+                  request.result,
+                );
+              case "collect":
+                return this.store.collectSubagents(task.id, request.ids);
+            }
+          },
+          acquireSubagentLease: async (candidate, id, requestSignal) => {
+            assertSubagentTask(candidate);
+            if (
+              !this.store
+                .subagents(task.id)
+                .some((child) => child.id === id && child.status === "queued")
+            ) {
+              throw new Error("子任务未登记或不在可申请租约的状态。");
+            }
+
+            const release = await this.subagentLimits.acquire(
+              task.id,
+              requestSignal,
+            );
+            try {
+              assertSubagentTask(candidate);
+              requestSignal.throwIfAborted();
+              if (
+                !this.store
+                  .subagents(task.id)
+                  .some((child) => child.id === id && child.status === "queued")
+              ) {
+                throw new Error("子任务等待租约期间状态已经变化。");
+              }
+
+              return release;
+            } catch (error) {
+              release();
+              throw error;
+            }
+          },
+          authorizeSubagentModel: async (candidate, id, requestId) => {
+            assertSubagentTask(candidate);
+            const child = this.store
+              .subagents(task.id)
+              .find((entry) => entry.id === id);
+            const request = this.store.subagentRequest(task.id, id, requestId);
+            if (child?.status !== "running" || request?.status !== "started") {
+              throw new Error("子模型请求没有对应运行中任务与已登记请求。");
+            }
+          },
+          commitSubagentCollect: async (candidate, body) => {
+            assertSubagentTask(candidate);
+            const last = body.input.at(-1) as
+              { type?: string; call_id?: string; output?: string } | undefined;
+            if (
+              !last ||
+              last.type !== "function_call_output" ||
+              last.call_id !== body.event.callId ||
+              last.output !== JSON.stringify(body.event.result)
+            ) {
+              throw new Error("子报告反馈未完整进入主模型上下文。");
+            }
+
+            const expected = this.store.collectSubagents(task.id, body.ids);
+            const data = body.event.result as { reports?: unknown };
+            if (JSON.stringify(data?.reports) !== JSON.stringify(expected)) {
+              throw new Error("子报告回执与当前任务持久化状态不一致。");
+            }
+
+            let saved: ReturnType<Store["event"]> | undefined;
+            this.store.commitSubagentCollect(
+              task.id,
+              body.ids,
+              () => {
+                const clean = JSON.parse(
+                  redactJson(JSON.stringify(body.event), [this.config.apiKey]),
+                );
+                saved = this.store.event(
+                  task.sessionId,
+                  task.id,
+                  "tool_result",
+                  clean,
+                );
+                this.store.saveContext(task.sessionId, body.input);
+              },
+              expected,
+            );
+            if (saved) {
+              captureToolEvent("tool_result", body.event);
+              this.events.emit("event", saved);
+              this.events.emit("change", task.sessionId);
+            }
+          },
           traceSpan: (event) => {
             if (event.event === "trace_span_start") {
               if (runtimeContextSpans.has(event.spanId)) {
@@ -808,12 +951,26 @@ export class Engine {
                 throw new Error("Agent Runtime trace parent 不存在。");
               }
 
+              const subagentTrace = event.name.startsWith("subagent.");
+              const subagentId = event.attributes.subagentId;
+              if (
+                subagentTrace &&
+                (!subagentId ||
+                  !this.store
+                    .subagents(task.id)
+                    .some((child) => child.id === subagentId))
+              ) {
+                throw new Error("Agent Runtime subagent trace 身份未登记。");
+              }
+
               runtimeContextSpans.set(
                 event.spanId,
                 this.traces.startSpan(task.id, {
                   name: event.name,
-                  category: "context",
-                  track: "Main thread",
+                  category: subagentTrace ? "subagent" : "context",
+                  track: subagentTrace
+                    ? `Subagent ${subagentId}`
+                    : "Main thread",
                   parentSpanId: parent?.id,
                   attributes: event.attributes,
                 }),
@@ -917,11 +1074,12 @@ export class Engine {
           },
         },
       );
-      const cancelled = () => broker.cancel("Broker 任务已取消。");
+      broker = currentBroker;
+      const cancelled = () => currentBroker.cancel("Broker 任务已取消。");
       signal.addEventListener("abort", cancelled, { once: true });
       const memory = await this.memories.retrieve(workspace, prompt);
       try {
-        const response = (await broker.startTask(
+        const response = (await currentBroker.startTask(
           {
             workspace,
             prompt,
@@ -932,6 +1090,7 @@ export class Engine {
               maxOutputTokens: settings.maxOutputTokens,
               contextChars: settings.contextChars,
               outputChars: settings.outputChars,
+              subagentsEnabled: task.subagentsEnabled,
             },
             memoryText: memory.bundle?.text,
           },
@@ -999,6 +1158,7 @@ export class Engine {
         const cleanup = await launched
           .close(closeReason)
           .catch(() => "orphaned" as const);
+        cleaned = cleanup === "clean";
         if (closeReason === "unknown" || cleanup !== "clean") {
           publishExecution("unknown", { sideEffectsPossible: true });
           publishSandboxStage("failed");
@@ -1007,6 +1167,12 @@ export class Engine {
           publishSandboxStage("failed");
         }
       }
+
+      if (cleaned) {
+        broker?.releaseSubagentLeases();
+      }
+
+      this.subagentLimits.cancelTask(task.id);
     }
   }
 
@@ -1952,6 +2118,7 @@ export class Engine {
                   task.id,
                   subagentRequest.subagentIds,
                   persistResult,
+                  result.reports,
                 );
               } else {
                 this.store.transaction(persistResult);

@@ -81,6 +81,7 @@ interface InstallationPaths {
   runtimeEntry: string;
   runtimeWorker: string;
   runtimeReadWorker: string;
+  runtimeSubagentWorker: string;
   state: string;
   dataRoot: string;
 }
@@ -93,6 +94,7 @@ interface InstallationMetadata {
   runtimeEntrySha256: string;
   runtimeWorkerSha256: string;
   runtimeReadWorkerSha256: string;
+  runtimeSubagentWorkerSha256: string;
   relayPortV4: number;
 }
 
@@ -147,6 +149,7 @@ function installationPaths(
     runtimeEntry: path.join(runtimeRoot, "agent-runtime.mjs"),
     runtimeWorker: path.join(runtimeRoot, "compaction-worker.mjs"),
     runtimeReadWorker: path.join(runtimeRoot, "read-file-worker.mjs"),
+    runtimeSubagentWorker: path.join(runtimeRoot, "subagent-worker.mjs"),
     state,
     dataRoot,
   };
@@ -179,9 +182,11 @@ function parseState(content: string): InstallationMetadata {
   const runtimeEntrySha256 = values.get("runtimeEntrySha256") ?? "";
   const runtimeWorkerSha256 = values.get("runtimeWorkerSha256") ?? "";
   const runtimeReadWorkerSha256 = values.get("runtimeReadWorkerSha256") ?? "";
+  const runtimeSubagentWorkerSha256 =
+    values.get("runtimeSubagentWorkerSha256") ?? "";
   const relayPortV4 = Number(values.get("relayPortV4"));
   if (
-    values.get("version") !== "3" ||
+    values.get("version") !== "4" ||
     !/^[0-9a-f-]{36}$/i.test(generationId) ||
     !/^[a-f0-9]{64}$/i.test(supervisorSha256) ||
     !/^[a-f0-9]{64}$/i.test(networkSha256) ||
@@ -189,6 +194,7 @@ function parseState(content: string): InstallationMetadata {
     !/^[a-f0-9]{64}$/i.test(runtimeEntrySha256) ||
     !/^[a-f0-9]{64}$/i.test(runtimeWorkerSha256) ||
     !/^[a-f0-9]{64}$/i.test(runtimeReadWorkerSha256) ||
+    !/^[a-f0-9]{64}$/i.test(runtimeSubagentWorkerSha256) ||
     !Number.isInteger(relayPortV4) ||
     relayPortV4 < 1024 ||
     relayPortV4 > 65_535
@@ -204,6 +210,7 @@ function parseState(content: string): InstallationMetadata {
     runtimeEntrySha256,
     runtimeWorkerSha256,
     runtimeReadWorkerSha256,
+    runtimeSubagentWorkerSha256,
     relayPortV4,
   };
 }
@@ -471,6 +478,7 @@ export class NativeWindowsSandboxRuntime implements SandboxRuntime {
         runtimeEntryDigest,
         runtimeWorkerDigest,
         runtimeReadWorkerDigest,
+        runtimeSubagentWorkerDigest,
       ] = await Promise.all([
         fileSha256(this.paths.supervisor),
         fileSha256(this.paths.networkManager),
@@ -478,6 +486,7 @@ export class NativeWindowsSandboxRuntime implements SandboxRuntime {
         fileSha256(this.paths.runtimeEntry),
         fileSha256(this.paths.runtimeWorker),
         fileSha256(this.paths.runtimeReadWorker),
+        fileSha256(this.paths.runtimeSubagentWorker),
       ]);
       if (
         supervisorDigest !== metadata.supervisorSha256.toLowerCase() ||
@@ -486,7 +495,9 @@ export class NativeWindowsSandboxRuntime implements SandboxRuntime {
         runtimeEntryDigest !== metadata.runtimeEntrySha256.toLowerCase() ||
         runtimeWorkerDigest !== metadata.runtimeWorkerSha256.toLowerCase() ||
         runtimeReadWorkerDigest !==
-          metadata.runtimeReadWorkerSha256.toLowerCase()
+          metadata.runtimeReadWorkerSha256.toLowerCase() ||
+        runtimeSubagentWorkerDigest !==
+          metadata.runtimeSubagentWorkerSha256.toLowerCase()
       ) {
         throw new NativeWindowsSandboxError(
           "原生二进制或 Agent Runtime 摘要与安装记录不一致。",
