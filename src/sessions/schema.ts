@@ -3,7 +3,7 @@
  *
  * 1. 开启 WAL 和外键检查；sessions 保存会话、工作区及标题生成状态，tasks 保存排队、实际运行、结束时间、任务级 subagent 选择和错误。
  * 2. events 保存按顺序读取的对话与工具事件；context 保存每个会话当前使用的模型协议记录。
- * 3. context_snapshots 保存压缩前的历史；task_replays 保存高保真本地 replay 捕获，末尾设置 user_version。
+ * 3. context_snapshots 保存压缩前的历史；task_replays 保存高保真本地 replay 捕获；subagents 和 subagent_requests 保存子任务检查点及请求回执，末尾设置 user_version。
  *
  * 表结构要与 Store 中的 SQL 一起维护。修改时也要考虑旧数据库如何升级，不能只检查新建数据库。
  */
@@ -61,5 +61,28 @@ export const SCHEMA_SQL = `
     data TEXT NOT NULL
   );
 
-  PRAGMA user_version = 6;
+  CREATE TABLE IF NOT EXISTS subagents (
+    taskId TEXT NOT NULL REFERENCES tasks(id),
+    id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    plan TEXT NOT NULL,
+    report TEXT,
+    context TEXT NOT NULL DEFAULT '[]',
+    consumed INTEGER NOT NULL DEFAULT 0,
+    updatedAt TEXT NOT NULL,
+    PRIMARY KEY(taskId, id)
+  );
+
+  CREATE TABLE IF NOT EXISTS subagent_requests (
+    taskId TEXT NOT NULL,
+    subagentId TEXT NOT NULL,
+    requestId TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    status TEXT NOT NULL,
+    result TEXT,
+    PRIMARY KEY(taskId, subagentId, requestId),
+    FOREIGN KEY(taskId, subagentId) REFERENCES subagents(taskId, id)
+  );
+
+  PRAGMA user_version = 7;
 `;

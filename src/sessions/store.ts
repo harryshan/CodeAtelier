@@ -4,7 +4,7 @@
  * 1. 构造器发现兼容的 history.sqlite 与后续容量分片，在每个文件初始化数据库并把重启前未完成的任务标为 interrupted；transaction 同步提交，取锁或执行失败时释放本次已开启的事务。
  * 2. list/get/create 跨分片定位或聚合会话；新会话在最新分片达到容量上限后进入新文件，已有会话始终写回其初始分片。标题状态的领取、完成或失败保证首条 prompt 只生成一次标题。
  * 3. tasks/task/createTask/status 读写任务状态与不可变的 subagent 选择；旧分片逐个迁移，SQLite 的 0/1 在各读取入口转换为布尔值。queuedTasks 和 hasUnfinishedTask 供 Engine 调度跨会话队列，event/events 保存和分页读取事件。
- * 4. task_replays 在任务开始后追加高保真模型/工具材料；replayCase 导出单任务的 captured 或 legacy case，不触发恢复或副作用。
+ * 4. subagents/subagent_requests 按任务存计划、检查点、状态及请求回执，重启只中断未完成子任务；task_replays 在任务开始后追加模型/工具材料，replayCase 导出单任务的 captured 或 legacy case。
  * 5. context/saveContext 读写当前模型历史；较大的 context、events 和快照可交给 store-worker 在线程外解析或原子写入，避免阻塞 HTTP 主线程。
  * 6. close 由应用退出流程调用，关闭全部历史分片连接；Worker 自己打开目标会话分片的短生命周期 WAL 连接，不持有 Store 的连接。
  *
@@ -21,7 +21,18 @@ import type {
 import { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
 import { Worker } from "node:worker_threads";
-import type { Session, Task, TaskStatus, Event } from "../shared/types.js";
+import type {
+  Session,
+  Task,
+  TaskStatus,
+  Event,
+  SubagentRecord,
+  SubagentStatus,
+} from "../shared/types.js";
+import {
+  validateSubagentPlan,
+  type SubtaskPlan,
+} from "../agent/subagent-contracts.js";
 import {
   DEFAULT_HISTORY_SHARD_MAX_BYTES,
   HistoryShards,
@@ -56,6 +67,16 @@ export class Store {
             "UPDATE tasks SET status='interrupted',error='服务已重启，任务中断；未重放命令。',finishedAt=COALESCE(finishedAt,?) WHERE status IN ('queued','running','waiting')",
           )
           .run(now);
+        shard.db
+          .prepare(
+            "UPDATE subagents SET status='interrupted',updatedAt=? WHERE status IN ('planned','queued','running')",
+          )
+          .run(now);
+        shard.db
+          .prepare(
+            "UPDATE subagent_requests SET status='unknown' WHERE status='started'",
+          )
+          .run();
       }
     }
 
@@ -527,6 +548,173 @@ export class Store {
       );
 
     return task;
+  }
+
+  /** 计划连同事件在同一会话分片提交；无效结构、旧 ID 或重复规划不启动任何 Worker。 */
+  planSubagents(taskId: string, plans: SubtaskPlan[]) {
+    const task = this.task(taskId);
+    if (!task?.subagentsEnabled || task.status !== "running") {
+      throw new Error("当前任务未开启 subagent 或尚未运行。");
+    }
+
+    return this.transaction(() => {
+      const existing = new Set(this.subagents(taskId).map((agent) => agent.id));
+      validateSubagentPlan(plans, existing);
+      const now = new Date().toISOString();
+      this.selectTask(taskId);
+      const statement = this.db.prepare(
+        "INSERT INTO subagents(taskId,id,status,plan,updatedAt) VALUES(?,?,?,?,?)",
+      );
+      for (const plan of plans) {
+        statement.run(taskId, plan.id, "planned", JSON.stringify(plan), now);
+      }
+
+      this.event(task.sessionId, taskId, "subagent_plan", {
+        subtasks: plans.map(({ id, role, dependsOn }) => ({
+          id,
+          role,
+          dependsOn,
+        })),
+      });
+
+      return this.subagents(taskId);
+    });
+  }
+
+  subagents(taskId: string): SubagentRecord[] {
+    const shard = this.taskShard(taskId);
+    if (!shard) {
+      return [];
+    }
+
+    return shard.db
+      .prepare("SELECT * FROM subagents WHERE taskId=? ORDER BY rowid")
+      .all(taskId)
+      .map((raw) => {
+        const row = raw as {
+          taskId: string;
+          id: string;
+          status: SubagentStatus;
+          plan: string;
+          report: string | null;
+          context: string;
+          consumed: number;
+          updatedAt: string;
+        };
+
+        return {
+          ...row,
+          plan: JSON.parse(row.plan) as SubtaskPlan,
+          context: JSON.parse(row.context) as unknown[],
+          consumed: row.consumed === 1,
+        };
+      });
+  }
+
+  /** 仅状态转移与落盘检查点；持久化结果确认后才可让子 loop 进入下一个模型轮次。 */
+  updateSubagent(
+    taskId: string,
+    id: string,
+    status: SubagentStatus,
+    context: unknown[],
+    report?: string,
+  ) {
+    if (
+      JSON.stringify(context).length > 2_000_000 ||
+      (report?.length ?? 0) > 32_000
+    ) {
+      throw new Error("subagent 上下文或报告超过保存限制。");
+    }
+
+    return this.transaction(() => {
+      this.selectTask(taskId);
+      const current = this.subagents(taskId).find((agent) => agent.id === id);
+      if (
+        !current ||
+        ["completed", "failed", "cancelled", "interrupted"].includes(
+          current.status,
+        )
+      ) {
+        throw new Error("subagent 不存在或已经结束。");
+      }
+
+      const now = new Date().toISOString();
+      this.db
+        .prepare(
+          "UPDATE subagents SET status=?,context=?,report=?,updatedAt=? WHERE taskId=? AND id=?",
+        )
+        .run(
+          status,
+          JSON.stringify(context),
+          report ?? current.report,
+          now,
+          taskId,
+          id,
+        );
+
+      this.event(this.task(taskId)!.sessionId, taskId, "subagent_state", {
+        id,
+        status,
+      });
+    });
+  }
+
+  /** 请求 ID 在同一子任务中只能启动一次；结果未知不会被当作从未执行。 */
+  subagentRequest(taskId: string, subagentId: string, requestId: string) {
+    const shard = this.taskShard(taskId);
+    if (!shard) {
+      return undefined;
+    }
+
+    const row = shard.db
+      .prepare(
+        "SELECT status,result FROM subagent_requests WHERE taskId=? AND subagentId=? AND requestId=?",
+      )
+      .get(taskId, subagentId, requestId) as
+      { status: string; result: string | null } | undefined;
+
+    return row
+      ? {
+          status: row.status,
+          result: row.result === null ? null : JSON.parse(row.result),
+        }
+      : undefined;
+  }
+
+  startSubagentRequest(
+    taskId: string,
+    subagentId: string,
+    requestId: string,
+    kind: string,
+  ) {
+    this.selectTask(taskId);
+    this.db
+      .prepare(
+        "INSERT INTO subagent_requests(taskId,subagentId,requestId,kind,status) VALUES(?,?,?,?,?)",
+      )
+      .run(taskId, subagentId, requestId, kind, "started");
+  }
+
+  finishSubagentRequest(
+    taskId: string,
+    subagentId: string,
+    requestId: string,
+    result: unknown,
+  ) {
+    const payload = JSON.stringify(result);
+    if (!payload || payload.length > 2_000_000) {
+      throw new Error("subagent 请求结果过大或为空。");
+    }
+
+    this.selectTask(taskId);
+    const updated = this.db
+      .prepare(
+        "UPDATE subagent_requests SET status='completed',result=? WHERE taskId=? AND subagentId=? AND requestId=? AND status='started'",
+      )
+      .run(payload, taskId, subagentId, requestId);
+    if (updated.changes !== 1) {
+      throw new Error("subagent 请求不在可确认状态。");
+    }
   }
 
   /** 首次进入 running 时记实际开始时间；排队等待不计入运行统计，终态只在真正结束时记录。 */
