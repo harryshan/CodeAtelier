@@ -6,7 +6,7 @@
 
 - 用户在**每个新任务提交前**决定是否启用 subagent；默认关闭。主 agent 始终对用户答复、计划、编辑、验证和最终结果负责。
 - subagent 是从属于当前任务的短生命周期研究者：可以阅读受控资料、整理结论和提出修改建议，不能执行写入。主 agent 可并行协调它们；不同会话的工作区锁与全局任务并发上限不因 subagent 增加。
-- 用户所说的“严格不能写文件”包含两个层次：应用层工具权限可以硬性拒绝任何写入请求；**同一进程的 Node Worker thread 不提供 OS 级只读身份**，不能阻止被攻陷的线程绕过工具直接调用 `fs` 或启动子进程。若要求对恶意/失控线程也保证不可写，必须改为独立低权限进程/独立身份与文件 ACL 等边界，不能同时承诺“同进程线程”和此级别的安全保证。Windows 专用账户 Sandbox 目前也不能为同账户线程赋予独立文件 ACL。本文的同进程方案只承诺对受信任实现和模型工具调用的强制只读策略，不冒充 OS 隔离。
+- **用户已确认只要求 subagent prompt 与工具层禁止写入**：指令明确不允许修改文件，模型工具声明和执行入口采用只读白名单，写入提案交给主 agent。Node Worker thread 与主 loop 同进程、同 OS 身份；这不抵御恶意线程直接调用 Node `fs` 或启动子进程，也不提供线程级 ACL 隔离。此风险属于已确认方案的非目标，不再作为实施前待确认冲突；不得将工具层约束宣传为 OS 级只读 Sandbox。Windows 专用账户 Sandbox 仍保护整个 Runtime 与宿主之间的边界，而非主、子线程之间的边界。
 
 ## 1. 入口和任务级设置
 
@@ -48,7 +48,7 @@
 ## 4. 只读权限与写入归属
 
 - subagent 模型可见工具采用**显式正向白名单**：受控文件读取、已脱敏的只读历史/状态查询、必要时受限的公开检索；不注册 `edit_files`、`memory_apply`、`run_command`、`run_with_permissions` 或通用 `git`。`git status/diff/show` 也不能直接复用现有完整 Git 工具，应另做只读命令及参数固定的查询代理并验证实际实现无副作用；首阶段可完全不提供 Git。不要通过“只读 shell”猜测命令是否写文件：测试、构建、重定向、Git、网络命令及插件都只能由主 agent 按原有权限执行。
-- 拒绝不仅发生在工具列表：解析和执行入口都须核对不可变 `role=subagent` 与调用能力；IPC / Broker 路由也拒绝任何子角色的写操作、审批升级、push、runner 或 memory 写入。禁止 subagent 直接调用主任务的工具执行器与 session 存储接口；唯一允许的持久化是由可信协调器写入子任务事件/报告，和“subagent 本身写工作区”区分。
+- 拒绝不仅发生在工具列表：子工具代理先核对协调器持有的 `role=subagent` 与操作白名单，再解析和执行；Worker 不持有主任务 ToolRunner、Runtime IPC peer 或 session 存储引用。Broker 对新增的子模型请求与子事件路由校验身份、任务归属和固定操作类型，不向子路由提供审批升级、push、runner 或 memory 写入；这只是正常工具/协议调用约束，不能阻止同进程恶意代码冒用主线程能力。唯一允许的持久化是可信协调器写入子任务事件/报告，和“subagent 本身写工作区”区分。
 - 主 agent 收集只读建议后，按既有读文件、计划、批量编辑、依赖声明、验证流程**独占发起所有写入**；对报告中提及的文件重新读取并校验版本。子 agent 与主 agent 可以并行读，但用户/外部进程仍可能改动文件，现有工作区锁不能替代版本检查。工作区内读写仍受执行实例原有 Sandbox/宿主权限约束；同进程 thread 没有独立 OS 身份，不能把白名单误称为防恶意代码的隔离。
 
 ## 5. Sandbox、持久化、恢复与取消
@@ -68,4 +68,49 @@
 3. 独立 Worker loop 与只读代理：模拟模型并发报告、跨线程通信、背压、版本变化；恶意模型尝试 `edit_files`、shell、Git、memory、审批和 IPC 越权时在所有入口拒绝且工作区不变。注明：这只验证**工具层**，无法证明同进程 Node 线程的 OS 级不可写。
 4. Tracing / Sandbox 分层测试：宿主模式、Runtime IPC harness 和 Windows 固定账户提升环境分别验证关联、取消/清理、fallback、Job 与未知状态。UI/HTTP/SSE 交互运行 `pnpm test:e2e`，提交前 `pnpm check`；持续维护 [测试覆盖](testing.md) 与 [验证记录](verification.md)。
 
-**需另行确认的冲突**：如果“严格不能写任何文件”是对恶意线程、任意 npm 依赖或直接 Node API 都成立的安全要求，则应选择独立低权限进程（必要时独立账户/ACL 与单独 IPC 代理），而不是按本草案把 subagent 放在同一进程的 Worker thread。无论选择哪一种，用户显式开启、主 agent 协调及只读工具接口仍可沿用。
+## 7. 具体代码落点与接入顺序
+
+以下均为计划改动，尚未实现：
+
+- **UI/API**：在 `src/web/App.tsx` 的 `send` 与输入框下方 `composerActions` 增加默认 `false` 的 checkbox；`src/server/app.ts` 的任务 POST 使用 Zod `subagentsEnabled: z.boolean().default(false)`，拒绝非布尔值。恢复按钮只提交 instruction，不读取当前 checkbox。更新 `src/shared/types.ts` 的 Task，以及 `src/web/Timeline.tsx` 的时间线，显示实际保存的选择与子任务进度。
+- **任务创建与恢复**：在 `src/agent/engine.ts` 的 `start`、`resume`、`run` 和 `runInAgentRuntime` 接入开关。建议 `start(sessionId, prompt, options?, recovery?)` 在创建任务和保存用户事件的同一事务写入开关；现有仅以第三参数传 recovery 的调用方要逐一迁移，避免位置参数歧义。`resume` 从来源任务读取开关创建**新任务**，而非依据 UI 当前表单状态或重启旧 Worker。主 loop 仅在开关为真时提供协调工具。
+- **存储/流式展示**：更新 `src/sessions/schema.ts`、`store.ts` 和 `src/server/session-events.ts`。`tasks.subagentsEnabled INTEGER NOT NULL DEFAULT 0`，逐分片 migration 兼容旧历史；子任务状态以 `(taskId, subagentId)` 唯一标识。进度、受限请求和报告通过现有 `events` 全局游标进入快照/SSE，界面从持久化事件还原，不另开不可恢复的内存流。
+- **两条执行路径**：宿主 `Engine.run` 与 Sandbox `AgentRuntimeService.run` 都构造同一个任务级 `SubagentCoordinator`。前者使用宿主模型 Provider 和 Store adapter；后者经现有 RuntimeModelProvider 与有序 session IPC adapter。校验、协议和只读工具实现应共用，不能只在宿主完成；Broker 仍只承担模型、历史和 trace 的跨进程职责。
+- **只读工具**：在 `src/tools/registry.ts`、`tool-runner.ts`、`paths.ts` 与 `read-file-worker-pool.ts` 的既有边界上新增主 agent 协调工具及独立的子工具白名单。子工具只有 `read_file` 和新做的受控 `list_entries`、`search_text`（见下节）。不向 Worker 暴露通用 ToolRunner、shell、Git 或 memory adapter；文件读取复用既有路径检查及行数/大小限制，但不占用 read_file 解析 Worker 执行 agent loop。
+- **Runtime IPC/打包**：更新 `src/sandbox/runtime-ipc-protocol.ts`、`runtime-model-provider.ts`、`runtime-ipc-broker-session.ts`、`scripts/windows-sandbox/build-runtime.ts`、`src/sandbox/native-windows-runtime.ts` 和 `native/windows-sandbox/restricted-runner.cpp`。`start_task` 传保存的开关；Runtime 内协调器代理子模型请求/进度。子模型请求须带协调器绑定的 subagentId，Broker 验证认证连接的 task/instance 与子任务登记关系；固定 session/trace event schema 同步扩展。单独打包 `subagent-worker.mjs`，同步 manifest、安装状态/摘要验证、复制和自检路径，不得在 Sandbox 回退到未校验的源码 Worker。
+- **Tracing/测试文档**：更新 `src/tracing/*`、`tests/*`、`tests/e2e/*`、`docs/testing.md` 和 `docs/verification.md`，分别保存单元、HTTP/SSE、独立 Runtime harness 与真实提升环境验收证据。设计文档不代替上述实现或验收。
+
+### 7.1 主从接口与线程通信
+
+主 agent 的结构化分工通过新增的**主角色专用**函数工具 `subagent` 发起，而不是解析普通回答中的 JSON。`src/agent/subagent-contracts.ts` 维护 Zod 判别联合、消息版本、长度/数量限制；模型可请求 `plan`（提交本节第 3 部分的 subtasks）、`message`（指定子任务提问/答复）、`await`（等待指定集合的终态或超时）、`collect`（取已保存报告）、`cancel`（终止指定子任务）。`plan` 在一轮工具结果中只返回已创建/跳过及 ID；后续工具轮才能引用该结果，不能在同一 DAG 批次猜测未知 ID。其他工具节点可与等待节点并行；`await` 必须可取消、有超时，不长占四个工具执行槽。未勾选时连工具定义也不发送，执行分派仍拒绝伪造的调用。
+
+`src/agent/subagent-coordinator.ts` 持有 taskId、execution instance、配置快照、每个 Worker 句柄、限流器和持久化 adapter；`src/agent/subagent-worker.ts` 仅持有子会话上下文、独立 `runModelLoop` 状态与 `parentPort`。`subagentId` 由计划校验/协调器分配，不接收 Worker 自报权限。新建 Worker 的来源按 tsx 开发、普通 JS 构建、Sandbox 安装 bundle 分流，并限制每任务最多 2 个活动子任务、全局模型请求与 Worker 总量；跨工作区公平排队，同工作区仍是**一个主任务**占锁。子任务不能创建下一层 Worker 或请求主 agent 工具。
+
+内部 `postMessage` 消息采用带版本的判别联合：`start | model.request | model.delta | model.result | tool.request | tool.result | question | reply | progress | report | cancel | error`。每条消息具有 `taskId/subagentId/messageId`、必要时 `replyTo` 与单调序号；协调器从自身登记表核对 Worker 句柄和归属，而非信任消息中的身份字符串。只允许协调器转发其他 subagent 的受限 `question/reply`；限制大小、队列、未完成请求数、发送次数和等待时间，避免环形等待。进度不是主 agent 的已验证结论。Worker 异常、退出和迟到回执按已记录状态处理；重复消息不重复写报告或触发模型请求，无法确认模型调用结果时标记未知并由主任务决定后续动作。
+
+模型调用由 Worker 发 `model.request`，协调器调用当前 execution instance 的 provider（Sandbox 内再由已有认证 Runtime IPC 向 Broker 代理），Worker 只能拿到流式文本、结果和 usage，不能拿到 API key、Provider 对象或 IPC peer。Worker 的本地上下文含受限目标、工作区相对范围、已核实的必要事实和子 prompt；报告经 `collect` 进入**主 agent 的工具结果**，不得直接并入主会话原始模型协议记录。只有主 agent 能提交写入和最终用户答复。
+
+### 7.2 只读工具和文件边界
+
+`src/agent/subagent-instructions.ts` 独立构造子 prompt：说明只调查/分析、不能写文件、不能要求主协调器代执行隐含命令或绕过用户权限、报告需列出证据文件及其版本；项目 AGENTS.md 等仓库内容仍视作资料，不能扩大工具权限。`src/tools/subagent-readonly.ts` 的正向白名单只接受 `read_file`、`list_entries`、`search_text`；二者新增的读取工具必须直接使用 Node 文件枚举/内容扫描，**不能**以 `run_command`、Git、外部可执行文件或插件包装“只读”搜索。路径按既有 `resolveTarget` 等检查规范化后落在当前任务授权读取范围内，拒绝越界、敏感位置和不安全链接，限制文件数、字节数、匹配数、行数和返回字符数；Sandbox 模式同时接受原有 AccessManifest/OS 限制，宿主模式沿用已有安全路径语义。首次增量不提供 `web_search`、Git、外部根或 memory，确有需要再单独设计权限/回归。
+
+工具声明只对 Worker 的模型请求可见；协调器收到 `tool.request` 时再次核对角色、名称、参数 schema、路径、范围与任务有效性，然后执行受限读取并保存调用状态和有界结果。子 Worker 从不加载 `ToolRunner` 的写入 adapter；即便模型构造 `edit_files`、`run_command`、`git`、`memory_apply`、`run_with_permissions` 或 `subagent` 调用，也在**调用执行之前**拒绝，既不要求主 agent 代行，也不触发审批。主 agent 收集报告后再自行 `read_file`，获取当前内容哈希；直接使用报告中的旧哈希编辑应被现有版本校验拒绝。这是工具/受信任代码层面的限制，不是 OS 级线程隔离。
+
+### 7.3 状态、存储与恢复的提交点
+
+协调器先在 `Store` 中原子保存合法计划及 `planned` 行，再依预算领取槽位并标记 `queued/running`，收到 Worker 报告时先保存报告和最终状态，再回复主 agent 的 `await`；调用 `collect` 时独立保存报告消费标记并幂等返回已保存报告。子请求以 `subagentId + messageId` 唯一登记；持久化已确认的工具回执与模型用量，避免重连重放；只允许可信协调器追加 `subagent_*` 事件。模型原始输入、自由文本报告保留在受控 session 历史或子状态中，**不**进入 Perfetto 属性。对每种写入失败，立即停止该子任务并向主任务报告失败/未知，不能让内存中的“完成”先于持久化结果显示成功。子上下文可保存有界检查点供人工恢复核对，不复用主会话 context 表作为子模型会话。
+
+取消顺序为：停止接收新消息 → 取消子模型/读取请求 → 有界等待 Worker 退出 → 超时终止 → 保存子终态 → 结束主任务并释放 Runtime。主任务 `close`/取消沿用 Engine 的 AbortSignal；Runtime 断连按任务中断处理，不把已经返回但未落盘的子报告算成功。Store 启动时除将主任务标为 `interrupted` 外，还将原 `planned/queued/running` 的子状态标为中断；**不自动重新创建 Worker**。人工 `resume` 创建新主任务，继承原开关但不继承运行中线程；先展示已持久化报告和未知项，主 agent 重读当前文件后才决定是否再次研究。跨任务报告只作为有来源的历史资料，不把它误当成新子任务已完成。保持旧数据库与无子任务历史的读取兼容。
+
+### 7.4 Tracing、Sandbox 与实现验收切片
+
+`src/tracing/recorder.ts` 在主 task 根下建立逻辑 `Subagent <id>` 轨道；`plan/spawn/model/tool.read/message/report/cancel/join` 分别覆盖开始、结束、耗时和状态，并按 `taskId/sessionId/executionInstanceId/subagentId/messageId` 关联。跨 Worker 的事件由协调器记录收发时间或映射时钟，Broker trace 只接收协议规定的固定名称、数字用量和受限错误类别；不能把子 prompt、搜索结果、报告、源码或密钥写入 trace。Sandbox 既有 Runtime→Broker trace schema 需要与工具事件、模型 purpose/关联字段同步扩展；未通过真实固定账户验收前只称 harness 可用。若新增 Worker 文件，除 JS/TS 测试外还要同时扩展 Windows 构建 manifest、原生安装/状态摘要、自检和故障回退/清理测试，不得只给 Node build 添加入口。
+
+实施按以下**可独立验收的增量**推进（每增量同步文件导读、架构、覆盖清单和对应测试）：
+
+1. **契约/存储/UI**：任务开关的 Zod、旧客户端默认值、Store 全分片 migration、刷新/排队/取消/恢复继承、checkbox 与历史显示；服务端未开启时主 loop 与原单 agent 行为一致。HTTP/SSE 与 UI 跑 `pnpm test:e2e`。
+2. **主 agent 协调工具**：主工具定义与两条 loop 的同名派发、Zod 计划/消息校验、状态机、去重与等待取消；先用假 Worker 和假 provider 测试无效计划零启动、并发上限、公平队列、重复报告和旧 ID 不能跨任务引用。
+3. **真实 Worker + 只读代理**：独立子 loop、跨线程模型代理、受限 list/search/read 和子 prompt；分别在宿主、独立 Runtime IPC harness 测试并发、文件更新重读、Worker 崩溃、超时和取消；对写入工具注入调用证明既无审批也无文件改动（不将其表述为 OS 隔离证明）。
+4. **恢复/trace/Sandbox 打包**：子状态检查点与主报告消费、持久化失败/未知结果恢复、任务终止全部 Worker、Perfetto 轨道与流关联、Sandbox 安装文件摘要/IPC/Job/代理清理；先跑受控测试，再在满足提升环境前提时做 Windows 端到端验收并在 `docs/verification.md` 如实记录未覆盖平台。每个实现增量提交前跑 `pnpm check`，涉及 UI/HTTP/SSE 再跑 `pnpm test:e2e`；Evaluation 仅在用户明确要求时手动运行。
+
+**已确认而非未决的取舍**：本方案不以恶意 Worker 线程、依赖代码或直接 Node API 为威胁模型；要获得对此类行为的 OS 级不可写承诺属于未来的独立进程/身份方案，不阻塞当前工具层实现计划。除该边界取舍外，多 agent 功能仍未获现行初版范围的实施授权，本文不改变现有单 agent 能力声明。
