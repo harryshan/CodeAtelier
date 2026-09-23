@@ -2,8 +2,7 @@
  * 在主 agent 所在进程协调同任务只读 subagent，供宿主 Engine 与 Sandbox AgentRuntime 共用。
  *
  * 1. execute 校验主 agent 的结构化分工、消息、等待、收集与取消请求；消息/显式取消追加无正文的安全 span，计划/状态持久化后才通知页面刷新。
- * 2. runChild 等待依赖、获取全局租约、启动独立 Worker loop；逐方向核对版本、taskId/subagentId 和单调序号；线程只持有任务描述，模型与
- *    工作区读取在父进程按请求回执重新验证，所有请求和检查点先持久化再确认。
+ * 2. runChild 等待依赖、获取全局租约，按时限和实报 token 上限驱动独立 Worker loop；逐方向核对消息归属/序号，模型与读取经父进程验证并先落盘。
  * 3. stop/close 通知所有未完成子任务，并在退出或强制终止得到确认后归还租约；等待响应主任务取消，消息数有界。
  * 4. Broker/Store 检查点或请求结果持久化失败时终止 Worker，不能将未知的只读结果当成普通工具失败后继续模型轮次。
  *
@@ -78,6 +77,22 @@ export interface SubagentStorage {
   >;
 }
 
+const MAX_CHILD_RUNTIME_MS = 120_000;
+const MAX_CHILD_TOKENS = 32_000;
+const BUDGET_TERMINATION_GRACE_MS = 5_000;
+
+type ChildBudgetFailure = "duration" | "tokens";
+
+function budgetFailureMessage(failure: ChildBudgetFailure | undefined) {
+  if (failure === "duration") {
+    return "subagent 运行时间超过上限，已停止。";
+  }
+
+  return failure === "tokens"
+    ? "subagent 累计 token 用量超过上限，已停止。"
+    : undefined;
+}
+
 interface ActiveChild {
   controller: AbortController;
   worker?: Worker;
@@ -85,6 +100,9 @@ interface ActiveChild {
   messagesSent: number;
   parentSequence: number;
   childSequence: number;
+  usedTokens: number;
+  budgetFailure?: ChildBudgetFailure;
+  terminateTimer?: NodeJS.Timeout;
 }
 
 interface CoordinatorOptions {
@@ -100,6 +118,8 @@ interface CoordinatorOptions {
     ): Promise<() => void | Promise<void>>;
   };
   providerFor?: (subagentId: string, requestId: string) => ModelProvider;
+  maxChildDurationMs?: number;
+  maxChildTokens?: number;
   signal: AbortSignal;
   trace?: (
     name: string,
@@ -173,6 +193,7 @@ export class SubagentCoordinator {
             messagesSent: 0,
             parentSequence: 0,
             childSequence: 0,
+            usedTokens: 0,
           };
           this.children.set(plan.id, entry);
 
@@ -318,6 +339,21 @@ export class SubagentCoordinator {
     };
   }
 
+  private exhaustBudget(entry: ActiveChild, failure: ChildBudgetFailure) {
+    if (entry.controller.signal.aborted) {
+      return;
+    }
+
+    entry.budgetFailure = failure;
+    entry.controller.abort(new Error(budgetFailureMessage(failure)));
+    // 模型代理不响应取消时，仍须确认 Worker 退出才允许归还活动租约。
+    entry.terminateTimer = setTimeout(() => {
+      if (entry.worker) {
+        void entry.worker.terminate();
+      }
+    }, BUDGET_TERMINATION_GRACE_MS);
+  }
+
   private stop(id: string) {
     const active = this.children.get(id);
     if (!active) {
@@ -357,6 +393,7 @@ export class SubagentCoordinator {
     const startedAt = Date.now();
     const { taskId, storage, limits } = this.options;
     let release: (() => void) | undefined;
+    let deadline: NodeJS.Timeout | undefined;
     let status: SubagentStatus = "failed";
     this.options.trace?.("subagent.worker", plan.id, "started", 0);
     try {
@@ -377,9 +414,20 @@ export class SubagentCoordinator {
       entry.controller.signal.throwIfAborted();
       await storage.updateSubagent(taskId, plan.id, "running", []);
       this.options.onStateChange?.();
+      deadline = setTimeout(
+        () => this.exhaustBudget(entry, "duration"),
+        Math.min(
+          this.options.maxChildDurationMs ?? MAX_CHILD_RUNTIME_MS,
+          MAX_CHILD_RUNTIME_MS,
+        ),
+      );
       status = await this.startWorker(plan, reader, entry);
     } catch (error) {
-      status = entry.controller.signal.aborted ? "cancelled" : "failed";
+      status = entry.budgetFailure
+        ? "failed"
+        : entry.controller.signal.aborted
+          ? "cancelled"
+          : "failed";
       const record = (await storage.subagents(taskId)).find(
         ({ id }) => id === plan.id,
       );
@@ -394,13 +442,16 @@ export class SubagentCoordinator {
           plan.id,
           status,
           record.context,
-          error instanceof Error
-            ? error.message.slice(0, 250)
-            : "subagent 启动失败。",
+          budgetFailureMessage(entry.budgetFailure) ??
+            (error instanceof Error
+              ? error.message.slice(0, 250)
+              : "subagent 启动失败。"),
         );
         this.options.onStateChange?.();
       }
     } finally {
+      clearTimeout(deadline);
+      clearTimeout(entry.terminateTimer);
       await release?.();
       this.options.trace?.(
         "subagent.worker",
@@ -494,12 +545,15 @@ export class SubagentCoordinator {
           }
 
           // 取消可能先于 Worker 对模型/工具错误的回执，终态不能误写为 failed。
-          const status = entry.controller.signal.aborted
-            ? "cancelled"
-            : workerError || code !== 0
-              ? "failed"
-              : (finished?.status ?? "failed");
+          const status = entry.budgetFailure
+            ? "failed"
+            : entry.controller.signal.aborted
+              ? "cancelled"
+              : workerError || code !== 0
+                ? "failed"
+                : (finished?.status ?? "failed");
           const report =
+            budgetFailureMessage(entry.budgetFailure) ??
             finished?.report ??
             workerError?.message.slice(0, 250) ??
             `Worker 未确认结果（exit=${code}）。`;
@@ -507,7 +561,7 @@ export class SubagentCoordinator {
             this.options.taskId,
             plan.id,
             status,
-            finished?.status === "completed"
+            status === "completed" && finished?.status === "completed"
               ? finished.context
               : record.context,
             report,
@@ -518,11 +572,14 @@ export class SubagentCoordinator {
       });
       entry.controller.signal.addEventListener(
         "abort",
-        () =>
-          worker.postMessage({
-            ...this.envelope(plan.id, entry),
-            kind: "stop",
-          } satisfies SubagentParentMessage),
+        () => {
+          if (entry.worker === worker) {
+            worker.postMessage({
+              ...this.envelope(plan.id, entry),
+              kind: "stop",
+            } satisfies SubagentParentMessage);
+          }
+        },
         { once: true },
       );
     });
@@ -677,6 +734,28 @@ export class SubagentCoordinator {
         );
         if (result.usage) {
           this.options.onUsage?.(id, result.usage);
+          const tokens = result.usage.total_tokens;
+          if (Number.isSafeInteger(tokens) && tokens >= 0) {
+            entry.usedTokens += tokens;
+          }
+        }
+
+        if (
+          entry.usedTokens >
+          Math.min(
+            this.options.maxChildTokens ?? MAX_CHILD_TOKENS,
+            MAX_CHILD_TOKENS,
+          )
+        ) {
+          this.exhaustBudget(entry, "tokens");
+          this.options.trace?.(
+            "subagent.model",
+            id,
+            "error",
+            Date.now() - startedAt,
+          );
+
+          return;
         }
 
         this.options.trace?.(

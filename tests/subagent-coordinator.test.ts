@@ -4,7 +4,7 @@
  * 1. 逆序声明有依赖的两个计划，验证计划/状态持久化后通知页面刷新、有限租约、读取、等待及只收集一次报告。
  * 2. 敏感/越界范围拒绝时不创建任务；取消等待模型的 Worker 后归还资源并标记终态。
  * 3. 主任务关闭时与尚在登记计划的请求竞态，不能遗漏晚登记的 Worker。
- * 4. 等待在主任务取消时立刻停止，消息有界且消息/显式取消均留下无正文 trace；存储回执失败不允许下一轮模型继续。
+ * 4. 等待在主任务取消时立刻停止；每个子任务的运行时间、累计实报 token、消息数有界，超限仅在 Worker 退出后归还额度。
  *
  * 模拟 ModelProvider 是协议桩，不能作为真实 Windows 专用账户 Sandbox 验收证据。
  */
@@ -30,7 +30,10 @@ const plan = (id: string, dependsOn: string[] = []) => ({
   deliverable: "cite a line",
 });
 
-async function setup(provider: ModelProvider) {
+async function setup(
+  provider: ModelProvider,
+  budget: { maxChildDurationMs?: number; maxChildTokens?: number } = {},
+) {
   const root = await temp();
   await mkdir(path.join(root, "src"));
   await writeFile(
@@ -50,6 +53,7 @@ async function setup(provider: ModelProvider) {
     provider,
     limits: new SubagentLimits(1),
     signal: new AbortController().signal,
+    ...budget,
     trace: (name, id, status) => trace.push(`${name}:${id}:${status}`),
     onStateChange: () =>
       notifications.push(store.events(session.id).at(-1)?.type ?? "missing"),
@@ -354,6 +358,114 @@ it("stops waiting immediately when the main task is cancelled", async () => {
     await expect(waiting).rejects.toThrow("main task cancelled");
   } finally {
     await coordinator.close();
+    await fixture.coordinator.close();
+    fixture.store.close();
+  }
+});
+
+it("fails a stalled Worker after its own wall-clock limit and releases its lease", async () => {
+  let modelCalls = 0;
+  const provider: ModelProvider = {
+    run: async (_input, _instructions, _tools, signal) => {
+      modelCalls++;
+
+      return new Promise((_resolve, reject) => {
+        signal.addEventListener("abort", () => reject(signal.reason), {
+          once: true,
+        });
+      });
+    },
+  };
+  const fixture = await setup(provider, { maxChildDurationMs: 2_500 });
+  try {
+    await fixture.coordinator.execute({
+      action: "plan",
+      subtasks: [plan("reader")],
+    });
+    await expect.poll(() => modelCalls).toBe(1);
+    const result = await fixture.coordinator.execute({
+      action: "await",
+      subagentIds: ["reader"],
+      timeoutMs: 15_000,
+    });
+
+    expect(result).toMatchObject({
+      subtasks: [{ id: "reader", status: "failed" }],
+    });
+    expect(fixture.store.subagents(fixture.task.id)).toMatchObject([
+      {
+        id: "reader",
+        status: "failed",
+        report: expect.stringContaining("运行时间"),
+      },
+    ]);
+    expect(fixture.trace).toContain("subagent.worker:reader:failed");
+    expect(modelCalls).toBe(1);
+  } finally {
+    await fixture.coordinator.close();
+    fixture.store.close();
+  }
+});
+
+it("stops after the reported cumulative token budget without replaying the last model call", async () => {
+  let modelCalls = 0;
+  const usage = {
+    input_tokens: 17_000,
+    output_tokens: 1_000,
+    total_tokens: 18_000,
+  };
+  const provider: ModelProvider = {
+    async run() {
+      modelCalls++;
+      if (modelCalls === 1) {
+        return {
+          text: "",
+          usage,
+          output: [
+            {
+              type: "function_call",
+              call_id: "read",
+              name: "read_file",
+              arguments: JSON.stringify({
+                execution: { id: "read", dependsOn: [] },
+                arguments: { path: "src/example.ts", startLine: 1, endLine: 1 },
+              }),
+            },
+          ],
+        };
+      }
+
+      return { text: "should not finish", usage, output: [] };
+    },
+  };
+  const fixture = await setup(provider, { maxChildTokens: 30_000 });
+  try {
+    await fixture.coordinator.execute({
+      action: "plan",
+      subtasks: [plan("reader")],
+    });
+    const result = await fixture.coordinator.execute({
+      action: "await",
+      subagentIds: ["reader"],
+      timeoutMs: 15_000,
+    });
+
+    expect(result).toMatchObject({
+      subtasks: [{ id: "reader", status: "failed" }],
+    });
+    expect(fixture.store.subagents(fixture.task.id)).toMatchObject([
+      {
+        id: "reader",
+        status: "failed",
+        report: expect.stringContaining("token"),
+      },
+    ]);
+    expect(
+      fixture.store.subagentRequest(fixture.task.id, "reader", "model-5")
+        ?.status,
+    ).toBe("completed");
+    expect(modelCalls).toBe(2);
+  } finally {
     await fixture.coordinator.close();
     fixture.store.close();
   }

@@ -18,7 +18,7 @@
 
 - 主 agent 沿用所在 execution instance 的现有 loop；每个活动 subagent 有**独立模型会话、上下文、轮次上限、AbortSignal 和状态机**，运行在该 execution instance 内专门创建的 Node.js `Worker` 中。Sandbox 启用时该进程是专用账户 Agent Runtime，而不是 Broker；启动前回退宿主后也须在 UI 和会话中保留 `host-process` 事实。Broker 不替 Runtime 执行 subagent loop。
 - 不复用“主任务的四个 Worker”。现有 `DEFAULT_TOOL_CONCURRENCY = 4` 是**单轮工具 DAG 的执行槽位**，不是四条 agent 线程；另有最多四条只用于 `read_file` 字节解析的短任务 Worker 池。subagent loop 是持续的异步对话，复用解析池会占满读取槽位且混淆权限。为每个活动 subagent 分配独立 Worker；完成或取消后释放（未来有性能证据才讨论复用**独立的 subagent 池**，不得混用读取池）。模型请求属于 I/O，并不会仅因使用 Worker 加速；线程隔离用于独立 loop 生命周期与故障归属，而不是吞吐保证。
-- 建议初始上限：**每任务累计创建最多 4 个、同时活动 2 个；所有任务合计同时活动 4 个**，另对全局子模型请求、读取队列、轮次、token、输出字节与超时设置有界预算，测量后再调整。这些数字仅为待验证的设计参数，不是现有配置项。宿主 Engine 可直接调用服务进程的全局资源调度器；每个 Windows Sandbox Runtime 是不同进程，须通过任务绑定的 Broker IPC 申请/释放全局 Worker 与模型请求 lease，不能把各 Runtime 的进程内计数误当全局限额。按任务公平排队；主任务正常结束或取消时，确认 Worker 退出后回收 lease；Runtime 断连或 Broker 关闭时先停止分配，待原 execution instance 清理完成或明确标记未知后再对账，不能提前把仍可能运行的 Worker 额度转借其它任务。现有全局 1～4 个主任务上限仍由 Engine 管理；四个 DAG 槽位仍归每个主任务工具批次使用，subagent 不得借此突破审批或任务超时。
+- 建议初始上限：**每任务累计创建最多 4 个、同时活动 2 个；所有任务合计同时活动 4 个**，目前每个子 Worker 最多运行 120 秒（从取得活动租约并进入 running 起算）、执行 12 轮，服务实报的累计 token 超过 32,000 时记为失败；无 usage 时仍使用输入 100,000 字符和轮次的备用限制。超限立即请求取消模型；如 Worker 仍未退出，则在 5 秒宽限后强制终止，确认退出后才归还租约。上述上限尚待实测且不是配置项；全局子模型请求和读取队列的更细配额仍待独立验收。宿主 Engine 可直接调用服务进程的全局资源调度器；每个 Windows Sandbox Runtime 是不同进程，须通过任务绑定的 Broker IPC 申请/释放全局 Worker 与模型请求 lease，不能把各 Runtime 的进程内计数误当全局限额。按任务公平排队；主任务正常结束或取消时，确认 Worker 退出后回收 lease；Runtime 断连或 Broker 关闭时先停止分配，待原 execution instance 清理完成或明确标记未知后再对账，不能提前把仍可能运行的 Worker 额度转借其它任务。现有全局 1～4 个主任务上限仍由 Engine 管理；四个 DAG 槽位仍归每个主任务工具批次使用，subagent 不得借此突破审批或任务超时。
 
 ## 3. 主控分工与消息协议
 
