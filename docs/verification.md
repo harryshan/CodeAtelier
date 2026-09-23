@@ -2,7 +2,7 @@
 
 ## 可选只读 subagent 内部接线（2026-09-23，尚未对外开放）
 
-- 宿主 Engine 与独立 Node Runtime 子进程 harness 已分别使用真实 SQLite、Worker thread 和模拟模型完成结构化分工、受限读取、等待、收集、原子反馈及线程退出；来源文件未被子任务修改。子模型 usage 在会话统计中单独归类。存储和协调器回归复现并修复晚完成报告误消费、读结果持久化失败后仍进入下一轮、等待不响应取消和消息队列无界的问题。
+- 宿主 Engine 与独立 Node Runtime 子进程 harness 已分别使用真实 SQLite、Worker thread 和模拟模型完成结构化分工、受限读取、等待、收集、原子反馈及线程退出；来源文件未被子任务修改。子模型 usage 在会话统计中单独归类。Worker 双向 postMessage 已核对固定版本、taskId/subagentId 和序号，跨任务伪造的父模型回执使子任务失败，不会被用于完成报告。存储和协调器回归复现并修复晚完成报告误消费、读结果持久化失败后仍进入下一轮、等待不响应取消和消息队列无界的问题。
 - Runtime IPC v3 固定子身份与请求、拒绝伪造的写工具/模型用途、按认证执行实例持有全局 Worker lease；断连不预先归还，只有进程实例确认 clean 后对账。Windows bundle build manifest v3 增加独立 `subagent-worker.mjs`；TypeScript/C++/PowerShell 安装 state v4 要求其摘要，旧版本自检失败后按已有启动前安全回退条件处理，不冒称受 Sandbox 保护。已运行 TypeScript、PowerShell 语法、无管理员副作用的 Node harness、Runtime bundle/MSVC 构建与相应回归；具体最终全套测试结果另以本轮提交前检查为准。
 - **限制**：本轮没有对真实专用账户执行提升安装、更新 WFP 或写持久 ACL，亦未验证固定账户下子 Worker 的真实 Job/映像/取消、故障恢复和跨平台行为。Worker 与主线程共享 OS 身份，工具白名单不是恶意代码防护；HTTP/UI 仍拒绝启用 `subagentsEnabled:true`，不能把内部 harness 或原生编译通过表述为产品可用。
 

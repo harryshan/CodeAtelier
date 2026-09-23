@@ -1,7 +1,7 @@
 /*
  * 在独立 Node Worker thread 中运行只读 subagent 模型循环，供主任务协调器按需启动。
  *
- * 1. 从 workerData 读取主任务指定的角色、目标和限额，构造独立历史与强制只读指令。
+ * 1. 从 workerData 读取主任务绑定的 taskId、角色、目标和限额，核对父消息的版本/归属/序号，再构造独立历史与强制只读指令。
  * 2. 使用共用 runModelLoop 驱动轮次、模型重试、响应检查点；通过 parentPort 请求模型，
  *    模型密钥/网络只留在父进程，不直接导入文件系统或命令执行器。
  * 3. 验证全部工具调用只属于 subagentReadDefinitions，逐个请求父进程再次校验并保存结果，
@@ -17,6 +17,7 @@ import {
   subagentReadDefinitions,
 } from "./subagent-read-contract.js";
 import type { ModelResult } from "../providers/model-provider.js";
+import { SUBAGENT_WORKER_PROTOCOL_VERSION } from "./subagent-worker-protocol.js";
 import type {
   SubagentParentMessage,
   SubagentWorkerInput,
@@ -37,6 +38,9 @@ const port = requirePort();
 const task = workerData as SubagentWorkerInput;
 const controller = new AbortController();
 let nextId = 0;
+let nextSequence = 0;
+let lastParentSequence = 0;
+let invalidParentMessage = false;
 const notes: string[] = [];
 const pending = new Map<
   number,
@@ -47,6 +51,29 @@ const pending = new Map<
 >();
 
 port.on("message", (message: SubagentParentMessage) => {
+  if (
+    !message ||
+    message.version !== SUBAGENT_WORKER_PROTOCOL_VERSION ||
+    message.taskId !== task.taskId ||
+    message.subagentId !== task.id ||
+    !Number.isSafeInteger(message.sequence) ||
+    message.sequence !== lastParentSequence + 1 ||
+    !["stop", "message", "response"].includes(message.kind)
+  ) {
+    invalidParentMessage = true;
+    const reason = new Error("subagent 父消息版本、归属或序号无效。");
+    controller.abort(reason);
+    for (const request of pending.values()) {
+      request.reject(reason);
+    }
+
+    pending.clear();
+
+    return;
+  }
+
+  lastParentSequence = message.sequence;
+
   if (message.kind === "stop") {
     const reason = new Error("主任务已取消。");
     controller.abort(reason);
@@ -85,6 +112,10 @@ function ask(operation: SubagentWorkerRequest["operation"], payload: unknown) {
   return new Promise<unknown>((resolve, reject) => {
     pending.set(id, { resolve, reject });
     port.postMessage({
+      version: SUBAGENT_WORKER_PROTOCOL_VERSION,
+      taskId: task.taskId,
+      subagentId: task.id,
+      sequence: ++nextSequence,
       kind: "request",
       id,
       operation,
@@ -177,6 +208,10 @@ async function run() {
   }
 
   port.postMessage({
+    version: SUBAGENT_WORKER_PROTOCOL_VERSION,
+    taskId: task.taskId,
+    subagentId: task.id,
+    sequence: ++nextSequence,
     kind: "finish",
     status: "completed",
     report: finalReport,
@@ -187,8 +222,16 @@ async function run() {
 void run()
   .catch((error: unknown) => {
     port.postMessage({
+      version: SUBAGENT_WORKER_PROTOCOL_VERSION,
+      taskId: task.taskId,
+      subagentId: task.id,
+      sequence: ++nextSequence,
       kind: "finish",
-      status: controller.signal.aborted ? "cancelled" : "failed",
+      status: invalidParentMessage
+        ? "failed"
+        : controller.signal.aborted
+          ? "cancelled"
+          : "failed",
       report:
         error instanceof Error
           ? error.message.slice(0, 250)

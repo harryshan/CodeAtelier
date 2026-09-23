@@ -2,7 +2,7 @@
  * 在主 agent 所在进程协调同任务只读 subagent，供宿主 Engine 与 Sandbox AgentRuntime 共用。
  *
  * 1. execute 校验主 agent 的结构化分工、消息、等待、收集与取消请求；持久化计划先于 Worker。
- * 2. runChild 等待依赖、获取全局租约、启动独立 Worker loop；线程只持有任务描述，模型与
+ * 2. runChild 等待依赖、获取全局租约、启动独立 Worker loop；逐方向核对版本、taskId/subagentId 和单调序号；线程只持有任务描述，模型与
  *    工作区读取在父进程按请求回执重新验证，所有请求和检查点先持久化再确认。
  * 3. stop/close 通知所有未完成子任务，并在退出或强制终止得到确认后归还租约；等待响应主任务取消，消息数有界。
  * 4. Broker/Store 检查点或请求结果持久化失败时终止 Worker，不能将未知的只读结果当成普通工具失败后继续模型轮次。
@@ -25,7 +25,9 @@ import {
   type SubtaskPlan,
   type SubagentAction,
 } from "./subagent-contracts.js";
+import { SUBAGENT_WORKER_PROTOCOL_VERSION } from "./subagent-worker-protocol.js";
 import type {
+  SubagentMessageEnvelope,
   SubagentParentMessage,
   SubagentWorkerInput,
   SubagentWorkerMessage,
@@ -81,6 +83,8 @@ interface ActiveChild {
   worker?: Worker;
   done: Promise<void>;
   messagesSent: number;
+  parentSequence: number;
+  childSequence: number;
 }
 
 interface CoordinatorOptions {
@@ -165,6 +169,8 @@ export class SubagentCoordinator {
             controller,
             done: Promise.resolve(),
             messagesSent: 0,
+            parentSequence: 0,
+            childSequence: 0,
           };
           this.children.set(plan.id, entry);
 
@@ -213,6 +219,7 @@ export class SubagentCoordinator {
 
       active.messagesSent++;
       worker.postMessage({
+        ...this.envelope(found.id, active),
         kind: "message",
         text: request.text,
       } satisfies SubagentParentMessage);
@@ -279,10 +286,8 @@ export class SubagentCoordinator {
       return;
     }
 
+    // 已启动的 Worker 由 startWorker 注册的 abort listener 只接收一次 stop。
     active.controller.abort(new Error("subagent 已取消。"));
-    active.worker?.postMessage({
-      kind: "stop",
-    } satisfies SubagentParentMessage);
   }
 
   async close() {
@@ -365,6 +370,15 @@ export class SubagentCoordinator {
     }
   }
 
+  private envelope(id: string, entry: ActiveChild): SubagentMessageEnvelope {
+    return {
+      version: SUBAGENT_WORKER_PROTOCOL_VERSION,
+      taskId: this.options.taskId,
+      subagentId: id,
+      sequence: ++entry.parentSequence,
+    };
+  }
+
   private startWorker(
     plan: SubtaskPlan,
     reader: SubagentReadOnly,
@@ -382,7 +396,11 @@ export class SubagentCoordinator {
         TMP: process.env.TMP ?? "",
         SYSTEMROOT: process.env.SYSTEMROOT ?? "",
       },
-      workerData: { ...plan, maxSteps: 12 } satisfies SubagentWorkerInput,
+      workerData: {
+        ...plan,
+        taskId: this.options.taskId,
+        maxSteps: 12,
+      } satisfies SubagentWorkerInput,
     });
     entry.worker = worker;
 
@@ -390,6 +408,22 @@ export class SubagentCoordinator {
       let finished:
         Extract<SubagentWorkerMessage, { kind: "finish" }> | undefined;
       worker.on("message", (message: SubagentWorkerMessage) => {
+        if (
+          !message ||
+          message.version !== SUBAGENT_WORKER_PROTOCOL_VERSION ||
+          message.taskId !== this.options.taskId ||
+          message.subagentId !== plan.id ||
+          !Number.isSafeInteger(message.sequence) ||
+          message.sequence !== entry.childSequence + 1 ||
+          (message.kind !== "finish" && message.kind !== "request")
+        ) {
+          workerError = new Error("subagent Worker 消息版本、归属或序号无效。");
+          void worker.terminate();
+
+          return;
+        }
+
+        entry.childSequence = message.sequence;
         if (message.kind === "finish") {
           finished = message;
 
@@ -443,7 +477,10 @@ export class SubagentCoordinator {
       entry.controller.signal.addEventListener(
         "abort",
         () =>
-          worker.postMessage({ kind: "stop" } satisfies SubagentParentMessage),
+          worker.postMessage({
+            ...this.envelope(plan.id, entry),
+            kind: "stop",
+          } satisfies SubagentParentMessage),
         { once: true },
       );
     });
@@ -473,12 +510,14 @@ export class SubagentCoordinator {
       worker.postMessage(
         ok
           ? ({
+              ...this.envelope(id, entry),
               kind: "response",
               id: message.id,
               ok: true,
               result,
             } satisfies SubagentParentMessage)
           : ({
+              ...this.envelope(id, entry),
               kind: "response",
               id: message.id,
               ok: false,
