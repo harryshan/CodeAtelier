@@ -6,6 +6,7 @@
 - Runtime IPC v3 固定子身份与请求、拒绝伪造的写工具/模型用途、按认证执行实例持有全局 Worker lease；断连不预先归还，只有进程实例确认 clean 后对账。Windows bundle build manifest v3 增加独立 `subagent-worker.mjs`；TypeScript/C++/PowerShell 安装 state v4 要求其摘要，旧版本自检失败后按已有启动前安全回退条件处理，不冒称受 Sandbox 保护。已运行 TypeScript、PowerShell 语法、无管理员副作用的 Node harness、Runtime bundle/MSVC 构建与相应回归；具体最终全套测试结果另以本轮提交前检查为准。
 - Web/HTTP 接线已预置但 `SUBAGENT_PUBLIC_READY=false`：bootstrap 不展示勾选，Engine/HTTP 同时拒绝直接开启；模拟 bootstrap 就绪只验证浏览器草稿、一次性请求与被拒后不丢输入，已标记的历史任务/子状态可从 Snapshot 重建并在刷新后回读。Host/Runtime 子状态写入后的 SSE 刷新经两条内部路径回归。Windows `pnpm check` 本次增量最终运行 68 个测试文件、448 项通过、1 项平台跳过，类型、lint、格式、前端/Runtime bundle 构建通过；Chromium E2E 26/26 通过且正常退出。首次全量运行中 `shutdown` 用例超过 15 秒并在超时清理时遇到 SQLite EBUSY；未改弱断言，隔离复测 3/3 及再次全量检查均通过。
 - 重启恢复新增真实 SQLite 回归：中断子任务的未知模型请求仍为 `unknown`，人工恢复继承已保存的开关、重新读取当前文件，不重建旧 Worker，也不盲目重发模型请求。手动 `pnpm sandbox:runtime:verify` 增加已安装 subagent Worker 的计划/只读读取/报告消费/trace/清理阶段；本轮仅完成代码、类型检查、离线 harness 与构建，**未执行该显式产品验收**，不得据此声称固定账户验收成功。
+- Tracing 补足主代理显式 `message`/`cancel` 子任务动作的固定 start/end span；Coordinator 回归验证消息计数与取消终态，Runtime IPC 协议回归只接受已登记子 ID 属性的固定事件名，拒绝包含正文的 frame。`pnpm check` 再次完整通过：68 个文件、448 项通过、1 项跳过；固定账户产品验收仍未执行。
 - **限制**：本轮没有对真实专用账户执行提升安装、更新 WFP 或写持久 ACL，亦未验证固定账户下子 Worker 的真实 Job/映像/取消、故障恢复和跨平台行为。Worker 与主线程共享 OS 身份，工具白名单不是恶意代码防护；HTTP/UI 仍拒绝启用 `subagentsEnabled:true`，不能把内部 harness 或原生编译通过表述为产品可用。
 
 ## 仓库审查与高优先级修复（2026-09-23）

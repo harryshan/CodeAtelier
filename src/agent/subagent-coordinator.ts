@@ -1,7 +1,7 @@
 /*
  * 在主 agent 所在进程协调同任务只读 subagent，供宿主 Engine 与 Sandbox AgentRuntime 共用。
  *
- * 1. execute 校验主 agent 的结构化分工、消息、等待、收集与取消请求；计划/状态持久化后才通知页面刷新，持久化计划先于 Worker。
+ * 1. execute 校验主 agent 的结构化分工、消息、等待、收集与取消请求；消息/显式取消追加无正文的安全 span，计划/状态持久化后才通知页面刷新。
  * 2. runChild 等待依赖、获取全局租约、启动独立 Worker loop；逐方向核对版本、taskId/subagentId 和单调序号；线程只持有任务描述，模型与
  *    工作区读取在父进程按请求回执重新验证，所有请求和检查点先持久化再确认。
  * 3. stop/close 通知所有未完成子任务，并在退出或强制终止得到确认后归还租约；等待响应主任务取消，消息数有界。
@@ -219,19 +219,55 @@ export class SubagentCoordinator {
         throw new Error("subagent 消息上限为每个子任务 16 条。");
       }
 
-      active.messagesSent++;
-      worker.postMessage({
-        ...this.envelope(found.id, active),
-        kind: "message",
-        text: request.text,
-      } satisfies SubagentParentMessage);
+      const startedAt = Date.now();
+      this.options.trace?.("subagent.message", found.id, "started", 0);
+      try {
+        active.messagesSent++;
+        worker.postMessage({
+          ...this.envelope(found.id, active),
+          kind: "message",
+          text: request.text,
+        } satisfies SubagentParentMessage);
+        this.options.trace?.(
+          "subagent.message",
+          found.id,
+          "ok",
+          Date.now() - startedAt,
+        );
+      } catch (error) {
+        this.options.trace?.(
+          "subagent.message",
+          found.id,
+          "error",
+          Date.now() - startedAt,
+        );
+        throw error;
+      }
 
       return { accepted: true, status: found.status };
     }
 
     if (request.action === "cancel") {
       const found = get(request.subagentId);
-      this.stop(found.id);
+      const startedAt = Date.now();
+      this.options.trace?.("subagent.cancel", found.id, "started", 0);
+      try {
+        this.stop(found.id);
+        this.options.trace?.(
+          "subagent.cancel",
+          found.id,
+          "cancelled",
+          Date.now() - startedAt,
+        );
+      } catch (error) {
+        this.options.trace?.(
+          "subagent.cancel",
+          found.id,
+          "error",
+          Date.now() - startedAt,
+        );
+        throw error;
+      }
 
       return { id: found.id, status: "cancelling" };
     }

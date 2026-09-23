@@ -105,7 +105,7 @@ Agent Runtime 已有权限内的全部 Git 与命令在 Runtime 内执行且免�
 
 ### 性能追踪
 
-`src/tracing` 默认只在任务运行期间于 Broker 构造性能 timeline：宿主 loop 直接记录上下文计量/压缩、模型请求与退避、响应处理、工具计划、SandboxBroker 阶段、工具真实执行和工具结果持久化；Agent Runtime loop 则以严格 IPC trace event 上报固定的 `context.prepare`、`context.request` 及其计量子阶段，Broker 重建父子 span。
+`src/tracing` 默认只在任务运行期间于 Broker 构造性能 timeline：宿主 loop 直接记录上下文计量/压缩、模型请求与退避、响应处理、工具计划、SandboxBroker 阶段、工具真实执行和工具结果持久化；Agent Runtime loop 则以严格 IPC trace event 上报固定的 `context.prepare`、`context.request` 及其计量子阶段，Broker 重建父子 span。已标记任务的 Worker/model/read 和显式 message/cancel 在 `Subagent <id>` 轨道上报开始、终态与耗时；Broker 核对已登记子 ID，IPC 白名单不接受消息正文或报告。
 
 该事件只允许固定名称以及 step/attempt/数量/状态等有界属性，不能充当任意 Runtime 日志通道。模型、退避与响应处理仍是独立 span，模型包装器记录长度、数量、usage、错误类别和首包时间。Node 主事件循环执行的上下文、模型、响应、计划和持久化 span 汇集于 `Main thread`，并以 begin/end slice 表示这些内部阶段；`Task` 根是生命周期包络。
 

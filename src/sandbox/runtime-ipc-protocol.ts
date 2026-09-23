@@ -5,7 +5,7 @@
  *
  * 1. runtimeRequestSchema 限定 Runtime 可请求的模型、审批、session adapter、任务绑定子状态/租约、结构化 Git PushSpec 和两阶段一次性 capability command；prepare 只完成审批，execute 只消费当前连接签发的 authorizationId，session event 只允许 Runtime 自有类型。
  * 2. runtimeResponseSchema 关联原 requestId；错误只返回受限 code/message 与模型重试元数据，避免泄露宿主异常对象。
- * 3. runtimeEventSchema 承载模型 delta、任务取消、请求级取消、Runtime 生命周期和固定 context trace span；trace 名称与属性不是任意日志通道。
+ * 3. runtimeEventSchema 承载模型 delta、任务取消、请求级取消、Runtime 生命周期以及固定 context/subagent trace span；名称与属性不是任意日志通道。
  * 4. hello schema 绑定协议版本、任务和 instance；其中 Runtime 自报字段只用于一致性核对，不能替代 transport 身份。
  */
 
@@ -45,6 +45,8 @@ const runtimeTraceNameSchema = z.enum([
   "subagent.worker",
   "subagent.model",
   "subagent.tool.read",
+  "subagent.message",
+  "subagent.cancel",
 ]);
 const runtimeSessionEventTypeSchema = z.enum([
   "assistant",

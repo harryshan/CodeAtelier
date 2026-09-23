@@ -99,7 +99,7 @@
 
 ### 7.4 Tracing、Sandbox 与实现验收切片
 
-`src/tracing/recorder.ts` 在主 task 根下建立逻辑 `Subagent <id>` 轨道；`plan/spawn/model/tool.read/message/report/cancel/join` 分别覆盖开始、结束、耗时和状态，并按 `taskId/sessionId/executionInstanceId/subagentId/messageId` 关联。跨 Worker 事件由协调器记录收发时间或映射时钟，Broker trace 只接收协议规定的固定名称、数字用量和受限错误类别；子 prompt、搜索结果、报告、源码和密钥不能进入 trace。Runtime→Broker 的 model purpose、trace 名称与事件属性和 session 事件白名单须同步扩展，并为子身份登记、全局 lease、模型请求与原子 `collect` 回执提供**固定而有界**的 IPC 操作；单帧大小、回压、取消和协议版本不匹配均安全失败。新增 Worker 文件时同步 Windows 构建 manifest、原生安装/状态摘要、自检与故障回退/清理测试；旧安装不兼容时提示更新；仅在现有启动前自检/清理能证明回退安全时标记 `host-process` 后继续完整子功能，不能把宿主 fallback 冒充 Sandbox 下多 agent 可用。固定账户端到端验收前只称 harness 可用；`pnpm sandbox:runtime:verify` 已添加对已安装 Worker 的显式产品链路验收步骤（发布门禁仍关闭），只有用户在真实安装环境运行才形成平台证据。
+`src/tracing/recorder.ts` 在主 task 根下建立逻辑 `Subagent <id>` 轨道；`plan/spawn/model/tool.read/message/report/cancel/join` 分别覆盖开始、结束、耗时和状态，并按 `taskId/sessionId/executionInstanceId/subagentId/messageId` 关联。跨 Worker 事件由协调器记录收发时间或映射时钟，Broker trace 只接收协议规定的固定名称、数字用量和受限错误类别；子 prompt、搜索结果、报告、源码和密钥不能进入 trace。Runtime→Broker 的 model purpose、trace 名称与事件属性和 session 事件白名单须同步扩展，并为子身份登记、全局 lease、模型请求与原子 `collect` 回执提供**固定而有界**的 IPC 操作；单帧大小、回压、取消和协议版本不匹配均安全失败。新增 Worker 文件时同步 Windows 构建 manifest、原生安装/状态摘要、自检与故障回退/清理测试；旧安装不兼容时提示更新；仅在现有启动前自检/清理能证明回退安全时标记 `host-process` 后继续完整子功能，不能把宿主 fallback 冒充 Sandbox 下多 agent 可用。当前子轨已有 worker/model/tool.read 以及显式 message/cancel 的独立固定安全 span；plan/await/collect 的结果仍由主工具 span 关联，不把预览报告放入 trace。固定账户端到端验收前只称 harness 可用；`pnpm sandbox:runtime:verify` 已添加对已安装 Worker 的显式产品链路验收步骤（发布门禁仍关闭），只有用户在真实安装环境运行才形成平台证据。
 
 实施按以下**可独立验收的增量**推进（每增量同步文件导读、架构、覆盖清单和对应测试），前四项均不向用户显示可用 checkbox，也不接受来自 HTTP 的 `subagentsEnabled:true`；已有内部测试通过直接保存已标记任务验证未开放的宿主路径：
 

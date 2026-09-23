@@ -4,7 +4,7 @@
  * 1. 逆序声明有依赖的两个计划，验证计划/状态持久化后通知页面刷新、有限租约、读取、等待及只收集一次报告。
  * 2. 敏感/越界范围拒绝时不创建任务；取消等待模型的 Worker 后归还资源并标记终态。
  * 3. 主任务关闭时与尚在登记计划的请求竞态，不能遗漏晚登记的 Worker。
- * 4. 等待在主任务取消时立刻停止，消息有界，存储回执失败不允许下一轮模型继续。
+ * 4. 等待在主任务取消时立刻停止，消息有界且消息/显式取消均留下无正文 trace；存储回执失败不允许下一轮模型继续。
  *
  * 模拟 ModelProvider 是协议桩，不能作为真实 Windows 专用账户 Sandbox 验收证据。
  */
@@ -396,6 +396,19 @@ it("caps queued messages while a child model is blocked", async () => {
         text: "overflow",
       }),
     ).rejects.toThrow("消息上限");
+    expect(
+      fixture.trace.filter((item) => item === "subagent.message:reader:ok"),
+    ).toHaveLength(16);
+    await fixture.coordinator.execute({
+      action: "cancel",
+      subagentId: "reader",
+    });
+    await fixture.coordinator.execute({
+      action: "await",
+      subagentIds: ["reader"],
+      timeoutMs: 15_000,
+    });
+    expect(fixture.trace).toContain("subagent.cancel:reader:cancelled");
   } finally {
     await fixture.coordinator.close();
     fixture.store.close();
