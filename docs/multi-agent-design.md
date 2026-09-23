@@ -65,7 +65,7 @@
 
 ## 7. 具体代码落点与接入顺序
 
-以下均为计划改动，尚未实现：
+以下描述目标落点；任务开关迁移、内部 Store/Worker 和宿主协调路径已部分完成，Sandbox Runtime/IPC、UI 和分层验收仍待实现，不能按本节目标推断现有功能已经可用：
 
 - **UI/API**：`src/server/app.ts` 的任务 POST 用 Zod `subagentsEnabled: z.boolean().default(false)`，拒绝非布尔值；功能未就绪时显式拒绝 `true`。完成后才在 `src/web/App.tsx` 的 `send` 与输入框下方 `composerActions` 开放默认 `false` 的 checkbox；恢复按钮只提交 instruction，不读取当前 checkbox。更新 `src/shared/types.ts` 的 Task 和 `src/web/Timeline.tsx`，展示实际保存的选择与进度。
 - **任务创建与恢复**：在 `src/agent/engine.ts` 的 `start`、`resume`、`run` 和 `runInAgentRuntime` 接入开关。将新增开关及原有 recovery 一并收束到具名 `StartTaskOptions`（而非两个易错的位置参数），迁移已有 `start(sessionId, prompt, recovery?)` 调用方；创建任务和用户事件在同一事务保存选项。`resume` 从来源任务读取开关创建**新任务**，不依据 UI 当前表单状态或重启旧 Worker。主 loop 仅在功能就绪且任务开关为真时提供协调工具。
@@ -101,7 +101,7 @@
 
 `src/tracing/recorder.ts` 在主 task 根下建立逻辑 `Subagent <id>` 轨道；`plan/spawn/model/tool.read/message/report/cancel/join` 分别覆盖开始、结束、耗时和状态，并按 `taskId/sessionId/executionInstanceId/subagentId/messageId` 关联。跨 Worker 事件由协调器记录收发时间或映射时钟，Broker trace 只接收协议规定的固定名称、数字用量和受限错误类别；子 prompt、搜索结果、报告、源码和密钥不能进入 trace。Runtime→Broker 的 model purpose、trace 名称与事件属性和 session 事件白名单须同步扩展，并为子身份登记、全局 lease、模型请求与原子 `collect` 回执提供**固定而有界**的 IPC 操作；单帧大小、回压、取消和协议版本不匹配均安全失败。新增 Worker 文件时同步 Windows 构建 manifest、原生安装/状态摘要、自检与故障回退/清理测试；旧安装不兼容时提示更新；仅在现有启动前自检/清理能证明回退安全时标记 `host-process` 后继续完整子功能，不能把宿主 fallback 冒充 Sandbox 下多 agent 可用。固定账户端到端验收前只称 harness 可用。
 
-实施按以下**可独立验收的增量**推进（每增量同步文件导读、架构、覆盖清单和对应测试），前四项均不向用户显示可用 checkbox，也不接受 `subagentsEnabled:true`：
+实施按以下**可独立验收的增量**推进（每增量同步文件导读、架构、覆盖清单和对应测试），前四项均不向用户显示可用 checkbox，也不接受来自 HTTP 的 `subagentsEnabled:true`；已有内部测试通过直接保存已标记任务验证未开放的宿主路径：
 
 1. **内部契约与存储**：Zod 默认 `false`、旧数据库逐分片迁移、子状态/检查点与模型请求账本、主任务恢复继承；旧客户端与原单 agent 行为不变，服务未就绪时请求 `true` 明确拒绝。覆盖多分片、持久化失败及未知结果。
 2. **主代理与全局配额**：按任务工具定义、图解析和两条 loop 的协调工具分派，Broker 子身份登记与跨进程 lease；用假 Worker/Provider 验证计划上限、无效计划零启动、同工作区锁、公平排队、取消与重复消息。

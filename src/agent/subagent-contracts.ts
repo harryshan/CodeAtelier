@@ -4,12 +4,13 @@
  * 1. subagentActionSchema 验证主角色的 plan/message/await/collect/cancel 请求和文本上限。
  * 2. validateSubagentPlan 在任何 Worker 启动前检查 ID、依赖图和累计计划上限；路径的规范化
  *    与实际读取权限由协调器在工作区上下文中另外校验。
- * 3. subagentToolDefinition 只供已启用任务按条件追加；它本身不是写入权限或执行器。
+ * 3. subagentToolDefinition 带工具 DAG 的 execution 信封，只供已启用任务按条件追加；它本身不是写入权限或执行器。
  *
  * 本模块无 I/O，不访问 SQLite 或进程能力。模型生成的计划始终是不可信输入。
  */
 
 import { z } from "zod";
+import { scheduledParameters } from "../tools/registry.js";
 
 const identifier = z.string().regex(/^[A-Za-z][A-Za-z0-9_-]{0,63}$/);
 
@@ -119,6 +120,6 @@ export const subagentToolDefinition = {
   name: "subagent",
   description:
     "Coordinate read-only subagents in this task. Only the main agent can plan, message, await, collect or cancel them. All edits and verification stay with the main agent.",
-  parameters: z.toJSONSchema(subagentActionSchema),
+  parameters: z.toJSONSchema(scheduledParameters(subagentActionSchema)),
   strict: true,
 };

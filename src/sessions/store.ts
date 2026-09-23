@@ -659,6 +659,73 @@ export class Store {
     });
   }
 
+  /** 预览不可变报告不消费它；主模型工具反馈可能尚未持久化。 */
+  collectSubagents(taskId: string, ids: string[]) {
+    const task = this.task(taskId);
+    if (
+      !task ||
+      !task.subagentsEnabled ||
+      ids.length < 1 ||
+      ids.length > 4 ||
+      new Set(ids).size !== ids.length
+    ) {
+      throw new Error("collect 必须指定当前任务中不同的 subagent ID。");
+    }
+
+    const all = this.subagents(taskId);
+    const selected = ids.map((id) => {
+      const record = all.find((agent) => agent.id === id);
+      if (!record) {
+        throw new Error("不能收集另一任务的 subagent 报告。");
+      }
+
+      return record;
+    });
+
+    return selected.map(({ id, status, consumed, report }) => ({
+      id,
+      status,
+      report: ["completed", "failed", "cancelled", "interrupted"].includes(
+        status,
+      )
+        ? report
+        : null,
+      consumed,
+    }));
+  }
+
+  /** 必须与主工具结果及 function_call_output 同一事务提交，写入失败时消费标记自动回滚。 */
+  commitSubagentCollect(
+    taskId: string,
+    ids: string[],
+    persistOutput: () => unknown,
+  ) {
+    return this.transaction(() => {
+      const reports = this.collectSubagents(taskId, ids);
+      const result = persistOutput();
+      if (result && typeof (result as { then?: unknown }).then === "function") {
+        throw new Error("报告提交回调必须同步完成。");
+      }
+
+      this.selectTask(taskId);
+      const statement = this.db.prepare(
+        "UPDATE subagents SET consumed=1 WHERE taskId=? AND id=? AND consumed=0",
+      );
+      const newlyConsumed = reports
+        .filter(({ report, consumed }) => report !== null && !consumed)
+        .map(({ id }) => id);
+      for (const id of newlyConsumed) {
+        statement.run(taskId, id);
+      }
+
+      this.event(this.task(taskId)!.sessionId, taskId, "subagent_collect", {
+        ids: newlyConsumed,
+      });
+
+      return reports;
+    });
+  }
+
   /** 请求 ID 在同一子任务中只能启动一次；结果未知不会被当作从未执行。 */
   subagentRequest(taskId: string, subagentId: string, requestId: string) {
     const shard = this.taskShard(taskId);

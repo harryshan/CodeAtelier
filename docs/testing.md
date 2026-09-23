@@ -26,12 +26,14 @@
 - `pnpm test`、`pnpm test:coverage`、`pnpm test:watch`、`pnpm test:e2e` 和 `pnpm check` 都经 `scripts/test-runner.ts` 启动：Vitest 子进程仅接收固定测试环境白名单，Vite 的 test 模式禁止读取 dotenv；Playwright 测试后端直接以 Node/tsx 启动，不解析包管理器的系统路径。
 
   测试不继承本机 `.env`、系统中的 CodeAtelier 配置或真实 API key；模型只可使用注入式模拟值和本机测试 HTTP/SSE 服务。
+
 - `pnpm build` 与 `pnpm build:test` 还会生成 `dist/runtime/windows-x64` 下的 Node 24 Agent Runtime、compaction Worker 与 read_file CPU Worker bundle 和 SHA-256 manifest；构建成功只验证 bundle 可生成，不代表安装器已把它复制到受保护目录或 native Supervisor 已核对并启动它。
 - `pnpm sandbox:runtime:verify` 是安装完成后显式运行的 Windows 产品链路验收：它使用模拟模型，经默认 Engine/SandboxBroker/native Supervisor 在专用账户 Agent Runtime 内创建工作区文件；
 
   随后由低成本模型夹具自动批准一次 `run_with_permissions`，让独立 Capability Runner 写入 sibling 目录，并用系统 `curl.exe` 经自身环境中的短期代理 token 请求获准但必须被 relay 以 403 拒绝的 `127.0.0.1`，从而核对外部 ACL、通用代理注入、私网拒绝、结果回传和 lease 清理。
 
   下一阶段初始化一次性 Git 仓库，对同一私网目标验证独立 Push Runner/askpass 路径；最后验证主动取消。该命令不属于 `test`/`check`，不会访问模型服务、外部网络、真实 remote 或凭据；只有在真实安装环境运行并输出 PASS 才构成对应平台证据。
+
 - 真实模型 smoke 测试独立运行，需要本地提供密钥；不作为日常离线测试前提。不对用户项目进行测试性写入。
 
 ## 代码覆盖率
@@ -123,11 +125,11 @@ item.done 回退、失败/不完整事件、服务实际错误 message/reason/co
 
 复杂任务先读取代码/文件并获得信息后才输出计划摘要的指令与随后执行、已知参数的依赖调用同轮提交指引（依赖只能引用本轮节点，禁止跨轮历史 ID）与过时顺序指令回归、工具往返、同轮 DAG 的稳定拓扑并发、审批准备与执行槽分离、单槽下独立节点越过审批等待、并发上限、重复/未知/环拒绝、失败后继阻断与反馈；跨会话不同工作目录并行、同目录排队、同会话互斥、取消/关闭队列、步骤/上下文预算、参数错误反馈、根规则、输出预算、跨任务重新读取、不重放副作用、工具耗时排除审批等待
 
-### 可选 subagent（内部契约阶段）
+### 可选 subagent（内部宿主路径，尚未开放）
 
-主要测试：subagent-contracts.test.ts、subagent-limits.test.ts、subagent-readonly.test.ts、store.test.ts。
+主要测试：subagent-contracts.test.ts、subagent-limits.test.ts、subagent-readonly.test.ts、subagent-worker.test.ts、subagent-coordinator.test.ts、model-tool-batch.test.ts、engine-subagent.test.ts、store.test.ts。
 
-已覆盖分工 action 严格校验、计划唯一 ID/无环/数量上限、单任务与全局租约及排队取消；Store 中的子计划、检查点、重复请求拒绝、重启中断与结果未知的模型请求。子工具层限定范围的文件读取、枚举、搜索及敏感/越界/写入请求拒绝；尚无 Worker loop 或对外可用开关。此阶段不构成并发执行、恶意线程隔离或 Sandbox 验收。
+已覆盖分工 action 严格校验、计划唯一 ID/无环/数量上限、单任务与宿主进程内全局租约及排队取消；Store 中的子计划、检查点、重复请求拒绝、重启中断与结果未知的模型请求；预览报告与主工具回执必须同分片事务持久化，失败可回滚，主模型反馈截断时不消费原报告。子 Worker 独立 loop、依赖顺序、受限模型代理及文件白名单；真实 Engine 的内部已标记任务可协调、等待并收集报告，且不修改文件。宿主路径的单元验证不代表可在 HTTP 选择启用；Sandbox Runtime、Broker 全局 lease、恢复和原生验收尚未完成。Worker 与主线程共享进程和权限，不提供针对恶意依赖的 OS 级只读保证。
 
 ### 项目记忆
 
@@ -218,6 +220,7 @@ item.done 回退、失败/不完整事件、服务实际错误 message/reason/co
   启动恢复/首次 self-check 依次执行账户进程终止、journal 撤销和安装自检。
 
   这些是无提升副作用的协议/编排测试，不替代固定账户下的真实 ACL、Job、WFP 或崩溃恢复验收。
+
 - `runtime-capability-core.test.ts` 只验证传输无关的 capability 状态机。
 
   `runtime-ipc.test.ts` 以独立 Node 子进程验证有界 framing、instance/nonce 握手和模型流；
@@ -233,6 +236,7 @@ item.done 回退、失败/不完整事件、服务实际错误 message/reason/co
   `runtime-session-client.test.ts`、`agent-runtime-tools.test.ts`、`agent-runtime-service.test.ts` 与 `agent-runtime-engine.test.ts` 进一步验证 session adapter、Runtime 内命令、完整模型/工具循环、模型重试元数据、无效 DAG 的无副作用修正及 Engine launcher 分流。
 
   这些自动回归仍不验证专用账户、Named Pipe client PID、token/capability、Job 或 generation，因此不能单独计入 W3/W4 完成。
+
 - 原生产品构建直接编译 `native/windows-sandbox/network-fence-implementation.cpp` 并定义 `CODEATELIER_PRODUCT_WFP_ONLY`；构建后手工冒烟确认实验参数 `--ipc` 以退出码 2 被拒。实验 demo 通过薄包装编译同一实现但不定义该宏，避免产品源从 experiment 目录反向依赖。
 
 ### Sandbox 证据边界
@@ -344,6 +348,7 @@ git-tools.test.ts 覆盖 diff 独立输出硬上限；core.test.ts 覆盖模型�
 - tests/tool-schema.test.ts 检查所有生产工具的 strict 对象声明：属性均列入 required，禁止额外属性；新调用的根节点包含严格的 `execution`（唯一 ID 与依赖列表）及 `arguments` 信封；单一 `git` 工具的每个 discriminated action 仅接受对应字段，diff 必须显式传 staged、paths 和 contextLines。
 
   此回归防止工具 schema 导致整轮模型请求被拒绝，不连接真实服务。
+
 - tests/tool-graph.test.ts 验证独立根节点的拓扑并发与汇聚、失败节点对子孙的阻断，以及重复 ID、未知依赖和环在任何执行回调前拒绝；engine.test.ts 覆盖模型信封解析、阻断结果回传和批次事件持久化。
 
 统一文件编辑：`files.test.ts` 覆盖 create:true 的嵌套创建、已有路径与创建期间出现路径的覆盖拒绝，以及 create:false 单文件条目中的同快照多处替换和成功修改后必须重新读取；`multi-file-edit.test.ts` 覆盖单/多文件条目的逐文件预检、重复真实路径、外部修改、审批拒绝、行号消歧、重叠拒绝、CRLF、取消，以及单文件预检/写入故障后继续独立文件、汇总全部失败路径和未知状态。

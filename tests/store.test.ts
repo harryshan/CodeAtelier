@@ -331,6 +331,88 @@ it("persists subagent plans and checkpoints while keeping interrupted requests u
   }
 });
 
+it("commits a finished subagent report with main feedback and keeps it readable", async () => {
+  const root = await temp();
+  const store = new Store(path.join(root, "history.sqlite"));
+  try {
+    const session = store.create(root);
+    const task = store.createTask(session.id, true);
+    store.status(task.id, "running");
+    store.planSubagents(task.id, [
+      {
+        id: "check",
+        role: "reviewer",
+        objective: "read",
+        scope: ["."],
+        dependsOn: [],
+        deliverable: "report",
+      },
+    ]);
+
+    expect(store.collectSubagents(task.id, ["check"])).toMatchObject([
+      { status: "planned", report: null, consumed: false },
+    ]);
+    store.updateSubagent(task.id, "check", "completed", [], "evidence");
+    expect(store.collectSubagents(task.id, ["check"])).toMatchObject([
+      { status: "completed", report: "evidence", consumed: false },
+    ]);
+    store.commitSubagentCollect(task.id, ["check"], () => {
+      store.event(session.id, task.id, "tool_result", { report: "evidence" });
+      store.saveContext(session.id, [
+        { type: "function_call_output", output: "evidence" },
+      ]);
+    });
+    expect(store.subagents(task.id)[0].consumed).toBe(true);
+    expect(store.collectSubagents(task.id, ["check"])).toMatchObject([
+      { status: "completed", report: "evidence", consumed: true },
+    ]);
+    expect(() => store.collectSubagents(task.id, ["other"])).toThrow(
+      "另一任务",
+    );
+  } finally {
+    store.close();
+  }
+});
+
+it("leaves subagent reports available until main tool feedback commits atomically", async () => {
+  const root = await temp();
+  const store = new Store(path.join(root, "history.sqlite"));
+
+  try {
+    const session = store.create(root);
+    const task = store.createTask(session.id, true);
+    store.status(task.id, "running");
+    store.planSubagents(task.id, [
+      {
+        id: "check",
+        role: "reviewer",
+        objective: "read",
+        scope: ["."],
+        dependsOn: [],
+        deliverable: "report",
+      },
+    ]);
+    store.updateSubagent(task.id, "check", "completed", [], "evidence");
+
+    expect(store.collectSubagents(task.id, ["check"])).toMatchObject([
+      { report: "evidence", consumed: false },
+    ]);
+    expect(store.subagents(task.id)[0].consumed).toBe(false);
+    expect(() =>
+      store.commitSubagentCollect(task.id, ["check"], () => {
+        store.event(session.id, task.id, "tool_result", { report: "evidence" });
+        throw new Error("simulated main context failure");
+      }),
+    ).toThrow("simulated main context failure");
+    expect(store.subagents(task.id)[0].consumed).toBe(false);
+    expect(
+      store.events(session.id).filter((event) => event.type === "tool_result"),
+    ).toEqual([]);
+  } finally {
+    store.close();
+  }
+});
+
 it("rotates new sessions into a later history shard while preserving old worker reads", async () => {
   const root = await temp();
   const file = path.join(root, "history.sqlite");

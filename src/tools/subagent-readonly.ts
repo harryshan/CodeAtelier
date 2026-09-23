@@ -2,7 +2,7 @@
  * 执行 subagent 唯一可用的工作区只读文件操作，供主任务所在进程的协调器响应 Worker 请求。
  *
  * 1. create 在 Worker 创建前把主 agent 声明的路径绑定到真实工作区内的现存目录。
- * 2. execute 先按正向白名单校验名称、参数和范围，拒绝敏感路径/越界，不发起审批。
+ * 2. execute 依照 agent 层的只读协议再校验白名单名称、参数和范围，拒绝敏感路径/越界，不发起审批。
  * 3. read_file 提供有版本的分页读取；list_entries 和 search_text 使用 Node 文件 API，
  *    上限限制文件数、字节数与输出，绝不把任意命令、Git 或写执行器借给子 agent。
  *
@@ -14,42 +14,10 @@ import { lstat, readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import { inside, regularFile, resolveTarget, sensitive } from "./paths.js";
-import { scheduledParameters } from "./registry.js";
-
-const schema = {
-  read_file: z
-    .object({
-      path: z.string().min(1),
-      startLine: z.number().int().min(1),
-      endLine: z.number().int().min(1),
-    })
-    .strict(),
-  list_entries: z
-    .object({
-      path: z.string().min(1),
-      maxEntries: z.number().int().min(1).max(100),
-    })
-    .strict(),
-  search_text: z
-    .object({
-      path: z.string().min(1),
-      pattern: z.string().min(1).max(120),
-      maxMatches: z.number().int().min(1).max(100),
-    })
-    .strict(),
-};
-
-export const subagentReadDefinitions = Object.entries(schema).map(
-  ([name, parameters]) => ({
-    type: "function" as const,
-    name,
-    description: `Read-only workspace ${name}; no shell, edits, Git, network, memory or approval capabilities.`,
-    parameters: z.toJSONSchema(scheduledParameters(parameters)),
-    strict: true,
-  }),
-);
-
-export type SubagentReadName = keyof typeof schema;
+import {
+  subagentReadSchemas,
+  type SubagentReadName,
+} from "../agent/subagent-read-contract.js";
 
 export class SubagentReadOnly {
   private constructor(
@@ -95,16 +63,16 @@ export class SubagentReadOnly {
   }
 
   async execute(name: string, input: unknown) {
-    if (!(name in schema)) {
+    if (!Object.hasOwn(subagentReadSchemas, name)) {
       throw new Error("subagent 仅允许只读工具。");
     }
 
     const operation = name as SubagentReadName;
-    const args = schema[operation].parse(input);
+    const args = subagentReadSchemas[operation].parse(input);
     const target = await this.allowed(args.path);
 
     if (operation === "read_file") {
-      const range = args as z.infer<typeof schema.read_file>;
+      const range = args as z.infer<typeof subagentReadSchemas.read_file>;
       if (
         range.endLine < range.startLine ||
         range.endLine - range.startLine >= 500
@@ -130,7 +98,8 @@ export class SubagentReadOnly {
     }
 
     if (operation === "list_entries") {
-      const limit = (args as z.infer<typeof schema.list_entries>).maxEntries;
+      const limit = (args as z.infer<typeof subagentReadSchemas.list_entries>)
+        .maxEntries;
       if (!(await lstat(target)).isDirectory()) {
         throw new Error("subagent 只能列出目录。");
       }
@@ -147,7 +116,7 @@ export class SubagentReadOnly {
       return { path: path.relative(this.root, target), entries: names };
     }
 
-    const search = args as z.infer<typeof schema.search_text>;
+    const search = args as z.infer<typeof subagentReadSchemas.search_text>;
     const matches: Array<{ path: string; line: number; text: string }> = [];
     const files = [{ path: target, depth: 0 }];
     let examined = 0;

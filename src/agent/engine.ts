@@ -8,7 +8,7 @@
  * 4. 首条 prompt 先用辅助模型生成标题；run 再读取历史和项目规则，准备工具及上下文预算。
  * 5. model-loop 共用轮次、重试和停止控制，model-tool-batch 共用计划与成功判断；Engine 保留宿主事务、replay 与 tracing。为压缩提供 ToolRunner 的安全文件哈希探测；每轮记录上下文准备和请求计量、模型重试、实际模型请求和响应处理，再记录服务实报用量。完整响应保存后校验工具 DAG，节点先完成准备/审批，实际执行才取得有界 worker 槽。
  * 6. executeSandboxRunner 共用独立 Runner 状态与失败记录；本入口保留各自审批和命令构造。宿主模式的危险调用仍经过审批分流；Sandbox Runtime 已有能力内工具免审批，push 与扩展权限命令由 Broker 调用相同的低成本模型三级审批并持久化决定；扩展命令用一次性两阶段 IPC 授权把审批等待留在执行队列外。
- * 7. 工具批次、节点状态和结果都附带批次/调用标识；ToolRunner 确认实际执行开始后才记录工具耗时，并在可复用调度轨道显示执行和结果持久化；退出时将安全 trace 写入会话/任务文件、释放运行期记录并发出 task_end。
+ * 7. 可选子任务仅在任务标记启用时接入协调工具与独立 Worker lease；工具结果与模型反馈同事务提交。退出先停子线程再归档安全 trace、释放运行期记录并发出 task_end。
  *
  * 模型请求可以重试，但已经执行的工具不能跟着重跑。数据库回滚也撤销不了文件修改或
  * 已启动的命令，所以保存失败时必须停止任务，并留下足够的记录供后续恢复。
@@ -30,6 +30,12 @@ import {
   readContextHistoryAsync,
 } from "../context/history.js";
 import { prepareTaskContext } from "./context.js";
+import { SubagentCoordinator } from "./subagent-coordinator.js";
+import { SubagentLimits } from "./subagent-limits.js";
+import {
+  subagentToolDefinition,
+  type SubagentAction,
+} from "./subagent-contracts.js";
 import { createInstructions } from "./instructions.js";
 import { runModelLoop } from "./model-loop.js";
 import {
@@ -97,7 +103,8 @@ import type { SandboxStatus } from "../sandbox/types.js";
 // 标题请求没有工具或文件副作用；服务未提供可分类原因时，允许比主任务多一次诊断性重试。
 const titleRetryOptions = { retries: 3, retryUnknownErrors: true };
 
-type ModelUsagePurpose = "task" | "compaction" | "title" | "approval";
+type ModelUsagePurpose =
+  "task" | "compaction" | "title" | "approval" | "subagent";
 
 interface StartTaskOptions {
   subagentsEnabled?: boolean;
@@ -118,6 +125,8 @@ export class Engine {
   private approvalTasks = new WeakMap<ApprovalSubject, Task>();
   private closing = false;
   private scheduling = false;
+  /** 全部宿主任务共享 Worker 配额；Sandbox Runtime 另须通过 Broker 取得同一全局 lease。 */
+  private readonly subagentLimits = new SubagentLimits();
   /** 当前进程仅保留运行中任务构造 trace 所需的状态，任务落盘后立即释放。 */
   readonly traces = new TraceRecorder();
   /** 已结束任务的 trace 另行按会话/任务写入数据目录，服务重启后仍可下载。 */
@@ -298,7 +307,7 @@ export class Engine {
     task: Task,
     usage: ModelUsage,
     purpose: ModelUsagePurpose,
-    details: { step?: number; attempt?: number } = {},
+    details: { step?: number; attempt?: number; subagentId?: string } = {},
   ) {
     this.emit(task, "model_usage", { ...usage, purpose, ...details });
     this.log.info({ event: "model.usage", purpose, ...details, ...usage });
@@ -1220,6 +1229,7 @@ export class Engine {
     let buffer = "";
     let lastFlush = 0;
     let replayCaptureSpan: TraceSpan | undefined;
+    let subagents: SubagentCoordinator | undefined;
     const cleanReplay = <T>(value: T) =>
       JSON.parse(redactJson(JSON.stringify(value), [this.config.apiKey])) as T;
     const flush = () => {
@@ -1422,13 +1432,58 @@ export class Engine {
         emit("notice", { text: "项目记忆不可用，当前任务将不使用历史记忆。" });
       }
 
-      const instructions = [baseInstructions, memory.bundle?.text]
+      const instructions = [
+        baseInstructions,
+        memory.bundle?.text,
+        task.subagentsEnabled
+          ? "This task opted into read-only subagents. After inspecting the relevant code, use the subagent tool only for bounded independent research. You alone plan all edits, re-read current files, verify any subagent evidence and write the final answer. Never delegate file writes or permission upgrades."
+          : undefined,
+      ]
         .filter(Boolean)
         .join("\n\n");
 
       const provider =
         this.factory?.(settings, "task") ||
         new ResponsesProvider(settings, this.config.apiKey);
+
+      if (task.subagentsEnabled) {
+        const subagentSpans = new Map<string, TraceSpan | undefined>();
+        subagents = new SubagentCoordinator({
+          taskId: task.id,
+          workspace: session.workspace,
+          storage: this.store,
+          provider,
+          limits: this.subagentLimits,
+          signal,
+          onModelRequest: (subagentId) =>
+            emit("model_request", { purpose: "subagent", subagentId }),
+          onUsage: (subagentId, usage) =>
+            this.recordModelUsage(task, usage, "subagent", { subagentId }),
+          trace: (name, subagentId, state, durationMs) => {
+            const key = `${name}:${subagentId}`;
+            if (state === "started") {
+              const span = this.traces.startSpan(task.id, {
+                name,
+                category: "subagent",
+                track: `Subagent ${subagentId}`,
+                attributes: { subagentId },
+              });
+              subagentSpans.set(key, span);
+            } else {
+              this.traces.endSpan(
+                subagentSpans.get(key),
+                state === "ok" || state === "completed"
+                  ? "ok"
+                  : state === "cancelled"
+                    ? "cancelled"
+                    : "error",
+                { durationMs },
+              );
+              subagentSpans.delete(key);
+            }
+          },
+        });
+      }
 
       let capabilities: ModelCapabilities | undefined;
       try {
@@ -1469,7 +1524,12 @@ export class Engine {
       };
 
       // web_search 由 Responses 服务在单次模型请求内完成；仅本地 function_call 才进入后续 DAG。
-      const tools = [...definitions, webSearchTool, historyDefinition];
+      const tools = [
+        ...definitions,
+        webSearchTool,
+        historyDefinition,
+        ...(task.subagentsEnabled ? [subagentToolDefinition] : []),
+      ];
       let compactionSpan: TraceSpan | undefined;
       let contextTraceParent: TraceSpan | undefined;
       const contextStageSpans: Array<TraceSpan | undefined> = [];
@@ -1828,8 +1888,9 @@ export class Engine {
             executionStartedAt?: number,
           ) => {
             let output = JSON.stringify(result);
+            const completeOutput = output.length <= settings.outputChars;
 
-            if (output.length > settings.outputChars) {
+            if (!completeOutput) {
               output = JSON.stringify({
                 truncated: true,
                 text: output.slice(0, settings.outputChars),
@@ -1853,7 +1914,7 @@ export class Engine {
             });
             // 工具副作用无法由 SQLite 回滚；每个并行节点完成后立即原子保存结果和模型反馈。
             try {
-              this.store.transaction(() => {
+              const persistResult = () => {
                 emit("tool_result", {
                   name: node.name,
                   callId: node.callId,
@@ -1875,7 +1936,27 @@ export class Engine {
                   output,
                 });
                 this.store.saveContext(session.id, input);
-              });
+              };
+
+              const subagentRequest =
+                node.name === "subagent"
+                  ? (node.arguments as { request?: SubagentAction }).request
+                  : undefined;
+              if (
+                subagentRequest?.action === "collect" &&
+                !result?.error &&
+                result?.reports &&
+                completeOutput
+              ) {
+                this.store.commitSubagentCollect(
+                  task.id,
+                  subagentRequest.subagentIds,
+                  persistResult,
+                );
+              } else {
+                this.store.transaction(persistResult);
+              }
+
               this.traces.endSpan(persistenceSpan, "ok", {
                 outputChars: output.length,
               });
@@ -1906,7 +1987,10 @@ export class Engine {
           let graph;
 
           try {
-            graph = buildModelToolGraph(calls, { exclusivePush: false });
+            graph = buildModelToolGraph(calls, {
+              exclusivePush: false,
+              subagentsEnabled: task.subagentsEnabled,
+            });
           } catch (error: any) {
             this.traces.endSpan(planningSpan, "error", {
               errorName: error instanceof Error ? error.name : typeof error,
@@ -2032,7 +2116,7 @@ export class Engine {
                       callId: node.callId,
                       nodeId: node.nodeId,
                       parameters:
-                        node.name === "memory_apply"
+                        node.name === "memory_apply" || node.name === "subagent"
                           ? undefined
                           : traceToolParameters(node.arguments),
                     },
@@ -2040,7 +2124,27 @@ export class Engine {
                 };
 
                 try {
-                  if (node.name === historyDefinition.name) {
+                  if (node.name === "subagent") {
+                    if (!task.subagentsEnabled || !subagents) {
+                      throw new Error("当前任务未开启 subagent。");
+                    }
+
+                    const action = (
+                      node.arguments as { request?: SubagentAction }
+                    ).request;
+                    if (!action) {
+                      throw new Error("subagent 缺少结构化操作。");
+                    }
+
+                    if (action.action !== "await") {
+                      await startExecution();
+                    }
+
+                    result = await subagents.execute(action);
+                    if (action.action === "await") {
+                      await startExecution();
+                    }
+                  } else if (node.name === historyDefinition.name) {
                     await startExecution();
                     result = await readContextHistoryAsync(
                       this.store,
@@ -2173,6 +2277,14 @@ export class Engine {
         ...(status === "failed" ? { err: error } : {}),
       });
     } finally {
+      try {
+        await subagents?.close();
+      } catch (error) {
+        status = "failed";
+        failure = "subagent 退出或状态落盘失败，任务结果不能视为完成。";
+        log.error({ event: "subagent.cleanup_failed", err: error });
+      }
+
       this.store.status(task.id, status, failure);
       try {
         this.store.finishReplayCapture(task.id, status);
