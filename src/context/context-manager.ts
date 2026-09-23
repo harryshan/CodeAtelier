@@ -101,7 +101,7 @@ interface FinalizedCompaction {
   snapshot: ContextSnapshot;
 }
 
-/** 每个任务单独管理上下文，摘要调用次数与任务步数分别限制。 */
+/** 每个任务单独管理上下文；摘要调用次数仅用于观测，不限制完整历史的分块处理。 */
 export class ContextManager {
   private calls = 0;
   private disabled = false;
@@ -368,9 +368,6 @@ export class ContextManager {
           },
           options.signal,
         );
-        if (chunks.length > 12 - this.calls) {
-          throw new Error("上下文压缩调用预算不足。");
-        }
 
         for (const chunk of chunks) {
           summaries.push(
@@ -380,10 +377,6 @@ export class ContextManager {
               options.signal,
               options.clean,
               () => {
-                if (this.calls >= 12) {
-                  throw new Error("上下文压缩调用已达上限。");
-                }
-
                 this.calls++;
               },
               options.onModelRequest,

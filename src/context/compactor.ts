@@ -42,10 +42,6 @@ export function summaryChunks(
       chunks.push(wrap(records));
       records = [];
     }
-
-    if (chunks.length > 12) {
-      throw new Error("上下文压缩调用预算不足。");
-    }
   };
 
   for (const [index, item] of source.entries()) {

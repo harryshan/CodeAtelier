@@ -4,7 +4,7 @@
  *
  * 1. history/fixture 创建长历史，先检查切分不会拆散工具调用和结果。
  * 2. 检查用户原话和纠正、归档正文、未知结果在多次压缩及重启后仍可读取。
- * 3. 模拟摘要失败、数据库失败和取消，检查快照与活动上下文是否一起保存或一起回滚。
+ * 3. 验证超过 12 次的完整分块与连续摘要；模拟摘要失败、数据库失败和取消，检查快照与活动上下文是否一起保存或一起回滚。
  * 4. 驱动 Engine 验证压缩后继续执行、历史分页和上下文超限重试，区分不同尝试的记录。
  * 5. 检查重复调用 ID、已保存的错误和明确的超限错误码，防止误判执行结果。
  *
@@ -413,7 +413,7 @@ it("continues an engine task after compression and exposes archived history as a
   }
 });
 
-it("bounds summary calls and rejects tool requests from the summarizer", async () => {
+it("rejects tool requests from the summarizer", async () => {
   const f = await fixture({
     async run() {
       return {
@@ -433,11 +433,17 @@ it("bounds summary calls and rejects tool requests from the summarizer", async (
   }
 });
 
-it("uses the fallback view when a large history exceeds the bounded summary call budget", async () => {
+it("summarizes complete history beyond twelve calls and continues compacting in the same task", async () => {
   let calls = 0;
+  const excerpts = new Map<number, string>();
   const f = await fixture({
-    async run() {
+    async run(input) {
       calls++;
+      for (const part of JSON.parse(input[0].content)) {
+        const previous = excerpts.get(part.index) ?? "";
+        expect(part.offset).toBe(previous.length);
+        excerpts.set(part.index, previous + part.excerpt);
+      }
 
       return { output: [], text: JSON.stringify(summary) };
     },
@@ -454,12 +460,27 @@ it("uses the fallback view when a large history exceeds the bounded summary call
     f.store.saveContext(f.session.id, source);
     const next = await f.manager.prepare(source, "", []);
 
-    expect(calls).toBe(0);
-    expect(f.store.latestContextSnapshot(f.session.id)?.stage).toBe("fallback");
+    expect(calls).toBeGreaterThan(12);
+    expect(f.store.latestContextSnapshot(f.session.id)?.stage).toBe("summary");
+    for (let index = 1; index <= 100; index++) {
+      expect(excerpts.get(index)).toBe(JSON.stringify(source[index]));
+    }
+
     expect(f.store.latestContextSnapshot(f.session.id)?.source).toEqual(source);
     expect(next).toContainEqual(source[0]);
     expect(next).toContainEqual(source.at(-1));
     expect(contextSize(next, "", [])).toBeLessThan(12000);
+
+    const firstCalls = calls;
+    excerpts.clear();
+    const continued = [...next, ...history()];
+    f.store.saveContext(f.session.id, continued);
+    const compactedAgain = await f.manager.prepare(continued, "", []);
+
+    expect(calls).toBeGreaterThan(firstCalls);
+    expect(f.store.latestContextSnapshot(f.session.id)?.stage).toBe("summary");
+    expect(compactedAgain).toContainEqual(history().at(-1));
+    expect(contextSize(compactedAgain, "", [])).toBeLessThan(7200);
   } finally {
     f.store.close();
   }
