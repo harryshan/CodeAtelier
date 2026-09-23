@@ -3,7 +3,7 @@
  * Sandbox Supervisor/Windows transport 必须先把连接绑定到已验证的 PID、Job、token、generation、nonce 和 lease，
  * 然后才能把已认证字节流交给 RuntimeIpcPeer；测试用 stdio 只验证 framing 和跨进程路由，不构成 W3 证据。
  *
- * 1. runtimeRequestSchema 限定 Runtime 可请求的模型、审批、session adapter、任务绑定子状态/租约、结构化 Git PushSpec 和两阶段一次性 capability command；prepare 只完成审批，execute 只消费当前连接签发的 authorizationId，session event 只允许 Runtime 自有类型。
+ * 1. runtimeRequestSchema 限定模型、审批、session adapter、任务绑定子状态/问题/租约、Git PushSpec 和一次性 capability command；不能扩展 Runtime 权限。
  * 2. runtimeResponseSchema 关联原 requestId；错误只返回受限 code/message 与模型重试元数据，避免泄露宿主异常对象。
  * 3. runtimeEventSchema 承载模型 delta、任务取消、请求级取消、Runtime 生命周期以及固定 context/subagent trace span；名称与属性不是任意日志通道。
  * 4. hello schema 绑定协议版本、任务和 instance；其中 Runtime 自报字段只用于一致性核对，不能替代 transport 身份。
@@ -47,6 +47,7 @@ const runtimeTraceNameSchema = z.enum([
   "subagent.tool.read",
   "subagent.message",
   "subagent.cancel",
+  "subagent.question",
 ]);
 const runtimeSessionEventTypeSchema = z.enum([
   "assistant",
@@ -178,6 +179,14 @@ export const runtimeSubagentStoreSchema = z.discriminatedUnion("action", [
       subagentId: identifier,
       requestId: identifier,
       result: z.unknown(),
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal("question"),
+      subagentId: identifier,
+      requestId: identifier,
+      question: z.string().trim().min(1).max(1_000),
     })
     .strict(),
   z

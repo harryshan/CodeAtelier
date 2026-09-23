@@ -6,7 +6,7 @@
  * 2. ContextManager 在 Runtime 内计量/压缩，快照读写经 RuntimeSessionClient 回到 Broker。
  * 3. model-loop 共用轮次、有界重试和上下文超限恢复，model-tool-batch 共用工具计划与结果判定；每轮模型调用经 RuntimeModelProvider 代理；工具 DAG 先并行准备已就绪节点，审批通过后才取得有界 worker 槽执行文件编辑、命令和非 push Git。
  * 4. UI/session 事件按单连接顺序排队；无效 DAG 在无副作用时回传模型修正，工具结果保存后才进入下一轮，取消或持久化失败不会盲目重放。
- * 5. 已选任务在 Runtime 内运行独立只读 Worker，子状态/模型/租约及固定无正文的消息/取消 trace 经任务绑定 IPC；收尾确认线程退出后由 Broker 结合进程/Job/ACL 清理决定可信状态。
+ * 5. 已选任务在 Runtime 内运行独立只读 Worker，子状态、问题回执、模型/租约及固定无正文的 trace 经任务绑定 IPC；收尾确认线程退出后再由 Broker 清理。
  *
  * Push Runner 必须独占当前工具批次；扩展权限 Runner 先经 IPC 审批取得一次性授权，获得 worker 槽后才启动，因而可与无依赖的普通工具正确并行。两者都由结构化 Runtime IPC adapter 等待结果；context/tool/model tracing 经固定 schema 回到 Broker，但提升环境验收仍未完成，不能据此宣称 W3/W4/W5 完成。
  */
@@ -156,7 +156,8 @@ export class AgentRuntimeService {
                   | "subagent.model"
                   | "subagent.tool.read"
                   | "subagent.message"
-                  | "subagent.cancel",
+                  | "subagent.cancel"
+                  | "subagent.question",
                 attributes: { subagentId },
               });
             } else {

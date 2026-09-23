@@ -1,7 +1,7 @@
 /*
  * Agent Runtime 中的任务绑定 subagent 存储与全局租约适配器，供 SubagentCoordinator 使用。
  *
- * 1. Storage 的固定 action 只能通过认证的 Runtime IPC 在 Broker 访问本任务子状态；Runtime 不打开宿主 SQLite。
+ * 1. Storage 的固定 action 只能经认证 Runtime IPC 访问本任务子状态及有界问题事件；Runtime 不打开宿主 SQLite。
  * 2. acquire 向 Broker 申请全服务共享的租约，Worker 退出后确认释放；取消中的释放使用独立短超时。
  * 3. 调用者先停止 Worker 再等待 release 回执，断连未知时由 Broker 在执行实例清理确认后对账。
  *
@@ -90,6 +90,21 @@ export class RuntimeSubagentClient implements SubagentStorage {
       { action: "request_finish", subagentId, requestId, result },
       AbortSignal.timeout(10_000),
     );
+  }
+
+  async recordSubagentQuestion(
+    taskId: string,
+    subagentId: string,
+    requestId: string,
+    question: string,
+  ) {
+    this.assertTask(taskId);
+
+    return (await this.peer.request(
+      "subagent_store",
+      { action: "question", subagentId, requestId, question },
+      this.signal,
+    )) as Awaited<ReturnType<SubagentStorage["recordSubagentQuestion"]>>;
   }
 
   async collectSubagents(taskId: string, ids: string[]) {

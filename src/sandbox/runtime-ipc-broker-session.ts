@@ -4,7 +4,7 @@
  *
  * 1. model_capabilities/model_run 委托 RuntimeBrokerGateway，使模型 endpoint/key 永远留在 Broker Host。
  * 2. model_run 把 provider delta 作为关联原 requestId 的事件回传，再返回完整 ModelResult。
- * 3. approval、结构化 Git push、扩展权限命令、任务绑定子状态/租约和 session 操作只调用显式 handlers，不暴露 Store 或任意宿主方法名；未登记的子身份及写工具声明在模型调用前拒绝。
+ * 3. approval、Git push、扩展权限命令、任务绑定子状态/问题/租约及 session 只调用显式 handlers；子模型严格比对三个只读工具与 ask_main，拒绝写工具。
  * 4. 扩展权限命令先审批并保存在当前认证连接的一次性表中，Runtime 获得执行槽后才消费 authorizationId；
  *    git_push 仍在单一请求上等待独立 Runner，请求取消只中止对应 Runner，不结束健康的 Agent Runtime。
  * 5. runtime_complete 是 Runtime 的完成报告；Broker 仍须结合进程退出、Job 和 cleanup 账本决定可信终态。
@@ -23,7 +23,7 @@ import type {
 } from "./runtime-ipc-protocol.js";
 import { RUNTIME_IPC_PROTOCOL_VERSION } from "./runtime-ipc-protocol.js";
 import type { RuntimeSubagentStoreRequest } from "./runtime-ipc-protocol.js";
-import { subagentReadDefinitions } from "../agent/subagent-read-contract.js";
+import { subagentToolDefinitions } from "../agent/subagent-question-contract.js";
 import type { RuntimeTaskSettings } from "./runtime-ipc-protocol.js";
 import type { GitPushSpec, GitProcessResult } from "../tools/git.js";
 import type {
@@ -289,7 +289,7 @@ export class RuntimeIpcBrokerSession {
               (lease) => lease.subagentId === id,
             ) ||
             JSON.stringify(request.body.tools) !==
-              JSON.stringify(subagentReadDefinitions) ||
+              JSON.stringify(subagentToolDefinitions) ||
             !this.handlers.authorizeSubagentModel
           ) {
             throw new Error(

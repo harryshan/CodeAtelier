@@ -4,18 +4,18 @@
  * 1. 从 workerData 读取主任务绑定的 taskId、角色、目标和限额，核对父消息的版本/归属/序号，再构造独立历史与强制只读指令。
  * 2. 使用共用 runModelLoop 驱动轮次、模型重试、响应检查点；通过 parentPort 请求模型，
  *    模型密钥/网络只留在父进程，不直接导入文件系统或命令执行器。
- * 3. 验证全部工具调用只属于 subagentReadDefinitions，逐个请求父进程再次校验并保存结果，
- *    每一步先等待检查点回执；最后 postMessage 终态供父进程原子登记。
+ * 3. 仅开放三个文件只读工具及向主协调器发问；每次受限请求先等父进程回执和检查点持久化，再继续模型轮次并发送终态。
  *
  * Worker 身份不是安全边界。恶意依赖仍可直接使用 Node API；本模块只约束模型可调用的工具。
  */
 
 import { parentPort, workerData } from "node:worker_threads";
 import { runModelLoop } from "./model-loop.js";
+import { parseSubagentReadCall } from "./subagent-read-contract.js";
 import {
-  parseSubagentReadCall,
-  subagentReadDefinitions,
-} from "./subagent-read-contract.js";
+  parseAskMainCall,
+  subagentToolDefinitions,
+} from "./subagent-question-contract.js";
 import type { ModelResult } from "../providers/model-provider.js";
 import { SUBAGENT_WORKER_PROTOCOL_VERSION } from "./subagent-worker-protocol.js";
 import type {
@@ -58,7 +58,12 @@ port.on("message", (message: SubagentParentMessage) => {
     message.subagentId !== task.id ||
     !Number.isSafeInteger(message.sequence) ||
     message.sequence !== lastParentSequence + 1 ||
-    !["stop", "message", "response"].includes(message.kind)
+    !["stop", "message", "response"].includes(message.kind) ||
+    (message.kind === "message" &&
+      (typeof message.text !== "string" ||
+        message.text.length > 2_000 ||
+        (message.replyTo !== undefined &&
+          (!Number.isSafeInteger(message.replyTo) || message.replyTo <= 0))))
   ) {
     invalidParentMessage = true;
     const reason = new Error("subagent 父消息版本、归属或序号无效。");
@@ -87,7 +92,11 @@ port.on("message", (message: SubagentParentMessage) => {
   }
 
   if (message.kind === "message") {
-    notes.push(message.text.slice(0, 2_000));
+    notes.push(
+      message.replyTo === undefined
+        ? message.text
+        : `Main reply to question #${message.replyTo}: ${message.text}`,
+    );
 
     return;
   }
@@ -132,7 +141,7 @@ async function run() {
     },
   ];
   const instructions =
-    "You are a read-only research subagent. You cannot write files, run commands, use Git or call other agents. Report findings, paths and evidence to the main agent; request any edits through your final report. Only call the provided read-only functions. Never assume previous file contents are current.";
+    "You are a read-only research subagent. You cannot write files, run commands, use Git or call other agents. Report findings, paths and evidence to the main agent; request any edits through your final report. You may use ask_main only to clarify task scope or priorities, never to request commands, edits or permissions. It never waits for an answer or contacts peers directly. Only call the provided tools. Never assume previous file contents are current.";
   let finalReport = "";
   const outcome = await runModelLoop({
     maxSteps: Math.max(1, Math.min(12, task.maxSteps)),
@@ -155,7 +164,7 @@ async function run() {
         attempt,
         input,
         instructions,
-        tools: subagentReadDefinitions,
+        tools: subagentToolDefinitions,
       })) as ModelResult,
     onRetry: () => {},
     prepareOverflow: async () => {
@@ -173,21 +182,29 @@ async function run() {
       for (const call of calls) {
         let result: unknown;
         try {
-          const parsed = parseSubagentReadCall(
-            call.name,
-            JSON.parse(call.arguments),
-          );
-          result = await ask("read", {
-            requestId: call.call_id,
-            name: call.name,
-            arguments: parsed.arguments,
-          });
+          if (call.name === "ask_main") {
+            const parsed = parseAskMainCall(JSON.parse(call.arguments));
+            result = await ask("question", {
+              requestId: call.call_id,
+              question: parsed.arguments.question,
+            });
+          } else {
+            const parsed = parseSubagentReadCall(
+              call.name,
+              JSON.parse(call.arguments),
+            );
+            result = await ask("read", {
+              requestId: call.call_id,
+              name: call.name,
+              arguments: parsed.arguments,
+            });
+          }
         } catch (error) {
           result = {
             error:
               error instanceof Error
                 ? error.message.slice(0, 250)
-                : "只读工具失败。",
+                : "子任务工具失败。",
           };
         }
 

@@ -4,7 +4,7 @@
  *
  * 1. labels 和 textResult 处理工具名称及结果的显示格式。
  * 2. 按任务、步骤和尝试次数合并流式文本；已有完整 assistant 事件时去掉对应的临时文本，未完成文本紧随其最后一个 delta，而非错误追加到时间线末尾。MarkdownMessage 负责安全渲染用户和 agent 文本。
- * 3. 合并同一编辑批次的逐文件最新状态；按调用 ID 聚合流式输出和结果；把 tool_state 及已保存的 subagent 选择、规划/状态/收集事件映射到页面。
+ * 3. 合并编辑进度与工具输出；将已保存的子任务选择、计划/状态/提问/收集从 Snapshot 和 SSE 事件重建。
  * 4. 已完成任务默认仅保留用户输入和最后一条 agent 输出，将中间过程收纳为可展开区域；未完成、失败、取消和中断任务继续完整显示。
  * 5. 将可见条目及缓冲区交给虚拟列表；ResizeObserver 测得的高度用于在未渲染历史前后保留准确占位。
  * 6. 显示仍在接收的文本和待审批按钮，把用户选择发给后端。
@@ -305,6 +305,7 @@ function eventHasTimelineContent(
     "approval_assessed",
     "subagent_plan",
     "subagent_state",
+    "subagent_question",
     "subagent_collect",
     "sandbox_fallback",
     "notice",
@@ -377,6 +378,23 @@ function TimelineEvent({
     return (
       <div className={s.notice} role="status">
         只读子任务 {id}：{status}
+      </div>
+    );
+  }
+
+  if (event.type === "subagent_question") {
+    const id =
+      typeof event.data?.subagentId === "string"
+        ? event.data.subagentId
+        : "未知";
+    const question =
+      typeof event.data?.question === "string"
+        ? event.data.question
+        : "未记录问题";
+
+    return (
+      <div className={s.notice} role="status">
+        只读子任务 {id} 提问：{question}
       </div>
     );
   }

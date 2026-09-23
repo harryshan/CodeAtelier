@@ -41,13 +41,13 @@
 
 服务端在创建 Worker **之前**校验总数、ID 唯一、依赖无环、范围是已授权工作区/只读根的子集、角色与文本长度、预算以及当前任务状态；无效计划返回可修正错误而非部分启动。只允许主 agent 通过 `plan / message / await / collect / cancel` 请求协调器；subagent 不能再创建 subagent。每个 subagent 的输入包含任务目标、限定范围及必要的已核实事实，不复制完整主对话、密钥或其它 subagent 原始上下文；报告作为**不可信资料**回传，主 agent 复核文件版本和证据后自行确定是否修改。
 
-`postMessage` 用于相同 execution instance 内的**主协调器 ↔ Worker** 通信，不建立任意 Worker 对 Worker 的直连；所谓互相通信是经协调器转发有类型的 `question / reply / progress / report`，避免环状等待、越界广播与绕过审计。所有消息使用版本化判别联合、`taskId/subagentId/messageId/parentId`、上限与 schema 校验；大文本截断或以受控分页读取，队列背压/超时；对同一活动实例的重复 `messageId` 返回已持久化回执；未确认的远程模型请求保留未知状态，不凭消息去重推断服务端从未执行，过期任务或被取消的消息丢弃。Worker 只向协调器发送只读工具请求，协调器统一完成权限和数据投递，不传递宿主对象、执行器引用、密钥或可用的 Broker IPC 句柄。Broker 模型调用仍通过经认证的 Runtime IPC adapter，新增子 agent 关联字段须逐层绑定 `taskId` 与 execution instance，不信任 Worker 自报身份。
+`postMessage` 用于相同 execution instance 内的**主协调器 ↔ Worker** 通信，不建立任意 Worker 对 Worker 的直连；所谓互相通信是经协调器转发有类型的 `question / reply / progress / report`，避免环状等待、越界广播与绕过审计。所有消息使用版本化判别联合、`taskId/subagentId/messageId/parentId`、上限与 schema 校验；大文本截断或以受控分页读取，队列背压/超时；对同一活动实例的重复 `messageId` 返回已持久化回执；未确认的远程模型请求保留未知状态，不凭消息去重推断服务端从未执行，过期任务或被取消的消息丢弃。当前 Worker 仅能提出三种只读文件请求或 `ask_main` 问题（最多八次、每条 1,000 字符），由可信协调器落盘确认；主代理的 `await` 至多交付四条待答问题并可提前返回，只有主代理的 `message(replyTo)` 能答复原提问者。Worker 不同步等待回复、不能直连或向其它子任务广播。协调器统一完成权限和数据投递，不传递宿主对象、执行器引用、密钥或可用的 Broker IPC 句柄。Broker 模型调用仍通过经认证的 Runtime IPC adapter，新增子 agent 关联字段须逐层绑定 `taskId` 与 execution instance，不信任 Worker 自报身份。
 
 建议生命周期：`planned → queued → running → completed | failed | cancelled | interrupted`。主 agent 可先等待必需结论，也可在 subagent 运行时处理独立事项；每份报告带来源文件版本/读取时刻。依赖失败时阻断下游并向主 agent 报告真实状态，不能把缺失结果当成功。最终结果只由主 agent 对用户发布。
 
 ## 4. 只读权限与写入归属
 
-- subagent 模型可见工具采用**显式正向白名单**：受控文件读取、已脱敏的只读历史/状态查询、必要时受限的公开检索；不注册 `edit_files`、`memory_apply`、`run_command`、`run_with_permissions` 或通用 `git`。`git status/diff/show` 也不能直接复用现有完整 Git 工具，应另做只读命令及参数固定的查询代理并验证实际实现无副作用；首阶段可完全不提供 Git。不要通过“只读 shell”猜测命令是否写文件：测试、构建、重定向、Git、网络命令及插件都只能由主 agent 按原有权限执行。
+- subagent 模型可见工具采用**显式正向白名单**：三个受控文件读取工具加一个只能发向主协调器、不能写工作区的 `ask_main`；未来的只读历史/状态查询或公开检索仍须另行验收；不注册 `edit_files`、`memory_apply`、`run_command`、`run_with_permissions` 或通用 `git`。`git status/diff/show` 也不能直接复用现有完整 Git 工具，应另做只读命令及参数固定的查询代理并验证实际实现无副作用；首阶段可完全不提供 Git。不要通过“只读 shell”猜测命令是否写文件：测试、构建、重定向、Git、网络命令及插件都只能由主 agent 按原有权限执行。
 - 拒绝不仅发生在工具列表：子工具代理先核对协调器持有的 `role=subagent` 与操作白名单，再解析和执行；Worker 不持有主任务 ToolRunner、Runtime IPC peer 或 session 存储引用。Broker 对新增的子模型请求与子事件路由校验身份、任务归属和固定操作类型，不向子路由提供审批升级、push、runner 或 memory 写入；这只是正常工具/协议调用约束，不能阻止同进程恶意代码冒用主线程能力。唯一允许的持久化是可信协调器写入子任务事件/报告，和“subagent 本身写工作区”区分。
 - 主 agent 收集只读建议后，按既有读文件、计划、批量编辑、依赖声明、验证流程**独占发起所有写入**；对报告中提及的文件重新读取并校验版本。子 agent 与主 agent 可以并行读，但用户/外部进程仍可能改动文件，现有工作区锁不能替代版本检查。工作区内读写仍受执行实例原有 Sandbox/宿主权限约束；同进程 thread 没有独立 OS 身份，不能把白名单误称为防恶意代码的隔离。
 
@@ -81,13 +81,13 @@
 
 `src/agent/subagent-coordinator.ts` 持有 taskId、execution instance、配置快照、每个 Worker 句柄、任务内限流器与持久化 adapter；`src/agent/subagent-worker.ts` 只被提供子会话上下文、独立 `runModelLoop` 状态与 `parentPort`，不能通过协议获取主工具或项目密钥。为 Worker 显式设置最小 `env`，避免默认继承父进程环境中的敏感配置；这减少意外传递，但同进程线程仍不是可抵御恶意代码的秘密隔离边界，不声称 Worker 绝对无法读取 API key。`subagentId` 由计划校验/协调器分配，不接收 Worker 自报权限。Worker 来源按 tsx 开发、普通 JS 构建和 Sandbox 安装 bundle 分流；启动前须取得 Broker/Engine 全局 lease，任务内同时至多 2 个活动子任务、每任务累计至多 4 个，跨任务公平排队。同工作区仍是**一个主任务**占锁；子任务不能创建下一层 Worker。
 
-当前内部 `postMessage` 的 request/response/finish/stop/message 已加固定版本、taskId/subagentId 与逐方向单调序号并核对；下述 question/reply 等扩展及跨子任务直接提问尚未完成。目标消息采用带版本的判别联合：`start | model.request | model.delta | model.result | tool.request | tool.result | question | reply | progress | report | cancel | error`。每条消息具有 `taskId/subagentId/messageId`、必要时 `replyTo` 与单调序号；协调器从自身登记表核对 Worker 句柄和归属，而非信任消息中的身份字符串。只允许协调器转发其他 subagent 的受限 `question/reply`；限制大小、队列、未完成请求数、发送次数和等待时间，避免环形等待。进度不是主 agent 的已验证结论。Worker 异常、退出和迟到回执按已记录状态处理；同一实例的重复消息查持久化状态，已确认的报告不重复写。对于刚发出但未获确认的模型请求，保留 `started/unknown` 记录和原 requestId，不把网络调用误认为可安全幂等重发；主任务在恢复时核对实际结果。
+当前内部 `postMessage` v2 的 request/response/finish/stop/message 已核对固定版本、taskId/subagentId 与逐方向单调序号；子→主 `question` 与主→原提问者 `replyTo` 已接入持久回执、全局任务身份和有界队列，跨子任务直接提问及更广的 progress 类型仍未完成。目标消息采用带版本的判别联合：`start | model.request | model.delta | model.result | tool.request | tool.result | question | reply | progress | report | cancel | error`。每条消息具有 `taskId/subagentId/messageId`、必要时 `replyTo` 与单调序号；协调器从自身登记表核对 Worker 句柄和归属，而非信任消息中的身份字符串。只允许协调器转发其他 subagent 的受限 `question/reply`；限制大小、队列、未完成请求数、发送次数和等待时间，避免环形等待。进度不是主 agent 的已验证结论。Worker 异常、退出和迟到回执按已记录状态处理；同一实例的重复消息查持久化状态，已确认的报告不重复写。对于刚发出但未获确认的模型请求，保留 `started/unknown` 记录和原 requestId，不把网络调用误认为可安全幂等重发；主任务在恢复时核对实际结果。
 
 模型调用由 Worker 发 `model.request`，协调器调用当前 execution instance 的 provider（Sandbox 内再由已有认证 Runtime IPC 向 Broker 代理），协调器只通过消息发送模型流片段、结果和 usage，不主动传 API key、Provider 对象或 IPC peer；进程内的 Worker 不构成密钥隔离。Worker 的本地上下文含受限目标、工作区相对范围、已核实的必要事实和子 prompt；报告经 `collect` 进入**主 agent 的工具结果**，不得直接并入主会话原始模型协议记录。只有主 agent 能提交写入和最终用户答复。
 
 ### 7.2 只读工具和文件边界
 
-`src/agent/subagent-instructions.ts` 独立构造子 prompt：说明只调查/分析、不能写文件、不能要求主协调器代执行隐含命令或绕过用户权限、报告需列出证据文件及其版本；项目 AGENTS.md 等仓库内容仍视作资料，不能扩大工具权限。`src/tools/subagent-readonly.ts` 的正向白名单只接受 `read_file`、`list_entries`、`search_text`；二者新增的读取工具必须直接使用 Node 文件枚举/内容扫描，**不能**以 `run_command`、Git、外部可执行文件或插件包装“只读”搜索。路径按既有 `resolveTarget` 等检查规范化后落在当前任务授权读取范围内，拒绝越界、敏感位置和不安全链接，限制文件数、字节数、匹配数、行数和返回字符数；Sandbox 模式同时接受原有 AccessManifest/OS 限制，宿主模式沿用已有安全路径语义。首次增量不提供 `web_search`、Git、外部根或 memory，确有需要再单独设计权限/回归。
+`src/agent/subagent-worker.ts` 独立构造子 prompt：说明只调查/分析、不能写文件、不能要求主协调器代执行隐含命令或绕过用户权限、报告需列出证据文件及其版本；项目 AGENTS.md 等仓库内容仍视作资料，不能扩大工具权限。`src/tools/subagent-readonly.ts` 的正向白名单只接受 `read_file`、`list_entries`、`search_text`；二者新增的读取工具必须直接使用 Node 文件枚举/内容扫描，**不能**以 `run_command`、Git、外部可执行文件或插件包装“只读”搜索。路径按既有 `resolveTarget` 等检查规范化后落在当前任务授权读取范围内，拒绝越界、敏感位置和不安全链接，限制文件数、字节数、匹配数、行数和返回字符数；Sandbox 模式同时接受原有 AccessManifest/OS 限制，宿主模式沿用已有安全路径语义。首次增量不提供 `web_search`、Git、外部根或 memory，确有需要再单独设计权限/回归。
 
 工具声明只对 Worker 的模型请求可见；协调器收到 `tool.request` 时再次核对角色、名称、参数 schema、路径、范围与任务有效性，然后执行受限读取并保存调用状态和有界结果。子 Worker 从不加载 `ToolRunner` 的写入 adapter；即便模型构造 `edit_files`、`run_command`、`git`、`memory_apply`、`run_with_permissions` 或 `subagent` 调用，也在**调用执行之前**拒绝，既不要求主 agent 代行，也不触发审批。主 agent 收集报告后再自行 `read_file`，获取当前内容哈希；直接使用报告中的旧哈希编辑应被现有版本校验拒绝。这是工具/受信任代码层面的限制，不是 OS 级线程隔离。
 
@@ -99,7 +99,7 @@
 
 ### 7.4 Tracing、Sandbox 与实现验收切片
 
-`src/tracing/recorder.ts` 在主 task 根下建立逻辑 `Subagent <id>` 轨道；`plan/spawn/model/tool.read/message/report/cancel/join` 分别覆盖开始、结束、耗时和状态，并按 `taskId/sessionId/executionInstanceId/subagentId/messageId` 关联。跨 Worker 事件由协调器记录收发时间或映射时钟，Broker trace 只接收协议规定的固定名称、数字用量和受限错误类别；子 prompt、搜索结果、报告、源码和密钥不能进入 trace。Runtime→Broker 的 model purpose、trace 名称与事件属性和 session 事件白名单须同步扩展，并为子身份登记、全局 lease、模型请求与原子 `collect` 回执提供**固定而有界**的 IPC 操作；单帧大小、回压、取消和协议版本不匹配均安全失败。新增 Worker 文件时同步 Windows 构建 manifest、原生安装/状态摘要、自检与故障回退/清理测试；旧安装不兼容时提示更新；仅在现有启动前自检/清理能证明回退安全时标记 `host-process` 后继续完整子功能，不能把宿主 fallback 冒充 Sandbox 下多 agent 可用。当前子轨已有 worker/model/tool.read 以及显式 message/cancel 的独立固定安全 span；plan/await/collect 的结果仍由主工具 span 关联，不把预览报告放入 trace。固定账户端到端验收前只称 harness 可用；`pnpm sandbox:runtime:verify` 已添加对已安装 Worker 的显式产品链路验收步骤（发布门禁仍关闭），只有用户在真实安装环境运行才形成平台证据。
+`src/tracing/recorder.ts` 在主 task 根下建立逻辑 `Subagent <id>` 轨道；`plan/spawn/model/tool.read/message/report/cancel/join` 分别覆盖开始、结束、耗时和状态，并按 `taskId/sessionId/executionInstanceId/subagentId/messageId` 关联。跨 Worker 事件由协调器记录收发时间或映射时钟，Broker trace 只接收协议规定的固定名称、数字用量和受限错误类别；子 prompt、搜索结果、报告、源码和密钥不能进入 trace。Runtime→Broker 的 model purpose、trace 名称与事件属性和 session 事件白名单须同步扩展，并为子身份登记、全局 lease、模型请求与原子 `collect` 回执提供**固定而有界**的 IPC 操作；单帧大小、回压、取消和协议版本不匹配均安全失败。新增 Worker 文件时同步 Windows 构建 manifest、原生安装/状态摘要、自检与故障回退/清理测试；旧安装不兼容时提示更新；仅在现有启动前自检/清理能证明回退安全时标记 `host-process` 后继续完整子功能，不能把宿主 fallback 冒充 Sandbox 下多 agent 可用。当前子轨已有 worker/model/tool.read 以及显式 question/message/cancel 的独立固定安全 span；plan/await/collect 的结果仍由主工具 span 关联，不把预览报告放入 trace。固定账户端到端验收前只称 harness 可用；`pnpm sandbox:runtime:verify` 已添加对已安装 Worker 的显式产品链路验收步骤（发布门禁仍关闭），只有用户在真实安装环境运行才形成平台证据。
 
 实施按以下**可独立验收的增量**推进（每增量同步文件导读、架构、覆盖清单和对应测试），前四项均不向用户显示可用 checkbox，也不接受来自 HTTP 的 `subagentsEnabled:true`；已有内部测试通过直接保存已标记任务验证未开放的宿主路径：
 

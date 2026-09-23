@@ -1,7 +1,7 @@
 /*
  * 用真实 Node Worker thread 和假父进程 RPC 驱动 subagent 独立 loop，不访问真实模型或文件。
  *
- * 1. 检查带版本与任务归属的模型/只读工具、历史检查点与最终报告均按递增序号交互。
+ * 1. 检查带版本与任务归属的模型/只读文件工具、向主协调器提问、历史检查点与最终报告均按递增序号交互。
  * 2. 模型试图调用写入工具时必须返回拒绝结果；父进程身份错误会使子循环失败，取消中断等待父进程的 RPC。
  *
  * 此测试仅证明 Worker loop 和消息协议，实际路径校验由 subagent-readonly.test.ts 验证。
@@ -73,11 +73,14 @@ async function exercise(tool: string) {
                     name: tool,
                     arguments: JSON.stringify({
                       execution: { id: "read", dependsOn: [] },
-                      arguments: {
-                        path: "src/example.ts",
-                        startLine: 1,
-                        endLine: 1,
-                      },
+                      arguments:
+                        tool === "ask_main"
+                          ? { question: "Which file should I inspect?" }
+                          : {
+                              path: "src/example.ts",
+                              startLine: 1,
+                              endLine: 1,
+                            },
                     }),
                   },
                 ],
@@ -87,6 +90,12 @@ async function exercise(tool: string) {
       } else if (message.operation === "read") {
         readCalls++;
         result = { text: "1: found" };
+      } else if (message.operation === "question") {
+        result = {
+          id: 17,
+          subagentId: "review",
+          question: "Which file should I inspect?",
+        };
       } else {
         result = { ok: true };
       }
@@ -127,6 +136,13 @@ it("runs its own model loop and only asks parent for read-only tools", async () 
   ]);
   expect(result.readCalls).toBe(1);
   expect(result.childSequences).toEqual([1, 2, 3, 4, 5, 6, 7]);
+});
+
+it("posts a bounded question only to its coordinator without requesting a file or command", async () => {
+  const result = await exercise("ask_main");
+  expect(result.output).toMatchObject({ kind: "finish", status: "completed" });
+  expect(result.operations).toContain("question");
+  expect(result.readCalls).toBe(0);
 });
 
 it("stops while waiting for a model response without replaying the request", async () => {

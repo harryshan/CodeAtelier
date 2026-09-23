@@ -9,7 +9,7 @@
  * 5. 逐步保存 replay 模型/工具捕获并导出单任务 case；旧事件只能形成明确的 legacy case。
  * 6. 以小容量阈值触发新会话分片，确认旧分片的上下文仍可由 Worker 读取，并在重启后发现全部分片。
  * 7. 任务级 subagent 选择写入队列后保持布尔类型；模拟旧表缺列并检查跨分片迁移默认关闭。
- * 8. 子任务计划、检查点与请求回执真实落盘；重启中断未完成子任务并保留未知模型请求；迟到报告不得在主工具反馈仍为等待中时误标消费。
+ * 8. 子任务计划、检查点、问题与请求回执真实落盘；重启保留已确认问题和未知模型请求，迟到报告不误标消费。
  *
  * 重启要保留已有终态和上下文，不能把其他会话的数据混进来。
  */
@@ -326,6 +326,77 @@ it("persists subagent plans and checkpoints while keeping interrupted requests u
     expect(() =>
       store.planSubagents(task.id, [{ ...plan, id: "next" }]),
     ).toThrow("尚未运行");
+  } finally {
+    store.close();
+  }
+});
+
+it("persists one bounded subagent question and returns its recorded receipt without replay", async () => {
+  const root = await temp();
+  const file = path.join(root, "history.sqlite");
+  let store = new Store(file);
+  const session = store.create(root);
+  const task = store.createTask(session.id, true);
+  store.status(task.id, "running");
+  store.planSubagents(task.id, [
+    {
+      id: "reader",
+      role: "researcher",
+      objective: "inspect",
+      scope: ["."],
+      dependsOn: [],
+      deliverable: "evidence",
+    },
+  ]);
+  store.updateSubagent(task.id, "reader", "running", []);
+
+  try {
+    const receipt = store.recordSubagentQuestion(
+      task.id,
+      "reader",
+      "ask-1",
+      "Which file owns this?",
+    );
+    expect(receipt).toMatchObject({
+      id: expect.any(Number),
+      subagentId: "reader",
+    });
+    expect(
+      store.recordSubagentQuestion(
+        task.id,
+        "reader",
+        "ask-1",
+        "Which file owns this?",
+      ),
+    ).toEqual(receipt);
+    expect(() =>
+      store.recordSubagentQuestion(
+        task.id,
+        "reader",
+        "ask-1",
+        "Changed question",
+      ),
+    ).toThrow();
+    expect(() =>
+      store.recordSubagentQuestion(task.id, "other", "ask-2", "Forged child"),
+    ).toThrow();
+    expect(
+      store
+        .events(session.id)
+        .filter((event) => event.type === "subagent_question"),
+    ).toHaveLength(1);
+    store.close();
+
+    store = new Store(file);
+    expect(store.subagentRequest(task.id, "reader", "ask-1")).toMatchObject({
+      status: "completed",
+      result: receipt,
+    });
+    expect(
+      store
+        .events(session.id)
+        .filter((event) => event.type === "subagent_question"),
+    ).toHaveLength(1);
   } finally {
     store.close();
   }

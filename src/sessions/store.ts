@@ -4,7 +4,7 @@
  * 1. 构造器发现兼容的 history.sqlite 与后续容量分片，在每个文件初始化数据库并把重启前未完成的任务标为 interrupted；transaction 同步提交，取锁或执行失败时释放本次已开启的事务。
  * 2. list/get/create 跨分片定位或聚合会话；新会话在最新分片达到容量上限后进入新文件，已有会话始终写回其初始分片。标题状态的领取、完成或失败保证首条 prompt 只生成一次标题。
  * 3. tasks/task/createTask/status 读写任务状态与不可变的 subagent 选择；旧分片逐个迁移，SQLite 的 0/1 在各读取入口转换为布尔值。queuedTasks 和 hasUnfinishedTask 供 Engine 调度跨会话队列，event/events 保存和分页读取事件。
- * 4. subagents/subagent_requests 按任务存计划、检查点、状态及请求回执，重启只中断未完成子任务；task_replays 在任务开始后追加模型/工具材料，replayCase 导出单任务的 captured 或 legacy case。
+ * 4. subagents/subagent_requests 按任务存计划、检查点、状态、子问题事件及请求回执，重启只中断未完成子任务；task_replays 保存可审计的模型/工具材料。
  * 5. context/saveContext 读写当前模型历史；较大的 context、events 和快照可交给 store-worker 在线程外解析或原子写入，避免阻塞 HTTP 主线程。
  * 6. close 由应用退出流程调用，关闭全部历史分片连接；Worker 自己打开目标会话分片的短生命周期 WAL 连接，不持有 Store 的连接。
  *
@@ -727,6 +727,64 @@ export class Store {
       });
 
       return reports;
+    });
+  }
+
+  /** 子问题与回执同事务提交；相同请求只返回已确认的原始问题，不创建第二条事件。 */
+  recordSubagentQuestion(
+    taskId: string,
+    subagentId: string,
+    requestId: string,
+    question: string,
+  ) {
+    if (
+      !requestId ||
+      requestId.length > 128 ||
+      !question.trim() ||
+      question.length > 1_000
+    ) {
+      throw new Error("subagent 问题或请求 ID 超过安全边界。");
+    }
+
+    return this.transaction(() => {
+      const prior = this.subagentRequest(taskId, subagentId, requestId);
+      if (prior) {
+        const receipt = prior.result as {
+          id: number;
+          subagentId: string;
+          question: string;
+        } | null;
+        if (
+          prior.status === "completed" &&
+          receipt?.subagentId === subagentId &&
+          receipt.question === question &&
+          Number.isSafeInteger(receipt.id)
+        ) {
+          return receipt;
+        }
+
+        throw new Error("subagent 问题请求重复、内容冲突或结果未知。");
+      }
+
+      const task = this.task(taskId);
+      const child = this.subagents(taskId).find(({ id }) => id === subagentId);
+      if (
+        !task?.subagentsEnabled ||
+        task.status !== "running" ||
+        child?.status !== "running"
+      ) {
+        throw new Error("subagent 问题只允许本任务运行中的子线程提交。");
+      }
+
+      this.startSubagentRequest(taskId, subagentId, requestId, "question");
+      const event = this.event(task.sessionId, taskId, "subagent_question", {
+        subagentId,
+        question,
+      });
+      const receipt = { id: event.id, subagentId, question };
+      this.finishSubagentRequest(taskId, subagentId, requestId, receipt);
+
+      return receipt;
     });
   }
 

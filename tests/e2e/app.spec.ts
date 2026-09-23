@@ -14,7 +14,7 @@
  * 10. 已完成任务默认仅显示输入和最后一轮输出；中间工具、通知和重试文本收纳为可展开过程，未完成任务仍完整显示。
  * 11. 累积较长时间线后检查滚动窗口外只保留高度占位，滚动到另一端才创建对应消息节点。
  * 12. 在手机视口检查完整侧栏由菜单按钮打开，并可通过会话选择、遮罩或 Escape 关闭。
- * 13. subagent 未开放时不显示复选框；模拟 bootstrap 就绪仅验证表单负载，历史任务和子进度可从持久事件重建，后端仍拒绝未验收的启用请求。
+ * 13. subagent 未开放时不显示复选框；模拟就绪仅验表单负载，历史任务的子问题纯文本及进度可从持久事件重建。
  *
  * 页面刷新或重连不能重新提交任务。这里不调用真实模型。
  */
@@ -183,12 +183,23 @@ test("rebuilds saved subagent selection and progress after refreshing a historic
         id: 3,
         sessionId,
         taskId,
+        type: "subagent_question",
+        data: {
+          subagentId: "review",
+          question: "问题 <img src=x onerror=alert(1)>",
+        },
+        createdAt,
+      },
+      {
+        id: 4,
+        sessionId,
+        taskId,
         type: "subagent_state",
         data: { id: "review", status: "completed" },
         createdAt,
       },
       {
-        id: 4,
+        id: 5,
         sessionId,
         taskId,
         type: "subagent_collect",
@@ -212,6 +223,12 @@ test("rebuilds saved subagent selection and progress after refreshing a historic
     page.getByRole("status").filter({ hasText: "只读子任务 review：已完成" }),
   ).toBeVisible();
   await expect(
+    page.getByRole("status").filter({
+      hasText: "只读子任务 review 提问：问题 <img src=x onerror=alert(1)>",
+    }),
+  ).toBeVisible();
+  await expect(page.locator("img[onerror]")).toHaveCount(0);
+  await expect(
     page.getByRole("status").filter({ hasText: "已收集子任务报告：review" }),
   ).toBeVisible();
   await expect(
@@ -223,6 +240,11 @@ test("rebuilds saved subagent selection and progress after refreshing a historic
   await expect(page.getByText("已启用只读子代理")).toBeVisible();
   await expect(
     page.getByRole("status").filter({ hasText: "只读子任务 review：已完成" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("status").filter({
+      hasText: "只读子任务 review 提问：问题 <img src=x onerror=alert(1)>",
+    }),
   ).toBeVisible();
 });
 

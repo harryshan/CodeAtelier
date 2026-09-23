@@ -4,7 +4,7 @@
  * 1. 逆序声明有依赖的两个计划，验证计划/状态持久化后通知页面刷新、有限租约、读取、等待及只收集一次报告。
  * 2. 敏感/越界范围拒绝时不创建任务；取消等待模型的 Worker 后归还资源并标记终态。
  * 3. 主任务关闭时与尚在登记计划的请求竞态，不能遗漏晚登记的 Worker。
- * 4. 等待在主任务取消时立刻停止；每个子任务的运行时间、累计实报 token、消息数有界，超限仅在 Worker 退出后归还额度。
+ * 4. 等待在主任务取消时立刻停止；限额有界。子问题先落盘并唤醒主代理等待，主代理核验归属后才可带关联 ID 回复。
  *
  * 模拟 ModelProvider 是协议桩，不能作为真实 Windows 专用账户 Sandbox 验收证据。
  */
@@ -230,6 +230,9 @@ it("joins plans already registering when the parent task closes", async () => {
       fixture.store,
     ),
     finishSubagentRequest: fixture.store.finishSubagentRequest.bind(
+      fixture.store,
+    ),
+    recordSubagentQuestion: fixture.store.recordSubagentQuestion.bind(
       fixture.store,
     ),
     collectSubagents: fixture.store.collectSubagents.bind(fixture.store),
@@ -465,6 +468,194 @@ it("stops after the reported cumulative token budget without replaying the last 
         ?.status,
     ).toBe("completed");
     expect(modelCalls).toBe(2);
+  } finally {
+    await fixture.coordinator.close();
+    fixture.store.close();
+  }
+});
+
+it("persists a child question and lets only the main coordinator answer it", async () => {
+  let modelCalls = 0;
+  let releaseSecond!: () => void;
+  const second = new Promise<void>((resolve) => {
+    releaseSecond = resolve;
+  });
+  const provider: ModelProvider = {
+    async run(input) {
+      modelCalls++;
+      if (modelCalls === 1) {
+        return {
+          text: "",
+          output: [
+            {
+              type: "function_call",
+              call_id: "ask",
+              name: "ask_main",
+              arguments: JSON.stringify({
+                execution: { id: "ask", dependsOn: [] },
+                arguments: { question: "Which file should I inspect?" },
+              }),
+            },
+          ],
+        };
+      }
+
+      if (modelCalls === 2) {
+        await second;
+
+        return {
+          text: "",
+          output: [
+            {
+              type: "function_call",
+              call_id: "read",
+              name: "read_file",
+              arguments: JSON.stringify({
+                execution: { id: "read", dependsOn: [] },
+                arguments: { path: "src/example.ts", startLine: 1, endLine: 1 },
+              }),
+            },
+          ],
+        };
+      }
+
+      expect(JSON.stringify(input)).toContain("Main reply to question");
+
+      return { text: "src/example.ts:1", output: [] };
+    },
+  };
+  const fixture = await setup(provider);
+  try {
+    await fixture.coordinator.execute({
+      action: "plan",
+      subtasks: [plan("reader")],
+    });
+    const waiting = await fixture.coordinator.execute({
+      action: "await",
+      subagentIds: ["reader"],
+      timeoutMs: 1_000,
+    });
+    expect(waiting).toMatchObject({
+      questions: [
+        {
+          id: expect.any(Number),
+          subagentId: "reader",
+          question: "Which file should I inspect?",
+        },
+      ],
+    });
+    if (!("questions" in waiting) || !waiting.questions?.length) {
+      throw new Error("主协调器没有收到已保存的问题。");
+    }
+
+    const questionId = waiting.questions[0].id;
+    expect(fixture.notifications).toContain("subagent_question");
+    await expect(
+      fixture.coordinator.execute({
+        action: "message",
+        subagentId: "reader",
+        replyTo: questionId + 1,
+        text: "wrong",
+      }),
+    ).rejects.toThrow();
+    await expect(
+      fixture.coordinator.execute({
+        action: "message",
+        subagentId: "reader",
+        replyTo: questionId,
+        text: "Look at src/example.ts",
+      }),
+    ).resolves.toMatchObject({ accepted: true });
+    releaseSecond();
+    const done = await fixture.coordinator.execute({
+      action: "await",
+      subagentIds: ["reader"],
+      timeoutMs: 15_000,
+    });
+    expect(done).toMatchObject({
+      subtasks: [{ id: "reader", status: "completed" }],
+      questions: [],
+    });
+    expect(
+      await fixture.coordinator.execute({
+        action: "collect",
+        subagentIds: ["reader"],
+      }),
+    ).toMatchObject({ reports: [{ report: "src/example.ts:1" }] });
+  } finally {
+    releaseSecond();
+    await fixture.coordinator.close();
+    fixture.store.close();
+  }
+});
+
+it("bounds child questions, acknowledges a duplicate, and never persists a ninth", async () => {
+  let modelCalls = 0;
+  const provider: ModelProvider = {
+    async run(input) {
+      modelCalls++;
+      if (modelCalls === 11) {
+        expect(JSON.stringify(input)).toContain("最多向主代理提问 8 次");
+
+        return { text: "questions completed", output: [] };
+      }
+
+      if (modelCalls === 10) {
+        const acks = input
+          .filter(
+            (item) =>
+              item.type === "function_call_output" && item.call_id === "ask-8",
+          )
+          .map(
+            (item) =>
+              JSON.parse(String(item.output)) as {
+                id?: number;
+                queued?: boolean;
+              },
+          );
+        expect(acks).toHaveLength(2);
+        expect(acks[0]).toEqual(acks[1]);
+        expect(acks[0].queued).toBe(true);
+      }
+
+      const number = modelCalls === 9 ? 8 : modelCalls === 10 ? 9 : modelCalls;
+
+      return {
+        text: "",
+        output: [
+          {
+            type: "function_call",
+            call_id: `ask-${number}`,
+            name: "ask_main",
+            arguments: JSON.stringify({
+              execution: { id: `ask-${number}`, dependsOn: [] },
+              arguments: { question: `Question ${number}?` },
+            }),
+          },
+        ],
+      };
+    },
+  };
+  const fixture = await setup(provider);
+  try {
+    await fixture.coordinator.execute({
+      action: "plan",
+      subtasks: [plan("reader")],
+    });
+    await expect
+      .poll(() => fixture.store.subagents(fixture.task.id)[0]?.status, {
+        timeout: 10_000,
+      })
+      .toBe("completed");
+    expect(
+      fixture.store
+        .events(fixture.task.sessionId)
+        .filter((event) => event.type === "subagent_question"),
+    ).toHaveLength(8);
+    expect(modelCalls).toBe(11);
+    expect(fixture.store.subagents(fixture.task.id)[0].report).toBe(
+      "questions completed",
+    );
   } finally {
     await fixture.coordinator.close();
     fixture.store.close();

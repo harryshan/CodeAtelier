@@ -2,13 +2,13 @@
  * 用双向内存 IPC 和 Broker session 验证已认证子模型路由、工具白名单及租约账本。
  *
  * 1. 在握手后的同一 task/instance 下验证无租约、冒用主任务身份及写工具声明均在模型调用前拒绝。
- * 2. 已登记子请求与已申请租约才能代理只读模型；重复释放、断连后的清理对账不可提前借出额度。
- * 3. 校验协议不允许把子状态路由变成任意写操作；本夹具不证明 Windows transport/OS 身份。
+ * 2. 已登记子请求与租约才能代理三个只读文件工具及有界 ask_main；重复释放、断连清理不得提前借出额度。
+ * 3. 校验协议只允许有界问题而不允许任意写入；本夹具不证明 Windows transport/OS 身份。
  */
 
 import { PassThrough } from "node:stream";
 import { expect, it } from "vitest";
-import { subagentReadDefinitions } from "../src/agent/subagent-read-contract.js";
+import { subagentToolDefinitions } from "../src/agent/subagent-question-contract.js";
 import { connectAgentRuntime } from "../src/sandbox/agent-runtime-connection.js";
 import { RuntimeBrokerGateway } from "../src/sandbox/runtime-capability-core.js";
 import { RuntimeIpcBrokerSession } from "../src/sandbox/runtime-ipc-broker-session.js";
@@ -26,6 +26,7 @@ it("rejects forged subagent requests and retains leases until the instance is cl
   const nonce = "0123456789abcdef0123456789abcdef";
   let modelCalls = 0;
   let releases = 0;
+  let questions = 0;
   const started = new Set<string>();
   const gateway = new RuntimeBrokerGateway(
     {
@@ -70,9 +71,14 @@ it("rejects forged subagent requests and retains leases until the instance is cl
       readContextSnapshot: async () => undefined,
       compactContext: async () => undefined,
       runtimeCompleted: async () => undefined,
-      subagentStore: async (_candidate, request) => {
+      subagentStore: async (candidate, request) => {
+        expect(candidate).toBe(identity);
         if (request.action === "request_start") {
           started.add(request.requestId);
+        }
+
+        if (request.action === "question") {
+          questions++;
         }
 
         return { saved: true };
@@ -110,7 +116,7 @@ it("rejects forged subagent requests and retains leases until the instance is cl
     subagentRequestId: "model-1",
     input: [],
     instructions: "read only",
-    tools: subagentReadDefinitions,
+    tools: subagentToolDefinitions,
   };
 
   const rejectedByBroker = async (request: Promise<unknown>) => {
@@ -154,6 +160,32 @@ it("rejects forged subagent requests and retains leases until the instance is cl
       code: "SANDBOX_RUNTIME_IPC",
       message: "Runtime IPC 请求无效。",
     });
+    await expect(
+      peer.request(
+        "subagent_store",
+        {
+          action: "question",
+          subagentId: "review",
+          requestId: "too-long",
+          question: "x".repeat(1_001),
+        },
+        signal,
+      ),
+    ).rejects.toMatchObject({ code: "SANDBOX_RUNTIME_IPC" });
+    expect(questions).toBe(0);
+    await expect(
+      peer.request(
+        "subagent_store",
+        {
+          action: "question",
+          subagentId: "review",
+          requestId: "q-1",
+          question: "Which file?",
+        },
+        signal,
+      ),
+    ).resolves.toMatchObject({ saved: true });
+    expect(questions).toBe(1);
     expect(modelCalls).toBe(0);
     expect(releases).toBe(0);
 

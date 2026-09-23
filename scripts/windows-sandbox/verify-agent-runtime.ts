@@ -236,7 +236,7 @@ function subagentProvider() {
         childCalls++;
         if (
           tools.map((tool) => tool.name).join(",") !==
-          "read_file,list_entries,search_text"
+          "read_file,list_entries,search_text,ask_main"
         ) {
           fail("installed subagent received a write-capable tool definition");
         }

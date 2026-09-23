@@ -1,7 +1,7 @@
 /*
  * 在主 agent 所在进程协调同任务只读 subagent，供宿主 Engine 与 Sandbox AgentRuntime 共用。
  *
- * 1. execute 校验主 agent 的结构化分工、消息、等待、收集与取消请求；消息/显式取消追加无正文的安全 span，计划/状态持久化后才通知页面刷新。
+ * 1. execute 校验分工/等待/回复/收集/取消；子问题先持久化再唤醒主代理，不让子任务直接访问另一 Worker，消息 trace 只含安全 ID。
  * 2. runChild 等待依赖、获取全局租约，按时限和实报 token 上限驱动独立 Worker loop；逐方向核对消息归属/序号，模型与读取经父进程验证并先落盘。
  * 3. stop/close 通知所有未完成子任务，并在退出或强制终止得到确认后归还租约；等待响应主任务取消，消息数有界。
  * 4. Broker/Store 检查点或请求结果持久化失败时终止 Worker，不能将未知的只读结果当成普通工具失败后继续模型轮次。
@@ -18,7 +18,7 @@ import type {
 import type { ModelUsage } from "../providers/model-metadata.js";
 import type { SubagentRecord, SubagentStatus } from "../shared/types.js";
 import { SubagentReadOnly } from "../tools/subagent-readonly.js";
-import { subagentReadDefinitions } from "./subagent-read-contract.js";
+import { subagentToolDefinitions } from "./subagent-question-contract.js";
 import {
   subagentActionSchema,
   type SubtaskPlan,
@@ -34,6 +34,12 @@ import type {
 } from "./subagent-worker-protocol.js";
 
 type Later<T> = T | Promise<T>;
+
+export interface SubagentQuestionReceipt {
+  id: number;
+  subagentId: string;
+  question: string;
+}
 
 class SubagentPersistenceError extends Error {
   constructor(cause: unknown) {
@@ -64,6 +70,12 @@ export interface SubagentStorage {
     requestId: string,
     result: unknown,
   ): Later<unknown>;
+  recordSubagentQuestion(
+    taskId: string,
+    subagentId: string,
+    requestId: string,
+    question: string,
+  ): Later<SubagentQuestionReceipt>;
   collectSubagents(
     taskId: string,
     ids: string[],
@@ -98,6 +110,8 @@ interface ActiveChild {
   worker?: Worker;
   done: Promise<void>;
   messagesSent: number;
+  questionsSent: number;
+  questionRequests: Map<string, SubagentQuestionReceipt>;
   parentSequence: number;
   childSequence: number;
   usedTokens: number;
@@ -146,6 +160,16 @@ function workerSource() {
 
 export class SubagentCoordinator {
   private readonly children = new Map<string, ActiveChild>();
+  private readonly pendingQuestions = new Map<
+    number,
+    SubagentQuestionReceipt
+  >();
+
+  private readonly questionWaiters = new Set<{
+    ids: string[];
+    resolve: () => void;
+  }>();
+
   /** close 等待已开始登记的计划后再收集 Worker，不能漏掉跨 await 才创建的子任务。 */
   private readonly pendingPlans = new Set<Promise<unknown>>();
   private closed = false;
@@ -191,6 +215,8 @@ export class SubagentCoordinator {
             controller,
             done: Promise.resolve(),
             messagesSent: 0,
+            questionsSent: 0,
+            questionRequests: new Map(),
             parentSequence: 0,
             childSequence: 0,
             usedTokens: 0,
@@ -240,6 +266,13 @@ export class SubagentCoordinator {
         throw new Error("subagent 消息上限为每个子任务 16 条。");
       }
 
+      if (request.replyTo !== undefined) {
+        const question = this.pendingQuestions.get(request.replyTo);
+        if (question?.subagentId !== found.id) {
+          throw new Error("回复不属于当前子任务或已经答复。");
+        }
+      }
+
       const startedAt = Date.now();
       this.options.trace?.("subagent.message", found.id, "started", 0);
       try {
@@ -248,7 +281,12 @@ export class SubagentCoordinator {
           ...this.envelope(found.id, active),
           kind: "message",
           text: request.text,
+          replyTo: request.replyTo,
         } satisfies SubagentParentMessage);
+        if (request.replyTo !== undefined) {
+          this.pendingQuestions.delete(request.replyTo);
+        }
+
         this.options.trace?.(
           "subagent.message",
           found.id,
@@ -306,6 +344,11 @@ export class SubagentCoordinator {
 
     request.subagentIds.forEach(get);
     this.options.signal.throwIfAborted();
+    const waiter = { ids: request.subagentIds, resolve: () => {} };
+    const questionArrived = new Promise<void>((resolve) => {
+      waiter.resolve = resolve;
+    });
+    this.questionWaiters.add(waiter);
     const pending = request.subagentIds.map(
       (id) => this.children.get(id)?.done ?? Promise.resolve(),
     );
@@ -323,9 +366,18 @@ export class SubagentCoordinator {
     });
     try {
       this.options.signal.throwIfAborted();
-      await Promise.race([Promise.all(pending), timeout, aborted]);
+      if (!this.questionsFor(request.subagentIds).length) {
+        await Promise.race([
+          Promise.all(pending),
+          timeout,
+          aborted,
+          questionArrived,
+        ]);
+      }
+
       this.options.signal.throwIfAborted();
     } finally {
+      this.questionWaiters.delete(waiter);
       this.options.signal.removeEventListener("abort", abortWaiting);
       clearTimeout(timer);
     }
@@ -336,7 +388,15 @@ export class SubagentCoordinator {
       subtasks: current
         .filter(({ id }) => request.subagentIds.includes(id))
         .map(({ id, status }) => ({ id, status })),
+      questions: this.questionsFor(request.subagentIds),
     };
+  }
+
+  private questionsFor(ids: readonly string[]) {
+    // 每轮至多交付四条；主代理回复后再调用 await 可读取下一批，避免模型反馈被截断。
+    return [...this.pendingQuestions.values()]
+      .filter((question) => ids.includes(question.subagentId))
+      .slice(0, 4);
   }
 
   private exhaustBudget(entry: ActiveChild, failure: ChildBudgetFailure) {
@@ -585,9 +645,9 @@ export class SubagentCoordinator {
     });
   }
 
-  private async persist(operation: () => Later<unknown>) {
+  private async persist<T>(operation: () => Later<T>): Promise<T> {
     try {
-      await operation();
+      return await operation();
     } catch (error) {
       throw new SubagentPersistenceError(error);
     }
@@ -639,6 +699,72 @@ export class SubagentCoordinator {
           storage.updateSubagent(taskId, id, "running", checkpoint.context),
         );
         response(true, { ok: true });
+
+        return;
+      }
+
+      if (message.operation === "question") {
+        const question = z
+          .object({
+            requestId: z.string().min(1).max(120),
+            question: z.string().trim().min(1).max(1_000),
+          })
+          .strict()
+          .parse(message.payload);
+        const previous = entry.questionRequests.get(question.requestId);
+        if (previous) {
+          if (previous.question !== question.question) {
+            throw new Error("subagent 问题请求 ID 对应的内容已改变。");
+          }
+
+          response(true, { id: previous.id, queued: true });
+
+          return;
+        }
+
+        if (entry.questionsSent >= 8) {
+          throw new Error("每个 subagent 最多向主代理提问 8 次。");
+        }
+
+        const startedAt = Date.now();
+        this.options.trace?.("subagent.question", id, "started", 0);
+        try {
+          const receipt = await this.persist(() =>
+            storage.recordSubagentQuestion(
+              taskId,
+              id,
+              question.requestId,
+              question.question,
+            ),
+          );
+          if (!this.pendingQuestions.has(receipt.id)) {
+            entry.questionsSent++;
+            this.pendingQuestions.set(receipt.id, receipt);
+            for (const waiter of this.questionWaiters) {
+              if (waiter.ids.includes(id)) {
+                waiter.resolve();
+              }
+            }
+          }
+
+          entry.questionRequests.set(question.requestId, receipt);
+          this.options.onStateChange?.();
+          this.options.trace?.(
+            "subagent.question",
+            id,
+            "ok",
+            Date.now() - startedAt,
+          );
+          response(true, { id: receipt.id, queued: true });
+        } catch (error) {
+          this.options.trace?.(
+            "subagent.question",
+            id,
+            "error",
+            Date.now() - startedAt,
+          );
+          throw error;
+        }
 
         return;
       }
@@ -724,7 +850,7 @@ export class SubagentCoordinator {
         const result: ModelResult = await selectedProvider.run(
           model.input,
           model.instructions,
-          subagentReadDefinitions,
+          subagentToolDefinitions,
           entry.controller.signal,
           () => {},
           { maxOutputTokens: 2_048 },

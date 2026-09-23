@@ -1,7 +1,7 @@
 /*
  * 定义主 agent 分工工具和任务内子任务计划的纯契约，供宿主、Runtime 与 Worker 消息分派共用。
  *
- * 1. subagentActionSchema 验证主角色的 plan/message/await/collect/cancel 请求和文本上限。
+ * 1. subagentActionSchema 验证主角色的 plan/message/await/collect/cancel、已保存问题的 replyTo 和文本上限。
  * 2. validateSubagentPlan 在任何 Worker 启动前检查 ID、依赖图和累计计划上限；路径的规范化
  *    与实际读取权限由协调器在工作区上下文中另外校验。
  * 3. subagentToolDefinition 带工具 DAG 的 execution 信封，只供已启用任务按条件追加；它本身不是写入权限或执行器。
@@ -39,6 +39,12 @@ export const subagentActionSchema = z
           action: z.literal("message"),
           subagentId: identifier,
           text: z.string().min(1).max(2_000),
+          replyTo: z
+            .number()
+            .int()
+            .positive()
+            .max(Number.MAX_SAFE_INTEGER)
+            .optional(),
         })
         .strict(),
       z
@@ -119,7 +125,7 @@ export const subagentToolDefinition = {
   type: "function" as const,
   name: "subagent",
   description:
-    "Coordinate read-only subagents in this task. Only the main agent can plan, message, await, collect or cancel them. All edits and verification stay with the main agent.",
+    "Coordinate read-only subagents in this task. Children can send bounded questions; await may return them early. Only the main agent can answer through message with replyTo, or plan, collect or cancel. All edits and verification stay with the main agent.",
   parameters: z.toJSONSchema(scheduledParameters(subagentActionSchema)),
   strict: true,
 };
