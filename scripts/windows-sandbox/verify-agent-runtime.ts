@@ -3,11 +3,11 @@
  * 本脚本由用户显式执行，不属于 pnpm test/check，也不调用真实模型、外部网络、真实凭据或管理员安装操作。
  *
  * 1. 在仓库 .local 下建立一次性工作区和 Broker 数据库，并强制启用 Windows Sandbox 产品组装。
- * 2. 用内存模型驱动固定 Agent Runtime 创建标记文件，核对 agent loop、Runtime IPC、文件工具与 clean grant release。
+ * 2. 内存模型驱动固定 Agent Runtime 创建标记文件，再以内部已标记任务让安装态独立 Worker 只读该文件，核对规划、模型 IPC、报告原子收集、tracing 和退出后的租约。
  * 3. 请求 sibling 目录写权限，经低成本模型审批后用独立 Capability Runner 写入标记，核对结果回传、外部 ACL 和 clean release。
  * 4. 初始化一次性 Git 仓库，把 HTTPS remote 指向 relay 必须拒绝的 127.0.0.1；验证 Runtime 阻塞等待独立 Push Runner、审批、失败结果回传和 clean lease release，全程不连接公网。
  * 5. 再让模型请求保持进行中并主动取消任务，核对 Job 终止、cancelled 归因和 generation lease 清空。
- * 6. 只有四条链路均为 windows-sandbox-user 且没有 fallback/unknown 才输出 PASS；失败现场保留供人工对账。
+ * 6. 只有五条链路均为 windows-sandbox-user 且没有 fallback/unknown 才输出 PASS；失败现场保留供人工对账。
  */
 
 import { execFile } from "node:child_process";
@@ -213,6 +213,125 @@ function completedProvider(): ModelProvider {
   };
 }
 
+function subagentProvider() {
+  let mainCalls = 0;
+  let childCalls = 0;
+  const action = (id: string, request: unknown) => ({
+    type: "function_call" as const,
+    call_id: id,
+    name: "subagent",
+    arguments: JSON.stringify({
+      execution: { id, dependsOn: [] },
+      arguments: { request },
+    }),
+  });
+  const provider: ModelProvider = {
+    async getCapabilities() {
+      return {
+        limits: { max_context_window_tokens: 64_000, max_output_tokens: 1_024 },
+      };
+    },
+    async run(input, instructions, tools) {
+      if (instructions.includes("read-only research subagent")) {
+        childCalls++;
+        if (
+          tools.map((tool) => tool.name).join(",") !==
+          "read_file,list_entries,search_text"
+        ) {
+          fail("installed subagent received a write-capable tool definition");
+        }
+
+        if (childCalls === 1) {
+          return {
+            text: "",
+            output: [
+              {
+                type: "function_call",
+                call_id: "verify-read",
+                name: "read_file",
+                arguments: JSON.stringify({
+                  execution: { id: "read", dependsOn: [] },
+                  arguments: { path: markerName, startLine: 1, endLine: 1 },
+                }),
+              },
+            ],
+          };
+        }
+
+        if (!JSON.stringify(input).includes(markerContent.trim())) {
+          fail("subagent did not receive the installed Runtime read result");
+        }
+
+        return { text: `${markerName}:1 ${markerContent.trim()}`, output: [] };
+      }
+
+      mainCalls++;
+      if (!tools.some((tool) => tool.name === "subagent")) {
+        fail("installed Runtime did not receive the opt-in coordination tool");
+      }
+
+      if (mainCalls === 1) {
+        return {
+          text: "",
+          output: [
+            action("plan", {
+              action: "plan",
+              subtasks: [
+                {
+                  id: "read-verifier",
+                  role: "reader",
+                  objective: "inspect the fixed marker",
+                  scope: ["."],
+                  dependsOn: [],
+                  deliverable: "source path and line",
+                },
+              ],
+            }),
+          ],
+        };
+      }
+
+      if (mainCalls === 2) {
+        return {
+          text: "",
+          output: [
+            action("await", {
+              action: "await",
+              subagentIds: ["read-verifier"],
+              timeoutMs: 30_000,
+            }),
+          ],
+        };
+      }
+
+      if (mainCalls === 3) {
+        return {
+          text: "",
+          output: [
+            action("collect", {
+              action: "collect",
+              subagentIds: ["read-verifier"],
+            }),
+          ],
+        };
+      }
+
+      if (
+        mainCalls !== 4 ||
+        !JSON.stringify(input).includes(`${markerName}:1`)
+      ) {
+        fail(
+          "main Runtime did not receive the subagent report through collect",
+        );
+      }
+
+      return { text: "installed subagent verification complete", output: [] };
+    },
+  };
+
+  return { provider, counts: () => ({ mainCalls, childCalls }) };
+}
+
 function cancelledProvider(entered: () => void): ModelProvider {
   return {
     async getCapabilities() {
@@ -383,6 +502,80 @@ async function waitFor(signal: Promise<void>, label: string) {
   }
 }
 
+async function verifyInstalledSubagent(
+  store: Store,
+  config: Config,
+  workspace: string,
+) {
+  const session = store.create(workspace, "Installed Runtime subagent probe");
+  // 发布门禁尚未打开：仅手动产品验收可以通过内部队列启动已标记任务，HTTP 仍必须拒绝启用。
+  const task = store.transaction(() => {
+    const created = store.createTask(session.id, true);
+    store.event(session.id, created.id, "user", {
+      text: "Inspect the installed marker with a read-only subagent.",
+    });
+
+    return created;
+  });
+  const markerBefore = await readFile(path.join(workspace, markerName), "utf8");
+  const model = subagentProvider();
+  const engine = new Engine(
+    store,
+    config,
+    pino({ enabled: false }),
+    () => model.provider,
+  );
+
+  try {
+    (engine as unknown as { schedule(): void }).schedule();
+    const pending = engine.active?.done;
+    if (!pending) {
+      fail("opted-in verification task was not scheduled");
+    }
+
+    await waitFor(pending, "installed Runtime subagent task");
+    if (store.task(task.id)?.status !== "completed") {
+      fail("opted-in Runtime subagent task did not complete");
+    }
+
+    const agents = store.subagents(task.id);
+    if (
+      agents.length !== 1 ||
+      agents[0].status !== "completed" ||
+      agents[0].consumed !== true ||
+      agents[0].report !== `${markerName}:1 ${markerContent.trim()}` ||
+      model.counts().mainCalls !== 4 ||
+      model.counts().childCalls !== 2
+    ) {
+      fail(
+        "installed subagent report or model round accounting did not persist",
+      );
+    }
+
+    if (
+      (await readFile(path.join(workspace, markerName), "utf8")) !==
+      markerBefore
+    ) {
+      fail("read-only subagent changed the workspace marker");
+    }
+
+    const trace = await engine.savedTrace(task);
+    if (
+      !trace?.includes("subagent.worker") ||
+      trace.includes(markerContent.trim())
+    ) {
+      fail("installed subagent trace is missing or contains source text");
+    }
+
+    assertCompletedRuntime(store, session.id);
+    if (engine.sandbox.accountGenerationSnapshot()?.activeInstanceCount !== 0) {
+      fail("installed subagent left an active generation lease");
+    }
+  } finally {
+    await engine.close();
+  }
+}
+
 async function main() {
   if (process.platform !== "win32") {
     process.stdout.write(
@@ -454,6 +647,7 @@ async function main() {
 
     await engine.close();
     engine = undefined;
+    await verifyInstalledSubagent(store, config, workspace);
     const capabilityModel = capabilityProvider(
       externalDirectory,
       capabilityProbeCommand(capabilityMarker),
@@ -551,7 +745,7 @@ async function main() {
 
     passed = true;
     process.stdout.write(
-      "SANDBOX_AGENT_RUNTIME_VERIFY PASS completion=yes capabilityRunner=yes pushRunnerBlocked=yes cancellation=yes cleanup=yes\n",
+      "SANDBOX_AGENT_RUNTIME_VERIFY PASS completion=yes subagent=yes capabilityRunner=yes pushRunnerBlocked=yes cancellation=yes cleanup=yes\n",
     );
   } finally {
     await engine?.close().catch(() => undefined);
