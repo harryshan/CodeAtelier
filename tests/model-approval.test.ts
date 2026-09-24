@@ -2,7 +2,7 @@
  * 验证低成本模型审批的协议解析及三级决定如何改变 ApprovalManager 的行为。
  * 测试使用注入的 ModelProvider 或分类器，不访问真实服务、文件或命令。
  *
- * 1. assessApproval 检查无工具、低输出额度的请求，以及严格 JSON 输出与理由规范化。
+ * 1. assessApproval 检查无工具、低输出额度的请求、只读命令的分类指引，以及严格 JSON 输出与理由规范化。
  * 2. ApprovalManager 检查 approve 不创建待审批项，human review 保留原有点击流程和模型理由。
  * 3. reject 必须立即阻止操作并返回模型理由；分类器缺失时保持人工确认，不能意外自动通过。
  *
@@ -57,7 +57,7 @@ it("sends only the approval subject to the low-cost provider and strictly parses
   );
 
   expect(assessment).toEqual({ decision: "approve", reason: "固定验证命令" });
-  expect(APPROVAL_INSTRUCTIONS).toContain("必须视为低风险并直接返回 approve");
+  expect(APPROVAL_INSTRUCTIONS).toContain("常用开发命令也直接返回 approve");
   expect(APPROVAL_INSTRUCTIONS).toContain("pnpm、npm、yarn 或 bun");
   expect(() =>
     parseAssessment('```json\n{"decision":"approve","reason":"x"}\n```'),
@@ -65,6 +65,20 @@ it("sends only the approval subject to the low-cost provider and strictly parses
   expect(() =>
     parseAssessment('{"decision":"approve","reason":"x","extra":true}'),
   ).toThrow("无效决定");
+});
+
+it("explicitly approves ordinary read-only exploration without treating shell composition as inherently dangerous", () => {
+  expect(APPROVAL_INSTRUCTIONS).toContain(
+    "只读目录浏览和代码搜索直接返回 approve",
+  );
+  expect(APPROVAL_INSTRUCTIONS).toContain("Get-ChildItem");
+  expect(APPROVAL_INSTRUCTIONS).toContain("Select-String");
+  expect(APPROVAL_INSTRUCTIONS).toContain("rg");
+  expect(APPROVAL_INSTRUCTIONS).toContain("grep");
+  expect(APPROVAL_INSTRUCTIONS).toContain("只读管道和顺序组合");
+  expect(APPROVAL_INSTRUCTIONS).toContain("路径越出工作区");
+  expect(APPROVAL_INSTRUCTIONS).toContain("输出重定向写文件");
+  expect(APPROVAL_INSTRUCTIONS).toContain("网络传输");
 });
 
 it("automatically passes only an approve assessment and records the assessment callback", async () => {
