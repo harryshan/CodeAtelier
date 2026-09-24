@@ -79,9 +79,9 @@ Abort 只表示 Broker 不再等待，不等于 Runtime 已终止；取消仍必
 
 ### 模型思考等级与限制
 
-思考等级在“模型与设置”中选择，保存为 `reasoningEffort`，每次主任务 Responses 请求显式发送 `reasoning.effort`，主任务和上下文摘要共用。默认 high，旧配置缺少字段时采用环境默认值或 high。例如 `.env` 中设置 `CODEATELIER_REASONING_EFFORT=high`；已保存偏好优先，保存后用于后续调用。
+思考等级在“模型与设置”中选择，保存为 `reasoningEffort`；主任务 Responses 请求显式发送 `reasoning.effort`。未配置辅助模型时标题和上下文摘要沿用主模型设置。默认 high，旧配置缺少字段时采用环境默认值或 high。例如 `.env` 中设置 `CODEATELIER_REASONING_EFFORT=high`；已保存偏好优先，保存后用于后续调用。
 
-辅助模型标识由 `CODEATELIER_AUXILIARY_MODEL` 决定，其推理强度 `auxiliaryReasoningEffort` 可按同一规则保存。服务或模型不支持所选等级时按现有错误流程报告，不静默降级。低成本审批不会以主模型替代未配置的辅助模型。
+辅助模型标识由 `CODEATELIER_AUXILIARY_MODEL` 决定，其推理强度 `auxiliaryReasoningEffort` 可按同一规则保存，供标题和上下文摘要使用。自动审批仍选用辅助模型，但仅在该次 Responses 请求覆盖为 `reasoning.effort: "none"`，不修改已保存的辅助等级；服务或模型不支持 `none` 时降级到人工确认，不用原思考等级重试，也不以主模型替代未配置的辅助模型。其它模型请求不支持所选等级时按现有错误流程报告，不静默降级。
 
 默认限制：每任务 100 次模型调用、命令 120 秒、模型请求总计 300 秒、流空闲 60 秒、备用上下文 1000000 字符、单工具输出 32000 字符；全局 `maxConcurrentTasks` 默认 2，允许 1～4。这是可配置字符预算，不是精确 token 计量。发现服务容量和支持的 tokenizer 后改用 token 预算，contextChars 仅备用；已保存的自定义值继续生效，缺失时使用新默认值。maxOutputTokens 默认 16384。
 
@@ -244,7 +244,7 @@ Python、YAML、TOML、Makefile、Make 片段和 Markdown 默认是空白敏感�
 
 每个原本需要审批的命令或工具使用先由已配置的低成本辅助模型作单次、无工具的三级分类：`approve` 自动通过，`human review` 显示现有人工点击审批，`reject` 直接拒绝并把简洁理由返回任务与时间线。
 
-分类请求只包含工具名和待审批内容，输出严格限制为 JSON 决定及理由，最多 256 token；`run_command` 的 cwd 固定为工作区，但这不约束命令访问的路径。审批 prompt 要求明确仅浏览工作区内普通文件的目录/代码搜索命令直接 `approve`：包括 Windows 的 Get-ChildItem、Select-String、Get-Content、findstr、dir、type，以及 POSIX 的 ls、find、rg、grep、sed -n、head、cat 等；只读管道和顺序组合须逐段判断，不因有管道或多条命令本身转人工。只读写工作区文件的常用开发命令也直接 `approve`，包括 pnpm/npm/yarn/bun 的 test/build/lint/typecheck/format 脚本，以及 tsc、eslint、prettier、vitest、jest、playwright、node --test 等编译、测试、格式化或代码生成命令；写入构建产物、格式化或生成文件不得仅因此转人工。路径越界、读取敏感内容、重定向写入、间接执行或网络传输等不能因出现只读命令名称而自动放行；分类仍是模型建议，不是静态只读证明，也不改变执行器原有安全检查。
+分类请求只包含工具名和待审批内容，不提供工具，关闭该次模型思考，输出严格限制为 JSON 决定及理由，最多 256 token；`run_command` 的 cwd 固定为工作区，但这不约束命令访问的路径。审批 prompt 要求明确仅浏览工作区内普通文件的目录/代码搜索命令直接 `approve`：包括 Windows 的 Get-ChildItem、Select-String、Get-Content、findstr、dir、type，以及 POSIX 的 ls、find、rg、grep、sed -n、head、cat 等；只读管道和顺序组合须逐段判断，不因有管道或多条命令本身转人工。只读写工作区文件的常用开发命令也直接 `approve`，包括 pnpm/npm/yarn/bun 的 test/build/lint/typecheck/format 脚本，以及 tsc、eslint、prettier、vitest、jest、playwright、node --test 等编译、测试、格式化或代码生成命令；写入构建产物、格式化或生成文件不得仅因此转人工。路径越界、读取敏感内容、重定向写入、间接执行或网络传输等不能因出现只读命令名称而自动放行；分类仍是模型建议，不是静态只读证明，也不改变执行器原有安全检查。
 
 无辅助模型、服务故障或无效输出一律保守转为人工确认，不调用主模型替代。模型分类不影响现有授权：简单的 `pnpm`/`npm` test/build/lint/typecheck 或 `node --test` 在可计算项目指纹时仍可授予本次会话重复执行，包含更多 shell 语法的命令仍不支持会话放行。执行器内部选择 shell，不改变命令的权限边界；直接 Git 程序名（包括复合命令中的 Git）和提权命令会在审批模型之前直接拒绝。
 

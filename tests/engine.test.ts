@@ -7,7 +7,7 @@
  * 3. 检查项目规则加载、复杂任务先读取文件并获得信息后才持久化和展示计划摘要、大输出限制，以及多项互不冲突的工具调用会在同一轮全部执行。
  * 4. 检查多文件调用的逐文件进度及结果持久化、新任务必须重新读文件，以及含凭据相关源码的工具结果仍是合法 JSON。
  * 5. 检查模型实际错误会进入任务失败记录和通知，对需要批准的命令确认保存的工具耗时只从真正执行开始计算，不包含审批等待；同时记录 SandboxBroker 的安全阶段和 trace。
- * 6. 配置辅助模型时，确认审批请求被路由给独立的低成本模型，并保存自动通过的分类决定。
+ * 6. 配置辅助模型时，确认审批请求被路由给独立的低成本模型，并保存自动通过的分类决定；关闭思考失败时仅转人工。
  * 7. 新任务逐次捕获模型请求/响应和未截断工具结果，供后续导出隔离 replay case。
  *
  * 只模拟模型响应，文件操作、审批和保存使用实际实现。
@@ -421,6 +421,7 @@ it("routes an approval to the configured low-cost model and persists an automati
   const store = new Store(path.join(config.directory, "db"));
   const session = store.create(root, "test");
   config.settings.auxiliaryModel = "approval-model";
+  config.settings.auxiliaryReasoningEffort = "medium";
   let taskCalls = 0;
   let approvalCalls = 0;
   const engine = new Engine(
@@ -433,10 +434,14 @@ it("routes an approval to the configured low-cost model and persists an automati
           async run(input, instructions, tools, _signal, _onDelta, options) {
             approvalCalls++;
             expect(settings.model).toBe("approval-model");
+            expect(settings.reasoningEffort).toBe("medium");
             expect(input[0].content).toContain("run_command");
             expect(instructions).toContain("工具审批分类器");
             expect(tools).toEqual([]);
-            expect(options).toEqual({ maxOutputTokens: 256 });
+            expect(options).toEqual({
+              maxOutputTokens: 256,
+              reasoningEffort: "none",
+            });
 
             return {
               output: [],
@@ -491,6 +496,71 @@ it("routes an approval to the configured low-cost model and persists an automati
   } finally {
     await engine.close();
     store.close();
+  }
+});
+
+it("requests human review instead of retrying with reasoning when the approval model rejects none", async () => {
+  let taskCalls = 0;
+  let approvalCalls = 0;
+  const fixture = await createFixture({
+    async run(_input, instructions, _tools, _signal, _onDelta, options) {
+      if (instructions.includes("工具审批分类器")) {
+        approvalCalls++;
+        expect(options?.reasoningEffort).toBe("none");
+        throw new ModelError(
+          "unsupported reasoning effort",
+          false,
+          "unsupported_value",
+        );
+      }
+
+      if (++taskCalls === 1) {
+        return {
+          output: [
+            {
+              type: "function_call",
+              call_id: "unsupported-approval",
+              name: "run_command",
+              arguments: JSON.stringify({
+                command: 'node -e "process.exit(0)"',
+              }),
+            },
+          ],
+          text: "",
+        };
+      }
+
+      return done;
+    },
+  });
+
+  try {
+    fixture.config.settings.auxiliaryModel = "approval-model";
+    fixture.engine.start(fixture.session.id, "run a command");
+    await expect.poll(() => fixture.engine.approvals.list()).toHaveLength(1);
+
+    expect(fixture.engine.approvals.list()[0].reviewReason).toContain(
+      "人工确认",
+    );
+    expect(approvalCalls).toBe(1);
+    fixture.engine.approvals.decide(
+      fixture.engine.approvals.list()[0].id,
+      "deny",
+    );
+    await fixture.engine.active?.done;
+
+    expect(approvalCalls).toBe(1);
+    expect(fixture.store.events(fixture.session.id)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "approval_assessed",
+          data: expect.objectContaining({ decision: "human review" }),
+        }),
+      ]),
+    );
+  } finally {
+    await fixture.engine.close();
+    fixture.store.close();
   }
 });
 

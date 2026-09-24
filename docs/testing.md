@@ -333,7 +333,7 @@ git-tools.test.ts 覆盖 diff 独立输出硬上限；core.test.ts 覆盖模型�
 
 - `tests/auxiliary-model.test.ts`：旧配置兼容、主模型继承、环境辅助模型来源、可保存推理强度、模型改动拒绝、非法输入拒绝；生产 Engine 路由、辅助模型独立预算、完整摘要来源、摘要失败保留历史。使用模拟模型，不访问真实服务。
 - `tests/title-generation.test.ts`：首条 prompt 选择辅助模型、输入分隔和输出清理、未知标题模型故障最多额外重试 3 次、永久失败不阻断主任务、取消结束标题状态，以及旧 SQLite 标题迁移。
-- `tests/model-approval.test.ts`：审批请求只将工具名和待审批内容发送给无工具、256 token 的低成本模型；严格 JSON 输出分别自动通过、保留人工点击或直接拒绝并返回理由；检查工作区内常用开发命令与只读目录浏览/代码搜索（包括只读组合）被 prompt 明确要求直接 `approve`，且越界路径、重定向与网络传输仍需审慎处理；分类器缺失时不自动放行。
+- `tests/model-approval.test.ts`：审批请求只将工具名和待审批内容发送给无工具、单次关闭思考（不修改辅助等级）、256 token 的低成本模型；`tests/engine.test.ts` 验证审批专属请求路由，`tests/provider.test.ts` 验证真实 Responses 请求为 `reasoning.effort: "none"` 且其它请求保留配置等级；严格 JSON 输出分别自动通过、保留人工点击或直接拒绝并返回理由；检查工作区内常用开发命令与只读目录浏览/代码搜索（包括只读组合）被 prompt 明确要求直接 `approve`，且越界路径、重定向与网络传输仍需审慎处理；分类器缺失时不自动放行。
 - `tests/e2e/app.spec.ts`：只读展示环境连接、保存思考偏好并在刷新后回显，且不暴露密钥；首条 prompt 完成后在侧栏显示并在刷新后保留自动标题。
 
 评测包装器的辅助模型路由与主模型共用累计用量和调用上限；本次仅静态检查评测改动，未运行 Evaluation。

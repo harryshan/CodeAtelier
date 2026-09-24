@@ -6,7 +6,7 @@
  * 1. ModelTraceScope 固定任务、用途、模型和可选 step/attempt，作为单次调用的关联字段。
  * 2. tracedModelProvider 透传 capabilities，并在 run 前创建可由当前上下文阶段动态指定父 span 的 llm.request；第一个 delta 生成 instant，完成或失败结束 span。
  * 3. Sandbox Runtime 经 Broker 请求模型时可附 execution mode/instance/kind、subagentId 与 brokered 标记，仍复用相同安全计量。
- * 4. 不记录 input、instructions、tools、输出文本、服务错误消息或 API key 的原文；LLM span 位于 Node 主线程轨道，高保真 replay payload 由后续独立机制处理。
+ * 4. 仅附带安全的请求参数（含思考等级），不记录 input、instructions、tools、输出文本、服务错误消息或 API key 的原文；LLM span 位于 Node 主线程轨道，高保真 replay payload 由后续独立机制处理。
  */
 
 import type { ModelProvider } from "../providers/model-provider.js";
@@ -65,6 +65,7 @@ export function tracedModelProvider(
           instructionsChars: instructions.length,
           toolCount: tools.length,
           maxOutputTokens: options?.maxOutputTokens,
+          reasoningEffort: options?.reasoningEffort,
           executionMode: scope.executionMode,
           executionInstanceId: scope.executionInstanceId,
           runtimeKind: scope.runtimeKind,

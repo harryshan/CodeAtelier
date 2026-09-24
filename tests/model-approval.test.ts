@@ -43,7 +43,10 @@ it("sends only the approval subject to the low-cost provider and strictly parses
         ]);
         expect(instructions).toBe(APPROVAL_INSTRUCTIONS);
         expect(tools).toEqual([]);
-        expect(options).toEqual({ maxOutputTokens: 256 });
+        expect(options).toEqual({
+          maxOutputTokens: 256,
+          reasoningEffort: "none",
+        });
         onDelta("must not be displayed");
 
         return {

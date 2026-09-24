@@ -4,7 +4,7 @@
  *
  * 1. getCapabilities 查询模型列表，按完整模型 ID 查找并校验容量信息。
  * 2. run 检查密钥，创建关闭 SDK 重试的客户端，并接上取消、总超时和空闲超时。
- * 3. 请求带上思考等级、并行工具调用偏好、流式选项和可选输出上限；文本 delta 交给界面，item.done 暂存完整输出项。
+ * 3. 请求带上配置思考等级（审批可单次覆盖为 none）、并行工具调用偏好、流式选项和可选输出上限；文本 delta 交给界面，item.done 暂存完整输出项。
  * 4. 收到 completed 后才返回结果。优先使用 completed.output，服务未填时按索引收集 item.done；网页搜索的 URL 引用会转为安全可点击的 Markdown 来源。
  * 5. 将流错误和连接异常转成 ModelError，最后清理计时器和监听。
  *
@@ -15,7 +15,11 @@ import { capabilitiesSchema, parseUsage } from "./model-metadata.js";
 import OpenAI from "openai";
 import { ModelError, modelError, modelErrorMessage } from "./model-error.js";
 import type { Settings } from "../shared/types.js";
-import type { ModelProvider, ModelResult } from "./model-provider.js";
+import type {
+  ModelProvider,
+  ModelResult,
+  ModelRunOptions,
+} from "./model-provider.js";
 
 /** 仅接受公开 HTTP(S) 引用，并转义标题，避免不可信网页元数据改变 Markdown 结构。 */
 function appendWebSearchCitations(text: string, output: any[]) {
@@ -96,7 +100,7 @@ export class ResponsesProvider implements ModelProvider {
     tools: any[],
     signal: AbortSignal,
     onDelta: (text: string) => void,
-    options?: { maxOutputTokens?: number },
+    options?: ModelRunOptions,
   ): Promise<ModelResult> {
     if (!this.key) {
       throw new ModelError("请先在设置中输入 API key。", false, "missing_key");
@@ -145,7 +149,12 @@ export class ResponsesProvider implements ModelProvider {
       const stream = await client.responses.create(
         {
           model: this.settings.model,
-          reasoning: { effort: this.settings.reasoningEffort ?? "high" },
+          reasoning: {
+            effort:
+              options?.reasoningEffort ??
+              this.settings.reasoningEffort ??
+              "high",
+          },
           input,
           instructions,
           tools,

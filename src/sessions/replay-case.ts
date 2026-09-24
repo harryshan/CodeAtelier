@@ -23,6 +23,7 @@ import { isDeepStrictEqual } from "node:util";
 import type {
   ModelProvider,
   ModelResult,
+  ModelRunOptions,
 } from "../providers/model-provider.js";
 import type {
   Event,
@@ -59,7 +60,7 @@ export interface RecordedModelExchange {
   input: any[];
   instructions: string;
   tools: any[];
-  options?: { maxOutputTokens?: number };
+  options?: ModelRunOptions;
   response?: ModelResult;
   error?: { name: string; message: string; code?: string; status?: number };
 }
@@ -188,7 +189,7 @@ export class RecordedModelProvider implements ModelProvider {
     tools: any[],
     _signal: AbortSignal,
     _onDelta: (text: string) => void,
-    options?: { maxOutputTokens?: number },
+    options?: ModelRunOptions,
   ) {
     const expected = this.capture.modelExchanges[this.index++];
     if (!expected) {
