@@ -188,7 +188,8 @@ export class Engine {
     this.memories = new ProjectMemoryService(config.directory, log);
     this.approvals = new ApprovalManager(
       () => this.updateWaitingTaskStatuses(),
-      (subject, signal) => this.classifyApproval(subject, signal),
+      (subject, signal, context) =>
+        this.classifyApproval(subject, signal, context),
       (subject, assessment) => {
         const task = this.approvalTasks.get(subject);
         this.approvalTasks.delete(subject);
@@ -207,12 +208,23 @@ export class Engine {
   private async classifyApproval(
     subject: ApprovalSubject,
     signal: AbortSignal,
+    context: { sessionId: string; taskId: string },
   ): Promise<ApprovalAssessment> {
-    // 即使未配置辅助模型，也要把后续人工审批评估事件归属到正确的并发任务。
-    const active = this.activeForSignal(signal);
-    const task = active?.task;
+    // Runtime IPC 可能提供独立的取消信号；会话路径只从后端存储读取，不采信待审批命令。
+    const active =
+      this.activeForSignal(signal) ?? this.activeByTaskId.get(context.taskId);
+    const task =
+      active?.task.sessionId === context.sessionId ? active.task : undefined;
+    const workspaceRoot = this.store.get(context.sessionId)?.workspace;
     if (task) {
       this.approvalTasks.set(subject, task);
+    }
+
+    if (!workspaceRoot) {
+      return {
+        decision: "human review",
+        reason: "无法确认会话工作区，需要人工确认。",
+      };
     }
 
     const settings = { ...this.config.settings };
@@ -248,6 +260,7 @@ export class Engine {
             )
           : provider,
         subject,
+        workspaceRoot,
         signal,
         (usage) => {
           if (task) {

@@ -244,7 +244,7 @@ Python、YAML、TOML、Makefile、Make 片段和 Markdown 默认是空白敏感�
 
 每个原本需要审批的命令或工具使用先由已配置的低成本辅助模型作单次、无工具的三级分类：`approve` 自动通过，`human review` 显示现有人工点击审批，`reject` 直接拒绝并把简洁理由返回任务与时间线。
 
-分类请求只包含工具名和待审批内容，不提供工具，关闭该次模型思考，输出严格限制为 JSON 决定及理由，最多 256 token；`run_command` 的 cwd 固定为工作区，但这不约束命令访问的路径。审批 prompt 要求明确仅浏览工作区内普通文件的目录/代码搜索命令直接 `approve`：包括 Windows 的 Get-ChildItem、Select-String、Get-Content、findstr、dir、type，以及 POSIX 的 ls、find、rg、grep、sed -n、head、cat 等；只读管道和顺序组合须逐段判断，不因有管道或多条命令本身转人工。只读写工作区文件的常用开发命令也直接 `approve`，包括 pnpm/npm/yarn/bun 的 test/build/lint/typecheck/format 脚本，以及 tsc、eslint、prettier、vitest、jest、playwright、node --test 等编译、测试、格式化或代码生成命令；写入构建产物、格式化或生成文件不得仅因此转人工。路径越界、读取敏感内容、重定向写入、间接执行或网络传输等不能因出现只读命令名称而自动放行；分类仍是模型建议，不是静态只读证明，也不改变执行器原有安全检查。
+分类请求把后端从会话读取的工作区根目录 `workspaceRoot` 与工具名、待审批内容分字段传给无工具的模型，不从命令描述中采信工作区路径；关闭该次模型思考，输出严格限制为 JSON 决定及理由，最多 256 token。模型需逐段解析命令、参数和组合对目录及文件的影响，以实际工作区路径判断范围；`run_command` 的 cwd 固定为工作区，但这不约束命令访问的路径。审批 prompt 要求明确仅浏览工作区内普通文件的目录/代码搜索命令直接 `approve`：包括 Windows 的 Get-ChildItem、Select-String、Get-Content、findstr、dir、type，以及 POSIX 的 ls、find、rg、grep、sed -n、head、cat 等；只读管道和顺序组合须逐段判断，不因有管道或多条命令本身转人工。只读写工作区文件的常用开发命令也直接 `approve`，包括 pnpm/npm/yarn/bun 的 test/build/lint/typecheck/format 脚本，以及 tsc、eslint、prettier、vitest、jest、playwright、node --test 等编译、测试、格式化或代码生成命令；写入构建产物、格式化或生成文件不得仅因此转人工。工作区内普通文件且无其它危险副作用的已确认影响应直接放行；路径越界、读取敏感内容、外部重定向写入、间接执行或网络传输等不能因出现只读命令名称而自动放行，影响不明仍转人工。`run_with_permissions` 的外部根和网络权限须独立审查，不能用工作区根目录替代其授权范围；分类仍是模型建议，不是静态只读证明，也不改变执行器原有安全检查。
 
 无辅助模型、服务故障或无效输出一律保守转为人工确认，不调用主模型替代。模型分类不影响现有授权：简单的 `pnpm`/`npm` test/build/lint/typecheck 或 `node --test` 在可计算项目指纹时仍可授予本次会话重复执行，包含更多 shell 语法的命令仍不支持会话放行。执行器内部选择 shell，不改变命令的权限边界；直接 Git 程序名（包括复合命令中的 Git）和提权命令会在审批模型之前直接拒绝。
 

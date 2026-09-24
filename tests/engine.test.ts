@@ -7,7 +7,7 @@
  * 3. 检查项目规则加载、复杂任务先读取文件并获得信息后才持久化和展示计划摘要、大输出限制，以及多项互不冲突的工具调用会在同一轮全部执行。
  * 4. 检查多文件调用的逐文件进度及结果持久化、新任务必须重新读文件，以及含凭据相关源码的工具结果仍是合法 JSON。
  * 5. 检查模型实际错误会进入任务失败记录和通知，对需要批准的命令确认保存的工具耗时只从真正执行开始计算，不包含审批等待；同时记录 SandboxBroker 的安全阶段和 trace。
- * 6. 配置辅助模型时，确认审批请求被路由给独立的低成本模型，并保存自动通过的分类决定；关闭思考失败时仅转人工。
+ * 6. 配置辅助模型时，确认审批请求带真实会话工作区、路由给低成本模型并保存决定；关闭思考失败或找不到工作区时仅转人工。
  * 7. 新任务逐次捕获模型请求/响应和未截断工具结果，供后续导出隔离 replay case。
  *
  * 只模拟模型响应，文件操作、审批和保存使用实际实现。
@@ -436,6 +436,9 @@ it("routes an approval to the configured low-cost model and persists an automati
             expect(settings.model).toBe("approval-model");
             expect(settings.reasoningEffort).toBe("medium");
             expect(input[0].content).toContain("run_command");
+            expect(input[0].content).toContain(
+              JSON.stringify({ workspaceRoot: root }).slice(1, -1),
+            );
             expect(instructions).toContain("工具审批分类器");
             expect(tools).toEqual([]);
             expect(options).toEqual({
@@ -558,6 +561,40 @@ it("requests human review instead of retrying with reasoning when the approval m
         }),
       ]),
     );
+  } finally {
+    await fixture.engine.close();
+    fixture.store.close();
+  }
+});
+
+it("requires a real session workspace before asking the approval model", async () => {
+  const fixture = await createFixture({
+    async run() {
+      throw new Error("missing-session approval must not call the model");
+    },
+  });
+
+  try {
+    fixture.config.settings.auxiliaryModel = "approval-model";
+    const pending = fixture.engine.approvals.request(
+      {
+        sessionId: "missing-session",
+        taskId: "missing-task",
+        tool: "run_command",
+        description: '{"command":"pwd","cwd":"/forged"}',
+      },
+      new AbortController().signal,
+    );
+
+    await expect.poll(() => fixture.engine.approvals.list()).toHaveLength(1);
+    expect(fixture.engine.approvals.list()[0].reviewReason).toContain(
+      "无法确认会话工作区",
+    );
+    fixture.engine.approvals.decide(
+      fixture.engine.approvals.list()[0].id,
+      "deny",
+    );
+    await expect(pending).resolves.toBe(false);
   } finally {
     await fixture.engine.close();
     fixture.store.close();

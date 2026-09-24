@@ -317,6 +317,9 @@ it("reviews and executes a capability command through the Broker", async () => {
             async run(input) {
               approvalCalls += 1;
               expect(JSON.stringify(input)).toContain("example.com");
+              expect(input[0].content).toContain(
+                JSON.stringify({ workspaceRoot: root }).slice(1, -1),
+              );
 
               return {
                 text: '{"decision":"approve","reason":"权限声明明确"}',

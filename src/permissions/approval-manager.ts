@@ -3,7 +3,7 @@
  * Engine 持有实例，ToolRunner 发起请求，HTTP 接口提交决定；changed 回调通知任务和界面更新。
  *
  * 1. list 列出待审批项，可按会话筛选；内存中另存可以在当前会话复用的授权。
- * 2. request 先检查取消和已有授权，再调用注入的低成本模型分类器；自动通过和拒绝不会创建待审批项。
+ * 2. request 先检查取消和已有授权，再将可信会话/任务 ID 传给分类器查询工作区；自动通过和拒绝不会创建待审批项。
  * 3. 人工确认请求保存模型理由并等待 decide；决定处理一次批准、会话批准和拒绝。
  *
  * 复用授权必须同时匹配会话和完整 grant key。分类模型只给出建议，工具本身的路径、命令和
@@ -32,6 +32,7 @@ export class ApprovalManager {
     private classify?: (
       subject: ApprovalSubject,
       signal: AbortSignal,
+      context: { sessionId: string; taskId: string },
     ) => Promise<ApprovalAssessment>,
     private assessed?: (
       subject: ApprovalSubject,
@@ -59,7 +60,10 @@ export class ApprovalManager {
 
     const subject = { tool: data.tool, description: data.description };
     const assessment = this.classify
-      ? await this.classify(subject, signal)
+      ? await this.classify(subject, signal, {
+          sessionId: data.sessionId,
+          taskId: data.taskId,
+        })
       : {
           decision: "human review" as const,
           reason: "未配置低成本审批模型，需要人工确认。",
