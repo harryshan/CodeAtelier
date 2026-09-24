@@ -935,23 +935,6 @@ export class Store {
         });
   }
 
-  /** 浏览器按游标读取有界事件窗口；大 JSON 在 Worker 内解析，不影响 agent 所需的全量事件读取。 */
-  eventsPage(sessionId: string, after = 0, before = 0, limit = 100) {
-    return this.runWorker<{
-      events: Event[];
-      hasOlderEvents: boolean;
-      hasNewerEvents: boolean;
-      newerTaskId?: string;
-    }>({
-      operation: "eventsPage",
-      file: this.selectSession(sessionId).file,
-      sessionId,
-      after,
-      before,
-      limit,
-    });
-  }
-
   context(id: string): any[] {
     const shard = this.sessionShard(id);
     if (!shard) {
@@ -1134,19 +1117,11 @@ export class Store {
 
   /** Worker 只接受固定 operation 和已定位的会话分片路径，不能成为通用 SQL 或命令执行入口。 */
   private async runWorker<T>(request: {
-    operation:
-      | "context"
-      | "events"
-      | "eventsPage"
-      | "latestSnapshot"
-      | "snapshot"
-      | "compact";
+    operation: "context" | "events" | "latestSnapshot" | "snapshot" | "compact";
     file: string;
     sessionId: string;
     snapshotId?: string;
     after?: number;
-    before?: number;
-    limit?: number;
     snapshot?: unknown;
     input?: unknown;
   }): Promise<T> {

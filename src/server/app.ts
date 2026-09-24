@@ -198,22 +198,15 @@ export async function createApp(
   });
   app.get("/api/sessions/:id", async (req, reply) => {
     const { id } = req.params as { id: string };
-    const { after, before, limit } = z
-      .object({
-        after: z.coerce.number().int().min(0).default(0),
-        before: z.coerce.number().int().positive().optional(),
-        limit: z.coerce.number().int().min(1).max(100).optional(),
-      })
-      .refine((value) => !value.before || (value.after === 0 && value.limit), {
-        message: "before 分页需要 limit，且不能与 after 同时使用。",
-      })
+    const { after } = z
+      .object({ after: z.coerce.number().int().min(0).default(0) })
       .parse(req.query);
 
     if (!store.get(id)) {
       return reply.code(404).send({ error: "会话不存在" });
     }
 
-    return engine.snapshot(id, after, before, limit);
+    return engine.snapshot(id, after);
   });
   app.post("/api/sessions/:id/tasks", async (req, reply) => {
     const { id } = req.params as { id: string };

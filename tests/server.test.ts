@@ -3,7 +3,7 @@
  * createFixture 使用 createApp、临时数据库和可取消的等待模型。
  *
  * 1. 测试夹具通过 bootstrap 获取合法 Cookie 和 token。
- * 2. 检查不同会话的数据隔离、双向有界历史分页，以及资源不存在、subagent 未就绪与请求体非法时的状态码。
+ * 2. 检查不同会话的数据隔离，以及资源不存在、subagent 未就绪与请求体非法时的状态码。
  * 3. 检查不同工作区可并行、同工作区排队、全局上限与设置互斥，再检查取消与人工恢复。
  * 4. 用伪造 token 和异常 Origin 检查写请求被拒绝。
  *
@@ -152,62 +152,6 @@ it("returns only events after the snapshot cursor while keeping current session 
         })
       ).statusCode,
     ).toBe(400);
-  } finally {
-    await fixture.app.close();
-  }
-});
-
-it("pages recent events in both directions without crossing sessions or repeating boundaries", async () => {
-  const fixture = await createFixture();
-
-  try {
-    const session = fixture.store.create(await temp());
-    const other = fixture.store.create(await temp());
-    fixture.store.event(other.id, "foreign", "notice", { text: "other" });
-    const events = Array.from({ length: 115 }, (_, index) =>
-      fixture.store.event(session.id, "task-one", "notice", { index }),
-    );
-    const read = async (query: string) => {
-      const response = await fixture.app.inject({
-        url: `/api/sessions/${session.id}?limit=100${query}`,
-        headers: fixture.headers,
-      });
-      expect(response.statusCode).toBe(200);
-
-      return response.json();
-    };
-
-    const recent = await read("");
-    expect(recent.events).toHaveLength(100);
-    expect(recent.events[0].id).toBe(events[15].id);
-    expect(recent.events.at(-1).id).toBe(events[114].id);
-    expect(recent.hasOlderEvents).toBe(true);
-    expect(recent.hasNewerEvents).toBe(false);
-
-    const older = await read(`&before=${recent.events[0].id}`);
-    expect(older.events.map((event: { id: number }) => event.id)).toEqual(
-      events.slice(0, 15).map((event) => event.id),
-    );
-    expect(older.hasOlderEvents).toBe(false);
-    expect(older.hasNewerEvents).toBe(true);
-    expect(older.newerTaskId).toBe("task-one");
-
-    const newer = await read(`&after=${older.events.at(-1).id}`);
-    expect(newer.events[0].id).toBe(recent.events[0].id);
-    expect(newer.hasOlderEvents).toBe(true);
-    expect(newer.hasNewerEvents).toBe(false);
-    for (const query of [
-      "limit=100&before=5&after=3",
-      "before=5",
-      "limit=101",
-      "limit=100&before=-1",
-    ]) {
-      const response = await fixture.app.inject({
-        url: `/api/sessions/${session.id}?${query}`,
-        headers: fixture.headers,
-      });
-      expect(response.statusCode).toBe(400);
-    }
   } finally {
     await fixture.app.close();
   }

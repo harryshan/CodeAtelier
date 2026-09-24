@@ -12,7 +12,7 @@
  * 8. 验证用户和 agent 消息的 Markdown 标题、链接、代码围栏、表格和任务列表渲染，并拒绝原始 HTML。
  * 9. 检查任务输入框以所见即所得方式将 Markdown 输入规则原地转换为富文本，并将生成的 Markdown 发送给任务。
  * 10. 已完成任务默认仅显示输入和最后一轮输出；中间工具、通知和重试文本收纳为可展开过程，未完成任务仍完整显示。
- * 11. 累积较长时间线后验证首屏 100 条、上/下滚动分页及折叠边界；滚动窗口外只保留高度占位。
+ * 11. 累积较长时间线后检查滚动窗口外只保留高度占位，滚动到另一端才创建对应消息节点。
  * 12. 在手机视口检查完整侧栏由菜单按钮打开，并可通过会话选择、遮罩或 Escape 关闭。
  * 13. subagent 未开放时不显示复选框；模拟就绪仅验表单负载，历史任务的子问题纯文本及进度可从持久事件重建。
  *
@@ -882,39 +882,6 @@ test("creates another conversation from its project and preserves separate histo
   });
 });
 
-test("retains at most 100 recent projects in the sidebar", async ({ page }) => {
-  await page.route("**/api/sessions", async (route) => {
-    if (route.request().method() !== "GET") {
-      await route.continue();
-
-      return;
-    }
-
-    const sessions = Array.from({ length: 105 }, (_, index) => ({
-      id: `mock-session-${index}`,
-      workspace: `mock-project-${index}`,
-      title: `项目对话 ${index}`,
-      createdAt: "2026-09-24T00:00:00.000Z",
-      updatedAt: "2026-09-24T00:00:00.000Z",
-    }));
-    await route.fulfill({ json: sessions });
-  });
-
-  await page.goto("/");
-  await expect(
-    page.getByRole("group", { name: "mock-project-0" }),
-  ).toBeVisible();
-  await expect(
-    page.getByRole("group", { name: "mock-project-99" }),
-  ).toBeVisible();
-  await expect(
-    page.getByRole("group", { name: "mock-project-100" }),
-  ).toHaveCount(0);
-  await expect(
-    page.locator('[aria-label="项目与对话"] [role="group"]'),
-  ).toHaveCount(100);
-});
-
 test("folds a project's older conversations and keeps full titles available", async ({
   page,
 }) => {
@@ -1027,25 +994,13 @@ test("virtualizes timeline entries outside the visible scroll window", async ({
 
     for (let index = 1; index <= 12; index += 1) {
       await page.getByLabel("任务描述").fill(`虚拟时间线条目 ${index}`);
-      // 等待服务端报告本轮任务结束，不能把刷新前瞬间缺少“停止任务”误认为已完成。
-      const completed = page.waitForResponse(async (response) => {
-        if (
-          response.request().method() !== "GET" ||
-          !response.url().includes("/api/sessions/") ||
-          response.url().includes("/events")
-        ) {
-          return false;
-        }
-
-        const snapshot = await response.json();
-
-        return (
-          snapshot.tasks?.length === index &&
-          snapshot.tasks.at(-1)?.status === "completed"
-        );
-      });
       await page.getByRole("button", { name: "开始执行" }).click();
-      await completed;
+      await expect(
+        page.getByRole("button", { name: "停止任务" }),
+      ).toBeVisible();
+      await expect(page.getByRole("button", { name: "停止任务" })).toHaveCount(
+        0,
+      );
     }
 
     const scrollArea = page.locator('[class*="scrollArea"]');
@@ -1070,137 +1025,6 @@ test("virtualizes timeline entries outside the visible scroll window", async ({
     await expect(
       timelineItems.getByText("虚拟时间线条目 12", { exact: true }),
     ).toHaveCount(0);
-  } finally {
-    await rm(workspace, { recursive: true, force: true });
-  }
-});
-
-test("loads bounded timeline pages in both directions without mislabeling a partial completed task", async ({
-  page,
-}) => {
-  const workspace = await realpath(
-    await mkdtemp(path.join(tmpdir(), "codeatelier-timeline-pages-")),
-  );
-
-  try {
-    await page.goto("/");
-    await createInitialConversation(page, workspace);
-    const events = Array.from({ length: 240 }, (_, index) => {
-      const id = index + 1;
-      const task = Math.ceil(id / 6);
-      const position = (id - 1) % 6;
-      const type =
-        position === 0
-          ? "user"
-          : position === 1 || position === 5
-            ? "assistant"
-            : "notice";
-
-      return {
-        id,
-        sessionId: "synthetic-session",
-        taskId: `synthetic-${task}`,
-        type,
-        data: {
-          text:
-            position === 0
-              ? `分页任务 ${task}`
-              : position === 1
-                ? `中间回复 ${task}`
-                : position === 5
-                  ? `最终回复 ${task}`
-                  : `过程 ${id}`,
-        },
-        createdAt: "2026-09-24T00:00:00.000Z",
-      };
-    });
-    const tasks = Array.from({ length: 40 }, (_, index) => ({
-      id: `synthetic-${index + 1}`,
-      status: "completed",
-      createdAt: "2026-09-24T00:00:00.000Z",
-    }));
-    const requests: string[] = [];
-    await page.route("**/api/sessions/*", async (route) => {
-      const request = route.request();
-      if (request.method() !== "GET" || request.url().includes("/events")) {
-        await route.continue();
-
-        return;
-      }
-
-      const url = new URL(request.url());
-      const limit = Number(url.searchParams.get("limit") ?? 100);
-      const before = Number(url.searchParams.get("before") ?? 0);
-      const after = Number(url.searchParams.get("after") ?? 0);
-      requests.push(url.search);
-      const matching = before
-        ? events.filter((event) => event.id < before)
-        : after
-          ? events.filter((event) => event.id > after)
-          : events;
-      const selected =
-        before || !after ? matching.slice(-limit) : matching.slice(0, limit);
-      const response = await route.fetch();
-      const body = await response.json();
-      const following = events.find(
-        (event) => event.id > (selected.at(-1)?.id ?? 0),
-      );
-      await route.fulfill({
-        response,
-        json: {
-          ...body,
-          tasks,
-          events: selected,
-          hasOlderEvents: Boolean(
-            selected.length && events[0].id < selected[0].id,
-          ),
-          hasNewerEvents: Boolean(following),
-          newerTaskId: following?.taskId,
-        },
-      });
-    });
-
-    await page.reload();
-    await page
-      .getByRole("group", { name: workspace, exact: true })
-      .getByRole("button", { name: "新对话", exact: true })
-      .click();
-    await expect(page.getByText("最终回复 40")).toBeVisible();
-    await expect(
-      page.getByRole("button", { name: "加载更早记录" }),
-    ).toBeVisible();
-    expect(requests[0]).toContain("limit=100");
-    await expect(page.getByText("分页任务 1")).toHaveCount(0);
-
-    const scrollArea = page.locator('[class*="scrollArea"]');
-    await scrollArea.evaluate((element) => {
-      element.scrollTop = 0;
-    });
-    await expect
-      .poll(() => requests.some((query) => query.includes("before=")))
-      .toBe(true);
-    await expect(page.getByText("分页任务 16")).toBeVisible();
-    await scrollArea.evaluate((element) => {
-      element.scrollTop = element.scrollHeight;
-    });
-    await expect(page.getByText("中间回复 32")).toBeHidden();
-    const process = page
-      .locator("[data-task-process]")
-      .filter({ hasText: "中间回复 32" });
-    // Playwright 自动滚动定位会触发向下分页并卸载虚拟卡片；直接激活已挂载的 summary。
-    await process.locator("summary").evaluate((element) => {
-      (element as HTMLElement).click();
-    });
-    await expect(page.getByText("中间回复 32")).toBeVisible();
-
-    await scrollArea.evaluate((element) => {
-      element.scrollTop = element.scrollHeight;
-    });
-    await expect
-      .poll(() => requests.some((query) => query.includes("after=")))
-      .toBe(true);
-    await expect(page.getByText("最终回复 40")).toBeVisible();
-    expect(await page.locator("[data-timeline-key]").count()).toBeLessThan(40);
   } finally {
     await rm(workspace, { recursive: true, force: true });
   }

@@ -123,10 +123,6 @@ export interface Settings {
 export interface Snapshot {
   session: Session;
   events: Event[];
-  /** 仅有界快照返回分页边界；旧的全量快照没有这些字段。 */
-  hasOlderEvents?: boolean;
-  hasNewerEvents?: boolean;
-  newerTaskId?: string;
   tasks: Task[];
   approvals: Approval[];
 }

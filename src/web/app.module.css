@@ -667,19 +667,6 @@
   margin-left: auto;
   white-space: nowrap;
 }
-.loadOlder {
-  display: block;
-  margin: 0 auto 16px;
-  padding: 8px 18px;
-  border: 1px solid #37505c;
-  border-radius: 8px;
-  background: #172831;
-  color: #c1d9e0;
-  cursor: pointer;
-}
-.loadOlder:hover {
-  background: #213a46;
-}
 .timeline {
   max-width: 950px;
   margin: auto;
