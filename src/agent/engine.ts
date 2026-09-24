@@ -952,7 +952,7 @@ export class Engine {
                   "tool_result",
                   clean,
                 );
-                this.store.saveContext(task.sessionId, body.input);
+                this.store.appendContext(task.sessionId, [last]);
               },
               expected,
             );
@@ -1059,6 +1059,9 @@ export class Engine {
               },
               request,
             ),
+          appendContext: async (_runtime, items) => {
+            this.store.appendContext(task.sessionId, items);
+          },
           appendSessionEvent: async (_runtime, type, data) => {
             captureToolEvent(type, data);
             emit(type, data);
@@ -2053,7 +2056,7 @@ export class Engine {
             }
 
             input.push(...response.output);
-            this.store.saveContext(session.id, input);
+            this.store.appendContext(session.id, response.output);
             if (response.text) {
               emit("assistant", { text: response.text, step, attempt });
             }
@@ -2131,7 +2134,7 @@ export class Engine {
                   call_id: node.callId,
                   output,
                 });
-                this.store.saveContext(session.id, input);
+                this.store.appendContext(session.id, [input.at(-1)]);
               };
 
               const subagentRequest =

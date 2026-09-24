@@ -16,7 +16,7 @@ import type { Event } from "../shared/types.js";
 export interface TaskContextStore {
   contextAsync(sessionId: string): Promise<any[]>;
   eventsAsync(sessionId: string): Promise<Event[]>;
-  saveContext(sessionId: string, input: any[]): void | Promise<void>;
+  appendContext(sessionId: string, items: any[]): void | Promise<void>;
 }
 
 function interruptedExecutionOutput(record: any) {
@@ -100,20 +100,25 @@ export async function prepareTaskContext(
     }
   }
 
+  const appended: any[] = [];
   for (const item of [...input]) {
     if (item.type === "function_call" && !answeredCallIds.has(item.call_id)) {
-      input.push({
+      const feedback = {
         type: "function_call_output",
         call_id: item.call_id,
         output: savedResultsByCallId.has(item.call_id)
           ? JSON.stringify(savedResultsByCallId.get(item.call_id))
           : interruptedExecutionOutput(executionByCallId.get(item.call_id)),
-      });
+      };
+      input.push(feedback);
+      appended.push(feedback);
     }
   }
 
-  input.push({ role: "user", content: prompt });
-  await store.saveContext(sessionId, input);
+  const user = { role: "user", content: prompt };
+  input.push(user);
+  appended.push(user);
+  await store.appendContext(sessionId, appended);
 
   return input;
 }

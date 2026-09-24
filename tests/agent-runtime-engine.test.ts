@@ -141,6 +141,19 @@ it("moves the Engine agent loop into the launched Runtime process", async () => 
 
     expect(store.task(task.id)?.status).toBe("completed");
     expect(modelCalls).toBe(2);
+    const chunks = store.db
+      .prepare(
+        "SELECT items FROM context_chunks WHERE sessionId=? ORDER BY position",
+      )
+      .all(session.id) as Array<{ items: string }>;
+    expect(chunks.map((chunk) => JSON.parse(chunk.items).length)).toEqual([
+      1, 1, 1,
+    ]);
+    expect(chunks.map((chunk) => JSON.parse(chunk.items)[0]?.type)).toEqual([
+      undefined,
+      "function_call",
+      "function_call_output",
+    ]);
     expect(closeCalls).toBe(1);
     expect(Buffer.concat(errors).toString("utf8")).toBe("");
     expect(store.replayCase(task.id)?.capture?.tools).toMatchObject([
@@ -162,6 +175,7 @@ it("moves the Engine agent loop into the launched Runtime process", async () => 
       "context.prepare.measure_request_view",
       "context.request",
       "context.request.measure_input",
+      "tool.result_persist",
     ]) {
       expect(
         trace.traceEvents.some(

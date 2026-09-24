@@ -5,7 +5,7 @@
  * 2. list/get/create 跨分片定位或聚合会话；新会话在最新分片达到容量上限后进入新文件，已有会话始终写回其初始分片。标题状态的领取、完成或失败保证首条 prompt 只生成一次标题。
  * 3. tasks/task/createTask/status 读写任务状态与不可变的 subagent 选择；旧分片逐个迁移，SQLite 的 0/1 在各读取入口转换为布尔值。queuedTasks 和 hasUnfinishedTask 供 Engine 调度跨会话队列，event/events 保存和分页读取事件。
  * 4. subagents/subagent_requests 按任务存计划、检查点、状态、子问题事件及请求回执，重启只中断未完成子任务；task_replays 保存可审计的模型/工具材料。
- * 5. context/saveContext 读写当前模型历史；较大的 context、events 和快照可交给 store-worker 在线程外解析或原子写入，避免阻塞 HTTP 主线程。
+ * 5. 旧 context 行在备份后原样迁入 context_chunks 基线；appendContext 只写新增批次，saveContext/压缩替换基线，读时按顺序重建；大记录由 store-worker 解析。
  * 6. close 由应用退出流程调用，关闭全部历史分片连接；Worker 自己打开目标会话分片的短生命周期 WAL 连接，不持有 Store 的连接。
  *
  * 事务只能回滚数据库，不能撤销文件修改或命令执行。恢复需要的未知状态和原始记录必须保留。
@@ -111,6 +111,22 @@ export class Store {
       db.exec(
         "ALTER TABLE tasks ADD COLUMN subagentsEnabled INTEGER NOT NULL DEFAULT 0 CHECK (subagentsEnabled IN (0, 1))",
       );
+    }
+
+    // 直接复制原始 JSON，既不重建历史也不把 UI 事件误当成模型协议项。
+    // INSERT/DELETE 必须同一事务：中断后重启只会看到旧行或新基线。
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      db.exec(
+        "INSERT INTO context_chunks(sessionId,position,items) SELECT sessionId,0,items FROM context WHERE NOT EXISTS (SELECT 1 FROM context_chunks WHERE context_chunks.sessionId=context.sessionId)",
+      );
+      db.exec(
+        "DELETE FROM context WHERE sessionId IN (SELECT sessionId FROM context_chunks)",
+      );
+      db.exec("COMMIT");
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
     }
   }
 
@@ -925,11 +941,13 @@ export class Store {
       return [];
     }
 
-    const row = shard.db
-      .prepare("SELECT items FROM context WHERE sessionId=?")
-      .get(id);
+    const rows = shard.db
+      .prepare(
+        "SELECT items FROM context_chunks WHERE sessionId=? ORDER BY position",
+      )
+      .all(id) as Array<{ items: string }>;
 
-    return row ? JSON.parse(String(row.items)) : [];
+    return rows.flatMap((row) => JSON.parse(row.items) as any[]);
   }
 
   /** 新任务读取活动上下文时在线程外 JSON.parse；空或短上下文直接读取以避免无意义的 Worker 启动。 */
@@ -943,13 +961,37 @@ export class Store {
         });
   }
 
+  /** 仅在显式替换活动历史（例如测试初始化）时建立基线；正常模型/工具反馈使用 appendContext。 */
   saveContext(id: string, items: any[]) {
+    this.selectSession(id);
+    this.db.exec("SAVEPOINT replace_context");
+    try {
+      this.db.prepare("DELETE FROM context_chunks WHERE sessionId=?").run(id);
+      this.db
+        .prepare(
+          "INSERT INTO context_chunks(sessionId,position,items) VALUES(?,0,?)",
+        )
+        .run(id, JSON.stringify(items));
+      this.db.exec("RELEASE replace_context");
+    } catch (error) {
+      this.db.exec("ROLLBACK TO replace_context");
+      this.db.exec("RELEASE replace_context");
+      throw error;
+    }
+  }
+
+  /** 在调用方的事件事务中追加一批协议项；空批次不产生记录。 */
+  appendContext(id: string, items: any[]) {
+    if (items.length === 0) {
+      return;
+    }
+
     this.selectSession(id);
     this.db
       .prepare(
-        "INSERT INTO context VALUES(?,?) ON CONFLICT(sessionId) DO UPDATE SET items=excluded.items",
+        "INSERT INTO context_chunks(sessionId,position,items) VALUES(?,(SELECT COALESCE(MAX(position)+1,0) FROM context_chunks WHERE sessionId=?),?)",
       )
-      .run(id, JSON.stringify(items));
+      .run(id, id, JSON.stringify(items));
   }
 
   latestContextSnapshot(sessionId: string): ContextSnapshot | undefined {
@@ -1027,10 +1069,12 @@ export class Store {
 
     if (source === "context") {
       const row = shard.db
-        .prepare("SELECT length(items) AS size FROM context WHERE sessionId=?")
-        .get(sessionId) as { size: number | null } | undefined;
+        .prepare(
+          "SELECT COALESCE(SUM(length(items)),0) AS size FROM context_chunks WHERE sessionId=?",
+        )
+        .get(sessionId) as { size: number };
 
-      return row?.size ?? 0;
+      return row.size;
     }
 
     const row = shard.db

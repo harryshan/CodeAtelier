@@ -3,7 +3,7 @@
  * 所有数据都通过已认证 RuntimeIpcPeer 请求 Broker；此类不缓存跨任务状态，也不接受任意数据库语句。
  *
  * 1. contextAsync/eventsAsync 读取当前 session 的模型上下文和历史事件，由 Broker 绑定的 identity 决定 session。
- * 2. saveContext 原子请求 Broker 保存完整上下文；失败会传播给 loop，工具副作用后不得假定持久化成功。
+ * 2. appendContext 只发送新协议项，saveContext 保留显式替换入口；失败传播给 loop，工具副作用后不得假定保存成功。
  * 3. appendEvent 只接受固定事件名和结构化 data；commitSubagentCollect 把子报告消费与主工具结果/上下文交给 Broker 原子保存。
  */
 
@@ -35,6 +35,12 @@ export class RuntimeSessionClient {
 
   async saveContext(_sessionId: string, input: any[]) {
     await this.peer.request("session_save_context", { input }, this.signal);
+  }
+
+  async appendContext(_sessionId: string, items: any[]) {
+    if (items.length > 0) {
+      await this.peer.request("session_append_context", { items }, this.signal);
+    }
   }
 
   async appendEvent(eventType: string, data: unknown) {

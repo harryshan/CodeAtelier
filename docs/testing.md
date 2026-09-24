@@ -143,7 +143,7 @@ item.done 回退、失败/不完整事件、服务实际错误 message/reason/co
 
 `store.test.ts` 用第二个真实 SQLite 连接锁住后续历史分片，验证事务取得部分锁后失败会释放前面分片，后续事务仍可提交。
 
-隔离、事件顺序与游标、上下文、事务回滚、queued/running/waiting 重启中断、实际开始时间、标题状态迁移和恢复，以及大 JSON 的 Worker 读取；按小阈值触发的历史 SQLite 分片、新旧分片聚合、重启发现和旧分片 Worker 读取；任务级 subagent 开关的布尔序列化、旧分片迁移默认关闭及未开放请求明确拒绝（UI 尚未启用）；逐次模型/工具捕获、legacy 历史标记、局部读取拒绝、哈希一致的分页读取重建和只写入新隔离目录
+隔离、事件顺序与游标、增量上下文批次重建与事务回滚、旧分片先备份再迁移以及备份失败保持旧数据、queued/running/waiting 重启中断、实际开始时间、标题状态迁移和恢复，以及大 JSON 的 Worker 读取；按小阈值触发的历史 SQLite 分片、新旧分片聚合、重启发现和旧分片 Worker 读取；任务级 subagent 开关的布尔序列化、旧分片迁移默认关闭及未开放请求明确拒绝（UI 尚未启用）；逐次模型/工具捕获、legacy 历史标记、局部读取拒绝、哈希一致的分页读取重建和只写入新隔离目录
 
 ### 会话统计
 
@@ -167,7 +167,7 @@ item.done 回退、失败/不完整事件、服务实际错误 message/reason/co
 
 主要测试：tracing.test.ts、agent-runtime-engine.test.ts、runtime-ipc.test.ts、tool-graph.test.ts、e2e/app.spec.ts。
 
-宿主与真实 Runtime 子进程的 `context.prepare`/`context.request` 及计量子阶段、独立模型与响应处理、工具计划/持久化及 instant/flow 事件导出；Runtime trace IPC 只接受固定阶段和有界数值属性，任意名称/文本字段关闭通道；主线程嵌套 begin/end slice、Task 包络、时序排序、整数 flow ID、可复用工具轨道、实际 tool 的完整结构化参数及递归凭据脱敏、按 session/task 独立持久化、终态后释放内存、认证下载、仅显示真实文件的统计框入口、关联元数据与普通长属性限长
+宿主与真实 Runtime 子进程的 `context.prepare`/`context.request` 及计量子阶段、Runtime `tool.result_persist`、独立模型与响应处理、工具计划/持久化及 instant/flow 事件导出；Runtime trace IPC 只接受固定阶段和有界数值属性，任意名称/文本字段关闭通道；主线程嵌套 begin/end slice、Task 包络、时序排序、整数 flow ID、可复用工具轨道、实际 tool 的完整结构化参数及递归凭据脱敏、按 session/task 独立持久化、终态后释放内存、认证下载、仅显示真实文件的统计框入口、关联元数据与普通长属性限长
 
 ### HTTP API、访问密码与监听范围
 

@@ -42,6 +42,7 @@ const runtimeTraceNameSchema = z.enum([
   "context.prepare.measure_request_view",
   "context.request",
   "context.request.measure_input",
+  "tool.result_persist",
   "subagent.worker",
   "subagent.model",
   "subagent.tool.read",
@@ -352,6 +353,13 @@ export const runtimeRequestSchema = z.discriminatedUnion("operation", [
       ...requestBase,
       operation: z.literal("session_save_context"),
       body: z.object({ input: z.array(z.unknown()) }).strict(),
+    })
+    .strict(),
+  z
+    .object({
+      ...requestBase,
+      operation: z.literal("session_append_context"),
+      body: z.object({ items: z.array(z.unknown()).max(100_000) }).strict(),
     })
     .strict(),
   z

@@ -10,12 +10,13 @@
  * 6. 以小容量阈值触发新会话分片，确认旧分片的上下文仍可由 Worker 读取，并在重启后发现全部分片。
  * 7. 任务级 subagent 选择写入队列后保持布尔类型；模拟旧表缺列并检查跨分片迁移默认关闭。
  * 8. 子任务计划、检查点、问题与请求回执真实落盘；重启保留已确认问题和未知模型请求，迟到报告不误标消费。
+ * 9. 增量上下文跨重启重建；旧分片先备份再迁移，备份失败保持原状。
  *
  * 重启要保留已有终态和上下文，不能把其他会话的数据混进来。
  */
 
 import { it, expect } from "vitest";
-import { readdirSync } from "node:fs";
+import { readdirSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import path from "node:path";
 import { Store } from "../src/sessions/store.js";
@@ -42,6 +43,128 @@ it("releases earlier shard transactions when a later shard is locked", async () 
     blocker.close();
     store.close();
   }
+});
+
+it("appends context batches and rolls back event plus feedback together", async () => {
+  const root = await temp();
+  const store = new Store(path.join(root, "history.sqlite"));
+  try {
+    const session = store.create(root);
+    const task = store.createTask(session.id);
+    const first = { role: "user", content: "before" };
+    const feedback = {
+      type: "function_call_output",
+      call_id: "read",
+      output: "ok",
+    };
+    store.saveContext(session.id, [first]);
+    store.appendContext(session.id, [feedback]);
+    store.appendContext(session.id, []);
+
+    expect(
+      store.db
+        .prepare(
+          "SELECT position,items FROM context_chunks WHERE sessionId=? ORDER BY position",
+        )
+        .all(session.id),
+    ).toEqual([
+      { position: 0, items: JSON.stringify([first]) },
+      { position: 1, items: JSON.stringify([feedback]) },
+    ]);
+    expect(store.context(session.id)).toEqual([first, feedback]);
+    await expect(store.contextAsync(session.id)).resolves.toEqual([
+      first,
+      feedback,
+    ]);
+
+    expect(() =>
+      store.transaction(() => {
+        store.event(session.id, task.id, "tool_result", { callId: "failed" });
+        store.appendContext(session.id, [
+          { type: "function_call_output", call_id: "failed", output: "x" },
+        ]);
+        throw new Error("write aborted");
+      }),
+    ).toThrow("write aborted");
+    expect(store.context(session.id)).toEqual([first, feedback]);
+    expect(store.events(session.id)).toEqual([]);
+  } finally {
+    store.close();
+  }
+});
+
+it("backs up every legacy shard before migrating its context", async () => {
+  const root = await temp();
+  const file = path.join(root, "history.sqlite");
+  let store = new Store(file, { maxShardBytes: 1 });
+  const first = store.create(root);
+  const second = store.create(root);
+  store.close();
+
+  for (const [shard, session, text] of [
+    [file, first.id, "old-one"],
+    [path.join(root, "history-000001.sqlite"), second.id, "old-two"],
+  ] as const) {
+    const db = new DatabaseSync(shard);
+    db.prepare("INSERT INTO context(sessionId,items) VALUES(?,?)").run(
+      session,
+      JSON.stringify([{ role: "user", content: text }]),
+    );
+    db.exec("DROP TABLE context_chunks; PRAGMA user_version = 7");
+    db.close();
+  }
+
+  store = new Store(file, { maxShardBytes: 1, interruptActive: false });
+  try {
+    expect(store.context(first.id)).toEqual([
+      { role: "user", content: "old-one" },
+    ]);
+    expect(store.context(second.id)).toEqual([
+      { role: "user", content: "old-two" },
+    ]);
+    store.appendContext(first.id, [{ role: "assistant", content: "new" }]);
+    expect(store.context(first.id)).toHaveLength(2);
+    const backups = readdirSync(path.join(root, "backups"));
+    expect(backups).toHaveLength(2);
+    for (const backup of backups) {
+      const db = new DatabaseSync(path.join(root, "backups", backup));
+      expect(db.prepare("SELECT items FROM context").all()).toHaveLength(1);
+      expect(db.prepare("PRAGMA user_version").get()).toEqual({
+        user_version: 7,
+      });
+      db.close();
+    }
+  } finally {
+    store.close();
+  }
+
+  store = new Store(file, { maxShardBytes: 1, interruptActive: false });
+  expect(store.context(first.id)).toHaveLength(2);
+  expect(readdirSync(path.join(root, "backups"))).toHaveLength(2);
+  store.close();
+});
+
+it("refuses migration when the legacy backup cannot be created", async () => {
+  const root = await temp();
+  const file = path.join(root, "history.sqlite");
+  const store = new Store(file);
+  const session = store.create(root);
+  store.close();
+  const db = new DatabaseSync(file);
+  db.prepare("INSERT INTO context(sessionId,items) VALUES(?,?)").run(
+    session.id,
+    JSON.stringify([{ role: "user", content: "safe" }]),
+  );
+  db.exec("PRAGMA user_version = 7");
+  db.close();
+  writeFileSync(path.join(root, "backups"), "block directory creation");
+
+  expect(() => new Store(file)).toThrow();
+  const untouched = new DatabaseSync(file);
+  expect(untouched.prepare("SELECT items FROM context").get()).toEqual({
+    items: JSON.stringify([{ role: "user", content: "safe" }]),
+  });
+  untouched.close();
 });
 
 it("keeps sessions isolated and supports ordered event cursors", async () => {

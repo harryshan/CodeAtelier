@@ -91,6 +91,10 @@ export interface RuntimeIpcBrokerHandlers {
     identity: RuntimeExecutionIdentity,
     input: unknown[],
   ): Promise<void>;
+  appendContext?(
+    identity: RuntimeExecutionIdentity,
+    items: unknown[],
+  ): Promise<void>;
   readContext(identity: RuntimeExecutionIdentity): Promise<unknown[]>;
   readEvents(identity: RuntimeExecutionIdentity): Promise<unknown[]>;
   latestContextSnapshot(identity: RuntimeExecutionIdentity): Promise<unknown>;
@@ -431,6 +435,19 @@ export class RuntimeIpcBrokerSession {
         return { saved: true };
       case "session_save_context":
         await this.handlers.saveContext(this.identity, request.body.input);
+
+        return { saved: true };
+      case "session_append_context":
+        if (this.handlers.appendContext) {
+          await this.handlers.appendContext(this.identity, request.body.items);
+        } else {
+          // 仅用于旧的内存 handler；生产 Broker 总是实现增量写入。
+          const current = await this.handlers.readContext(this.identity);
+          await this.handlers.saveContext(this.identity, [
+            ...current,
+            ...request.body.items,
+          ]);
+        }
 
         return { saved: true };
       case "session_read_context":

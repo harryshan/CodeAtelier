@@ -2,7 +2,7 @@
  * 在独立 Worker 线程中读取或写入较大的 SQLite JSON 字段，避免历史快照、上下文和事件的解析/序列化占用 HTTP 主线程。
  * Store 通过 worker_threads 一次性启动本模块；输入是数据库路径和受限 operation，输出是已解析的只读数据或完成信号。
  *
- * 1. readContext、readEvents、readLatestSnapshot 和 readSnapshot 从已有数据库读取大 JSON，并仅在本线程 JSON.parse。
+ * 1. readContext 顺序拼接基线与增量；其他读取从数据库加载大 JSON，仅在本线程解析。
  * 2. compact 在本线程 JSON.stringify 压缩前快照和活动上下文，并用与 Store 相同的 BEGIN IMMEDIATE 事务原子写入两张表。
  * 3. 主线程只接收结构化克隆结果；Worker 不处理权限、模型、文件或用户输入，也不会执行任意 SQL。
  *
@@ -27,11 +27,13 @@ function handle(request: Request) {
 
   try {
     if (request.operation === "context") {
-      const row = db
-        .prepare("SELECT items FROM context WHERE sessionId=?")
-        .get(request.sessionId) as { items: string } | undefined;
+      const rows = db
+        .prepare(
+          "SELECT items FROM context_chunks WHERE sessionId=? ORDER BY position",
+        )
+        .all(request.sessionId) as Array<{ items: string }>;
 
-      return row ? JSON.parse(row.items) : [];
+      return rows.flatMap((row) => JSON.parse(row.items) as unknown[]);
     }
 
     if (request.operation === "events") {
@@ -83,8 +85,11 @@ function handle(request: Request) {
         db.prepare(
           "INSERT INTO context_snapshots(id,sessionId,data) VALUES(?,?,?)",
         ).run(snapshotId, request.sessionId, snapshot);
+        db.prepare("DELETE FROM context_chunks WHERE sessionId=?").run(
+          request.sessionId,
+        );
         db.prepare(
-          "INSERT INTO context VALUES(?,?) ON CONFLICT(sessionId) DO UPDATE SET items=excluded.items",
+          "INSERT INTO context_chunks(sessionId,position,items) VALUES(?,0,?)",
         ).run(request.sessionId, input);
         db.exec("COMMIT");
       } catch (error) {

@@ -75,7 +75,7 @@ Engine 在任一节点产生副作用前校验整批 DAG，并以稳定拓扑顺
 
 ### 会话存储与 Replay Case
 
-`src/sessions/store.ts` 保存 sessions、tasks、events、context、新任务的高保真 replay 捕获以及尚未对外开放的子任务计划、检查点和请求结果账本；`src/agent/subagent-contracts.ts` 校验分工 action、计划 DAG 与数量上限，`subagent-limits.ts` 供宿主 Engine 共享公平的进程内 Worker 配额。`subagent-coordinator.ts` 在已标记任务内调度专属 Worker 并代理模型/只读请求；`subagent-worker.ts` 维护独立 loop；每个活动子 Worker 最多运行 120 秒，服务实报累计 token 超过 32,000 后作为失败终止，缺少实报时依赖 12 轮和 100,000 字符输入上限，且始终在 Worker 退出确认后归还租约。`ask_main` 只向主协调器发有界问题，可信 Store 原子保存事件与回执；`await` 可提前呈交最多四个待答问题，只有主代理用关联 `replyTo` 的 `message` 回复。收集报告预览不消费，主工具结果与消费状态在同一分片事务中保存，截断的反馈保留报告。当前 Engine/HTTP 仍拒绝开启；App 的勾选仅在 bootstrap 的服务端发布门禁通过时出现，Timeline 从持久化的任务标记与子计划/状态/收集事件重建历史；宿主和 Runtime 都在子状态落盘后通知 SSE 刷新。Runtime 经已认证 IPC 回到 Broker 核验子身份、分配跨进程共享的 lease、持久化子请求及原子提交主回执，独立 stdio harness 已通过；受保护 Worker bundle 已接入安装摘要，但尚未完成专用账户提升环境端到端验收。`history-shards.ts` 将既有 `history.sqlite` 作为首个兼容分片，并在最新分片（主库加 WAL）达到默认 1 GiB 后让**新会话**进入 `history-000001.sqlite` 等后续文件。
+`src/sessions/store.ts` 保存 sessions、tasks、events、按基线和增量批次重建的活动 context、新任务的高保真 replay 捕获以及尚未对外开放的子任务计划、检查点和请求结果账本；`src/agent/subagent-contracts.ts` 校验分工 action、计划 DAG 与数量上限，`subagent-limits.ts` 供宿主 Engine 共享公平的进程内 Worker 配额。`subagent-coordinator.ts` 在已标记任务内调度专属 Worker 并代理模型/只读请求；`subagent-worker.ts` 维护独立 loop；每个活动子 Worker 最多运行 120 秒，服务实报累计 token 超过 32,000 后作为失败终止，缺少实报时依赖 12 轮和 100,000 字符输入上限，且始终在 Worker 退出确认后归还租约。`ask_main` 只向主协调器发有界问题，可信 Store 原子保存事件与回执；`await` 可提前呈交最多四个待答问题，只有主代理用关联 `replyTo` 的 `message` 回复。收集报告预览不消费，主工具结果与消费状态在同一分片事务中保存，截断的反馈保留报告。当前 Engine/HTTP 仍拒绝开启；App 的勾选仅在 bootstrap 的服务端发布门禁通过时出现，Timeline 从持久化的任务标记与子计划/状态/收集事件重建历史；宿主和 Runtime 都在子状态落盘后通知 SSE 刷新。Runtime 经已认证 IPC 回到 Broker 核验子身份、分配跨进程共享的 lease、持久化子请求及原子提交主回执，独立 stdio harness 已通过；受保护 Worker bundle 已接入安装摘要，但尚未完成专用账户提升环境端到端验收。`history-shards.ts` 将既有 `history.sqlite` 作为首个兼容分片，并在最新分片（主库加 WAL）达到默认 1 GiB 后让**新会话**进入 `history-000001.sqlite` 等后续文件。
 
 单个会话始终留在初始分片，因此保持 SQLite 外键、事务、恢复和 Worker 路径语义；单次不可分割写入或单个超长会话仍可能略超阈值，不承诺自动重新分区既有历史。任务的 createdAt、startedAt、finishedAt 分别表示入队、实际开始和结束，排队时间不计入会话累计运行时间。初始数据库结构位于 `schema.ts`。
 
@@ -105,7 +105,7 @@ Agent Runtime 已有权限内的全部 Git 与命令在 Runtime 内执行且免�
 
 ### 性能追踪
 
-`src/tracing` 默认只在任务运行期间于 Broker 构造性能 timeline：宿主 loop 直接记录上下文计量/压缩、模型请求与退避、响应处理、工具计划、SandboxBroker 阶段、工具真实执行和工具结果持久化；Agent Runtime loop 则以严格 IPC trace event 上报固定的 `context.prepare`、`context.request` 及其计量子阶段，Broker 重建父子 span。已标记任务的 Worker/model/read 和显式 question/message/cancel 在 `Subagent <id>` 轨道上报开始、终态与耗时；Broker 核对已登记子 ID，IPC 白名单不接受消息正文或报告。
+`src/tracing` 默认只在任务运行期间于 Broker 构造性能 timeline：宿主 loop 直接记录上下文计量/压缩、模型请求与退避、响应处理、工具计划、SandboxBroker 阶段、工具真实执行和工具结果持久化；Agent Runtime loop 则以严格 IPC trace event 上报固定的 `context.prepare`、`context.request`、`tool.result_persist` 及计量子阶段，Broker 重建父子 span。已标记任务的 Worker/model/read 和显式 question/message/cancel 在 `Subagent <id>` 轨道上报开始、终态与耗时；Broker 核对已登记子 ID，IPC 白名单不接受消息正文或报告。
 
 该事件只允许固定名称以及 step/attempt/数量/状态等有界属性，不能充当任意 Runtime 日志通道。模型、退避与响应处理仍是独立 span，模型包装器记录长度、数量、usage、错误类别和首包时间。Node 主事件循环执行的上下文、模型、响应、计划和持久化 span 汇集于 `Main thread`，并以 begin/end slice 表示这些内部阶段；`Task` 根是生命周期包络。
 

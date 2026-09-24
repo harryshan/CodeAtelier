@@ -2,7 +2,7 @@
  * 用模拟模型驱动生产 Engine，检查任务限制和工具结果反馈。
  * createFixture 提供临时 Store，断言读取实际文件、事件和任务状态。
  *
- * 1. 检查达到步数或上下文上限时会停止，已经完成的工具结果仍然保存。
+ * 1. 检查达到步数或上下文上限时会停止，完成的工具结果按单批次增量保存。
  * 2. 传入非法工具参数，确认错误返回模型且文件没有变化。
  * 3. 检查项目规则加载、复杂任务先读取文件并获得信息后才持久化和展示计划摘要、大输出限制，以及多项互不冲突的工具调用会在同一轮全部执行。
  * 4. 检查多文件调用的逐文件进度及结果持久化、新任务必须重新读文件，以及含凭据相关源码的工具结果仍是合法 JSON。
@@ -124,6 +124,27 @@ it("captures model exchanges and complete tool results for a replay case", async
     await fixture.engine.active?.done;
 
     const task = fixture.store.tasks(fixture.session.id)[0];
+    const chunks = fixture.store.db
+      .prepare(
+        "SELECT items FROM context_chunks WHERE sessionId=? ORDER BY position",
+      )
+      .all(fixture.session.id) as Array<{ items: string }>;
+    expect(chunks.map((chunk) => JSON.parse(chunk.items))).toEqual([
+      [{ role: "user", content: "read the target" }],
+      [
+        expect.objectContaining({
+          type: "function_call",
+          call_id: "replay-read",
+        }),
+      ],
+      [
+        expect.objectContaining({
+          type: "function_call_output",
+          call_id: "replay-read",
+        }),
+      ],
+      [expect.objectContaining({ type: "message", role: "assistant" })],
+    ]);
     expect(fixture.store.replayCase(task.id)).toMatchObject({
       source: "captured",
       capture: {

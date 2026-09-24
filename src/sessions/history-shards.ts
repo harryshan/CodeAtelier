@@ -5,12 +5,14 @@
  * 1. 兼容现有的 history.sqlite 作为序号 0 分片，并发现同目录的 history-000001.sqlite 等后续分片。
  * 2. 统计主数据库与 WAL 文件的实际磁盘字节数；创建新会话前，已含会话且达到容量上限的最新分片会轮换到下一个文件。
  * 3. 保持单个会话始终位于其初始分片，避免跨 SQLite 文件的外键、事务和恢复语义变化；因此单个会话的一次不可分割写入仍可能使其所属分片略超阈值。
- * 4. close 关闭本进程持有的全部 DatabaseSync 连接。Worker 仍按 Store 提供的单一分片路径短暂打开自己的连接。
+ * 4. 打开含会话的旧分片时先用 SQLite 一致性快照备份到数据目录 backups；失败则拒绝升级。
+ * 5. 发现任何后续分片失败时关闭已打开连接；正常 close 关闭全部连接，Worker 按单一分片路径短暂打开自己的连接。
  *
- * 分片不构成安全隔离，也不迁移或重写已有历史；它只限制后续新会话对单个历史文件的持续增长。
+ * 分片不构成安全隔离，也不跨文件迁移已有会话；版本升级前会备份旧数据，后续新会话才会轮换到新的文件。
  */
 
 import { DatabaseSync } from "node:sqlite";
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import { SCHEMA_SQL } from "./schema.js";
@@ -136,16 +138,61 @@ export class HistoryShards {
       }
     }
 
-    return discovered
-      .sort((left, right) => left.sequence - right.sequence)
-      .map((shard) => this.open(shard.sequence, shard.file));
+    const opened: HistoryShard[] = [];
+    try {
+      for (const shard of discovered.sort(
+        (left, right) => left.sequence - right.sequence,
+      )) {
+        opened.push(this.open(shard.sequence, shard.file));
+      }
+
+      return opened;
+    } catch (error) {
+      // 后续分片备份/迁移失败时不能留下前面分片的活动句柄。
+      for (const shard of opened) {
+        shard.db.close();
+      }
+
+      throw error;
+    }
   }
 
   private open(sequence: number, file: string): HistoryShard {
+    const existing = existsSync(file);
     const db = new DatabaseSync(file);
-    db.exec(SCHEMA_SQL);
+    try {
+      if (existing) {
+        const version = db.prepare("PRAGMA user_version").get() as {
+          user_version: number;
+        };
+        const sessionsTable = db
+          .prepare(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sessions'",
+          )
+          .get();
+        if (
+          version.user_version < 8 &&
+          sessionsTable &&
+          db.prepare("SELECT 1 FROM sessions LIMIT 1").get()
+        ) {
+          const backupDirectory = path.join(path.dirname(file), "backups");
+          mkdirSync(backupDirectory, { recursive: true });
+          const destination = path.join(
+            backupDirectory,
+            `${path.basename(file)}.${new Date().toISOString().replace(/[:.]/g, "-")}.${randomUUID()}.sqlite`,
+          );
+          // VACUUM INTO 包含已提交的 WAL 内容；不能直接复制正在使用的主库文件。
+          db.prepare("VACUUM INTO ?").run(destination);
+        }
+      }
 
-    return { sequence, file, db };
+      db.exec(SCHEMA_SQL);
+
+      return { sequence, file, db };
+    } catch (error) {
+      db.close();
+      throw error;
+    }
   }
 
   private hasSessions(shard: HistoryShard) {
