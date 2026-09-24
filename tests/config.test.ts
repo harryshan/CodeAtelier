@@ -31,11 +31,13 @@ it("uses the explicit data directory and keeps the environment model authoritati
   expect(initial.settings.maxSteps).toBe(100);
   expect(initial.settings.maxConcurrentTasks).toBe(2);
   expect(initial.settings.maxContextTokens).toBe(300_000);
+  expect(initial.settings.contextChars).toBe(1_000_000);
   initial.update({
     settings: {
       ...initial.settings,
       reasoningEffort: "low",
       maxContextTokens: 240_000,
+      contextChars: 750_000,
     },
   });
   vi.stubEnv("CODEATELIER_MODEL", "next-environment-model");
@@ -44,6 +46,17 @@ it("uses the explicit data directory and keeps the environment model authoritati
   expect(reopened.settings.model).toBe("next-environment-model");
   expect(reopened.settings.reasoningEffort).toBe("low");
   expect(reopened.settings.maxContextTokens).toBe(240_000);
+  expect(reopened.settings.contextChars).toBe(750_000);
+});
+
+it("keeps an explicitly saved legacy character limit", async () => {
+  const root = await temp();
+  await writeFile(
+    path.join(root, "settings.json"),
+    JSON.stringify({ contextChars: 180_000 }),
+  );
+
+  expect(new Config(root).settings.contextChars).toBe(180_000);
 });
 
 it("normalizes environment connections and persists only preferences and memory keys", async () => {
