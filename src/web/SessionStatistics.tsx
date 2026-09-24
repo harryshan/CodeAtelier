@@ -8,7 +8,7 @@
  * 4. 工具成功率的分母是已完成结果，待审批或仍执行的调用单独显示，避免将进行中操作当作失败。
  * 5. 展开后读取当前会话真实存在的 trace 文件清单；只有同时结束且在清单中的任务才显示下载链接。
  *
- * 组件只展示当前 session 已持久化或正在接收的 Snapshot；刷新和重启后会从同一历史事件重新计算。
+ * 任务数量从完整任务索引读取；事件相关用量/工具计数仅覆盖当前加载的事件窗口，不冒充整个会话累计值。
  */
 
 import { useEffect, useState } from "react";
@@ -119,7 +119,11 @@ export function SessionStatistics({ data }: { data: Snapshot }) {
         <section className={s.statisticsPanel} aria-live="polite">
           <div className={s.statisticsHeading}>
             <div>
-              <small>当前对话</small>
+              <small>
+                {data.hasOlderEvents || data.hasNewerEvents
+                  ? "当前加载的历史窗口 · 任务数量为全量"
+                  : "当前对话"}
+              </small>
               <h2>会话统计</h2>
             </div>
             <span className={statistics.activeTask ? s.statisticsLive : ""}>

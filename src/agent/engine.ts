@@ -295,13 +295,15 @@ export class Engine {
     }
   }
 
-  /** HTTP 快照首次加载全量事件，后续刷新只解析游标后的新增事件；任务状态和审批始终从小索引重新读取。 */
-  async snapshot(id: string, after = 0) {
-    const events = await this.store.eventsAsync(id, after);
+  /** 有界快照供浏览器分页；未指定 limit 的调用方保留既有全量/增量契约。 */
+  async snapshot(id: string, after = 0, before = 0, limit?: number) {
+    const page = limit
+      ? await this.store.eventsPage(id, after, before, limit)
+      : { events: await this.store.eventsAsync(id, after) };
 
     return {
       session: this.store.get(id),
-      events,
+      ...page,
       tasks: this.store.tasks(id),
       approvals: this.approvals.list(id),
     };

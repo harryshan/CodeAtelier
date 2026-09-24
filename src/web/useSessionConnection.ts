@@ -1,17 +1,16 @@
 /**
  * 为 App 同步当前会话快照，并管理 SSE 连接和断线重试。
- * 接收会话 ID、连接开关及状态回调，返回快照 data、setData 和连接状态 connected。
+ * 接收会话 ID、连接开关及状态回调，返回有界快照、分页动作及连接状态。
  *
- * 1. effect 在选中会话后先清除旧快照并标记 loading；refresh 合并连续 SSE 通知，读取最新快照。
- * 2. connect 先 bootstrap 更新凭据、配置和 sandbox 状态，再建立当前会话的 EventSource；服务建立流时的首个 refresh
- *    是唯一初始快照请求，避免切换时重复下载同一段历史。
- * 3. 收到后续 refresh 就读快照，连接失败则关闭旧流并安排重试。
- * 4. 清理时标记 disposed、取消进行中的快照、清除定时器并关闭连接；晚到响应不会覆盖新会话。
+ * 1. effect 切换会话时清理旧状态；首个 refresh 只读取最近 100 条，之后按游标读取新增事件。
+ * 2. older/newer 按页双向移动固定大小的浏览器窗口；旧页浏览时 SSE 只更新任务状态和最新游标，不将远端事件混入不相邻的窗口。
+ * 3. connect 先 bootstrap 更新凭据和配置，再建立 EventSource；连续 refresh 合并处理，断线后重试。
+ * 4. 清理时取消正在进行的历史请求并关闭连接；晚到响应不能覆盖切换后的会话。
  *
  * 重连只恢复状态同步，不重发任务。服务停止后通过 enabled 关闭连接和重试。
  */
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import type { SandboxStatus, Settings, Snapshot } from "../shared/types";
 import { bootstrap, snapshot } from "./api";
@@ -28,11 +27,29 @@ export function useSessionConnection(
   const [data, setData] = useState<Snapshot>();
   const [connected, setConnected] = useState(true);
   const [loading, setLoading] = useState(false);
+  const [hasOlder, setHasOlder] = useState(false);
+  const [hasNewer, setHasNewer] = useState(false);
+  const [atLatest, setAtLatest] = useState(true);
+  const pager = useRef<{
+    older: () => Promise<boolean>;
+    newer: () => Promise<boolean>;
+  } | null>(null);
+  const loadOlder = useCallback(
+    () => pager.current?.older() ?? Promise.resolve(false),
+    [],
+  );
+  const loadNewer = useCallback(
+    () => pager.current?.newer() ?? Promise.resolve(false),
+    [],
+  );
 
   useEffect(() => {
     if (!selected || !enabled) {
       setData(undefined);
       setLoading(false);
+      setHasOlder(false);
+      setHasNewer(false);
+      pager.current = null;
 
       return;
     }
@@ -40,12 +57,85 @@ export function useSessionConnection(
     // 不能在新快照抵达前继续展示旧会话；否则侧栏已切换但主区域看似卡住。
     setData(undefined);
     setLoading(true);
+    setHasOlder(false);
+    setHasNewer(false);
+    setAtLatest(true);
     // 合并连续刷新通知，并在切换会话或关闭服务时取消过期的历史读取。
     let disposed = false;
     const snapshotRequest = new AbortController();
     let refreshInProgress = false;
     let refreshQueued = false;
     let lastEventId = 0;
+    let windowData: Snapshot | undefined;
+    let browsingLatest = true;
+    let paging = false;
+
+    const readPage = async (direction: "older" | "newer") => {
+      if (disposed || paging || !windowData?.events.length) {
+        return false;
+      }
+
+      paging = true;
+      try {
+        const before = direction === "older" ? windowData.events[0].id : 0;
+        const after = direction === "newer" ? windowData.events.at(-1)!.id : 0;
+        // 保留半页重叠，向上/向下滚动时不会整屏替换内容。
+        const page = await snapshot(
+          selected,
+          snapshotRequest.signal,
+          after,
+          before,
+          50,
+        );
+        if (disposed || page.events.length === 0) {
+          return false;
+        }
+
+        const combined =
+          direction === "older"
+            ? [...page.events, ...windowData.events]
+            : [...windowData.events, ...page.events];
+        const events =
+          direction === "older" ? combined.slice(0, 100) : combined.slice(-100);
+        const hasOlderEvents =
+          direction === "older"
+            ? (page.hasOlderEvents ?? false)
+            : combined.length > 100 || windowData.hasOlderEvents;
+        const newerTaskId =
+          combined.length > 100 && direction === "older"
+            ? combined[100].taskId
+            : page.newerTaskId;
+        lastEventId = Math.max(lastEventId, page.events.at(-1)!.id);
+        browsingLatest =
+          !page.hasNewerEvents && events.at(-1)!.id >= lastEventId;
+        windowData = {
+          ...page,
+          events,
+          hasOlderEvents,
+          hasNewerEvents: !browsingLatest,
+          newerTaskId: browsingLatest ? undefined : newerTaskId,
+        };
+        setData(windowData);
+        setHasOlder(Boolean(hasOlderEvents));
+        setHasNewer(!browsingLatest);
+        setAtLatest(browsingLatest);
+
+        return true;
+      } catch (error) {
+        if (!disposed && (error as Error).name !== "AbortError") {
+          setError((error as Error).message);
+        }
+
+        return false;
+      } finally {
+        paging = false;
+      }
+    };
+
+    pager.current = {
+      older: () => readPage("older"),
+      newer: () => readPage("newer"),
+    };
     const refresh = async () => {
       if (refreshInProgress) {
         refreshQueued = true;
@@ -55,28 +145,40 @@ export function useSessionConnection(
 
       refreshInProgress = true;
       try {
-        const v = await snapshot(selected, snapshotRequest.signal, lastEventId);
-        for (const event of v.events) {
-          lastEventId = Math.max(lastEventId, event.id);
+        const cursor = lastEventId;
+        const v = await snapshot(selected, snapshotRequest.signal, cursor);
+        if (disposed) {
+          return;
         }
 
-        if (!disposed) {
-          setData((current) => {
-            if (!current) {
-              return v;
-            }
+        lastEventId = v.events.at(-1)?.id ?? lastEventId;
+        if (!windowData) {
+          windowData = v;
+          setHasOlder(Boolean(v.hasOlderEvents));
+        } else if (browsingLatest) {
+          const events = [...windowData.events, ...v.events];
+          windowData = {
+            ...v,
+            events: events.slice(-100),
+            hasOlderEvents: events.length > 100 || windowData.hasOlderEvents,
+          };
+          setHasOlder(Boolean(windowData.hasOlderEvents));
+        } else {
+          windowData = {
+            ...v,
+            events: windowData.events,
+            hasOlderEvents: windowData.hasOlderEvents,
+            hasNewerEvents: true,
+            newerTaskId: windowData.newerTaskId,
+          };
+          setHasNewer(lastEventId > (windowData.events.at(-1)?.id ?? 0));
+        }
 
-            const knownEventIds = new Set(
-              current.events.map((event) => event.id),
-            );
-            const events = [
-              ...current.events,
-              ...v.events.filter((event) => !knownEventIds.has(event.id)),
-            ];
-
-            return { ...v, events };
-          });
-          setLoading(false);
+        setData(windowData);
+        setLoading(false);
+        // 大于单页的断线积压需继续读取；不能跳过中间事件或无限增加内存。
+        if (v.hasNewerEvents && v.events.length) {
+          refreshQueued = true;
         }
       } catch (e) {
         if (!disposed && (e as Error).name !== "AbortError") {
@@ -137,8 +239,18 @@ export function useSessionConnection(
       snapshotRequest.abort();
       clearTimeout(reconnect);
       stream?.close();
+      pager.current = null;
     };
   }, [selected, enabled, setSettings, setHasKey, setSandbox, setError]);
 
-  return { data, setData, connected, loading };
+  return {
+    data,
+    connected,
+    loading,
+    hasOlder,
+    hasNewer,
+    atLatest,
+    loadOlder,
+    loadNewer,
+  };
 }

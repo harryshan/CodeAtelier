@@ -5,7 +5,7 @@
  * 1. labels 和 textResult 处理工具名称及结果的显示格式。
  * 2. 按任务、步骤和尝试次数合并流式文本；已有完整 assistant 事件时去掉对应的临时文本，未完成文本紧随其最后一个 delta，而非错误追加到时间线末尾。MarkdownMessage 负责安全渲染用户和 agent 文本。
  * 3. 合并编辑进度与工具输出；将已保存的子任务选择、计划/状态/提问/收集从 Snapshot 和 SSE 事件重建。
- * 4. 已完成任务默认仅保留用户输入和最后一条 agent 输出，将中间过程收纳为可展开区域；未完成、失败、取消和中断任务继续完整显示。
+ * 4. 已完成任务默认仅保留用户输入和最后一条 agent 输出，将中间过程收纳为可展开区域；分页边界处若同一任务仍有更新的事件，则不能把窗口尾的回复误判为最终回复。
  * 5. 将可见条目及缓冲区交给虚拟列表；ResizeObserver 测得的高度用于在未渲染历史前后保留准确占位。
  * 6. 显示仍在接收的文本和待审批按钮，把用户选择发给后端。
  *
@@ -215,6 +215,7 @@ function collapseCompletedTaskProcesses(
   entries: TimelineEntry[],
   events: Event[],
   tasks: Snapshot["tasks"],
+  newerTaskId?: string,
 ) {
   const completedTaskIds = new Set(
     tasks.filter((task) => task.status === "completed").map((task) => task.id),
@@ -253,6 +254,7 @@ function collapseCompletedTaskProcesses(
     const isFinalOutput =
       entry.kind === "event" &&
       entry.event.type === "assistant" &&
+      taskId !== newerTaskId &&
       latestAssistantEventByTask.get(taskId) === entry.event.id;
 
     if (!isCompletedTask || isUserInput || isFinalOutput) {
@@ -901,6 +903,7 @@ export function Timeline({
     timelineEntries,
     data.events,
     data.tasks,
+    data.newerTaskId,
   );
   const { measureItem, range } = useVirtualTimeline(
     entries,

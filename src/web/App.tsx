@@ -3,18 +3,24 @@
  * 通过 api 请求后端，通过 useSessionConnection 同步会话，再交给 Timeline 和 SettingsPanel 展示。
  *
  * 1. 状态和 effects 管理当前会话、一次性 subagent 勾选、服务端发布门禁、弹窗、加载状态及自动滚动。
- * 2. 按服务端返回的工作区路径分组展示会话；项目可独立折叠，展开时默认仅显示最近五个对话，并可按需显示更早记录；手机端以可关闭的抽屉呈现该侧栏。
+ * 2. 限制浏览器保留最近 100 个项目，并按服务端返回的工作区路径分组；项目可独立折叠，每项目默认显示最近五个对话，手机端用可关闭的抽屉呈现侧栏。
  * 3. resume、reloadService、stopServer、createProject、createConversation 和 send 处理恢复、受确认的服务重载、关闭服务、连接项目、新建会话和发送消息，并显示操作结果。
- * 4. 服务关闭后显示重启说明；正常页面由侧栏或手机端导航抽屉、项目栏、实际 sandbox 模式、可折叠会话统计、会将已完成任务过程默认收纳的时间线或项目连接页、所见即所得 Markdown 任务编辑器组成。
+ * 4. 服务关闭后显示重启说明；正常页面由侧栏、项目栏、Sandbox 状态、可折叠统计、有界时间线与向上分页入口、任务编辑器组成。
  * 5. 末尾仅渲染设置、重载和关闭确认弹窗，项目连接不使用弹窗。
  *
  * 关闭请求失败时不能断言服务已经关闭。切换会话和断线重连都只更新显示，不能重新提交任务。
  */
 
 import { useSessionConnection } from "./useSessionConnection";
-import { useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import type { SandboxStatus, Session, Settings } from "../shared/types";
-import { api, bootstrap, sessions, snapshot } from "./api";
+import { api, bootstrap, sessions } from "./api";
 import { MarkdownTaskEditor } from "./MarkdownTaskEditor";
 import { SettingsPanel } from "./SettingsPanel";
 import { Timeline } from "./Timeline";
@@ -22,6 +28,26 @@ import { SessionStatistics } from "./SessionStatistics";
 import s from "./app.module.css";
 
 const RECENT_CONVERSATION_LIMIT = 5;
+const RECENT_PROJECT_LIMIT = 100;
+
+// 服务端按更新时间返回会话；只在浏览器保留最近的项目，不改变任一项目内部的历史展开能力。
+function limitRecentProjects(sessions: Session[]) {
+  const workspaces = new Set<string>();
+
+  return sessions.filter((session) => {
+    if (workspaces.has(session.workspace)) {
+      return true;
+    }
+
+    if (workspaces.size >= RECENT_PROJECT_LIMIT) {
+      return false;
+    }
+
+    workspaces.add(session.workspace);
+
+    return true;
+  });
+}
 
 export default function App() {
   const [list, setList] = useState<Session[]>([]);
@@ -49,7 +75,16 @@ export default function App() {
   const [serverState, setServerState] = useState<
     "running" | "reloading" | "stopping" | "stopped"
   >("running");
-  const { data, setData, connected, loading } = useSessionConnection(
+  const {
+    data,
+    connected,
+    loading,
+    hasOlder,
+    hasNewer,
+    loadOlder,
+    loadNewer,
+    atLatest,
+  } = useSessionConnection(
     selected,
     serverState === "running",
     setSettings,
@@ -70,7 +105,7 @@ export default function App() {
 
         return sessions();
       })
-      .then(setList)
+      .then((items) => setList(limitRecentProjects(items)))
       .catch((e) => setError(e.message));
   }, []);
 
@@ -79,9 +114,89 @@ export default function App() {
     setSubagentsEnabled(false);
   }, [selected]);
 
+  const lastScrolledSession = useRef("");
   useEffect(() => {
-    bottom.current?.scrollIntoView({ behavior: "smooth" });
-  }, [data?.events.length, data?.approvals.length]);
+    if (!data || !atLatest) {
+      return;
+    }
+
+    const container = scrollArea.current;
+    const firstLoad = lastScrolledSession.current !== data.session.id;
+    lastScrolledSession.current = data.session.id;
+    if (
+      firstLoad ||
+      (container &&
+        container.scrollHeight - container.scrollTop - container.clientHeight <
+          400)
+    ) {
+      bottom.current?.scrollIntoView({
+        behavior: firstLoad ? "instant" : "smooth",
+      });
+    }
+  }, [
+    data?.session.id,
+    data?.events.at(-1)?.id,
+    data?.approvals.length,
+    atLatest,
+  ]);
+
+  const scrollBeforePage = useRef<{ height: number; top: number } | null>(null);
+  useEffect(() => {
+    scrollBeforePage.current = null;
+  }, [selected]);
+
+  const requestOlder = useCallback(
+    (preservePosition: boolean) => {
+      const container = scrollArea.current;
+      if (preservePosition && container && !scrollBeforePage.current) {
+        scrollBeforePage.current = {
+          height: container.scrollHeight,
+          top: container.scrollTop,
+        };
+      }
+
+      void loadOlder().then((loaded) => {
+        if (!loaded) {
+          scrollBeforePage.current = null;
+        }
+      });
+    },
+    [loadOlder],
+  );
+
+  useEffect(() => {
+    const container = scrollArea.current;
+    if (!container) {
+      return;
+    }
+
+    const onScroll = () => {
+      if (container.scrollTop < 40 && hasOlder && !scrollBeforePage.current) {
+        requestOlder(true);
+      } else if (
+        container.scrollHeight - container.scrollTop - container.clientHeight <
+          40 &&
+        hasNewer
+      ) {
+        void loadNewer();
+      }
+    };
+
+    container.addEventListener("scroll", onScroll, { passive: true });
+
+    return () => container.removeEventListener("scroll", onScroll);
+  }, [hasOlder, hasNewer, loadNewer, requestOlder]);
+
+  // 前插历史后保持原先可见内容的位置；折叠和虚拟列表的高度随后由 ResizeObserver 修正。
+  useLayoutEffect(() => {
+    const previous = scrollBeforePage.current;
+    const container = scrollArea.current;
+    if (previous && container) {
+      container.scrollTop =
+        previous.top + container.scrollHeight - previous.height;
+      scrollBeforePage.current = null;
+    }
+  }, [data?.events[0]?.id]);
 
   // Sandbox 的实际模式可能在任务 preflight 后改变；历史事件立即更新徽标，不等待 SSE 重连。
   useEffect(() => {
@@ -181,7 +296,7 @@ export default function App() {
         instruction: prompt,
       });
       setPrompt("");
-      setData(await snapshot(selected));
+      // SSE refresh 会以有界快照同步恢复后的任务与事件，不另行全量读取历史。
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -247,7 +362,7 @@ export default function App() {
         workspace: projectWorkspace,
       });
 
-      setList(await sessions());
+      setList(limitRecentProjects(await sessions()));
       setSelected(session.id);
       setAddingProject(false);
       setMobileSidebarOpen(false);
@@ -277,7 +392,7 @@ export default function App() {
       });
       setPrompt("");
       setSubagentsEnabled(false);
-      setList(await sessions());
+      setList(limitRecentProjects(await sessions()));
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -605,6 +720,15 @@ export default function App() {
                 <code>{data?.session.workspace}</code>
                 <span>本地项目</span>
               </div>
+              {data && hasOlder && (
+                <button
+                  className={s.loadOlder}
+                  type="button"
+                  onClick={() => requestOlder(false)}
+                >
+                  加载更早记录
+                </button>
+              )}
               {data && (
                 <Timeline
                   data={data}
