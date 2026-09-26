@@ -143,7 +143,7 @@ item.done 回退、失败/不完整事件、服务实际错误 message/reason/co
 
 主要测试：store.test.ts、recovery.test.ts、title-generation.test.ts、replay-case.test.ts。
 
-`store.test.ts` 用第二个真实 SQLite 连接锁住后续历史分片，验证事务取得部分锁后失败会释放前面分片，后续事务仍可提交。
+`store.test.ts` 覆盖 Store Worker 串行常规写入、回执后的读写顺序、跨重启持久化和失败批次原子回滚；`tracing.test.ts` 验证独立 Store worker 轨道及无正文泄露。同步兼容入口与未开放 subagent 的迁移仍需另行验证；现有宿主/Runtime subagent 回归覆盖其同步账本与 Worker 事务交错时的执行、检查点及报告收集。`store.test.ts` 用第二个真实 SQLite 连接锁住后续历史分片，验证兼容连接有界等待后失败会释放前面分片，后续事务仍可提交。`shutdown.test.ts` 等待冷启动 Worker 确认命令输出已持久化，再验证 SSE 关闭与中断保存。
 
 隔离、事件顺序与游标、增量上下文批次重建与事务回滚、旧分片先备份再迁移以及备份失败保持旧数据、queued/running/waiting 重启中断、实际开始时间、标题状态迁移和恢复，以及大 JSON 的 Worker 读取；按小阈值触发的历史 SQLite 分片、新旧分片聚合、重启发现和旧分片 Worker 读取；任务级 subagent 开关的布尔序列化、旧分片迁移默认关闭及未开放请求明确拒绝（UI 尚未启用）；逐次模型/工具捕获、legacy 历史标记、局部读取拒绝、哈希一致的分页读取重建和只写入新隔离目录
 

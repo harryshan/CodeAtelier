@@ -226,6 +226,96 @@ it("rolls back task creation and events together when persistence fails", async 
   }
 });
 
+it("serializes regular writes on the Store worker and reads only committed results", async () => {
+  const root = await temp();
+  const file = path.join(root, "history.sqlite");
+  const store = new Store(file);
+
+  try {
+    const session = await store.createAsync(root, "worker writes");
+    const { task, events } = await store.startTaskAsync(
+      session.id,
+      "first prompt",
+      false,
+    );
+    expect(events.map((event) => event.type)).toEqual(["user"]);
+
+    const first = store.eventAsync(session.id, task.id, "notice", { order: 1 });
+    const second = store.appendContextAsync(
+      session.id,
+      [{ role: "user", content: "first" }],
+      task.id,
+    );
+    const third = store.eventAsync(session.id, task.id, "notice", { order: 2 });
+    await Promise.all([first, second, third]);
+    expect(
+      (await store.eventsAsync(session.id)).map((event) => event.type),
+    ).toEqual(["user", "notice", "notice"]);
+    expect(await store.contextAsync(session.id)).toEqual([
+      { role: "user", content: "first" },
+    ]);
+
+    await store.replayAsync(task.id, "create", null, { schemaVersion: 1 });
+    const feedback = {
+      type: "function_call_output",
+      call_id: "call-1",
+      output: "ok",
+    };
+    const result = await store.persistToolResultAsync(
+      session.id,
+      task.id,
+      { callId: "call-1" },
+      feedback,
+      "call-1",
+      { ok: true },
+    );
+    expect(result.id).toBeGreaterThan((await first).id);
+    expect((await store.eventsAsync(session.id)).at(-1)?.type).toBe(
+      "tool_result",
+    );
+    expect((await store.contextAsync(session.id)).at(-1)).toEqual(feedback);
+    await store.statusAsync(task.id, "completed");
+    expect(store.task(task.id)?.status).toBe("completed");
+  } finally {
+    await store.closeAsync();
+  }
+
+  const reopened = new Store(file, { interruptActive: false });
+  try {
+    expect(reopened.list()).toHaveLength(1);
+    expect(reopened.tasks(reopened.list()[0].id)[0]?.status).toBe("completed");
+  } finally {
+    reopened.close();
+  }
+});
+
+it("rolls back a worker batch when context serialization fails", async () => {
+  const root = await temp();
+  const store = new Store(path.join(root, "history.sqlite"));
+  try {
+    const session = await store.createAsync(root);
+    const task = store.createTask(session.id);
+    await expect(
+      store.persistToolResultAsync(
+        session.id,
+        task.id,
+        { content: "x" },
+        { type: "function_call_output", output: 1n },
+        "call-1",
+        { content: "x" },
+      ),
+    ).rejects.toThrow();
+    expect(await store.eventsAsync(session.id)).toEqual([]);
+    expect(await store.contextAsync(session.id)).toEqual([]);
+    const result = await store.eventAsync(session.id, task.id, "notice", {
+      safe: true,
+    });
+    expect(result.data).toEqual({ safe: true });
+  } finally {
+    await store.closeAsync();
+  }
+});
+
 it("reads large persisted JSON through a worker without changing its data", async () => {
   const root = await temp();
   const store = new Store(path.join(root, "db"));

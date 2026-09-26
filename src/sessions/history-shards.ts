@@ -6,7 +6,7 @@
  * 2. 统计主数据库与 WAL 文件的实际磁盘字节数；创建新会话前，已含会话且达到容量上限的最新分片会轮换到下一个文件。
  * 3. 保持单个会话始终位于其初始分片，避免跨 SQLite 文件的外键、事务和恢复语义变化；因此单个会话的一次不可分割写入仍可能使其所属分片略超阈值。
  * 4. 打开含会话的旧分片时先用 SQLite 一致性快照备份到数据目录 backups；失败则拒绝升级。
- * 5. 发现任何后续分片失败时关闭已打开连接；正常 close 关闭全部连接，Worker 按单一分片路径短暂打开自己的连接。
+ * 5. 主线程兼容连接遇到 Worker 短事务时最多等待 1 秒；发现分片失败时关闭已打开连接，正常 close 关闭全部连接。
  *
  * 分片不构成安全隔离，也不跨文件迁移已有会话；版本升级前会备份旧数据，后续新会话才会轮换到新的文件。
  */
@@ -159,7 +159,8 @@ export class HistoryShards {
 
   private open(sequence: number, file: string): HistoryShard {
     const existing = existsSync(file);
-    const db = new DatabaseSync(file);
+    // 未迁移的同步兼容事务可能与 Store Worker 的短事务交错；只作有界等待，不重放结果未知的写入。
+    const db = new DatabaseSync(file, { timeout: 1000 });
     try {
       if (existing) {
         const version = db.prepare("PRAGMA user_version").get() as {

@@ -6,7 +6,7 @@
  * 3. tasks/task/createTask/status 读写任务状态与不可变的 subagent 选择；旧分片逐个迁移，SQLite 的 0/1 在各读取入口转换为布尔值。queuedTasks 和 hasUnfinishedTask 供 Engine 调度跨会话队列，event/events 保存和分页读取事件。
  * 4. subagents/subagent_requests 按任务存计划、检查点、状态、子问题事件及请求回执，重启只中断未完成子任务；task_replays 保存可审计的模型/工具材料。
  * 5. 旧 context 行在备份后原样迁入 context_chunks 基线；appendContext 只写新增批次，saveContext/压缩替换基线，读时按顺序重建；大记录由 store-worker 解析。
- * 6. close 由应用退出流程调用，关闭全部历史分片连接；Worker 自己打开目标会话分片的短生命周期 WAL 连接，不持有 Store 的连接。
+ * 6. 常规事件/上下文/状态写入和大记录读取由有界串行 Store Worker 队列提交；closeAsync 排空并关闭线程后再关闭分片连接。
  *
  * 事务只能回滚数据库，不能撤销文件修改或命令执行。恢复需要的未知状态和原始记录必须保留。
  */
@@ -20,7 +20,7 @@ import type {
 } from "./replay-case.js";
 import { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
-import { Worker } from "node:worker_threads";
+import type { TraceRecorder } from "../tracing/recorder.js";
 import type {
   Session,
   Task,
@@ -37,6 +37,8 @@ import {
   DEFAULT_HISTORY_SHARD_MAX_BYTES,
   HistoryShards,
 } from "./history-shards.js";
+import { StoreWorkerQueue } from "./store-worker-queue.js";
+import type { StoreWorkerRequest } from "./store-worker.js";
 
 type TaskRow = Omit<Task, "subagentsEnabled"> & { subagentsEnabled: number };
 
@@ -44,6 +46,7 @@ export class Store {
   db: DatabaseSync;
   private readonly shards: HistoryShards;
   private nextEventId: number;
+  private readonly worker = new StoreWorkerQueue();
 
   constructor(
     file: string,
@@ -82,6 +85,14 @@ export class Store {
 
     // SQLite rowid 只在单一文件中单调；分片后显式分配全局事件游标，保持 SSE 增量读取兼容。
     this.nextEventId = this.shards.maxEventId() + 1;
+  }
+
+  setTracer(traces: TraceRecorder) {
+    this.worker.setTracer(traces);
+  }
+
+  async drain() {
+    await this.worker.drain();
   }
 
   /** 将历史会话标为完成，避免升级后用旧消息意外覆盖用户原有标题。 */
@@ -241,6 +252,100 @@ export class Store {
     return this.get(id)!;
   }
 
+  async createAsync(workspace: string, title?: string) {
+    await this.worker.drain();
+    const date = new Date().toISOString();
+    const id = randomUUID();
+    const manualTitle = title?.trim();
+    const shard = this.shards.forNewSession();
+    await this.worker.request<void>({
+      operation: "write",
+      file: shard.file,
+      sessionId: id,
+      writes: [
+        {
+          kind: "session",
+          values: [
+            id,
+            manualTitle || "新对话",
+            workspace,
+            date,
+            manualTitle ? "manual" : "pending",
+          ],
+        },
+      ],
+    });
+
+    return this.get(id)!;
+  }
+
+  async startTaskAsync(
+    sessionId: string,
+    prompt: string,
+    subagentsEnabled: boolean,
+    recovery?: unknown,
+  ) {
+    const session = this.get(sessionId);
+    if (!session) {
+      throw new Error("会话不存在。");
+    }
+
+    const firstPrompt =
+      session.titleState === "pending" && !this.hasEvent(sessionId, "user");
+    const taskId = randomUUID();
+    const userId = this.nextEventId++;
+    const recoveryId = recovery ? this.nextEventId++ : null;
+    const date = new Date().toISOString();
+    await this.worker.request<void>({
+      operation: "write",
+      file: this.selectSession(sessionId).file,
+      sessionId,
+      taskId,
+      writes: [
+        {
+          kind: "task",
+          values: [
+            taskId,
+            sessionId,
+            date,
+            Number(subagentsEnabled),
+            prompt,
+            recovery,
+            firstPrompt,
+            userId,
+            recoveryId,
+          ],
+        },
+      ],
+    });
+
+    return {
+      task: this.task(taskId)!,
+      firstPrompt,
+      events: this.taskEvents(taskId),
+    };
+  }
+
+  async titleAsync(
+    sessionId: string,
+    state: "completed" | "failed",
+    title?: string,
+    taskId?: string,
+  ) {
+    await this.worker.request<void>({
+      operation: "write",
+      file: this.selectSession(sessionId).file,
+      sessionId,
+      taskId,
+      writes: [
+        {
+          kind: "title",
+          values: [state, title ?? null, new Date().toISOString(), sessionId],
+        },
+      ],
+    });
+  }
+
   /** 以条件更新领取标题任务，避免重试、恢复或并发调用使用后续 prompt 覆盖首条消息。 */
   startTitleGeneration(sessionId: string) {
     this.selectSession(sessionId);
@@ -362,6 +467,32 @@ export class Store {
     this.db
       .prepare("INSERT INTO task_replays(taskId,data) VALUES(?,?)")
       .run(task.id, JSON.stringify(data));
+  }
+
+  async replayAsync(
+    taskId: string,
+    action:
+      | "create"
+      | "modelStart"
+      | "modelFinish"
+      | "toolStart"
+      | "toolFinish"
+      | "finish",
+    key: string | null,
+    data: unknown,
+  ) {
+    const task = this.task(taskId);
+    if (!task) {
+      throw new Error("任务不存在于历史分片中。");
+    }
+
+    await this.worker.request<void>({
+      operation: "write",
+      file: this.selectTask(taskId).file,
+      sessionId: task.sessionId,
+      taskId,
+      writes: [{ kind: "replay", values: [taskId, action, key, data] }],
+    });
   }
 
   private replayCapture(taskId: string) {
@@ -907,6 +1038,123 @@ export class Store {
     };
   }
 
+  /** 仅在 Worker 提交确认之后返回事件，供 Engine 再向 SSE 发布。 */
+  async eventAsync(
+    sessionId: string,
+    taskId: string,
+    type: string,
+    data: unknown,
+  ): Promise<Event> {
+    const id = this.nextEventId++;
+    const createdAt = new Date().toISOString();
+    const file = this.selectSession(sessionId).file;
+    await this.worker.request<void>({
+      operation: "write",
+      file,
+      sessionId,
+      taskId,
+      writes: [
+        {
+          kind: "event",
+          values: [id, sessionId, taskId, type, data, createdAt],
+        },
+      ],
+    });
+
+    return { id, sessionId, taskId, type, data, createdAt };
+  }
+
+  async persistToolResultAsync(
+    sessionId: string,
+    taskId: string,
+    data: unknown,
+    feedback: unknown,
+    callId: string,
+    replayResult: unknown,
+  ) {
+    const id = this.nextEventId++;
+    const createdAt = new Date().toISOString();
+    await this.worker.request<void>({
+      operation: "write",
+      file: this.selectSession(sessionId).file,
+      sessionId,
+      taskId,
+      writes: [
+        {
+          kind: "event",
+          values: [id, sessionId, taskId, "tool_result", data, createdAt],
+        },
+        {
+          kind: "replay",
+          values: [taskId, "toolFinish", callId, replayResult],
+        },
+        { kind: "context", values: [sessionId, [feedback]] },
+      ],
+    });
+
+    return {
+      id,
+      sessionId,
+      taskId,
+      type: "tool_result",
+      data,
+      createdAt,
+    } as Event;
+  }
+
+  async appendContextAsync(sessionId: string, items: any[], taskId?: string) {
+    if (!items.length) {
+      return;
+    }
+
+    await this.worker.request<void>({
+      operation: "write",
+      file: this.selectSession(sessionId).file,
+      sessionId,
+      taskId,
+      writes: [{ kind: "context", values: [sessionId, items] }],
+    });
+  }
+
+  async saveContextAsync(sessionId: string, items: any[], taskId?: string) {
+    await this.worker.request<void>({
+      operation: "write",
+      file: this.selectSession(sessionId).file,
+      sessionId,
+      taskId,
+      writes: [{ kind: "contextReplace", values: [sessionId, items] }],
+    });
+  }
+
+  async statusAsync(id: string, status: TaskStatus, error?: string) {
+    const task = this.task(id);
+    if (!task) {
+      throw new Error("任务不存在于历史分片中。");
+    }
+
+    const now = new Date().toISOString();
+    await this.worker.request<void>({
+      operation: "write",
+      file: this.selectTask(id).file,
+      sessionId: task.sessionId,
+      taskId: id,
+      writes: [
+        {
+          kind: "status",
+          values: [
+            status,
+            error ?? null,
+            status === "running" ? now : null,
+            ["completed", "failed", "cancelled", "interrupted"].includes(status)
+              ? now
+              : null,
+            id,
+          ],
+        },
+      ],
+    });
+  }
+
   events(sessionId: string, after = 0) {
     const shard = this.sessionShard(sessionId);
     if (!shard) {
@@ -1106,7 +1354,7 @@ export class Store {
       throw new Error("压缩快照的父快照不属于目标会话。");
     }
 
-    await this.runWorker<void>({
+    await this.worker.request<void>({
       operation: "compact",
       file: this.selectSession(sessionId).file,
       sessionId,
@@ -1115,51 +1363,18 @@ export class Store {
     });
   }
 
-  /** Worker 只接受固定 operation 和已定位的会话分片路径，不能成为通用 SQL 或命令执行入口。 */
-  private async runWorker<T>(request: {
-    operation: "context" | "events" | "latestSnapshot" | "snapshot" | "compact";
-    file: string;
-    sessionId: string;
-    snapshotId?: string;
-    after?: number;
-    snapshot?: unknown;
-    input?: unknown;
-  }): Promise<T> {
-    const source = import.meta.url.endsWith(".ts")
-      ? new URL("./store-worker.ts", import.meta.url)
-      : new URL("./store-worker.js", import.meta.url);
-    const worker = new Worker(source, {
-      execArgv: source.pathname.endsWith(".ts")
-        ? ["--import", "tsx"]
-        : undefined,
-    });
-    worker.unref();
+  /** 所有异步读写都经过同一队列，保证先写后读及压缩原子提交的顺序。 */
+  private runWorker<T>(request: Omit<StoreWorkerRequest, "id">): Promise<T> {
+    return this.worker.request<T>(request);
+  }
 
-    return new Promise<T>((resolve, reject) => {
-      const cleanup = () => {
-        void worker.terminate();
-      };
-
-      worker.once("error", (error) => {
-        cleanup();
-        reject(error);
-      });
-      worker.once(
-        "message",
-        (message: { ok: boolean; value?: T; error?: string }) => {
-          cleanup();
-          if (message.ok) {
-            resolve(message.value as T);
-          } else {
-            reject(new Error(message.error || "Store Worker 执行失败。"));
-          }
-        },
-      );
-      worker.postMessage(request);
-    });
+  async closeAsync() {
+    await this.worker.close();
+    this.shards.close();
   }
 
   close() {
+    void this.worker.close();
     this.shards.close();
   }
 }

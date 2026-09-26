@@ -141,13 +141,17 @@ it("shutdown acknowledges a running task, closes SSE, releases the port and pers
       "once",
     );
 
+    // 首次命令输出要等待冷启动的 Store Worker 提交，不能用默认的短轮询期限判断子进程未启动。
     await expect
-      .poll(() =>
-        fixture.store
-          .events(session.id)
-          .some(
-            (e) => e.type === "command_output" && e.data.text.includes("ready"),
-          ),
+      .poll(
+        () =>
+          fixture.store
+            .events(session.id)
+            .some(
+              (e) =>
+                e.type === "command_output" && e.data.text.includes("ready"),
+            ),
+        { timeout: 10_000 },
       )
       .toBe(true);
     const stream = await fetch(url + `/api/sessions/${session.id}/events`, {

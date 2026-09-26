@@ -113,6 +113,8 @@ tracing 默认启用：每个实际开始的任务在当前服务进程内生成
 
 统计框通过受保护的 `GET /api/sessions/:id/traces` 查询实际存在的文件，只有已保存 trace 才显示下载入口；`GET /api/tasks/:id/trace` 也只读取该文件并可在 [ui.perfetto.dev](https://ui.perfetto.dev) 打开。接口不接受写入，也沿用 cookie 校验；任务不存在、仍在执行或尚未成功保存 trace 时返回 404。
 
+常规 SQLite 请求在 `Store queue` 和 `Store worker` 两条独立 Perfetto 轨道展示排队和执行/提交回执；轨道只记录任务与请求 ID、操作类别、耗时和失败类别，不记录 SQL 参数或持久化正文。Worker 故障会使当前及待处理写入失败，不自动重放；诊断后人工恢复。未迁移的同步兼容入口及未开放的 subagent 账本不走此队列，与 Worker 写同一分片时主线程连接最多等待 SQLite 写锁 1 秒；仍可能短暂阻塞主线程，不能将其计入 Store worker 轨道。
+
 trace 含关联 ID、模型名称、步骤/尝试、字节/项目数量、usage、退出/错误类别、耗时及已脱敏的完整工具参数；不含完整提示词、模型输出、工具输出或服务错误正文。tool 参数中的源码、命令与路径会持久化到本机 trace，API key、认证头、cookie、token 与 password 等值会递归遮盖。它不是会话历史、运行日志或高保真 replay 存档；服务重启不影响已结束任务的 trace 文件下载。
 
 Replay Case 已独立实现脱敏、存储与手动导出，见 [任务 Replay Case](replay-cases.md)；原始模型 payload 不进入 Perfetto 属性。

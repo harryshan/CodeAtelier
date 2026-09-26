@@ -1,6 +1,6 @@
 /**
  * 在独立 Worker 线程中读取或写入较大的 SQLite JSON 字段，避免历史快照、上下文和事件的解析/序列化占用 HTTP 主线程。
- * Store 通过 worker_threads 一次性启动本模块；输入是数据库路径和受限 operation，输出是已解析的只读数据或完成信号。
+ * Store 的串行队列复用本 Worker；输入是数据库路径和受限 operation，输出是已解析的数据或提交回执。
  *
  * 1. readContext 顺序拼接基线与增量；其他读取从数据库加载大 JSON，仅在本线程解析。
  * 2. compact 在本线程 JSON.stringify 压缩前快照和活动上下文，并用与 Store 相同的 BEGIN IMMEDIATE 事务原子写入两张表。
@@ -12,18 +12,41 @@
 import { DatabaseSync } from "node:sqlite";
 import { parentPort } from "node:worker_threads";
 
-interface Request {
-  operation: "context" | "events" | "latestSnapshot" | "snapshot" | "compact";
+export interface StoreWorkerRequest {
+  id: number;
+  operation:
+    "context" | "events" | "latestSnapshot" | "snapshot" | "compact" | "write";
   file: string;
   sessionId: string;
+  taskId?: string;
   snapshotId?: string;
   after?: number;
   snapshot?: unknown;
   input?: unknown;
+  writes?: Array<{
+    kind:
+      | "event"
+      | "context"
+      | "contextReplace"
+      | "status"
+      | "replay"
+      | "session"
+      | "title"
+      | "task";
+    values: unknown[];
+  }>;
 }
 
-function handle(request: Request) {
-  const db = new DatabaseSync(request.file);
+export interface StoreWorkerResponse {
+  id: number;
+  ok: boolean;
+  value?: unknown;
+  error?: string;
+}
+
+function handle(request: StoreWorkerRequest) {
+  const db = new DatabaseSync(request.file, { timeout: 5000 });
+  db.exec("PRAGMA foreign_keys = ON");
 
   try {
     if (request.operation === "context") {
@@ -68,6 +91,203 @@ function handle(request: Request) {
       return row ? JSON.parse(row.data) : undefined;
     }
 
+    if (request.operation === "write") {
+      if (!request.writes?.length) {
+        throw new Error("Store 写入请求不能为空。");
+      }
+
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        for (const write of request.writes) {
+          if (write.kind === "event") {
+            const [id, sessionId, taskId, type, data, createdAt] = write.values;
+            db.prepare(
+              "INSERT INTO events(id,sessionId,taskId,type,data,createdAt) VALUES(?,?,?,?,?,?)",
+            ).run(
+              id as number,
+              sessionId as string,
+              taskId as string,
+              type as string,
+              JSON.stringify(data),
+              createdAt as string,
+            );
+            db.prepare("UPDATE sessions SET updatedAt=? WHERE id=?").run(
+              createdAt as string,
+              sessionId as string,
+            );
+          } else if (write.kind === "context") {
+            const [sessionId, items] = write.values;
+            db.prepare(
+              "INSERT INTO context_chunks(sessionId,position,items) VALUES(?,(SELECT COALESCE(MAX(position)+1,0) FROM context_chunks WHERE sessionId=?),?)",
+            ).run(
+              sessionId as string,
+              sessionId as string,
+              JSON.stringify(items),
+            );
+          } else if (write.kind === "contextReplace") {
+            const [sessionId, items] = write.values;
+            db.prepare("DELETE FROM context_chunks WHERE sessionId=?").run(
+              sessionId as string,
+            );
+            db.prepare(
+              "INSERT INTO context_chunks(sessionId,position,items) VALUES(?,0,?)",
+            ).run(sessionId as string, JSON.stringify(items));
+          } else if (write.kind === "status") {
+            const [status, error, startedAt, finishedAt, taskId] = write.values;
+            db.prepare(
+              "UPDATE tasks SET status=?,error=?,startedAt=CASE WHEN ? IS NULL THEN startedAt ELSE COALESCE(startedAt,?) END,finishedAt=COALESCE(?,finishedAt) WHERE id=?",
+            ).run(
+              status as string,
+              error as string | null,
+              startedAt as string | null,
+              startedAt as string | null,
+              finishedAt as string | null,
+              taskId as string,
+            );
+          } else if (write.kind === "session") {
+            const [id, title, workspace, date, titleState] =
+              write.values as string[];
+            db.prepare(
+              "INSERT INTO sessions(id,title,workspace,createdAt,updatedAt,titleState) VALUES(?,?,?,?,?,?)",
+            ).run(id, title, workspace, date, date, titleState);
+          } else if (write.kind === "task") {
+            const [
+              id,
+              sessionId,
+              date,
+              subagentsEnabled,
+              prompt,
+              recovery,
+              firstPrompt,
+              userId,
+              recoveryId,
+            ] = write.values;
+            if (
+              db
+                .prepare(
+                  "SELECT 1 FROM tasks WHERE sessionId=? AND status IN ('queued','running','waiting') LIMIT 1",
+                )
+                .get(sessionId as string)
+            ) {
+              throw new Error(
+                "当前会话已有运行中或排队中的任务，请等待或取消。",
+              );
+            }
+
+            db.prepare(
+              "INSERT INTO tasks(id,sessionId,status,createdAt,subagentsEnabled) VALUES(?,?,'queued',?,?)",
+            ).run(
+              id as string,
+              sessionId as string,
+              date as string,
+              subagentsEnabled as number,
+            );
+            const event = db.prepare(
+              "INSERT INTO events(id,sessionId,taskId,type,data,createdAt) VALUES(?,?,?,?,?,?)",
+            );
+            event.run(
+              userId as number,
+              sessionId as string,
+              id as string,
+              "user",
+              JSON.stringify({ text: prompt }),
+              date as string,
+            );
+            if (recovery) {
+              event.run(
+                recoveryId as number,
+                sessionId as string,
+                id as string,
+                "recovery",
+                JSON.stringify(recovery),
+                date as string,
+              );
+            }
+
+            db.prepare("UPDATE sessions SET updatedAt=? WHERE id=?").run(
+              date as string,
+              sessionId as string,
+            );
+            if (firstPrompt) {
+              db.prepare(
+                "UPDATE sessions SET titleState='generating' WHERE id=? AND titleState='pending'",
+              ).run(sessionId as string);
+            }
+          } else if (write.kind === "title") {
+            const [state, title, date, sessionId] = write.values;
+            if (state === "completed") {
+              db.prepare(
+                "UPDATE sessions SET title=?,titleState='completed',updatedAt=? WHERE id=? AND titleState='generating'",
+              ).run(title as string, date as string, sessionId as string);
+            } else {
+              db.prepare(
+                "UPDATE sessions SET titleState='failed' WHERE id=? AND titleState='generating'",
+              ).run(sessionId as string);
+            }
+          } else if (write.kind === "replay") {
+            const [taskId, action, key, data] = write.values;
+            if (action === "create") {
+              db.prepare(
+                "INSERT INTO task_replays(taskId,data) VALUES(?,?)",
+              ).run(
+                taskId as string,
+                JSON.stringify({
+                  ...(data as object),
+                  modelExchanges: [],
+                  tools: [],
+                }),
+              );
+            } else {
+              const row = db
+                .prepare("SELECT data FROM task_replays WHERE taskId=?")
+                .get(taskId as string) as { data: string } | undefined;
+              if (row) {
+                const capture = JSON.parse(row.data);
+                if (action === "modelStart") {
+                  capture.modelExchanges.push(data);
+                } else if (action === "modelFinish") {
+                  const exchange = capture.modelExchanges.find(
+                    (entry: { id: string }) => entry.id === key,
+                  );
+                  if (exchange) {
+                    Object.assign(exchange, data);
+                  }
+                } else if (action === "toolStart") {
+                  capture.tools.push(data);
+                } else if (action === "toolFinish") {
+                  const tool = capture.tools.find(
+                    (entry: { callId: string }) => entry.callId === key,
+                  );
+                  if (tool) {
+                    tool.result = data;
+                  }
+                } else if (action === "finish") {
+                  capture.status = data;
+                  capture.finalizedAt = new Date().toISOString();
+                } else {
+                  throw new Error("未知的 replay 更新类型。");
+                }
+
+                db.prepare("UPDATE task_replays SET data=? WHERE taskId=?").run(
+                  JSON.stringify(capture),
+                  taskId as string,
+                );
+              }
+            }
+          } else {
+            throw new Error("未知的 Store 写入类型。");
+          }
+        }
+
+        db.exec("COMMIT");
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+
+      return undefined;
+    }
+
     if (request.operation === "compact") {
       if (request.snapshot === undefined || request.input === undefined) {
         throw new Error("压缩存储请求缺少快照或活动上下文。");
@@ -106,11 +326,16 @@ function handle(request: Request) {
   }
 }
 
-parentPort?.once("message", (request: Request) => {
+parentPort?.on("message", (request: StoreWorkerRequest) => {
   try {
-    parentPort?.postMessage({ ok: true, value: handle(request) });
+    parentPort?.postMessage({
+      id: request.id,
+      ok: true,
+      value: handle(request),
+    });
   } catch (error) {
     parentPort?.postMessage({
+      id: request.id,
       ok: false,
       error: error instanceof Error ? error.message : "Store Worker 执行失败。",
     });

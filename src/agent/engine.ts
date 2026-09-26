@@ -135,6 +135,8 @@ export class Engine {
   private readonly subagentLimits = new SubagentLimits();
   /** 当前进程仅保留运行中任务构造 trace 所需的状态，任务落盘后立即释放。 */
   readonly traces = new TraceRecorder();
+  private readonly workerTasks = new Set<string>();
+  private readonly persistenceErrors = new Map<string, Error>();
   /** 已结束任务的 trace 另行按会话/任务写入数据目录，服务重启后仍可下载。 */
   readonly traceArchive: TraceArchive;
   /** SandboxBroker 在任务内固定安全 fallback；执行已开始后的未知结果仍不会重放。 */
@@ -170,6 +172,7 @@ export class Engine {
     private agentRuntimeLauncher?: AgentRuntimeLauncher,
   ) {
     this.traceArchive = new TraceArchive(config.directory, log);
+    this.store.setTracer(this.traces);
     this.sandboxLog = createSandboxLogger(
       config.directory,
       config.settings.logLevel,
@@ -315,10 +318,30 @@ export class Engine {
     const clean = JSON.parse(
       redactJson(JSON.stringify(data), [this.config.apiKey]),
     );
-    const event = this.store.event(task.sessionId, task.id, type, clean);
+    if (this.workerTasks.has(task.id)) {
+      void this.store.eventAsync(task.sessionId, task.id, type, clean).then(
+        (event) => {
+          this.events.emit("event", event);
+          this.events.emit("change", task.sessionId);
+        },
+        (error: Error) => this.persistenceErrors.set(task.id, error),
+      );
 
+      return;
+    }
+
+    const event = this.store.event(task.sessionId, task.id, type, clean);
     this.events.emit("event", event);
     this.events.emit("change", task.sessionId);
+  }
+
+  private async drainEvents(taskId: string) {
+    await this.store.drain();
+    const error = this.persistenceErrors.get(taskId);
+    if (error) {
+      this.persistenceErrors.delete(taskId);
+      throw error;
+    }
   }
 
   /** 每次得到服务实报 usage 都随会话保存；缺失 usage 不补零，调用次数由 model_request 独立记录。 */
@@ -344,13 +367,19 @@ export class Engine {
     return captureModelProvider(
       provider,
       {
-        startModelExchange: (exchange) => {
-          this.store.startReplayModelExchange(task.id, clean(exchange));
+        startModelExchange: async (exchange) => {
+          await this.drainEvents(task.id);
+          await this.store.replayAsync(
+            task.id,
+            "modelStart",
+            null,
+            clean(exchange),
+          );
 
           return exchange.id;
         },
         finishModelExchange: (id, outcome) =>
-          this.store.finishReplayModelExchange(task.id, id, clean(outcome)),
+          this.store.replayAsync(task.id, "modelFinish", id, clean(outcome)),
       },
       details,
     );
@@ -369,6 +398,11 @@ export class Engine {
 
     if (!session) {
       throw new Error("会话不存在");
+    }
+
+    // 同步兼容入口先拒绝冲突，避免 Worker 写事务进行时主线程进入无意义的写锁等待。
+    if (this.store.hasUnfinishedTask(sessionId)) {
+      throw new Error("当前会话已有运行中或排队中的任务，请等待或取消。");
     }
 
     // 同一会话的历史上下文只能由一个任务追加。跨会话排队由 workspace 锁和全局上限处理。
@@ -403,6 +437,36 @@ export class Engine {
     return this.store.task(task.id)!;
   }
 
+  async startAsync(
+    sessionId: string,
+    prompt: string,
+    options: StartTaskOptions = {},
+  ) {
+    if (options.subagentsEnabled && !SUBAGENT_PUBLIC_READY) {
+      throw new Error("subagent 尚未就绪，不能启用本次任务。");
+    }
+
+    if (this.closing) {
+      throw new Error("服务正在关闭，不能启动任务。");
+    }
+
+    const { task, events } = await this.store.startTaskAsync(
+      sessionId,
+      prompt,
+      options.subagentsEnabled ?? false,
+      options.recovery,
+    );
+    for (const event of events) {
+      this.events.emit("event", event);
+    }
+
+    this.events.emit("change", sessionId);
+    this.schedule();
+    await this.store.drain();
+
+    return this.store.task(task.id)!;
+  }
+
   /** 找到给定 AbortSignal 所属任务，避免并发审批事件误写入另一个会话。 */
   private activeForSignal(signal: AbortSignal) {
     return [...this.activeByTaskId.values()].find(
@@ -416,8 +480,12 @@ export class Engine {
       const waiting = this.approvals
         .list(active.task.sessionId)
         .some((approval) => approval.taskId === active.task.id);
-      this.store.status(active.task.id, waiting ? "waiting" : "running");
-      this.events.emit("change", active.task.sessionId);
+      void this.store
+        .statusAsync(active.task.id, waiting ? "waiting" : "running")
+        .then(
+          () => this.events.emit("change", active.task.sessionId),
+          (error: Error) => this.persistenceErrors.set(active.task.id, error),
+        );
     }
   }
 
@@ -464,8 +532,7 @@ export class Engine {
       return;
     }
 
-    this.store.status(queued.id, "running");
-    const task = this.store.task(queued.id)!;
+    const task = { ...queued, status: "running" as TaskStatus };
     const controller = new AbortController();
     const active: ActiveTask = {
       task,
@@ -477,8 +544,18 @@ export class Engine {
     const generateTitle =
       this.store.get(task.sessionId)?.titleState === "generating";
 
-    active.done = this.run(task, user.text, controller.signal, generateTitle)
-      .catch((error) => {
+    this.workerTasks.add(task.id);
+    active.done = this.store
+      .statusAsync(task.id, "running")
+      .then(() =>
+        this.run(
+          this.store.task(task.id)!,
+          user.text!,
+          controller.signal,
+          generateTitle,
+        ),
+      )
+      .catch(async (error) => {
         this.log.error({
           event: "task.persistence_failed",
           module: "agent",
@@ -486,7 +563,7 @@ export class Engine {
           err: error,
         });
         try {
-          this.store.status(
+          await this.store.statusAsync(
             task.id,
             "failed",
             "任务持久化异常，请检查存储空间和权限后恢复。",
@@ -497,6 +574,7 @@ export class Engine {
       })
       .finally(() => {
         this.activeByTaskId.delete(task.id);
+        this.workerTasks.delete(task.id);
         this.events.emit("change", task.sessionId);
         this.schedule();
       });
@@ -504,6 +582,18 @@ export class Engine {
   }
 
   resume(id: string, instruction = "") {
+    const request = this.recoveryRequest(id, instruction);
+
+    return this.start(request.sessionId, request.prompt, request.options);
+  }
+
+  async resumeAsync(id: string, instruction = "") {
+    const request = this.recoveryRequest(id, instruction);
+
+    return this.startAsync(request.sessionId, request.prompt, request.options);
+  }
+
+  private recoveryRequest(id: string, instruction: string) {
     const task = this.store.task(id);
 
     if (
@@ -527,17 +617,18 @@ export class Engine {
       throw new Error("缺少原任务描述，请在当前会话重新说明任务。");
     }
 
-    return this.start(
-      task.sessionId,
-      "恢复上次任务。原任务要求：\n" +
+    return {
+      sessionId: task.sessionId,
+      prompt:
+        "恢复上次任务。原任务要求：\n" +
         prompt +
         "\n保留已完成的进度；先核实当前文件和不确定操作的状态，不要盲目重放命令。\n" +
         instruction,
-      {
+      options: {
         subagentsEnabled: task.subagentsEnabled,
         recovery: { sourceTaskId: id, originalPrompt: prompt },
       },
-    );
+    };
   }
 
   cancel(id: string) {
@@ -562,15 +653,66 @@ export class Engine {
     }
   }
 
+  async cancelAsync(id: string) {
+    const active = this.activeByTaskId.get(id);
+    if (active) {
+      active.controller.abort();
+
+      return;
+    }
+
+    const queued = this.store.task(id);
+    if (queued?.status !== "queued") {
+      return;
+    }
+
+    const text = "任务已在队列中取消，可手动恢复。";
+    await this.store.titleAsync(
+      queued.sessionId,
+      "failed",
+      undefined,
+      queued.id,
+    );
+    await this.store.statusAsync(id, "cancelled", text);
+    const notice = await this.store.eventAsync(queued.sessionId, id, "notice", {
+      text,
+      status: "cancelled",
+    });
+    const end = await this.store.eventAsync(queued.sessionId, id, "task_end", {
+      status: "cancelled",
+    });
+    this.events.emit("event", notice);
+    this.events.emit("event", end);
+    this.events.emit("change", queued.sessionId);
+    this.schedule();
+  }
+
   async close() {
     this.closing = true;
     try {
       for (const queued of this.store.queuedTasks()) {
         const message = "服务关闭，任务中断，可手动恢复。";
-        this.store.failTitleGeneration(queued.sessionId);
-        this.store.status(queued.id, "interrupted", message);
-        this.emit(queued, "notice", { text: message, status: "interrupted" });
-        this.emit(queued, "task_end", { status: "interrupted" });
+        await this.store.titleAsync(
+          queued.sessionId,
+          "failed",
+          undefined,
+          queued.id,
+        );
+        await this.store.statusAsync(queued.id, "interrupted", message);
+        const notice = await this.store.eventAsync(
+          queued.sessionId,
+          queued.id,
+          "notice",
+          { text: message, status: "interrupted" },
+        );
+        const end = await this.store.eventAsync(
+          queued.sessionId,
+          queued.id,
+          "task_end",
+          { status: "interrupted" },
+        );
+        this.events.emit("event", notice);
+        this.events.emit("event", end);
         this.events.emit("change", queued.sessionId);
       }
 
@@ -580,6 +722,7 @@ export class Engine {
       }
 
       await Promise.all(active.map((item) => item.done));
+      await this.store.drain();
       await this.sandbox.shutdown();
     } finally {
       this.closing = false;
@@ -636,7 +779,7 @@ export class Engine {
         titleRetryOptions,
       );
 
-      this.store.completeTitleGeneration(task.sessionId, title);
+      await this.store.titleAsync(task.sessionId, "completed", title, task.id);
       this.events.emit("change", task.sessionId);
       log.info({
         event: "session.title_generated",
@@ -646,12 +789,17 @@ export class Engine {
     } catch (error: any) {
       if (signal.aborted) {
         // 取消后的请求不会返回结果；结束标题状态，防止恢复任务永久卡在 generating。
-        this.store.failTitleGeneration(task.sessionId);
+        await this.store.titleAsync(
+          task.sessionId,
+          "failed",
+          undefined,
+          task.id,
+        );
         this.events.emit("change", task.sessionId);
         throw signal.reason;
       }
 
-      this.store.failTitleGeneration(task.sessionId);
+      await this.store.titleAsync(task.sessionId, "failed", undefined, task.id);
       this.events.emit("change", task.sessionId);
       log.warn({
         event: "session.title_generation_failed",
@@ -673,7 +821,7 @@ export class Engine {
     settings: Settings,
     signal: AbortSignal,
     emit: (type: string, data: any) => void,
-    captureToolEvent: (type: string, data: any) => void,
+    captureToolEvent: (type: string, data: any) => Promise<void>,
   ): Promise<{ status: TaskStatus; failure?: string }> {
     const launcher = this.agentRuntimeLauncher!;
     const runtimeContextSpans = new Map<string, TraceSpan | undefined>();
@@ -974,7 +1122,7 @@ export class Engine {
               expected,
             );
             if (saved) {
-              captureToolEvent("tool_result", body.event);
+              await captureToolEvent("tool_result", body.event);
               this.events.emit("event", saved);
               this.events.emit("change", task.sessionId);
             }
@@ -1084,14 +1232,15 @@ export class Engine {
               request,
             ),
           appendContext: async (_runtime, items) => {
-            this.store.appendContext(task.sessionId, items);
+            await this.store.appendContextAsync(task.sessionId, items, task.id);
           },
           appendSessionEvent: async (_runtime, type, data) => {
-            captureToolEvent(type, data);
+            await captureToolEvent(type, data);
             emit(type, data);
+            await this.drainEvents(task.id);
           },
           saveContext: async (_runtime, input) => {
-            this.store.saveContext(task.sessionId, input);
+            await this.store.saveContextAsync(task.sessionId, input, task.id);
           },
           readContext: () => this.store.contextAsync(task.sessionId),
           readEvents: () => this.store.eventsAsync(task.sessionId),
@@ -1459,7 +1608,7 @@ export class Engine {
     };
 
     try {
-      this.store.startReplayCapture(task, {
+      await this.store.replayAsync(task.id, "create", null, {
         schemaVersion: 1,
         capturedAt: new Date().toISOString(),
         platform: process.platform,
@@ -1477,10 +1626,12 @@ export class Engine {
       if (this.agentRuntimeLauncher && this.config.sandbox.enabled) {
         const runtimeToolSpans = new Map<string, TraceSpan | undefined>();
         let runtimeCompactionSpan: TraceSpan | undefined;
-        const captureRuntimeToolEvent = (type: string, data: any) => {
+        const captureRuntimeToolEvent = async (type: string, data: any) => {
           if (type === "tool_start") {
-            this.store.startReplayTool(
+            await this.store.replayAsync(
               task.id,
+              "toolStart",
+              null,
               cleanReplay({
                 name: data.name,
                 callId: data.callId,
@@ -1513,8 +1664,9 @@ export class Engine {
               }),
             );
           } else if (type === "tool_result") {
-            this.store.finishReplayTool(
+            await this.store.replayAsync(
               task.id,
+              "toolFinish",
               data.callId,
               cleanReplay(data.result),
             );
@@ -1585,6 +1737,7 @@ export class Engine {
         }
       }
 
+      await this.drainEvents(task.id);
       let input = await prepareTaskContext(this.store, session.id, prompt);
 
       const runner = new ToolRunner({
@@ -1993,6 +2146,7 @@ export class Engine {
           }
 
           emit("model_request", { purpose: "task", step, attempt });
+          await this.drainEvents(task.id);
 
           return tracedModelProvider(
             this.replayProvider(task, provider, () => ({
@@ -2059,7 +2213,7 @@ export class Engine {
           lastFlush = Date.now();
           input = await prepareContext(true);
         },
-        acceptResponse: (response, calls) => {
+        acceptResponse: async (response, calls) => {
           const responseSpan = this.traces.startSpan(task.id, {
             name: "model.response_process",
             category: "agent",
@@ -2080,11 +2234,16 @@ export class Engine {
             }
 
             input.push(...response.output);
-            this.store.appendContext(session.id, response.output);
+            await this.store.appendContextAsync(
+              session.id,
+              response.output,
+              task.id,
+            );
             if (response.text) {
               emit("assistant", { text: response.text, step, attempt });
             }
 
+            await this.drainEvents(task.id);
             this.traces.endSpan(responseSpan, "ok", {
               outputItems: response.output.length,
               toolCalls: calls.length,
@@ -2105,7 +2264,7 @@ export class Engine {
         executeTools: async (calls) => {
           const batchId = randomUUID();
           const modelSpan = this.traces.latestSpan(task.id, "llm");
-          const saveResult = (
+          const saveResult = async (
             node: ToolGraphNode,
             result: any,
             executionStartedAt?: number,
@@ -2137,28 +2296,37 @@ export class Engine {
             });
             // 工具副作用无法由 SQLite 回滚；每个并行节点完成后立即原子保存结果和模型反馈。
             try {
+              const eventData = {
+                name: node.name,
+                callId: node.callId,
+                batchId,
+                nodeId: node.nodeId,
+                dependsOn: node.dependsOn,
+                result: JSON.parse(output),
+                durationMs,
+              };
+              const feedback = {
+                type: "function_call_output",
+                call_id: node.callId,
+                output,
+              };
               const persistResult = () => {
-                emit("tool_result", {
-                  name: node.name,
-                  callId: node.callId,
-                  batchId,
-                  nodeId: node.nodeId,
-                  dependsOn: node.dependsOn,
-                  result: JSON.parse(output),
-                  durationMs,
-                });
-                // replay 保留执行器原始脱敏结果，不受模型上下文 outputChars 截断影响。
+                const event = this.store.event(
+                  session.id,
+                  task.id,
+                  "tool_result",
+                  eventData,
+                );
+                this.events.emit("event", event);
+                this.events.emit("change", session.id);
+                // 仅供尚未开放的 subagent collect 兼容同步事务。
                 this.store.finishReplayTool(
                   task.id,
                   node.callId,
                   cleanReplay(result),
                 );
-                input.push({
-                  type: "function_call_output",
-                  call_id: node.callId,
-                  output,
-                });
-                this.store.appendContext(session.id, [input.at(-1)]);
+                input.push(feedback);
+                this.store.appendContext(session.id, [feedback]);
               };
 
               const subagentRequest =
@@ -2178,7 +2346,18 @@ export class Engine {
                   result.reports,
                 );
               } else {
-                this.store.transaction(persistResult);
+                await this.drainEvents(task.id);
+                const event = await this.store.persistToolResultAsync(
+                  session.id,
+                  task.id,
+                  eventData,
+                  feedback,
+                  node.callId,
+                  cleanReplay(result),
+                );
+                input.push(feedback);
+                this.events.emit("event", event);
+                this.events.emit("change", session.id);
               }
 
               this.traces.endSpan(persistenceSpan, "ok", {
@@ -2238,8 +2417,10 @@ export class Engine {
                 dependsOn: node.dependsOn,
                 args: node.arguments,
               });
-              this.store.startReplayTool(
+              await this.store.replayAsync(
                 task.id,
+                "toolStart",
+                null,
                 cleanReplay({
                   name: node.name,
                   callId: node.callId,
@@ -2249,7 +2430,7 @@ export class Engine {
                   arguments: node.arguments,
                 }),
               );
-              saveResult(node, { error: `工具调用图无效：${message}` });
+              await saveResult(node, { error: `工具调用图无效：${message}` });
             }
 
             return "invalid";
@@ -2281,8 +2462,10 @@ export class Engine {
                     }
                   : node.arguments,
             });
-            this.store.startReplayTool(
+            await this.store.replayAsync(
               task.id,
+              "toolStart",
+              null,
               cleanReplay({
                 name: node.name,
                 callId: node.callId,
@@ -2474,7 +2657,7 @@ export class Engine {
                         : undefined,
                   },
                 );
-                saveResult(node, result, executionStartedAt);
+                await saveResult(node, result, executionStartedAt);
 
                 return toolSucceeded(result);
               },
@@ -2491,7 +2674,7 @@ export class Engine {
                     failedDependency: failedDependency.nodeId,
                   },
                 );
-                saveResult(node, {
+                await saveResult(node, {
                   error: `依赖工具 ${failedDependency.nodeId} 未成功，未执行当前调用。`,
                   code: "dependency_failed",
                   failedDependency: failedDependency.nodeId,
@@ -2550,9 +2733,17 @@ export class Engine {
         log.error({ event: "subagent.cleanup_failed", err: error });
       }
 
-      this.store.status(task.id, status, failure);
       try {
-        this.store.finishReplayCapture(task.id, status);
+        await this.drainEvents(task.id);
+      } catch (error) {
+        status = "failed";
+        failure = "事件持久化失败，请检查存储状态后恢复。";
+        log.error({ event: "task.persistence_failed", err: error });
+      }
+
+      await this.store.statusAsync(task.id, status, failure);
+      try {
+        await this.store.replayAsync(task.id, "finish", null, status);
         this.traces.endSpan(replayCaptureSpan, "ok");
       } catch (error) {
         this.traces.endSpan(replayCaptureSpan, "error", {
@@ -2578,6 +2769,8 @@ export class Engine {
       this.sandbox.releaseTask(task.id);
 
       emit("task_end", { status });
+      await this.drainEvents(task.id);
+      this.workerTasks.delete(task.id);
       log.info({ event: "task.finished", status });
     }
   }

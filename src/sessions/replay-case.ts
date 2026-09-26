@@ -97,11 +97,11 @@ export interface TaskReplayCase {
 }
 
 export interface ReplayCaptureSink {
-  startModelExchange(entry: RecordedModelExchange): string;
+  startModelExchange(entry: RecordedModelExchange): string | Promise<string>;
   finishModelExchange(
     id: string,
     outcome: Pick<RecordedModelExchange, "response" | "error">,
-  ): void;
+  ): void | Promise<void>;
 }
 
 function copy<T>(value: T): T {
@@ -130,7 +130,7 @@ export function captureModelProvider(
     getCapabilities: provider.getCapabilities?.bind(provider),
     async run(input, instructions, tools, signal, onDelta, options) {
       const id = randomUUID();
-      sink.startModelExchange({
+      await sink.startModelExchange({
         id,
         ...details(),
         input: copy(input),
@@ -148,11 +148,11 @@ export function captureModelProvider(
           onDelta,
           options,
         );
-        sink.finishModelExchange(id, { response: copy(response) });
+        await sink.finishModelExchange(id, { response: copy(response) });
 
         return response;
       } catch (error) {
-        sink.finishModelExchange(id, { error: errorRecord(error) });
+        await sink.finishModelExchange(id, { error: errorRecord(error) });
         throw error;
       }
     },

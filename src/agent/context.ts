@@ -17,6 +17,7 @@ export interface TaskContextStore {
   contextAsync(sessionId: string): Promise<any[]>;
   eventsAsync(sessionId: string): Promise<Event[]>;
   appendContext(sessionId: string, items: any[]): void | Promise<void>;
+  appendContextAsync?(sessionId: string, items: any[]): Promise<void>;
 }
 
 function interruptedExecutionOutput(record: any) {
@@ -118,7 +119,11 @@ export async function prepareTaskContext(
   const user = { role: "user", content: prompt };
   input.push(user);
   appended.push(user);
-  await store.appendContext(sessionId, appended);
+  if (store.appendContextAsync) {
+    await store.appendContextAsync(sessionId, appended);
+  } else {
+    await store.appendContext(sessionId, appended);
+  }
 
   return input;
 }

@@ -185,7 +185,7 @@ export async function createApp(
       .strict()
       .parse(req.body);
 
-    return store.create(await workspacePath(data.workspace));
+    return store.createAsync(await workspacePath(data.workspace));
   });
   app.get("/api/sessions/:id/traces", async (req, reply) => {
     const { id } = req.params as { id: string };
@@ -224,17 +224,17 @@ export async function createApp(
         .send({ error: "subagent 尚未就绪，不能启用本次任务。" });
     }
 
-    return engine.start(id, prompt, { subagentsEnabled });
+    return engine.startAsync(id, prompt, { subagentsEnabled });
   });
   app.post("/api/tasks/:id/resume", async (req) => {
     const { instruction } = z
       .object({ instruction: z.string().max(40000).default("") })
       .parse(req.body);
 
-    return engine.resume((req.params as { id: string }).id, instruction);
+    return engine.resumeAsync((req.params as { id: string }).id, instruction);
   });
   app.post("/api/tasks/:id/cancel", async (req) => {
-    engine.cancel((req.params as { id: string }).id);
+    await engine.cancelAsync((req.params as { id: string }).id);
 
     return { ok: true };
   });
@@ -289,7 +289,7 @@ export async function createApp(
   });
   app.addHook("onClose", async () => {
     await engine.close();
-    store.close();
+    await store.closeAsync();
   });
 
   return { app, engine, store, shutdown };
