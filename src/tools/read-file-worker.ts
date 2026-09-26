@@ -5,7 +5,7 @@
  *
  * 1. ReadRequest / ReadResult 固定跨线程消息契约，只传递字节和经过 Zod 校验的读取范围。
  * 2. processRead 按字节查找 LF，保留旧实现对空文件、末尾换行和 CRLF 的 totalLines 与文本语义，但不创建整文件行数组。
- * 3. parentPort 仅分发 read 请求，并把受控错误返回给池客户端；没有文件、网络、会话或数据库副作用。
+ * 3. parentPort 加载后通知池 Worker 已就绪，再分发 read 请求；回传计算耗时及受控错误，不包含文件、网络、会话或数据库副作用。
  */
 
 import { createHash } from "node:crypto";
@@ -119,6 +119,7 @@ function processRead(data: ReadRequest["data"]): ReadResult {
 }
 
 parentPort?.on("message", (message: ReadRequest) => {
+  const startedAt = performance.now();
   try {
     if (
       message?.type !== "read" ||
@@ -131,12 +132,16 @@ parentPort?.on("message", (message: ReadRequest) => {
       id: message.id,
       ok: true,
       value: processRead(message.data),
+      computeMs: performance.now() - startedAt,
     });
   } catch (error) {
     parentPort?.postMessage({
       id: message?.id,
       ok: false,
       error: error instanceof Error ? error.message : "读取 Worker 执行失败。",
+      computeMs: performance.now() - startedAt,
     });
   }
 });
+
+parentPort?.postMessage({ type: "ready" });

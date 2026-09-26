@@ -1,7 +1,7 @@
 /**
  * 验证 Perfetto tracing 的可导出时间线、敏感原文边界、会话/任务级持久化和真实 HTTP 下载接口。
  * 第一组直接驱动 TraceRecorder，检查主线程 begin/end slice、instant、flow 与递归凭据脱敏的 tool 参数被转换为 Chrome Trace Event JSON；
- * 第二组通过生产 createApp、Engine 和模拟模型完成并发工具任务，确认 context.prepare 与 context.request 的预算计量、响应/计划/持久化阶段、四条可复用工具轨道及任务根 span 写入数据目录后即释放内存，并可经本机受保护 API 和真实文件清单下载。
+ * 第二组通过生产 createApp、Engine 和模拟模型完成并发工具任务，确认 read_file 的安全阶段细分、context 预算计量、响应/计划/持久化阶段、可复用工具轨道及任务根 span 写入后即释放内存，并可经受保护 API 下载。
  *
  * 测试不连接真实模型服务，也不写入用户工作区；它只检查导出的可观察结构和临时数据目录，不依赖具体微秒耗时。
  */
@@ -328,6 +328,40 @@ it("persists each Engine task trace by session and task, then exports it only th
       endLine: 1,
       whitespaceMode: false,
     });
+    const stages = response
+      .json()
+      .traceEvents.filter(
+        (event: { name: string; ph: string; args?: { callId?: string } }) =>
+          event.name.startsWith("read_file.") &&
+          event.ph === "X" &&
+          event.args?.callId === tool.args.callId,
+      );
+    expect(stages.map((event: { name: string }) => event.name)).toEqual(
+      expect.arrayContaining([
+        "read_file.access",
+        "read_file.stat",
+        "read_file.bytes",
+        "read_file.worker.queue",
+        "read_file.worker.startup",
+        "read_file.worker.response",
+      ]),
+    );
+    expect(
+      stages.every(
+        (event: { args: { callId?: string; status?: string } }) =>
+          event.args.callId === tool.args.callId && event.args.status === "ok",
+      ),
+    ).toBe(true);
+    expect(
+      stages.find((event: { name: string }) => event.name === "read_file.bytes")
+        ?.args.bytes,
+    ).toBeGreaterThan(0);
+    expect(
+      stages.find(
+        (event: { name: string }) => event.name === "read_file.worker.response",
+      )?.args.computeMs,
+    ).toBeGreaterThanOrEqual(0);
+    expect(JSON.stringify(stages)).not.toContain("trace-target.txt");
   } finally {
     await fixture.app.close();
   }

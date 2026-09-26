@@ -5,7 +5,7 @@
  *
  * 1. runtimeRequestSchema 限定模型、审批、session adapter、任务绑定子状态/问题/租约、Git PushSpec 和一次性 capability command；不能扩展 Runtime 权限。
  * 2. runtimeResponseSchema 关联原 requestId；错误只返回受限 code/message 与模型重试元数据，避免泄露宿主异常对象。
- * 3. runtimeEventSchema 承载模型 delta、任务取消、请求级取消、Runtime 生命周期以及固定 context/subagent trace span；名称与属性不是任意日志通道。
+ * 3. runtimeEventSchema 承载模型 delta、任务取消、请求级取消、Runtime 生命周期以及固定 context/read_file/subagent trace span；名称与属性不是任意日志通道。
  * 4. hello schema 绑定协议版本、任务和 instance；其中 Runtime 自报字段只用于一致性核对，不能替代 transport 身份。
  */
 
@@ -29,6 +29,18 @@ const runtimeTraceAttributesSchema = z
     amount: z.number().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
     errorName: z.string().min(1).max(120).optional(),
     subagentId: identifier.optional(),
+    callId: identifier.optional(),
+    bytes: z
+      .number()
+      .int()
+      .nonnegative()
+      .max(2 * 1024 * 1024)
+      .optional(),
+    computeMs: z
+      .number()
+      .nonnegative()
+      .max(24 * 60 * 60 * 1_000)
+      .optional(),
     durationMs: z
       .number()
       .int()
@@ -43,6 +55,12 @@ const runtimeTraceNameSchema = z.enum([
   "context.request",
   "context.request.measure_input",
   "tool.result_persist",
+  "read_file.access",
+  "read_file.stat",
+  "read_file.bytes",
+  "read_file.worker.queue",
+  "read_file.worker.startup",
+  "read_file.worker.response",
   "subagent.worker",
   "subagent.model",
   "subagent.tool.read",
@@ -484,7 +502,12 @@ export const runtimeEventSchema = z.discriminatedUnion("event", [
       name: runtimeTraceNameSchema,
       attributes: runtimeTraceAttributesSchema,
     })
-    .strict(),
+    .strict()
+    .refine(
+      (event) =>
+        !event.name.startsWith("read_file.") || !!event.attributes.callId,
+      { message: "read_file trace 必须关联工具调用标识。" },
+    ),
   z
     .object({
       type: z.literal("event"),

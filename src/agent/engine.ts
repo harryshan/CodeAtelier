@@ -84,6 +84,10 @@ import { createSandboxLogger } from "../logging/logger.js";
 import { tracedModelProvider } from "../tracing/model-provider.js";
 import { TraceArchive } from "../tracing/archive.js";
 import { TraceRecorder } from "../tracing/recorder.js";
+import type {
+  ReadFileTrace,
+  ReadFileTraceStage,
+} from "../tools/read-file-worker-pool.js";
 import type { TraceSpan } from "../tracing/types.js";
 import type { Task, TaskStatus } from "../shared/types.js";
 import type { AgentRuntimeLauncher } from "../sandbox/agent-runtime-launcher.js";
@@ -989,6 +993,7 @@ export class Engine {
               }
 
               const subagentTrace = event.name.startsWith("subagent.");
+              const readFileTrace = event.name.startsWith("read_file.");
               const subagentId = event.attributes.subagentId;
               if (
                 subagentTrace &&
@@ -1004,10 +1009,16 @@ export class Engine {
                 event.spanId,
                 this.traces.startSpan(task.id, {
                   name: event.name,
-                  category: subagentTrace ? "subagent" : "context",
+                  category: subagentTrace
+                    ? "subagent"
+                    : readFileTrace
+                      ? "read_file"
+                      : "context",
                   track: subagentTrace
                     ? `Subagent ${subagentId}`
-                    : "Main thread",
+                    : readFileTrace
+                      ? `Runtime read_file ${event.attributes.callId}`
+                      : "Main thread",
                   parentSpanId: parent?.id,
                   attributes: event.attributes,
                 }),
@@ -2311,6 +2322,42 @@ export class Engine {
                 let executionStartedAt: number | undefined;
                 let toolSpan: ReturnType<TraceRecorder["startSpan"]>;
                 let result: any;
+                const readFileSpans = new Map<
+                  ReadFileTraceStage,
+                  ReturnType<TraceRecorder["startSpan"]>
+                >();
+                const traceReadFile: ReadFileTrace = (
+                  stage,
+                  state,
+                  details,
+                ) => {
+                  if (state === "started") {
+                    readFileSpans.set(
+                      stage,
+                      this.traces.startSpan(task.id, {
+                        name: stage,
+                        category: "read_file",
+                        track:
+                          slot === undefined
+                            ? `Read file preparation ${node.ordinal + 1}`
+                            : `Read file detail ${slot + 1}`,
+                        parentSpanId: toolSpan?.id,
+                        attributes: {
+                          batchId,
+                          callId: node.callId,
+                          nodeId: node.nodeId,
+                        },
+                      }),
+                    );
+                  } else {
+                    this.traces.endSpan(
+                      readFileSpans.get(stage),
+                      state,
+                      details,
+                    );
+                    readFileSpans.delete(stage);
+                  }
+                };
 
                 const startExecution = async () => {
                   slot ??= await acquireExecutionSlot();
@@ -2368,7 +2415,12 @@ export class Engine {
                   } else {
                     result = await runner
                       .forCall(node.callId)
-                      .execute(node.name, node.arguments, startExecution);
+                      .execute(
+                        node.name,
+                        node.arguments,
+                        startExecution,
+                        node.name === "read_file" ? traceReadFile : undefined,
+                      );
                   }
                 } catch (error: any) {
                   if (signal.aborted) {

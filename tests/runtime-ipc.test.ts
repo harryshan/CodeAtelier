@@ -263,19 +263,40 @@ it("accepts only bounded context trace events", async () => {
     name: "context.prepare",
   });
 
-  for (const name of ["subagent.message", "subagent.cancel"]) {
+  for (const name of [
+    "read_file.worker.response",
+    "subagent.message",
+    "subagent.cancel",
+  ]) {
     const frame = {
       type: "event",
       event: "trace_span_start",
       spanId: "span-subagent",
       name,
-      attributes: { subagentId: "reader" },
+      attributes: name.startsWith("read_file.")
+        ? { callId: "reader", bytes: 42 }
+        : { subagentId: "reader" },
     };
     expect(runtimeIpcMessageSchema.safeParse(frame).success).toBe(true);
+    if (name.startsWith("read_file.")) {
+      expect(
+        runtimeIpcMessageSchema.safeParse({
+          ...frame,
+          attributes: { bytes: 42 },
+        }).success,
+      ).toBe(false);
+      expect(
+        runtimeIpcMessageSchema.safeParse({
+          ...frame,
+          attributes: { callId: "reader", bytes: 2 * 1024 * 1024 + 1 },
+        }).success,
+      ).toBe(false);
+    }
+
     expect(
       runtimeIpcMessageSchema.safeParse({
         ...frame,
-        attributes: { subagentId: "reader", text: "secret" },
+        attributes: { callId: "reader", text: "secret" },
       }).success,
     ).toBe(false);
   }

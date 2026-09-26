@@ -6,7 +6,7 @@
  * 2. currentFileHash 仅探测安全工作区文件的字节哈希，不更新读取凭证；access 解析路径并申请必要的权限；entries 限量遍历，commandGrant 为可复用命令计算指纹。
  * 3. execute 先通过 parseToolArguments 校验参数并解开 Git 的 request 包装（兼容历史扁平调用）。统一的精确编辑和显式新建文件均分流给共享读取哈希的 FileEditor，已有文件成功编辑后会作废对应哈希；普通 Runtime 工具在既有 AccessManifest 内不再审批，越界命令先经 run_with_permissions adapter 交给 Broker 复核与审批，取得执行槽后才消费一次性授权启动独立 Runner。
  * 4. 每个 execution instance 只读取 Broker 为该 task/instance 保存的状态；并发任务的 fallback/unknown 不会污染其它 PID、session 或 trace 记录。
- * 5. 只读分支只处理读取；目录浏览和代码搜索均由 run_command 在审批后执行。read_file 在主线程完成安全访问和异步字节读取，再交给任务共享的有界 Worker 池进行全文哈希、字节行扫描和格式化，按 500 行分页返回 contentHash 供压缩比较，并在内部记录哈希供后续修改核对。
+ * 5. 只读分支只处理读取；目录浏览和代码搜索均由 run_command 在审批后执行。read_file 在主线程完成安全访问、类型检查和异步字节读取，再交给共享 Worker 池处理全文哈希与行扫描；可选 trace 将路径准备、检查、读取及 Worker 阶段分开计时，不保存文件内容。
  *
  * 新建文件使用 edit_files 的 create:true 条目，已有文件只能用 create:false 的精确快照编辑；
  * FileEditor 会在写入前复核路径、存在性和读取版本，并以同目录临时文件替换目标。
@@ -27,6 +27,10 @@ import { FileEditor } from "./file-editor.js";
 import { GitToolRunner, containsGitCommand } from "./git.js";
 import type { GitProcessResult, GitPushSpec } from "./git.js";
 import { ReadFileWorkerPool } from "./read-file-worker-pool.js";
+import type {
+  ReadFileTrace,
+  ReadFileTraceStage,
+} from "./read-file-worker-pool.js";
 import type {
   CapabilityCommandRequest,
   CapabilityCommandResult,
@@ -565,6 +569,7 @@ export class ToolRunner {
     name: string,
     raw: unknown,
     onExecutionStart?: () => Promise<void>,
+    traceReadFile?: ReadFileTrace,
   ): Promise<any> {
     this.ctx.signal.throwIfAborted();
     const args: any = parseToolArguments(name, raw);
@@ -685,10 +690,37 @@ export class ToolRunner {
     }
 
     if (name === "read_file") {
-      const file = await this.access(args.path);
+      const measure = async <T>(
+        stage: ReadFileTraceStage,
+        action: () => Promise<T>,
+        details?: (value: T) => { bytes: number },
+      ) => {
+        traceReadFile?.(stage, "started");
+        try {
+          const value = await action();
+          traceReadFile?.(stage, "ok", details?.(value));
+
+          return value;
+        } catch (error) {
+          traceReadFile?.(
+            stage,
+            this.ctx.signal.aborted ? "cancelled" : "error",
+          );
+          throw error;
+        }
+      };
+
+      // 路径审批/解析发生在执行槽取得之前；不应伪装为工具实际执行时间。
+      const file = await measure("read_file.access", () =>
+        this.access(args.path),
+      );
       await startExecution();
-      await regularFile(file, 2 * 1024 * 1024);
-      const bytes = await readFile(file, { signal: this.ctx.signal });
+      await measure("read_file.stat", () => regularFile(file, 2 * 1024 * 1024));
+      const bytes = await measure(
+        "read_file.bytes",
+        () => readFile(file, { signal: this.ctx.signal }),
+        (value) => ({ bytes: value.byteLength }),
+      );
       const buffer =
         bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength
           ? bytes.buffer
@@ -706,6 +738,7 @@ export class ToolRunner {
           whitespaceMode: args.whitespaceMode,
         },
         this.ctx.signal,
+        traceReadFile,
       );
 
       // 读取凭证使用 Worker 返回的全文字节哈希，避免文本重编码掩盖版本差异。

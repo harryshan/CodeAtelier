@@ -4,7 +4,7 @@
  * 与既有工具契约一致，并同时发起四个大文件读取以覆盖共享池的独立并发调用。所有文件在临时目录清理，不访问真实模型或工作区。
  *
  * 1. createRunner 组装最小 ToolContext，保持路径/读取哈希和实际 Worker 生命周期。
- * 2. 第一组断言行范围和内容哈希，第二组断言二进制拒绝，最后一组断言多个独立读取均可完成。
+ * 2. 第一组断言行范围、哈希及冷/热 Worker 阶段；随后检查二进制失败、排队取消的阶段收尾，最后验证独立读取并发。
  */
 
 import { createHash } from "node:crypto";
@@ -13,6 +13,10 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, expect, it } from "vitest";
 import { ToolRunner } from "../src/tools/tool-runner.js";
+import {
+  ReadFileWorkerPool,
+  type ReadFileTrace,
+} from "../src/tools/read-file-worker-pool.js";
 
 const roots: string[] = [];
 
@@ -46,12 +50,17 @@ it("preserves full hashes and line pagination without allocating all file lines"
   const source = path.join(root, "source.txt");
   await writeFile(source, content);
 
-  const result = await runner.execute("read_file", {
-    path: "source.txt",
-    startLine: 1,
-    endLine: 2,
-    whitespaceMode: true,
-  });
+  const stages: Array<{ stage: string; state: string; details?: unknown }> = [];
+  const trace: ReadFileTrace = (stage, state, details) => {
+    stages.push({ stage, state, details });
+  };
+
+  const result = await runner.execute(
+    "read_file",
+    { path: "source.txt", startLine: 1, endLine: 2, whitespaceMode: true },
+    undefined,
+    trace,
+  );
 
   expect(result).toEqual({
     path: await realpath(source),
@@ -65,14 +74,67 @@ it("preserves full hashes and line pagination without allocating all file lines"
     visibleText: "1: 第一行␍↵\n2: second·line↵",
   });
 
-  await new Promise((resolve) => setTimeout(resolve, 1_100));
+  expect(
+    stages
+      .filter((event) => event.state === "started")
+      .map((event) => event.stage),
+  ).toEqual([
+    "read_file.access",
+    "read_file.stat",
+    "read_file.bytes",
+    "read_file.worker.queue",
+    "read_file.worker.startup",
+    "read_file.worker.response",
+  ]);
+  expect(
+    stages.filter((event) => event.state === "ok").map((event) => event.stage),
+  ).toEqual([
+    "read_file.access",
+    "read_file.stat",
+    "read_file.bytes",
+    "read_file.worker.queue",
+    "read_file.worker.startup",
+    "read_file.worker.response",
+  ]);
+  expect(
+    stages.find(
+      (event) => event.stage === "read_file.bytes" && event.state === "ok",
+    )?.details,
+  ).toEqual({ bytes: Buffer.byteLength(content) });
+  expect(
+    stages.find(
+      (event) =>
+        event.stage === "read_file.worker.response" && event.state === "ok",
+    )?.details,
+  ).toEqual({ computeMs: expect.any(Number) });
+
+  stages.length = 0;
   await expect(
-    runner.execute("read_file", {
-      path: "source.txt",
-      startLine: 3,
-      endLine: 3,
-    }),
+    runner.execute(
+      "read_file",
+      { path: "source.txt", startLine: 3, endLine: 3 },
+      undefined,
+      trace,
+    ),
   ).resolves.toMatchObject({ text: "3: third line" });
+  expect(
+    stages.some((event) => event.stage === "read_file.worker.startup"),
+  ).toBe(false);
+
+  await new Promise((resolve) => setTimeout(resolve, 1_100));
+  stages.length = 0;
+  await runner.execute(
+    "read_file",
+    { path: "source.txt", startLine: 1, endLine: 1 },
+    undefined,
+    trace,
+  );
+  expect(
+    stages.some(
+      (event) =>
+        event.stage === "read_file.worker.startup" && event.state === "started",
+    ),
+  ).toBe(true);
 });
 
 it("rejects binary bytes in the Worker before returning a read credential", async () => {
@@ -82,13 +144,53 @@ it("rejects binary bytes in the Worker before returning a read credential", asyn
     Buffer.from([0x61, 0x00, 0x62]),
   );
 
+  const stages: Array<{ stage: string; state: string }> = [];
   await expect(
-    runner.execute("read_file", {
-      path: "binary.bin",
-      startLine: 1,
-      endLine: 1,
-    }),
+    runner.execute(
+      "read_file",
+      { path: "binary.bin", startLine: 1, endLine: 1 },
+      undefined,
+      (stage, state) => stages.push({ stage, state }),
+    ),
   ).rejects.toThrow("不支持二进制文件");
+  expect(stages.at(-1)).toEqual({
+    stage: "read_file.worker.response",
+    state: "error",
+  });
+});
+
+it("closes the queued Worker stage when a read is cancelled", async () => {
+  const pool = new ReadFileWorkerPool();
+  const options = {
+    startLine: 1,
+    endLine: 1,
+    maxLines: 500,
+    whitespaceMode: false,
+  };
+  const buffer = () => new TextEncoder().encode("line\n").buffer;
+  const running = Array.from({ length: 4 }, () =>
+    pool.process(buffer(), options, new AbortController().signal),
+  );
+  const controller = new AbortController();
+  const stages: Array<{ stage: string; state: string }> = [];
+  const queued = pool.process(
+    buffer(),
+    options,
+    controller.signal,
+    (stage, state) => stages.push({ stage, state }),
+  );
+
+  try {
+    controller.abort(new Error("cancelled"));
+    await expect(queued).rejects.toThrow("cancelled");
+    expect(stages).toEqual([
+      { stage: "read_file.worker.queue", state: "started" },
+      { stage: "read_file.worker.queue", state: "cancelled" },
+    ]);
+    await Promise.all(running);
+  } finally {
+    await pool.close();
+  }
 });
 
 it("finishes four independent large reads through the shared bounded pool", async () => {

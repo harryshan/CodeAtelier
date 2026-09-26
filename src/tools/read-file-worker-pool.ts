@@ -3,7 +3,7 @@
  * ToolRunner 在主线程完成路径解析、权限审批、普通文件/大小检查和异步 readFile 后调用 process；本池只传递 ArrayBuffer 给
  * read-file-worker，不提供路径、命令或其它进程能力。forCall 共享同一池，使同一 DAG 批次的独立读取可同时占用不同 Worker。
  *
- * 1. ReadFileWorkerPool.process 将调用排入有界槽位，并把可转移的完整字节缓冲区发送给空闲 Worker。
+ * 1. ReadFileWorkerPool.process 将调用排入有界槽位，按请求上报排队、Worker 冷启动与响应阶段，并把可转移的完整字节缓冲区发送给空闲 Worker。
  * 2. startWorker 按 ts/js/mjs 运行形态选择同名 Worker 文件，支持开发 tsx、常规构建和 Windows 安装版 bundle。
  * 3. AbortSignal 会移除未开始请求或终止正在计算的槽位；空闲短暂保留以复用同一任务的后续批次，随后只终止空闲线程而不关闭池，因此同一长任务的下一轮读取仍可按需新建线程。
  *
@@ -23,8 +23,24 @@ export interface ReadFileWorkerResult {
   visibleText?: string;
 }
 
+export type ReadFileTraceStage =
+  | "read_file.access"
+  | "read_file.stat"
+  | "read_file.bytes"
+  | "read_file.worker.queue"
+  | "read_file.worker.startup"
+  | "read_file.worker.response";
+
+export type ReadFileTrace = (
+  stage: ReadFileTraceStage,
+  state: "started" | "ok" | "error" | "cancelled",
+  details?: { bytes?: number; computeMs?: number },
+) => void;
+
 interface PendingRequest {
   id: number;
+  phase: "queue" | "startup" | "response";
+  trace?: ReadFileTrace;
   buffer: ArrayBuffer;
   startLine: number;
   endLine: number;
@@ -37,14 +53,17 @@ interface PendingRequest {
 }
 
 interface WorkerMessage {
-  id: number;
-  ok: boolean;
+  type?: "ready";
+  id?: number;
+  ok?: boolean;
+  computeMs?: number;
   value?: ReadFileWorkerResult;
   error?: string;
 }
 
 interface WorkerSlot {
   worker: Worker;
+  ready: boolean;
   current?: PendingRequest;
 }
 
@@ -85,6 +104,7 @@ export class ReadFileWorkerPool {
       whitespaceMode: boolean;
     },
     signal: AbortSignal,
+    trace?: ReadFileTrace,
   ): Promise<ReadFileWorkerResult> {
     signal.throwIfAborted();
     if (this.closed) {
@@ -96,6 +116,8 @@ export class ReadFileWorkerPool {
     return new Promise<ReadFileWorkerResult>((resolve, reject) => {
       const request: PendingRequest = {
         id: this.nextId++,
+        phase: "queue",
+        trace,
         buffer,
         ...options,
         signal,
@@ -106,6 +128,7 @@ export class ReadFileWorkerPool {
         },
       };
       signal.addEventListener("abort", request.abort, { once: true });
+      trace?.("read_file.worker.queue", "started");
       this.queue.push(request);
       this.dispatch();
     });
@@ -160,7 +183,7 @@ export class ReadFileWorkerPool {
         ? ["--import", "tsx"]
         : undefined,
     });
-    const slot: WorkerSlot = { worker };
+    const slot: WorkerSlot = { worker, ready: false };
 
     worker.unref();
     worker.on("message", (message: WorkerMessage) =>
@@ -181,6 +204,9 @@ export class ReadFileWorkerPool {
   }
 
   private start(slot: WorkerSlot, request: PendingRequest) {
+    request.trace?.("read_file.worker.queue", "ok");
+    request.phase = slot.ready ? "response" : "startup";
+    request.trace?.(`read_file.worker.${request.phase}`, "started");
     slot.current = request;
     slot.worker.postMessage(
       {
@@ -199,6 +225,18 @@ export class ReadFileWorkerPool {
   }
 
   private onMessage(slot: WorkerSlot, message: WorkerMessage) {
+    if (message.type === "ready") {
+      slot.ready = true;
+      const current = slot.current;
+      if (current?.phase === "startup") {
+        current.trace?.("read_file.worker.startup", "ok");
+        current.phase = "response";
+        current.trace?.("read_file.worker.response", "started");
+      }
+
+      return;
+    }
+
     const request = slot.current;
     if (!request || request.id !== message.id) {
       return;
@@ -211,6 +249,9 @@ export class ReadFileWorkerPool {
         ? undefined
         : new Error(message.error || "读取 Worker 执行失败。"),
       message.value,
+      message.computeMs === undefined
+        ? undefined
+        : { computeMs: message.computeMs },
     );
     this.dispatch();
   }
@@ -256,7 +297,13 @@ export class ReadFileWorkerPool {
     request: PendingRequest,
     error?: Error,
     value?: ReadFileWorkerResult,
+    details?: { computeMs: number },
   ) {
+    request.trace?.(
+      `read_file.worker.${request.phase}`,
+      request.signal.aborted ? "cancelled" : error ? "error" : "ok",
+      details,
+    );
     request.signal.removeEventListener("abort", request.abort);
     if (error) {
       request.reject(error);
