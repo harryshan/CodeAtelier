@@ -3,7 +3,7 @@
  * Engine 为每个实际运行的任务调用 startTask/finishTask；模型和工具包装器在真实执行边界创建 span，
  * server/app.ts 通过 exportTask 将已完成或运行中的 trace 作为本地下载接口返回。
  *
- * 1. 单调时钟把 span 和 instant 事件映射到同一个微秒时间轴；Worker 可上报同源时钟的精确计算区间；task 根使用独立轨道，主线程 span 以可嵌套的 begin/end slice 表示，未结束的子操作会在任务结束时标为实际终态。
+ * 1. 单调时钟把 span 和 instant 事件映射到同一个微秒时间轴；task 根使用独立轨道，主线程 span 以可嵌套的 begin/end slice 表示，未结束的子操作会在任务结束时标为实际终态。
  * 2. startSpan/endSpan/instant 接收受控 JSON 属性：普通字符串限长；tool parameters 允许完整结构但递归遮盖凭据字段，避免密钥进入本机 trace。
  * 3. link 保存跨轨道因果关系；exportTask 输出进程/轨道元数据、按时间排序的耗时片段和使用递增整数 ID 的 Perfetto flow 事件。
  * 4. recorder 只保存运行中任务构造完整 JSON 所需的短暂状态；Engine 成功或失败写入 TraceArchive 后立即 discardTask，不保留完成 trace 缓存。
@@ -178,7 +178,7 @@ export class TraceRecorder {
       category: options.category,
       track: options.track,
       parentSpanId: options.parentSpanId ?? record.rootSpanId,
-      startedAtUs: options.startedAtUs ?? this.nowUs(),
+      startedAtUs: this.nowUs(),
       attributes: safeAttributes(options.attributes),
     };
     record.spans.set(span.id, span);
@@ -207,13 +207,12 @@ export class TraceRecorder {
     span: TraceSpan | undefined,
     status: TraceStatus,
     attributes: TraceAttributes = {},
-    finishedAtUs?: number,
   ) {
     if (!span || span.finishedAtUs !== undefined) {
       return;
     }
 
-    span.finishedAtUs = finishedAtUs ?? this.nowUs();
+    span.finishedAtUs = this.nowUs();
     span.status = status;
     Object.assign(span.attributes, safeAttributes(attributes));
   }

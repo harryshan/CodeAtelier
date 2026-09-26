@@ -5,11 +5,11 @@
  *
  * 1. ReadRequest / ReadResult 固定跨线程消息契约，只传递字节和经过 Zod 校验的读取范围。
  * 2. processRead 按字节查找 LF，保留旧实现对空文件、末尾换行和 CRLF 的 totalLines 与文本语义，但不创建整文件行数组。
- * 3. parentPort 加载后通知池 Worker 已就绪，再分发 read 请求；回传线程 ID、计算区间及受控错误，不包含文件、网络、会话或数据库副作用。
+ * 3. parentPort 加载后通知池 Worker 已就绪，再分发 read 请求；回传计算耗时及受控错误，不包含文件、网络、会话或数据库副作用。
  */
 
 import { createHash } from "node:crypto";
-import { parentPort, threadId } from "node:worker_threads";
+import { parentPort } from "node:worker_threads";
 
 interface ReadRequest {
   id: number;
@@ -119,9 +119,7 @@ function processRead(data: ReadRequest["data"]): ReadResult {
 }
 
 parentPort?.on("message", (message: ReadRequest) => {
-  const startedAtUs = Math.round(
-    (performance.timeOrigin + performance.now()) * 1000,
-  );
+  const startedAt = performance.now();
   try {
     if (
       message?.type !== "read" ||
@@ -131,30 +129,18 @@ parentPort?.on("message", (message: ReadRequest) => {
     }
 
     const value = processRead(message.data);
-    const finishedAtUs = Math.round(
-      (performance.timeOrigin + performance.now()) * 1000,
-    );
     parentPort?.postMessage({
       id: message.id,
       ok: true,
       value,
-      computeMs: (finishedAtUs - startedAtUs) / 1000,
-      startedAtUs,
-      finishedAtUs,
-      workerThreadId: threadId,
+      computeMs: performance.now() - startedAt,
     });
   } catch (error) {
-    const finishedAtUs = Math.round(
-      (performance.timeOrigin + performance.now()) * 1000,
-    );
     parentPort?.postMessage({
       id: message?.id,
       ok: false,
       error: error instanceof Error ? error.message : "读取 Worker 执行失败。",
-      computeMs: (finishedAtUs - startedAtUs) / 1000,
-      startedAtUs,
-      finishedAtUs,
-      workerThreadId: threadId,
+      computeMs: performance.now() - startedAt,
     });
   }
 });

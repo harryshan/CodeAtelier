@@ -710,10 +710,8 @@ export class ToolRunner {
         }
       };
 
-      // 路径审批/解析发生在执行槽取得之前；不应伪装为工具实际执行时间。
-      const file = await measure("read_file.access", () =>
-        this.access(args.path),
-      );
+      // 路径审批/解析发生在执行槽取得之前，不计入工具执行阶段。
+      const file = await this.access(args.path);
       await startExecution();
       await measure("read_file.stat", () => regularFile(file, 2 * 1024 * 1024));
       const bytes = await measure(

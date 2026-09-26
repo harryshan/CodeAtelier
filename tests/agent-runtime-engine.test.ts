@@ -3,7 +3,7 @@
  * 测试 launcher 只用 stdio 和环境变量传递测试身份，不提供 Windows token/Job/ACL 证明，不是产品 Sandbox 验收。
  *
  * 1. Engine 生成 instance/nonce，launcher 启动真实 Node 子进程并返回 IPC 流。
- * 2. 子进程运行 read_file 工具 DAG 并检查 trace 的工具阶段嵌套与真实 CPU Worker 时间片，Broker 仅提供模型、session、审批和记忆 adapter；固定白名单细分 trace 不包含文件内容。
+ * 2. 子进程运行 read_file 工具 DAG 并检查仅保留工具内阶段的 trace，Broker 仅提供模型、session、审批和记忆 adapter；固定白名单细分 trace 不包含文件内容。
  * 3. Engine 等待 Runtime 终态与 clean 退出，再把任务和 execution instance 记为 completed。
  * 4. 扩展权限命令经低成本模型审批后，把规范化根和 host 交给独立 capability runner，并将结果送回 agent loop。
  * 5. Runtime IPC 在可信终态前断开时，Engine 以 unknown 关闭 launcher 并持久化可能副作用。
@@ -171,7 +171,6 @@ it("moves the Engine agent loop into the launched Runtime process", async () => 
       trace.traceEvents.some((event: any) => event.name === "tool.read_file"),
     ).toBe(true);
     for (const name of [
-      "read_file.access",
       "read_file.stat",
       "read_file.bytes",
       "read_file.worker.queue",
@@ -192,11 +191,7 @@ it("moves the Engine agent loop into the launched Runtime process", async () => 
       (event: any) => event.name === "tool.read_file" && event.ph === "X",
     );
     const runtimeStages = trace.traceEvents.filter(
-      (event: any) =>
-        event.name.startsWith("read_file.") &&
-        event.name !== "read_file.worker.compute" &&
-        event.name !== "read_file.access" &&
-        event.ph === "X",
+      (event: any) => event.name.startsWith("read_file.") && event.ph === "X",
     );
     expect(
       runtimeStages.every(
@@ -206,23 +201,12 @@ it("moves the Engine agent loop into the launched Runtime process", async () => 
           event.ts + event.dur <= toolSpan.ts + toolSpan.dur,
       ),
     ).toBe(true);
-    const compute = trace.traceEvents.find(
-      (event: any) =>
-        event.name === "read_file.worker.compute" && event.ph === "X",
+    expect(runtimeStages.length).toBeGreaterThan(0);
+    expect(trace.traceEvents.map((event: any) => event.name)).not.toContain(
+      "read_file.access",
     );
-    const access = trace.traceEvents.find(
-      (event: any) => event.name === "read_file.access" && event.ph === "X",
-    );
-    expect(access.tid).not.toBe(toolSpan.tid);
-    expect(compute.tid).not.toBe(toolSpan.tid);
-    expect(compute.args).toMatchObject({
-      callId: "runtime-read",
-      status: "ok",
-      workerThreadId: expect.any(Number),
-    });
-    expect(compute.ts).toBeGreaterThanOrEqual(toolSpan.ts);
-    expect(compute.ts + compute.dur).toBeLessThanOrEqual(
-      toolSpan.ts + toolSpan.dur,
+    expect(trace.traceEvents.map((event: any) => event.name)).not.toContain(
+      "read_file.worker.compute",
     );
 
     for (const name of [

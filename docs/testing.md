@@ -55,7 +55,7 @@
 
 主要测试：files.test.ts、core.test.ts、read-file-worker.test.ts。
 
-行号/范围/500 行限制、分页与截断元数据、无效范围、文件大小、二进制、链接越界；宿主及 Agent Runtime 的 read_file 准备/工具阶段轨道嵌套、真实 Worker CPU 区间、失败与排队取消 trace
+行号/范围/500 行限制、分页与截断元数据、无效范围、文件大小、二进制、链接越界；宿主及 Agent Runtime 的 read_file 工具内阶段嵌套、无独立准备/计算片段、冷/热 Worker 启动、失败与排队取消 trace
 
 ### 新建与精确编辑
 
