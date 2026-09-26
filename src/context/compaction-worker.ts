@@ -8,7 +8,7 @@
  * 2. transform 使用索引完成一级读取投影和二级工具投影，并在 Worker 中验收压缩收益。
  * 3. chunks 仅在需要三级摘要时按摘要模型预算分块；网络模型调用仍由主线程负责，以保留取消和重试语义。
  * 4. fallback 保留用户原话、最新结论与完整近期批次；finalize 组合常规压缩结果和快照。
- *    两条路径均要求完整输入不超过实际预算且确实减少，不使用固定压缩比例。
+ *    两条路径均要求完整输入不超过预算的 60% 且确实减少，不另设最小收益比例。
  *
  * Worker 不访问工作区、不调用模型、不写 SQLite。所有输入都是已保存历史数据，不能据此推断工具成功或权限。
  */
@@ -95,7 +95,7 @@ function acceptable(
 
   const amount = measure(measurement, candidate, instructions, tools);
 
-  return amount <= limit && amount < beforeAmount;
+  return amount <= limit * 0.6 && amount < beforeAmount;
 }
 
 function prepare(request: {
@@ -119,7 +119,7 @@ function prepare(request: {
   const tail = request.input.slice(cut);
   if (
     localMeasure([...anchors, ...tail], request.instructions, request.tools) >=
-    request.limit
+    request.limit * 0.6
   ) {
     return { planned: false as const };
   }
@@ -249,9 +249,10 @@ function transform(request: {
       [...retained, ...state.tail],
       request.instructions,
       request.tools,
-    ) >= request.limit
+    ) >=
+    request.limit * 0.6
   ) {
-    throw new Error("保留的用户要求与历史摘要已占满输入容量。");
+    throw new Error("保留的用户要求与历史摘要已占满 60% 压缩目标。");
   }
 
   state.retained = retained;
@@ -366,7 +367,7 @@ function fallback(request: {
       request.instructions,
       request.tools,
     );
-    if (amount <= request.limit && amount < before) {
+    if (amount <= request.limit * 0.6 && amount < before) {
       selected = next;
       break;
     }
@@ -384,8 +385,8 @@ function fallback(request: {
     request.instructions,
     request.tools,
   );
-  if (after > request.limit) {
-    throw new Error("保底上下文仍超过输入容量。");
+  if (after > request.limit * 0.6) {
+    throw new Error("保底上下文仍超过 60% 压缩目标。");
   }
 
   const snapshot: ContextSnapshot = {
@@ -459,8 +460,8 @@ function finalize(request: {
     request.instructions,
     request.tools,
   );
-  if (after > request.limit || after >= request.beforeAmount) {
-    throw new Error("压缩后的上下文超过输入容量或未减少。");
+  if (after > request.limit * 0.6 || after >= request.beforeAmount) {
+    throw new Error("压缩后的上下文超过 60% 压缩目标或未减少。");
   }
 
   const snapshot: ContextSnapshot = {

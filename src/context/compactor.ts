@@ -25,7 +25,7 @@ Return only a JSON object with exactly four required keys: completed, conclusion
 
 Records may be split into contiguous parts identified by character offsets. Do not treat a partial record as complete. Summarize only what the supplied parts support.
 
-Write concise, nonredundant entries while preserving information needed to resume safely. There is no fixed count limit for entries or sources and no fixed total character limit. The combined context will be checked against the task's actual input budget and must become smaller. Do not add extra JSON fields, Markdown fences, commentary outside the JSON, or tool calls.`;
+Write concise, nonredundant entries while preserving information needed to resume safely. There is no fixed count limit for entries or sources and no fixed total character limit. The combined context will be required to fit within 60% of the task's input budget and must become smaller. Do not add extra JSON fields, Markdown fences, commentary outside the JSON, or tool calls.`;
 
 /** 分块保留完整记录，offset 按序列化后的字符位置计算，不丢掉中间内容。 */
 export function summaryChunks(

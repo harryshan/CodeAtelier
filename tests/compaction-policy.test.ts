@@ -4,7 +4,7 @@
  *
  * 1. 摘要响应覆盖长 JSON、多结论、多来源，以及仍必须拒绝的结构和来源错误。
  * 2. 保底用例验证强制整理也按实际容量保留完整用户要求和工具批次。
- * 3. Worker 用例保留较大的用户原文，检查小幅但真实的压缩可提交，超容量或无收益仍拒绝。
+ * 3. Worker 用例保留较大的用户原文，检查 60% 目标以内的小幅压缩可提交，超过目标或无收益仍拒绝。
  * 所有 Worker 均在 finally 中终止；不写会话数据库、不执行工具、不请求模型服务。
  */
 
@@ -84,11 +84,16 @@ it.each([
   },
 );
 
-it.each([false, true])(
-  "retains requirements above ninety percent of capacity during fallback, force=%s",
-  async (force) => {
+it.each([
+  { force: false, userLength: 5300 },
+  { force: true, userLength: 5300 },
+  { force: false, userLength: 9300 },
+  { force: true, userLength: 9300 },
+])(
+  "enforces the sixty percent fallback target, force=$force userLength=$userLength",
+  async ({ force, userLength }) => {
     const input = [
-      { role: "user", content: "u".repeat(9300) },
+      { role: "user", content: "u".repeat(userLength) },
       {
         type: "function_call",
         call_id: "call",
@@ -131,9 +136,17 @@ it.each([false, true])(
         },
       },
     });
+    if (userLength > 6000) {
+      await expect(manager.prepare(input, "rules", [], force)).rejects.toThrow(
+        "上下文",
+      );
+      expect(saved).toBeUndefined();
+
+      return;
+    }
+
     const result = await manager.prepare(input, "rules", [], force);
-    expect(contextSize(result, "rules", [])).toBeGreaterThan(9000);
-    expect(contextSize(result, "rules", [])).toBeLessThanOrEqual(10000);
+    expect(contextSize(result, "rules", [])).toBeLessThanOrEqual(6000);
     expect(result).toContainEqual(input[0]);
     expect(result).toContainEqual(input.at(-1));
     expect(saved?.stage).toBe("fallback");
@@ -144,13 +157,13 @@ it.each([false, true])(
 it.each([
   { noteLength: 1100, originalLength: 1500, accepted: true },
   { noteLength: 2500, originalLength: 1500, accepted: false },
-  { noteLength: 4000, originalLength: 8000, accepted: false },
+  { noteLength: 3100, originalLength: 8000, accepted: false },
 ])(
   "checks actual capacity and reduction for a summary of $noteLength characters",
   async ({ noteLength, originalLength, accepted }) => {
     const worker = new CompactionWorkerClient();
     const input = [
-      { role: "user", content: "u".repeat(6500) },
+      { role: "user", content: "u".repeat(3500) },
       { role: "assistant", content: "a".repeat(originalLength) },
       { role: "user", content: "next" },
     ];
@@ -201,7 +214,7 @@ it.each([
       if (accepted) {
         const compacted = await result;
         const after = contextSize(compacted.input, "rules", []);
-        expect(after).toBeGreaterThan(6000);
+        expect(after).toBeLessThanOrEqual(6000);
         expect(after).toBeGreaterThan(beforeAmount * 0.9);
         expect(after).toBeLessThan(beforeAmount);
         expect(after).toBeLessThanOrEqual(10000);
