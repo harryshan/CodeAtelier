@@ -4,7 +4,8 @@
  * 1. create 在 Worker 创建前把主 agent 声明的路径绑定到真实工作区内的现存目录。
  * 2. execute 依照 agent 层的只读协议再校验白名单名称、参数和范围，拒绝敏感路径/越界，不发起审批。
  * 3. read_file 提供有版本的分页读取；list_entries 和 search_text 使用 Node 文件 API，
- *    上限限制文件数、字节数与输出，绝不把任意命令、Git 或写执行器借给子 agent。
+ *    读取沿用主工具的文件大小和分页上限；搜索/枚举只按调用方请求限制结果数量，不额外限制扫描范围或截断文本。
+ * 4. 搜索逐文件读取并检查取消；路径权限、敏感文件和链接检查保持独立，不借给子 agent 任意命令或写执行器。
  *
  * 这些是工具层限制；Worker 与主进程共享 OS 身份，不构成抵御恶意线程的文件沙箱。
  */
@@ -14,6 +15,7 @@ import { lstat, readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import { inside, regularFile, resolveTarget, sensitive } from "./paths.js";
+import { MAX_READ_LINES } from "./registry.js";
 import {
   subagentReadSchemas,
   type SubagentReadName,
@@ -73,19 +75,21 @@ export class SubagentReadOnly {
 
     if (operation === "read_file") {
       const range = args as z.infer<typeof subagentReadSchemas.read_file>;
-      if (
-        range.endLine < range.startLine ||
-        range.endLine - range.startLine >= 500
-      ) {
-        throw new Error("subagent 读取最多 500 行且起止行必须有效。");
+      if (range.endLine < range.startLine) {
+        throw new Error("读取起止行必须有效。");
       }
 
       await regularFile(target, 2 * 1024 * 1024);
       const bytes = await readFile(target, { signal: this.signal });
       const contentHash = createHash("sha256").update(bytes).digest("hex");
       const lines = bytes.toString("utf8").split(/\r?\n/);
+      const requestedEndLine = Math.min(range.endLine, lines.length);
+      const returnedEndLine = Math.min(
+        requestedEndLine,
+        range.startLine + MAX_READ_LINES - 1,
+      );
       const text = lines
-        .slice(range.startLine - 1, range.endLine)
+        .slice(range.startLine - 1, returnedEndLine)
         .map((line, index) => `${range.startLine + index}: ${line}`)
         .join("\n");
 
@@ -93,7 +97,12 @@ export class SubagentReadOnly {
         path: path.relative(this.root, target),
         contentHash,
         totalLines: lines.length,
-        text: text.slice(0, 32_000),
+        returnedEndLine,
+        truncated: returnedEndLine < requestedEndLine,
+        hasMore: returnedEndLine < lines.length,
+        nextStartLine:
+          returnedEndLine < lines.length ? returnedEndLine + 1 : null,
+        text,
       };
     }
 
@@ -104,47 +113,43 @@ export class SubagentReadOnly {
         throw new Error("subagent 只能列出目录。");
       }
 
-      const names = (await readdir(target, { withFileTypes: true }))
+      const entries = (await readdir(target, { withFileTypes: true }))
         .filter((entry) => !entry.isSymbolicLink() && !sensitive(entry.name))
-        .sort((left, right) => left.name.localeCompare(right.name))
-        .slice(0, limit)
-        .map((entry) => ({
-          name: entry.name,
-          type: entry.isDirectory() ? "directory" : "file",
-        }));
+        .sort((left, right) => left.name.localeCompare(right.name));
+      const names = entries.slice(0, limit).map((entry) => ({
+        name: entry.name,
+        type: entry.isDirectory() ? "directory" : "file",
+      }));
 
-      return { path: path.relative(this.root, target), entries: names };
+      return {
+        path: path.relative(this.root, target),
+        entries: names,
+        truncated: entries.length > limit,
+      };
     }
 
     const search = args as z.infer<typeof subagentReadSchemas.search_text>;
     const matches: Array<{ path: string; line: number; text: string }> = [];
-    const files = [{ path: target, depth: 0 }];
+    const files = [target];
+    const pattern = search.pattern.toLowerCase();
     let examined = 0;
-    let bytesRead = 0;
-    while (
-      files.length &&
-      examined < 200 &&
-      matches.length < search.maxMatches
-    ) {
+    while (files.length && matches.length < search.maxMatches) {
       this.signal.throwIfAborted();
-      const next = files.shift()!;
-      if (next.depth > 6) {
-        continue;
-      }
-
-      const info = await lstat(next.path);
+      const next = files.pop()!;
+      const info = await lstat(next);
       if (info.isSymbolicLink()) {
         continue;
       }
 
       if (info.isDirectory()) {
-        const entries = await readdir(next.path);
-        for (const entry of entries.slice(0, 300)) {
-          const child = path.join(next.path, entry);
+        const entries = await readdir(next);
+        for (const entry of entries.reverse()) {
+          const child = path.join(next, entry);
           try {
             await this.allowed(child);
-            files.push({ path: child, depth: next.depth + 1 });
+            files.push(child);
           } catch {
+            this.signal.throwIfAborted();
             // 搜索自动跳过敏感或越界路径，显式 read_file 请求仍直接报错。
           }
         }
@@ -153,25 +158,21 @@ export class SubagentReadOnly {
       }
 
       examined++;
-      if (
-        !info.isFile() ||
-        info.size > 256 * 1024 ||
-        bytesRead + info.size > 4 * 1024 * 1024
-      ) {
+      if (!info.isFile()) {
         continue;
       }
 
-      const text = await readFile(next.path, {
+      const text = await readFile(next, {
         encoding: "utf8",
         signal: this.signal,
       });
-      bytesRead += info.size;
       for (const [index, line] of text.split(/\r?\n/).entries()) {
-        if (line.toLowerCase().includes(search.pattern.toLowerCase())) {
+        this.signal.throwIfAborted();
+        if (line.toLowerCase().includes(pattern)) {
           matches.push({
-            path: path.relative(this.root, next.path),
+            path: path.relative(this.root, next),
             line: index + 1,
-            text: line.slice(0, 240),
+            text: line,
           });
           if (matches.length >= search.maxMatches) {
             break;
@@ -183,10 +184,7 @@ export class SubagentReadOnly {
     return {
       matches,
       examined,
-      truncated:
-        files.length > 0 ||
-        examined >= 200 ||
-        matches.length >= search.maxMatches,
+      truncated: files.length > 0 || matches.length >= search.maxMatches,
     };
   }
 }

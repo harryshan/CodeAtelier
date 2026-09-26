@@ -127,6 +127,8 @@ item.done 回退、失败/不完整事件、服务实际错误 message/reason/co
 
 ### 可选 subagent（内部双执行路径，尚未开放）
 
+文件读取回归覆盖超过 32,000 字符的完整长行、与主工具共有的 500 行分页及 2 MiB 文件大小限制；搜索覆盖超过 4 MiB 的文件、超过 240 字符的匹配行和 120 字符的搜索词、调用方请求超过 100 条结果、超过 300 个目录条目/200 个文件及超过 6 层的目录。取消与只读权限检查继续有效，不以移除资源阈值扩大授权范围。
+
 主要测试：subagent-contracts.test.ts、subagent-limits.test.ts、subagent-readonly.test.ts、subagent-worker.test.ts、subagent-coordinator.test.ts、subagent-recovery.test.ts、model-tool-batch.test.ts、engine-subagent.test.ts、agent-runtime-subagent.test.ts、runtime-subagent-ipc.test.ts、sandbox-native-windows-runtime.test.ts、store.test.ts、session-statistics.test.ts、server.test.ts、tests/e2e/app.spec.ts。
 
 已覆盖分工 action 严格校验、计划 DAG 与数量上限、单任务与跨 Runtime 的 Broker 全局 Worker lease、排队和取消；真实 SQLite 子计划、检查点、重复请求拒绝、重启中断与未知模型请求，以及与主工具反馈同分片提交的报告消费。晚完成、反馈截断或持久化失败不能误标已消费；子 Worker 只可用受限读取，读回执落盘失败立即停止，不继续模型轮次，主任务取消中断等待，每子任务消息数有界；活动 Worker 的时限与累计实报 token 上限分别验证超限失败、结果持久化、不重放和退出后归还租约，缺少 usage 时使用轮次/字符边界；`ask_main` 问题上限、错误拒绝、已确认回执重试幂等、任务归属、主代理 `await` 提前返回、`message(replyTo)` 唯一答复，以及真实 Runtime IPC 和刷新后 HTML 安全历史均有回归；Worker 双向消息核对版本、任务/子任务归属和单调序号，跨任务父回执不能成为有效模型结果；question/message/cancel 只写固定名与登记子 ID 的 trace，不放问题正文、消息或报告。宿主 Engine 与真实 Node Runtime 子进程的内部已标记任务均完成计划/等待/收集的模拟模型闭环；Broker IPC 拒绝未经登记的子模型、冒用主模型身份、写工具声明和重复 lease 释放，断连后留存租约直到实例确认清理。Worker 与主线程共用进程/身份，不抵御恶意代码直接使用 Node API；stdio 测试、bundle/MSVC 构建不等于固定账户提升环境或跨平台验收。Bootstrap、Engine 与 HTTP 共用默认 false 的发布门禁；Playwright 伪造 bootstrap true 只可检查 checkbox 与一次性请求，后端 409 拒绝启用且草稿不丢失。历史任务标记及子计划/状态/收集由持久化 Snapshot 重建、刷新后仍可见；Host/Runtime 在状态落盘后通知 SSE。真实 SQLite 重启后的子模型未知请求保留，人工恢复继承启用选择并重新读取文件而不自动重建旧 Worker。真实发布仍待固定账户下子线程启动/取消、恢复及故障矩阵验收；上述手动命令未在无安装环境运行。

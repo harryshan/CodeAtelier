@@ -87,7 +87,7 @@
 
 ### 7.2 只读工具和文件边界
 
-`src/agent/subagent-worker.ts` 独立构造子 prompt：说明只调查/分析、不能写文件、不能要求主协调器代执行隐含命令或绕过用户权限、报告需列出证据文件及其版本；项目 AGENTS.md 等仓库内容仍视作资料，不能扩大工具权限。`src/tools/subagent-readonly.ts` 的正向白名单只接受 `read_file`、`list_entries`、`search_text`；二者新增的读取工具必须直接使用 Node 文件枚举/内容扫描，**不能**以 `run_command`、Git、外部可执行文件或插件包装“只读”搜索。路径按既有 `resolveTarget` 等检查规范化后落在当前任务授权读取范围内，拒绝越界、敏感位置和不安全链接，限制文件数、字节数、匹配数、行数和返回字符数；Sandbox 模式同时接受原有 AccessManifest/OS 限制，宿主模式沿用已有安全路径语义。首次增量不提供 `web_search`、Git、外部根或 memory，确有需要再单独设计权限/回归。
+`src/agent/subagent-worker.ts` 独立构造子 prompt：说明只调查/分析、不能写文件、不能要求主协调器代执行隐含命令或绕过用户权限、报告需列出证据文件及其版本；项目 AGENTS.md 等仓库内容仍视作资料，不能扩大工具权限。`src/tools/subagent-readonly.ts` 的正向白名单只接受 `read_file`、`list_entries`、`search_text`；二者新增的读取工具必须直接使用 Node 文件枚举/内容扫描，**不能**以 `run_command`、Git、外部可执行文件或插件包装“只读”搜索。路径按既有 `resolveTarget` 等检查规范化后落在当前任务授权读取范围内，拒绝越界、敏感位置和不安全链接，文件读取保留与主 agent 相同的 2 MiB 文件大小及每次 500 行上限，超出行范围返回分页信息；不再附加 32,000 字符截断。搜索取消专属的单文件/累计字节、扫描文件数、目录深度及每目录条目限制，并返回完整匹配行；搜索和列目录的结果数量由调用方 maxMatches/maxEntries 指定，不另设 100 条硬上限，搜索词也不另限 120 字符。路径范围、敏感位置和链接校验继续生效；Sandbox 模式同时接受原有 AccessManifest/OS 限制，宿主模式沿用已有安全路径语义。首次增量不提供 `web_search`、Git、外部根或 memory，确有需要再单独设计权限/回归。
 
 工具声明只对 Worker 的模型请求可见；协调器收到 `tool.request` 时再次核对角色、名称、参数 schema、路径、范围与任务有效性，然后执行受限读取并保存调用状态和有界结果。子 Worker 从不加载 `ToolRunner` 的写入 adapter；即便模型构造 `edit_files`、`run_command`、`git`、`memory_apply`、`run_with_permissions` 或 `subagent` 调用，也在**调用执行之前**拒绝，既不要求主 agent 代行，也不触发审批。主 agent 收集报告后再自行 `read_file`，获取当前内容哈希；直接使用报告中的旧哈希编辑应被现有版本校验拒绝。这是工具/受信任代码层面的限制，不是 OS 级线程隔离。
 

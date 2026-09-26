@@ -1,7 +1,7 @@
 /*
  * 声明 subagent 自有模型 loop 可见的只读工具协议，供 Worker 声明和父进程执行器共享。
  *
- * 1. subagentReadSchemas 给 read_file/list_entries/search_text 定义严格且有限的参数。
+ * 1. subagentReadSchemas 校验读取范围、非空搜索文本和调用方选择的结果数量，不附加子任务专属数量上限。
  * 2. subagentReadDefinitions 为模型附带调度信封，只暴露这三个白名单工具。
  * 3. parseSubagentReadCall 校验模型输出和无依赖执行元数据；父进程仍须再次校验。
  *
@@ -22,14 +22,14 @@ export const subagentReadSchemas = {
   list_entries: z
     .object({
       path: z.string().min(1),
-      maxEntries: z.number().int().min(1).max(100),
+      maxEntries: z.number().int().min(1),
     })
     .strict(),
   search_text: z
     .object({
       path: z.string().min(1),
-      pattern: z.string().min(1).max(120),
-      maxMatches: z.number().int().min(1).max(100),
+      pattern: z.string().min(1),
+      maxMatches: z.number().int().min(1),
     })
     .strict(),
 };
