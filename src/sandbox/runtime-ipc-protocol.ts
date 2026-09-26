@@ -41,6 +41,13 @@ const runtimeTraceAttributesSchema = z
       .nonnegative()
       .max(24 * 60 * 60 * 1_000)
       .optional(),
+    timestampUs: z
+      .number()
+      .int()
+      .positive()
+      .max(Number.MAX_SAFE_INTEGER)
+      .optional(),
+    workerThreadId: z.number().int().positive().max(10_000).optional(),
     durationMs: z
       .number()
       .int()
@@ -61,6 +68,7 @@ const runtimeTraceNameSchema = z.enum([
   "read_file.worker.queue",
   "read_file.worker.startup",
   "read_file.worker.response",
+  "read_file.worker.compute",
   "subagent.worker",
   "subagent.model",
   "subagent.tool.read",

@@ -1,7 +1,7 @@
 /**
  * 验证 Perfetto tracing 的可导出时间线、敏感原文边界、会话/任务级持久化和真实 HTTP 下载接口。
  * 第一组直接驱动 TraceRecorder，检查主线程 begin/end slice、instant、flow 与递归凭据脱敏的 tool 参数被转换为 Chrome Trace Event JSON；
- * 第二组通过生产 createApp、Engine 和模拟模型完成并发工具任务，确认 read_file 的安全阶段细分、context 预算计量、响应/计划/持久化阶段、独立 Store worker 与工具轨道及任务根 span 写入后即释放内存，并可经受保护 API 下载。
+ * 第二组通过生产 createApp、Engine 和模拟模型完成并发工具任务，确认 read_file 阶段的轨道嵌套及 CPU Worker 独立时间片、context 预算计量、响应/计划/持久化阶段、独立 Store worker 与工具轨道及任务根 span 写入后即释放内存，并可经受保护 API 下载。
  *
  * 测试不连接真实模型服务，也不写入用户工作区；它只检查导出的可观察结构和临时数据目录，不依赖具体微秒耗时。
  */
@@ -381,6 +381,74 @@ it("persists each Engine task trace by session and task, then exports it only th
         (event: { name: string }) => event.name === "read_file.worker.response",
       )?.args.computeMs,
     ).toBeGreaterThanOrEqual(0);
+    const preparation = stages.find(
+      (event: { name: string }) => event.name === "read_file.access",
+    );
+    const insideTool = stages.filter(
+      (event: { name: string }) =>
+        event.name !== "read_file.access" &&
+        event.name !== "read_file.worker.compute",
+    );
+    expect(preparation.tid).not.toBe(tool.tid);
+    expect(
+      insideTool.every(
+        (event: { tid: number; ts: number; dur: number }) =>
+          event.tid === tool.tid &&
+          event.ts >= tool.ts &&
+          event.ts + event.dur <= tool.ts + tool.dur,
+      ),
+    ).toBe(true);
+    const compute = response
+      .json()
+      .traceEvents.find(
+        (event: { name: string; ph: string; args?: { callId?: string } }) =>
+          event.name === "read_file.worker.compute" &&
+          event.ph === "X" &&
+          event.args?.callId === tool.args.callId,
+      );
+    const responseStage = stages.find(
+      (event: { name: string }) => event.name === "read_file.worker.response",
+    );
+    expect(compute.tid).not.toBe(tool.tid);
+    expect(compute.args).toMatchObject({
+      callId: tool.args.callId,
+      status: "ok",
+      workerThreadId: expect.any(Number),
+    });
+    expect(compute.ts).toBeGreaterThanOrEqual(tool.ts);
+    expect(compute.ts + compute.dur).toBeLessThanOrEqual(tool.ts + tool.dur);
+    expect(compute.ts + compute.dur).toBeLessThanOrEqual(
+      responseStage.ts + responseStage.dur,
+    );
+    const allTools = response
+      .json()
+      .traceEvents.filter(
+        (event: { name: string; ph: string }) =>
+          event.name === "tool.read_file" && event.ph === "X",
+      );
+    expect(allTools.length).toBeGreaterThanOrEqual(4);
+    for (const readTool of allTools) {
+      const details = response
+        .json()
+        .traceEvents.filter(
+          (event: { name: string; ph: string; args?: { callId?: string } }) =>
+            event.name.startsWith("read_file.") &&
+            event.name !== "read_file.access" &&
+            event.name !== "read_file.worker.compute" &&
+            event.ph === "X" &&
+            event.args?.callId === readTool.args.callId,
+        );
+      expect(details.length).toBeGreaterThan(0);
+      expect(
+        details.every(
+          (event: { tid: number; ts: number; dur: number }) =>
+            event.tid === readTool.tid &&
+            event.ts >= readTool.ts &&
+            event.ts + event.dur <= readTool.ts + readTool.dur,
+        ),
+      ).toBe(true);
+    }
+
     expect(JSON.stringify(stages)).not.toContain("trace-target.txt");
   } finally {
     await fixture.app.close();

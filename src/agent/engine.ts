@@ -1164,10 +1164,17 @@ export class Engine {
                       : "context",
                   track: subagentTrace
                     ? `Subagent ${subagentId}`
-                    : readFileTrace
-                      ? `Runtime read_file ${event.attributes.callId}`
-                      : "Main thread",
+                    : event.name === "read_file.worker.compute"
+                      ? `Runtime read file CPU worker ${event.attributes.workerThreadId}`
+                      : event.name === "read_file.access"
+                        ? `Runtime read file preparation ${event.attributes.callId}`
+                        : readFileTrace
+                          ? `Agent Runtime read_file ${event.attributes.callId}`
+                          : "Main thread",
                   parentSpanId: parent?.id,
+                  startedAtUs: readFileTrace
+                    ? event.attributes.timestampUs
+                    : undefined,
                   attributes: event.attributes,
                 }),
               );
@@ -1182,7 +1189,14 @@ export class Engine {
               );
             }
 
-            this.traces.endSpan(span, event.status, event.attributes);
+            this.traces.endSpan(
+              span,
+              event.status,
+              event.attributes,
+              span.name.startsWith("read_file.")
+                ? event.attributes.timestampUs
+                : undefined,
+            );
             runtimeContextSpans.delete(event.spanId);
           },
           executeGitPush: (_runtime, spec, toolCallId, requestSignal) =>
@@ -1646,7 +1660,11 @@ export class Engine {
               this.traces.startSpan(task.id, {
                 name: `tool.${String(data.name).slice(0, 80)}`,
                 category: "tool",
-                track: "Agent Runtime tools",
+                // Runtime 工具可能并行；read_file 使用按调用隔离的轨道，避免 X slice 相互交叉。
+                track:
+                  data.name === "read_file"
+                    ? `Agent Runtime read_file ${data.callId}`
+                    : "Agent Runtime tools",
                 attributes: {
                   batchId: data.batchId,
                   callId: data.callId,
@@ -2521,14 +2539,18 @@ export class Engine {
                         name: stage,
                         category: "read_file",
                         track:
-                          slot === undefined
-                            ? `Read file preparation ${node.ordinal + 1}`
-                            : `Read file detail ${slot + 1}`,
+                          stage === "read_file.worker.compute"
+                            ? `Read file CPU worker ${details?.workerThreadId}`
+                            : slot === undefined
+                              ? `Read file preparation ${node.ordinal + 1}`
+                              : `Tool worker ${slot + 1}`,
                         parentSpanId: toolSpan?.id,
+                        startedAtUs: details?.timestampUs,
                         attributes: {
                           batchId,
                           callId: node.callId,
                           nodeId: node.nodeId,
+                          workerThreadId: details?.workerThreadId,
                         },
                       }),
                     );
@@ -2537,6 +2559,7 @@ export class Engine {
                       readFileSpans.get(stage),
                       state,
                       details,
+                      details?.timestampUs,
                     );
                     readFileSpans.delete(stage);
                   }

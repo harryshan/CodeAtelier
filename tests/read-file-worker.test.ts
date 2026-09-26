@@ -4,7 +4,7 @@
  * 与既有工具契约一致，并同时发起四个大文件读取以覆盖共享池的独立并发调用。所有文件在临时目录清理，不访问真实模型或工作区。
  *
  * 1. createRunner 组装最小 ToolContext，保持路径/读取哈希和实际 Worker 生命周期。
- * 2. 第一组断言行范围、哈希及冷/热 Worker 阶段；随后检查二进制失败、排队取消的阶段收尾，最后验证独立读取并发。
+ * 2. 第一组断言行范围、哈希及冷/热 Worker 阶段与真实 CPU 计时；随后检查二进制失败、排队取消的阶段收尾，最后验证独立读取并发。
  */
 
 import { createHash } from "node:crypto";
@@ -85,6 +85,7 @@ it("preserves full hashes and line pagination without allocating all file lines"
     "read_file.worker.queue",
     "read_file.worker.startup",
     "read_file.worker.response",
+    "read_file.worker.compute",
   ]);
   expect(
     stages.filter((event) => event.state === "ok").map((event) => event.stage),
@@ -94,6 +95,7 @@ it("preserves full hashes and line pagination without allocating all file lines"
     "read_file.bytes",
     "read_file.worker.queue",
     "read_file.worker.startup",
+    "read_file.worker.compute",
     "read_file.worker.response",
   ]);
   expect(
@@ -107,6 +109,19 @@ it("preserves full hashes and line pagination without allocating all file lines"
         event.stage === "read_file.worker.response" && event.state === "ok",
     )?.details,
   ).toEqual({ computeMs: expect.any(Number) });
+
+  const computeStart = stages.find(
+    (event) =>
+      event.stage === "read_file.worker.compute" && event.state === "started",
+  )?.details as { timestampUs: number; workerThreadId: number };
+  const computeEnd = stages.find(
+    (event) =>
+      event.stage === "read_file.worker.compute" && event.state === "ok",
+  )?.details as { timestampUs: number };
+  expect(computeStart.workerThreadId).toBeGreaterThan(0);
+  expect(computeEnd.timestampUs).toBeGreaterThanOrEqual(
+    computeStart.timestampUs,
+  );
 
   stages.length = 0;
   await expect(
@@ -153,6 +168,10 @@ it("rejects binary bytes in the Worker before returning a read credential", asyn
       (stage, state) => stages.push({ stage, state }),
     ),
   ).rejects.toThrow("不支持二进制文件");
+  expect(stages).toContainEqual({
+    stage: "read_file.worker.compute",
+    state: "error",
+  });
   expect(stages.at(-1)).toEqual({
     stage: "read_file.worker.response",
     state: "error",

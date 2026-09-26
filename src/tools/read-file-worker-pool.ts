@@ -3,7 +3,7 @@
  * ToolRunner 在主线程完成路径解析、权限审批、普通文件/大小检查和异步 readFile 后调用 process；本池只传递 ArrayBuffer 给
  * read-file-worker，不提供路径、命令或其它进程能力。forCall 共享同一池，使同一 DAG 批次的独立读取可同时占用不同 Worker。
  *
- * 1. ReadFileWorkerPool.process 将调用排入有界槽位，按请求上报排队、Worker 冷启动与响应阶段，并把可转移的完整字节缓冲区发送给空闲 Worker。
+ * 1. ReadFileWorkerPool.process 将调用排入有界槽位，按请求上报排队、Worker 冷启动与响应阶段，并把可转移的完整字节缓冲区发送给空闲 Worker；响应携带真实线程计算区间用于单独的 CPU 轨道。
  * 2. startWorker 按 ts/js/mjs 运行形态选择同名 Worker 文件，支持开发 tsx、常规构建和 Windows 安装版 bundle。
  * 3. AbortSignal 会移除未开始请求或终止正在计算的槽位；空闲短暂保留以复用同一任务的后续批次，随后只终止空闲线程而不关闭池，因此同一长任务的下一轮读取仍可按需新建线程。
  *
@@ -29,12 +29,18 @@ export type ReadFileTraceStage =
   | "read_file.bytes"
   | "read_file.worker.queue"
   | "read_file.worker.startup"
-  | "read_file.worker.response";
+  | "read_file.worker.response"
+  | "read_file.worker.compute";
 
 export type ReadFileTrace = (
   stage: ReadFileTraceStage,
   state: "started" | "ok" | "error" | "cancelled",
-  details?: { bytes?: number; computeMs?: number },
+  details?: {
+    bytes?: number;
+    computeMs?: number;
+    timestampUs?: number;
+    workerThreadId?: number;
+  },
 ) => void;
 
 interface PendingRequest {
@@ -57,6 +63,9 @@ interface WorkerMessage {
   id?: number;
   ok?: boolean;
   computeMs?: number;
+  startedAtUs?: number;
+  finishedAtUs?: number;
+  workerThreadId?: number;
   value?: ReadFileWorkerResult;
   error?: string;
 }
@@ -243,6 +252,20 @@ export class ReadFileWorkerPool {
     }
 
     slot.current = undefined;
+    if (
+      message.startedAtUs !== undefined &&
+      message.finishedAtUs !== undefined &&
+      message.workerThreadId !== undefined
+    ) {
+      request.trace?.("read_file.worker.compute", "started", {
+        timestampUs: message.startedAtUs,
+        workerThreadId: message.workerThreadId,
+      });
+      request.trace?.("read_file.worker.compute", message.ok ? "ok" : "error", {
+        timestampUs: message.finishedAtUs,
+      });
+    }
+
     this.complete(
       request,
       message.ok

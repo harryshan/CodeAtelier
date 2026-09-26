@@ -107,7 +107,7 @@ tracing 默认启用：每个实际开始的任务在当前服务进程内生成
 
 模型请求、退避及响应处理保持独立，以便区分上下文处理与模型服务耗时，且不会产生完整事件交叠。`Task` 是任务生命周期包络；工具批次、参数检查、审批等待与依赖阻塞保留在 `Tool scheduler` 逻辑轨道，只有审批通过并准备实际执行的调用才排队取得最多 4 条可复用 `Tool worker 1` 至 `Tool worker 4` 轨道，后续节点复用最先空闲的槽位。
 
-这些槽位表示并发操作而不是 Node 物理线程，人工审批耗时不会显示为 worker 占用。`read_file` 在独立 detail 轨道按 callId 记录路径准备（在执行槽外）、普通文件检查、字节读取、Worker 排队、冷启动等待和处理/回传；热 Worker 没有冷启动阶段。处理/回传 span 另附 Worker 内纯计算耗时 `computeMs`，两者差额包含消息传递与事件循环等待，不能仅凭总 span 判断磁盘耗时。阶段仅附有界字节数及计时，不保存路径或内容；Runtime 也通过固定 IPC 白名单上报这些阶段。每个实际 tool span 的 `args.parameters` 保存传给执行器的完整结构化参数，递归遮盖 API key、token、password、authorization、cookie 及 Bearer 值；因此 trace 文件可能含命令、路径和编辑文本，必须按敏感本机诊断数据保护，不能上传或提交。
+这些槽位表示并发操作而不是 Node 物理线程，人工审批耗时不会显示为 worker 占用。`read_file.access` 在独立准备轨道记录取得执行槽前的路径授权与解析；普通文件检查、字节读取、Worker 排队、冷启动等待和响应阶段在调用对应的 `Tool worker`（Agent Runtime 路径为按 callId 独立的 `Agent Runtime read_file`）轨道上嵌套显示于 `tool.read_file`。这些工具轨道是逻辑并发槽，不是物理线程；只有 `read_file.worker.compute` 在按真实 Node Worker 线程 ID 区分的 CPU Worker 轨道展示真实计算区间。热 Worker 没有冷启动阶段；冷启动时计算可能与主线程观察到的就绪/响应阶段边界略有交叠，不把计算强行归入响应阶段。响应 span 另附纯计算耗时 `computeMs`，两者差额包含消息传递与事件循环等待，不能仅凭总 span 判断磁盘耗时。阶段仅附 callId、线程 ID、有界字节数及计时，不保存路径或内容；Runtime 也通过固定 IPC 白名单上报这些阶段。每个实际 tool span 的 `args.parameters` 保存传给执行器的完整结构化参数，递归遮盖 API key、token、password、authorization、cookie 及 Bearer 值；因此 trace 文件可能含命令、路径和编辑文本，必须按敏感本机诊断数据保护，不能上传或提交。
 
 导出会按时间排序，并以递增整数而非 UUID 标识 flow，保证 Perfetto Trace Event JSON importer 可解析。任务进入 completed、failed、cancelled 或 interrupted 终态后，安全 JSON 原子写入 `traces/<sessionId>/<taskId>.json`，同一会话的任务各用独立文件，绝不覆盖；写入完成或失败后立即释放该任务的内存记录，不保留完成 trace 缓存。
 
