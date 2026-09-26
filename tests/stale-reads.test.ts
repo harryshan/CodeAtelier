@@ -1,8 +1,8 @@
 /**
- * 验证全文版本变化后的读取归档，使用真实临时文件、ToolRunner 和 SQLite。
+ * 验证全文版本变化的读取兼容性，以及默认只摘要时不进行额外文件探测。
  *
  * 1. 读取局部行也记录全文字节哈希；外部修改不在返回范围内的行仍能识别版本变化。
- * 2. 通过 ContextManager 验证阈值前不探测，阈值后第一级归档、协议配对和重启回读。
+ * 2. 通过 ContextManager 验证阈值前和摘要阶段均不探测，原始记录与重启回读完整。
  * 3. 直接检查投影的保守边界：缺失哈希、失败、截断、重复 ID 和无法核实均不判过期。
  * 4. 检查敏感/越界/缺失/过大文件探测、取消以及探测不授予编辑凭证。
  *
@@ -51,7 +51,7 @@ function event(result: any, id = "read"): any {
   };
 }
 
-it("archives externally changed partial reads only at the threshold and restores exact history", async () => {
+it("summarizes externally changed reads without probing files or projecting history", async () => {
   const f = await fileFixture();
   const file = path.join(f.root, "a.ts");
   const original = "x".repeat(16000) + "\nunchanged";
@@ -69,8 +69,21 @@ it("archives externally changed partial reads only at the threshold and restores
   const store = new Store(db);
   const session = store.create(f.root, "versions");
   const probe = vi.fn((name: string) => f.runner.currentFileHash(name));
-  const model = vi.fn(async () => {
-    throw new Error("summary should not run");
+  const excerpts: string[] = [];
+  const model = vi.fn(async (input: any[]) => {
+    excerpts.push(
+      ...JSON.parse(input[0].content).map((record: any) => record.excerpt),
+    );
+
+    return {
+      output: [],
+      text: JSON.stringify({
+        completed: [],
+        conclusions: [],
+        verification: [],
+        pending: [],
+      }),
+    };
   });
   const options = {
     store,
@@ -104,19 +117,12 @@ it("archives externally changed partial reads only at the threshold and restores
 
     const next = await new ContextManager(options).prepare(source, "", []);
     const snapshot = store.latestContextSnapshot(session.id)!;
-    expect(snapshot.stage).toBe("deduplicate");
-    expect(model).not.toHaveBeenCalled();
-    expect(probe).toHaveBeenCalledTimes(1);
-    expect(next.map((item: any) => item.call_id)).toEqual(
-      source.map((item: any) => item.call_id),
-    );
-    const projected = JSON.parse(next[2].output);
-    expect(projected.text).toBeUndefined();
-    expect(projected.contentHash).toBe(read.contentHash);
-    expect(projected.contextArchive).toMatchObject({
-      reason: "stale-file-version",
-      omitted: true,
-    });
+    expect(snapshot.stage).toBe("summary");
+    expect(model).toHaveBeenCalled();
+    expect(probe).not.toHaveBeenCalled();
+    expect(excerpts.join("")).toContain(JSON.stringify(source[2]));
+    expect(snapshot.projections).toBeUndefined();
+    expect(next).not.toContainEqual(source[2]);
     expect(snapshot.ledger[0]).toMatchObject({
       status: "recorded",
       result: JSON.stringify({ truncated: false }),

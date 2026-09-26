@@ -405,17 +405,18 @@ tool-schema.test.ts 覆盖根节点、oneOf 禁用、包装解包、历史兼容
 - `tests/sandbox.test.ts` 验证一个阻塞 Agent Runtime 可重叠一个 capability runner，审核后的读写根进入该 Runner 的 AccessManifest，且禁止调用宿主 fallback。
 - C++ Supervisor 为 capability runner 将短期 host-bound proxy token 仅放进该 Runner 的代理环境，不查询 WinCred；Push Runner 继续使用同 Job askpass。原生构建只验证代码与协议可编译，固定账户下的递归根 ACL、真实 HTTPS client、取消、proxy lease 撤销和 generation drain 仍需提升环境验收。
 
-### 文件版本过期归档
+### 上下文默认摘要与旧投影兼容
 
-- tests/stale-reads.test.ts：真实局部读取记录全文哈希，外部修改未返回行后，第一级按版本归档；未到阈值不探测、不改历史。
-- 核对协议配对、原始事件、执行账本和重启后的快照正文回读；同路径保留当前版本，小正文无收益时跳过。
+- tests/context-stages.test.ts、tests/stale-reads.test.ts、tests/tool-projection.test.ts：达到阈值后默认直接摘要重复读取、过期文件读取和长工具结果；不调用哈希探测、不生成新的一级/二级投影，摘要模型收到原始全文。旧投影函数的契约仍独立测试。
+- tests/stale-reads.test.ts：真实局部读取记录全文哈希，外部修改未返回行后，默认压缩不按版本归档；未到阈值不探测、不改历史。
+- 核对原始事件、执行账本和重启后的快照正文回读；旧投影函数仍检查同路径保留当前版本、小正文无收益时跳过。
 - 覆盖旧记录无哈希、失败/截断/编码结果、歧义 ID、无法核实、敏感/越界/缺失/过大文件、取消和探测不授予编辑凭证。
 - 使用临时工作区和模拟模型，不证明真实缓存命中、真实模型理解归档提示或所有平台的文件行为。
 
-### 第二级工具结果归档
+### 保留的旧第二级工具结果归档（默认关闭）
 
 - tests/tool-projection.test.ts 覆盖旧搜索记录保留所有位置、目录首尾清单和省略计数、失败/截断命令诊断、只读 Git 输出、Git 写操作结果保留、写入 diff 与部分成功状态。
-- 覆盖来源缺失/歧义、格式未知、无退出码、已有归档和无收益结果不变；真实 SQLite 测试阈值、重启分页回读、后续摘要前展开全文及批次状态不丢失。
+- 覆盖来源缺失/歧义、格式未知、无退出码、已有归档和无收益结果不变；真实 SQLite 测试默认直接摘要、重启分页回读及批次状态不丢失。
 - 模拟输出和模型仅验证归档契约，不证明真实模型一定能从摘录发现所有故障；Evaluation 仍仅由用户手动运行。
 
 ## Sandbox 审查回归

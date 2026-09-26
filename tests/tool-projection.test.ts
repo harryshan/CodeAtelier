@@ -4,7 +4,7 @@
  * 1. pair/saved 生成完整工具协议对及匹配事件；验证旧搜索记录、目录省略数量、命令诊断。
  * 2. 验证只读 Git 输出和写文件 diff 缩短，Git 提交/推送输出及批次未知状态原样保留。
  * 3. 验证缺失/歧义来源、未知格式、无退出码、已有归档和短结果不被替换。
- * 4. 真实 Store 和 ContextManager 验证阈值、原子快照、重启回读、后续摘要恢复全文及执行账本。
+ * 4. 真实 Store 和 ContextManager 验证默认直接摘要、原子快照、重启回读及执行账本。
  *
  * 不运行真实命令或模型，不执行 Evaluation。输出中的失败不能因归档变成成功。
  */
@@ -206,7 +206,7 @@ it("leaves unknown and ambiguous sources, absent exit status, archived and short
   }
 });
 
-it("persists archive at the threshold, reloads exact outputs and restores state before later summary", async () => {
+it("summarizes tool results directly, persists originals and retains execution state", async () => {
   const db = path.join(await temp(), "tools.db");
   let store = new Store(db);
   const session = store.create(await temp(), "tools");
@@ -275,12 +275,20 @@ it("persists archive at the threshold, reloads exact outputs and restores state 
 
     const next = await new ContextManager(options).prepare(source, "", []);
     const snapshot = store.latestContextSnapshot(session.id)!;
-    expect(snapshot.stage).toBe("archive");
-    expect(run).not.toHaveBeenCalled();
+    expect(snapshot.stage).toBe("summary");
+    expect(run).toHaveBeenCalled();
+    expect(snapshot.projections).toBeUndefined();
+    expect(snapshot.source).toEqual(source);
     expect(next[0]).toEqual(source[0]);
     expect(next.at(-1)).toEqual(source.at(-1));
-    expect(JSON.parse(next[2].output).exitCode).toBe(1);
-    expect(JSON.parse(next[4].output).files[1].status).toBe("unknown");
+    for (const index of [2, 4]) {
+      const excerpts = requests
+        .flat()
+        .filter((record) => record.index === index)
+        .map((record) => record.excerpt);
+      expect(excerpts.join("")).toBe(JSON.stringify(source[index]));
+    }
+
     store.close();
     store = new Store(db);
     expect(store.context(session.id)).toEqual(next);
@@ -313,10 +321,7 @@ it("persists archive at the threshold, reloads exact outputs and restores state 
       [],
     );
     expect(store.latestContextSnapshot(session.id)!.stage).toBe("summary");
-    const parts = requests.flat().filter((record) => record.index === 2);
-    expect(parts.map((record) => record.excerpt).join("")).toBe(
-      JSON.stringify(source[2]),
-    );
+    expect(store.contextSnapshot(session.id, snapshot.id)).toEqual(snapshot);
     const ledger = store.latestContextSnapshot(session.id)!.ledger;
     expect(
       JSON.parse(ledger.find((entry) => entry.callId === "edit_files")!.result)

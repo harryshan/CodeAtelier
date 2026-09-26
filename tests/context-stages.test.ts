@@ -1,10 +1,10 @@
 /**
- * 检查上下文去重、归档和摘要是否按需执行，以及原始记录能否完整找回。
+ * 检查上下文默认直接摘要、旧投影兼容性和原始记录的完整回读。
  * 用模拟历史、摘要模型和临时 Store 驱动 ContextManager，读取快照核对结果。
  *
  * 1. 检查长记录分块后能覆盖每个字符，包括中间的失败信息。
- * 2. setup 创建长历史会话；去重用例确认不必调用模型，工具调用和结果仍完整配对。
- * 3. 归档用例检查诊断摘录，以及后续摘要前能否展开完整正文。
+ * 2. setup 创建长历史会话；重复读取用例确认默认不走去重或归档，模型接收全文。
+ * 3. 长读取用例检查摘要请求覆盖中间诊断，旧投影快照仍可在直接摘要前展开全文。
  * 4. 检查不同文件版本、失败和未知结果、已有摘要及来源都能保留。
  *
  * 不能通过丢掉正文中间的内容来让压缩“通过”。
@@ -13,6 +13,8 @@
 import { expect, it } from "vitest";
 import { summaryChunks } from "../src/context/compactor.js";
 import path from "node:path";
+import { createHash } from "node:crypto";
+import type { ContextSnapshot } from "../src/context/types.js";
 import { ContextManager } from "../src/context/context-manager.js";
 import { Store } from "../src/sessions/store.js";
 import { temp } from "./fixtures/helpers.js";
@@ -100,7 +102,7 @@ async function setup() {
   return { store, session, requests, manager, read };
 }
 
-it("deduplicates old reads only after the capacity threshold and preserves protocol pairs", async () => {
+it("summarizes repeated reads directly without first projecting tool outputs", async () => {
   const f = await setup();
   try {
     const source = [
@@ -113,14 +115,19 @@ it("deduplicates old reads only after the capacity threshold and preserves proto
     ];
     const next = await f.manager.prepare(source, "", []);
     const request = f.manager.request(next, "", []);
-    expect(f.store.latestContextSnapshot(f.session.id)?.stage).toBe(
-      "deduplicate",
-    );
-    expect(next).not.toBe(source);
-    expect(f.requests).toHaveLength(0);
-    expect(next.map((item) => item.call_id)).toEqual(
-      source.map((item) => ("call_id" in item ? item.call_id : undefined)),
-    );
+    const snapshot = f.store.latestContextSnapshot(f.session.id)!;
+    expect(snapshot.stage).toBe("summary");
+    expect(snapshot.source).toEqual(source);
+    expect(snapshot.projections).toBeUndefined();
+    expect(f.requests.length).toBeGreaterThan(0);
+    for (const index of [2, 4, 6, 8]) {
+      const excerpts = f.requests
+        .flat()
+        .filter((record) => record.index === index)
+        .map((record) => record.excerpt);
+      expect(excerpts.join("")).toBe(JSON.stringify(source[index]));
+    }
+
     expect(request.input).toBe(next);
     expect(request.after).toBe(request.before);
     expect(contextSize(next, "", [])).toBeLessThan(7200);
@@ -129,7 +136,7 @@ it("deduplicates old reads only after the capacity threshold and preserves proto
   }
 });
 
-it("archives large reads, retains middle diagnostics, and expands full records on later summarization", async () => {
+it("summarizes long read results with middle diagnostics without an archive stage", async () => {
   const f = await setup();
   try {
     const full =
@@ -140,24 +147,70 @@ it("archives large reads, retains middle diagnostics, and expands full records o
       { role: "user", content: "next" },
     ];
     const first = await f.manager.prepare(source, "", []);
-    expect(f.store.latestContextSnapshot(f.session.id)!.stage).toBe("archive");
-    expect(f.requests).toHaveLength(0);
-    expect(JSON.stringify(first)).toContain("FAILURE migration pending");
-    await f.manager.prepare(
-      [
-        ...first,
-        { role: "assistant", content: "z".repeat(14000) },
-        { role: "user", content: "again" },
-      ],
-      "",
-      [],
-    );
-    expect(f.store.latestContextSnapshot(f.session.id)!.stage).toBe("summary");
+    const snapshot = f.store.latestContextSnapshot(f.session.id)!;
+    expect(snapshot.stage).toBe("summary");
+    expect(snapshot.source).toEqual(source);
+    expect(snapshot.projections).toBeUndefined();
+    expect(first).not.toEqual(source);
     expect(
-      f.store
-        .latestContextSnapshot(f.session.id)!
-        .ledger.every((record) => record.status === "recorded"),
+      snapshot.ledger.every((record) => record.status === "recorded"),
     ).toBe(true);
+    const parts = f.requests.flat().filter((record) => record.index === 2);
+    expect(parts.map((record) => record.excerpt).join("")).toBe(
+      JSON.stringify(source[2]),
+    );
+  } finally {
+    f.store.close();
+  }
+});
+
+it("expands old archive snapshots before directly summarizing the full read", async () => {
+  const f = await setup();
+  try {
+    const source = [
+      { role: "user", content: "keep the old read" },
+      ...f.read("old", "a".repeat(9000) + "MIDDLE FAILURE" + "b".repeat(9000)),
+      { role: "user", content: "next" },
+    ];
+    const id = "legacy-archive";
+    const projected = projectReads(
+      source,
+      id,
+      f.store.events(f.session.id),
+      "archive",
+    );
+    expect(projected[2]).not.toEqual(source[2]);
+
+    const previous: ContextSnapshot = {
+      version: 1,
+      stage: "archive",
+      id,
+      sessionId: f.session.id,
+      parentId: null,
+      sourceHash: createHash("sha256")
+        .update(JSON.stringify(source))
+        .digest("hex"),
+      model: "test",
+      createdAt: new Date().toISOString(),
+      beforeChars: contextSize(source, "", []),
+      afterChars: contextSize(projected, "", []),
+      cut: 3,
+      source,
+      projections: [{ index: 2, output: projected[2].output }],
+      summaries: [],
+      ledger: [],
+    };
+    await f.store.compactContextAsync(f.session.id, previous, projected);
+
+    const input = [
+      ...projected,
+      { role: "assistant", content: "z".repeat(14000) },
+      { role: "user", content: "again" },
+    ];
+    await f.manager.prepare(input, "", []);
+    const snapshot = f.store.latestContextSnapshot(f.session.id)!;
+    expect(snapshot.stage).toBe("summary");
+    expect(snapshot.parentId).toBe(id);
     const parts = f.requests.flat().filter((record) => record.index === 2);
     expect(parts.map((record) => record.excerpt).join("")).toBe(
       JSON.stringify(source[2]),

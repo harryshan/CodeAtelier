@@ -5,9 +5,9 @@
  *
  * 1. Options 接收预算、存储、摘要模型、文件探测、通知和可选 tracing 依赖；request 计量原始请求。
  * 2. prepare 在阈值前直接返回，达到阈值后启动 Worker；常规压缩失败且已达硬上限时改用受限保底视图。
- * 3. compact 读取快照链和事件，Worker 构建索引并给出受限文件版本候选；主线程只执行 ToolRunner 的
- *    权限内哈希探测、可取消的摘要模型请求和原子 SQLite 提交。
- * 4. 压缩成功后重置任务内计量缓存，再由下一请求计量新视图；三个级别与保底视图仍保留原文快照、执行账本和恢复契约。
+ * 3. compact 读取快照链和事件，由 Worker 准备摘要分块；只有启用旧投影阶段才在主线程探测文件哈希，
+ *    主线程仍负责可取消的摘要模型请求和原子 SQLite 提交。
+ * 4. 压缩成功后重置任务内计量缓存，再由下一请求计量新视图；摘要与保底视图保留原文快照、执行账本和恢复契约。
  *
  * 摘要不能授予权限。取消会终止 Worker；数据库提交成功后即使界面通知失败也不能退回旧输入。
  */
@@ -230,7 +230,7 @@ export class ContextManager {
           ? "二级工具结果归档"
           : snapshot.stage === "fallback"
             ? "保底上下文裁剪"
-            : "三级结构化摘要";
+            : "LLM 结构化摘要";
     this.options.notice(
       `上下文已整理：${before} → ${snapshot.budget?.after ?? snapshot.afterChars} ${this.options.unit === "tokens" ? "token（估算）" : "字符"}；${stage}，历史记录仍可查看。`,
     );
@@ -245,7 +245,7 @@ export class ContextManager {
     return compacted.input;
   }
 
-  /** 常规分级压缩不可用时，Worker 只裁剪活动视图；完整原文和执行账本随快照原子保存。 */
+  /** 常规摘要不可用时，Worker 只裁剪活动视图；完整原文和执行账本随快照原子保存。 */
   private async fallback(
     input: any[],
     instructions: string,
@@ -349,7 +349,7 @@ export class ContextManager {
       let note: string | undefined;
 
       if (transformed.requiresSummary) {
-        // 摘要要读取完整原文，不能只看前面去重、归档留下的摘录。
+        // 旧快照可能保存投影；摘要仍须读取还原后的完整原文。
         const auxiliary = await options.summaryModel?.();
         options.signal.throwIfAborted();
         summaryModel = auxiliary?.model;

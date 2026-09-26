@@ -3,10 +3,10 @@
  * compaction-worker-client 为每次压缩创建本 Worker；ContextManager 保留模型请求、文件哈希探测和
  * SQLite 提交，向这里发送已读取的历史、事件和快照链。
  *
- * 1. prepare 使用与主任务一致的计量配置寻找安全切分，恢复祖先快照正文，建立工具来源索引和执行账本，
- *    然后返回可由主线程安全探测的文件版本。
- * 2. transform 使用索引完成一级读取投影和二级工具投影，并在 Worker 中验收压缩收益。
- * 3. chunks 仅在需要三级摘要时按摘要模型预算分块；网络模型调用仍由主线程负责，以保留取消和重试语义。
+ * 1. prepare 使用与主任务一致的计量配置寻找安全切分，恢复祖先快照正文，建立执行账本；
+ *    仅在开启旧投影阶段时建立投影索引并返回文件哈希候选。
+ * 2. transform 默认直接准备 LLM 摘要；文件内开关可恢复一级读取投影与二级工具投影用于对比。
+ * 3. chunks 按摘要模型预算分块；网络模型调用仍由主线程负责，以保留取消和重试语义。
  * 4. fallback 保留用户原话、最新结论与完整近期批次；finalize 组合常规压缩结果和快照。
  *    两条路径均要求完整输入不超过预算的 60% 且确实减少，不另设最小收益比例。
  *
@@ -25,6 +25,9 @@ import { createToolResultIndex, type ToolResultIndex } from "./tool-result.js";
 import type { ContextSnapshot } from "./types.js";
 import type { Event } from "../shared/types.js";
 
+// 仅用于本文件内对比旧版机械压缩；默认不探测文件版本，也不投影工具正文。
+const enableProjectionStages = false;
+
 interface PreparedState {
   input: any[];
   prefix: any[];
@@ -32,7 +35,7 @@ interface PreparedState {
   events: Event[];
   snapshots: ContextSnapshot[];
   expanded: any[];
-  prefixIndex: ToolResultIndex;
+  prefixIndex?: ToolResultIndex;
   ledger: ContextSnapshot["ledger"];
   retained?: any[];
   selected?: ContextSnapshot["stage"];
@@ -125,7 +128,9 @@ function prepare(request: {
   }
 
   const { expanded, trustedNotes } = restoreHistory(prefix, request.snapshots);
-  const prefixIndex = createToolResultIndex(prefix, request.events);
+  const prefixIndex = enableProjectionStages
+    ? createToolResultIndex(prefix, request.events)
+    : undefined;
   const expandedIndex = createToolResultIndex(expanded, request.events);
   const ledger = executionLedger(
     expanded,
@@ -146,7 +151,9 @@ function prepare(request: {
 
   return {
     planned: true as const,
-    readCandidates: readHashCandidates(prefix, request.events, prefixIndex),
+    readCandidates: prefixIndex
+      ? readHashCandidates(prefix, request.events, prefixIndex)
+      : [],
     ledger,
     trustedNotes: [...trustedNotes],
   };
@@ -166,67 +173,69 @@ function transform(request: {
     throw new Error("压缩 Worker 尚未准备历史。");
   }
 
-  const hashes = new Map(request.hashes);
-  const deduplicated = [
-    ...projectReads(
+  if (enableProjectionStages && state.prefixIndex) {
+    const hashes = new Map(request.hashes);
+    const deduplicated = [
+      ...projectReads(
+        state.prefix,
+        request.snapshotId,
+        state.events,
+        "deduplicate",
+        hashes,
+        state.prefixIndex,
+      ),
+      ...state.tail,
+    ];
+    if (
+      acceptable(
+        deduplicated,
+        state,
+        request.measurement,
+        request.instructions,
+        request.tools,
+        request.limit,
+        request.beforeAmount,
+      )
+    ) {
+      state.selected = "deduplicate";
+      state.selectedInput = deduplicated;
+
+      return { stage: "deduplicate" as const, requiresSummary: false };
+    }
+
+    const readsArchived = projectReads(
       state.prefix,
       request.snapshotId,
       state.events,
-      "deduplicate",
+      "archive",
       hashes,
       state.prefixIndex,
-    ),
-    ...state.tail,
-  ];
-  if (
-    acceptable(
-      deduplicated,
-      state,
-      request.measurement,
-      request.instructions,
-      request.tools,
-      request.limit,
-      request.beforeAmount,
-    )
-  ) {
-    state.selected = "deduplicate";
-    state.selectedInput = deduplicated;
+    );
+    const archived = [
+      ...projectToolResults(
+        readsArchived,
+        request.snapshotId,
+        state.events,
+        state.prefixIndex,
+      ),
+      ...state.tail,
+    ];
+    if (
+      acceptable(
+        archived,
+        state,
+        request.measurement,
+        request.instructions,
+        request.tools,
+        request.limit,
+        request.beforeAmount,
+      )
+    ) {
+      state.selected = "archive";
+      state.selectedInput = archived;
 
-    return { stage: "deduplicate" as const, requiresSummary: false };
-  }
-
-  const readsArchived = projectReads(
-    state.prefix,
-    request.snapshotId,
-    state.events,
-    "archive",
-    hashes,
-    state.prefixIndex,
-  );
-  const archived = [
-    ...projectToolResults(
-      readsArchived,
-      request.snapshotId,
-      state.events,
-      state.prefixIndex,
-    ),
-    ...state.tail,
-  ];
-  if (
-    acceptable(
-      archived,
-      state,
-      request.measurement,
-      request.instructions,
-      request.tools,
-      request.limit,
-      request.beforeAmount,
-    )
-  ) {
-    state.selected = "archive";
-    state.selectedInput = archived;
-
-    return { stage: "archive" as const, requiresSummary: false };
+      return { stage: "archive" as const, requiresSummary: false };
+    }
   }
 
   const trustedNotes = new Set(request.trustedNotes);
@@ -284,7 +293,7 @@ function chunks(request: { measurement: ContextMeasurement; limit: number }) {
 }
 
 /**
- * 常规三级压缩无法在硬上限前完成时的保底视图：完整原文仍进入快照，活动输入只保留
+ * 常规摘要无法在硬上限前完成时的保底视图：完整原文仍进入快照，活动输入只保留
  * 全部用户原话、最新可见结论与尽量多的完整近期批次。不能保留用户输入时拒绝继续，
  * 而不是悄悄删除用户要求或伪造工具状态。
  */
