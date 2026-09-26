@@ -2,7 +2,7 @@
  * 使用真实 ToolRunner 和临时文件验证统一文件编辑工具，不访问模型或用户项目。
  * 1. 最后一次预检后的新建竞争也不得覆盖外部文件；单/多文件编辑、后项校验失败、重复路径和读取版本通过磁盘内容验证。
  * 2. 行号限定搜索窗口，覆盖行内/跨行片段、重复文本、原始快照偏移、范围越界、重叠、所有文本文件的 CRLF/LF 等价定位、唯一空白候选和可修复诊断。
- * 3. 后续故障用例检查逐文件失败仍继续、版本校验、聚合错误、取消及部分写入，不假设跨文件原子性。
+ * 3. 后续故障用例检查逐文件失败仍继续、版本校验、聚合错误、取消及部分写入，不假设跨文件原子性；夹具统一关闭其按需创建的读取线程。
  */
 
 import { expect, it, vi, afterEach } from "vitest";
@@ -11,7 +11,7 @@ import path from "node:path";
 import * as fs from "node:fs/promises";
 import { writeFileSync, renameSync, linkSync, type PathLike } from "node:fs";
 import { ToolRunner } from "../src/tools/tool-runner.js";
-import { fileFixture } from "./fixtures/helpers.js";
+import { fileFixture, trackRunner } from "./fixtures/helpers.js";
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const original = await importOriginal<typeof import("node:fs/promises")>();
@@ -270,20 +270,22 @@ async function hookedFixture(
   hook: (data: any, root: string, controller: AbortController) => void,
 ) {
   const fixture = await fileFixture();
-  const runner = new ToolRunner({
-    root: fixture.root,
-    settings: fixture.config.settings,
-    signal: fixture.controller.signal,
-    approvals: fixture.approvals,
-    sessionId: "s",
-    taskId: "t",
-    emit: (type, data) => {
-      fixture.events.push({ type, data });
-      if (type === "edit_progress") {
-        hook(data, fixture.root, fixture.controller);
-      }
-    },
-  });
+  const runner = trackRunner(
+    new ToolRunner({
+      root: fixture.root,
+      settings: fixture.config.settings,
+      signal: fixture.controller.signal,
+      approvals: fixture.approvals,
+      sessionId: "s",
+      taskId: "t",
+      emit: (type, data) => {
+        fixture.events.push({ type, data });
+        if (type === "edit_progress") {
+          hook(data, fixture.root, fixture.controller);
+        }
+      },
+    }),
+  );
   for (const name of ["a.txt", "b.txt", "c.txt"]) {
     await writeFile(path.join(fixture.root, name), "old");
     await runner.execute("read_file", {

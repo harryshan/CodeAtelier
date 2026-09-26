@@ -55,6 +55,7 @@ const runtimeTraceNameSchema = z.enum([
   "context.request",
   "context.request.measure_input",
   "tool.result_persist",
+  "read_file.pool.close",
   "read_file.stat",
   "read_file.bytes",
   "read_file.worker.queue",
@@ -504,8 +505,10 @@ export const runtimeEventSchema = z.discriminatedUnion("event", [
     .strict()
     .refine(
       (event) =>
-        !event.name.startsWith("read_file.") || !!event.attributes.callId,
-      { message: "read_file trace 必须关联工具调用标识。" },
+        event.name === "read_file.pool.close" ||
+        !event.name.startsWith("read_file.") ||
+        !!event.attributes.callId,
+      { message: "read_file 工具阶段必须关联工具调用标识。" },
     ),
   z
     .object({

@@ -301,6 +301,16 @@ it("accepts only bounded context trace events", async () => {
     ).toBe(false);
   }
 
+  expect(
+    runtimeIpcMessageSchema.safeParse({
+      type: "event",
+      event: "trace_span_start",
+      spanId: "pool-close",
+      name: "read_file.pool.close",
+      attributes: {},
+    }).success,
+  ).toBe(true);
+
   input.write(
     `${JSON.stringify({
       type: "event",

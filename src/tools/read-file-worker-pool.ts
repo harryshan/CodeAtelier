@@ -5,7 +5,7 @@
  *
  * 1. ReadFileWorkerPool.process 将调用排入有界槽位，按请求上报排队、Worker 冷启动与响应阶段，并把可转移的完整字节缓冲区发送给空闲 Worker；响应仅附带 Worker 的计算耗时，不额外创建计算轨道。
  * 2. startWorker 按 ts/js/mjs 运行形态选择同名 Worker 文件，支持开发 tsx、常规构建和 Windows 安装版 bundle。
- * 3. AbortSignal 会移除未开始请求或终止正在计算的槽位；空闲短暂保留以复用同一任务的后续批次，随后只终止空闲线程而不关闭池，因此同一长任务的下一轮读取仍可按需新建线程。
+ * 3. AbortSignal 会移除未开始请求或终止正在计算的槽位；已创建线程在任务内保持可复用，close 同时等待正常线程和取消中尚未退出的线程。
  *
  * Worker 的结果没有副作用；取消只会丢弃尚未返回的计算结果，ToolRunner 仍负责文件版本凭证与任务恢复语义。
  */
@@ -70,7 +70,6 @@ interface WorkerSlot {
 }
 
 const MAX_READ_FILE_WORKERS = 4;
-const IDLE_TIMEOUT_MS = 1_000;
 
 function workerSource() {
   if (import.meta.url.endsWith(".ts")) {
@@ -94,7 +93,9 @@ export class ReadFileWorkerPool {
   private readonly slots = new Set<WorkerSlot>();
   private readonly queue: PendingRequest[] = [];
   private nextId = 1;
-  private idleTimer: NodeJS.Timeout | undefined;
+  private readonly stopping = new Set<Promise<void>>();
+  private closePromise?: Promise<void>;
+  private stopFailure?: Error;
   private closed = false;
 
   process(
@@ -112,8 +113,6 @@ export class ReadFileWorkerPool {
     if (this.closed) {
       return Promise.reject(new Error("读取 Worker 池已关闭。"));
     }
-
-    this.clearIdleTimer();
 
     return new Promise<ReadFileWorkerResult>((resolve, reject) => {
       const request: PendingRequest = {
@@ -136,13 +135,16 @@ export class ReadFileWorkerPool {
     });
   }
 
-  async close() {
-    if (this.closed) {
-      return;
+  close(): Promise<void> {
+    if (!this.closePromise) {
+      this.closed = true;
+      this.closePromise = this.stopWorkers();
     }
 
-    this.closed = true;
-    this.clearIdleTimer();
+    return this.closePromise;
+  }
+
+  private async stopWorkers() {
     const error = new Error("读取 Worker 池已关闭。");
     for (const request of this.queue.splice(0)) {
       this.complete(request, error);
@@ -150,7 +152,19 @@ export class ReadFileWorkerPool {
 
     const slots = [...this.slots];
     this.slots.clear();
-    await Promise.all(slots.map((slot) => this.stopSlot(slot, error)));
+    // 一个终止失败也必须等待其余线程退出，再向任务收尾报告不确定状态。
+    const results = await Promise.allSettled([
+      ...this.stopping,
+      ...slots.map((slot) => this.stopSlot(slot, error)),
+    ]);
+    const failed = results.find((result) => result.status === "rejected");
+    if (failed?.status === "rejected") {
+      throw failed.reason;
+    }
+
+    if (this.stopFailure) {
+      throw this.stopFailure;
+    }
   }
 
   private dispatch() {
@@ -171,10 +185,6 @@ export class ReadFileWorkerPool {
     while (this.queue.length && this.slots.size < MAX_READ_FILE_WORKERS) {
       const slot = this.startWorker();
       this.start(slot, this.queue.shift()!);
-    }
-
-    if (!this.queue.length && [...this.slots].every((slot) => !slot.current)) {
-      this.scheduleIdleWorkerRelease();
     }
   }
 
@@ -292,7 +302,20 @@ export class ReadFileWorkerPool {
     this.slots.delete(slot);
     slot.current = undefined;
     this.complete(request, error);
-    void this.stopSlot(slot, error).finally(() => this.dispatch());
+    const stopping = this.stopSlot(slot, error);
+    this.stopping.add(stopping);
+    void stopping.then(
+      () => {
+        this.stopping.delete(stopping);
+        this.dispatch();
+      },
+      (cause: unknown) => {
+        this.stopping.delete(stopping);
+        this.stopFailure =
+          cause instanceof Error ? cause : new Error("读取 Worker 退出失败。");
+        this.dispatch();
+      },
+    );
   }
 
   private complete(
@@ -324,38 +347,5 @@ export class ReadFileWorkerPool {
     }
 
     await slot.worker.terminate();
-  }
-
-  private scheduleIdleWorkerRelease() {
-    if (this.idleTimer || this.closed) {
-      return;
-    }
-
-    this.idleTimer = setTimeout(() => {
-      this.idleTimer = undefined;
-      void this.releaseIdleWorkers();
-    }, IDLE_TIMEOUT_MS);
-    this.idleTimer.unref();
-  }
-
-  private async releaseIdleWorkers() {
-    if (
-      this.closed ||
-      this.queue.length ||
-      [...this.slots].some((slot) => slot.current)
-    ) {
-      return;
-    }
-
-    const slots = [...this.slots];
-    this.slots.clear();
-    await Promise.all(slots.map((slot) => slot.worker.terminate()));
-  }
-
-  private clearIdleTimer() {
-    if (this.idleTimer) {
-      clearTimeout(this.idleTimer);
-      this.idleTimer = undefined;
-    }
   }
 }

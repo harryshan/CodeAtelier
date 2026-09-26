@@ -1142,6 +1142,8 @@ export class Engine {
 
               const subagentTrace = event.name.startsWith("subagent.");
               const readFileTrace = event.name.startsWith("read_file.");
+              const readFileToolStage =
+                readFileTrace && event.name !== "read_file.pool.close";
               const subagentId = event.attributes.subagentId;
               if (
                 subagentTrace &&
@@ -1164,7 +1166,7 @@ export class Engine {
                       : "context",
                   track: subagentTrace
                     ? `Subagent ${subagentId}`
-                    : readFileTrace
+                    : readFileToolStage
                       ? `Agent Runtime read_file ${event.attributes.callId}`
                       : "Main thread",
                   parentSpanId: parent?.id,
@@ -1597,6 +1599,7 @@ export class Engine {
     let lastFlush = 0;
     let replayCaptureSpan: TraceSpan | undefined;
     let subagents: SubagentCoordinator | undefined;
+    let taskRunner: ToolRunner | undefined;
     const cleanReplay = <T>(value: T) =>
       JSON.parse(redactJson(JSON.stringify(value), [this.config.apiKey])) as T;
     const flush = () => {
@@ -1787,6 +1790,7 @@ export class Engine {
           );
         },
       });
+      taskRunner = runner;
       // Runtime 启动前 fallback 已回到宿主权限模型；不能沿用仅 Runtime 可执行的提示或工具。
       const baseInstructions = await createInstructions(session.workspace);
       const memorySpan = this.traces.startSpan(task.id, {
@@ -2727,6 +2731,25 @@ export class Engine {
         ...(status === "failed" ? { err: error } : {}),
       });
     } finally {
+      if (taskRunner) {
+        const poolSpan = this.traces.startSpan(task.id, {
+          name: "read_file.pool.close",
+          category: "read_file",
+          track: "Main thread",
+        });
+        try {
+          await taskRunner.close();
+          this.traces.endSpan(poolSpan, signal.aborted ? "cancelled" : "ok");
+        } catch (error) {
+          this.traces.endSpan(poolSpan, "error", {
+            errorName: error instanceof Error ? error.name : typeof error,
+          });
+          status = "failed";
+          failure = "读取 Worker 退出失败，任务结果不能视为完成。";
+          log.error({ event: "read_file.pool.cleanup_failed", err: error });
+        }
+      }
+
       try {
         await subagents?.close();
       } catch (error) {

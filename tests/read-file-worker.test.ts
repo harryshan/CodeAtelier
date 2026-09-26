@@ -4,14 +4,15 @@
  * 与既有工具契约一致，并同时发起四个大文件读取以覆盖共享池的独立并发调用。所有文件在临时目录清理，不访问真实模型或工作区。
  *
  * 1. createRunner 组装最小 ToolContext，保持路径/读取哈希和实际 Worker 生命周期。
- * 2. 第一组断言行范围、哈希及冷/热 Worker 阶段（不记录路径准备或单独计算片段）；随后检查二进制失败、排队取消的阶段收尾，最后验证独立读取并发。
+ * 2. 第一组断言行范围、哈希及跨空闲期复用 Worker 的阶段（不记录路径准备或单独计算片段）；随后检查二进制失败、排队/执行中取消、清理部分失败时仍等待全部线程、任务清理中的执行请求和四个并发读取。
  */
 
 import { createHash } from "node:crypto";
+import { Worker } from "node:worker_threads";
 import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { ToolRunner } from "../src/tools/tool-runner.js";
 import {
   ReadFileWorkerPool,
@@ -19,8 +20,10 @@ import {
 } from "../src/tools/read-file-worker-pool.js";
 
 const roots: string[] = [];
+const runners: ToolRunner[] = [];
 
 afterEach(async () => {
+  await Promise.all(runners.splice(0).map((runner) => runner.close()));
   await Promise.all(
     roots.splice(0).map((root) => rm(root, { recursive: true, force: true })),
   );
@@ -30,18 +33,18 @@ async function createRunner() {
   const root = await mkdtemp(path.join(tmpdir(), "codeatelier-read-worker-"));
   roots.push(root);
 
-  return {
+  const runner = new ToolRunner({
     root,
-    runner: new ToolRunner({
-      root,
-      sessionId: "session",
-      taskId: "task",
-      signal: new AbortController().signal,
-      settings: {} as never,
-      approvals: { request: async () => true },
-      emit: () => {},
-    }),
-  };
+    sessionId: "session",
+    taskId: "task",
+    signal: new AbortController().signal,
+    settings: {} as never,
+    approvals: { request: async () => true },
+    emit: () => {},
+  });
+  runners.push(runner);
+
+  return { root, runner };
 }
 
 it("preserves full hashes and line pagination without allocating all file lines", async () => {
@@ -133,11 +136,8 @@ it("preserves full hashes and line pagination without allocating all file lines"
     trace,
   );
   expect(
-    stages.some(
-      (event) =>
-        event.stage === "read_file.worker.startup" && event.state === "started",
-    ),
-  ).toBe(true);
+    stages.some((event) => event.stage === "read_file.worker.startup"),
+  ).toBe(false);
 });
 
 it("rejects binary bytes in the Worker before returning a read credential", async () => {
@@ -197,6 +197,123 @@ it("closes the queued Worker stage when a read is cancelled", async () => {
     await Promise.all(running);
   } finally {
     await pool.close();
+  }
+});
+
+it("closes active and queued reads at the task boundary and cannot restart the pool", async () => {
+  const pool = new ReadFileWorkerPool();
+  const options = {
+    startLine: 1,
+    endLine: 1,
+    maxLines: 500,
+    whitespaceMode: false,
+  };
+  const buffer = () => new TextEncoder().encode("line\n").buffer;
+  const pending = Array.from({ length: 5 }, () =>
+    pool.process(buffer(), options, new AbortController().signal),
+  );
+
+  const closed = pool.close();
+  await Promise.all(
+    pending.map((request) => expect(request).rejects.toThrow("已关闭")),
+  );
+  await closed;
+  await expect(
+    pool.process(buffer(), options, new AbortController().signal),
+  ).rejects.toThrow("已关闭");
+});
+
+it("waits for an aborted read's Worker to exit before finishing task cleanup", async () => {
+  const pool = new ReadFileWorkerPool();
+  const controller = new AbortController();
+  const stages: Array<{ stage: string; state: string }> = [];
+  const pending = pool.process(
+    new TextEncoder().encode("line\n").buffer,
+    { startLine: 1, endLine: 1, maxLines: 500, whitespaceMode: false },
+    controller.signal,
+    (stage, state) => stages.push({ stage, state }),
+  );
+
+  controller.abort(new Error("cancelled"));
+  const closed = pool.close();
+  expect(pool.close()).toBe(closed);
+  await expect(pending).rejects.toThrow("cancelled");
+  await closed;
+  expect(stages).toContainEqual({
+    stage: "read_file.worker.startup",
+    state: "cancelled",
+  });
+});
+
+it("waits for all workers even when terminating one reports failure", async () => {
+  const terminateWorker = Worker.prototype.terminate;
+  let firstExited!: () => void;
+  let releaseSecond!: () => void;
+  const firstTerminated = new Promise<void>((resolve) => {
+    firstExited = resolve;
+  });
+  const secondReleased = new Promise<void>((resolve) => {
+    releaseSecond = resolve;
+  });
+  let terminations = 0;
+  const spy = vi
+    .spyOn(Worker.prototype, "terminate")
+    .mockImplementation(function (this: Worker) {
+      const exiting = terminateWorker.call(this);
+      terminations += 1;
+      if (terminations === 1) {
+        return exiting.then(() => {
+          firstExited();
+          throw new Error("退出状态不确定");
+        });
+      }
+
+      return exiting.then(async (code) => {
+        await secondReleased;
+
+        return code;
+      });
+    });
+  const pool = new ReadFileWorkerPool();
+  const options = {
+    startLine: 1,
+    endLine: 1,
+    maxLines: 500,
+    whitespaceMode: false,
+  };
+  const pending = Array.from({ length: 2 }, () =>
+    pool.process(
+      new TextEncoder().encode("line\n").buffer,
+      options,
+      new AbortController().signal,
+    ),
+  );
+  const closed = pool.close();
+  const failed = expect(closed).rejects.toThrow("退出状态不确定");
+
+  try {
+    await Promise.all(
+      pending.map((request) => expect(request).rejects.toThrow("已关闭")),
+    );
+    await firstTerminated;
+    let settled = false;
+    void closed.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    releaseSecond();
+    await failed;
+    expect(terminations).toBe(2);
+  } finally {
+    releaseSecond();
+    await closed.catch(() => {});
+    spy.mockRestore();
   }
 });
 

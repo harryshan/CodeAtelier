@@ -5,7 +5,7 @@
  * 1. start 接受 Broker 绑定任务的安全设置，恢复 session 上下文并在工作区生成指令和文件工具。
  * 2. ContextManager 在 Runtime 内计量/压缩，快照读写经 RuntimeSessionClient 回到 Broker。
  * 3. model-loop 共用轮次、有界重试和上下文超限恢复，model-tool-batch 共用工具计划与结果判定；每轮模型调用经 RuntimeModelProvider 代理；工具 DAG 先并行准备已就绪节点，审批通过后才取得有界 worker 槽执行文件编辑、命令和非 push Git。
- * 4. UI/session 事件按连接排队；无效 DAG 在无副作用时回传模型修正，read_file 的工具内阶段经固定 IPC trace 上报，工具结果增量保存后进入下一轮，失败不得盲目重放。
+ * 4. UI/session 事件按连接排队；无效 DAG 在无副作用时回传模型修正，read_file 的工具内阶段与任务级线程池清理经固定 IPC trace 上报，工具结果增量保存后进入下一轮，失败不得盲目重放。
  * 5. 已选任务在 Runtime 内运行独立只读 Worker，子状态、问题回执、模型/租约及固定无正文的 trace 经任务绑定 IPC；收尾确认线程退出后再由 Broker 清理。
  *
  * Push Runner 必须独占当前工具批次；扩展权限 Runner 先经 IPC 审批取得一次性授权，获得 worker 槽后才启动，因而可与无依赖的普通工具正确并行。两者都由结构化 Runtime IPC adapter 等待结果；context/tool/model tracing 经固定 schema 回到 Broker，但提升环境验收仍未完成，不能据此宣称 W3/W4/W5 完成。
@@ -98,6 +98,7 @@ export class AgentRuntimeService {
     );
     const trace = new RuntimeContextTrace(this.peer);
     let subagents: SubagentCoordinator | undefined;
+    let taskRunner: ToolRunner | undefined;
     let status: RuntimeTaskStatus = "completed";
     let failure: string | undefined;
 
@@ -230,6 +231,7 @@ export class AgentRuntimeService {
         parentExecutionInstanceId: this.identity.executionInstanceId,
         emit: (type, data) => events.emit(type, data),
       });
+      taskRunner = runner;
       // 内置网页搜索在 Broker 代理的 Responses 请求中完成，不会伪装为 Runtime 本地工具调用。
       const tools = [
         ...runtimeDefinitions,
@@ -551,6 +553,19 @@ export class AgentRuntimeService {
       events.emit("notice", { text: failure, status });
     }
 
+    if (taskRunner) {
+      const poolSpan = trace.start("read_file.pool.close");
+      try {
+        await taskRunner.close();
+        trace.end(poolSpan, signal.aborted ? "cancelled" : "ok");
+      } catch {
+        trace.end(poolSpan, "error");
+        status = "failed";
+        failure = "读取 Worker 退出失败，不能确认主任务完成。";
+        events.emit("notice", { text: failure, status });
+      }
+    }
+
     try {
       await subagents?.close();
     } catch {
@@ -614,7 +629,8 @@ class RuntimeContextTrace implements ContextTrace {
         | "context.prepare.measure_request_view"
         | "context.request"
         | "context.request.measure_input"
-        | "tool.result_persist",
+        | "tool.result_persist"
+        | "read_file.pool.close",
       attributes,
     });
     this.stack.push(spanId);

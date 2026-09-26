@@ -1,7 +1,7 @@
 /**
  * 验证 Perfetto tracing 的可导出时间线、敏感原文边界、会话/任务级持久化和真实 HTTP 下载接口。
  * 第一组直接驱动 TraceRecorder，检查主线程 begin/end slice、instant、flow 与递归凭据脱敏的 tool 参数被转换为 Chrome Trace Event JSON；
- * 第二组通过生产 createApp、Engine 和模拟模型完成并发工具任务，确认 read_file 仅保留工具内阶段、context 预算计量、响应/计划/持久化阶段、独立 Store worker 与工具轨道及任务根 span 写入后即释放内存，并可经受保护 API 下载。
+ * 第二组通过生产 createApp、Engine 和模拟模型完成并发工具任务，确认 read_file 工具内阶段和任务级线程池关闭片段、context 预算计量、响应/计划/持久化阶段、独立 Store worker 与工具轨道及任务根 span 写入后即释放内存，并可经受保护 API 下载。
  *
  * 测试不连接真实模型服务，也不写入用户工作区；它只检查导出的可观察结构和临时数据目录，不依赖具体微秒耗时。
  */
@@ -400,6 +400,17 @@ it("persists each Engine task trace by session and task, then exports it only th
     expect(
       response.json().traceEvents.map((event: { name: string }) => event.name),
     ).not.toContain("read_file.worker.compute");
+    const shutdown = response
+      .json()
+      .traceEvents.filter(
+        (event: { name: string }) => event.name === "read_file.pool.close",
+      );
+    expect(shutdown.map((event: { ph: string }) => event.ph)).toEqual([
+      "B",
+      "E",
+    ]);
+    expect(shutdown[0].args.status).toBe("ok");
+    expect(shutdown[0].ts).toBeGreaterThanOrEqual(tool.ts + tool.dur);
     const allTools = response
       .json()
       .traceEvents.filter(

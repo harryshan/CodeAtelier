@@ -2,11 +2,11 @@
  * 执行模型提出的文件操作和命令，并在操作前完成参数、路径和审批检查。
  * Engine 为每个任务创建共享读取快照的 ToolRunner，并为 DAG 中每个节点派生带独立 callId 的输出作用域。
  *
- * 1. ignored 列出遍历时跳过的目录；ToolContext 定义依赖，readHashes 记住本任务读过的文件版本；forCall 共享该状态但隔离事件关联。
+ * 1. ignored 列出遍历时跳过的目录；ToolContext 定义依赖，readHashes 记住本任务读过的文件版本；forCall 共享该状态但隔离事件关联，任务收尾由根 runner.close 等待读取线程退出。
  * 2. currentFileHash 仅探测安全工作区文件的字节哈希，不更新读取凭证；access 解析路径并申请必要的权限；entries 限量遍历，commandGrant 为可复用命令计算指纹。
  * 3. execute 先通过 parseToolArguments 校验参数并解开 Git 的 request 包装（兼容历史扁平调用）。统一的精确编辑和显式新建文件均分流给共享读取哈希的 FileEditor，已有文件成功编辑后会作废对应哈希；普通 Runtime 工具在既有 AccessManifest 内不再审批，越界命令先经 run_with_permissions adapter 交给 Broker 复核与审批，取得执行槽后才消费一次性授权启动独立 Runner。
  * 4. 每个 execution instance 只读取 Broker 为该 task/instance 保存的状态；并发任务的 fallback/unknown 不会污染其它 PID、session 或 trace 记录。
- * 5. 只读分支只处理读取；目录浏览和代码搜索均由 run_command 在审批后执行。read_file 在主线程完成安全访问、类型检查和异步字节读取，再交给共享 Worker 池处理全文哈希与行扫描；可选 trace 将路径准备、检查、读取及 Worker 阶段分开计时，不保存文件内容。
+ * 5. 只读分支只处理读取；目录浏览和代码搜索均由 run_command 在审批后执行。read_file 在主线程完成安全访问、类型检查和异步字节读取，再交给共享 Worker 池处理全文哈希与行扫描；可选 trace 将检查、读取及 Worker 阶段分开计时，不保存文件内容。
  *
  * 新建文件使用 edit_files 的 create:true 条目，已有文件只能用 create:false 的精确快照编辑；
  * FileEditor 会在写入前复核路径、存在性和读取版本，并以同目录临时文件替换目标。
@@ -196,6 +196,11 @@ export class ToolRunner {
       readHashes: this.readHashes,
       emit: ctx.emit,
     });
+  }
+
+  /** 根 runner 在任务收尾调用；派生的 call runner 与之共享同一读取池。 */
+  close(): Promise<void> {
+    return this.readFileWorkers.close();
   }
 
   /**

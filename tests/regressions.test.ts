@@ -82,6 +82,7 @@ it.skipIf(process.platform === "win32")(
   "preserves executable mode after an atomic edit",
   async () => {
     const root = await realpath(await mkdtemp(path.join(tmpdir(), "ca-mode-")));
+    let tools: ToolRunner | undefined;
 
     try {
       const file = path.join(root, "script.sh");
@@ -89,7 +90,7 @@ it.skipIf(process.platform === "win32")(
       await writeFile(file, "echo before\n");
       await chmod(file, 0o755);
       const config = new Config(path.join(root, "data"));
-      const tools = new ToolRunner({
+      tools = new ToolRunner({
         root,
         sessionId: "s",
         taskId: "t",
@@ -117,6 +118,7 @@ it.skipIf(process.platform === "win32")(
       expect((await stat(file)).mode & 0o777).toBe(0o755);
       expect(await readFile(file, "utf8")).toContain("after");
     } finally {
+      await tools?.close();
       await rm(root, { recursive: true, force: true });
     }
   },
