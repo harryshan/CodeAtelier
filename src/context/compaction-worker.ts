@@ -7,7 +7,8 @@
  *    然后返回可由主线程安全探测的文件版本。
  * 2. transform 使用索引完成一级读取投影和二级工具投影，并在 Worker 中验收压缩收益。
  * 3. chunks 仅在需要三级摘要时按摘要模型预算分块；网络模型调用仍由主线程负责，以保留取消和重试语义。
- * 4. finalize 将模型返回的摘要组合为新上下文和快照元数据，计算 hash/字符数和最终预算验收。
+ * 4. fallback 保留用户原话、最新结论与完整近期批次；finalize 组合常规压缩结果和快照。
+ *    两条路径均要求完整输入不超过实际预算且确实减少，不使用固定压缩比例。
  *
  * Worker 不访问工作区、不调用模型、不写 SQLite。所有输入都是已保存历史数据，不能据此推断工具成功或权限。
  */
@@ -94,7 +95,7 @@ function acceptable(
 
   const amount = measure(measurement, candidate, instructions, tools);
 
-  return amount <= limit * 0.6 && amount < beforeAmount * 0.9;
+  return amount <= limit && amount < beforeAmount;
 }
 
 function prepare(request: {
@@ -118,7 +119,7 @@ function prepare(request: {
   const tail = request.input.slice(cut);
   if (
     localMeasure([...anchors, ...tail], request.instructions, request.tools) >=
-    request.limit * 0.6
+    request.limit
   ) {
     return { planned: false as const };
   }
@@ -248,10 +249,9 @@ function transform(request: {
       [...retained, ...state.tail],
       request.instructions,
       request.tools,
-    ) >=
-    request.limit * 0.6
+    ) >= request.limit
   ) {
-    throw new Error("保留的用户要求与历史摘要已超出压缩目标。");
+    throw new Error("保留的用户要求与历史摘要已占满输入容量。");
   }
 
   state.retained = retained;
@@ -296,7 +296,6 @@ function fallback(request: {
   events: Event[];
   previous?: ContextSnapshot;
   limit: number;
-  target: number;
   unit: "tokens" | "characters";
   measurement: ContextMeasurement;
   instructions: string;
@@ -351,14 +350,23 @@ function fallback(request: {
   };
 
   let selected: any[] | undefined;
+  const before = measure(
+    request.measurement,
+    request.input,
+    request.instructions,
+    request.tools,
+  );
 
   // 从最早的完整近期批次开始尝试，优先给模型留下尽量多的新鲜执行过程。
   for (const start of uniqueBoundaries) {
     const next = candidate(start);
-    if (
-      measure(request.measurement, next, request.instructions, request.tools) <=
-      request.target
-    ) {
+    const amount = measure(
+      request.measurement,
+      next,
+      request.instructions,
+      request.tools,
+    );
+    if (amount <= request.limit && amount < before) {
       selected = next;
       break;
     }
@@ -370,12 +378,6 @@ function fallback(request: {
     );
   }
 
-  const before = measure(
-    request.measurement,
-    request.input,
-    request.instructions,
-    request.tools,
-  );
   const after = measure(
     request.measurement,
     selected,
@@ -457,8 +459,8 @@ function finalize(request: {
     request.instructions,
     request.tools,
   );
-  if (after > request.limit * 0.6 || after >= request.beforeAmount * 0.9) {
-    throw new Error("摘要未达到压缩目标。");
+  if (after > request.limit || after >= request.beforeAmount) {
+    throw new Error("压缩后的上下文超过输入容量或未减少。");
   }
 
   const snapshot: ContextSnapshot = {

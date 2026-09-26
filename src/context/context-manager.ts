@@ -200,13 +200,7 @@ export class ContextManager {
         fallback: true,
       });
       try {
-        compacted = await this.fallback(
-          input,
-          instructions,
-          tools,
-          before,
-          force ? options.limit * 0.6 : options.limit * 0.9,
-        );
+        compacted = await this.fallback(input, instructions, tools, before);
       } catch {
         options.signal.throwIfAborted();
         options.report("context.compaction_failed", {
@@ -257,7 +251,6 @@ export class ContextManager {
     instructions: string,
     tools: any[],
     beforeAmount: number,
-    target: number,
   ): Promise<Compaction> {
     const options = this.options;
     const [previous, events] = await Promise.all([
@@ -278,7 +271,6 @@ export class ContextManager {
           events,
           previous,
           limit: options.limit,
-          target,
           unit: options.unit ?? "characters",
           measurement: this.measurement(),
           instructions,

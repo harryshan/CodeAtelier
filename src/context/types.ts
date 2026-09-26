@@ -2,7 +2,7 @@
  * 定义摘要的校验规则，以及 Store 保存的上下文快照格式。
  * 摘要模型的返回值先通过这里的 schema 校验，再由 ContextManager 组织成快照。
  *
- * 1. fact 给每条摘要结论附上来源索引；summarySchema 分别保存已完成事项、结论、验证和待办。
+ * 1. fact 校验非空、有界的单条文本和非空整数来源；summarySchema 定义四类结论，不限制条目或来源数量。
  * 2. ContextSummary 从 schema 推导类型，避免类型声明与实际校验规则各写一套。
  * 3. contextSnapshotSchema 在跨进程写入前完整校验快照；ContextSnapshot 直接从 schema 推导，避免 Runtime 可伪造会话归属或父链。
  *
@@ -14,17 +14,17 @@ import { z } from "zod";
 const fact = z
   .object({
     text: z.string().min(1).max(2000),
-    sources: z.array(z.number().int().nonnegative()).min(1).max(20),
+    sources: z.array(z.number().int().nonnegative()).min(1),
   })
   .strict();
 
 /** 来源编号对应本次归档的 input；摘要是历史记录，不是新的授权。 */
 export const summarySchema = z
   .object({
-    completed: z.array(fact).max(20),
-    conclusions: z.array(fact).max(20),
-    verification: z.array(fact).max(20),
-    pending: z.array(fact).max(20),
+    completed: z.array(fact),
+    conclusions: z.array(fact),
+    verification: z.array(fact),
+    pending: z.array(fact),
   })
   .strict();
 

@@ -85,7 +85,7 @@ Abort 只表示 Broker 不再等待，不等于 Runtime 已终止；取消仍必
 
 默认限制：每任务 100 次模型调用、命令 120 秒、模型请求总计 300 秒、流空闲 60 秒、备用上下文 1000000 字符、单工具输出 32000 字符；全局 `maxConcurrentTasks` 默认 2，允许 1～4。这是可配置字符预算，不是精确 token 计量。发现服务容量和支持的 tokenizer 后改用 token 预算，contextChars 仅备用；已保存的自定义值继续生效，缺失时使用新默认值。maxOutputTokens 默认 16384。
 
-输入预算扣除输出与安全余量后，达到 80% 时尝试压缩至 60% 以内。失败保留原历史，超过硬上限则停止。实测值和用量展示见 [model-tokens.md](model-tokens.md)。详见 [上下文管理](context-management.md)。高级字段可在没有运行中或排队任务时编辑 settings.json 或通过设置 API 更新。
+输入预算扣除输出与安全余量后，达到 80% 时尝试压缩；完整输入不超过实际预算且比压缩前更小即可提交，不设固定压缩比例。失败保留原历史，超过硬上限且保底整理仍失败则停止。实测值和用量展示见 [model-tokens.md](model-tokens.md)。详见 [上下文管理](context-management.md)。高级字段可在没有运行中或排队任务时编辑 settings.json 或通过设置 API 更新。
 
 ## 数据与日志
 
