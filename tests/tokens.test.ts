@@ -6,7 +6,7 @@
  * 2. 检查 usage 校验拒绝非法数值，保留支持的明细。
  * 3. 在 ContextManager 中区分 token 预算和按字符记录的归档信息。
  * 4. 在 Engine 中核对输出限制参数、实际模型请求/usage 保存和容量查询失败后的回退。
- * 5. 检查重复计量、追加增量、请求配置变化、压缩重建和实际用量校准。
+ * 5. 检查重复计量、实报双向校准与追加增量、配置/前缀变化、非法用量和 Worker 压缩后的基线重建。
  *
  * 缺少容量或用量时应使用对应的回退逻辑，不能编造零值。
  */
@@ -123,8 +123,9 @@ it("reuses tokenized history across prepare, request and usage, only encoding ap
     expect(encode).toHaveBeenCalledTimes(firstCalls + 1);
 
     input[1] = { role: "assistant", content: "replaced with more text" };
-    expect(budget.measure(input, "rules", [])).toBeGreaterThan(appended);
-    expect(encode).toHaveBeenCalledTimes(firstCalls + 4);
+    expect(budget.measure(input, "rules", [])).toBe(
+      measureContext(budget.measurement, input, "rules", []),
+    );
     expect(budget.measure(input, "new rules", [])).toBe(
       measureContext(budget.measurement, input, "new rules", []),
     );
@@ -229,10 +230,17 @@ it("uses token measurement through compaction and keeps character archive metada
       { role: "assistant", content: "读取 const x = 123;\n".repeat(2200) },
       { role: "user", content: "继续" },
     ];
+    // A low real input count prevents premature compaction even when local JSON counting is large.
+    budget.observeUsage!(1000, source, "rules", []);
+    expect(await manager.prepare(source, "rules", [])).toBe(source);
+    expect(reset).not.toHaveBeenCalled();
+
+    budget.observeUsage!(9000, source, "rules", []);
     const next = await manager.prepare(source, "rules", []);
     expect(reset).toHaveBeenCalledTimes(1);
     const snapshot = store.latestContextSnapshot(session.id)!;
     expect(snapshot.budget?.unit).toBe("tokens");
+    expect(snapshot.budget!.before).toBe(9000);
     expect(snapshot.budget!.after).toBeLessThanOrEqual(budget.limit * 0.6);
     expect(snapshot.beforeChars).toBeGreaterThan(snapshot.budget!.before);
     expect(next.at(-1)).toEqual(source.at(-1));
@@ -343,15 +351,73 @@ it("metadata failure falls back without blocking the task", async () => {
   }
 });
 
-it("calibrates underestimates from service usage without accumulating total consumption", () => {
+it("anchors input to the latest service usage in both directions and estimates only appended items", () => {
   const budget = createBudget(capabilities, 180000);
   const input = [{ role: "user", content: "hello" }];
   const initial = budget.measure(input, "", []);
   budget.observeUsage!(initial * 2, input, "", []);
   expect(budget.measure(input, "", [])).toBe(initial * 2);
-  budget.observeUsage!(initial, input, "", []);
-  expect(budget.measure(input, "", [])).toBe(initial * 2);
-  expect(createBudget(capabilities, 180000).measure(input, "", [])).toBe(
-    initial,
-  );
+  budget.observeUsage!(5, input, "", []);
+  expect(budget.measure(input, "", [])).toBe(5);
+
+  input.push({ role: "assistant", content: "new answer" });
+  const local = measureContext(budget.measurement, input, "", []);
+  expect(budget.measure(input, "", [])).toBe(5 + local - initial);
+  budget.observeUsage!(12, input, "", []);
+  expect(budget.measure(input, "", [])).toBe(12);
+
+  // Rewritten candidates in the Worker use local counts, not the old request's usage.
+  expect(
+    measureContext(structuredClone(budget.measurement), input, "", []),
+  ).toBe(local);
+  budget.resetMeasurement!();
+  expect(budget.measure(input, "", [])).toBe(local);
+  expect(createBudget(capabilities, 180000).measure(input, "", [])).toBe(local);
+});
+
+it("invalidates usage anchors when history or request configuration changes", () => {
+  for (const change of [
+    "array",
+    "prefix",
+    "truncate",
+    "instructions",
+    "tools",
+  ]) {
+    const budget = createBudget(capabilities, 180000);
+    let input = [
+      { role: "user", content: "first" },
+      { role: "assistant", content: "second" },
+    ];
+    let instructions = "rules";
+    let tools: any[] = [];
+    budget.observeUsage!(10000, input, instructions, tools);
+    if (change === "array") {
+      input = [...input];
+    } else if (change === "prefix") {
+      input[0] = { role: "user", content: "changed" };
+    } else if (change === "truncate") {
+      input.pop();
+    } else if (change === "instructions") {
+      instructions = "new rules";
+    } else {
+      tools = [{ name: "read_file" }];
+    }
+
+    expect(budget.measure(input, instructions, tools)).toBe(
+      createBudget(capabilities, 180000).measure(input, instructions, tools),
+    );
+  }
+});
+
+it("ignores invalid usage without losing the last valid baseline", () => {
+  const budget = createBudget(capabilities, 180000);
+  const input = [{ role: "user", content: "hello" }];
+  budget.observeUsage!(10, input, "", []);
+  for (const invalid of [-1, NaN, Infinity, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+    budget.observeUsage!(invalid, input, "", []);
+    expect(budget.measure(input, "", [])).toBe(10);
+  }
+
+  budget.observeUsage!(0, input, "", []);
+  expect(budget.measure(input, "", [])).toBe(0);
 });

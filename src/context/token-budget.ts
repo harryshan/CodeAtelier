@@ -5,7 +5,8 @@
  * 1. ContextBudget 提供统一的大小计量、输入上限和输出预留，可选支持实际用量校准。
  * 2. createBudget 检查本地是否支持 o200k_base，再用用户窗口覆盖服务报告的窗口和输入容量，结合安全余量计算预算。
  * 3. token 计量将固定请求部分与各历史项分别编码；任务级缓存复用稳定前缀，只编码新增项。
- * 4. 压缩成功后清理前缀缓存并重建基线；observeUsage 复用原始计数，仅上调任务内校准比例。
+ * 4. observeUsage 将完整请求锚定到最新实报输入，后续仅估算追加项；重写历史或压缩后清除基线。
+ * 5. measureContext 为 Worker 的新候选上下文提供纯本地计量，不将旧请求的实报值套在改写后的内容上。
  *
  * 累计用量不是当前上下文大小。源码中的特殊 token 字面量按普通文本处理，不能让编码器误当控制标记。
  */
@@ -22,10 +23,9 @@ export type Measure = (
   tools: any[],
 ) => number;
 
-/** 可结构化克隆到压缩 Worker 的计量配置；校准系数只在当前任务内上调。 */
+/** Worker 只接收本地计量配置；实报基线仅属于主循环中未改写的请求。 */
 export type ContextMeasurement =
-  | { unit: "characters" }
-  | { unit: "tokens"; tokenizer: "o200k_base"; correction: number };
+  { unit: "characters" } | { unit: "tokens"; tokenizer: "o200k_base" };
 
 export interface ContextBudget {
   unit: "tokens" | "characters";
@@ -75,7 +75,7 @@ export function measureContext(
     raw += itemTokens(item, index);
   }
 
-  return Math.ceil(raw * measurement.correction);
+  return raw;
 }
 
 export function createBudget(
@@ -127,43 +127,47 @@ export function createBudget(
   const measurement: ContextMeasurement = {
     unit: "tokens",
     tokenizer: "o200k_base",
-    correction: 1,
   };
+  let usageOffset = 0;
   let cache:
     | {
         input: any[];
         instructions: string;
-        tools: any[];
-        length: number;
-        lastItem: any;
+        toolsJson: string;
+        items: any[];
         raw: number;
       }
     | undefined;
   const rawMeasure: Measure = (input, instructions, tools) => {
     // Engine 与 Runtime 在同一任务中只追加历史项；其它数组或配置变化重建基线。
-    // 最后一项的身份检查可发现常见的原位替换；任意旧项的原位改写须主动 reset。
+    // 检查所有旧项的身份，避免替换较早记录后沿用旧实报；旧对象内部的原位改写须主动 reset。
+    const toolsJson = JSON.stringify(tools);
     const appendOnly =
       cache !== undefined &&
       cache.input === input &&
       cache.instructions === instructions &&
-      (cache.tools === tools ||
-        (cache.tools.length === 0 && tools.length === 0)) &&
-      input.length >= cache.length &&
-      (cache.length === 0 || input[cache.length - 1] === cache.lastItem);
+      cache.toolsJson === toolsJson &&
+      input.length >= cache.items.length &&
+      cache.items.every((item, index) => input[index] === item);
+    if (!appendOnly) {
+      usageOffset = 0;
+    }
+
     let raw = appendOnly
       ? cache!.raw
       : tokenCount(JSON.stringify({ input: [], instructions, tools }));
-    const start = appendOnly ? cache!.length : 0;
+    const start = appendOnly ? cache!.items.length : 0;
+    const items = appendOnly ? cache!.items : [];
     for (let index = start; index < input.length; index++) {
       raw += itemTokens(input[index], index);
+      items.push(input[index]);
     }
 
     cache = {
       input,
       instructions,
-      tools,
-      length: input.length,
-      lastItem: input.at(-1),
+      toolsJson,
+      items,
       raw,
     };
 
@@ -178,20 +182,20 @@ export function createBudget(
     contextWindowTokens: window,
     safetyTokens,
     tokenizer: capabilities.tokenizer,
-    // 分段编码和服务端协议包装均非精确计数；安全余量与用量校准仍不可省略。
+    // offset = 上次实报 - 上次本地计量；旧前缀不变时等价于实报 + 新增项估算。
     measure: (input, instructions, tools) =>
-      Math.ceil(
-        rawMeasure(input, instructions, tools) * measurement.correction,
-      ),
+      rawMeasure(input, instructions, tools) + usageOffset,
     resetMeasurement: () => {
       cache = undefined;
+      usageOffset = 0;
     },
-    // 只上调当前任务的估算比例，不能因为一次用量较低就减少预留。
+    // 仅使用当前请求的合法输入用量；最新实报可以向上或向下修正，不改变输出和安全预留。
     observeUsage: (actualInput, input, instructions, tools) => {
-      measurement.correction = Math.max(
-        measurement.correction,
-        actualInput / Math.max(1, rawMeasure(input, instructions, tools)),
-      );
+      if (!Number.isSafeInteger(actualInput) || actualInput < 0) {
+        return;
+      }
+
+      usageOffset = actualInput - rawMeasure(input, instructions, tools);
     },
   };
 }
