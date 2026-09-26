@@ -2,7 +2,7 @@
  * 在当前对话右上角显示可折叠的本地会话统计，供 App 在已加载 Snapshot 后渲染。
  * 它依赖 session-statistics 的纯投影、受保护的 trace 清单 API 和 App 的 CSS Module，不保存任何用户偏好。
  *
- * 1. useEffect 在切换会话时恢复折叠状态；仅在任务运行或等待审批时每秒刷新一次时钟。
+ * 1. statistics 使用连接层编译的统计，时钟只刷新运行时长，不扫描事件；useEffect 在切换会话时恢复折叠状态；仅在任务运行或等待审批时每秒刷新一次时钟。
  * 2. 折叠按钮只显示累计运行时间，避免干扰对话；展开后分组展示 token、主/子 LLM、工具和任务统计。
  * 3. Token 区域明确区分服务实报总量与可选缓存明细；缺少明细时显示未知，而非假定没有缓存。
  * 4. 工具成功率的分母是已完成结果，待审批或仍执行的调用单独显示，避免将进行中操作当作失败。
@@ -11,14 +11,10 @@
  * 组件只展示当前 session 已持久化或正在接收的 Snapshot；刷新和重启后会从同一历史事件重新计算。
  */
 
-import { useEffect, useState } from "react";
-import type { Snapshot } from "../shared/types";
+import { memo, useEffect, useMemo, useState } from "react";
+import type { SessionView } from "./session-view";
 import { sessionTraceTaskIds } from "./api";
-import {
-  formatDuration,
-  formatTokenCount,
-  sessionStatistics,
-} from "./session-statistics";
+import { formatDuration, formatTokenCount } from "./session-statistics";
 import s from "./app.module.css";
 
 const purposeLabels = {
@@ -36,13 +32,17 @@ function toolSummary(calls: Record<string, number>) {
 }
 
 /** 当前会话的轻量统计面板；运行中的会话每秒更新时长，其他数值跟随 Snapshot 的 SSE 刷新。 */
-export function SessionStatistics({ data }: { data: Snapshot }) {
+export const SessionStatistics = memo(function SessionStatistics({
+  data,
+}: {
+  data: SessionView;
+}) {
   const [expanded, setExpanded] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const [savedTraceTaskIds, setSavedTraceTaskIds] = useState<Set<string>>(
     () => new Set(),
   );
-  const statistics = sessionStatistics(data, now);
+  const statistics = data.statistics(now);
   const purposeSummary = Object.entries(statistics.modelRequestsByPurpose)
     .filter(([, count]) => count > 0)
     .map(
@@ -50,16 +50,22 @@ export function SessionStatistics({ data }: { data: Snapshot }) {
         purposeLabels[purpose as keyof typeof purposeLabels] + " " + count,
     )
     .join(" · ");
-  const completedTraceTasks = [...data.tasks]
-    .filter((task) => task.finishedAt)
-    .sort((left, right) =>
-      (right.finishedAt ?? "").localeCompare(left.finishedAt ?? ""),
-    );
-  const completedTraceTaskKey = completedTraceTasks
-    .map((task) => task.id)
-    .join(",");
-  const savedTraceTasks = completedTraceTasks.filter((task) =>
-    savedTraceTaskIds.has(task.id),
+  const completedTraceTasks = useMemo(
+    () =>
+      [...data.tasks]
+        .filter((task) => task.finishedAt)
+        .sort((left, right) =>
+          (right.finishedAt ?? "").localeCompare(left.finishedAt ?? ""),
+        ),
+    [data.tasks],
+  );
+  const completedTraceTaskKey = useMemo(
+    () => completedTraceTasks.map((task) => task.id).join(","),
+    [completedTraceTasks],
+  );
+  const savedTraceTasks = useMemo(
+    () => completedTraceTasks.filter((task) => savedTraceTaskIds.has(task.id)),
+    [completedTraceTasks, savedTraceTaskIds],
   );
 
   useEffect(() => {
@@ -212,4 +218,4 @@ export function SessionStatistics({ data }: { data: Snapshot }) {
       )}
     </aside>
   );
-}
+});

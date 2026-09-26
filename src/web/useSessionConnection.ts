@@ -1,20 +1,21 @@
 /**
  * 为 App 同步当前会话快照，并管理 SSE 连接和断线重试。
- * 接收会话 ID、连接开关及状态回调，返回快照 data、setData 和连接状态 connected。
+ * 接收会话 ID、连接开关及状态回调，返回快照 data、refreshSession 和连接状态 connected。
  *
  * 1. effect 在选中会话后先清除旧快照并标记 loading；refresh 合并连续 SSE 通知，读取最新快照。
  * 2. connect 先 bootstrap 更新凭据、配置和 sandbox 状态，再建立当前会话的 EventSource；服务建立流时的首个 refresh
  *    是唯一初始快照请求，避免切换时重复下载同一段历史。
- * 3. 收到后续 refresh 就读快照，连接失败则关闭旧流并安排重试。
+ * 3. 收到后续 refresh 或恢复后的 refreshSession 都通过同一游标读取，由 SessionViewModel 增量聚合；连接失败则重试。
  * 4. 清理时标记 disposed、取消进行中的快照、清除定时器并关闭连接；晚到响应不会覆盖新会话。
  *
  * 重连只恢复状态同步，不重发任务。服务停止后通过 enabled 关闭连接和重试。
  */
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
-import type { SandboxStatus, Settings, Snapshot } from "../shared/types";
+import type { SandboxStatus, Settings } from "../shared/types";
 import { bootstrap, snapshot } from "./api";
+import { SessionViewModel, type SessionView } from "./session-view";
 
 /** 管理快照和 SSE 连接；enabled 为 false 时断开，供关闭服务时使用。 */
 export function useSessionConnection(
@@ -25,9 +26,18 @@ export function useSessionConnection(
   setSandbox: Dispatch<SetStateAction<SandboxStatus | undefined>>,
   setError: Dispatch<SetStateAction<string>>,
 ) {
-  const [data, setData] = useState<Snapshot>();
+  const [data, setData] = useState<SessionView>();
   const [connected, setConnected] = useState(true);
   const [loading, setLoading] = useState(false);
+
+  const refreshRef = useRef<
+    { sessionId: string; refresh: () => Promise<void> } | undefined
+  >(undefined);
+  const refreshSession = useCallback(async (sessionId: string) => {
+    if (refreshRef.current?.sessionId === sessionId) {
+      await refreshRef.current.refresh();
+    }
+  }, []);
 
   useEffect(() => {
     if (!selected || !enabled) {
@@ -45,7 +55,7 @@ export function useSessionConnection(
     const snapshotRequest = new AbortController();
     let refreshInProgress = false;
     let refreshQueued = false;
-    let lastEventId = 0;
+    const model = new SessionViewModel(selected);
     const refresh = async () => {
       if (refreshInProgress) {
         refreshQueued = true;
@@ -55,27 +65,14 @@ export function useSessionConnection(
 
       refreshInProgress = true;
       try {
-        const v = await snapshot(selected, snapshotRequest.signal, lastEventId);
-        for (const event of v.events) {
-          lastEventId = Math.max(lastEventId, event.id);
-        }
-
+        const v = await snapshot(
+          selected,
+          snapshotRequest.signal,
+          model.cursor,
+        );
         if (!disposed) {
-          setData((current) => {
-            if (!current) {
-              return v;
-            }
-
-            const knownEventIds = new Set(
-              current.events.map((event) => event.id),
-            );
-            const events = [
-              ...current.events,
-              ...v.events.filter((event) => !knownEventIds.has(event.id)),
-            ];
-
-            return { ...v, events };
-          });
+          // 可变索引属于连接回调，不在 render 或 React updater 内修改。
+          setData(model.update(v));
           setLoading(false);
         }
       } catch (e) {
@@ -91,6 +88,8 @@ export function useSessionConnection(
         }
       }
     };
+
+    refreshRef.current = { sessionId: selected, refresh };
 
     let stream: EventSource | undefined;
     let reconnect: ReturnType<typeof setTimeout>;
@@ -134,11 +133,15 @@ export function useSessionConnection(
 
     return () => {
       disposed = true;
+      if (refreshRef.current?.refresh === refresh) {
+        refreshRef.current = undefined;
+      }
+
       snapshotRequest.abort();
       clearTimeout(reconnect);
       stream?.close();
     };
   }, [selected, enabled, setSettings, setHasKey, setSandbox, setError]);
 
-  return { data, setData, connected, loading };
+  return { data, refreshSession, connected, loading };
 }

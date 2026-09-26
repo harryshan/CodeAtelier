@@ -12,7 +12,33 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { calculateVirtualTimelineRange } from "../src/web/timeline-virtualization";
+import {
+  calculateVirtualTimelineRange,
+  createTimelineLayout,
+  timelineRange,
+} from "../src/web/timeline-virtualization";
+
+it("finds viewport ranges without walking the full height index", () => {
+  const layout = createTimelineLayout(Array.from({ length: 50000 }, () => 100));
+  let reads = 0;
+  const offsets = new Proxy(layout, {
+    get(target, key, receiver) {
+      if (typeof key === "string" && /^\d+$/.test(key)) {
+        reads++;
+      }
+
+      return Reflect.get(target, key, receiver);
+    },
+  });
+  expect(timelineRange(offsets, 4000000, 500, 100)).toEqual({
+    startIndex: 39999,
+    endIndex: 40006,
+    beforeHeight: 3999900,
+    afterHeight: 999400,
+    totalHeight: 5000000,
+  });
+  expect(reads).toBeLessThan(50);
+});
 
 describe("calculateVirtualTimelineRange", () => {
   it("renders only the scrolled window with overscan and preserves both placeholders", () => {

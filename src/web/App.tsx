@@ -14,7 +14,7 @@
 import { useSessionConnection } from "./useSessionConnection";
 import { useEffect, useRef, useState } from "react";
 import type { SandboxStatus, Session, Settings } from "../shared/types";
-import { api, bootstrap, sessions, snapshot } from "./api";
+import { api, bootstrap, sessions } from "./api";
 import { MarkdownTaskEditor } from "./MarkdownTaskEditor";
 import { SettingsPanel } from "./SettingsPanel";
 import { Timeline } from "./Timeline";
@@ -48,7 +48,7 @@ export default function App() {
   const [serverState, setServerState] = useState<
     "running" | "reloading" | "stopping" | "stopped"
   >("running");
-  const { data, setData, connected, loading } = useSessionConnection(
+  const { data, refreshSession, connected, loading } = useSessionConnection(
     selected,
     serverState === "running",
     setSettings,
@@ -84,13 +84,11 @@ export default function App() {
 
   // Sandbox 的实际模式可能在任务 preflight 后改变；历史事件立即更新徽标，不等待 SSE 重连。
   useEffect(() => {
-    const latest = data?.events.findLast(
-      (event) => event.type === "sandbox_stage",
-    );
-    if (latest?.data?.mode) {
-      setSandbox(latest.data as SandboxStatus);
+    const latest = data?.latestSandbox;
+    if (latest?.mode) {
+      setSandbox(latest);
     }
-  }, [data?.events]);
+  }, [data?.latestSandbox]);
 
   useEffect(() => {
     if (!mobileSidebarOpen) {
@@ -180,7 +178,7 @@ export default function App() {
         instruction: prompt,
       });
       setPrompt("");
-      setData(await snapshot(selected));
+      await refreshSession(selected);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -606,6 +604,7 @@ export default function App() {
               </div>
               {data && (
                 <Timeline
+                  key={data.session.id}
                   data={data}
                   onError={setError}
                   scrollContainerRef={scrollArea}

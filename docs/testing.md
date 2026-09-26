@@ -191,7 +191,7 @@ item.done 回退、失败/不完整事件、服务实际错误 message/reason/co
 
 ### Web UI
 
-主要测试：e2e/app.spec.ts、e2e/access-password.spec.ts、timeline-virtualization.test.ts。
+主要测试：e2e/app.spec.ts、e2e/access-password.spec.ts、e2e/web-history.spec.ts、session-view.test.ts、timeline-virtualization.test.ts。
 
 访问密码开启时先显示门禁、错误密码不进入主页面且正确密码后加载主页面；
 
@@ -199,7 +199,9 @@ item.done 回退、失败/不完整事件、服务实际错误 message/reason/co
 
 手机视口可通过菜单完整打开侧栏，并由会话选择、遮罩或 Escape 收起；
 
-时间线按滚动位置和缓冲范围只创建可视条目，其余历史以准确高度占位
+时间线按滚动位置和缓冲范围只创建可视条目，其余历史以准确高度占位；高度前缀和复用与二分查询覆盖 50,000 项下的索引读取次数。
+
+增量会话投影覆盖分批与全量结果一致、重复事件去重、乱序重建、显式替换、跨会话拒绝、attempt 隔离、完整回复替换流式项、旧命令输出和 batch 通配兼容、任务完成分组复用、不可变旧视图、usage 回退在 request 到达后撤销以及时钟独立计量。3,000／12,000／50,000 事件用例通过禁止读取旧正文验证增量边界；浏览器以 12,001 个合成事件验证有限节点、滚动、输入、真实 EventSource 重连游标与重复统计防护。测试不访问真实模型或个人历史。
 
 ## 关键缺陷回归
 

@@ -144,7 +144,8 @@ Agent Runtime 已有权限内的全部 Git 与命令在 Runtime 内执行且免�
 | server/local-security.ts / session-events.ts                                           | 环境访问密码、来源与本机会话防护；SSE 连接管理与清理                                                                                                                                                                                       |
 | server/http-server.ts                                                                  | 保留 Pino 日志类型的 HTTP 服务类型                                                                                                                                                                                                         |
 | web/App.tsx / MarkdownTaskEditor.tsx / useSessionConnection.ts / SessionStatistics.tsx | 页面交互与布局、任务输入框的所见即所得 Markdown 编辑和 Markdown 序列化、开发服务完整页面重载、当前会话右上角的折叠统计，以及快照和 SSE 重连生命周期；切换会话时先清除旧快照并显示本地历史加载提示                                          |
-| web/Timeline.tsx / MarkdownMessage.tsx                                                 | 事件时间线、工具输出聚合，以及用户和 agent 消息的 GitHub Flavored Markdown 渲染；原始 HTML 不进入页面 DOM                                                                                                                                  |
+| web/Timeline.tsx / MarkdownMessage.tsx                                                 | 消费连接层展示视图、虚拟列表布局和缓存渲染；用户和 agent 消息使用 GitHub Flavored Markdown，原始 HTML 不进入页面 DOM                                                                                                                                  |
+| web/session-view.ts / timeline-projection.ts / timeline-entries.ts / session-event-statistics.ts | 连接层的增量会话视图、工具与流式索引、连续任务段缓存和事件统计；首次全量重建，后续仅聚合新增正文 |
 
 Engine、Store 及其上下文/schema 辅助模块、共享数据契约、测试和开发脚本继续按各自职责组织，不为每个小函数增加文件。
 
@@ -168,7 +169,11 @@ Engine、Store 及其上下文/schema 辅助模块、共享数据契约、测试
 
    前端通过 SSE 得知标题或任务状态变化：首个 refresh 读取完整快照，之后携带最后已见 event ID 只读取新增事件、按 ID 去重合并，任务和审批状态仍每次刷新；在默认折叠的会话统计中聚合服务实报 token、LLM 请求/轮次、工具成功率与累计运行时间，并只为后端清单确认已保存的任务显示 trace 下载入口。
 
-   Timeline 将未被完整回复收敛的流式文本放回其最后一个 delta 后，避免旧断流残片错误显示在末尾；切换时立即显示“正在打开对话”，不把旧会话内容误当成新会话；重新连接只读状态，不会再次启动任务。
+   `useSessionConnection` 在 React 渲染之外持有 `SessionViewModel`，每批新增事件只聚合一次。`timeline-projection.ts` 更新流式文本、工具状态/输出和编辑进度索引；`timeline-entries.ts` 复用未变化的连续任务段折叠结果。工具状态按调用及批次查询，并保留缺少 batch 的旧记录匹配规则。`session-event-statistics.ts` 增量累计事件计数，`session-statistics.ts` 在任务变化时编译运行时间基线，每秒时钟不扫描历史事件。
+
+   Timeline 将未被完整回复收敛的流式文本放回其最后一个 delta 后，避免旧断流残片错误显示在末尾；高度变化时构建前缀和，滚动每帧合并并二分定位可见范围，ResizeObserver 批量提交测量。历史卡片和相同 Markdown 文本复用渲染结果。切换时立即显示“正在打开对话”，同时重建会话索引及虚拟列表状态；重新连接只读状态，不会再次启动任务，人工恢复后的刷新也走同一游标入口。
+
+   初次打开仍需读取完整历史；增量发布不可变视图时仍会复制事件引用与索引，并线性检查展示条目，因此不宣称所有更新均为 O(增量)。已消除旧正文的重复聚合、每个工具扫描全部事件以及滚动/时钟驱动的全历史计算。仅改变浏览器内展示计算，不增加 agent/runtime 行为或后端 tracing 事件；性能验证使用合成历史和浏览器测试，不记录用户正文。
 
 ### 宿主与 Sandbox 的共享执行逻辑
 

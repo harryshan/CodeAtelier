@@ -3,10 +3,10 @@
  * 请求失败时交给传入的错误回调处理。
  *
  * 1. labels 和 textResult 处理工具名称及结果的显示格式。
- * 2. 按任务、步骤和尝试次数合并流式文本；已有完整 assistant 事件时去掉对应的临时文本，未完成文本紧随其最后一个 delta，而非错误追加到时间线末尾。MarkdownMessage 负责安全渲染用户和 agent 文本。
- * 3. 合并编辑进度与工具输出；将已保存的子任务选择、计划/状态/提问/收集从 Snapshot 和 SSE 事件重建。
+ * 2. 读取连接层 timeline-projection 的流式文本、输出和状态视图；渲染期间不聚合历史。MarkdownMessage 缓存相同正文的安全渲染。
+ * 3. 显示编辑进度、工具输出及子任务记录；StreamingMessage 使用通知索引判断尝试是否仍在生成。
  * 4. 已完成任务默认仅保留用户输入和最后一条 agent 输出，将中间过程收纳为可展开区域；未完成、失败、取消和中断任务继续完整显示。
- * 5. 将可见条目及缓冲区交给虚拟列表；ResizeObserver 测得的高度用于在未渲染历史前后保留准确占位。
+ * 5. useVirtualTimeline 缓存高度前缀和，滚动每帧合并并二分定位；ResizeObserver 批量更新高度，条目 ref 保持稳定。
  * 6. 显示仍在接收的文本和待审批按钮，把用户选择发给后端。
  *
  * 失败尝试的半截文本不能拼进重试后的回复。命令有输出不代表成功，退出码和错误信息要保留；
@@ -14,6 +14,7 @@
  */
 
 import {
+  memo,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -26,8 +27,15 @@ import type { Snapshot, Event } from "../shared/types";
 import { api } from "./api";
 import s from "./app.module.css";
 import { MarkdownMessage } from "./MarkdownMessage";
-import { toolDisplayStatus, type ToolDisplayStatus } from "./tool-status";
-import { calculateVirtualTimelineRange } from "./timeline-virtualization";
+import type { ToolDisplayStatus } from "./tool-status";
+import type { TimelineEntry, EditBatch } from "./timeline-entries";
+import {
+  outputTypeForTool,
+  type OutputEvents,
+  type ToolOutputCardState,
+} from "./timeline-projection";
+import type { SessionView } from "./session-view";
+import { createTimelineLayout, timelineRange } from "./timeline-virtualization";
 
 const labels: Record<string, string> = {
   // 已移除的 list_files 工具仅用于展示旧会话记录。
@@ -62,77 +70,6 @@ const modelUsagePurposeLabels: Record<string, string> = {
   approval: "工具审批",
   subagent: "只读子任务",
 };
-
-const streamedToolOutputTypes: Record<string, string> = {
-  run_command: "command_output",
-  git: "git_output",
-};
-
-interface ToolOutputCardState {
-  output: string;
-  result?: Event;
-}
-
-function outputTypeForTool(name: string) {
-  return streamedToolOutputTypes[name];
-}
-
-function toolForOutputType(type: string) {
-  return Object.entries(streamedToolOutputTypes).find(
-    ([, outputType]) => outputType === type,
-  )?.[0];
-}
-
-/** 将有流式 stdout/stderr 的工具开始、输出和最终状态聚合；旧历史缺少 callId 时按工具顺序兼容。 */
-function toolOutputCards(events: Event[]) {
-  const cards = new Map<number, ToolOutputCardState>();
-  const calls = new Map<string, number>();
-  const outputEventIds = new Set<number>();
-  const resultEventIds = new Set<number>();
-  const activeCards = new Map<string, number>();
-
-  for (const event of events) {
-    const outputType =
-      event.type === "tool_start"
-        ? outputTypeForTool(event.data.name)
-        : undefined;
-
-    if (outputType) {
-      cards.set(event.id, { output: "" });
-      calls.set(event.taskId + ":" + event.data.callId, event.id);
-      activeCards.set(outputType, event.id);
-      continue;
-    }
-
-    const tool = toolForOutputType(event.type);
-    if (tool) {
-      const cardId = event.data.callId
-        ? calls.get(event.taskId + ":" + event.data.callId)
-        : activeCards.get(event.type);
-      const card = cardId === undefined ? undefined : cards.get(cardId);
-
-      if (card) {
-        card.output += event.data.text;
-        outputEventIds.add(event.id);
-      }
-
-      continue;
-    }
-
-    if (event.type === "tool_result" && outputTypeForTool(event.data.name)) {
-      const cardId = calls.get(event.taskId + ":" + event.data.callId);
-      const card = cardId === undefined ? undefined : cards.get(cardId);
-
-      if (card) {
-        card.result = event;
-        resultEventIds.add(event.id);
-        activeCards.delete(outputTypeForTool(event.data.name));
-      }
-    }
-  }
-
-  return { cards, outputEventIds, resultEventIds };
-}
 
 function ToolOutputCard({
   start,
@@ -183,415 +120,308 @@ function ToolOutputCard({
 const TIMELINE_ITEM_ESTIMATED_HEIGHT = 160;
 const TIMELINE_OVERSCAN_HEIGHT = 480;
 
-type EditBatch = {
-  lastId: number;
-  files: Map<string, { status: string; error?: string }>;
-};
-
-type TimelineEntry =
-  | { key: string; kind: "event"; event: Event }
-  | { key: string; kind: "streaming"; taskId: string; text: string }
-  | { key: string; kind: "approval"; approval: Snapshot["approvals"][number] }
-  | { key: string; kind: "interrupted"; taskId: string }
-  | { key: string; kind: "process"; taskId: string; entries: TimelineEntry[] };
-
-function taskIdForEntry(entry: TimelineEntry) {
-  if (entry.kind === "event") {
-    return entry.event.taskId;
-  }
-
-  if (entry.kind === "streaming" || entry.kind === "interrupted") {
-    return entry.taskId;
-  }
-
-  if (entry.kind === "approval") {
-    return entry.approval.taskId;
-  }
-
-  return entry.taskId;
-}
-
-function collapseCompletedTaskProcesses(
-  entries: TimelineEntry[],
-  events: Event[],
-  tasks: Snapshot["tasks"],
-) {
-  const completedTaskIds = new Set(
-    tasks.filter((task) => task.status === "completed").map((task) => task.id),
-  );
-  const latestAssistantEventByTask = new Map<string, number>();
-
-  for (const event of events) {
-    if (event.type === "assistant" && completedTaskIds.has(event.taskId)) {
-      latestAssistantEventByTask.set(event.taskId, event.id);
-    }
-  }
-
-  const collapsed: TimelineEntry[] = [];
-  let processEntries: TimelineEntry[] = [];
-  let processTaskId: string | undefined;
-
-  const flushProcess = () => {
-    if (!processTaskId || !processEntries.length) {
-      return;
-    }
-
-    collapsed.push({
-      key: `process:${processTaskId}:${processEntries[0].key}`,
-      kind: "process",
-      taskId: processTaskId,
-      entries: processEntries,
-    });
-    processEntries = [];
-    processTaskId = undefined;
-  };
-
-  for (const entry of entries) {
-    const taskId = taskIdForEntry(entry);
-    const isCompletedTask = completedTaskIds.has(taskId);
-    const isUserInput = entry.kind === "event" && entry.event.type === "user";
-    const isFinalOutput =
-      entry.kind === "event" &&
-      entry.event.type === "assistant" &&
-      latestAssistantEventByTask.get(taskId) === entry.event.id;
-
-    if (!isCompletedTask || isUserInput || isFinalOutput) {
-      flushProcess();
-      collapsed.push(entry);
-      continue;
-    }
-
-    if (processTaskId && processTaskId !== taskId) {
-      flushProcess();
-    }
-
-    processTaskId = taskId;
-    processEntries.push(entry);
-  }
-
-  flushProcess();
-
-  return collapsed;
-}
-
-function eventHasTimelineContent(
-  event: Event,
-  outputEvents: ReturnType<typeof toolOutputCards>,
-  editBatches: Map<string, EditBatch>,
-) {
-  if (event.type === "tool_start" && outputTypeForTool(event.data.name)) {
-    return outputEvents.cards.has(event.id);
-  }
-
-  if (event.type === "tool_result") {
-    return !outputEvents.resultEventIds.has(event.id);
-  }
-
-  if (event.type === "edit_progress") {
-    return editBatches.get(event.data.batchId)?.lastId === event.id;
-  }
-
-  if (event.type === "command_output" || event.type === "git_output") {
-    return !outputEvents.outputEventIds.has(event.id);
-  }
-
-  return [
-    "user",
-    "assistant",
-    "tool_start",
-    "diff",
-    "context_budget",
-    "model_usage",
-    "approval_assessed",
-    "subagent_plan",
-    "subagent_state",
-    "subagent_question",
-    "subagent_collect",
-    "sandbox_fallback",
-    "notice",
-  ].includes(event.type);
-}
-
-function TimelineEvent({
-  event,
-  outputEvents,
-  editBatches,
-  toolStatuses,
-  subagentTaskIds,
-}: {
-  event: Event;
-  outputEvents: ReturnType<typeof toolOutputCards>;
-  editBatches: Map<string, EditBatch>;
-  toolStatuses: Map<number, ToolDisplayStatus>;
-  subagentTaskIds: Set<string>;
-}) {
-  if (event.type === "user" || event.type === "assistant") {
-    return (
-      <article
-        className={event.type === "user" ? s.userMessage : s.assistantMessage}
-      >
-        <div className={s.messageLabel}>
-          {event.type === "user" ? "你" : "✳ CodeAtelier"}
-          {event.type === "user" && subagentTaskIds.has(event.taskId) && (
-            <small className={s.subagentBadge}>已启用只读子代理</small>
-          )}
-          <time>
-            {new Date(event.createdAt).toLocaleTimeString([], {
-              hour: "2-digit",
-              minute: "2-digit",
-            })}
-          </time>
-        </div>
-        <MarkdownMessage text={event.data.text} />
-      </article>
-    );
-  }
-
-  if (event.type === "subagent_plan") {
-    const subtasks = Array.isArray(event.data?.subtasks)
-      ? event.data.subtasks
-      : [];
-    const ids = subtasks.map((plan: { id?: unknown }) =>
-      typeof plan.id === "string" ? plan.id : "未命名",
-    );
-
-    return (
-      <div className={s.notice} role="status">
-        已规划只读子任务（{ids.length}）：{ids.join("、")}
-      </div>
-    );
-  }
-
-  if (event.type === "subagent_state") {
-    const statuses: Record<string, string> = {
-      planned: "已规划",
-      queued: "排队中",
-      running: "调查中",
-      completed: "已完成",
-      failed: "失败",
-      cancelled: "已取消",
-      interrupted: "已中断",
-    };
-    const id = typeof event.data?.id === "string" ? event.data.id : "未知";
-    const status = statuses[String(event.data?.status)] ?? "未知状态";
-
-    return (
-      <div className={s.notice} role="status">
-        只读子任务 {id}：{status}
-      </div>
-    );
-  }
-
-  if (event.type === "subagent_question") {
-    const id =
-      typeof event.data?.subagentId === "string"
-        ? event.data.subagentId
-        : "未知";
-    const question =
-      typeof event.data?.question === "string"
-        ? event.data.question
-        : "未记录问题";
-
-    return (
-      <div className={s.notice} role="status">
-        只读子任务 {id} 提问：{question}
-      </div>
-    );
-  }
-
-  if (event.type === "subagent_collect") {
-    const ids = Array.isArray(event.data?.ids)
-      ? event.data.ids.filter(
-          (id: unknown): id is string => typeof id === "string",
-        )
-      : [];
-
-    return (
-      <div className={s.notice} role="status">
-        {ids.length
-          ? `已收集子任务报告：${ids.join("、")}`
-          : "本次没有新增子任务报告"}
-      </div>
-    );
-  }
-
-  if (event.type === "tool_start") {
-    const toolStatus = toolStatuses.get(event.id) ?? {
-      label: "等待调度",
-      tone: "waiting" as const,
-    };
-    if (outputTypeForTool(event.data.name)) {
-      const card = outputEvents.cards.get(event.id);
-
-      return card ? (
-        <ToolOutputCard start={event} state={card} toolStatus={toolStatus} />
-      ) : null;
-    }
-
-    return (
-      <details className={s.tool}>
-        <summary>
-          <span className={`${s.toolDot} ${s[`toolDot${toolStatus.tone}`]}`} />
-          {labels[event.data.name] || event.data.name}
-          <code>
-            {event.data.args?.path ||
-              event.data.args?.command ||
-              event.data.args?.message ||
-              ""}
-          </code>
-          <span className={s.outputStatus}>{toolStatus.label}</span>
-        </summary>
-        <pre>{JSON.stringify(event.data.args, null, 2)}</pre>
-      </details>
-    );
-  }
-
-  if (event.type === "tool_result") {
-    return (
-      <details className={s.toolResult}>
-        <summary>
-          {event.data.result?.error ? "⚠ 操作未完成" : "✓ 工具结果"}
-          <span>{event.data.durationMs} ms</span>
-        </summary>
-        <pre>{textResult(event)}</pre>
-      </details>
-    );
-  }
-
-  if (event.type === "edit_progress") {
-    const batch = editBatches.get(event.data.batchId);
-    const statuses: Record<string, string> = {
-      not_attempted: "尚未执行",
-      failed: "未写入",
-      unknown: "写入中或结果未知，请核实文件",
-      written: "已写入",
-    };
-
-    return (
-      <details open className={s.toolResult}>
-        <summary>文件编辑进度</summary>
-        {Array.from(batch?.files ?? [], ([file, state]) => (
-          <div key={file}>
-            <code>{file}</code>：{statuses[state.status] || state.status}
-            {state.error && `；错误：${state.error}`}
+const TimelineEvent = memo(
+  function TimelineEvent({
+    event,
+    outputEvents,
+    editBatches,
+    toolStatuses,
+    subagentTaskIds,
+  }: {
+    event: Event;
+    outputEvents: OutputEvents;
+    editBatches: Map<string, EditBatch>;
+    toolStatuses: Map<number, ToolDisplayStatus>;
+    subagentTaskIds: Set<string>;
+  }) {
+    if (event.type === "user" || event.type === "assistant") {
+      return (
+        <article
+          className={event.type === "user" ? s.userMessage : s.assistantMessage}
+        >
+          <div className={s.messageLabel}>
+            {event.type === "user" ? "你" : "✳ CodeAtelier"}
+            {event.type === "user" && subagentTaskIds.has(event.taskId) && (
+              <small className={s.subagentBadge}>已启用只读子代理</small>
+            )}
+            <time>
+              {new Date(event.createdAt).toLocaleTimeString([], {
+                hour: "2-digit",
+                minute: "2-digit",
+              })}
+            </time>
           </div>
-        ))}
-      </details>
-    );
-  }
+          <MarkdownMessage text={event.data.text} />
+        </article>
+      );
+    }
 
-  if (event.type === "diff") {
-    return (
-      <details open className={s.diff}>
-        <summary>
-          修改预览 <code>{event.data.path}</code>
-        </summary>
-        <pre>
-          {event.data.diff.split("\n").map((line: string, index: number) => (
-            <div
-              key={index}
-              className={
-                line.startsWith("+")
-                  ? s.added
-                  : line.startsWith("-")
-                    ? s.removed
-                    : ""
-              }
-            >
-              {line || " "}
+    if (event.type === "subagent_plan") {
+      const subtasks = Array.isArray(event.data?.subtasks)
+        ? event.data.subtasks
+        : [];
+      const ids = subtasks.map((plan: { id?: unknown }) =>
+        typeof plan.id === "string" ? plan.id : "未命名",
+      );
+
+      return (
+        <div className={s.notice} role="status">
+          已规划只读子任务（{ids.length}）：{ids.join("、")}
+        </div>
+      );
+    }
+
+    if (event.type === "subagent_state") {
+      const statuses: Record<string, string> = {
+        planned: "已规划",
+        queued: "排队中",
+        running: "调查中",
+        completed: "已完成",
+        failed: "失败",
+        cancelled: "已取消",
+        interrupted: "已中断",
+      };
+      const id = typeof event.data?.id === "string" ? event.data.id : "未知";
+      const status = statuses[String(event.data?.status)] ?? "未知状态";
+
+      return (
+        <div className={s.notice} role="status">
+          只读子任务 {id}：{status}
+        </div>
+      );
+    }
+
+    if (event.type === "subagent_question") {
+      const id =
+        typeof event.data?.subagentId === "string"
+          ? event.data.subagentId
+          : "未知";
+      const question =
+        typeof event.data?.question === "string"
+          ? event.data.question
+          : "未记录问题";
+
+      return (
+        <div className={s.notice} role="status">
+          只读子任务 {id} 提问：{question}
+        </div>
+      );
+    }
+
+    if (event.type === "subagent_collect") {
+      const ids = Array.isArray(event.data?.ids)
+        ? event.data.ids.filter(
+            (id: unknown): id is string => typeof id === "string",
+          )
+        : [];
+
+      return (
+        <div className={s.notice} role="status">
+          {ids.length
+            ? `已收集子任务报告：${ids.join("、")}`
+            : "本次没有新增子任务报告"}
+        </div>
+      );
+    }
+
+    if (event.type === "tool_start") {
+      const toolStatus = toolStatuses.get(event.id) ?? {
+        label: "等待调度",
+        tone: "waiting" as const,
+      };
+      if (outputTypeForTool(event.data.name)) {
+        const card = outputEvents.cards.get(event.id);
+
+        return card ? (
+          <ToolOutputCard start={event} state={card} toolStatus={toolStatus} />
+        ) : null;
+      }
+
+      return (
+        <details className={s.tool}>
+          <summary>
+            <span
+              className={`${s.toolDot} ${s[`toolDot${toolStatus.tone}`]}`}
+            />
+            {labels[event.data.name] || event.data.name}
+            <code>
+              {event.data.args?.path ||
+                event.data.args?.command ||
+                event.data.args?.message ||
+                ""}
+            </code>
+            <span className={s.outputStatus}>{toolStatus.label}</span>
+          </summary>
+          <pre>{JSON.stringify(event.data.args, null, 2)}</pre>
+        </details>
+      );
+    }
+
+    if (event.type === "tool_result") {
+      return (
+        <details className={s.toolResult}>
+          <summary>
+            {event.data.result?.error ? "⚠ 操作未完成" : "✓ 工具结果"}
+            <span>{event.data.durationMs} ms</span>
+          </summary>
+          <pre>{textResult(event)}</pre>
+        </details>
+      );
+    }
+
+    if (event.type === "edit_progress") {
+      const batch = editBatches.get(event.data.batchId);
+      const statuses: Record<string, string> = {
+        not_attempted: "尚未执行",
+        failed: "未写入",
+        unknown: "写入中或结果未知，请核实文件",
+        written: "已写入",
+      };
+
+      return (
+        <details open className={s.toolResult}>
+          <summary>文件编辑进度</summary>
+          {Array.from(batch?.files ?? [], ([file, state]) => (
+            <div key={file}>
+              <code>{file}</code>：{statuses[state.status] || state.status}
+              {state.error && `；错误：${state.error}`}
             </div>
           ))}
-        </pre>
-      </details>
-    );
-  }
+        </details>
+      );
+    }
 
-  if (event.type === "command_output" || event.type === "git_output") {
-    return <pre className={s.toolResult}>{event.data.text}</pre>;
-  }
+    if (event.type === "diff") {
+      return (
+        <details open className={s.diff}>
+          <summary>
+            修改预览 <code>{event.data.path}</code>
+          </summary>
+          <pre>
+            {event.data.diff.split("\n").map((line: string, index: number) => (
+              <div
+                key={index}
+                className={
+                  line.startsWith("+")
+                    ? s.added
+                    : line.startsWith("-")
+                      ? s.removed
+                      : ""
+                }
+              >
+                {line || " "}
+              </div>
+            ))}
+          </pre>
+        </details>
+      );
+    }
 
-  if (event.type === "context_budget") {
-    return (
-      <details className={s.toolResult}>
-        <summary>
-          上下文预算：
-          {event.data.unit === "tokens" ? "token 模式" : "字符备用模式"}
-        </summary>
-        <p>
-          {event.data.contextWindowTokens
-            ? "服务公布窗口：" + event.data.contextWindowTokens + " token"
-            : "服务未提供窗口容量"}
-        </p>
-        {event.data.effectiveWindowTokens && (
-          <p>采用的窗口上限：{event.data.effectiveWindowTokens} token</p>
-        )}
-        <p>输入预算：{event.data.inputLimit}</p>
-        {event.data.outputTokens && (
+    if (event.type === "command_output" || event.type === "git_output") {
+      return <pre className={s.toolResult}>{event.data.text}</pre>;
+    }
+
+    if (event.type === "context_budget") {
+      return (
+        <details className={s.toolResult}>
+          <summary>
+            上下文预算：
+            {event.data.unit === "tokens" ? "token 模式" : "字符备用模式"}
+          </summary>
           <p>
-            输出预留：{event.data.outputTokens} token；安全余量：
-            {event.data.safetyTokens} token
+            {event.data.contextWindowTokens
+              ? "服务公布窗口：" + event.data.contextWindowTokens + " token"
+              : "服务未提供窗口容量"}
           </p>
-        )}
-      </details>
-    );
-  }
+          {event.data.effectiveWindowTokens && (
+            <p>采用的窗口上限：{event.data.effectiveWindowTokens} token</p>
+          )}
+          <p>输入预算：{event.data.inputLimit}</p>
+          {event.data.outputTokens && (
+            <p>
+              输出预留：{event.data.outputTokens} token；安全余量：
+              {event.data.safetyTokens} token
+            </p>
+          )}
+        </details>
+      );
+    }
 
-  if (event.type === "model_usage") {
+    if (event.type === "model_usage") {
+      return (
+        <details className={s.toolResult}>
+          <summary>
+            模型用量（服务实报）：输入 {event.data.input_tokens} / 输出{" "}
+            {event.data.output_tokens} token
+          </summary>
+          <p>
+            用途：
+            {modelUsagePurposeLabels[event.data.purpose] || "任务执行"}
+            ；本次合计：{event.data.total_tokens} token
+          </p>
+          <p>
+            缓存输入：
+            {event.data.input_tokens_details?.cached_tokens ?? "未提供"}
+            ；推理输出：
+            {event.data.output_tokens_details?.reasoning_tokens ?? "未提供"}
+          </p>
+        </details>
+      );
+    }
+
+    if (event.type === "approval_assessed") {
+      const decisionLabels: Record<string, string> = {
+        approve: "低成本审批模型已自动通过",
+        "human review": "低成本审批模型建议人工确认",
+        reject: "低成本审批模型已拒绝",
+      };
+
+      return (
+        <div role="status" className={s.notice}>
+          {decisionLabels[event.data.decision] || "低成本审批模型已完成评估"}：
+          {event.data.reason}
+        </div>
+      );
+    }
+
+    if (event.type === "sandbox_fallback") {
+      return (
+        <div role="alert" className={s.sandboxWarning}>
+          <strong>Sandbox 未生效，已自动使用宿主权限继续。</strong>
+          <span>{event.data.reason}</span>
+        </div>
+      );
+    }
+
+    if (event.type === "notice") {
+      return (
+        <div role="status" className={s.notice}>
+          {event.data.text}
+        </div>
+      );
+    }
+
+    return null;
+  },
+  (previous, next) => {
+    if (previous.event !== next.event) {
+      return false;
+    }
+
+    const event = next.event;
+
     return (
-      <details className={s.toolResult}>
-        <summary>
-          模型用量（服务实报）：输入 {event.data.input_tokens} / 输出{" "}
-          {event.data.output_tokens} token
-        </summary>
-        <p>
-          用途：
-          {modelUsagePurposeLabels[event.data.purpose] || "任务执行"}
-          ；本次合计：{event.data.total_tokens} token
-        </p>
-        <p>
-          缓存输入：
-          {event.data.input_tokens_details?.cached_tokens ?? "未提供"}
-          ；推理输出：
-          {event.data.output_tokens_details?.reasoning_tokens ?? "未提供"}
-        </p>
-      </details>
+      previous.outputEvents.cards.get(event.id) ===
+        next.outputEvents.cards.get(event.id) &&
+      previous.toolStatuses.get(event.id) === next.toolStatuses.get(event.id) &&
+      (event.type !== "edit_progress" ||
+        previous.editBatches.get(event.data.batchId) ===
+          next.editBatches.get(event.data.batchId)) &&
+      previous.subagentTaskIds.has(event.taskId) ===
+        next.subagentTaskIds.has(event.taskId)
     );
-  }
-
-  if (event.type === "approval_assessed") {
-    const decisionLabels: Record<string, string> = {
-      approve: "低成本审批模型已自动通过",
-      "human review": "低成本审批模型建议人工确认",
-      reject: "低成本审批模型已拒绝",
-    };
-
-    return (
-      <div role="status" className={s.notice}>
-        {decisionLabels[event.data.decision] || "低成本审批模型已完成评估"}：
-        {event.data.reason}
-      </div>
-    );
-  }
-
-  if (event.type === "sandbox_fallback") {
-    return (
-      <div role="alert" className={s.sandboxWarning}>
-        <strong>Sandbox 未生效，已自动使用宿主权限继续。</strong>
-        <span>{event.data.reason}</span>
-      </div>
-    );
-  }
-
-  if (event.type === "notice") {
-    return (
-      <div role="status" className={s.notice}>
-        {event.data.text}
-      </div>
-    );
-  }
-
-  return null;
-}
+  },
+);
 
 function StreamingMessage({
   active,
@@ -599,7 +429,7 @@ function StreamingMessage({
   entry,
 }: {
   active?: Snapshot["tasks"][number];
-  data: Snapshot;
+  data: SessionView;
   entry: Extract<TimelineEntry, { kind: "streaming" }>;
 }) {
   return (
@@ -609,12 +439,7 @@ function StreamingMessage({
         <span className={s.pulse}>
           {active &&
           entry.taskId === active.id &&
-          !data.events.some(
-            (event) =>
-              event.type === "notice" &&
-              entry.key ===
-                `streaming:${event.taskId}:${event.data.step}:${event.data.attempt || 1}`,
-          )
+          !data.timeline.interruptedStreams.has(entry.key)
             ? "生成中"
             : "未完成的回复"}
         </span>
@@ -624,7 +449,7 @@ function StreamingMessage({
   );
 }
 
-function TaskProcess({
+const TaskProcess = memo(function TaskProcess({
   data,
   entries,
   outputEvents,
@@ -632,9 +457,9 @@ function TaskProcess({
   toolStatuses,
   subagentTaskIds,
 }: {
-  data: Snapshot;
+  data: SessionView;
   entries: TimelineEntry[];
-  outputEvents: ReturnType<typeof toolOutputCards>;
+  outputEvents: OutputEvents;
   editBatches: Map<string, EditBatch>;
   toolStatuses: Map<number, ToolDisplayStatus>;
   subagentTaskIds: Set<string>;
@@ -668,7 +493,7 @@ function TaskProcess({
       </div>
     </details>
   );
-}
+});
 
 function useVirtualTimeline(
   entries: TimelineEntry[],
@@ -691,27 +516,32 @@ function useVirtualTimeline(
       return;
     }
 
-    setScrollMetrics({
-      scrollTop: container.scrollTop,
-      viewportHeight: container.clientHeight,
-    });
+    const scrollTop = container.scrollTop;
+    const viewportHeight = container.clientHeight;
+    setScrollMetrics((current) =>
+      current.scrollTop === scrollTop &&
+      current.viewportHeight === viewportHeight
+        ? current
+        : { scrollTop, viewportHeight },
+    );
   }, [scrollContainerRef]);
 
-  const recordHeight = useCallback((element: HTMLDivElement) => {
-    const key = element.dataset.timelineKey;
-    const height = Math.ceil(element.getBoundingClientRect().height);
-
-    if (!key || height <= 0) {
-      return;
-    }
-
+  const recordHeights = useCallback((elements: HTMLDivElement[]) => {
+    const updates = elements.map((element) => ({
+      key: element.dataset.timelineKey,
+      height: Math.ceil(element.getBoundingClientRect().height),
+    }));
     setMeasuredHeights((current) => {
-      if (current.get(key) === height) {
-        return current;
-      }
+      let next = current;
+      for (const { key, height } of updates) {
+        if (key && height > 0 && current.get(key) !== height) {
+          if (next === current) {
+            next = new Map(current);
+          }
 
-      const next = new Map(current);
-      next.set(key, height);
+          next.set(key, height);
+        }
+      }
 
       return next;
     });
@@ -724,30 +554,39 @@ function useVirtualTimeline(
     }
 
     updateScrollMetrics();
-    container.addEventListener("scroll", updateScrollMetrics, {
-      passive: true,
-    });
-    const containerObserver = new ResizeObserver(updateScrollMetrics);
+    let frame: number | undefined;
+    const scheduleMetrics = () => {
+      frame ??= requestAnimationFrame(() => {
+        frame = undefined;
+        updateScrollMetrics();
+      });
+    };
+
+    container.addEventListener("scroll", scheduleMetrics, { passive: true });
+    const containerObserver = new ResizeObserver(scheduleMetrics);
     containerObserver.observe(container);
     const observer = new ResizeObserver((observedEntries) => {
-      for (const observedEntry of observedEntries) {
-        recordHeight(observedEntry.target as HTMLDivElement);
-      }
+      recordHeights(
+        observedEntries.map((entry) => entry.target as HTMLDivElement),
+      );
     });
     itemObserver.current = observer;
 
     for (const element of itemElements.current.values()) {
       observer.observe(element);
-      recordHeight(element);
     }
 
     return () => {
-      container.removeEventListener("scroll", updateScrollMetrics);
+      container.removeEventListener("scroll", scheduleMetrics);
+      if (frame !== undefined) {
+        cancelAnimationFrame(frame);
+      }
+
       containerObserver.disconnect();
       observer.disconnect();
       itemObserver.current = undefined;
     };
-  }, [recordHeight, scrollContainerRef, updateScrollMetrics]);
+  }, [recordHeights, scrollContainerRef, updateScrollMetrics]);
 
   useEffect(() => {
     const currentKeys = new Set(entryKeys);
@@ -761,30 +600,59 @@ function useVirtualTimeline(
     });
   }, [entryKeys]);
 
+  const measureCallbacks = useMemo(
+    () => new Map<string, (element: HTMLDivElement | null) => void>(),
+    [],
+  );
+  useEffect(() => {
+    const keys = new Set(entryKeys);
+    for (const key of measureCallbacks.keys()) {
+      if (!keys.has(key)) {
+        measureCallbacks.delete(key);
+      }
+    }
+  }, [entryKeys, measureCallbacks]);
   const measureItem = useCallback(
-    (key: string) => (element: HTMLDivElement | null) => {
-      const previous = itemElements.current.get(key);
-      if (previous) {
-        itemObserver.current?.unobserve(previous);
-        itemElements.current.delete(key);
+    (key: string) => {
+      let callback = measureCallbacks.get(key);
+      if (!callback) {
+        callback = (element: HTMLDivElement | null) => {
+          const previous = itemElements.current.get(key);
+          if (previous === element) {
+            return;
+          }
+
+          if (previous) {
+            itemObserver.current?.unobserve(previous);
+            itemElements.current.delete(key);
+          }
+
+          if (element) {
+            itemElements.current.set(key, element);
+            itemObserver.current?.observe(element);
+          }
+        };
+
+        measureCallbacks.set(key, callback);
       }
 
-      if (!element) {
-        return;
-      }
-
-      itemElements.current.set(key, element);
-      itemObserver.current?.observe(element);
-      recordHeight(element);
+      return callback;
     },
-    [recordHeight],
+    [measureCallbacks],
   );
 
-  const itemHeights = entries.map(
-    (entry) => measuredHeights.get(entry.key) ?? TIMELINE_ITEM_ESTIMATED_HEIGHT,
+  const layout = useMemo(
+    () =>
+      createTimelineLayout(
+        entries.map(
+          (entry) =>
+            measuredHeights.get(entry.key) ?? TIMELINE_ITEM_ESTIMATED_HEIGHT,
+        ),
+      ),
+    [entries, measuredHeights],
   );
-  const range = calculateVirtualTimelineRange(
-    itemHeights,
+  const range = timelineRange(
+    layout,
     scrollMetrics.scrollTop,
     scrollMetrics.viewportHeight,
     TIMELINE_OVERSCAN_HEIGHT,
@@ -793,115 +661,23 @@ function useVirtualTimeline(
   return { measureItem, range };
 }
 
-export function Timeline({
+export const Timeline = memo(function Timeline({
   data,
   onError,
   scrollContainerRef,
 }: {
-  data: Snapshot;
+  data: SessionView;
   onError: (s: string) => void;
   scrollContainerRef: RefObject<HTMLDivElement | null>;
 }) {
-  const subagentTaskIds = new Set(
-    data.tasks.filter((task) => task.subagentsEnabled).map((task) => task.id),
-  );
-  const active = data.tasks.find(
-    (task) =>
-      task.status === "queued" ||
-      task.status === "running" ||
-      task.status === "waiting",
-  );
-  // 分别保留每次尝试的文本，避免将失败前的半截回复拼进成功结果；同时记住末尾 delta，保留历史顺序。
-  const streaming = new Map<string, { text: string; lastEventId: number }>();
-
-  for (const event of data.events) {
-    if (event.type === "delta") {
-      const key =
-        event.taskId + ":" + event.data.step + ":" + (event.data.attempt || 1);
-      const previous = streaming.get(key);
-
-      streaming.set(key, {
-        text: (previous?.text || "") + event.data.text,
-        lastEventId: event.id,
-      });
-    }
-  }
-
-  for (const event of data.events) {
-    if (event.type === "assistant") {
-      streaming.delete(
-        event.taskId + ":" + event.data.step + ":" + (event.data.attempt || 1),
-      );
-    }
-  }
-
-  const editBatches = new Map<string, EditBatch>();
-  for (const event of data.events) {
-    if (event.type !== "edit_progress") {
-      continue;
-    }
-
-    const batch = editBatches.get(event.data.batchId) ?? {
-      lastId: event.id,
-      files: new Map<string, { status: string; error?: string }>(),
-    };
-    for (const file of event.data.files ?? [event.data]) {
-      batch.files.set(file.path, { status: file.status, error: file.error });
-    }
-
-    batch.lastId = event.id;
-    editBatches.set(event.data.batchId, batch);
-  }
-
-  const outputEvents = toolOutputCards(data.events);
-  const toolStatuses = new Map<number, ToolDisplayStatus>();
-  for (const event of data.events) {
-    if (event.type === "tool_start") {
-      toolStatuses.set(event.id, toolDisplayStatus(data.events, event));
-    }
-  }
-
-  const streamingAfterEvent = new Map<number, TimelineEntry[]>();
-  for (const [key, state] of streaming) {
-    const entries = streamingAfterEvent.get(state.lastEventId) ?? [];
-
-    entries.push({
-      key: `streaming:${key}`,
-      kind: "streaming",
-      taskId: key.split(":", 1)[0],
-      text: state.text,
-    });
-    streamingAfterEvent.set(state.lastEventId, entries);
-  }
-
-  const timelineEntries: TimelineEntry[] = [];
-  for (const event of data.events) {
-    if (eventHasTimelineContent(event, outputEvents, editBatches)) {
-      timelineEntries.push({ key: `event:${event.id}`, kind: "event", event });
-    }
-
-    timelineEntries.push(...(streamingAfterEvent.get(event.id) ?? []));
-  }
-
-  timelineEntries.push(
-    ...data.approvals.map((approval) => ({
-      key: `approval:${approval.id}`,
-      kind: "approval" as const,
-      approval,
-    })),
-    ...data.tasks
-      .filter((task) => task.status === "interrupted")
-      .map((task) => ({
-        key: `interrupted:${task.id}`,
-        kind: "interrupted" as const,
-        taskId: task.id,
-      })),
-  );
-  const entries = collapseCompletedTaskProcesses(
-    timelineEntries,
-    data.events,
-    data.tasks,
-  );
+  const {
+    subagentTaskIds,
+    active,
+    outputEvents,
+    toolStatuses,
+    editBatches,
+    entries,
+  } = data.timeline;
   const { measureItem, range } = useVirtualTimeline(
     entries,
     scrollContainerRef,
@@ -1001,4 +777,4 @@ export function Timeline({
       )}
     </div>
   );
-}
+});

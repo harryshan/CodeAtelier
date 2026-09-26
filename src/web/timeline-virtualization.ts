@@ -4,7 +4,8 @@
  * 测量、滚动监听和实际 JSX 渲染仍留在 Timeline.tsx，因而这里可以由普通 Vitest 单元测试覆盖。
  *
  * 1. VirtualTimelineRange 描述可渲染索引区间和两端空白的准确高度。
- * 2. calculateVirtualTimelineRange 规范化滚动参数，累积每项高度，找到包含视口与 overscan 的最小连续区间。
+ * 2. calculateVirtualTimelineRange 保留全量入口；createTimelineLayout 在高度变化时构建前缀和。
+ * 3. timelineRange 在滚动时复用前缀和，二分定位视口和 overscan，复杂度 O(log N)。
  *
  * 该函数不读写 DOM、滚动状态或会话数据。高度由调用方维护；非有限或非正高度会安全地视为零，
  * 避免一次异常测量使占位尺寸变成 NaN。
@@ -32,45 +33,72 @@ export function calculateVirtualTimelineRange(
   viewportHeight: number,
   overscan: number,
 ): VirtualTimelineRange {
-  const heights = itemHeights.map(validHeight);
-  const totalHeight = heights.reduce((total, height) => total + height, 0);
-  const normalizedScrollTop = Math.max(0, Math.min(scrollTop, totalHeight));
-  const normalizedViewportHeight = Math.max(0, viewportHeight);
-  const normalizedOverscan = Math.max(0, overscan);
-  const startBoundary = Math.max(0, normalizedScrollTop - normalizedOverscan);
-  const endBoundary = Math.min(
-    totalHeight,
-    normalizedScrollTop + normalizedViewportHeight + normalizedOverscan,
+  return timelineRange(
+    createTimelineLayout(itemHeights),
+    scrollTop,
+    viewportHeight,
+    overscan,
   );
-  let startIndex = 0;
-  let beforeHeight = 0;
+}
 
-  while (
-    startIndex < heights.length &&
-    beforeHeight + heights[startIndex] <= startBoundary
-  ) {
-    beforeHeight += heights[startIndex];
-    startIndex += 1;
+/** 条目或测量变化时重建一次；offsets[i] 是第 i 项顶部，末项是总高度。 */
+export function createTimelineLayout(itemHeights: number[]): number[] {
+  const offsets = [0];
+  for (const height of itemHeights) {
+    offsets.push(offsets[offsets.length - 1] + validHeight(height));
   }
 
-  let endIndex = startIndex;
-  let renderedHeight = beforeHeight;
+  return offsets;
+}
 
-  while (endIndex < heights.length && renderedHeight < endBoundary) {
-    renderedHeight += heights[endIndex];
-    endIndex += 1;
+/** 二分寻找第一个 >= 或 > 边界的偏移，重复高度对应零高度项。 */
+function boundaryIndex(offsets: number[], boundary: number, strict: boolean) {
+  let low = 0;
+  let high = offsets.length;
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2);
+    if (
+      offsets[middle] < boundary ||
+      (strict && offsets[middle] === boundary)
+    ) {
+      low = middle + 1;
+    } else {
+      high = middle;
+    }
   }
 
-  if (startIndex === endIndex && startIndex < heights.length) {
-    renderedHeight += heights[endIndex];
-    endIndex += 1;
-  }
+  return low;
+}
+
+/** 滚动只执行两次二分查询，不遍历完整条目列表。 */
+export function timelineRange(
+  offsets: number[],
+  scrollTop: number,
+  viewportHeight: number,
+  overscan: number,
+): VirtualTimelineRange {
+  const count = offsets.length - 1;
+  const totalHeight = offsets[count];
+  const top = Math.max(0, Math.min(scrollTop, totalHeight));
+  const start = Math.max(0, top - Math.max(0, overscan));
+  const end = Math.min(
+    totalHeight,
+    top + Math.max(0, viewportHeight) + Math.max(0, overscan),
+  );
+  const startIndex = Math.min(
+    count,
+    Math.max(0, boundaryIndex(offsets, start, true) - 1),
+  );
+  const endIndex = Math.min(
+    count,
+    Math.max(startIndex + 1, boundaryIndex(offsets, end, false)),
+  );
 
   return {
     startIndex,
     endIndex,
-    beforeHeight,
-    afterHeight: Math.max(0, totalHeight - renderedHeight),
+    beforeHeight: offsets[startIndex],
+    afterHeight: Math.max(0, totalHeight - offsets[endIndex]),
     totalHeight,
   };
 }

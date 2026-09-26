@@ -2,16 +2,20 @@
  * 从当前会话 Snapshot 的持久化任务与事件计算可展示统计，供 SessionStatistics 组件和单元测试共用。
  * 本模块只读取共享类型，不请求 API、不修改 React 状态，也不把缺失的服务数据伪造成零值。
  *
- * 1. sessionStatistics 聚合 service 实报的 token、按主任务/子任务区分的模型请求、工具结果和任务状态；旧历史没有 model_request 时，仅以已有 usage 作保守回退。
+ * 1. sessionStatistics 通过 SessionEventStatistics 聚合 service 实报的 token、按主任务/子任务区分的模型请求、工具结果和任务状态；旧历史没有 model_request 时，仅以已有 usage 作保守回退。
  * 2. 工具成功仅依据最终 tool_result 的错误和退出码判断；仍在审批或执行的调用不进入成功率分母。
- * 3. 运行时间使用 Task 的 startedAt、finishedAt 或 task_end 事件；排队等待不计入累计运行时间，运行中任务以调用方传入的当前时间持续累加。
+ * 3. prepareSessionStatistics 编译时长基线，时钟刷新只处理运行中的开始时间；运行时间使用 Task 的 startedAt、finishedAt 或 task_end 事件；排队等待不计入累计运行时间，运行中任务以调用方传入的当前时间持续累加。
  * 4. formatTokenCount 与 formatDuration 为组件提供一致、紧凑且不依赖语言环境的显示文本。
  *
  * token 缓存明细是服务可选字段。任意一次实报缺失 cached_tokens 时，缓存和非缓存输入都标记为不完整，
  * 避免把未知缓存量错误显示为零。统计属于本地历史的展示投影，不能用于费用结算。
  */
 
-import type { Event, Snapshot, Task, TaskStatus } from "../shared/types";
+import type { Snapshot, Task, TaskStatus } from "../shared/types";
+import {
+  SessionEventStatistics,
+  type EventStatisticsSnapshot,
+} from "./session-event-statistics";
 
 export type ModelPurpose =
   "task" | "compaction" | "title" | "approval" | "subagent";
@@ -38,26 +42,6 @@ export interface SessionStatistics {
   activeTask: boolean;
 }
 
-const modelPurposes: ModelPurpose[] = [
-  "task",
-  "compaction",
-  "title",
-  "approval",
-  "subagent",
-];
-
-function isModelPurpose(value: unknown): value is ModelPurpose {
-  return (
-    typeof value === "string" && modelPurposes.includes(value as ModelPurpose)
-  );
-}
-
-function numberValue(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0
-    ? value
-    : undefined;
-}
-
 function timestamp(value: unknown): number | undefined {
   if (typeof value !== "string") {
     return undefined;
@@ -66,23 +50,6 @@ function timestamp(value: unknown): number | undefined {
   const parsed = Date.parse(value);
 
   return Number.isFinite(parsed) ? parsed : undefined;
-}
-
-function taskEndTimes(events: Event[]) {
-  const ends = new Map<string, number>();
-
-  for (const event of events) {
-    if (event.type !== "task_end") {
-      continue;
-    }
-
-    const endedAt = timestamp(event.createdAt);
-    if (endedAt !== undefined) {
-      ends.set(event.taskId, endedAt);
-    }
-  }
-
-  return ends;
 }
 
 function taskDuration(task: Task, endTimes: Map<string, number>, now: number) {
@@ -103,100 +70,12 @@ function taskDuration(task: Task, endTimes: Map<string, number>, now: number) {
   return endedAt === undefined ? 0 : Math.max(0, endedAt - startedAt);
 }
 
-/** 将当前会话完整历史投影为统计；now 由运行中的组件周期性更新，便于活跃时长连续显示。 */
-export function sessionStatistics(
-  snapshot: Snapshot,
-  now = Date.now(),
-): SessionStatistics {
-  const usageEvents = snapshot.events.filter(
-    (event) => event.type === "model_usage",
-  );
-  const modelRequestEvents = snapshot.events.filter(
-    (event) => event.type === "model_request",
-  );
-  const requestsByTask = new Set(
-    modelRequestEvents.map((event) => event.taskId),
-  );
-  const modelRequestsByPurpose: Record<ModelPurpose, number> = {
-    task: 0,
-    compaction: 0,
-    title: 0,
-    approval: 0,
-    subagent: 0,
-  };
-  const rounds = new Set<string>();
-
-  for (const event of modelRequestEvents) {
-    const purposeValue: unknown = event.data?.purpose;
-    const purpose: ModelPurpose = isModelPurpose(purposeValue)
-      ? purposeValue
-      : "task";
-    modelRequestsByPurpose[purpose]++;
-    if (purpose === "task") {
-      const step = numberValue(event.data?.step);
-      rounds.add(event.taskId + ":" + (step ?? event.id));
-    }
-  }
-
-  let inputTokens = 0;
-  let outputTokens = 0;
-  let totalTokens = 0;
-  let cachedInputTokens = 0;
-  let cacheDetailsComplete = usageEvents.length > 0;
-
-  for (const event of usageEvents) {
-    const input = numberValue(event.data?.input_tokens);
-    const output = numberValue(event.data?.output_tokens);
-    const total = numberValue(event.data?.total_tokens);
-    if (input === undefined || output === undefined || total === undefined) {
-      continue;
-    }
-
-    inputTokens += input;
-    outputTokens += output;
-    totalTokens += total;
-    const cached = numberValue(event.data?.input_tokens_details?.cached_tokens);
-    if (cached === undefined) {
-      cacheDetailsComplete = false;
-    } else {
-      cachedInputTokens += cached;
-    }
-
-    // 旧会话未记录请求开始，只有收到 usage 的已完成请求才可保守计为一次调用。
-    if (!requestsByTask.has(event.taskId)) {
-      const purposeValue: unknown = event.data?.purpose;
-      const purpose: ModelPurpose = isModelPurpose(purposeValue)
-        ? purposeValue
-        : "task";
-      modelRequestsByPurpose[purpose]++;
-      if (purpose === "task") {
-        const step = numberValue(event.data?.step);
-        rounds.add(event.taskId + ":legacy:" + (step ?? event.id));
-      }
-    }
-  }
-
-  const toolStarts = snapshot.events.filter(
-    (event) => event.type === "tool_start",
-  );
-  const toolResults = snapshot.events.filter(
-    (event) => event.type === "tool_result",
-  );
-  const toolCallsByName: Record<string, number> = {};
-  for (const event of toolStarts) {
-    const name =
-      typeof event.data?.name === "string" ? event.data.name : "未知工具";
-    toolCallsByName[name] = (toolCallsByName[name] ?? 0) + 1;
-  }
-
-  const successfulToolCalls = toolResults.filter((event) => {
-    const result = event.data?.result;
-
-    return (
-      !result?.error &&
-      (result?.exitCode === undefined || result.exitCode === 0)
-    );
-  }).length;
+/** 编译任务时长基线；时钟刷新只遍历正在运行的任务开始时间。 */
+export function prepareSessionStatistics(
+  events: EventStatisticsSnapshot,
+  tasks: Task[],
+) {
+  const { endTimes, ...counts } = events;
   const taskCountsByStatus: Record<TaskStatus, number> = {
     queued: 0,
     running: 0,
@@ -206,50 +85,52 @@ export function sessionStatistics(
     cancelled: 0,
     interrupted: 0,
   };
-  const endTimes = taskEndTimes(snapshot.events);
-  let totalRunMs = 0;
-
-  for (const task of snapshot.tasks) {
+  const runningStarts: number[] = [];
+  let finishedMs = 0;
+  for (const task of tasks) {
     taskCountsByStatus[task.status]++;
-    totalRunMs += taskDuration(task, endTimes, now);
+    if (task.status === "running" || task.status === "waiting") {
+      const start =
+        task.startedAt === null
+          ? undefined
+          : (timestamp(task.startedAt) ?? timestamp(task.createdAt));
+      if (start !== undefined) {
+        runningStarts.push(start);
+      }
+    } else {
+      finishedMs += taskDuration(task, endTimes, 0);
+    }
   }
 
-  const completedToolCalls = toolResults.length;
-
-  return {
-    inputTokens,
-    outputTokens,
-    totalTokens,
-    cachedInputTokens: cacheDetailsComplete ? cachedInputTokens : undefined,
-    uncachedInputTokens: cacheDetailsComplete
-      ? inputTokens - cachedInputTokens
-      : undefined,
-    cacheDetailsComplete,
-    llmRequests:
-      modelRequestsByPurpose.task +
-      modelRequestsByPurpose.compaction +
-      modelRequestsByPurpose.title +
-      modelRequestsByPurpose.approval +
-      modelRequestsByPurpose.subagent,
-    llmRounds: rounds.size,
-    modelRequestsByPurpose,
-    toolCalls: toolStarts.length,
-    completedToolCalls,
-    successfulToolCalls,
-    pendingToolCalls: Math.max(0, toolStarts.length - completedToolCalls),
-    toolSuccessRate:
-      completedToolCalls > 0
-        ? successfulToolCalls / completedToolCalls
-        : undefined,
-    toolCallsByName,
-    taskCount: snapshot.tasks.length,
+  const base = {
+    ...counts,
+    taskCount: tasks.length,
     taskCountsByStatus,
-    totalRunMs,
     activeTask:
       taskCountsByStatus.queued > 0 ||
       taskCountsByStatus.running > 0 ||
       taskCountsByStatus.waiting > 0,
   };
+
+  return (now: number): SessionStatistics => ({
+    ...base,
+    totalRunMs:
+      finishedMs +
+      runningStarts.reduce((sum, start) => sum + Math.max(0, now - start), 0),
+  });
+}
+
+/** 全量入口供非增量调用方与测试使用；UI 复用连接层编译后的统计。 */
+export function sessionStatistics(
+  snapshot: Snapshot,
+  now = Date.now(),
+): SessionStatistics {
+  const events = new SessionEventStatistics();
+  for (const event of snapshot.events) {
+    events.append(event);
+  }
+
+  return prepareSessionStatistics(events.snapshot(), snapshot.tasks)(now);
 }
 
 /** token 数字在面板中使用分组分隔符，零和未知的区分由调用方决定。 */

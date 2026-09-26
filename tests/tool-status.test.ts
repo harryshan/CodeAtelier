@@ -1,15 +1,16 @@
 /**
  * 验证时间线工具卡片对 DAG 状态事件的纯映射。
- * ToolDisplayStatus 由 Timeline 调用；测试以最小持久化 Event 序列覆盖初始未调度、准备或审批、等待 slot、执行、依赖阻断及跨批次隔离，
+ * ToolDisplayStatus 由连接层索引提供给 Timeline；测试以最小持久化 Event 序列覆盖初始未调度、准备或审批、等待 slot、执行、依赖阻断及跨批次隔离，
  * 不渲染浏览器、不依赖 SSE。断言直接覆盖用户可见中文状态和样式类别。
  *
  * 1. event 构造器生成同一工具开始与可选 tool_state 历史。
  * 2. 用例确保最后状态生效，且其它批次或调用不能串扰当前卡片。
+ * 增量索引额外验证跨任务和无 batch 兼容，并禁止查询期间重读已索引事件正文。
  */
 
 import { expect, it } from "vitest";
 import type { Event } from "../src/shared/types.js";
-import { toolDisplayStatus } from "../src/web/tool-status.js";
+import { toolDisplayStatus, ToolStatusIndex } from "../src/web/tool-status.js";
 
 function event(id: number, type: string, data: Record<string, unknown>): Event {
   return {
@@ -96,4 +97,47 @@ it("ignores another call or batch when resolving a tool card state", () => {
     label: "等待前置工具",
     tone: "waiting",
   });
+});
+
+it("indexes each state once and preserves wildcard and task isolation on repeated queries", () => {
+  const index = new ToolStatusIndex();
+  const history = [
+    event(2, "tool_state", { callId: "call", state: "queued" }),
+    event(3, "tool_state", {
+      callId: "call",
+      batchId: "batch",
+      state: "executing",
+    }),
+    event(4, "tool_state", {
+      callId: "call",
+      batchId: "other",
+      state: "failed",
+    }),
+    {
+      ...event(5, "tool_state", { callId: "call", state: "blocked" }),
+      taskId: "different-task",
+    },
+  ];
+  for (const item of history) {
+    index.append(item);
+  }
+
+  const unbatched = { ...start, data: { callId: "call" } };
+  const expected = toolDisplayStatus(history, start);
+  const expectedUnbatched = toolDisplayStatus(history, unbatched);
+  for (const item of history) {
+    Object.defineProperty(item, "data", {
+      get() {
+        throw new Error("state body reread");
+      },
+    });
+  }
+
+  for (let count = 0; count < 1000; count++) {
+    expect(index.get(start)).toEqual(expected);
+    expect(index.get(unbatched)).toEqual(expectedUnbatched);
+  }
+
+  index.append(event(6, "tool_state", { callId: "call", state: "succeeded" }));
+  expect(index.get(start).label).toBe("已完成");
 });
