@@ -6,7 +6,7 @@
  * 2. selfCheck 只有 state 中原生二进制、Node 24、entry/三种 Worker 摘要、启动恢复排空与原生自检全部成功时才报告 sandbox level。
  * 3. prepareAccess 在 manifest 之前同时创建只读 Git 投影和逐实例可写 HOME/TEMP，cleanup 删除两者。
  * 4. state 缺失、摘要篡改和原生拒绝都在 Runtime 启动前失败，允许 Broker 安全选择宿主 fallback。
- * 5. Agent Runtime 启动帧只携带 Broker 身份、nonce 和已安装 Node 路径，不允许选择 Runtime kind 或任意 entry argv。
+ * 5. Agent Runtime 启动帧只携带 Broker 身份、nonce 和已安装 Node 路径，不允许选择 Runtime kind 或任意 entry argv；固定阶段诊断只提取白名单枚举。
  */
 
 import { createHash } from "node:crypto";
@@ -18,6 +18,7 @@ import {
   encodeNativeAgentRuntimeRequest,
   encodeNativeSandboxRequest,
   NativeWindowsSandboxRuntime,
+  supervisorStartupDiagnostic,
 } from "../src/sandbox/native-windows-runtime.js";
 import { temp } from "./fixtures/helpers.js";
 
@@ -60,6 +61,20 @@ describe.skipIf(process.platform !== "win32")(
           exitCode: 0,
         }),
       ).toBe("cleanup_unknown");
+    });
+
+    it("keeps only the latest fixed Runtime command stage in supervisor diagnostics", () => {
+      const diagnostic = supervisorStartupDiagnostic(
+        "CODEATELIER_AGENT_RUNTIME_STAGE command_shell_begin\n" +
+          "CODEATELIER_AGENT_RUNTIME_STAGE command_spawn_begin\n" +
+          "CODEATELIER_AGENT_RUNTIME_STAGE command_spawned\n" +
+          "CODEATELIER_AGENT_RUNTIME_STAGE arbitrary-private-text\n",
+      );
+
+      expect(diagnostic.runtimeStage).toBe("command_spawned");
+      expect(JSON.stringify(diagnostic)).not.toContain(
+        "arbitrary-private-text",
+      );
     });
 
     it("encodes a bounded binary command request and rejects unsafe shapes", () => {

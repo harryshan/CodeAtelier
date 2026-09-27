@@ -60,7 +60,7 @@ Sandbox **不会**创建 worktree、暂存副本或自动回滚：可写操作�
    pnpm sandbox:runtime:verify
    ```
 
-   此命令使用模拟模型、临时工作区和不可用的本机 HTTPS 端口，不访问真实模型、外部网络、远程仓库或凭据。它检查已安装 Agent Runtime、审批后的 Broker 宿主命令、Broker 宿主 Git push 拒绝结果及取消路径，且要求没有 fallback/unknown。即使输出 `PASS`，也**不**等同于真实公网 HTTPS、真实 remote push 或全部 W0--W6 阶段验收完成；Broker 宿主命令和 Git push 本身不受 Sandbox 保护。
+   此命令使用模拟模型、临时工作区和不可用的本机 HTTPS 端口，不访问真实模型、外部网络、远程仓库或凭据。它检查已安装 Agent Runtime 内的文件工具和固定普通命令、审批后的 Broker 宿主命令、Broker 宿主 Git push 拒绝结果及取消路径，且要求没有 fallback/unknown。即使输出 `PASS`，也**不**等同于真实公网 HTTPS、真实 remote push 或全部 W0--W6 阶段验收完成；Broker 宿主命令和 Git push 本身不受 Sandbox 保护。
 
 ### 启用、运行与状态判断
 
@@ -81,7 +81,7 @@ Sandbox **不会**创建 worktree、暂存副本或自动回滚：可写操作�
 
    | 状态                    | 含义                                                                                                                                | 你应如何处理                                                                              |
    | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
-   | `sandboxed`             | 专用用户 Runtime 已成功启动并承载该任务；获批 Broker 宿主命令仍是例外。                                                              | 仍遵守本节的工作区、同账户 peer 和预览限制；查看每条命令的执行实例。                        |
+   | `sandboxed`             | 专用用户 Runtime 已成功启动并承载该任务；获批 Broker 宿主命令仍是例外。                                                             | 仍遵守本节的工作区、同账户 peer 和预览限制；查看每条命令的执行实例。                      |
    | `host-process-fallback` | Runtime 启动前的 preflight/provision/self-check 失败，但系统已证明没有 Sandbox 操作启动且临时授权已回滚；任务自动改用宿主权限执行。 | 把它当作未隔离任务；检查警告、`sandbox.log` 和安装状态。                                  |
    | `non-isolated`          | Sandbox 开关关闭，或平台不是 Windows。                                                                                              | 命令按原有宿主审批与权限路径运行。                                                        |
    | `unknown` / `orphaned`  | Runtime、Runner 或清理结果无法证明；副作用可能已发生。                                                                              | 不要自动重试或恢复同一副作用。先核对当前文件/Git 状态，并处理安装或账户 generation 问题。 |

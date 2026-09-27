@@ -3,11 +3,12 @@
  * 本脚本由用户显式执行，不属于 pnpm test/check，也不调用真实模型、外部网络、真实凭据或管理员安装操作。
  *
  * 1. 在仓库 .local 下建立一次性工作区和 Broker 数据库，并强制启用 Windows Sandbox 产品组装。
- * 2. 内存模型驱动固定 Agent Runtime 创建标记文件，再以内部已标记任务让安装态独立 Worker 只读该文件，核对规划、模型 IPC、报告原子收集、tracing 和退出后的租约。
- * 3. 请求 Broker 宿主命令，经低成本模型审批后写入 sibling 标记，核对 host-process 归因和结果回传；Capability Runner 暂停使用。
- * 4. 初始化一次性 Git 仓库，把 HTTPS remote 指向不可用的回环端口；验证 Broker 宿主 Git 预检、审批、失败结果回传和 Runtime clean lease release，全程不连接公网。
- * 5. 再让模型请求保持进行中并主动取消任务，核对 Job 终止、cancelled 归因和 generation lease 清空。
- * 6. Agent Runtime 必须在专用账户，获批宿主命令及 Git push 必须明确标为 host-process；不得有 fallback/unknown。失败现场保留供人工对账。
+ * 2. 内存模型驱动固定 Agent Runtime 创建标记文件，再执行只读的普通命令，核对专用账户子进程与输出回传。
+ * 3. 以内部已标记任务让安装态独立 Worker 只读该文件，核对规划、模型 IPC、报告原子收集、tracing 和退出后的租约。
+ * 4. 请求 Broker 宿主命令，经低成本模型审批后写入 sibling 标记，核对 host-process 归因和结果回传；Capability Runner 暂停使用。
+ * 5. 初始化一次性 Git 仓库，把 HTTPS remote 指向不可用的回环端口；验证 Broker 宿主 Git 预检、审批、失败结果回传和 Runtime clean lease release，全程不连接公网。
+ * 6. 再让模型请求保持进行中并主动取消任务，核对 Job 终止、cancelled 归因和 generation lease 清空。
+ * 7. Agent Runtime 必须在专用账户，获批宿主命令及 Git push 必须明确标为 host-process；不得有 fallback/unknown。失败现场保留供人工对账。
  */
 
 import { execFile } from "node:child_process";
@@ -25,6 +26,7 @@ import { commandShell } from "../../src/tools/command-shell.js";
 const verificationTimeoutMs = 60_000;
 const markerName = "agent-runtime-marker.txt";
 const markerContent = "written-by-installed-agent-runtime\n";
+const runtimeCommandOutput = "codeatelier-runtime-command-ok";
 const brokerCommandMarkerName = "broker-command-marker.txt";
 const brokerCommandMarkerContent = "written-by-broker-command";
 const blockedRemote = "https://127.0.0.1:1/codeatelier-verification.git";
@@ -224,6 +226,80 @@ function completedProvider(): ModelProvider {
       return { text: "verification complete", output: [] };
     },
   };
+}
+
+function runtimeCommandProvider(): ModelProvider {
+  let calls = 0;
+
+  return {
+    async getCapabilities() {
+      return {
+        limits: {
+          max_context_window_tokens: 64_000,
+          max_output_tokens: 1_024,
+        },
+      };
+    },
+    async run(input) {
+      calls++;
+      if (calls === 1) {
+        return {
+          text: "",
+          output: [
+            {
+              type: "function_call",
+              call_id: "runtime-local-command",
+              name: "run_command",
+              arguments: JSON.stringify({
+                execution: { id: "local-command", dependsOn: [] },
+                arguments: { command: `echo ${runtimeCommandOutput}` },
+              }),
+            },
+          ],
+        };
+      }
+
+      if (!JSON.stringify(input).includes(runtimeCommandOutput)) {
+        fail("Runtime command output did not return to the model");
+      }
+
+      return { text: "Runtime command verification complete", output: [] };
+    },
+  };
+}
+
+function assertRuntimeCommand(store: Store, sessionId: string) {
+  const events = store.events(sessionId);
+  const result = events.find(
+    (event) =>
+      event.type === "tool_result" &&
+      (event.data as Record<string, unknown>).callId ===
+        "runtime-local-command",
+  );
+  const processStarted = events.some(
+    (event) => event.type === "sandboxed_tool_process",
+  );
+  const commandResult = (
+    result?.data as
+      | {
+          result?: {
+            output?: string;
+            exitCode?: number;
+            sandbox?: { applied?: boolean };
+          };
+        }
+      | undefined
+  )?.result;
+  if (
+    !processStarted ||
+    commandResult?.exitCode !== 0 ||
+    commandResult.sandbox?.applied !== true ||
+    !commandResult.output?.includes(runtimeCommandOutput)
+  ) {
+    fail("ordinary command did not run inside the installed Runtime");
+  }
+
+  assertCompletedRuntime(store, sessionId);
 }
 
 function subagentProvider() {
@@ -650,6 +726,33 @@ async function main() {
 
     await engine.close();
     engine = undefined;
+    const runtimeCommandSession = store.create(
+      workspace,
+      "Runtime ordinary command probe",
+    );
+    const runtimeCommandModel = runtimeCommandProvider();
+    engine = new Engine(
+      store,
+      config,
+      pino({ enabled: false }),
+      () => runtimeCommandModel,
+    );
+    const runtimeCommandTask = engine.start(
+      runtimeCommandSession.id,
+      "Run the fixed read-only command inside the installed Runtime.",
+    );
+    await waitFor(engine.active!.done, "ordinary Runtime command task");
+    if (store.task(runtimeCommandTask.id)?.status !== "completed") {
+      fail("ordinary Runtime command task did not complete");
+    }
+
+    assertRuntimeCommand(store, runtimeCommandSession.id);
+    if (engine.sandbox.accountGenerationSnapshot()?.activeInstanceCount !== 0) {
+      fail("ordinary Runtime command left an active generation lease");
+    }
+
+    await engine.close();
+    engine = undefined;
     await verifyInstalledSubagent(store, config, workspace);
     const brokerCommandModel = brokerCommandProvider(
       brokerCommandProbe(brokerCommandMarker),
@@ -747,7 +850,7 @@ async function main() {
 
     passed = true;
     process.stdout.write(
-      "SANDBOX_AGENT_RUNTIME_VERIFY PASS completion=yes subagent=yes brokerHostCommand=yes brokerGitPushBlocked=yes cancellation=yes cleanup=yes\n",
+      "SANDBOX_AGENT_RUNTIME_VERIFY PASS completion=yes runtimeCommand=yes subagent=yes brokerHostCommand=yes brokerGitPushBlocked=yes cancellation=yes cleanup=yes\n",
     );
   } finally {
     await engine?.close().catch(() => undefined);

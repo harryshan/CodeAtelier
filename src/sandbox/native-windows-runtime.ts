@@ -10,6 +10,7 @@
  * 6. 逐工具进程取消、JS 超时或管道失败时关闭继承 stdin 并等待退出；常驻 Agent Runtime 已启动后先让 Broker 经 IPC 取消并等待终态，close 才关闭 stdin。清理证明缺失优先于原错误或取消结果，绝不宿主重放。
  * 7. drainGeneration 关闭 relay、终止该账户全部进程并按持久 journal 撤销 ACL，供在线 quarantine 与重启恢复共用。
  * 8. 临时 HOME/TEMP 只在原生确认撤销后删除；启动失败仅记录白名单 station、Runtime pipe/身份阶段、入口固定阶段和数字错误码，日志与错误不包含命令、路径、SID、端口、密码或工具输出。
+ * 9. Runtime 普通命令只向 stderr 输出固定阶段标记；启动后异常日志提取最后阶段，供区分 shell 选择、进程启动和进程关闭停滞，不记录命令内容。
  *
  * 该实现启动常驻 Agent Runtime，并保留独立 Push/Capability Runner 的原生入口；两个 Runner 当前不在产品路径。常驻 Runtime 承载完整 agent loop、文件工具、普通命令和非 push Git，Broker 保留模型、session、审批与恢复账本。
  */
@@ -41,7 +42,7 @@ const PROTOCOL_FAILURE_EXIT_CODE = 72;
 const MAXIMUM_ARGUMENTS = 64;
 const MAXIMUM_STRING_BYTES = 64 * 1024;
 
-function supervisorStartupDiagnostic(control: string) {
+export function supervisorStartupDiagnostic(control: string) {
   const station =
     /^CODEATELIER_(?:STATION|STATION_ACL)_FAILED stage=(current_sid|sddl|mutex|lock|create|name|interactive|select|desktop|desktop_sddl|desktop_id|account_ace|query|merge|write)(?: win32=(\d{1,10}))?$/gm;
   const latest = [...control.matchAll(station)].at(-1);
@@ -61,6 +62,11 @@ function supervisorStartupDiagnostic(control: string) {
     /^CODEATELIER_RUNTIME_CLIENT_REJECT stage=(client_pid|job|process|token|restricted|sids|image|times) win32=(\d{1,10})$/m.exec(
       control,
     );
+  const runtimeStage = [
+    ...control.matchAll(
+      /^CODEATELIER_AGENT_RUNTIME_STAGE (command_shell_begin|command_shell_selected|command_spawn_begin|command_spawned|command_closed)$/gm,
+    ),
+  ].at(-1)?.[1];
 
   return {
     stage: latest?.[1],
@@ -73,6 +79,7 @@ function supervisorStartupDiagnostic(control: string) {
     proxyWin32: proxy?.[4] ? Number(proxy[4]) : undefined,
     clientStage: client?.[1],
     clientWin32: client?.[2] ? Number(client[2]) : undefined,
+    runtimeStage,
   };
 }
 

@@ -1,5 +1,11 @@
 # 初版验证记录
 
+## Windows Sandbox 普通命令卡住诊断（2026-09-27，安装态待复验）
+
+- 最新真实会话的模型请求已于 13:02:29 UTC 返回两个 `run_command` 和一个 Git status 调用，但任务只持久化到 `tool_batch_planned`，之后无工具结果；13:04:41 Supervisor 以退出码 30 关闭，Broker 未取得可信 Runtime 终态，按 `process_unknown` 隔离并排空 generation，任务失败。Supervisor 的 `completionReported=true` 只证明其自身清理完成，不证明 Runtime 已完成任务。
+- 独立的固定模型/临时工作区复现显示：安装态 Runtime 连 `Write-Output diagnostic-ok` 也未完成；同样的 Runtime/Engine 逻辑在普通 Node 子进程里能完成该命令并正确取消长命令。由此将问题缩到已安装 Windows Runtime 的普通命令路径，但现有事件缺口尚不能区分 shell 查找、同步进程启动与 IPC 回执停滞。
+- 管理员 `sandbox:recover` 已输出 `CODEATELIER_REVOKE_JOURNAL_OK count=5` 和 `SANDBOX_RECOVERY PASS`，没有手工删除授权账本。安装现已移除。新增安装态固定普通命令验收及只包含白名单阶段名的 Supervisor 诊断；`pnpm check` 通过 70 个测试文件、510 项通过、1 项跳过，Runtime bundle 构建通过。下一步需重新安装并运行新版 `sandbox:runtime:verify`，确认卡点后再修复，不能把此前缺少普通命令的 `PASS` 视为当前真实任务可正常运行。
+
 ## Windows Sandbox 取消终态修复（2026-09-27，安装态复验通过）
 
 - 用户运行安装态 `sandbox:runtime:verify`，固定任务、已安装 subagent、审批后的 Broker 宿主命令和 Broker Git push 本机拒绝夹具均完成；最后的取消断言失败。两份保留工作区的会话均显示任务 `cancelled`，但 Agent Runtime execution instance 为 `unknown`、`sideEffectsPossible=true`，账户 generation 因 `process_unknown` 隔离并排空；因此是真实终态不一致，不是断言误判。原生 Supervisor 报告 `completionReported=true`、退出码 30，但 Broker 未取得可信 Runtime 任务终态。
@@ -52,10 +58,10 @@
 合成计算基准以 `6dd99a8` 的时间线投影为对照，每个工具构造开始、状态、输出和结果等六类事件；预热一次后取五次测量中位数。旧路径每次重新构建完整时间线，新路径首次建立索引后追加一个 delta；同时核对条目、工具状态和输出卡片等价。耗时包含前端纯数据计算，不包含网络、DOM 布局、Markdown 渲染或模型执行。
 
 | 历史事件数 | 旧时间线每次投影 | 新视图首次投影 | 新视图追加事件 |
-| --- | --- | --- | --- |
-| 3,000 | 4.61 ms | 1.21 ms | 0.28 ms |
-| 12,000 | 70.02 ms | 3.63 ms | 0.56 ms |
-| 50,000 | 4,169.67 ms | 31.01 ms | 4.32 ms |
+| ---------- | ---------------- | -------------- | -------------- |
+| 3,000      | 4.61 ms          | 1.21 ms        | 0.28 ms        |
+| 12,000     | 70.02 ms         | 3.63 ms        | 0.56 ms        |
+| 50,000     | 4,169.67 ms      | 31.01 ms       | 4.32 ms        |
 
 浏览器合成用例加载 12,001 个事件，最终窗口挂载 10 个时间线节点，首次可见约 1.6 秒（包含测试请求和浏览器等待）。该用例验证滚动、输入、真实 EventSource 重连及游标去重；单元回归在 3,000／12,000／50,000 事件后禁止重读旧正文，并在 50,000 项布局上限制二分索引访问次数，不以机器相关毫秒阈值作为唯一断言。
 

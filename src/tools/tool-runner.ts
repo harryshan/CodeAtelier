@@ -274,6 +274,9 @@ export class ToolRunner {
         );
       }
 
+      process.stderr.write(
+        "CODEATELIER_AGENT_RUNTIME_STAGE command_spawn_begin\n",
+      );
       const result = await executeProcess(
         input.command,
         input.args,
@@ -283,12 +286,17 @@ export class ToolRunner {
         input.outputLimit,
         input.onOutput,
         input.environment ?? {},
-        (pid) =>
+        (pid) => {
+          process.stderr.write(
+            "CODEATELIER_AGENT_RUNTIME_STAGE command_spawned\n",
+          );
           this.ctx.emit("sandboxed_tool_process", {
             pid,
             parentExecutionInstanceId: this.ctx.parentExecutionInstanceId,
-          }),
+          });
+        },
       );
+      process.stderr.write("CODEATELIER_AGENT_RUNTIME_STAGE command_closed\n");
 
       return {
         ...result,
@@ -641,6 +649,12 @@ export class ToolRunner {
     }
 
     if (name === "run_command") {
+      if (this.ctx.executionBoundary === "agent-runtime") {
+        process.stderr.write(
+          "CODEATELIER_AGENT_RUNTIME_STAGE command_shell_begin\n",
+        );
+      }
+
       const hostShell = commandShell(
         process.env,
         undefined,
@@ -649,6 +663,12 @@ export class ToolRunner {
       );
       const shell = hostShell;
       const cwd = this.ctx.root;
+
+      if (this.ctx.executionBoundary === "agent-runtime") {
+        process.stderr.write(
+          "CODEATELIER_AGENT_RUNTIME_STAGE command_shell_selected\n",
+        );
+      }
 
       if (!shell) {
         throw new Error("当前平台未找到可用的命令 shell。");
