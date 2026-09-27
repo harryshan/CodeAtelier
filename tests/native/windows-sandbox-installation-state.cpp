@@ -9,8 +9,8 @@
  * 3. 用真实二进制 journal 帧验证恢复入口接受已安装授权的合法标志，普通撤销入口仍拒绝这些标志。
  * 4. 在进程内 ACL 上验证新增的安装者读取 ACE 不丢弃既有 ACE，也不授予写入。
  * 5. 核对 bootstrap pipe 不授予实例 SID，Agent Runtime 专属 pipe 才授予本实例 restricting SID，避免 WRITE_RESTRICTED 客户端无法连接；真实受限 token 连接仍由安装后产品验收证明。
- * 6. 核对 Supervisor 只能重新查询 Runtime process/token，不能凭该授权终止、注入或修改其安全描述符。
- * 7. 显式 --token-query-probe 用真实受限 token 验证 Supervisor 查询 ACE 可安装；默认 native build 不运行此 OS 探针。
+ * 6. 用真实句柄验证 bootstrap attestation 只复制查询权限，绑定进程 PID 并拒绝畸形或错误 PID。
+ * 7. 显式 --handle-transfer-probe 用独立子进程和匿名管道验证句柄帧的有界等待、跨进程复制和 PID 绑定；默认 native build 不运行此 OS 探针。
  * 8. 显式 --window-station-probe 在真实 Windows 会话中用不同账户替身 SID 创建并关闭两个非交互式 station/desktop 句柄，验证已有 station 补装第二个账户 ACE、实例授权、原 station 恢复，以及带完整 station/desktop 名称的 USER32 子进程启动；默认 native build 不运行此 OS 探针。
  * 9. 删除临时夹具，以退出码报告回归结果。
  */
@@ -144,106 +144,162 @@ bool TestRuntimePipeSecurity() {
   return true;
 }
 
-bool TestRuntimeInspectorAcl() {
-  SidPointer account = CreateCapabilitySid();
-  SidPointer execution = CreateCapabilitySid();
-  SidPointer supervisor = CreateCapabilitySid();
-  if (!account || !execution || !supervisor) {
+bool TestRuntimeHandleAttestation() {
+  HANDLE raw_token = nullptr;
+  if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY | TOKEN_DUPLICATE,
+                        &raw_token)) {
     return false;
   }
-
-  SECURITY_ATTRIBUTES process_attributes{};
-  LocalPointer process_descriptor;
-  if (!BuildRuntimeProcessSecurity(account.get(), execution.get(),
-                                   supervisor.get(), &process_attributes,
-                                   &process_descriptor)) {
+  UniqueHandle source_token(raw_token);
+  RuntimeHandleAttestation frame{};
+  frame.magic = kRuntimeAttestationMagic;
+  frame.version = 1;
+  frame.process_id = GetCurrentProcessId();
+  frame.process_handle = reinterpret_cast<uintptr_t>(GetCurrentProcess());
+  frame.token_handle = reinterpret_cast<uintptr_t>(source_token.get());
+  UniqueHandle copied_process;
+  UniqueHandle copied_token;
+  if (!DuplicateRuntimeHandles(GetCurrentProcess(), frame, &copied_process,
+                               &copied_token) ||
+      GetProcessId(copied_process.get()) != frame.process_id) {
     return false;
   }
-  BOOL present = FALSE;
-  BOOL defaulted = FALSE;
-  PACL process_acl = nullptr;
-  if (!GetSecurityDescriptorDacl(process_descriptor.get(), &present,
-                                 &process_acl, &defaulted) ||
-      !present || !process_acl ||
-      !AclHasExplicitGrantForSid(process_acl, account.get()) ||
-      !AclHasExplicitGrantForSid(process_acl, execution.get()) ||
-      !AclHasExplicitGrantForSid(process_acl, supervisor.get())) {
+  DWORD token_size = 0;
+  GetTokenInformation(copied_token.get(), TokenUser, nullptr, 0,
+                      &token_size);
+  std::vector<BYTE> token_user(token_size);
+  if (token_size == 0 ||
+      !GetTokenInformation(copied_token.get(), TokenUser,
+                           token_user.data(), token_size, &token_size)) {
     return false;
   }
-
-  EXPLICIT_ACCESSW existing{};
-  existing.grfAccessPermissions = TOKEN_QUERY | WRITE_DAC;
-  existing.grfAccessMode = GRANT_ACCESS;
-  existing.Trustee.TrusteeForm = TRUSTEE_IS_SID;
-  existing.Trustee.ptstrName = static_cast<LPWSTR>(account.get());
-  PACL old_token_acl = nullptr;
-  if (SetEntriesInAclW(1, &existing, nullptr, &old_token_acl) !=
-      ERROR_SUCCESS) {
+  HANDLE raw_extra_process = nullptr;
+  bool can_duplicate_from_process = DuplicateHandle(
+      copied_process.get(), GetCurrentProcess(), GetCurrentProcess(),
+      &raw_extra_process, 0, FALSE, DUPLICATE_SAME_ACCESS) != FALSE;
+  UniqueHandle extra_process(raw_extra_process);
+  HANDLE raw_extra_token = nullptr;
+  bool can_duplicate_token = DuplicateTokenEx(
+      copied_token.get(), TOKEN_QUERY, nullptr, SecurityImpersonation,
+      TokenImpersonation, &raw_extra_token) != FALSE;
+  UniqueHandle extra_token(raw_extra_token);
+  if (can_duplicate_from_process || can_duplicate_token) {
     return false;
   }
-  LocalPointer owned_old_token_acl(old_token_acl);
-  PACL token_acl = nullptr;
-  if (!CreateSupervisorTokenQueryAcl(old_token_acl, supervisor.get(),
-                                     &token_acl)) {
-    return false;
-  }
-  LocalPointer owned_token_acl(token_acl);
-
-  TRUSTEEW supervisor_trustee{};
-  supervisor_trustee.TrusteeForm = TRUSTEE_IS_SID;
-  supervisor_trustee.ptstrName = static_cast<LPWSTR>(supervisor.get());
-  ACCESS_MASK process_rights = 0;
-  ACCESS_MASK token_rights = 0;
-  if (GetEffectiveRightsFromAclW(process_acl, &supervisor_trustee,
-                                 &process_rights) != ERROR_SUCCESS ||
-      GetEffectiveRightsFromAclW(token_acl, &supervisor_trustee,
-                                 &token_rights) != ERROR_SUCCESS) {
-    return false;
-  }
-  return process_rights == PROCESS_QUERY_LIMITED_INFORMATION &&
-         token_rights == TOKEN_QUERY &&
-         AclHasExplicitGrantForSid(token_acl, account.get());
+  RuntimeHandleAttestation wrong_pid = frame;
+  wrong_pid.process_id += 1;
+  RuntimeHandleAttestation wrong_token = frame;
+  wrong_token.token_handle = 0;
+  RuntimeHandleAttestation wrong_magic = frame;
+  wrong_magic.magic = 0;
+  RuntimeHandleAttestation wrong_version = frame;
+  wrong_version.version = 2;
+  RuntimeHandleAttestation wrong_reserved = frame;
+  wrong_reserved.reserved = 1;
+  UniqueHandle rejected_process;
+  UniqueHandle rejected_token;
+  return !DuplicateRuntimeHandles(GetCurrentProcess(), wrong_pid,
+                                  &rejected_process, &rejected_token) &&
+         !DuplicateRuntimeHandles(GetCurrentProcess(), wrong_token,
+                                  &rejected_process, &rejected_token) &&
+         !DuplicateRuntimeHandles(GetCurrentProcess(), wrong_magic,
+                                  &rejected_process, &rejected_token) &&
+         !DuplicateRuntimeHandles(GetCurrentProcess(), wrong_version,
+                                  &rejected_process, &rejected_token) &&
+         !DuplicateRuntimeHandles(GetCurrentProcess(), wrong_reserved,
+                                  &rejected_process, &rejected_token);
 }
 
-bool TestRestrictedTokenInspector() {
-  SidPointer execution = CreateCapabilitySid();
-  SidPointer capability = CreateCapabilitySid();
-  SidPointer supervisor = CreateCapabilitySid();
-  UniqueHandle token;
-  UniqueHandle ordinary_token;
-  if (!execution || !capability || !supervisor ||
-      !CreateProductRestrictedPrimaryToken(
-          execution.get(), capability.get(), supervisor.get(), &token) ||
-      !CreateProductRestrictedPrimaryToken(
-          execution.get(), capability.get(), nullptr, &ordinary_token)) {
-    std::wcerr << L"TOKEN_QUERY_PROBE_STAGE create win32=" << GetLastError()
-               << L"\n";
+int RunHandleTransferChild() {
+  HANDLE raw_token = nullptr;
+  if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &raw_token)) {
+    return 1;
+  }
+  UniqueHandle token(raw_token);
+  UniqueHandle process(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION,
+                                   FALSE, GetCurrentProcessId()));
+  if (!process) {
+    return 1;
+  }
+  RuntimeHandleAttestation frame{};
+  frame.process_id = GetCurrentProcessId();
+  frame.process_handle = reinterpret_cast<uintptr_t>(process.get());
+  frame.token_handle = reinterpret_cast<uintptr_t>(token.get());
+  if (!WriteExact(GetStdHandle(STD_OUTPUT_HANDLE), &frame, sizeof(frame))) {
+    return 1;
+  }
+  BYTE release = 0;
+  return ReadExact(GetStdHandle(STD_INPUT_HANDLE), &release,
+                   sizeof(release)) &&
+                 release == 1
+             ? 0
+             : 1;
+}
+
+bool TestCrossProcessHandleTransfer() {
+  SECURITY_ATTRIBUTES inherited{};
+  inherited.nLength = sizeof(inherited);
+  inherited.bInheritHandle = TRUE;
+  HANDLE raw_output_read = nullptr;
+  HANDLE raw_output_write = nullptr;
+  HANDLE raw_input_read = nullptr;
+  HANDLE raw_input_write = nullptr;
+  if (!CreatePipe(&raw_output_read, &raw_output_write, &inherited, 0)) {
     return false;
   }
-  DWORD size = 0;
-  GetKernelObjectSecurity(token.get(), DACL_SECURITY_INFORMATION, nullptr, 0,
-                          &size);
-  std::vector<BYTE> descriptor(size);
-  BOOL present = FALSE;
-  BOOL defaulted = FALSE;
-  PACL acl = nullptr;
-  if (size == 0 ||
-      !GetKernelObjectSecurity(token.get(), DACL_SECURITY_INFORMATION,
-                               descriptor.data(), size, &size) ||
-      !GetSecurityDescriptorDacl(descriptor.data(), &present, &acl,
-                                 &defaulted) ||
-      !present || !acl) {
-    std::wcerr << L"TOKEN_QUERY_PROBE_STAGE dacl win32=" << GetLastError()
-               << L"\n";
+  UniqueHandle output_read(raw_output_read);
+  UniqueHandle output_write(raw_output_write);
+  if (!CreatePipe(&raw_input_read, &raw_input_write, &inherited, 0)) {
     return false;
   }
-  TRUSTEEW inspector{};
-  inspector.TrusteeForm = TRUSTEE_IS_SID;
-  inspector.ptstrName = static_cast<LPWSTR>(supervisor.get());
-  ACCESS_MASK rights = 0;
-  return GetEffectiveRightsFromAclW(acl, &inspector, &rights) ==
-             ERROR_SUCCESS &&
-         rights == TOKEN_QUERY;
+  UniqueHandle input_read(raw_input_read);
+  UniqueHandle input_write(raw_input_write);
+  if (!SetHandleInformation(output_read.get(), HANDLE_FLAG_INHERIT, 0) ||
+      !SetHandleInformation(input_write.get(), HANDLE_FLAG_INHERIT, 0)) {
+    return false;
+  }
+  std::wstring executable = CurrentExecutablePath();
+  std::wstring command =
+      BuildCommandLine(executable, {L"--handle-transfer-child"});
+  std::vector<wchar_t> mutable_command(command.begin(), command.end());
+  mutable_command.push_back(L'\0');
+  STARTUPINFOW startup{};
+  startup.cb = sizeof(startup);
+  startup.dwFlags = STARTF_USESTDHANDLES;
+  startup.hStdInput = input_read.get();
+  startup.hStdOutput = output_write.get();
+  startup.hStdError = GetStdHandle(STD_ERROR_HANDLE);
+  PROCESS_INFORMATION child{};
+  if (!CreateProcessW(executable.c_str(), mutable_command.data(), nullptr,
+                      nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr,
+                      &startup, &child)) {
+    return false;
+  }
+  UniqueHandle child_process(child.hProcess);
+  UniqueHandle child_thread(child.hThread);
+  output_write.reset();
+  input_read.reset();
+
+  RuntimeHandleAttestation frame{};
+  bool received = ReadRuntimeHandleAttestation(output_read.get(),
+                                                child_process.get(), &frame);
+  UniqueHandle copied_process;
+  UniqueHandle copied_token;
+  bool verified =
+      received &&
+      DuplicateRuntimeHandles(child_process.get(), frame, &copied_process,
+                              &copied_token) &&
+      GetProcessId(copied_process.get()) == child.dwProcessId;
+  BYTE release = 1;
+  WriteExact(input_write.get(), &release, sizeof(release));
+  if (WaitForSingleObject(child_process.get(), 5000) != WAIT_OBJECT_0) {
+    TerminateProcess(child_process.get(), 1);
+    WaitForSingleObject(child_process.get(), 5000);
+    return false;
+  }
+  DWORD exit_code = 1;
+  return verified && GetExitCodeProcess(child_process.get(), &exit_code) &&
+         exit_code == 0;
 }
 
 bool ReadRevokeFixture(const std::filesystem::path& path, bool journal_mode) {
@@ -397,6 +453,17 @@ bool TestPrivateDesktopStation() {
 }  // namespace
 
 int wmain(int argc, wchar_t* argv[]) {
+  if (argc == 2 && std::wstring(argv[1]) == L"--handle-transfer-child") {
+    return RunHandleTransferChild();
+  }
+  if (argc == 2 && std::wstring(argv[1]) == L"--handle-transfer-probe") {
+    if (!TestCrossProcessHandleTransfer()) {
+      std::wcerr << L"SANDBOX_HANDLE_TRANSFER_PROBE FAIL\n";
+      return 1;
+    }
+    std::wcout << L"SANDBOX_HANDLE_TRANSFER_PROBE PASS\n";
+    return 0;
+  }
   if (argc == 2 && std::wstring(argv[1]) == L"--window-station-child") {
     return 0;
   }
@@ -406,14 +473,6 @@ int wmain(int argc, wchar_t* argv[]) {
       return 1;
     }
     std::wcout << L"SANDBOX_WINDOW_STATION_PROBE PASS\n";
-    return 0;
-  }
-  if (argc == 2 && std::wstring(argv[1]) == L"--token-query-probe") {
-    if (!TestRestrictedTokenInspector()) {
-      std::wcerr << L"SANDBOX_TOKEN_QUERY_PROBE FAIL\n";
-      return 1;
-    }
-    std::wcout << L"SANDBOX_TOKEN_QUERY_PROBE PASS\n";
     return 0;
   }
   if (argc != 1) {
@@ -438,7 +497,7 @@ int wmain(int argc, wchar_t* argv[]) {
           TestGrantJournalFlags(fixture, 7, false, false) &&
           TestGrantJournalFlags(fixture, 2, false, true);
   valid = valid && TestInstallerAccountAcl() && TestRuntimePipeSecurity() &&
-          TestRuntimeInspectorAcl();
+          TestRuntimeHandleAttestation();
   std::error_code remove_error;
   std::filesystem::remove(fixture, remove_error);
   if (!valid || remove_error) {

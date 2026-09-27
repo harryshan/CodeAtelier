@@ -96,7 +96,7 @@ it.each(["runtime-launcher", "runtime"] as const)(
         "data",
         "CODEATELIER_STATION_ACL_FAILED stage=account_ace\n" +
           "CODEATELIER_SUPERVISOR_BOOTSTRAP_FAILED exit_code=3221225794\n" +
-          "CODEATELIER_RUNTIME_PROXY_FAILED stage=identity\n" +
+          "CODEATELIER_RUNTIME_PROXY_FAILED stage=attestation_handle win32=5\n" +
           "CODEATELIER_RUNTIME_CLIENT_REJECT stage=process win32=5\n" +
           "private path and output must not enter logs\n",
       );
@@ -112,7 +112,8 @@ it.each(["runtime-launcher", "runtime"] as const)(
           diagnostic: {
             stage: "account_ace",
             bootstrapExitCode: 3221225794,
-            proxyStage: "identity",
+            proxyStage: "attestation_handle",
+            proxyWin32: 5,
             clientStage: "process",
             clientWin32: 5,
           },

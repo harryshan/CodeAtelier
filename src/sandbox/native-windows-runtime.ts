@@ -54,7 +54,7 @@ function supervisorStartupDiagnostic(control: string) {
       control,
     );
   const proxy =
-    /^CODEATELIER_RUNTIME_PROXY_FAILED stage=(connect_wait|connect|identity|descriptor)(?: wait=(\d{1,10}) bootstrap_exit=(\d{1,10})| win32=(\d{1,10}))?$/m.exec(
+    /^CODEATELIER_RUNTIME_PROXY_FAILED stage=(attestation_wait|attestation_frame|attestation_handle|connect_wait|connect|identity|descriptor)(?: wait=(\d{1,10}) bootstrap_exit=(\d{1,10})| win32=(\d{1,10}))?$/m.exec(
       control,
     );
   const client =
