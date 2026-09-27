@@ -1,5 +1,10 @@
 # 初版验证记录
 
+## Windows Sandbox 普通用户 WFP 自检修复（2026-09-27，待重装验收）
+
+- 固定账户安装与管理员 `sandbox:verify` 已通过，但普通终端的 `sandbox:runtime:verify` 在第一个任务发现 `runtime_self_check` 启动前 fallback；模拟任务在宿主创建了标记，脚本正确拒绝将其计为 Sandbox 成功。保留的会话事件明确记录 `host-process-fallback`、`sandboxApplied=false`、`sideEffectsPossible=false`。对已安装 WFP manager 做只读普通用户复核，`FwpmFilterCreateEnumHandle0` 返回错误 5；因此不能用管理员校验通过推断普通用户 Broker 可以完成同一枚举。
+- 产品 WFP manager 改为给安装用户对固定 provider、sublayer 和八条固定 key filter 授予对象级 `FWPM_ACTRL_READ`，保留既有 ACL；普通用户自检按 key 读取并核对规则形状，不修改全局 filter 容器 ACL。管理员 `sandbox:verify` 仍枚举 provider 下全部 filter 并要求恰好八条。MSVC `/W4` 原生构建及安装状态解析回归通过；修复后的卸载、重装、普通用户自检和完整 Runtime 链路尚待手动验证，不能据编译成功宣称 W1/W3/W4 完成。
+
 ## Windows Sandbox 安装状态端口回归（2026-09-27）
 
 - 固定账户首次提升安装在 WFP 规则写入后由 Supervisor self-check 以退出码 71 拒绝；安装脚本随后报告删除 8 条规则并完成账户、权限和安装目录回滚。代码检查发现安装 state 已升至版本 4，而 C++ 仅对版本 2 解析 relayPortV4/V6，导致版本 4 自检使用端口 0。

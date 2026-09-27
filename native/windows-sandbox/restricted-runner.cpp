@@ -740,7 +740,7 @@ bool VerifyInstallation(const InstallationState& state,
          (!require_wfp ||
           RunFixedProcess(
               network_manager,
-              L"--wfp-persistent-verify " + QuoteArgument(state.account_name) +
+               L"--wfp-persistent-attest " + QuoteArgument(state.account_name) +
                   L" " + std::to_wstring(state.relay_port_v4) + L" " +
                   std::to_wstring(state.relay_port_v6)));
 }

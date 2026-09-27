@@ -35,7 +35,7 @@ Windows 启用时的产品调用链现为 `Broker Engine → SandboxBroker launc
 
 Git push 是这条链的受限分支：`Agent Runtime（loop 阻塞）→ Runtime IPC PushSpec → Broker → Sandbox Supervisor → 独立 Push Runner`；原 Agent Runtime 保持存活，但不取得 Runner 的网络或凭据能力。
 
-安装版 Runtime 的 argv 只携带 Supervisor 生成的本机任务 pipe 名，identity/nonce 由有界首帧交付；产品 build 生成面向 Node 24 的单文件 Runtime 与独立 compaction Worker bundle，安装器把 Node 24 和 bundle 固定到受保护目录，TypeScript/native self-check 复核 v2 state 中的 SHA-256。
+安装版 Runtime 的 argv 只携带 Supervisor 生成的本机任务 pipe 名，identity/nonce 由有界首帧交付；产品 build 生成面向 Node 24 的单文件 Runtime 与独立 compaction、read_file、subagent Worker bundle，安装器把 Node 24 和 bundle 固定到受保护目录，TypeScript/native self-check 复核 v4 state 中的 SHA-256。
 
 启动前回退时由宿主 loop 继续执行，实际模式记录为 `host-process`。只有提升环境证明这条真实链路的身份、取消、清理与恢复后，才满足 Agent Runtime 完成条件。
 
@@ -89,7 +89,7 @@ replay 捕获逐次保存模型 input/instructions/响应及完整脱敏工具�
 
 ### Windows Sandbox
 
-Sandbox 以 Broker Host 为宿主可信边界。一次性提升安装创建单一 `CodeAtelierSandbox` 本地账户，并按其 SID 安装持久 WFP 默认拒绝规则；独立 C++ supervisor 为每个 execution instance 创建该账户的 `WRITE_RESTRICTED` token、根 capability、私有 desktop、最小环境和 Job。
+Sandbox 以 Broker Host 为宿主可信边界。一次性提升安装创建单一 `CodeAtelierSandbox` 本地账户，并按其 SID 安装持久 WFP 默认拒绝规则；安装用户仅取得产品 WFP 对象的只读权限，普通启动自检按固定 key 核对规则，管理员校验仍枚举完整规则集。独立 C++ supervisor 为每个 execution instance 创建该账户的 `WRITE_RESTRICTED` token、根 capability、私有 desktop、最小环境和 Job。
 
 Broker 先建立不可变 AccessManifest，supervisor 再以原对象 handle 和卷/file ID 复核工作区、显式 read/write roots、产品依赖和精确 Git config/include 图并投影最小 ACL；持久 journal 使最终 revoke 或重启恢复可在同卷 rename 后按 file ID 重开原对象。
 

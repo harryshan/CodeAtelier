@@ -96,9 +96,9 @@ Runtime 只可通过 `run_with_permissions` 提交任意命令文本；真正可
 
 - 使用随机高熵密码；密码只以 Windows DPAPI/等价系统保护形式保存，存储 DACL 只允许 SYSTEM 和安装该实例的宿主用户，绝不进入 argv、环境、日志、session 或工作区。
 - 不加入 Administrators。首版使用普通 Broker 可调用的 `CreateProcessWithLogonW` 创建本地账户进程，因此不能同时配置 `SeDenyInteractiveLogonRight`；账户以高熵秘密、隐藏欢迎屏幕入口、禁止远程交互/网络/服务登录和 WFP fence 降低被其它入口使用的风险。若本机或域策略禁止这种本地 logon，安装失败；后续若改用提升服务与 batch logon，必须另行审计高权限控制面。
-- 安装器把原生构建产物复制到 `%ProgramData%\CodeAtelier\Sandbox\bin`，把固定 Node.js 24 executable、`agent-runtime.mjs`、`compaction-worker.mjs` 和 `read-file-worker.mjs` 复制到受保护的 `runtime` 子目录。
+- 安装器把原生构建产物复制到 `%ProgramData%\CodeAtelier\Sandbox\bin`，把固定 Node.js 24 executable、`agent-runtime.mjs`、`compaction-worker.mjs`、`read-file-worker.mjs` 和 `subagent-worker.mjs` 复制到受保护的 `runtime` 子目录。
 
-  两个目录的 DACL 都只允许安装用户、Administrators 和 SYSTEM 修改，Sandbox 账户仅可读取/执行；v3 state 记录六个安装副本的 SHA-256，TypeScript 与 native self-check 都复核摘要，运行时不执行工作区 `dist` 或当前 `PATH` 下可被项目替换的文件。
+  两个目录的 DACL 都只允许安装用户、Administrators 和 SYSTEM 修改，Sandbox 账户仅可读取/执行；v4 state 记录七个安装副本的 SHA-256，TypeScript 与 native self-check 都复核摘要，运行时不执行工作区 `dist` 或当前 `PATH` 下可被项目替换的文件。
 - 不加载宿主用户 profile，不继承其 cookie、SSH agent、凭据管理器、证书私钥或已打开 handle。默认不加载持久 Sandbox profile hive；每个 lease 使用新建的私有 `HOME`/`USERPROFILE`/`XDG_CONFIG_HOME`/`TEMP` 目录。
 
   若真实工具兼容性迫使加载专用账户 profile/HKCU，必须先定义可证明的逐租约重置流程，重置失败即隔离账户，不能让前一任务持久化配置影响下一任务。
@@ -263,7 +263,7 @@ Sandbox 生命周期日志/trace 只保存状态、耗时、数量、kind/profil
 | 阶段 | 交付物 | 必要证据 |
 | --- | --- | --- |
 | W0：契约 | 已接入公开实际状态、按任务/instance 宿主 fallback、执行后不重放、独立日志、executionInstance/PID 账本、Runtime→Broker typed IPC、不可变 AccessManifest、Git global/include 图和账户 generation/lease 状态机；应用协议已由默认 C++ Named Pipe transport 承载，仍需固定账户提升环境验收 | 关闭路径保持兼容；自检前失败醒目提示并记录宿主 fallback；并发状态不串扰；已执行/未知结果不重放 |
-| W1：安装与身份 | 已有产品构建与提升脚本：固定账户、CurrentUser DPAPI secret、状态/安装副本 DACL、四项拒绝登录权、固定端口持久 WFP 的 install/verify/uninstall/recover；Node 24、Agent Runtime bundle 与原生程序使用受保护安装副本及 v2 state 摘要。尚未以产品账户完成提升验收 | 宿主用户网络不受影响；Sandbox SID 的 V4/V6 直接出站均阻断；loopback 只到固定端点 |
+| W1：安装与身份 | 已有产品构建与提升脚本：固定账户、CurrentUser DPAPI secret、状态/安装副本 DACL、四项拒绝登录权、固定端口持久 WFP 的 install/verify/uninstall/recover；安装用户仅获产品 WFP 对象的只读权限，普通自检按固定 key 读取，管理员校验仍做完整枚举。Node 24、Agent Runtime bundle 与原生程序使用受保护安装副本及 v4 state 摘要。普通用户自检修复仍待重装验收 | 宿主用户网络不受影响；Sandbox SID 的 V4/V6 直接出站均阻断；loopback 只到固定端点 |
 | W2：文件与监督 | 已接入 supervisor：二进制 manifest 携带卷/file ID，专用账户 bootstrap 使用仅含 execution/root capability 的 `WRITE_RESTRICTED` token、私有 desktop、Job 与逐对象 ACL；账户 ACE 使用可等待 provision 和两阶段 release，独立 journal 支持崩溃/卸载/服务重启撤销。Git config 与只读聚合根已纳入 manifest。仍缺提升环境产品验收和复杂对象替换夹具 | 并发实例互相可读且可能互相干扰，但直接及后代不可跨 capability 根写入；共享 ACE 安装窗口与撤销失败保持账本；孤儿 generation 全量排空 |
 | W3：Broker IPC | 已完成 typed capability、有界双向 framing、instance/nonce 握手、模型流及 model/session/approval/memory adapter；C++ Named Pipe transport、PID/创建时间/Job/account/restricted capability/固定映像联合检查、首帧和字节代理已接入默认 Windows launcher。仍缺固定账户提升环境的错误客户端、重放、取消、断连和恢复实测 | 重放、错误映像/Job/token、畸形帧安全拒绝；native build、协议单测或 stdio harness 不得冒充 Windows 身份边界 |
 | W4：本地 Runtime 与扩展能力 | `AgentRuntimeService` 已承载上下文、模型轮次、工具 DAG、文件工具、普通命令和非 push Git；Runtime 内已有权限工具免审批。`run_with_permissions` 已将命令/根/HTTPS host/理由经认证 IPC 交给 Broker 重新审批，并以独立 capability runner、AccessManifest 和 relay 执行，禁止宿主 fallback。构建会生成并安装受保护 Node 24 Runtime bundle；固定 schema 的 context/tool/model tracing 已跨进程接回 Broker，仍缺提升环境 capability runner 的 ACL/代理/取消矩阵 | 证明 loop/文件/Git 不在 Broker；越界命令只能得到已审核根/host；TOCTOU、reparse、敏感日志和超限失败路径 |
