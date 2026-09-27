@@ -407,7 +407,8 @@ bool ReadInstallationState(const std::wstring& state_path,
   state->generation_id = values[L"generationId"];
   state->protected_password = values[L"protectedPassword"];
   state->installed_by_sid = values[L"installedBySid"];
-  if (state->version == 2) {
+  // Newer installation states retain the relay ports introduced in version 2.
+  if (state->version >= 2) {
     wchar_t* port_v4_end = nullptr;
     wchar_t* port_v6_end = nullptr;
     unsigned long relay_port_v4 =
@@ -2441,6 +2442,7 @@ int RunAccountRights(const std::wstring& state_path,
 
 }  // namespace
 
+#ifndef CODEATELIER_INSTALLATION_STATE_TEST
 int wmain(int argc, wchar_t* argv[]) {
   if (argc == 2) {
     wchar_t pipe_name[2]{};
@@ -2481,3 +2483,4 @@ int wmain(int argc, wchar_t* argv[]) {
       << L"CodeAtelier Sandbox supervisor accepts only fixed product modes.\n";
   return kProtocolFailureExitCode;
 }
+#endif

@@ -241,7 +241,7 @@ item.done 回退、失败/不完整事件、服务实际错误 message/reason/co
 
   这些自动回归仍不验证专用账户、Named Pipe client PID、token/capability、Job 或 generation，因此不能单独计入 W3/W4 完成。
 
-- 原生产品构建直接编译 `native/windows-sandbox/network-fence-implementation.cpp` 并定义 `CODEATELIER_PRODUCT_WFP_ONLY`；构建后手工冒烟确认实验参数 `--ipc` 以退出码 2 被拒。实验 demo 通过薄包装编译同一实现但不定义该宏，避免产品源从 experiment 目录反向依赖。
+- 原生产品构建直接编译 `native/windows-sandbox/network-fence-implementation.cpp` 并定义 `CODEATELIER_PRODUCT_WFP_ONLY`；同时编译并运行真实 Supervisor 状态解析器的版本 4 relay 端口回归，拒绝缺失或无效端口。构建后手工冒烟确认实验参数 `--ipc` 以退出码 2 被拒。实验 demo 通过薄包装编译同一实现但不定义该宏，避免产品源从 experiment 目录反向依赖。
 
 ### Sandbox 证据边界
 

@@ -13,7 +13,10 @@ packaging artifact and can be removed by a normal clean build.
 3. Compile with C++20, warnings, CFG, ASLR, DEP and release optimization; the
    network target defines CODEATELIER_PRODUCT_WFP_ONLY so experiment CLI modes
    are not part of the installed product executable.
-4. Return a nonzero exit when either binary is missing or the compiler fails.
+4. Build and run the native installation-state parser regression without
+   creating an account, ACL, or WFP rule.
+5. Return a nonzero exit when a binary is missing, compilation fails, or the
+   parser regression fails.
 #>
 
 [CmdletBinding()]
@@ -44,8 +47,10 @@ $CompilerFlags = "/nologo /std:c++20 /EHsc /W4 /O2 /guard:cf /DUNICODE /D_UNICOD
 $LinkerFlags = "/guard:cf /DYNAMICBASE /NXCOMPAT"
 $NetworkSource = Join-Path $RepositoryRoot "native\windows-sandbox\network-fence-implementation.cpp"
 $RunnerSource = Join-Path $RepositoryRoot "native\windows-sandbox\restricted-runner.cpp"
+$StateParserTestSource = Join-Path $RepositoryRoot "tests\native\windows-sandbox-installation-state.cpp"
 $NetworkOutput = Join-Path $OutputRoot "codeatelier-sandbox-network.exe"
 $RunnerOutput = Join-Path $OutputRoot "codeatelier-sandbox-supervisor.exe"
+$StateParserTestOutput = Join-Path $OutputRoot "codeatelier-sandbox-state-parser-test.exe"
 $NetworkLibraries = "fwpuclnt.lib ws2_32.lib advapi32.lib ole32.lib"
 $RunnerLibraries = "advapi32.lib userenv.lib user32.lib ole32.lib crypt32.lib"
 
@@ -70,5 +75,11 @@ function Invoke-MsvcBuild {
 
 Invoke-MsvcBuild -Source $NetworkSource -Output $NetworkOutput -Libraries $NetworkLibraries -Definitions "/DCODEATELIER_PRODUCT_WFP_ONLY"
 Invoke-MsvcBuild -Source $RunnerSource -Output $RunnerOutput -Libraries $RunnerLibraries
+Invoke-MsvcBuild -Source $StateParserTestSource -Output $StateParserTestOutput -Libraries $RunnerLibraries
+
+& $StateParserTestOutput
+if ($LASTEXITCODE -ne 0) {
+    throw "原生 Sandbox 安装状态解析回归失败。"
+}
 
 Write-Host "SANDBOX_NATIVE_BUILD PASS output=$OutputRoot"
