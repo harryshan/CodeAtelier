@@ -3,7 +3,7 @@
  * 本脚本由用户显式执行，不属于 pnpm test/check，也不调用真实模型、外部网络、真实凭据或管理员安装操作。
  *
  * 1. 在仓库 .local 下建立一次性工作区和 Broker 数据库，并强制启用 Windows Sandbox 产品组装。
- * 2. 内存模型驱动固定 Agent Runtime 创建标记文件，再执行只读的普通命令，核对专用账户子进程与输出回传。
+ * 2. 内存模型驱动固定 Agent Runtime 创建标记文件，再依次执行只读 Git status 与普通命令，区分通用子进程与 shell 启动，核对专用账户输出回传。
  * 3. 以内部已标记任务让安装态独立 Worker 只读该文件，核对规划、模型 IPC、报告原子收集、tracing 和退出后的租约。
  * 4. 请求 Broker 宿主命令，经低成本模型审批后写入 sibling 标记，核对 host-process 归因和结果回传；Capability Runner 暂停使用。
  * 5. 初始化一次性 Git 仓库，把 HTTPS remote 指向不可用的回环端口；验证 Broker 宿主 Git 预检、审批、失败结果回传和 Runtime clean lease release，全程不连接公网。
@@ -248,10 +248,22 @@ function runtimeCommandProvider(): ModelProvider {
           output: [
             {
               type: "function_call",
+              call_id: "runtime-local-git-status",
+              name: "git",
+              arguments: JSON.stringify({
+                execution: { id: "local-git-status", dependsOn: [] },
+                arguments: { request: { action: "status" } },
+              }),
+            },
+            {
+              type: "function_call",
               call_id: "runtime-local-command",
               name: "run_command",
               arguments: JSON.stringify({
-                execution: { id: "local-command", dependsOn: [] },
+                execution: {
+                  id: "local-command",
+                  dependsOn: ["local-git-status"],
+                },
                 arguments: { command: `echo ${runtimeCommandOutput}` },
               }),
             },
@@ -270,6 +282,12 @@ function runtimeCommandProvider(): ModelProvider {
 
 function assertRuntimeCommand(store: Store, sessionId: string) {
   const events = store.events(sessionId);
+  const gitResult = events.find(
+    (event) =>
+      event.type === "tool_result" &&
+      (event.data as Record<string, unknown>).callId ===
+        "runtime-local-git-status",
+  );
   const result = events.find(
     (event) =>
       event.type === "tool_result" &&
@@ -290,8 +308,12 @@ function assertRuntimeCommand(store: Store, sessionId: string) {
         }
       | undefined
   )?.result;
+  const gitStatus = (
+    gitResult?.data as { result?: { exitCode?: number } } | undefined
+  )?.result;
   if (
     !processStarted ||
+    gitStatus?.exitCode !== 0 ||
     commandResult?.exitCode !== 0 ||
     commandResult.sandbox?.applied !== true ||
     !commandResult.output?.includes(runtimeCommandOutput)
