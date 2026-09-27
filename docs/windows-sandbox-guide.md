@@ -11,6 +11,7 @@
 启用并且启动前自检成功时，CodeAtelier 会为每个任务启动一个常驻 **Agent Runtime**：
 
 - Runtime、其普通命令、非 push Git、hook/helper 和子进程均在专用低权限本地账户 `CodeAtelierSandbox`、restricted token 和 Job 中运行；模型 API key、会话数据库与审批策略仍保留在宿主 **Broker Host**。
+- 每个实例使用非交互式 window station 内的私有 desktop；同一宿主登录会话的并发实例可共用 station，因此它不构成不同任务间的安全隔离。
 - Broker 按任务生成 AccessManifest，只投影当前工作区、显式授权的读写根、运行时依赖及精确的 Git global/include 配置图。可写根还必须匹配本实例的 `WRITE_RESTRICTED` capability。
 - 按专用账户 SID 安装的持久 WFP 规则默认阻止直接网络。普通 Runtime 没有命令网络；模型请求只能经 Broker。越界命令须用 `run_with_permissions` 声明最小递归读写根、至多一个 HTTPS host 和理由，并再次经过三级审批后由独立 Capability Runner 执行。
 - Git 始终在 Runtime 内执行，Broker 不执行 Git。`git push` 是独占工具批次，需逐次审批，由独立 Push Runner 经受控 relay/CONNECT 代理和短期凭据运行；WFP 不会因 push 或扩展网络请求而临时放宽。

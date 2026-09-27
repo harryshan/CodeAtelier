@@ -6,7 +6,7 @@
  * 1. 提升安装时仅对专用 LSA 账户对象授予安装者读取拒绝登录权的权限；self-check 核对 state 所属宿主 SID、专用账户 SID/密码、拒绝登录权、WFP 持久规则，以及受保护 Node 24/Agent Runtime entry 和各 Worker bundle 摘要。
  * 2. execute 生成 execution/root capability SID；共享账户 ACE 始终提供 normal-side 读写候选权限，每实例 capability ACE 再决定 WRITE_RESTRICTED token 实际可写的根。
  * 3. CreateProcessWithLogonW 以固定 bootstrap 入口启动专用账户进程，先分配 KILL_ON_JOB_CLOSE Job 再恢复。
- * 4. bootstrap 使用专用账户自身的全新环境块，通过只允许宿主/SYSTEM/专用账户且核对 PID 的 Named Pipe 取得命令，创建 WRITE_RESTRICTED token 后启动真实工具。
+ * 4. bootstrap 使用专用账户自身的全新环境块，在账户及实例 SID 可访问的非交互式 window station/private desktop 中，通过只允许宿主/SYSTEM/专用账户且核对 PID 的 Named Pipe 取得命令，创建 WRITE_RESTRICTED token 后启动真实工具。
  * 5. Broker stdin 关闭、超时或异常会终止 Job；正常/异常退出撤销本实例 capability ACE，共享账户 ACE 仅由 Broker 最后引用的两阶段 release 撤销；安装恢复从持久 journal 验证原文件身份后撤销账户 ACE，清理不确定返回专用错误码。
  * 6. Push Runner 仅从宿主 Credential Manager 读取绑定 host 的 HTTPS 凭据，并经同 Job askpass pipe 交付；capability runner 只把短期、host-bound proxy token 放入自身环境，不取得宿主凭据。
  * 7. Agent Runtime 模式只启动受保护 Node/entry，联合核对 pipe 客户端身份后发送启动首帧并代理原始 Broker 字节流；初始 CWD 使用私有目录。
@@ -1246,6 +1246,49 @@ class UniqueDesktop {
   HDESK handle_ = nullptr;
 };
 
+class UniqueWindowStation {
+ public:
+  ~UniqueWindowStation() {
+    if (handle_ != nullptr) {
+      CloseWindowStation(handle_);
+    }
+  }
+  UniqueWindowStation(const UniqueWindowStation&) = delete;
+  UniqueWindowStation& operator=(const UniqueWindowStation&) = delete;
+  UniqueWindowStation() = default;
+  HWINSTA get() const { return handle_; }
+  explicit operator bool() const { return handle_ != nullptr; }
+  void reset(HWINSTA handle) {
+    if (handle_ != nullptr) {
+      CloseWindowStation(handle_);
+    }
+    handle_ = handle;
+  }
+
+ private:
+  HWINSTA handle_ = nullptr;
+};
+
+class ScopedMutexLock {
+ public:
+  explicit ScopedMutexLock(HANDLE mutex) : mutex_(mutex) {
+    DWORD result = WaitForSingleObject(mutex, 5000);
+    locked_ = result == WAIT_OBJECT_0 || result == WAIT_ABANDONED;
+  }
+  ~ScopedMutexLock() {
+    if (locked_) {
+      ReleaseMutex(mutex_);
+    }
+  }
+  ScopedMutexLock(const ScopedMutexLock&) = delete;
+  ScopedMutexLock& operator=(const ScopedMutexLock&) = delete;
+  explicit operator bool() const { return locked_; }
+
+ private:
+  HANDLE mutex_ = nullptr;
+  bool locked_ = false;
+};
+
 class UniqueEnvironment {
  public:
   ~UniqueEnvironment() {
@@ -1274,35 +1317,191 @@ bool BuildSandboxEnvironment(const std::wstring& account_name,
          FALSE;
 }
 
-bool CreatePrivateDesktop(PSID account_sid, PSID execution_sid,
-                          PSID capability_sid, std::wstring* desktop_name,
-                          UniqueDesktop* desktop) {
+bool AclHasExplicitGrantForSid(PACL acl, PSID sid) {
+  if (!acl) {
+    return false;
+  }
+  ULONG count = 0;
+  PEXPLICIT_ACCESSW entries = nullptr;
+  if (GetExplicitEntriesFromAclW(acl, &count, &entries) != ERROR_SUCCESS) {
+    return false;
+  }
+  LocalPointer owned_entries(entries);
+  for (ULONG index = 0; index < count; ++index) {
+    if (entries[index].grfAccessMode == GRANT_ACCESS &&
+        entries[index].Trustee.TrusteeForm == TRUSTEE_IS_SID &&
+        EqualSid(entries[index].Trustee.ptstrName, sid)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool GrantStationInstanceAccess(HWINSTA station, PSID account_sid,
+                                PSID execution_sid, PSID capability_sid) {
+  PACL old_acl = nullptr;
+  PSECURITY_DESCRIPTOR descriptor = nullptr;
+  DWORD result = GetSecurityInfo(station, SE_WINDOW_OBJECT,
+                                 DACL_SECURITY_INFORMATION, nullptr, nullptr,
+                                 &old_acl, nullptr, &descriptor);
+  LocalPointer owned_descriptor(descriptor);
+  if (result != ERROR_SUCCESS) {
+    std::wcerr << L"CODEATELIER_STATION_ACL_FAILED stage=query win32="
+               << result << L"\n";
+    return false;
+  }
+  if (!AclHasExplicitGrantForSid(old_acl, account_sid)) {
+    std::wcerr << L"CODEATELIER_STATION_ACL_FAILED stage=account_ace\n";
+    return false;
+  }
+  std::array<EXPLICIT_ACCESSW, 2> entries{};
+  std::array<PSID, 2> sids = {execution_sid, capability_sid};
+  for (size_t index = 0; index < entries.size(); ++index) {
+    entries[index].grfAccessPermissions = GENERIC_ALL;
+    entries[index].grfAccessMode = GRANT_ACCESS;
+    entries[index].grfInheritance = NO_INHERITANCE;
+    entries[index].Trustee.TrusteeForm = TRUSTEE_IS_SID;
+    entries[index].Trustee.TrusteeType = TRUSTEE_IS_UNKNOWN;
+    entries[index].Trustee.ptstrName = static_cast<LPWSTR>(sids[index]);
+  }
+  PACL new_acl = nullptr;
+  result = SetEntriesInAclW(static_cast<ULONG>(entries.size()), entries.data(),
+                            old_acl, &new_acl);
+  LocalPointer owned_acl(new_acl);
+  if (result != ERROR_SUCCESS) {
+    std::wcerr << L"CODEATELIER_STATION_ACL_FAILED stage=merge win32="
+               << result << L"\n";
+    return false;
+  }
+  result = SetSecurityInfo(station, SE_WINDOW_OBJECT,
+                           DACL_SECURITY_INFORMATION, nullptr, nullptr,
+                           new_acl, nullptr);
+  if (result != ERROR_SUCCESS) {
+    std::wcerr << L"CODEATELIER_STATION_ACL_FAILED stage=write win32="
+               << result << L"\n";
+    return false;
+  }
+  return true;
+}
+
+bool OpenPrivateWindowStation(PSID account_sid, PSID execution_sid,
+                              PSID capability_sid,
+                              std::wstring* station_name,
+                              UniqueWindowStation* station) {
   std::wstring current_sid = CurrentUserSidString();
+  if (current_sid.empty()) {
+    std::wcerr << L"CODEATELIER_STATION_FAILED stage=current_sid\n";
+    return false;
+  }
   std::wstring sddl =
       L"D:P(A;;GA;;;SY)(A;;GA;;;" + current_sid + L")(A;;GA;;;" +
-      SidToString(account_sid) + L")(A;;GA;;;" +
-      SidToString(execution_sid) + L")(A;;GA;;;" +
-      SidToString(capability_sid) + L")";
+      SidToString(account_sid) + L")";
   PSECURITY_DESCRIPTOR raw = nullptr;
   if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
           sddl.c_str(), SDDL_REVISION_1, &raw, nullptr)) {
+    std::wcerr << L"CODEATELIER_STATION_FAILED stage=sddl win32="
+               << GetLastError() << L"\n";
     return false;
   }
   LocalPointer descriptor(raw);
   SECURITY_ATTRIBUTES attributes{};
   attributes.nLength = sizeof(attributes);
   attributes.lpSecurityDescriptor = raw;
+
+  UniqueHandle mutex(CreateMutexW(nullptr, FALSE,
+                                   L"Local\\CodeAtelierSandboxStationAcl"));
+  if (!mutex) {
+    std::wcerr << L"CODEATELIER_STATION_FAILED stage=mutex win32="
+               << GetLastError() << L"\n";
+    return false;
+  }
+  {
+    ScopedMutexLock lock(mutex.get());
+    if (!lock) {
+      std::wcerr << L"CODEATELIER_STATION_FAILED stage=lock win32="
+                 << GetLastError() << L"\n";
+      return false;
+    }
+    station->reset(
+        CreateWindowStationW(nullptr, 0,
+                             WINSTA_ALL_ACCESS | READ_CONTROL | WRITE_DAC,
+                             &attributes));
+    if (!*station) {
+      std::wcerr << L"CODEATELIER_STATION_FAILED stage=create win32="
+                 << GetLastError() << L"\n";
+      return false;
+    }
+    if (!GrantStationInstanceAccess(station->get(), account_sid,
+                                    execution_sid, capability_sid)) {
+      return false;
+    }
+  }
+  wchar_t name[256]{};
+  DWORD needed = 0;
+  if (!GetUserObjectInformationW(station->get(), UOI_NAME, name,
+                                 sizeof(name), &needed) ||
+      name[0] == L'\0') {
+    std::wcerr << L"CODEATELIER_STATION_FAILED stage=name win32="
+               << GetLastError() << L"\n";
+    return false;
+  }
+  *station_name = name;
+  return true;
+}
+
+bool CreatePrivateDesktop(PSID account_sid, PSID execution_sid,
+                          PSID capability_sid, std::wstring* desktop_name,
+                          UniqueWindowStation* station,
+                          UniqueDesktop* desktop) {
+  std::wstring station_name;
+  if (!OpenPrivateWindowStation(account_sid, execution_sid, capability_sid,
+                                &station_name, station)) {
+    return false;
+  }
+  std::wstring current_sid = CurrentUserSidString();
+  std::wstring desktop_sddl =
+      L"D:P(A;;GA;;;SY)(A;;GA;;;" + current_sid + L")(A;;GA;;;" +
+      SidToString(account_sid) + L")(A;;GA;;;" +
+      SidToString(execution_sid) + L")(A;;GA;;;" +
+      SidToString(capability_sid) + L")";
+  PSECURITY_DESCRIPTOR raw = nullptr;
+  if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
+          desktop_sddl.c_str(), SDDL_REVISION_1, &raw, nullptr)) {
+    std::wcerr << L"CODEATELIER_STATION_FAILED stage=desktop_sddl win32="
+               << GetLastError() << L"\n";
+    return false;
+  }
+  LocalPointer descriptor(raw);
+  SECURITY_ATTRIBUTES attributes{};
+  attributes.nLength = sizeof(attributes);
+  attributes.lpSecurityDescriptor = raw;
+
   GUID identifier{};
   wchar_t identifier_text[40]{};
   if (CoCreateGuid(&identifier) != S_OK ||
       StringFromGUID2(identifier, identifier_text,
                       static_cast<int>(std::size(identifier_text))) == 0) {
+    std::wcerr << L"CODEATELIER_STATION_FAILED stage=desktop_id\n";
     return false;
   }
-  *desktop_name = L"CodeAtelierSandbox-" + std::wstring(identifier_text);
-  desktop->reset(CreateDesktopW(desktop_name->c_str(), nullptr, nullptr, 0,
+  std::wstring desktop_leaf =
+      L"CodeAtelierSandbox-" + std::wstring(identifier_text);
+  HWINSTA previous_station = GetProcessWindowStation();
+  if (!previous_station || !SetProcessWindowStation(station->get())) {
+    std::wcerr << L"CODEATELIER_STATION_FAILED stage=select win32="
+               << GetLastError() << L"\n";
+    return false;
+  }
+  desktop->reset(CreateDesktopW(desktop_leaf.c_str(), nullptr, nullptr, 0,
                                 GENERIC_ALL, &attributes));
-  return static_cast<bool>(*desktop);
+  bool restored = SetProcessWindowStation(previous_station) != FALSE;
+  if (!restored || !*desktop) {
+    std::wcerr << L"CODEATELIER_STATION_FAILED stage=desktop win32="
+               << GetLastError() << L"\n";
+    return false;
+  }
+  *desktop_name = station_name + L"\\" + desktop_leaf;
+  return true;
 }
 
 bool ConfigureProductJob(SECURITY_ATTRIBUTES* security_attributes,
@@ -2211,12 +2410,14 @@ int RunProductSupervisor(const std::wstring& state_path,
   PrivateObjectSecurity object_security;
   UniqueHandle job;
   std::wstring desktop_name;
+  UniqueWindowStation station;
   UniqueDesktop desktop;
   if (!object_security.Initialize(execution_sid.get()) ||
       !ConfigureProductJob(object_security.attributes(), request.timeout_ms,
                            &job) ||
       !CreatePrivateDesktop(account_sid.data(), execution_sid.get(),
-                            capability_sid.get(), &desktop_name, &desktop)) {
+                            capability_sid.get(), &desktop_name, &station,
+                            &desktop)) {
     SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
     return fail_launch(kSelfCheckFailureExitCode);
   }
@@ -2312,6 +2513,12 @@ int RunProductSupervisor(const std::wstring& state_path,
       ResumeThread(bootstrap_thread.get()) != static_cast<DWORD>(-1) &&
       ConnectAndSendRequest(pipe.get(), bootstrap.dwProcessId, request);
   if (!bootstrap_ready) {
+    DWORD bootstrap_exit = STILL_ACTIVE;
+    if (GetExitCodeProcess(bootstrap_process.get(), &bootstrap_exit) &&
+        bootstrap_exit != STILL_ACTIVE) {
+      std::wcerr << L"CODEATELIER_SUPERVISOR_BOOTSTRAP_FAILED exit_code="
+                 << bootstrap_exit << L"\n";
+    }
     bool terminated = assigned_to_job
                           ? TerminateJobObject(job.get(),
                                                kSelfCheckFailureExitCode) != FALSE
