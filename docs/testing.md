@@ -177,7 +177,7 @@ item.done 回退、失败/不完整事件、服务实际错误 message/reason/co
 
 主要测试：tracing.test.ts、read-file-worker.test.ts、agent-runtime-engine.test.ts、runtime-ipc.test.ts、tool-graph.test.ts、e2e/app.spec.ts。
 
-宿主与真实 Runtime 子进程的 `read_file` 路径准备/检查/字节读取/Worker 排队/冷启动/处理回传阶段及结果字节数与纯计算耗时，冷/热 Worker、二进制失败与排队取消的阶段配对；`context.prepare`/`context.request` 及计量子阶段、Runtime `tool.result_persist`、独立模型与响应处理、工具计划/持久化及 instant/flow 事件导出；Runtime trace IPC 只接受固定阶段和有界数值属性，任意名称/文本字段关闭通道；主线程嵌套 begin/end slice、Task 包络、时序排序、整数 flow ID、可复用工具轨道、实际 tool 的完整结构化参数及递归凭据脱敏、按 session/task 独立持久化、终态后释放内存、认证下载、仅显示真实文件的统计框入口、关联元数据与普通长属性限长
+宿主与真实 Runtime 子进程的 `read_file` 路径准备/检查/字节读取/Worker 排队/冷启动/处理回传阶段及结果字节数与纯计算耗时，冷/热 Worker、二进制失败与排队取消的阶段配对；`context.prepare`/`context.request` 及计量子阶段、Runtime `tool.result_persist`、独立模型与响应处理、工具计划/持久化及 instant/flow 事件导出；Runtime trace IPC 只接受固定阶段、工具槽位、单调微秒时间戳和有界数值属性，Broker 校验时间窗、以已验证 Runtime PID 分组、对五次 read_file 复用最多四条槽位轨道，参数在 Broker 侧从 tool_start 脱敏附加；任意名称/文本字段关闭通道；主线程嵌套 begin/end slice、Task 包络、时序排序、整数 flow ID、可复用工具轨道、实际 tool 的完整结构化参数及递归凭据脱敏、按 session/task 独立持久化、终态后释放内存、认证下载、仅显示真实文件的统计框入口、关联元数据与普通长属性限长
 
 ### HTTP API、访问密码与监听范围
 

@@ -3,7 +3,7 @@
  * 测试 launcher 只用 stdio 和环境变量传递测试身份，不提供 Windows token/Job/ACL 证明，不是产品 Sandbox 验收。
  *
  * 1. Engine 生成 instance/nonce，launcher 启动真实 Node 子进程并返回 IPC 流。
- * 2. 子进程运行 read_file 工具 DAG 并检查工具内阶段及任务结束清理 trace，Broker 仅提供模型、session、审批和记忆 adapter；固定白名单细分 trace 不包含文件内容。
+ * 2. 子进程并行运行五次 read_file，验证 Broker 按已验证 PID/最多四个可复用槽重建实际执行与内部阶段、附参数和任务结束清理 trace；固定白名单细分 trace 不包含文件内容。
  * 3. Engine 等待 Runtime 终态与 clean 退出，再把任务和带有已验证进程身份的 execution instance 记为 completed。
  * 4. 取消等待 Runtime 写回可信终态后才关闭 transport；无法证明终态时仍保持 unknown。
  * 5. run_with_permissions 经低成本模型审批后由 Broker 宿主进程执行，单独记录 host-process，而不创建 Capability Runner。
@@ -112,17 +112,15 @@ it("moves the Engine agent loop into the launched Runtime process", async () => 
       if (modelCalls === 1) {
         return {
           text: "",
-          output: [
-            {
-              type: "function_call",
-              call_id: "runtime-read",
-              name: "read_file",
-              arguments: JSON.stringify({
-                execution: { id: "read", dependsOn: [] },
-                arguments: { path: "runtime.txt", startLine: 1, endLine: 10 },
-              }),
-            },
-          ],
+          output: Array.from({ length: 5 }, (_, index) => ({
+            type: "function_call" as const,
+            call_id: index === 0 ? "runtime-read" : `runtime-read-${index + 1}`,
+            name: "read_file",
+            arguments: JSON.stringify({
+              execution: { id: `read-${index + 1}`, dependsOn: [] },
+              arguments: { path: "runtime.txt", startLine: 1, endLine: 10 },
+            }),
+          })),
         };
       }
 
@@ -151,24 +149,28 @@ it("moves the Engine agent loop into the launched Runtime process", async () => 
       )
       .all(session.id) as Array<{ items: string }>;
     expect(chunks.map((chunk) => JSON.parse(chunk.items).length)).toEqual([
-      1, 1, 1,
+      1, 5, 1, 1, 1, 1, 1,
     ]);
     expect(chunks.map((chunk) => JSON.parse(chunk.items)[0]?.type)).toEqual([
       undefined,
       "function_call",
-      "function_call_output",
+      ...Array(5).fill("function_call_output"),
     ]);
     expect(closeCalls).toBe(1);
     expect(Buffer.concat(errors).toString("utf8")).toBe("");
-    expect(store.replayCase(task.id)?.capture?.tools).toMatchObject([
-      {
-        callId: "runtime-read",
-        name: "read_file",
-        result: expect.objectContaining({
-          text: expect.stringContaining("from-runtime"),
+    const capturedTools = store.replayCase(task.id)?.capture?.tools;
+    expect(capturedTools).toHaveLength(5);
+    expect(capturedTools).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          callId: "runtime-read",
+          name: "read_file",
+          result: expect.objectContaining({
+            text: expect.stringContaining("from-runtime"),
+          }),
         }),
-      },
-    ]);
+      ]),
+    );
     const trace = JSON.parse((await engine.savedTrace(task))!);
 
     expect(
@@ -182,7 +184,10 @@ it("moves the Engine agent loop into the launched Runtime process", async () => 
       "read_file.worker.response",
     ]) {
       const stage = trace.traceEvents.find(
-        (event: any) => event.name === name && event.ph === "X",
+        (event: any) =>
+          event.name === name &&
+          event.ph === "B" &&
+          event.args?.callId === "runtime-read",
       );
       expect(stage?.args).toMatchObject({
         callId: "runtime-read",
@@ -192,23 +197,71 @@ it("moves the Engine agent loop into the launched Runtime process", async () => 
     }
 
     const toolSpan = trace.traceEvents.find(
-      (event: any) => event.name === "tool.read_file" && event.ph === "X",
+      (event: any) =>
+        event.name === "tool.read_file" &&
+        event.ph === "B" &&
+        event.args.callId === "runtime-read",
     );
+    const toolEnd = trace.traceEvents.find(
+      (event: any) =>
+        event.name === "tool.read_file" &&
+        event.ph === "E" &&
+        event.tid === toolSpan.tid &&
+        event.ts >= toolSpan.ts,
+    );
+    expect(toolSpan.args.parameters).toMatchObject({
+      path: "runtime.txt",
+      startLine: 1,
+      endLine: 10,
+    });
+    expect(toolSpan.pid).toBeGreaterThan(0);
+    expect(toolSpan.pid).not.toBe(process.pid);
+    expect(toolEnd.pid).toBe(toolSpan.pid);
+    expect(toolEnd.ts).toBeGreaterThanOrEqual(toolSpan.ts);
+    expect(
+      trace.traceEvents.find(
+        (event: any) => event.name === "context.prepare" && event.ph === "B",
+      ).pid,
+    ).toBe(toolSpan.pid);
+    expect(
+      trace.traceEvents.find(
+        (event: any) => event.name === "llm.request" && event.ph === "B",
+      ).pid,
+    ).toBe(process.pid);
+    const runtimeTracks = trace.traceEvents.filter(
+      (event: any) =>
+        event.name === "thread_name" &&
+        event.pid === toolSpan.pid &&
+        event.args.name.startsWith("Agent Runtime read_file"),
+    );
+    expect(runtimeTracks).toHaveLength(0);
     const runtimeStages = trace.traceEvents.filter(
       (event: any) =>
         event.name.startsWith("read_file.") &&
         event.name !== "read_file.pool.close" &&
-        event.ph === "X",
+        event.args?.callId === "runtime-read" &&
+        event.ph === "B",
     );
     expect(
       runtimeStages.every(
         (event: any) =>
           event.tid === toolSpan.tid &&
+          event.pid === toolSpan.pid &&
           event.ts >= toolSpan.ts &&
-          event.ts + event.dur <= toolSpan.ts + toolSpan.dur,
+          event.ts <= toolEnd.ts,
       ),
     ).toBe(true);
     expect(runtimeStages.length).toBeGreaterThan(0);
+    const toolStarts = trace.traceEvents.filter(
+      (event: any) => event.name === "tool.read_file" && event.ph === "B",
+    );
+    const toolLanes = new Set(toolStarts.map((event: any) => event.tid));
+    expect(toolStarts).toHaveLength(5);
+    expect(toolLanes.size).toBeLessThan(5);
+    expect(toolLanes.size).toBeLessThanOrEqual(4);
+    expect(toolStarts.every((event: any) => event.pid === toolSpan.pid)).toBe(
+      true,
+    );
     const shutdown = trace.traceEvents.filter(
       (event: any) => event.name === "read_file.pool.close",
     );
@@ -216,7 +269,16 @@ it("moves the Engine agent loop into the launched Runtime process", async () => 
     expect(shutdown[0].args.status).toBe("ok");
     expect(shutdown[0].cat).toBe("read_file");
     expect(shutdown[0].tid).not.toBe(toolSpan.tid);
-    expect(shutdown[0].ts).toBeGreaterThanOrEqual(toolSpan.ts + toolSpan.dur);
+    expect(shutdown[0].pid).toBe(toolSpan.pid);
+    expect(shutdown[0].ts).toBeGreaterThanOrEqual(
+      Math.max(
+        ...trace.traceEvents
+          .filter(
+            (event: any) => event.name === "tool.read_file" && event.ph === "E",
+          )
+          .map((event: any) => event.ts),
+      ),
+    );
     expect(trace.traceEvents.map((event: any) => event.name)).not.toContain(
       "read_file.access",
     );
@@ -245,7 +307,12 @@ it("moves the Engine agent loop into the launched Runtime process", async () => 
 
     expect(
       trace.traceEvents.some(
-        (event: any) => event.args?.name === "Agent Runtime tools",
+        (event: any) => event.args?.name === "Agent Runtime tool 1",
+      ),
+    ).toBe(true);
+    expect(
+      trace.traceEvents.some(
+        (event: any) => event.args?.name === "Agent Runtime",
       ),
     ).toBe(true);
     const runtimeEvents = store

@@ -5,7 +5,7 @@
  *
  * 1. runtimeRequestSchema 限定模型、审批、session adapter、任务绑定子状态/问题/租约、受限 Git action 与一次性 Broker 命令授权；Git push 旧入口只含调用 ID，不能扩展 Runtime 权限。
  * 2. runtimeResponseSchema 关联原 requestId；错误只返回受限 code/message 与模型重试元数据，避免泄露宿主异常对象。
- * 3. runtimeEventSchema 承载模型 delta、任务取消、请求级取消、Runtime 生命周期以及固定 context/read_file/subagent trace span；名称与属性不是任意日志通道。
+ * 3. runtimeEventSchema 承载模型 delta、取消、Runtime 生命周期以及固定 context/tool/read_file/subagent trace span；微秒时间戳由 Runtime 单调时钟提供，Broker 核验后归档，名称与属性不是任意日志通道。
  * 4. hello schema 绑定协议版本、任务和 instance；其中 Runtime 自报字段只用于一致性核对，不能替代 transport 身份。
  */
 
@@ -15,7 +15,8 @@ import { contextSnapshotSchema } from "../context/types.js";
 import { subtaskSchema } from "../agent/subagent-contracts.js";
 import { gitRequestSchema } from "../tools/registry.js";
 
-export const RUNTIME_IPC_PROTOCOL_VERSION = 3;
+// trace span 的 Runtime 时间戳现在必填；旧 Runtime 不得以 v3 握手后中途断连。
+export const RUNTIME_IPC_PROTOCOL_VERSION = 4;
 export const MAX_RUNTIME_IPC_FRAME_BYTES = 8 * 1024 * 1024;
 
 const identifier = z.string().min(1).max(120);
@@ -31,6 +32,7 @@ const runtimeTraceAttributesSchema = z
     errorName: z.string().min(1).max(120).optional(),
     subagentId: identifier.optional(),
     callId: identifier.optional(),
+    slot: z.number().int().min(0).max(3).optional(),
     bytes: z
       .number()
       .int()
@@ -56,6 +58,7 @@ const runtimeTraceNameSchema = z.enum([
   "context.request",
   "context.request.measure_input",
   "tool.result_persist",
+  "tool.execute",
   "read_file.pool.close",
   "read_file.stat",
   "read_file.bytes",
@@ -532,22 +535,26 @@ export const runtimeEventSchema = z.discriminatedUnion("event", [
       event: z.literal("trace_span_start"),
       spanId: identifier,
       parentSpanId: identifier.optional(),
+      timestampUs: z.number().int().safe().positive(),
       name: runtimeTraceNameSchema,
       attributes: runtimeTraceAttributesSchema,
     })
     .strict()
     .refine(
       (event) =>
-        event.name === "read_file.pool.close" ||
-        !event.name.startsWith("read_file.") ||
-        !!event.attributes.callId,
-      { message: "read_file 工具阶段必须关联工具调用标识。" },
+        (event.name === "read_file.pool.close" ||
+          (!event.name.startsWith("read_file.") &&
+            event.name !== "tool.execute") ||
+          !!event.attributes.callId) &&
+        (event.name !== "tool.execute" || event.attributes.slot !== undefined),
+      { message: "工具 trace 阶段必须关联调用标识和执行槽。" },
     ),
   z
     .object({
       type: z.literal("event"),
       event: z.literal("trace_span_end"),
       spanId: identifier,
+      timestampUs: z.number().int().safe().positive(),
       status: z.enum(["cancelled", "error", "ok"]),
       attributes: runtimeTraceAttributesSchema,
     })

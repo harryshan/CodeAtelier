@@ -1,6 +1,6 @@
 /**
  * 验证 Perfetto tracing 的可导出时间线、敏感原文边界、会话/任务级持久化和真实 HTTP 下载接口。
- * 第一组直接驱动 TraceRecorder，检查主线程 begin/end slice、instant、flow 与递归凭据脱敏的 tool 参数被转换为 Chrome Trace Event JSON；
+ * 第一组直接驱动 TraceRecorder，检查主线程和跨进程可复用轨道、单调时间、instant/flow 及递归脱敏参数导出；
  * 第二组通过生产 createApp、Engine 和模拟模型完成并发工具任务，确认 read_file 工具内阶段和任务级线程池关闭片段、context 预算计量、响应/计划/持久化阶段、独立 Store worker 与工具轨道及任务根 span 写入后即释放内存，并可经受保护 API 下载。
  *
  * 测试不连接真实模型服务，也不写入用户工作区；它只检查导出的可观察结构和临时数据目录，不依赖具体微秒耗时。
@@ -146,8 +146,71 @@ it("exports spans, instants and cross-track flows as Perfetto Trace Event JSON",
   });
 });
 
+it("groups runtime slices by process and reusable track without shifting their measured timestamps", () => {
+  const recorder = new TraceRecorder();
+  const task = recorder.startTask("runtime-task", "runtime-session");
+  const startedAtUs = task.startedAtUs + 10;
+  expect(recorder.acceptExternalTime(task.taskId, startedAtUs)).toBe(true);
+  expect(
+    recorder.acceptExternalTime(task.taskId, task.startedAtUs - 6_000_000),
+  ).toBe(false);
+  expect(
+    recorder.acceptExternalTime(task.taskId, Number.MAX_SAFE_INTEGER),
+  ).toBe(false);
+
+  const tool = recorder.startSpan(task.taskId, {
+    name: "tool.read_file",
+    category: "tool",
+    track: "Agent Runtime tool 1",
+    processId: 12345,
+    startedAtUs,
+    attributes: {
+      callId: "read-1",
+      parameters: { path: "file.txt", password: "private" },
+    },
+  });
+  const read = recorder.startSpan(task.taskId, {
+    name: "read_file.bytes",
+    category: "read_file",
+    track: "Agent Runtime tool 1",
+    processId: 12345,
+    startedAtUs: startedAtUs + 1,
+  });
+  recorder.endSpan(read, "ok", {}, startedAtUs + 3);
+  recorder.endSpan(tool, "ok", {}, startedAtUs + 4);
+
+  const events = recorder.exportTask(task.taskId)!.traceEvents;
+  const toolBegin = events.find(
+    (event: any) => event.name === "tool.read_file" && event.ph === "B",
+  );
+  const toolEnd = events.find(
+    (event: any) => event.name === "tool.read_file" && event.ph === "E",
+  );
+  const readBegin = events.find(
+    (event: any) => event.name === "read_file.bytes" && event.ph === "B",
+  );
+  expect(toolBegin).toMatchObject({ pid: 12345, ts: startedAtUs });
+  expect(readBegin).toMatchObject({
+    pid: 12345,
+    tid: toolBegin.tid,
+    ts: startedAtUs + 1,
+  });
+  expect(toolEnd.ts).toBe(startedAtUs + 4);
+  expect(toolBegin.args.parameters).toMatchObject({
+    path: "file.txt",
+    password: "[REDACTED]",
+  });
+  expect(
+    events.filter(
+      (event: any) => event.name === "process_name" && event.pid === 12345,
+    ),
+  ).toHaveLength(1);
+});
+
 it("persists each Engine task trace by session and task, then exports it only through the authenticated local API", async () => {
   const config = new Config(await temp());
+  // 本用例断言宿主 Engine 的轨道；不依赖本机是否安装 Windows Sandbox。
+  config.sandbox.enabled = false;
   const workspace = await temp();
   await writeFile(path.join(workspace, "trace-target.txt"), "trace target\n");
   let modelCalls = 0;

@@ -3,7 +3,7 @@
  * Engine 为每个实际运行的任务调用 startTask/finishTask；模型和工具包装器在真实执行边界创建 span，
  * server/app.ts 通过 exportTask 将已完成或运行中的 trace 作为本地下载接口返回。
  *
- * 1. 单调时钟把 span 和 instant 事件映射到同一个微秒时间轴；task 根使用独立轨道，主线程 span 以可嵌套的 begin/end slice 表示，未结束的子操作会在任务结束时标为实际终态。
+ * 1. 本进程单调时钟和已认证 Runtime 报时映射到微秒时间轴；按进程和可复用轨道导出可嵌套的 begin/end，未结束片段由任务终态收口。
  * 2. startSpan/endSpan/instant 接收受控 JSON 属性：普通字符串限长；tool parameters 允许完整结构但递归遮盖凭据字段，避免密钥进入本机 trace。
  * 3. link 保存跨轨道因果关系；exportTask 输出进程/轨道元数据、按时间排序的耗时片段和使用递增整数 ID 的 Perfetto flow 事件。
  * 4. recorder 只保存运行中任务构造完整 JSON 所需的短暂状态；Engine 成功或失败写入 TraceArchive 后立即 discardTask，不保留完成 trace 缓存。
@@ -38,6 +38,7 @@ type TraceRecord = {
     category: string;
     track: string;
     timestampUs: number;
+    processId: number;
     attributes: TraceAttributes;
   }>;
   links: TraceLink[];
@@ -106,24 +107,29 @@ function safeAttributes(attributes: TraceAttributes = {}): TraceAttributes {
 
 /** 将逻辑轨道稳定映射为同一 trace 内的数字 tid，避免依赖 Node 真实线程实现细节。 */
 function trackIds(record: TraceRecord) {
-  const tracks = new Map<string, number>();
-  let next = 1;
-  const id = (track: string) => {
-    let value = tracks.get(track);
+  const tracks = new Map<number, Map<string, number>>();
+  const id = (processId: number, track: string) => {
+    let processTracks = tracks.get(processId);
+    if (!processTracks) {
+      processTracks = new Map();
+      tracks.set(processId, processTracks);
+    }
+
+    let value = processTracks.get(track);
     if (value === undefined) {
-      value = next++;
-      tracks.set(track, value);
+      value = processTracks.size + 1;
+      processTracks.set(track, value);
     }
 
     return value;
   };
 
   for (const span of record.spans.values()) {
-    id(span.track);
+    id(span.processId ?? process.pid, span.track);
   }
 
   for (const instant of record.instants) {
-    id(instant.track);
+    id(instant.processId, instant.track);
   }
 
   return { tracks, id };
@@ -177,8 +183,9 @@ export class TraceRecorder {
       name: options.name,
       category: options.category,
       track: options.track,
+      processId: options.processId,
       parentSpanId: options.parentSpanId ?? record.rootSpanId,
-      startedAtUs: this.nowUs(),
+      startedAtUs: options.startedAtUs ?? this.nowUs(),
       attributes: safeAttributes(options.attributes),
     };
     record.spans.set(span.id, span);
@@ -207,12 +214,16 @@ export class TraceRecorder {
     span: TraceSpan | undefined,
     status: TraceStatus,
     attributes: TraceAttributes = {},
+    finishedAtUs?: number,
   ) {
     if (!span || span.finishedAtUs !== undefined) {
       return;
     }
 
-    span.finishedAtUs = this.nowUs();
+    span.finishedAtUs = Math.max(
+      span.startedAtUs,
+      finishedAtUs ?? this.nowUs(),
+    );
     span.status = status;
     Object.assign(span.attributes, safeAttributes(attributes));
   }
@@ -223,6 +234,7 @@ export class TraceRecorder {
     category: string,
     track: string,
     attributes: TraceAttributes = {},
+    processId = process.pid,
   ) {
     const record = this.traces.get(taskId);
     if (!record) {
@@ -234,8 +246,22 @@ export class TraceRecorder {
       category,
       track,
       timestampUs: this.nowUs(),
+      processId,
       attributes: safeAttributes(attributes),
     });
+  }
+
+  /** 不信任跨进程报时：只接受本任务开始之后且不超前 Broker 当前时间的有限误差。 */
+  acceptExternalTime(taskId: string, timestampUs: number) {
+    const record = this.traces.get(taskId);
+    const root = record?.spans.get(record.rootSpanId);
+
+    return (
+      Number.isSafeInteger(timestampUs) &&
+      root !== undefined &&
+      timestampUs >= root.startedAtUs - 5_000_000 &&
+      timestampUs <= this.nowUs() + 5_000_000
+    );
   }
 
   link(from: TraceSpan | undefined, to: TraceSpan | undefined, name: string) {
@@ -297,21 +323,37 @@ export class TraceRecorder {
     ];
     const timelineEvents: any[] = [];
 
-    for (const [track, tid] of tracks) {
-      metadataEvents.push({
-        name: "thread_name",
-        ph: "M",
-        pid: process.pid,
-        tid,
-        args: { name: track },
-      });
+    for (const [processId, processTracks] of tracks) {
+      if (processId !== process.pid) {
+        metadataEvents.push({
+          name: "process_name",
+          ph: "M",
+          pid: processId,
+          tid: 0,
+          args: { name: "Agent Runtime" },
+        });
+      }
+
+      for (const [track, tid] of processTracks) {
+        metadataEvents.push({
+          name: "thread_name",
+          ph: "M",
+          pid: processId,
+          tid,
+          args: { name: track },
+        });
+      }
     }
 
     for (const span of record.spans.values()) {
       const finishedAtUs = span.finishedAtUs ?? exportedAtUs;
       const args = { ...span.attributes, status: span.status ?? "unknown" };
-      const tid = id(span.track);
-      if (span.track === "Main thread") {
+      const processId = span.processId ?? process.pid;
+      const tid = id(processId, span.track);
+      if (
+        span.track === "Main thread" ||
+        span.track.startsWith("Agent Runtime")
+      ) {
         // 主线程阶段经常自然嵌套，例如 context.prepare 内的压缩和模型请求。
         // Trace Event 的 X 片段不能在同一 tid 交叠；B/E 保留这种真实调用栈关系。
         timelineEvents.push({
@@ -319,7 +361,7 @@ export class TraceRecorder {
           cat: span.category,
           ph: "B",
           ts: span.startedAtUs,
-          pid: process.pid,
+          pid: processId,
           tid,
           args,
         });
@@ -328,7 +370,7 @@ export class TraceRecorder {
           cat: span.category,
           ph: "E",
           ts: finishedAtUs,
-          pid: process.pid,
+          pid: processId,
           tid,
         });
       } else {
@@ -338,7 +380,7 @@ export class TraceRecorder {
           ph: "X",
           ts: span.startedAtUs,
           dur: Math.max(0, finishedAtUs - span.startedAtUs),
-          pid: process.pid,
+          pid: processId,
           tid,
           args,
         });
@@ -352,8 +394,8 @@ export class TraceRecorder {
         ph: "i",
         s: "t",
         ts: instant.timestampUs,
-        pid: process.pid,
-        tid: id(instant.track),
+        pid: instant.processId,
+        tid: id(instant.processId, instant.track),
         args: instant.attributes,
       });
     }
@@ -374,8 +416,8 @@ export class TraceRecorder {
         cat: "flow",
         ph: "s",
         ts: fromTimestampUs,
-        pid: process.pid,
-        tid: id(from.track),
+        pid: from.processId ?? process.pid,
+        tid: id(from.processId ?? process.pid, from.track),
         id: flowId,
       });
       timelineEvents.push({
@@ -383,8 +425,8 @@ export class TraceRecorder {
         cat: "flow",
         ph: "f",
         ts: to.startedAtUs,
-        pid: process.pid,
-        tid: id(to.track),
+        pid: to.processId ?? process.pid,
+        tid: id(to.processId ?? process.pid, to.track),
         id: flowId,
       });
     }

@@ -8,7 +8,7 @@
  * 4. 首条 prompt 先用辅助模型生成标题；run 再读取历史和项目规则，准备工具及上下文预算。
  * 5. model-loop 共用轮次、重试和停止控制，model-tool-batch 共用计划与成功判断；Engine 保留宿主事务、replay 与 tracing。为压缩提供 ToolRunner 的安全文件哈希探测；每轮记录上下文准备和请求计量、模型重试、实际模型请求和响应处理，再记录服务实报用量。完整响应保存后校验工具 DAG，节点先完成准备/审批，实际执行才取得有界 worker 槽。
  * 6. Sandbox Runtime 已有能力内工具免审批；全部 Git action 与 run_with_permissions 的获批命令均交给 Broker 宿主进程，push 额外预检和逐次审批，并分别留下未隔离的执行记录。一次性两阶段 IPC 授权把命令审批等待留在执行队列外；Push/Capability Runner 代码暂存但不走产品路径。
- * 7. Agent Runtime 取消先经 IPC 等待 runtime_complete/stopping，再关闭原生 transport；清理未知优先于取消。终态事件保留已验证的进程身份，供验收和中断恢复对账；可选子任务只在已标记任务接入协调工具，Broker 原子保存问题回执，报告与模型反馈同事务提交；退出先停子线程、归档 trace 再发 task_end。
+ * 7. Agent Runtime 取消先经 IPC 等待 runtime_complete/stopping，再关闭原生 transport；清理未知优先于取消。终态保留已验证进程身份；Broker 校验 Runtime trace 时间戳，按该进程的执行槽组织片段、从已保存工具调用附加脱敏参数并统一归档；子任务由 Broker 核对身份与原子保存问题回执，退出先停子线程再归档。
  *
  * 模型请求可以重试，但已经执行的工具不能跟着重跑。数据库回滚也撤销不了文件修改或
  * 已启动的命令，所以保存失败时必须停止任务，并留下足够的记录供后续恢复。
@@ -849,9 +849,15 @@ export class Engine {
     signal: AbortSignal,
     emit: (type: string, data: any) => void,
     captureToolEvent: (type: string, data: any) => Promise<void>,
+    runtimeToolCalls: Map<
+      string,
+      { name: string; args: unknown; batchId: string; nodeId: string }
+    >,
+    onLaunched: (pid: number) => void,
   ): Promise<{ status: TaskStatus; failure?: string }> {
     const launcher = this.agentRuntimeLauncher!;
     const runtimeContextSpans = new Map<string, TraceSpan | undefined>();
+    const runtimeToolTracks = new Map<string, string>();
     const executionInstanceId = randomUUID();
     const identity: RuntimeExecutionIdentity = {
       sessionId: task.sessionId,
@@ -967,6 +973,7 @@ export class Engine {
         throw error;
       }
 
+      onLaunched(launched.pid);
       processIdentity = {
         pid: launched.pid,
         pidKind: "runtime",
@@ -1169,6 +1176,10 @@ export class Engine {
             }
           },
           traceSpan: (event) => {
+            if (!this.traces.acceptExternalTime(task.id, event.timestampUs)) {
+              throw new Error("Agent Runtime trace 时间戳不属于当前任务。");
+            }
+
             if (event.event === "trace_span_start") {
               if (runtimeContextSpans.has(event.spanId)) {
                 throw new Error("Agent Runtime trace span 标识重复。");
@@ -1183,8 +1194,29 @@ export class Engine {
 
               const subagentTrace = event.name.startsWith("subagent.");
               const readFileTrace = event.name.startsWith("read_file.");
+              const executionTrace = event.name === "tool.execute";
               const readFileToolStage =
                 readFileTrace && event.name !== "read_file.pool.close";
+              const callId = event.attributes.callId;
+              const tool = callId ? runtimeToolCalls.get(callId) : undefined;
+              if ((executionTrace || readFileToolStage) && !tool) {
+                throw new Error("Agent Runtime trace 工具调用未登记。");
+              }
+
+              if (executionTrace && callId) {
+                runtimeToolTracks.set(
+                  callId,
+                  `Agent Runtime tool ${event.attributes.slot! + 1}`,
+                );
+              }
+
+              if (
+                readFileToolStage &&
+                (!callId || !runtimeToolTracks.has(callId))
+              ) {
+                throw new Error("Agent Runtime read_file 阶段缺少执行槽。");
+              }
+
               const subagentId = event.attributes.subagentId;
               if (
                 subagentTrace &&
@@ -1199,19 +1231,44 @@ export class Engine {
               runtimeContextSpans.set(
                 event.spanId,
                 this.traces.startSpan(task.id, {
-                  name: event.name,
+                  name: executionTrace ? `tool.${tool!.name}` : event.name,
                   category: subagentTrace
                     ? "subagent"
                     : readFileTrace
                       ? "read_file"
-                      : "context",
+                      : executionTrace
+                        ? "tool"
+                        : "context",
                   track: subagentTrace
                     ? `Subagent ${subagentId}`
-                    : readFileToolStage
-                      ? `Agent Runtime read_file ${event.attributes.callId}`
-                      : "Main thread",
+                    : readFileToolStage || executionTrace
+                      ? runtimeToolTracks.get(callId!)!
+                      : "Agent Runtime",
+                  processId: launched?.pid,
+                  startedAtUs: event.timestampUs,
                   parentSpanId: parent?.id,
-                  attributes: event.attributes,
+                  attributes: executionTrace
+                    ? {
+                        ...event.attributes,
+                        batchId: tool!.batchId,
+                        nodeId: tool!.nodeId,
+                        // Broker 宿主工具在 Runtime 的片段只表示等待，不冒充受限进程中的执行。
+                        execution:
+                          tool!.name === "git" ||
+                          tool!.name === "run_with_permissions"
+                            ? "broker-host-wait"
+                            : "runtime",
+                        parameters:
+                          tool!.name === "memory_apply" ||
+                          tool!.name === "subagent"
+                            ? undefined
+                            : JSON.parse(
+                                redactJson(JSON.stringify(tool!.args), [
+                                  this.config.apiKey,
+                                ]),
+                              ),
+                      }
+                    : event.attributes,
                 }),
               );
 
@@ -1225,7 +1282,16 @@ export class Engine {
               );
             }
 
-            this.traces.endSpan(span, event.status, event.attributes);
+            this.traces.endSpan(
+              span,
+              event.status,
+              event.attributes,
+              event.timestampUs,
+            );
+            if (span?.name.startsWith("tool.") && span.attributes.callId) {
+              runtimeToolTracks.delete(String(span.attributes.callId));
+            }
+
             runtimeContextSpans.delete(event.spanId);
           },
           executeGitPush: (_runtime, toolCallId, requestSignal) =>
@@ -1833,7 +1899,11 @@ export class Engine {
       }
 
       if (this.agentRuntimeLauncher && this.config.sandbox.enabled) {
-        const runtimeToolSpans = new Map<string, TraceSpan | undefined>();
+        const runtimeToolCalls = new Map<
+          string,
+          { name: string; args: unknown; batchId: string; nodeId: string }
+        >();
+        let runtimeProcessId: number | undefined;
         let runtimeCompactionSpan: TraceSpan | undefined;
         const captureRuntimeToolEvent = async (type: string, data: any) => {
           if (type === "tool_start") {
@@ -1850,28 +1920,12 @@ export class Engine {
                 arguments: data.args,
               }),
             );
-            runtimeToolSpans.set(
-              data.callId,
-              this.traces.startSpan(task.id, {
-                name: `tool.${String(data.name).slice(0, 80)}`,
-                category: "tool",
-                // Runtime 工具可能并行；read_file 使用按调用隔离的轨道，避免 X slice 相互交叉。
-                track:
-                  data.name === "read_file"
-                    ? `Agent Runtime read_file ${data.callId}`
-                    : "Agent Runtime tools",
-                attributes: {
-                  batchId: data.batchId,
-                  callId: data.callId,
-                  nodeId: data.nodeId,
-                  executionInstanceId: undefined,
-                  execution:
-                    data.name === "run_with_permissions"
-                      ? "broker-host"
-                      : undefined,
-                },
-              }),
-            );
+            runtimeToolCalls.set(data.callId, {
+              name: String(data.name).slice(0, 80),
+              args: data.args,
+              batchId: data.batchId,
+              nodeId: data.nodeId,
+            });
           } else if (type === "tool_result") {
             await this.store.replayAsync(
               task.id,
@@ -1879,26 +1933,26 @@ export class Engine {
               data.callId,
               cleanReplay(data.result),
             );
-            const span = runtimeToolSpans.get(data.callId);
-
-            this.traces.endSpan(span, data.result?.error ? "error" : "ok");
-            runtimeToolSpans.delete(data.callId);
+            runtimeToolCalls.delete(data.callId);
           } else if (type === "tool_batch_planned") {
             this.traces.instant(
               task.id,
               "tool.plan",
               "tool",
-              "Agent Runtime tools",
+              "Agent Runtime",
               {
                 batchId: data.batchId,
                 nodes: Array.isArray(data.nodes) ? data.nodes.length : 0,
               },
+              runtimeProcessId,
             );
           } else if (type === "context.compaction_started") {
             runtimeCompactionSpan = this.traces.startSpan(task.id, {
               name: "context.compaction",
               category: "context",
-              track: "Agent Runtime context",
+              // 此片段源于异步 session 事件而非 Runtime 时钟，不与 Runtime 主轨道的精确阶段混用。
+              track: "Agent Runtime compaction",
+              processId: runtimeProcessId,
               attributes: {
                 stage: data.stage,
                 beforeAmount: data.beforeAmount,
@@ -1929,6 +1983,10 @@ export class Engine {
             signal,
             emit,
             captureRuntimeToolEvent,
+            runtimeToolCalls,
+            (pid) => {
+              runtimeProcessId = pid;
+            },
           );
           status = result.status;
           failure = result.failure;

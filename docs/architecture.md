@@ -107,9 +107,9 @@ Agent Runtime 已有权限内的普通命令在 Runtime 内执行且免审批；
 
 ### 性能追踪
 
-`src/tracing` 默认只在任务运行期间于 Broker 构造性能 timeline：宿主 loop 直接记录上下文计量/压缩、模型请求与退避、响应处理、工具计划、SandboxBroker 阶段、工具真实执行和工具结果持久化；`read_file` 在工具执行片段内细分检查、字节读取和 Worker 排队、冷启动与回传，并在响应中附纯计算耗时；路径准备与 Worker 计算不另建片段；真实读取线程池每个任务按需扩到最多 4 条、任务内保持复用，宿主与 Runtime 的任务收尾显式清理并记录 `read_file.pool.close`；Agent Runtime loop 以严格 IPC trace event 上报固定的 `context.prepare`、`context.request`、`read_file.*`、`tool.result_persist` 及计量子阶段，Broker 重建 span。已标记任务的 Worker/model/read 和显式 question/message/cancel 在 `Subagent <id>` 轨道上报开始、终态与耗时；Broker 核对已登记子 ID，IPC 白名单不接受消息正文或报告。
+`src/tracing` 默认只在任务运行期间于 Broker 构造性能 timeline：宿主 loop 直接记录上下文计量/压缩、模型请求与退避、响应处理、工具计划、SandboxBroker 阶段、工具真实执行和工具结果持久化；`read_file` 在工具执行片段内细分检查、字节读取和 Worker 排队、冷启动与回传，并在响应中附纯计算耗时；路径准备与 Worker 计算不另建片段；真实读取线程池每个任务按需扩到最多 4 条、任务内保持复用，宿主与 Runtime 的任务收尾显式清理并记录 `read_file.pool.close`；Agent Runtime loop 以严格 IPC trace event 上报固定的 `context.prepare`、`context.request`、`read_file.*`、`tool.result_persist` 及计量子阶段，Broker 校验 Runtime 单调时间戳并重建 span：以已验证的 Runtime PID 分组，内部上下文/池关闭共用 `Agent Runtime` 轨道，实际工具与 read_file 阶段按执行槽复用最多四条 `Agent Runtime tool` 轨道，不按 callId 新建轨道；参数从已保存的 tool_start 在 Broker 脱敏加入，Broker 统一导出落盘。已标记任务的 Worker/model/read 和显式 question/message/cancel 在 `Subagent <id>` 轨道上报开始、终态与耗时；Broker 核对已登记子 ID，IPC 白名单不接受消息正文或报告。
 
-该事件只允许固定名称以及 step/attempt/数量/状态等有界属性，不能充当任意 Runtime 日志通道。模型、退避与响应处理仍是独立 span，模型包装器记录长度、数量、usage、错误类别和首包时间。Node 主事件循环执行的上下文、模型、响应、计划和持久化 span 汇集于 `Main thread`，并以 begin/end slice 表示这些内部阶段；`Task` 根是生命周期包络。
+该事件只允许固定名称以及 step/attempt/数量/状态等有界属性，不能充当任意 Runtime 日志通道。模型、退避与响应处理仍是独立 span，模型包装器记录长度、数量、usage、错误类别和首包时间。Broker 主事件循环执行的模型、响应及宿主上下文/计划/持久化 span 汇集于 `Main thread`，Runtime 上下文归入 Runtime PID，并以 begin/end slice 表示这些内部阶段；`Task` 根是生命周期包络。
 
 工具批次/依赖属于 `Tool scheduler` 逻辑轨道，实际执行节点映射到可复用工具轨道。导出事件按时间排序，并用递增整数 ID 连接模型到工具的 flow，保证 Perfetto Trace Event JSON 兼容性。每个实际 tool span 保存经递归凭据脱敏后的结构化执行参数，因此 trace 是不得上传或提交的敏感本机诊断文件；它仍不保存提示词、模型/工具输出或凭据原文。
 

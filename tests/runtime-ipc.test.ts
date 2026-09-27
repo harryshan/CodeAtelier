@@ -344,6 +344,7 @@ it("accepts only bounded context trace events", async () => {
       event: "trace_span_start",
       spanId: "span-1",
       name: "context.prepare",
+      timestampUs: Math.round(Date.now() * 1_000),
       attributes: { step: 1, inputItems: 3 },
     })}\n`,
   );
@@ -363,6 +364,7 @@ it("accepts only bounded context trace events", async () => {
       event: "trace_span_start",
       spanId: "span-subagent",
       name,
+      timestampUs: Math.round(Date.now() * 1_000),
       attributes: name.startsWith("read_file.")
         ? { callId: "reader", bytes: 42 }
         : { subagentId: "reader" },
@@ -396,10 +398,40 @@ it("accepts only bounded context trace events", async () => {
       type: "event",
       event: "trace_span_start",
       spanId: "pool-close",
+      timestampUs: Math.round(Date.now() * 1_000),
       name: "read_file.pool.close",
       attributes: {},
     }).success,
   ).toBe(true);
+  expect(
+    runtimeIpcMessageSchema.safeParse({
+      type: "event",
+      event: "trace_span_start",
+      spanId: "missing-time",
+      name: "context.prepare",
+      attributes: {},
+    }).success,
+  ).toBe(false);
+  expect(
+    runtimeIpcMessageSchema.safeParse({
+      type: "event",
+      event: "trace_span_start",
+      spanId: "execution",
+      timestampUs: Math.round(Date.now() * 1_000),
+      name: "tool.execute",
+      attributes: { callId: "reader", slot: 0 },
+    }).success,
+  ).toBe(true);
+  expect(
+    runtimeIpcMessageSchema.safeParse({
+      type: "event",
+      event: "trace_span_start",
+      spanId: "no-slot",
+      timestampUs: Math.round(Date.now() * 1_000),
+      name: "tool.execute",
+      attributes: { callId: "reader" },
+    }).success,
+  ).toBe(false);
 
   input.write(
     `${JSON.stringify({
@@ -450,6 +482,7 @@ it("closes the channel when an event observer rejects the message", async () => 
       type: "event",
       event: "trace_span_start",
       spanId: "span-1",
+      timestampUs: Math.round(Date.now() * 1_000),
       name: "context.prepare",
       attributes: { step: 1 },
     })}\n`,

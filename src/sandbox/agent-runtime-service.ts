@@ -5,7 +5,7 @@
  * 1. start 接受 Broker 绑定任务的安全设置，恢复 session 上下文并在工作区生成指令和文件工具。
  * 2. ContextManager 在 Runtime 内计量/压缩，快照读写经 RuntimeSessionClient 回到 Broker。
  * 3. model-loop 共用轮次、有界重试和上下文超限恢复，model-tool-batch 共用工具计划与结果判定；每轮模型调用经 RuntimeModelProvider 代理；工具 DAG 先并行准备已就绪节点，取得有界 worker 槽后执行文件编辑、命令或请求 Broker Git。
- * 4. UI/session 事件按连接排队；无效 DAG 在无副作用时回传模型修正，read_file 的工具内阶段与任务级线程池清理经固定 IPC trace 上报，工具结果增量保存后进入下一轮，失败不得盲目重放。
+ * 4. UI/session 事件按连接排队；无效 DAG 回传修正，实际取得执行槽的工具和 read_file 内部阶段带单调时间戳上报，由 Broker 统一组装并归档；工具结果增量保存，未知副作用不重放。
  * 5. 已选任务在 Runtime 内运行独立只读 Worker，子状态、问题回执、模型/租约及固定无正文的 trace 经任务绑定 IPC；收尾确认线程退出后再由 Broker 清理。
  *
  * Git push 必须独占当前工具批次；全部 Git action 由 Broker 宿主执行，push 额外做预检和逐次审批。越界命令先经 IPC 审批取得一次性授权，获得 worker 槽后由 Broker 启动，因而可与无依赖的普通工具正确并行。context/tool/model tracing 经固定 schema 回到 Broker。
@@ -53,6 +53,7 @@ import {
   RuntimeMemoryClient,
 } from "./runtime-tool-adapters.js";
 import { randomUUID } from "node:crypto";
+import { performance } from "node:perf_hooks";
 
 interface StartTaskInput {
   workspace: string;
@@ -154,6 +155,7 @@ export class AgentRuntimeService {
                 type: "event",
                 event: "trace_span_start",
                 spanId,
+                timestampUs: runtimeTraceNowUs(),
                 name: name as
                   | "subagent.worker"
                   | "subagent.model"
@@ -170,6 +172,7 @@ export class AgentRuntimeService {
                   type: "event",
                   event: "trace_span_end",
                   spanId,
+                  timestampUs: runtimeTraceNowUs(),
                   status:
                     state === "ok" || state === "completed"
                       ? "ok"
@@ -451,13 +454,16 @@ export class AgentRuntimeService {
                 dependsOn: node.dependsOn,
                 args: node.arguments,
               });
-              // read_file 的细分 trace 直接经 IPC 发出；先确认 Broker 已建立 tool span，
-              // 否则异步会话事件可能落后于阶段事件，使同轨道的子阶段出现在父片段之前。
-              if (node.name === "read_file") {
-                await events.flush();
-              }
+              // 参数先在 Broker 登记；后续固定 trace IPC 只携带调用 ID、槽号与安全数值。
+              await events.flush();
 
               let result: unknown;
+              let executionSpan: string | undefined;
+              const startExecution = async () => {
+                const slot = await acquireExecutionSlot();
+                executionSpan = trace.startToolExecution(node.callId, slot);
+              };
+
               const readFileSpans = new Map<ReadFileTraceStage, string>();
               try {
                 if (node.name === "subagent") {
@@ -473,15 +479,16 @@ export class AgentRuntimeService {
                   }
 
                   if (action.action !== "await") {
-                    await acquireExecutionSlot();
+                    await startExecution();
                   }
 
                   result = await subagents.execute(action);
                   if (action.action === "await") {
+                    // await 的实际等待发生在取得执行槽之前，不能事后记录成工具执行耗时。
                     await acquireExecutionSlot();
                   }
                 } else if (node.name === historyDefinition.name) {
-                  await acquireExecutionSlot();
+                  await startExecution();
                   result = await readContextHistoryAsync(
                     session,
                     this.identity.sessionId,
@@ -493,7 +500,7 @@ export class AgentRuntimeService {
                     node.name,
                     node.arguments,
                     async () => {
-                      await acquireExecutionSlot();
+                      await startExecution();
                     },
                     node.name === "read_file"
                       ? (stage, state, details) => {
@@ -521,6 +528,17 @@ export class AgentRuntimeService {
                       ? error.message.slice(0, 2_000)
                       : "工具执行失败。",
                 };
+              } finally {
+                if (executionSpan) {
+                  trace.endToolStage(
+                    executionSpan,
+                    signal.aborted
+                      ? "cancelled"
+                      : toolSucceeded(result)
+                        ? "ok"
+                        : "error",
+                  );
+                }
               }
 
               await persistence.save(node, result);
@@ -599,6 +617,10 @@ export class AgentRuntimeService {
   }
 }
 
+function runtimeTraceNowUs() {
+  return Math.round((performance.timeOrigin + performance.now()) * 1_000);
+}
+
 function runtimeToolSettings(settings: RuntimeTaskSettings) {
   return {
     baseUrl: "broker://model",
@@ -616,7 +638,7 @@ function runtimeToolSettings(settings: RuntimeTaskSettings) {
   };
 }
 
-/** Runtime 只可上报固定 context/read_file/结果持久化阶段和有界元数据；工具并发阶段不借用 context 的全局父栈。 */
+/** Runtime 只上报固定 context/tool/read_file/结果持久化阶段和有界元数据；并发工具阶段不借用 context 的全局父栈。 */
 class RuntimeContextTrace implements ContextTrace {
   private stack: string[] = [];
 
@@ -633,6 +655,7 @@ class RuntimeContextTrace implements ContextTrace {
       event: "trace_span_start",
       spanId,
       parentSpanId,
+      timestampUs: runtimeTraceNowUs(),
       name: name as
         | "context.prepare"
         | "context.prepare.measure_request_view"
@@ -666,6 +689,7 @@ class RuntimeContextTrace implements ContextTrace {
       type: "event",
       event: "trace_span_end",
       spanId: handle,
+      timestampUs: runtimeTraceNowUs(),
       status,
       attributes,
     });
@@ -675,12 +699,28 @@ class RuntimeContextTrace implements ContextTrace {
     return this.stack.at(-1);
   }
 
+  /** 槽号由调度器分配；参数只留在 Broker 已收到的 tool_start 事件。 */
+  startToolExecution(callId: string, slot: number) {
+    const spanId = randomUUID();
+    this.peer.event({
+      type: "event",
+      event: "trace_span_start",
+      spanId,
+      timestampUs: runtimeTraceNowUs(),
+      name: "tool.execute",
+      attributes: { callId, slot },
+    });
+
+    return spanId;
+  }
+
   startToolStage(name: ReadFileTraceStage, callId: string) {
     const spanId = randomUUID();
     this.peer.event({
       type: "event",
       event: "trace_span_start",
       spanId,
+      timestampUs: runtimeTraceNowUs(),
       name,
       attributes: { callId },
     });
@@ -697,6 +737,7 @@ class RuntimeContextTrace implements ContextTrace {
       type: "event",
       event: "trace_span_end",
       spanId,
+      timestampUs: runtimeTraceNowUs(),
       status,
       attributes: details ?? {},
     });
