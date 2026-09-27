@@ -7,7 +7,7 @@
  * 3. approval、Git push、扩展权限命令、任务绑定子状态/问题/租约及 session 只调用显式 handlers；子模型严格比对三个只读工具与 ask_main，拒绝写工具。
  * 4. 越界命令先审批并保存在当前认证连接的一次性表中，Runtime 获得执行槽后才消费 authorizationId；
  *    git_push 只送调用 ID 并等待 Broker 宿主 Git 预检、审批和执行；请求取消只中止对应操作，不结束健康的 Agent Runtime。
- * 5. runtime_complete 是 Runtime 的完成报告；Broker 仍须结合进程退出、Job 和 cleanup 账本决定可信终态。
+ * 5. runtime_complete 是 Runtime 的完成报告，stopping 事件表示其已收到完成确认；取消后的 start_task 不再回复，Broker 需等待 stopping，再结合进程退出、Job 和 cleanup 账本决定可信终态。
  */
 
 import type {
@@ -124,6 +124,9 @@ export class RuntimeIpcBrokerSession {
   private runtimeReady: Promise<void>;
   private resolveRuntimeReady!: () => void;
   private rejectRuntimeReady!: (error: Error) => void;
+  private runtimeStopped: Promise<void>;
+  private resolveRuntimeStopped!: () => void;
+  private rejectRuntimeStopped!: (error: Error) => void;
   private readonly subagentLeases = new Map<
     string,
     { subagentId: string; release: () => void }
@@ -152,8 +155,13 @@ export class RuntimeIpcBrokerSession {
       this.resolveRuntimeReady = resolve;
       this.rejectRuntimeReady = reject;
     });
+    this.runtimeStopped = new Promise((resolve, reject) => {
+      this.resolveRuntimeStopped = resolve;
+      this.rejectRuntimeStopped = reject;
+    });
     void this.ready.catch(() => undefined);
     void this.runtimeReady.catch(() => undefined);
+    void this.runtimeStopped.catch(() => undefined);
     this.peer = new RuntimeIpcPeer({
       ...streams,
       onClose: (error) => {
@@ -163,6 +171,7 @@ export class RuntimeIpcBrokerSession {
         }
 
         this.rejectRuntimeReady(error);
+        this.rejectRuntimeStopped(error);
       },
       onEvent: (event) => {
         if (!this.authenticated) {
@@ -180,6 +189,10 @@ export class RuntimeIpcBrokerSession {
 
         if (event.event === "runtime_state" && event.state === "ready") {
           this.resolveRuntimeReady();
+        }
+
+        if (event.event === "runtime_state" && event.state === "stopping") {
+          this.resolveRuntimeStopped();
         }
       },
       onHandshake: (message) => {
@@ -240,6 +253,10 @@ export class RuntimeIpcBrokerSession {
     await this.waitFor(this.runtimeReady, signal);
 
     return this.peer.request("start_task", input, signal);
+  }
+
+  waitForStop(signal: AbortSignal) {
+    return this.waitFor(this.runtimeStopped, signal);
   }
 
   private waitFor(ready: Promise<void>, signal: AbortSignal) {

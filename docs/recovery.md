@@ -20,6 +20,8 @@
 
 正常 Broker 宿主命令和 push 的结果返回仍在同步等待的原 Agent Runtime，但恢复不能把这些进程当作 Agent Runtime。Sandbox 实例进入 orphaned 时冻结新 Sandbox 任务并排空该 account generation 的其它活动实例，对账完成前不得启动替代任务；宿主命令或 push 未知结果也不得自动重放，须核对可能副作用。非 Sandbox 进程不伪造专用账户字段。
 
+用户取消运行中的 Agent Runtime 时，Broker 先通过认证 IPC 发送取消，等待 Runtime 的 `runtime_complete` 报告及 `stopping` 事件，再关闭原生 transport 并核对进程、Job 和 ACL。已取消的 `start_task` 请求按协议不会再回复，不能把它当作唯一终态。若限时内缺少可信终态或原生清理证明，执行实例保持 `unknown`、账户 generation 隔离，任务报告失败供人工对账；不能用用户取消覆盖未知结果。
+
 generation lease/grant、Job、代理和 ACL journal 的在线 drain 与启动恢复已经接线；固定账户提升环境下的强制终止、进程崩溃、损坏 journal 和重启后复证仍未完成。完整身份和进程边界见 [windows-integrity-sandbox.md](windows-integrity-sandbox.md)。
 
 ## 各中断阶段

@@ -5,10 +5,11 @@
  * 1. Engine 生成 instance/nonce，launcher 启动真实 Node 子进程并返回 IPC 流。
  * 2. 子进程运行 read_file 工具 DAG 并检查工具内阶段及任务结束清理 trace，Broker 仅提供模型、session、审批和记忆 adapter；固定白名单细分 trace 不包含文件内容。
  * 3. Engine 等待 Runtime 终态与 clean 退出，再把任务和带有已验证进程身份的 execution instance 记为 completed。
- * 4. run_with_permissions 经低成本模型审批后由 Broker 宿主进程执行，单独记录 host-process，而不创建 Capability Runner。
- * 5. Runtime IPC 在可信终态前断开时，Engine 以 unknown 关闭 launcher 并持久化可能副作用。
- * 6. Broker 宿主 Git 先做固定预检、审批，再启动 push；已启动后取消仍记录远端副作用可能已经发生。
- * 7. launcher 证明 Runtime 尚未启动且 provision 已回滚时，Engine 明确记录 host fallback 并继续宿主 loop。
+ * 4. 取消等待 Runtime 写回可信终态后才关闭 transport；无法证明终态时仍保持 unknown。
+ * 5. run_with_permissions 经低成本模型审批后由 Broker 宿主进程执行，单独记录 host-process，而不创建 Capability Runner。
+ * 6. Runtime IPC 在可信终态前断开时，Engine 以 unknown 关闭 launcher 并持久化可能副作用。
+ * 7. Broker 宿主 Git 先做固定预检、审批，再启动 push；已启动后取消仍记录远端副作用可能已经发生。
+ * 8. launcher 证明 Runtime 尚未启动且 provision 已回滚时，Engine 明确记录 host fallback 并继续宿主 loop。
  */
 
 import { execFile, spawn } from "node:child_process";
@@ -270,6 +271,127 @@ it("moves the Engine agent loop into the launched Runtime process", async () => 
     store.close();
   }
 });
+
+for (const cleanupProof of ["clean", "orphaned"] as const) {
+  it(`waits for a cancelled Runtime terminal state and ${cleanupProof} cleanup`, async () => {
+    const root = await temp();
+    const config = new Config(await temp());
+    config.sandbox.enabled = true;
+    const store = new Store(path.join(config.directory, "db"));
+    const session = store.create(root, "Runtime cancel handshake");
+    let runtimeCompleted = false;
+    const launcher: AgentRuntimeLauncher = {
+      async launch(input) {
+        const child = spawn(
+          process.execPath,
+          [
+            "--import",
+            "tsx",
+            path.resolve("tests/fixtures/agent-runtime-service-child.ts"),
+          ],
+          {
+            cwd: process.cwd(),
+            stdio: ["pipe", "pipe", "pipe"],
+            env: {
+              ...process.env,
+              CODEATELIER_TEST_RUNTIME_DESCRIPTOR: JSON.stringify({
+                identity: input.identity,
+                nonce: input.nonce,
+              }),
+            },
+          },
+        );
+        let output = "";
+        child.stdout.on("data", (chunk: Buffer) => {
+          output = (output + chunk.toString("utf8")).slice(-16_384);
+          runtimeCompleted ||= output.includes(
+            '"operation":"runtime_complete"',
+          );
+        });
+
+        return {
+          input: child.stdout,
+          output: child.stdin,
+          pid: child.pid!,
+          close: async () => {
+            child.stdin.end();
+            const exitCode = await new Promise<number | null>((resolve) =>
+              child.once("exit", resolve),
+            );
+
+            return exitCode === 0 && runtimeCompleted
+              ? cleanupProof
+              : "orphaned";
+          },
+        };
+      },
+    };
+    let resolveEntered!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      resolveEntered = resolve;
+    });
+    const provider: ModelProvider = {
+      async getCapabilities() {
+        return {
+          limits: {
+            max_context_window_tokens: 32_000,
+            max_output_tokens: 1_024,
+          },
+        };
+      },
+      async run(_input, _instructions, _tools, signal) {
+        resolveEntered();
+
+        return new Promise<never>((_resolve, reject) => {
+          signal?.addEventListener(
+            "abort",
+            () => reject(signal.reason ?? new Error("cancelled")),
+            { once: true },
+          );
+        });
+      },
+    };
+    const engine = new Engine(
+      store,
+      config,
+      pino({ enabled: false }),
+      () => provider,
+      launcher,
+    );
+
+    try {
+      const task = engine.start(session.id, "wait for cancellation");
+      const done = engine.active!.done;
+      await entered;
+      const cancelledAt = Date.now();
+      engine.cancel(task.id);
+      await done;
+
+      expect(runtimeCompleted).toBe(true);
+      expect(Date.now() - cancelledAt).toBeLessThan(5_000);
+      expect(store.task(task.id)?.status).toBe(
+        cleanupProof === "clean" ? "cancelled" : "failed",
+      );
+      const executions = store
+        .events(session.id)
+        .filter((event) => event.type === "execution_instance")
+        .map((event) => event.data as Record<string, unknown>);
+      expect(
+        executions.some(
+          (event) =>
+            event.state ===
+            (cleanupProof === "clean" ? "cancelled" : "unknown"),
+        ),
+      ).toBe(true);
+      expect(executions.some((event) => event.state === "unknown")).toBe(
+        cleanupProof === "orphaned",
+      );
+    } finally {
+      await engine.close();
+      store.close();
+    }
+  });
+}
 
 for (const approve of [true, false]) {
   it(`reviews ${approve ? "approved" : "rejected"} Broker host command`, async () => {

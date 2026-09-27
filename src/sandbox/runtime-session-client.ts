@@ -4,7 +4,7 @@
  *
  * 1. contextAsync/eventsAsync 读取当前 session 的模型上下文和历史事件，由 Broker 绑定的 identity 决定 session。
  * 2. appendContext 只发送新协议项，saveContext 保留显式替换入口；失败传播给 loop，工具副作用后不得假定保存成功。
- * 3. appendEvent 只接受固定事件名和结构化 data；commitSubagentCollect 把子报告消费与主工具结果/上下文交给 Broker 原子保存。
+ * 3. appendEvent 使用独立有界信号保存取消终态，避免任务 AbortSignal 阻断恢复记录；commitSubagentCollect 把子报告消费与主工具结果/上下文交给 Broker 原子保存。
  */
 
 import type { RuntimeIpcPeer } from "./runtime-ipc-peer.js";
@@ -47,7 +47,7 @@ export class RuntimeSessionClient {
     await this.peer.request(
       "session_append_event",
       { eventType, data },
-      this.signal,
+      AbortSignal.timeout(10_000),
     );
   }
 

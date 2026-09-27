@@ -8,7 +8,7 @@
  * 4. 首条 prompt 先用辅助模型生成标题；run 再读取历史和项目规则，准备工具及上下文预算。
  * 5. model-loop 共用轮次、重试和停止控制，model-tool-batch 共用计划与成功判断；Engine 保留宿主事务、replay 与 tracing。为压缩提供 ToolRunner 的安全文件哈希探测；每轮记录上下文准备和请求计量、模型重试、实际模型请求和响应处理，再记录服务实报用量。完整响应保存后校验工具 DAG，节点先完成准备/审批，实际执行才取得有界 worker 槽。
  * 6. Sandbox Runtime 已有能力内工具免审批；Git push 的预检、审批和执行与 run_with_permissions 的获批命令均交给 Broker 宿主进程，并分别留下未隔离的执行记录。一次性两阶段 IPC 授权把命令审批等待留在执行队列外；Push/Capability Runner 代码暂存但不走产品路径。
- * 7. Agent Runtime 的终态事件保留已验证的进程身份，供验收和中断恢复对账；可选子任务只在已标记任务接入协调工具，Broker 原子保存问题回执，报告与模型反馈同事务提交；退出先停子线程、归档 trace 再发 task_end。
+ * 7. Agent Runtime 取消先经 IPC 等待 runtime_complete/stopping，再关闭原生 transport；清理未知优先于取消。终态事件保留已验证的进程身份，供验收和中断恢复对账；可选子任务只在已标记任务接入协调工具，Broker 原子保存问题回执，报告与模型反馈同事务提交；退出先停子线程、归档 trace 再发 task_end。
  *
  * 模型请求可以重试，但已经执行的工具不能跟着重跑。数据库回滚也撤销不了文件修改或
  * 已启动的命令，所以保存失败时必须停止任务，并留下足够的记录供后续恢复。
@@ -110,6 +110,17 @@ import type {
 
 // 标题请求没有工具或文件副作用；服务未提供可分类原因时，允许比主任务多一次诊断性重试。
 const titleRetryOptions = { retries: 3, retryUnknownErrors: true };
+
+class AgentRuntimeCleanupUnknownError extends Error {
+  readonly code = "SANDBOX_RUNTIME_CLEANUP_UNKNOWN";
+
+  constructor(cause?: unknown) {
+    super("Agent Runtime 结果或清理状态未知，账户 generation 必须隔离。", {
+      cause,
+    });
+    this.name = "AgentRuntimeCleanupUnknownError";
+  }
+}
 
 type ModelUsagePurpose =
   "task" | "compaction" | "title" | "approval" | "subagent";
@@ -840,6 +851,15 @@ export class Engine {
       Awaited<ReturnType<AgentRuntimeLauncher["launch"]>> | undefined;
     let cleaned = false;
     let closeAttempted = false;
+    let taskRequestStarted = false;
+    let runtimeStoppedObserved = false;
+    let runtimeError: unknown;
+    let reported:
+      | {
+          status: TaskStatus;
+          failure?: string;
+        }
+      | undefined;
     let broker: RuntimeIpcBrokerSession | undefined;
     const createdAt = new Date().toISOString();
     let processIdentity:
@@ -977,12 +997,6 @@ export class Engine {
         this.traces,
         this.sandboxLog,
       );
-      let reported:
-        | {
-            status: TaskStatus;
-            failure?: string;
-          }
-        | undefined;
       const currentBroker = new RuntimeIpcBrokerSession(
         { input: launched.input, output: launched.output },
         identity,
@@ -1289,11 +1303,31 @@ export class Engine {
         },
       );
       broker = currentBroker;
-      const cancelled = () => currentBroker.cancel("Broker 任务已取消。");
+      const completionController = new AbortController();
+      let cancellationDeadline: NodeJS.Timeout | undefined;
+      let resolveCancellation!: () => void;
+      const cancellationObserved = new Promise<void>((resolve) => {
+        resolveCancellation = resolve;
+      });
+      const cancelled = () => {
+        currentBroker.cancel("Broker 任务已取消。");
+        resolveCancellation();
+        // 请求取消先让 Runtime 回报可信终态；超时才放弃等待并走 unknown 清理。
+        cancellationDeadline = setTimeout(
+          () =>
+            completionController.abort(
+              new Error("Agent Runtime 取消后未在期限内返回终态。"),
+            ),
+          10_000,
+        );
+      };
+
       signal.addEventListener("abort", cancelled, { once: true });
-      const memory = await this.memories.retrieve(workspace, prompt);
       try {
-        const response = (await currentBroker.startTask(
+        const memory = await this.memories.retrieve(workspace, prompt);
+        signal.throwIfAborted();
+        taskRequestStarted = true;
+        const taskRequest = currentBroker.startTask(
           {
             workspace,
             prompt,
@@ -1309,8 +1343,25 @@ export class Engine {
             },
             memoryText: memory.bundle?.text,
           },
-          signal,
-        )) as { status?: TaskStatus; failure?: string };
+          completionController.signal,
+        );
+        const runtimeStopped = cancellationObserved
+          .then(() => currentBroker.waitForStop(completionController.signal))
+          .then(() => {
+            runtimeStoppedObserved = true;
+            if (!reported) {
+              throw new Error("Agent Runtime 停止前未报告可信任务终态。");
+            }
+
+            return reported;
+          });
+        const response = (await Promise.race([
+          taskRequest,
+          runtimeStopped,
+        ]).catch((error) => {
+          runtimeError = error;
+          throw error;
+        })) as { status?: TaskStatus; failure?: string };
         const status = reported?.status ?? response.status;
         if (
           status !== "completed" &&
@@ -1319,6 +1370,14 @@ export class Engine {
           status !== "interrupted"
         ) {
           throw new Error("Agent Runtime 未返回有效任务终态。");
+        }
+
+        if (
+          signal.aborted &&
+          status !== "completed" &&
+          !runtimeStoppedObserved
+        ) {
+          throw new Error("Agent Runtime 取消后未确认停止状态。");
         }
 
         closeAttempted = true;
@@ -1336,9 +1395,7 @@ export class Engine {
         if (!cleaned) {
           publishExecution("unknown", { sideEffectsPossible: true });
           publishSandboxStage("failed");
-          throw new Error(
-            "Agent Runtime 清理结果未知，账户 generation 必须隔离。",
-          );
+          throw new AgentRuntimeCleanupUnknownError();
         }
 
         publishExecution(
@@ -1357,6 +1414,9 @@ export class Engine {
         return { status, failure: reported?.failure ?? response.failure };
       } finally {
         signal.removeEventListener("abort", cancelled);
+        if (cancellationDeadline) {
+          clearTimeout(cancellationDeadline);
+        }
       }
     } finally {
       authorized = false;
@@ -1367,14 +1427,22 @@ export class Engine {
       }
 
       runtimeContextSpans.clear();
+      let terminalUnknown = false;
       if (launched && !closeAttempted) {
         closeAttempted = true;
-        const closeReason = signal.aborted ? "cancel" : "unknown";
+        const closeReason =
+          taskRequestStarted &&
+          (!reported || (signal.aborted && !runtimeStoppedObserved))
+            ? "unknown"
+            : signal.aborted
+              ? "cancel"
+              : "unknown";
         const cleanup = await launched
           .close(closeReason)
           .catch(() => "orphaned" as const);
         cleaned = cleanup === "clean";
         if (closeReason === "unknown" || cleanup !== "clean") {
+          terminalUnknown = true;
           publishExecution("unknown", { sideEffectsPossible: true });
           publishSandboxStage("failed");
         } else {
@@ -1388,6 +1456,9 @@ export class Engine {
       }
 
       this.subagentLimits.cancelTask(task.id);
+      if (terminalUnknown || (launched && !cleaned)) {
+        throw new AgentRuntimeCleanupUnknownError(runtimeError);
+      }
     }
   }
 
@@ -2815,18 +2886,24 @@ export class Engine {
       }
     } catch (error: any) {
       flush();
-      status = signal.aborted
-        ? signal.reason?.message?.startsWith("服务关闭")
-          ? "interrupted"
-          : "cancelled"
-        : "failed";
-      failure = signal.aborted
-        ? status === "interrupted"
-          ? "服务关闭，任务中断，可手动恢复。"
-          : "任务已取消，可手动恢复。"
-        : redactText(String(error?.message || "任务失败").slice(0, 2000), [
-            this.config.apiKey,
-          ]);
+      status =
+        error instanceof AgentRuntimeCleanupUnknownError
+          ? "failed"
+          : signal.aborted
+            ? signal.reason?.message?.startsWith("服务关闭")
+              ? "interrupted"
+              : "cancelled"
+            : "failed";
+      failure =
+        error instanceof AgentRuntimeCleanupUnknownError
+          ? error.message
+          : signal.aborted
+            ? status === "interrupted"
+              ? "服务关闭，任务中断，可手动恢复。"
+              : "任务已取消，可手动恢复。"
+            : redactText(String(error?.message || "任务失败").slice(0, 2000), [
+                this.config.apiKey,
+              ]);
       emit("notice", { text: failure, status });
       log[status === "failed" ? "error" : "info"]({
         event: "task." + status,

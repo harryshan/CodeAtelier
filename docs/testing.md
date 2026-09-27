@@ -401,6 +401,7 @@ tool-schema.test.ts 覆盖根节点、oneOf 禁用、包装解包、历史兼容
 - `tests/agent-runtime-tools.test.ts` 用真实临时 Git worktree 完成 upstream/OID 查询，随后验证 Runtime 只调用结构化 push adapter、同步取得结果，且不嵌套逐工具 SandboxBroker；Broker 已实时持久化的输出不会被 Runtime 在最终响应后重复发射。
 - `tests/runtime-ipc.test.ts` 验证 `git_push` 只携带当前 `toolCallId`、返回值受固定 schema 校验；请求级取消继续只中止对应 handler。
 - `tests/agent-runtime-tools.test.ts` 验证 Runtime 不再预检 Git 配置而将调用 ID 交给 Broker；`tests/agent-runtime-engine.test.ts` 验证 Broker 宿主 Git 预检、审批与已启动 push 取消的非 Sandbox 归因。
+- `tests/agent-runtime-engine.test.ts` 使用真实 Node 子进程验证取消时先收到 `runtime_complete`，随后 clean 关闭；即使 Runtime 已回报终态，只要原生清理返回 orphaned，任务也记为失败、执行实例保留 unknown。安装态脚本最终核对取消后无 unknown 和活动 generation lease。
 - `tests/sandbox-account-generation.test.ts` 与 `tests/sandbox.test.ts` 保留旧 Push Runner 的机制测试，但不证明当前产品 push 的网络或凭据隔离。真实 remote、凭据、hook/helper 和取消清理仍须手动验收。
 
 ### Agent Runtime 经审批的 Broker 宿主命令
