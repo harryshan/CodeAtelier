@@ -6,7 +6,7 @@
  * 1. createFixture 模拟 worktree 根目录、当前分支及其安全 upstream，并记录 Git 参数和流式输出。
  * 2. 只读用例检查 status、diff、log、show、branch 的固定参数、路径和 revision 限制。
  * 3. 写入用例检查 add、commit、push 都无需审批，且 commit 仅暂存明确路径、暂存失败不继续提交。
- * 4. 安全用例拒绝敏感目录、未通过内容校验的 dotenv 模板、跨 worktree、危险 revision 与不安全 upstream，确保不能借 action 传递任意 Git 选项。
+ * 4. 安全用例拒绝敏感目录、未通过内容校验的 dotenv 模板、跨 worktree、危险 revision 与不安全 upstream，且仓库探测失败保留有界 Git 错误，确保不能借 action 传递任意 Git 选项。
  *
  * 这些断言验证实际传给执行器的行为，而非只检查模型定义；真实 Git 与远程服务兼容性仍需手动集成验证。
  */
@@ -192,6 +192,20 @@ it("runs proactive read-only actions with fixed options", async () => {
     ],
   ]);
   expect(fixture.output).toHaveLength(5);
+});
+
+it("reports bounded Git output when repository detection fails", async () => {
+  const fixture = await createFixture({
+    exitCodes: [128],
+    repositoryRoot: `fatal: ${"ownership ".repeat(100)}`,
+  });
+
+  const error = await fixture.tools
+    .execute({ action: "status" })
+    .catch((reason: unknown) => reason as Error);
+
+  expect(error.message).toMatch(/Git 退出码 128：fatal: ownership/);
+  expect(error.message.length).toBeLessThan(650);
 });
 
 it("routes every Git subprocess through the configured Sandbox Runtime", async () => {

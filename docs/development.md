@@ -166,6 +166,7 @@ Replay Case 已独立实现脱敏、存储与手动导出，见 [任务 Replay C
 Windows 专用账户 Agent Runtime 的普通命令与非 push Git 使用实例私有 TEMP 中的独占临时文件承接 stdout/stderr，每 100 ms 读取并按原输出上限推送，进程结束后删除。这样避免 Node/libuv 在 restricted token 下创建默认 stdio 命名管道时可能同步卡住，导致取消与超时器均无法运行；临时输出文件达到 64 MiB 时终止该命令进程树并返回明确错误。Broker 宿主命令仍使用原有管道。此传输变更沿用原工具的开始/结束、耗时、失败/取消和关联 ID trace；原生 stderr 只保留固定阶段名与 shell 类别，不记录命令、路径或输出。
 
 专用账户与宿主工作区所有者不同。每次实例的只读 Git global 投影在宿主配置 include 之后重置继承的 `safe.directory` 列表，并仅加入当前工作区的真实路径，使 Runtime 能运行 Git，同时不把其它仓库或通配路径加入该实例的信任范围。
+仓库探测失败时，Git 工具结果保留退出码及最多 512 字符的子进程错误，便于区分所有权、ACL 和环境问题；该文本不进入诊断日志或 trace。
 
 ### 网页检索与网页正文
 

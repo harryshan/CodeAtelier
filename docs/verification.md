@@ -6,6 +6,7 @@
 - 独立的固定模型/临时工作区复现显示：安装态 Runtime 连 `Write-Output diagnostic-ok` 也未完成；同样的 Runtime/Engine 逻辑在普通 Node 子进程里能完成该命令并正确取消长命令。由此将问题缩到已安装 Windows Runtime 的普通命令路径。随后新版验收在文件编辑任务完成后，固定 `echo` 命令超时；Supervisor 的最后白名单阶段为 `command_spawn_begin`，没有子进程 PID。这将卡点缩到 Node `spawn` 调用或其紧邻的同步准备阶段，尚未证明是哪一个 Windows 调用阻塞。
 - 管理员 `sandbox:recover` 已输出 `CODEATELIER_REVOKE_JOURNAL_OK count=5` 和 `SANDBOX_RECOVERY PASS`，没有手工删除授权账本。用户随后重新安装并再次 Repair，安装自检及 WFP 八条规则通过。新增安装态固定普通命令验收及只包含白名单阶段名的 Supervisor 诊断；第二轮验收先运行 Git status，也停在 `command_spawn_begin`，没有 `spawn` 返回或 PID，故不是 PowerShell 独有。两轮失败后 Broker 均完成 generation 排空；只读检查显示授权 journal 为零，仍保留一个实例和投影目录。Node 24.19.0 所用 [libuv 1.52.1 Windows pipe 源码](https://github.com/libuv/libuv/blob/v1.52.1/src/win/pipe.c)在持续收到 `ERROR_ACCESS_DENIED` 时会无界重试，因此 restricted token 下建管道失败是当前最强推断，尚无直接 Win32 错误码证据。候选修复改用实例私有 TEMP 文件承接输出并保留定时回传、64 MiB 磁盘限额和清理。本地 Node 子进程的正常输出、取消、输出持久化失败回归通过，`pnpm check` 为 70 个测试文件、513 项通过、1 项跳过；仍须更新安装副本并完成真实验收。此前缺少普通命令的 `PASS` 不能视为当前真实任务可正常运行。
 - 用户安装该修复后运行固定验收：Git 任务的子进程已经启动并走到 `command_closed`，任务 clean 完成且撤销五项授权，原来的同步卡死没有复现；但 Git `rev-parse` 返回“不是可用的 Git 工作树”，使依赖的普通命令未执行，整链验收仍失败。结合专用账户与测试仓库所有者不同及 [Git `safe.directory` 规则](https://git-scm.com/docs/git-config)，当前最强推断是 Git 拒绝跨所有者仓库；尚未直接捕获该 Git 子进程的 stderr。新的只读 global 投影配置在宿主 include 之后清空继承的安全目录列表，只加入本次真实工作区路径；需再次更新安装副本并验收 Git、普通命令和后续任务。
+- 安装精确 `safe.directory` 投影后的第二次验收仍在 Git `rev-parse` 处返回相同泛化错误；Git 子进程已获得 PID 并关闭，任务与授权均 clean 结束。因该错误此前丢弃了 Git 的退出码与原始输出，无法断言所有权就是原因。下一轮在工具结果中保留至多 512 字符的 Git 错误，先取得实际失败原因，再决定修复；此文本不写入日志或 trace。
 
 ## Windows Sandbox 取消终态修复（2026-09-27，安装态复验通过）
 

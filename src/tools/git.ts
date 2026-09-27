@@ -231,7 +231,13 @@ export class GitToolRunner {
     const repositoryRoot = result.output.trim();
 
     if (result.exitCode !== 0 || !repositoryRoot) {
-      throw new Error("当前会话工作区不是可用的 Git 工作树。");
+      // rev-parse 的错误只进入工具结果，不进入诊断日志；保留有界文本以区分 ACL、所有权和 Git 环境故障。
+      const detail = result.output.trim().slice(0, 512);
+      const gitError = detail
+        ? ` Git 退出码 ${result.exitCode}：${detail}`
+        : ` Git 退出码 ${result.exitCode}。`;
+
+      throw new Error(`当前会话工作区不是可用的 Git 工作树。${gitError}`);
     }
 
     if (!samePath(repositoryRoot, this.ctx.root)) {
