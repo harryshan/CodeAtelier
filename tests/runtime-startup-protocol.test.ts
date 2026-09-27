@@ -1,7 +1,7 @@
 /**
  * 验证 Agent Runtime 正式入口的 Supervisor 首帧契约，不把 stdio 测试夹具环境变量当作产品启动材料。
  *
- * 1. 覆盖合法 pipe 命名空间、分片首帧和同批到达的后续 IPC 字节。
+ * 1. 覆盖原生 StringFromGUID2 的带花括号 pipe 名、分片首帧和同批到达的后续 IPC 字节。
  * 2. 覆盖远程/错误 pipe、超限长度、未知字段和非法 nonce 的安全拒绝。
  */
 
@@ -55,6 +55,11 @@ describe("Runtime startup protocol", () => {
   it("only accepts the fixed local Agent Runtime pipe namespace", () => {
     expect(
       validateRuntimeStartupPipeName(
+        "\\\\.\\pipe\\CodeAtelier.AgentRuntime.{123e4567-e89b-12d3-a456-426614174000}",
+      ),
+    ).toContain("CodeAtelier.AgentRuntime");
+    expect(
+      validateRuntimeStartupPipeName(
         "\\\\.\\pipe\\CodeAtelier.AgentRuntime.123e4567-e89b-12d3-a456-426614174000",
       ),
     ).toContain("CodeAtelier.AgentRuntime");
@@ -65,6 +70,11 @@ describe("Runtime startup protocol", () => {
     ).toThrow(RuntimeStartupProtocolError);
     expect(() =>
       validateRuntimeStartupPipeName("C:\\temp\\runtime.pipe"),
+    ).toThrow(RuntimeStartupProtocolError);
+    expect(() =>
+      validateRuntimeStartupPipeName(
+        "\\\\.\\pipe\\CodeAtelier.AgentRuntime.{not-a-guid}",
+      ),
     ).toThrow(RuntimeStartupProtocolError);
   });
 
@@ -97,7 +107,7 @@ describe("Runtime startup protocol", () => {
 it.skipIf(process.platform !== "win32")(
   "starts the fixed Agent Runtime entry through a real local named pipe",
   async () => {
-    const pipeName = `\\\\.\\pipe\\CodeAtelier.AgentRuntime.${randomUUID()}`;
+    const pipeName = `\\\\.\\pipe\\CodeAtelier.AgentRuntime.{${randomUUID()}}`;
     const server = net.createServer();
     await new Promise<void>((resolve, reject) => {
       server.once("error", reject);
