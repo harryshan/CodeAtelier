@@ -9,7 +9,7 @@
  * 4. 在确认不是 WinSta0 后给系统命名的非交互式 station 补齐专用账户及实例 SID，再创建私有 desktop；bootstrap 经账户管道取得命令，创建 WRITE_RESTRICTED token，常驻 Runtime 则经仅额外授权本实例 execution SID 的专属 pipe 连接 Broker。
  * 5. Broker stdin 关闭、超时或异常会终止 Job；正常/异常退出撤销本实例 capability ACE，共享账户 ACE 仅由 Broker 最后引用的两阶段 release 撤销；安装恢复从持久 journal 验证原文件身份后撤销账户 ACE，清理不确定返回专用错误码。
  * 6. Push Runner 仅从宿主 Credential Manager 读取绑定 host 的 HTTPS 凭据，并经同 Job askpass pipe 交付；capability runner 只把短期、host-bound proxy token 放入自身环境，不取得宿主凭据。
- * 7. Agent Runtime 模式只启动受保护 Node/entry，联合核对 pipe 客户端身份后发送启动首帧并代理原始 Broker 字节流；初始 CWD 使用私有目录。
+ * 7. Agent Runtime 模式只启动受保护 Node/entry；bootstrap 给 Supervisor 的 SID 仅授予 Runtime process/token 查询权，以便在联合核对 pipe 客户端身份后发送启动首帧并代理原始 Broker 字节流；初始 CWD 使用私有目录。
  * 8. stdout 只承载工具输出或 Agent Runtime IPC；stderr 只输出有界控制记录，不记录命令、路径、SID、密码或工具内容。
  *
  * restricted token、default DACL、Job 和 capability SID 的底层算法复用已验证探针源；通过宏重命名其 wmain，
@@ -1226,6 +1226,29 @@ bool BuildPipeSecurity(PSID account_sid, PSID execution_sid,
   return true;
 }
 
+bool BuildRuntimeProcessSecurity(PSID account_sid, PSID execution_sid,
+                                 PSID supervisor_sid,
+                                 SECURITY_ATTRIBUTES* attributes,
+                                 LocalPointer* descriptor) {
+  static_assert(PROCESS_QUERY_LIMITED_INFORMATION == 0x1000);
+  // The host Supervisor only needs to reopen the client for identity checks.
+  // Keep terminate, VM, duplicate-handle and DACL modification rights absent.
+  std::wstring sddl = L"D:P(A;;GA;;;SY)(A;;GA;;;" +
+                      SidToString(account_sid) + L")(A;;GA;;;" +
+                      SidToString(execution_sid) + L")(A;;0x1000;;;" +
+                      SidToString(supervisor_sid) + L")";
+  PSECURITY_DESCRIPTOR raw = nullptr;
+  if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
+          sddl.c_str(), SDDL_REVISION_1, &raw, nullptr)) {
+    return false;
+  }
+  descriptor->reset(raw);
+  attributes->nLength = sizeof(*attributes);
+  attributes->lpSecurityDescriptor = raw;
+  attributes->bInheritHandle = FALSE;
+  return true;
+}
+
 class UniqueDesktop {
  public:
   UniqueDesktop() = default;
@@ -1821,13 +1844,20 @@ bool VerifyAgentRuntimeClient(HANDLE pipe, HANDLE job, PSID account_sid,
   if (!GetNamedPipeClientProcessId(pipe, &client_pid)) {
     return reject(L"client_pid", GetLastError());
   }
-  if (client_pid == 0 || !ProcessBelongsToJob(client_pid, job)) {
-    return reject(L"job");
+  if (client_pid == 0) {
+    return reject(L"client_pid");
   }
   UniqueHandle process(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE,
                                    client_pid));
   if (!process) {
     return reject(L"process", GetLastError());
+  }
+  BOOL belongs = FALSE;
+  if (!IsProcessInJob(process.get(), job, &belongs)) {
+    return reject(L"job", GetLastError());
+  }
+  if (!belongs) {
+    return reject(L"job");
   }
   HANDLE raw_token = nullptr;
   if (!OpenProcessToken(process.get(), TOKEN_QUERY, &raw_token)) {
@@ -1975,16 +2005,68 @@ int RunAskpass(const std::wstring& prompt) {
   return 0;
 }
 
+// OpenProcessToken 对 token 对象自身的 DACL 做访问检查；这与下面设置的
+// TokenDefaultDacl 是两份不同的 ACL。只给宿主 Supervisor 增加 TOKEN_QUERY。
+bool CreateSupervisorTokenQueryAcl(PACL old_acl, PSID supervisor_sid,
+                                   PACL* new_acl) {
+  if (old_acl == nullptr || supervisor_sid == nullptr ||
+      !IsValidSid(supervisor_sid)) {
+    return false;
+  }
+  EXPLICIT_ACCESSW entry{};
+  entry.grfAccessPermissions = TOKEN_QUERY;
+  entry.grfAccessMode = GRANT_ACCESS;
+  entry.grfInheritance = NO_INHERITANCE;
+  entry.Trustee.TrusteeForm = TRUSTEE_IS_SID;
+  entry.Trustee.TrusteeType = TRUSTEE_IS_UNKNOWN;
+  entry.Trustee.ptstrName = static_cast<LPWSTR>(supervisor_sid);
+  return SetEntriesInAclW(1, &entry, old_acl, new_acl) == ERROR_SUCCESS;
+}
+
+bool GrantTokenQueryToSupervisor(HANDLE token, PSID supervisor_sid) {
+  DWORD size = 0;
+  GetKernelObjectSecurity(token, DACL_SECURITY_INFORMATION, nullptr, 0,
+                          &size);
+  if (size == 0) {
+    return false;
+  }
+  std::vector<BYTE> original(size);
+  if (!GetKernelObjectSecurity(token, DACL_SECURITY_INFORMATION,
+                               original.data(), size, &size)) {
+    return false;
+  }
+  BOOL present = FALSE;
+  BOOL defaulted = FALSE;
+  PACL old_acl = nullptr;
+  if (!GetSecurityDescriptorDacl(original.data(), &present, &old_acl,
+                                 &defaulted) ||
+      !present || old_acl == nullptr) {
+    return false;
+  }
+  PACL new_acl = nullptr;
+  if (!CreateSupervisorTokenQueryAcl(old_acl, supervisor_sid, &new_acl)) {
+    return false;
+  }
+  LocalPointer owned_acl(new_acl);
+  SECURITY_DESCRIPTOR updated{};
+  return InitializeSecurityDescriptor(&updated,
+                                      SECURITY_DESCRIPTOR_REVISION) &&
+         SetSecurityDescriptorDacl(&updated, TRUE, new_acl, FALSE) &&
+         SetKernelObjectSecurity(token, DACL_SECURITY_INFORMATION,
+                                 &updated);
+}
+
 // WRITE_RESTRICTED 仅在写访问时检查 restricting SID。产品 token 只放入本实例
 // execution/root capability；不能加入 Everyone，否则公共可写对象会绕过写根边界。
 bool CreateProductRestrictedPrimaryToken(PSID execution_sid,
                                          PSID capability_sid,
+                                         PSID supervisor_sid,
                                          UniqueHandle* restricted_token) {
   HANDLE raw_current = nullptr;
   if (!OpenProcessToken(GetCurrentProcess(),
                         TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY | TOKEN_QUERY |
                             TOKEN_ADJUST_DEFAULT | TOKEN_ADJUST_PRIVILEGES |
-                            TOKEN_ADJUST_SESSIONID,
+                            TOKEN_ADJUST_SESSIONID | READ_CONTROL | WRITE_DAC,
                         &raw_current)) {
     return false;
   }
@@ -2030,7 +2112,10 @@ bool CreateProductRestrictedPrimaryToken(PSID execution_sid,
   default_dacl_info.DefaultDacl = default_dacl;
   if (result != ERROR_SUCCESS ||
       !SetTokenInformation(restricted_token->get(), TokenDefaultDacl,
-                           &default_dacl_info, sizeof(default_dacl_info))) {
+                           &default_dacl_info, sizeof(default_dacl_info)) ||
+      (supervisor_sid != nullptr &&
+       !GrantTokenQueryToSupervisor(restricted_token->get(),
+                                    supervisor_sid))) {
     return false;
   }
 
@@ -2051,16 +2136,26 @@ bool CreateProductRestrictedPrimaryToken(PSID execution_sid,
 int RunProductBootstrap(const std::wstring& pipe_name,
                         const std::wstring& execution_sid_text,
                         const std::wstring& capability_sid_text,
-                        const std::wstring& desktop_name) {
+                        const std::wstring& desktop_name,
+                        const std::wstring& supervisor_sid_text) {
   PSID raw_execution_sid = nullptr;
   PSID raw_capability_sid = nullptr;
-  if (!ConvertStringSidToSidW(execution_sid_text.c_str(), &raw_execution_sid) ||
-      !ConvertStringSidToSidW(capability_sid_text.c_str(),
-                              &raw_capability_sid)) {
+  PSID raw_supervisor_sid = nullptr;
+  if (!ConvertStringSidToSidW(execution_sid_text.c_str(),
+                              &raw_execution_sid)) {
     return 21;
   }
   LocalPointer execution_sid(raw_execution_sid);
+  if (!ConvertStringSidToSidW(capability_sid_text.c_str(),
+                              &raw_capability_sid)) {
+    return 21;
+  }
   LocalPointer capability_sid(raw_capability_sid);
+  if (!ConvertStringSidToSidW(supervisor_sid_text.c_str(),
+                              &raw_supervisor_sid)) {
+    return 21;
+  }
+  LocalPointer supervisor_sid(raw_supervisor_sid);
   if (!WaitNamedPipeW(pipe_name.c_str(), 10000)) {
     return 22;
   }
@@ -2080,10 +2175,33 @@ int RunProductBootstrap(const std::wstring& pipe_name,
   SecureZeroMemory(request.proxy_token.data(),
                    request.proxy_token.size() * sizeof(wchar_t));
   request.proxy_token.clear();
+  const bool agent_runtime =
+      request.arguments.size() == 2 &&
+      request.arguments[1].rfind(L"\\\\.\\pipe\\CodeAtelier.AgentRuntime.",
+                                 0) == 0;
   UniqueHandle restricted_token;
   if (!CreateProductRestrictedPrimaryToken(
-          execution_sid.get(), capability_sid.get(), &restricted_token)) {
+          execution_sid.get(), capability_sid.get(),
+          agent_runtime ? supervisor_sid.get() : nullptr,
+          &restricted_token)) {
     return 25;
+  }
+  SECURITY_ATTRIBUTES process_security{};
+  LocalPointer process_descriptor;
+  if (agent_runtime) {
+    DWORD user_size = 0;
+    GetTokenInformation(restricted_token.get(), TokenUser, nullptr, 0,
+                        &user_size);
+    std::vector<BYTE> user_buffer(user_size);
+    if (user_size == 0 ||
+        !GetTokenInformation(restricted_token.get(), TokenUser,
+                             user_buffer.data(), user_size, &user_size) ||
+        !BuildRuntimeProcessSecurity(
+            reinterpret_cast<TOKEN_USER*>(user_buffer.data())->User.Sid,
+            execution_sid.get(), supervisor_sid.get(), &process_security,
+            &process_descriptor)) {
+      return 25;
+    }
   }
   std::wstring command_line =
       BuildCommandLine(request.executable, request.arguments);
@@ -2096,16 +2214,13 @@ int RunProductBootstrap(const std::wstring& pipe_name,
   startup.lpDesktop = const_cast<LPWSTR>(desktop_name.c_str());
   startup.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
   startup.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
-  const bool agent_runtime =
-      request.arguments.size() == 2 &&
-      request.arguments[1].rfind(L"\\\\.\\pipe\\CodeAtelier.AgentRuntime.",
-                                 0) == 0;
   startup.hStdError = GetStdHandle(agent_runtime ? STD_ERROR_HANDLE
                                                  : STD_OUTPUT_HANDLE);
   PROCESS_INFORMATION process{};
   if (!CreateProcessAsUserW(
           restricted_token.get(), request.executable.c_str(),
-          mutable_command.data(), nullptr, nullptr, TRUE,
+          mutable_command.data(),
+          agent_runtime ? &process_security : nullptr, nullptr, TRUE,
           CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT, nullptr,
           request.working_directory.c_str(), &startup, &process)) {
     return 26;
@@ -2522,7 +2637,8 @@ int RunProductSupervisor(const std::wstring& state_path,
   std::wstring executable = CurrentExecutablePath();
   std::vector<std::wstring> bootstrap_arguments = {
       L"--bootstrap", pipe_name, SidToString(execution_sid.get()),
-      SidToString(capability_sid.get()), desktop_name};
+      SidToString(capability_sid.get()), desktop_name,
+      state.installed_by_sid};
   std::wstring command_line =
       BuildCommandLine(executable, bootstrap_arguments);
   std::vector<wchar_t> mutable_command(command_line.begin(),
@@ -2878,8 +2994,8 @@ int wmain(int argc, wchar_t* argv[]) {
   if (argc == 4 && std::wstring(argv[1]) == L"--launch-agent-runtime") {
     return RunProductSupervisor(argv[2], argv[3], true);
   }
-  if (argc == 6 && std::wstring(argv[1]) == L"--bootstrap") {
-    return RunProductBootstrap(argv[2], argv[3], argv[4], argv[5]);
+  if (argc == 7 && std::wstring(argv[1]) == L"--bootstrap") {
+    return RunProductBootstrap(argv[2], argv[3], argv[4], argv[5], argv[6]);
   }
   std::wcerr
       << L"CodeAtelier Sandbox supervisor accepts only fixed product modes.\n";

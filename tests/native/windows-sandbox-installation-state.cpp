@@ -9,8 +9,10 @@
  * 3. 用真实二进制 journal 帧验证恢复入口接受已安装授权的合法标志，普通撤销入口仍拒绝这些标志。
  * 4. 在进程内 ACL 上验证新增的安装者读取 ACE 不丢弃既有 ACE，也不授予写入。
  * 5. 核对 bootstrap pipe 不授予实例 SID，Agent Runtime 专属 pipe 才授予本实例 restricting SID，避免 WRITE_RESTRICTED 客户端无法连接；真实受限 token 连接仍由安装后产品验收证明。
- * 6. 显式 --window-station-probe 在真实 Windows 会话中用不同账户替身 SID 创建并关闭两个非交互式 station/desktop 句柄，验证已有 station 补装第二个账户 ACE、实例授权、原 station 恢复，以及带完整 station/desktop 名称的 USER32 子进程启动；默认 native build 不运行此 OS 探针。
- * 7. 删除临时夹具，以退出码报告回归结果。
+ * 6. 核对 Supervisor 只能重新查询 Runtime process/token，不能凭该授权终止、注入或修改其安全描述符。
+ * 7. 显式 --token-query-probe 用真实受限 token 验证 Supervisor 查询 ACE 可安装；默认 native build 不运行此 OS 探针。
+ * 8. 显式 --window-station-probe 在真实 Windows 会话中用不同账户替身 SID 创建并关闭两个非交互式 station/desktop 句柄，验证已有 station 补装第二个账户 ACE、实例授权、原 station 恢复，以及带完整 station/desktop 名称的 USER32 子进程启动；默认 native build 不运行此 OS 探针。
+ * 9. 删除临时夹具，以退出码报告回归结果。
  */
 
 #define CODEATELIER_INSTALLATION_STATE_TEST
@@ -140,6 +142,108 @@ bool TestRuntimePipeSecurity() {
     return fail(L"shape");
   }
   return true;
+}
+
+bool TestRuntimeInspectorAcl() {
+  SidPointer account = CreateCapabilitySid();
+  SidPointer execution = CreateCapabilitySid();
+  SidPointer supervisor = CreateCapabilitySid();
+  if (!account || !execution || !supervisor) {
+    return false;
+  }
+
+  SECURITY_ATTRIBUTES process_attributes{};
+  LocalPointer process_descriptor;
+  if (!BuildRuntimeProcessSecurity(account.get(), execution.get(),
+                                   supervisor.get(), &process_attributes,
+                                   &process_descriptor)) {
+    return false;
+  }
+  BOOL present = FALSE;
+  BOOL defaulted = FALSE;
+  PACL process_acl = nullptr;
+  if (!GetSecurityDescriptorDacl(process_descriptor.get(), &present,
+                                 &process_acl, &defaulted) ||
+      !present || !process_acl ||
+      !AclHasExplicitGrantForSid(process_acl, account.get()) ||
+      !AclHasExplicitGrantForSid(process_acl, execution.get()) ||
+      !AclHasExplicitGrantForSid(process_acl, supervisor.get())) {
+    return false;
+  }
+
+  EXPLICIT_ACCESSW existing{};
+  existing.grfAccessPermissions = TOKEN_QUERY | WRITE_DAC;
+  existing.grfAccessMode = GRANT_ACCESS;
+  existing.Trustee.TrusteeForm = TRUSTEE_IS_SID;
+  existing.Trustee.ptstrName = static_cast<LPWSTR>(account.get());
+  PACL old_token_acl = nullptr;
+  if (SetEntriesInAclW(1, &existing, nullptr, &old_token_acl) !=
+      ERROR_SUCCESS) {
+    return false;
+  }
+  LocalPointer owned_old_token_acl(old_token_acl);
+  PACL token_acl = nullptr;
+  if (!CreateSupervisorTokenQueryAcl(old_token_acl, supervisor.get(),
+                                     &token_acl)) {
+    return false;
+  }
+  LocalPointer owned_token_acl(token_acl);
+
+  TRUSTEEW supervisor_trustee{};
+  supervisor_trustee.TrusteeForm = TRUSTEE_IS_SID;
+  supervisor_trustee.ptstrName = static_cast<LPWSTR>(supervisor.get());
+  ACCESS_MASK process_rights = 0;
+  ACCESS_MASK token_rights = 0;
+  if (GetEffectiveRightsFromAclW(process_acl, &supervisor_trustee,
+                                 &process_rights) != ERROR_SUCCESS ||
+      GetEffectiveRightsFromAclW(token_acl, &supervisor_trustee,
+                                 &token_rights) != ERROR_SUCCESS) {
+    return false;
+  }
+  return process_rights == PROCESS_QUERY_LIMITED_INFORMATION &&
+         token_rights == TOKEN_QUERY &&
+         AclHasExplicitGrantForSid(token_acl, account.get());
+}
+
+bool TestRestrictedTokenInspector() {
+  SidPointer execution = CreateCapabilitySid();
+  SidPointer capability = CreateCapabilitySid();
+  SidPointer supervisor = CreateCapabilitySid();
+  UniqueHandle token;
+  UniqueHandle ordinary_token;
+  if (!execution || !capability || !supervisor ||
+      !CreateProductRestrictedPrimaryToken(
+          execution.get(), capability.get(), supervisor.get(), &token) ||
+      !CreateProductRestrictedPrimaryToken(
+          execution.get(), capability.get(), nullptr, &ordinary_token)) {
+    std::wcerr << L"TOKEN_QUERY_PROBE_STAGE create win32=" << GetLastError()
+               << L"\n";
+    return false;
+  }
+  DWORD size = 0;
+  GetKernelObjectSecurity(token.get(), DACL_SECURITY_INFORMATION, nullptr, 0,
+                          &size);
+  std::vector<BYTE> descriptor(size);
+  BOOL present = FALSE;
+  BOOL defaulted = FALSE;
+  PACL acl = nullptr;
+  if (size == 0 ||
+      !GetKernelObjectSecurity(token.get(), DACL_SECURITY_INFORMATION,
+                               descriptor.data(), size, &size) ||
+      !GetSecurityDescriptorDacl(descriptor.data(), &present, &acl,
+                                 &defaulted) ||
+      !present || !acl) {
+    std::wcerr << L"TOKEN_QUERY_PROBE_STAGE dacl win32=" << GetLastError()
+               << L"\n";
+    return false;
+  }
+  TRUSTEEW inspector{};
+  inspector.TrusteeForm = TRUSTEE_IS_SID;
+  inspector.ptstrName = static_cast<LPWSTR>(supervisor.get());
+  ACCESS_MASK rights = 0;
+  return GetEffectiveRightsFromAclW(acl, &inspector, &rights) ==
+             ERROR_SUCCESS &&
+         rights == TOKEN_QUERY;
 }
 
 bool ReadRevokeFixture(const std::filesystem::path& path, bool journal_mode) {
@@ -304,6 +408,14 @@ int wmain(int argc, wchar_t* argv[]) {
     std::wcout << L"SANDBOX_WINDOW_STATION_PROBE PASS\n";
     return 0;
   }
+  if (argc == 2 && std::wstring(argv[1]) == L"--token-query-probe") {
+    if (!TestRestrictedTokenInspector()) {
+      std::wcerr << L"SANDBOX_TOKEN_QUERY_PROBE FAIL\n";
+      return 1;
+    }
+    std::wcout << L"SANDBOX_TOKEN_QUERY_PROBE PASS\n";
+    return 0;
+  }
   if (argc != 1) {
     return 2;
   }
@@ -325,7 +437,8 @@ int wmain(int argc, wchar_t* argv[]) {
           TestGrantJournalFlags(fixture, 6, true, false) &&
           TestGrantJournalFlags(fixture, 7, false, false) &&
           TestGrantJournalFlags(fixture, 2, false, true);
-  valid = valid && TestInstallerAccountAcl() && TestRuntimePipeSecurity();
+  valid = valid && TestInstallerAccountAcl() && TestRuntimePipeSecurity() &&
+          TestRuntimeInspectorAcl();
   std::error_code remove_error;
   std::filesystem::remove(fixture, remove_error);
   if (!valid || remove_error) {
