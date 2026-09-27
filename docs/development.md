@@ -324,7 +324,7 @@ macOS/Linux 调用这些命令只输出 `SKIP`，不启动 PowerShell 或任何 
 
 按职责划分文件，保持 strict 类型检查；协议边界的动态结构应由 schema 验证。变更前读 AGENTS.md 与需求文档。核心行为修改添加对应行为测试，纯文档不写形式化测试。每个独立可验证增量创建 commit，同步更新文档；隔一段时间批量 push。
 
-CI 使用 GitHub 托管的 Windows、Linux、macOS runner 执行 pnpm check，Linux Chromium 执行 UI 验收。
+CI 暂时仅允许在 GitHub Actions 页面手动触发，不随 push 或 pull request 自动运行。触发后使用 GitHub 托管的 Windows、Linux、macOS runner 执行 pnpm check，Linux Chromium 执行 UI 验收。
 
 `pnpm test`、`pnpm test:watch`、`pnpm test:e2e` 和 check 中的测试模式构建均由 `scripts/test-runner.ts` 以固定白名单环境启动，Vitest 不继承父进程配置、Vite 的 test 模式不读取 dotenv，Playwright 测试后端也不经包管理器路径启动；因此不使用真实 API key、生产 `.env` 或系统中的 CodeAtelier 配置。
 

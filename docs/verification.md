@@ -99,6 +99,7 @@
 
 ## GitHub CI
 
+- 2026-09-27 起暂时关闭 push 和 pull request 自动触发；`Checks` 工作流仍可在 GitHub Actions 页面手动运行。此期间的提交不能视为已有跨平台 CI 验证。
 - 初版提交 cfac6fe 的 Windows、Linux、macOS 核心检查及 Linux Chromium UI 验收全部通过。
 - [已完成的跨平台运行](https://github.com/harryshan/CodeAtelier/actions/runs/34068860495)。后续新增回归以对应提交的 CI 结果为准。
 

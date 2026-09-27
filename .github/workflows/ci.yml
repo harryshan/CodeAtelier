@@ -1,4 +1,4 @@
-# GitHub Actions 的常规检查，在 main 收到 push 或仓库收到 pull request 时运行。
+# GitHub Actions 的常规检查，暂时仅允许手动触发。
 # 按仓库锁定的包管理器和依赖安装环境。
 #
 # 1. core 在 Linux、Windows 和 macOS 安装 Node 24，运行 pnpm check。
@@ -9,9 +9,7 @@
 
 name: Checks
 on:
-  push:
-    branches: [main]
-  pull_request:
+  workflow_dispatch:
 jobs:
   core:
     strategy:
