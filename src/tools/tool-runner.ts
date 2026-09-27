@@ -4,7 +4,7 @@
  *
  * 1. ignored 列出遍历时跳过的目录；ToolContext 定义依赖，readHashes 记住本任务读过的文件版本；forCall 共享该状态但隔离事件关联，任务收尾由根 runner.close 等待读取线程退出。
  * 2. currentFileHash 仅探测安全工作区文件的字节哈希，不更新读取凭证；access 解析路径并申请必要的权限；entries 限量遍历，commandGrant 为可复用命令计算指纹。
- * 3. execute 先通过 parseToolArguments 校验参数并解开 Git 的 request 包装（兼容历史扁平调用）。统一的精确编辑和显式新建文件均分流给共享读取哈希的 FileEditor，已有文件成功编辑后会作废对应哈希；Runtime 的 push 只交给 Broker 进行预检、审批和宿主执行，越界命令经 run_with_permissions adapter 审批后也在宿主执行。
+ * 3. execute 先通过 parseToolArguments 校验参数并解开 Git 的 request 包装（兼容历史扁平调用）。统一的精确编辑和显式新建文件均分流给共享读取哈希的 FileEditor，已有文件成功编辑后会作废对应哈希；Runtime 的全部 Git action 交给 Broker 宿主执行，push 额外预检审批，越界命令经 run_with_permissions adapter 审批后也在宿主执行。
  * 4. 每个 execution instance 只读取 Broker 为该 task/instance 保存的状态；并发任务的 fallback/unknown 不会污染其它 PID、session 或 trace 记录。
  * 5. 只读分支只处理读取；目录浏览和代码搜索均由 run_command 在审批后执行。read_file 在主线程完成安全访问、类型检查和异步字节读取，再交给共享 Worker 池处理全文哈希与行扫描；可选 trace 将检查、读取及 Worker 阶段分开计时，不保存文件内容。
  *
@@ -25,8 +25,8 @@ import { resolveTarget, regularFile, sensitive, inside } from "./paths.js";
 import { executeProcess, executeProcessFileBacked } from "./process.js";
 import { commandShell, resolveExecutablePath } from "./command-shell.js";
 import { FileEditor } from "./file-editor.js";
-import { GitToolRunner, containsGitCommand } from "./git.js";
-import type { GitProcessResult } from "./git.js";
+import { GitToolRunner, containsGitCommand, type GitRequest } from "./git.js";
+import type { GitProcessResult, GitToolResult } from "./git.js";
 import { ReadFileWorkerPool } from "./read-file-worker-pool.js";
 import type {
   ReadFileTrace,
@@ -80,6 +80,12 @@ export interface ToolContext {
     signal: AbortSignal,
     toolCallId?: string,
   ) => Promise<GitProcessResult>;
+  /** Agent Runtime 的全部 Git action 通过已认证 IPC 交给 Broker 宿主执行。 */
+  gitExecute?: (
+    request: GitRequest,
+    signal: AbortSignal,
+    toolCallId?: string,
+  ) => Promise<GitToolResult>;
   /** Runtime 只提交命令和理由；Broker 审批后返回取得执行槽才可消费的一次性宿主执行授权。 */
   prepareRunWithPermissions?: (
     request: CapabilityCommandRequest,
@@ -201,6 +207,7 @@ export class ToolRunner {
    */
   forCall(callId: string) {
     const parentGitPush = this.ctx.gitPush;
+    const parentGitExecute = this.ctx.gitExecute;
     const parentPrepareRunWithPermissions = this.ctx.prepareRunWithPermissions;
 
     return new ToolRunner(
@@ -209,6 +216,9 @@ export class ToolRunner {
         sandbox: this.sandbox,
         gitPush: parentGitPush
           ? (signal) => parentGitPush(signal, callId)
+          : undefined,
+        gitExecute: parentGitExecute
+          ? (request, signal) => parentGitExecute(request, signal, callId)
           : undefined,
         prepareRunWithPermissions: parentPrepareRunWithPermissions
           ? (request, signal) =>
@@ -611,14 +621,17 @@ export class ToolRunner {
     }
 
     if (name === "git") {
-      if (
-        args.action === "push" &&
-        (this.ctx.gitPush || this.ctx.executionBoundary === "agent-runtime")
-      ) {
-        if (!this.ctx.gitPush) {
-          throw new Error("Agent Runtime 未连接 Broker Git push adapter。");
+      if (this.ctx.executionBoundary === "agent-runtime") {
+        if (!this.ctx.gitExecute) {
+          throw new Error("Agent Runtime 未连接 Broker Git adapter。");
         }
 
+        await startExecution();
+
+        return this.ctx.gitExecute(args, this.ctx.signal);
+      }
+
+      if (args.action === "push" && this.ctx.gitPush) {
         await startExecution();
 
         return this.ctx.gitPush(this.ctx.signal);

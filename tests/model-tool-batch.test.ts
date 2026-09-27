@@ -3,7 +3,7 @@
  *
  * 1. 用真实参数 schema 构造宿主/Runtime 工具图，确认节点与依赖一致且 push 独占仅适用于 Runtime。
  * 2. 验证 subagent 调用只在本任务开启后通过结构化图解析，宿主与 Runtime 共用同一拒绝规则。
- * 3. 用真实 DAG 调度器和失败结果验证失败/unknown 文件与非零退出会阻断后继，而成功结果允许继续。
+ * 3. 用真实 DAG 调度器和失败结果验证失败/unknown 文件、平面及 Git 写入嵌套非零退出会阻断后继，而成功结果允许继续。
  */
 
 import { expect, it } from "vitest";
@@ -132,6 +132,11 @@ it.each([
   [{ error: "failed" }, false],
   [{ exitCode: 1 }, false],
   [{ exitCode: null }, false],
+  [{ paths: ["change.txt"], add: { exitCode: 1 } }, false],
+  [
+    { paths: ["change.txt"], stage: { exitCode: 0 }, commit: { exitCode: 1 } },
+    false,
+  ],
   [{ files: [{ status: "failed" }] }, false],
   [{ files: [{ status: "unknown" }] }, false],
   [{ exitCode: 0 }, true],

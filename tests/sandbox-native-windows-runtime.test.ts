@@ -288,6 +288,8 @@ describe.skipIf(process.platform !== "win32")(
 
     it("projects the private HOME/TEMP as a writable manifest root", async () => {
       const root = await temp();
+      const hostConfig = path.join(root, ".gitconfig");
+      await writeFile(hostConfig, "[user]\n\tname = private-host-name\n");
       const readable = await temp();
       const writable = await temp();
       const runtime = new NativeWindowsSandboxRuntime({
@@ -316,6 +318,11 @@ describe.skipIf(process.platform !== "win32")(
       );
 
       expect(prepared.privateDirectory).toBe(prepared.readWriteRoots[0]);
+      expect(prepared.gitConfigFiles).toEqual([prepared.gitGlobalConfigPath]);
+      expect(prepared.gitConfigFiles).not.toContain(hostConfig);
+      await expect(
+        readFile(prepared.gitGlobalConfigPath!, "utf8"),
+      ).resolves.toBe("");
       expect(prepared.readOnlyRoots).toEqual(
         expect.arrayContaining([expect.any(String), readable]),
       );

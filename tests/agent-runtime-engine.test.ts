@@ -8,7 +8,7 @@
  * 4. 取消等待 Runtime 写回可信终态后才关闭 transport；无法证明终态时仍保持 unknown。
  * 5. run_with_permissions 经低成本模型审批后由 Broker 宿主进程执行，单独记录 host-process，而不创建 Capability Runner。
  * 6. Runtime IPC 在可信终态前断开时，Engine 以 unknown 关闭 launcher 并持久化可能副作用。
- * 7. Broker 宿主 Git 先做固定预检、审批，再启动 push；已启动后取消仍记录远端副作用可能已经发生。
+ * 7. Broker 宿主 Git 处理普通 action 的结果形状和写入归因；push 先做固定预检、审批，已启动后取消仍记录可能的远端副作用。
  * 8. launcher 证明 Runtime 尚未启动且 provision 已回滚时，Engine 明确记录 host fallback 并继续宿主 loop。
  */
 
@@ -702,9 +702,10 @@ it("keeps a cancelled Broker Git push out of the Sandbox Runner", async () => {
 
   try {
     await expect(
-      (engine as any).executeBrokerGitPush(
+      (engine as any).executeBrokerGit(
         task,
         root,
+        { action: "push" },
         "push-call",
         controller.signal,
         config.settings,
@@ -722,6 +723,122 @@ it("keeps a cancelled Broker Git push out of the Sandbox Runner", async () => {
         sideEffectsPossible: true,
       }),
     });
+  } finally {
+    await engine.close();
+    store.close();
+  }
+});
+
+it("runs ordinary Runtime Git through the Broker host process", async () => {
+  const root = await temp();
+  await runFile("git", ["init", "-b", "main"], { cwd: root });
+  const config = new Config(await temp());
+  config.sandbox.enabled = true;
+  const store = new Store(path.join(config.directory, "db"));
+  const session = store.create(root, "Broker Git status test");
+  const task = store.createTask(session.id);
+  const engine = new Engine(store, config, pino({ enabled: false }), () => ({
+    async run() {
+      return { text: "", output: [] };
+    },
+  }));
+  const events: Array<{ type: string; data: any }> = [];
+  const sandboxCommand = vi.spyOn(engine.sandbox, "executeCommand");
+
+  try {
+    const result = await (engine as any).executeBrokerGit(
+      task,
+      root,
+      { action: "status" },
+      "status-call",
+      new AbortController().signal,
+      config.settings,
+      (type: string, data: any) => events.push({ type, data }),
+    );
+    expect(result).toMatchObject({ exitCode: 0 });
+    expect(result.output).toContain("main");
+    expect(sandboxCommand).not.toHaveBeenCalled();
+    expect(events).toContainEqual({
+      type: "execution_instance",
+      data: expect.objectContaining({
+        toolCallId: "status-call",
+        kind: "broker-git",
+        mode: "host-process",
+        state: "completed",
+        sandboxApplied: false,
+        pid: expect.any(Number),
+      }),
+    });
+  } finally {
+    await engine.close();
+    store.close();
+  }
+});
+
+it("preserves Broker Git add and commit results and write attribution", async () => {
+  const root = await temp();
+  await runFile("git", ["init", "-b", "main"], { cwd: root });
+  await runFile("git", ["config", "user.name", "Sandbox Test"], { cwd: root });
+  await runFile("git", ["config", "user.email", "sandbox@example.test"], {
+    cwd: root,
+  });
+  await writeFile(path.join(root, "change.txt"), "reviewed change\n");
+  const config = new Config(await temp());
+  config.sandbox.enabled = true;
+  const store = new Store(path.join(config.directory, "db"));
+  const session = store.create(root, "Broker Git write test");
+  const task = store.createTask(session.id);
+  const engine = new Engine(store, config, pino({ enabled: false }), () => ({
+    async run() {
+      return { text: "", output: [] };
+    },
+  }));
+  const events: Array<{ type: string; data: any }> = [];
+
+  try {
+    const executeGit = (request: unknown, callId: string) =>
+      (engine as any).executeBrokerGit(
+        task,
+        root,
+        request,
+        callId,
+        new AbortController().signal,
+        config.settings,
+        (type: string, data: any) => events.push({ type, data }),
+      );
+    const added = await executeGit(
+      { action: "add", paths: ["change.txt"] },
+      "add-call",
+    );
+    expect(added).toMatchObject({
+      paths: ["change.txt"],
+      add: { exitCode: 0 },
+    });
+    const committed = await executeGit(
+      {
+        action: "commit",
+        message: "Record reviewed change",
+        paths: ["change.txt"],
+      },
+      "commit-call",
+    );
+    expect(committed).toMatchObject({
+      paths: ["change.txt"],
+      stage: { exitCode: 0 },
+      commit: { exitCode: 0 },
+    });
+    for (const callId of ["add-call", "commit-call"]) {
+      expect(events).toContainEqual({
+        type: "execution_instance",
+        data: expect.objectContaining({
+          toolCallId: callId,
+          kind: "broker-git",
+          mode: "host-process",
+          state: "completed",
+          sideEffectsPossible: true,
+        }),
+      });
+    }
   } finally {
     await engine.close();
     store.close();

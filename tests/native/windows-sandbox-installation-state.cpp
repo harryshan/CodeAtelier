@@ -9,12 +9,13 @@
  * 3. 用真实二进制 journal 帧验证恢复入口接受已安装授权的合法标志，普通撤销入口仍拒绝这些标志。
  * 4. 在进程内 ACL 上验证新增的安装者读取 ACE 不丢弃既有 ACE，也不授予写入。
  * 5. 核对 bootstrap pipe 不授予实例 SID，Agent Runtime 专属 pipe 才授予本实例 restricting SID，避免 WRITE_RESTRICTED 客户端无法连接；真实受限 token 连接仍由安装后产品验收证明。
- * 6. 用真实句柄验证 bootstrap attestation 只复制查询权限，绑定进程 PID 并拒绝畸形或错误 PID。
- * 7. 显式 --handle-transfer-probe 用独立子进程和匿名管道验证句柄帧的有界等待、跨进程复制和 PID 绑定；默认 native build 不运行此 OS 探针。
- * 8. 显式 --runtime-descriptor-probe 输出真实原生首帧，供跨语言回归核对 Node 解码器；不启动 Supervisor。
- * 9. 显式 --runtime-duplex-probe 在真实 Named Pipe 上让读取方等待第二帧时写入 Broker 回复，证明两个方向不会相互阻塞；以独立测试进程执行并设超时。
- * 10. 显式 --window-station-probe 在真实 Windows 会话中用不同账户替身 SID 创建并关闭两个非交互式 station/desktop 句柄，验证已有 station 补装第二个账户 ACE、实例授权、原 station 恢复，以及带完整 station/desktop 名称的 USER32 子进程启动；默认 native build 不运行此 OS 探针。
- * 11. 删除临时夹具，以退出码报告回归结果。
+ * 6. 从产品 token 构造函数创建真实受限 token，核对 execution/root capability 和 Everyone 均在 restricting SID 列表。
+ * 7. 用真实句柄验证 bootstrap attestation 只复制查询权限，绑定进程 PID 并拒绝畸形或错误 PID。
+ * 8. 显式 --handle-transfer-probe 用独立子进程和匿名管道验证句柄帧的有界等待、跨进程复制和 PID 绑定；默认 native build 不运行此 OS 探针。
+ * 9. 显式 --runtime-descriptor-probe 输出真实原生首帧，供跨语言回归核对 Node 解码器；不启动 Supervisor。
+ * 10. 显式 --runtime-duplex-probe 在真实 Named Pipe 上让读取方等待第二帧时写入 Broker 回复，证明两个方向不会相互阻塞；以独立测试进程执行并设超时。
+ * 11. 显式 --window-station-probe 在真实 Windows 会话中用不同账户替身 SID 创建并关闭两个非交互式 station/desktop 句柄，验证已有 station 补装第二个账户 ACE、实例授权、原 station 恢复，以及带完整 station/desktop 名称的 USER32 子进程启动；默认 native build 不运行此 OS 探针。
+ * 12. 删除临时夹具，以退出码报告回归结果。
  */
 
 #define CODEATELIER_INSTALLATION_STATE_TEST
@@ -144,6 +145,32 @@ bool TestRuntimePipeSecurity() {
     return fail(L"shape");
   }
   return true;
+}
+
+bool TestProductTokenRestrictingSids() {
+  SidPointer execution = CreateCapabilitySid();
+  SidPointer capability = CreateCapabilitySid();
+  std::array<BYTE, SECURITY_MAX_SID_SIZE> everyone{};
+  DWORD everyone_size = static_cast<DWORD>(everyone.size());
+  if (!execution || !capability ||
+      !CreateWellKnownSid(WinWorldSid, nullptr, everyone.data(),
+                          &everyone_size)) {
+    return false;
+  }
+
+  UniqueHandle token;
+  if (!CreateProductRestrictedPrimaryToken(execution.get(), capability.get(),
+                                            &token)) {
+    std::wcerr << L"PRODUCT_TOKEN_PROBE stage=create win32=" << GetLastError()
+               << L"\n";
+    return false;
+  }
+
+  return TokenContainsSid(token.get(), TokenRestrictedSids,
+                          execution.get()) &&
+         TokenContainsSid(token.get(), TokenRestrictedSids,
+                          capability.get()) &&
+         TokenContainsSid(token.get(), TokenRestrictedSids, everyone.data());
 }
 
 bool TestRuntimeHandleAttestation() {
@@ -581,7 +608,7 @@ int wmain(int argc, wchar_t* argv[]) {
           TestGrantJournalFlags(fixture, 7, false, false) &&
           TestGrantJournalFlags(fixture, 2, false, true);
   valid = valid && TestInstallerAccountAcl() && TestRuntimePipeSecurity() &&
-          TestRuntimeHandleAttestation();
+          TestProductTokenRestrictingSids() && TestRuntimeHandleAttestation();
   std::error_code remove_error;
   std::filesystem::remove(fixture, remove_error);
   if (!valid || remove_error) {

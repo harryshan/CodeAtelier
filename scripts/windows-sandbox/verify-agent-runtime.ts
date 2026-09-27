@@ -3,12 +3,12 @@
  * 本脚本由用户显式执行，不属于 pnpm test/check，也不调用真实模型、外部网络、真实凭据或管理员安装操作。
  *
  * 1. 在仓库 .local 下建立一次性工作区和 Broker 数据库，并强制启用 Windows Sandbox 产品组装。
- * 2. 内存模型驱动固定 Agent Runtime 创建标记文件，再在同一工具批次独立执行只读 Git status 与普通命令，使单一路径失败不遮蔽另一条诊断，并核对专用账户输出回传。
+ * 2. 内存模型驱动固定 Agent Runtime 创建标记文件，再在同一工具批次独立执行 Broker 宿主 Git status 与 Runtime 普通命令，使单一路径失败不遮蔽另一条诊断，并核对专用账户输出回传。
  * 3. 以内部已标记任务让安装态独立 Worker 只读该文件，核对规划、模型 IPC、报告原子收集、tracing 和退出后的租约。
  * 4. 请求 Broker 宿主命令，经低成本模型审批后写入 sibling 标记，核对 host-process 归因和结果回传；Capability Runner 暂停使用。
  * 5. 初始化一次性 Git 仓库，把 HTTPS remote 指向不可用的回环端口；验证 Broker 宿主 Git 预检、审批、失败结果回传和 Runtime clean lease release，全程不连接公网。
  * 6. 再让模型请求保持进行中并主动取消任务，核对 Job 终止、cancelled 归因和 generation lease 清空。
- * 7. Agent Runtime 必须在专用账户，获批宿主命令及 Git push 必须明确标为 host-process；不得有 fallback/unknown。失败现场保留供人工对账。
+ * 7. Agent Runtime 必须在专用账户，获批宿主命令及全部 Git action 必须明确标为 host-process；不得有 fallback/unknown。失败现场保留供人工对账。
  */
 
 import { execFile } from "node:child_process";
@@ -311,14 +311,24 @@ function assertRuntimeCommand(store: Store, sessionId: string) {
   const gitStatus = (
     gitResult?.data as { result?: { exitCode?: number } } | undefined
   )?.result;
+  const brokerGit = events.some(
+    (event) =>
+      event.type === "execution_instance" &&
+      (event.data as Record<string, unknown>).kind === "broker-git" &&
+      (event.data as Record<string, unknown>).toolCallId ===
+        "runtime-local-git-status" &&
+      (event.data as Record<string, unknown>).mode === "host-process" &&
+      (event.data as Record<string, unknown>).state === "completed",
+  );
   if (
     !processStarted ||
+    !brokerGit ||
     gitStatus?.exitCode !== 0 ||
     commandResult?.exitCode !== 0 ||
     commandResult.sandbox?.applied !== true ||
     !commandResult.output?.includes(runtimeCommandOutput)
   ) {
-    fail("ordinary command did not run inside the installed Runtime");
+    fail("Broker Git or ordinary Runtime command did not complete correctly");
   }
 
   assertCompletedRuntime(store, sessionId);

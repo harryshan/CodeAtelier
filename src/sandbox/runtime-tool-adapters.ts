@@ -1,18 +1,22 @@
 /**
- * 在 Agent Runtime 内实现 ToolRunner 所需的审批、项目记忆、Broker 宿主 Git push 和宿主命令窄接口。
+ * 在 Agent Runtime 内实现 ToolRunner 所需的审批、项目记忆、Broker 宿主 Git 和宿主命令窄接口。
  * 审批 UI、分类模型和平台数据目录都留在 Broker Host；Runtime 只发送当前任务绑定的固定 schema 请求。
  *
  * 1. RuntimeApprovalClient 忽略调用方提供的 session/task 路由字段，Broker 使用已认证 identity 归属请求。
  * 2. grantKey 原样绑定审批语义，但不能改变 operation；Broker ApprovalManager 决定是否允许复用。
  * 3. RuntimeMemoryClient 不接收宿主路径，Broker handler 固定使用 identity 对应工作区和项目记忆服务。
- * 4. RuntimeGitPushClient 只发送当前 toolCallId；Broker 完成 Git 预检、审批和宿主推送。
+ * 4. RuntimeGitClient 发送受限 action 和 toolCallId，保留各 action 的结果形状；旧 RuntimeGitPushClient 只发送调用 ID，Broker 完成 push 预检与审批。
  * 5. RuntimeCapabilityClient 先发送命令、理由和 toolCallId 完成 Broker 审批；调用方取得
  *    Tool worker 槽后才用一次性 authorizationId 启动 Broker 宿主命令，审批等待不会占用执行槽。
  */
 
 import type { Approval } from "../shared/types.js";
 import type { RuntimeIpcPeer } from "./runtime-ipc-peer.js";
-import { runtimeGitPushResultSchema } from "./runtime-ipc-protocol.js";
+import {
+  runtimeGitPushResultSchema,
+  runtimeGitResultSchema,
+} from "./runtime-ipc-protocol.js";
+import type { GitRequest } from "../tools/git.js";
 import {
   capabilityCommandResultSchema,
   type CapabilityCommandRequest,
@@ -61,6 +65,20 @@ export class RuntimeGitPushClient {
     const result = await this.peer.request("git_push", { toolCallId }, signal);
 
     return runtimeGitPushResultSchema.parse(result);
+  }
+}
+
+export class RuntimeGitClient {
+  constructor(private peer: RuntimeIpcPeer) {}
+
+  async execute(request: GitRequest, toolCallId: string, signal: AbortSignal) {
+    const result = await this.peer.request(
+      "git_execute",
+      { toolCallId, request },
+      signal,
+    );
+
+    return runtimeGitResultSchema.parse(result);
   }
 }
 

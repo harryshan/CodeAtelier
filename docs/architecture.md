@@ -25,7 +25,7 @@ Broker Host（可信宿主边界）
   └─ 经认证、固定 schema 的 IPC
        ↕
 Sandbox Process（单一 CodeAtelierSandbox 账户；每实例独立 lease/capability/Job）
-  ├─ Agent Runtime：常驻 Node.js agent loop、工具计划、文件工具、本地 Git 与命令；无直接网络（Windows 启动/传输已接入，待提升环境验收）
+  ├─ Agent Runtime：常驻 Node.js agent loop、工具计划、文件工具与普通命令；无直接网络（Windows 启动/传输已接入，待提升环境验收）
   ├─ Broker Git push：宿主 Git 预检、审批与执行；旧 Push Runner 代码暂停使用
   ├─ 账户既有读取权 + 工作区、显式 read/write roots 与精确只读 Git config/include 图
   └─ WRITE_RESTRICTED 根 capability、产品依赖与私有临时目录；不继承宿主 profile/凭据
@@ -35,7 +35,7 @@ Windows 启用时的产品调用链现为 `Broker Engine → SandboxBroker launc
 
 `run_with_permissions` 由 Runtime 通过认证 IPC 请求 Broker 审批；获准后 Broker 以宿主用户权限执行完整命令，单独记录 `broker-command/host-process`。该命令不在专用账户、Job、ACL 或 WFP 边界内。Capability Runner 实现保留但暂停使用。
 
-Git push 是这条链的宿主执行分支：`Agent Runtime（loop 阻塞）→ Runtime IPC toolCallId → Broker Git 预检 → 审批 → Broker 宿主 Git push`。原 Agent Runtime 保持存活，但不取得宿主网络或凭据能力；Push Runner 代码保留且暂停使用。
+全部 Git 工具 action 都是宿主执行分支：`Agent Runtime → Runtime IPC 固定 action/toolCallId → Broker 宿主 Git`；其中 push 还经过 Broker 预检和逐次审批，并独占工具批次。原 Agent Runtime 保持存活，但不取得宿主网络或凭据能力；Push Runner 代码保留且暂停使用。
 
 安装版 Runtime 的 argv 只携带 Supervisor 生成的本机任务 pipe 名，identity/nonce 由有界首帧交付；产品 build 生成面向 Node 24 的单文件 Runtime 与独立 compaction、read_file、subagent Worker bundle，安装器把 Node 24 和 bundle 固定到受保护目录，TypeScript/native self-check 复核 v4 state 中的 SHA-256。
 
@@ -97,11 +97,11 @@ Broker 先建立不可变 AccessManifest，supervisor 再以原对象 handle 和
 
 当前产品已把常驻 AgentRuntimeService、C++ Supervisor launcher、身份绑定 Named Pipe、model/session/approval/memory adapter、ACL journal 和 generation drain 接到同一生命周期；relay、Push Runner 和 Capability Runner 的实现保留但不再由产品工具触发。
 
-Sandbox 沿用 1～4 个不同工作区并发和同工作区串行；账户 SID 使所有并发实例可能读取活动 manifest 的授权根，同账户 peer 也可能终止、注入或检查其它 Runtime。不同对话不是彼此的 OS 安全边界，每实例 capability 只承诺经验证的直接及后代文件写入限制。专用账户不继承宿主用户私有权限，但既有公共/机器 ACL 仍可能允许额外读取。
+Sandbox 沿用 1～4 个不同工作区并发和同工作区串行；账户 SID 使所有并发实例可能读取活动 manifest 的授权根，同账户 peer 也可能终止、注入或检查其它 Runtime。不同对话不是彼此的 OS 安全边界。Runtime token 为系统组件兼容加入 `Everyone` restricting SID；已有 Everyone 可写 ACL 可绕过实例 root capability，故不承诺完整文件写入隔离。专用账户不继承宿主用户私有权限，但既有公共/机器 ACL 仍可能允许额外读取。
 
 共享账户 ACE 使用 provision 等待与 prepare/native revoke/commit 两阶段 grant table；任一实例 ACL、Job、代理或账户状态无法对账时隔离 account generation，原生终止整代账户进程并按持久 journal 撤销 ACL。
 
-Agent Runtime 已有权限内的普通 Git 与命令在 Runtime 内执行且免审批；`run_with_permissions` 和 Git push 由 Broker 审批后以宿主用户权限执行，文件、网络和凭据不再受 Sandbox 附加限制。只有 Agent Runtime 启动前可证明完整回滚时才保留宿主 loop fallback。
+Agent Runtime 已有权限内的普通命令在 Runtime 内执行且免审批；全部 Git 工具 action 在 Broker 以宿主用户权限执行，push 另做预检和逐次审批。`run_with_permissions` 经审批后也在 Broker 以宿主权限执行；这些宿主进程的文件、网络和凭据不受 Sandbox 附加限制。只有 Agent Runtime 启动前可证明完整回滚时才保留宿主 loop fallback。
 
 完整边界与验收状态见 [windows-integrity-sandbox.md](windows-integrity-sandbox.md)。
 
@@ -183,7 +183,7 @@ Engine、Store 及其上下文/schema 辅助模块、共享数据契约、测试
 
 `src/tools/model-tool-batch.ts` 共用 function_call 参数解析、DAG 节点构造和工具成功判定。Runtime 显式启用 push 独占批次检查，宿主保持既有规则。循环返回正常完成、普通批次耗尽轮次或无效图耗尽轮次：保留现存兼容差异，宿主对后两种结果均报步数上限；Runtime 在最后一轮无效图反馈后沿用自然完成，普通工具批次耗尽轮次仍报错。统一这项终态差异须另行作为行为修复处理。
 
-`src/sandbox/execute-runner.ts` 保留暂停使用的 Push Runner 与 Capability Runner 实现。当前 `run_with_permissions` 和 Git push 在 Broker 内使用宿主进程执行器，分别记录 `broker-command`/`broker-git-push` execution instance 及 `broker.command`/`broker.git_push` span。取消或结果未知不自动重放；trace 只保存关联 ID、耗时和状态，不写命令正文。
+`src/sandbox/execute-runner.ts` 保留暂停使用的 Push Runner 与 Capability Runner 实现。当前 `run_with_permissions` 和全部 Git 工具 action 在 Broker 内使用宿主进程执行器，分别记录 `broker-command`/`broker-git`/`broker-git-push` execution instance 及对应 `broker.command`/`broker.git`/`broker.git_push` span。取消或结果未知不自动重放；trace 只保存关联 ID、耗时和状态，不写命令正文。
 
 ## 历史与恢复
 
@@ -203,7 +203,7 @@ UI 历史包含消息、工具调用、受限工具结果和修改 diff。Timeli
 
 `run_command` 的模型参数只有 `{ command }`，执行器固定在会话工作区运行。Windows 内部按 `pwsh`、`powershell`、`cmd.exe` 的优先级检测真实可执行文件；macOS/Linux 使用已验证的 `/bin/sh`。执行器追加固定非交互参数，模型不提供或探测 shell。直接 Git 程序名（包括复合命令中的 Git）被拒绝，改由 `git.ts` 提供单一 action 子集。
 
-Sandbox 关闭、macOS/Linux 或 Windows 启动前 fallback 仍沿用宿主审批和会话授权，模型只接收宿主工具定义与提示，不会看见 `run_with_permissions` 或 Sandbox 专属说明；Windows Agent Runtime 已实际启动后才接收该工具，且其已有权限的文件工具、命令和非 push Git 不再审批。
+Sandbox 关闭、macOS/Linux 或 Windows 启动前 fallback 仍沿用宿主审批和会话授权，模型只接收宿主工具定义与提示，不会看见 `run_with_permissions` 或 Sandbox 专属说明；Windows Agent Runtime 已实际启动后才接收该工具。已有权限的文件工具和普通命令免审批，Git 工具在 Broker 宿主执行且 push 逐次审批。
 
 若 Runtime 中的命令需要额外能力，模型必须改用 `run_with_permissions`，提交完整命令和理由；Broker 重新审批后以宿主用户身份启动进程，不再通过 Capability Runner 的文件根或 HTTPS host 限制。结果单独标为 `broker-command/host-process`，不能算作 Sandbox 内执行。
 

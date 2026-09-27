@@ -1025,3 +1025,19 @@
 - 决定：Sandbox Runtime 的 `git` push 调用只经认证 IPC 发送 `toolCallId`。Broker 使用宿主 Git 在真实工作区读取当前分支、upstream、push URL 和 HEAD OID，经既有三级审批后，在 Broker 宿主用户权限下对预检得到的 HTTPS URL 和 OID/ref 执行一次 push。Push 仍独占工具批次；普通非 push Git 仍在 Agent Runtime 中执行。Runtime 不取得宿主权限或凭据。Runtime 启动前的宿主 fallback 也走同一 Broker push 路径。
 - 原因：安装态验证的 push 阶段在创建 Push Runner 或发送 push IPC 之前超时，旧路径的 Runtime Git 预检无法完成。该现象尚不能证明 Push Runner 自身有同一故障；用户选择暂停它并把预检、审批及执行全部移到 Broker。
 - 边界与影响：获准 push 的 Git 配置、hook、helper、凭据和网络均使用宿主用户权限，不受专用账户 ACL/WFP/Job/relay 限制。审批明确展示预检 URL、目标 ref/OID 与宿主权限；应用层预检与固定参数旨在减少误推，但不是网络或内容安全边界。记录 `broker-git-push/host-process` execution instance、PID、原 `toolCallId`、取消及可能副作用；启动后结果未知不自动重放。`broker.git_push` trace 只保留关联 ID、模式、耗时和终态，不记录 URL、命令、凭据或输出。旧 Push Runner、CONNECT relay 和 askpass 代码保留但不由当前产品 Git push 调用。固定账户验收只验证 Broker 宿主 Git 的本地拒绝夹具和结果回传；真实远端、凭据及 hook 兼容性仍待手动验证。
+
+## D121：全部 Git 工具 action 移至 Broker
+
+- 日期：2026-09-27
+- 状态：用户明确要求；替代 D120 及更早决定中“普通 Git 在 Agent Runtime 内执行”的现行产品路径，保留旧 Runner 与 Git 配置图代码供以后评估。
+- 决定：Sandbox Agent Runtime 的 `git` 工具只经已认证 IPC 发送受严格 schema 限定的 action 参数和当前 `toolCallId`；Broker 在真实工作区用宿主用户权限执行全部固定 Git action。`status/diff/log/show/branch/add/commit` 沿用原仓库根、路径、revision、输出和禁用交互/hook 等校验，按既有工具语义执行，无新增逐次审批；`push` 仍预检当前 upstream/URL/OID/ref，独占工具批次并逐次审批。宿主执行分别记录 `broker-git/host-process` 与 `broker-git-push/host-process`，失败、取消和结果未知遵守禁止盲目重放。
+- 原因：安装态受限 Git 在进入 action 前访问 Windows `NUL` 设备失败，无法正常使用；用户选择将整个 Git 工具移到 Broker。Runtime 不再需要宿主 global/include Git 配置投影，原生协议暂保留一个空的只读配置文件；旧图解析器与 Runner 代码保留，但不由当前产品工具调用。
+- 边界与观测：所有 Broker Git、配置、hook/helper 和子进程均可使用宿主用户的文件、网络及凭据权限，不受专用账户 ACL/WFP/Job 限制，应用层固定参数不是 OS 权限边界。普通 Git action 只阻塞自己的 DAG 节点；push 独占批次。新增 `broker.git` span 仅记录关联 ID、模式、耗时和终态，不记录参数、路径或输出。固定账户安装态 Git/普通命令及失败清理仍须分别验收。
+
+## D122：Runtime restricting SID 加入 Everyone
+
+- 日期：2026-09-27
+- 状态：用户明确要求照搬 Codex Windows restricted-token 的兼容做法；替代 D100、D101 等旧决定中“产品 token 不加入 Everyone”和完整实例写根隔离的承诺。
+- 决定：Windows Agent Runtime 的 `WRITE_RESTRICTED` token 保留本实例 execution/root capability，并额外加入 `Everyone`（`S-1-1-0`）restricting SID。default DACL 仍只授予专用账户和本实例 execution SID，不主动向 Everyone 增加写入 ACE。普通命令继续使用原有 Windows shell 检测顺序；不因 BCrypt 故障固定退回 cmd。
+- 依据：安装态探针中 `bcrypt.dll` 映像映射成功但 `LoadLibraryW` 返回 1114；在相同系统上用 `WRITE_RESTRICTED` 变体测试时，仅加入 Everyone 的变体使原生 BCrypt 探针成功。该结果定位到 token 限制组合，但没有证明 BCrypt 内部具体访问的对象或 ACL。[Codex 当前公开源码](https://github.com/openai/codex/blob/main/codex-rs/windows-sandbox-rs/src/token.rs)也把 Everyone 加入 restricting SID。
+- 影响：已有 ACL 授予 Everyone 写入且专用账户 normal-side 检查也通过的对象，可能被 Runtime 直接写入，无须本实例 root capability；不同实例的此类根也可能互写。故不再声明完整写入 allowlist 或实例间直接写入隔离。WFP 按专用账户阻断直接命令网络、Broker IPC 身份校验、任务审批与宿主进程归因不因该变更放宽。当前主机 Repair 后，安装态 PowerShell/BCrypt 探针与模拟模型产品链路、取消和正常清理通过；原生 token 单测或构建本身不能替代这些检查，也不证明复杂 ACL 或异常恢复。

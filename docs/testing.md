@@ -28,11 +28,12 @@
   测试不继承本机 `.env`、系统中的 CodeAtelier 配置或真实 API key；模型只可使用注入式模拟值和本机测试 HTTP/SSE 服务。
 
 - `pnpm build` 与 `pnpm build:test` 还会生成 `dist/runtime/windows-x64` 下的 Node 24 Agent Runtime、compaction/read_file/subagent 三种 Worker bundle 和 SHA-256 manifest；构建成功只验证 bundle 可生成，不代表安装器已把它复制到受保护目录或 native Supervisor 已核对并启动它。
-- `pnpm sandbox:native:build` 的原生回归核对 Runtime bootstrap 句柄帧、进程 PID 绑定、仅复制查询权限及畸形帧拒绝；显式 `codeatelier-sandbox-state-parser-test.exe --handle-transfer-probe` 还以真实子进程验证私有管道读帧和跨进程句柄复制。两者都不代替固定账户下的 Job、token 与 Runtime pipe 联合身份验收。
+- `pnpm sandbox:native:build` 的原生回归核对产品受限 token 的 execution/root capability 与 Everyone restricting SID、Runtime bootstrap 句柄帧、进程 PID 绑定、仅复制查询权限及畸形帧拒绝；显式 `codeatelier-sandbox-state-parser-test.exe --handle-transfer-probe` 还以真实子进程验证私有管道读帧和跨进程句柄复制。这些都不代替固定账户下的 BCrypt/PowerShell、Job 与 Runtime pipe 联合身份验收。
 - 原生 `codeatelier-sandbox-state-parser-test.exe --runtime-descriptor-probe` 可输出固定启动描述符二进制首帧，供 Node 解码器跨语言核对；`runtime-startup-protocol.test.ts` 验证真实本机管道的成功握手，以及无效首帧后入口关闭 socket 并退出。安装态首帧和 IPC 双向代理仍须用显式产品验收验证。
 - `pnpm sandbox:native:build` 还以五秒上限运行原生 `--runtime-duplex-probe`：在真实本机 Named Pipe 上覆盖预连接与待决连接两种顺序，并在 server 读取下一帧时向 client 写入 Broker 回复；它曾在同步 pipe 上超时，overlapped I/O 修复后通过。该探针不覆盖固定账户 ACL、Job 或完整任务协议。
-- `pnpm sandbox:runtime:verify` 是安装完成后由用户显式运行的 Windows 产品链路验收：它使用模拟模型，经默认 Engine/SandboxBroker/native Supervisor 在专用账户 Agent Runtime 内创建工作区文件，再在同一批次独立执行固定只读 Git status 和普通命令，使一条路径的失败不遮蔽另一条的结果，并核对专用账户子进程、输出与 clean release；随后以仅供此手动验收的内部已标记任务调用受保护的 subagent Worker，核对受限工具、读取、报告收集和 tracing，公开 HTTP 门禁仍保持关闭。`process.test.ts` 覆盖 file-backed 输出回传、取消和持久化失败时的进程停止与临时文件清理；这些本地测试不代替安装态 restricted token 验收。
-- `sandbox-git-config-graph.test.ts` 核对只读 Git global 投影先包含已发现的宿主配置、再重置 `safe.directory` 并精确加入本次真实工作区；跨账户仓库可用性仍以安装态固定 Git status 为准。
+- `pnpm sandbox:runtime:verify` 是安装完成后由用户显式运行的 Windows 产品链路验收：它使用模拟模型，经默认 Engine/SandboxBroker/native Supervisor 在专用账户 Agent Runtime 内创建工作区文件，再在同一批次独立执行 Broker 宿主 Git status 和 Runtime 普通命令，使一条路径的失败不遮蔽另一条的结果，并核对专用账户子进程、输出与 clean release；随后以仅供此手动验收的内部已标记任务调用受保护的 subagent Worker，核对受限工具、读取、报告收集和 tracing，公开 HTTP 门禁仍保持关闭。`process.test.ts` 覆盖 file-backed 输出回传、取消和持久化失败时的进程停止与临时文件清理；这些本地测试不代替安装态 restricted token 验收。
+- `agent-runtime-engine.test.ts` 与 `runtime-ipc.test.ts` 核对 Broker Git status/add/commit 的宿主执行归因、原有 action-specific 结果形状和受限 IPC schema；`sandbox-native-windows-runtime.test.ts` 核对 Runtime 不再投影宿主 global/include 配置。
+- `sandbox-git-config-graph.test.ts` 保留旧 Runner 路径的只读 Git global 投影回归；当前产品 Git 已由 Broker 宿主执行，该测试不是现行产品路径验收。
 - `git-tools.test.ts` 核对仓库探测失败时工具结果保留有界 Git 错误，避免安装态验收只剩泛化失败信息。
 
   `tests/runtime-startup-protocol.test.ts` 另以原生 `StringFromGUID2` 的 `{GUID}` 后缀启动真实本机 pipe，验证 Node 入口能连接并完成模拟任务；普通协议测试同时保留不带花括号的合法名称及远程、畸形名称拒绝。该测试不代替专用账户的身份与 ACL 验收。

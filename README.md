@@ -38,7 +38,7 @@ API 地址与主、辅助模型标识只从启动环境读取，修改 `.env` �
 
 宿主模式下，需要审批的操作先由已配置的辅助模型分为通过、人工确认或拒绝；模型不可用时转人工确认。获准命令以本机用户权限运行，适用于可信项目。
 
-Windows 专用用户 Sandbox 默认关闭，需要管理员安装，仍未完成固定账户提升环境的完整端到端验收。macOS/Linux 使用宿主路径。试用前阅读 [Sandbox 使用指南](docs/windows-sandbox-guide.md)；实现与验证范围见 [Sandbox 架构](docs/windows-integrity-sandbox.md) 和 [验证记录](docs/verification.md)。
+Windows 专用用户 Sandbox 默认关闭，需要管理员安装。当前 Windows 主机上的模拟模型产品链路、普通命令、Broker Git、主动取消和正常清理已通过；复杂 ACL、真实远端 push、强制终止和重启恢复仍待验收。Runtime token 为 Windows 兼容包含 Everyone restricting SID，因此不承诺完整文件写入 allowlist。macOS/Linux 使用宿主路径。试用前阅读 [Sandbox 使用指南](docs/windows-sandbox-guide.md)；实现与验证范围见 [Sandbox 架构](docs/windows-integrity-sandbox.md) 和 [验证记录](docs/verification.md)。
 
 ## 开发与验证
 

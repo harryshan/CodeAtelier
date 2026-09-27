@@ -2,7 +2,7 @@
 
 > **适用范围与状态：** 此功能只面向 Windows，默认关闭，且需要一次性管理员安装；macOS 和 Linux 即使设置开关也会继续使用 `non-isolated` 宿主路径。
 >
-> 当前代码已经接入专用账户、C++ Supervisor、Agent Runtime、AccessManifest、ACL/WFP 和认证 IPC。Capability Runner 与 Push Runner 代码保留但暂停使用；获批 `run_with_permissions` 命令和 Git push 由 Broker 以宿主用户权限运行。固定账户提升安装、真实 remote push、复杂 ACL、强制取消、崩溃及重启恢复仍未完成分层端到端验收。因此它是**预览能力，而非稳定或跨平台的安全保证**。请只在可备份、可信的测试项目中试用。
+> 当前代码已经接入专用账户、C++ Supervisor、Agent Runtime、AccessManifest、ACL/WFP 和认证 IPC。本机固定账户安装态的模拟模型任务、普通命令、Broker Git、主动取消和正常清理已通过；真实 remote push、复杂 ACL、强制终止、崩溃及重启恢复仍未验收。Capability Runner 与 Push Runner 代码保留但暂停使用；获批 `run_with_permissions` 命令和全部 Git 工具 action 由 Broker 以宿主用户权限运行，其中 push 逐次审批。因此它仍是**预览能力，而非稳定或跨平台的安全保证**。请只在可备份、可信的测试项目中试用。
 >
 > 完整架构、分层验收状态和已知限制见 [Windows 专用用户 Sandbox Runtime 与 Broker 架构](windows-integrity-sandbox.md)。
 
@@ -10,19 +10,19 @@
 
 启用并且启动前自检成功时，CodeAtelier 会为每个任务启动一个常驻 **Agent Runtime**：
 
-- Runtime、其普通命令、非 push Git、hook/helper 和子进程均在专用低权限本地账户 `CodeAtelierSandbox`、restricted token 和 Job 中运行；模型 API key、会话数据库与审批策略仍保留在宿主 **Broker Host**。
+- Runtime 及其普通命令子进程在专用低权限本地账户 `CodeAtelierSandbox`、restricted token 和 Job 中运行；模型 API key、会话数据库、审批策略和 Git 工具均保留在宿主 **Broker Host**。
 - 每个实例使用非交互式 window station 内的私有 desktop；同一宿主登录会话的并发实例可共用 station，因此它不构成不同任务间的安全隔离。
-- Broker 按任务生成 AccessManifest，只投影当前工作区、显式授权的读写根、运行时依赖及精确的 Git global/include 配置图。可写根还必须匹配本实例的 `WRITE_RESTRICTED` capability。
+- Broker 按任务生成 AccessManifest，只投影当前工作区、显式授权的读写根、运行时依赖及一个空的只读 Git global 配置文件；不再向 Runtime 投影宿主 Git global/include 文件。实例 token 同时包含 root capability 和 `Everyone` restricting SID，后者会使已有 Everyone 可写 ACL 成为额外写入路径。
 - 按专用账户 SID 安装的持久 WFP 规则默认阻止直接网络。普通 Runtime 没有命令网络；模型请求只能经 Broker。越界命令须用 `run_with_permissions` 提交完整命令和理由，经三级审批后由 Broker 以宿主用户权限执行。该命令不受 Sandbox 额外文件根或网络 host 限制。
-- 非 push Git 在 Runtime 内执行。`git push` 是独占工具批次，由 Broker 预检 upstream 和目标、逐次审批后以宿主用户权限执行；该 Git 及其 hook/helper 不受专用账户 Sandbox 限制。WFP 不会因 push 而临时放宽。
-- Runtime 的只读 Git global 投影重置宿主继承的 `safe.directory` 列表，只信任当前工作区真实路径，以允许专用账户使用宿主所有的仓库。
-- Runtime 内普通命令与非 push Git 的输出先写入实例私有 TEMP，再按固定间隔回传；单次临时输出达到 64 MiB 会终止该命令并报错。临时文件在命令结束后删除，Broker 宿主命令不使用这一传输路径。
+- 全部 Git 工具 action 在 Broker 以宿主用户权限执行，并保留固定参数及路径校验；`git push` 另预检 upstream 和目标、逐次审批且独占工具批次。Git 配置、hook/helper 及子进程不受专用账户 Sandbox 限制。WFP 不会因 Git 而临时放宽。
+- Runtime 内普通命令的输出先写入实例私有 TEMP，再按固定间隔回传；单次临时输出达到 64 MiB 会终止该命令并报错。临时文件在命令结束后删除，Broker 宿主命令和 Git 不使用这一传输路径。
 
 Sandbox **不会**创建 worktree、暂存副本或自动回滚：可写操作直接改动真实工作区，取消、失败和崩溃都不能撤销已发生的文件或 Git 副作用。工作区内的 `.git`、`.env` 和其他文件没有额外保护。请在启用前提交、备份或另行复制重要工作。
 
 ### 安全边界与不应作出的假设
 
 - 专用账户不继承宿主交互用户的私有 profile、凭据、SSH agent 或仅授予宿主用户的文件权限；但 `Everyone`、`Authenticated Users`、机器级安装目录等既有 ACL 仍可能允许额外读取。因此这**不是纯读取 allowlist**，任何可读内容都可能进入模型上下文、会话记录或获准网络请求。
+- `Everyone` 也在 Runtime 的 restricting SID 列表中。若某个文件或目录的既有 ACL 允许 Everyone 写入，Runtime 可能直接写入，即使它不在本实例的可写根内；同账户并发实例也可能写入彼此带这类 ACL 的根。不要将 root capability 视为完整的文件写入 allowlist。
 - 不同工作区可按全局设置并行运行 1～4 个任务，同一工作区仍串行；但它们共用一个 Sandbox 账户。活动授权根会形成读取并集，同账户 peer 可能读取、终止、注入或检查其他 Runtime。**不同对话不是彼此的 OS 安全边界。**
 - 这不抵抗管理员、SYSTEM、内核/驱动漏洞、弱/null DACL、重解析/复杂 ACL 缺陷、已泄露句柄或获准 HTTPS host 接收数据等风险。不要把 Sandbox 当作执行不可信恶意代码的完整隔离环境。
 
@@ -62,7 +62,7 @@ Sandbox **不会**创建 worktree、暂存副本或自动回滚：可写操作�
    pnpm sandbox:runtime:verify
    ```
 
-   此命令使用模拟模型、临时工作区和不可用的本机 HTTPS 端口，不访问真实模型、外部网络、远程仓库或凭据。它检查已安装 Agent Runtime 内的文件工具、固定 Git status 和普通命令、审批后的 Broker 宿主命令、Broker 宿主 Git push 拒绝结果及取消路径，且要求没有 fallback/unknown。即使输出 `PASS`，也**不**等同于真实公网 HTTPS、真实 remote push 或全部 W0--W6 阶段验收完成；Broker 宿主命令和 Git push 本身不受 Sandbox 保护。
+   此命令使用模拟模型、临时工作区和不可用的本机 HTTPS 端口，不访问真实模型、外部网络、远程仓库或凭据。它检查已安装 Agent Runtime 内的文件工具和普通命令、Broker 宿主 Git status、审批后的 Broker 宿主命令、Broker 宿主 Git push 拒绝结果及取消路径，且要求没有 fallback/unknown。即使输出 `PASS`，也**不**等同于真实公网 HTTPS、真实 remote push 或全部 W0--W6 阶段验收完成；Broker 宿主命令和全部 Git 工具 action 本身不受 Sandbox 保护。
 
 ### 启用、运行与状态判断
 
@@ -93,7 +93,7 @@ Sandbox **不会**创建 worktree、暂存副本或自动回滚：可写操作�
 ### 审批、命令和 Git 的差异
 
 - **宿主模式或 fallback：** 原有命令与工具审批仍生效；获准命令以当前本机用户权限运行，适用于你信任的项目。低成本模型的 `approve` 不会绕过路径、敏感文件、Git、提权或并发校验。
-- **已启动的 Sandbox Agent Runtime：** AccessManifest/WFP 范围内的文件工具、普通命令和非 push Git 不再逐项审批。越界普通文件工具会被拒绝；越界命令必须通过 `run_with_permissions` 提交完整命令和理由，经 review 后由 Broker 使用宿主用户权限运行。它可访问宿主用户有权访问的文件、网络和凭据，务必按该权限审查命令。
+- **已启动的 Sandbox Agent Runtime：** AccessManifest/WFP 范围内的文件工具和普通命令不再逐项审批；Git 工具 action 在 Broker 使用宿主用户权限执行，push 另需逐次审批。越界普通文件工具会被拒绝；越界命令必须通过 `run_with_permissions` 提交完整命令和理由，经 review 后由 Broker 使用宿主用户权限运行。它可访问宿主用户有权访问的文件、网络和凭据，务必按该权限审查命令。
 - **Git push：** 仅支持已校验 upstream 的既有 Git 工具契约；push 必须独占当前工具批次，审批会展示预检 URL、目标和 Broker 宿主权限。Git 配置、hook/helper 与网络不受专用账户 Sandbox 限制。当前真实 remote/凭据/helper 兼容性尚未完成验收，不应将预览实现用于关键生产推送。
 
 ### 维护、故障处理与卸载

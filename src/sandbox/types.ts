@@ -72,6 +72,7 @@ export interface ExecutionInstanceRecord {
     | "push-runner"
     | "capability-runner"
     | "broker-command"
+    | "broker-git"
     | "broker-git-push";
   mode: ExecutionInstanceMode;
   state: ExecutionInstanceState;

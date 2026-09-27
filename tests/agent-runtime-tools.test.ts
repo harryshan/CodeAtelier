@@ -89,13 +89,13 @@ it("routes an explicit permission request to one Broker host command", async () 
   expect(executePrepared).toHaveBeenCalledOnce();
 });
 
-it("waits for the broker push adapter while the agent runtime remains alive", async () => {
+it("routes every Git action to Broker without spawning a Runtime Git process", async () => {
   const root = await temp();
   const config = new Config(await temp());
   const executeCommand = vi.fn(() => {
     throw new Error("不应嵌套调用 SandboxBroker");
   });
-  const gitPush = vi.fn(async () => ({
+  const gitExecute = vi.fn(async () => ({
     output: "push-complete",
     exitCode: 0,
     truncated: false,
@@ -110,14 +110,28 @@ it("waits for the broker push adapter while the agent runtime remains alive", as
     approvals: { request: async () => true },
     sandbox: { executeCommand } as never,
     executionBoundary: "agent-runtime",
-    gitPush,
+    gitExecute,
     emit: (type, data) => events.push({ type, data }),
   });
 
   await expect(
     runner.forCall("push-call").execute("git", { request: { action: "push" } }),
   ).resolves.toMatchObject({ output: "push-complete", exitCode: 0 });
-  expect(gitPush).toHaveBeenCalledWith(expect.any(AbortSignal), "push-call");
+  await expect(
+    runner
+      .forCall("status-call")
+      .execute("git", { request: { action: "status" } }),
+  ).resolves.toMatchObject({ exitCode: 0 });
+  expect(gitExecute).toHaveBeenCalledWith(
+    { action: "push" },
+    expect.any(AbortSignal),
+    "push-call",
+  );
+  expect(gitExecute).toHaveBeenCalledWith(
+    { action: "status" },
+    expect.any(AbortSignal),
+    "status-call",
+  );
   expect(executeCommand).not.toHaveBeenCalled();
   expect(events.filter((event) => event.type === "git_output")).toEqual([]);
 });

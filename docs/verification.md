@@ -1,6 +1,14 @@
 # 初版验证记录
 
-## Windows Sandbox 普通命令卡住诊断（2026-09-27，卡死消除但整链未通过）
+## Windows Sandbox BCrypt 兼容与 Broker Git 迁移（2026-09-27，安装态复验通过）
+
+- 安装态 native probe 显示 `bcrypt.dll` 文件打开、映射和 Load Image 均成功，但 `LoadLibraryW` 以 1114 失败；ProcMon 未显示该进程的 `ACCESS DENIED` 事件，因此尚未定位 BCrypt 内部的具体对象或 ACL。相同主机上的 `WRITE_RESTRICTED` token 变体测试中，只有加入 Everyone restricting SID 的变体使原生 BCrypt 探针成功，其他单独加入 Users、Authenticated Users、Interactive 或 Local 的变体仍失败。
+- 用户选择采用 Codex Windows restricted-token 的 Everyone 兼容方式。产品 token 现包含 execution/root capability 和 Everyone；原生编译与真实 token SID 回归通过。此变更可能允许 Runtime 写入已有 Everyone 写入 ACE 且 normal-side 也允许的对象，故旧的完整写根和跨实例直接写入隔离承诺已在 D122 及使用指南中撤销。管理员 Repair 后，固定账户 restricted-token 探针中的 `cmd`、`pwsh`、Windows PowerShell 和原生 `BCryptGenRandom` 均以退出码 0 完成，原生探针的 `bcrypt.dll` LoadLibraryW 成功。
+- Git 工具全部 action 已改为 Runtime 经认证 IPC 交给 Broker 宿主执行；status/add/commit 的实仓库回归及 IPC 结果形状回归通过。原生 Runtime 不再投影宿主 Git global/include 配置，旧图解析器仅供暂停的 Runner 代码使用。Repair 后 `pnpm sandbox:runtime:verify` 输出 `SANDBOX_AGENT_RUNTIME_VERIFY PASS completion=yes runtimeCommand=yes subagent=yes brokerHostCommand=yes brokerGitPushBlocked=yes cancellation=yes cleanup=yes`。这证明本机模拟模型的安装态链路，不证明真实 remote push、复杂 ACL、强制取消或重启恢复。
+- 当前 Codex 中等完整性终端直接运行 `pnpm sandbox:verify` 时，WFP 枚举返回 `FwpmFilterCreateEnumHandle0(persistent) code=5`；这次非提升检查不构成规则丢失证据。用户在管理员 PowerShell 中完成 Repair，且安装态 Supervisor 自检及上述产品链路通过；完整管理员 WFP 枚举仍以 Repair/管理员 Verify 输出为准。
+- 最终 `pnpm check` 通过：类型、ESLint、Prettier、70 个测试文件中的 520 项通过、1 项跳过，以及测试构建；`pnpm test:e2e` 的 Chromium 27 项通过。最终构建后再次运行安装态产品验收，全部上述阶段继续 `PASS`。
+
+## Windows Sandbox 普通命令卡住诊断（2026-09-27，历史诊断；修复后安装态待复验）
 
 - 最新真实会话的模型请求已于 13:02:29 UTC 返回两个 `run_command` 和一个 Git status 调用，但任务只持久化到 `tool_batch_planned`，之后无工具结果；13:04:41 Supervisor 以退出码 30 关闭，Broker 未取得可信 Runtime 终态，按 `process_unknown` 隔离并排空 generation，任务失败。Supervisor 的 `completionReported=true` 只证明其自身清理完成，不证明 Runtime 已完成任务。
 - 独立的固定模型/临时工作区复现显示：安装态 Runtime 连 `Write-Output diagnostic-ok` 也未完成；同样的 Runtime/Engine 逻辑在普通 Node 子进程里能完成该命令并正确取消长命令。由此将问题缩到已安装 Windows Runtime 的普通命令路径。随后新版验收在文件编辑任务完成后，固定 `echo` 命令超时；Supervisor 的最后白名单阶段为 `command_spawn_begin`，没有子进程 PID。这将卡点缩到 Node `spawn` 调用或其紧邻的同步准备阶段，尚未证明是哪一个 Windows 调用阻塞。

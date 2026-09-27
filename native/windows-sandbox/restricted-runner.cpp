@@ -4,11 +4,11 @@
  * supervisor 使用 DPAPI state、工作区 ACL、Job 和私有 Named Pipe 启动同一二进制的 bootstrap 模式，并代理 Agent Runtime IPC。
  *
  * 1. 提升安装时仅对专用 LSA 账户对象授予安装者读取拒绝登录权的权限；self-check 核对 state 所属宿主 SID、专用账户 SID/密码、拒绝登录权、WFP 持久规则，以及受保护 Node 24/Agent Runtime entry 和各 Worker bundle 摘要。
- * 2. execute 生成 execution/root capability SID；共享账户 ACE 始终提供 normal-side 读写候选权限，每实例 capability ACE 再决定 WRITE_RESTRICTED token 实际可写的根。
+ * 2. execute 生成 execution/root capability SID；共享账户 ACE 提供 normal-side 读写候选权限，restricted token 另含 Everyone 以兼容系统组件，故已有 Everyone 可写对象不受根 capability 完整约束。
  * 3. CreateProcessWithLogonW 以固定 bootstrap 入口启动专用账户进程，先分配 KILL_ON_JOB_CLOSE Job 再恢复。
  * 4. 在确认不是 WinSta0 后给系统命名的非交互式 station 补齐专用账户及实例 SID，再创建私有 desktop；bootstrap 经账户管道取得命令，创建 WRITE_RESTRICTED token，常驻 Runtime 则经仅额外授权本实例 execution SID 的专属 pipe 连接 Broker。
  * 5. Broker stdin 关闭、超时或异常会终止 Job；正常/异常退出撤销本实例 capability ACE，共享账户 ACE 仅由 Broker 最后引用的两阶段 release 撤销；安装恢复从持久 journal 验证原文件身份后撤销账户 ACE，清理不确定返回专用错误码。
- * 6. Push Runner 仅从宿主 Credential Manager 读取绑定 host 的 HTTPS 凭据，并经同 Job askpass pipe 交付；capability runner 只把短期、host-bound proxy token 放入自身环境，不取得宿主凭据。
+ * 6. 保留的 Push Runner 从宿主 Credential Manager 读取绑定 host 的 HTTPS 凭据，经同 Job askpass pipe 交付；Capability Runner 只持有短期 proxy token。两条 Runner 路径当前暂停，产品 Git 和获批宿主命令交给 Broker。
  * 7. Agent Runtime 模式只启动受保护 Node/entry；bootstrap 通过已核对客户端 PID 的私有 pipe 交付进程/token 句柄值，Supervisor 限权复制查询句柄，联合核对 Runtime pipe 客户端身份后发送启动首帧并代理原始 Broker 字节流；初始 CWD 使用私有目录。
  * 8. stdout 只承载工具输出或 Agent Runtime IPC；stderr 只输出有界控制记录及每方向首帧阶段，不记录命令、路径、SID、密码或工具内容。
  *
@@ -2134,8 +2134,9 @@ int RunAskpass(const std::wstring& prompt) {
   return 0;
 }
 
-// WRITE_RESTRICTED 仅在写访问时检查 restricting SID。产品 token 只放入本实例
-// execution/root capability；不能加入 Everyone，否则公共可写对象会绕过写根边界。
+// WRITE_RESTRICTED 仅在写访问时检查 restricting SID。Everyone 使依赖系统公共
+// ACL 的 BCrypt 等组件能够初始化；已向 Everyone 开放写入的对象不再受 root
+// capability 限制，故不能将实例间写入隔离作为此 token 的完整保证。
 bool CreateProductRestrictedPrimaryToken(PSID execution_sid,
                                          PSID capability_sid,
                                          UniqueHandle* restricted_token) {
@@ -2159,9 +2160,17 @@ bool CreateProductRestrictedPrimaryToken(PSID execution_sid,
     return false;
   }
   auto* token_user = reinterpret_cast<TOKEN_USER*>(user_buffer.data());
-  std::array<SID_AND_ATTRIBUTES, 2> restricting_sids{};
+  std::array<BYTE, SECURITY_MAX_SID_SIZE> everyone_sid{};
+  DWORD everyone_sid_size = static_cast<DWORD>(everyone_sid.size());
+  if (!CreateWellKnownSid(WinWorldSid, nullptr, everyone_sid.data(),
+                          &everyone_sid_size)) {
+    return false;
+  }
+
+  std::array<SID_AND_ATTRIBUTES, 3> restricting_sids{};
   restricting_sids[0].Sid = execution_sid;
   restricting_sids[1].Sid = capability_sid;
+  restricting_sids[2].Sid = everyone_sid.data();
   HANDLE raw_restricted = nullptr;
   if (!CreateRestrictedToken(current_token.get(), kRestrictedTokenFlags, 0,
                              nullptr, 0, nullptr,

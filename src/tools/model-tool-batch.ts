@@ -4,7 +4,7 @@
  *
  * 1. ModelToolCall 描述计划所需的模型字段，buildModelToolGraph 复用工具及历史读取参数校验，按任务开关验证 subagent 协调调用，再交给 createToolGraph 验证依赖。
  * 2. exclusivePush 仅由 Runtime 入口启用，保留 Git push 审批与执行必须独占批次的规则，不改变宿主路径。
- * 3. toolSucceeded 同时检查工具错误、进程退出码和多文件 failed/unknown，供 DAG、日志和 tracing 使用同一结论。
+ * 3. toolSucceeded 同时检查工具错误、平面及 Git 写入嵌套退出码和多文件 failed/unknown，供 DAG、日志和 tracing 使用同一结论。
  */
 
 import {
@@ -66,8 +66,14 @@ export function buildModelToolGraph(
 }
 
 export function toolSucceeded(result: any) {
+  const gitWriteFailed =
+    (result?.add && result.add.exitCode !== 0) ||
+    (result?.stage && result.stage.exitCode !== 0) ||
+    (result?.commit && result.commit.exitCode !== 0);
+
   return (
     !result?.error &&
+    !gitWriteFailed &&
     (result?.exitCode === undefined || result.exitCode === 0) &&
     !result?.files?.some(
       (file: any) => file.status === "failed" || file.status === "unknown",

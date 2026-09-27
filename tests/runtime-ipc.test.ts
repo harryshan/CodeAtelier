@@ -3,7 +3,7 @@
  * 内存流用例覆盖协议错误，独立 Node fixture 覆盖 model request/delta/response 跨进程，但不冒充 Windows Named Pipe 身份验收。
  *
  * 1. 双向 PassThrough peer 完成请求并拒绝未知响应、畸形 JSON 和超限半帧。
- * 2. RuntimeGitPushClient 只发送调用 ID，Broker 自己做 Git 预检；RuntimeCapabilityClient 先准备审批、再用连接内一次性授权执行，且授权不可重放。
+ * 2. RuntimeGitPushClient 只发送调用 ID；RuntimeGitClient 发送受限 action 并保留 add/commit/diff 结果形状；RuntimeCapabilityClient 先准备审批、再用连接内一次性授权执行，且授权不可重放。
  * 3. AbortSignal 发送 request_cancel，中止远端同 requestId handler；竞态迟到响应不会破坏后续请求。
  * 4. Runtime trace 与 session event 只接受固定类型；子消息/取消 span 不携带正文，Runtime 不能伪造 Broker execution/sandbox/终态事件。
  * 5. 子进程经继承 stdio 请求模型，Broker test adapter 流式回传 delta 和最终结果，进程正常退出。
@@ -24,6 +24,7 @@ import { connectAgentRuntime } from "../src/sandbox/agent-runtime-connection.js"
 import {
   RuntimeCapabilityClient,
   RuntimeGitPushClient,
+  RuntimeGitClient,
 } from "../src/sandbox/runtime-tool-adapters.js";
 import { runtimeIpcMessageSchema } from "../src/sandbox/runtime-ipc-protocol.js";
 
@@ -76,6 +77,114 @@ it("sends only the push tool call ID to the broker", async () => {
   });
   right.end();
   left.end();
+});
+
+it("sends only a validated Git action and task call ID to Broker", async () => {
+  const leftToRight = new PassThrough();
+  const rightToLeft = new PassThrough();
+  let received: unknown;
+  const right = new RuntimeIpcPeer({
+    input: leftToRight,
+    output: rightToLeft,
+    handleRequest: async (request) => {
+      received = request;
+
+      return { output: "branch", exitCode: 0, truncated: false };
+    },
+  });
+  const left = new RuntimeIpcPeer({ input: rightToLeft, output: leftToRight });
+  await expect(
+    new RuntimeGitClient(left).execute(
+      { action: "status" },
+      "status-call",
+      new AbortController().signal,
+    ),
+  ).resolves.toMatchObject({ output: "branch", exitCode: 0 });
+  expect(received).toMatchObject({
+    operation: "git_execute",
+    body: { toolCallId: "status-call", request: { action: "status" } },
+  });
+  await expect(
+    left.request(
+      "git_execute",
+      {
+        toolCallId: "bad-call",
+        request: { action: "status", args: ["--exec"] },
+      },
+      new AbortController().signal,
+    ),
+  ).rejects.toBeInstanceOf(RuntimeIpcError);
+  right.end();
+  left.end();
+});
+
+it("keeps action-specific Broker Git results across IPC", async () => {
+  const leftToRight = new PassThrough();
+  const rightToLeft = new PassThrough();
+  const processResult = { output: "ok", exitCode: 0, truncated: false };
+  const right = new RuntimeIpcPeer({
+    input: leftToRight,
+    output: rightToLeft,
+    handleRequest: async (request) => {
+      if (request.operation !== "git_execute") {
+        throw new Error("unexpected operation");
+      }
+
+      switch (request.body.request.action) {
+        case "add":
+          return { paths: ["change.txt"], add: processResult };
+        case "commit":
+          return {
+            paths: ["change.txt"],
+            stage: processResult,
+            commit: processResult,
+          };
+        case "diff":
+          return { ...processResult, staged: false, paths: ["change.txt"] };
+        default:
+          throw new Error("unexpected action");
+      }
+    },
+  });
+  const left = new RuntimeIpcPeer({ input: rightToLeft, output: leftToRight });
+  const client = new RuntimeGitClient(left);
+  const signal = new AbortController().signal;
+
+  try {
+    await expect(
+      client.execute({ action: "add", paths: ["change.txt"] }, "add", signal),
+    ).resolves.toEqual({ paths: ["change.txt"], add: processResult });
+    await expect(
+      client.execute(
+        { action: "commit", paths: ["change.txt"], message: "Record change" },
+        "commit",
+        signal,
+      ),
+    ).resolves.toEqual({
+      paths: ["change.txt"],
+      stage: processResult,
+      commit: processResult,
+    });
+    await expect(
+      client.execute(
+        {
+          action: "diff",
+          staged: false,
+          paths: ["change.txt"],
+          contextLines: 3,
+        },
+        "diff",
+        signal,
+      ),
+    ).resolves.toEqual({
+      ...processResult,
+      staged: false,
+      paths: ["change.txt"],
+    });
+  } finally {
+    right.end();
+    left.end();
+  }
 });
 
 it("sends a bounded capability command with its reason and tool call", async () => {

@@ -53,11 +53,11 @@ Runtime 执行开始后的错误标为 `unknown`，绝不自动重放；ACL/Job 
 
 Windows 且 Sandbox 开启时，`createApp` 默认注入 `SandboxBroker` 作为 `AgentRuntimeLauncher`：Engine 通过 C++ Sandbox Supervisor 启动每任务一个常驻 Agent Runtime，模型、session、审批和 memory 经任务专属 Runtime IPC 返回 Broker；禁用、非 Windows 或可证明启动前完整回滚的 fallback 才由 Broker Host 运行 loop。
 
-独立 Push Runner 和 Capability Runner 代码保留但暂不用于产品路径；获批 `run_with_permissions` 命令与 Git push 在 Broker 宿主用户权限下运行并分别归因。固定账户提升环境的身份、崩溃/取消/恢复矩阵尚未完成，因此仍不能宣称 W3/W4 完成。
+独立 Push Runner 和 Capability Runner 代码保留但暂不用于产品路径；获批 `run_with_permissions` 命令与全部 Git 工具 action 在 Broker 宿主用户权限下运行并分别归因。固定账户提升环境的身份、崩溃/取消/恢复矩阵尚未完成，因此仍不能宣称 W3/W4 完成。
 
 严格术语、目标完成判据与分层验收见 [Windows 专用用户 Sandbox Runtime 与 Broker 架构](windows-integrity-sandbox.md#0-术语进程和完成条件)。
 
-每个已批准的 `run_command` 以及受限 `git` 工具启动的每个 Git 子进程，在执行前创建不可复用的 `executionInstanceId`，并复用同一 SandboxBroker 与宿主 fallback 规则。
+每个已批准的 `run_command` 启动的受限子进程，在执行前创建不可复用的 `executionInstanceId`，并复用同一 SandboxBroker 与宿主 fallback 规则；Git 工具在 Broker 宿主进程中另行记录 `broker-git`/`broker-git-push` execution instance。
 
 子进程获得 PID 时立即把 PID 和 `host-process | runtime-launcher | runtime` 类型追加到 session，并把 created/running/completed/cancelled/unknown 状态同步写入 `sandbox.log` 和 Perfetto trace；记录不包含命令、路径或输出。
 
@@ -163,9 +163,9 @@ Replay Case 已独立实现脱敏、存储与手动导出，见 [任务 Replay C
 
 `run_command` 和 `git` 的每次流式输出都以工具调用 ID 保存。Web UI 将有流式输出工具的开始、所有输出分块和退出状态聚合在同一可展开卡片中，任务完成或刷新历史后仍可查看。工具结果和诊断日志的耗时从执行器真正开始读取、写入或启动子进程时计算，不包含用户在审批界面的等待时间；因拒绝或预检失败而未实际执行的调用显示为 0 ms。
 
-Windows 专用账户 Agent Runtime 的普通命令与非 push Git 使用实例私有 TEMP 中的独占临时文件承接 stdout/stderr，每 100 ms 读取并按原输出上限推送，进程结束后删除。这样避免 Node/libuv 在 restricted token 下创建默认 stdio 命名管道时可能同步卡住，导致取消与超时器均无法运行；临时输出文件达到 64 MiB 时终止该命令进程树并返回明确错误。Broker 宿主命令仍使用原有管道。此传输变更沿用原工具的开始/结束、耗时、失败/取消和关联 ID trace；原生 stderr 只保留固定阶段名与 shell 类别，不记录命令、路径或输出。
+Windows 专用账户 Agent Runtime 的普通命令使用实例私有 TEMP 中的独占临时文件承接 stdout/stderr，每 100 ms 读取并按原输出上限推送，进程结束后删除。这样避免 Node/libuv 在 restricted token 下创建默认 stdio 命名管道时可能同步卡住，导致取消与超时器均无法运行；临时输出文件达到 64 MiB 时终止该命令进程树并返回明确错误。Broker 宿主命令与 Git 仍使用原有管道。此传输变更沿用原工具的开始/结束、耗时、失败/取消和关联 ID trace；原生 stderr 只保留固定阶段名与 shell 类别，不记录命令、路径或输出。
 
-专用账户与宿主工作区所有者不同。每次实例的只读 Git global 投影在宿主配置 include 之后重置继承的 `safe.directory` 列表，并仅加入当前工作区的真实路径，使 Runtime 能运行 Git，同时不把其它仓库或通配路径加入该实例的信任范围。
+专用账户与宿主工作区所有者不同。Git 工具现由 Broker 执行；Agent Runtime 不再投影宿主的 Git global/include 配置图。原生协议要求的只读 global 文件保留为空文件，旧配置图解析代码仅供暂停的 Runner 路径保留。
 仓库探测失败时，Git 工具结果保留退出码及最多 512 字符的子进程错误，便于区分所有权、ACL 和环境问题；该文本不进入诊断日志或 trace。
 
 ### 网页检索与网页正文
@@ -279,7 +279,7 @@ add、commit 或 push 中断时结果可能未知，恢复前必须用 status/di
 
 本节宿主命令与 Git 规则适用于未启用 Sandbox 的任务和启动前 fallback。宿主任务以及 Windows Sandbox 启动前 fallback 的模型请求只接收宿主工具定义和提示，**不会公开或建议 `run_with_permissions`**。
 
-只有实际已启动的 Sandbox Agent Runtime 才会收到该工具及其 Sandbox 专属提示：其已有 AccessManifest/WFP 权限内的文件工具、普通命令和非 push Git 不再进入审批；越界普通文件工具直接拒绝。
+只有实际已启动的 Sandbox Agent Runtime 才会收到该工具及其 Sandbox 专属提示：其已有 AccessManifest/WFP 权限内的文件工具、普通命令不再进入审批；全部 Git 工具 action 经 Broker 宿主执行，push 逐次审批。越界普通文件工具直接拒绝。
 
 任意越界命令必须调用 `run_with_permissions`，给出完整命令和具体理由；该调用只阻塞自身 DAG 节点，无依赖的同批工具可并行执行。
 
@@ -289,17 +289,17 @@ Broker 不信任 Runtime 自报审批，把完整命令、理由和“将使用�
 
 审批时必须考虑命令在宿主用户权限下可能访问多个 host、私网、设备、注册表、服务或凭据；这些不再由 Sandbox 额外拦截。
 
-Sandbox 模式下非 push Git 在 Runtime 内运行，工作区内部不保护 `.git`、`.env` 或其他子路径；push 的预检和执行在 Broker 中运行。
+Sandbox 模式下全部 Git 工具 action 在 Broker 中以宿主用户权限运行，工作区内部不保护 `.git`、`.env` 或其他子路径。非 push action 沿用受限参数契约但不逐次审批；push 另经 Broker 预检和逐次审批。
 
-专用账户正常加载 system、local 和 worktree Git 配置；Broker 解析宿主 `%USERPROFILE%\.gitconfig`、`%USERPROFILE%\.config\git\config` 及对当前工作区成立的 include/includeIf 图，只给原对象精确只读 ACL，并在 Broker 控制、Runtime 不可写的投影根生成顺序固定的逐租约聚合文件，以 `GIT_CONFIG_GLOBAL` 让 Git 加载它们。
+Broker Git 正常加载宿主用户可见的 system、global/include、local 和 worktree 配置。Agent Runtime 不再取得宿主 global/include 图的精确只读 ACL；原生协议仍要求的 `GIT_CONFIG_GLOBAL` 指向逐租约空文件。
 
-聚合文件及父目录都不能由 Runtime 替换；Sandbox 的 `HOME`/`USERPROFILE`/`XDG_CONFIG_HOME` 仍指向逐租约私有可写目录，不授予整个宿主 profile。helper、证书或签名程序等配置引用对象不会自动获得访问权。
+空配置文件及父目录都不能由 Runtime 替换；Sandbox 的 `HOME`/`USERPROFILE`/`XDG_CONFIG_HOME` 仍指向逐租约私有可写目录，不授予整个宿主 profile。Broker Git 的 helper、证书或签名程序使用宿主用户权限。
 
 普通 Agent Runtime 无直接命令网络；push 前由 Broker 宿主 Git 查询当前 upstream/URL/OID/ref，并沿用低成本模型的自动通过、移交人工或拒绝三级审批。审批展示预检 URL、目标和宿主权限。
 
 Push 必须是当前工具批次的唯一节点；Agent Runtime 保持存活，其 agent loop 通过认证 IPC 同步等待 Broker Git push，不调度其它工具，也不获得宿主凭据。Broker 使用真实仓库配置预检，再以预检 URL、源 OID 和目标 ref 构造一次 push；该应用层固定参数不构成对 Git 配置、hook/helper 或网络出口的 Sandbox 限制。
 
-持久 WFP fence 只约束专用账户 Runtime，不约束 Broker 宿主命令或 Git push；旧 relay/CONNECT 代码暂停用于产品 push。取消记录以 executionInstance 及 `agent-runtime | broker-command | broker-git-push` kind 保存 cancelled/unknown/orphaned、部分输出和“副作用可能已发生/禁止重放”；非 Sandbox 进程不伪造专用账户字段。
+持久 WFP fence 只约束专用账户 Runtime，不约束 Broker 宿主命令或任何 Git 工具 action；旧 relay/CONNECT 代码暂停用于产品 push。取消记录以 executionInstance 及 `agent-runtime | broker-command | broker-git | broker-git-push` kind 保存 cancelled/unknown/orphaned、部分输出和“副作用可能已发生/禁止重放”；非 Sandbox 进程不伪造专用账户字段。
 
 Windows 原生安装命令是显式维护入口，不属于服务启动或默认测试：先在普通终端运行 `pnpm sandbox:native:build` 与 `pnpm sandbox:runtime:build`；若当前 `PATH` 中的 `node` 不是 v24，通过 `CODEATELIER_SANDBOX_RUNTIME_NODE` 指定可信 Node 24 executable。
 
