@@ -199,11 +199,13 @@ item.done 回退、失败/不完整事件、服务实际错误 message/reason/co
 
 ### Web UI
 
-主要测试：e2e/app.spec.ts、e2e/access-password.spec.ts、e2e/web-history.spec.ts、session-view.test.ts、timeline-virtualization.test.ts。
+主要测试：e2e/app.spec.ts、e2e/access-password.spec.ts、e2e/web-history.spec.ts、e2e/sandbox-badge.spec.ts、session-view.test.ts、timeline-virtualization.test.ts。
 
 访问密码开启时先显示门禁、错误密码不进入主页面且正确密码后加载主页面；
 
 建会话、首条消息标题更新、已完成任务默认只显示输入和最后一轮输出，展开后可检查工具/diff/通知/重试过程且刷新后重新默认折叠、历史续聊及隔离、项目内折叠和最近记录限制、审批与取消、有流式输出工具的卡片聚合与历史重载、设置、人工恢复、Markdown 输入规则原地转换为富文本且不显示独立预览、消息中的标题/链接/代码围栏/表格/任务列表及原始 HTML 拒绝、SSE 失效重连及切换会话时的加载反馈；
+
+Sandbox 徽标浏览器回归以合成历史阶段验证：bootstrap 的待确认状态不能覆盖当前会话已有的实际隔离结果，即使 SSE 断开、重连且没有新增阶段；切换到尚无执行证据、结果未知或宿主回退的会话不能继承旧会话结果，待确认不能误报为不可用。该回归不替代真实专用账户验收。
 
 手机视口可通过菜单完整打开侧栏，并由会话选择、遮罩或 Escape 收起；
 

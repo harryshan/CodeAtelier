@@ -5,7 +5,7 @@
  * 1. 状态和 effects 管理当前会话、一次性 subagent 勾选、服务端发布门禁、弹窗、加载状态及自动滚动。
  * 2. 按服务端返回的工作区路径分组展示会话；项目可独立折叠，展开时默认仅显示最近五个对话，并可按需显示更早记录；手机端以可关闭的抽屉呈现该侧栏。
  * 3. resume、reloadService、stopServer、createProject、createConversation 和 send 处理恢复、受确认的服务重载、关闭服务、连接项目、新建会话和发送消息，并显示操作结果。
- * 4. 服务关闭后显示重启说明；正常页面由侧栏或手机端导航抽屉、项目栏、实际 Runtime 隔离模式（提示获批宿主命令例外）、可折叠会话统计、会将已完成任务过程默认收纳的时间线或项目连接页、所见即所得 Markdown 任务编辑器组成。
+ * 4. 服务关闭后显示重启说明；正常页面由侧栏或手机端导航抽屉、项目栏、当前会话实际 Runtime 隔离模式（没有证据时显示启动初始状态，并提示获批宿主命令例外）、可折叠会话统计、会将已完成任务过程默认收纳的时间线或项目连接页、所见即所得 Markdown 任务编辑器组成。
  * 5. 末尾仅渲染设置、重载和关闭确认弹窗，项目连接不使用弹窗。
  *
  * 关闭请求失败时不能断言服务已经关闭。切换会话和断线重连都只更新显示，不能重新提交任务。
@@ -27,7 +27,7 @@ export default function App() {
   const [selected, setSelected] = useState("");
   const [settings, setSettings] = useState<Settings>();
   const [hasKey, setHasKey] = useState(false);
-  const [sandbox, setSandbox] = useState<SandboxStatus>();
+  const [bootstrapSandbox, setBootstrapSandbox] = useState<SandboxStatus>();
   const [showSettings, setShowSettings] = useState(false);
   const [addingProject, setAddingProject] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
@@ -53,7 +53,7 @@ export default function App() {
     serverState === "running",
     setSettings,
     setHasKey,
-    setSandbox,
+    setBootstrapSandbox,
     setError,
   );
   const bottom = useRef<HTMLDivElement>(null);
@@ -64,7 +64,7 @@ export default function App() {
       .then((v) => {
         setSettings(v.settings);
         setHasKey(v.hasApiKey);
-        setSandbox(v.sandbox);
+        setBootstrapSandbox(v.sandbox);
         setSubagentsAvailable(v.subagentsAvailable);
 
         return sessions();
@@ -82,13 +82,12 @@ export default function App() {
     bottom.current?.scrollIntoView({ behavior: "smooth" });
   }, [data?.events.length, data?.approvals.length]);
 
-  // Sandbox 的实际模式可能在任务 preflight 后改变；历史事件立即更新徽标，不等待 SSE 重连。
-  useEffect(() => {
-    const latest = data?.latestSandbox;
-    if (latest?.mode) {
-      setSandbox(latest);
-    }
-  }, [data?.latestSandbox]);
+  // bootstrap 仅表示启动配置，不是任务执行结果。重连时它可能晚于已保存的
+  // sandbox_stage 抵达；当前会话有实际证据就必须优先显示，切换期间也不能泄漏旧会话状态。
+  const sandbox =
+    data?.session.id === selected
+      ? (data.latestSandbox ?? bootstrapSandbox)
+      : bootstrapSandbox;
 
   useEffect(() => {
     if (!mobileSidebarOpen) {
@@ -500,7 +499,9 @@ export default function App() {
                   ? "Sandbox 失败：宿主运行"
                   : sandbox?.mode === "non-isolated"
                     ? "未隔离"
-                    : "隔离不可用"}
+                    : sandbox?.failureCategory === "runtime_execution"
+                      ? "隔离结果未知"
+                      : "隔离待确认"}
             </span>
             <span className={s.status}>
               {active

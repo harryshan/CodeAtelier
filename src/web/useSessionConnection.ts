@@ -3,7 +3,7 @@
  * 接收会话 ID、连接开关及状态回调，返回快照 data、refreshSession 和连接状态 connected。
  *
  * 1. effect 在选中会话后先清除旧快照并标记 loading；refresh 合并连续 SSE 通知，读取最新快照。
- * 2. connect 先 bootstrap 更新凭据、配置和 sandbox 状态，再建立当前会话的 EventSource；服务建立流时的首个 refresh
+ * 2. connect 先 bootstrap 更新凭据、配置和 sandbox 启动初始状态，再建立当前会话的 EventSource；服务建立流时的首个 refresh
  *    是唯一初始快照请求，避免切换时重复下载同一段历史。
  * 3. 收到后续 refresh 或恢复后的 refreshSession 都通过同一游标读取，由 SessionViewModel 增量聚合；连接失败则重试。
  * 4. 清理时标记 disposed、取消进行中的快照、清除定时器并关闭连接；晚到响应不会覆盖新会话。
