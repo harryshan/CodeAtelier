@@ -183,6 +183,112 @@ bool WriteExact(HANDLE handle, const void* input, DWORD size) {
   return true;
 }
 
+HANDLE CreateAgentRuntimePipe(const std::wstring& name,
+                              DWORD buffer_size,
+                              SECURITY_ATTRIBUTES* security) {
+  return CreateNamedPipeW(
+      name.c_str(),
+      PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE |
+          FILE_FLAG_OVERLAPPED,
+      PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT |
+          PIPE_REJECT_REMOTE_CLIENTS,
+      1, buffer_size, buffer_size, 5000, security);
+}
+
+bool ConnectAgentRuntimePipe(HANDLE pipe, HANDLE bootstrap_process,
+                             DWORD* wait_result, DWORD* connect_error) {
+  *wait_result = WAIT_OBJECT_0;
+  *connect_error = ERROR_SUCCESS;
+  UniqueHandle event(CreateEventW(nullptr, TRUE, FALSE, nullptr));
+  if (!event) {
+    *connect_error = GetLastError();
+    return false;
+  }
+  OVERLAPPED operation{};
+  operation.hEvent = event.get();
+  if (ConnectNamedPipe(pipe, &operation)) {
+    return true;
+  }
+  DWORD error = GetLastError();
+  if (error == ERROR_PIPE_CONNECTED) {
+    return true;
+  }
+  if (error != ERROR_IO_PENDING) {
+    *connect_error = error;
+    return false;
+  }
+  std::array<HANDLE, 2> waits = {event.get(), bootstrap_process};
+  DWORD wait = WaitForMultipleObjects(static_cast<DWORD>(waits.size()),
+                                      waits.data(), FALSE, 10000);
+  if (wait != WAIT_OBJECT_0) {
+    *wait_result = wait;
+    CancelIoEx(pipe, &operation);
+    DWORD ignored = 0;
+    GetOverlappedResult(pipe, &operation, &ignored, TRUE);
+    return false;
+  }
+  DWORD ignored = 0;
+  if (!GetOverlappedResult(pipe, &operation, &ignored, FALSE)) {
+    *connect_error = GetLastError();
+    return false;
+  }
+  return true;
+}
+
+bool ReadAgentRuntimePipeChunk(HANDLE pipe, void* output, DWORD size,
+                               DWORD* count) {
+  UniqueHandle event(CreateEventW(nullptr, TRUE, FALSE, nullptr));
+  if (!event) {
+    return false;
+  }
+  OVERLAPPED operation{};
+  operation.hEvent = event.get();
+  *count = 0;
+  if (!ReadFile(pipe, output, size, count, &operation)) {
+    if (GetLastError() != ERROR_IO_PENDING ||
+        !GetOverlappedResult(pipe, &operation, count, TRUE)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool WriteExactAgentRuntimePipe(HANDLE pipe, const void* input, DWORD size) {
+  const BYTE* cursor = static_cast<const BYTE*>(input);
+  DWORD remaining = size;
+  while (remaining > 0) {
+    UniqueHandle event(CreateEventW(nullptr, TRUE, FALSE, nullptr));
+    if (!event) {
+      return false;
+    }
+    OVERLAPPED operation{};
+    operation.hEvent = event.get();
+    DWORD written = 0;
+    if (!WriteFile(pipe, cursor, remaining, &written, &operation)) {
+      DWORD error = GetLastError();
+      if (error == ERROR_IO_PENDING &&
+          GetOverlappedResult(pipe, &operation, &written, TRUE)) {
+        error = ERROR_SUCCESS;
+      } else if (error == ERROR_IO_PENDING) {
+        error = GetLastError();
+      }
+      if (error != ERROR_SUCCESS) {
+        event.reset();
+        SetLastError(error);
+        return false;
+      }
+    }
+    if (written == 0) {
+      event.reset();
+      SetLastError(ERROR_WRITE_FAULT);
+      return false;
+    }
+    cursor += written;
+    remaining -= written;
+  }
+  return true;
+}
+
 bool ReadFramedString(HANDLE handle, std::wstring* output) {
   uint32_t size = 0;
   if (!ReadExact(handle, &size, sizeof(size)) || size > kMaximumStringBytes) {
@@ -1621,7 +1727,8 @@ bool WriteRuntimeStartupDescriptor(HANDLE pipe,
                                    const std::wstring& session_id,
                                    const std::wstring& task_id,
                                    const std::wstring& execution_instance_id,
-                                   const std::wstring& nonce) {
+                                   const std::wstring& nonce,
+                                   bool overlapped_pipe = true) {
   std::string payload =
       "{\"protocolVersion\":1,\"identity\":{\"sessionId\":" +
       JsonString(session_id) + ",\"taskId\":" + JsonString(task_id) +
@@ -1632,8 +1739,9 @@ bool WriteRuntimeStartupDescriptor(HANDLE pipe,
     return false;
   }
   uint32_t size = static_cast<uint32_t>(payload.size());
-  return WriteExact(pipe, &size, sizeof(size)) &&
-         WriteExact(pipe, payload.data(), size);
+  auto write = overlapped_pipe ? &WriteExactAgentRuntimePipe : &WriteExact;
+  return write(pipe, &size, sizeof(size)) &&
+         write(pipe, payload.data(), size);
 }
 
 std::wstring BuildCommandLine(const std::wstring& executable,
@@ -2277,23 +2385,11 @@ bool RunAgentRuntimeProxy(HANDLE runtime_pipe, HANDLE bootstrap_pipe,
                << GetLastError() << L"\n";
     return false;
   }
-  bool connected = false;
+  DWORD connection_result = WAIT_OBJECT_0;
   DWORD connect_error = ERROR_SUCCESS;
-  std::thread connector([&]() {
-    connected = ConnectNamedPipe(runtime_pipe, nullptr) != FALSE ||
-                GetLastError() == ERROR_PIPE_CONNECTED;
-    if (!connected) {
-      connect_error = GetLastError();
-    }
-  });
-  std::array<HANDLE, 2> connection_wait = {connector.native_handle(),
-                                            bootstrap_process};
-  DWORD connection_result = WaitForMultipleObjects(
-      static_cast<DWORD>(connection_wait.size()), connection_wait.data(),
-      FALSE, 10000);
-  if (connection_result != WAIT_OBJECT_0) {
-    CancelSynchronousIo(connector.native_handle());
-    connector.join();
+  if (!ConnectAgentRuntimePipe(runtime_pipe, bootstrap_process,
+                               &connection_result, &connect_error) &&
+      connection_result != WAIT_OBJECT_0) {
     DWORD bootstrap_exit = STILL_ACTIVE;
     GetExitCodeProcess(bootstrap_process, &bootstrap_exit);
     std::wcerr << L"CODEATELIER_RUNTIME_PROXY_FAILED stage=connect_wait wait="
@@ -2301,8 +2397,7 @@ bool RunAgentRuntimeProxy(HANDLE runtime_pipe, HANDLE bootstrap_pipe,
                << L"\n";
     return false;
   }
-  connector.join();
-  if (!connected) {
+  if (connect_error != ERROR_SUCCESS) {
     std::wcerr << L"CODEATELIER_RUNTIME_PROXY_FAILED stage=connect win32="
                << connect_error << L"\n";
     return false;
@@ -2353,7 +2448,7 @@ bool RunAgentRuntimeProxy(HANDLE runtime_pipe, HANDLE bootstrap_pipe,
       if (first_frame) {
         std::wcerr << L"CODEATELIER_RUNTIME_PROXY_STAGE broker_read\n";
       }
-      if (!WriteExact(runtime_pipe, buffer.data(), read)) {
+      if (!WriteExactAgentRuntimePipe(runtime_pipe, buffer.data(), read)) {
         if (!stop->exchange(true)) {
           proxy_failed->store(true);
           TerminateJobObject(job, 32);
@@ -2371,8 +2466,9 @@ bool RunAgentRuntimeProxy(HANDLE runtime_pipe, HANDLE bootstrap_pipe,
     bool first_frame = true;
     while (!stop->load()) {
       DWORD read = 0;
-      if (!ReadFile(runtime_pipe, buffer.data(),
-                    static_cast<DWORD>(buffer.size()), &read, nullptr) ||
+      if (!ReadAgentRuntimePipeChunk(runtime_pipe, buffer.data(),
+                                     static_cast<DWORD>(buffer.size()),
+                                     &read) ||
           read == 0) {
         return;
       }
@@ -2403,6 +2499,7 @@ bool RunAgentRuntimeProxy(HANDLE runtime_pipe, HANDLE bootstrap_pipe,
   }
   stop->store(true);
   CancelSynchronousIo(broker_to_runtime.native_handle());
+  CancelSynchronousIo(runtime_to_broker.native_handle());
   CancelIoEx(runtime_pipe, nullptr);
   broker_to_runtime.join();
   runtime_to_broker.join();
@@ -2571,13 +2668,8 @@ int RunProductSupervisor(const std::wstring& state_path,
       SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
       return fail_launch(kSelfCheckFailureExitCode);
     }
-    runtime_pipe.reset(CreateNamedPipeW(
-        runtime_pipe_name.c_str(),
-        PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE,
-        PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT |
-            PIPE_REJECT_REMOTE_CLIENTS,
-        1, 1024 * 1024, 1024 * 1024, 5000,
-        &runtime_pipe_security));
+    runtime_pipe.reset(CreateAgentRuntimePipe(runtime_pipe_name, 1024 * 1024,
+                                               &runtime_pipe_security));
     if (!runtime_pipe) {
       SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
       return fail_launch(kSelfCheckFailureExitCode);

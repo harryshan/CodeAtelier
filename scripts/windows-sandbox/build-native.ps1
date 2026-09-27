@@ -15,8 +15,10 @@ packaging artifact and can be removed by a normal clean build.
    are not part of the installed product executable.
 4. Build and run the native installation-state parser regression without
    creating an account, ACL, or WFP rule.
-5. Return a nonzero exit when a binary is missing, compilation fails, or the
-   parser regression fails.
+5. Run the real Named Pipe duplex regression in a bounded child process so a
+   synchronous read/write deadlock fails the build rather than hanging it.
+6. Return a nonzero exit when a binary is missing, compilation fails, or a
+   regression fails.
 #>
 
 [CmdletBinding()]
@@ -80,6 +82,36 @@ Invoke-MsvcBuild -Source $StateParserTestSource -Output $StateParserTestOutput -
 & $StateParserTestOutput
 if ($LASTEXITCODE -ne 0) {
     throw "原生 Sandbox 安装状态解析回归失败。"
+}
+
+$Probe = [Diagnostics.Process]::new()
+$Probe.StartInfo.FileName = $StateParserTestOutput
+$Probe.StartInfo.Arguments = "--runtime-duplex-probe"
+$Probe.StartInfo.UseShellExecute = $false
+$Probe.StartInfo.CreateNoWindow = $true
+$Probe.StartInfo.RedirectStandardOutput = $true
+$Probe.StartInfo.RedirectStandardError = $true
+
+try {
+    if (-not $Probe.Start()) {
+        throw "无法启动原生 Runtime 双向管道回归。"
+    }
+    if (-not $Probe.WaitForExit(5000)) {
+        $Probe.Kill($true)
+        $Probe.WaitForExit()
+        throw "原生 Runtime 双向管道回归超时。"
+    }
+
+    $ProbeOutput = $Probe.StandardOutput.ReadToEnd()
+    $ProbeError = $Probe.StandardError.ReadToEnd()
+    if ($Probe.ExitCode -ne 0 -or -not $ProbeOutput.Contains("SANDBOX_RUNTIME_DUPLEX_PROBE PASS")) {
+        throw "原生 Runtime 双向管道回归失败：$ProbeError"
+    }
+
+    Write-Host $ProbeOutput.Trim()
+}
+finally {
+    $Probe.Dispose()
 }
 
 Write-Host "SANDBOX_NATIVE_BUILD PASS output=$OutputRoot"

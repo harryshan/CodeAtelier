@@ -12,8 +12,9 @@
  * 6. 用真实句柄验证 bootstrap attestation 只复制查询权限，绑定进程 PID 并拒绝畸形或错误 PID。
  * 7. 显式 --handle-transfer-probe 用独立子进程和匿名管道验证句柄帧的有界等待、跨进程复制和 PID 绑定；默认 native build 不运行此 OS 探针。
  * 8. 显式 --runtime-descriptor-probe 输出真实原生首帧，供跨语言回归核对 Node 解码器；不启动 Supervisor。
- * 9. 显式 --window-station-probe 在真实 Windows 会话中用不同账户替身 SID 创建并关闭两个非交互式 station/desktop 句柄，验证已有 station 补装第二个账户 ACE、实例授权、原 station 恢复，以及带完整 station/desktop 名称的 USER32 子进程启动；默认 native build 不运行此 OS 探针。
- * 10. 删除临时夹具，以退出码报告回归结果。
+ * 9. 显式 --runtime-duplex-probe 在真实 Named Pipe 上让读取方等待第二帧时写入 Broker 回复，证明两个方向不会相互阻塞；以独立测试进程执行并设超时。
+ * 10. 显式 --window-station-probe 在真实 Windows 会话中用不同账户替身 SID 创建并关闭两个非交互式 station/desktop 句柄，验证已有 station 补装第二个账户 ACE、实例授权、原 station 恢复，以及带完整 station/desktop 名称的 USER32 子进程启动；默认 native build 不运行此 OS 探针。
+ * 11. 删除临时夹具，以退出码报告回归结果。
  */
 
 #define CODEATELIER_INSTALLATION_STATE_TEST
@@ -303,6 +304,73 @@ bool TestCrossProcessHandleTransfer() {
          exit_code == 0;
 }
 
+bool TestRuntimeDuplexPipe(bool connect_after_wait) {
+  std::wstring name = MakeAgentRuntimePipeName();
+  if (name.empty()) {
+    return false;
+  }
+  UniqueHandle server(CreateAgentRuntimePipe(name, 4096, nullptr));
+  if (!server) {
+    return false;
+  }
+  UniqueHandle wait_process(OpenProcess(SYNCHRONIZE, FALSE,
+                                        GetCurrentProcessId()));
+  if (!wait_process) {
+    return false;
+  }
+  UniqueHandle client;
+  std::thread connector;
+  if (connect_after_wait) {
+    connector = std::thread([&]() {
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+      client.reset(CreateFileW(name.c_str(), GENERIC_READ | GENERIC_WRITE,
+                               0, nullptr, OPEN_EXISTING, 0, nullptr));
+    });
+  } else {
+    client.reset(CreateFileW(name.c_str(), GENERIC_READ | GENERIC_WRITE,
+                             0, nullptr, OPEN_EXISTING, 0, nullptr));
+  }
+  DWORD connect_wait = WAIT_OBJECT_0;
+  DWORD connect_error = ERROR_SUCCESS;
+  bool connected = ConnectAgentRuntimePipe(
+      server.get(), wait_process.get(), &connect_wait, &connect_error);
+  if (connector.joinable()) {
+    connector.join();
+  }
+  if (!client || !connected) {
+    std::wcerr << L"RUNTIME_DUPLEX_STAGE connect wait=" << connect_wait
+               << L" win32=" << connect_error << L" client="
+               << (client ? 1 : 0) << L"\n";
+    return false;
+  }
+  BYTE runtime_hello = 'H';
+  BYTE received_hello = 0;
+  DWORD hello_size = 0;
+  if (!WriteExact(client.get(), &runtime_hello, 1) ||
+      !ReadAgentRuntimePipeChunk(server.get(), &received_hello, 1,
+                                 &hello_size) ||
+      hello_size != 1 ||
+      received_hello != runtime_hello) {
+    return false;
+  }
+  std::thread pending_runtime_read([&]() {
+    BYTE next = 0;
+    DWORD count = 0;
+    ReadAgentRuntimePipeChunk(server.get(), &next, 1, &count);
+  });
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  BYTE broker_hello = 'B';
+  bool written = WriteExactAgentRuntimePipe(server.get(), &broker_hello, 1);
+  BYTE received_broker = 0;
+  bool delivered = written &&
+                   ReadExact(client.get(), &received_broker, 1) &&
+                   received_broker == broker_hello;
+  client.reset();
+  CancelIoEx(server.get(), nullptr);
+  pending_runtime_read.join();
+  return delivered;
+}
+
 bool ReadRevokeFixture(const std::filesystem::path& path, bool journal_mode) {
   UniqueHandle input(CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ,
                                  nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
@@ -460,9 +528,17 @@ int wmain(int argc, wchar_t* argv[]) {
   if (argc == 2 && std::wstring(argv[1]) == L"--runtime-descriptor-probe") {
     return WriteRuntimeStartupDescriptor(
                GetStdHandle(STD_OUTPUT_HANDLE), L"session-1", L"task-1",
-               L"instance-1", std::wstring(64, L'a'))
+               L"instance-1", std::wstring(64, L'a'), false)
                ? 0
                : 1;
+  }
+  if (argc == 2 && std::wstring(argv[1]) == L"--runtime-duplex-probe") {
+    if (!TestRuntimeDuplexPipe(false) || !TestRuntimeDuplexPipe(true)) {
+      std::wcerr << L"SANDBOX_RUNTIME_DUPLEX_PROBE FAIL\n";
+      return 1;
+    }
+    std::wcout << L"SANDBOX_RUNTIME_DUPLEX_PROBE PASS\n";
+    return 0;
   }
   if (argc == 2 && std::wstring(argv[1]) == L"--handle-transfer-probe") {
     if (!TestCrossProcessHandleTransfer()) {
