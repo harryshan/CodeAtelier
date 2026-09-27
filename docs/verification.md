@@ -1,9 +1,10 @@
 # 初版验证记录
 
-## Windows Sandbox 普通用户 WFP 自检修复（2026-09-27，待重装验收）
+## Windows Sandbox 普通用户启动自检（2026-09-27，进行中）
 
 - 固定账户安装与管理员 `sandbox:verify` 已通过，但普通终端的 `sandbox:runtime:verify` 在第一个任务发现 `runtime_self_check` 启动前 fallback；模拟任务在宿主创建了标记，脚本正确拒绝将其计为 Sandbox 成功。保留的会话事件明确记录 `host-process-fallback`、`sandboxApplied=false`、`sideEffectsPossible=false`。对已安装 WFP manager 做只读普通用户复核，`FwpmFilterCreateEnumHandle0` 返回错误 5；因此不能用管理员校验通过推断普通用户 Broker 可以完成同一枚举。
-- 产品 WFP manager 改为给安装用户对固定 provider、sublayer 和八条固定 key filter 授予对象级 `FWPM_ACTRL_READ`，保留既有 ACL；普通用户自检按 key 读取并核对规则形状，不修改全局 filter 容器 ACL。管理员 `sandbox:verify` 仍枚举 provider 下全部 filter 并要求恰好八条。MSVC `/W4` 原生构建及安装状态解析回归通过；修复后的卸载、重装、普通用户自检和完整 Runtime 链路尚待手动验证，不能据编译成功宣称 W1/W3/W4 完成。
+- 产品 WFP manager 改为给安装用户对固定 provider、sublayer 和八条固定 key filter 授予对象级 `FWPM_ACTRL_READ`，保留既有 ACL；普通用户自检按 key 读取并核对规则形状，不修改全局 filter 容器 ACL。管理员 `sandbox:verify` 仍枚举 provider 下全部 filter 并要求恰好八条。用户重装后，管理员 `sandbox:verify` 通过，普通用户运行已安装 WFP manager 的 `--wfp-persistent-attest` 输出 `PASS filters=8`。
+- 继续只读运行新版 Supervisor 自检，发现下一处失败为 `account_rights`；细分诊断确认普通用户 `LsaEnumerateAccountRights` 返回 Win32 错误 5，管理员验证则通过。安装器现只在专用账户 LSA 对象的原 DACL 上增加安装用户 `ACCOUNT_VIEW`，保留原 ACE；不改变 LSA policy ACL，也不授予账户权限写入。MSVC `/W4` 构建与进程内 DACL 回归通过。此 LSA 修复尚待提升重装及普通用户 Runtime 验收，不能据编译或管理员验证宣称 W1/W3/W4 完成。
 
 ## Windows Sandbox 安装状态端口回归（2026-09-27）
 

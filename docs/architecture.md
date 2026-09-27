@@ -89,7 +89,7 @@ replay 捕获逐次保存模型 input/instructions/响应及完整脱敏工具�
 
 ### Windows Sandbox
 
-Sandbox 以 Broker Host 为宿主可信边界。一次性提升安装创建单一 `CodeAtelierSandbox` 本地账户，并按其 SID 安装持久 WFP 默认拒绝规则；安装用户仅取得产品 WFP 对象的只读权限，普通启动自检按固定 key 核对规则，管理员校验仍枚举完整规则集。独立 C++ supervisor 为每个 execution instance 创建该账户的 `WRITE_RESTRICTED` token、根 capability、私有 desktop、最小环境和 Job。
+Sandbox 以 Broker Host 为宿主可信边界。一次性提升安装创建单一 `CodeAtelierSandbox` 本地账户，并按其 SID 安装持久 WFP 默认拒绝规则；安装用户仅取得产品 WFP 对象的只读权限，普通启动自检按固定 key 核对规则，管理员校验仍枚举完整规则集。安装器还仅对该专用账户的 LSA 对象授予安装用户 `ACCOUNT_VIEW`，使普通启动自检能够逐项核对四项拒绝登录权；不扩大 LSA policy 的访问权限。独立 C++ supervisor 为每个 execution instance 创建该账户的 `WRITE_RESTRICTED` token、根 capability、私有 desktop、最小环境和 Job。
 
 Broker 先建立不可变 AccessManifest，supervisor 再以原对象 handle 和卷/file ID 复核工作区、显式 read/write roots、产品依赖和精确 Git config/include 图并投影最小 ACL；持久 journal 使最终 revoke 或重启恢复可在同卷 rename 后按 file ID 重开原对象。
 

@@ -3,7 +3,7 @@
  * TypeScript Broker 只以固定 argv 启动 self-check/execute/launch-agent-runtime，请求通过继承 stdin 的有界二进制帧传入；
  * supervisor 使用 DPAPI state、工作区 ACL、Job 和私有 Named Pipe 启动同一二进制的 bootstrap 模式，并代理 Agent Runtime IPC。
  *
- * 1. self-check 核对 state 所属宿主 SID、专用账户 SID/密码、拒绝登录权、WFP 持久规则，以及受保护 Node 24/Agent Runtime entry 和各 Worker bundle 摘要。
+ * 1. 提升安装时仅对专用 LSA 账户对象授予安装者读取拒绝登录权的权限；self-check 核对 state 所属宿主 SID、专用账户 SID/密码、拒绝登录权、WFP 持久规则，以及受保护 Node 24/Agent Runtime entry 和各 Worker bundle 摘要。
  * 2. execute 生成 execution/root capability SID；共享账户 ACE 始终提供 normal-side 读写候选权限，每实例 capability ACE 再决定 WRITE_RESTRICTED token 实际可写的根。
  * 3. CreateProcessWithLogonW 以固定 bootstrap 入口启动专用账户进程，先分配 KILL_ON_JOB_CLOSE Job 再恢复。
  * 4. bootstrap 使用专用账户自身的全新环境块，通过只允许宿主/SYSTEM/专用账户且核对 PID 的 Named Pipe 取得命令，创建 WRITE_RESTRICTED token 后启动真实工具。
@@ -30,6 +30,19 @@
 #include <map>
 #include <sstream>
 
+// ntsecapi.h exposes the policy APIs used below, while ntlsa.h duplicates
+// their type declarations in current Windows SDKs. Declare only these account
+// object APIs instead of including both incompatible headers.
+extern "C" NTSTATUS NTAPI LsaOpenAccount(LSA_HANDLE policy, PSID sid,
+                                          ACCESS_MASK access,
+                                          PLSA_HANDLE account);
+extern "C" NTSTATUS NTAPI LsaQuerySecurityObject(
+    LSA_HANDLE object, SECURITY_INFORMATION information,
+    PSECURITY_DESCRIPTOR* descriptor);
+extern "C" NTSTATUS NTAPI LsaSetSecurityObject(
+    LSA_HANDLE object, SECURITY_INFORMATION information,
+    PSECURITY_DESCRIPTOR descriptor);
+
 namespace {
 
 constexpr uint32_t kRequestMagic = 0x42534143;
@@ -39,6 +52,7 @@ constexpr DWORD kSelfCheckFailureExitCode = 71;
 constexpr DWORD kProtocolFailureExitCode = 72;
 constexpr NTSTATUS kStatusObjectNameNotFound =
     static_cast<NTSTATUS>(0xC0000034L);
+constexpr ACCESS_MASK kLsaAccountView = 0x00000001L;
 constexpr size_t kMaximumStringBytes = 64 * 1024;
 constexpr uint32_t kMaximumArguments = 64;
 constexpr uint32_t kMaximumRoots = 96;
@@ -659,7 +673,11 @@ bool AccountRightsMatch(PSID account_sid) {
   LSA_OBJECT_ATTRIBUTES attributes{};
   attributes.Length = sizeof(attributes);
   LSA_HANDLE policy = nullptr;
-  if (LsaOpenPolicy(nullptr, &attributes, POLICY_LOOKUP_NAMES, &policy) != 0) {
+  NTSTATUS open_status =
+      LsaOpenPolicy(nullptr, &attributes, POLICY_LOOKUP_NAMES, &policy);
+  if (open_status != 0) {
+    std::wcerr << L"CODEATELIER_ACCOUNT_RIGHTS_CHECK stage=policy_open win32="
+               << LsaNtStatusToWinError(open_status) << L"\n";
     return false;
   }
   PLSA_UNICODE_STRING rights = nullptr;
@@ -676,10 +694,13 @@ bool AccountRightsMatch(PSID account_sid) {
   }
   LsaClose(policy);
   if (status != 0) {
+    std::wcerr << L"CODEATELIER_ACCOUNT_RIGHTS_CHECK stage=enumerate win32="
+               << LsaNtStatusToWinError(status) << L"\n";
     return false;
   }
   for (const wchar_t* required : RequiredDenyRights()) {
     if (std::find(actual.begin(), actual.end(), required) == actual.end()) {
+      std::wcerr << L"CODEATELIER_ACCOUNT_RIGHTS_CHECK stage=missing_right\n";
       return false;
     }
   }
@@ -709,22 +730,126 @@ bool ConfigureAccountRights(PSID account_sid, bool remove) {
   return status == 0 || (remove && status == kStatusObjectNameNotFound);
 }
 
+bool CreateInstallerReadAcl(PACL old_acl, PSID installer_sid,
+                            PACL* new_acl) {
+  if (!old_acl || !IsValidAcl(old_acl) || !IsValidSid(installer_sid)) {
+    return false;
+  }
+  EXPLICIT_ACCESSW entry{};
+  entry.grfAccessPermissions = kLsaAccountView;
+  entry.grfAccessMode = GRANT_ACCESS;
+  entry.grfInheritance = NO_INHERITANCE;
+  entry.Trustee.TrusteeForm = TRUSTEE_IS_SID;
+  entry.Trustee.TrusteeType = TRUSTEE_IS_USER;
+  entry.Trustee.ptstrName = static_cast<LPWSTR>(installer_sid);
+  return SetEntriesInAclW(1, &entry, old_acl, new_acl) == ERROR_SUCCESS;
+}
+
+bool GrantAccountRightsReadToInstaller(PSID account_sid,
+                                      const std::wstring& installer_sid) {
+  auto fail = [](const wchar_t* stage, DWORD error) {
+    std::wcerr << L"CODEATELIER_ACCOUNT_RIGHTS_ACL_FAILED stage=" << stage
+               << L" win32=" << error << L"\n";
+    return false;
+  };
+  PSID raw_installer_sid = nullptr;
+  if (!ConvertStringSidToSidW(installer_sid.c_str(), &raw_installer_sid)) {
+    return fail(L"installer_sid", GetLastError());
+  }
+  LocalPointer owned_installer_sid(raw_installer_sid);
+
+  LSA_OBJECT_ATTRIBUTES attributes{};
+  attributes.Length = sizeof(attributes);
+  LSA_HANDLE policy = nullptr;
+  NTSTATUS status =
+      LsaOpenPolicy(nullptr, &attributes, POLICY_LOOKUP_NAMES, &policy);
+  if (status != 0) {
+    return fail(L"policy_open", LsaNtStatusToWinError(status));
+  }
+  LSA_HANDLE account = nullptr;
+  status = LsaOpenAccount(policy, account_sid, READ_CONTROL | WRITE_DAC,
+                          &account);
+  LsaClose(policy);
+  if (status != 0) {
+    return fail(L"account_open", LsaNtStatusToWinError(status));
+  }
+
+  PSECURITY_DESCRIPTOR old_descriptor = nullptr;
+  status = LsaQuerySecurityObject(account, DACL_SECURITY_INFORMATION,
+                                  &old_descriptor);
+  if (status != 0) {
+    LsaClose(account);
+    return fail(L"acl_query", LsaNtStatusToWinError(status));
+  }
+  BOOL present = FALSE;
+  BOOL defaulted = FALSE;
+  PACL old_acl = nullptr;
+  bool valid = old_descriptor &&
+               GetSecurityDescriptorDacl(old_descriptor, &present, &old_acl,
+                                         &defaulted) &&
+               present && old_acl;
+  PACL new_acl = nullptr;
+  if (valid) {
+    valid = CreateInstallerReadAcl(old_acl, raw_installer_sid, &new_acl);
+  }
+  LocalPointer owned_acl(new_acl);
+  SECURITY_DESCRIPTOR absolute_descriptor{};
+  valid = valid &&
+          InitializeSecurityDescriptor(&absolute_descriptor,
+                                       SECURITY_DESCRIPTOR_REVISION) &&
+          SetSecurityDescriptorDacl(&absolute_descriptor, TRUE, new_acl, FALSE);
+  DWORD size = 0;
+  if (valid) {
+    MakeSelfRelativeSD(&absolute_descriptor, nullptr, &size);
+    valid = GetLastError() == ERROR_INSUFFICIENT_BUFFER && size > 0;
+  }
+  std::vector<BYTE> relative_descriptor(size);
+  if (valid) {
+    valid = MakeSelfRelativeSD(&absolute_descriptor,
+                               relative_descriptor.data(), &size);
+  }
+  if (valid) {
+    status = LsaSetSecurityObject(
+        account, DACL_SECURITY_INFORMATION,
+        reinterpret_cast<PSECURITY_DESCRIPTOR>(relative_descriptor.data()));
+    valid = status == 0;
+  }
+  LsaFreeMemory(old_descriptor);
+  LsaClose(account);
+  if (!valid) {
+    return fail(L"acl_update", status == 0 ? GetLastError()
+                                              : LsaNtStatusToWinError(status));
+  }
+  return valid;
+}
+
 bool VerifyInstallation(const InstallationState& state,
                         const std::wstring& network_manager,
                         std::wstring* password,
-                        bool require_account_rights = true,
-                        bool require_wfp = true,
-                        bool require_runtime_bundle = true) {
-  if (CurrentUserSidString() != state.installed_by_sid ||
-      (require_wfp && !std::filesystem::is_regular_file(network_manager)) ||
-      (require_runtime_bundle && !RuntimeBundleMatches(state))) {
+                         bool require_account_rights = true,
+                         bool require_wfp = true,
+                         bool require_runtime_bundle = true) {
+  auto fail = [](const wchar_t* stage) {
+    std::wcerr << L"CODEATELIER_SUPERVISOR_CHECK_FAILED stage=" << stage
+               << L"\n";
     return false;
+  };
+  if (CurrentUserSidString() != state.installed_by_sid) {
+    return fail(L"installer_identity");
+  }
+  if (require_wfp && !std::filesystem::is_regular_file(network_manager)) {
+    return fail(L"network_manager");
+  }
+  if (require_runtime_bundle && !RuntimeBundleMatches(state)) {
+    return fail(L"runtime_bundle");
   }
   std::vector<BYTE> account_sid;
   if (!LookupAccountSid(state.account_name, &account_sid) ||
-      SidToString(account_sid.data()) != state.account_sid ||
-      !UnprotectPassword(state.protected_password, password)) {
-    return false;
+      SidToString(account_sid.data()) != state.account_sid) {
+    return fail(L"account_identity");
+  }
+  if (!UnprotectPassword(state.protected_password, password)) {
+    return fail(L"password_protection");
   }
   UniqueHandle logon_token;
   HANDLE raw_token = nullptr;
@@ -733,16 +858,21 @@ bool VerifyInstallation(const InstallationState& state,
                   &raw_token)) {
     SecureZeroMemory(password->data(), password->size() * sizeof(wchar_t));
     password->clear();
-    return false;
+    return fail(L"account_logon");
   }
   logon_token.reset(raw_token);
-  return (!require_account_rights || AccountRightsMatch(account_sid.data())) &&
-         (!require_wfp ||
-          RunFixedProcess(
-              network_manager,
-               L"--wfp-persistent-attest " + QuoteArgument(state.account_name) +
-                  L" " + std::to_wstring(state.relay_port_v4) + L" " +
-                  std::to_wstring(state.relay_port_v6)));
+  if (require_account_rights && !AccountRightsMatch(account_sid.data())) {
+    return fail(L"account_rights");
+  }
+  if (require_wfp &&
+      !RunFixedProcess(
+          network_manager,
+          L"--wfp-persistent-attest " + QuoteArgument(state.account_name) +
+              L" " + std::to_wstring(state.relay_port_v4) + L" " +
+              std::to_wstring(state.relay_port_v6))) {
+    return fail(L"wfp_attestation");
+  }
+  return true;
 }
 
 class ObjectGrant {
@@ -2432,6 +2562,8 @@ int RunAccountRights(const std::wstring& state_path,
   std::vector<BYTE> account_sid;
   if (!LookupAccountSid(state.account_name, &account_sid) ||
       !ConfigureAccountRights(account_sid.data(), remove) ||
+      (!remove && !GrantAccountRightsReadToInstaller(
+                      account_sid.data(), state.installed_by_sid)) ||
       (!remove && !AccountRightsMatch(account_sid.data()))) {
     return kCleanupFailureExitCode;
   }
