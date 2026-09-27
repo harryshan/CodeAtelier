@@ -241,7 +241,7 @@ item.done 回退、失败/不完整事件、服务实际错误 message/reason/co
 
   这些自动回归仍不验证专用账户、Named Pipe client PID、token/capability、Job 或 generation，因此不能单独计入 W3/W4 完成。
 
-- 原生产品构建直接编译 `native/windows-sandbox/network-fence-implementation.cpp` 并定义 `CODEATELIER_PRODUCT_WFP_ONLY`；同时编译并运行真实 Supervisor 的版本 4 relay 端口解析回归，以及 LSA 账户 DACL 的进程内回归：只给安装者 `ACCOUNT_VIEW`，保留既有 ACE。提升安装后须分别在管理员终端执行 `pnpm sandbox:verify` 的完整 WFP 枚举，在普通终端执行 `pnpm sandbox:runtime:verify`，核对对象级 WFP/LSA 读取、Runtime 承载、Runner 与取消无 fallback/unknown；两种身份不能互相代替。构建后手工冒烟确认实验参数 `--ipc` 以退出码 2 被拒。实验 demo 通过薄包装编译同一实现但不定义该宏，避免产品源从 experiment 目录反向依赖。
+- 原生产品构建直接编译 `native/windows-sandbox/network-fence-implementation.cpp` 并定义 `CODEATELIER_PRODUCT_WFP_ONLY`；同时编译并运行真实 Supervisor 的版本 4 relay 端口解析回归、LSA 账户 DACL 进程内回归，以及二进制授权 journal 标志回归。journal 模式只接受带安装账户标志且不同时声明文件与写入的 4/5/6，普通撤销模式仍只接受 0/2。提升安装后须分别在管理员终端执行 `pnpm sandbox:verify` 的完整 WFP 枚举，在普通终端执行 `pnpm sandbox:runtime:verify`，核对对象级 WFP/LSA 读取、Runtime 承载、Runner 与取消无 fallback/unknown；两种身份不能互相代替。构建后手工冒烟确认实验参数 `--ipc` 以退出码 2 被拒。实验 demo 通过薄包装编译同一实现但不定义该宏，避免产品源从 experiment 目录反向依赖。
 
 ### Sandbox 证据边界
 

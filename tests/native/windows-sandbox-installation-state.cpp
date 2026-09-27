@@ -5,8 +5,9 @@
  *
  * 1. 写入包含两个非默认 relay 端口的安装状态夹具。
  * 2. 调用 ReadInstallationState，核对端口与版本，并拒绝无效端口。
- * 3. 在进程内 ACL 上验证新增的安装者读取 ACE 不丢弃既有 ACE，也不授予写入。
- * 4. 删除临时夹具，以退出码报告回归结果。
+ * 3. 用真实二进制 journal 帧验证恢复入口接受已安装授权的合法标志，普通撤销入口仍拒绝这些标志。
+ * 4. 在进程内 ACL 上验证新增的安装者读取 ACE 不丢弃既有 ACE，也不授予写入。
+ * 5. 删除临时夹具，以退出码报告回归结果。
  */
 
 #define CODEATELIER_INSTALLATION_STATE_TEST
@@ -88,6 +89,39 @@ bool TestInstallerAccountAcl() {
              (READ_CONTROL | WRITE_DAC);
 }
 
+bool ReadRevokeFixture(const std::filesystem::path& path, bool journal_mode) {
+  UniqueHandle input(CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ,
+                                 nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
+                                 nullptr));
+  std::vector<ProductRoot> roots;
+  return static_cast<bool>(input) &&
+         ReadRevokeRoots(input.get(), &roots, journal_mode) &&
+         roots.size() == 1;
+}
+
+bool TestGrantJournalFlags(const std::filesystem::path& path, uint32_t flags,
+                           bool expected_journal, bool expected_revoke) {
+  UniqueHandle output(CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr,
+                                  CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL,
+                                  nullptr));
+  uint32_t count = 1;
+  if (!output || !WriteExact(output.get(), &kRequestMagic,
+                             sizeof(kRequestMagic)) ||
+      !WriteExact(output.get(), &kRequestVersion,
+                  sizeof(kRequestVersion)) ||
+      !WriteExact(output.get(), &count, sizeof(count)) ||
+      !WriteExact(output.get(), &flags, sizeof(flags)) ||
+      !WriteFramedString(output.get(), L"C:\\fixture") ||
+      !WriteFramedString(output.get(), L"1") ||
+      !WriteFramedString(output.get(), L"2") ||
+      !WriteFramedString(output.get(), std::wstring(64, L'a'))) {
+    return false;
+  }
+  output.reset();
+  return ReadRevokeFixture(path, true) == expected_journal &&
+         ReadRevokeFixture(path, false) == expected_revoke;
+}
+
 }  // namespace
 
 int wmain() {
@@ -104,6 +138,11 @@ int wmain() {
           !ReadInstallationState(fixture.wstring(), &state);
   valid = valid && WriteFixture(fixture, 42871, false) &&
           !ReadInstallationState(fixture.wstring(), &state);
+  valid = valid && TestGrantJournalFlags(fixture, 4, true, false) &&
+          TestGrantJournalFlags(fixture, 5, true, false) &&
+          TestGrantJournalFlags(fixture, 6, true, false) &&
+          TestGrantJournalFlags(fixture, 7, false, false) &&
+          TestGrantJournalFlags(fixture, 2, false, true);
   valid = valid && TestInstallerAccountAcl();
   std::error_code remove_error;
   std::filesystem::remove(fixture, remove_error);

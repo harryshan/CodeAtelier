@@ -7,7 +7,7 @@
  * 2. execute 生成 execution/root capability SID；共享账户 ACE 始终提供 normal-side 读写候选权限，每实例 capability ACE 再决定 WRITE_RESTRICTED token 实际可写的根。
  * 3. CreateProcessWithLogonW 以固定 bootstrap 入口启动专用账户进程，先分配 KILL_ON_JOB_CLOSE Job 再恢复。
  * 4. bootstrap 使用专用账户自身的全新环境块，通过只允许宿主/SYSTEM/专用账户且核对 PID 的 Named Pipe 取得命令，创建 WRITE_RESTRICTED token 后启动真实工具。
- * 5. Broker stdin 关闭、超时或异常会终止 Job；正常/异常退出撤销本实例 capability ACE，共享账户 ACE 仅由 Broker 最后引用的两阶段 release 撤销，清理不确定返回专用错误码。
+ * 5. Broker stdin 关闭、超时或异常会终止 Job；正常/异常退出撤销本实例 capability ACE，共享账户 ACE 仅由 Broker 最后引用的两阶段 release 撤销；安装恢复从持久 journal 验证原文件身份后撤销账户 ACE，清理不确定返回专用错误码。
  * 6. Push Runner 仅从宿主 Credential Manager 读取绑定 host 的 HTTPS 凭据，并经同 Job askpass pipe 交付；capability runner 只把短期、host-bound proxy token 放入自身环境，不取得宿主凭据。
  * 7. Agent Runtime 模式只启动受保护 Node/entry，联合核对 pipe 客户端身份后发送启动首帧并代理原始 Broker 字节流；初始 CWD 使用私有目录。
  * 8. stdout 只承载工具输出或 Agent Runtime IPC；stderr 只输出有界控制记录，不记录命令、路径、SID、密码或工具内容。
@@ -296,7 +296,8 @@ bool WriteProductRequest(HANDLE handle, const ProductRequest& request) {
   return true;
 }
 
-bool ReadRevokeRoots(HANDLE handle, std::vector<ProductRoot>* roots) {
+bool ReadRevokeRoots(HANDLE handle, std::vector<ProductRoot>* roots,
+                     bool journal_mode = false) {
   uint32_t magic = 0;
   uint32_t version = 0;
   uint32_t root_count = 0;
@@ -310,8 +311,15 @@ bool ReadRevokeRoots(HANDLE handle, std::vector<ProductRoot>* roots) {
   roots->clear();
   for (uint32_t index = 0; index < root_count; ++index) {
     ProductRoot root;
-    if (!ReadExact(handle, &root.flags, sizeof(root.flags)) ||
-        (root.flags & ~2u) != 0 || !ReadFramedString(handle, &root.path) ||
+    if (!ReadExact(handle, &root.flags, sizeof(root.flags))) {
+      return false;
+    }
+    bool valid_flags = journal_mode
+                           ? (root.flags & 4u) != 0 &&
+                                 (root.flags & ~7u) == 0 &&
+                                 (root.flags & 3u) != 3u
+                           : (root.flags & ~2u) == 0;
+    if (!valid_flags || !ReadFramedString(handle, &root.path) ||
         !ReadFramedString(handle, &root.device_id) ||
         !ReadFramedString(handle, &root.file_id) ||
         !ReadFramedString(handle, &root.identity_digest) || root.path.empty() ||
@@ -2471,7 +2479,7 @@ int RunProductRevokeJournal(const std::wstring& state_path,
     std::vector<ProductRoot> roots;
     if (!journal || !GetFileInformationByHandle(journal.get(), &information) ||
         (information.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0 ||
-        !ReadRevokeRoots(journal.get(), &roots) || roots.size() != 1 ||
+        !ReadRevokeRoots(journal.get(), &roots, true) || roots.size() != 1 ||
         entry.path().stem().wstring() != roots[0].identity_digest ||
         !ObjectGrant::RevokeAccount(
             roots[0].path, (roots[0].flags & 2u) != 0, account_sid.data(),
