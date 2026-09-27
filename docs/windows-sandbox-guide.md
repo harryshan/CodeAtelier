@@ -15,6 +15,7 @@
 - Broker 按任务生成 AccessManifest，只投影当前工作区、显式授权的读写根、运行时依赖及精确的 Git global/include 配置图。可写根还必须匹配本实例的 `WRITE_RESTRICTED` capability。
 - 按专用账户 SID 安装的持久 WFP 规则默认阻止直接网络。普通 Runtime 没有命令网络；模型请求只能经 Broker。越界命令须用 `run_with_permissions` 提交完整命令和理由，经三级审批后由 Broker 以宿主用户权限执行。该命令不受 Sandbox 额外文件根或网络 host 限制。
 - 非 push Git 在 Runtime 内执行。`git push` 是独占工具批次，由 Broker 预检 upstream 和目标、逐次审批后以宿主用户权限执行；该 Git 及其 hook/helper 不受专用账户 Sandbox 限制。WFP 不会因 push 而临时放宽。
+- Runtime 内普通命令与非 push Git 的输出先写入实例私有 TEMP，再按固定间隔回传；单次临时输出达到 64 MiB 会终止该命令并报错。临时文件在命令结束后删除，Broker 宿主命令不使用这一传输路径。
 
 Sandbox **不会**创建 worktree、暂存副本或自动回滚：可写操作直接改动真实工作区，取消、失败和崩溃都不能撤销已发生的文件或 Git 副作用。工作区内的 `.git`、`.env` 和其他文件没有额外保护。请在启用前提交、备份或另行复制重要工作。
 

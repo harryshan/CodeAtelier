@@ -4,13 +4,18 @@
  * 1. 启动不存在的程序，检查错误包含子进程实际报错及超时资源清理。
  * 2. 分两次输出一个 UTF-8 字符，检查解码完整、颜色控制符跨 chunk 清理、子进程颜色环境和模型密钥隔离。
  * 3. 创建返回回调先于 PID 回调，PID 在进程结束前提供真实正数，供 Sandbox 执行账本持久化。
- * 4. 输出持久化抛错、输入管道提前关闭时返回错误并停止进程；收到输出后取消进程，确认以取消错误结束。
+ * 4. file-backed 模式以实例临时目录代替 libuv stdio pipe，仍回传输出、PID 与阶段并在结束后删去临时文件。
+ * 5. 输出持久化抛错、输入管道提前关闭时返回错误并停止进程；收到输出后取消进程，确认以取消错误结束。
  *
  * 用例结束后恢复环境变量；程序和参数直接传给执行器，不经过 shell 拼接。
  */
 
 import { it, expect, vi, afterEach } from "vitest";
-import { executeProcess } from "../src/tools/process.js";
+import { readdir } from "node:fs/promises";
+import {
+  executeProcess,
+  executeProcessFileBacked,
+} from "../src/tools/process.js";
 import { temp } from "./fixtures/helpers.js";
 
 it("rejects output persistence failures after stopping the child", async () => {
@@ -113,6 +118,73 @@ it("reports the spawned process id before completion", async () => {
   expect(stages).toEqual(["spawn-returned", "pid"]);
   expect(processIds).toHaveLength(1);
   expect(processIds[0]).toBeGreaterThan(0);
+});
+
+it("streams file-backed output and removes its private spool", async () => {
+  const outputDirectory = await temp();
+  const stages: string[] = [];
+  const chunks: string[] = [];
+  const result = await executeProcessFileBacked(
+    process.execPath,
+    ["-e", 'console.log("file-backed-ok")'],
+    outputDirectory,
+    new AbortController().signal,
+    5000,
+    1000,
+    (text) => chunks.push(text),
+    outputDirectory,
+    {},
+    () => stages.push("pid"),
+    () => stages.push("spawn-returned"),
+  );
+
+  expect(result.exitCode).toBe(0);
+  expect(result.output).toContain("file-backed-ok");
+  expect(chunks.join("")).toBe(result.output);
+  expect(stages).toEqual(["spawn-returned", "pid"]);
+  expect(await readdir(outputDirectory)).toEqual([]);
+});
+
+it("cancels a file-backed command and removes its private spool", async () => {
+  const outputDirectory = await temp();
+  const controller = new AbortController();
+
+  await expect(
+    executeProcessFileBacked(
+      process.execPath,
+      ["-e", 'console.log("ready");setTimeout(() => {}, 30_000)'],
+      outputDirectory,
+      controller.signal,
+      5_000,
+      1_000,
+      () => controller.abort(),
+      outputDirectory,
+    ),
+  ).rejects.toThrow("任务已取消");
+
+  expect(await readdir(outputDirectory)).toEqual([]);
+});
+
+it("stops a file-backed child when output persistence fails", async () => {
+  const outputDirectory = await temp();
+  const failure = new Error("output persistence failed");
+
+  await expect(
+    executeProcessFileBacked(
+      process.execPath,
+      ["-e", 'console.log("ready");setTimeout(() => {}, 30_000)'],
+      outputDirectory,
+      new AbortController().signal,
+      5_000,
+      1_000,
+      () => {
+        throw failure;
+      },
+      outputDirectory,
+    ),
+  ).rejects.toBe(failure);
+
+  expect(await readdir(outputDirectory)).toEqual([]);
 });
 
 it("removes split terminal controls and sets no-color child environment", async () => {

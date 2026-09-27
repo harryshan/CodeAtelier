@@ -10,11 +10,18 @@
  * 5. stdout、stderr 按 UTF-8 流式解码，append 保留限额内的可见内容并通知调用方。
  * 6. 输出/PID 回调和管道错误先停止子进程，等待 close 后再拒绝调用，避免未捕获异常结束整个服务；close 清理计时器和取消监听。
  * 7. 可选的进程创建返回回调只供已安装 Runtime 的固定阶段诊断使用，不传递命令、参数或输出。
+ * 8. Windows 专用账户 Runtime 的 file-backed 入口避开 libuv 创建默认 stdio 命名管道的同步路径；在实例 TEMP 中独占创建输出文件，定时读取并施加磁盘上限，结束后关闭句柄和删除文件。
  *
  * 输出太长时只截断保存内容。非零退出码及 shell 写入 stderr 的实际错误照实返回，命令是否获准由执行前的审批负责。
  */
 
 import { spawn } from "node:child_process";
+import { StringDecoder } from "node:string_decoder";
+import { mkdtemp, open, rm, type FileHandle } from "node:fs/promises";
+import path from "node:path";
+
+const FILE_OUTPUT_LIMIT_BYTES = 64 * 1024 * 1024;
+const FILE_OUTPUT_POLL_MS = 100;
 
 type TerminalControlState =
   "text" | "escape" | "csi" | "string" | "stringEscape";
@@ -258,6 +265,268 @@ export async function executeProcess(
 
       if (standardInput && !stopped) {
         child.stdin.end(standardInput);
+      }
+    } catch (error) {
+      fail(error);
+    }
+  });
+}
+
+/**
+ * 专用账户下 Node/libuv 的默认 stdio pipe 创建可能同步卡住，使 AbortSignal 和超时器都无法运行。
+ * 这里只改变工具输出传输方式；进程仍继承同一 restricted token/Job，并在关闭前保持取消和 PID 账本回调。
+ */
+export async function executeProcessFileBacked(
+  command: string,
+  args: string[],
+  cwd: string,
+  signal: AbortSignal,
+  timeoutMs: number,
+  outputLimit: number,
+  onOutput: (text: string) => void,
+  outputDirectory: string,
+  environment: NodeJS.ProcessEnv = {},
+  onProcessStarted?: (pid: number) => void,
+  onSpawnReturned?: () => void,
+) {
+  signal.throwIfAborted();
+  const privateDirectory = await mkdtemp(
+    path.join(outputDirectory, "codeatelier-command-output-"),
+  );
+  let outputFile: FileHandle | undefined;
+
+  try {
+    outputFile = await open(
+      path.join(privateDirectory, "output"),
+      "wx+",
+      0o600,
+    );
+    process.stderr.write(
+      "CODEATELIER_AGENT_RUNTIME_STAGE command_spool_ready\n",
+    );
+
+    return await runFileBackedProcess(
+      command,
+      args,
+      cwd,
+      signal,
+      timeoutMs,
+      outputLimit,
+      onOutput,
+      outputFile,
+      environment,
+      onProcessStarted,
+      onSpawnReturned,
+    );
+  } finally {
+    try {
+      await outputFile?.close();
+    } finally {
+      await rm(privateDirectory, { recursive: true, force: true });
+    }
+  }
+}
+
+function runFileBackedProcess(
+  command: string,
+  args: string[],
+  cwd: string,
+  signal: AbortSignal,
+  timeoutMs: number,
+  outputLimit: number,
+  onOutput: (text: string) => void,
+  outputFile: FileHandle,
+  environment: NodeJS.ProcessEnv,
+  onProcessStarted?: (pid: number) => void,
+  onSpawnReturned?: () => void,
+) {
+  return new Promise<{
+    output: string;
+    exitCode: number | null;
+    truncated: boolean;
+  }>((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd,
+      shell: false,
+      windowsHide: true,
+      detached: false,
+      stdio: ["ignore", outputFile.fd, outputFile.fd],
+      env: {
+        ...process.env,
+        NO_COLOR: "1",
+        FORCE_COLOR: "0",
+        CLICOLOR: "0",
+        CLICOLOR_FORCE: "0",
+        TERM: "dumb",
+        ...environment,
+        CODEATELIER_API_KEY: undefined,
+      },
+    });
+    const decoder = new StringDecoder("utf8");
+    const sanitizer = new TerminalTextSanitizer();
+    const buffer = Buffer.allocUnsafe(64 * 1024);
+    let output = "";
+    let outputSize = 0;
+    let readPosition = 0;
+    let stopped = false;
+    let timedOut = false;
+    let finished = false;
+    let failure: unknown;
+    let drain = Promise.resolve();
+
+    const stop = () => {
+      if (stopped) {
+        return;
+      }
+
+      stopped = true;
+      if (!child.pid) {
+        return;
+      }
+
+      if (process.platform === "win32") {
+        const killer = spawn(
+          "taskkill",
+          ["/pid", String(child.pid), "/T", "/F"],
+          {
+            windowsHide: true,
+            stdio: "ignore",
+          },
+        );
+        const fallback = setTimeout(() => child.kill(), 1_000);
+
+        fallback.unref();
+        killer.once("error", () => {
+          clearTimeout(fallback);
+          child.kill();
+        });
+        killer.once("close", (code) => {
+          clearTimeout(fallback);
+          if (code !== 0) {
+            child.kill();
+          }
+        });
+      } else {
+        child.kill("SIGKILL");
+      }
+    };
+
+    const fail = (error: unknown) => {
+      if (finished || failure) {
+        return;
+      }
+
+      failure = error;
+      stop();
+    };
+
+    const append = (chunk: string) => {
+      if (failure || finished) {
+        return;
+      }
+
+      const text = sanitizer.write(chunk);
+      outputSize += text.length;
+      const accepted = text.slice(0, Math.max(0, outputLimit - output.length));
+      output += accepted;
+      if (accepted) {
+        try {
+          onOutput(accepted);
+        } catch (error) {
+          fail(error);
+        }
+      }
+    };
+
+    const readAvailable = async () => {
+      const size = (await outputFile.stat()).size;
+
+      if (size > FILE_OUTPUT_LIMIT_BYTES) {
+        fail(new Error("命令输出超过 Sandbox 临时文件上限，已终止进程树。"));
+
+        return;
+      }
+
+      while (readPosition < size && !failure) {
+        const length = Math.min(buffer.length, size - readPosition);
+        const read = await outputFile.read(buffer, 0, length, readPosition);
+        if (read.bytesRead === 0) {
+          break;
+        }
+
+        readPosition += read.bytesRead;
+        append(decoder.write(buffer.subarray(0, read.bytesRead)));
+      }
+    };
+
+    const pollOutput = () => {
+      drain = drain.then(readAvailable).catch(fail);
+    };
+
+    const outputTimer = setInterval(pollOutput, FILE_OUTPUT_POLL_MS);
+    const timeoutTimer = setTimeout(() => {
+      timedOut = true;
+      stop();
+    }, timeoutMs);
+    signal.addEventListener("abort", stop, { once: true });
+
+    const cleanup = () => {
+      finished = true;
+      clearInterval(outputTimer);
+      clearTimeout(timeoutTimer);
+      signal.removeEventListener("abort", stop);
+    };
+
+    child.once("error", (error) => {
+      if (finished) {
+        return;
+      }
+
+      cleanup();
+      reject(
+        new Error(
+          `无法启动命令，请检查可执行文件或 shell 路径。实际错误：${error.message}`,
+        ),
+      );
+    });
+    child.once("close", (code) => {
+      if (finished) {
+        return;
+      }
+
+      clearInterval(outputTimer);
+      void (async () => {
+        await drain;
+        await readAvailable();
+        append(decoder.end());
+        cleanup();
+        if (failure) {
+          reject(failure);
+        } else if (signal.aborted) {
+          reject(new Error("任务已取消"));
+        } else if (timedOut) {
+          reject(new Error("命令超时，已终止进程树。"));
+        } else {
+          resolve({
+            output,
+            exitCode: code,
+            truncated: outputSize > outputLimit,
+          });
+        }
+      })().catch((error) => {
+        cleanup();
+        reject(error);
+      });
+    });
+
+    try {
+      onSpawnReturned?.();
+      if (child.pid !== undefined) {
+        onProcessStarted?.(child.pid);
+      }
+
+      if (signal.aborted) {
+        stop();
       }
     } catch (error) {
       fail(error);

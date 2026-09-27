@@ -16,12 +16,13 @@
 
 import { readFile, readdir } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
+import os from "node:os";
 import path from "node:path";
 import { MAX_READ_LINES, parseToolArguments } from "./registry.js";
 import type { Settings } from "../shared/types.js";
 import type { Approval } from "../shared/types.js";
 import { resolveTarget, regularFile, sensitive, inside } from "./paths.js";
-import { executeProcess } from "./process.js";
+import { executeProcess, executeProcessFileBacked } from "./process.js";
 import { commandShell, resolveExecutablePath } from "./command-shell.js";
 import { FileEditor } from "./file-editor.js";
 import { GitToolRunner, containsGitCommand } from "./git.js";
@@ -277,7 +278,7 @@ export class ToolRunner {
       process.stderr.write(
         "CODEATELIER_AGENT_RUNTIME_STAGE command_spawn_begin\n",
       );
-      const result = await executeProcess(
+      const result = await executeProcessFileBacked(
         input.command,
         input.args,
         input.cwd,
@@ -285,6 +286,7 @@ export class ToolRunner {
         input.timeoutMs,
         input.outputLimit,
         input.onOutput,
+        process.env.TEMP ?? process.env.TMP ?? os.tmpdir(),
         input.environment ?? {},
         (pid) => {
           process.stderr.write(
@@ -295,7 +297,6 @@ export class ToolRunner {
             parentExecutionInstanceId: this.ctx.parentExecutionInstanceId,
           });
         },
-        undefined,
         () =>
           process.stderr.write(
             "CODEATELIER_AGENT_RUNTIME_STAGE command_spawn_returned\n",

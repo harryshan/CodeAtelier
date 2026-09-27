@@ -68,6 +68,7 @@ describe.skipIf(process.platform !== "win32")(
         "CODEATELIER_AGENT_RUNTIME_STAGE command_shell_begin\n" +
           "CODEATELIER_AGENT_RUNTIME_STAGE command_spawn_begin\n" +
           "CODEATELIER_AGENT_RUNTIME_SHELL powershell\n" +
+          "CODEATELIER_AGENT_RUNTIME_STAGE command_spool_ready\n" +
           "CODEATELIER_AGENT_RUNTIME_STAGE command_spawn_returned\n" +
           "CODEATELIER_AGENT_RUNTIME_STAGE command_spawned\n" +
           "CODEATELIER_AGENT_RUNTIME_STAGE arbitrary-private-text\n",

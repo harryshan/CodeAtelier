@@ -64,7 +64,7 @@ export function supervisorStartupDiagnostic(control: string) {
     );
   const runtimeStage = [
     ...control.matchAll(
-      /^CODEATELIER_AGENT_RUNTIME_STAGE (command_shell_begin|command_spawn_begin|command_spawn_returned|command_spawned|command_closed)$/gm,
+      /^CODEATELIER_AGENT_RUNTIME_STAGE (command_shell_begin|command_spawn_begin|command_spool_ready|command_spawn_returned|command_spawned|command_closed)$/gm,
     ),
   ].at(-1)?.[1];
   const runtimeShell = [
