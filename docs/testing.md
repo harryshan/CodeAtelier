@@ -15,7 +15,7 @@
 
 - `model-loop.test.ts`：响应先保存再执行工具、轮次推进、普通重试上限、超限恢复的任务级次数及 attempt 连续编号、保存/工具失败不重放、取消与无效图/正常工具耗尽轮次的区分。
 - `model-tool-batch.test.ts`：两种执行模式的节点解析与依赖一致、Runtime push 独占而宿主维持原规则、退出码及多文件 failed/unknown 阻断 DAG 后继。
-- `execute-runner.test.ts`：Push Runner 和 Capability Runner 的实例标识、进程元数据、事件/账本一致、非零退出、启动前后失败、取消、unknown 优先级、命令构造失败和拒绝 host fallback。
+- `execute-runner.test.ts`：保留但暂停使用的 Push Runner 与 Capability Runner 的实例标识、进程元数据、事件/账本一致、非零退出、启动前后失败、取消、unknown 优先级、命令构造失败和拒绝 host fallback；不能视作现行产品路径验收。
 - `engine.test.ts`、`agent-runtime-service.test.ts`、`agent-runtime-engine.test.ts` 继续验证生产组装、真实 Node 子进程、工具结果回传、审批和取消记录；Engine 回归还核对已验证的 Runtime PID 在 `running` 与 `completed` execution instance 中一致。这些测试不替代专用账户提升环境验收。
 
 ## 测试分层
@@ -35,9 +35,9 @@
 
   `tests/runtime-startup-protocol.test.ts` 另以原生 `StringFromGUID2` 的 `{GUID}` 后缀启动真实本机 pipe，验证 Node 入口能连接并完成模拟任务；普通协议测试同时保留不带花括号的合法名称及远程、畸形名称拒绝。该测试不代替专用账户的身份与 ACL 验收。
 
-  随后由低成本模型夹具自动批准一次 `run_with_permissions`，让独立 Capability Runner 写入 sibling 目录，并用系统 `curl.exe` 经自身环境中的短期代理 token 请求获准但必须被 relay 以 403 拒绝的 `127.0.0.1`，从而核对外部 ACL、通用代理注入、私网拒绝、结果回传和 lease 清理。
+  随后由低成本模型夹具自动批准一次 `run_with_permissions`，让 Broker 宿主命令写入 sibling 目录，核对独立 `broker-command/host-process` 记录、结果回传和 Sandbox lease 清理。此阶段不验证 Capability Runner 的外部 ACL 或 HTTPS relay。
 
-  下一阶段初始化一次性 Git 仓库，对同一私网目标验证独立 Push Runner/askpass 路径；最后验证主动取消。该命令不属于 `test`/`check`，不会访问模型服务、外部网络、真实 remote 或凭据；只有在真实安装环境运行并输出 PASS 才构成对应平台证据。
+  下一阶段初始化一次性 Git 仓库，验证 Broker 宿主 Git push 对本机不可用端口的失败结果、审批和归因；最后验证主动取消。该命令不属于 `test`/`check`，不会访问模型服务、外部网络、真实 remote 或凭据；只有在真实安装环境运行并输出 PASS 才构成对应平台证据。
 
 - 真实模型 smoke 测试独立运行，需要本地提供密钥；不作为日常离线测试前提。不对用户项目进行测试性写入。
 
@@ -287,7 +287,7 @@ clean close 后执行 native revoke、commit 和私有目录清理；
 
 started 后 close 返回 orphaned、Broker 未取得可信 Runtime 终态（即使 native shutdown clean）或 generation 摘要不一致时写入 `unknown`、quarantine 并调用整代排空。
 
-`agent-runtime-engine.test.ts` 另证明 Engine 只捕获 `AgentRuntimeFallbackError` 继续宿主 loop，并把 execution instance 记为 `host-process`/`sandboxApplied=false`，同时发出供 Web 徽标使用的实际 `sandbox_stage`；已启动 Push Runner 即使 clean cancellation，也保留 `sideEffectsPossible=true`。
+`agent-runtime-engine.test.ts` 另证明 Engine 只捕获 `AgentRuntimeFallbackError` 继续宿主 loop，并把 execution instance 记为 `host-process`/`sandboxApplied=false`，同时发出供 Web 徽标使用的实际 `sandbox_stage`；已启动 Broker Git push 即使取消，也保留 `sideEffectsPossible=true`。
 
 C++ 任务 pipe 的 PID、创建时间、Job、账户、restricted SID、固定映像检查及字节代理目前由 MSVC `/W4` 构建覆盖；安装后可用 `pnpm sandbox:runtime:verify` 验证真实完成、取消和 clean release，错误客户端及恢复故障注入仍需提升环境矩阵。
 
@@ -395,21 +395,20 @@ git-tools.test.ts 覆盖 diff 独立输出硬上限；core.test.ts 覆盖模型�
 
 tool-schema.test.ts 覆盖根节点、oneOf 禁用、包装解包、历史兼容和额外/非法字段拒绝。
 
-### Agent Runtime 阻塞等待 Push Runner
+### Agent Runtime 阻塞等待 Broker Git push
 
 - `tests/agent-runtime-service.test.ts` 在执行任何节点前拒绝含 push 和其它调用的同一工具批次；单独 push 可形成有效图。
 - `tests/agent-runtime-tools.test.ts` 用真实临时 Git worktree 完成 upstream/OID 查询，随后验证 Runtime 只调用结构化 push adapter、同步取得结果，且不嵌套逐工具 SandboxBroker；Broker 已实时持久化的输出不会被 Runtime 在最终响应后重复发射。
-- `tests/runtime-ipc.test.ts` 验证 `git_push` 只携带有界 PushSpec 和当前 `toolCallId`、返回值受固定 schema 校验；请求级取消继续只中止对应 handler。
-- `tests/sandbox-account-generation.test.ts` 验证已占用任务并发名额的 Agent Runtime 可在同一工作区重叠一个 Push Runner，但第二个 Runner 或新任务仍受并发约束。
-- `tests/sandbox.test.ts` 验证 Push Runner 后端缺失时不调用宿主 executor。真实 relay、凭据、hook/helper、取消清理和 remote push 仍须在固定账户提升环境手动验收。
+- `tests/runtime-ipc.test.ts` 验证 `git_push` 只携带当前 `toolCallId`、返回值受固定 schema 校验；请求级取消继续只中止对应 handler。
+- `tests/agent-runtime-tools.test.ts` 验证 Runtime 不再预检 Git 配置而将调用 ID 交给 Broker；`tests/agent-runtime-engine.test.ts` 验证 Broker 宿主 Git 预检、审批与已启动 push 取消的非 Sandbox 归因。
+- `tests/sandbox-account-generation.test.ts` 与 `tests/sandbox.test.ts` 保留旧 Push Runner 的机制测试，但不证明当前产品 push 的网络或凭据隔离。真实 remote、凭据、hook/helper 和取消清理仍须手动验收。
 
-### Agent Runtime 扩展权限命令
+### Agent Runtime 经审批的 Broker 宿主命令
 
-- `tests/agent-runtime-tools.test.ts` 验证普通 Runtime `run_command` 不请求审批；`run_with_permissions` 只把严格命令/权限/理由和当前 `toolCallId` 交给 adapter。`tests/agent-runtime-service.test.ts` 还验证扩展权限请求保留普通 DAG 并行语义，而 Git push 继续独占批次。
-- `tests/agent-runtime-engine.test.ts` 通过真实 Runtime 子进程验证低成本模型可自动批准 capability 请求，Broker 收到规范化读写根、host 与原工具调用 ID，并把独立 Runner 的输出和终态送回 agent loop/session；任务 trace 保留经统一脱敏后的完整工具参数。
-- `tests/runtime-ipc.test.ts` 验证扩展权限请求的有界 schema 与调用关联，空权限、额外字段或无效 host 在跨进程处理前拒绝。
-- `tests/sandbox.test.ts` 验证一个阻塞 Agent Runtime 可重叠一个 capability runner，审核后的读写根进入该 Runner 的 AccessManifest，且禁止调用宿主 fallback。
-- C++ Supervisor 为 capability runner 将短期 host-bound proxy token 仅放进该 Runner 的代理环境，不查询 WinCred；Push Runner 继续使用同 Job askpass。原生构建只验证代码与协议可编译，固定账户下的递归根 ACL、真实 HTTPS client、取消、proxy lease 撤销和 generation drain 仍需提升环境验收。
+- `tests/agent-runtime-tools.test.ts` 验证普通 Runtime `run_command` 不请求审批；`run_with_permissions` 只把严格命令、理由和当前 `toolCallId` 交给 adapter。`tests/agent-runtime-service.test.ts` 验证该请求保留普通 DAG 并行语义，而 Git push 继续独占批次。
+- `tests/agent-runtime-engine.test.ts` 通过真实 Runtime 子进程验证低成本模型审批后，Broker 宿主命令可写入工作区外标记，且独立记为 `broker-command/host-process`，不会调用 Sandbox runner；命令和理由不进入任务 trace。
+- `tests/runtime-ipc.test.ts` 与 `tests/tool-schema.test.ts` 验证命令/理由的有界 schema 与调用关联，并拒绝旧权限字段或其它额外参数。
+- `tests/sandbox.test.ts` 和原生构建仍覆盖保留的 Capability/Push Runner 代码，但它们当前不由产品工具触发；其中 ACL、代理及限制断言不能证明现行 Broker 宿主命令或 Git push 的权限边界。
 
 ### 上下文默认摘要与旧投影兼容
 

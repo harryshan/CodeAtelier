@@ -4,7 +4,7 @@
  *
  * 1. 检查根节点为 object、禁止 oneOf，再递归遍历工具定义及数组项，核对 strict 对象的属性均为必填且禁止额外属性。
  * 2. 检查每个新调用的 execution/arguments 调度信封，及唯一 edit_files 工具的 create 分支、带版本和行范围的已有文件补丁、可见空白读取和 run_command 的单一 command 字符串。
- * 3. 检查单一 git 工具的 discriminated action 契约，以及内置网页搜索与本地函数工具保持分离。
+ * 3. 检查 run_with_permissions 只请求命令和理由、不伪装成受限根/host 授权；再检查单一 git 工具及内置网页搜索契约。
  */
 
 import { expect, it } from "vitest";
@@ -120,6 +120,22 @@ it("exposes capability requests only to the Agent Runtime", () => {
     runtimeDefinitions.find((definition) => definition.name === "run_command")
       ?.description,
   ).toContain("AccessManifest");
+  expect(
+    parseToolArguments("run_with_permissions", {
+      command: "external-tool --version",
+      reason: "需要 Broker 宿主权限。",
+    }),
+  ).toEqual({
+    command: "external-tool --version",
+    reason: "需要 Broker 宿主权限。",
+  });
+  expect(() =>
+    parseToolArguments("run_with_permissions", {
+      command: "external-tool --version",
+      reason: "需要 Broker 宿主权限。",
+      permissions: { readRoots: [], writeRoots: [], httpsHost: "example.test" },
+    }),
+  ).toThrow();
 });
 
 it("exposes only edit_files for file writes and no directory or search tool", () => {

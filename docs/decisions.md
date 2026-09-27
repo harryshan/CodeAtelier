@@ -903,7 +903,7 @@
 ## D106：Runtime 内工具免审批，越界命令使用通用 capability runner
 
 - 日期：2026-09-21
-- 状态：用户确认并授权实现；替代目标 Sandbox 模式下“每条普通命令仍审批”和“外部写入只允许固定文件 adapter”的要求，不改变 Sandbox 关闭/宿主 fallback 的既有审批行为。
+- 状态：用户确认并授权实现；其中 Capability Runner 执行边界已由 D119 暂时替代，保留本条作为历史设计。不改变 Sandbox 关闭/宿主 fallback 的既有审批行为。
 - Runtime 内执行：Agent Runtime 已由 AccessManifest、restricted token、Job 和 WFP 限定；在这些既有权限内运行的 `read_file`、`edit_files`、`run_command`、非 push Git 和其它本地工具不再请求低成本模型或人工审批。路径落在 Runtime 授权根之外时普通文件工具直接拒绝，不能把一次审批误当成新增 ACL。
 - 通用请求：新增 `run_with_permissions`。LLM 必须提交命令、结构化最小权限和具体理由；当前可强制权限只有最多 16 个现存递归只读目录根、16 个现存递归可写目录根，以及一个精确公网 HTTPS host:443。该调用只阻塞自身 DAG 节点，无依赖的其它工具可以并行；参数检查、低成本模型判断和人工审批不占 Tool worker 执行槽。Runtime 先通过认证 IPC 提交当前 `toolCallId`，Broker 审批后签发仅限当前认证连接和调用的一次性 authorizationId；Runtime 取得执行槽后才消费它并等待 Runner 结果。Broker 不相信 Runtime 自报审批，在审批前先按 AccessManifest 规则打开现存目录、拒绝重解析入口并取得规范路径；审批通过后及原生授权前仍重新打开并核对对象身份，避免模型决定取代执行时校验。Broker 把完整命令/规范权限/理由交给现有低成本模型三级审批，可自动通过、拒绝或移交人工。
 - 执行边界：审批通过后 Broker 编排新的单用途 `capability-runner` execution instance，以专用账户、独立 restricted token/Job/capability/private directory 运行；声明根进入该 Runner 的 AccessManifest，HTTPS host 进入短期 CONNECT relay lease。Broker **不以宿主交互用户 token 执行 LLM 命令**，不授予宿主 profile、凭据、任意网络或未声明路径。网络 Runner 只得到自身短期、host-bound proxy token；Git push 仍使用更窄的 PushSpec/Push Runner/WinCred askpass 路径，不允许借通用工具绕过。
@@ -916,7 +916,7 @@
 - 状态：用户要求实现。
 - 决定：主任务向支持 OpenAI Responses 协议的模型服务发送 `{ type: "web_search" }` 内置工具。它由模型服务执行，不注册为本地 function tool、不经过 ToolRunner 或 DAG 调度。`output_text.annotations` 的合法 HTTP(S) `url_citation` 按 URL 去重后以可点击 Markdown 来源追加到回答；无效协议或 URL 忽略。
 - 原因：用户要求按 OpenAI 文档接入网页检索，并让 agent 能在需要时使用 `curl` 取得公开网页正文。
-- 边界与影响：网页搜索与抓取结果均是不可信数据，不能成为指令或权限依据。`curl` 仍是受现有命令边界约束的本机命令；在 Windows Agent Runtime 中访问公开网页须用 `run_with_permissions` 声明唯一的 HTTPS host，不能绕过被拒绝的网络请求。此能力不引入浏览器自动化、私网访问、凭据或任意网络；不支持内置工具的自建服务会按既有模型错误流程明确失败。宿主 Engine 和 Agent Runtime 共用声明，provider/loop/schema 回归覆盖请求、引用和分流。现有模型请求、响应处理与失败/取消 span 已覆盖这次远程模型调用；由于 `web_search` 没有本地执行器且服务不提供可独立记录的本地生命周期，不新增伪造的本地工具 span。
+- 边界与影响：网页搜索与抓取结果均是不可信数据，不能成为指令或权限依据。`curl` 仍是受现有命令边界约束的本机命令；在 Windows Agent Runtime 中访问公开网页须用 `run_with_permissions`，不能绕过被拒绝的网络请求。D119 已替代本条原有唯一 HTTPS host 限制，获批命令改由 Broker 宿主用户执行。此能力不引入浏览器自动化；不支持内置工具的自建服务会按既有模型错误流程明确失败。宿主 Engine 和 Agent Runtime 共用声明，provider/loop/schema 回归覆盖请求、引用和分流。现有模型请求、响应处理与失败/取消 span 已覆盖这次远程模型调用；由于 `web_search` 没有本地执行器且服务不提供可独立记录的本地生命周期，不新增伪造的本地工具 span。
 
 ## D108：以自然触发策略维护项目记忆
 
@@ -1009,3 +1009,19 @@
 - 边界：替换/裁剪历史、更换输入数组、修改指令或工具、新任务及压缩提交后清除基线；旧历史对象内部原位修改须显式 resetMeasurement。Worker 对新的候选与摘要分块仍采用本地计量。保留输出预留、安全余量、80% 触发和 60% 压缩目标；缺失 usage 不视为零，不使用累计消耗或缓存命中替代输入占用。
 - 观测：沿用 context.prepare/request 的计量耗时和 amount、安全数值摘要及既有 model_usage、压缩开始/完成/失败与关联 ID；本次只改变计量数值来源，没有新增运行阶段或正文日志。
 - 验证：模拟 usage 覆盖双向修正、增量、失效及非法输入，真实压缩 Worker 回归覆盖提交前后计量；不以离线测试证明真实服务误差或全平台验收。
+
+## D119：暂时关闭 Capability Runner，由 Broker 执行获批越界命令
+
+- 日期：2026-09-27
+- 状态：用户明确要求实现；暂时替代 D106 的通用 Capability Runner 执行边界，保留其代码。
+- 决定：Sandbox Runtime 的 `run_with_permissions` 只提交完整命令和理由，保留经认证 IPC 的两阶段、单次授权及低成本模型 `approve | human review | reject` 审批。获准后 Broker 以当前宿主进程用户权限执行命令，不施加额外文件根、网络 host、WFP 或 Job 限制；拒绝则不启动。此时普通 Runtime 工具、Git 工具及 Push Runner 保持原有边界；D120 随后暂停 Push Runner 并迁移 push。
+- 原因：固定账户 Capability Runner 在验收中因受限 token 下的 `BCrypt.dll` 初始化失败，阻断端到端检查；用户选择暂停该功能并让经 review 的通用命令改由 Broker 运行。
+- 边界与影响：获批命令可能访问宿主用户有权访问的文件、网络和凭据，不能称为受 Sandbox 保护。审批说明必须明确这一权限；执行结果单独记为 `broker-command/host-process`，包含 PID、状态、可能副作用与原 `toolCallId`，取消或未知结果不得自动重放。Capability Runner 的 schema、supervisor 和执行代码保留但不被产品工具调用。任务 trace 只记录执行类别与关联 ID；独立 `broker.command` span 记录安全摘要、耗时及终态，不写命令、理由或输出。安装版验收改为验证 Broker 宿主写入及其非 Sandbox 归因，不再把旧 Runner 的 ACL/HTTPS 断言视为现行能力。
+
+## D120：暂时关闭 Push Runner，由 Broker 审批后执行 Git push
+
+- 日期：2026-09-27
+- 状态：用户明确要求迁移执行位置；替代 D082、D093、D095、D099、D105、D106 及 D119 中关于当前产品 Push Runner 的执行路径。旧机制代码与对应隔离测试保留，不能作为现行 push 的安全保证。
+- 决定：Sandbox Runtime 的 `git` push 调用只经认证 IPC 发送 `toolCallId`。Broker 使用宿主 Git 在真实工作区读取当前分支、upstream、push URL 和 HEAD OID，经既有三级审批后，在 Broker 宿主用户权限下对预检得到的 HTTPS URL 和 OID/ref 执行一次 push。Push 仍独占工具批次；普通非 push Git 仍在 Agent Runtime 中执行。Runtime 不取得宿主权限或凭据。Runtime 启动前的宿主 fallback 也走同一 Broker push 路径。
+- 原因：安装态验证的 push 阶段在创建 Push Runner 或发送 push IPC 之前超时，旧路径的 Runtime Git 预检无法完成。该现象尚不能证明 Push Runner 自身有同一故障；用户选择暂停它并把预检、审批及执行全部移到 Broker。
+- 边界与影响：获准 push 的 Git 配置、hook、helper、凭据和网络均使用宿主用户权限，不受专用账户 ACL/WFP/Job/relay 限制。审批明确展示预检 URL、目标 ref/OID 与宿主权限；应用层预检与固定参数旨在减少误推，但不是网络或内容安全边界。记录 `broker-git-push/host-process` execution instance、PID、原 `toolCallId`、取消及可能副作用；启动后结果未知不自动重放。`broker.git_push` trace 只保留关联 ID、模式、耗时和终态，不记录 URL、命令、凭据或输出。旧 Push Runner、CONNECT relay 和 askpass 代码保留但不由当前产品 Git push 调用。固定账户验收只验证 Broker 宿主 Git 的本地拒绝夹具和结果回传；真实远端、凭据及 hook 兼容性仍待手动验证。

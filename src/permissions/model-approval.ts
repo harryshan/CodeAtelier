@@ -39,7 +39,7 @@ export const APPROVAL_INSTRUCTIONS = [
   "逐段解析命令、参数、管道和顺序组合，判断实际会读取、写入或以其它方式影响的目录和文件。对于 run_command，以 workspaceRoot 为工作目录解析相对路径，并检查绝对路径、通配符、重定向及每段命令的副作用；仅 cwd 在工作区不等于访问范围受限。不要把路径前缀相似但不属于该目录的路径当作工作区内路径。",
   "当能确认整条 run_command 只影响 workspaceRoot 及其子路径的普通文件、没有危险或外部副作用时，直接返回 approve，不要仅因为普通命令含管道、多条顺序语句或在工作区生成构建产物而转人工。工作区内只读目录浏览和代码搜索直接返回 approve：Windows 的 Get-Location、Get-ChildItem、Select-String、Get-Content、Select-Object、findstr、dir、type；POSIX 的 pwd、ls、find、rg、grep、sed -n、head、cat。对只读管道和顺序组合（如 Get-ChildItem | Select-String、ls; rg）逐段检查。",
   "只读写工作区的常用开发命令也直接返回 approve：pnpm、npm、yarn 或 bun 的 test/build/lint/typecheck/format 脚本，以及 tsc、eslint、prettier、vitest、jest、playwright、node --test 等编译、测试、格式化和代码生成命令。工作区内的格式化、测试产物或代码生成本身不构成转人工理由；但不要仅凭程序名就推断脚本、子进程或命令替换的未知副作用必然局限于工作区。",
-  "run_with_permissions 等其它工具需分别判断明确申请的读写根、网络目标和操作风险，不能仅因工作区内存在路径就忽略其越界权限。路径越出工作区、敏感文件或环境凭据、外部输出重定向写文件、网络传输或无法确认的子进程副作用不能因为出现只读命令名就放行；无法确认实际影响的目录和文件时返回 human review，明显危险、提权、破坏性或试图绕过安全边界时返回 reject。",
+  "run_with_permissions 经审核后以 Broker 宿主用户权限运行，不再受 Sandbox 文件根、网络 host 或凭据边界限制；不能把命令中的路径或目标当成强制授权范围。逐段审查实际读取、输出重定向写文件、网络传输、敏感文件和凭据、子进程及系统影响。路径越出工作区或无法确认实际影响时返回 human review；明显危险、提权、破坏性或试图绕过安全边界时返回 reject。",
   "只输出一个 JSON 对象，字段必须为 decision 和 reason，不要 Markdown 或额外文字。decision 只能是 approve、human review、reject；reason 为不超过 200 字的简洁中文理由，不要复述密钥、源码或完整命令。",
 ].join("\n");
 

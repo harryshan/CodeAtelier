@@ -539,7 +539,7 @@ export class GitToolRunner {
     if (this.executePush) {
       const url = new URL(remoteUrl);
       if (url.protocol !== "https:") {
-        throw new Error("Sandbox Push Runner 首版只支持 HTTPS remote。");
+        throw new Error("Broker Git push 首版只支持 HTTPS remote。");
       }
 
       return this.executePush(

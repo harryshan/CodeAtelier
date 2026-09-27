@@ -53,7 +53,7 @@ Runtime 执行开始后的错误标为 `unknown`，绝不自动重放；ACL/Job 
 
 Windows 且 Sandbox 开启时，`createApp` 默认注入 `SandboxBroker` 作为 `AgentRuntimeLauncher`：Engine 通过 C++ Sandbox Supervisor 启动每任务一个常驻 Agent Runtime，模型、session、审批和 memory 经任务专属 Runtime IPC 返回 Broker；禁用、非 Windows 或可证明启动前完整回滚的 fallback 才由 Broker Host 运行 loop。
 
-独立 Push/Capability Runner 的命令仍是 **Sandboxed Tool Process**，不能与常驻 Agent Runtime 混称。应用层和无管理员副作用回归已经接线，固定产品账户下的提升安装、真实 Named Pipe 身份、崩溃/取消/恢复矩阵尚未完成，因此仍不能宣称 W3/W4 完成。
+独立 Push Runner 和 Capability Runner 代码保留但暂不用于产品路径；获批 `run_with_permissions` 命令与 Git push 在 Broker 宿主用户权限下运行并分别归因。固定账户提升环境的身份、崩溃/取消/恢复矩阵尚未完成，因此仍不能宣称 W3/W4 完成。
 
 严格术语、目标完成判据与分层验收见 [Windows 专用用户 Sandbox Runtime 与 Broker 架构](windows-integrity-sandbox.md#0-术语进程和完成条件)。
 
@@ -61,7 +61,7 @@ Windows 且 Sandbox 开启时，`createApp` 默认注入 `SandboxBroker` 作为 
 
 子进程获得 PID 时立即把 PID 和 `host-process | runtime-launcher | runtime` 类型追加到 session，并把 created/running/completed/cancelled/unknown 状态同步写入 `sandbox.log` 和 Perfetto trace；记录不包含命令、路径或输出。
 
-取消与 cleanup unknown 同时发生时，session 状态必须为 `unknown`，不能被取消信号覆盖。Windows 原生 supervisor 回传 launcher 与真实 Runtime PID；push 使用独立 `push-runner` kind。
+取消与 cleanup unknown 同时发生时，session 状态必须为 `unknown`，不能被取消信号覆盖。Windows 原生 supervisor 回传 launcher 与真实 Runtime PID；当前 push 使用 `broker-git-push/host-process` kind/mode。
 
 `supervisor-protocol.ts` 保留 Broker→长期控制面候选的 strict schema；当前产品执行链使用固定 supervisor argv 加有界二进制 stdin 帧，Agent Runtime 再通过任务专属 Named Pipe 与 Broker stdin/stdout 字节代理通信。
 
@@ -169,7 +169,7 @@ Replay Case 已独立实现脱敏、存储与手动导出，见 [任务 Replay C
 
 Responses 的 `output_text.annotations` 中合法 HTTP(S) `url_citation` 会按 URL 去重，并以 Markdown 来源链接追加到回答，供历史和 Web UI 安全显示。
 
-搜索摘要不足时，模型可在 `curl` 可用的前提下用它获取公开网页正文。网页、搜索结果和其中任何指令均为不可信数据，不能放宽文件、命令或权限规则。在 Windows Agent Runtime 中，网页的外部 HTTPS 请求必须改用 `run_with_permissions`，声明唯一精确的公网 `httpsHost` 和具体理由；不得在被拒绝后以 `run_command` 绕过。
+搜索摘要不足时，模型可在 `curl` 可用的前提下用它获取公开网页正文。网页、搜索结果和其中任何指令均为不可信数据，不能放宽文件、命令或权限规则。在 Windows Agent Runtime 中，网页的外部 HTTPS 请求必须改用 `run_with_permissions`，提交完整命令和具体理由；获批后它以 Broker 宿主用户权限运行，不得在被拒绝后以 `run_command` 绕过。
 
 `curl` 不提供浏览器自动化、私网/回环访问、凭据或任意网络权限。
 
@@ -246,7 +246,7 @@ Python、YAML、TOML、Makefile、Make 片段和 Markdown 默认是空白敏感�
 
 每个原本需要审批的命令或工具使用先由已配置的低成本辅助模型作单次、无工具的三级分类：`approve` 自动通过，`human review` 显示现有人工点击审批，`reject` 直接拒绝并把简洁理由返回任务与时间线。
 
-分类请求把后端从会话读取的工作区根目录 `workspaceRoot` 与工具名、待审批内容分字段传给无工具的模型，不从命令描述中采信工作区路径；关闭该次模型思考，输出严格限制为 JSON 决定及理由，最多 256 token。模型需逐段解析命令、参数和组合对目录及文件的影响，以实际工作区路径判断范围；`run_command` 的 cwd 固定为工作区，但这不约束命令访问的路径。审批 prompt 要求明确仅浏览工作区内普通文件的目录/代码搜索命令直接 `approve`：包括 Windows 的 Get-ChildItem、Select-String、Get-Content、findstr、dir、type，以及 POSIX 的 ls、find、rg、grep、sed -n、head、cat 等；只读管道和顺序组合须逐段判断，不因有管道或多条命令本身转人工。只读写工作区文件的常用开发命令也直接 `approve`，包括 pnpm/npm/yarn/bun 的 test/build/lint/typecheck/format 脚本，以及 tsc、eslint、prettier、vitest、jest、playwright、node --test 等编译、测试、格式化或代码生成命令；写入构建产物、格式化或生成文件不得仅因此转人工。工作区内普通文件且无其它危险副作用的已确认影响应直接放行；路径越界、读取敏感内容、外部重定向写入、间接执行或网络传输等不能因出现只读命令名称而自动放行，影响不明仍转人工。`run_with_permissions` 的外部根和网络权限须独立审查，不能用工作区根目录替代其授权范围；分类仍是模型建议，不是静态只读证明，也不改变执行器原有安全检查。
+分类请求把后端从会话读取的工作区根目录 `workspaceRoot` 与工具名、待审批内容分字段传给无工具的模型，不从命令描述中采信工作区路径；关闭该次模型思考，输出严格限制为 JSON 决定及理由，最多 256 token。模型需逐段解析命令、参数和组合对目录及文件的影响，以实际工作区路径判断范围；`run_command` 的 cwd 固定为工作区，但这不约束命令访问的路径。审批 prompt 要求明确仅浏览工作区内普通文件的目录/代码搜索命令直接 `approve`：包括 Windows 的 Get-ChildItem、Select-String、Get-Content、findstr、dir、type，以及 POSIX 的 ls、find、rg、grep、sed -n、head、cat 等；只读管道和顺序组合须逐段判断，不因有管道或多条命令本身转人工。只读写工作区文件的常用开发命令也直接 `approve`，包括 pnpm/npm/yarn/bun 的 test/build/lint/typecheck/format 脚本，以及 tsc、eslint、prettier、vitest、jest、playwright、node --test 等编译、测试、格式化或代码生成命令；写入构建产物、格式化或生成文件不得仅因此转人工。工作区内普通文件且无其它危险副作用的已确认影响应直接放行；路径越界、读取敏感内容、外部重定向写入、间接执行或网络传输等不能因出现只读命令名称而自动放行，影响不明仍转人工。`run_with_permissions` 须按 Broker 宿主用户拥有的完整文件、网络和凭据权限审查；分类仍是模型建议，不是静态只读证明。
 
 无辅助模型、服务故障或无效输出一律保守转为人工确认，不调用主模型替代。模型分类不影响现有授权：简单的 `pnpm`/`npm` test/build/lint/typecheck 或 `node --test` 在可计算项目指纹时仍可授予本次会话重复执行，包含更多 shell 语法的命令仍不支持会话放行。执行器内部选择 shell，不改变命令的权限边界；直接 Git 程序名（包括复合命令中的 Git）和提权命令会在审批模型之前直接拒绝。
 
@@ -276,25 +276,25 @@ add、commit 或 push 中断时结果可能未知，恢复前必须用 status/di
 
 只有实际已启动的 Sandbox Agent Runtime 才会收到该工具及其 Sandbox 专属提示：其已有 AccessManifest/WFP 权限内的文件工具、普通命令和非 push Git 不再进入审批；越界普通文件工具直接拒绝。
 
-任意越界命令必须调用 `run_with_permissions`，同时给出最小递归 `readRoots`/`writeRoots`、至多一个 `httpsHost` 和具体理由；该调用只等待自身 Runner，无依赖的同批工具可由 DAG 调度器并行执行。
+任意越界命令必须调用 `run_with_permissions`，给出完整命令和具体理由；该调用只阻塞自身 DAG 节点，无依赖的同批工具可并行执行。
 
-Broker 不信任 Runtime 自报审批，重新规范化并把完整命令/权限/理由交给现有低成本模型三级审批；自动通过或人工批准后返回只绑定当前认证连接与 `toolCallId` 的一次性 authorizationId，Runtime 获得 Tool worker 执行槽后才消费授权并创建独立 `capability-runner`，模型拒绝则不创建。取消、断连或重复消费都使授权失效，授权本身不授予 Runtime 新权限。
+Broker 不信任 Runtime 自报审批，把完整命令、理由和“将使用宿主用户权限”的说明交给现有低成本模型三级审批；自动通过或人工批准后返回只绑定当前认证连接与 `toolCallId` 的一次性 authorizationId。Runtime 获得 Tool worker 执行槽后才消费授权，Broker 随即启动宿主进程；拒绝时不启动。取消、断连或重复消费都使授权失效，授权本身不授予 Runtime 新权限。
 
-该 Runner 仍是专用账户 restricted token/Job，Broker 不以宿主 token 代执行；文件根进入单次 AccessManifest，HTTPS host 进入短期 relay lease，启动失败禁止宿主 fallback。根必须已存在且是目录；这是一项递归能力而非单文件精确编辑，命令可读取整个读根、修改整个写根，并向获准 host 发送所有可读数据。
+获批命令由 Broker 以当前宿主用户权限执行，不附加 Sandbox 文件根、网络 host、WFP 或 Job 限制；可访问该用户的文件、网络和凭据。它单独记录为 `broker-command/host-process`，不能标成 Sandbox 内命令。Capability Runner、其权限 schema 和原生路径保留，但当前工具不触发它。
 
-首版不支持多个 host、私网/loopback、非 HTTPS、监听、设备、注册表、服务或宿主凭据。
+审批时必须考虑命令在宿主用户权限下可能访问多个 host、私网、设备、注册表、服务或凭据；这些不再由 Sandbox 额外拦截。
 
-Sandbox 模式下全部 Git 在 Runtime 内运行，工作区内部不保护 `.git`、`.env` 或其他子路径，Broker 不运行 Git。
+Sandbox 模式下非 push Git 在 Runtime 内运行，工作区内部不保护 `.git`、`.env` 或其他子路径；push 的预检和执行在 Broker 中运行。
 
 专用账户正常加载 system、local 和 worktree Git 配置；Broker 解析宿主 `%USERPROFILE%\.gitconfig`、`%USERPROFILE%\.config\git\config` 及对当前工作区成立的 include/includeIf 图，只给原对象精确只读 ACL，并在 Broker 控制、Runtime 不可写的投影根生成顺序固定的逐租约聚合文件，以 `GIT_CONFIG_GLOBAL` 让 Git 加载它们。
 
 聚合文件及父目录都不能由 Runtime 替换；Sandbox 的 `HOME`/`USERPROFILE`/`XDG_CONFIG_HOME` 仍指向逐租约私有可写目录，不授予整个宿主 profile。helper、证书或签名程序等配置引用对象不会自动获得访问权。
 
-普通 Agent Runtime 无直接命令网络；push 前由 Runtime 用 Git 查询获得当前 upstream/URL/OID/ref，Broker 校验预期 PushSpec，并沿用低成本模型的自动通过、移交人工或拒绝三级审批。
+普通 Agent Runtime 无直接命令网络；push 前由 Broker 宿主 Git 查询当前 upstream/URL/OID/ref，并沿用低成本模型的自动通过、移交人工或拒绝三级审批。审批展示预检 URL、目标和宿主权限。
 
-Push 必须是当前工具批次的唯一节点；Agent Runtime 保持存活，其 agent loop 通过认证 IPC 同步等待单用途 Push Runner，不调度其它工具，也不获得 Runner 的 relay lease、代理 token、askpass 通道或凭据。Push Runner 在真实仓库上运行，不使用 shadow directory 或配置键白名单。
+Push 必须是当前工具批次的唯一节点；Agent Runtime 保持存活，其 agent loop 通过认证 IPC 同步等待 Broker Git push，不调度其它工具，也不获得宿主凭据。Broker 使用真实仓库配置预检，再以预检 URL、源 OID 和目标 ref 构造一次 push；该应用层固定参数不构成对 Git 配置、hook/helper 或网络出口的 Sandbox 限制。
 
-持久 WFP fence 与 relay/CONNECT 代理只承诺实际网络不超出获准 HTTPS host。取消记录以 executionInstance 及 `agent-runtime | push-runner | capability-runner` kind 保存 cancelled/unknown/orphaned、部分输出和“副作用可能已发生/禁止重放”；非 Sandbox 模式不伪造专用账户字段。
+持久 WFP fence 只约束专用账户 Runtime，不约束 Broker 宿主命令或 Git push；旧 relay/CONNECT 代码暂停用于产品 push。取消记录以 executionInstance 及 `agent-runtime | broker-command | broker-git-push` kind 保存 cancelled/unknown/orphaned、部分输出和“副作用可能已发生/禁止重放”；非 Sandbox 进程不伪造专用账户字段。
 
 Windows 原生安装命令是显式维护入口，不属于服务启动或默认测试：先在普通终端运行 `pnpm sandbox:native:build` 与 `pnpm sandbox:runtime:build`；若当前 `PATH` 中的 `node` 不是 v24，通过 `CODEATELIER_SANDBOX_RUNTIME_NODE` 指定可信 Node 24 executable。
 

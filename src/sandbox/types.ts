@@ -67,7 +67,12 @@ export type ExecutionProcessKind =
 export interface ExecutionInstanceRecord {
   executionInstanceId: string;
   toolCallId?: string;
-  kind?: "agent-runtime" | "push-runner" | "capability-runner";
+  kind?:
+    | "agent-runtime"
+    | "push-runner"
+    | "capability-runner"
+    | "broker-command"
+    | "broker-git-push";
   mode: ExecutionInstanceMode;
   state: ExecutionInstanceState;
   createdAt: string;

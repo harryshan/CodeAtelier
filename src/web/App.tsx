@@ -5,7 +5,7 @@
  * 1. 状态和 effects 管理当前会话、一次性 subagent 勾选、服务端发布门禁、弹窗、加载状态及自动滚动。
  * 2. 按服务端返回的工作区路径分组展示会话；项目可独立折叠，展开时默认仅显示最近五个对话，并可按需显示更早记录；手机端以可关闭的抽屉呈现该侧栏。
  * 3. resume、reloadService、stopServer、createProject、createConversation 和 send 处理恢复、受确认的服务重载、关闭服务、连接项目、新建会话和发送消息，并显示操作结果。
- * 4. 服务关闭后显示重启说明；正常页面由侧栏或手机端导航抽屉、项目栏、实际 sandbox 模式、可折叠会话统计、会将已完成任务过程默认收纳的时间线或项目连接页、所见即所得 Markdown 任务编辑器组成。
+ * 4. 服务关闭后显示重启说明；正常页面由侧栏或手机端导航抽屉、项目栏、实际 Runtime 隔离模式（提示获批宿主命令例外）、可折叠会话统计、会将已完成任务过程默认收纳的时间线或项目连接页、所见即所得 Markdown 任务编辑器组成。
  * 5. 末尾仅渲染设置、重载和关闭确认弹窗，项目连接不使用弹窗。
  *
  * 关闭请求失败时不能断言服务已经关闭。切换会话和断线重连都只更新显示，不能重新提交任务。
@@ -487,11 +487,15 @@ export default function App() {
             <span className={s.modelBadge}>{settings?.model || "连接中"}</span>
             <span
               className={s.sandboxBadge}
-              title={sandbox?.reason}
-              aria-label={`命令隔离状态：${sandbox?.mode ?? "unknown"}`}
+              title={
+                sandbox?.mode === "sandboxed"
+                  ? "Agent Runtime 使用专用账户；经批准的 run_with_permissions 命令与 Git push 由 Broker 以宿主用户权限执行。"
+                  : sandbox?.reason
+              }
+              aria-label={`Runtime 隔离状态：${sandbox?.mode ?? "unknown"}`}
             >
               {sandbox?.mode === "sandboxed"
-                ? `已隔离${sandbox.level ? `：${sandbox.level}` : ""}`
+                ? `Runtime 已隔离${sandbox.level ? `：${sandbox.level}` : ""}`
                 : sandbox?.mode === "host-process-fallback"
                   ? "Sandbox 失败：宿主运行"
                   : sandbox?.mode === "non-isolated"

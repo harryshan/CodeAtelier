@@ -56,12 +56,7 @@ it("allows a capability command beside an independent tool", () => {
       execution: { id: "capability", dependsOn: [] },
       arguments: {
         command: "tool --version",
-        permissions: {
-          readRoots: ["C:\\external"],
-          writeRoots: [],
-          httpsHost: null,
-        },
-        reason: "读取工作区外的工具目录。",
+        reason: "请求 Broker 宿主权限读取外部工具目录。",
       },
     }),
   };

@@ -16,24 +16,24 @@
 
 专用用户 Sandbox 已接入同一产品语义：取消只终止目标 execution instance，不回滚已经发生的工作区或 Git 副作用，也不影响其它健康并发任务；确认终止和本实例 lease 清理记为 `cancelled`，无法确认进程、代理或 ACL 清理记为 `unknown`/`orphaned`。
 
-记录统一使用 `executionInstanceId`，包含 `mode: windows-sandbox-user | host-process | unknown`、可空 `pid`、`createdAt/updatedAt`、`sideEffectsPossible` 与禁止重放语义；Sandbox 模式以 `kind: agent-runtime | push-runner | capability-runner` 区分进程边界，Runner 用 `toolCallId` 关联原工具，常驻 Runtime 内普通工具进程用 `parentExecutionInstanceId` 关联父 Runtime。
+记录统一使用 `executionInstanceId`，包含 `mode: windows-sandbox-user | host-process | unknown`、可空 `pid`、`createdAt/updatedAt`、`sideEffectsPossible` 与禁止重放语义；当前 Sandbox 产品路径以 `kind: agent-runtime | broker-command | broker-git-push` 区分进程边界，Broker 宿主命令和 push 以 `host-process` 模式和 `toolCallId` 关联原工具。保留的 `capability-runner`、`push-runner` kind 暂不由产品调用；常驻 Runtime 内普通工具进程用 `parentExecutionInstanceId` 关联父 Runtime。
 
-正常 Push/Capability Runner 结果返回仍在同步等待的原 Agent Runtime，但恢复不能把 Runner 自身当作 Agent Runtime。任一实例进入 orphaned 时冻结新 Sandbox 任务并排空该 account generation 的其它活动实例，对账完成前不得启动替代任务；非 Sandbox 模式不伪造专用账户字段。
+正常 Broker 宿主命令和 push 的结果返回仍在同步等待的原 Agent Runtime，但恢复不能把这些进程当作 Agent Runtime。Sandbox 实例进入 orphaned 时冻结新 Sandbox 任务并排空该 account generation 的其它活动实例，对账完成前不得启动替代任务；宿主命令或 push 未知结果也不得自动重放，须核对可能副作用。非 Sandbox 进程不伪造专用账户字段。
 
 generation lease/grant、Job、代理和 ACL journal 的在线 drain 与启动恢复已经接线；固定账户提升环境下的强制终止、进程崩溃、损坏 journal 和重启后复证仍未完成。完整身份和进程边界见 [windows-integrity-sandbox.md](windows-integrity-sandbox.md)。
 
 ## 各中断阶段
 
-| 阶段 | 恢复行为 |
-| --- | --- |
-| 模型请求前/连接中/接收部分文本或工具参数 | 瞬态故障重试同一步；部分输出只留历史，不加入模型上下文，不执行部分工具调用 |
-| 模型完整回复已保存，尚未执行工具 | 调用图先整体校验后才执行；人工恢复时把每个未有 function_call_output 的节点标为状态未知，要求先检查现场 |
-| 等待审批 | 取消/关闭释放等待；恢复后模型可重新提出操作，继续按权限规则审批 |
-| 文件、命令或其他 DAG 节点执行中 | 不自动重放原工具。已完成或已阻断的节点结果继续使用；没有完整结果的节点明确标注未知，先核实文件或进程状态 |
-| 工具已完成但上下文未写入 | 兼容旧记录：从工具结果事件补齐；新记录将结果事件和上下文放在同一事务 |
-| 模型重试耗尽、步数上限、配置错误 | 保存失败状态，人工修正原因并恢复；新任务获得新的步数预算 |
-| 排队中 | 用户可取消，记录 cancelled；服务关闭、重载或进程重启则标记 interrupted。队列不自动恢复执行，人工恢复时重新进入调度并遵守同目录互斥 |
-| 后端关闭/崩溃 | queued/running/waiting 任务标记 interrupted，人工恢复；不自动重启后端、不假设原命令已退出 |
+| 阶段                                     | 恢复行为                                                                                                                           |
+| ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| 模型请求前/连接中/接收部分文本或工具参数 | 瞬态故障重试同一步；部分输出只留历史，不加入模型上下文，不执行部分工具调用                                                         |
+| 模型完整回复已保存，尚未执行工具         | 调用图先整体校验后才执行；人工恢复时把每个未有 function_call_output 的节点标为状态未知，要求先检查现场                             |
+| 等待审批                                 | 取消/关闭释放等待；恢复后模型可重新提出操作，继续按权限规则审批                                                                    |
+| 文件、命令或其他 DAG 节点执行中          | 不自动重放原工具。已完成或已阻断的节点结果继续使用；没有完整结果的节点明确标注未知，先核实文件或进程状态                           |
+| 工具已完成但上下文未写入                 | 兼容旧记录：从工具结果事件补齐；新记录将结果事件和上下文放在同一事务                                                               |
+| 模型重试耗尽、步数上限、配置错误         | 保存失败状态，人工修正原因并恢复；新任务获得新的步数预算                                                                           |
+| 排队中                                   | 用户可取消，记录 cancelled；服务关闭、重载或进程重启则标记 interrupted。队列不自动恢复执行，人工恢复时重新进入调度并遵守同目录互斥 |
+| 后端关闭/崩溃                            | queued/running/waiting 任务标记 interrupted，人工恢复；不自动重启后端、不假设原命令已退出                                          |
 
 文件系统副作用和 SQLite 无法组成同一事务：例如文件重命名后立即断电，结果可能未保存。这种情况不能保证恰好执行一次，必须检查现场。硬崩溃后子进程可能仍然运行，恢复说明会要求检查；应用未提供操作系统级隔离或进程接管。
 

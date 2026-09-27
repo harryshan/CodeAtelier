@@ -1,5 +1,11 @@
 # 初版验证记录
 
+## Broker 宿主命令与 Git push 临时路径（2026-09-27）
+
+- D119/D120 暂停 Capability Runner 与 Push Runner 产品入口；`run_with_permissions` 的命令/理由经 Broker 审批后作为宿主命令执行，Git push 的宿主预检、审批与执行同样由 Broker 完成。两者分别记录 `broker-command`、`broker-git-push` 的 `host-process` execution instance；旧 Runner 和 relay 的测试仍作为保留代码回归，不能证明现行路径受到 Sandbox 文件或网络限制。
+- 本地 Node.js 24.19.0 上 `pnpm check` 通过：70 个测试文件，507 项通过、1 项跳过；类型、lint、格式和 Runtime bundle 构建通过。`pnpm test:e2e` Chromium 27/27 通过。定向回归覆盖已批准/拒绝的 Broker 宿主命令、Runtime push 无本地 Git 预检、Broker Git 启动后取消及 IPC 调用 ID 契约。
+- 当前 Codex 进程不是提升的管理员 token。尝试从该进程启动 Windows UAC Repair 时没有进入安装脚本、没有生成修复日志，因此未更新受保护安装副本；本次改动的 `sandbox:runtime:verify` 尚未在新版安装态运行。需要在管理员 PowerShell 7 以 `pwsh -NoProfile -File scripts/windows-sandbox/install.ps1 -Mode Repair` 更新安装副本，然后普通终端运行 `pnpm sandbox:runtime:verify`。本地不可用端口夹具即使通过，也不代表真实远端 push、凭据或 hook/helper 兼容性通过。
+
 ## Windows Sandbox 普通用户启动自检（2026-09-27，进行中）
 
 - 固定账户安装与管理员 `sandbox:verify` 已通过，但普通终端的 `sandbox:runtime:verify` 在第一个任务发现 `runtime_self_check` 启动前 fallback；模拟任务在宿主创建了标记，脚本正确拒绝将其计为 Sandbox 成功。保留的会话事件明确记录 `host-process-fallback`、`sandboxApplied=false`、`sideEffectsPossible=false`。对已安装 WFP manager 做只读普通用户复核，`FwpmFilterCreateEnumHandle0` 返回错误 5；因此不能用管理员校验通过推断普通用户 Broker 可以完成同一枚举。

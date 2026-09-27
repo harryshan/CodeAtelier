@@ -11,9 +11,10 @@
 - 保持清晰的目录、模块与代码文件结构。
 - 保持完善且与开发同步更新的文档。
 - **初版功能边界已确认**，以 docs/requirements.md 第 2、5 节为范围与验收依据；用户已授权开始实现；当前按 Node.js 24、React/Vite、Fastify、SQLite、Pino 技术方案开发。
-- 第一版使用 Web UI 作为用户交互界面，支持 Windows、macOS 和 Linux，优先完成读代码、修改与验证闭环。后续 Windows Sandbox 使用单一专用低权限本地账户、per-instance restricted token/Job/capability、显式文件 ACL 与按账户 SID 的 WFP；Runtime 执行全部 Git，Broker 不执行 Git。Sandbox 模式沿用 1～4 个不同工作区并发和同工作区串行。
+- 第一版使用 Web UI 作为用户交互界面，支持 Windows、macOS 和 Linux，优先完成读代码、修改与验证闭环。后续 Windows Sandbox 使用单一专用低权限本地账户、per-instance restricted token/Job/capability、显式文件 ACL 与按账户 SID 的 WFP；普通 Git 在 Runtime 中执行，经审批的 push 在 Broker 中执行。Sandbox 模式沿用 1～4 个不同工作区并发和同工作区串行。
 
   应用层 AgentRuntimeService、Engine launcher 分流与 model/session/approval/memory adapter 已在独立 Node 子进程 harness 跑通；默认 Windows 组装现已接入 C++ Supervisor launcher、任务专属 Named Pipe 字节代理和 PID/创建时间/Job/token/capability/映像联合检查，但尚未完成固定账户提升环境端到端验收，因此专用账户 Runtime 仍不可描述为当前可用或跨平台实现。
+
 - 默认采用本机后端 + 本机浏览器访问并监听回环地址；用户显式配置后可在受信任局域网监听，仍不提供公网部署、多用户账户或权限分级。Web UI 可由环境变量启用单一访问密码门禁；此限制针对 UI 和后端服务的入站访问，不限制已配置的模型 API 调用。
 - 跨平台设计需覆盖路径、shell、进程取消和文件权限差异；不得将单一系统验证描述为全平台验证。具体系统版本与浏览器支持矩阵待定。
 - 首个模型服务为用户自建 Responses API server，预留其他提供商接口；实际端点、模型标识与 Bearer API key 仅在本地 .env 配置，不写入源码、示例或文档；示例仅使用占位值。模型标识原样传递，不内置特定服务的简称转换。
@@ -30,11 +31,11 @@ Windows 专用用户 Runtime、独立 C++ supervisor 与 Broker 是已确认的�
 
 Sandbox 沿用 1～4 个不同工作区并发、同工作区串行；同账户实例会形成活动授权根的读取并集，不提供任务间 OS 级读取、进程或对象隔离，但每个实例及其正常后代必须不能直接越权写入其它实例的根。不同对话不是彼此的安全边界；同账户 peer 可能终止、注入或检查其它 Runtime，这属于明确接受的残余风险，不能影响宿主边界的能力表述。
 
-专用账户不继承宿主用户私有权限，`Everyone`/`Authenticated Users` 等既有 ACL 也可能允许额外读取，不能宣称纯读取 allowlist。工作区内不额外保护 `.git`/`.env`，全部 Git 在 Runtime 内执行，Broker 不运行 Git。
+专用账户不继承宿主用户私有权限，`Everyone`/`Authenticated Users` 等既有 ACL 也可能允许额外读取，不能宣称纯读取 allowlist。工作区内不额外保护 `.git`/`.env`；普通 Git 在 Runtime 内执行，push 的预检和执行由 Broker 承担。
 
-Agent Runtime 已有权限内的工具不再审批；需要额外递归读写根或单一 HTTPS host 的任意命令必须以命令、结构化权限和理由请求 Broker，沿用低成本模型的 `approve | human review | reject` 审批，审批通过后由独立 capability runner 在专用账户边界内执行，Broker 不以宿主 token 代运行。
+Agent Runtime 已有权限内的工具不再审批；越界命令通过 `run_with_permissions` 提交完整命令和理由，由 Broker 沿用低成本模型的 `approve | human review | reject` 审批。审批通过后由 Broker 以宿主进程用户权限执行，不施加额外文件根或网络 host 限制；结果必须明确标为 `broker-command`/`host-process`，不能称为受 Sandbox 保护。Capability Runner 代码保留但暂不用于产品路径。
 
-普通 Runtime 默认无直接命令网络；push 继续使用更窄的逐次确认 PushSpec、独立 Push Runner、认证 relay/CONNECT 代理与短期凭据，WFP 不临时放宽。Push 必须独占工具批次；Capability Runner 请求只阻塞自己的 DAG 节点，无依赖节点可并行，网络 lease 和凭据不授予 Agent Runtime。
+普通 Runtime 默认无直接命令网络；获批 Broker 宿主命令使用宿主网络与凭据权限，不受专用账户 WFP fence 约束。Push Runner 代码保留但暂停使用；push 由 Broker 预检并逐次审批，随后以宿主用户权限运行，记录为 `broker-git-push/host-process`，不受 Sandbox 文件、网络或凭据限制。Push 必须独占工具批次；Broker 宿主命令只阻塞自己的 DAG 节点，无依赖节点可并行。
 
 启动前自检或尚未创建 Runtime 的 provision 失败时，在明确提示“本任务未受 Sandbox 保护”、记录原因并将 executionInstance 标为 `host-process` 后自动回退宿主执行；独立 Runner 不允许宿主 fallback。命令已经启动、结果未知或清理无法证明完成时不得自动重放，仍须隔离账户 generation、停止新 Sandbox 任务并排空活动实例。
 

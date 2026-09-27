@@ -7,7 +7,7 @@
  * 3. resume 继续最后一个可恢复任务；cancel 处理用户取消，close 处理服务关闭。
  * 4. 首条 prompt 先用辅助模型生成标题；run 再读取历史和项目规则，准备工具及上下文预算。
  * 5. model-loop 共用轮次、重试和停止控制，model-tool-batch 共用计划与成功判断；Engine 保留宿主事务、replay 与 tracing。为压缩提供 ToolRunner 的安全文件哈希探测；每轮记录上下文准备和请求计量、模型重试、实际模型请求和响应处理，再记录服务实报用量。完整响应保存后校验工具 DAG，节点先完成准备/审批，实际执行才取得有界 worker 槽。
- * 6. executeSandboxRunner 共用独立 Runner 状态与失败记录；本入口保留各自审批和命令构造。宿主模式的危险调用仍经过审批分流；Sandbox Runtime 已有能力内工具免审批，push 与扩展权限命令由 Broker 调用相同的低成本模型三级审批并持久化决定；扩展命令用一次性两阶段 IPC 授权把审批等待留在执行队列外。
+ * 6. Sandbox Runtime 已有能力内工具免审批；Git push 的预检、审批和执行与 run_with_permissions 的获批命令均交给 Broker 宿主进程，并分别留下未隔离的执行记录。一次性两阶段 IPC 授权把命令审批等待留在执行队列外；Push/Capability Runner 代码暂存但不走产品路径。
  * 7. Agent Runtime 的终态事件保留已验证的进程身份，供验收和中断恢复对账；可选子任务只在已标记任务接入协调工具，Broker 原子保存问题回执，报告与模型反馈同事务提交；退出先停子线程、归档 trace 再发 task_end。
  *
  * 模型请求可以重试，但已经执行的工具不能跟着重跑。数据库回滚也撤销不了文件修改或
@@ -43,11 +43,9 @@ import {
   buildModelToolGraph,
   toolSucceeded,
 } from "../tools/model-tool-batch.js";
-import { executeSandboxRunner } from "../sandbox/execute-runner.js";
 import { retryModel } from "../providers/retry.js";
 import { randomBytes, randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import path from "node:path";
 import type { Logger } from "pino";
 import { Store } from "../sessions/store.js";
 import { generateConversationTitle } from "../sessions/title-generator.js";
@@ -98,13 +96,17 @@ import {
 } from "../sandbox/runtime-capability-core.js";
 import { RuntimeIpcBrokerSession } from "../sandbox/runtime-ipc-broker-session.js";
 import { commandShell, resolveExecutablePath } from "../tools/command-shell.js";
-import type { GitProcessResult, GitPushSpec } from "../tools/git.js";
+import { executeProcess } from "../tools/process.js";
+import { GitToolRunner, type GitProcessResult } from "../tools/git.js";
 import type {
   CapabilityCommandRequest,
   CapabilityCommandResult,
 } from "../sandbox/capability-request.js";
-import { buildAccessManifest } from "../sandbox/access-manifest.js";
-import type { SandboxStatus } from "../sandbox/types.js";
+import type {
+  ExecutionInstanceRecord,
+  ExecutionInstanceState,
+  SandboxStatus,
+} from "../sandbox/types.js";
 
 // 标题请求没有工具或文件副作用；服务未提供可分类原因时，允许比主任务多一次诊断性重试。
 const titleRetryOptions = { retries: 3, retryUnknownErrors: true };
@@ -1198,11 +1200,10 @@ export class Engine {
             this.traces.endSpan(span, event.status, event.attributes);
             runtimeContextSpans.delete(event.spanId);
           },
-          executeGitPush: (_runtime, spec, toolCallId, requestSignal) =>
-            this.executeRuntimeGitPush(
+          executeGitPush: (_runtime, toolCallId, requestSignal) =>
+            this.executeBrokerGitPush(
               task,
               workspace,
-              spec,
               toolCallId,
               requestSignal,
               settings,
@@ -1390,75 +1391,153 @@ export class Engine {
     }
   }
 
-  /**
-   * Agent Runtime 在此请求上保持存活并同步等待；只有独立 Push Runner 获得 relay/credential lease。
-   * Broker 从 PushSpec 重建固定参数，且明确禁止 Sandbox 启动失败时回退为宿主 Git。
-   */
-  private async executeRuntimeGitPush(
+  /** Runtime 只等待结果；Broker 在宿主执行固定 Git 预检、审批和单次 push。 */
+  private async executeBrokerGitPush(
     task: Task,
     workspace: string,
-    spec: GitPushSpec,
     toolCallId: string,
     signal: AbortSignal,
     settings: Settings,
     emit: (type: string, data: any) => void,
   ): Promise<GitProcessResult> {
-    const remoteUrl = new URL(spec.remoteUrl);
-    if (
-      remoteUrl.protocol !== "https:" ||
-      remoteUrl.hostname.toLocaleLowerCase() !==
-        spec.host.toLocaleLowerCase() ||
-      remoteUrl.username ||
-      remoteUrl.password
-    ) {
-      throw new Error("PushSpec 的 HTTPS remote 与获准 host 不一致。");
-    }
+    const executionInstanceId = randomUUID();
+    const createdAt = new Date().toISOString();
+    const gitExecutable = resolveExecutablePath("git");
+    const environment = {
+      GIT_TERMINAL_PROMPT: "0",
+      GIT_PAGER: "cat",
+      PAGER: "cat",
+      GIT_EDITOR: "true",
+    };
+    let pid: number | undefined;
+    let pushStarted = false;
+    const publish = (
+      state: ExecutionInstanceState,
+      sideEffectsPossible = false,
+    ) => {
+      const record: ExecutionInstanceRecord = {
+        executionInstanceId,
+        toolCallId,
+        kind: "broker-git-push",
+        mode: "host-process",
+        state,
+        createdAt,
+        updatedAt: new Date().toISOString(),
+        sandboxRequested: false,
+        sandboxApplied: false,
+        pid,
+        pidKind: pid === undefined ? undefined : "host-process",
+        sideEffectsPossible,
+      };
+      emit("execution_instance", record);
+      this.sandbox.recordExecutionInstance(record);
+    };
 
-    const allowed = await this.approvals.request(
-      {
-        sessionId: task.sessionId,
-        taskId: task.id,
-        tool: "git_push",
-        description: `允许单次 HTTPS push 到 ${spec.host}，目标 ${spec.refspec}，当前对象 ${spec.objectId.slice(0, 12)}。该主机可接收仓库内容，Git 配置、hook 及其子进程会在本次网络窗口内运行。`,
-      },
-      signal,
-    );
-    if (!allowed) {
-      throw new Error("Sandbox Git push 审批未通过。");
-    }
+    const processStarted = (startedPid: number, isPush: boolean) => {
+      pid = startedPid;
+      pushStarted ||= isPush;
+      publish("running");
+    };
 
-    const outcome = await executeSandboxRunner(this.sandbox, {
-      taskId: task.id,
-      toolCallId,
-      kind: "push-runner",
-      signal,
-      fallbackError: "Push Runner 禁止宿主 Git fallback。",
-      emit,
-      command: () => ({
-        sessionId: task.sessionId,
-        networkHost: spec.host,
-        command: resolveExecutablePath("git"),
-        args: [
-          "push",
-          "--porcelain",
-          spec.remote,
-          `${spec.objectId}:${spec.refspec.slice("HEAD:".length)}`,
-        ],
-        cwd: workspace,
-        timeoutMs: settings.commandTimeoutMs,
-        outputLimit: settings.outputChars,
-        onOutput: (text) => emit("git_output", { text }),
-      }),
+    publish("created");
+    const span = this.traces.startSpan(task.id, {
+      name: "broker.git_push",
+      category: "tool",
+      track: "Broker host Git",
+      attributes: { executionInstanceId, toolCallId, mode: "host-process" },
     });
 
-    return outcome.result;
+    try {
+      const git = new GitToolRunner(
+        {
+          root: workspace,
+          sessionId: task.sessionId,
+          taskId: task.id,
+          signal,
+          settings,
+          emit,
+        },
+        (args, cwd, runSignal, timeoutMs, outputLimit, onOutput) =>
+          executeProcess(
+            gitExecutable,
+            args,
+            cwd,
+            runSignal,
+            timeoutMs,
+            outputLimit,
+            onOutput,
+            environment,
+            (startedPid) => processStarted(startedPid, false),
+          ),
+        async (
+          spec,
+          args,
+          cwd,
+          pushSignal,
+          timeoutMs,
+          outputLimit,
+          onOutput,
+        ) => {
+          const remoteUrl = new URL(spec.remoteUrl);
+          if (
+            remoteUrl.protocol !== "https:" ||
+            remoteUrl.hostname.toLocaleLowerCase() !==
+              spec.host.toLocaleLowerCase() ||
+            remoteUrl.username ||
+            remoteUrl.password
+          ) {
+            throw new Error("PushSpec 的 HTTPS remote 与获准 host 不一致。");
+          }
+
+          const allowed = await this.approvals.request(
+            {
+              sessionId: task.sessionId,
+              taskId: task.id,
+              tool: "git_push",
+              description: `允许单次 HTTPS push 到预检解析的 ${spec.remoteUrl}，目标 ${spec.refspec}，当前对象 ${spec.objectId.slice(0, 12)}。Git push 将以 Broker 宿主用户权限运行，不受 Sandbox 网络、文件或凭据限制；Git 配置、hook、helper 及其子进程也在宿主权限下运行。`,
+            },
+            pushSignal,
+          );
+          if (!allowed) {
+            throw new Error("Broker Git push 审批未通过。");
+          }
+
+          emit("notice", {
+            text: "本次 Git push 已获批准，将由 Broker 以宿主用户权限执行，不受 Sandbox 文件或网络限制。",
+          });
+          const pushArgs = [...args];
+          // 使用预检时解析的 URL，避免审批等待期间 remote 名称被改指到另一个目标。
+          pushArgs[2] = spec.remoteUrl;
+
+          return executeProcess(
+            gitExecutable,
+            pushArgs,
+            cwd,
+            pushSignal,
+            timeoutMs,
+            outputLimit,
+            onOutput,
+            environment,
+            (startedPid) => processStarted(startedPid, true),
+          );
+        },
+      );
+      const result = await git.execute({ action: "push" });
+      publish(result.exitCode === 0 ? "completed" : "failed", pushStarted);
+      this.traces.endSpan(span, result.exitCode === 0 ? "ok" : "error");
+
+      return result;
+    } catch (error) {
+      publish(
+        signal.aborted ? "cancelled" : pushStarted ? "unknown" : "failed",
+        pushStarted,
+      );
+      this.traces.endSpan(span, signal.aborted ? "cancelled" : "error");
+      throw error;
+    }
   }
 
-  /**
-   * Broker 审核 Runtime 声明的最小扩展权限，返回只可调用一次的 restricted Runner 启动闭包。
-   * 声明只接受现有递归目录根和单一 HTTPS host；调用方取得 Tool worker 槽后才执行闭包，
-   * 且任何启动前失败都禁止回退到宿主用户权限。
-   */
+  /** Broker 先审查完整命令，再交给 Tool worker 槽中的一次性宿主执行闭包。 */
   private async prepareRuntimeCapabilityCommand(
     task: Task,
     workspace: string,
@@ -1468,65 +1547,9 @@ export class Engine {
     settings: Settings,
     emit: (type: string, data: any) => void,
   ): Promise<(signal: AbortSignal) => Promise<CapabilityCommandResult>> {
-    const normalizeRoots = (roots: string[]) => {
-      const seen = new Set<string>();
-
-      return roots.map((root) => {
-        if (!path.isAbsolute(root)) {
-          throw new Error("扩展文件根必须是绝对路径。");
-        }
-
-        const normalized = path.resolve(root);
-        const key =
-          process.platform === "win32"
-            ? normalized.toLocaleLowerCase()
-            : normalized;
-        if (seen.has(key)) {
-          throw new Error("扩展权限包含重复文件根。");
-        }
-
-        seen.add(key);
-
-        return normalized;
-      });
-    };
-
-    const requestedReadRoots = normalizeRoots(request.permissions.readRoots);
-    const requestedWriteRoots = normalizeRoots(request.permissions.writeRoots);
-    const readKeys = new Set(
-      requestedReadRoots.map((root) =>
-        process.platform === "win32" ? root.toLocaleLowerCase() : root,
-      ),
-    );
-    if (
-      requestedWriteRoots.some((root) =>
-        readKeys.has(
-          process.platform === "win32" ? root.toLocaleLowerCase() : root,
-        ),
-      )
-    ) {
-      throw new Error("同一扩展文件根不能同时声明为只读和可写。");
-    }
-
-    // 审批前先以与正式 provision 相同的规则打开对象并取得规范路径；审批后
-    // Broker 和原生 supervisor 仍会重新打开并核对身份，防止审批替代执行时校验。
-    const reviewedManifest = await buildAccessManifest({
-      workspaceRoot: workspace,
-      readOnlyRoots: requestedReadRoots,
-      readWriteRoots: requestedWriteRoots,
-    });
-    const readOnlyRoots = reviewedManifest.readRoots.map((root) => root.path);
-    const readWriteRoots = reviewedManifest.writeRoots
-      .filter((root) => root.rootId !== reviewedManifest.workspaceRootId)
-      .map((root) => root.path);
-    if (readWriteRoots.length !== requestedWriteRoots.length) {
-      throw new Error("工作区已经属于 Agent Runtime 权限，不能重复申请。");
-    }
-
-    const networkHost = request.permissions.httpsHost?.toLocaleLowerCase();
     const shell = commandShell(process.env, undefined, process.platform, false);
     if (!shell) {
-      throw new Error("当前平台未找到 capability runner 可用的命令 shell。");
+      throw new Error("Broker 宿主未找到可用的命令 shell。");
     }
 
     const allowed = await this.approvals.request(
@@ -1537,12 +1560,11 @@ export class Engine {
         description: JSON.stringify(
           {
             command: request.command,
-            permissions: {
-              readRoots: readOnlyRoots,
-              writeRoots: readWriteRoots,
-              httpsHost: networkHost ?? null,
-            },
+            cwd: workspace,
             reason: request.reason,
+            execution: "broker-host",
+            authority:
+              "使用 Broker 进程的宿主用户权限；文件、网络和凭据不再受 Sandbox 的额外限制。",
           },
           null,
           2,
@@ -1551,38 +1573,102 @@ export class Engine {
       signal,
     );
     if (!allowed) {
-      throw new Error("扩展权限命令审批未通过。");
+      throw new Error("Broker 宿主命令审批未通过。");
     }
 
     return async (executionSignal) => {
       executionSignal.throwIfAborted();
-      const outcome = await executeSandboxRunner(this.sandbox, {
-        taskId: task.id,
-        toolCallId,
-        kind: "capability-runner",
-        signal: executionSignal,
-        fallbackError: "扩展权限 Runner 禁止宿主权限 fallback。",
-        emit,
-        command: () => ({
-          sessionId: task.sessionId,
-          networkHost,
-          readOnlyRoots,
-          readWriteRoots,
-          reviewedAccessManifest: reviewedManifest,
-          command: shell.command,
-          args: [...shell.args, request.command],
-          cwd: workspace,
-          timeoutMs: settings.commandTimeoutMs,
-          outputLimit: settings.outputChars,
-          onOutput: (text) => emit("capability_output", { text }),
-        }),
+      emit("notice", {
+        text: "本次 run_with_permissions 已获批准，命令将在 Broker 宿主用户权限下执行，不受 Sandbox 额外文件或网络限制。",
       });
 
-      return {
-        executionInstanceId: outcome.executionInstanceId,
-        ...outcome.result,
-      };
+      return this.executeReviewedBrokerCommand(
+        task,
+        workspace,
+        shell,
+        request.command,
+        toolCallId,
+        executionSignal,
+        settings,
+        emit,
+      );
     };
+  }
+
+  /** 审批已完成；宿主命令单独归因，不能写成受 Sandbox 保护的 Runner。 */
+  private async executeReviewedBrokerCommand(
+    task: Task,
+    workspace: string,
+    shell: { command: string; args: string[] },
+    command: string,
+    toolCallId: string,
+    signal: AbortSignal,
+    settings: Settings,
+    emit: (type: string, data: any) => void,
+  ): Promise<CapabilityCommandResult> {
+    const executionInstanceId = randomUUID();
+    const createdAt = new Date().toISOString();
+    let pid: number | undefined;
+    const publish = (
+      state: ExecutionInstanceState,
+      sideEffectsPossible = false,
+    ) => {
+      const record: ExecutionInstanceRecord = {
+        executionInstanceId,
+        toolCallId,
+        kind: "broker-command",
+        mode: "host-process",
+        state,
+        createdAt,
+        updatedAt: new Date().toISOString(),
+        sandboxRequested: false,
+        sandboxApplied: false,
+        pid,
+        pidKind: pid === undefined ? undefined : "host-process",
+        sideEffectsPossible,
+      };
+      emit("execution_instance", record);
+      this.sandbox.recordExecutionInstance(record);
+    };
+
+    publish("created");
+    const span = this.traces.startSpan(task.id, {
+      name: "broker.command",
+      category: "tool",
+      track: "Broker host commands",
+      attributes: { executionInstanceId, toolCallId, mode: "host-process" },
+    });
+
+    try {
+      const result = await executeProcess(
+        shell.command,
+        [...shell.args, command],
+        workspace,
+        signal,
+        settings.commandTimeoutMs,
+        settings.outputChars,
+        (text) => emit("capability_output", { text }),
+        {},
+        (startedPid) => {
+          pid = startedPid;
+          publish("running");
+        },
+      );
+      publish(
+        result.exitCode === 0 ? "completed" : "failed",
+        result.exitCode !== 0,
+      );
+      this.traces.endSpan(span, result.exitCode === 0 ? "ok" : "error");
+
+      return { executionInstanceId, ...result };
+    } catch (error) {
+      publish(
+        signal.aborted ? "cancelled" : pid === undefined ? "failed" : "unknown",
+        pid !== undefined,
+      );
+      this.traces.endSpan(span, signal.aborted ? "cancelled" : "error");
+      throw error;
+    }
   }
 
   private async run(
@@ -1670,13 +1756,9 @@ export class Engine {
                   callId: data.callId,
                   nodeId: data.nodeId,
                   executionInstanceId: undefined,
-                  parameters:
+                  execution:
                     data.name === "run_with_permissions"
-                      ? JSON.parse(
-                          redactJson(JSON.stringify(data.args), [
-                            this.config.apiKey,
-                          ]),
-                        )
+                      ? "broker-host"
                       : undefined,
                 },
               }),
@@ -1767,6 +1849,17 @@ export class Engine {
         approvals: this.approvals,
         emit,
         sandbox: this.sandbox,
+        gitPush: this.config.sandbox.enabled
+          ? (pushSignal, toolCallId) =>
+              this.executeBrokerGitPush(
+                task,
+                session.workspace,
+                toolCallId ?? "unknown-git-call",
+                pushSignal,
+                settings,
+                emit,
+              )
+          : undefined,
         memory: this.memories,
         onSandboxStage: (stage, status, executionInstanceId) => {
           this.traces.instant(

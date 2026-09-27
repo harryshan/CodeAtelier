@@ -3,7 +3,7 @@
  * Engine 和 AgentRuntimeService 调用本模块；这里只解析数据，不执行工具或持久化事件。
  *
  * 1. ModelToolCall 描述计划所需的模型字段，buildModelToolGraph 复用工具及历史读取参数校验，按任务开关验证 subagent 协调调用，再交给 createToolGraph 验证依赖。
- * 2. exclusivePush 仅由 Runtime 入口启用，保留其独立 Push Runner 必须独占批次的规则，不改变宿主路径。
+ * 2. exclusivePush 仅由 Runtime 入口启用，保留 Git push 审批与执行必须独占批次的规则，不改变宿主路径。
  * 3. toolSucceeded 同时检查工具错误、进程退出码和多文件 failed/unknown，供 DAG、日志和 tracing 使用同一结论。
  */
 

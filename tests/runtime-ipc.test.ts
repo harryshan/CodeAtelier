@@ -3,7 +3,7 @@
  * 内存流用例覆盖协议错误，独立 Node fixture 覆盖 model request/delta/response 跨进程，但不冒充 Windows Named Pipe 身份验收。
  *
  * 1. 双向 PassThrough peer 完成请求并拒绝未知响应、畸形 JSON 和超限半帧。
- * 2. RuntimeGitPushClient 只发送有界 PushSpec；RuntimeCapabilityClient 先准备审批、再用连接内一次性授权执行，且授权不可重放。
+ * 2. RuntimeGitPushClient 只发送调用 ID，Broker 自己做 Git 预检；RuntimeCapabilityClient 先准备审批、再用连接内一次性授权执行，且授权不可重放。
  * 3. AbortSignal 发送 request_cancel，中止远端同 requestId handler；竞态迟到响应不会破坏后续请求。
  * 4. Runtime trace 与 session event 只接受固定类型；子消息/取消 span 不携带正文，Runtime 不能伪造 Broker execution/sandbox/终态事件。
  * 5. 子进程经继承 stdio 请求模型，Broker test adapter 流式回传 delta 和最终结果，进程正常退出。
@@ -50,7 +50,7 @@ it("routes a bounded request and response", async () => {
   expect(result).toEqual({ operation: "session_read_context" });
 });
 
-it("sends only a structured push spec to the broker", async () => {
+it("sends only the push tool call ID to the broker", async () => {
   const leftToRight = new PassThrough();
   const rightToLeft = new PassThrough();
   let received: unknown;
@@ -64,24 +64,15 @@ it("sends only a structured push spec to the broker", async () => {
     },
   });
   const left = new RuntimeIpcPeer({ input: rightToLeft, output: leftToRight });
-  const spec = {
-    remote: "origin",
-    remoteUrl: "https://example.com/repository.git",
-    host: "example.com",
-    refspec: "HEAD:refs/heads/main",
-    objectId: "a".repeat(40),
-  };
-
   await expect(
     new RuntimeGitPushClient(left).execute(
-      spec,
       "push-call",
       new AbortController().signal,
     ),
   ).resolves.toEqual({ output: "pushed", exitCode: 0, truncated: false });
   expect(received).toMatchObject({
     operation: "git_push",
-    body: { toolCallId: "push-call", spec },
+    body: { toolCallId: "push-call" },
   });
   right.end();
   left.end();
@@ -110,12 +101,7 @@ it("sends a bounded capability command with its reason and tool call", async () 
   const left = new RuntimeIpcPeer({ input: rightToLeft, output: leftToRight });
   const request = {
     command: "node external-task.js",
-    permissions: {
-      readRoots: ["C:\\approved-read"],
-      writeRoots: ["C:\\approved-write"],
-      httpsHost: "example.test",
-    },
-    reason: "需要处理工作区外的已审核对象。",
+    reason: "需要 Broker 宿主权限处理工作区外的对象。",
   };
 
   await expect(
@@ -210,11 +196,6 @@ it("keeps an approved capability command inactive until its one-time authorizati
   const execute = await new RuntimeCapabilityClient(peer).prepare(
     {
       command: "external-tool --version",
-      permissions: {
-        readRoots: [],
-        writeRoots: [],
-        httpsHost: "example.test",
-      },
       reason: "验证两阶段授权。",
     },
     "capability-call",

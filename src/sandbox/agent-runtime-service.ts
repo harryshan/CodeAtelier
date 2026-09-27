@@ -1,6 +1,6 @@
 /**
  * 在常驻 Agent Runtime 进程内运行模型/工具循环；Broker Host 只通过 Runtime IPC 提供模型、session、审批和项目记忆能力。
- * 本服务不打开宿主 SQLite、不读取模型 endpoint/key，也不创建第二层 SandboxBroker；普通命令和 Git 子进程直接继承 Runtime 的 token/Job。
+ * 本服务不打开宿主 SQLite、不读取模型 endpoint/key，也不创建第二层 SandboxBroker；普通命令和非 push Git 子进程直接继承 Runtime 的 token/Job。
  *
  * 1. start 接受 Broker 绑定任务的安全设置，恢复 session 上下文并在工作区生成指令和文件工具。
  * 2. ContextManager 在 Runtime 内计量/压缩，快照读写经 RuntimeSessionClient 回到 Broker。
@@ -8,7 +8,7 @@
  * 4. UI/session 事件按连接排队；无效 DAG 在无副作用时回传模型修正，read_file 的工具内阶段与任务级线程池清理经固定 IPC trace 上报，工具结果增量保存后进入下一轮，失败不得盲目重放。
  * 5. 已选任务在 Runtime 内运行独立只读 Worker，子状态、问题回执、模型/租约及固定无正文的 trace 经任务绑定 IPC；收尾确认线程退出后再由 Broker 清理。
  *
- * Push Runner 必须独占当前工具批次；扩展权限 Runner 先经 IPC 审批取得一次性授权，获得 worker 槽后才启动，因而可与无依赖的普通工具正确并行。两者都由结构化 Runtime IPC adapter 等待结果；context/tool/model tracing 经固定 schema 回到 Broker，但提升环境验收仍未完成，不能据此宣称 W3/W4/W5 完成。
+ * Git push 必须独占当前工具批次；Runtime 仅把调用 ID 交给 Broker 做宿主 Git 预检、审批与执行。越界命令先经 IPC 审批取得一次性授权，获得 worker 槽后由 Broker 启动，因而可与无依赖的普通工具正确并行。context/tool/model tracing 经固定 schema 回到 Broker，仍需提升环境验收。
  */
 
 import { createBudget } from "../context/token-budget.js";
@@ -213,12 +213,12 @@ export class AgentRuntimeService {
         settings: toolSettings,
         approvals: new RuntimeApprovalClient(this.peer),
         memory: new RuntimeMemoryClient(this.peer, signal),
-        gitPush: (spec, pushSignal, toolCallId) => {
+        gitPush: (pushSignal, toolCallId) => {
           if (!toolCallId) {
-            throw new Error("Push Runner 请求缺少工具调用标识。");
+            throw new Error("Broker Git push 请求缺少工具调用标识。");
           }
 
-          return gitPush.execute(spec, toolCallId, pushSignal);
+          return gitPush.execute(toolCallId, pushSignal);
         },
         prepareRunWithPermissions: (request, requestSignal, toolCallId) => {
           if (!toolCallId) {

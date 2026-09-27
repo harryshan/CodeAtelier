@@ -19,21 +19,23 @@ Browser / Web UI
   ↕ HTTP、SSE（宿主 Server）
 Broker Host（可信宿主边界）
   ├─ 策略、审批、AccessManifest、SandboxProcessRecord、执行账本与 tracing
+  ├─ 审批后的 run_with_permissions：宿主命令进程，不附加 Sandbox 文件或网络限制
   ├─ C++ supervisor、专用账户租约与 Job 生命周期
   ├─ 参数受限的 model / storage / network / external adapters
   └─ 经认证、固定 schema 的 IPC
        ↕
 Sandbox Process（单一 CodeAtelierSandbox 账户；每实例独立 lease/capability/Job）
   ├─ Agent Runtime：常驻 Node.js agent loop、工具计划、文件工具、本地 Git 与命令；无直接网络（Windows 启动/传输已接入，待提升环境验收）
-  ├─ Capability Runner：单次获批命令、额外根与 HTTPS lease；无 agent loop
-  ├─ Push Runner：真实 Git 配置与认证 relay；无 agent loop
+  ├─ Broker Git push：宿主 Git 预检、审批与执行；旧 Push Runner 代码暂停使用
   ├─ 账户既有读取权 + 工作区、显式 read/write roots 与精确只读 Git config/include 图
   └─ WRITE_RESTRICTED 根 capability、产品依赖与私有临时目录；不继承宿主 profile/凭据
 ```
 
 Windows 启用时的产品调用链现为 `Broker Engine → SandboxBroker launcher → C++ Sandbox Supervisor → Agent Runtime → 工具子进程`，模型、session、审批和记忆通过 Runtime IPC adapter 回到 Broker。
 
-Git push 是这条链的受限分支：`Agent Runtime（loop 阻塞）→ Runtime IPC PushSpec → Broker → Sandbox Supervisor → 独立 Push Runner`；原 Agent Runtime 保持存活，但不取得 Runner 的网络或凭据能力。
+`run_with_permissions` 由 Runtime 通过认证 IPC 请求 Broker 审批；获准后 Broker 以宿主用户权限执行完整命令，单独记录 `broker-command/host-process`。该命令不在专用账户、Job、ACL 或 WFP 边界内。Capability Runner 实现保留但暂停使用。
+
+Git push 是这条链的宿主执行分支：`Agent Runtime（loop 阻塞）→ Runtime IPC toolCallId → Broker Git 预检 → 审批 → Broker 宿主 Git push`。原 Agent Runtime 保持存活，但不取得宿主网络或凭据能力；Push Runner 代码保留且暂停使用。
 
 安装版 Runtime 的 argv 只携带 Supervisor 生成的本机任务 pipe 名，identity/nonce 由有界首帧交付；产品 build 生成面向 Node 24 的单文件 Runtime 与独立 compaction、read_file、subagent Worker bundle，安装器把 Node 24 和 bundle 固定到受保护目录，TypeScript/native self-check 复核 v4 state 中的 SHA-256。
 
@@ -93,13 +95,13 @@ Sandbox 以 Broker Host 为宿主可信边界。一次性提升安装创建单�
 
 Broker 先建立不可变 AccessManifest，supervisor 再以原对象 handle 和卷/file ID 复核工作区、显式 read/write roots、产品依赖和精确 Git config/include 图并投影最小 ACL；持久 journal 使最终 revoke 或重启恢复可在同卷 rename 后按 file ID 重开原对象。
 
-当前产品已把常驻 AgentRuntimeService、C++ Supervisor launcher、身份绑定 Named Pipe、model/session/approval/memory adapter、ACL journal、relay、capability runner 和 generation drain 接到同一生命周期；尚缺固定账户提升环境对 W3/W4 的真实验证。
+当前产品已把常驻 AgentRuntimeService、C++ Supervisor launcher、身份绑定 Named Pipe、model/session/approval/memory adapter、ACL journal 和 generation drain 接到同一生命周期；relay、Push Runner 和 Capability Runner 的实现保留但不再由产品工具触发。
 
 Sandbox 沿用 1～4 个不同工作区并发和同工作区串行；账户 SID 使所有并发实例可能读取活动 manifest 的授权根，同账户 peer 也可能终止、注入或检查其它 Runtime。不同对话不是彼此的 OS 安全边界，每实例 capability 只承诺经验证的直接及后代文件写入限制。专用账户不继承宿主用户私有权限，但既有公共/机器 ACL 仍可能允许额外读取。
 
 共享账户 ACE 使用 provision 等待与 prepare/native revoke/commit 两阶段 grant table；任一实例 ACL、Job、代理或账户状态无法对账时隔离 account generation，原生终止整代账户进程并按持久 journal 撤销 ACL。
 
-Agent Runtime 已有权限内的全部 Git 与命令在 Runtime 内执行且免审批；越界命令由 Broker 重新审批后在独立 capability runner 中执行，Broker 不运行 Git，也不以宿主 token 执行 LLM 命令。只有 Agent Runtime 启动前可证明完整回滚时才保留宿主 loop fallback。
+Agent Runtime 已有权限内的普通 Git 与命令在 Runtime 内执行且免审批；`run_with_permissions` 和 Git push 由 Broker 审批后以宿主用户权限执行，文件、网络和凭据不再受 Sandbox 附加限制。只有 Agent Runtime 启动前可证明完整回滚时才保留宿主 loop fallback。
 
 完整边界与验收状态见 [windows-integrity-sandbox.md](windows-integrity-sandbox.md)。
 
@@ -159,7 +161,7 @@ Engine、Store 及其上下文/schema 辅助模块、共享数据契约、测试
 
    宿主模式中原本需要审批的调用继续由低成本模型给出自动通过、人工确认或拒绝；Sandbox Agent Runtime 已有权限内的工具直接执行，只有 push 和 `run_with_permissions` 越界命令进入 Broker 审批。
 
-   `run_with_permissions` 通过两阶段 Runtime IPC 先取得当前连接与 toolCallId 绑定的一次性 authorizationId，Runtime 获得执行槽后才消费授权并启动 Runner。前置失败时所有后继不执行而返回 `dependency_failed`，独立节点继续；每个完成或阻断的节点立即保存 `function_call_output`。
+   `run_with_permissions` 通过两阶段 Runtime IPC 先取得当前连接与 toolCallId 绑定的一次性 authorizationId，Runtime 获得执行槽后才消费授权，由 Broker 启动宿主命令。前置失败时所有后继不执行而返回 `dependency_failed`，独立节点继续；每个完成或阻断的节点立即保存 `function_call_output`。
 
    DAG 覆盖读取、写入、命令及 Git，不推断共享文件或命令资源冲突，模型必须为需要串行化的调用声明依赖；ToolRunner 的路径、快照、权限和文件编辑复核仍然生效。
 
@@ -181,7 +183,7 @@ Engine、Store 及其上下文/schema 辅助模块、共享数据契约、测试
 
 `src/tools/model-tool-batch.ts` 共用 function_call 参数解析、DAG 节点构造和工具成功判定。Runtime 显式启用 push 独占批次检查，宿主保持既有规则。循环返回正常完成、普通批次耗尽轮次或无效图耗尽轮次：保留现存兼容差异，宿主对后两种结果均报步数上限；Runtime 在最后一轮无效图反馈后沿用自然完成，普通工具批次耗尽轮次仍报错。统一这项终态差异须另行作为行为修复处理。
 
-`src/sandbox/execute-runner.ts` 共用 Push Runner 与 Capability Runner 的 execution instance 创建、开始、结束及失败记录。Engine 保留两者各自的审批、命令和权限构造；命令构造在 created 后的异常边界内执行。共享入口固定禁止 host fallback，启动后失败或 unknown 保留可能副作用标记，不重放命令。既有模型、工具、Broker tracing 和安全事件继续由各实际执行边界记录，共享控制不另建重复 span，也不新增包含正文的属性。
+`src/sandbox/execute-runner.ts` 保留暂停使用的 Push Runner 与 Capability Runner 实现。当前 `run_with_permissions` 和 Git push 在 Broker 内使用宿主进程执行器，分别记录 `broker-command`/`broker-git-push` execution instance 及 `broker.command`/`broker.git_push` span。取消或结果未知不自动重放；trace 只保存关联 ID、耗时和状态，不写命令正文。
 
 ## 历史与恢复
 
@@ -203,13 +205,13 @@ UI 历史包含消息、工具调用、受限工具结果和修改 diff。Timeli
 
 Sandbox 关闭、macOS/Linux 或 Windows 启动前 fallback 仍沿用宿主审批和会话授权，模型只接收宿主工具定义与提示，不会看见 `run_with_permissions` 或 Sandbox 专属说明；Windows Agent Runtime 已实际启动后才接收该工具，且其已有权限的文件工具、命令和非 push Git 不再审批。
 
-若 Runtime 中的命令需要额外能力，模型必须改用 `run_with_permissions`，提交命令、最多 16 个现存递归只读根、16 个现存递归可写根、一个公网 HTTPS host 和理由；Broker 重新审批后启动独立 capability runner，声明根进入 AccessManifest，host 进入短期 CONNECT relay，且不允许宿主 fallback。
+若 Runtime 中的命令需要额外能力，模型必须改用 `run_with_permissions`，提交完整命令和理由；Broker 重新审批后以宿主用户身份启动进程，不再通过 Capability Runner 的文件根或 HTTPS host 限制。结果单独标为 `broker-command/host-process`，不能算作 Sandbox 内执行。
 
-该 Runner 不继承宿主 profile/凭据，不能获得未声明路径、多个 host、私网、监听或任意 socket；短期 proxy token 仅存在于该 Runner 环境。Git push 保持更窄的 PushSpec/Push Runner/WinCred askpass 路径。
+Broker 命令与 Git push 可以使用宿主用户可访问的文件、网络和凭据；审批必须按此完整权限审查。Git push 仍由专用 `git` 工具固定 upstream/OID/ref 参数并逐次审批，通用命令仍不能调用 Git 工具绕过其契约。
 
 按账户 SID 的持久 WFP fence 始终只允许固定 Broker relay/proxy 端口；host 边界不限制上传内容、URL path 或命令将哪些可读数据发送出去。supervisor 记录 process handle、PID 和创建时间，以 Job 管理后代。
 
-安装器、产品 ACL/WFP/relay、Git 配置投影、恢复 journal、独立 sandbox.log 与 tracing 已实现；固定账户提升安装、真实 remote push、capability runner 的 ACL/代理/取消矩阵和复杂 ACL/崩溃夹具仍待验收。后续边界见 [windows-integrity-sandbox.md](windows-integrity-sandbox.md)。
+安装器、产品 ACL/WFP、Git 配置投影、恢复 journal、独立 sandbox.log 与 tracing 已实现；固定账户提升安装、真实 remote push 和复杂 ACL/崩溃夹具仍待验收。暂停使用的 Capability/Push Runner 与 relay 不作为当前产品验收项。后续边界见 [windows-integrity-sandbox.md](windows-integrity-sandbox.md)。
 
 ## 补丁编辑的准确性边界
 

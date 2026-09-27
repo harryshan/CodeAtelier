@@ -1,13 +1,12 @@
 /**
- * 定义 Agent Runtime 请求一次性扩展权限命令的共享、严格契约。
- * Tool registry、Runtime IPC 和 Broker executor 共同使用这些 schema，避免模型参数、跨进程消息和实际授权范围漂移。
+ * 定义 Agent Runtime 请求 Broker 审核并执行一次宿主命令的共享契约。
+ * Tool registry、Runtime IPC 和 Broker executor 共用请求/结果 schema，避免跨进程参数漂移。
  *
- * 1. capabilityPermissionsSchema 只表达当前平台能够强制落实的递归文件根与单一 HTTPS host；空权限请求被拒绝。
- * 2. capabilityCommandRequestSchema 同时绑定命令、权限和人类可读理由，但理由只用于审批与审计，不能扩大权限。
- * 3. capabilityCommandResultSchema 返回有界进程结果和独立 execution instance；unknown/orphaned 不会伪装成普通结果。
+ * 1. capabilityPermissionsSchema 保留暂停使用的 Capability Runner 原有权限形状，不进入当前工具请求。
+ * 2. capabilityCommandRequestSchema 只绑定命令和理由；审批后的命令以 Broker 宿主权限执行。
+ * 3. capabilityCommandResultSchema 返回有界进程结果与独立宿主 execution instance。
  *
- * 文件根授权是递归目录能力，不是单文件补丁语义。Broker 必须重新规范化路径、请求用户审批并通过
- * AccessManifest/relay 落实；绝不能因为 Runtime 已发送该对象就认为它已获授权。
+ * 此工具没有额外的文件根或网络强制边界；不能再把旧权限声明当作执行限制。
  */
 
 import { z } from "zod";
@@ -54,7 +53,6 @@ export const capabilityPermissionsSchema = z
 export const capabilityCommandRequestSchema = z
   .object({
     command: z.string().trim().min(1).max(100_000),
-    permissions: capabilityPermissionsSchema,
     reason: z.string().trim().min(1).max(2_000),
   })
   .strict();

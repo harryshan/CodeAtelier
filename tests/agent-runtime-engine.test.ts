@@ -5,16 +5,17 @@
  * 1. Engine 生成 instance/nonce，launcher 启动真实 Node 子进程并返回 IPC 流。
  * 2. 子进程运行 read_file 工具 DAG 并检查工具内阶段及任务结束清理 trace，Broker 仅提供模型、session、审批和记忆 adapter；固定白名单细分 trace 不包含文件内容。
  * 3. Engine 等待 Runtime 终态与 clean 退出，再把任务和带有已验证进程身份的 execution instance 记为 completed。
- * 4. 扩展权限命令经低成本模型审批后，把规范化根和 host 交给独立 capability runner，并将结果送回 agent loop。
+ * 4. run_with_permissions 经低成本模型审批后由 Broker 宿主进程执行，单独记录 host-process，而不创建 Capability Runner。
  * 5. Runtime IPC 在可信终态前断开时，Engine 以 unknown 关闭 launcher 并持久化可能副作用。
- * 6. 已启动 Push Runner 的 clean cancellation 仍记录远端副作用可能已经发生。
+ * 6. Broker 宿主 Git 先做固定预检、审批，再启动 push；已启动后取消仍记录远端副作用可能已经发生。
  * 7. launcher 证明 Runtime 尚未启动且 provision 已回滚时，Engine 明确记录 host fallback 并继续宿主 loop。
  */
 
-import { spawn } from "node:child_process";
-import { writeFile } from "node:fs/promises";
+import { execFile, spawn } from "node:child_process";
+import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { PassThrough } from "node:stream";
+import { promisify } from "node:util";
 import pino from "pino";
 import { expect, it, vi } from "vitest";
 import { Engine } from "../src/agent/engine.js";
@@ -27,6 +28,8 @@ import type {
 import { AgentRuntimeFallbackError } from "../src/sandbox/agent-runtime-launcher.js";
 import { Store } from "../src/sessions/store.js";
 import { temp } from "./fixtures/helpers.js";
+
+const runFile = promisify(execFile);
 
 it("moves the Engine agent loop into the launched Runtime process", async () => {
   const root = await temp();
@@ -268,186 +271,185 @@ it("moves the Engine agent loop into the launched Runtime process", async () => 
   }
 });
 
-it("reviews and executes a capability command through the Broker", async () => {
-  const root = await temp();
-  const external = await temp();
-  const config = new Config(await temp());
-  config.sandbox.enabled = true;
-  config.settings.auxiliaryModel = "approval-model";
-  config.sandbox.initialStatus = {
-    enabled: true,
-    requested: true,
-    applied: false,
-    mode: "unknown",
-    platform: process.platform,
-    level: null,
-  };
-  const store = new Store(path.join(config.directory, "db"));
-  const session = store.create(root, "capability test");
-  const errors: Buffer[] = [];
-  const launcher: AgentRuntimeLauncher = {
-    async launch(input) {
-      const child = spawn(
-        process.execPath,
-        [
-          "--import",
-          "tsx",
-          path.resolve("tests/fixtures/agent-runtime-service-child.ts"),
-        ],
-        {
-          cwd: process.cwd(),
-          stdio: ["pipe", "pipe", "pipe"],
-          env: {
-            ...process.env,
-            CODEATELIER_TEST_RUNTIME_DESCRIPTOR: JSON.stringify({
-              identity: input.identity,
-              nonce: input.nonce,
-            }),
-          },
-        },
-      );
-      child.stderr.on("data", (chunk: Buffer) => errors.push(chunk));
-
-      return {
-        input: child.stdout,
-        output: child.stdin,
-        pid: child.pid!,
-        close: async () =>
-          new Promise<"clean" | "orphaned">((resolve) => {
-            child.once("exit", (code) =>
-              resolve(code === 0 ? "clean" : "orphaned"),
-            );
-            child.stdin.end();
-          }),
-      };
-    },
-  };
-  let modelCalls = 0;
-  let approvalCalls = 0;
-  const provider: ModelProvider = {
-    async getCapabilities() {
-      return {
-        limits: {
-          max_context_window_tokens: 64_000,
-          max_output_tokens: 1_024,
-        },
-      };
-    },
-    async run(input) {
-      modelCalls += 1;
-      if (modelCalls === 1) {
-        return {
-          text: "",
-          output: [
-            {
-              type: "function_call",
-              call_id: "capability-call",
-              name: "run_with_permissions",
-              arguments: JSON.stringify({
-                execution: { id: "capability", dependsOn: [] },
-                arguments: {
-                  command: "external-tool --version",
-                  permissions: {
-                    readRoots: [external],
-                    writeRoots: [],
-                    httpsHost: "EXAMPLE.COM",
-                  },
-                  reason: "读取外部工具并访问其公开服务。",
-                },
+for (const approve of [true, false]) {
+  it(`reviews ${approve ? "approved" : "rejected"} Broker host command`, async () => {
+    const root = await temp();
+    const external = await temp();
+    const marker = path.join(external, "broker-command-marker.txt");
+    const quotedMarker = marker.replaceAll(
+      "'",
+      process.platform === "win32" ? "''" : "'\\''",
+    );
+    const command =
+      process.platform === "win32"
+        ? `Set-Content -LiteralPath '${quotedMarker}' -Value 'broker-result' -NoNewline; Write-Output 'broker-result'`
+        : `printf 'broker-result' > '${quotedMarker}' && printf 'broker-result'`;
+    const config = new Config(await temp());
+    config.sandbox.enabled = true;
+    config.settings.auxiliaryModel = "approval-model";
+    config.sandbox.initialStatus = {
+      enabled: true,
+      requested: true,
+      applied: false,
+      mode: "unknown",
+      platform: process.platform,
+      level: null,
+    };
+    const store = new Store(path.join(config.directory, "db"));
+    const session = store.create(root, "capability test");
+    const errors: Buffer[] = [];
+    const launcher: AgentRuntimeLauncher = {
+      async launch(input) {
+        const child = spawn(
+          process.execPath,
+          [
+            "--import",
+            "tsx",
+            path.resolve("tests/fixtures/agent-runtime-service-child.ts"),
+          ],
+          {
+            cwd: process.cwd(),
+            stdio: ["pipe", "pipe", "pipe"],
+            env: {
+              ...process.env,
+              CODEATELIER_TEST_RUNTIME_DESCRIPTOR: JSON.stringify({
+                identity: input.identity,
+                nonce: input.nonce,
               }),
             },
-          ],
+          },
+        );
+        child.stderr.on("data", (chunk: Buffer) => errors.push(chunk));
+
+        return {
+          input: child.stdout,
+          output: child.stdin,
+          pid: child.pid!,
+          close: async () =>
+            new Promise<"clean" | "orphaned">((resolve) => {
+              child.once("exit", (code) =>
+                resolve(code === 0 ? "clean" : "orphaned"),
+              );
+              child.stdin.end();
+            }),
         };
+      },
+    };
+    let modelCalls = 0;
+    let approvalCalls = 0;
+    const provider: ModelProvider = {
+      async getCapabilities() {
+        return {
+          limits: {
+            max_context_window_tokens: 64_000,
+            max_output_tokens: 1_024,
+          },
+        };
+      },
+      async run(input) {
+        modelCalls += 1;
+        if (modelCalls === 1) {
+          return {
+            text: "",
+            output: [
+              {
+                type: "function_call",
+                call_id: "capability-call",
+                name: "run_with_permissions",
+                arguments: JSON.stringify({
+                  execution: { id: "capability", dependsOn: [] },
+                  arguments: {
+                    command,
+                    reason: "需要在 Broker 宿主权限下写入工作区外的标记。",
+                  },
+                }),
+              },
+            ],
+          };
+        }
+
+        expect(approve).toBe(true);
+        expect(JSON.stringify(input)).toContain("broker-result");
+
+        return { text: "done", output: [] };
+      },
+    };
+    const engine = new Engine(
+      store,
+      config,
+      pino({ enabled: false }),
+      (_settings, purpose) =>
+        purpose === "approval"
+          ? {
+              async run(input) {
+                approvalCalls += 1;
+                expect(JSON.stringify(input)).toContain("broker-host");
+                expect(JSON.stringify(input)).toContain("宿主用户权限");
+                expect(input[0].content).toContain(
+                  JSON.stringify({ workspaceRoot: root }).slice(1, -1),
+                );
+
+                return {
+                  text: JSON.stringify({
+                    decision: approve ? "approve" : "reject",
+                    reason: approve ? "权限声明明确" : "拒绝宿主命令",
+                  }),
+                  output: [],
+                };
+              },
+            }
+          : provider,
+      launcher,
+    );
+    const execute = vi.spyOn(engine.sandbox, "executeCommand");
+
+    try {
+      const task = engine.start(session.id, "run external tool");
+      await engine.active?.done;
+
+      expect(store.task(task.id)?.status, store.task(task.id)?.error).toBe(
+        approve ? "completed" : "failed",
+      );
+      expect(approvalCalls).toBe(1);
+      expect(engine.approvals.list(session.id)).toEqual([]);
+      expect(execute).not.toHaveBeenCalled();
+      if (approve) {
+        expect(await readFile(marker, "utf8")).toBe("broker-result");
+      } else {
+        await expect(readFile(marker, "utf8")).rejects.toMatchObject({
+          code: "ENOENT",
+        });
       }
 
-      expect(JSON.stringify(input)).toContain("capability-result");
+      expect(Buffer.concat(errors).toString("utf8")).toBe("");
+      expect(
+        store
+          .events(session.id)
+          .some(
+            (event) =>
+              event.type === "execution_instance" &&
+              (event.data as any).kind === "broker-command" &&
+              (event.data as any).mode === "host-process" &&
+              (event.data as any).sandboxApplied === false &&
+              (event.data as any).state === "completed" &&
+              (event.data as any).pid > 0,
+          ),
+      ).toBe(approve);
+      const trace = await engine.savedTrace(task);
 
-      return { text: "done", output: [] };
-    },
-  };
-  const engine = new Engine(
-    store,
-    config,
-    pino({ enabled: false }),
-    (_settings, purpose) =>
-      purpose === "approval"
-        ? {
-            async run(input) {
-              approvalCalls += 1;
-              expect(JSON.stringify(input)).toContain("example.com");
-              expect(input[0].content).toContain(
-                JSON.stringify({ workspaceRoot: root }).slice(1, -1),
-              );
+      if (approve) {
+        expect(trace).toContain("broker.command");
+      } else {
+        expect(trace).not.toContain("broker.command");
+      }
 
-              return {
-                text: '{"decision":"approve","reason":"权限声明明确"}',
-                output: [],
-              };
-            },
-          }
-        : provider,
-    launcher,
-  );
-  const sandboxedStatus = {
-    enabled: true,
-    requested: true,
-    applied: true,
-    mode: "sandboxed" as const,
-    platform: "win32",
-    level: "dedicated-user",
-  };
-  vi.spyOn(engine.sandbox, "statusFor").mockReturnValue(sandboxedStatus);
-  const execute = vi
-    .spyOn(engine.sandbox, "executeCommand")
-    .mockImplementation(async (command) => {
-      expect(command.kind).toBe("capability-runner");
-      expect(command.toolCallId).toBe("capability-call");
-      expect(command.readOnlyRoots).toEqual([path.resolve(external)]);
-      expect(command.readWriteRoots).toEqual([]);
-      expect(command.networkHost).toBe("example.com");
-      command.onProcessStarted(4312, "runtime");
-      command.onOutput?.("capability-result");
-
-      return {
-        result: {
-          output: "capability-result",
-          exitCode: 0,
-          truncated: false,
-        },
-        status: sandboxedStatus,
-      };
-    });
-
-  try {
-    const task = engine.start(session.id, "run external tool");
-    await engine.active?.done;
-
-    expect(store.task(task.id)?.status, store.task(task.id)?.error).toBe(
-      "completed",
-    );
-    expect(approvalCalls).toBe(1);
-    expect(engine.approvals.list(session.id)).toEqual([]);
-    expect(execute).toHaveBeenCalledOnce();
-    expect(Buffer.concat(errors).toString("utf8")).toBe("");
-    expect(
-      store
-        .events(session.id)
-        .some(
-          (event) =>
-            event.type === "execution_instance" &&
-            (event.data as any).kind === "capability-runner" &&
-            (event.data as any).state === "completed",
-        ),
-    ).toBe(true);
-    const trace = await engine.savedTrace(task);
-
-    expect(trace).toContain("external-tool --version");
-    expect(trace).toContain("EXAMPLE.COM");
-  } finally {
-    await engine.close();
-    store.close();
-  }
-});
+      expect(trace).not.toContain(command);
+    } finally {
+      await engine.close();
+      store.close();
+    }
+  });
+}
 
 it("records unknown when Runtime IPC closes before a trusted terminal result", async () => {
   const root = await temp();
@@ -516,8 +518,35 @@ it("records unknown when Runtime IPC closes before a trusted terminal result", a
   }
 });
 
-it("records possible side effects when a started Push Runner is cancelled", async () => {
+it("keeps a cancelled Broker Git push out of the Sandbox Runner", async () => {
   const root = await temp();
+  await runFile("git", ["init", "-b", "main"], { cwd: root });
+  await runFile("git", ["config", "user.name", "Broker Test"], { cwd: root });
+  await runFile("git", ["config", "user.email", "broker@example.test"], {
+    cwd: root,
+  });
+  await writeFile(path.join(root, "tracked.txt"), "tracked\n");
+  await runFile("git", ["add", "tracked.txt"], { cwd: root });
+  await runFile(
+    "git",
+    ["-c", "commit.gpgSign=false", "commit", "--no-verify", "-m", "fixture"],
+    {
+      cwd: root,
+    },
+  );
+  await runFile(
+    "git",
+    ["remote", "add", "origin", "https://127.0.0.1:1/verification.git"],
+    {
+      cwd: root,
+    },
+  );
+  await runFile("git", ["config", "branch.main.remote", "origin"], {
+    cwd: root,
+  });
+  await runFile("git", ["config", "branch.main.merge", "refs/heads/main"], {
+    cwd: root,
+  });
   const config = new Config(await temp());
   config.sandbox.enabled = true;
   const store = new Store(path.join(config.directory, "db"));
@@ -531,45 +560,42 @@ it("records possible side effects when a started Push Runner is cancelled", asyn
   }));
   const events: Array<{ type: string; data: any }> = [];
   vi.spyOn(engine.approvals, "request").mockResolvedValue(true);
-  vi.spyOn(engine.sandbox, "statusFor").mockReturnValue({
-    enabled: true,
-    requested: true,
-    applied: true,
-    mode: "sandboxed",
-    platform: process.platform,
-    level: "test",
-  });
-  vi.spyOn(engine.sandbox, "executeCommand").mockImplementation(
-    async (command) => {
-      command.onProcessStarted(53, "runtime");
+  const execute = vi.spyOn(engine.sandbox, "executeCommand");
+  let approved = false;
+  const emit = (type: string, data: any) => {
+    events.push({ type, data });
+    if (type === "notice") {
+      approved = true;
+    }
+
+    if (
+      approved &&
+      type === "execution_instance" &&
+      data.kind === "broker-git-push" &&
+      data.state === "running"
+    ) {
       controller.abort(new Error("cancel push"));
-      throw controller.signal.reason;
-    },
-  );
+    }
+  };
 
   try {
     await expect(
-      (engine as any).executeRuntimeGitPush(
+      (engine as any).executeBrokerGitPush(
         task,
         root,
-        {
-          remote: "origin",
-          remoteUrl: "https://example.com/repository.git",
-          host: "example.com",
-          refspec: "HEAD:refs/heads/main",
-          objectId: "a".repeat(40),
-        },
         "push-call",
         controller.signal,
         config.settings,
-        (type: string, data: any) => events.push({ type, data }),
+        emit,
       ),
-    ).rejects.toThrow("cancel push");
+    ).rejects.toThrow("任务已取消");
 
+    expect(execute).not.toHaveBeenCalled();
     expect(events).toContainEqual({
       type: "execution_instance",
       data: expect.objectContaining({
-        kind: "push-runner",
+        kind: "broker-git-push",
+        mode: "host-process",
         state: "cancelled",
         sideEffectsPossible: true,
       }),

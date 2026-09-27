@@ -2,7 +2,7 @@
 
 > **适用范围与状态：** 此功能只面向 Windows，默认关闭，且需要一次性管理员安装；macOS 和 Linux 即使设置开关也会继续使用 `non-isolated` 宿主路径。
 >
-> 当前代码已经接入专用账户、C++ Supervisor、Agent Runtime、AccessManifest、ACL/WFP、认证 IPC、Capability Runner 和 Push Runner，但固定账户提升安装、真实公网 HTTPS/remote push、复杂 ACL、强制取消、崩溃及重启恢复仍未完成分层端到端验收。因此它是**预览能力，而非稳定或跨平台的安全保证**。请只在可备份、可信的测试项目中试用。
+> 当前代码已经接入专用账户、C++ Supervisor、Agent Runtime、AccessManifest、ACL/WFP 和认证 IPC。Capability Runner 与 Push Runner 代码保留但暂停使用；获批 `run_with_permissions` 命令和 Git push 由 Broker 以宿主用户权限运行。固定账户提升安装、真实 remote push、复杂 ACL、强制取消、崩溃及重启恢复仍未完成分层端到端验收。因此它是**预览能力，而非稳定或跨平台的安全保证**。请只在可备份、可信的测试项目中试用。
 >
 > 完整架构、分层验收状态和已知限制见 [Windows 专用用户 Sandbox Runtime 与 Broker 架构](windows-integrity-sandbox.md)。
 
@@ -13,8 +13,8 @@
 - Runtime、其普通命令、非 push Git、hook/helper 和子进程均在专用低权限本地账户 `CodeAtelierSandbox`、restricted token 和 Job 中运行；模型 API key、会话数据库与审批策略仍保留在宿主 **Broker Host**。
 - 每个实例使用非交互式 window station 内的私有 desktop；同一宿主登录会话的并发实例可共用 station，因此它不构成不同任务间的安全隔离。
 - Broker 按任务生成 AccessManifest，只投影当前工作区、显式授权的读写根、运行时依赖及精确的 Git global/include 配置图。可写根还必须匹配本实例的 `WRITE_RESTRICTED` capability。
-- 按专用账户 SID 安装的持久 WFP 规则默认阻止直接网络。普通 Runtime 没有命令网络；模型请求只能经 Broker。越界命令须用 `run_with_permissions` 声明最小递归读写根、至多一个 HTTPS host 和理由，并再次经过三级审批后由独立 Capability Runner 执行。
-- Git 始终在 Runtime 内执行，Broker 不执行 Git。`git push` 是独占工具批次，需逐次审批，由独立 Push Runner 经受控 relay/CONNECT 代理和短期凭据运行；WFP 不会因 push 或扩展网络请求而临时放宽。
+- 按专用账户 SID 安装的持久 WFP 规则默认阻止直接网络。普通 Runtime 没有命令网络；模型请求只能经 Broker。越界命令须用 `run_with_permissions` 提交完整命令和理由，经三级审批后由 Broker 以宿主用户权限执行。该命令不受 Sandbox 额外文件根或网络 host 限制。
+- 非 push Git 在 Runtime 内执行。`git push` 是独占工具批次，由 Broker 预检 upstream 和目标、逐次审批后以宿主用户权限执行；该 Git 及其 hook/helper 不受专用账户 Sandbox 限制。WFP 不会因 push 而临时放宽。
 
 Sandbox **不会**创建 worktree、暂存副本或自动回滚：可写操作直接改动真实工作区，取消、失败和崩溃都不能撤销已发生的文件或 Git 副作用。工作区内的 `.git`、`.env` 和其他文件没有额外保护。请在启用前提交、备份或另行复制重要工作。
 
@@ -47,13 +47,20 @@ Sandbox **不会**创建 worktree、暂存副本或自动回滚：可写操作�
 
    安装会创建 `CodeAtelierSandbox` 账户、受保护的 ProgramData 安装副本和按账户 SID 的持久 WFP 规则。安装器使用随机密码的系统保护存储；不要手工修改其账户、ProgramData 状态、WFP 规则或 ACL。
 
+   若已安装旧的 Runtime bundle，更新本地代码并重建后，在同一个管理员 PowerShell 7 终端执行修复与复核：
+
+   ```powershell
+   pwsh -NoProfile -File scripts/windows-sandbox/install.ps1 -Mode Repair
+   pnpm sandbox:verify
+   ```
+
 3. 回到普通终端，运行产品链路验收：
 
    ```powershell
    pnpm sandbox:runtime:verify
    ```
 
-   此命令使用模拟模型、临时工作区和私网拒绝夹具，不访问真实模型、外部网络、远程仓库或凭据。只有它在已安装的真实 Windows 环境中输出 `PASS`，才能证明本次安装的 Agent Runtime、Capability Runner、受控 Push Runner 和取消路径没有发生 fallback/unknown；即使通过，也**不**等同于真实公网 HTTPS、真实 remote push 或全部 W0--W6 阶段验收完成。
+   此命令使用模拟模型、临时工作区和不可用的本机 HTTPS 端口，不访问真实模型、外部网络、远程仓库或凭据。它检查已安装 Agent Runtime、审批后的 Broker 宿主命令、Broker 宿主 Git push 拒绝结果及取消路径，且要求没有 fallback/unknown。即使输出 `PASS`，也**不**等同于真实公网 HTTPS、真实 remote push 或全部 W0--W6 阶段验收完成；Broker 宿主命令和 Git push 本身不受 Sandbox 保护。
 
 ### 启用、运行与状态判断
 
@@ -74,27 +81,27 @@ Sandbox **不会**创建 worktree、暂存副本或自动回滚：可写操作�
 
    | 状态                    | 含义                                                                                                                                | 你应如何处理                                                                              |
    | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
-   | `sandboxed`             | 专用用户 Runtime 已成功启动并承载该任务。                                                                                           | 仍遵守本节的工作区、同账户 peer 和预览限制。                                              |
+   | `sandboxed`             | 专用用户 Runtime 已成功启动并承载该任务；获批 Broker 宿主命令仍是例外。                                                              | 仍遵守本节的工作区、同账户 peer 和预览限制；查看每条命令的执行实例。                        |
    | `host-process-fallback` | Runtime 启动前的 preflight/provision/self-check 失败，但系统已证明没有 Sandbox 操作启动且临时授权已回滚；任务自动改用宿主权限执行。 | 把它当作未隔离任务；检查警告、`sandbox.log` 和安装状态。                                  |
    | `non-isolated`          | Sandbox 开关关闭，或平台不是 Windows。                                                                                              | 命令按原有宿主审批与权限路径运行。                                                        |
    | `unknown` / `orphaned`  | Runtime、Runner 或清理结果无法证明；副作用可能已发生。                                                                              | 不要自动重试或恢复同一副作用。先核对当前文件/Git 状态，并处理安装或账户 generation 问题。 |
 
-启动前失败只会在能够证明目标操作**尚未开始**时自动 fallback。若 Runtime、Capability Runner 或 Push Runner 已启动而结果未知，系统不会在宿主模式重放该操作；它会记录 `unknown`/`orphaned`、隔离该账户 generation 并停止新的 Sandbox 实例，直至完成对账。
+启动前失败只会在能够证明目标操作**尚未开始**时自动 fallback。若 Runtime 已启动而结果未知，系统不会在宿主模式重放该操作；它会记录 `unknown`/`orphaned`、隔离该账户 generation 并停止新的 Sandbox 实例，直至完成对账。Broker 宿主命令或 Git push 结果未知时也禁止自动重放，须单独核对其副作用。
 
 ### 审批、命令和 Git 的差异
 
 - **宿主模式或 fallback：** 原有命令与工具审批仍生效；获准命令以当前本机用户权限运行，适用于你信任的项目。低成本模型的 `approve` 不会绕过路径、敏感文件、Git、提权或并发校验。
-- **已启动的 Sandbox Agent Runtime：** AccessManifest/WFP 范围内的文件工具、普通命令和非 push Git 不再逐项审批。越界普通文件工具会被拒绝；越界命令必须通过 `run_with_permissions` 申请最小根和单个 HTTPS host。该申请是递归目录能力，获准命令可读取整个读根、修改整个写根，并向获准 host 发送可读数据，务必审查审批内容。
-- **Git push：** 仅支持已校验 upstream 的既有受限 Git 契约；push 必须独占当前工具批次，按 host/port、期限、流量及“该 host 可能接收 Runner 所有可读内容”的风险逐次审批。当前真实 remote/凭据/helper 兼容性尚未完成提升环境验收，不应将预览实现用于关键生产推送。
+- **已启动的 Sandbox Agent Runtime：** AccessManifest/WFP 范围内的文件工具、普通命令和非 push Git 不再逐项审批。越界普通文件工具会被拒绝；越界命令必须通过 `run_with_permissions` 提交完整命令和理由，经 review 后由 Broker 使用宿主用户权限运行。它可访问宿主用户有权访问的文件、网络和凭据，务必按该权限审查命令。
+- **Git push：** 仅支持已校验 upstream 的既有 Git 工具契约；push 必须独占当前工具批次，审批会展示预检 URL、目标和 Broker 宿主权限。Git 配置、hook/helper 与网络不受专用账户 Sandbox 限制。当前真实 remote/凭据/helper 兼容性尚未完成验收，不应将预览实现用于关键生产推送。
 
 ### 维护、故障处理与卸载
 
-| 场景 | 命令与执行位置 | 说明 |
-| --- | --- | --- |
-| 检查已安装组件、账户和 WFP 状态 | 在**管理员 PowerShell** 执行 `pnpm sandbox:verify` | 不替代 `sandbox:runtime:verify` 的产品链路验收。 |
-| 安装后的产品链路检查 | 在普通终端执行 `pnpm sandbox:runtime:verify` | 不访问公网或真实凭据。 |
-| 正常卸载 | 在**管理员 PowerShell** 执行 `pnpm sandbox:uninstall` | 先停止所有任务；卸载必须确认没有活动 lease。 |
-| 正常卸载无法证明完整清理时的受控恢复 | 在**管理员 PowerShell** 执行 `pnpm sandbox:recover` | 只清理安装 state 中记录的产品账户、固定 WFP 对象、欢迎屏幕值和受控 ProgramData 子目录；不会扫描或重置整机防火墙。 |
+| 场景                                 | 命令与执行位置                                        | 说明                                                                                                              |
+| ------------------------------------ | ----------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| 检查已安装组件、账户和 WFP 状态      | 在**管理员 PowerShell** 执行 `pnpm sandbox:verify`    | 不替代 `sandbox:runtime:verify` 的产品链路验收。                                                                  |
+| 安装后的产品链路检查                 | 在普通终端执行 `pnpm sandbox:runtime:verify`          | 不访问公网或真实凭据。                                                                                            |
+| 正常卸载                             | 在**管理员 PowerShell** 执行 `pnpm sandbox:uninstall` | 先停止所有任务；卸载必须确认没有活动 lease。                                                                      |
+| 正常卸载无法证明完整清理时的受控恢复 | 在**管理员 PowerShell** 执行 `pnpm sandbox:recover`   | 只清理安装 state 中记录的产品账户、固定 WFP 对象、欢迎屏幕值和受控 ProgramData 子目录；不会扫描或重置整机防火墙。 |
 
 更新原生 Supervisor、WFP manager 或 Runtime bundle 后，应重新生成对应构建产物，并在管理员终端运行安装/验证流程，使受保护的安装副本与其 SHA-256 状态保持一致。出现 fallback、`unknown`、`orphaned`、安装校验失败或无法清理时，不要手动删除账户/WFP/ACL 来“强行修复”；保留诊断现场，先停止任务并使用 `sandbox:verify` 或 `sandbox:recover` 对账。
 
