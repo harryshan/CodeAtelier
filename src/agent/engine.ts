@@ -8,7 +8,7 @@
  * 4. 首条 prompt 先用辅助模型生成标题；run 再读取历史和项目规则，准备工具及上下文预算。
  * 5. model-loop 共用轮次、重试和停止控制，model-tool-batch 共用计划与成功判断；Engine 保留宿主事务、replay 与 tracing。为压缩提供 ToolRunner 的安全文件哈希探测；每轮记录上下文准备和请求计量、模型重试、实际模型请求和响应处理，再记录服务实报用量。完整响应保存后校验工具 DAG，节点先完成准备/审批，实际执行才取得有界 worker 槽。
  * 6. executeSandboxRunner 共用独立 Runner 状态与失败记录；本入口保留各自审批和命令构造。宿主模式的危险调用仍经过审批分流；Sandbox Runtime 已有能力内工具免审批，push 与扩展权限命令由 Broker 调用相同的低成本模型三级审批并持久化决定；扩展命令用一次性两阶段 IPC 授权把审批等待留在执行队列外。
- * 7. 可选子任务只在已标记任务接入协调工具；Broker 原子保存问题回执，报告与模型反馈同事务提交；退出先停子线程、归档 trace 再发 task_end。
+ * 7. Agent Runtime 的终态事件保留已验证的进程身份，供验收和中断恢复对账；可选子任务只在已标记任务接入协调工具，Broker 原子保存问题回执，报告与模型反馈同事务提交；退出先停子线程、归档 trace 再发 task_end。
  *
  * 模型请求可以重试，但已经执行的工具不能跟着重跑。数据库回滚也撤销不了文件修改或
  * 已启动的命令，所以保存失败时必须停止任务，并留下足够的记录供后续恢复。
@@ -840,6 +840,14 @@ export class Engine {
     let closeAttempted = false;
     let broker: RuntimeIpcBrokerSession | undefined;
     const createdAt = new Date().toISOString();
+    let processIdentity:
+      | {
+          pid: number;
+          pidKind: "runtime";
+          processCreationTime100ns?: string;
+          accountGenerationDigest?: string;
+        }
+      | undefined;
     const assertSubagentTask = (candidate: RuntimeExecutionIdentity) => {
       const current = this.store.task(task.id);
       if (
@@ -872,6 +880,8 @@ export class Engine {
         updatedAt: new Date().toISOString(),
         sandboxRequested: true,
         sandboxApplied: state !== "created",
+        // 终态是独立事件；不能让已验证的 PID 只存在于 running 事件中。
+        ...processIdentity,
         ...extra,
       };
       emit("execution_instance", record);
@@ -921,12 +931,13 @@ export class Engine {
         throw error;
       }
 
-      publishExecution("running", {
+      processIdentity = {
         pid: launched.pid,
         pidKind: "runtime",
         processCreationTime100ns: launched.processCreationTime100ns,
         accountGenerationDigest: launched.accountGenerationDigest,
-      });
+      };
+      publishExecution("running");
       publishSandboxStage("executing");
       const gateway = new RuntimeBrokerGateway(
         {

@@ -4,7 +4,7 @@
  *
  * 1. Engine 生成 instance/nonce，launcher 启动真实 Node 子进程并返回 IPC 流。
  * 2. 子进程运行 read_file 工具 DAG 并检查工具内阶段及任务结束清理 trace，Broker 仅提供模型、session、审批和记忆 adapter；固定白名单细分 trace 不包含文件内容。
- * 3. Engine 等待 Runtime 终态与 clean 退出，再把任务和 execution instance 记为 completed。
+ * 3. Engine 等待 Runtime 终态与 clean 退出，再把任务和带有已验证进程身份的 execution instance 记为 completed。
  * 4. 扩展权限命令经低成本模型审批后，把规范化根和 host 交给独立 capability runner，并将结果送回 agent loop。
  * 5. Runtime IPC 在可信终态前断开时，Engine 以 unknown 关闭 launcher 并持久化可能副作用。
  * 6. 已启动 Push Runner 的 clean cancellation 仍记录远端副作用可能已经发生。
@@ -244,16 +244,24 @@ it("moves the Engine agent loop into the launched Runtime process", async () => 
         (event: any) => event.args?.name === "Agent Runtime tools",
       ),
     ).toBe(true);
-    expect(
-      store
-        .events(session.id)
-        .some(
-          (event) =>
-            event.type === "execution_instance" &&
-            (event.data as any).kind === "agent-runtime" &&
-            (event.data as any).state === "completed",
-        ),
-    ).toBe(true);
+    const runtimeEvents = store
+      .events(session.id)
+      .filter((event) => event.type === "execution_instance")
+      .map((event) => event.data as Record<string, unknown>);
+    const runningRuntime = runtimeEvents.find(
+      (event) => event.kind === "agent-runtime" && event.state === "running",
+    );
+    const completedRuntime = runtimeEvents.find(
+      (event) => event.kind === "agent-runtime" && event.state === "completed",
+    );
+    expect(runningRuntime?.pid).toBeGreaterThan(0);
+    expect(completedRuntime).toMatchObject({
+      executionInstanceId: runningRuntime?.executionInstanceId,
+      mode: "windows-sandbox-user",
+      sandboxApplied: true,
+      pid: runningRuntime?.pid,
+      pidKind: "runtime",
+    });
   } finally {
     await engine.close();
     store.close();
@@ -497,6 +505,8 @@ it("records unknown when Runtime IPC closes before a trusted terminal result", a
             event.type === "execution_instance" &&
             (event.data as any).kind === "agent-runtime" &&
             (event.data as any).state === "unknown" &&
+            (event.data as any).pid === 52 &&
+            (event.data as any).pidKind === "runtime" &&
             (event.data as any).sideEffectsPossible === true,
         ),
     ).toBe(true);

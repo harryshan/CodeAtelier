@@ -16,7 +16,7 @@
 - `model-loop.test.ts`：响应先保存再执行工具、轮次推进、普通重试上限、超限恢复的任务级次数及 attempt 连续编号、保存/工具失败不重放、取消与无效图/正常工具耗尽轮次的区分。
 - `model-tool-batch.test.ts`：两种执行模式的节点解析与依赖一致、Runtime push 独占而宿主维持原规则、退出码及多文件 failed/unknown 阻断 DAG 后继。
 - `execute-runner.test.ts`：Push Runner 和 Capability Runner 的实例标识、进程元数据、事件/账本一致、非零退出、启动前后失败、取消、unknown 优先级、命令构造失败和拒绝 host fallback。
-- `engine.test.ts`、`agent-runtime-service.test.ts`、`agent-runtime-engine.test.ts` 继续验证生产组装、真实 Node 子进程、工具结果回传、审批和取消记录；这些测试不替代专用账户提升环境验收。
+- `engine.test.ts`、`agent-runtime-service.test.ts`、`agent-runtime-engine.test.ts` 继续验证生产组装、真实 Node 子进程、工具结果回传、审批和取消记录；Engine 回归还核对已验证的 Runtime PID 在 `running` 与 `completed` execution instance 中一致。这些测试不替代专用账户提升环境验收。
 
 ## 测试分层
 

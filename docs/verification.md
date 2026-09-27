@@ -14,12 +14,14 @@
 - 用户再次提升 `Repair` 后，首任务仍以 `proxyStage=identity clientStage=token clientWin32=5` 失败，原生退出 72、`rollbackReported=true`，授权 journal 与实例文件均为零。Job 检查已通过，失败发生在 Supervisor 对另一账户的 Runtime 调用 `OpenProcessToken`；[Microsoft 文档](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-openprocesstoken)要求调用方为此启用 `SeDebugPrivilege`，单独的 token DACL 查询 ACE 不足。现撤回上一候选 ACL 扩权，改由已核对 PID 的固定账户 bootstrap 在原有私有管道交付其创建 Runtime 时持有的进程/token 句柄值；Supervisor 用 `DuplicateHandle` 仅复制 `PROCESS_QUERY_LIMITED_INFORMATION`/`TOKEN_QUERY`，将连接 pipe 的实际 PID 与该进程句柄、Job、SID、映像和创建时间联合核对，不给宿主提升调试权限。MSVC 构建、原生状态回归和真实普通账户跨进程句柄传递探针通过；这仍不证明固定账户下的产品链路，需更新安装包后重跑 `sandbox:runtime:verify`。
 - 用户更新安装后，Supervisor 与构建文件 SHA-256 一致。固定工具任务首次进入 `windows-sandbox-user/running`，说明此前的跨账户身份拒绝已越过；但约 30 秒后仍未出现模型或工具事件，Supervisor 退出 72，Runtime 入口报告固定 `STARTUP_FAILED`，任务记为 `unknown` 且 `sideEffectsPossible=true`。Broker 随后报告 generation 排空成功；只读检查受保护安装区的 grants/instances 没有文件，验收工作区只有 seed 文件、没有目标标记。新开临时工作区复现相同结果。当前无法从单一失败标记判断入口是卡在启动描述符还是 IPC 握手，因此增加不含身份材料的入口和代理首帧阶段诊断；同时新增回归先复现“畸形启动帧后入口保留 pipe 直到超时”，再修复为失败时销毁 socket 并立即退出。新版原生首帧经 Node 解析夹具验证格式和固定字段匹配，固定账户的下一次验收仍待安装更新。
 - 下一次固定账户验收继续失败，但新增阶段明确显示 `entryDescriptorAccepted=true`、`runtimeFrameRead=true`、`brokerFrameWritten=true`、`brokerFrameRead=true`、`runtimeFrameWritten=false`、`entryHandshakeCompleted=false`。即 Runtime 已解析首帧并发出 hello，Broker 已收到并回复，Supervisor 却未把回复写回 Runtime。独立真实 Named Pipe 探针先以同一同步句柄上的待决读取与写入复现超时，再把任务 pipe 改为 `FILE_FLAG_OVERLAPPED`，连接、首帧和双向代理均使用带独立事件的 overlapped I/O；同一探针改后在预连接和等待连接两种顺序下通过，重复五次通过。此修复符合 [Microsoft 的并发管道 I/O 说明](https://learn.microsoft.com/en-us/windows/win32/ipc/synchronous-and-overlapped-input-and-output)，但只证明本机双向传输，不等于固定账户产品链路已经完成；仍需更新安装副本后重跑显式验收。
+- 修复安装副本并重新运行后，固定工具任务确实在专用账户 Runtime 内完成，但验收发现其 `completed` execution instance 丢失先前已核对的 PID、创建时间与账户 generation 摘要；旧断言据此拒绝成功。增加先失败的 Engine 回归后，终态事件继承该进程身份。下一次 `sandbox:runtime:verify` 已通过固定工具与已安装 subagent 阶段，停在独立 Capability Runner：受限 `pwsh.exe` 在执行命令前因 `BCrypt.dll` 初始化失败而退出 82，任务未完成，工作区与日志保留在 `.local/sandbox-runtime-verification`。切换至 Windows PowerShell 5.1 仍在 CLR 启动时失败。
+- Process Monitor 捕获显示受限进程成功读取并映射 `C:\Windows\System32\bcrypt.dll`，仅记录到 `.NET` 诊断命名管道的 `ACCESS DENIED`；不能据此断言管道就是加密初始化失败的原因。独立 token 探针在产品同类 `WRITE_RESTRICTED` restricting SID 下复现 `LoadLibraryExW("bcrypt.dll")=1114`，用同类 token 与默认 DACL 启动真实子进程也复现；移除 `LUA_TOKEN` 或 `DISABLE_MAX_PRIVILEGE` 均不改变结果。加入 `Everyone` 或 `SYSTEM` 可让探针通过，但会扩大写检查可命中的对象，违反 D101 的实例写入边界，因此未修改产品 token。失败后的管理员 `sandbox:verify` 再次通过：8 条 WFP 规则、自检与安装版本 4 均正常。完整 W3--W6 验收仍未通过。
 
 ## Windows Sandbox 安装状态端口回归（2026-09-27）
 
 - 固定账户首次提升安装在 WFP 规则写入后由 Supervisor self-check 以退出码 71 拒绝；安装脚本随后报告删除 8 条规则并完成账户、权限和安装目录回滚。代码检查发现安装 state 已升至版本 4，而 C++ 仅对版本 2 解析 relayPortV4/V6，导致版本 4 自检使用端口 0。
 - 原生构建新增直接调用产品状态解析器的版本 4 夹具，核对两个 relay 端口并拒绝无效端口；旧代码下 `SANDBOX_NATIVE_STATE_PARSE FAIL`，修复后 `PASS`，MSVC 原生构建通过。`pnpm check` 在允许正常子进程清理的环境通过：70 个测试文件、505 项通过、1 项跳过，类型、lint、格式和测试构建均通过。外层受限环境的首次运行有既有 shutdown 用例超时及 SQLite `EBUSY`，未修改产品语义或测试断言。
-- 修复后的管理员重装、安装自检与 `sandbox:runtime:verify` 尚待本次手动验收；不能从原生构建或普通测试推断固定账户端到端成功。
+- 该次修复之后的提升环境验收进展见上节；原生构建或普通测试本身仍不能证明固定账户端到端成功。
 
 ## Compact 契约与容量验收（2026-09-26）
 
