@@ -5,7 +5,7 @@
  * 1. discoverGitConfigGraph 按标准 global 入口顺序读取现存文件，并递归处理 include.path 与适用于当前仓库的 gitdir/gitdir/i includeIf。
  * 2. 每个文件在读取前拒绝 UNC、设备路径和符号链接入口，以 realpath + stat 身份去重；循环、深度、数量和总字节都有硬上限。
  * 3. 相对 include 以声明它的配置文件目录解析，~/ 只展开为显式传入的宿主 profile，不读取 Sandbox HOME。
- * 4. renderGitGlobalAggregate 只生成固定顺序的 include 入口；调用方必须把结果放在 Runtime 不可写的投影父目录。
+ * 4. renderGitGlobalAggregate 生成固定顺序的 include 入口，并仅信任本次真实工作区的 Git owner；调用方必须把结果放在 Runtime 不可写的投影父目录。
  *
  * 本模块不执行 Git、不解析 helper/url/proxy 等普通键，也不推导 push 目标。无法可靠理解的 includeIf 条件会拒绝 Sandbox preflight，
  * 而不是静默漏授权后改变用户 Git 配置语义。
@@ -257,10 +257,17 @@ function quoteGitPath(value: string) {
   return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 }
 
-export function renderGitGlobalAggregate(entryFiles: string[]) {
-  return entryFiles
+export function renderGitGlobalAggregate(
+  entryFiles: string[],
+  workspaceRoot: string,
+) {
+  const includes = entryFiles
     .map((file) => `[include]\n\tpath = ${quoteGitPath(file)}\n`)
     .join("");
+
+  // 先清空宿主或系统配置可能继承的通配值，再只信任当前真实工作区。
+  // 专用账户不拥有宿主工作区，Git 否则会在读取仓库配置前拒绝执行。
+  return `${includes}[safe]\n\tdirectory = ""\n\tdirectory = ${quoteGitPath(workspaceRoot)}\n`;
 }
 
 /** 返回真实、稳定且有界的文件图；不存在的标准入口由调用方在传入前过滤。 */
@@ -274,8 +281,9 @@ export async function discoverGitConfigGraph(
     path.join(options.profileDirectory, ".config", "git", "config"),
     path.join(options.profileDirectory, ".gitconfig"),
   ];
+  const workspaceRoot = await realpath(options.workspaceRoot);
   const gitDirectory = path
-    .join(await realpath(options.workspaceRoot), ".git")
+    .join(workspaceRoot, ".git")
     .replace(/\\/g, "/")
     .concat("/");
   const existingEntries: string[] = [];
@@ -339,6 +347,6 @@ export async function discoverGitConfigGraph(
   return {
     entryFiles: existingEntries,
     files,
-    aggregate: renderGitGlobalAggregate(existingEntries),
+    aggregate: renderGitGlobalAggregate(existingEntries, workspaceRoot),
   };
 }

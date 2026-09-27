@@ -3,12 +3,12 @@
  * 临时夹具覆盖标准入口顺序、相对 include、条件 include、循环去重和安全拒绝；冲突优先级用本机真实 Git 验证。
  *
  * 1. 匹配当前 workspace 的 gitdir/i 文件进入图，不匹配条件不授权。
- * 2. 两个 global 入口保持固定聚合顺序，私有 Sandbox HOME 不参与发现。
+ * 2. 两个 global 入口保持固定聚合顺序，聚合配置仅信任本次工作区，私有 Sandbox HOME 不参与发现。
  * 3. UNC、未知 includeIf、链接、深度和文件数越界均在 ACL provision 前失败。
  */
 
 import { expect, it } from "vitest";
-import { mkdir, symlink, writeFile } from "node:fs/promises";
+import { mkdir, realpath, symlink, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import {
@@ -45,7 +45,13 @@ it("discovers ordered global, relative and matching conditional includes", async
 
   expect(graph.entryFiles).toEqual([second, first]);
   expect(graph.files).toEqual([second, first, relative, conditional]);
-  expect(graph.aggregate).toBe(renderGitGlobalAggregate([second, first]));
+  expect(graph.aggregate).toBe(
+    renderGitGlobalAggregate([second, first], await realpath(workspace)),
+  );
+  expect(graph.aggregate).toContain(
+    `[safe]\n\tdirectory = ""\n\tdirectory = ${JSON.stringify(await realpath(workspace))}\n`,
+  );
+  expect(graph.aggregate).not.toContain("directory = *");
   expect(graph.aggregate).not.toContain(skipped);
 });
 
