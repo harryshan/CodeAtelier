@@ -1,16 +1,17 @@
 # 初版验证记录
 
-## Windows Sandbox 取消终态修复（2026-09-27，待重装复验）
+## Windows Sandbox 取消终态修复（2026-09-27，安装态复验通过）
 
 - 用户运行安装态 `sandbox:runtime:verify`，固定任务、已安装 subagent、审批后的 Broker 宿主命令和 Broker Git push 本机拒绝夹具均完成；最后的取消断言失败。两份保留工作区的会话均显示任务 `cancelled`，但 Agent Runtime execution instance 为 `unknown`、`sideEffectsPossible=true`，账户 generation 因 `process_unknown` 隔离并排空；因此是真实终态不一致，不是断言误判。原生 Supervisor 报告 `completionReported=true`、退出码 30，但 Broker 未取得可信 Runtime 任务终态。
 - 原因：取消信号在 Runtime 启动后立即关闭 Supervisor stdin，且 Broker 的 `start_task` 请求随任务 AbortSignal 提前拒绝。Runtime 很快通过 `runtime_complete` 报告取消，但 IPC 按协议不再回复已取消的 `start_task`；Broker 错过该报告并在 close 时按 unknown 隔离。修复改为保留已启动 Runtime 的 transport，先经 IPC 取消、等待 `runtime_complete` 和 `stopping`；取消后的 session 终态事件使用独立有界信号保存。超时或清理未知仍隔离，任务不会再被取消状态覆盖。
-- 真实 Node 子进程回归先复现旧实现未收到 `runtime_complete`；修复后 clean 取消及时完成，原生清理返回 orphaned 的变体仍记为失败/unknown。`pnpm check` 通过：70 个测试文件、509 项通过、1 项跳过，类型、lint、格式和 Runtime bundle 构建均通过；首次全量运行中未修改的进程 UTF-8 输出测试偶发失败，单独复核及随后全量重跑通过。完整固定账户验收需更新受保护 Runtime bundle 后重跑；不能以该回归代替安装态证据。
+- 真实 Node 子进程回归先复现旧实现未收到 `runtime_complete`；修复后 clean 取消及时完成，原生清理返回 orphaned 的变体仍记为失败/unknown。`pnpm check` 通过：70 个测试文件、509 项通过、1 项跳过，类型、lint、格式和 Runtime bundle 构建均通过；首次全量运行中未修改的进程 UTF-8 输出测试偶发失败，单独复核及随后全量重跑通过。
+- 用户在管理员终端运行 `Repair` 与 `sandbox:verify`：`SANDBOX_INSTALL PASS version=4`、`SANDBOX_INSTALL_VERIFY PASS version=4`，WFP 八条规则和账户自检通过。随后普通权限终端运行 `pnpm sandbox:runtime:verify`，输出 `SANDBOX_AGENT_RUNTIME_VERIFY PASS completion=yes subagent=yes brokerHostCommand=yes brokerGitPushBlocked=yes cancellation=yes cleanup=yes`。这证明该安装态夹具的取消路径已 clean 关闭且无 fallback/unknown；不等同于真实公网、真实 remote push 或所有平台安全阶段验收。
 
 ## Broker 宿主命令与 Git push 临时路径（2026-09-27）
 
 - D119/D120 暂停 Capability Runner 与 Push Runner 产品入口；`run_with_permissions` 的命令/理由经 Broker 审批后作为宿主命令执行，Git push 的宿主预检、审批与执行同样由 Broker 完成。两者分别记录 `broker-command`、`broker-git-push` 的 `host-process` execution instance；旧 Runner 和 relay 的测试仍作为保留代码回归，不能证明现行路径受到 Sandbox 文件或网络限制。
 - 本地 Node.js 24.19.0 上 `pnpm check` 通过：70 个测试文件，507 项通过、1 项跳过；类型、lint、格式和 Runtime bundle 构建通过。`pnpm test:e2e` Chromium 27/27 通过。定向回归覆盖已批准/拒绝的 Broker 宿主命令、Runtime push 无本地 Git 预检、Broker Git 启动后取消及 IPC 调用 ID 契约。
-- 当前 Codex 进程不是提升的管理员 token。尝试从该进程启动 Windows UAC Repair 时没有进入安装脚本、没有生成修复日志，因此未更新受保护安装副本；本次改动的 `sandbox:runtime:verify` 尚未在新版安装态运行。需要在管理员 PowerShell 7 以 `pwsh -NoProfile -File scripts/windows-sandbox/install.ps1 -Mode Repair` 更新安装副本，然后普通终端运行 `pnpm sandbox:runtime:verify`。本地不可用端口夹具即使通过，也不代表真实远端 push、凭据或 hook/helper 兼容性通过。
+- 当时 Codex 进程不是提升的管理员 token，尝试从该进程启动 Windows UAC Repair 未进入安装脚本，因此该阶段未能更新安装副本。用户随后在管理员终端完成 Repair；安装态验收结果见上节。本地不可用端口夹具通过仍不代表真实远端 push、凭据或 hook/helper 兼容性通过。
 
 ## Windows Sandbox 普通用户启动自检（2026-09-27，进行中）
 
