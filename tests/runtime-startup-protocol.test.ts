@@ -2,7 +2,7 @@
  * 验证 Agent Runtime 正式入口的 Supervisor 首帧契约，不把 stdio 测试夹具环境变量当作产品启动材料。
  *
  * 1. 覆盖原生 StringFromGUID2 的带花括号 pipe 名、分片首帧和同批到达的后续 IPC 字节。
- * 2. 覆盖远程/错误 pipe、超限长度、未知字段和非法 nonce 的安全拒绝。
+ * 2. 覆盖远程/错误 pipe、超限长度、未知字段和非法 nonce 的安全拒绝；入口失败须关闭已连接 pipe 并退出。
  */
 
 import { spawn } from "node:child_process";
@@ -219,7 +219,69 @@ it.skipIf(process.platform !== "win32")(
 
     expect(result).toEqual({ status: "completed" });
     expect(completed).toBe(true);
-    expect(Buffer.concat(errors).toString("utf8")).toBe("");
+    expect(Buffer.concat(errors).toString("utf8")).toBe(
+      "CODEATELIER_AGENT_RUNTIME_PHASE descriptor\n" +
+        "CODEATELIER_AGENT_RUNTIME_PHASE handshake\n",
+    );
     expect(exit).toBe(0);
+  },
+);
+
+it.skipIf(process.platform !== "win32")(
+  "closes the startup pipe and exits after a malformed descriptor",
+  async () => {
+    const pipeName = `\\\\.\\pipe\\CodeAtelier.AgentRuntime.{${randomUUID()}}`;
+    const server = net.createServer();
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(pipeName, resolve);
+    });
+    const child = spawn(
+      process.execPath,
+      [
+        "--import",
+        "tsx",
+        path.resolve("src/sandbox/agent-runtime-main.ts"),
+        pipeName,
+      ],
+      {
+        cwd: process.cwd(),
+        stdio: ["ignore", "ignore", "pipe"],
+        env: process.env,
+      },
+    );
+    const errors: Buffer[] = [];
+    child.stderr.on("data", (chunk: Buffer) => errors.push(chunk));
+    const socket = await new Promise<net.Socket>((resolve, reject) => {
+      server.once("connection", resolve);
+      server.once("error", reject);
+    });
+    server.close();
+    const invalidLength = Buffer.alloc(4);
+    socket.write(invalidLength);
+
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const exit = await Promise.race([
+        new Promise<number | null>((resolve) => child.once("exit", resolve)),
+        new Promise<"timeout">((resolve) => {
+          timeout = setTimeout(() => resolve("timeout"), 3_000);
+        }),
+      ]);
+
+      expect(exit).toBe(1);
+      expect(Buffer.concat(errors).toString("utf8")).toBe(
+        "CODEATELIER_AGENT_RUNTIME_STARTUP_FAILED\n",
+      );
+    } finally {
+      if (timeout) {
+        clearTimeout(timeout);
+      }
+
+      socket.destroy();
+      if (child.exitCode === null) {
+        child.kill();
+      }
+    }
   },
 );

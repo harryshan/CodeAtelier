@@ -29,6 +29,7 @@
 
 - `pnpm build` 与 `pnpm build:test` 还会生成 `dist/runtime/windows-x64` 下的 Node 24 Agent Runtime、compaction/read_file/subagent 三种 Worker bundle 和 SHA-256 manifest；构建成功只验证 bundle 可生成，不代表安装器已把它复制到受保护目录或 native Supervisor 已核对并启动它。
 - `pnpm sandbox:native:build` 的原生回归核对 Runtime bootstrap 句柄帧、进程 PID 绑定、仅复制查询权限及畸形帧拒绝；显式 `codeatelier-sandbox-state-parser-test.exe --handle-transfer-probe` 还以真实子进程验证私有管道读帧和跨进程句柄复制。两者都不代替固定账户下的 Job、token 与 Runtime pipe 联合身份验收。
+- 原生 `codeatelier-sandbox-state-parser-test.exe --runtime-descriptor-probe` 可输出固定启动描述符二进制首帧，供 Node 解码器跨语言核对；`runtime-startup-protocol.test.ts` 验证真实本机管道的成功握手，以及无效首帧后入口关闭 socket 并退出。安装态首帧和 IPC 双向代理仍须用显式产品验收验证。
 - `pnpm sandbox:runtime:verify` 是安装完成后由用户显式运行的 Windows 产品链路验收：它使用模拟模型，经默认 Engine/SandboxBroker/native Supervisor 在专用账户 Agent Runtime 内创建工作区文件；随后以仅供此手动验收的内部已标记任务调用受保护的 subagent Worker，核对受限工具、读取、报告收集、tracing 和 clean release，公开 HTTP 门禁仍保持关闭。
 
   `tests/runtime-startup-protocol.test.ts` 另以原生 `StringFromGUID2` 的 `{GUID}` 后缀启动真实本机 pipe，验证 Node 入口能连接并完成模拟任务；普通协议测试同时保留不带花括号的合法名称及远程、畸形名称拒绝。该测试不代替专用账户的身份与 ACL 验收。

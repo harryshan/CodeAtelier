@@ -10,7 +10,7 @@
  * 5. Broker stdin 关闭、超时或异常会终止 Job；正常/异常退出撤销本实例 capability ACE，共享账户 ACE 仅由 Broker 最后引用的两阶段 release 撤销；安装恢复从持久 journal 验证原文件身份后撤销账户 ACE，清理不确定返回专用错误码。
  * 6. Push Runner 仅从宿主 Credential Manager 读取绑定 host 的 HTTPS 凭据，并经同 Job askpass pipe 交付；capability runner 只把短期、host-bound proxy token 放入自身环境，不取得宿主凭据。
  * 7. Agent Runtime 模式只启动受保护 Node/entry；bootstrap 通过已核对客户端 PID 的私有 pipe 交付进程/token 句柄值，Supervisor 限权复制查询句柄，联合核对 Runtime pipe 客户端身份后发送启动首帧并代理原始 Broker 字节流；初始 CWD 使用私有目录。
- * 8. stdout 只承载工具输出或 Agent Runtime IPC；stderr 只输出有界控制记录，不记录命令、路径、SID、密码或工具内容。
+ * 8. stdout 只承载工具输出或 Agent Runtime IPC；stderr 只输出有界控制记录及每方向首帧阶段，不记录命令、路径、SID、密码或工具内容。
  *
  * restricted token、default DACL、Job 和 capability SID 的底层算法复用已验证探针源；通过宏重命名其 wmain，
  * 探针入口不会暴露在产品二进制的顶层命令分派中。该 supervisor 不提升权限，也不创建账户或 WFP 规则。
@@ -2337,6 +2337,7 @@ bool RunAgentRuntimeProxy(HANDLE runtime_pipe, HANDLE bootstrap_pipe,
   auto proxy_failed = std::make_shared<std::atomic_bool>(false);
   std::thread broker_to_runtime([=]() {
     std::array<BYTE, 64 * 1024> buffer{};
+    bool first_frame = true;
     while (!stop->load()) {
       DWORD read = 0;
       if (!ReadFile(broker_input, buffer.data(),
@@ -2349,6 +2350,9 @@ bool RunAgentRuntimeProxy(HANDLE runtime_pipe, HANDLE bootstrap_pipe,
         }
         return;
       }
+      if (first_frame) {
+        std::wcerr << L"CODEATELIER_RUNTIME_PROXY_STAGE broker_read\n";
+      }
       if (!WriteExact(runtime_pipe, buffer.data(), read)) {
         if (!stop->exchange(true)) {
           proxy_failed->store(true);
@@ -2356,16 +2360,24 @@ bool RunAgentRuntimeProxy(HANDLE runtime_pipe, HANDLE bootstrap_pipe,
         }
         return;
       }
+      if (first_frame) {
+        std::wcerr << L"CODEATELIER_RUNTIME_PROXY_STAGE runtime_write\n";
+        first_frame = false;
+      }
     }
   });
   std::thread runtime_to_broker([=]() {
     std::array<BYTE, 64 * 1024> buffer{};
+    bool first_frame = true;
     while (!stop->load()) {
       DWORD read = 0;
       if (!ReadFile(runtime_pipe, buffer.data(),
                     static_cast<DWORD>(buffer.size()), &read, nullptr) ||
           read == 0) {
         return;
+      }
+      if (first_frame) {
+        std::wcerr << L"CODEATELIER_RUNTIME_PROXY_STAGE runtime_read\n";
       }
       if (!WriteExact(broker_output, buffer.data(), read)) {
         if (!stop->exchange(true)) {
@@ -2374,6 +2386,10 @@ bool RunAgentRuntimeProxy(HANDLE runtime_pipe, HANDLE bootstrap_pipe,
           CancelIoEx(runtime_pipe, nullptr);
         }
         return;
+      }
+      if (first_frame) {
+        std::wcerr << L"CODEATELIER_RUNTIME_PROXY_STAGE broker_write\n";
+        first_frame = false;
       }
     }
   });

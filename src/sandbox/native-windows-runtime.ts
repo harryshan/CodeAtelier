@@ -9,7 +9,7 @@
  * 5. runtime started 控制帧确认共享账户 ACE 已安装；并发 lease 在该确认前不会假定 grant 可用。
  * 6. 取消、JS 超时、管道或持久化回调失败关闭继承 stdin，并等待退出；清理证明缺失优先于原错误或取消结果，抛出专用 unknown 错误，绝不宿主重放。
  * 7. drainGeneration 关闭 relay、终止该账户全部进程并按持久 journal 撤销 ACL，供在线 quarantine 与重启恢复共用。
- * 8. 临时 HOME/TEMP 只在原生确认撤销后删除；启动失败仅记录白名单 station、Runtime pipe/身份阶段和数字错误码，日志与错误不包含命令、路径、SID、端口、密码或工具输出。
+ * 8. 临时 HOME/TEMP 只在原生确认撤销后删除；启动失败仅记录白名单 station、Runtime pipe/身份阶段、入口固定阶段和数字错误码，日志与错误不包含命令、路径、SID、端口、密码或工具输出。
  *
  * 该实现既启动常驻 Agent Runtime，也启动独立 Push/Capability Runner；常驻 Runtime 承载完整 agent loop、文件工具、普通命令和非 push Git，Broker 保留模型、session、审批与恢复账本。
  */
@@ -876,6 +876,41 @@ export class NativeWindowsSandboxRuntime implements SandboxRuntime {
                   "Agent Runtime 在身份验证完成前退出。",
                 ),
         );
+      } else if (
+        runtimePid !== undefined &&
+        (exitCode !== 0 || !completionReported)
+      ) {
+        this.log?.warn({
+          event: "sandbox.agent_runtime_supervisor_poststart_closed",
+          module: "sandbox",
+          sessionId: command.sessionId,
+          taskId: command.taskId,
+          executionInstanceId: command.executionInstanceId,
+          exitCode,
+          completionReported,
+          entryStartupFailed: control.includes(
+            "CODEATELIER_AGENT_RUNTIME_STARTUP_FAILED",
+          ),
+          entryDescriptorAccepted: control.includes(
+            "CODEATELIER_AGENT_RUNTIME_PHASE descriptor",
+          ),
+          entryHandshakeCompleted: control.includes(
+            "CODEATELIER_AGENT_RUNTIME_PHASE handshake",
+          ),
+          runtimeFrameRead: control.includes(
+            "CODEATELIER_RUNTIME_PROXY_STAGE runtime_read",
+          ),
+          brokerFrameWritten: control.includes(
+            "CODEATELIER_RUNTIME_PROXY_STAGE broker_write",
+          ),
+          brokerFrameRead: control.includes(
+            "CODEATELIER_RUNTIME_PROXY_STAGE broker_read",
+          ),
+          runtimeFrameWritten: control.includes(
+            "CODEATELIER_RUNTIME_PROXY_STAGE runtime_write",
+          ),
+          diagnostic: supervisorStartupDiagnostic(control),
+        });
       }
     });
     if (child.pid !== undefined) {

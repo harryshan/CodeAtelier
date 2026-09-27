@@ -11,8 +11,9 @@
  * 5. 核对 bootstrap pipe 不授予实例 SID，Agent Runtime 专属 pipe 才授予本实例 restricting SID，避免 WRITE_RESTRICTED 客户端无法连接；真实受限 token 连接仍由安装后产品验收证明。
  * 6. 用真实句柄验证 bootstrap attestation 只复制查询权限，绑定进程 PID 并拒绝畸形或错误 PID。
  * 7. 显式 --handle-transfer-probe 用独立子进程和匿名管道验证句柄帧的有界等待、跨进程复制和 PID 绑定；默认 native build 不运行此 OS 探针。
- * 8. 显式 --window-station-probe 在真实 Windows 会话中用不同账户替身 SID 创建并关闭两个非交互式 station/desktop 句柄，验证已有 station 补装第二个账户 ACE、实例授权、原 station 恢复，以及带完整 station/desktop 名称的 USER32 子进程启动；默认 native build 不运行此 OS 探针。
- * 9. 删除临时夹具，以退出码报告回归结果。
+ * 8. 显式 --runtime-descriptor-probe 输出真实原生首帧，供跨语言回归核对 Node 解码器；不启动 Supervisor。
+ * 9. 显式 --window-station-probe 在真实 Windows 会话中用不同账户替身 SID 创建并关闭两个非交互式 station/desktop 句柄，验证已有 station 补装第二个账户 ACE、实例授权、原 station 恢复，以及带完整 station/desktop 名称的 USER32 子进程启动；默认 native build 不运行此 OS 探针。
+ * 10. 删除临时夹具，以退出码报告回归结果。
  */
 
 #define CODEATELIER_INSTALLATION_STATE_TEST
@@ -455,6 +456,13 @@ bool TestPrivateDesktopStation() {
 int wmain(int argc, wchar_t* argv[]) {
   if (argc == 2 && std::wstring(argv[1]) == L"--handle-transfer-child") {
     return RunHandleTransferChild();
+  }
+  if (argc == 2 && std::wstring(argv[1]) == L"--runtime-descriptor-probe") {
+    return WriteRuntimeStartupDescriptor(
+               GetStdHandle(STD_OUTPUT_HANDLE), L"session-1", L"task-1",
+               L"instance-1", std::wstring(64, L'a'))
+               ? 0
+               : 1;
   }
   if (argc == 2 && std::wstring(argv[1]) == L"--handle-transfer-probe") {
     if (!TestCrossProcessHandleTransfer()) {

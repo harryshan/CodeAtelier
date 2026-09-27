@@ -4,7 +4,8 @@
  *
  * 1. 先校验 pipe 名称并建立本机 Named Pipe 连接；连接错误只返回固定类别，不泄露路径或启动材料。
  * 2. 从 Supervisor 首帧读取严格启动描述符，随后完成 Runtime→Broker 握手。
- * 3. 握手成功才创建 AgentRuntimeService 并报告 ready；pipe 断开会结束进程，不另开宿主能力通道。
+ * 3. 握手成功才创建 AgentRuntimeService 并报告 ready；启动失败主动销毁已连接 pipe，避免无效 Runtime 挂到超时。
+ * 4. stderr 只输出固定启动阶段，不记录启动描述符、路径、nonce 或 IPC 内容，供宿主区分帧与握手失败。
  *
  * native Supervisor 必须在发送首帧前完成联合身份验证并代理 Broker 字节流；仅调用本入口不能证明 W3 身份边界完成。
  */
@@ -52,20 +53,27 @@ export async function runAgentRuntimeEntry(
     signal.addEventListener("abort", onAbort, { once: true });
   });
 
-  await connected;
-  const descriptor = await readRuntimeStartupDescriptor(socket, signal);
-  const peer = await connectAgentRuntime(
-    { input: socket, output: socket },
-    descriptor.identity,
-    descriptor.nonce,
-    signal,
-  );
+  try {
+    await connected;
+    const descriptor = await readRuntimeStartupDescriptor(socket, signal);
+    process.stderr.write("CODEATELIER_AGENT_RUNTIME_PHASE descriptor\n");
+    const peer = await connectAgentRuntime(
+      { input: socket, output: socket },
+      descriptor.identity,
+      descriptor.nonce,
+      signal,
+    );
+    process.stderr.write("CODEATELIER_AGENT_RUNTIME_PHASE handshake\n");
 
-  new AgentRuntimeService(peer, descriptor.identity);
-  peer.event({ type: "event", event: "runtime_state", state: "ready" });
+    new AgentRuntimeService(peer, descriptor.identity);
+    peer.event({ type: "event", event: "runtime_state", state: "ready" });
 
-  return new Promise<void>((resolve, reject) => {
-    socket.once("end", resolve);
-    socket.once("error", reject);
-  });
+    await new Promise<void>((resolve, reject) => {
+      socket.once("end", resolve);
+      socket.once("error", reject);
+    });
+  } catch (error) {
+    socket.destroy();
+    throw error;
+  }
 }
