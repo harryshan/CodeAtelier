@@ -6,7 +6,7 @@
  * 1. 提升安装时仅对专用 LSA 账户对象授予安装者读取拒绝登录权的权限；self-check 核对 state 所属宿主 SID、专用账户 SID/密码、拒绝登录权、WFP 持久规则，以及受保护 Node 24/Agent Runtime entry 和各 Worker bundle 摘要。
  * 2. execute 生成 execution/root capability SID；共享账户 ACE 始终提供 normal-side 读写候选权限，每实例 capability ACE 再决定 WRITE_RESTRICTED token 实际可写的根。
  * 3. CreateProcessWithLogonW 以固定 bootstrap 入口启动专用账户进程，先分配 KILL_ON_JOB_CLOSE Job 再恢复。
- * 4. 在确认不是 WinSta0 后给系统命名的非交互式 station 补齐专用账户及实例 SID，再创建私有 desktop；bootstrap 使用专用账户自身的全新环境块，通过只允许宿主/SYSTEM/专用账户且核对 PID 的 Named Pipe 取得命令，创建 WRITE_RESTRICTED token 后启动真实工具。
+ * 4. 在确认不是 WinSta0 后给系统命名的非交互式 station 补齐专用账户及实例 SID，再创建私有 desktop；bootstrap 经账户管道取得命令，创建 WRITE_RESTRICTED token，常驻 Runtime 则经仅额外授权本实例 execution SID 的专属 pipe 连接 Broker。
  * 5. Broker stdin 关闭、超时或异常会终止 Job；正常/异常退出撤销本实例 capability ACE，共享账户 ACE 仅由 Broker 最后引用的两阶段 release 撤销；安装恢复从持久 journal 验证原文件身份后撤销账户 ACE，清理不确定返回专用错误码。
  * 6. Push Runner 仅从宿主 Credential Manager 读取绑定 host 的 HTTPS 凭据，并经同 Job askpass pipe 交付；capability runner 只把短期、host-bound proxy token 放入自身环境，不取得宿主凭据。
  * 7. Agent Runtime 模式只启动受保护 Node/entry，联合核对 pipe 客户端身份后发送启动首帧并代理原始 Broker 字节流；初始 CWD 使用私有目录。
@@ -1204,12 +1204,16 @@ class ObjectGrant {
   bool remove_capability_ = false;
 };
 
-bool BuildPipeSecurity(PSID account_sid, SECURITY_ATTRIBUTES* attributes,
+bool BuildPipeSecurity(PSID account_sid, PSID execution_sid,
+                       SECURITY_ATTRIBUTES* attributes,
                        LocalPointer* descriptor) {
   std::wstring current_sid = CurrentUserSidString();
   std::wstring account_sid_text = SidToString(account_sid);
   std::wstring sddl = L"D:P(A;;GA;;;SY)(A;;GA;;;" + current_sid +
                       L")(A;;GA;;;" + account_sid_text + L")";
+  if (execution_sid != nullptr) {
+    sddl += L"(A;;GA;;;" + SidToString(execution_sid) + L")";
+  }
   PSECURITY_DESCRIPTOR raw = nullptr;
   if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
           sddl.c_str(), SDDL_REVISION_1, &raw, nullptr)) {
@@ -1808,24 +1812,36 @@ bool VerifyAgentRuntimeClient(HANDLE pipe, HANDLE job, PSID account_sid,
                               const std::wstring& expected_image,
                               DWORD* process_id,
                               ULONGLONG* creation_time_100ns) {
-  ULONG client_pid = 0;
-  if (!GetNamedPipeClientProcessId(pipe, &client_pid) || client_pid == 0 ||
-      !ProcessBelongsToJob(client_pid, job)) {
+  auto reject = [](const wchar_t* stage, DWORD win32 = 0) {
+    std::wcerr << L"CODEATELIER_RUNTIME_CLIENT_REJECT stage=" << stage
+               << L" win32=" << win32 << L"\n";
     return false;
+  };
+  ULONG client_pid = 0;
+  if (!GetNamedPipeClientProcessId(pipe, &client_pid)) {
+    return reject(L"client_pid", GetLastError());
+  }
+  if (client_pid == 0 || !ProcessBelongsToJob(client_pid, job)) {
+    return reject(L"job");
   }
   UniqueHandle process(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE,
                                    client_pid));
+  if (!process) {
+    return reject(L"process", GetLastError());
+  }
   HANDLE raw_token = nullptr;
-  if (!process || !OpenProcessToken(process.get(), TOKEN_QUERY, &raw_token)) {
-    return false;
+  if (!OpenProcessToken(process.get(), TOKEN_QUERY, &raw_token)) {
+    return reject(L"token", GetLastError());
   }
   UniqueHandle token(raw_token);
   BOOL restricted = FALSE;
   DWORD restricted_size = sizeof(restricted);
   if (!GetTokenInformation(token.get(), TokenIsRestricted, &restricted,
-                           restricted_size, &restricted_size) ||
-      !restricted) {
-    return false;
+                           restricted_size, &restricted_size)) {
+    return reject(L"restricted", GetLastError());
+  }
+  if (!restricted) {
+    return reject(L"restricted");
   }
 
   DWORD user_size = 0;
@@ -1833,26 +1849,30 @@ bool VerifyAgentRuntimeClient(HANDLE pipe, HANDLE job, PSID account_sid,
   std::vector<BYTE> user_buffer(user_size);
   if (user_size == 0 ||
       !GetTokenInformation(token.get(), TokenUser, user_buffer.data(),
-                           user_size, &user_size) ||
-      !EqualSid(reinterpret_cast<TOKEN_USER*>(user_buffer.data())->User.Sid,
+                           user_size, &user_size)) {
+    return reject(L"sids", GetLastError());
+  }
+  if (!EqualSid(reinterpret_cast<TOKEN_USER*>(user_buffer.data())->User.Sid,
                 account_sid) ||
       !TokenContainsSid(token.get(), TokenRestrictedSids, execution_sid) ||
       !TokenContainsSid(token.get(), TokenRestrictedSids, capability_sid)) {
-    return false;
+    return reject(L"sids");
   }
 
   std::vector<wchar_t> image(32768);
   DWORD image_size = static_cast<DWORD>(image.size());
-  if (!QueryFullProcessImageNameW(process.get(), 0, image.data(), &image_size) ||
-      _wcsicmp(std::wstring(image.data(), image_size).c_str(),
+  if (!QueryFullProcessImageNameW(process.get(), 0, image.data(), &image_size)) {
+    return reject(L"image", GetLastError());
+  }
+  if (_wcsicmp(std::wstring(image.data(), image_size).c_str(),
                expected_image.c_str()) != 0) {
-    return false;
+    return reject(L"image");
   }
 
   FILETIME created{}, exited{}, kernel{}, user{};
   ULARGE_INTEGER created_value{};
   if (!GetProcessTimes(process.get(), &created, &exited, &kernel, &user)) {
-    return false;
+    return reject(L"times", GetLastError());
   }
   created_value.LowPart = created.dwLowDateTime;
   created_value.HighPart = created.dwHighDateTime;
@@ -2148,9 +2168,13 @@ bool RunAgentRuntimeProxy(HANDLE runtime_pipe, HANDLE bootstrap_process,
                           const std::wstring& nonce,
                           AgentRuntimeProxyResult* result) {
   bool connected = false;
+  DWORD connect_error = ERROR_SUCCESS;
   std::thread connector([&]() {
     connected = ConnectNamedPipe(runtime_pipe, nullptr) != FALSE ||
                 GetLastError() == ERROR_PIPE_CONNECTED;
+    if (!connected) {
+      connect_error = GetLastError();
+    }
   });
   std::array<HANDLE, 2> connection_wait = {connector.native_handle(),
                                             bootstrap_process};
@@ -2160,10 +2184,17 @@ bool RunAgentRuntimeProxy(HANDLE runtime_pipe, HANDLE bootstrap_process,
   if (connection_result != WAIT_OBJECT_0) {
     CancelSynchronousIo(connector.native_handle());
     connector.join();
+    DWORD bootstrap_exit = STILL_ACTIVE;
+    GetExitCodeProcess(bootstrap_process, &bootstrap_exit);
+    std::wcerr << L"CODEATELIER_RUNTIME_PROXY_FAILED stage=connect_wait wait="
+               << connection_result << L" bootstrap_exit=" << bootstrap_exit
+               << L"\n";
     return false;
   }
   connector.join();
   if (!connected) {
+    std::wcerr << L"CODEATELIER_RUNTIME_PROXY_FAILED stage=connect win32="
+               << connect_error << L"\n";
     return false;
   }
 
@@ -2171,9 +2202,14 @@ bool RunAgentRuntimeProxy(HANDLE runtime_pipe, HANDLE bootstrap_process,
   ULONGLONG creation_time_100ns = 0;
   if (!VerifyAgentRuntimeClient(runtime_pipe, job, account_sid, execution_sid,
                                 capability_sid, state.runtime_node_path,
-                                &runtime_pid, &creation_time_100ns) ||
-      !WriteRuntimeStartupDescriptor(runtime_pipe, session_id, task_id,
+                                &runtime_pid, &creation_time_100ns)) {
+    std::wcerr << L"CODEATELIER_RUNTIME_PROXY_FAILED stage=identity\n";
+    return false;
+  }
+  if (!WriteRuntimeStartupDescriptor(runtime_pipe, session_id, task_id,
                                      request.execution_instance_id, nonce)) {
+    std::wcerr << L"CODEATELIER_RUNTIME_PROXY_FAILED stage=descriptor win32="
+               << GetLastError() << L"\n";
     return false;
   }
 
@@ -2377,7 +2413,8 @@ int RunProductSupervisor(const std::wstring& state_path,
   LocalPointer pipe_descriptor;
   std::wstring pipe_name = MakeProductPipeName();
   if (pipe_name.empty() ||
-      !BuildPipeSecurity(account_sid.data(), &pipe_security, &pipe_descriptor)) {
+      !BuildPipeSecurity(account_sid.data(), nullptr, &pipe_security,
+                         &pipe_descriptor)) {
     SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
     return fail_launch(kSelfCheckFailureExitCode);
   }
@@ -2399,12 +2436,20 @@ int RunProductSupervisor(const std::wstring& state_path,
       SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
       return fail_launch(kSelfCheckFailureExitCode);
     }
+    SECURITY_ATTRIBUTES runtime_pipe_security{};
+    LocalPointer runtime_pipe_descriptor;
+    if (!BuildPipeSecurity(account_sid.data(), execution_sid.get(),
+                           &runtime_pipe_security, &runtime_pipe_descriptor)) {
+      SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
+      return fail_launch(kSelfCheckFailureExitCode);
+    }
     runtime_pipe.reset(CreateNamedPipeW(
         runtime_pipe_name.c_str(),
         PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE,
         PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT |
             PIPE_REJECT_REMOTE_CLIENTS,
-        1, 1024 * 1024, 1024 * 1024, 5000, &pipe_security));
+        1, 1024 * 1024, 1024 * 1024, 5000,
+        &runtime_pipe_security));
     if (!runtime_pipe) {
       SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
       return fail_launch(kSelfCheckFailureExitCode);

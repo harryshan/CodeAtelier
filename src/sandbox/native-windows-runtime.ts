@@ -9,7 +9,7 @@
  * 5. runtime started 控制帧确认共享账户 ACE 已安装；并发 lease 在该确认前不会假定 grant 可用。
  * 6. 取消、JS 超时、管道或持久化回调失败关闭继承 stdin，并等待退出；清理证明缺失优先于原错误或取消结果，抛出专用 unknown 错误，绝不宿主重放。
  * 7. drainGeneration 关闭 relay、终止该账户全部进程并按持久 journal 撤销 ACL，供在线 quarantine 与重启恢复共用。
- * 8. 临时 HOME/TEMP 只在原生确认撤销后删除；启动失败仅记录白名单 station 阶段和数字错误码，日志与错误不包含命令、路径、SID、端口、密码或工具输出。
+ * 8. 临时 HOME/TEMP 只在原生确认撤销后删除；启动失败仅记录白名单 station、Runtime pipe/身份阶段和数字错误码，日志与错误不包含命令、路径、SID、端口、密码或工具输出。
  *
  * 该实现既启动常驻 Agent Runtime，也启动独立 Push/Capability Runner；常驻 Runtime 承载完整 agent loop、文件工具、普通命令和非 push Git，Broker 保留模型、session、审批与恢复账本。
  */
@@ -53,12 +53,26 @@ function supervisorStartupDiagnostic(control: string) {
     /^CODEATELIER_SUPERVISOR_ERROR category=launch win32=(\d{1,10})$/m.exec(
       control,
     );
+  const proxy =
+    /^CODEATELIER_RUNTIME_PROXY_FAILED stage=(connect_wait|connect|identity|descriptor)(?: wait=(\d{1,10}) bootstrap_exit=(\d{1,10})| win32=(\d{1,10}))?$/m.exec(
+      control,
+    );
+  const client =
+    /^CODEATELIER_RUNTIME_CLIENT_REJECT stage=(client_pid|job|process|token|restricted|sids|image|times) win32=(\d{1,10})$/m.exec(
+      control,
+    );
 
   return {
     stage: latest?.[1],
     win32: latest?.[2] ? Number(latest[2]) : undefined,
     bootstrapExitCode: bootstrap ? Number(bootstrap[1]) : undefined,
     launchWin32: launch ? Number(launch[1]) : undefined,
+    proxyStage: proxy?.[1],
+    proxyWait: proxy?.[2] ? Number(proxy[2]) : undefined,
+    proxyBootstrapExitCode: proxy?.[3] ? Number(proxy[3]) : undefined,
+    proxyWin32: proxy?.[4] ? Number(proxy[4]) : undefined,
+    clientStage: client?.[1],
+    clientWin32: client?.[2] ? Number(client[2]) : undefined,
   };
 }
 

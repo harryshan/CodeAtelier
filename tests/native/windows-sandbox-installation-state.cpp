@@ -8,8 +8,9 @@
  * 2. 调用 ReadInstallationState，核对端口与版本，并拒绝无效端口。
  * 3. 用真实二进制 journal 帧验证恢复入口接受已安装授权的合法标志，普通撤销入口仍拒绝这些标志。
  * 4. 在进程内 ACL 上验证新增的安装者读取 ACE 不丢弃既有 ACE，也不授予写入。
- * 5. 显式 --window-station-probe 在真实 Windows 会话中用不同账户替身 SID 创建并关闭两个非交互式 station/desktop 句柄，验证已有 station 补装第二个账户 ACE、实例授权、原 station 恢复，以及带完整 station/desktop 名称的 USER32 子进程启动；默认 native build 不运行此 OS 探针。
- * 6. 删除临时夹具，以退出码报告回归结果。
+ * 5. 核对 bootstrap pipe 不授予实例 SID，Agent Runtime 专属 pipe 才授予本实例 restricting SID，避免 WRITE_RESTRICTED 客户端无法连接；真实受限 token 连接仍由安装后产品验收证明。
+ * 6. 显式 --window-station-probe 在真实 Windows 会话中用不同账户替身 SID 创建并关闭两个非交互式 station/desktop 句柄，验证已有 station 补装第二个账户 ACE、实例授权、原 station 恢复，以及带完整 station/desktop 名称的 USER32 子进程启动；默认 native build 不运行此 OS 探针。
+ * 7. 删除临时夹具，以退出码报告回归结果。
  */
 
 #define CODEATELIER_INSTALLATION_STATE_TEST
@@ -89,6 +90,56 @@ bool TestInstallerAccountAcl() {
          (installer_access & (WRITE_DAC | WRITE_OWNER | DELETE)) == 0 &&
          (system_access & (READ_CONTROL | WRITE_DAC)) ==
              (READ_CONTROL | WRITE_DAC);
+}
+
+bool TestRuntimePipeSecurity() {
+  auto fail = [](const wchar_t* stage) {
+    std::wcerr << L"PIPE_SECURITY_PROBE stage=" << stage << L" win32="
+               << GetLastError() << L"\n";
+    return false;
+  };
+  PSID raw_account = nullptr;
+  std::wstring current_sid = CurrentUserSidString();
+  if (!ConvertStringSidToSidW(current_sid.c_str(), &raw_account)) {
+    return fail(L"account");
+  }
+  LocalPointer account(raw_account);
+  SidPointer execution = CreateCapabilitySid();
+  if (!account || !execution) {
+    return fail(L"sid");
+  }
+  SECURITY_ATTRIBUTES bootstrap_attributes{};
+  LocalPointer bootstrap_descriptor;
+  SECURITY_ATTRIBUTES runtime_attributes{};
+  LocalPointer runtime_descriptor;
+  if (!BuildPipeSecurity(account.get(), nullptr, &bootstrap_attributes,
+                         &bootstrap_descriptor) ||
+      !BuildPipeSecurity(account.get(), execution.get(), &runtime_attributes,
+                         &runtime_descriptor)) {
+    return fail(L"build");
+  }
+  BOOL bootstrap_present = FALSE;
+  BOOL bootstrap_defaulted = FALSE;
+  PACL bootstrap_acl = nullptr;
+  BOOL runtime_present = FALSE;
+  BOOL runtime_defaulted = FALSE;
+  PACL runtime_acl = nullptr;
+  if (!GetSecurityDescriptorDacl(bootstrap_descriptor.get(),
+                                 &bootstrap_present, &bootstrap_acl,
+                                 &bootstrap_defaulted) ||
+      !GetSecurityDescriptorDacl(runtime_descriptor.get(), &runtime_present,
+                                 &runtime_acl, &runtime_defaulted)) {
+    return fail(L"dacl");
+  }
+  if (!bootstrap_present || !runtime_present || !bootstrap_acl ||
+      !runtime_acl ||
+      !AclHasExplicitGrantForSid(bootstrap_acl, account.get()) ||
+      AclHasExplicitGrantForSid(bootstrap_acl, execution.get()) ||
+      !AclHasExplicitGrantForSid(runtime_acl, account.get()) ||
+      !AclHasExplicitGrantForSid(runtime_acl, execution.get())) {
+    return fail(L"shape");
+  }
+  return true;
 }
 
 bool ReadRevokeFixture(const std::filesystem::path& path, bool journal_mode) {
@@ -274,7 +325,7 @@ int wmain(int argc, wchar_t* argv[]) {
           TestGrantJournalFlags(fixture, 6, true, false) &&
           TestGrantJournalFlags(fixture, 7, false, false) &&
           TestGrantJournalFlags(fixture, 2, false, true);
-  valid = valid && TestInstallerAccountAcl();
+  valid = valid && TestInstallerAccountAcl() && TestRuntimePipeSecurity();
   std::error_code remove_error;
   std::filesystem::remove(fixture, remove_error);
   if (!valid || remove_error) {

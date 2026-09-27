@@ -2,7 +2,7 @@
  * 用内存管道模拟 Supervisor，验证宿主持久化回调和管道故障不会逃出事件监听器。
  * 通过 NativeWindowsSandboxRuntime.execute 和 launchAgentRuntime 的真实编码与收尾路径执行，不启动账户或原生程序。
  * 1. 为每个场景创建独立子进程替身，注入 PID、stdout 或 stdin 故障。
- * 2. 故障必须关闭控制输入并等待 close；有清理证明时返回原错误，没有证明时保持 cleanup_unknown。
+ * 2. 故障必须关闭控制输入并等待 close；有清理证明时返回原错误，没有证明时保持 cleanup_unknown，Supervisor 诊断只能记录白名单阶段与数字码。
  * 3. finally 关闭全部内存流并恢复替身，避免测试留下计时器或调用记录。
  */
 import { EventEmitter } from "node:events";
@@ -96,6 +96,8 @@ it.each(["runtime-launcher", "runtime"] as const)(
         "data",
         "CODEATELIER_STATION_ACL_FAILED stage=account_ace\n" +
           "CODEATELIER_SUPERVISOR_BOOTSTRAP_FAILED exit_code=3221225794\n" +
+          "CODEATELIER_RUNTIME_PROXY_FAILED stage=identity\n" +
+          "CODEATELIER_RUNTIME_CLIENT_REJECT stage=process win32=5\n" +
           "private path and output must not enter logs\n",
       );
       child.stderr.emit(
@@ -110,6 +112,9 @@ it.each(["runtime-launcher", "runtime"] as const)(
           diagnostic: {
             stage: "account_ace",
             bootstrapExitCode: 3221225794,
+            proxyStage: "identity",
+            clientStage: "process",
+            clientWin32: 5,
           },
         },
       ]);
