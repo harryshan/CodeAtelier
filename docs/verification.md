@@ -3,8 +3,8 @@
 ## Windows Sandbox 普通命令卡住诊断（2026-09-27，安装态待复验）
 
 - 最新真实会话的模型请求已于 13:02:29 UTC 返回两个 `run_command` 和一个 Git status 调用，但任务只持久化到 `tool_batch_planned`，之后无工具结果；13:04:41 Supervisor 以退出码 30 关闭，Broker 未取得可信 Runtime 终态，按 `process_unknown` 隔离并排空 generation，任务失败。Supervisor 的 `completionReported=true` 只证明其自身清理完成，不证明 Runtime 已完成任务。
-- 独立的固定模型/临时工作区复现显示：安装态 Runtime 连 `Write-Output diagnostic-ok` 也未完成；同样的 Runtime/Engine 逻辑在普通 Node 子进程里能完成该命令并正确取消长命令。由此将问题缩到已安装 Windows Runtime 的普通命令路径，但现有事件缺口尚不能区分 shell 查找、同步进程启动与 IPC 回执停滞。
-- 管理员 `sandbox:recover` 已输出 `CODEATELIER_REVOKE_JOURNAL_OK count=5` 和 `SANDBOX_RECOVERY PASS`，没有手工删除授权账本。安装现已移除。新增安装态固定普通命令验收及只包含白名单阶段名的 Supervisor 诊断；`pnpm check` 通过 70 个测试文件、510 项通过、1 项跳过，Runtime bundle 构建通过。下一步需重新安装并运行新版 `sandbox:runtime:verify`，确认卡点后再修复，不能把此前缺少普通命令的 `PASS` 视为当前真实任务可正常运行。
+- 独立的固定模型/临时工作区复现显示：安装态 Runtime 连 `Write-Output diagnostic-ok` 也未完成；同样的 Runtime/Engine 逻辑在普通 Node 子进程里能完成该命令并正确取消长命令。由此将问题缩到已安装 Windows Runtime 的普通命令路径。随后新版验收在文件编辑任务完成后，固定 `echo` 命令超时；Supervisor 的最后白名单阶段为 `command_spawn_begin`，没有子进程 PID。这将卡点缩到 Node `spawn` 调用或其紧邻的同步准备阶段，尚未证明是哪一个 Windows 调用阻塞。
+- 管理员 `sandbox:recover` 已输出 `CODEATELIER_REVOKE_JOURNAL_OK count=5` 和 `SANDBOX_RECOVERY PASS`，没有手工删除授权账本。用户随后重新安装，安装自检及 WFP 八条规则通过。新增安装态固定普通命令验收及只包含白名单阶段名的 Supervisor 诊断；`pnpm check` 通过 70 个测试文件、510 项通过、1 项跳过，Runtime bundle 构建通过。新版验收在普通命令处复现，Broker 完成 generation 排空；只读检查显示授权 journal 为零，仍保留一个实例和投影目录。后续需进一步确认 `spawn` 是否返回，修复后再通过整套产品验收，不能把此前缺少普通命令的 `PASS` 视为当前真实任务可正常运行。
 
 ## Windows Sandbox 取消终态修复（2026-09-27，安装态复验通过）
 

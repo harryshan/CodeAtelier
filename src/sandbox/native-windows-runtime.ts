@@ -64,7 +64,12 @@ export function supervisorStartupDiagnostic(control: string) {
     );
   const runtimeStage = [
     ...control.matchAll(
-      /^CODEATELIER_AGENT_RUNTIME_STAGE (command_shell_begin|command_shell_selected|command_spawn_begin|command_spawned|command_closed)$/gm,
+      /^CODEATELIER_AGENT_RUNTIME_STAGE (command_shell_begin|command_spawn_begin|command_spawn_returned|command_spawned|command_closed)$/gm,
+    ),
+  ].at(-1)?.[1];
+  const runtimeShell = [
+    ...control.matchAll(
+      /^CODEATELIER_AGENT_RUNTIME_SHELL (pwsh|powershell|cmd|missing)$/gm,
     ),
   ].at(-1)?.[1];
 
@@ -80,6 +85,7 @@ export function supervisorStartupDiagnostic(control: string) {
     clientStage: client?.[1],
     clientWin32: client?.[2] ? Number(client[2]) : undefined,
     runtimeStage,
+    runtimeShell,
   };
 }
 

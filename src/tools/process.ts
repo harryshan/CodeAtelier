@@ -9,6 +9,7 @@
  * 4. stop 在 Windows 使用 taskkill，在 Unix 使用进程组终止子进程树；超时和取消都走这里。
  * 5. stdout、stderr 按 UTF-8 流式解码，append 保留限额内的可见内容并通知调用方。
  * 6. 输出/PID 回调和管道错误先停止子进程，等待 close 后再拒绝调用，避免未捕获异常结束整个服务；close 清理计时器和取消监听。
+ * 7. 可选的进程创建返回回调只供已安装 Runtime 的固定阶段诊断使用，不传递命令、参数或输出。
  *
  * 输出太长时只截断保存内容。非零退出码及 shell 写入 stderr 的实际错误照实返回，命令是否获准由执行前的审批负责。
  */
@@ -84,6 +85,7 @@ export async function executeProcess(
   environment: NodeJS.ProcessEnv = {},
   onProcessStarted?: (pid: number) => void,
   standardInput?: Buffer,
+  onSpawnReturned?: () => void,
 ) {
   signal.throwIfAborted();
 
@@ -244,6 +246,8 @@ export async function executeProcess(
     child.stderr.on("error", fail);
     // 先装好所有监听，再交给可能失败或触发取消的持久化回调。
     try {
+      onSpawnReturned?.();
+
       if (child.pid !== undefined) {
         onProcessStarted?.(child.pid);
       }

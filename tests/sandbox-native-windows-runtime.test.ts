@@ -67,11 +67,14 @@ describe.skipIf(process.platform !== "win32")(
       const diagnostic = supervisorStartupDiagnostic(
         "CODEATELIER_AGENT_RUNTIME_STAGE command_shell_begin\n" +
           "CODEATELIER_AGENT_RUNTIME_STAGE command_spawn_begin\n" +
+          "CODEATELIER_AGENT_RUNTIME_SHELL powershell\n" +
+          "CODEATELIER_AGENT_RUNTIME_STAGE command_spawn_returned\n" +
           "CODEATELIER_AGENT_RUNTIME_STAGE command_spawned\n" +
           "CODEATELIER_AGENT_RUNTIME_STAGE arbitrary-private-text\n",
       );
 
       expect(diagnostic.runtimeStage).toBe("command_spawned");
+      expect(diagnostic.runtimeShell).toBe("powershell");
       expect(JSON.stringify(diagnostic)).not.toContain(
         "arbitrary-private-text",
       );

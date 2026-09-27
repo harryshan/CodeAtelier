@@ -3,7 +3,7 @@
  *
  * 1. 启动不存在的程序，检查错误包含子进程实际报错及超时资源清理。
  * 2. 分两次输出一个 UTF-8 字符，检查解码完整、颜色控制符跨 chunk 清理、子进程颜色环境和模型密钥隔离。
- * 3. PID 回调必须在进程结束前提供真实正数，供 Sandbox 执行账本持久化。
+ * 3. 创建返回回调先于 PID 回调，PID 在进程结束前提供真实正数，供 Sandbox 执行账本持久化。
  * 4. 输出持久化抛错、输入管道提前关闭时返回错误并停止进程；收到输出后取消进程，确认以取消错误结束。
  *
  * 用例结束后恢复环境变量；程序和参数直接传给执行器，不经过 shell 拼接。
@@ -91,6 +91,7 @@ it("preserves split UTF-8 output and does not inherit the model API key", async 
 
 it("reports the spawned process id before completion", async () => {
   const processIds: number[] = [];
+  const stages: string[] = [];
   const result = await executeProcess(
     process.execPath,
     ["-e", "setTimeout(() => process.exit(0), 20)"],
@@ -100,10 +101,16 @@ it("reports the spawned process id before completion", async () => {
     1000,
     () => {},
     {},
-    (pid) => processIds.push(pid),
+    (pid) => {
+      stages.push("pid");
+      processIds.push(pid);
+    },
+    undefined,
+    () => stages.push("spawn-returned"),
   );
 
   expect(result.exitCode).toBe(0);
+  expect(stages).toEqual(["spawn-returned", "pid"]);
   expect(processIds).toHaveLength(1);
   expect(processIds[0]).toBeGreaterThan(0);
 });

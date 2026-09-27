@@ -295,6 +295,11 @@ export class ToolRunner {
             parentExecutionInstanceId: this.ctx.parentExecutionInstanceId,
           });
         },
+        undefined,
+        () =>
+          process.stderr.write(
+            "CODEATELIER_AGENT_RUNTIME_STAGE command_spawn_returned\n",
+          ),
       );
       process.stderr.write("CODEATELIER_AGENT_RUNTIME_STAGE command_closed\n");
 
@@ -665,9 +670,18 @@ export class ToolRunner {
       const cwd = this.ctx.root;
 
       if (this.ctx.executionBoundary === "agent-runtime") {
-        process.stderr.write(
-          "CODEATELIER_AGENT_RUNTIME_STAGE command_shell_selected\n",
-        );
+        const shellName = path.win32
+          .basename(shell?.command ?? "")
+          .toLowerCase();
+        const shellKind =
+          shellName === "pwsh.exe"
+            ? "pwsh"
+            : shellName === "powershell.exe"
+              ? "powershell"
+              : shellName === "cmd.exe"
+                ? "cmd"
+                : "missing";
+        process.stderr.write(`CODEATELIER_AGENT_RUNTIME_SHELL ${shellKind}\n`);
       }
 
       if (!shell) {
