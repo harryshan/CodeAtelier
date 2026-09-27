@@ -242,7 +242,7 @@ item.done 回退、失败/不完整事件、服务实际错误 message/reason/co
   这些自动回归仍不验证专用账户、Named Pipe client PID、token/capability、Job 或 generation，因此不能单独计入 W3/W4 完成。
 
 - 原生产品构建直接编译 `native/windows-sandbox/network-fence-implementation.cpp` 并定义 `CODEATELIER_PRODUCT_WFP_ONLY`；同时编译并运行真实 Supervisor 的版本 4 relay 端口解析回归、LSA 账户 DACL 进程内回归，以及二进制授权 journal 标志回归。journal 模式只接受带安装账户标志且不同时声明文件与写入的 4/5/6，普通撤销模式仍只接受 0/2。提升安装后须分别在管理员终端执行 `pnpm sandbox:verify` 的完整 WFP 枚举，在普通终端执行 `pnpm sandbox:runtime:verify`，核对对象级 WFP/LSA 读取、Runtime 承载、Runner 与取消无 fallback/unknown；两种身份不能互相代替。构建后手工冒烟确认实验参数 `--ipc` 以退出码 2 被拒。实验 demo 通过薄包装编译同一实现但不定义该宏，避免产品源从 experiment 目录反向依赖。
-- 非交互式 window station/desktop 的真实 OS 探针需在普通用户 Windows 会话中手动运行 `dist\native\windows-x64\codeatelier-sandbox-state-parser-test.exe --window-station-probe`。它短暂创建并关闭两个 desktop，核对共享 station 的实例 SID、宿主原 station 恢复，以及在完整 station/desktop 路径上的 USER32 子进程启动；不创建专用账户，不替代安装后跨账户的 Runtime 验收。默认 native build 不执行此 OS 探针，以免外层受限环境影响纯构建回归。
+- 非交互式 window station/desktop 的真实 OS 探针需在普通用户 Windows 会话中手动运行 `dist\native\windows-x64\codeatelier-sandbox-state-parser-test.exe --window-station-probe`。它短暂创建并关闭两个 desktop，以不同账户替身 SID 核对已有共享 station 补装第二个账户 ACE、不同实例 SID、宿主原 station 恢复，以及在完整 station/desktop 路径上的 USER32 子进程启动；不创建专用账户，不替代安装后跨账户的 Runtime 验收。默认 native build 不执行此 OS 探针，以免外层受限环境影响纯构建回归。
 
 ### Sandbox 证据边界
 

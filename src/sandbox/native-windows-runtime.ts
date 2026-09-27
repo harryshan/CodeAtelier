@@ -9,7 +9,7 @@
  * 5. runtime started 控制帧确认共享账户 ACE 已安装；并发 lease 在该确认前不会假定 grant 可用。
  * 6. 取消、JS 超时、管道或持久化回调失败关闭继承 stdin，并等待退出；清理证明缺失优先于原错误或取消结果，抛出专用 unknown 错误，绝不宿主重放。
  * 7. drainGeneration 关闭 relay、终止该账户全部进程并按持久 journal 撤销 ACL，供在线 quarantine 与重启恢复共用。
- * 8. 临时 HOME/TEMP 只在原生确认撤销后删除；日志与错误不包含命令、路径、SID、端口、密码或工具输出。
+ * 8. 临时 HOME/TEMP 只在原生确认撤销后删除；启动失败仅记录白名单 station 阶段和数字错误码，日志与错误不包含命令、路径、SID、端口、密码或工具输出。
  *
  * 该实现既启动常驻 Agent Runtime，也启动独立 Push/Capability Runner；常驻 Runtime 承载完整 agent loop、文件工具、普通命令和非 push Git，Broker 保留模型、session、审批与恢复账本。
  */
@@ -40,6 +40,27 @@ const SELF_CHECK_FAILURE_EXIT_CODE = 71;
 const PROTOCOL_FAILURE_EXIT_CODE = 72;
 const MAXIMUM_ARGUMENTS = 64;
 const MAXIMUM_STRING_BYTES = 64 * 1024;
+
+function supervisorStartupDiagnostic(control: string) {
+  const station =
+    /^CODEATELIER_(?:STATION|STATION_ACL)_FAILED stage=(current_sid|sddl|mutex|lock|create|name|interactive|select|desktop|desktop_sddl|desktop_id|account_ace|query|merge|write)(?: win32=(\d{1,10}))?$/gm;
+  const latest = [...control.matchAll(station)].at(-1);
+  const bootstrap =
+    /^CODEATELIER_SUPERVISOR_BOOTSTRAP_FAILED exit_code=(\d{1,10})$/m.exec(
+      control,
+    );
+  const launch =
+    /^CODEATELIER_SUPERVISOR_ERROR category=launch win32=(\d{1,10})$/m.exec(
+      control,
+    );
+
+  return {
+    stage: latest?.[1],
+    win32: latest?.[2] ? Number(latest[2]) : undefined,
+    bootstrapExitCode: bootstrap ? Number(bootstrap[1]) : undefined,
+    launchWin32: launch ? Number(launch[1]) : undefined,
+  };
+}
 
 export function classifySupervisorClose(input: {
   aborted: boolean;
@@ -817,6 +838,17 @@ export class NativeWindowsSandboxRuntime implements SandboxRuntime {
     void closed.then((exitCode) => {
       if (!settled) {
         settled = true;
+        this.log?.warn({
+          event: "sandbox.agent_runtime_supervisor_prestart_failed",
+          module: "sandbox",
+          sessionId: command.sessionId,
+          taskId: command.taskId,
+          executionInstanceId: command.executionInstanceId,
+          exitCode,
+          rollbackReported,
+          cleanupFailure,
+          diagnostic: supervisorStartupDiagnostic(control),
+        });
         rejectStarted(
           cleanupFailure ||
             exitCode === CLEANUP_FAILURE_EXIT_CODE ||

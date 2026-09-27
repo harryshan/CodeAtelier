@@ -473,12 +473,15 @@ export class SandboxBroker implements AgentRuntimeLauncher {
     let manifest: AccessManifest | undefined;
     let acquired: ReturnType<AccountGenerationRegistry["acquire"]> | undefined;
     let runtimeStarted = false;
+    let launchPhase = "availability";
     try {
       if (!this.configuration.enabled || !this.runtime?.launchAgentRuntime) {
         throw new Error("当前平台缺少 Agent Runtime launcher。");
       }
 
+      launchPhase = "workspace";
       workspace = (await WorkspaceView.open(input.workspace)).descriptor();
+      launchPhase = "self_check";
       const checked = await this.runtime.selfCheck(input.signal, workspace);
       input.signal.throwIfAborted();
       if (
@@ -488,11 +491,13 @@ export class SandboxBroker implements AgentRuntimeLauncher {
         throw new Error("平台 Runtime 未证明账户 generation 与直接路径防护。");
       }
 
+      launchPhase = "prepare_access";
       prepared = await this.runtime.prepareAccess?.(command, workspace);
       if (!prepared?.privateDirectory || !prepared.gitGlobalConfigPath) {
         throw new Error("Agent Runtime 缺少私有目录或 Git 配置投影。");
       }
 
+      launchPhase = "manifest";
       manifest = await buildAccessManifest({
         workspaceRoot: workspace.root,
         readOnlyRoots: prepared.readOnlyRoots,
@@ -514,6 +519,7 @@ export class SandboxBroker implements AgentRuntimeLauncher {
         checked.accountGenerationDigest,
         4,
       );
+      launchPhase = "acquire";
       acquired = await this.withGrantMutation(() =>
         this.accountGeneration!.acquire({
           executionInstanceId: command.executionInstanceId,
@@ -522,6 +528,7 @@ export class SandboxBroker implements AgentRuntimeLauncher {
           accessManifest: manifest!,
         }),
       );
+      launchPhase = "shared_provision";
       await acquired.waitForSharedProvision(input.signal);
 
       command.onAccessProvisioned = () => {
@@ -536,6 +543,7 @@ export class SandboxBroker implements AgentRuntimeLauncher {
         );
       };
 
+      launchPhase = "native_launch";
       const launched = await this.runtime.launchAgentRuntime(
         command,
         workspace,
@@ -608,6 +616,15 @@ export class SandboxBroker implements AgentRuntimeLauncher {
         },
       };
     } catch (error) {
+      this.log?.warn({
+        event: "sandbox.agent_runtime_launch_failed",
+        module: "sandbox",
+        sessionId: command.sessionId,
+        taskId: command.taskId,
+        executionInstanceId: command.executionInstanceId,
+        phase: launchPhase,
+        ...this.errorMetadata(error),
+      });
       if (runtimeStarted || this.cleanupFailure(error)) {
         this.executionStatuses.set(
           command.executionInstanceId,

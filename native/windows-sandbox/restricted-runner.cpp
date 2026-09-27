@@ -6,7 +6,7 @@
  * 1. 提升安装时仅对专用 LSA 账户对象授予安装者读取拒绝登录权的权限；self-check 核对 state 所属宿主 SID、专用账户 SID/密码、拒绝登录权、WFP 持久规则，以及受保护 Node 24/Agent Runtime entry 和各 Worker bundle 摘要。
  * 2. execute 生成 execution/root capability SID；共享账户 ACE 始终提供 normal-side 读写候选权限，每实例 capability ACE 再决定 WRITE_RESTRICTED token 实际可写的根。
  * 3. CreateProcessWithLogonW 以固定 bootstrap 入口启动专用账户进程，先分配 KILL_ON_JOB_CLOSE Job 再恢复。
- * 4. bootstrap 使用专用账户自身的全新环境块，在账户及实例 SID 可访问的非交互式 window station/private desktop 中，通过只允许宿主/SYSTEM/专用账户且核对 PID 的 Named Pipe 取得命令，创建 WRITE_RESTRICTED token 后启动真实工具。
+ * 4. 在确认不是 WinSta0 后给系统命名的非交互式 station 补齐专用账户及实例 SID，再创建私有 desktop；bootstrap 使用专用账户自身的全新环境块，通过只允许宿主/SYSTEM/专用账户且核对 PID 的 Named Pipe 取得命令，创建 WRITE_RESTRICTED token 后启动真实工具。
  * 5. Broker stdin 关闭、超时或异常会终止 Job；正常/异常退出撤销本实例 capability ACE，共享账户 ACE 仅由 Broker 最后引用的两阶段 release 撤销；安装恢复从持久 journal 验证原文件身份后撤销账户 ACE，清理不确定返回专用错误码。
  * 6. Push Runner 仅从宿主 Credential Manager 读取绑定 host 的 HTTPS 凭据，并经同 Job askpass pipe 交付；capability runner 只把短期、host-bound proxy token 放入自身环境，不取得宿主凭据。
  * 7. Agent Runtime 模式只启动受保护 Node/entry，联合核对 pipe 客户端身份后发送启动首帧并代理原始 Broker 字节流；初始 CWD 使用私有目录。
@@ -1350,12 +1350,16 @@ bool GrantStationInstanceAccess(HWINSTA station, PSID account_sid,
                << result << L"\n";
     return false;
   }
+  // A system-named station may already exist for this logon session. In that
+  // case CreateWindowStationW ignores the requested security descriptor, so
+  // the dedicated account must be added to the actual station DACL here.
+  std::vector<PSID> sids;
   if (!AclHasExplicitGrantForSid(old_acl, account_sid)) {
-    std::wcerr << L"CODEATELIER_STATION_ACL_FAILED stage=account_ace\n";
-    return false;
+    sids.push_back(account_sid);
   }
-  std::array<EXPLICIT_ACCESSW, 2> entries{};
-  std::array<PSID, 2> sids = {execution_sid, capability_sid};
+  sids.push_back(execution_sid);
+  sids.push_back(capability_sid);
+  std::vector<EXPLICIT_ACCESSW> entries(sids.size());
   for (size_t index = 0; index < entries.size(); ++index) {
     entries[index].grfAccessPermissions = GENERIC_ALL;
     entries[index].grfAccessMode = GRANT_ACCESS;
@@ -1431,21 +1435,25 @@ bool OpenPrivateWindowStation(PSID account_sid, PSID execution_sid,
                  << GetLastError() << L"\n";
       return false;
     }
+    wchar_t name[256]{};
+    DWORD needed = 0;
+    if (!GetUserObjectInformationW(station->get(), UOI_NAME, name,
+                                   sizeof(name), &needed) ||
+        name[0] == L'\0') {
+      std::wcerr << L"CODEATELIER_STATION_FAILED stage=name win32="
+                 << GetLastError() << L"\n";
+      return false;
+    }
+    if (_wcsicmp(name, L"WinSta0") == 0) {
+      std::wcerr << L"CODEATELIER_STATION_FAILED stage=interactive\n";
+      return false;
+    }
     if (!GrantStationInstanceAccess(station->get(), account_sid,
                                     execution_sid, capability_sid)) {
       return false;
     }
+    *station_name = name;
   }
-  wchar_t name[256]{};
-  DWORD needed = 0;
-  if (!GetUserObjectInformationW(station->get(), UOI_NAME, name,
-                                 sizeof(name), &needed) ||
-      name[0] == L'\0') {
-    std::wcerr << L"CODEATELIER_STATION_FAILED stage=name win32="
-               << GetLastError() << L"\n";
-    return false;
-  }
-  *station_name = name;
   return true;
 }
 
@@ -2497,11 +2505,13 @@ int RunProductSupervisor(const std::wstring& state_path,
       CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW,
       sandbox_environment.get(),
       request.working_directory.c_str(), &startup, &bootstrap);
+  DWORD launch_error = created ? ERROR_SUCCESS : GetLastError();
   SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
   password.clear();
   if (!created) {
     stop_askpass();
-    std::wcerr << L"CODEATELIER_SUPERVISOR_ERROR category=launch\n";
+    std::wcerr << L"CODEATELIER_SUPERVISOR_ERROR category=launch win32="
+               << launch_error << L"\n";
     return fail_launch(kSelfCheckFailureExitCode);
   }
   UniqueHandle bootstrap_process(bootstrap.hProcess);

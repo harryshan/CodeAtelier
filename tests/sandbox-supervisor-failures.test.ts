@@ -9,6 +9,7 @@ import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import * as childProcess from "node:child_process";
 import path from "node:path";
+import type { Logger } from "pino";
 import { afterEach, expect, it, vi } from "vitest";
 import { NativeWindowsSandboxRuntime } from "../src/sandbox/native-windows-runtime.js";
 
@@ -31,7 +32,15 @@ it.each(["runtime-launcher", "runtime"] as const)(
     vi.mocked(childProcess.spawn).mockReturnValue(child as never);
     const root = path.resolve(".");
     const failure = new Error("startup persistence failed");
-    const runtime = new NativeWindowsSandboxRuntime({ ProgramData: root });
+    const warnings: Record<string, unknown>[] = [];
+    const log = {
+      warn: (details: Record<string, unknown>) => warnings.push(details),
+    } as unknown as Logger;
+    const runtime = new NativeWindowsSandboxRuntime(
+      { ProgramData: root },
+      undefined,
+      log,
+    );
     const pending = runtime.launchAgentRuntime(
       {
         sessionId: "session",
@@ -85,10 +94,26 @@ it.each(["runtime-launcher", "runtime"] as const)(
       expect(child.stdin.writableEnded).toBe(true);
       child.stderr.emit(
         "data",
+        "CODEATELIER_STATION_ACL_FAILED stage=account_ace\n" +
+          "CODEATELIER_SUPERVISOR_BOOTSTRAP_FAILED exit_code=3221225794\n" +
+          "private path and output must not enter logs\n",
+      );
+      child.stderr.emit(
+        "data",
         "CODEATELIER_SUPERVISOR_COMPLETE\nCODEATELIER_SUPERVISOR_ROLLBACK_COMPLETE\n",
       );
       child.emit("close", 0);
       expect(await outcome).toBe(failure);
+      expect(warnings).toMatchObject([
+        {
+          event: "sandbox.agent_runtime_supervisor_prestart_failed",
+          diagnostic: {
+            stage: "account_ace",
+            bootstrapExitCode: 3221225794,
+          },
+        },
+      ]);
+      expect(JSON.stringify(warnings)).not.toContain("private path");
     } finally {
       child.emit("close", 0);
       child.stdin.destroy();

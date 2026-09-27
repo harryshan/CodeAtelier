@@ -8,7 +8,7 @@
  * 2. 调用 ReadInstallationState，核对端口与版本，并拒绝无效端口。
  * 3. 用真实二进制 journal 帧验证恢复入口接受已安装授权的合法标志，普通撤销入口仍拒绝这些标志。
  * 4. 在进程内 ACL 上验证新增的安装者读取 ACE 不丢弃既有 ACE，也不授予写入。
- * 5. 显式 --window-station-probe 在真实 Windows 会话中创建并关闭两个非交互式 station/desktop 句柄，验证共享 station 的实例授权、原 station 恢复，以及带完整 station/desktop 名称的 USER32 子进程启动；默认 native build 不运行此 OS 探针。
+ * 5. 显式 --window-station-probe 在真实 Windows 会话中用不同账户替身 SID 创建并关闭两个非交互式 station/desktop 句柄，验证已有 station 补装第二个账户 ACE、实例授权、原 station 恢复，以及带完整 station/desktop 名称的 USER32 子进程启动；默认 native build 不运行此 OS 探针。
  * 6. 删除临时夹具，以退出码报告回归结果。
  */
 
@@ -125,12 +125,13 @@ bool TestGrantJournalFlags(const std::filesystem::path& path, uint32_t flags,
 }
 
 bool TestPrivateDesktopStation() {
-  PSID raw_account = nullptr;
-  std::wstring current_sid = CurrentUserSidString();
-  if (!ConvertStringSidToSidW(current_sid.c_str(), &raw_account)) {
+  // Use a SID distinct from the caller: the production account is not the
+  // interactive user, and its ACE can be absent on an existing station.
+  SidPointer account_a = CreateCapabilitySid();
+  SidPointer account_b = CreateCapabilitySid();
+  if (!account_a || !account_b) {
     return false;
   }
-  LocalPointer account(raw_account);
   SidPointer execution_a = CreateCapabilitySid();
   SidPointer capability_a = CreateCapabilitySid();
   SidPointer execution_b = CreateCapabilitySid();
@@ -145,14 +146,14 @@ bool TestPrivateDesktopStation() {
   UniqueDesktop desktop_b;
   std::wstring name_a;
   std::wstring name_b;
-  if (!CreatePrivateDesktop(account.get(), execution_a.get(),
+  if (!CreatePrivateDesktop(account_a.get(), execution_a.get(),
                             capability_a.get(), &name_a, &station_a,
                             &desktop_a)) {
     std::wcerr << L"WINDOW_STATION_PROBE_STAGE first win32=" << GetLastError()
                << L"\n";
     return false;
   }
-  if (!CreatePrivateDesktop(account.get(), execution_b.get(),
+  if (!CreatePrivateDesktop(account_b.get(), execution_b.get(),
                             capability_b.get(), &name_b, &station_b,
                             &desktop_b)) {
     std::wcerr << L"WINDOW_STATION_PROBE_STAGE second win32=" << GetLastError()
@@ -181,7 +182,8 @@ bool TestPrivateDesktopStation() {
                                  &acl, nullptr, &descriptor);
   LocalPointer owned_descriptor(descriptor);
   bool valid = result == ERROR_SUCCESS &&
-               AclHasExplicitGrantForSid(acl, account.get()) &&
+               AclHasExplicitGrantForSid(acl, account_a.get()) &&
+               AclHasExplicitGrantForSid(acl, account_b.get()) &&
                AclHasExplicitGrantForSid(acl, execution_a.get()) &&
                AclHasExplicitGrantForSid(acl, capability_a.get()) &&
                AclHasExplicitGrantForSid(acl, execution_b.get()) &&
@@ -199,7 +201,8 @@ bool TestPrivateDesktopStation() {
                            &desktop_acl, nullptr, &desktop_descriptor);
   LocalPointer owned_desktop_descriptor(desktop_descriptor);
   if (result != ERROR_SUCCESS ||
-      !AclHasExplicitGrantForSid(desktop_acl, account.get()) ||
+      !AclHasExplicitGrantForSid(desktop_acl, account_a.get()) ||
+      AclHasExplicitGrantForSid(desktop_acl, account_b.get()) ||
       !AclHasExplicitGrantForSid(desktop_acl, execution_a.get()) ||
       !AclHasExplicitGrantForSid(desktop_acl, capability_a.get()) ||
       AclHasExplicitGrantForSid(desktop_acl, execution_b.get()) ||
