@@ -36,7 +36,8 @@ export const contextSnapshotSchema = z
   .object({
     version: z.literal(1),
     stage: z.enum(["deduplicate", "archive", "summary", "fallback"]).optional(),
-    note: z.string().max(20_000).optional(),
+    // 摘要和执行账本由完整请求预算与 IPC 帧约束，不能再用固定字符数拒绝可用快照。
+    note: z.string().optional(),
     projections: z
       .array(
         z

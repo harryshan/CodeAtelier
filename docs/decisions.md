@@ -1042,3 +1042,11 @@
 - 决定：Windows Agent Runtime 的 `WRITE_RESTRICTED` token 保留本实例 execution/root capability，并额外加入 `Everyone`（`S-1-1-0`）restricting SID。default DACL 仍只授予专用账户和本实例 execution SID，不主动向 Everyone 增加写入 ACE。普通命令继续使用原有 Windows shell 检测顺序；不因 BCrypt 故障固定退回 cmd。
 - 依据：安装态探针中 `bcrypt.dll` 映像映射成功但 `LoadLibraryW` 返回 1114；在相同系统上用 `WRITE_RESTRICTED` 变体测试时，仅加入 Everyone 的变体使原生 BCrypt 探针成功。该结果定位到 token 限制组合，但没有证明 BCrypt 内部具体访问的对象或 ACL。[Codex 当前公开源码](https://github.com/openai/codex/blob/main/codex-rs/windows-sandbox-rs/src/token.rs)也把 Everyone 加入 restricting SID。
 - 影响：已有 ACL 授予 Everyone 写入且专用账户 normal-side 检查也通过的对象，可能被 Runtime 直接写入，无须本实例 root capability；不同实例的此类根也可能互写。故不再声明完整写入 allowlist 或实例间直接写入隔离。WFP 按专用账户阻断直接命令网络、Broker IPC 身份校验、任务审批与宿主进程归因不因该变更放宽。当前主机 Repair 后，安装态 PowerShell/BCrypt 探针与模拟模型产品链路、取消和正常清理通过；原生 token 单测或构建本身不能替代这些检查，也不证明复杂 ACL 或异常恢复。
+
+## D123：移除压缩快照 note 的固定字符上限
+
+- 日期：2026-09-28
+- 状态：用户明确要求实现；调整 D115 保留的 Runtime 快照约束中的 note 长度部分。
+- 决定：`contextSnapshotSchema.note` 保持字符串类型和可选字段，不再设置 20000 字符上限。快照其它结构、来源与执行状态校验不变；完整活动输入仍须满足 60% 压缩目标及严格缩减，Runtime IPC 保留 8 MiB 单帧限制。
+- 原因：note 会同时包含多块结构化摘要和执行账本；合法摘要可能在完整输入仍符合 token 预算时越过固定字符上限，导致 `session_compact` 被 IPC schema 校验拒绝，转入保底裁剪。
+- 观测与验证：沿用现有压缩开始、失败、完成事件及 trace，不增加摘要正文日志；协议与 Store 回归验证较长 note 可完整保存，跨会话和父链拒绝仍有效。

@@ -3,8 +3,9 @@
  * 测试使用临时 SQLite Store，不启动 Windows Runtime、Named Pipe、账户或原生 Sandbox。
  *
  * 1. runtime IPC schema 拒绝字段不完整的任意 snapshot，防止 unknown 直达 Store。
- * 2. Store 以 Broker 传入的目标 session 为权威，拒绝 snapshot.sessionId 指向其它会话。
- * 3. parentId 必须能在同一会话中读取；拒绝后快照和活动上下文都保持不变。
+ * 2. 较长摘要说明可通过 IPC schema 并完整保存，不受旧的 20000 字符阈值拒绝。
+ * 3. Store 以 Broker 传入的目标 session 为权威，拒绝 snapshot.sessionId 指向其它会话。
+ * 4. parentId 必须能在同一会话中读取；拒绝后快照和活动上下文都保持不变。
  */
 
 import path from "node:path";
@@ -41,6 +42,36 @@ it("validates compact snapshots before accepting an IPC request", () => {
       body: { snapshot: { sessionId: "other" }, input: [] },
     }),
   ).toThrow();
+});
+
+it("accepts and persists a compaction note beyond the old fixed limit", async () => {
+  const store = new Store(path.join(await temp(), "history.sqlite"));
+  const session = store.create(await temp(), "context");
+  const note = "历史摘要与执行账本。".repeat(2_500);
+  const compacted = snapshot(session.id, "long-note");
+  const input = [
+    { role: "user", content: "continue" },
+    { role: "assistant", content: note },
+  ];
+  compacted.note = note;
+
+  try {
+    expect(note.length).toBeGreaterThan(20_000);
+    expect(
+      runtimeRequestSchema.safeParse({
+        type: "request",
+        requestId: "long-note-request",
+        operation: "session_compact",
+        body: { snapshot: compacted, input },
+      }).success,
+    ).toBe(true);
+
+    await store.compactContextAsync(session.id, compacted, input);
+    expect(store.latestContextSnapshot(session.id)?.note).toBe(note);
+    expect(store.context(session.id)).toEqual(input);
+  } finally {
+    store.close();
+  }
 });
 
 it("cannot compact another session or attach a foreign parent snapshot", async () => {
