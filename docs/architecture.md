@@ -81,7 +81,7 @@ Engine 在任一节点产生副作用前校验整批 DAG，并以稳定拓扑顺
 
 单个会话始终留在初始分片，因此保持 SQLite 外键、事务、恢复和 Worker 路径语义；单次不可分割写入或单个超长会话仍可能略超阈值，不承诺自动重新分区既有历史。任务的 createdAt、startedAt、finishedAt 分别表示入队、实际开始和结束，排队时间不计入会话累计运行时间。初始数据库结构位于 `schema.ts`。
 
-replay 捕获逐次保存模型 input/instructions/响应及完整脱敏工具参数/结果，导出时可从同一哈希的完整 `read_file` 页拼接 `edit_files` 的原始文件；只读到部分行或旧历史则明确拒绝真实文件物化。
+replay 捕获将任务元数据和单条模型/工具记录分开保存，模型 input 按前缀与新增尾部增量编码，导出时重建完整 input/instructions/响应及脱敏工具材料；旧整条 JSON 可读。导出还可从同一哈希的完整 `read_file` 页拼接 `edit_files` 的原始文件；只读到部分行或旧历史则明确拒绝真实文件物化。
 
 会话初始快照读取全量事件，SSE 后续刷新按跨分片仍单调的 event ID 游标只读取新增事件；常规事件、上下文、任务状态、replay 和 HTTP 新建会话/任务通过串行复用的 `store-worker.ts` 提交后再返回，工具结果/反馈保持同一事务。超过 64 KiB 的事件/上下文和历史快照也通过此 Worker 读取，小结果仍由主线程同步读取。同步 Store 兼容入口、服务启动迁移及未开放的 subagent 原子账本暂保留主线程写入；这些事务未进入 Worker 队列，若交错写入同一分片，主线程连接最多等待 SQLite 写锁 1 秒后失败，不自动重试结果未知的写入。启动时将 queued/running/waiting 任务标为 interrupted 并记录结束时间；子任务的未完成状态同样中断，未确认的子模型请求保留 unknown，不自动重放。
 
@@ -113,7 +113,7 @@ Agent Runtime 已有权限内的普通命令在 Runtime 内执行且免审批；
 
 工具批次/依赖属于 `Tool scheduler` 逻辑轨道，实际执行节点映射到可复用工具轨道。导出事件按时间排序，并用递增整数 ID 连接模型到工具的 flow，保证 Perfetto Trace Event JSON 兼容性。每个实际 tool span 保存经递归凭据脱敏后的结构化执行参数，因此 trace 是不得上传或提交的敏感本机诊断文件；它仍不保存提示词、模型/工具输出或凭据原文。
 
-高保真 replay payload 独立保存在 Store 的 `task_replays`，不混入 Perfetto；模型/工具 replay 只用于隔离测试，文件物化还必须验证完整读取版本。任务进入终态时 TraceArchive 以临时文件后 rename 的方式保存 `traces/<sessionId>/<taskId>.json`，然后立即释放内存记录，所以同一会话各任务不覆盖且没有完成 trace 缓存。
+高保真 replay payload 独立保存在 Store 的 `task_replays` 元数据与 `replay_entries` 增量记录中，不混入 Perfetto；模型/工具 replay 只用于隔离测试，文件物化还必须验证完整读取版本。任务进入终态时 TraceArchive 以临时文件后 rename 的方式保存 `traces/<sessionId>/<taskId>.json`，然后立即释放内存记录，所以同一会话各任务不覆盖且没有完成 trace 缓存。
 
 `GET /api/tasks/:id/trace` 在本机 cookie 保护下只读取该文件；`GET /api/sessions/:id/traces` 只列出实际存在的文件，统计框据此显示下载入口。
 

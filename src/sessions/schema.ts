@@ -3,7 +3,7 @@
  *
  * 1. 开启 WAL 和外键检查；sessions 保存会话、工作区及标题生成状态，tasks 保存排队、实际运行、结束时间、任务级 subagent 选择和错误。
  * 2. events 保存工具与对话；context_chunks 按基线与增量保存活动模型协议项，context 只供旧库迁移。
- * 3. context_snapshots 保存压缩前的历史；task_replays 保存高保真本地 replay 捕获；subagents 和 subagent_requests 保存子任务检查点及请求回执，末尾设置 user_version。
+ * 3. context_snapshots 保存压缩前历史；task_replays 保存 replay 元数据及旧格式，replay_entries 增量保存模型/工具；subagent 表保存检查点与请求回执，末尾设置 user_version。
  *
  * 表结构要与 Store 中的 SQL 一起维护。修改时也要考虑旧数据库如何升级，不能只检查新建数据库。
  */
@@ -68,6 +68,16 @@ export const SCHEMA_SQL = `
     data TEXT NOT NULL
   );
 
+  CREATE TABLE IF NOT EXISTS replay_entries (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    taskId TEXT NOT NULL REFERENCES task_replays(taskId),
+    kind TEXT NOT NULL CHECK (kind IN ('model', 'tool')),
+    itemId TEXT NOT NULL,
+    data TEXT NOT NULL,
+    UNIQUE(taskId, kind, itemId)
+  );
+  CREATE INDEX IF NOT EXISTS replay_entries_task ON replay_entries(taskId, seq);
+
   CREATE TABLE IF NOT EXISTS subagents (
     taskId TEXT NOT NULL REFERENCES tasks(id),
     id TEXT NOT NULL,
@@ -91,5 +101,5 @@ export const SCHEMA_SQL = `
     FOREIGN KEY(taskId, subagentId) REFERENCES subagents(taskId, id)
   );
 
-  PRAGMA user_version = 8;
+  PRAGMA user_version = 9;
 `;

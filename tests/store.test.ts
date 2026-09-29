@@ -6,7 +6,7 @@
  * 2. 后续分片取锁失败时释放已取得的事务；在保存任务和事件的事务中制造失败，确认整笔事务回滚。
  * 3. 保存排队、运行和终态任务后重启，确认所有未完成任务变为 interrupted。
  * 4. 大于同步阈值的事件和上下文由 Worker 读取，验证结果与同步接口相同且数据库可正常关闭。
- * 5. 逐步保存 replay 模型/工具捕获并导出单任务 case；旧事件只能形成明确的 legacy case。
+ * 5. 增量保存 replay 模型/工具并校验真实存储前缀、Worker 路径、重启与旧整条捕获兼容。
  * 6. 以小容量阈值触发新会话分片，确认旧分片的上下文仍可由 Worker 读取，并在重启后发现全部分片。
  * 7. 任务级 subagent 选择写入队列后保持布尔类型；模拟旧表缺列并检查跨分片迁移默认关闭。
  * 8. 子任务计划、检查点、问题与请求回执真实落盘；重启保留已确认问题和未知模型请求，迟到报告不误标消费。
@@ -409,6 +409,180 @@ it("persists captured replay exchanges and exports legacy cases without changing
     store.close();
     store = new Store(file, { interruptActive: false });
     expect(store.task(legacy.id)?.status).toBe("queued");
+  } finally {
+    store.close();
+  }
+});
+
+it("stores replay entries incrementally and rebuilds requests after restart", async () => {
+  const root = await temp();
+  const file = path.join(root, "history.sqlite");
+  let store = new Store(file);
+  const session = store.create(root);
+  const task = store.createTask(session.id);
+  const common = { role: "user", content: "large shared prompt".repeat(100) };
+  const first = { role: "assistant", content: "one" };
+  const changed = { role: "assistant", content: "two" };
+  const metadata = {
+    schemaVersion: 1,
+    capturedAt: "2026-01-01T00:00:00.000Z",
+    platform: "win32",
+    settings: { model: "test" },
+  };
+
+  try {
+    await store.replayAsync(task.id, "create", null, metadata);
+    await store.replayAsync(task.id, "modelStart", null, {
+      id: "first",
+      purpose: "task",
+      input: [common, first],
+      instructions: "rules",
+      tools: [],
+    });
+    await store.replayAsync(task.id, "modelFinish", "first", {
+      response: { output: [], text: "ok" },
+    });
+    await store.replayAsync(task.id, "toolStart", null, {
+      callId: "read",
+      nodeId: "read",
+      name: "read_file",
+      batchId: "batch",
+      arguments: { path: "test.txt" },
+      dependsOn: [],
+    });
+    await store.replayAsync(task.id, "toolFinish", "read", { text: "data" });
+    await store.replayAsync(task.id, "modelStart", null, {
+      id: "second",
+      purpose: "task",
+      input: [common, changed],
+      instructions: "rules",
+      tools: [],
+    });
+
+    const rows = store.db
+      .prepare(
+        "SELECT kind,data FROM replay_entries WHERE taskId=? ORDER BY seq",
+      )
+      .all(task.id) as Array<{ kind: string; data: string }>;
+    expect(rows.map((row) => row.kind)).toEqual(["model", "tool", "model"]);
+    expect(JSON.parse(rows[0].data)).toMatchObject({
+      inputPrefix: 0,
+      inputSuffix: [common, first],
+      response: { text: "ok" },
+    });
+    expect(JSON.parse(rows[2].data)).toMatchObject({
+      inputPrefix: 1,
+      inputSuffix: [changed],
+    });
+    expect(rows[2].data).not.toContain("large shared prompt");
+    expect(
+      JSON.parse(
+        String(
+          store.db
+            .prepare("SELECT data FROM task_replays WHERE taskId=?")
+            .get(task.id)?.data,
+        ),
+      ),
+    ).toMatchObject({
+      storageVersion: 2,
+      settings: metadata.settings,
+    });
+    expect(store.replayCase(task.id)?.capture?.modelExchanges[1]).toMatchObject(
+      {
+        input: [common, changed],
+      },
+    );
+    expect(
+      store.replayCase(task.id)?.capture?.modelExchanges[1],
+    ).not.toHaveProperty("response");
+
+    await store.closeAsync();
+    store = new Store(file, { interruptActive: false });
+    await store.replayAsync(task.id, "modelStart", null, {
+      id: "third",
+      purpose: "task",
+      input: [common, changed, { role: "assistant", content: "three" }],
+      instructions: "rules",
+      tools: [],
+    });
+    await store.replayAsync(task.id, "finish", null, "interrupted");
+    expect(store.replayCase(task.id)?.capture).toMatchObject({
+      status: "interrupted",
+      modelExchanges: [
+        { input: [common, first], response: { text: "ok" } },
+        { input: [common, changed] },
+        { input: [common, changed, { role: "assistant", content: "three" }] },
+      ],
+      tools: [{ result: { text: "data" } }],
+    });
+    expect(
+      JSON.parse(
+        String(
+          store.db
+            .prepare(
+              "SELECT data FROM replay_entries WHERE taskId=? AND itemId='third'",
+            )
+            .get(task.id)?.data,
+        ),
+      ).inputPrefix,
+    ).toBe(2);
+    await expect(
+      store.replayAsync(task.id, "modelFinish", "missing", {
+        error: { name: "Error", message: "no start" },
+      }),
+    ).rejects.toThrow("缺少对应的开始记录");
+    expect(store.replayCase(task.id)?.capture?.modelExchanges).toHaveLength(3);
+  } finally {
+    await store.closeAsync();
+  }
+});
+
+it("upgrades a v8 replay database without rewriting captured JSON", async () => {
+  const root = await temp();
+  const file = path.join(root, "history.sqlite");
+  let store = new Store(file);
+  const session = store.create(root);
+  const task = store.createTask(session.id);
+  const oldCapture = {
+    schemaVersion: 1,
+    capturedAt: "2026-01-01T00:00:00.000Z",
+    platform: "win32",
+    settings: { model: "old" },
+    modelExchanges: [
+      {
+        id: "old",
+        purpose: "task",
+        input: [{ role: "user", content: "original" }],
+        instructions: "rules",
+        tools: [],
+        response: { output: [], text: "ok" },
+      },
+    ],
+    tools: [],
+    status: "completed",
+  };
+  store.db
+    .prepare("INSERT INTO task_replays(taskId,data) VALUES(?,?)")
+    .run(task.id, JSON.stringify(oldCapture));
+  store.close();
+  const oldDb = new DatabaseSync(file);
+  oldDb.exec("DROP TABLE replay_entries; PRAGMA user_version = 8");
+  oldDb.close();
+
+  store = new Store(file, { interruptActive: false });
+  try {
+    expect(store.replayCase(task.id)?.capture).toEqual(oldCapture);
+    expect(store.replayCase(task.id)?.source).toBe("captured");
+    const backup = readdirSync(path.join(root, "backups"));
+    expect(backup).toHaveLength(1);
+    const db = new DatabaseSync(path.join(root, "backups", backup[0]));
+    expect(db.prepare("PRAGMA user_version").get()).toEqual({
+      user_version: 8,
+    });
+    expect(db.prepare("SELECT data FROM task_replays").get()).toEqual({
+      data: JSON.stringify(oldCapture),
+    });
+    db.close();
   } finally {
     store.close();
   }

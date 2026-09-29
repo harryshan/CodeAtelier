@@ -172,7 +172,7 @@ export class HistoryShards {
           )
           .get();
         if (
-          version.user_version < 8 &&
+          version.user_version < 9 &&
           sessionsTable &&
           db.prepare("SELECT 1 FROM sessions LIMIT 1").get()
         ) {

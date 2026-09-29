@@ -4,13 +4,14 @@
  *
  * 1. readContext 顺序拼接基线与增量；其他读取从数据库加载大 JSON，仅在本线程解析。
  * 2. compact 在本线程 JSON.stringify 压缩前快照和活动上下文，并用与 Store 相同的 BEGIN IMMEDIATE 事务原子写入两张表。
- * 3. 主线程只接收结构化克隆结果；Worker 不处理权限、模型、文件或用户输入，也不会执行任意 SQL。
+ * 3. replay 与同步 Store 共用增量编码；主线程只接收结构化克隆结果，Worker 不处理权限、模型、文件或用户输入，也不会执行任意 SQL。
  *
  * 每次请求单独打开 SQLite 连接，WAL 允许它与主 Store 的短查询共存。事务失败会回滚，不能撤销已经发生的文件或模型副作用。
  */
 
 import { DatabaseSync } from "node:sqlite";
 import { parentPort } from "node:worker_threads";
+import { writeReplay } from "./replay-storage.js";
 
 export interface StoreWorkerRequest {
   id: number;
@@ -226,54 +227,13 @@ function handle(request: StoreWorkerRequest) {
             }
           } else if (write.kind === "replay") {
             const [taskId, action, key, data] = write.values;
-            if (action === "create") {
-              db.prepare(
-                "INSERT INTO task_replays(taskId,data) VALUES(?,?)",
-              ).run(
-                taskId as string,
-                JSON.stringify({
-                  ...(data as object),
-                  modelExchanges: [],
-                  tools: [],
-                }),
-              );
-            } else {
-              const row = db
-                .prepare("SELECT data FROM task_replays WHERE taskId=?")
-                .get(taskId as string) as { data: string } | undefined;
-              if (row) {
-                const capture = JSON.parse(row.data);
-                if (action === "modelStart") {
-                  capture.modelExchanges.push(data);
-                } else if (action === "modelFinish") {
-                  const exchange = capture.modelExchanges.find(
-                    (entry: { id: string }) => entry.id === key,
-                  );
-                  if (exchange) {
-                    Object.assign(exchange, data);
-                  }
-                } else if (action === "toolStart") {
-                  capture.tools.push(data);
-                } else if (action === "toolFinish") {
-                  const tool = capture.tools.find(
-                    (entry: { callId: string }) => entry.callId === key,
-                  );
-                  if (tool) {
-                    tool.result = data;
-                  }
-                } else if (action === "finish") {
-                  capture.status = data;
-                  capture.finalizedAt = new Date().toISOString();
-                } else {
-                  throw new Error("未知的 replay 更新类型。");
-                }
-
-                db.prepare("UPDATE task_replays SET data=? WHERE taskId=?").run(
-                  JSON.stringify(capture),
-                  taskId as string,
-                );
-              }
-            }
+            writeReplay(
+              db,
+              taskId as string,
+              action as Parameters<typeof writeReplay>[2],
+              key as string | null,
+              data,
+            );
           } else {
             throw new Error("未知的 Store 写入类型。");
           }

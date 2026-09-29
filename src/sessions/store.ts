@@ -4,7 +4,7 @@
  * 1. 构造器发现兼容的 history.sqlite 与后续容量分片，在每个文件初始化数据库并把重启前未完成的任务标为 interrupted；transaction 同步提交，取锁或执行失败时释放本次已开启的事务。
  * 2. list/get/create 跨分片定位或聚合会话；新会话在最新分片达到容量上限后进入新文件，已有会话始终写回其初始分片。标题状态的领取、完成或失败保证首条 prompt 只生成一次标题。
  * 3. tasks/task/createTask/status 读写任务状态与不可变的 subagent 选择；旧分片逐个迁移，SQLite 的 0/1 在各读取入口转换为布尔值。queuedTasks 和 hasUnfinishedTask 供 Engine 调度跨会话队列，event/events 保存和分页读取事件。
- * 4. subagents/subagent_requests 按任务存计划、检查点、状态、子问题事件及请求回执，重启只中断未完成子任务；task_replays 保存可审计的模型/工具材料。
+ * 4. subagents/subagent_requests 按任务存计划、检查点与回执；replay 元数据和逐条模型/工具增量经 replay-storage 写入，读取时兼容旧整条捕获。
  * 5. 旧 context 行在备份后原样迁入 context_chunks 基线；appendContext 只写新增批次，saveContext/压缩替换基线，读时按顺序重建；大记录由 store-worker 解析。
  * 6. 常规事件/上下文/状态写入和大记录读取由有界串行 Store Worker 队列提交；closeAsync 排空并关闭线程后再关闭分片连接。
  *
@@ -38,6 +38,7 @@ import {
   HistoryShards,
 } from "./history-shards.js";
 import { StoreWorkerQueue } from "./store-worker-queue.js";
+import { readReplayCapture, writeReplay } from "./replay-storage.js";
 import type { StoreWorkerRequest } from "./store-worker.js";
 
 type TaskRow = Omit<Task, "subagentsEnabled"> & { subagentsEnabled: number };
@@ -459,14 +460,7 @@ export class Store {
     capture: Omit<TaskReplayCapture, "modelExchanges" | "tools">,
   ) {
     this.selectTask(task.id);
-    const data: TaskReplayCapture = {
-      ...capture,
-      modelExchanges: [],
-      tools: [],
-    };
-    this.db
-      .prepare("INSERT INTO task_replays(taskId,data) VALUES(?,?)")
-      .run(task.id, JSON.stringify(data));
+    writeReplay(this.db, task.id, "create", null, capture);
   }
 
   async replayAsync(
@@ -497,32 +491,13 @@ export class Store {
 
   private replayCapture(taskId: string) {
     const shard = this.taskShard(taskId);
-    if (!shard) {
-      return undefined;
-    }
 
-    const row = shard.db
-      .prepare("SELECT data FROM task_replays WHERE taskId=?")
-      .get(taskId) as { data: string } | undefined;
-
-    return row ? (JSON.parse(row.data) as TaskReplayCapture) : undefined;
-  }
-
-  private saveReplayCapture(taskId: string, capture: TaskReplayCapture) {
-    this.selectTask(taskId);
-    this.db
-      .prepare("UPDATE task_replays SET data=? WHERE taskId=?")
-      .run(JSON.stringify(capture), taskId);
+    return shard ? readReplayCapture(shard.db, taskId) : undefined;
   }
 
   startReplayModelExchange(taskId: string, exchange: RecordedModelExchange) {
-    const capture = this.replayCapture(taskId);
-    if (!capture) {
-      return;
-    }
-
-    capture.modelExchanges.push(exchange);
-    this.saveReplayCapture(taskId, capture);
+    this.selectTask(taskId);
+    writeReplay(this.db, taskId, "modelStart", null, exchange);
   }
 
   finishReplayModelExchange(
@@ -530,46 +505,23 @@ export class Store {
     id: string,
     outcome: Pick<RecordedModelExchange, "response" | "error">,
   ) {
-    const capture = this.replayCapture(taskId);
-    const exchange = capture?.modelExchanges.find((item) => item.id === id);
-    if (!capture || !exchange) {
-      return;
-    }
-
-    Object.assign(exchange, outcome);
-    this.saveReplayCapture(taskId, capture);
+    this.selectTask(taskId);
+    writeReplay(this.db, taskId, "modelFinish", id, outcome);
   }
 
   startReplayTool(taskId: string, tool: RecordedToolCall) {
-    const capture = this.replayCapture(taskId);
-    if (!capture) {
-      return;
-    }
-
-    capture.tools.push(tool);
-    this.saveReplayCapture(taskId, capture);
+    this.selectTask(taskId);
+    writeReplay(this.db, taskId, "toolStart", null, tool);
   }
 
   finishReplayTool(taskId: string, callId: string, result: unknown) {
-    const capture = this.replayCapture(taskId);
-    const tool = capture?.tools.find((item) => item.callId === callId);
-    if (!capture || !tool) {
-      return;
-    }
-
-    tool.result = result;
-    this.saveReplayCapture(taskId, capture);
+    this.selectTask(taskId);
+    writeReplay(this.db, taskId, "toolFinish", callId, result);
   }
 
   finishReplayCapture(taskId: string, status: TaskStatus) {
-    const capture = this.replayCapture(taskId);
-    if (!capture) {
-      return;
-    }
-
-    capture.status = status;
-    capture.finalizedAt = new Date().toISOString();
-    this.saveReplayCapture(taskId, capture);
+    this.selectTask(taskId);
+    writeReplay(this.db, taskId, "finish", null, status);
   }
 
   /** 新捕获优先使用未截断工具材料；旧历史退回事件配对，但 source 必须明确标为 legacy。 */

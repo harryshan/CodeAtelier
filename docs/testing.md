@@ -153,7 +153,7 @@ item.done 回退、失败/不完整事件、服务实际错误 message/reason/co
 
 `store.test.ts` 覆盖 Store Worker 串行常规写入、回执后的读写顺序、跨重启持久化和失败批次原子回滚；`tracing.test.ts` 验证独立 Store worker 轨道及无正文泄露。同步兼容入口与未开放 subagent 的迁移仍需另行验证；现有宿主/Runtime subagent 回归覆盖其同步账本与 Worker 事务交错时的执行、检查点及报告收集。`store.test.ts` 用第二个真实 SQLite 连接锁住后续历史分片，验证兼容连接有界等待后失败会释放前面分片，后续事务仍可提交。`shutdown.test.ts` 等待冷启动 Worker 确认命令输出已持久化，再验证 SSE 关闭与中断保存。
 
-隔离、事件顺序与游标、增量上下文批次重建与事务回滚、旧分片先备份再迁移以及备份失败保持旧数据、queued/running/waiting 重启中断、实际开始时间、标题状态迁移和恢复，以及大 JSON 的 Worker 读取；按小阈值触发的历史 SQLite 分片、新旧分片聚合、重启发现和旧分片 Worker 读取；任务级 subagent 开关的布尔序列化、旧分片迁移默认关闭及未开放请求明确拒绝（UI 尚未启用）；逐次模型/工具捕获、legacy 历史标记、局部读取拒绝、哈希一致的分页读取重建和只写入新隔离目录
+隔离、事件顺序与游标、增量上下文批次重建与事务回滚、旧分片先备份再迁移以及备份失败保持旧数据、queued/running/waiting 重启中断、实际开始时间、标题状态迁移和恢复，以及大 JSON 的 Worker 读取；按小阈值触发的历史 SQLite 分片、新旧分片聚合、重启发现和旧分片 Worker 读取；任务级 subagent 开关的布尔序列化、旧分片迁移默认关闭及未开放请求明确拒绝（UI 尚未启用）；逐条模型/工具增量捕获、跨重启前缀恢复、未完成请求、旧整条捕获与 legacy 历史标记、局部读取拒绝、哈希一致的分页读取重建和只写入新隔离目录
 
 ### 会话统计
 
@@ -393,7 +393,7 @@ git-tools.test.ts 覆盖 diff 独立输出硬上限；core.test.ts 覆盖模型�
 ### Replay Case
 
 - `tests/replay-case.test.ts`：连续的同哈希 `read_file` 页可重建 `edit_files(create:false)` 的原始文件，并且只允许写入此前不存在的隔离目录；局部读取、哈希不符和已有目录均拒绝。`RecordedModelProvider` 对 input、instructions、工具定义和输出选项严格匹配，避免用旧响应掩盖改动后的行为。
-- 任务执行路径的 replay 捕获与 Store 持久化属于默认回归；手动 `pnpm replay:export` 只导出本地材料，不启动模型、工具或 Evaluation。旧历史没有完整模型载荷时导出为 legacy，不能宣称 transcript 可重放。
+- 任务执行路径的 replay 捕获与 Store 增量持久化属于默认回归；同步与 Worker 写入共用编码，落库不重复保存模型 input 公共前缀，导出恢复完整请求；手动 `pnpm replay:export` 只导出本地材料，不启动模型、工具或 Evaluation。旧历史没有完整模型载荷时导出为 legacy，不能宣称 transcript 可重放。
 
 ### Git 模型参数兼容性
 
