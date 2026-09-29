@@ -4,7 +4,7 @@
  * supervisor 使用 DPAPI state、工作区 ACL、Job 和私有 Named Pipe 启动同一二进制的 bootstrap 模式，并代理 Agent Runtime IPC。
  *
  * 1. 提升安装时仅对专用 LSA 账户对象授予安装者读取拒绝登录权的权限；self-check 核对 state 所属宿主 SID、专用账户 SID/密码、拒绝登录权、WFP 持久规则，以及受保护 Node 24/Agent Runtime entry 和各 Worker bundle 摘要。
- * 2. execute 生成 execution/root capability SID；共享账户 ACE 提供 normal-side 读写候选权限，restricted token 另含 Everyone 以兼容系统组件，故已有 Everyone 可写对象不受根 capability 完整约束。
+ * 2. execute 生成 execution/root capability SID；共享账户的目录 ACE 与可写 root capability 均包含 DELETE_CHILD，以替换未继承新 ACE 的既有文件；restricted token 另含 Everyone 以兼容系统组件，故已有 Everyone 可写对象不受根 capability 完整约束。
  * 3. CreateProcessWithLogonW 以固定 bootstrap 入口启动专用账户进程，先分配 KILL_ON_JOB_CLOSE Job 再恢复。
  * 4. 在确认不是 WinSta0 后给系统命名的非交互式 station 补齐专用账户及实例 SID，再创建私有 desktop；bootstrap 经账户管道取得命令，创建 WRITE_RESTRICTED token，常驻 Runtime 则经仅额外授权本实例 execution SID 的专属 pipe 连接 Broker。
  * 5. Broker stdin 关闭、超时或异常会终止 Job；正常/异常退出撤销本实例 capability ACE，共享账户 ACE 仅由 Broker 最后引用的两阶段 release 撤销；安装恢复从持久 journal 验证原文件身份后撤销账户 ACE，清理不确定返回专用错误码。
@@ -1061,10 +1061,17 @@ class ObjectGrant {
     }
 
     std::vector<EXPLICIT_ACCESSW> entries;
+    const ACCESS_MASK base_access = FILE_GENERIC_READ | FILE_GENERIC_EXECUTE |
+                                    FILE_GENERIC_WRITE | DELETE;
+    // 旧文件可能属于其它账户且不能更新 DACL；原子 rename 可以走父目录的 DELETE_CHILD。
+    // 共享账户的 normal-side grant 包含此权利，避免先只读、后可写租约共用根时缺失。
+    const ACCESS_MASK account_access =
+        expect_file ? base_access : base_access | FILE_DELETE_CHILD;
+    const ACCESS_MASK capability_access =
+        writable && !expect_file ? base_access | FILE_DELETE_CHILD : base_access;
     if (install_account) {
       EXPLICIT_ACCESSW entry{};
-      entry.grfAccessPermissions = FILE_GENERIC_READ | FILE_GENERIC_EXECUTE |
-                                   FILE_GENERIC_WRITE | DELETE;
+      entry.grfAccessPermissions = account_access;
       entry.grfAccessMode = GRANT_ACCESS;
       entry.grfInheritance =
           expect_file ? NO_INHERITANCE : SUB_CONTAINERS_AND_OBJECTS_INHERIT;
@@ -1075,8 +1082,7 @@ class ObjectGrant {
     }
     if (writable) {
       EXPLICIT_ACCESSW entry{};
-      entry.grfAccessPermissions = FILE_GENERIC_READ | FILE_GENERIC_EXECUTE |
-                                   FILE_GENERIC_WRITE | DELETE;
+      entry.grfAccessPermissions = capability_access;
       entry.grfAccessMode = GRANT_ACCESS;
       entry.grfInheritance =
           expect_file ? NO_INHERITANCE : SUB_CONTAINERS_AND_OBJECTS_INHERIT;
