@@ -3,7 +3,7 @@
  * 使用模拟模型和临时工作区，只由 pnpm eval:test 手动执行，不纳入默认检查。
  *
  * 1. 提供固定工具响应和 usage，检查实际文件读写及导出记录。
- * 2. 确认命令默认被拒绝，并分别检查 token、调用次数和超时限制。
+ * 2. 使用现行工具参数确认命令默认被拒绝，并分别检查 token、调用次数和超时限制。
  * 3. 检查 MeteredProvider 的主辅模型共享计量、未知用量和下一次请求前的预算检查。
  * 4. 检查重叠目录、非法预算和不符合授权范围的请求被拒绝。
  *
@@ -67,6 +67,7 @@ it("runs production read/edit tools and exports independently verifiable artifac
           files: [
             {
               path: "math.js",
+              create: false,
               edits: [{ oldText: "a - b", newText: "a + b" }],
             },
           ],
@@ -115,9 +116,7 @@ it("denies commands by default without hanging or creating their side effects", 
     async run(input) {
       if (calls++ === 0) {
         return tool("run_command", {
-          command: process.execPath,
-          args: ["-e", "require('fs').writeFileSync('unexpected','x')"],
-          cwd: ".",
+          command: `node -e "require('fs').writeFileSync('unexpected','x')"`,
         });
       }
 
@@ -135,17 +134,23 @@ it("denies commands by default without hanging or creating their side effects", 
 });
 
 it("stops before another model request once reported tokens reach the threshold", async () => {
+  const workspace = await temp();
+  await writeFile(path.join(workspace, "math.js"), "export const sum = 1;\n");
   const report = await runEvaluation(
     {
-      workspace: await temp(),
+      workspace,
       outputDir: await temp(),
-      prompt: "list",
+      prompt: "read",
       maxTotalTokens: 25,
     },
     {
       provider: {
         async run() {
-          return tool("list_files", { path: "." });
+          return tool("read_file", {
+            path: "math.js",
+            startLine: 1,
+            endLine: 1,
+          });
         },
       },
       log: silent,

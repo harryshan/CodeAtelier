@@ -56,6 +56,9 @@ it("preserves host batches while requiring an exclusive Runtime push", () => {
   };
 
   expect(
+    buildModelToolGraph([push], { exclusivePush: true }).nodes,
+  ).toHaveLength(1);
+  expect(
     buildModelToolGraph([push, call("read")], { exclusivePush: false }).nodes,
   ).toHaveLength(2);
   expect(() =>

@@ -18,6 +18,12 @@
 - `execute-runner.test.ts`：保留但暂停使用的 Push Runner 与 Capability Runner 的实例标识、进程元数据、事件/账本一致、非零退出、启动前后失败、取消、unknown 优先级、命令构造失败和拒绝 host fallback；不能视作现行产品路径验收。
 - `engine.test.ts`、`agent-runtime-service.test.ts`、`agent-runtime-engine.test.ts` 继续验证生产组装、真实 Node 子进程、工具结果回传、审批和取消记录；Engine 回归还核对已验证的 Runtime PID 在 `running` 与 `completed` execution instance 中一致。这些测试不替代专用账户提升环境验收。
 
+## 测试审计（2026-09-30）
+
+按默认 Vitest、独立 Playwright、手动 Evaluation（TS 与 Python）和 Windows 原生探针的入口清点测试；扫描断言、跳过条件、历史功能引用和相似用例后，对删除候选逐项核对实际实现及替代覆盖。移除了八项重复或不属于现行后端的用例：基础文件替换、配置密钥落盘、会话重启、重复的旧连接迁移、单文件缺失/歧义目标、两文件部分成功预检、重复的 push 独占图测试及未注册的 WSL inspect 启动形状测试。将重启后事件回读、错误详情与单独 push 合法性补到保留用例。修正手动 Evaluation 的旧工具参数与已移除的 list_files 夹具；**未执行 Evaluation**，不能把静态核对当成该套件通过。
+
+保留有独立安全或兼容价值的旧投影、旧 Runner、历史数据迁移、平台条件跳过以及运行中/已完成任务分别覆盖的长时间线 UI 测试。历史 WSL 代码仍在仓库，但 Runtime 工厂只选择 Windows 专用账户后端；单测、原生构建和 Chromium 测试均不替代安装态验收。审计不以用例数量或单纯调用 spy 作为删除理由。
+
 ## 测试分层
 
 - 单元测试验证配置、授权、错误分类等可独立观察的行为。
@@ -166,7 +172,7 @@ item.done 回退、失败/不完整事件、服务实际错误 message/reason/co
 
 ### 模型设置
 
-主要测试：config.test.ts、regressions.test.ts。
+主要测试：config.test.ts。
 
 连接只来自环境、settings.json 仅保存偏好、备用字符上限新默认值及既有自定义值保留、端点规范化、连接改动拒绝、参数边界、失败更新保持原状态、密钥内存存储、损坏配置不覆盖
 
@@ -326,7 +332,7 @@ provider.test.ts 用本机 HTTP/SSE 验证模型容量和 usage 提取。真实�
 
 compaction-policy.test.ts 覆盖超过 20 个来源、每类超过 20 条结论与超过 8000 字符的有效摘要，以及仍拒绝的格式/来源错误；真实 Worker 验证预算 60% 以内且收益不足 10% 的摘要可提交，高于 60% 目标或无收益仍拒绝；普通与强制保底均执行 60% 目标，不能保留用户原文时拒绝提交。
 
-context-stages.test.ts 先复现旧实现遗漏长记录中间材料，再验证全文连续覆盖、完全相同读取零模型调用、文件归档与中间诊断行、不同文件版本不合并、文件读取投影不处理命令/失败/未知输出、归档后再次摘要还原全文、旧摘要原文与来源不漂移。既有 context.test.ts 继续覆盖事务回滚、取消和恢复。
+context-stages.test.ts 覆盖长记录中间材料的全文连续送出、默认摘要时重复读取仍保留原文，以及旧文件投影函数对版本、失败/未知结果和来源的兼容契约；默认路径不再执行旧去重或归档阶段。既有 context.test.ts 继续覆盖事务回滚、取消和恢复。
 
 ## SWE-bench 评测（仅手动）
 
@@ -336,7 +342,7 @@ context-stages.test.ts 先复现旧实现遗漏长记录中间材料，再验证
 
 ## 完整请求与压缩覆盖
 
-context-request.test.ts 覆盖低于阈值时重复读取结果原样发送、原始输入计量、瞬态重试和新工具轮次保持完整历史。context-stages.test.ts 覆盖达到阈值后的读取去重、归档和摘要。context.test.ts 额外覆盖常规摘要在超预算失败时的保底视图：完整快照保留，活动输入保留用户原文与最新结论，并移除超长中间工具输出。
+context-request.test.ts 覆盖低于阈值时重复读取结果原样发送、原始输入计量、瞬态重试和新工具轮次保持完整历史。context-stages.test.ts 覆盖达到阈值后默认直接摘要全文以及旧投影数据的兼容回读。context.test.ts 额外覆盖常规摘要在超预算失败时的保底视图：完整快照保留，活动输入保留用户原文与最新结论，并移除超长中间工具输出。
 
 git-tools.test.ts 覆盖 diff 独立输出硬上限；core.test.ts 覆盖模型收到避免无必要全量 diff 的指令。它们均属于普通功能回归，不启动 Evaluation。
 
@@ -406,7 +412,7 @@ tool-schema.test.ts 覆盖根节点、oneOf 禁用、包装解包、历史兼容
 
 ### Agent Runtime 阻塞等待 Broker Git push
 
-- `tests/agent-runtime-service.test.ts` 在执行任何节点前拒绝含 push 和其它调用的同一工具批次；单独 push 可形成有效图。
+- `tests/model-tool-batch.test.ts` 用宿主与 Runtime 共享的工具图校验在执行任何节点前拒绝含 push 和其它调用的 Runtime 批次，同时单独 push 可形成有效图。
 - `tests/agent-runtime-tools.test.ts` 用真实临时 Git worktree 完成 upstream/OID 查询，随后验证 Runtime 只调用结构化 push adapter、同步取得结果，且不嵌套逐工具 SandboxBroker；Broker 已实时持久化的输出不会被 Runtime 在最终响应后重复发射。
 - `tests/runtime-ipc.test.ts` 验证 `git_push` 只携带当前 `toolCallId`、返回值受固定 schema 校验；请求级取消继续只中止对应 handler。
 - `tests/agent-runtime-tools.test.ts` 验证 Runtime 不再预检 Git 配置而将调用 ID 交给 Broker；`tests/agent-runtime-engine.test.ts` 验证 Broker 宿主 Git 预检、审批与已启动 push 取消的非 Sandbox 归因。
@@ -415,7 +421,7 @@ tool-schema.test.ts 覆盖根节点、oneOf 禁用、包装解包、历史兼容
 
 ### Agent Runtime 经审批的 Broker 宿主命令
 
-- `tests/agent-runtime-tools.test.ts` 验证普通 Runtime `run_command` 不请求审批；`run_with_permissions` 只把严格命令、理由和当前 `toolCallId` 交给 adapter。`tests/agent-runtime-service.test.ts` 验证该请求保留普通 DAG 并行语义，而 Git push 继续独占批次。
+- `tests/agent-runtime-tools.test.ts` 验证普通 Runtime `run_command` 不请求审批；`run_with_permissions` 只把严格命令、理由和当前 `toolCallId` 交给 adapter。`tests/agent-runtime-service.test.ts` 验证该请求保留普通 DAG 并行语义；Git push 独占由共享工具图测试覆盖。
 - `tests/agent-runtime-engine.test.ts` 通过真实 Runtime 子进程验证低成本模型审批后，Broker 宿主命令可写入工作区外标记，且独立记为 `broker-command/host-process`，不会调用 Sandbox runner；命令和理由不进入任务 trace。
 - `tests/runtime-ipc.test.ts` 与 `tests/tool-schema.test.ts` 验证命令/理由的有界 schema 与调用关联，并拒绝旧权限字段或其它额外参数。
 - `tests/sandbox.test.ts` 和原生构建仍覆盖保留的 Capability/Push Runner 代码，但它们当前不由产品工具触发；其中 ACL、代理及限制断言不能证明现行 Broker 宿主命令或 Git push 的权限边界。

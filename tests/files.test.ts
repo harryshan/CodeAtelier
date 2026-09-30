@@ -4,7 +4,7 @@
  *
  * 1. 检查已移除目录/搜索工具的拒绝，以及带行号、分页、版本和可见空白元数据的分段读取。
  * 2. 检查模型可见的定位/小范围读取契约，以及反向行区间、二进制文件和过大文件被拒绝。
- * 3. 检查多处快照替换、整批失败不写入、已有文件成功编辑后必须重新读取、显式新建父目录、美元符号按原文替换，以及 create 防止覆盖。
+ * 3. 检查已有文件成功编辑后必须重新读取、显式新建父目录、美元符号按原文替换，以及 create 防止覆盖。
  * 4. 在等待审批时修改文件，并检查规则文件、敏感文件和非法工具参数的处理。
  *
  * 拒绝或校验失败后，原文件必须保持不变，不能只检查是否弹出了审批。
@@ -151,19 +151,6 @@ it("rejects binary and oversized reads", async () => {
       runner.execute("read_file", { path: name, startLine: 1, endLine: 5 }),
     ).rejects.toThrow();
   }
-});
-
-it("rejects missing or ambiguous replacement targets without changing the file", async () => {
-  const { root, runner } = await fileFixture();
-
-  await createFile(runner, "a.txt", "same same");
-  for (const oldText of ["absent", "same"]) {
-    await expect(
-      editSingleFile(runner, "a.txt", [{ oldText, newText: "new" }]),
-    ).rejects.toThrow("精确匹配一次");
-  }
-
-  expect(await readFile(path.join(root, "a.txt"), "utf8")).toBe("same same");
 });
 
 it("creates nested files and treats replacement dollar sequences literally", async () => {

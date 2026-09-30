@@ -172,7 +172,8 @@ it("migrates legacy connection fields out of settings.json and persists effort",
   const config = new Config(root);
 
   expect(config.settings.reasoningEffort).toBe("high");
-  expect(config.settings.model).not.toBe("legacy");
+  expect(config.settings.model).toBe("test-model");
+  expect(config.settings.baseUrl).toBe("http://127.0.0.1:9999/v1");
   vi.stubEnv("CODEATELIER_REASONING_EFFORT", "low");
   expect(new Config(root).settings.reasoningEffort).toBe("low");
 
@@ -181,9 +182,10 @@ it("migrates legacy connection fields out of settings.json and persists effort",
     expect(new Config(root).settings.reasoningEffort).toBe(reasoningEffort);
   }
 
-  expect(
-    await readFile(path.join(root, "settings.json"), "utf8"),
-  ).not.toContain("legacy");
+  const saved = await readFile(path.join(root, "settings.json"), "utf8");
+  expect(saved).not.toContain("legacy");
+  expect(saved).not.toContain("baseUrl");
+  expect(saved).not.toContain("model");
 });
 
 it("uses the configured endpoint and model verbatim except endpoint suffix", async () => {

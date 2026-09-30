@@ -139,36 +139,6 @@ it("edits two files in one call and reports each completed file", async () => {
   ).toHaveLength(2);
 });
 
-it("writes valid files when a later file fails preflight", async () => {
-  const { root, runner } = await fileFixture();
-  for (const name of ["a.txt", "b.txt"]) {
-    await createFile(runner, name, "old");
-  }
-
-  const result = await runner.execute("edit_files", {
-    files: [
-      {
-        path: "a.txt",
-        create: false,
-        edits: [{ oldText: "old", newText: "new" }],
-      },
-      {
-        path: "b.txt",
-        create: false,
-        edits: [{ oldText: "missing", newText: "new" }],
-      },
-    ],
-  });
-  expect(result.error).toContain("b.txt");
-  expect(result.error).toContain("精确匹配一次");
-  expect(result.files).toMatchObject([
-    { path: "a.txt", status: "written" },
-    { path: "b.txt", status: "failed" },
-  ]);
-  expect(await readFile(path.join(root, "a.txt"), "utf8")).toBe("new");
-  expect(await readFile(path.join(root, "b.txt"), "utf8")).toBe("old");
-});
-
 it("reports every preflight failure while writing independent valid files", async () => {
   const { root, runner } = await fileFixture();
   for (const name of ["a.txt", "b.txt", "c.txt"]) {
@@ -197,6 +167,7 @@ it("reports every preflight failure while writing independent valid files", asyn
 
   expect(result.error).toContain("b.txt");
   expect(result.error).toContain("c.txt");
+  expect(result.error).toContain("精确匹配一次");
   expect(result.files.map((file: any) => file.status)).toEqual([
     "written",
     "failed",

@@ -2,9 +2,9 @@
  * 覆盖文件权限、模型调用工具、历史保存和本机 HTTP 安全的基础流程。
  * 测试使用临时目录、真实数据库和模拟模型。
  *
- * 1. temp/runner 准备并在用例后关闭工具/临时目录；files and permissions 检查渐进式阅读指令、先读后写、精确替换、越界和取消。
- * 2. waitFor 等待任务结束；execution and persistence 检查超时、输出限制、重启和工具执行。
- * 3. server security and configuration 检查请求来源、凭据、配置保存和脱敏。
+ * 1. temp/runner 准备并在用例后关闭工具/临时目录；files and permissions 检查渐进式阅读指令、先读后写、越界和取消。
+ * 2. waitFor 等待任务结束；execution and persistence 检查超时、输出限制和工具执行。
+ * 3. server security and configuration 检查请求来源、凭据和脱敏。
  *
  * 需要特定平台能力的链接测试会明确跳过，不能把一次平台上的通过当作全平台验证。
  */
@@ -273,26 +273,6 @@ describe("files and permissions", () => {
     });
     expect(stale.error).toContain("已变化");
   });
-  it("writes an exact replacement through the unified edit tool", async () => {
-    const root = await temp();
-    const tools = runner(root, new Config(await temp()));
-
-    await tools.execute("edit_files", {
-      files: [{ path: "a.txt", create: true, content: "abc" }],
-    });
-    const result = await tools.execute("edit_files", {
-      files: [
-        {
-          path: "a.txt",
-          create: false,
-          edits: [{ oldText: "b", newText: "B" }],
-        },
-      ],
-    });
-
-    expect(await readFile(path.join(root, "a.txt"), "utf8")).toBe("aBc");
-    expect(result.files).toMatchObject([{ path: "a.txt", status: "written" }]);
-  });
   it("blocks external writes until approval and denial leaves file absent", async () => {
     const root = await temp();
     const outside = await temp();
@@ -392,21 +372,6 @@ describe("execution and persistence", () => {
     expect(result.output.length).toBe(100);
     expect(result.truncated).toBe(true);
     expect(result.exitCode).toBe(3);
-  });
-  it("persists conversations and marks unfinished tasks interrupted after restart", async () => {
-    const root = await temp();
-    const file = path.join(root, "history.sqlite");
-    const first = new Store(file);
-    const session = first.create(root, "test");
-    const task = first.createTask(session.id);
-
-    first.event(session.id, task.id, "user", { text: "hello" });
-    first.close();
-    const second = new Store(file);
-
-    expect(second.events(session.id)[0].data.text).toBe("hello");
-    expect(second.tasks(session.id)[0].status).toBe("interrupted");
-    second.close();
   });
   it("completes a model/tool loop and rejects a second task in the same session", async () => {
     const root = await temp();
@@ -563,15 +528,6 @@ describe("server security and configuration", () => {
     }
   });
 
-  it("keeps API key out of settings file", async () => {
-    const config = new Config(await temp());
-
-    config.update({ settings: config.settings, apiKey: "do-not-persist" });
-
-    expect(
-      await readFile(path.join(config.directory, "settings.json"), "utf8"),
-    ).not.toContain("do-not-persist");
-  });
   it("redacts configured secrets and authorization tokens", () => {
     expect(
       redactText("Bearer token123 key=super-secret", ["super-secret"]),

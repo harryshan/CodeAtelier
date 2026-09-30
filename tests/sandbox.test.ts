@@ -1,7 +1,7 @@
 /**
- * 验证 Sandbox S0/S1 的环境开关、Broker 分流、WorkspaceView、WSL inspect runtime 请求形状与安全失败边界。
+ * 验证 Sandbox 开关、Broker 分流、WorkspaceView、原生账户 Runtime 与安全失败边界。
  * 测试直接使用 Config 和 SandboxBroker；临时配置目录避免读取用户设置，假的 runtime 只证明契约分流，
- * WSL Runtime 以注入的进程执行器检查固定启动器参数，不把单元测试当成任何平台隔离实现。
+ * 不把单元测试当成任何平台隔离实现。
  *
  * 1. 配置用例检查空值/false 保留 non-isolated，以及非法值和 true 的 unknown 初始状态。
  * 2. Broker 关闭时调用传入的既有宿主执行器，并记录可审计但不含命令内容的生命周期阶段。
@@ -9,10 +9,10 @@
  * 4. 启用而没有 runtime 或自检失败时明确回退宿主，同一任务保持 fallback；runtime 执行已开始后的失败不重放。
  * 5. 共享 grant acquire 不越过进行中的 native revoke；审批时对象身份变化会在 Runner provision 前拒绝。
  * 6. 同任务 Agent Runtime 可在阻塞期间重叠一个独立 Push Runner，且 Runner 启动失败不回退宿主 Git。
- * 7. 测试 runtime 必须声明并接收工作区保护契约；Windows inspect 路径只交给 WSL 固定 POSIX shell 形状。
+ * 7. 测试 runtime 必须声明并接收工作区保护契约；只有 Windows 注册专用账户 Runtime。
  *
- * 用例不启动真实 shell、不访问网络或用户项目。它证明策略、请求形状与安全失败；实际 WSL2 bubblewrap
- * 隔离只能由平台夹具和验证记录证明，不能推广为 Windows 原生或其他平台的 OS 级隔离。
+ * 用例不启动真实 shell、不访问网络或用户项目。它证明策略、请求形状与安全失败，
+ * 不证明固定账户安装态或其他平台的 OS 级隔离。
  */
 
 import { afterEach, expect, it, vi } from "vitest";
@@ -28,7 +28,6 @@ import {
   NativeWindowsSandboxTimeoutError,
 } from "../src/sandbox/native-windows-runtime.js";
 import { WorkspaceView } from "../src/sandbox/workspace-view.js";
-import { WslInspectRuntime } from "../src/sandbox/wsl-inspect-runtime.js";
 import { commandShell } from "../src/tools/command-shell.js";
 import { buildAccessManifest } from "../src/sandbox/access-manifest.js";
 import type {
@@ -862,62 +861,6 @@ it("projects reviewed roots into one capability runner beside its agent runtime"
   finishRuntime();
   await agentRuntime;
   expect(broker.accountGenerationSnapshot()?.activeInstanceCount).toBe(0);
-});
-
-it("passes only fixed WSL launcher arguments to the inspect runtime", async () => {
-  const runProcess = vi.fn(async () => ({
-    output: "",
-    exitCode: 0,
-    truncated: false,
-  }));
-  const runtime = new WslInspectRuntime(runProcess);
-  const workspace = (await WorkspaceView.open(process.cwd())).descriptor();
-
-  await expect(
-    runtime.selfCheck(new AbortController().signal, workspace),
-  ).resolves.toMatchObject({
-    level: "wsl2-bubblewrap-inspect",
-    workspaceProtection: "direct-path",
-  });
-  await runtime.execute({ ...command(), command: "/bin/sh" }, workspace);
-
-  expect(runProcess).toHaveBeenCalledTimes(2);
-  expect(runProcess).toHaveBeenNthCalledWith(
-    1,
-    "wsl.exe",
-    expect.arrayContaining([
-      "--exec",
-      "/bin/sh",
-      "-c",
-      "codeatelier-wsl-inspect",
-      "self-check",
-      workspace.root,
-    ]),
-    process.cwd(),
-    expect.any(AbortSignal),
-    10_000,
-    1_000,
-    expect.any(Function),
-    {},
-    undefined,
-  );
-  expect(runProcess).toHaveBeenLastCalledWith(
-    "wsl.exe",
-    expect.arrayContaining(["execute", workspace.root, "echo safe"]),
-    process.cwd(),
-    expect.any(AbortSignal),
-    1_000,
-    1_000,
-    expect.any(Function),
-    {},
-    expect.any(Function),
-  );
-  expect(() =>
-    runtime.execute(
-      { ...command(), command: "cmd.exe", args: ["/c", "echo unsafe"] },
-      workspace,
-    ),
-  ).toThrow("固定的 POSIX shell");
 });
 
 it("dispatches only to a runtime that passed self-check", async () => {

@@ -607,6 +607,9 @@ it("restart interrupts active tasks but preserves terminal states and context", 
     store.status(task.id, status);
   }
 
+  store.event(session.id, store.tasks(session.id)[0].id, "user", {
+    text: "hello",
+  });
   store.saveContext(session.id, [{ role: "user", content: "saved" }]);
   store.close();
   store = new Store(file);
@@ -620,6 +623,10 @@ it("restart interrupts active tasks but preserves terminal states and context", 
       "cancelled",
     ]);
     expect(store.context(session.id)[0].content).toBe("saved");
+    expect(store.events(session.id).at(-1)).toMatchObject({
+      type: "user",
+      data: { text: "hello" },
+    });
   } finally {
     store.close();
   }
