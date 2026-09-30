@@ -52,7 +52,7 @@ Sandbox **不会**创建 worktree、暂存副本或自动回滚：可写操作�
    若已安装旧的 Runtime bundle，更新本地代码并重建后，在同一个管理员 PowerShell 7 终端执行修复与复核：
 
    ```powershell
-   pwsh -NoProfile -File scripts/windows-sandbox/install.ps1 -Mode Repair
+   pnpm sandbox:repair
    pnpm sandbox:verify
    ```
 
@@ -101,6 +101,7 @@ Sandbox **不会**创建 worktree、暂存副本或自动回滚：可写操作�
 | 场景                                 | 命令与执行位置                                        | 说明                                                                                                              |
 | ------------------------------------ | ----------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
 | 检查已安装组件、账户和 WFP 状态      | 在**管理员 PowerShell** 执行 `pnpm sandbox:verify`    | 不替代 `sandbox:runtime:verify` 的产品链路验收。                                                                  |
+| 更新已安装组件                       | 在**管理员 PowerShell** 执行 `pnpm sandbox:repair`    | 先重建对应产物；等价于 `install.ps1 -Mode Repair`，不会自动触发 UAC。                                              |
 | 安装后的产品链路检查                 | 在普通终端执行 `pnpm sandbox:runtime:verify`          | 不访问公网或真实凭据。                                                                                            |
 | 正常卸载                             | 在**管理员 PowerShell** 执行 `pnpm sandbox:uninstall` | 先停止所有任务；卸载必须确认没有活动 lease。                                                                      |
 | 正常卸载无法证明完整清理时的受控恢复 | 在**管理员 PowerShell** 执行 `pnpm sandbox:recover`   | 只清理安装 state 中记录的产品账户、固定 WFP 对象、欢迎屏幕值和受控 ProgramData 子目录；不会扫描或重置整机防火墙。 |
