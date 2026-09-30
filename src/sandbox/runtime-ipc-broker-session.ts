@@ -37,6 +37,7 @@ import type {
 import type { ContextSnapshot } from "../context/types.js";
 
 export interface RuntimeIpcBrokerHandlers {
+  getErrorSecrets?: () => string[];
   subagentStore?(
     identity: RuntimeExecutionIdentity,
     request: RuntimeSubagentStoreRequest,
@@ -174,6 +175,7 @@ export class RuntimeIpcBrokerSession {
     void this.runtimeStopped.catch(() => undefined);
     this.peer = new RuntimeIpcPeer({
       ...streams,
+      getErrorSecrets: handlers.getErrorSecrets,
       onClose: (error) => {
         this.preparedCapabilityCommands.clear();
         if (!this.authenticated) {

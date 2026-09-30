@@ -4,7 +4,7 @@
  *
  * 1. request 生成不可复用 requestId、注册取消监听并等待精确匹配的 response；本地取消发送 request_cancel 以中止远端 handler。
  * 2. consume 逐帧校验 schema 和大小；非法帧、重复/未知 response 或半帧断开会关闭整条连接。
- * 3. 收到 request 后调用固定 handler，返回受限错误；event/handshake observer 抛错时安全关闭通道，不能形成未处理拒绝。
+ * 3. 收到 request 后调用固定 handler，返回操作、关联 ID、脱敏原因及错误码；event/handshake observer 抛错时安全关闭通道。
  * 4. 已取消 requestId 使用有界 tombstone 忽略竞态中的迟到响应，其他未知响应仍关闭连接。
  * 5. close 使全部 pending/handling 请求失败并移除监听，避免断连后把未知操作当成成功或继续等待。
  */
@@ -12,8 +12,14 @@
 import { randomUUID } from "node:crypto";
 import type { Readable, Writable } from "node:stream";
 import {
+  ipcErrorText,
+  ipcFailureDetails,
+  ipcSchemaDetails,
+} from "./runtime-ipc-error-details.js";
+import {
   MAX_RUNTIME_IPC_FRAME_BYTES,
   runtimeIpcMessageSchema,
+  runtimeRequestSchema,
   type RuntimeIpcEvent,
   type RuntimeIpcMessage,
   type RuntimeIpcOperation,
@@ -58,6 +64,8 @@ export interface RuntimeIpcPeerOptions {
   ) => void;
   onClose?: (error: RuntimeIpcError) => void;
   maxFrameBytes?: number;
+  /** Broker 提供当前凭据，仅用于错误脱敏，绝不放入协议帧。 */
+  getErrorSecrets?: () => string[];
 }
 
 export class RuntimeIpcPeer {
@@ -76,9 +84,13 @@ export class RuntimeIpcPeer {
     this.requestHandler = options.handleRequest;
     options.input.setEncoding("utf8");
     options.input.on("data", (chunk: string) => this.consume(chunk));
-    options.input.once("error", () => this.close("Runtime IPC 输入失败。"));
+    options.input.once("error", (error) =>
+      this.close(`Runtime IPC 输入读取失败：${ipcFailureDetails(error)}`),
+    );
     options.input.once("end", () => this.close("Runtime IPC 输入已关闭。"));
-    options.output.once("error", () => this.close("Runtime IPC 输出失败。"));
+    options.output.once("error", (error) =>
+      this.close(`Runtime IPC 输出写入失败：${ipcFailureDetails(error)}`),
+    );
   }
 
   request(
@@ -105,11 +117,18 @@ export class RuntimeIpcPeer {
       operation,
       body,
     };
-    const parsed = runtimeIpcMessageSchema.safeParse(request);
+    const parsed = runtimeRequestSchema.safeParse(request);
     if (!parsed.success || parsed.data.type !== "request") {
       return {
         requestId: request.requestId,
-        result: Promise.reject(new RuntimeIpcError("Runtime IPC 请求无效。")),
+        result: Promise.reject(
+          new RuntimeIpcError(
+            ipcErrorText(
+              `Runtime IPC 请求校验失败（operation=${operation}）：${!parsed.success ? ipcSchemaDetails(parsed.error) : "消息类型必须为 request"}`,
+              this.options.getErrorSecrets?.(),
+            ),
+          ),
+        ),
       };
     }
 
@@ -202,7 +221,7 @@ export class RuntimeIpcPeer {
 
     this.options.output.write(frame, "utf8", (error) => {
       if (error) {
-        this.close("Runtime IPC 输出失败。");
+        this.close(`Runtime IPC 输出写入失败：${ipcFailureDetails(error)}`);
       }
     });
   }
@@ -259,8 +278,10 @@ export class RuntimeIpcPeer {
         return;
       }
 
-      void this.dispatch(parsed.data).catch(() => {
-        this.close("Runtime IPC 消息分发失败。");
+      void this.dispatch(parsed.data).catch((error) => {
+        this.close(
+          `Runtime IPC 消息分发失败（type=${parsed.data.type}）：${ipcFailureDetails(error)}`,
+        );
       });
     }
 
@@ -310,7 +331,9 @@ export class RuntimeIpcPeer {
     }
 
     if (!this.requestHandler || this.handling.has(message.requestId)) {
-      this.close("Runtime IPC 收到无法处理或重复的请求。");
+      this.close(
+        `Runtime IPC 拒绝请求（operation=${message.operation}, requestId=${message.requestId}）：${!this.requestHandler ? "未注册请求处理程序" : "请求 ID 重复，已有同 ID 操作执行中"}。`,
+      );
 
       return;
     }
@@ -336,6 +359,7 @@ export class RuntimeIpcPeer {
       const status = Reflect.get(Object(error), "status");
       const retryAfterMs = Reflect.get(Object(error), "retryAfterMs");
       const providerRequestId = Reflect.get(Object(error), "requestId");
+      const secrets = this.options.getErrorSecrets?.() ?? [];
 
       this.send({
         type: "response",
@@ -344,9 +368,16 @@ export class RuntimeIpcPeer {
         error: {
           code:
             typeof Reflect.get(Object(error), "code") === "string"
-              ? String(Reflect.get(Object(error), "code")).slice(0, 120)
+              ? ipcErrorText(
+                  String(Reflect.get(Object(error), "code")),
+                  secrets,
+                  120,
+                ) || "RUNTIME_REQUEST_FAILED"
               : "RUNTIME_REQUEST_FAILED",
-          message: "Broker 未能完成 Runtime IPC 请求。",
+          message: ipcErrorText(
+            `Runtime IPC 操作 ${message.operation} 失败（requestId=${message.requestId}）：${ipcFailureDetails(error)}`,
+            secrets,
+          ),
           retryable: typeof retryable === "boolean" ? retryable : undefined,
           status:
             Number.isInteger(status) && status >= 100 && status <= 599
@@ -360,7 +391,7 @@ export class RuntimeIpcPeer {
               : undefined,
           providerRequestId:
             typeof providerRequestId === "string"
-              ? providerRequestId.slice(0, 128)
+              ? ipcErrorText(providerRequestId, secrets, 128)
               : undefined,
         },
       });
@@ -415,10 +446,19 @@ export class RuntimeIpcPeer {
       return;
     }
 
-    this.failure = new RuntimeIpcError(message);
+    this.failure = new RuntimeIpcError(
+      ipcErrorText(message, this.options.getErrorSecrets?.()),
+    );
     for (const pending of this.pending.values()) {
       pending.removeAbortListener();
-      pending.reject(this.failure);
+      pending.reject(
+        new RuntimeIpcError(
+          ipcErrorText(
+            `Runtime IPC 操作 ${pending.operation} 未完成：${this.failure.message}`,
+            this.options.getErrorSecrets?.(),
+          ),
+        ),
+      );
     }
 
     for (const controller of this.handling.values()) {

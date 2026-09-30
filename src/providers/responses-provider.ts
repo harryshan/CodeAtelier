@@ -123,7 +123,11 @@ export class ResponsesProvider implements ModelProvider {
     const total = setTimeout(
       () =>
         controller.abort(
-          new ModelError("模型请求超时", true, "request_timeout"),
+          new ModelError(
+            `模型请求超过 ${this.settings.requestTimeoutMs} ms 总时限，未收到完成事件（requestTimeoutMs）。`,
+            true,
+            "request_timeout",
+          ),
         ),
       this.settings.requestTimeoutMs,
     );
@@ -133,7 +137,11 @@ export class ResponsesProvider implements ModelProvider {
       idle = setTimeout(
         () =>
           controller.abort(
-            new ModelError("模型流长时间无响应", true, "idle_timeout"),
+            new ModelError(
+              `模型流连续 ${this.settings.idleTimeoutMs} ms 未收到事件（idleTimeoutMs）。`,
+              true,
+              "idle_timeout",
+            ),
           ),
         this.settings.idleTimeoutMs,
       );

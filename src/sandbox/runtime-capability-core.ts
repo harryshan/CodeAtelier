@@ -21,6 +21,10 @@ import type {
 } from "../providers/model-provider.js";
 import { tracedModelProvider } from "../tracing/model-provider.js";
 import type { TraceRecorder } from "../tracing/recorder.js";
+import {
+  ipcErrorText,
+  ipcFailureDetails,
+} from "./runtime-ipc-error-details.js";
 
 const MAX_COMMAND_CHARS = 32_000;
 const MAX_CWD_CHARS = 4_096;
@@ -61,6 +65,7 @@ export interface RuntimeModelRequest {
 }
 
 export interface RuntimeBrokerHandlers {
+  getErrorSecrets?: () => string[];
   authorize(identity: RuntimeExecutionIdentity): boolean;
   approveCommand(
     identity: RuntimeExecutionIdentity,
@@ -311,6 +316,10 @@ export class RuntimeBrokerGateway {
         error && typeof error === "object" ? Reflect.get(error, "code") : null;
       this.log?.warn({
         event: "broker.model_request_failed",
+        errorDetail: ipcErrorText(
+          ipcFailureDetails(error),
+          this.handlers.getErrorSecrets?.(),
+        ),
         module: "sandbox",
         sessionId: identity.sessionId,
         taskId: identity.taskId,

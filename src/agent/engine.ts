@@ -985,6 +985,7 @@ export class Engine {
       const gateway = new RuntimeBrokerGateway(
         {
           authorize: (candidate) => authorized && candidate === identity,
+          getErrorSecrets: () => [this.config.apiKey],
           approveCommand: async (_runtime, request, requestSignal) => ({
             approved: await this.approvals.request(
               {
@@ -1024,6 +1025,7 @@ export class Engine {
         nonce,
         gateway,
         {
+          getErrorSecrets: () => [this.config.apiKey],
           subagentStore: async (candidate, request, requestSignal) => {
             assertSubagentTask(candidate);
             switch (request.action) {

@@ -3,7 +3,7 @@
  * withServer 提供服务及清理，不连接外部模型。
  *
  * 1. completed.output 为空时，从 item.done 收集完整工具调用。
- * 2. 检查文本流、缺失完成事件，以及 failed、incomplete 和 error 的错误分类与服务实际错误信息。
+ * 2. 检查文本流、缺失完成事件，以及 failed、incomplete 和 error 的错误分类与服务实际错误信息；挂起流验证总超时/空闲超时及配置时限提示。
  * 3. completed.output 有内容时应优先使用，最终消息正文也优先于暂存文本。
  * 4. 检查网页搜索 URL 引用转为可点击 Markdown 来源，以及输出上限、配置/单次覆盖的思考等级、内置网页搜索和并行工具调用偏好是否正确发出。
  *
@@ -51,6 +51,55 @@ async function withServer(
     await new Promise<void>((r) => server.close(() => r()));
   }
 }
+
+it.each([
+  {
+    requestTimeoutMs: 150,
+    idleTimeoutMs: 3000,
+    code: "request_timeout",
+    detail: "150 ms 总时限",
+  },
+  {
+    requestTimeoutMs: 3000,
+    idleTimeoutMs: 150,
+    code: "idle_timeout",
+    detail: "150 ms 未收到事件",
+  },
+])(
+  "reports configured time limits for $code",
+  async ({ requestTimeoutMs, idleTimeoutMs, code, detail }) => {
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.flushHeaders();
+    });
+    await new Promise<void>((resolve) =>
+      server.listen(0, "127.0.0.1", resolve),
+    );
+
+    try {
+      const port = (server.address() as { port: number }).port;
+      const provider = new ResponsesProvider(
+        {
+          ...settings,
+          baseUrl: `http://127.0.0.1:${port}/v1`,
+          requestTimeoutMs,
+          idleTimeoutMs,
+        },
+        "test-key",
+      );
+      await expect(
+        provider.run([], "", [], new AbortController().signal, () => {}),
+      ).rejects.toMatchObject({
+        code,
+        retryable: true,
+        message: expect.stringContaining(detail),
+      });
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  },
+);
 
 it("collects item.done when completed output is empty and preserves function calls", async () => {
   const call = {

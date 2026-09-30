@@ -119,10 +119,13 @@ it("rejects forged subagent requests and retains leases until the instance is cl
     tools: subagentToolDefinitions,
   };
 
-  const rejectedByBroker = async (request: Promise<unknown>) => {
+  const rejectedByBroker = async (
+    request: Promise<unknown>,
+    reason = /model_run.*(授权|not registered|身份)/,
+  ) => {
     await expect(request).rejects.toMatchObject({
       code: "RUNTIME_REQUEST_FAILED",
-      message: "Broker 未能完成 Runtime IPC 请求。",
+      message: expect.stringMatching(reason),
     });
   };
 
@@ -158,7 +161,7 @@ it("rejects forged subagent requests and retains leases until the instance is cl
       ),
     ).rejects.toMatchObject({
       code: "SANDBOX_RUNTIME_IPC",
-      message: "Runtime IPC 请求无效。",
+      message: expect.stringMatching(/subagent_store.*body/),
     });
     await expect(
       peer.request(
@@ -214,6 +217,7 @@ it("rejects forged subagent requests and retains leases until the instance is cl
         { leaseId: lease.leaseId },
         signal,
       ),
+      /subagent_lease_release.*租约无效或已释放/,
     );
     await peer.request(
       "subagent_lease_acquire",

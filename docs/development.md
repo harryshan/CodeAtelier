@@ -49,6 +49,8 @@ Runtime 执行开始后的错误标为 `unknown`，绝不自动重放；ACL/Job 
 
 实际模式按 task/execution instance 保存并通过工具结果公开，不读取并发任务共享的“最近状态”。Sandbox 生命周期另写入平台数据目录的 `logs/sandbox.log`。
 
+Runtime IPC 失败在会话中显示具体 operation、requestId、错误码和脱敏后的实际原因，保留最多三层 cause；不序列化异常附带的请求/响应正文。错误消息最多 1000 字符，截断会标明。模型总超时指出 `requestTimeoutMs` 的毫秒数和未收到完成事件，流空闲超时指出 `idleTimeoutMs` 及无事件时长；两者继续沿用现有有界重试。总时限不会随流事件延长。校验失败指出字段路径和校验代码，不回显请求值；没有详细异常时明确说明处理程序未提供详情，并保留操作和关联 ID 供定位。Broker 模型失败日志只增加显式脱敏、限长的错误摘要，trace 继续只保存受控错误码/类型等元数据。
+
 `runtime-capability-core.ts` 提供传输无关的一次性 command grant 与模型代理核心；`runtime-ipc-*`、`AgentRuntimeService` 和 Runtime 侧 adapter 已实现完整 agent loop 的应用层边界。
 
 Windows 且 Sandbox 开启时，`createApp` 默认注入 `SandboxBroker` 作为 `AgentRuntimeLauncher`：Engine 通过 C++ Sandbox Supervisor 启动每任务一个常驻 Agent Runtime，模型、session、审批和 memory 经任务专属 Runtime IPC 返回 Broker；禁用、非 Windows 或可证明启动前完整回滚的 fallback 才由 Broker Host 运行 loop。

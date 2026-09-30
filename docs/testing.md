@@ -126,6 +126,8 @@ item.done 回退、失败/不完整事件、服务实际错误 message/reason/co
 
 主要测试：provider.test.ts、engine.test.ts、agent-runtime-engine.test.ts、tool-schema.test.ts、core.test.ts。
 
+错误诊断另由 runtime-ipc-errors.test.ts 覆盖：跨 IPC 保留模型超时、HTTP 原因、重试元数据和底层 cause；凭据脱敏、消息限长、未知异常不序列化正文、无效请求定位字段。provider.test.ts 使用本机流服务区分总超时和空闲超时，并检查提示包含实际配置时限。
+
 主任务请求包含 OpenAI 内置 `web_search`，宿主与 Agent Runtime 路径一致；Responses URL 引用只接受 HTTP(S)、按 URL 去重并转为可点击 Markdown 来源；内置工具不注册为本地函数或 DAG 节点
 
 ### agent 循环、任务调度与工具 DAG
