@@ -88,15 +88,15 @@
 - 云端部署、远程访问、多用户账号或账户系统。
 - 无人值守的崩溃重启执行；人工恢复已纳入范围（D018）。
 
-### Windows Sandbox 预览范围
+### Windows Sandbox 范围与验证状态
 
-Windows 专用用户 Sandbox 已接入预览实现，但尚未完成固定账户提升环境端到端验收。macOS/Linux 不加载该后端，继续使用宿主路径。
+Windows 专用用户 Sandbox 已通过用户实际使用验证：2026-10-03 用户确认持续使用一段时间功能正常，按可用于日常开发记录（D130）。默认关闭，需要显式安装和启用。macOS/Linux 不加载该后端，继续使用宿主路径。此确认不等于逐项完成所有安全/故障矩阵，也不开放只读 subagent。
 
 - **执行位置**：常驻 Agent Runtime 在专用账户、restricted token 和 Job 中运行。Broker 保留模型密钥、会话存储和审批；全部 Git 工具 action 在 Broker 以宿主用户权限执行，push 另做预检和逐次审批。获批的 `run_with_permissions` 命令也由 Broker 执行；这些宿主执行均明确记为未受 Sandbox 保护。
 - **文件与并发**：AccessManifest 投影工作区、显式读写根和运行依赖；实例 token 包含 root capability 与 `Everyone` restricting SID。已有 ACL 允许 Everyone 写入的对象可能绕过 root capability，因此不承诺完整写入隔离。多个实例共用账户，读取根会形成并集，存在 peer 干扰风险；不同对话不是 OS 安全边界，也不承诺纯读取 allowlist。
 - **审批与网络**：已有权限内的工具免审批；越界命令用 `run_with_permissions` 提交命令和理由，经三级审批后由 Broker 宿主进程执行，不额外限制文件根、网络目标或宿主可用凭据。push 独占工具批次，Broker 从真实仓库读取 upstream/URL/OID/ref，逐次审批后以宿主用户权限执行。Capability Runner 和 Push Runner 代码保留但暂不启用；专用账户 WFP 不临时放宽。
 - **失败处理**：只有 Runtime 启动前且可证明完整回滚时才自动回退宿主，并明确提示任务未受 Sandbox 保护。Broker 宿主命令和 push 是明确获批的执行位置，不是 fallback。已启动命令或 push 结果未知时不重放；Sandbox 实例清理未知时隔离并排空账户 generation。
-- **验收边界**：原生构建、协议与 harness 通过不能替代真实安装、IPC、取消、网络、push 和恢复验收。工作区直接写入，包含 `.git` 和 `.env`，不提供副作用回滚。
+- **验收边界**：日常功能可用性已有用户实际使用确认；原生构建、协议与 harness 或日常使用反馈，都不能代替未明确覆盖的错误 IPC、复杂 ACL、网络、真实 push 和异常恢复专项证据。工作区直接写入，包含 `.git` 和 `.env`，不提供副作用回滚。
 
 完整权限、失败条件与 W0--W6 验收要求以 [Windows Sandbox 架构](windows-integrity-sandbox.md) 为准；安装和操作见 [使用指南](windows-sandbox-guide.md)。
 
@@ -113,7 +113,7 @@ Windows 专用用户 Sandbox 已接入预览实现，但尚未完成固定账户
 - 跨平台实现需处理路径、shell、进程生命周期、文件权限和编码差异；版本与浏览器矩阵确定后安排对应验证。
 - 模型层保持小型接口，先落地一种 API 协议，再按实际需要扩展；不预先承诺兼容所有提供商。
 - 明确最大步骤、命令超时、上下文容量和重试上限，避免无限循环或无限重试。
-- 工具授权是应用逻辑，不能冒充操作系统沙箱。专用用户/Broker 是 Windows 后续目标设计，不承诺当前可用、跨平台或已经具备 Windows 原生系统级隔离；它只对未授权且 DACL 正常的对象提供有限保密性，只有通过各阶段真实验收后才可更新能力声明。
+- 工具授权是应用逻辑，不能冒充操作系统沙箱。Windows 专用用户/Broker 已实现并通过用户实际使用验证；其 OS 级限制仍以专用账户、restricted token、ACL/Job/WFP 的实际边界为准，只提供有限保密性，不承诺完整读写 allowlist、任务间隔离或跨平台 Sandbox。后续安全能力声明须有对应专项证据。
 
 模块结构方向（实际目录和职责见 architecture.md）：
 

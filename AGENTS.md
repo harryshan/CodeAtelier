@@ -11,9 +11,9 @@
 - 保持清晰的目录、模块与代码文件结构。
 - 保持完善且与开发同步更新的文档。
 - **初版功能边界已确认**，以 docs/requirements.md 第 2、5 节为范围与验收依据；用户已授权开始实现；当前按 Node.js 24/26、React/Vite、Fastify、SQLite、Pino 技术方案开发。
-- 第一版使用 Web UI 作为用户交互界面，支持 Windows、macOS 和 Linux，优先完成读代码、修改与验证闭环。后续 Windows Sandbox 使用单一专用低权限本地账户、per-instance restricted token/Job/capability、显式文件 ACL 与按账户 SID 的 WFP；全部 Git 工具 action 在 Broker 中以宿主用户权限执行，push 仍逐次审批。Sandbox 模式沿用 1～4 个不同工作区并发和同工作区串行。
+- 第一版使用 Web UI 作为用户交互界面，支持 Windows、macOS 和 Linux，优先完成读代码、修改与验证闭环。Windows Sandbox 使用单一专用低权限本地账户、per-instance restricted token/Job/capability、显式文件 ACL 与按账户 SID 的 WFP；全部 Git 工具 action 在 Broker 中以宿主用户权限执行，push 仍逐次审批。Sandbox 模式沿用 1～4 个不同工作区并发和同工作区串行。
 
-  应用层 AgentRuntimeService、Engine launcher 分流与 model/session/approval/memory adapter 已在独立 Node 子进程 harness 跑通；默认 Windows 组装现已接入 C++ Supervisor launcher、任务专属 Named Pipe 字节代理和 PID/创建时间/Job/token/capability/映像联合检查，但尚未完成固定账户提升环境端到端验收，因此专用账户 Runtime 仍不可描述为当前可用或跨平台实现。
+  Windows 专用账户 Runtime 已接入 C++ Supervisor launcher、任务专属 Named Pipe 字节代理和 PID/创建时间/Job/token/capability/映像联合检查。2026-10-03 用户确认持续使用一段时间功能正常，Windows Sandbox 按实际使用验证通过、可用于日常开发记录，不再笼统描述为尚不可用的预览。默认关闭及显式安装规则不变；该结论不扩展为跨平台实现、完整安全矩阵通过或 subagent 已开放。来源与专项证据边界见 docs/verification.md、D130。
 
 - 默认采用本机后端 + 本机浏览器访问并监听回环地址；用户显式配置后可在受信任局域网监听，仍不提供公网部署、多用户账户或权限分级。Web UI 可由环境变量启用单一访问密码门禁；此限制针对 UI 和后端服务的入站访问，不限制已配置的模型 API 调用。
 - 跨平台设计需覆盖路径、shell、进程取消和文件权限差异；不得将单一系统验证描述为全平台验证。具体系统版本与浏览器支持矩阵待定。
@@ -29,7 +29,7 @@
 
 ### Windows Sandbox 开发边界
 
-Windows 专用用户 Runtime、独立 C++ supervisor 与 Broker 是已确认的后续 Sandbox 目标架构：一次性提升安装创建 `CodeAtelierSandbox` 账户及按其 SID 的持久 WFP fence；每次任务向该账户投影工作区和显式 read/write roots，并用 `WRITE_RESTRICTED` token、根 capability、Job、desktop 与 IPC 限制目标写入和能力。Git 工具已经移到 Broker；旧 Git config graph、relay 与 Runner 代码保留但不作为现行产品边界。
+Windows 专用用户 Runtime、独立 C++ supervisor 与 Broker 是当前 Windows Sandbox 架构：一次性提升安装创建 `CodeAtelierSandbox` 账户及按其 SID 的持久 WFP fence；每次任务向该账户投影工作区和显式 read/write roots，并用 `WRITE_RESTRICTED` token、根 capability、Job、desktop 与 IPC 限制目标写入和能力。Git 工具已经移到 Broker；旧 Git config graph、relay 与 Runner 代码保留但不作为现行产品边界。
 
 Sandbox 沿用 1～4 个不同工作区并发、同工作区串行；同账户实例会形成活动授权根的读取并集，不提供任务间 OS 级读取、进程或对象隔离。受限 token 的 restricting SID 包含 `Everyone` 以兼容 Windows 系统组件；已有 ACL 授予 Everyone 写入的对象可绕过本实例 root capability，因此不能保证实例之间或实例之外的完整文件写入隔离。不同对话不是彼此的安全边界；同账户 peer 也可能终止、注入或检查其它 Runtime。
 
@@ -41,7 +41,7 @@ Agent Runtime 已有权限内的工具不再审批；越界命令通过 `run_wit
 
 启动前自检或尚未创建 Runtime 的 provision 失败时，在明确提示“本任务未受 Sandbox 保护”、记录原因并将 executionInstance 标为 `host-process` 后自动回退宿主执行；独立 Runner 不允许宿主 fallback。命令已经启动、结果未知或清理无法证明完成时不得自动重放，仍须隔离账户 generation、停止新 Sandbox 任务并排空活动实例。
 
-取消结果以 executionInstance kind 写入 session。首版不依赖 AppContainer、自研 WFP callout driver、实验性的 `CreateProcessInSandbox`/Bound File System 或 Chromium Target hook。在另行授权实现并完成分层平台验收前，不得将其当作当前可用功能或跨平台系统级沙箱。
+取消结果以 executionInstance kind 写入 session。首版不依赖 AppContainer、自研 WFP callout driver、实验性的 `CreateProcessInSandbox`/Bound File System 或 Chromium Target hook。这些未采用机制不得描述为已实现。Windows Sandbox 的日常可用性已获用户确认，但不因此扩大既有权限保证或跨平台能力声明；专项故障与安全矩阵仍按实际证据记录。
 
 ## 需求的权威来源
 

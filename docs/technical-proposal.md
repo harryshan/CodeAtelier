@@ -34,7 +34,7 @@
 - 文件工具核对真实路径、敏感文件与读取版本；`edit_files` 不覆盖并发变化的文件。
 - 宿主命令在执行前按策略审批，辅助模型可以通过、拒绝或转人工；获准命令仍具有宿主用户权限。
 - 产品 Git 使用受限 action 和固定参数，允许合规的暂存、提交和 upstream 推送；不开放任意 Git 参数或强推。
-- Windows Sandbox 使用专用账户、restricted token、ACL/WFP 和独立 Runner。该预览仍待提升环境完整验收，不能视为跨平台安全保证。
+- Windows Sandbox 使用专用账户、restricted token、ACL/WFP、C++ Supervisor 与常驻 Agent Runtime，已通过用户实际使用验证，可用于日常开发；默认关闭、显式安装启用。独立 Capability/Push Runner 暂停使用，获批越界命令与全部 Git 工具 action 在 Broker 宿主执行。日常可用性不等于完整安全矩阵或跨平台保证。
 
 具体权限规则集中维护在 [开发说明](development.md#权限交互)；Sandbox 边界见 [架构专题](windows-integrity-sandbox.md)。
 

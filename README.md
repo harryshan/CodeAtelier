@@ -4,7 +4,7 @@
 
 CodeAtelier 是使用 TypeScript 开发的个人 coding agent：后端在本机操作你选择的项目，通过用户配置的 Responses API 服务调用模型，Web UI 展示计划、流式回复、工具执行、文件差异和审批过程。核心 agent 循环、工具调度、上下文管理和权限机制自行实现，不依赖 agent 编排框架。
 
-> 当前公开能力以单 agent 为主；只读 subagent 尚未开放。Windows 专用账户 Sandbox 属于默认关闭的预览能力，不能视为跨平台隔离保证。平台与功能的实测范围见 [验证记录](docs/verification.md)。
+> 当前公开能力以单 agent 为主；只读 subagent 尚未开放。Windows 专用账户 Sandbox 已通过用户实际使用验证，可用于日常开发；默认关闭、按需安装启用，不是跨平台隔离保证。平台与功能的实测范围见 [验证记录](docs/verification.md)。
 
 ## 项目亮点
 
@@ -154,7 +154,7 @@ description: 审查当前修改，检查调用方、测试和文档，不自动�
 - **本机后端不等于离线运行**：模型请求会把任务所需的对话、代码片段和工具结果发送给你配置的模型服务；Skill 正文和 MCP 结果也可能进入上下文。使用前确认这些数据允许发送。
 - **审批不等于系统隔离**：宿主模式下获准命令以本机用户权限运行，应只用于可信项目。辅助模型审批不能替代对高风险操作的检查。
 - **Sandbox 外的执行仍有宿主权限**：全部 Git 工具 action、获批的 `run_with_permissions` 命令及 MCP 操作由 Broker 执行，不受 Runtime Sandbox 保护。Git push 仍需逐次审批。
-- **Windows Sandbox 是预览能力**：默认关闭，需管理员安装；历史安装态已有部分链路通过，但当前版本仍需重建、Repair 和独立验收，复杂 ACL、真实远端 push、强制终止及重启恢复等矩阵尚未完整通过。共用账户和 Everyone restricting SID 意味着不能承诺完整读写 allowlist 或任务间 OS 隔离。启动前特定失败可能明确警告后回退宿主，不能只凭开关判断任务受保护。macOS/Linux 使用宿主路径。试用前阅读 [Sandbox 使用指南](docs/windows-sandbox-guide.md) 与 [架构及边界](docs/windows-integrity-sandbox.md)。
+- **Windows Sandbox 已通过实际使用验证**：用户持续使用一段时间后确认功能正常，可用于日常开发。默认关闭，需管理员安装并显式启用；升级安装组件时仍需重建、Repair 和复核。日常可用性确认不等于复杂 ACL、真实远端 push、强制终止及重启恢复等专项矩阵全部通过。共用账户和 Everyone restricting SID 意味着不能承诺完整读写 allowlist 或任务间 OS 隔离。启动前特定失败可能明确警告后回退宿主，不能只凭开关判断任务受保护。macOS/Linux 使用宿主路径。启用前阅读 [Sandbox 使用指南](docs/windows-sandbox-guide.md) 与 [架构及边界](docs/windows-integrity-sandbox.md)。
 
 只读 subagent 尚未对外开放；工具并行和不同工作区的任务并发不等于多 agent。当前也不提供完整 IDE、交互式终端、浏览器自动化、云端部署或多用户权限系统。
 
@@ -252,5 +252,5 @@ docs/            # 需求、设计、使用与验证记录
 | 开发与贡献   | [架构](docs/architecture.md) · [配置与排错](docs/development.md) · [代码规范](docs/code-style.md) · [Agent 工作约定](AGENTS.md)                        |
 | 上下文与恢复 | [上下文管理](docs/context-management.md) · [模型容量与 token](docs/model-tokens.md) · [项目记忆](docs/memory-system.md) · [任务恢复](docs/recovery.md) |
 | 扩展能力     | [Skill](docs/skills.md) · [MCP](docs/mcp.md) · [只读 subagent 设计与进度](docs/multi-agent-design.md)                                                  |
-| Sandbox 预览 | [使用指南](docs/windows-sandbox-guide.md) · [Windows 架构与验收边界](docs/windows-integrity-sandbox.md)                                                |
+| Sandbox      | [使用指南](docs/windows-sandbox-guide.md) · [Windows 架构与验收边界](docs/windows-integrity-sandbox.md)                                                |
 | 测试与诊断   | [测试约定](docs/testing.md) · [验证记录](docs/verification.md) · [Replay Case](docs/replay-cases.md) · [手动 SWE-bench 评测](docs/swebench.md)         |

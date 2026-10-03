@@ -1,5 +1,13 @@
 # 初版验证记录
 
+## Windows Sandbox 实际使用验证通过（2026-10-03，用户确认）
+
+- **结论：Windows Sandbox 已通过用户实际使用验证，可用于日常开发。** 用户明确反馈：“windows sandbox已经可以算通过验证了，使用一段时间功能正常。”据此更新当前产品状态，不再笼统标为预览、尚不可用或仅有 harness 验证（D130）。
+- 证据来源是用户在当前 Windows 环境持续使用后的确认；此前 2026-09-27 的固定账户安装态产品链路已记录普通命令、Broker Git、主动取消和正常清理通过。本次没有新增安装态测试输出，也不虚构使用时长、任务数量、系统版本、Node 版本或具体安装摘要。
+- 此确认针对日常功能可用性，不等同于错误 IPC 客户端、复杂 ACL、真实 remote push/凭据/helper、强制终止、崩溃/重启恢复、资源上限等专项矩阵逐项通过；这些场景继续按具体证据记录。macOS/Linux 不因此获得 Windows Sandbox 能力。
+- 默认关闭、管理员显式安装/Repair、任务实际执行模式归因、已知权限限制、Broker 宿主执行和未知结果不重放保持不变。只读 subagent 的公开门禁未由本次确认开放，仍须独立核对其就绪状态。
+- 下文保留各次检查当时的结果；早期的“尚未验收”“当前不可用”不再代表当前 Windows Sandbox 日常可用性，旧 Runner/relay 的证据也不代表当前 Broker 执行边界。
+
 ## 移除 subagent 专属研究配额（2026-10-03）
 
 - 按 D129 同步调整主工具/Worker 契约、协调器、Runtime IPC 和 SQLite：计划/通信次数、子模型轮数/时长/token、正文/上下文/报告不再附加子任务专属阈值。先添加三项容量回归并观察旧实现全部失败，再修复实现；原只读、身份、取消、恢复与发布门禁断言保持。
@@ -122,7 +130,7 @@
 
 修复文件新建竞争覆盖、历史分片取锁失败残留事务，以及进程持久化回调/管道异常逃逸。复现、修复和边界见 [本轮审查记录](repository-review-2026-09-23.md)。Windows 最终 `pnpm check` 通过：421 项通过、1 项跳过，类型/lint/格式/构建通过；Chromium E2E 23/23 通过且正常退出。未运行 Evaluation 或真实模型，未完成固定账户原生端到端验收。
 
-日期：2026-09-07；后续条目按各自日期补充。以下区分实际验证和计划覆盖，不将构建成功等同于跨平台运行成功。**Windows 专用用户 Runtime 的产品代码、受保护 bundle、安装器、ACL/Job、持久 WFP、journal、CONNECT relay、默认 Supervisor launcher 和联合身份 Named Pipe 已接入，但尚未完成固定账户提升环境端到端验收。AgentRuntimeService 与模型/session/审批 adapter 已在独立 Node 子进程 harness 通过；结构化 PushSpec、独立 Push Runner 和 Agent Runtime 阻塞等待链已接入应用代码，但真实安装下的错误 pipe 客户端、取消/恢复及 remote push 矩阵仍未验证。WSL2 与 restricted-token demo 仍只是历史或局部证据。代码存在、stdio 跨进程测试、单测或 native build 通过都不能扩展成 W0--W6 完成或跨平台 Sandbox 能力。**
+以下保留从 2026-09-07 起积累的历史记录；后续条目按各自日期补充。早期状态不代表当前结论，Windows Sandbox 日常可用性以本文开头的 2026-10-03 用户确认为准。以下区分实际验证和计划覆盖，不将构建成功等同于跨平台运行成功。**Windows 专用用户 Runtime 的产品代码、受保护 bundle、安装器、ACL/Job、持久 WFP、journal、CONNECT relay、默认 Supervisor launcher 和联合身份 Named Pipe 已接入，但尚未完成固定账户提升环境端到端验收。AgentRuntimeService 与模型/session/审批 adapter 已在独立 Node 子进程 harness 通过；结构化 PushSpec、独立 Push Runner 和 Agent Runtime 阻塞等待链已接入应用代码，但真实安装下的错误 pipe 客户端、取消/恢复及 remote push 矩阵仍未验证。WSL2 与 restricted-token demo 仍只是历史或局部证据。代码存在、stdio 跨进程测试、单测或 native build 通过都不能扩展成 W0--W6 完成或跨平台 Sandbox 能力。**
 
 ## 本机实际验证
 

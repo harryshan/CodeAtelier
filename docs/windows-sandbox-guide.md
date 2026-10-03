@@ -1,8 +1,10 @@
-# Windows Sandbox 使用指南（预览）
+# Windows Sandbox 使用指南
 
 > **适用范围与状态：** 此功能只面向 Windows，默认关闭，且需要一次性管理员安装；macOS 和 Linux 即使设置开关也会继续使用 `non-isolated` 宿主路径。
 >
-> 当前代码已经接入专用账户、C++ Supervisor、Agent Runtime、AccessManifest、ACL/WFP 和认证 IPC。本机固定账户安装态的模拟模型任务、普通命令、Broker Git、主动取消和正常清理已通过；真实 remote push、复杂 ACL、强制终止、崩溃及重启恢复仍未验收。Capability Runner 与 Push Runner 代码保留但暂停使用；获批 `run_with_permissions` 命令和全部 Git 工具 action 由 Broker 以宿主用户权限运行，其中 push 逐次审批。因此它仍是**预览能力，而非稳定或跨平台的安全保证**。请只在可备份、可信的测试项目中试用。
+> **已通过用户实际使用验证，可用于日常开发。** 2026-10-03 用户确认 Windows Sandbox 持续使用一段时间功能正常；结合此前本机固定账户安装态产品链路的通过记录，不再将该功能标为尚不可用的预览。该结论针对用户当前 Windows 环境的日常使用，不代表所有安全/故障专项或其他平台均已验证，详见 [验证记录](verification.md)。
+>
+> 当前实现包括专用账户、C++ Supervisor、Agent Runtime、AccessManifest、ACL/WFP 和认证 IPC。Capability Runner 与 Push Runner 代码保留但暂停使用；获批 `run_with_permissions` 命令和全部 Git 工具 action 由 Broker 以宿主用户权限运行，其中 push 逐次审批。继续只用于可信项目，保留重要文件的备份；默认关闭和安装维护流程不变。
 >
 > 完整架构、分层验收状态和已知限制见 [Windows 专用用户 Sandbox Runtime 与 Broker 架构](windows-integrity-sandbox.md)。
 
@@ -83,7 +85,7 @@ Sandbox **不会**创建 worktree、暂存副本或自动回滚：可写操作�
 
    | 状态                    | 含义                                                                                                                                | 你应如何处理                                                                              |
    | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
-   | `sandboxed`             | 专用用户 Runtime 已成功启动并承载该任务；获批 Broker 宿主命令仍是例外。                                                             | 仍遵守本节的工作区、同账户 peer 和预览限制；查看每条命令的执行实例。                      |
+   | `sandboxed`             | 专用用户 Runtime 已成功启动并承载该任务；获批 Broker 宿主命令仍是例外。                                                             | 仍遵守本节的工作区、同账户 peer 和权限限制；查看每条命令的执行实例。                      |
    | `host-process-fallback` | Runtime 启动前的 preflight/provision/self-check 失败，但系统已证明没有 Sandbox 操作启动且临时授权已回滚；任务自动改用宿主权限执行。 | 把它当作未隔离任务；检查警告、`sandbox.log` 和安装状态。                                  |
    | `non-isolated`          | Sandbox 开关关闭，或平台不是 Windows。                                                                                              | 命令按原有宿主审批与权限路径运行。                                                        |
    | `unknown` / `orphaned`  | Runtime、Runner 或清理结果无法证明；副作用可能已发生。                                                                              | 不要自动重试或恢复同一副作用。先核对当前文件/Git 状态，并处理安装或账户 generation 问题。 |
@@ -94,9 +96,9 @@ Sandbox **不会**创建 worktree、暂存副本或自动回滚：可写操作�
 
 - **宿主模式或 fallback：** 原有命令与工具审批仍生效；获准命令以当前本机用户权限运行，适用于你信任的项目。低成本模型的 `approve` 不会绕过路径、敏感文件、Git、提权或并发校验。
 - **已启动的 Sandbox Agent Runtime：** AccessManifest/WFP 范围内的文件工具和普通命令不再逐项审批；Git 工具 action 在 Broker 使用宿主用户权限执行，push 另需逐次审批。越界普通文件工具会被拒绝；越界命令必须通过 `run_with_permissions` 提交完整命令和理由，经 review 后由 Broker 使用宿主用户权限运行。它可访问宿主用户有权访问的文件、网络和凭据，务必按该权限审查命令。
-- **Git push：** 仅支持已校验 upstream 的既有 Git 工具契约；push 必须独占当前工具批次，审批会展示预检 URL、目标和 Broker 宿主权限。Git 配置、hook/helper 与网络不受专用账户 Sandbox 限制。当前真实 remote/凭据/helper 兼容性尚未完成验收，不应将预览实现用于关键生产推送。
+- **Git push：** 仅支持已校验 upstream 的既有 Git 工具契约；push 必须独占当前工具批次，审批会展示预检 URL、目标和 Broker 宿主权限。Git 配置、hook/helper 与网络不受专用账户 Sandbox 限制。日常使用确认未提供真实 remote/凭据/helper 的逐项兼容性证据，关键推送前仍须核对目标、权限与结果。
 
-- **MCP：** 所有 stdio/HTTP 连接由本机 Broker 建立，除列出配置别名外均走审批；不受 Runtime 的 ACL/WFP/Job 保护。结果标记 `broker-mcp/host-process`，未知结果不得自动重放。配置与限制见 [MCP 指南](mcp.md)。MCP 接入将 Runtime IPC 升至 v5，旧安装包需重建并 Repair；应用层 stdio 测试不替代安装态验收。
+- **MCP：** 所有 stdio/HTTP 连接由本机 Broker 建立，除列出配置别名外均走审批；不受 Runtime 的 ACL/WFP/Job 保护。结果标记 `broker-mcp/host-process`，未知结果不得自动重放。配置与限制见 [MCP 指南](mcp.md)。当前 Runtime IPC 为 v7，旧安装包需重建并 Repair；应用层 stdio 测试不替代具体 MCP 服务的安装态与兼容性验证。
 
 ### 维护、故障处理与卸载
 
@@ -112,7 +114,7 @@ Sandbox **不会**创建 worktree、暂存副本或自动回滚：可写操作�
 
 Sandbox 生命周期日志位于平台数据目录的 `logs/sandbox.log`，常规应用日志和会话历史仍分别保存。
 
-若要完全关闭预览能力，将 `.env` 改回以下值并重启或重载服务；若还要移除机器级安装对象，再按上表执行卸载：
+若要关闭 Sandbox，将 `.env` 改回以下值并重启或重载服务；若还要移除机器级安装对象，再按上表执行卸载：
 
 ```dotenv
 CODEATELIER_SANDBOX_ENABLED=false

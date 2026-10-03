@@ -2,15 +2,15 @@
 
 当前初版为本机后端、浏览器单页应用、单 agent；不同真实工作目录的会话默认最多两个任务并行，同一目录严格串行。
 
-Windows Sandbox 仍处于预览验收态：启用时默认产品组装会由 C++ Sandbox Supervisor 启动常驻 Agent Runtime；Supervisor 创建任务专属 Named Pipe，联合核对 PID、创建时间、Job、账户、restricted SID、capability 与固定 Node 映像后代理 Broker IPC。
+Windows Sandbox 已通过用户实际使用验证，可用于日常开发：启用时默认产品组装会由 C++ Sandbox Supervisor 启动常驻 Agent Runtime；Supervisor 创建任务专属 Named Pipe，联合核对 PID、创建时间、Job、账户、restricted SID、capability 与固定 Node 映像后代理 Broker IPC。
 
-该路径已有 native build、协议和无管理员副作用回归，但尚未完成固定账户提升环境端到端验收，不能描述为当前稳定可用能力。严格术语和完成判据见 [Windows 专用用户 Sandbox Runtime 与 Broker 架构](windows-integrity-sandbox.md#0-术语进程和完成条件)。Sandbox 模式沿用 1～4 个不同工作区并发和同工作区串行；macOS/Linux 明确不加载这套 Windows 后端。
+该路径已有 native build、协议回归及本机固定账户安装态产品链路证据；2026-10-03 用户进一步确认持续使用一段时间功能正常（D130）。日常可用性确认不代表所有故障注入或安全专项矩阵均已通过。严格术语和完成判据见 [Windows 专用用户 Sandbox Runtime 与 Broker 架构](windows-integrity-sandbox.md#0-术语进程和完成条件)。Sandbox 模式沿用 1～4 个不同工作区并发和同工作区串行；macOS/Linux 明确不加载这套 Windows 后端。
 
 核心机制自行实现，没有引入 agent 编排框架。
 
 ## 模块与数据流
 
-下图是已经接入代码、仍待提升环境验收的目标进程边界。`AgentRuntimeService` 与 Engine launcher 承载 agent loop；SandboxBroker 管理 manifest、generation lease、启动前 fallback 与启动后 quarantine；C++ Supervisor 创建并验证真实 Named Pipe 客户端后代理 `runtime-ipc-*` 字节流。
+下图是当前产品的进程边界。`AgentRuntimeService` 与 Engine launcher 承载 agent loop；SandboxBroker 管理 manifest、generation lease、启动前 fallback 与启动后 quarantine；C++ Supervisor 创建并验证真实 Named Pipe 客户端后代理 `runtime-ipc-*` 字节流。
 
 独立 Node harness 证明应用协议，native build 证明代码可构建，两者仍不能替代固定账户下的真实联合验收。
 
@@ -20,14 +20,15 @@ Browser / Web UI
 Broker Host（可信宿主边界）
   ├─ 策略、审批、AccessManifest、SandboxProcessRecord、执行账本与 tracing
   ├─ 审批后的 run_with_permissions：宿主命令进程，不附加 Sandbox 文件或网络限制
+  ├─ 全部 Git 工具 action：宿主执行，push 另做预检与逐次审批
   ├─ C++ supervisor、专用账户租约与 Job 生命周期
   ├─ 参数受限的 model / storage / network / external adapters
   └─ 经认证、固定 schema 的 IPC
        ↕
 Sandbox Process（单一 CodeAtelierSandbox 账户；每实例独立 lease/capability/Job）
-  ├─ Agent Runtime：常驻 Node.js agent loop、工具计划、文件工具与普通命令；无直接网络（Windows 启动/传输已接入，待提升环境验收）
-  ├─ Broker Git push：宿主 Git 预检、审批与执行；旧 Push Runner 代码暂停使用
-  ├─ 账户既有读取权 + 工作区、显式 read/write roots 与精确只读 Git config/include 图
+  ├─ Agent Runtime：常驻 Node.js agent loop、工具计划、文件工具与普通命令；无直接网络
+  ├─ Git / run_with_permissions：经认证 IPC 请求 Broker，不在 Sandbox 内执行
+  ├─ 账户既有读取权 + 工作区、显式 read/write roots；不投影宿主 Git config/include 图
   └─ WRITE_RESTRICTED 根 capability、产品依赖与私有临时目录；不继承宿主 profile/凭据
 ```
 
@@ -39,7 +40,7 @@ Windows 启用时的产品调用链现为 `Broker Engine → SandboxBroker launc
 
 安装版 Runtime 的 argv 只携带 Supervisor 生成的本机任务 pipe 名，identity/nonce 由有界首帧交付；产品 build 生成以 Node 24 为兼容基线、支持 Node 24/26 的单文件 Runtime 与独立 compaction、read_file、subagent Worker bundle，安装器把选定的 Node 24 或 26 和 bundle 固定到受保护目录，TypeScript/native self-check 复核 v4 state 中的 SHA-256。
 
-启动前回退时由宿主 loop 继续执行，实际模式记录为 `host-process`。只有提升环境证明这条真实链路的身份、取消、清理与恢复后，才满足 Agent Runtime 完成条件。
+启动前回退时由宿主 loop 继续执行，实际模式记录为 `host-process`。用户已确认当前 Windows 链路的日常功能可用性；身份、取消、清理与恢复的专项证据仍分别记录，不由该确认推导全矩阵通过。
 
 以下文件职责描述当前实现；专用用户/Broker 的完整边界以 [windows-integrity-sandbox.md](windows-integrity-sandbox.md) 为准。无论当前还是目标架构，前端都不能导入文件、进程或密钥实现。
 
@@ -149,8 +150,8 @@ Agent Runtime 已有权限内的普通命令在 Runtime 内执行且免审批；
 | config/settings.ts / config.ts / data-directory.ts                                               | 连接/偏好参数 schema、仅保存偏好的配置加载、内存密钥与平台数据目录                                                                                                                                                                         |
 | tracing/recorder.ts / archive.ts / model-provider.ts                                             | 任务 span、模型安全摘要、Sandbox execution/instance/kind、跨轨道 flow、Trace Event JSON 导出，以及按会话/任务安全落盘；模型包装器保持 Provider 契约与取消语义                                                                              |
 | sandbox/broker.ts / runtime-capability-core.ts                                                   | Sandbox 优先/宿主 fallback 分流；命令 executionInstance/PID/创建时间账本；Runtime→Broker 的一次性命令审批 grant 与宿主模型代理 capability core                                                                                             |
-| sandbox/runtime-ipc-\*.ts / agent-runtime-\*.ts / runtime-model-provider.ts                      | 有界双向 framing、instance/nonce 握手、Broker model/session/approval/memory adapter、Runtime 侧完整 agent loop 及 Engine launcher 分流；Windows Supervisor launcher 与联合身份 transport 已接入，独立 harness 已通过，仍待提升环境产品验收 |
-| sandbox/native-windows-runtime.ts / C++ supervisor                                               | 受保护安装副本自检、有界二进制执行帧、专用账户/restricted token/ACL/Job/desktop、取消、恢复 journal、Git relay 与同 Job askpass；仍待提升环境产品验收                                                                                      |
+| sandbox/runtime-ipc-\*.ts / agent-runtime-\*.ts / runtime-model-provider.ts                      | 有界双向 framing、instance/nonce 握手、Broker model/session/approval/memory adapter、Runtime 侧完整 agent loop 及 Engine launcher 分流；Windows Supervisor launcher 与联合身份 transport 已接入，独立 harness、安装态链路与用户日常使用验证已通过 |
+| sandbox/native-windows-runtime.ts / C++ supervisor                                               | 受保护安装副本自检、有界二进制执行帧、专用账户/restricted token/ACL/Job/desktop、取消与恢复 journal；安装态链路与用户日常使用验证已通过，旧 Git relay/askpass 不用于当前产品路径                                                                                      |
 | sandbox/supervisor-protocol.ts / supervisor-channel.ts                                           | 更高层 Broker→Supervisor strict typed operation 与私有 handle framing；不暴露任意 SID/ACL/handle。当前产品 launcher 使用更窄的固定原生帧启动 Agent Runtime/Runner；模型、session、审批和 trace 则走已认证 Runtime IPC，不经过该控制协议    |
 | logging/logger.ts / redact.ts                                                                    | 日志创建、错误详情序列化、格式化输出与轮转、纯文本脱敏                                                                                                                                                                                     |
 | permissions/approval-manager.ts                                                                  | ApprovalManager：授权等待与取消                                                                                                                                                                                                            |
@@ -223,7 +224,7 @@ Broker 命令与 Git push 可以使用宿主用户可访问的文件、网络和
 
 按账户 SID 的持久 WFP fence 始终只允许固定 Broker relay/proxy 端口；host 边界不限制上传内容、URL path 或命令将哪些可读数据发送出去。supervisor 记录 process handle、PID 和创建时间，以 Job 管理后代。
 
-安装器、产品 ACL/WFP、Git 配置投影、恢复 journal、独立 sandbox.log 与 tracing 已实现；固定账户提升安装、真实 remote push 和复杂 ACL/崩溃夹具仍待验收。暂停使用的 Capability/Push Runner 与 relay 不作为当前产品验收项。后续边界见 [windows-integrity-sandbox.md](windows-integrity-sandbox.md)。
+安装器、产品 ACL/WFP、恢复 journal、独立 sandbox.log 与 tracing 已实现；固定账户安装态链路及用户日常使用验证已通过。真实 remote push 和复杂 ACL/崩溃等专项仍按具体证据记录，不由日常使用结论推定通过。暂停使用的 Capability/Push Runner 与 relay 不作为当前产品验收项。后续边界见 [windows-integrity-sandbox.md](windows-integrity-sandbox.md)。
 
 ## 补丁编辑的准确性边界
 

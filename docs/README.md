@@ -7,7 +7,7 @@
 | 文档                                                 | 内容                                         |
 | ---------------------------------------------------- | -------------------------------------------- |
 | [开发、配置与排错](development.md)                   | 环境变量、数据目录、工具权限、日志与服务操作 |
-| [Windows Sandbox 使用指南](windows-sandbox-guide.md) | 预览能力的安装、启用、状态判断、维护与卸载   |
+| [Windows Sandbox 使用指南](windows-sandbox-guide.md) | 已验证可用的 Windows Sandbox：安装、启用、维护与卸载   |
 | [任务恢复](recovery.md)                              | 失败、取消、重启中断和未知执行结果           |
 | [模型容量与 token](model-tokens.md)                  | 输入预算、服务 usage 与界面统计              |
 | [任务 Replay Case](replay-cases.md)                  | 本地捕获、手动导出与隔离复现                 |
@@ -33,7 +33,7 @@
 - [上下文管理](context-management.md)：已实现的会话压缩、历史回读与保留规则。
 - [项目记忆](memory-system.md)：核心检索和模型维护已实现；管理 UI、来源失效验证和手工恢复/清空仍待实现。
 - [多 agent 协作设计草案](multi-agent-design.md)：任务级开关、subagent 线程、只读权限、协调通信与 Sandbox/tracing 的待实现设计；不改变当前单 agent 范围。
-- [Windows Sandbox 架构](windows-integrity-sandbox.md)：预览实现、权限边界和 W0--W6 验收要求；固定账户提升环境验收尚未完整完成。
+- [Windows Sandbox 架构](windows-integrity-sandbox.md)：已通过用户实际使用验证的实现、权限边界，以及与日常可用性分开记录的 W0--W6 专项证据。
 
 ## 历史与证据
 
