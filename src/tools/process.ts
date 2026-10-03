@@ -6,7 +6,7 @@
  *    避免颜色和标题控制符进入会话记录；子进程环境同时请求常见工具禁用颜色。
  * 2. spawn 不经过 shell，隐藏 Windows 窗口，并从子进程环境中移除模型密钥；调用方可追加受限环境变量。
  * 3. onProcessStarted 在子进程获得 PID 后立即回传，使 session 能在命令结束前持久化恢复身份。
- * 4. stop 在 Windows 使用 taskkill，在 Unix 使用进程组终止子进程树；超时和取消都走这里。
+ * 4. stop 在 Windows 等待 taskkill 的结果后才允许单进程后备终止，不能先杀 shell 而遗留后代；Unix 使用进程组终止子进程树，超时和取消都走这里。
  * 5. stdout、stderr 按 UTF-8 流式解码，append 保留限额内的可见内容并通知调用方。
  * 6. 输出/PID 回调和管道错误先停止子进程，等待 close 后再拒绝调用，避免未捕获异常结束整个服务；close 清理计时器和取消监听。
  * 7. 可选的进程创建返回回调只供已安装 Runtime 的固定阶段诊断使用，不传递命令、参数或输出。
@@ -142,15 +142,12 @@ export async function executeProcess(
               stdio: "ignore",
             },
           );
-          const fallback = setTimeout(() => child.kill(), 1_000);
-
-          fallback.unref();
+          // taskkill 冷启动可能超过一秒。提前杀 shell 会令 /T 找不到父 PID，
+          // 留下持有 stdout 的后代并让 close 永久等待；只在明确失败后退回直子进程 kill。
           killer.once("error", () => {
-            clearTimeout(fallback);
             child.kill();
           });
           killer.once("close", (code) => {
-            clearTimeout(fallback);
             if (code !== 0) {
               child.kill();
             }
@@ -393,15 +390,11 @@ function runFileBackedProcess(
             stdio: "ignore",
           },
         );
-        const fallback = setTimeout(() => child.kill(), 1_000);
-
-        fallback.unref();
+        // 与 pipe 入口相同：不能在 taskkill /T 仍工作时先终止父 shell。
         killer.once("error", () => {
-          clearTimeout(fallback);
           child.kill();
         });
         killer.once("close", (code) => {
-          clearTimeout(fallback);
           if (code !== 0) {
             child.kill();
           }
