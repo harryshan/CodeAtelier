@@ -7,6 +7,7 @@
  * 2. runtimeResponseSchema 关联原 requestId；错误只返回受限 code/message 与模型重试元数据，避免泄露宿主异常对象。
  * 3. runtimeEventSchema 承载模型 delta、取消、Runtime 生命周期以及固定 context/tool/read_file/subagent trace span；微秒时间戳由 Runtime 单调时钟提供，Broker 核验后归档，名称与属性不是任意日志通道。
  * 4. hello schema 绑定协议版本、任务和 instance；其中 Runtime 自报字段只用于一致性核对，不能替代 transport 身份。
+ * 5. 子任务计划、问题、检查点和报告不加专属容量阈值；统一的帧大小与背压限制仍由 IPC transport 执行。
  */
 
 import { z } from "zod";
@@ -17,8 +18,8 @@ import { contextSnapshotSchema } from "../context/types.js";
 import { subtaskSchema } from "../agent/subagent-contracts.js";
 import { gitRequestSchema } from "../tools/registry.js";
 
-// v6 增加任务 Skill 目录和 Broker 只读加载；旧安装包须 Repair，不能静默缺失工具能力。
-export const RUNTIME_IPC_PROTOCOL_VERSION = 6;
+// v7 移除子任务研究配额；旧 Worker/Runtime 须重建并 Repair，不能静默沿用旧阈值。
+export const RUNTIME_IPC_PROTOCOL_VERSION = 7;
 export const MAX_RUNTIME_IPC_FRAME_BYTES = 8 * 1024 * 1024;
 
 const identifier = z.string().min(1).max(120);
@@ -193,7 +194,7 @@ export const runtimeSubagentStoreSchema = z.discriminatedUnion("action", [
   z
     .object({
       action: z.literal("plan"),
-      subtasks: z.array(subtaskSchema).min(1).max(4),
+      subtasks: z.array(subtaskSchema).min(1),
     })
     .strict(),
   z.object({ action: z.literal("list") }).strict(),
@@ -210,8 +211,8 @@ export const runtimeSubagentStoreSchema = z.discriminatedUnion("action", [
         "cancelled",
         "interrupted",
       ]),
-      context: z.array(z.unknown()).max(2_000),
-      report: z.string().max(32_000).optional(),
+      context: z.array(z.unknown()),
+      report: z.string().optional(),
     })
     .strict(),
   z
@@ -235,13 +236,13 @@ export const runtimeSubagentStoreSchema = z.discriminatedUnion("action", [
       action: z.literal("question"),
       subagentId: identifier,
       requestId: identifier,
-      question: z.string().trim().min(1).max(1_000),
+      question: z.string().trim().min(1),
     })
     .strict(),
   z
     .object({
       action: z.literal("collect"),
-      ids: z.array(identifier).min(1).max(4),
+      ids: z.array(identifier).min(1),
     })
     .strict(),
 ]);
@@ -409,7 +410,7 @@ export const runtimeRequestSchema = z.discriminatedUnion("operation", [
       operation: z.literal("session_commit_subagent_collect"),
       body: z
         .object({
-          ids: z.array(identifier).min(1).max(4),
+          ids: z.array(identifier).min(1),
           input: z.array(z.unknown()).max(100_000),
           event: z
             .object({

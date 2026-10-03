@@ -1,8 +1,8 @@
 /*
  * 定义主 agent 分工工具和任务内子任务计划的纯契约，供宿主、Runtime 与 Worker 消息分派共用。
  *
- * 1. subagentActionSchema 验证主角色的 plan/message/await/collect/cancel、已保存问题的 replyTo 和文本上限。
- * 2. validateSubagentPlan 在任何 Worker 启动前检查 ID、依赖图和累计计划上限；路径的规范化
+ * 1. subagentActionSchema 验证主角色的 plan/message/await/collect/cancel、已保存问题的 replyTo 和非空文本。
+ * 2. validateSubagentPlan 在任何 Worker 启动前检查 ID 唯一性与依赖图；路径的规范化
  *    与实际读取权限由协调器在工作区上下文中另外校验。
  * 3. subagentToolDefinition 带工具 DAG 的 execution 信封，只供已启用任务按条件追加；它本身不是写入权限或执行器。
  *
@@ -17,11 +17,11 @@ const identifier = z.string().regex(/^[A-Za-z][A-Za-z0-9_-]{0,63}$/);
 export const subtaskSchema = z
   .object({
     id: identifier,
-    role: z.string().trim().min(1).max(80),
-    objective: z.string().trim().min(1).max(1_000),
-    scope: z.array(z.string().min(1).max(1_024)).min(1).max(8),
-    dependsOn: z.array(identifier).max(4),
-    deliverable: z.string().trim().min(1).max(500),
+    role: z.string().trim().min(1),
+    objective: z.string().trim().min(1),
+    scope: z.array(z.string().min(1)).min(1),
+    dependsOn: z.array(identifier),
+    deliverable: z.string().trim().min(1),
   })
   .strict();
 
@@ -31,14 +31,14 @@ export const subagentActionSchema = z
       z
         .object({
           action: z.literal("plan"),
-          subtasks: z.array(subtaskSchema).min(1).max(4),
+          subtasks: z.array(subtaskSchema).min(1),
         })
         .strict(),
       z
         .object({
           action: z.literal("message"),
           subagentId: identifier,
-          text: z.string().min(1).max(2_000),
+          text: z.string().min(1),
           replyTo: z
             .number()
             .int()
@@ -50,14 +50,14 @@ export const subagentActionSchema = z
       z
         .object({
           action: z.literal("await"),
-          subagentIds: z.array(identifier).min(1).max(4),
+          subagentIds: z.array(identifier).min(1),
           timeoutMs: z.number().int().min(100).max(30_000),
         })
         .strict(),
       z
         .object({
           action: z.literal("collect"),
-          subagentIds: z.array(identifier).min(1).max(4),
+          subagentIds: z.array(identifier).min(1),
         })
         .strict(),
       z
@@ -74,11 +74,8 @@ export function validateSubagentPlan(
   subtasks: SubtaskPlan[],
   existingIds: ReadonlySet<string> = new Set(),
 ) {
-  const checked = z.array(subtaskSchema).min(1).max(4).parse(subtasks);
+  const checked = z.array(subtaskSchema).min(1).parse(subtasks);
   const ids = new Set(existingIds);
-  if (checked.length + existingIds.size > 4) {
-    throw new Error("每任务累计最多创建四个 subagent。");
-  }
 
   for (const subtask of checked) {
     if (ids.has(subtask.id)) {
@@ -125,7 +122,7 @@ export const subagentToolDefinition = {
   type: "function" as const,
   name: "subagent",
   description:
-    "Coordinate read-only subagents in this task. Children can send bounded questions; await may return them early. Only the main agent can answer through message with replyTo, or plan, collect or cancel. All edits and verification stay with the main agent.",
+    "Coordinate read-only subagents in this task. Children can send questions; await may return them early. Only the main agent can answer through message with replyTo, or plan, collect or cancel. All edits and verification stay with the main agent.",
   parameters: z.toJSONSchema(scheduledParameters(subagentActionSchema)),
   strict: true,
 };

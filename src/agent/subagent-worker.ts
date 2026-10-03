@@ -1,8 +1,8 @@
 /*
  * 在独立 Node Worker thread 中运行只读 subagent 模型循环，供主任务协调器按需启动。
  *
- * 1. 从 workerData 读取主任务绑定的 taskId、角色、目标和限额，核对父消息的版本/归属/序号，再构造独立历史与强制只读指令。
- * 2. 使用共用 runModelLoop 驱动轮次、模型重试、响应检查点；通过 parentPort 请求模型，
+ * 1. 从 workerData 读取主任务绑定的 taskId、角色、目标和范围，核对父消息的版本/归属/序号，再构造独立历史与强制只读指令。
+ * 2. 使用共用 runModelLoop 驱动不设轮数阈值的研究、模型重试、响应检查点；通过 parentPort 请求模型，
  *    模型密钥/网络只留在父进程，不直接导入文件系统或命令执行器。
  * 3. 仅开放三个文件只读工具及向主协调器发问；每次受限请求先等父进程回执和检查点持久化，再继续模型轮次并发送终态。
  *
@@ -61,7 +61,6 @@ port.on("message", (message: SubagentParentMessage) => {
     !["stop", "message", "response"].includes(message.kind) ||
     (message.kind === "message" &&
       (typeof message.text !== "string" ||
-        message.text.length > 2_000 ||
         (message.replyTo !== undefined &&
           (!Number.isSafeInteger(message.replyTo) || message.replyTo <= 0))))
   ) {
@@ -143,8 +142,8 @@ async function run() {
   const instructions =
     "You are a read-only research subagent. You cannot write files, run commands, use Git or call other agents. Report findings, paths and evidence to the main agent; request any edits through your final report. You may use ask_main only to clarify task scope or priorities, never to request commands, edits or permissions. It never waits for an answer or contacts peers directly. Only call the provided tools. Never assume previous file contents are current.";
   let finalReport = "";
-  const outcome = await runModelLoop({
-    maxSteps: Math.max(1, Math.min(12, task.maxSteps)),
+  await runModelLoop({
+    maxSteps: null,
     signal: controller.signal,
     prepareStep: async () => {
       if (notes.length) {
@@ -152,10 +151,6 @@ async function run() {
           ...notes.splice(0).map((content) => ({ role: "user", content })),
         );
         await ask("checkpoint", { status: "running", context: input });
-      }
-
-      if (JSON.stringify(input).length > 100_000) {
-        throw new Error("subagent 上下文超过安全预算。");
       }
     },
     request: async (attempt) =>
@@ -173,7 +168,7 @@ async function run() {
     acceptResponse: async (response) => {
       input.push(...response.output);
       if (response.text) {
-        finalReport = response.text.slice(0, 32_000);
+        finalReport = response.text;
       }
 
       await ask("checkpoint", { status: "running", context: input });
@@ -219,10 +214,6 @@ async function run() {
       return "executed";
     },
   });
-
-  if (outcome !== "completed") {
-    throw new Error("subagent 在限定轮次内未完成调查。");
-  }
 
   port.postMessage({
     version: SUBAGENT_WORKER_PROTOCOL_VERSION,

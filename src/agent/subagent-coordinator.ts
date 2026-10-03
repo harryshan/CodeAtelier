@@ -2,8 +2,8 @@
  * 在主 agent 所在进程协调同任务只读 subagent，供宿主 Engine 与 Sandbox AgentRuntime 共用。
  *
  * 1. execute 校验分工/等待/回复/收集/取消；子问题先持久化再唤醒主代理，不让子任务直接访问另一 Worker，消息 trace 只含安全 ID。
- * 2. runChild 等待依赖、获取全局租约，按时限和实报 token 上限驱动独立 Worker loop；逐方向核对消息归属/序号，模型与读取经父进程验证并先落盘。
- * 3. stop/close 通知所有未完成子任务，并在退出或强制终止得到确认后归还租约；等待响应主任务取消，消息数有界。
+ * 2. runChild 等待依赖、获取全局租约，驱动独立 Worker loop，不附加子任务时长或累计 token 阈值；逐方向核对消息归属/序号，模型与读取经父进程验证并先落盘。
+ * 3. stop/close 通知所有未完成子任务，并在退出或强制终止得到确认后归还租约；等待响应主任务取消，消息不设次数阈值。
  * 4. Broker/Store 检查点或请求结果持久化失败时终止 Worker，不能将未知的只读结果当成普通工具失败后继续模型轮次。
  *
  * 这是模型工具层的只读约束而非线程 OS 沙箱；未知执行结果不能被重放。
@@ -89,34 +89,13 @@ export interface SubagentStorage {
   >;
 }
 
-const MAX_CHILD_RUNTIME_MS = 120_000;
-const MAX_CHILD_TOKENS = 32_000;
-const BUDGET_TERMINATION_GRACE_MS = 5_000;
-
-type ChildBudgetFailure = "duration" | "tokens";
-
-function budgetFailureMessage(failure: ChildBudgetFailure | undefined) {
-  if (failure === "duration") {
-    return "subagent 运行时间超过上限，已停止。";
-  }
-
-  return failure === "tokens"
-    ? "subagent 累计 token 用量超过上限，已停止。"
-    : undefined;
-}
-
 interface ActiveChild {
   controller: AbortController;
   worker?: Worker;
   done: Promise<void>;
-  messagesSent: number;
-  questionsSent: number;
   questionRequests: Map<string, SubagentQuestionReceipt>;
   parentSequence: number;
   childSequence: number;
-  usedTokens: number;
-  budgetFailure?: ChildBudgetFailure;
-  terminateTimer?: NodeJS.Timeout;
 }
 
 interface CoordinatorOptions {
@@ -132,8 +111,6 @@ interface CoordinatorOptions {
     ): Promise<() => void | Promise<void>>;
   };
   providerFor?: (subagentId: string, requestId: string) => ModelProvider;
-  maxChildDurationMs?: number;
-  maxChildTokens?: number;
   signal: AbortSignal;
   trace?: (
     name: string,
@@ -214,12 +191,9 @@ export class SubagentCoordinator {
           const entry: ActiveChild = {
             controller,
             done: Promise.resolve(),
-            messagesSent: 0,
-            questionsSent: 0,
             questionRequests: new Map(),
             parentSequence: 0,
             childSequence: 0,
-            usedTokens: 0,
           };
           this.children.set(plan.id, entry);
 
@@ -262,10 +236,6 @@ export class SubagentCoordinator {
         return { delivered: false, status: found.status };
       }
 
-      if (active.messagesSent >= 16) {
-        throw new Error("subagent 消息上限为每个子任务 16 条。");
-      }
-
       if (request.replyTo !== undefined) {
         const question = this.pendingQuestions.get(request.replyTo);
         if (question?.subagentId !== found.id) {
@@ -276,7 +246,6 @@ export class SubagentCoordinator {
       const startedAt = Date.now();
       this.options.trace?.("subagent.message", found.id, "started", 0);
       try {
-        active.messagesSent++;
         worker.postMessage({
           ...this.envelope(found.id, active),
           kind: "message",
@@ -393,25 +362,9 @@ export class SubagentCoordinator {
   }
 
   private questionsFor(ids: readonly string[]) {
-    // 每轮至多交付四条；主代理回复后再调用 await 可读取下一批，避免模型反馈被截断。
-    return [...this.pendingQuestions.values()]
-      .filter((question) => ids.includes(question.subagentId))
-      .slice(0, 4);
-  }
-
-  private exhaustBudget(entry: ActiveChild, failure: ChildBudgetFailure) {
-    if (entry.controller.signal.aborted) {
-      return;
-    }
-
-    entry.budgetFailure = failure;
-    entry.controller.abort(new Error(budgetFailureMessage(failure)));
-    // 模型代理不响应取消时，仍须确认 Worker 退出才允许归还活动租约。
-    entry.terminateTimer = setTimeout(() => {
-      if (entry.worker) {
-        void entry.worker.terminate();
-      }
-    }, BUDGET_TERMINATION_GRACE_MS);
+    return [...this.pendingQuestions.values()].filter((question) =>
+      ids.includes(question.subagentId),
+    );
   }
 
   private stop(id: string) {
@@ -453,7 +406,6 @@ export class SubagentCoordinator {
     const startedAt = Date.now();
     const { taskId, storage, limits } = this.options;
     let release: (() => void) | undefined;
-    let deadline: NodeJS.Timeout | undefined;
     let status: SubagentStatus = "failed";
     this.options.trace?.("subagent.worker", plan.id, "started", 0);
     try {
@@ -474,20 +426,9 @@ export class SubagentCoordinator {
       entry.controller.signal.throwIfAborted();
       await storage.updateSubagent(taskId, plan.id, "running", []);
       this.options.onStateChange?.();
-      deadline = setTimeout(
-        () => this.exhaustBudget(entry, "duration"),
-        Math.min(
-          this.options.maxChildDurationMs ?? MAX_CHILD_RUNTIME_MS,
-          MAX_CHILD_RUNTIME_MS,
-        ),
-      );
       status = await this.startWorker(plan, reader, entry);
     } catch (error) {
-      status = entry.budgetFailure
-        ? "failed"
-        : entry.controller.signal.aborted
-          ? "cancelled"
-          : "failed";
+      status = entry.controller.signal.aborted ? "cancelled" : "failed";
       const record = (await storage.subagents(taskId)).find(
         ({ id }) => id === plan.id,
       );
@@ -502,16 +443,13 @@ export class SubagentCoordinator {
           plan.id,
           status,
           record.context,
-          budgetFailureMessage(entry.budgetFailure) ??
-            (error instanceof Error
-              ? error.message.slice(0, 250)
-              : "subagent 启动失败。"),
+          error instanceof Error
+            ? error.message.slice(0, 250)
+            : "subagent 启动失败。",
         );
         this.options.onStateChange?.();
       }
     } finally {
-      clearTimeout(deadline);
-      clearTimeout(entry.terminateTimer);
       await release?.();
       this.options.trace?.(
         "subagent.worker",
@@ -551,7 +489,6 @@ export class SubagentCoordinator {
       workerData: {
         ...plan,
         taskId: this.options.taskId,
-        maxSteps: 12,
       } satisfies SubagentWorkerInput,
     });
     entry.worker = worker;
@@ -605,15 +542,12 @@ export class SubagentCoordinator {
           }
 
           // 取消可能先于 Worker 对模型/工具错误的回执，终态不能误写为 failed。
-          const status = entry.budgetFailure
-            ? "failed"
-            : entry.controller.signal.aborted
-              ? "cancelled"
-              : workerError || code !== 0
-                ? "failed"
-                : (finished?.status ?? "failed");
+          const status = entry.controller.signal.aborted
+            ? "cancelled"
+            : workerError || code !== 0
+              ? "failed"
+              : (finished?.status ?? "failed");
           const report =
-            budgetFailureMessage(entry.budgetFailure) ??
             finished?.report ??
             workerError?.message.slice(0, 250) ??
             `Worker 未确认结果（exit=${code}）。`;
@@ -691,7 +625,7 @@ export class SubagentCoordinator {
         const checkpoint = z
           .object({
             status: z.literal("running"),
-            context: z.array(z.unknown()).max(2000),
+            context: z.array(z.unknown()),
           })
           .strict()
           .parse(message.payload);
@@ -707,7 +641,7 @@ export class SubagentCoordinator {
         const question = z
           .object({
             requestId: z.string().min(1).max(120),
-            question: z.string().trim().min(1).max(1_000),
+            question: z.string().trim().min(1),
           })
           .strict()
           .parse(message.payload);
@@ -722,10 +656,6 @@ export class SubagentCoordinator {
           return;
         }
 
-        if (entry.questionsSent >= 8) {
-          throw new Error("每个 subagent 最多向主代理提问 8 次。");
-        }
-
         const startedAt = Date.now();
         this.options.trace?.("subagent.question", id, "started", 0);
         try {
@@ -738,7 +668,6 @@ export class SubagentCoordinator {
             ),
           );
           if (!this.pendingQuestions.has(receipt.id)) {
-            entry.questionsSent++;
             this.pendingQuestions.set(receipt.id, receipt);
             for (const waiter of this.questionWaiters) {
               if (waiter.ids.includes(id)) {
@@ -830,13 +759,10 @@ export class SubagentCoordinator {
         .object({
           requestId: z.string().min(1).max(128),
           input: z.array(z.unknown()),
-          instructions: z.string().max(2_000),
+          instructions: z.string(),
         })
         .passthrough()
         .parse(message.payload);
-      if (JSON.stringify(model.input).length > 100_000) {
-        throw new Error("subagent 模型输入超出安全预算。");
-      }
 
       await this.persist(() =>
         storage.startSubagentRequest(taskId, id, model.requestId, "model"),
@@ -853,35 +779,12 @@ export class SubagentCoordinator {
           subagentToolDefinitions,
           entry.controller.signal,
           () => {},
-          { maxOutputTokens: 2_048 },
         );
         await this.persist(() =>
           storage.finishSubagentRequest(taskId, id, model.requestId, result),
         );
         if (result.usage) {
           this.options.onUsage?.(id, result.usage);
-          const tokens = result.usage.total_tokens;
-          if (Number.isSafeInteger(tokens) && tokens >= 0) {
-            entry.usedTokens += tokens;
-          }
-        }
-
-        if (
-          entry.usedTokens >
-          Math.min(
-            this.options.maxChildTokens ?? MAX_CHILD_TOKENS,
-            MAX_CHILD_TOKENS,
-          )
-        ) {
-          this.exhaustBudget(entry, "tokens");
-          this.options.trace?.(
-            "subagent.model",
-            id,
-            "error",
-            Date.now() - startedAt,
-          );
-
-          return;
         }
 
         this.options.trace?.(

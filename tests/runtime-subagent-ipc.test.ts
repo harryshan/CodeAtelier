@@ -2,8 +2,8 @@
  * 用双向内存 IPC 和 Broker session 验证已认证子模型路由、工具白名单及租约账本。
  *
  * 1. 在握手后的同一 task/instance 下验证无租约、冒用主任务身份及写工具声明均在模型调用前拒绝。
- * 2. 已登记子请求与租约才能代理三个只读文件工具及有界 ask_main；重复释放、断连清理不得提前借出额度。
- * 3. 校验协议只允许有界问题而不允许任意写入；本夹具不证明 Windows transport/OS 身份。
+ * 2. 已登记子请求与租约才能代理三个只读文件工具及 ask_main；重复释放、断连清理不得提前借出额度。
+ * 3. 校验长问题可传输，空问题与任意写入仍拒绝；本夹具不证明 Windows transport/OS 身份。
  */
 
 import { PassThrough } from "node:stream";
@@ -169,8 +169,8 @@ it("rejects forged subagent requests and retains leases until the instance is cl
         {
           action: "question",
           subagentId: "review",
-          requestId: "too-long",
-          question: "x".repeat(1_001),
+          requestId: "empty",
+          question: " ",
         },
         signal,
       ),
@@ -183,7 +183,7 @@ it("rejects forged subagent requests and retains leases until the instance is cl
           action: "question",
           subagentId: "review",
           requestId: "q-1",
-          question: "Which file?",
+          question: "Which file?".repeat(200),
         },
         signal,
       ),

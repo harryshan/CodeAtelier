@@ -29,7 +29,6 @@ async function exercise(tool: string) {
       objective: "inspect",
       scope: ["src"],
       deliverable: "evidence",
-      maxSteps: 3,
     },
   });
   const operations: string[] = [];
@@ -138,7 +137,7 @@ it("runs its own model loop and only asks parent for read-only tools", async () 
   expect(result.childSequences).toEqual([1, 2, 3, 4, 5, 6, 7]);
 });
 
-it("posts a bounded question only to its coordinator without requesting a file or command", async () => {
+it("posts a question only to its coordinator without requesting a file or command", async () => {
   const result = await exercise("ask_main");
   expect(result.output).toMatchObject({ kind: "finish", status: "completed" });
   expect(result.operations).toContain("question");
@@ -155,7 +154,6 @@ it("stops while waiting for a model response without replaying the request", asy
       objective: "inspect",
       scope: ["src"],
       deliverable: "evidence",
-      maxSteps: 3,
     },
   });
   let requests = 0;
@@ -192,7 +190,6 @@ it("rejects a parent response addressed to another task before accepting its mod
       objective: "inspect",
       scope: ["src"],
       deliverable: "evidence",
-      maxSteps: 3,
     },
   });
 

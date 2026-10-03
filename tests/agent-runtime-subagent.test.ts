@@ -2,7 +2,7 @@
  * 使用真实子进程 Runtime、双向 IPC、宿主 Engine/SQLite 和模拟模型验证可选子任务的第二执行路径。
  *
  * 1. 在对外功能门禁仍关闭时，内部创建带开关的任务，通过注入的 stdio launcher 运行真实 Runtime loop。
- * 2. 主 loop 规划/等待/回复/收集，子 Worker 只见三个文件读取工具与有界 ask_main，Broker 按任务身份登记并分配全局租约。
+ * 2. 主 loop 规划/等待/回复/收集，子 Worker 只见三个文件读取工具与 ask_main，并跨 IPC 读取超过旧上下文阈值的证据，Broker 按任务身份登记并分配全局租约。
  * 3. 核对计划/状态落盘后及时通知 SSE 刷新、报告/主反馈同分片、线程清理、tracing 和源码未变；stdio 夹具不是专用账户验收。
  */
 
@@ -28,7 +28,8 @@ it("coordinates subagent Workers inside the Runtime through task-bound Broker IP
   const root = await temp();
   await mkdir(path.join(root, "src"));
   const source = path.join(root, "src", "evidence.ts");
-  await writeFile(source, "export const evidence = 42;\n");
+  const evidence = `export const evidence = 42; // ${"x".repeat(110_000)}\n`;
+  await writeFile(source, evidence);
   const config = new Config(await temp());
   config.sandbox.enabled = true;
   config.sandbox.initialStatus = {
@@ -141,7 +142,9 @@ it("coordinates subagent Workers inside the Runtime through task-bound Broker IP
                 name: "ask_main",
                 arguments: JSON.stringify({
                   execution: { id: "ask", dependsOn: [] },
-                  arguments: { question: "Which file should I inspect?" },
+                  arguments: {
+                    question: `Which file should I inspect? ${"?".repeat(1_001)}`,
+                  },
                 }),
               },
             ],
@@ -238,7 +241,7 @@ it("coordinates subagent Workers inside the Runtime through task-bound Broker IP
           {
             id: expect.any(Number),
             subagentId: "review",
-            question: "Which file should I inspect?",
+            question: `Which file should I inspect? ${"?".repeat(1_001)}`,
           },
         ]);
         const questionId = feedback.questions?.[0]?.id;
@@ -257,7 +260,7 @@ it("coordinates subagent Workers inside the Runtime through task-bound Broker IP
                 action: "message",
                 subagentId: "review",
                 replyTo: questionId,
-                text: "Inspect src/evidence.ts",
+                text: `Inspect src/evidence.ts ${"r".repeat(2_001)}`,
               }),
             },
           ],
@@ -364,9 +367,7 @@ it("coordinates subagent Workers inside the Runtime through task-bound Broker IP
     ).toHaveLength(1);
     expect(refreshedSubagentStates).toContain("running");
     expect(refreshedSubagentStates).toContain("completed");
-    expect(await readFile(source, "utf8")).toBe(
-      "export const evidence = 42;\n",
-    );
+    expect(await readFile(source, "utf8")).toBe(evidence);
     expect(Buffer.concat(errors).toString("utf8")).toBe("");
     const trace = await engine.savedTrace(task);
     expect(trace).toContain("subagent.worker");

@@ -4,14 +4,14 @@
  * 1. 逆序声明有依赖的两个计划，验证计划/状态持久化后通知页面刷新、有限租约、读取、等待及只收集一次报告。
  * 2. 敏感/越界范围拒绝时不创建任务；取消等待模型的 Worker 后归还资源并标记终态。
  * 3. 主任务关闭时与尚在登记计划的请求竞态，不能遗漏晚登记的 Worker。
- * 4. 等待在主任务取消时立刻停止；限额有界。子问题先落盘并唤醒主代理等待，主代理核验归属后才可带关联 ID 回复。
+ * 4. 超过旧时长/token/问题/消息阈值仍继续研究，主任务取消仍立刻停止。子问题先落盘并唤醒主代理等待，主代理核验归属后才可带关联 ID 回复。
  *
  * 模拟 ModelProvider 是协议桩，不能作为真实 Windows 专用账户 Sandbox 验收证据。
  */
 
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import {
   SubagentCoordinator,
   type SubagentStorage,
@@ -30,10 +30,7 @@ const plan = (id: string, dependsOn: string[] = []) => ({
   deliverable: "cite a line",
 });
 
-async function setup(
-  provider: ModelProvider,
-  budget: { maxChildDurationMs?: number; maxChildTokens?: number } = {},
-) {
+async function setup(provider: ModelProvider) {
   const root = await temp();
   await mkdir(path.join(root, "src"));
   await writeFile(
@@ -53,7 +50,6 @@ async function setup(
     provider,
     limits: new SubagentLimits(1),
     signal: new AbortController().signal,
-    ...budget,
     trace: (name, id, status) => trace.push(`${name}:${id}:${status}`),
     onStateChange: () =>
       notifications.push(store.events(session.id).at(-1)?.type ?? "missing"),
@@ -366,11 +362,16 @@ it("stops waiting immediately when the main task is cancelled", async () => {
   }
 });
 
-it("fails a stalled Worker after its own wall-clock limit and releases its lease", async () => {
+it("keeps research running beyond the former deadline until explicitly cancelled", async () => {
   let modelCalls = 0;
+  let modelStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    modelStarted = resolve;
+  });
   const provider: ModelProvider = {
     run: async (_input, _instructions, _tools, signal) => {
       modelCalls++;
+      modelStarted();
 
       return new Promise((_resolve, reject) => {
         signal.addEventListener("abort", () => reject(signal.reason), {
@@ -379,13 +380,21 @@ it("fails a stalled Worker after its own wall-clock limit and releases its lease
       });
     },
   };
-  const fixture = await setup(provider, { maxChildDurationMs: 2_500 });
+  const fixture = await setup(provider);
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   try {
     await fixture.coordinator.execute({
       action: "plan",
       subtasks: [plan("reader")],
     });
-    await expect.poll(() => modelCalls).toBe(1);
+    await started;
+    await vi.advanceTimersByTimeAsync(120_001);
+    expect(fixture.store.subagents(fixture.task.id)[0].status).toBe("running");
+    vi.useRealTimers();
+    await fixture.coordinator.execute({
+      action: "cancel",
+      subagentId: "reader",
+    });
     const result = await fixture.coordinator.execute({
       action: "await",
       subagentIds: ["reader"],
@@ -393,24 +402,24 @@ it("fails a stalled Worker after its own wall-clock limit and releases its lease
     });
 
     expect(result).toMatchObject({
-      subtasks: [{ id: "reader", status: "failed" }],
+      subtasks: [{ id: "reader", status: "cancelled" }],
     });
     expect(fixture.store.subagents(fixture.task.id)).toMatchObject([
       {
         id: "reader",
-        status: "failed",
-        report: expect.stringContaining("运行时间"),
+        status: "cancelled",
       },
     ]);
-    expect(fixture.trace).toContain("subagent.worker:reader:failed");
+    expect(fixture.trace).toContain("subagent.worker:reader:cancelled");
     expect(modelCalls).toBe(1);
   } finally {
+    vi.useRealTimers();
     await fixture.coordinator.close();
     fixture.store.close();
   }
 });
 
-it("stops after the reported cumulative token budget without replaying the last model call", async () => {
+it("completes beyond the former cumulative token budget without replaying model calls", async () => {
   let modelCalls = 0;
   const usage = {
     input_tokens: 17_000,
@@ -438,10 +447,10 @@ it("stops after the reported cumulative token budget without replaying the last 
         };
       }
 
-      return { text: "should not finish", usage, output: [] };
+      return { text: "research complete", usage, output: [] };
     },
   };
-  const fixture = await setup(provider, { maxChildTokens: 30_000 });
+  const fixture = await setup(provider);
   try {
     await fixture.coordinator.execute({
       action: "plan",
@@ -454,13 +463,13 @@ it("stops after the reported cumulative token budget without replaying the last 
     });
 
     expect(result).toMatchObject({
-      subtasks: [{ id: "reader", status: "failed" }],
+      subtasks: [{ id: "reader", status: "completed" }],
     });
     expect(fixture.store.subagents(fixture.task.id)).toMatchObject([
       {
         id: "reader",
-        status: "failed",
-        report: expect.stringContaining("token"),
+        status: "completed",
+        report: "research complete",
       },
     ]);
     expect(
@@ -589,13 +598,15 @@ it("persists a child question and lets only the main coordinator answer it", asy
   }
 });
 
-it("bounds child questions, acknowledges a duplicate, and never persists a ninth", async () => {
+it("persists questions beyond the former count limit while deduplicating confirmed requests", async () => {
   let modelCalls = 0;
   const provider: ModelProvider = {
     async run(input) {
       modelCalls++;
-      if (modelCalls === 11) {
-        expect(JSON.stringify(input)).toContain("最多向主代理提问 8 次");
+      if (modelCalls === 22) {
+        expect(
+          input.filter((item) => item.type === "function_call_output"),
+        ).toHaveLength(21);
 
         return { text: "questions completed", output: [] };
       }
@@ -618,7 +629,7 @@ it("bounds child questions, acknowledges a duplicate, and never persists a ninth
         expect(acks[0].queued).toBe(true);
       }
 
-      const number = modelCalls === 9 ? 8 : modelCalls === 10 ? 9 : modelCalls;
+      const number = modelCalls >= 9 ? modelCalls - 1 : modelCalls;
 
       return {
         text: "",
@@ -651,8 +662,8 @@ it("bounds child questions, acknowledges a duplicate, and never persists a ninth
       fixture.store
         .events(fixture.task.sessionId)
         .filter((event) => event.type === "subagent_question"),
-    ).toHaveLength(8);
-    expect(modelCalls).toBe(11);
+    ).toHaveLength(20);
+    expect(modelCalls).toBe(22);
     expect(fixture.store.subagents(fixture.task.id)[0].report).toBe(
       "questions completed",
     );
@@ -662,14 +673,52 @@ it("bounds child questions, acknowledges a duplicate, and never persists a ninth
   }
 });
 
-it("caps queued messages while a child model is blocked", async () => {
+it("delivers more than sixteen long messages at the next child model step", async () => {
+  let modelStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    modelStarted = resolve;
+  });
+  let releaseModel!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    releaseModel = resolve;
+  });
+  const notes = Array.from(
+    { length: 20 },
+    (_, index) => `note ${index}: ${"x".repeat(2_001)}`,
+  );
+  let modelCalls = 0;
   const provider: ModelProvider = {
-    run: async (_input, _instructions, _tools, signal) =>
-      new Promise((_resolve, reject) =>
-        signal.addEventListener("abort", () => reject(signal.reason), {
-          once: true,
-        }),
-      ),
+    async run(input) {
+      modelCalls++;
+      if (modelCalls === 1) {
+        modelStarted();
+        await gate;
+
+        return {
+          text: "",
+          output: [
+            {
+              type: "function_call",
+              call_id: "read",
+              name: "read_file",
+              arguments: JSON.stringify({
+                execution: { id: "read", dependsOn: [] },
+                arguments: { path: "src/example.ts", startLine: 1, endLine: 1 },
+              }),
+            },
+          ],
+        };
+      }
+
+      expect(
+        input
+          .filter((item) => item.role === "user")
+          .slice(1)
+          .map((item) => item.content),
+      ).toEqual(notes);
+
+      return { text: "all notes received", output: [] };
+    },
   };
   const fixture = await setup(provider);
   try {
@@ -677,42 +726,33 @@ it("caps queued messages while a child model is blocked", async () => {
       action: "plan",
       subtasks: [plan("reader")],
     });
-    await fixture.coordinator.execute({
-      action: "await",
-      subagentIds: ["reader"],
-      timeoutMs: 100,
-    });
-    for (let index = 0; index < 16; index++) {
+    await started;
+    for (const text of notes) {
       await expect(
         fixture.coordinator.execute({
           action: "message",
           subagentId: "reader",
-          text: `note ${index}`,
+          text,
         }),
       ).resolves.toMatchObject({ accepted: true });
     }
 
-    await expect(
-      fixture.coordinator.execute({
-        action: "message",
-        subagentId: "reader",
-        text: "overflow",
+    releaseModel();
+    expect(
+      await fixture.coordinator.execute({
+        action: "await",
+        subagentIds: ["reader"],
+        timeoutMs: 15_000,
       }),
-    ).rejects.toThrow("消息上限");
+    ).toMatchObject({ subtasks: [{ id: "reader", status: "completed" }] });
+    expect(fixture.store.subagents(fixture.task.id)[0].report).toBe(
+      "all notes received",
+    );
     expect(
       fixture.trace.filter((item) => item === "subagent.message:reader:ok"),
-    ).toHaveLength(16);
-    await fixture.coordinator.execute({
-      action: "cancel",
-      subagentId: "reader",
-    });
-    await fixture.coordinator.execute({
-      action: "await",
-      subagentIds: ["reader"],
-      timeoutMs: 15_000,
-    });
-    expect(fixture.trace).toContain("subagent.cancel:reader:cancelled");
+    ).toHaveLength(20);
   } finally {
+    releaseModel();
     await fixture.coordinator.close();
     fixture.store.close();
   }

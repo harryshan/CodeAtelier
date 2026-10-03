@@ -71,11 +71,11 @@ Engine 在任一节点产生副作用前校验整批 DAG，并以稳定拓扑顺
 
 `src/skills/contracts.ts` 提供 strict list/load 参数；`skill-document.ts` 使用 js-yaml 的 JSON_SCHEMA 解析有界 SKILL.md，校验 name/description 并忽略权限元信息；`task-skills.ts` 管理每任务预设根扫描、固定摘要/版本、链接与容量检查，以及调用时重新读取正文。Engine 在宿主/Runtime 分流前创建目录，fallback 复用同一实例；名称、描述和来源类别进入指令，正文只通过工具结果进入模型。
 
-宿主 ToolRunner 直接调用此任务实例；Runtime 使用 IPC v6 的 `skill_execute`，启动材料只含目录提示，不投影宿主技能根。返回 `broker-skill/host-process`，不执行脚本、不增加读写授权。`skills.*` span 及普通工具历史覆盖成功/失败/取消，trace 排除技能参数/正文。格式、目录优先级和限制见 [Skill 指南](skills.md)。
+宿主 ToolRunner 直接调用此任务实例；Runtime 使用 IPC v7 的 `skill_execute`，启动材料只含目录提示，不投影宿主技能根。返回 `broker-skill/host-process`，不执行脚本、不增加读写授权。`skills.*` span 及普通工具历史覆盖成功/失败/取消，trace 排除技能参数/正文。格式、目录优先级和限制见 [Skill 指南](skills.md)。
 
 ### MCP 本机客户端
 
-`src/mcp/contracts.ts` 提供模型与 Runtime 共用的有界操作契约，`config.ts` 只在宿主读取 mcp.json；`task-client.ts` 使用官方 SDK 管理每任务的 stdio/Streamable HTTP 连接、审批、串行请求、取消/清理和输出脱敏。模型通过静态 `mcp` 工具按需发现动态 schema，不声明 provider-hosted MCP。`ToolRunner` 审批准备后取得执行槽，宿主调用 Engine 的任务客户端；Runtime 通过 IPC v6 的 `prepare_mcp/execute_mcp` 在当前认证连接内消费调用绑定的单次授权。连接配置和凭据不经 Runtime。
+`src/mcp/contracts.ts` 提供模型与 Runtime 共用的有界操作契约，`config.ts` 只在宿主读取 mcp.json；`task-client.ts` 使用官方 SDK 管理每任务的 stdio/Streamable HTTP 连接、审批、串行请求、取消/清理和输出脱敏。模型通过静态 `mcp` 工具按需发现动态 schema，不声明 provider-hosted MCP。`ToolRunner` 审批准备后取得执行槽，宿主调用 Engine 的任务客户端；Runtime 通过 IPC v7 的 `prepare_mcp/execute_mcp` 在当前认证连接内消费调用绑定的单次授权。连接配置和凭据不经 Runtime。
 
 除列出配置别名外，每项操作走现有审批。结果标记 `broker-mcp/host-process` 并进入通常的历史/replay/DAG，MCP `isError` 阻断后继；失败连接在当前任务内不可重连，未知副作用不重放。任务终态前关闭全部连接；MCP 参数/正文不进入 trace，仅用安全的 `mcp.*` 阶段记录。详细能力与边界见 [MCP 指南](mcp.md)。
 
@@ -89,7 +89,7 @@ Engine 在任一节点产生副作用前校验整批 DAG，并以稳定拓扑顺
 
 ### 会话存储与 Replay Case
 
-`src/sessions/store.ts` 保存 sessions、tasks、events、按基线和增量批次重建的活动 context、新任务的高保真 replay 捕获以及尚未对外开放的子任务计划、检查点和请求结果账本；`src/agent/subagent-contracts.ts` 校验分工 action、计划 DAG 与数量上限，`subagent-limits.ts` 供宿主 Engine 共享公平的进程内 Worker 配额。`subagent-coordinator.ts` 在已标记任务内调度专属 Worker 并代理模型/只读请求；`subagent-worker.ts` 维护独立 loop；每个活动子 Worker 最多运行 120 秒，服务实报累计 token 超过 32,000 后作为失败终止，缺少实报时依赖 12 轮和 100,000 字符输入上限，且始终在 Worker 退出确认后归还租约。`ask_main` 只向主协调器发有界问题，可信 Store 原子保存事件与回执；`await` 可提前呈交最多四个待答问题，只有主代理用关联 `replyTo` 的 `message` 回复。收集报告预览不消费，主工具结果与消费状态在同一分片事务中保存，截断的反馈保留报告。当前 Engine/HTTP 仍拒绝开启；App 的勾选仅在 bootstrap 的服务端发布门禁通过时出现，Timeline 从持久化的任务标记与子计划/状态/收集事件重建历史；宿主和 Runtime 都在子状态落盘后通知 SSE 刷新。Runtime 经已认证 IPC 回到 Broker 核验子身份、分配跨进程共享的 lease、持久化子请求及原子提交主回执，独立 stdio harness 已通过；受保护 Worker bundle 已接入安装摘要，但尚未完成专用账户提升环境端到端验收。`history-shards.ts` 将既有 `history.sqlite` 作为首个兼容分片，并在最新分片（主库加 WAL）达到默认 1 GiB 后让**新会话**进入 `history-000001.sqlite` 等后续文件。
+`src/sessions/store.ts` 保存 sessions、tasks、events、按基线和增量批次重建的活动 context、新任务的高保真 replay 捕获以及尚未对外开放的子任务计划、检查点和请求结果账本；`src/agent/subagent-contracts.ts` 校验分工 action、计划 DAG、ID 与非空字段，`subagent-limits.ts` 供宿主 Engine 共享公平的进程内 Worker 配额。`subagent-coordinator.ts` 在已标记任务内调度专属 Worker 并代理模型/只读请求；`subagent-worker.ts` 维护独立 loop；子 Worker 不设独立轮数、时长、累计 token、文本或上下文配额，由完成/错误/取消结束；保留任务内两个、全局四个活动 Worker 的公平调度，始终在 Worker 退出确认后归还租约。计划累计数、问题/消息次数、正文和检查点不再受子任务专属阈值限制；共享模型配置、主任务输出预算及 IPC 帧大小仍生效，子上下文尚无自动压缩。`ask_main` 只向主协调器发非空问题，可信 Store 原子保存事件与回执；`await` 可提前呈交全部待答问题，只有主代理用关联 `replyTo` 的 `message` 回复。收集报告预览不消费，主工具结果与消费状态在同一分片事务中保存，截断的反馈保留报告。当前 Engine/HTTP 仍拒绝开启；App 的勾选仅在 bootstrap 的服务端发布门禁通过时出现，Timeline 从持久化的任务标记与子计划/状态/收集事件重建历史；宿主和 Runtime 都在子状态落盘后通知 SSE 刷新。Runtime 经已认证 IPC 回到 Broker 核验子身份、分配跨进程共享的 lease、持久化子请求及原子提交主回执，独立 stdio harness 已通过；受保护 Worker bundle 已接入安装摘要，但尚未完成专用账户提升环境端到端验收。`history-shards.ts` 将既有 `history.sqlite` 作为首个兼容分片，并在最新分片（主库加 WAL）达到默认 1 GiB 后让**新会话**进入 `history-000001.sqlite` 等后续文件。
 
 单个会话始终留在初始分片，因此保持 SQLite 外键、事务、恢复和 Worker 路径语义；单次不可分割写入或单个超长会话仍可能略超阈值，不承诺自动重新分区既有历史。任务的 createdAt、startedAt、finishedAt 分别表示入队、实际开始和结束，排队时间不计入会话累计运行时间。初始数据库结构位于 `schema.ts`。
 

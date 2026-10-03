@@ -4,7 +4,7 @@
  * 1. 构造器发现兼容的 history.sqlite 与后续容量分片，在每个文件初始化数据库并把重启前未完成的任务标为 interrupted；transaction 同步提交，取锁或执行失败时释放本次已开启的事务。
  * 2. list/get/create 跨分片定位或聚合会话；新会话在最新分片达到容量上限后进入新文件，已有会话始终写回其初始分片。标题状态的领取、完成或失败保证首条 prompt 只生成一次标题。
  * 3. tasks/task/createTask/status 读写任务状态与不可变的 subagent 选择；旧分片逐个迁移，SQLite 的 0/1 在各读取入口转换为布尔值。queuedTasks 和 hasUnfinishedTask 供 Engine 调度跨会话队列，event/events 保存和分页读取事件。
- * 4. subagents/subagent_requests 按任务存计划、检查点与回执；replay 元数据和逐条模型/工具增量经 replay-storage 写入，读取时兼容旧整条捕获。
+ * 4. subagents/subagent_requests 按任务保存完整计划、检查点、报告与回执，不附加子任务文本配额；replay 元数据和逐条模型/工具增量经 replay-storage 写入，读取时兼容旧整条捕获。
  * 5. 旧 context 行在备份后原样迁入 context_chunks 基线；appendContext 只写新增批次，saveContext/压缩替换基线，读时按顺序重建；大记录由 store-worker 解析。
  * 6. 常规事件/上下文/状态写入和大记录读取由有界串行 Store Worker 队列提交；closeAsync 排空并关闭线程后再关闭分片连接。
  *
@@ -718,13 +718,6 @@ export class Store {
     context: unknown[],
     report?: string,
   ) {
-    if (
-      JSON.stringify(context).length > 2_000_000 ||
-      (report?.length ?? 0) > 32_000
-    ) {
-      throw new Error("subagent 上下文或报告超过保存限制。");
-    }
-
     return this.transaction(() => {
       this.selectTask(taskId);
       const current = this.subagents(taskId).find((agent) => agent.id === id);
@@ -765,7 +758,6 @@ export class Store {
       !task ||
       !task.subagentsEnabled ||
       ids.length < 1 ||
-      ids.length > 4 ||
       new Set(ids).size !== ids.length
     ) {
       throw new Error("collect 必须指定当前任务中不同的 subagent ID。");
@@ -836,13 +828,8 @@ export class Store {
     requestId: string,
     question: string,
   ) {
-    if (
-      !requestId ||
-      requestId.length > 128 ||
-      !question.trim() ||
-      question.length > 1_000
-    ) {
-      throw new Error("subagent 问题或请求 ID 超过安全边界。");
+    if (!requestId || requestId.length > 128 || !question.trim()) {
+      throw new Error("subagent 问题不能为空，请求 ID 必须有效。");
     }
 
     return this.transaction(() => {
@@ -930,8 +917,8 @@ export class Store {
     result: unknown,
   ) {
     const payload = JSON.stringify(result);
-    if (!payload || payload.length > 2_000_000) {
-      throw new Error("subagent 请求结果过大或为空。");
+    if (!payload) {
+      throw new Error("subagent 请求结果为空。");
     }
 
     this.selectTask(taskId);
