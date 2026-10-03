@@ -5,7 +5,7 @@
  * 1. model_capabilities/model_run 委托 RuntimeBrokerGateway，使模型 endpoint/key 永远留在 Broker Host。
  * 2. model_run 把 provider delta 作为关联原 requestId 的事件回传，再返回完整 ModelResult。
  * 3. approval、受限 Git action、扩展权限命令、任务绑定子状态/问题/租约及 session 只调用显式 handlers；子模型严格比对三个只读工具与 ask_main，拒绝写工具。
- * 4. 越界命令先审批并保存在当前认证连接的一次性表中，Runtime 获得执行槽后才消费 authorizationId；
+ * 4. MCP 与越界命令先审批并保存在当前认证连接的一次性表中，Runtime 获得执行槽后才消费 authorizationId；
  *    git_execute 传递受限 action 和调用 ID，旧 git_push 只传调用 ID；push 等待 Broker 宿主 Git 预检、审批和执行。请求取消只中止对应操作，不结束健康的 Agent Runtime。
  * 5. runtime_complete 是 Runtime 的完成报告，stopping 事件表示其已收到完成确认；取消后的 start_task 不再回复，Broker 需等待 stopping，再结合进程退出、Job 和 cleanup 账本决定可信终态。
  */
@@ -34,10 +34,17 @@ import type {
   CapabilityCommandRequest,
   CapabilityCommandResult,
 } from "./capability-request.js";
+import type { McpAction, McpResult } from "../mcp/contracts.js";
 import type { ContextSnapshot } from "../context/types.js";
 
 export interface RuntimeIpcBrokerHandlers {
   getErrorSecrets?: () => string[];
+  prepareMcp?(
+    identity: RuntimeExecutionIdentity,
+    request: McpAction,
+    toolCallId: string,
+    signal: AbortSignal,
+  ): Promise<(signal: AbortSignal) => Promise<McpResult>>;
   subagentStore?(
     identity: RuntimeExecutionIdentity,
     request: RuntimeSubagentStoreRequest,
@@ -143,6 +150,14 @@ export class RuntimeIpcBrokerSession {
     { subagentId: string; release: () => void }
   >();
 
+  private preparedMcp = new Map<
+    string,
+    {
+      toolCallId: string;
+      execute: (signal: AbortSignal) => Promise<McpResult>;
+    }
+  >();
+
   private preparedCapabilityCommands = new Map<
     string,
     {
@@ -177,6 +192,7 @@ export class RuntimeIpcBrokerSession {
       ...streams,
       getErrorSecrets: handlers.getErrorSecrets,
       onClose: (error) => {
+        this.preparedMcp.clear();
         this.preparedCapabilityCommands.clear();
         if (!this.authenticated) {
           this.rejectReady(error);
@@ -350,6 +366,38 @@ export class RuntimeIpcBrokerSession {
               text,
             }),
         );
+      }
+
+      case "prepare_mcp": {
+        if (!this.handlers.prepareMcp || this.preparedMcp.size >= 20) {
+          throw new Error("MCP handler 不可用或待执行授权已满。");
+        }
+
+        const execute = await this.handlers.prepareMcp(
+          this.identity,
+          request.body.request,
+          request.body.toolCallId,
+          signal,
+        );
+        signal.throwIfAborted();
+        const authorizationId = randomUUID();
+        this.preparedMcp.set(authorizationId, {
+          toolCallId: request.body.toolCallId,
+          execute,
+        });
+
+        return { authorizationId };
+      }
+
+      case "execute_mcp": {
+        const prepared = this.preparedMcp.get(request.body.authorizationId);
+        if (!prepared || prepared.toolCallId !== request.body.toolCallId) {
+          throw new Error("MCP 授权不存在、已消费或不属于当前调用。");
+        }
+
+        this.preparedMcp.delete(request.body.authorizationId);
+
+        return prepared.execute(signal);
       }
 
       case "approval_request":

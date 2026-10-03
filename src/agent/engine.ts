@@ -8,12 +8,15 @@
  * 4. 首条 prompt 先用辅助模型生成标题；run 再读取历史和项目规则，准备工具及上下文预算。
  * 5. model-loop 共用轮次、重试和停止控制，model-tool-batch 共用计划与成功判断；Engine 保留宿主事务、replay 与 tracing。为压缩提供 ToolRunner 的安全文件哈希探测；每轮记录上下文准备和请求计量、模型重试、实际模型请求和响应处理，再记录服务实报用量。完整响应保存后校验工具 DAG，节点先完成准备/审批，实际执行才取得有界 worker 槽。
  * 6. Sandbox Runtime 已有能力内工具免审批；全部 Git action 与 run_with_permissions 的获批命令均交给 Broker 宿主进程，push 额外预检和逐次审批，并分别留下未隔离的执行记录。一次性两阶段 IPC 授权把命令审批等待留在执行队列外；Push/Capability Runner 代码暂存但不走产品路径。
+ *    MCP 使用任务级本机连接池，宿主/Runtime 共用审批后单次执行入口；收尾关闭连接，MCP 参数和正文不进入 trace。
  * 7. Agent Runtime 取消先经 IPC 等待 runtime_complete/stopping，再关闭原生 transport；清理未知优先于取消。终态保留已验证进程身份；Broker 校验 Runtime trace 时间戳，按该进程的执行槽组织片段、从已保存工具调用附加脱敏参数并统一归档；子任务由 Broker 核对身份与原子保存问题回执，退出先停子线程再归档。
  *
  * 模型请求可以重试，但已经执行的工具不能跟着重跑。数据库回滚也撤销不了文件修改或
  * 已启动的命令，所以保存失败时必须停止任务，并留下足够的记录供后续恢复。
  */
 
+import { McpTaskClient } from "../mcp/task-client.js";
+import type { McpAction } from "../mcp/contracts.js";
 import { auxiliarySettings } from "../config/auxiliary-model.js";
 import type { Settings } from "../shared/types.js";
 import { createBudget } from "../context/token-budget.js";
@@ -157,6 +160,7 @@ export class Engine {
   private activeByTaskId = new Map<string, ActiveTask>();
   private approvalTasks = new WeakMap<ApprovalSubject, Task>();
   private closing = false;
+  private readonly mcpTasks = new Map<string, McpTaskClient>();
   private scheduling = false;
   /** 全部宿主任务共享 Worker 配额；Sandbox Runtime 另须通过 Broker 取得同一全局 lease。 */
   private readonly subagentLimits = new SubagentLimits();
@@ -172,6 +176,41 @@ export class Engine {
   readonly sandboxLog: Logger;
   /** 项目记忆只写入平台数据目录；任务开始时读取固定 bundle，工具调用时执行受限维护操作。 */
   readonly memories: ProjectMemoryService;
+
+  private prepareMcp(
+    task: Task,
+    workspace: string,
+    request: McpAction,
+    toolCallId: string,
+    signal: AbortSignal,
+    outputChars: number,
+  ) {
+    let client = this.mcpTasks.get(task.id);
+    if (!client) {
+      client = new McpTaskClient({
+        servers: this.config.mcpServers,
+        workspace,
+        taskId: task.id,
+        sessionId: task.sessionId,
+        outputChars,
+        log: this.log,
+        traces: this.traces,
+        approve: (description, approvalSignal) =>
+          this.approvals.request(
+            {
+              sessionId: task.sessionId,
+              taskId: task.id,
+              tool: "mcp",
+              description,
+            },
+            approvalSignal,
+          ),
+      });
+      this.mcpTasks.set(task.id, client);
+    }
+
+    return client.prepare(request, toolCallId, signal);
+  }
 
   /** 保留单任务调用方的兼容访问；服务端新逻辑应使用 activeTasks 或 hasActiveTasks。 */
   get active() {
@@ -1257,11 +1296,13 @@ export class Engine {
                         // Broker 宿主工具在 Runtime 的片段只表示等待，不冒充受限进程中的执行。
                         execution:
                           tool!.name === "git" ||
-                          tool!.name === "run_with_permissions"
+                          tool!.name === "run_with_permissions" ||
+                          tool!.name === "mcp"
                             ? "broker-host-wait"
                             : "runtime",
                         parameters:
                           tool!.name === "memory_apply" ||
+                          tool!.name === "mcp" ||
                           tool!.name === "subagent"
                             ? undefined
                             : JSON.parse(
@@ -1296,6 +1337,15 @@ export class Engine {
 
             runtimeContextSpans.delete(event.spanId);
           },
+          prepareMcp: (_runtime, request, toolCallId, requestSignal) =>
+            this.prepareMcp(
+              task,
+              workspace,
+              request,
+              toolCallId,
+              requestSignal,
+              settings.outputChars,
+            ),
           executeGitPush: (_runtime, toolCallId, requestSignal) =>
             this.executeBrokerGit(
               task,
@@ -2018,6 +2068,22 @@ export class Engine {
         approvals: this.approvals,
         emit,
         sandbox: this.sandbox,
+        prepareMcp: async (request, requestSignal, toolCallId) => {
+          if (!toolCallId) {
+            throw new Error("MCP 请求缺少工具调用标识。");
+          }
+
+          const execute = await this.prepareMcp(
+            task,
+            session.workspace,
+            request,
+            toolCallId,
+            requestSignal,
+            settings.outputChars,
+          );
+
+          return () => execute(requestSignal);
+        },
         gitPush: this.config.sandbox.enabled
           ? (pushSignal, toolCallId) =>
               this.executeBrokerGit(
@@ -2839,7 +2905,9 @@ export class Engine {
                       callId: node.callId,
                       nodeId: node.nodeId,
                       parameters:
-                        node.name === "memory_apply" || node.name === "subagent"
+                        node.name === "memory_apply" ||
+                        node.name === "subagent" ||
+                        node.name === "mcp"
                           ? undefined
                           : traceToolParameters(node.arguments),
                     },
@@ -3011,6 +3079,16 @@ export class Engine {
         ...(status === "failed" ? { err: error } : {}),
       });
     } finally {
+      try {
+        await this.mcpTasks.get(task.id)?.close();
+      } catch (error) {
+        status = "failed";
+        failure = "MCP 连接清理失败，任务结果不能视为完成。";
+        log.error({ event: "mcp.cleanup_failed", err: error });
+      } finally {
+        this.mcpTasks.delete(task.id);
+      }
+
       if (taskRunner) {
         const poolSpan = this.traces.startSpan(task.id, {
           name: "read_file.pool.close",

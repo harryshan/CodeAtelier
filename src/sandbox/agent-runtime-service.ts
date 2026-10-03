@@ -1,6 +1,6 @@
 /**
  * 在常驻 Agent Runtime 进程内运行模型/工具循环；Broker Host 只通过 Runtime IPC 提供模型、session、审批和项目记忆能力。
- * 本服务不打开宿主 SQLite、不读取模型 endpoint/key，也不创建第二层 SandboxBroker；普通命令子进程继承 Runtime 的 token/Job，全部 Git 工具 action 经认证 IPC 交给 Broker。
+ * 本服务不打开宿主 SQLite、不读取模型 endpoint/key，也不创建第二层 SandboxBroker；普通命令子进程继承 Runtime 的 token/Job，全部 Git 工具 action 和 MCP 连接/操作经认证 IPC 交给 Broker。
  *
  * 1. start 接受 Broker 绑定任务的安全设置，恢复 session 上下文并在工作区生成指令和文件工具。
  * 2. ContextManager 在 Runtime 内计量/压缩，快照读写经 RuntimeSessionClient 回到 Broker。
@@ -51,6 +51,7 @@ import {
   RuntimeGitPushClient,
   RuntimeGitClient,
   RuntimeMemoryClient,
+  RuntimeMcpClient,
 } from "./runtime-tool-adapters.js";
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
@@ -210,6 +211,7 @@ export class AgentRuntimeService {
       const gitPush = new RuntimeGitPushClient(this.peer);
       const gitClient = new RuntimeGitClient(this.peer);
       const capability = new RuntimeCapabilityClient(this.peer);
+      const mcp = new RuntimeMcpClient(this.peer);
       const runner = new ToolRunner({
         root: input.workspace,
         sessionId: this.identity.sessionId,
@@ -218,6 +220,13 @@ export class AgentRuntimeService {
         settings: toolSettings,
         approvals: new RuntimeApprovalClient(this.peer),
         memory: new RuntimeMemoryClient(this.peer, signal),
+        prepareMcp: (request, requestSignal, toolCallId) => {
+          if (!toolCallId) {
+            throw new Error("MCP 请求缺少工具调用标识。");
+          }
+
+          return mcp.prepare(request, toolCallId, requestSignal);
+        },
         gitPush: (pushSignal, toolCallId) => {
           if (!toolCallId) {
             throw new Error("Broker Git push 请求缺少工具调用标识。");

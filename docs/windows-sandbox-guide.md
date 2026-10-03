@@ -96,6 +96,8 @@ Sandbox **不会**创建 worktree、暂存副本或自动回滚：可写操作�
 - **已启动的 Sandbox Agent Runtime：** AccessManifest/WFP 范围内的文件工具和普通命令不再逐项审批；Git 工具 action 在 Broker 使用宿主用户权限执行，push 另需逐次审批。越界普通文件工具会被拒绝；越界命令必须通过 `run_with_permissions` 提交完整命令和理由，经 review 后由 Broker 使用宿主用户权限运行。它可访问宿主用户有权访问的文件、网络和凭据，务必按该权限审查命令。
 - **Git push：** 仅支持已校验 upstream 的既有 Git 工具契约；push 必须独占当前工具批次，审批会展示预检 URL、目标和 Broker 宿主权限。Git 配置、hook/helper 与网络不受专用账户 Sandbox 限制。当前真实 remote/凭据/helper 兼容性尚未完成验收，不应将预览实现用于关键生产推送。
 
+- **MCP：** 所有 stdio/HTTP 连接由本机 Broker 建立，除列出配置别名外均走审批；不受 Runtime 的 ACL/WFP/Job 保护。结果标记 `broker-mcp/host-process`，未知结果不得自动重放。配置与限制见 [MCP 指南](mcp.md)。MCP 接入将 Runtime IPC 升至 v5，旧安装包需重建并 Repair；应用层 stdio 测试不替代安装态验收。
+
 ### 维护、故障处理与卸载
 
 | 场景                                 | 命令与执行位置                                        | 说明                                                                                                              |

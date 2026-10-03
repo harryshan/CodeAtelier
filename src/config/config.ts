@@ -3,6 +3,7 @@
  * 服务入口创建 Config，Engine 从中读取设置和内存中的密钥，API 使用 publicValue。
  *
  * 1. 构造器准备数据目录，只从环境读取连接配置，再读取 settings.json 中的可持久化偏好。
+ *    同时读取仅后端持有的 mcp.json；MCP 配置不进入 publicValue 或 Runtime 设置。
  * 2. normalizeBaseUrl 去掉端点末尾的 responses 和斜杠；模型 ID 保持环境变量的原样。
  * 3. update 拒绝修改连接字段，只原子保存偏好；浏览器输入的密钥仅覆盖本次进程。
  * 4. publicValue 返回运行时设置、密钥状态和启动期 sandbox 模式，浏览器据此显示实际命令边界。
@@ -25,6 +26,7 @@ import {
   persistedSettingsSchema,
   settingsSchema,
 } from "./settings.js";
+import { loadMcpServers, type McpServers } from "../mcp/config.js";
 import { dataDirectory } from "./data-directory.js";
 import { sandboxConfiguration } from "../sandbox/config.js";
 import type { SandboxConfiguration } from "../sandbox/types.js";
@@ -41,6 +43,7 @@ export class Config {
   private connection: ConnectionSettings;
   apiKey = process.env.CODEATELIER_API_KEY || "";
   readonly sandbox: SandboxConfiguration;
+  readonly mcpServers: McpServers;
 
   constructor(public directory = dataDirectory()) {
     mkdirSync(directory, { recursive: true });
@@ -51,6 +54,7 @@ export class Config {
 
     this.connection = this.readEnvironmentConnection();
     this.sandbox = sandboxConfiguration();
+    this.mcpServers = loadMcpServers(directory);
     this.settings = this.runtimeSettings(this.savedPreferences(saved));
   }
 

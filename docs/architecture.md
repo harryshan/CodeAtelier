@@ -67,6 +67,12 @@ Engine 在任一节点产生副作用前校验整批 DAG，并以稳定拓扑顺
 
 `edit_files` 的 create:true 条目只新建不存在的文件，create:false 条目只精确编辑本任务已读取的已有文件。历史工具结果的展示与压缩兼容见 [上下文管理](context-management.md)。
 
+### MCP 本机客户端
+
+`src/mcp/contracts.ts` 提供模型与 Runtime 共用的有界操作契约，`config.ts` 只在宿主读取 mcp.json；`task-client.ts` 使用官方 SDK 管理每任务的 stdio/Streamable HTTP 连接、审批、串行请求、取消/清理和输出脱敏。模型通过静态 `mcp` 工具按需发现动态 schema，不声明 provider-hosted MCP。`ToolRunner` 审批准备后取得执行槽，宿主调用 Engine 的任务客户端；Runtime 通过 IPC v5 的 `prepare_mcp/execute_mcp` 在当前认证连接内消费调用绑定的单次授权。连接配置和凭据不经 Runtime。
+
+除列出配置别名外，每项操作走现有审批。结果标记 `broker-mcp/host-process` 并进入通常的历史/replay/DAG，MCP `isError` 阻断后继；失败连接在当前任务内不可重连，未知副作用不重放。任务终态前关闭全部连接；MCP 参数/正文不进入 trace，仅用安全的 `mcp.*` 阶段记录。详细能力与边界见 [MCP 指南](mcp.md)。
+
 ### 审批
 
 `src/permissions` 用无工具的低成本辅助模型将待审批请求分为自动通过、人工确认或拒绝；人工确认仍在后端等待用户点击，取消会释放待审批 Promise。模型无法自行同意审批。
@@ -159,7 +165,7 @@ Engine、Store 及其上下文/schema 辅助模块、共享数据契约、测试
 4. 主任务加载本地上下文与根 AGENTS.md，模型请求包含当前指令、上下文与工具定义，并请求服务允许多个独立工具调用；复杂任务要求模型先通过只读工具读取相关代码和文件并获得足够当前信息，再在用户可见文本中自行给出“计划摘要”，随后在同轮或后续轮次调用工具执行，实质调整前更新摘要；接收文本及完整输出项。
 5. 自研循环先解析每项的 `execution` 信封，并在任一节点执行前拒绝重复 ID、未知依赖或环；旧历史格式作为无依赖调用兼容。通过校验后，Engine 以稳定拓扑顺序准备所有已满足前置条件的节点；参数检查、低成本模型判断和人工审批不占用最多 4 个 `Tool worker` 执行槽，审批通过并完成执行前复核后才排队取得槽位。
 
-   宿主模式中原本需要审批的调用继续由低成本模型给出自动通过、人工确认或拒绝；Sandbox Agent Runtime 已有权限内的工具直接执行，只有 push 和 `run_with_permissions` 越界命令进入 Broker 审批。
+   宿主模式中原本需要审批的调用继续由低成本模型给出自动通过、人工确认或拒绝；Sandbox Agent Runtime 已有权限内的工具直接执行，push、`run_with_permissions` 越界命令以及有连接/调用的 MCP 操作进入 Broker 审批。
 
    `run_with_permissions` 通过两阶段 Runtime IPC 先取得当前连接与 toolCallId 绑定的一次性 authorizationId，Runtime 获得执行槽后才消费授权，由 Broker 启动宿主命令。前置失败时所有后继不执行而返回 `dependency_failed`，独立节点继续；每个完成或阻断的节点立即保存 `function_call_output`。
 

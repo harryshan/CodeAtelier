@@ -98,9 +98,9 @@ create:true 嵌套创建、已有目标及最后一次预检之后出现目标�
 
 ### 命令执行
 
-主要测试：process.test.ts、core.test.ts、permissions.test.ts、tool-schema.test.ts。
+主要测试：process.test.ts、process-tree.test.ts、core.test.ts、permissions.test.ts、tool-schema.test.ts。
 
-不存在的命令及子进程实际错误、输出与退出码、截断、UTF-8/ANSI 分块、颜色环境与控制符清理、API key 不继承、内部 Windows/POSIX shell 选择、单一 command 契约、复合命令合并、直接 Git/提权拒绝、取消和超时；输出持久化失败及 stdin 提前关闭不会产生未捕获异常，停止子进程后返回错误。
+不存在的命令及子进程实际错误、输出与退出码、截断、UTF-8/ANSI 分块、颜色环境与控制符清理、API key 不继承、内部 Windows/POSIX shell 选择、单一 command 契约、复合命令合并、直接 Git/提权拒绝、取消和超时；输出持久化失败及 stdin 提前关闭不会产生未捕获异常，停止子进程后返回错误。Windows 专属 process-tree.test.ts 延迟真实 taskkill，验证不能抢先杀父 shell；pipe/file-backed 均须让后代退出并释放输出资源，安全兜底清理一旦触发则测试失败。
 
 ### Sandbox Broker 与专用用户目标
 
@@ -127,6 +127,12 @@ Windows native runtime/relay 测试在非 Windows 整组跳过。stdio harness�
 主要测试：provider.test.ts、recovery.test.ts。
 
 item.done 回退、失败/不完整事件、服务实际错误 message/reason/code 的脱敏保留、断流、超时、重试次数、HTTP 分类、取消退避、并行工具调用请求参数
+
+### MCP 本机访问
+
+主要测试：mcp.test.ts、mcp-engine.test.ts、mcp-ipc.test.ts、tool-schema.test.ts；夹具 tests/fixtures/mcp-server.ts 使用官方 SDK。
+
+覆盖配置缺省关闭/损坏拒绝/UTF-8 BOM/私密字段、禁用服务拒绝、stdio 真实握手与连接复用/直接子进程退出、工具/资源/模板往返、HTTP 认证头和裸 token 脱敏、分页/重定向拒绝/响应流大小限制/正常 DELETE、审批先于连接、单次授权、超时/取消及禁止自动重连、输出截断与 isError、宿主和独立 Runtime 模型往返/历史/replay、失败后继阻断及 trace 不含 MCP 参数/正文。全部离线且无个人密钥；不替代真实远端、跨平台和固定账户安装态验收。
 
 ### 网页检索与来源引用
 

@@ -37,6 +37,7 @@
   },
   "dependencies": {
     "@fastify/static": "^8.0.0",
+    "@modelcontextprotocol/sdk": "1.31.0",
     "@tiptap/markdown": "3.31.3",
     "@tiptap/react": "3.31.3",
     "@tiptap/starter-kit": "3.31.3",

@@ -37,6 +37,10 @@ Node.js 24，pnpm 11.22.0（packageManager 固定）。提交 pnpm-lock.yaml，�
 | CODEATELIER_LOG_LEVEL            | info                                                                                |
 | CODEATELIER_SANDBOX_ENABLED      | false；只接受明确的 `true` 或 `false`；启动后不可动态切换                           |
 
+### MCP 配置
+
+可选 `CODEATELIER_MCP_CONFIG` 指向后端 MCP JSON 配置的绝对路径，缺省使用平台数据目录的 mcp.json；文件缺失默认不启用任何服务。支持本地 stdio 和远程 Streamable HTTP，由本机后端连接，凭据不发送给模型服务商或 Runtime。配置格式、可执行离线示例、审批与已知限制见 [MCP 指南](mcp.md)。修改配置后重启；不自动读取工作区 MCP 配置，不在 UI 展示密钥。
+
 ### 配置来源与优先级
 
 `settings.json` 只保存非连接偏好：主/辅助模型的思考等级、任务限制（包括 `maxConcurrentTasks`）和日志级别；通过 UI 修改。已保存偏好优先于同名环境默认值。API 地址、主/辅助模型标识绝不写入该文件；旧版本留下的同名字段会在读取时忽略，并在下一次保存偏好时移除。密钥始终来自环境或当前进程内存，不写 `settings.json`。存在运行中或排队任务时禁止修改配置。
@@ -109,7 +113,7 @@ tracing 默认启用：每个实际开始的任务在当前服务进程内生成
 
 模型请求、退避及响应处理保持独立，以便区分上下文处理与模型服务耗时，且不会产生完整事件交叠。`Task` 是任务生命周期包络；工具批次、参数检查、审批等待与依赖阻塞保留在 `Tool scheduler` 逻辑轨道，只有审批通过并准备实际执行的调用才排队取得最多 4 条可复用 `Tool worker 1` 至 `Tool worker 4` 轨道，后续节点复用最先空闲的槽位。
 
-这些槽位表示并发操作而不是 Node 物理线程，人工审批耗时不会显示为 worker 占用。`read_file` 的路径授权与解析发生在执行槽取得之前，不另建准备片段；取得槽位后，文件检查、字节读取、Worker 排队、冷启动等待和响应阶段在调用对应的 `Tool worker`（Agent Runtime 路径为可复用的 `Agent Runtime tool 1`～`4`）轨道上嵌套显示于 `tool.read_file`。这些工具轨道是逻辑并发槽，不是物理线程；Worker 的计算不再另建 trace 轨道，响应片段仍附纯计算耗时 `computeMs`，不能把响应总耗时当作磁盘或 CPU 耗时。`read_file.worker.startup` 从首次向刚创建的 Worker 分派请求起计，到调用侧收到该 Worker 的 `ready` 消息为止，包含剩余线程启动、模块加载和消息调度等待，并非纯文件处理耗时；开发环境的 `.ts` Worker 还需加载 `tsx`。池在任务内按需扩展至最多 4 条真实线程，已创建线程跨模型轮次复用，不在空闲时释放；成功、失败或取消后的任务收尾显式等待全部线程退出，记录 `read_file.pool.close` 耗时与终态，清理失败将任务标为失败。热 Worker 没有冷启动阶段；尚无具体 trace 时不能把某次偏长归因于其中单一因素。阶段仅附 callId、有界字节数及计时，不保存路径或内容；Runtime IPC v4 的 trace span 必须携带单调时间戳（旧版本拒绝握手），固定白名单上报这些阶段及取得执行槽后的工具执行边界；Broker 校验任务时间窗、以已验证 Runtime PID 分组、按槽号分配复用轨道、从已保存的 tool_start 提取参数，统一导出落盘。Runtime 的 `Agent Runtime` 主轨道展示上下文和池关闭；`tool_start` 到取得执行槽之间是排队/准备时间，不冒充实际执行；尚未开放的 subagent `await` 在槽位之前等待，不把事后取得槽位误记为工具执行。获批 Broker 命令仍在 Broker 的宿主执行轨道记录，Runtime 工具片段表示等待其结果，不能称为在 Sandbox 内执行命令。每个实际 tool span 的 `args.parameters` 保存传给执行器的完整结构化参数，递归遮盖 API key、token、password、authorization、cookie 及 Bearer 值；因此 trace 文件可能含命令、路径和编辑文本，必须按敏感本机诊断数据保护，不能上传或提交。
+这些槽位表示并发操作而不是 Node 物理线程，人工审批耗时不会显示为 worker 占用。`read_file` 的路径授权与解析发生在执行槽取得之前，不另建准备片段；取得槽位后，文件检查、字节读取、Worker 排队、冷启动等待和响应阶段在调用对应的 `Tool worker`（Agent Runtime 路径为可复用的 `Agent Runtime tool 1`～`4`）轨道上嵌套显示于 `tool.read_file`。这些工具轨道是逻辑并发槽，不是物理线程；Worker 的计算不再另建 trace 轨道，响应片段仍附纯计算耗时 `computeMs`，不能把响应总耗时当作磁盘或 CPU 耗时。`read_file.worker.startup` 从首次向刚创建的 Worker 分派请求起计，到调用侧收到该 Worker 的 `ready` 消息为止，包含剩余线程启动、模块加载和消息调度等待，并非纯文件处理耗时；开发环境的 `.ts` Worker 还需加载 `tsx`。池在任务内按需扩展至最多 4 条真实线程，已创建线程跨模型轮次复用，不在空闲时释放；成功、失败或取消后的任务收尾显式等待全部线程退出，记录 `read_file.pool.close` 耗时与终态，清理失败将任务标为失败。热 Worker 没有冷启动阶段；尚无具体 trace 时不能把某次偏长归因于其中单一因素。阶段仅附 callId、有界字节数及计时，不保存路径或内容；Runtime IPC v5 的 trace span 必须携带单调时间戳（旧版本拒绝握手），固定白名单上报这些阶段及取得执行槽后的工具执行边界；Broker 校验任务时间窗、以已验证 Runtime PID 分组、按槽号分配复用轨道、从已保存的 tool_start 提取参数，统一导出落盘。Runtime 的 `Agent Runtime` 主轨道展示上下文和池关闭；`tool_start` 到取得执行槽之间是排队/准备时间，不冒充实际执行；尚未开放的 subagent `await` 在槽位之前等待，不把事后取得槽位误记为工具执行。获批 Broker 命令仍在 Broker 的宿主执行轨道记录，Runtime 工具片段表示等待其结果，不能称为在 Sandbox 内执行命令。普通实际 tool span 的 `args.parameters` 保存传给执行器的完整结构化参数（MCP、项目记忆和 subagent 不记录正文参数），递归遮盖 API key、token、password、authorization、cookie 及 Bearer 值；因此 trace 文件可能含命令、路径和编辑文本，必须按敏感本机诊断数据保护，不能上传或提交。
 
 导出会按时间排序，并以递增整数而非 UUID 标识 flow，保证 Perfetto Trace Event JSON importer 可解析。任务进入 completed、failed、cancelled 或 interrupted 终态后，安全 JSON 原子写入 `traces/<sessionId>/<taskId>.json`，同一会话的任务各用独立文件，绝不覆盖；写入完成或失败后立即释放该任务的内存记录，不保留完成 trace 缓存。
 

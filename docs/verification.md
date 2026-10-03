@@ -1,5 +1,12 @@
 # 初版验证记录
 
+## 本机后端 MCP 与 Windows 进程取消回归（2026-10-03）
+
+- MCP 由本机后端使用 SDK 1.31.0 连接 stdio 或 Streamable HTTP；专项夹具覆盖工具、资源与提示模板、审批和 Runtime IPC v5 单次授权、历史/replay、超时取消、失败连接不重放、脱敏、大小限制及关闭连接。Windows UTF-8 BOM 配置先复现解析失败，再修复并通过回归。
+- 完整并发测试暴露已有 Windows 关闭服务卡住问题：`taskkill /T` 尚未完成，原一秒后备定时器已杀父 shell，留下后代和输出句柄。延迟真实 taskkill 的回归先复现 pipe 挂起与 file-backed 后代仍存活；修复后等待 taskkill 明确失败才允许单进程 fallback，两种输出路径、原关闭服务断言均通过。没有放宽测试超时或降低并发；taskkill 自身故障及第三方脱离进程仍不构成完整进程树隔离保证。
+- Windows / Node.js 24.19.0：最终 `pnpm check` 通过（类型、ESLint、Prettier、76 个测试文件，553 项通过、1 项原有跳过，以及 Web/服务端/Runtime 测试构建）；`pnpm test:e2e` Chromium 28 项通过。本次变更的 Markdown 本地链接目标检查通过。构建仍提示既有 Web bundle 大小警告。
+- 所有 MCP 验证使用离线 stdio/回环 HTTP 和模拟模型；未调用真实模型或第三方服务，未运行 Evaluation。未验证 macOS/Linux、真实远端 OAuth/兼容性或重建后固定账户安装态；IPC v5 的旧安装副本须重建、管理员 Repair 后另行验收。MCP 为 `broker-mcp/host-process`，不得描述为 Sandbox 内执行。
+
 ## Windows Sandbox BCrypt 兼容与 Broker Git 迁移（2026-09-27，安装态复验通过）
 
 - 安装态 native probe 显示 `bcrypt.dll` 文件打开、映射和 Load Image 均成功，但 `LoadLibraryW` 以 1114 失败；ProcMon 未显示该进程的 `ACCESS DENIED` 事件，因此尚未定位 BCrypt 内部的具体对象或 ACL。相同主机上的 `WRITE_RESTRICTED` token 变体测试中，只有加入 Everyone restricting SID 的变体使原生 BCrypt 探针成功，其他单独加入 Users、Authenticated Users、Interactive 或 Local 的变体仍失败。

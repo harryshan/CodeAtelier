@@ -6,10 +6,12 @@
  * 2. grantKey 原样绑定审批语义，但不能改变 operation；Broker ApprovalManager 决定是否允许复用。
  * 3. RuntimeMemoryClient 不接收宿主路径，Broker handler 固定使用 identity 对应工作区和项目记忆服务。
  * 4. RuntimeGitClient 发送受限 action 和 toolCallId，保留各 action 的结果形状；旧 RuntimeGitPushClient 只发送调用 ID，Broker 完成 push 预检与审批。
- * 5. RuntimeCapabilityClient 先发送命令、理由和 toolCallId 完成 Broker 审批；调用方取得
+ * 5. RuntimeMcpClient 仅提交服务别名/操作，由 Broker 审批后消费一次性授权；连接配置和凭据不经过 Runtime。
+ * 6. RuntimeCapabilityClient 先发送命令、理由和 toolCallId 完成 Broker 审批；调用方取得
  *    Tool worker 槽后才用一次性 authorizationId 启动 Broker 宿主命令，审批等待不会占用执行槽。
  */
 
+import type { McpAction, McpResult } from "../mcp/contracts.js";
 import type { Approval } from "../shared/types.js";
 import type { RuntimeIpcPeer } from "./runtime-ipc-peer.js";
 import {
@@ -79,6 +81,34 @@ export class RuntimeGitClient {
     );
 
     return runtimeGitResultSchema.parse(result);
+  }
+}
+
+export class RuntimeMcpClient {
+  constructor(private peer: RuntimeIpcPeer) {}
+
+  async prepare(request: McpAction, toolCallId: string, signal: AbortSignal) {
+    const prepared = (await this.peer.request(
+      "prepare_mcp",
+      { toolCallId, request },
+      signal,
+    )) as { authorizationId?: unknown };
+    if (
+      typeof prepared.authorizationId !== "string" ||
+      !prepared.authorizationId
+    ) {
+      throw new Error("Broker 未返回有效的 MCP 单次授权。");
+    }
+
+    return async () =>
+      this.peer.request(
+        "execute_mcp",
+        {
+          toolCallId,
+          authorizationId: prepared.authorizationId,
+        },
+        signal,
+      ) as Promise<McpResult>;
   }
 }
 
