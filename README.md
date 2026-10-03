@@ -4,7 +4,7 @@
 
 ## 快速开始
 
-需要 Node.js 24 和 pnpm 11.22.0。
+需要 Node.js 24 或 26，以及 package.json 的 packageManager 指定版本的 pnpm。实际验证平台和版本见 [验证记录](docs/verification.md)。
 
 1. 复制 `.env.example` 为 `.env`，填写 API 地址、完整模型标识和密钥。
 2. 在仓库目录安装、构建并启动：

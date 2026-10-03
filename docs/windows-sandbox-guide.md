@@ -28,7 +28,7 @@ Sandbox **不会**创建 worktree、暂存副本或自动回滚：可写操作�
 
 ### 首次安装与验收
 
-**前置条件：** 使用真实 Windows 主机、Node.js 24、pnpm 11.22.0，以及可编译原生组件的 Windows C++ 构建环境。不要把外层受限执行环境中的结果当作平台验收：外层 Sandbox 可能阻断嵌套 restricted token、Job 或 WFP 操作。
+**前置条件：** 使用真实 Windows 主机、Node.js 24 或 26、packageManager 指定版本的 pnpm，以及可编译原生组件的 Windows C++ 构建环境。不要把外层受限执行环境中的结果当作平台验收：外层 Sandbox 可能阻断嵌套 restricted token、Job 或 WFP 操作。
 
 1. 在普通终端进入仓库并准备构建产物；下列两个 Sandbox 构建命令只生成仓库内产物，不修改系统：
 
@@ -39,7 +39,7 @@ Sandbox **不会**创建 worktree、暂存副本或自动回滚：可写操作�
    pnpm sandbox:runtime:build
    ```
 
-2. **另开“以管理员身份运行”的 PowerShell**，进入同一仓库目录。安装命令不会自行触发 UAC。若当前 `PATH` 中的 `node` 不是可信的 Node.js 24 executable，先在这个管理员终端设置要复制的路径：
+2. **另开“以管理员身份运行”的 PowerShell**，进入同一仓库目录。安装命令不会自行触发 UAC。若当前 `PATH` 中的 `node` 不是可信的 Node.js 24 或 26 executable，先在这个管理员终端设置要复制的路径：
 
    ```powershell
    $env:CODEATELIER_SANDBOX_RUNTIME_NODE = "C:\Program Files\nodejs\node.exe"

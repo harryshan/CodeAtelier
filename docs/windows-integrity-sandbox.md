@@ -99,7 +99,7 @@ Runtime 只可通过 `run_with_permissions` 提交任意命令文本和理由；
 
 - 使用随机高熵密码；密码只以 Windows DPAPI/等价系统保护形式保存，存储 DACL 只允许 SYSTEM 和安装该实例的宿主用户，绝不进入 argv、环境、日志、session 或工作区。
 - 不加入 Administrators。首版使用普通 Broker 可调用的 `CreateProcessWithLogonW` 创建本地账户进程，因此不能同时配置 `SeDenyInteractiveLogonRight`；账户以高熵秘密、隐藏欢迎屏幕入口、禁止远程交互/网络/服务登录和 WFP fence 降低被其它入口使用的风险。若本机或域策略禁止这种本地 logon，安装失败；后续若改用提升服务与 batch logon，必须另行审计高权限控制面。
-- 安装器把原生构建产物复制到 `%ProgramData%\CodeAtelier\Sandbox\bin`，把固定 Node.js 24 executable、`agent-runtime.mjs`、`compaction-worker.mjs`、`read-file-worker.mjs` 和 `subagent-worker.mjs` 复制到受保护的 `runtime` 子目录。
+- 安装器把原生构建产物复制到 `%ProgramData%\CodeAtelier\Sandbox\bin`，把固定 Node.js 24 或 26 executable、`agent-runtime.mjs`、`compaction-worker.mjs`、`read-file-worker.mjs` 和 `subagent-worker.mjs` 复制到受保护的 `runtime` 子目录。
 
   两个目录的 DACL 都只允许安装用户、Administrators 和 SYSTEM 修改，Sandbox 账户仅可读取/执行；v4 state 记录七个安装副本的 SHA-256，TypeScript 与 native self-check 都复核摘要，运行时不执行工作区 `dist` 或当前 `PATH` 下可被项目替换的文件。
 
@@ -329,7 +329,7 @@ UI 已区分 `sandboxed`、`host-process-fallback`、`non-isolated` 和 `unknown
 ```powershell
 pnpm sandbox:native:build
 pnpm sandbox:runtime:build
-# 若当前 PATH 中不是 Node.js 24，先指定要复制的可信 Node 24 executable
+# 若当前 PATH 中不是 Node.js 24 或 26，先指定要复制的可信 Node 24 或 26 executable
 $env:CODEATELIER_SANDBOX_RUNTIME_NODE = "C:\Program Files\nodejs\node.exe"
 # 以下命令不会自行触发 UAC；先另开“以管理员身份运行”的 PowerShell，进入仓库目录后执行
 pnpm sandbox:install
@@ -339,8 +339,8 @@ pnpm sandbox:uninstall
 pnpm sandbox:recover
 ```
 
-`sandbox:native:build` 只在 `dist/native/windows-x64` 生成启用 CFG/ASLR/DEP 的 fence manager 与 supervisor/bootstrap，`sandbox:runtime:build` 生成 Node 24 目标的两个 ESM bundle 和严格 manifest，两者都不修改机器。
+`sandbox:native:build` 只在 `dist/native/windows-x64` 生成启用 CFG/ASLR/DEP 的 fence manager 与 supervisor/bootstrap，`sandbox:runtime:build` 以 Node 24 为兼容基线生成支持 Node 24/26 的 Runtime、三个 Worker ESM bundle 和严格 manifest，两者都不修改机器。
 
-安装脚本固定使用 `CodeAtelierSandbox`、DPAPI 保护的随机密码、`%ProgramData%\CodeAtelier\Sandbox\installation.state` 受限 v2 状态文件、五个安装副本的 SHA-256 和 42871/42872 回环端口；只接受实际报告 `v24.*` 的非 reparse Node executable，同名非产品账户会安全拒绝。
+安装脚本固定使用 `CodeAtelierSandbox`、DPAPI 保护的随机密码、`%ProgramData%\CodeAtelier\Sandbox\installation.state` 受限 v4 状态文件、七个安装副本的 SHA-256 和 42871/42872 回环端口；只接受实际报告稳定版 `v24.*.*` 或 `v26.*.*` 的非 reparse Node executable，同名非产品账户会安全拒绝。
 
 恢复脚本只删除已记录 SID 且产品描述匹配的账户、固定 WFP GUID 对象、欢迎屏幕值和受控 ProgramData 子目录，不扫描或重置整机防火墙。v1 state 仅为卸载/恢复兼容而可读，不能通过当前启动 self-check，须用 Repair 升级。

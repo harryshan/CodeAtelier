@@ -6,7 +6,7 @@ Installs, verifies, repairs, or uninstalls the CodeAtelier Windows Sandbox accou
 This is the only elevated product entrypoint for persistent Sandbox machine
 state. It creates one fixed low-privilege local account, protects its random
 password with CurrentUser DPAPI, installs deny-logon rights and the account-SID
-WFP fence, copies the native binaries plus a fixed Node 24/Agent Runtime bundle
+WFP fence, copies the native binaries plus a fixed Node 24 or 26/Agent Runtime bundle
 into protected ProgramData directories, and writes a versioned state file with
 a restrictive ACL and hashes for every executable Runtime artifact.
 
@@ -15,6 +15,10 @@ same narrow recovery routine and reports any residual objects. Verify is read
 only. Uninstall removes only the fixed WFP provider/sublayer, the account whose
 SID matches recorded state, the welcome-screen registry value, and the state
 directory. No operation scans or deletes unrelated users, filters, or folders.
+
+1. Source and manifest helpers validate regular files, hashes and the Node 24 bundle baseline.
+2. Assert-RuntimeNodeVersion accepts Node 24/26 for both source selection and installed verification.
+3. Account, credential, ACL and WFP helpers implement the selected maintenance mode and rollback.
 #>
 
 [CmdletBinding()]
@@ -205,6 +209,14 @@ function Read-RuntimeBuildManifest {
     return $Manifest
 }
 
+function Assert-RuntimeNodeVersion {
+    param([string]$Version, [int]$ExitCode)
+
+    if ($ExitCode -ne 0 -or $Version -notmatch '^v(24|26)\.\d+\.\d+$') {
+        throw "Agent Runtime 必须使用固定的 Node.js 24 或 26 executable。"
+    }
+}
+
 function Resolve-RuntimeNode {
     $Candidate = $RuntimeNodePath
     if (-not $Candidate) {
@@ -218,9 +230,7 @@ function Resolve-RuntimeNode {
     Assert-RegularSourceFile -Path $Resolved -Label "Agent Runtime Node executable"
 
     $Version = & $Resolved --version
-    if ($LASTEXITCODE -ne 0 -or $Version -notmatch '^v24\.') {
-        throw "Agent Runtime 必须安装固定的 Node.js 24 executable。"
-    }
+    Assert-RuntimeNodeVersion -Version $Version -ExitCode $LASTEXITCODE
 
     return $Resolved
 }
@@ -343,9 +353,7 @@ function Test-Installation {
         }
     }
     $InstalledNodeVersion = & $RuntimeNode --version
-    if ($LASTEXITCODE -ne 0 -or $InstalledNodeVersion -notmatch '^v24\.') {
-        throw "受保护 Agent Runtime Node 不是 Node.js 24。"
-    }
+    Assert-RuntimeNodeVersion -Version $InstalledNodeVersion -ExitCode $LASTEXITCODE
     Invoke-NetworkManager -Arguments @(
         "--wfp-persistent-verify",
         $State.accountName,

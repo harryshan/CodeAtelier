@@ -10,7 +10,7 @@
 | ---- | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | R1   | 创建个人 coding agent                         | 用户拥有并维护项目，初版功能边界见第 2 节                                                                                                                                                                    |
 | R2   | 使用 GitHub 管理，开发本项目时合理生成 commit | 项目版本可追溯，提交围绕清晰目的组织；此要求属于开发工作流；产品 Git 功能另见 R24                                                                                                                            |
-| R3   | 使用 TypeScript                               | 运行时 Node.js 24，使用 TypeScript strict                                                                                                                                                                    |
+| R3   | 使用 TypeScript                               | 运行时 Node.js 24 或 26，使用 TypeScript strict                                                                                                                                                                    |
 | R4   | 不使用现代 agent 框架，尽量 from scratch      | 自行实现核心 agent 机制；允许模型官方 SDK，通用基础库按技术方案采用                                                                                                                                          |
 | R5   | 良好的目录和代码文件结构                      | 模块职责清晰，便于理解、验证和扩展                                                                                                                                                                           |
 | R6   | 完善且持续更新的文档                          | AGENTS.md 提供工作入口，需求与设计随开发同步维护                                                                                                                                                             |
@@ -105,7 +105,7 @@ Windows 专用用户 Sandbox 已接入预览实现，但尚未完成固定账户
 
 技术选型依据见 [technical-proposal.md](technical-proposal.md)；当前配置和权限细则见 [development.md](development.md)。
 
-- 采用 Node.js 24、TypeScript strict 与 pnpm 11.22.0。
+- 采用 Node.js 24 或 26、TypeScript strict 与 packageManager 固定版本的 pnpm。
 - 采用单包仓库；第三方库用于通用基础能力，自研 agent 循环、工具协议、上下文策略和授权机制。
 - 已确认采用本机浏览器 Web UI + 本机后端；服务默认仅监听回环地址，用户可显式开放受信任局域网。后端负责模型调用、文件访问和命令执行，前端展示状态并收集用户操作；可由环境变量开启单一密码门禁，但局域网模式不提供多用户账户、权限分级或公网部署。
 - API 密钥保留在后端；后端落实权限判断，校验请求来源和会话身份。HTTP 接收操作，SSE 按事件游标恢复订阅；重新连接不触发任务重放。
@@ -159,7 +159,7 @@ README.md
 
 ## 6. 实现决定与后续范围
 
-- 采用 Node.js 24、pnpm 11.22.0、React/Vite、Fastify、Node 内置 SQLite、Pino。接口与目录职责见 architecture.md。
+- 采用 Node.js 24/26、pnpm（packageManager 固定版本）、React/Vite、Fastify、Node 内置 SQLite、Pino。接口与目录职责见 architecture.md。
 - 使用用户自建服务及 Bearer key；本地配置的模型已通过真实流式工具往返验证。
 - 权限规则、历史存储、输出限制、日志轮转、配置优先级和启动方式见 development.md。
 - 文档中文优先；开发本项目的 commit 使用英文，并按已有规则间隔批量 push。产品 Git 操作仅由 action 和参数受限的单一专用工具自动执行。

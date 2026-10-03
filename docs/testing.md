@@ -9,7 +9,7 @@
 3. 每完成一个可验证增量就运行相关测试。开发时可使用 `pnpm test:watch`，或 `pnpm test -- tests/files.test.ts` 定向验证。
 4. 需要评估单元/回归测试的源码覆盖率时运行 `pnpm test:coverage`；在补测前先查看未覆盖分支，避免为提高数字而削弱行为断言。
 5. 提交前运行 `pnpm check`（类型、lint、格式、单元/集成回归、构建）。UI、API、SSE 变更额外运行 `pnpm test:e2e`。
-6. 新增行为同步维护下表与验证记录；说明平台跳过、外部依赖和未验证范围。CI 暂时仅手动触发；触发后在 Windows、macOS、Linux 跑核心检查，在 Linux Chromium 跑 UI 验收。
+6. 新增行为同步维护下表与验证记录；说明平台跳过、外部依赖和未验证范围。CI 暂时仅手动触发；触发后在 Windows、macOS、Linux 分别使用 Node 24/26 跑核心检查，在 Linux 的两个 Node 版本下跑 Chromium UI 验收。
 
 ## 共享执行逻辑回归
 
@@ -26,6 +26,8 @@
 
 ## 测试分层
 
+- Node 版本兼容性按 `package.json` 的 Node 24/26 范围验证；`@types/node` 和 Runtime bundle 保留 Node 24 基线，避免引入仅 Node 26 可用的 API。`windows-sandbox-node-version.test.ts` 在真实 PowerShell 中单独加载安装器函数，验证 Node 24/26 选择成功、不受支持版本和探测失败被拒绝；不执行账户安装或 WFP 操作。
+
 - 单元测试验证配置、授权、错误分类等可独立观察的行为。
 - 集成回归使用真实临时文件、SQLite、子进程和本机 HTTP；模型通过可控适配器/SSE 服务注入预设请求与回复，验证上下文与副作用，而非只检查 mock 调用次数。
 - 浏览器测试操作真实 Web UI 与测试后端，覆盖消息、历史、权限、设置、恢复与重连。
@@ -33,7 +35,7 @@
 
   测试不继承本机 `.env`、系统中的 CodeAtelier 配置或真实 API key；模型只可使用注入式模拟值和本机测试 HTTP/SSE 服务。
 
-- `pnpm build` 与 `pnpm build:test` 还会生成 `dist/runtime/windows-x64` 下的 Node 24 Agent Runtime、compaction/read_file/subagent 三种 Worker bundle 和 SHA-256 manifest；构建成功只验证 bundle 可生成，不代表安装器已把它复制到受保护目录或 native Supervisor 已核对并启动它。
+- `pnpm build` 与 `pnpm build:test` 还会生成 `dist/runtime/windows-x64` 下以 Node 24 为兼容基线、支持 Node 24/26 的 Agent Runtime、compaction/read_file/subagent 三种 Worker bundle 和 SHA-256 manifest；构建成功只验证 bundle 可生成，不代表安装器已把它复制到受保护目录或 native Supervisor 已核对并启动它。
 - `windows-sandbox-scripts.test.ts` 使用模拟平台与子进程核对 `sandbox:repair` 的 pnpm 入口、全部固定维护 action 的 PowerShell 参数、非 shell 启动、退出码/启动错误与非 Windows `SKIP`；不实际执行安装、修复、账户、ACL 或 WFP 操作，也不替代平台安装态验收。
 - `pnpm sandbox:native:build` 的原生回归核对产品受限 token 的 execution/root capability 与 Everyone restricting SID、Runtime bootstrap 句柄帧、进程 PID 绑定、仅复制查询权限及畸形帧拒绝；显式 `codeatelier-sandbox-state-parser-test.exe --handle-transfer-probe` 还以真实子进程验证私有管道读帧和跨进程句柄复制。这些都不代替固定账户下的 BCrypt/PowerShell、Job 与 Runtime pipe 联合身份验收。
 - 原生 `codeatelier-sandbox-state-parser-test.exe --runtime-descriptor-probe` 可输出固定启动描述符二进制首帧，供 Node 解码器跨语言核对；`runtime-startup-protocol.test.ts` 验证真实本机管道的成功握手，以及无效首帧后入口关闭 socket 并退出。安装态首帧和 IPC 双向代理仍须用显式产品验收验证。

@@ -2,7 +2,9 @@
 
 ## 环境与命令
 
-Node.js 24，pnpm 11.22.0（packageManager 固定）。提交 pnpm-lock.yaml，使用 pnpm install --frozen-lockfile 重现依赖。esbuild 的安装脚本在 pnpm-workspace.yaml 中明确允许。
+Node.js 24 或 26，pnpm 版本由 package.json 的 packageManager 固定。提交 pnpm-lock.yaml，使用 pnpm install --frozen-lockfile 重现依赖。esbuild 的安装脚本在 pnpm-workspace.yaml 中明确允许。
+
+`engines.node` 只包含 24.x 和 26.x。TypeScript 的 Node 类型及 Runtime bundle 的 `target`/manifest `nodeMajor` 继续使用 Node 24 兼容基线；在 Node 26 上构建的同一 bundle 仍面向这两个版本。使用 nvm 切换后，先运行 `node --version` 和 `pnpm exec node --version`，再执行 `pnpm check`、`pnpm test:e2e` 与 `pnpm build`。Windows 安装器接受固定的 Node 24 或 26 executable；更换已安装 Runtime 的 Node 版本仍须显式 Repair，宿主 Node 切换不会自动替换受保护副本。
 
 | 命令                                                                  | 用途                                                                      |
 | --------------------------------------------------------------------- | ------------------------------------------------------------------------- |
@@ -311,11 +313,11 @@ Push 必须是当前工具批次的唯一节点；Agent Runtime 保持存活，�
 
 持久 WFP fence 只约束专用账户 Runtime，不约束 Broker 宿主命令或任何 Git 工具 action；旧 relay/CONNECT 代码暂停用于产品 push。取消记录以 executionInstance 及 `agent-runtime | broker-command | broker-git | broker-git-push` kind 保存 cancelled/unknown/orphaned、部分输出和“副作用可能已发生/禁止重放”；非 Sandbox 进程不伪造专用账户字段。
 
-Windows 原生安装命令是显式维护入口，不属于服务启动或默认测试：先在普通终端运行 `pnpm sandbox:native:build` 与 `pnpm sandbox:runtime:build`；若当前 `PATH` 中的 `node` 不是 v24，通过 `CODEATELIER_SANDBOX_RUNTIME_NODE` 指定可信 Node 24 executable。
+Windows 原生安装命令是显式维护入口，不属于服务启动或默认测试：先在普通终端运行 `pnpm sandbox:native:build` 与 `pnpm sandbox:runtime:build`；若当前 `PATH` 中的 `node` 不是 v24 或 v26，通过 `CODEATELIER_SANDBOX_RUNTIME_NODE` 指定可信 Node 24 或 26 executable。
 
 随后必须由用户**先打开“以管理员身份运行”的 PowerShell**，进入仓库目录，再运行 `pnpm sandbox:install`、`sandbox:repair`、`sandbox:verify`、`sandbox:uninstall` 或 `sandbox:recover`；`run.ts` 使用非 shell `spawn`，不会自行触发 UAC 或重新提升。
 
-安装器校验 v3 build manifest 后，把 supervisor/WFP manager、Node 24、Agent Runtime entry 和 compaction、read_file、subagent 三种 Worker 复制到受保护的 ProgramData 目录，并在 v4 state 记录安装副本摘要；旧 v3 安装须由用户显式运行 `pnpm sandbox:repair`（转交 `install.ps1 -Mode Repair`），TypeScript 启动前与 native self-check 均拒绝旧状态或不匹配的摘要。安装器还配置专用账户的网络、batch、service 和远程交互拒绝登录权；服务不得自行提权或自动安装。
+安装器校验 v3 build manifest 后，把 supervisor/WFP manager、Node 24 或 26、Agent Runtime entry 和 compaction、read_file、subagent 三种 Worker 复制到受保护的 ProgramData 目录，并在 v4 state 记录安装副本摘要；旧 v3 安装须由用户显式运行 `pnpm sandbox:repair`（转交 `install.ps1 -Mode Repair`），TypeScript 启动前与 native self-check 均拒绝旧状态或不匹配的摘要。安装器还配置专用账户的网络、batch、service 和远程交互拒绝登录权；服务不得自行提权或自动安装。
 
 macOS/Linux 调用这些命令只输出 `SKIP`，不启动 PowerShell 或任何 Windows 原生代码；设置 `CODEATELIER_SANDBOX_ENABLED=true` 也保持 non-isolated 宿主路径。Windows 上提升验收完成前，启用开关若自检失败仍按既有契约提示并回退宿主。
 

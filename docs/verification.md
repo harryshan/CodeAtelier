@@ -1,5 +1,12 @@
 # 初版验证记录
 
+## Node.js 26 兼容性（2026-10-03）
+
+- Windows 上使用 nvm 安装目录中的 Node.js 26.10.0，并以 `pnpm exec node` 确认测试子进程的版本；本轮使用工作区已有的 pnpm 12.8.1，未切换 nvm 全局选择。修改前完整 `pnpm check` 为 78 个文件、577 项通过、1 项原有跳过；Chromium `pnpm test:e2e` 28/28 通过，覆盖真实 HTTP/SSE、历史、编辑、重载与关闭。
+- 新增安装器版本回归先复现 Node 26 被拒绝，扩展后通过；真实 PowerShell 只执行源文件/版本检查函数，验证 24/26 接受、22/25/27 和错误输出/非零退出拒绝，不执行账户、ACL 或 WFP 安装。最终 Node 26.10.0 与 Node 24.21.0 均通过 `pnpm check`：79 个测试文件、578 项通过、1 项原有跳过，含类型、lint、格式及服务/Web/Runtime 测试构建。
+- Node 26 的 `pnpm build` 生产构建通过；`pnpm sandbox:native:build` 的 MSVC 编译、`SANDBOX_NATIVE_REGRESSION` 与 `SANDBOX_RUNTIME_DUPLEX_PROBE` 均通过。仍有既有 Web bundle 大小警告。
+- 支持声明与手动 CI 矩阵已扩展至 Node 24/26；类型与 bundle 保留 Node 24 兼容基线，安装器允许两种固定 Node executable。未运行跨平台 CI、固定账户 Node 26 安装/Repair/产品链路验收或真实模型请求，未运行 Evaluation；不能把本机离线结果视为这些层次已通过。
+
 ## Skill 自动发现与按需加载（2026-10-03）
 
 - 自动扫描项目/宿主用户的六个预设目录，主模型先接收摘要，`skill list/load` 按名称经 Broker 返回目录/正文。新增 24 项离线回归覆盖解析、优先级、无效条目、链接/硬链接、容量、版本失效、下一任务刷新、取消/失败 trace，以及宿主和独立 Node Runtime 的模型往返、DAG 阻断和历史/replay。

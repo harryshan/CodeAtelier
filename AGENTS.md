@@ -10,7 +10,7 @@
 - 不使用现代 agent 框架，核心能力尽量从零实现。
 - 保持清晰的目录、模块与代码文件结构。
 - 保持完善且与开发同步更新的文档。
-- **初版功能边界已确认**，以 docs/requirements.md 第 2、5 节为范围与验收依据；用户已授权开始实现；当前按 Node.js 24、React/Vite、Fastify、SQLite、Pino 技术方案开发。
+- **初版功能边界已确认**，以 docs/requirements.md 第 2、5 节为范围与验收依据；用户已授权开始实现；当前按 Node.js 24/26、React/Vite、Fastify、SQLite、Pino 技术方案开发。
 - 第一版使用 Web UI 作为用户交互界面，支持 Windows、macOS 和 Linux，优先完成读代码、修改与验证闭环。后续 Windows Sandbox 使用单一专用低权限本地账户、per-instance restricted token/Job/capability、显式文件 ACL 与按账户 SID 的 WFP；全部 Git 工具 action 在 Broker 中以宿主用户权限执行，push 仍逐次审批。Sandbox 模式沿用 1～4 个不同工作区并发和同工作区串行。
 
   应用层 AgentRuntimeService、Engine launcher 分流与 model/session/approval/memory adapter 已在独立 Node 子进程 harness 跑通；默认 Windows 组装现已接入 C++ Supervisor launcher、任务专属 Named Pipe 字节代理和 PID/创建时间/Job/token/capability/映像联合检查，但尚未完成固定账户提升环境端到端验收，因此专用账户 Runtime 仍不可描述为当前可用或跨平台实现。

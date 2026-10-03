@@ -3,7 +3,7 @@
  * TypeScript Broker 只以固定 argv 启动 self-check/execute/launch-agent-runtime，请求通过继承 stdin 的有界二进制帧传入；
  * supervisor 使用 DPAPI state、工作区 ACL、Job 和私有 Named Pipe 启动同一二进制的 bootstrap 模式，并代理 Agent Runtime IPC。
  *
- * 1. 提升安装时仅对专用 LSA 账户对象授予安装者读取拒绝登录权的权限；self-check 核对 state 所属宿主 SID、专用账户 SID/密码、拒绝登录权、WFP 持久规则，以及受保护 Node 24/Agent Runtime entry 和各 Worker bundle 摘要。
+ * 1. 提升安装时仅对专用 LSA 账户对象授予安装者读取拒绝登录权的权限；self-check 核对 state 所属宿主 SID、专用账户 SID/密码、拒绝登录权、WFP 持久规则，以及受保护 Node 24 或 26/Agent Runtime entry 和各 Worker bundle 摘要。
  * 2. execute 生成 execution/root capability SID；共享账户的目录 ACE 与可写 root capability 均包含 DELETE_CHILD，以替换未继承新 ACE 的既有文件；restricted token 另含 Everyone 以兼容系统组件，故已有 Everyone 可写对象不受根 capability 完整约束。
  * 3. CreateProcessWithLogonW 以固定 bootstrap 入口启动专用账户进程，先分配 KILL_ON_JOB_CLOSE Job 再恢复。
  * 4. 在确认不是 WinSta0 后给系统命名的非交互式 station 补齐专用账户及实例 SID，再创建私有 desktop；bootstrap 经账户管道取得命令，创建 WRITE_RESTRICTED token，常驻 Runtime 则经仅额外授权本实例 execution SID 的专属 pipe 连接 Broker。

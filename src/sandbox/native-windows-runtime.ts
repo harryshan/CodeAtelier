@@ -3,7 +3,7 @@
  * Runtime factory 仅在 Windows 且开关开启时创建本类；selfCheck 必须同时验证安装 state、二进制摘要、账户凭据与 WFP。
  *
  * 1. installationPaths 解析 ProgramData 下受保护的产品副本或显式测试覆盖，不从工作区或模型输入选择可执行文件。
- * 2. selfCheck 严格读取受限 state 元数据、复核 supervisor/network 与固定 Node 24/Runtime bundle SHA-256，并在首次接单前排空旧账户进程和 ACL journal。
+ * 2. selfCheck 严格读取受限 state 元数据、复核 supervisor/network 与固定 Node 24 或 26/Runtime bundle SHA-256，并在首次接单前排空旧账户进程和 ACL journal。
  * 3. prepareAccess 在 manifest 前创建逐实例 HOME/TEMP 与协议所需的空 Git global 投影，不再投影宿主 Git 配置图；私有目录也经过原对象 ACL/capability/journal，encodeRequest 再发送固定执行帧。
  * 4. execute 启动单实例 supervisor，stdout 作为工具输出流，stderr 只解析 runtime PID/创建时间、完成和固定错误类别。
  * 5. runtime started 控制帧确认共享账户 ACE 已安装；并发 lease 在该确认前不会假定 grant 可用。

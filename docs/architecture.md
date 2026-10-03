@@ -37,7 +37,7 @@ Windows 启用时的产品调用链现为 `Broker Engine → SandboxBroker launc
 
 全部 Git 工具 action 都是宿主执行分支：`Agent Runtime → Runtime IPC 固定 action/toolCallId → Broker 宿主 Git`；其中 push 还经过 Broker 预检和逐次审批，并独占工具批次。原 Agent Runtime 保持存活，但不取得宿主网络或凭据能力；Push Runner 代码保留且暂停使用。
 
-安装版 Runtime 的 argv 只携带 Supervisor 生成的本机任务 pipe 名，identity/nonce 由有界首帧交付；产品 build 生成面向 Node 24 的单文件 Runtime 与独立 compaction、read_file、subagent Worker bundle，安装器把 Node 24 和 bundle 固定到受保护目录，TypeScript/native self-check 复核 v4 state 中的 SHA-256。
+安装版 Runtime 的 argv 只携带 Supervisor 生成的本机任务 pipe 名，identity/nonce 由有界首帧交付；产品 build 生成以 Node 24 为兼容基线、支持 Node 24/26 的单文件 Runtime 与独立 compaction、read_file、subagent Worker bundle，安装器把选定的 Node 24 或 26 和 bundle 固定到受保护目录，TypeScript/native self-check 复核 v4 state 中的 SHA-256。
 
 启动前回退时由宿主 loop 继续执行，实际模式记录为 `host-process`。只有提升环境证明这条真实链路的身份、取消、清理与恢复后，才满足 Agent Runtime 完成条件。
 
