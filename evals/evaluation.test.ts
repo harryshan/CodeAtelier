@@ -162,8 +162,12 @@ it("stops before another model request once reported tokens reach the threshold"
 });
 
 it("cancels a blocked provider and records unknown usage on timeout", async () => {
+  let providerStarted = false;
+
   const provider: ModelProvider = {
     async run(_input, _instructions, _tools, signal) {
+      providerStarted = true;
+
       return new Promise((_resolve, reject) => {
         signal.addEventListener("abort", () => reject(signal.reason), {
           once: true,
@@ -176,10 +180,12 @@ it("cancels a blocked provider and records unknown usage on timeout", async () =
       workspace: await temp(),
       outputDir: await temp(),
       prompt: "wait",
-      timeoutMs: 100,
+      // Allow initialization to reach the provider before the task timeout.
+      timeoutMs: 1000,
     },
     { provider, log: silent },
   );
+  expect(providerStarted).toBe(true);
   expect(report.task.status).toBe("cancelled");
   expect(report.stopReason).toBe("timeout");
   expect(report.usage.unmeasuredCalls).toBe(1);
@@ -229,7 +235,7 @@ it("caps model calls even when total token usage is low", async () => {
   );
 });
 
-it("allows only command approvals rooted in the workspace", () => {
+it("allows the production run_command approval shape only in the workspace", () => {
   const root = path.resolve("workspace");
   const approval = {
     id: "a",
@@ -238,8 +244,7 @@ it("allows only command approvals rooted in the workspace", () => {
     repeatable: false,
     tool: "run_command",
     description: JSON.stringify({
-      command: "node",
-      args: ["--test"],
+      command: "pwd; find . -maxdepth 2 -name AGENTS.md -print",
       cwd: root,
     }),
   };
@@ -256,9 +261,17 @@ it("allows only command approvals rooted in the workspace", () => {
         ...approval,
         description: JSON.stringify({
           command: "node",
-          args: [],
           cwd: root + "-outside",
         }),
+      },
+      root,
+    ),
+  ).toBe(false);
+  expect(
+    approveEvaluationCommand(
+      {
+        ...approval,
+        description: JSON.stringify({ command: "node" }),
       },
       root,
     ),

@@ -3,7 +3,7 @@
 #
 # 1. 缺少用量或评分时，应保留未知，不能写成零成本或评分失败。
 # 2. 检查官方通过和失败记录，并确认补丁行数不会把 diff 头部算进去。
-# 3. 检查工具缺少结果、非零退出和列表结果的统计，未提供的数据不参与分布计算。
+# 3. 检查工具缺少结果、非零退出、脱敏命令参数和列表结果的统计，未提供的数据不参与分布计算。
 #
 # 只在用户要求时运行；“没有记录”和“记录为零”必须保持区别。
 
@@ -70,7 +70,7 @@ class ReportTests(unittest.TestCase):
                 "data": {
                     "name": "run_command",
                     "callId": "1",
-                    "args": {"command": "pytest", "args": []},
+                    "args": {"command": "pytest"},
                 },
             },
             {
@@ -92,6 +92,21 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(metrics["missingToolResults"], 1)
         self.assertEqual(metrics["testCommandsHeuristic"], 1)
         self.assertEqual(metrics["testCommandsExitZero"], 0)
+
+    def test_redacted_command_arguments_remain_unknown(self):
+        events = [
+            {
+                "type": "tool_start",
+                "data": {
+                    "name": "run_command",
+                    "callId": "1",
+                    "args": "[redacted]",
+                },
+            }
+        ]
+        metrics = process_metrics(events)
+        self.assertEqual(metrics["unparsedCommandArguments"], 1)
+        self.assertEqual(metrics["testCommandsHeuristic"], 0)
 
     def test_distribution_excludes_missing_values(self):
         result = distribution([None, 1, 2, 9])

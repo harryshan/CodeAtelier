@@ -350,7 +350,7 @@ context-stages.test.ts 覆盖长记录中间材料的全文连续送出、默认
 
 ## SWE-bench 评测（仅手动）
 
-`evals/evaluation.test.ts` 保留生产工具、预算、用量缺失、超时和目录隔离测试。`scripts/swebench/test_contract.py` 覆盖固定清单合法性、提示词不泄露答案、打包白名单。所有评测测试只在用户要求后执行；不加入默认 test/check、CI 或钩子。
+`evals/evaluation.test.ts` 保留生产工具、预算、用量缺失、在途模型请求超时、目录隔离，以及当前 `run_command` 的 `{ command, cwd }` 审批描述与工作区约束测试。`scripts/swebench/test_contract.py` 覆盖固定清单合法性、提示词不泄露答案、打包白名单。所有评测测试只在用户要求后执行；不加入默认 test/check、CI 或钩子。
 
 手动入口：`pnpm eval:test` 和 `python -m unittest discover -s scripts/swebench -p 'test_*.py'`。评分使用官方 harness，不以 agent completed 或本地测试退出码冒充解决率。运行说明见 [swebench.md](swebench.md)。
 
@@ -360,7 +360,7 @@ context-request.test.ts 覆盖低于阈值时重复读取结果原样发送、�
 
 git-tools.test.ts 覆盖 diff 独立输出硬上限；core.test.ts 覆盖模型收到避免无必要全量 diff 的指令。它们均属于普通功能回归，不启动 Evaluation。
 
-评测报告手动回归 `scripts/swebench/test_report.py` 覆盖缺失数据不当作零或失败、官方回归测试失败、补丁头排除、缺失工具结果、非零测试退出和分位数样本口径。该套件不进入默认 test/check。另覆盖 list_files 数组形式的工具结果；2026-09-12 用户授权三题评测期间，报告回归 6 项通过。
+评测报告手动回归 `scripts/swebench/test_report.py` 覆盖缺失数据不当作零或失败、官方回归测试失败、补丁头排除、缺失工具结果、非零测试退出、不可解析的脱敏命令参数和分位数样本口径。该套件不进入默认 test/check。另覆盖 list_files 数组形式的工具结果；2026-09-12 用户授权三题评测期间，报告回归 6 项通过。
 
 准备镜像的手动契约用例验证：使用固定 image ID 后不访问 registry 或远程 task spec。仍通过独立手动测试入口执行，不加入默认检查。
 

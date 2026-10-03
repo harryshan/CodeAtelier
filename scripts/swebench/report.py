@@ -2,7 +2,7 @@
 # 只处理本地记录，不调用模型、网络、容器或评分器。
 #
 # 1. read_json、ratio、distribution、elapsed 读取记录并计算统计值，保留缺失值。
-# 2. patch_metrics、process_metrics、diagnostic_metrics 分别分析补丁、工具执行和诊断记录。
+# 2. patch_metrics、process_metrics、diagnostic_metrics 分别分析补丁、工具执行和诊断记录；脱敏命令参数保持未知。
 # 3. official_result 读取官方评分结果，build_report 汇总各题指标。
 # 4. write_report 写出报告，命令行入口接收已有运行目录。
 #
@@ -89,15 +89,19 @@ def process_metrics(events):
         for item in results
     )
     test_calls = []
+    unparsed_commands = 0
     signatures = Counter()
     for item in starts:
-        args = item.get("args", {})
-        if item["name"] in ("read_file", "search", "list_files"):
+        raw_args = item.get("args")
+        args = raw_args if isinstance(raw_args, dict) else None
+        if item["name"] in ("read_file", "search", "list_files") and args is not None:
             signatures[json.dumps([item["name"], args], sort_keys=True)] += 1
         if item["name"] == "run_command":
-            command = (
-                str(args.get("command", "")) + " " + " ".join(args.get("args", []))
-            )
+            command = args.get("command") if args is not None else None
+            if not isinstance(command, str):
+                unparsed_commands += 1
+                continue
+
             # 这里只根据命令名猜测是否运行了测试；退出码为零不代表测试确实执行或覆盖了问题。
             if re.search(
                 r"\b(pytest|unittest|vitest|jest|ctest|tox)\b|\b(npm|pnpm|yarn|cargo|go|node)\b.*(?:\btest\b|--test)",
@@ -127,6 +131,7 @@ def process_metrics(events):
         ),
         "repeatedReadArguments": sum(count - 1 for count in signatures.values()),
         "testCommandsHeuristic": len(test_calls),
+        "unparsedCommandArguments": unparsed_commands,
         "testCommandsExitZero": test_calls.count(0),
         "testCommandsUnknownExit": test_calls.count(None),
         "measuredTaskSteps": len(steps),

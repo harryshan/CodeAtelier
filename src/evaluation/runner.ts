@@ -36,12 +36,18 @@ export function approveEvaluationCommand(
   }
 
   try {
-    const command = JSON.parse(approval.description);
+    const request: unknown = JSON.parse(approval.description);
+    if (!request || typeof request !== "object" || Array.isArray(request)) {
+      return false;
+    }
+
+    // ToolRunner emits the shell command and its resolved cwd, with no args
+    // array. Reject a changed approval shape until this boundary is reviewed.
+    const command = request as Record<string, unknown>;
 
     return (
+      Object.keys(command).length === 2 &&
       typeof command.command === "string" &&
-      Array.isArray(command.args) &&
-      command.args.every((arg: unknown) => typeof arg === "string") &&
       typeof command.cwd === "string" &&
       path.isAbsolute(command.cwd) &&
       inside(workspace, command.cwd)
