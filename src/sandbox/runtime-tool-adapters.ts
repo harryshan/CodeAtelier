@@ -6,11 +6,13 @@
  * 2. grantKey 原样绑定审批语义，但不能改变 operation；Broker ApprovalManager 决定是否允许复用。
  * 3. RuntimeMemoryClient 不接收宿主路径，Broker handler 固定使用 identity 对应工作区和项目记忆服务。
  * 4. RuntimeGitClient 发送受限 action 和 toolCallId，保留各 action 的结果形状；旧 RuntimeGitPushClient 只发送调用 ID，Broker 完成 push 预检与审批。
- * 5. RuntimeMcpClient 仅提交服务别名/操作，由 Broker 审批后消费一次性授权；连接配置和凭据不经过 Runtime。
- * 6. RuntimeCapabilityClient 先发送命令、理由和 toolCallId 完成 Broker 审批；调用方取得
+ * 5. RuntimeSkillClient 只发送名称和 list/load 操作，不能指定根目录、命令或扩大文件权限。
+ * 6. RuntimeMcpClient 仅提交服务别名/操作，由 Broker 审批后消费一次性授权；连接配置和凭据不经过 Runtime。
+ * 7. RuntimeCapabilityClient 先发送命令、理由和 toolCallId 完成 Broker 审批；调用方取得
  *    Tool worker 槽后才用一次性 authorizationId 启动 Broker 宿主命令，审批等待不会占用执行槽。
  */
 
+import type { SkillAction, SkillResult } from "../skills/contracts.js";
 import type { McpAction, McpResult } from "../mcp/contracts.js";
 import type { Approval } from "../shared/types.js";
 import type { RuntimeIpcPeer } from "./runtime-ipc-peer.js";
@@ -81,6 +83,18 @@ export class RuntimeGitClient {
     );
 
     return runtimeGitResultSchema.parse(result);
+  }
+}
+
+export class RuntimeSkillClient {
+  constructor(private peer: RuntimeIpcPeer) {}
+
+  async execute(request: SkillAction, toolCallId: string, signal: AbortSignal) {
+    return this.peer.request(
+      "skill_execute",
+      { toolCallId, request },
+      signal,
+    ) as Promise<SkillResult>;
   }
 }
 

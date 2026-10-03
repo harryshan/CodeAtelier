@@ -12,6 +12,7 @@
 | [模型容量与 token](model-tokens.md)                  | 输入预算、服务 usage 与界面统计              |
 | [任务 Replay Case](replay-cases.md)                  | 本地捕获、手动导出与隔离复现                 |
 
+- [Skill 系统](skills.md)：预设目录、SKILL.md 格式、模型加载接口、优先级与权限边界。
 - [MCP 本机客户端](mcp.md)：stdio/远程 HTTP 配置、工具和资源调用、审批、凭据与失败边界。
 
 ## 开发与当前设计

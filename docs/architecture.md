@@ -67,9 +67,15 @@ Engine 在任一节点产生副作用前校验整批 DAG，并以稳定拓扑顺
 
 `edit_files` 的 create:true 条目只新建不存在的文件，create:false 条目只精确编辑本任务已读取的已有文件。历史工具结果的展示与压缩兼容见 [上下文管理](context-management.md)。
 
+### Skill 发现与加载
+
+`src/skills/contracts.ts` 提供 strict list/load 参数；`skill-document.ts` 使用 js-yaml 的 JSON_SCHEMA 解析有界 SKILL.md，校验 name/description 并忽略权限元信息；`task-skills.ts` 管理每任务预设根扫描、固定摘要/版本、链接与容量检查，以及调用时重新读取正文。Engine 在宿主/Runtime 分流前创建目录，fallback 复用同一实例；名称、描述和来源类别进入指令，正文只通过工具结果进入模型。
+
+宿主 ToolRunner 直接调用此任务实例；Runtime 使用 IPC v6 的 `skill_execute`，启动材料只含目录提示，不投影宿主技能根。返回 `broker-skill/host-process`，不执行脚本、不增加读写授权。`skills.*` span 及普通工具历史覆盖成功/失败/取消，trace 排除技能参数/正文。格式、目录优先级和限制见 [Skill 指南](skills.md)。
+
 ### MCP 本机客户端
 
-`src/mcp/contracts.ts` 提供模型与 Runtime 共用的有界操作契约，`config.ts` 只在宿主读取 mcp.json；`task-client.ts` 使用官方 SDK 管理每任务的 stdio/Streamable HTTP 连接、审批、串行请求、取消/清理和输出脱敏。模型通过静态 `mcp` 工具按需发现动态 schema，不声明 provider-hosted MCP。`ToolRunner` 审批准备后取得执行槽，宿主调用 Engine 的任务客户端；Runtime 通过 IPC v5 的 `prepare_mcp/execute_mcp` 在当前认证连接内消费调用绑定的单次授权。连接配置和凭据不经 Runtime。
+`src/mcp/contracts.ts` 提供模型与 Runtime 共用的有界操作契约，`config.ts` 只在宿主读取 mcp.json；`task-client.ts` 使用官方 SDK 管理每任务的 stdio/Streamable HTTP 连接、审批、串行请求、取消/清理和输出脱敏。模型通过静态 `mcp` 工具按需发现动态 schema，不声明 provider-hosted MCP。`ToolRunner` 审批准备后取得执行槽，宿主调用 Engine 的任务客户端；Runtime 通过 IPC v6 的 `prepare_mcp/execute_mcp` 在当前认证连接内消费调用绑定的单次授权。连接配置和凭据不经 Runtime。
 
 除列出配置别名外，每项操作走现有审批。结果标记 `broker-mcp/host-process` 并进入通常的历史/replay/DAG，MCP `isError` 阻断后继；失败连接在当前任务内不可重连，未知副作用不重放。任务终态前关闭全部连接；MCP 参数/正文不进入 trace，仅用安全的 `mcp.*` 阶段记录。详细能力与边界见 [MCP 指南](mcp.md)。
 

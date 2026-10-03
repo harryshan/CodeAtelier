@@ -1,5 +1,12 @@
 # 初版验证记录
 
+## Skill 自动发现与按需加载（2026-10-03）
+
+- 自动扫描项目/宿主用户的六个预设目录，主模型先接收摘要，`skill list/load` 按名称经 Broker 返回目录/正文。新增 24 项离线回归覆盖解析、优先级、无效条目、链接/硬链接、容量、版本失效、下一任务刷新、取消/失败 trace，以及宿主和独立 Node Runtime 的模型往返、DAG 阻断和历史/replay。
+- 审查发现合法最大目录的 JSON 转义会超过最初的 Runtime 启动文本上限；先增加回归并观察失败，再按最多 64 项、每描述 1024 字符、最坏六倍转义扩大有界 IPC 字段。没有改变单文件、目录条目或模型上下文预算限制，回归通过。
+- Windows / Node.js 24.19.0：最终 `pnpm check` 通过（类型、ESLint、Prettier、78 个测试文件，577 项通过、1 项原有跳过，以及 Web/服务端/Runtime 构建）；本次 `pnpm test:e2e` Chromium 28 项通过。修改文档的本地链接目标检查通过；构建仍有既有 Web bundle 大小警告。
+- 工具读取归因为 `broker-skill/host-process`，不是 Sandbox 文件授权或脚本执行。未调用真实模型，未运行 Evaluation；未验证 macOS/Linux 或更新后的 Windows 固定账户安装态。IPC 已升至 v6，旧安装副本须重建并管理员 Repair 后另行验收。
+
 ## 本机后端 MCP 与 Windows 进程取消回归（2026-10-03）
 
 - MCP 由本机后端使用 SDK 1.31.0 连接 stdio 或 Streamable HTTP；专项夹具覆盖工具、资源与提示模板、审批和 Runtime IPC v5 单次授权、历史/replay、超时取消、失败连接不重放、脱敏、大小限制及关闭连接。Windows UTF-8 BOM 配置先复现解析失败，再修复并通过回归。

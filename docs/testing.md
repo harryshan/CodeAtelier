@@ -128,6 +128,12 @@ Windows native runtime/relay 测试在非 Windows 整组跳过。stdio harness�
 
 item.done 回退、失败/不完整事件、服务实际错误 message/reason/code 的脱敏保留、断流、超时、重试次数、HTTP 分类、取消退避、并行工具调用请求参数
 
+### Skill 发现与加载
+
+主要测试：skills.test.ts、skills-engine.test.ts、tool-schema.test.ts。
+
+覆盖 UTF-8/BOM/CRLF、YAML 多行/坏字段/重复键/大小边界，六个预设根及同名优先级、缺省空目录、坏条目隔离和低优先级回退，链接/junction/硬链接与加载前根替换拒绝，枚举/目录容量限制，任务内版本失效、新任务重新发现，strict 工具与 IPC v6 拒绝路径/命令和旧握手、最大目录 JSON 转义后的启动传输边界。宿主及真实 Node Runtime 模拟模型往返验证摘要先行、正文按需、无审批/脚本副作用、失败后继阻断、历史/replay 及 trace 脱离元信息/正文。所有文件在临时项目/home 中，无个人密钥；不替代固定账户安装态或跨平台验收。
+
 ### MCP 本机访问
 
 主要测试：mcp.test.ts、mcp-engine.test.ts、mcp-ipc.test.ts、tool-schema.test.ts；夹具 tests/fixtures/mcp-server.ts 使用官方 SDK。

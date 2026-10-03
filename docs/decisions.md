@@ -1076,3 +1076,12 @@
 - 权限：除无连接的 list_servers 外逐次审批，readOnlyHint 不授予权限；Runtime 经认证 IPC v5 两阶段单次授权调用 Broker，审批等待不占执行槽。stdio 使用宿主用户权限，HTTP 使用本机网络和配置的认证头；结果标记 broker-mcp/host-process，不构成 Sandbox。模型只接收脱敏工具数据，配置凭据不经 Runtime；工具返回数据仍会送入配置的模型上下文。
 - 生命周期：每任务/服务按需连接、串行复用，失败/取消/超时不自动重连或重放；任务收尾关闭连接并检查直接子进程，HTTP session 正常尝试终止。不能保证第三方脱离子进程或已提交远端操作被取消。输出与接收量有界；业务错误阻断 DAG 后继。
 - 观测：沿用工具历史、replay、审批和任务关联；mcp.connect/action/close span 记录开始/终态/耗时及调用 ID，MCP 参数、正文、地址、密钥不进入 trace。旧安装版 Runtime 须 Repair；本次不宣称全平台、固定账户安装态或任意远端兼容性已验证。OAuth、旧 SSE transport、sampling、elicitation、订阅和配置 UI 不在本次交付能力中。
+
+## D127：预设目录 Skill 发现与按需只读加载
+
+- 日期：2026-10-03
+- 状态：用户明确授权实现 Skill 系统、自动加载预设目录并向模型提供调用接口；目录、格式和生命周期是本次实现选择。
+- 决定：采用 `SKILL.md` 的 YAML name/description + Markdown 正文。任务启动扫描项目、宿主用户各自的 `.codeatelier/skills`、`.agents/skills`、`.claude/skills`；项目优先，同名取第一个有效条目。模型先见有界目录摘要，通过 strict `skill` 的 list/load 按名称读取正文；使用 js-yaml 的安全基础 schema，不引入 agent 框架。
+- 原因：技能只在适用时占用正文上下文，项目可覆盖用户通用技能；任务级目录和加载时版本校验避免元信息与正文静默漂移。新任务/续聊/恢复重新发现，不使用永久缓存或 watcher。
+- 权限：预设根的只读发现/加载无需单独审批；所有读盘在 Broker 完成，Runtime 经认证 IPC v6 请求固定名称，不能指定路径或扩大 AccessManifest。拒绝链接/硬链接和根越界，限制字节、枚举与条目数量；应用层复核不构成恶意宿主文件系统竞争的隔离保证。Skill 仅为不可信工作流参考，不能提升指令优先级、授予权限或自动执行 scripts；资源访问继续由现有工具处理。
+- 观测与影响：沿用 DAG、历史/replay、脱敏、输出限制、失败后继阻断；`skills.discover/list/load` 覆盖开始/完成/失败/取消和耗时，仅附调用 ID、计数，不含路径/元信息/正文。IPC 版本升级要求安装副本重建/Repair；不把独立 Node harness 视作固定账户或跨平台验收。无市场、安装器、自定义根设置或 UI，未开放 subagent 不增加新工具。详见 [Skill 指南](skills.md)。
