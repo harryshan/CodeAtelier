@@ -2,9 +2,10 @@
 # 使用固定子集和已打包的生产后端，不经过 Web UI。
 #
 # 1. upload、execute、save_artifacts 负责上传归档、运行容器命令和取回记录。
-# 2. run_trial 准备单题镜像与工作目录，安装 agent，再传入不含参考答案的题目提示。
-# 3. 单题结束后提取工作区补丁和用量；失败或取消也保存状态并清理容器。
-# 4. main 检查平台和连接配置，读取清单与应用包，按顺序运行并写入预测和汇总记录。
+# 2. run_unlimited_agent 以独立 Docker exec 和轮询记录无本地时限任务的退出码。
+# 3. run_trial 准备单题镜像与工作目录，安装 agent，再传入不含参考答案的题目提示。
+# 4. 单题结束后提取工作区补丁和用量；失败或取消也保存状态并清理容器。
+# 5. main 检查平台和连接配置，读取清单与应用包，按顺序运行并写入预测和汇总记录。
 #
 # 这里生成补丁，是否正确由 grade.py 单独评分；参考答案不能传给 agent。
 
@@ -59,6 +60,22 @@ def save_artifacts(container, output: Path) -> None:
                 target.write_bytes(source.read())
 
 
+def run_unlimited_agent(client, container, command, environment) -> int:
+    # 阻塞式 exec_run 受 Docker HTTP 读取超时约束；分离启动并轮询退出码。
+    execution_id = client.api.exec_create(
+        container.id, command, environment=environment
+    )["Id"]
+    client.api.exec_start(execution_id, detach=True)
+    while True:
+        execution = client.api.exec_inspect(execution_id)
+        if not execution["Running"]:
+            exit_code = execution["ExitCode"]
+            if exit_code is None:
+                raise RuntimeError("Detached evaluation command has no exit code")
+            return exit_code
+        time.sleep(1)
+
+
 def run_trial(client, row: dict, output: Path, bundle: Path, args) -> dict:
     from swebench.harness.test_spec.test_spec import make_test_spec
 
@@ -82,15 +99,16 @@ def run_trial(client, row: dict, output: Path, bundle: Path, args) -> dict:
             metadata["image"] = spec.instance_image_key
             image = client.images.pull(spec.instance_image_key)
         metadata["imageId"] = image.id
-        container = client.containers.create(
-            image.id,
+        container_options = dict(
+            image=image.id,
             command=["sleep", "infinity"],
             name="codeatelier-swe-" + uuid.uuid4().hex[:12],
             working_dir="/testbed",
-            mem_limit="4g",
-            nano_cpus=2_000_000_000,
             labels={"codeatelier.evaluation": "swebench"},
         )
+        if not args.unlimited:
+            container_options.update(mem_limit="4g", nano_cpus=2_000_000_000)
+        container = client.containers.create(**container_options)
         container.start()
         execute(container, ["mkdir", "-p", "/installed-agent", "/evaluation"])
         if not prepared:
@@ -102,10 +120,10 @@ def run_trial(client, row: dict, output: Path, bundle: Path, args) -> dict:
                 "/installed-agent/codeatelier-install.sh",
                 Path(__file__).with_name("install.sh").read_bytes(),
             )
-            execute(
-                container,
-                ["timeout", "600", "bash", "/installed-agent/codeatelier-install.sh"],
-            )
+            install = ["bash", "/installed-agent/codeatelier-install.sh"]
+            if not args.unlimited:
+                install = ["timeout", "600", *install]
+            execute(container, install)
         # 核对镜像中的代码版本，确保题目从指定提交开始。
         head = (
             execute(container, ["git", "rev-parse", "HEAD"], workdir="/testbed")
@@ -115,14 +133,21 @@ def run_trial(client, row: dict, output: Path, bundle: Path, args) -> dict:
         if head != row["base_commit"]:
             raise ValueError("Published image does not match base_commit")
         upload(container, "/evaluation/prompt.txt", prompt_for(row).encode())
+        budget_flags = (
+            "--unlimited"
+            if args.unlimited
+            else f"--max-total-tokens {args.max_total_tokens} "
+            + f"--max-model-calls {args.max_model_calls} "
+            + f"--max-steps {args.max_steps} --timeout-ms {args.timeout_ms}"
+        )
         command = [
             "bash",
             "-lc",
             "source /opt/miniconda3/etc/profile.d/conda.sh && conda activate testbed && exec "
             + "/opt/codeatelier/runtime/bin/node /opt/codeatelier/app/dist/server/evaluation/main.js "
             + "--workspace /testbed --output /evaluation/output --prompt-file /evaluation/prompt.txt "
-            + f"--max-total-tokens {args.max_total_tokens} --max-model-calls {args.max_model_calls} "
-            + f"--max-steps {args.max_steps} --timeout-ms {args.timeout_ms} --allow-workspace-commands",
+            + budget_flags
+            + " --allow-workspace-commands",
         ]
         environment = {
             key: os.environ[key]
@@ -135,13 +160,17 @@ def run_trial(client, row: dict, output: Path, bundle: Path, args) -> dict:
         }
         metadata["setupMs"] = (time.monotonic() - started) * 1000
         metadata["status"] = "agent_failed"
-        result = container.exec_run(
-            ["timeout", str(args.timeout_ms // 1000 + 30), *command],
-            environment=environment,
-        )
+        if args.unlimited:
+            exit_code = run_unlimited_agent(client, container, command, environment)
+        else:
+            result = container.exec_run(
+                ["timeout", str(args.timeout_ms // 1000 + 30), *command],
+                environment=environment,
+            )
+            exit_code = result.exit_code
         metadata.update(
-            status="completed" if result.exit_code == 0 else "agent_failed",
-            exitCode=result.exit_code,
+            status="completed" if exit_code == 0 else "agent_failed",
+            exitCode=exit_code,
         )
         # 将未被忽略的新文件也计入补丁，不修改提交；隐藏测试只由评分器加入。
         execute(container, ["git", "add", "-N", "."], workdir="/testbed")
@@ -191,6 +220,7 @@ def main() -> None:
     parser.add_argument("--max-model-calls", type=int, default=60)
     parser.add_argument("--max-steps", type=int, default=30)
     parser.add_argument("--timeout-ms", type=int, default=600000)
+    parser.add_argument("--unlimited", action="store_true")
     args = parser.parse_args()
     if os.name != "posix" or not all(
         os.environ.get(key)
@@ -238,11 +268,15 @@ def main() -> None:
                 if args.prepared_environments
                 else None,
                 "model": os.environ["CODEATELIER_MODEL"],
-                "limits": {
-                    key: value
-                    for key, value in vars(args).items()
-                    if isinstance(value, int)
-                },
+                "limits": (
+                    {"unlimited": True}
+                    if args.unlimited
+                    else {
+                        key: value
+                        for key, value in vars(args).items()
+                        if type(value) is int
+                    }
+                ),
             },
             indent=2,
         )

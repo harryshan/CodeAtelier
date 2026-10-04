@@ -32,7 +32,13 @@ export CODEATELIER_MODEL='YOUR_MODEL_ID'
   --output .local/swebench/runs/verified-20-v1-run1
 ```
 
-每题一次、串行，不自动重试；输出目录必须全新。默认每题 500000 token、60 次模型调用（含摘要）、30 步、600000ms，可用 --max-total-tokens、--max-model-calls、--max-steps、--timeout-ms 调整。安装最多 600 秒，官方独立评分每题最多 1800 秒。
+每题一次、串行，不自动重试；输出目录必须全新。通常默认每题 500000 token、60 次模型调用（含摘要）、30 步、600000ms，可用 --max-total-tokens、--max-model-calls、--max-steps、--timeout-ms 调整。2026-10-04 用户要求复跑时移除这些评测专加的预算，可显式传 `--unlimited`：不检查累计 token、模型调用数、Agent 步数或任务总时长；缺失 usage 仍记为未知，不因此中断；预测容器也不再附加 4 GB/2 CPU 上限。无上限模式使用 Docker 分离 exec 轮询退出码，避免 Docker HTTP 读取超时伪装成任务超时。仍保留生产 Agent 的单请求、单命令与上下文容量机制，以及取消、目录检查、审批和产物记录；这些是产品行为或安全边界，不代表 SWE-bench 的官方限制。官方评分测试仍采用官方 1800 秒默认超时。
+
+```sh
+.local/swebench-venv/bin/python scripts/swebench/predict.py \
+  --output .local/swebench/runs/verified-20-unlimited-run1 \
+  --unlimited
+```
 
 Ctrl+C/SIGTERM 停止并清理当前容器，已写出的结果保留；强杀无法保证清理，可通过 Docker label `codeatelier.evaluation=swebench` 定位本工具容器。
 
@@ -53,7 +59,7 @@ agent 非零退出仍保存可提取补丁和失败状态，环境初始化错�
 
 每次运行保存 subset.json、run.json（运行包 SHA256、模型和预算）、predictions.jsonl；每题 trial.json（环境镜像 ID、执行状态）及 output 下的 report.json、usage.json、events.json、SQLite 和诊断日志。task.status=completed 只表示 agent 结束，官方 resolved 才表示测试判定解决。
 
-累计 token 是请求间软阈值，一次响应可能超出；失败请求或缺失 usage 属于未知消耗，后续请求停止，不能按零计费。不估计美元费用。
+有限模式的累计 token 是请求间软阈值，一次响应可能超出；失败请求或缺失 usage 属于未知消耗，不能按零计费。无上限模式继续执行并记录未知用量，因此总 token 只在全部请求 usage 完整时填写。不估计美元费用。
 
 容器中仅自动批准生产 `run_command` 生成的 `{ command, cwd }` 审批描述，`cwd` 必须是工作区内的绝对路径；其他审批仍拒绝，保留产品 Git/提权规则。cwd 检查无法限制命令副作用；Docker 是开发评测隔离，不是产品新增的安全沙箱。容器不挂载宿主仓库、个人目录或 Docker socket，模型 key 只传给执行进程，但同权限容器代码仍可能读取它。测试数据和会话不提交 Git。
 

@@ -4,7 +4,8 @@
  *
  * 1. EvaluationUsage 分开记录已知和未知用量；timings 保存首次文本和整次调用耗时。
  * 2. forProvider 给辅助模型创建共享计量的包装；能力查询仍转发给对应模型。
- * 3. run/runWithProvider 发请求前检查预算，先将本次调用记为用量未知并保存检查点，
+ * 3. run/runWithProvider 在有限模式下发请求前检查预算；无限模式继续计量但不以缺失 usage 停止，
+ *    先将本次调用记为用量未知并保存检查点，
  *    收到合法 usage 后再更新为已知用量。
  * 4. onDelta 记录首次文本时间；无论成功还是失败，finally 都保存耗时和检查点。
  *
@@ -52,7 +53,11 @@ export class MeteredProvider implements ModelProvider {
 
   constructor(
     private provider: ModelProvider,
-    private limits: { maxTotalTokens: number; maxModelCalls: number },
+    private limits: {
+      maxTotalTokens: number;
+      maxModelCalls: number;
+      unlimited?: boolean;
+    },
     private checkpoint: () => void,
   ) {}
 
@@ -79,11 +84,17 @@ export class MeteredProvider implements ModelProvider {
     provider: ModelProvider,
     ...args: Parameters<ModelProvider["run"]>
   ): Promise<ModelResult> {
-    if (this.usage.unmeasuredCalls) {
+    if (!this.limits.unlimited && this.usage.unmeasuredCalls) {
       this.stopReason = "usage_unavailable";
-    } else if (this.usage.totalTokens >= this.limits.maxTotalTokens) {
+    } else if (
+      !this.limits.unlimited &&
+      this.usage.totalTokens >= this.limits.maxTotalTokens
+    ) {
       this.stopReason = "token_budget";
-    } else if (this.usage.calls >= this.limits.maxModelCalls) {
+    } else if (
+      !this.limits.unlimited &&
+      this.usage.calls >= this.limits.maxModelCalls
+    ) {
       this.stopReason = "call_budget";
     }
 

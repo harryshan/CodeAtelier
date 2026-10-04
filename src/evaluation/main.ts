@@ -28,6 +28,7 @@ try {
       "max-model-calls": { type: "string", default: "60" },
       "max-steps": { type: "string", default: "30" },
       "timeout-ms": { type: "string", default: "600000" },
+      unlimited: { type: "boolean", default: false },
       "allow-workspace-commands": { type: "boolean", default: false },
     },
   });
@@ -46,6 +47,7 @@ try {
       maxModelCalls: Number(values["max-model-calls"]),
       maxSteps: Number(values["max-steps"]),
       timeoutMs: Number(values["timeout-ms"]),
+      unlimited: values.unlimited,
       allowWorkspaceCommands: values["allow-workspace-commands"],
     },
     { signal: controller.signal },

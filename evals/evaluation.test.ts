@@ -3,7 +3,7 @@
  * 使用模拟模型和临时工作区，只由 pnpm eval:test 手动执行，不纳入默认检查。
  *
  * 1. 提供固定工具响应和 usage，检查实际文件读写及导出记录。
- * 2. 使用现行工具参数确认命令默认被拒绝，并分别检查 token、调用次数和超时限制。
+ * 2. 使用现行工具参数确认命令默认被拒绝，并分别检查有限预算与无额外预算模式。
  * 3. 检查 MeteredProvider 的主辅模型共享计量、未知用量和下一次请求前的预算检查。
  * 4. 检查重叠目录、非法预算和不符合授权范围的请求被拒绝。
  *
@@ -26,12 +26,12 @@ const usage = { input_tokens: 20, output_tokens: 5, total_tokens: 25 };
 const final = { output: [], text: "done", usage };
 const silent = pino({ enabled: false });
 
-function tool(name: string, args: unknown) {
+function tool(name: string, args: unknown, callId = name) {
   return {
     output: [
       {
         type: "function_call",
-        call_id: name,
+        call_id: callId,
         name,
         arguments: JSON.stringify(args),
       },
@@ -233,6 +233,71 @@ it("caps model calls even when total token usage is low", async () => {
   await expect(meter.run([], "again", [], signal, () => {})).rejects.toThrow(
     "call_budget",
   );
+});
+
+it("runs beyond the evaluation and product step defaults in unlimited mode", async () => {
+  const workspace = await temp();
+  const outputDir = await temp();
+  await writeFile(path.join(workspace, "note.txt"), "note\n");
+  let calls = 0;
+  const provider: ModelProvider = {
+    async run() {
+      calls++;
+
+      return calls <= 101
+        ? tool(
+            "read_file",
+            { path: "note.txt", startLine: 1, endLine: 1 },
+            `read-${calls}`,
+          )
+        : final;
+    },
+  };
+
+  const report = await runEvaluation(
+    { workspace, outputDir, prompt: "Read repeatedly", unlimited: true },
+    { provider, log: silent },
+  );
+
+  expect(
+    report.task.status,
+    JSON.stringify({
+      stopReason: report.stopReason,
+      calls: report.usage.calls,
+    }),
+  ).toBe("completed");
+  expect(report.usage.calls).toBe(102);
+  expect(report.limits).toEqual({
+    maxTotalTokens: null,
+    maxModelCalls: null,
+    maxSteps: null,
+    timeoutMs: null,
+  });
+});
+
+it("keeps measuring after a missing usage report in unlimited mode", async () => {
+  let calls = 0;
+  const meter = new MeteredProvider(
+    {
+      async run() {
+        calls++;
+
+        return calls === 1 ? { output: [], text: "unmetered" } : final;
+      },
+    },
+    { maxTotalTokens: 1, maxModelCalls: 1, unlimited: true },
+    () => {},
+  );
+  const signal = new AbortController().signal;
+  await meter.run([], "task", [], signal, () => {});
+  await meter.run([], "task", [], signal, () => {});
+
+  expect(meter.usage).toMatchObject({
+    calls: 2,
+    measuredCalls: 1,
+    unmeasuredCalls: 1,
+    totalTokens: 25,
+  });
 });
 
 it("allows the production run_command approval shape only in the workspace", () => {

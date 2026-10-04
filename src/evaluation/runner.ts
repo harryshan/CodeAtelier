@@ -5,7 +5,7 @@
  * 1. approveEvaluationCommand 检查命令审批请求；writeJson 脱敏后通过临时文件保存记录。
  * 2. runEvaluation 检查工作区和输出目录互不包含，并新建 data 目录，避免带入上次任务状态。
  * 3. 创建 Config、Store、MeteredProvider 和 Engine，接好审批及取消回调。
- * 4. 等待任务完成或超时，导出状态、用量、耗时和审批次数，最后关闭引擎和数据库。
+ * 4. 有限模式设置任务定时器；无限模式只由完成、错误或人工取消结束，均导出状态、用量、耗时和审批次数。
  *
  * 只有显式满足 Docker 条件才启用自动命令审批，这项检查本身不提供操作系统隔离。
  * 报告中的 verification 固定为 external，补丁是否正确由后续评分脚本判断。
@@ -100,7 +100,10 @@ export async function runEvaluation(
   const dataDir = path.join(outputDir, "data");
   mkdirSync(dataDir); // Refuse reuse so trials cannot inherit prior state.
   const config = new Config(dataDir);
-  config.settings.maxSteps = options.maxSteps;
+  if (!options.unlimited) {
+    config.settings.maxSteps = options.maxSteps;
+  }
+
   if (!dependencies.provider && !config.apiKey) {
     throw new Error("Set CODEATELIER_API_KEY before running an evaluation.");
   }
@@ -124,13 +127,19 @@ export async function runEvaluation(
     options,
     checkpoint,
   );
-  const engine = new Engine(store, config, log, (selected, purpose) =>
-    purpose === "auxiliary" || purpose === "approval"
-      ? meter.forProvider(
-          dependencies.provider ??
-            new ResponsesProvider(selected, config.apiKey),
-        )
-      : meter,
+  const engine = new Engine(
+    store,
+    config,
+    log,
+    (selected, purpose) =>
+      purpose === "auxiliary" || purpose === "approval"
+        ? meter.forProvider(
+            dependencies.provider ??
+              new ResponsesProvider(selected, config.apiKey),
+          )
+        : meter,
+    undefined,
+    options.unlimited ? null : undefined,
   );
   const decideApprovals = () => {
     // 每次只处理一项，因为 decide 会同步触发下一次 change 通知。
@@ -171,10 +180,13 @@ export async function runEvaluation(
     dependencies.signal?.throwIfAborted();
     const task = engine.start(session.id, options.prompt);
     dependencies.signal?.addEventListener("abort", abort, { once: true });
-    timer = setTimeout(() => {
-      stopReason = "timeout";
-      engine.cancel(task.id);
-    }, options.timeoutMs);
+    if (!options.unlimited) {
+      timer = setTimeout(() => {
+        stopReason = "timeout";
+        engine.cancel(task.id);
+      }, options.timeoutMs);
+    }
+
     await engine.active?.done;
     const result = store.task(task.id)!;
     const report = {
@@ -189,10 +201,10 @@ export async function runEvaluation(
       // agent 结束不代表修复正确，评分仍由外部验证器完成。
       verification: "external",
       limits: {
-        maxTotalTokens: options.maxTotalTokens,
-        maxModelCalls: options.maxModelCalls,
-        maxSteps: options.maxSteps,
-        timeoutMs: options.timeoutMs,
+        maxTotalTokens: options.unlimited ? null : options.maxTotalTokens,
+        maxModelCalls: options.unlimited ? null : options.maxModelCalls,
+        maxSteps: options.unlimited ? null : options.maxSteps,
+        timeoutMs: options.unlimited ? null : options.timeoutMs,
       },
       approvals: { allowed: approvalsAllowed, denied: approvalsDenied },
       usage: meter.usage,

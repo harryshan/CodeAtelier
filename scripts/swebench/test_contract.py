@@ -1,7 +1,7 @@
 # 检查评测的数据读取、提示生成、打包和容器清理，使用临时目录和模拟容器。
 # 属于手动 unittest 套件，不调用真实模型、Docker 或数据下载。
 #
-# 1. 模拟镜像失败、取消和使用已准备镜像，检查状态记录与清理。
+# 1. 模拟镜像失败、取消、无本地限额的 Docker exec 和使用已准备镜像，检查状态记录与清理。
 # 2. 检查子集 ID 唯一、提示只含题目信息，并拒绝重复题目。
 # 3. 创建构建文件和不应打包的敏感文件，检查归档只包含允许的内容。
 #
@@ -18,10 +18,31 @@ from unittest.mock import Mock, patch
 
 from dataset import load_manifest, prompt_for
 from prepare import prepare
-from predict import run_trial
+from predict import run_trial, run_unlimited_agent
 
 
 class ContractTests(unittest.TestCase):
+    def test_unlimited_agent_polls_detached_exec_until_exit(self):
+        client = Mock()
+        client.api.exec_create.return_value = {"Id": "exec-1"}
+        client.api.exec_inspect.side_effect = [
+            {"Running": True, "ExitCode": None},
+            {"Running": False, "ExitCode": 7},
+        ]
+        container = SimpleNamespace(id="container-1")
+        with patch("predict.time.sleep") as sleep:
+            exit_code = run_unlimited_agent(
+                client, container, ["node", "agent.js"], {"MODEL": "test"}
+            )
+
+        self.assertEqual(exit_code, 7)
+        client.api.exec_create.assert_called_once_with(
+            "container-1", ["node", "agent.js"], environment={"MODEL": "test"}
+        )
+        client.api.exec_start.assert_called_once_with("exec-1", detach=True)
+        self.assertEqual(client.api.exec_inspect.call_count, 2)
+        sleep.assert_called_once_with(1)
+
     def test_image_failure_is_recorded_without_a_patch(self):
         client = Mock()
         client.images.pull.side_effect = RuntimeError("private error detail")
@@ -61,7 +82,11 @@ class ContractTests(unittest.TestCase):
             output = Path(directory)
             with self.assertRaises(KeyboardInterrupt):
                 run_trial(
-                    client, {"instance_id": "a__b-1"}, output, Path("unused"), None
+                    client,
+                    {"instance_id": "a__b-1"},
+                    output,
+                    Path("unused"),
+                    SimpleNamespace(unlimited=False),
                 )
             self.assertEqual(
                 json.loads((output / "trial.json").read_text())["status"], "cancelled"
@@ -81,6 +106,7 @@ class ContractTests(unittest.TestCase):
             )
         )
         args = SimpleNamespace(
+            unlimited=True,
             prepared_images={
                 "a__b-1": {
                     "preparedImage": "local-ready",
@@ -104,6 +130,9 @@ class ContractTests(unittest.TestCase):
             report = json.loads((Path(directory) / "trial.json").read_text())
             self.assertEqual(report["imageId"], "prepared-id")
             client.images.pull.assert_not_called()
+            created_with = client.containers.create.call_args.kwargs
+            self.assertNotIn("mem_limit", created_with)
+            self.assertNotIn("nano_cpus", created_with)
 
     def test_manifest_has_twenty_unique_instances(self):
         manifest = load_manifest(Path("evals/swebench/subset.json"))

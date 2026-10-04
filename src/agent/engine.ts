@@ -2,7 +2,7 @@
  * CodeAtelier 的任务执行入口，把模型请求、工具调用 DAG、审批和历史保存串起来。
  * HTTP 服务和手动评测都会创建 Engine；任务记录写入 Store，界面通过事件获知变化。
  *
- * 1. 构造器接好审批通知；snapshot 读取会话状态，emit 脱敏并保存事件。
+ * 1. 构造器接好审批通知；手动评测可仅对宿主模型循环覆盖步数阈值，snapshot 读取会话状态，emit 脱敏并保存事件。
  * 2. start 原子保存用户消息和任务级 subagent 选择为 queued；多 agent 尚未就绪时拒绝开启。调度器在全局并发上限内启动不同工作区的任务，并对相同真实工作区保持互斥。
  * 3. resume 继续最后一个可恢复任务；cancel 处理用户取消，close 处理服务关闭。
  * 4. 首条 prompt 先用辅助模型生成标题；run 再读取历史和项目规则，准备工具及上下文预算。
@@ -238,6 +238,7 @@ export class Engine {
     private log: Logger,
     private factory?: ModelProviderFactory,
     private agentRuntimeLauncher?: AgentRuntimeLauncher,
+    private modelStepLimitOverride?: number | null,
   ) {
     this.traceArchive = new TraceArchive(config.directory, log);
     this.store.setTracer(this.traces);
@@ -2470,7 +2471,10 @@ export class Engine {
       let requestInput = input;
       let retryDelaySpan: ReturnType<TraceRecorder["startSpan"]>;
       const outcome = await runModelLoop({
-        maxSteps: settings.maxSteps,
+        maxSteps:
+          this.modelStepLimitOverride === undefined
+            ? settings.maxSteps
+            : this.modelStepLimitOverride,
         signal,
         prepareStep: async (currentStep) => {
           step = currentStep;

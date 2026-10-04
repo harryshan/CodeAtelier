@@ -350,7 +350,7 @@ context-stages.test.ts 覆盖长记录中间材料的全文连续送出、默认
 
 ## SWE-bench 评测（仅手动）
 
-`evals/evaluation.test.ts` 保留生产工具、预算、用量缺失、在途模型请求超时、目录隔离，以及当前 `run_command` 的 `{ command, cwd }` 审批描述与工作区约束测试。`scripts/swebench/test_contract.py` 覆盖固定清单合法性、提示词不泄露答案、打包白名单。所有评测测试只在用户要求后执行；不加入默认 test/check、CI 或钩子。
+`evals/evaluation.test.ts` 保留生产工具、有限预算、无评测预算下超过 100 步仍完成、缺失 usage 继续计量、在途模型请求超时、目录隔离，以及当前 `run_command` 的 `{ command, cwd }` 审批描述与工作区约束测试。`scripts/swebench/test_contract.py` 覆盖固定清单合法性、提示词不泄露答案、打包白名单、无限模式分离 Docker exec 的退出码轮询和容器不附加资源上限。所有评测测试只在用户要求后执行；不加入默认 test/check、CI 或钩子。
 
 手动入口：`pnpm eval:test` 和 `python -m unittest discover -s scripts/swebench -p 'test_*.py'`。评分使用官方 harness，不以 agent completed 或本地测试退出码冒充解决率。运行说明见 [swebench.md](swebench.md)。
 
