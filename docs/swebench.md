@@ -70,7 +70,7 @@ pnpm eval:test
 .local/swebench-venv/bin/python -m unittest discover -s scripts/swebench -p 'test_*.py'
 ```
 
-2026-10-04 按用户要求完成当前固定 20 题的一次端到端预测与独立评分；结果、评测链路修复及验证限制见 [验证记录](verification.md) 和本机 `.local/swebench/runs/verified20-20261004-030302/analysis.md`。此操作仍仅由用户手动要求触发，不加入默认检查或自动化。
+2026-10-04 按用户要求完成固定 20 题的有限预算运行（14/20）及显式 `--unlimited` 复跑（15/20）。逐题结果、两轮差异、参考补丁对照及验证限制见 [验证记录](verification.md) 和本机 `.local/swebench/runs/verified20-unlimited-20261004-181603/analysis.md`；旧轮报告为 `.local/swebench/runs/verified20-20261004-030302/analysis.md`。两轮均仅由用户手动要求触发，不加入默认检查或自动化。
 
 官方参考：[数据](https://huggingface.co/datasets/SWE-bench/SWE-bench_Verified)、[评分格式](https://www.swebench.com/SWE-bench/guides/evaluation/)、[固定评分器源码](https://github.com/SWE-bench/SWE-bench/tree/v4.1.0)。
 

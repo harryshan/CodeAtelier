@@ -291,13 +291,39 @@ it("keeps measuring after a missing usage report in unlimited mode", async () =>
   const signal = new AbortController().signal;
   await meter.run([], "task", [], signal, () => {});
   await meter.run([], "task", [], signal, () => {});
+  await meter.run([], "task", [], signal, () => {});
 
   expect(meter.usage).toMatchObject({
-    calls: 2,
-    measuredCalls: 1,
+    calls: 3,
+    measuredCalls: 2,
     unmeasuredCalls: 1,
-    totalTokens: 25,
+    totalTokens: 50,
   });
+});
+
+it("does not apply the evaluation task timer in unlimited mode", async () => {
+  const report = await runEvaluation(
+    {
+      workspace: await temp(),
+      outputDir: await temp(),
+      prompt: "wait and finish",
+      timeoutMs: 100,
+      unlimited: true,
+    },
+    {
+      provider: {
+        async run() {
+          await new Promise((resolve) => setTimeout(resolve, 200));
+
+          return final;
+        },
+      },
+      log: silent,
+    },
+  );
+
+  expect(report.task.status).toBe("completed");
+  expect(report.limits.timeoutMs).toBeNull();
 });
 
 it("allows the production run_command approval shape only in the workspace", () => {
