@@ -1,9 +1,9 @@
 /**
- * 在渲染 CodeAtelier 主页面前显示可选的访问密码门禁。
- * 浏览器入口 main.tsx 用该组件包裹 App；它只通过 api.ts 读取服务端状态和提交当前输入，验证结果由服务端 HttpOnly cookie 保存。
+ * 在渲染 CodeAtelier 主页面或服务托管的对话阅读器前显示可选访问密码门禁。
+ * 浏览器入口 main.tsx 用该组件包裹选定页面；它只通过 api.ts 读取服务端状态和提交当前输入，验证结果由服务端 HttpOnly cookie 保存。
  *
  * 1. useEffect 在首次渲染及重试时读取 accessStatus，未启用或已有有效 cookie 时直接渲染 children。
- * 2. submitPassword 提交受控密码输入；成功后仅切换本地门禁状态，随后由 App 自己 bootstrap 并建立本机会话。
+ * 2. submitPassword 提交受控密码输入；成功后仅切换本地门禁状态，主页面由 App 自己 bootstrap，阅读器不加载服务端会话材料。
  * 3. 加载、服务错误和错误密码分别呈现不可进入主页面的状态与可重试表单。
  *
  * 密码不会保存在 React state 以外的位置、不会写入 localStorage，也不会传给子页面。网络失败不能被当作验证成功。

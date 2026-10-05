@@ -1,5 +1,5 @@
 /**
- * 离线 Replay 阅读器样式，由 html.ts 内嵌，不加载字体、图片或网络资源。
+ * Replay 阅读器样式，由 Web 页面惰性加载或 html.ts 内嵌，不加载第三方字体、图片或资源。
  * 1. 根元素与控件使用本机字体、高对比深色和可见焦点。
  * 2. toolbar/layout 将筛选、分页目录和单条详情分开，目录保持可滚动。
  * 3. entry 状态边框区分异常/未知；小屏改为上下布局，长路径和输出可换行。
@@ -129,7 +129,8 @@ details {
   border-top: 1px solid #35445a;
   padding: 12px 0;
 }
-summary {
+summary,
+.viewer-home {
   color: #aacdff;
 }
 .tool-links button {

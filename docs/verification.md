@@ -1,5 +1,14 @@
 # 初版验证记录
 
+## 现有 Web 服务托管 Replay 阅读器（2026-10-05）
+
+- 根据用户更正，主侧栏“对话阅读器”另开同源 `/?view=replay`，复用 AccessGate，浏览器选择 JSON 后本地解析，不新增上传或服务端文件 API；独立 HTML 只保留可选兼容入口。共享 DOM 挂载/清理支持 StrictMode；原单文件 CSP 与文本安全显示不变。
+- Windows / Node.js 26.10.0：最终原样 `pnpm check` 通过，81 个测试文件、587 项通过、1 项原有跳过，类型、ESLint、Prettier 与测试构建通过。独立 MCP 与阅读器复核 17/17 通过；此前一次完整检查的未修改 MCP 截断用例缺少 `truncated` 字段，不把复跑通过称为已修复其间歇风险。
+- 完整 Chromium E2E 按 `pnpm test:e2e --shard=1/2` 和 `--shard=2/2` 分批正常完成，27 + 7 = 34 项全部通过，仍使用原单 worker 和断言。先前组合命令及一次不分批运行触发外层执行时限，后者日志记录 33 项通过但无最终结果，故不算完整通过。
+- 新覆盖 HTTP 阅读器本地导入、工具与模型导航、安全文本/分页、坏文件保留旧视图、导入后零网络请求、侧栏另开/返回、刷新需重选且不写 localStorage；门禁状态失败不挂载，主页面和阅读器均需正确密码后才呈现内容。仍保留真实 `file://` 兼容验证。
+- `pnpm build` 生产构建通过；对正在运行的本机 `http://127.0.0.1:4142/?view=replay` 做只读 HTTP 冒烟，页面 200 且引用的新入口脚本包含 ReplayViewer 分块，未重启服务。
+- 验证输出在忽略的 `.local/replay-host-*.log`。Runtime 无 pnpm，且阅读器目录写临时文件报 EPERM，相关修改与检查经批准在 Broker 宿主执行，未修改 ACL。未读取 `1.json`、个人历史或运行 Evaluation/真实模型，未进行 macOS/Linux 与非 Chromium 验收；超大 JSON 的完整解析内存成本与既有 bundle 警告仍保留。
+
 ## 离线 Replay 对话阅读器（2026-10-05）
 
 - 增加独立 `pnpm replay:view`，将现有 TaskReplayCase v1 JSON 转为单文件 HTML，或生成空白阅读器以在浏览器本地选文件。模型请求/重试、唯一 call ID 关联工具、未知结果、legacy、事件、搜索、分页与惰性载荷由合成夹具覆盖，不改变捕获或恢复链路。

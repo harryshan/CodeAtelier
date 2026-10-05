@@ -1,11 +1,12 @@
 /**
- * 自包含 HTML 中运行的只读浏览器入口，由 html.ts 打包，不连接 CodeAtelier 后端。
- * 输入为嵌入的任务 JSON 或用户显式选择的文件；所有不可信内容仅通过 textContent 显示。
+ * Web 托管页面与可选单文件 HTML 共用的只读 DOM 阅读器，不连接 CodeAtelier 后端。
+ * ReplayViewer 或 standalone 提供容器与可选内嵌 JSON；用户也可显式选择文件，载荷仅通过 textContent 显示。
  *
  * 1. element/textPanel/panel 创建安全 DOM；大文本分段追加，折叠载荷第一次展开才序列化。
  * 2. mountViewer 建立文件入口、统计、筛选、分页目录和单条详情，避免全量展开大型历史。
  * 3. showEntry 展示模型请求/响应、关联工具、参数结果和原始事件，保留缺失结果与字段。
  * 4. load/import 先完整校验再替换状态；失败保留上次有效文件，文件切换用 generation 防止异步覆盖。
+ * 5. 返回的清理函数取消搜索计时器、废弃在途读取并移除 DOM，支持 React StrictMode 的重复挂载。
  *
  * 不使用 innerHTML、不渲染可执行 Markdown、不把内容转为链接，也不重放任何调用。
  * 搜索仅在本机内存中进行；离线 HTML 的 CSP 进一步禁止网络、表单和外部资源。
@@ -84,12 +85,14 @@ function select(label: string, options: [string, string][]) {
   return node;
 }
 
-function mountViewer() {
-  const root = document.getElementById("app")!;
+export function mountViewer(
+  root: HTMLElement,
+  embeddedJson: string | null = null,
+) {
   const heading = element("h1", "CodeAtelier · 对话阅读器");
   const warning = element(
     "p",
-    "离线只读 · 不上传、不执行历史工具。文件可能含源码、提示词和敏感信息，请勿公开或提交。",
+    "本地只读 · JSON 不上传、不执行历史工具。文件可能含源码、提示词和敏感信息，请勿公开或提交。",
   );
   const file = element("input");
   file.type = "file";
@@ -380,9 +383,8 @@ function mountViewer() {
     }
   });
   try {
-    const embedded = JSON.parse(
-      document.getElementById("replay-data")!.textContent!,
-    );
+    const embedded: unknown =
+      embeddedJson === null ? null : JSON.parse(embeddedJson);
     if (embedded !== null) {
       load(embedded, "内嵌 Replay Case");
     } else {
@@ -391,6 +393,10 @@ function mountViewer() {
   } catch (cause) {
     reportError(cause);
   }
-}
 
-mountViewer();
+  return () => {
+    generation++;
+    clearTimeout(timer);
+    root.replaceChildren();
+  };
+}

@@ -71,13 +71,11 @@ Git、MCP 和经审批在沙箱外执行的命令仍使用你的系统账户权�
 
 ### 查阅导出的对话
 
-已有 Replay JSON 时，可生成可离线打开的单文件阅读器，按模型调用查看工具、输入输出和历史事件：
+点击主界面侧栏 **“对话阅读器”**，或打开 `http://127.0.0.1:4142/?view=replay`（自定义端口时使用实际服务地址）。阅读器由现有 Web 服务提供，无需额外启动服务器或生成独立 HTML。
 
-```sh
-pnpm replay:view --input C:\safe\case.json --output C:\safe\case-view.html
-```
+在页面选择已有 Replay JSON，即可按模型调用查看工具、输入输出和历史事件，支持搜索、状态筛选和分页。访问密码门禁与主页面一致；JSON 只在浏览器本地读取，不会上传。刷新页面后需重新选文件。开发模式使用 `http://127.0.0.1:5173/?view=replay`。
 
-直接在浏览器中打开新生成的 HTML。也可省略 `--input` 生成空白阅读器，再在页面里选择 JSON；文件只在本机读取。详细操作与敏感数据边界见 [Replay Case 阅读指南](docs/replay-cases.md#离线可视化阅读)。
+详细操作与可选的旧单文件导出见 [Replay Case 阅读指南](docs/replay-cases.md#可视化阅读)。
 
 ## 使用前须知
 

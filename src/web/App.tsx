@@ -6,7 +6,7 @@
  * 2. 按服务端返回的工作区路径分组展示会话；项目可独立折叠，展开时默认仅显示最近五个对话，并可按需显示更早记录；手机端以可关闭的抽屉呈现该侧栏。
  * 3. resume、reloadService、stopServer、createProject、createConversation 和 send 处理恢复、受确认的服务重载、关闭服务、连接项目、新建会话和发送消息，并显示操作结果。
  * 4. 服务关闭后显示重启说明；正常页面由侧栏或手机端导航抽屉、项目栏、当前会话实际 Runtime 隔离模式（没有证据时显示启动初始状态，并提示获批宿主命令例外）、可折叠会话统计、会将已完成任务过程默认收纳的时间线或项目连接页、所见即所得 Markdown 任务编辑器组成。
- * 5. 末尾仅渲染设置、重载和关闭确认弹窗，项目连接不使用弹窗。
+ * 5. 侧栏可另开同源对话阅读器而不离开当前任务；末尾仅渲染设置、重载和关闭确认弹窗，项目连接不使用弹窗。
  *
  * 关闭请求失败时不能断言服务已经关闭。切换会话和断线重连都只更新显示，不能重新提交任务。
  */
@@ -424,6 +424,14 @@ export default function App() {
           )}
         </nav>
         <div className={s.sideFooter}>
+          <button
+            type="button"
+            onClick={() =>
+              window.open("/?view=replay", "_blank", "noopener,noreferrer")
+            }
+          >
+            对话阅读器 <span>↗</span>
+          </button>
           <button
             disabled={serverState !== "running"}
             onClick={() => {

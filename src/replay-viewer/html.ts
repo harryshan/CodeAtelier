@@ -2,7 +2,7 @@
  * 为手动 CLI 与测试生成可直接通过 file:// 打开的自包含 Replay 阅读器。
  * 输入为可选的导出 JSON，输出为包含本地脚本、样式和惰性显示数据的 HTML；无数据库或模型依赖。
  *
- * 1. createReplayHtml 先校验输入，用已有 esbuild 打包 browser.ts，并读取本模块旁的固定 CSS。
+ * 1. createReplayHtml 先校验输入，用已有 esbuild 打包 standalone.ts（复用 browser.ts），并读取本模块旁的固定 CSS。
  * 2. 对 JSON 的 HTML 特殊字符转义，避免载荷关闭 script 标签；脚本/样式使用内容哈希 CSP。
  * 3. writeReplayHtml 仅以 wx 创建新文件，拒绝覆盖；POSIX 使用 0600，Windows 仍依赖目录 ACL。
  *
@@ -21,7 +21,7 @@ export async function createReplayHtml(value: unknown = null): Promise<string> {
   }
 
   const bundle = await build({
-    entryPoints: [fileURLToPath(new URL("./browser.ts", import.meta.url))],
+    entryPoints: [fileURLToPath(new URL("./standalone.ts", import.meta.url))],
     bundle: true,
     write: false,
     platform: "browser",
