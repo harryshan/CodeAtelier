@@ -6,7 +6,8 @@
  * 2. mountViewer 建立文件入口、统计、筛选、分页目录和单条详情，避免全量展开大型历史。
  * 3. showEntry 展示模型请求/响应、关联工具、参数结果和原始事件，保留缺失结果与字段。
  * 4. load/import 先完整校验再替换状态；失败保留上次有效文件，文件切换用 generation 防止异步覆盖。
- * 5. 返回的清理函数取消搜索计时器、废弃在途读取并移除 DOM，支持 React StrictMode 的重复挂载。
+ * 5. 返回 load/clear/dispose 控制器供 Web 数据源更新；清理取消计时器、废弃在途文件读取并移除 DOM。
+ * Web 入口可隐藏文件选择器，数据库请求由 React 页面处理；本模块始终不进行网络访问。
  *
  * 不使用 innerHTML、不渲染可执行 Markdown、不把内容转为链接，也不重放任何调用。
  * 搜索仅在本机内存中进行；离线 HTML 的 CSP 进一步禁止网络、表单和外部资源。
@@ -88,6 +89,7 @@ function select(label: string, options: [string, string][]) {
 export function mountViewer(
   root: HTMLElement,
   embeddedJson: string | null = null,
+  allowImport = true,
 ) {
   const heading = element("h1", "CodeAtelier · 对话阅读器");
   const warning = element(
@@ -96,6 +98,7 @@ export function mountViewer(
   );
   const file = element("input");
   file.type = "file";
+  file.hidden = !allowImport;
   file.accept = ".json,application/json";
   file.setAttribute("aria-label", "选择 Replay JSON");
   const error = element("p");
@@ -394,9 +397,21 @@ export function mountViewer(
     reportError(cause);
   }
 
-  return () => {
-    generation++;
-    clearTimeout(timer);
-    root.replaceChildren();
+  return {
+    load,
+    clear() {
+      generation++;
+      clearTimeout(timer);
+      entries = [];
+      byKey.clear();
+      overview.replaceChildren();
+      error.textContent = "";
+      refresh();
+    },
+    dispose() {
+      generation++;
+      clearTimeout(timer);
+      root.replaceChildren();
+    },
   };
 }

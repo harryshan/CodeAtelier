@@ -426,10 +426,13 @@ git-tools.test.ts 覆盖 diff 独立输出硬上限；core.test.ts 覆盖模型�
 - `tests/replay-case.test.ts`：连续的同哈希 `read_file` 页可重建 `edit_files(create:false)` 的原始文件，并且只允许写入此前不存在的隔离目录；局部读取、哈希不符和已有目录均拒绝。`RecordedModelProvider` 对 input、instructions、工具定义和输出选项严格匹配，避免用旧响应掩盖改动后的行为。
 - 任务执行路径的 replay 捕获与 Store 增量持久化属于默认回归；同步与 Worker 写入共用编码，落库不重复保存模型 input 公共前缀，导出恢复完整请求；手动 `pnpm replay:export` 只导出本地材料，不启动模型、工具或 Evaluation。旧历史没有完整模型载荷时导出为 legacy，不能宣称 transcript 可重放。
 
-### Replay 阅读器（Web 与可选离线文件）
+### Replay 阅读器（数据库、Web 本地导入与可选离线文件）
+
+- `tests/replay-api.test.ts`：真实临时 SQLite 与 HTTP 验证 captured/legacy、单任务归属/隔离、目录无大载荷、未知结果、不执行历史、服务重开后的持久内容、cookie/Origin/404/no-store 与故障通用错误。`tests/access-password.test.ts` 同时覆盖新接口未验证密码时的拒绝。
+- `tests/e2e/replay-database.spec.ts`：真实测试服务写入任务后从 UI 直接读取、选择对话/Task、刷新/URL 恢复及空对话；合成只读响应控制晚到结果、失败清空、重试、空库和无效深链接。测试服务只使用模拟模型，不读取个人数据库。
 
 - `tests/replay-viewer.test.ts`：v1 输入校验、captured/legacy、重试与缺失终态、唯一 call ID 关联及歧义保留、全文筛选、脚本闭合字符转义、CSP 和仅创建新文件。
-- `tests/e2e/replay-viewer.spec.ts`：分别通过现有 HTTP 服务的 `/?view=replay` 和可选 `file://` 入口检查模型/工具往返、折叠载荷、搜索/状态筛选、分页、本地 JSON 导入、坏文件保留原视图与恶意 HTML 仅作文本；文件导入/浏览不产生网络请求。另覆盖主侧栏另开阅读器、返回主页面、刷新需重新选择且不写 localStorage，以及访问验证失败时不挂载阅读器。使用合成记录，不读取个人历史或运行 Evaluation。
+- `tests/e2e/replay-viewer.spec.ts`：分别通过现有 HTTP 服务的 `/?view=replay&source=file` 和可选 `file://` 入口检查模型/工具往返、折叠载荷、搜索/状态筛选、分页、本地 JSON 导入、坏文件保留原视图与恶意 HTML 仅作文本；文件导入/浏览不产生网络请求。另覆盖主侧栏另开阅读器、返回主页面、刷新需重新选择且不写 localStorage，以及访问验证失败时不挂载阅读器。使用合成记录，不读取个人历史或运行 Evaluation。
 - `tests/e2e/access-password.spec.ts`：主页面与 `/?view=replay` 共用密码门禁，错误密码不进入、正确密码后才显示对应页面；API 的真实 cookie/来源保护继续由 `tests/access-password.test.ts` 覆盖。
 
 ### Git 模型参数兼容性

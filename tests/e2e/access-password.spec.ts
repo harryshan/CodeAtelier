@@ -39,7 +39,7 @@ for (const url of ["/", "/?view=replay"]) {
     const content =
       url === "/"
         ? page.getByText("让想法，")
-        : page.getByLabel("选择 Replay JSON");
+        : page.getByLabel("选择对话", { exact: true });
 
     await expect(page.getByRole("heading", { name: "访问验证" })).toBeVisible();
     await expect(content).toBeHidden();

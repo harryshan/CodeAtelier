@@ -98,7 +98,7 @@ replay 捕获将任务元数据和单条模型/工具记录分开保存，模型
 
 会话初始快照读取全量事件，SSE 后续刷新按跨分片仍单调的 event ID 游标只读取新增事件；常规事件、上下文、任务状态、replay 和 HTTP 新建会话/任务通过串行复用的 `store-worker.ts` 提交后再返回，工具结果/反馈保持同一事务。超过 64 KiB 的事件/上下文和历史快照也通过此 Worker 读取，小结果仍由主线程同步读取。同步 Store 兼容入口、服务启动迁移及未开放的 subagent 原子账本暂保留主线程写入；这些事务未进入 Worker 队列，若交错写入同一分片，主线程连接最多等待 SQLite 写锁 1 秒后失败，不自动重试结果未知的写入。启动时将 queued/running/waiting 任务标为 interrupted 并记录结束时间；子任务的未完成状态同样中断，未确认的子模型请求保留 unknown，不自动重放。
 
-可视化位于 `src/replay-viewer`：`projection.ts` 校验 TaskReplayCase v1 并按唯一 call ID 建立模型/工具关联；`browser.ts` 提供可挂载/清理的纯文本 DOM 阅读器。现有 `main.tsx` 在 `/?view=replay` 经共用 AccessGate 惰性加载 `ReplayViewer.tsx`，主页面与阅读器的模块/样式分别加载，Fastify 与 Vite 均沿用根 HTML 入口。页面仅在浏览器读取用户选择的 JSON，不新增上传、数据库导出或文件访问 API；卸载清除搜索计时器并废弃在途读取。旧 `scripts/replay-view.ts` / `html.ts` / `standalone.ts` 保留可选单文件导出，共用同一阅读器，不修改捕获协议。使用说明见 [Replay Case](replay-cases.md#可视化阅读)。
+可视化位于 `src/replay-viewer`：`projection.ts` 校验 TaskReplayCase v1 并按唯一 call ID 建立模型/工具关联；`browser.ts` 提供可挂载/清理的纯文本 DOM 阅读器。现有 `main.tsx` 在 `/?view=replay` 经共用 AccessGate 惰性加载 `ReplayViewer.tsx`，主页面与阅读器的模块/样式分别加载，Fastify 与 Vite 均沿用根 HTML 入口。默认数据库模式通过现有 `/api/sessions` 和 `server/replay-routes.ts` 的会话 Task 目录、单任务 Replay GET 接口，复用 `Store.tasks/replayCase` 与历史分片；任务归属、cookie/密码/来源和 no-store 在后端校验。目录不携带模型/事件载荷，详情只按选中的 Task 重建；同步重建仍有大任务阻塞/内存成本。URL 仅保存数据源/记录 ID，取消和清理信号禁止旧请求覆盖新选择。本地 JSON 为可选模式，不上传文件；卸载清除搜索计时器并废弃在途读取。旧 `scripts/replay-view.ts` / `html.ts` / `standalone.ts` 保留可选单文件导出，共用同一阅读器，不修改捕获协议。使用说明见 [Replay Case](replay-cases.md#可视化阅读)。
 
 ### 配置
 

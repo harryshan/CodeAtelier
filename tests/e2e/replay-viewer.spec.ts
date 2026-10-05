@@ -4,7 +4,7 @@
  * 2. 检查轮次/工具往返、惰性原始载荷、未知状态、搜索和事件视图。
  * 3. 本地导入覆盖分页、长文本、legacy、损坏文件保留旧视图，以及 HTML/script 载荷不执行。
  * 4. 验证侧栏另开、返回主页面、刷新丢弃本地文件，以及验证服务失败时不挂载阅读器。
- * 文件仅为合成夹具和测试产物；HTTP 只加载 UI/访问验证，导入后断言零网络请求。
+ * 文件仅为合成夹具和测试产物；本地导入模式只加载 UI/访问验证，导入后断言零网络请求。
  */
 
 import { mkdir } from "node:fs/promises";
@@ -33,7 +33,9 @@ for (const mode of ["server", "standalone"] as const) {
     });
     page.on("pageerror", (error) => errors.push(error.message));
     await page.goto(
-      mode === "server" ? "/?view=replay" : pathToFileURL(output).href,
+      mode === "server"
+        ? "/?view=replay&source=file"
+        : pathToFileURL(output).href,
     );
     if (mode === "server") {
       await expect(page.getByLabel("选择 Replay JSON")).toBeVisible();
@@ -148,11 +150,12 @@ test("opens the hosted viewer from the sidebar without leaving the current page"
   const opened = page.waitForEvent("popup");
   await page.getByRole("button", { name: "对话阅读器" }).click();
   const viewer = await opened;
-  await expect(viewer).toHaveURL(/\?view=replay$/);
+  await expect(viewer).toHaveURL(/\?view=replay(?:&.*)?$/);
   await expect(
     viewer.getByRole("heading", { name: "CodeAtelier · 对话阅读器" }),
   ).toHaveCount(1);
   await expect(page.getByRole("button", { name: "对话阅读器" })).toBeVisible();
+  await viewer.getByRole("button", { name: "本地 JSON", exact: true }).click();
   const previousStorage = await viewer.evaluate(() =>
     JSON.stringify(localStorage),
   );

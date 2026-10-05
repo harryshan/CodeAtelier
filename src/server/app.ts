@@ -5,7 +5,7 @@
  * 1. 创建 Fastify、Store 和 Engine；若启用 Windows Sandbox，在监听前排空上次服务遗留的账户进程和 ACL journal。
  * 2. 先按监听范围注册来源与凭据检查、关闭/受监督重载接口和错误处理，再注册 bootstrap、设置接口。
  * 3. bootstrap 报告与 Engine 一致的 subagent 发布门禁；会话和任务路由仍独立拒绝未就绪的勾选，处理启动、恢复、取消和 trace/审批。
- * 4. 接入 SSE，并提供构建后的网页；没有前端产物时显示开发提示。
+ * 4. 注册复用 Store 的只读任务阅读接口，接入 SSE，并提供构建后的网页；没有前端产物时显示开发提示。
  * 5. preClose 中断任务并结束 SSE，onClose 关闭数据库。
  *
  * 关闭时要先确认任务已经中断，再结束服务。页面从保存的会话快照读取状态，任务循环由 Engine 执行。
@@ -18,6 +18,7 @@ import {
   validatePasswordAccessConfiguration,
 } from "./local-security.js";
 import { registerSessionEvents } from "./session-events.js";
+import { registerReplayRoutes } from "./replay-routes.js";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
@@ -178,6 +179,7 @@ export async function createApp(
 
     return { ...config.publicValue(), sandbox: engine.sandbox.status };
   });
+  registerReplayRoutes(app, store, log);
   app.get("/api/sessions", async () => store.list());
   app.post("/api/sessions", async (req) => {
     const data = z

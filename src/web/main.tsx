@@ -5,7 +5,7 @@
  * 2. 找到 HTML 中的 root 容器，在 StrictMode、共用 AccessGate 与 Suspense 下挂载选定页面。
  *
  * 根路径 query 同时兼容 Fastify 静态入口与 Vite，不需要服务端路径回退或新增文件读取 API。
- * root 的 ID 要与 index.html 一致；仅 App 管理会话，阅读器只处理浏览器显式选择的本地 JSON。
+ * root 的 ID 要与 index.html 一致；App 管理任务执行，阅读器通过只读 API 浏览已有对话与 Task，或导入本地 JSON。
  */
 
 import React, { lazy, Suspense } from "react";

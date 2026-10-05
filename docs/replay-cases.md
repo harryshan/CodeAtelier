@@ -48,11 +48,19 @@ pnpm replay:export -- --data-dir C:\CodeAtelierData --task-id TASK_ID --output C
 
 阅读器直接由现有 CodeAtelier Web 服务提供，不需要生成独立 HTML，也不另开服务器：
 
-1. 按 README 构建并启动 CodeAtelier（已有服务只需使用更新后的前端产物）。
+1. 按 README 构建并启动 CodeAtelier。新增数据库 API 需要更新后的后端；已有服务须在当前任务结束后重载/重启，不能只刷新页面。
 2. 点击侧栏“对话阅读器”，在新标签页打开；也可直接访问 `http://127.0.0.1:4142/?view=replay`。修改端口时使用实际地址；Vite 开发模式为 `http://127.0.0.1:5173/?view=replay`。
-3. 启用访问密码时先通过与主页面相同的门禁，再选择本地 Replay JSON。JSON 只在当前浏览器读取，不发往后端或模型，不写 localStorage；刷新后需重新选择。
+3. 启用访问密码时先通过与主页面相同的门禁。默认“数据库记录”列出当前服务已保存的对话，按标题/工作区/ID 筛选，再选择对话与 Task；初次默认选最近对话的最后一个 Task。不需要导出或指定数据库路径。
+4. “刷新记录”读取当前已落库内容，不提交任务或重放工具。运行中 Task 不是实时推流，不保证多个查询覆盖同一事务时刻；缺失结果仍为未知。
+5. 页面 URL 仅保留 source、session、task 等选择项，刷新可恢复；不存在的 ID 明确报错而不替换成其他记录。正文不写 localStorage。切换“本地 JSON”仍可读取旧导出，文件只在浏览器解析、不上传，刷新需重新选择文件。
 
-阅读器使用 `replay:export` 的 **TaskReplayCase v1**，不是 Perfetto trace 或任意 JSON；现有 captured/legacy 导出均可查看。服务仅提供页面、同源脚本/样式与访问验证，不根据 JSON 或 URL 参数读取服务器文件。
+两种来源都使用 **TaskReplayCase v1**，不是 Perfetto trace 或任意 JSON；captured 与 legacy 历史均可查看。数据库连接只在后端：沿用现有 Store 及分片定位，浏览器不打开 SQLite，不允许请求传入 SQL、数据库路径或导出目录。接口为：
+
+- `GET /api/sessions`：既有对话目录。
+- `GET /api/sessions/:id/tasks`：单会话的 Task 元数据目录，不返回事件和模型大载荷。
+- `GET /api/sessions/:id/tasks/:taskId/replay`：只重建选中任务的完整材料；校验 Task 属于指定会话，缺失或归属不符返回 404，读取异常返回不含原始载荷的通用错误。
+
+这些接口复用 Host/Origin、访问密码及 `ca_session` 校验，响应 `Cache-Control: no-store`。数据只发往使用该服务的浏览器，不发送模型；局域网访问同样可读敏感历史，必须使用既有门禁与可信网络边界。
 
 - **按轮次**：每次模型请求独立编号，展示 purpose、原始 step/attempt、回复、实报 token 用量和关联工具。重试不会合并，编号不是新的对话轮次协议。
 - **工具详情**：查看参数、可读输出、完整结果、call ID、DAG 节点、批次和依赖；可返回所属模型调用。关联只使用唯一 `function_call.call_id`，缺失或歧义记录放在“未关联模型调用”，不凭顺序猜测。
@@ -62,7 +70,7 @@ pnpm replay:export -- --data-dir C:\CodeAtelierData --task-id TASK_ID --output C
 
 JSON 可能包含完整源码、提示词、命令与工具输出，必须保存在受保护本地目录，不能提交 Git 或公开。页面用纯文本而非可执行 HTML/Markdown 显示载荷；查看不会调用模型、重放工具或运行 Evaluation。主界面目前提供阅读入口，不提供服务端历史导出按钮。
 
-JSON 解析和搜索仍在内存中处理完整文件，分页主要减少 DOM 数量；超大文件仍受本机内存与浏览器性能限制。
+目录与单任务详情分开加载，但单个任务仍通过现有同步 `Store.replayCase` 完整重建，HTTP 序列化、浏览器解析和搜索仍处理完整任务。分页主要减少 DOM 数量，超大任务会消耗后端/浏览器内存并可能阻塞后端事件循环；本版不宣称流式或按模型轮次分页读取。
 
 ### 可选：保留旧单文件导出
 
