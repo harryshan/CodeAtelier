@@ -3,13 +3,13 @@
  *
  * 1. 配置用例覆盖缺省关闭、坏文件/越界字段拒绝以及凭据不出现在公开设置。
  * 2. stdio 用例验证审批先于启动、发现/分页字段、连接复用、环境最小继承、工具/资源/模板往返与错误语义。
- * 3. 超时/取消阻止后续重放，任务清理确认直接进程退出；HTTP 核对认证头、分页、DELETE、重定向与响应流大小限制。
+ * 3. 握手超时后直接进程必须已退出；操作超时/取消先确认握手与调用就绪，再核对退出和禁止重放；HTTP 核对认证头、分页、DELETE、重定向与响应流大小限制。
  *    配置覆盖 Windows UTF-8 BOM，禁用服务不连接；凭据回显包含无 Bearer 前缀的原 token。
  * 4. Trace 和日志只含安全阶段与关联 ID，不包含配置凭据或 MCP 正文；不启动 Evaluation 或真实模型。
  */
 import { createServer } from "node:http";
 import path from "node:path";
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import pino from "pino";
 import { afterEach, expect, it, vi } from "vitest";
 import { Config } from "../src/config/config.js";
@@ -26,10 +26,36 @@ afterEach(async () => {
   vi.unstubAllEnvs();
 });
 
-async function fixture(approve = true, timeoutMs = 5000, outputChars = 32000) {
+async function fixture(
+  approve = true,
+  timeoutMs = 5000,
+  outputChars = 32000,
+  startupDelayMs = 0,
+) {
   const traces = new TraceRecorder();
   traces.startTask("mcp-task", "session");
   const approval = vi.fn(async () => approve);
+  const workspace = await temp();
+  const pidFile = path.join(workspace, "mcp.pid");
+  const local = mcpServerSchema.parse({
+    transport: "stdio",
+    command: process.execPath,
+    args: [path.resolve("tests/fixtures/mcp-server.ts")],
+    env: {
+      MCP_TEST_SECRET: "fixture-secret-731",
+      // MCP 将 env 值视为凭据；不要把无延迟的 "0" 注入，以免 PID 正文中的数字被脱敏。
+      ...(startupDelayMs > 0
+        ? { MCP_TEST_STARTUP_DELAY_MS: String(startupDelayMs) }
+        : {}),
+      MCP_TEST_PID_FILE: pidFile,
+      MCP_TEST_STARTED_FILE: path.join(workspace, "slow.started"),
+    },
+    timeoutMs,
+  });
+  if (local.transport !== "stdio") {
+    throw new Error("MCP 测试夹具必须使用 stdio。");
+  }
+
   const client = new McpTaskClient({
     servers: {
       disabled: mcpServerSchema.parse({
@@ -37,15 +63,9 @@ async function fixture(approve = true, timeoutMs = 5000, outputChars = 32000) {
         command: "never-start-this",
         enabled: false,
       }),
-      local: mcpServerSchema.parse({
-        transport: "stdio",
-        command: process.execPath,
-        args: [path.resolve("tests/fixtures/mcp-server.ts")],
-        env: { MCP_TEST_SECRET: "fixture-secret-731" },
-        timeoutMs,
-      }),
+      local,
     },
-    workspace: await temp(),
+    workspace,
     taskId: "mcp-task",
     sessionId: "session",
     outputChars,
@@ -63,8 +83,38 @@ async function fixture(approve = true, timeoutMs = 5000, outputChars = 32000) {
     return execute(signal);
   };
 
-  return { client, approval, traces, run };
+  return { client, approval, traces, run, pidFile, local, workspace };
 }
+
+it("waits for a timed-out stdio handshake to release its process before returning", async () => {
+  const { client, run, pidFile, local, traces } = await fixture(true, 3000);
+  // 不加载 SDK 的轻量子进程始终不回复握手，并在 stdin 关闭后继续存活，强制覆盖 SDK 的异步终止阶段。
+  local.args = [
+    "-e",
+    "require('node:fs').writeFileSync(process.env.MCP_TEST_PID_FILE, String(process.pid));setInterval(()=>{},1000)",
+  ];
+  try {
+    expect(
+      await run({ action: "list_tools", server: "local", cursor: null }),
+    ).toMatchObject({ outcome: "unknown" });
+    const pid = Number(await readFile(pidFile, "utf8"));
+    expect(pid).toBeGreaterThan(0);
+    expect(() => process.kill(pid, 0)).toThrow();
+    const cleanup = traces
+      .exportTask("mcp-task")
+      ?.traceEvents.find((event) => event.name === "mcp.connection_close");
+    expect(cleanup).toMatchObject({
+      ph: "X",
+      args: { status: "ok", callId: "call-fixture" },
+    });
+    expect(cleanup?.dur).toBeGreaterThan(0);
+    await expect(
+      run({ action: "list_tools", server: "local", cursor: null }),
+    ).rejects.toThrow("不自动重连");
+  } finally {
+    await client.close();
+  }
+});
 
 it("loads MCP only from backend configuration and keeps credentials out of public settings", async () => {
   const directory = await temp();
@@ -256,9 +306,23 @@ it("consumes approvals once and marks output truncation without dropping busines
 it.each(["timeout", "cancel"])(
   "closes on %s and refuses another request on the failed task connection",
   async (mode) => {
-    const { run } = await fixture(true, mode === "timeout" ? 3000 : 5000);
+    const { client, run, local, workspace, pidFile } = await fixture(
+      true,
+      10000,
+      32000,
+      mode === "timeout" ? 3100 : 0,
+    );
     // 完成握手后再施加取消，确保覆盖已发送调用而非仅取消启动。
-    await run({ action: "list_tools", server: "local", cursor: null });
+    const discovery = await run({
+      action: "list_tools",
+      server: "local",
+      cursor: null,
+    });
+    expect(discovery.error).toBeUndefined();
+    expect(discovery.data).toHaveProperty("tools");
+    // 操作期限仍为原来的三/五秒；初始化使用单独的测试就绪期限。
+    local.timeoutMs = mode === "timeout" ? 3000 : 5000;
+    const startedFile = path.join(workspace, "slow.started");
     const controller = new AbortController();
     const promise = run(
       {
@@ -269,14 +333,14 @@ it.each(["timeout", "cancel"])(
       },
       controller.signal,
     );
-    const timer =
-      mode === "cancel"
-        ? setTimeout(
-            () => controller.abort(new Error("fixture cancellation")),
-            100,
-          )
-        : undefined;
     try {
+      if (mode === "cancel") {
+        await expect
+          .poll(() => readFile(startedFile, "utf8"), { timeout: 5000 })
+          .toBe("ready");
+        controller.abort(new Error("fixture cancellation"));
+      }
+
       expect(await promise).toMatchObject({
         outcome: "unknown",
         error: expect.stringContaining("不得自动重放"),
@@ -284,8 +348,13 @@ it.each(["timeout", "cancel"])(
       await expect(
         run({ action: "list_tools", server: "local", cursor: null }),
       ).rejects.toThrow("不自动重连");
+      expect(await readFile(startedFile, "utf8")).toBe("ready");
+      const pid = Number(await readFile(pidFile, "utf8"));
+      expect(() => process.kill(pid, 0)).toThrow();
     } finally {
-      clearTimeout(timer);
+      controller.abort();
+      await promise;
+      await client.close();
     }
   },
 );

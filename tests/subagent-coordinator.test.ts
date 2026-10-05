@@ -4,13 +4,14 @@
  * 1. 逆序声明有依赖的两个计划，验证计划/状态持久化后通知页面刷新、有限租约、读取、等待及只收集一次报告。
  * 2. 敏感/越界范围拒绝时不创建任务；取消等待模型的 Worker 后归还资源并标记终态。
  * 3. 主任务关闭时与尚在登记计划的请求竞态，不能遗漏晚登记的 Worker。
- * 4. 超过旧时长/token/问题/消息阈值仍继续研究，主任务取消仍立刻停止。子问题先落盘并唤醒主代理等待，主代理核验归属后才可带关联 ID 回复。
+ * 4. 超过旧时长/token/问题/消息阈值仍继续研究，主任务取消仍立刻停止。延迟模型先确认 Worker 就绪，再验证子问题唤醒一秒 await；主代理核验归属后才可带关联 ID 回复。
  *
  * 模拟 ModelProvider 是协议桩，不能作为真实 Windows 专用账户 Sandbox 验收证据。
  */
 
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { expect, it, vi } from "vitest";
 import {
   SubagentCoordinator,
@@ -485,6 +486,14 @@ it("completes beyond the former cumulative token budget without replaying model 
 
 it("persists a child question and lets only the main coordinator answer it", async () => {
   let modelCalls = 0;
+  let markWorkerReady!: () => void;
+  const workerReady = new Promise<void>((resolve) => {
+    markWorkerReady = resolve;
+  });
+  let releaseQuestion!: () => void;
+  const question = new Promise<void>((resolve) => {
+    releaseQuestion = resolve;
+  });
   let releaseSecond!: () => void;
   const second = new Promise<void>((resolve) => {
     releaseSecond = resolve;
@@ -493,6 +502,10 @@ it("persists a child question and lets only the main coordinator answer it", asy
     async run(input) {
       modelCalls++;
       if (modelCalls === 1) {
+        await delay(1100);
+        markWorkerReady();
+        await question;
+
         return {
           text: "",
           output: [
@@ -539,11 +552,15 @@ it("persists a child question and lets only the main coordinator answer it", asy
       action: "plan",
       subtasks: [plan("reader")],
     });
-    const waiting = await fixture.coordinator.execute({
+    // 先确认真实 Worker 已进入模型请求，再检查一秒 await 被新问题唤醒。
+    await workerReady;
+    const awaitingQuestion = fixture.coordinator.execute({
       action: "await",
       subagentIds: ["reader"],
       timeoutMs: 1_000,
     });
+    releaseQuestion();
+    const waiting = await awaitingQuestion;
     expect(waiting).toMatchObject({
       questions: [
         {
@@ -592,6 +609,7 @@ it("persists a child question and lets only the main coordinator answer it", asy
       }),
     ).toMatchObject({ reports: [{ report: "src/example.ts:1" }] });
   } finally {
+    releaseQuestion();
     releaseSecond();
     await fixture.coordinator.close();
     fixture.store.close();

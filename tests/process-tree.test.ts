@@ -2,8 +2,9 @@
  * 回归 Windows taskkill 尚在启动时抢先杀父进程造成的孤儿子进程和关闭挂起。
  *
  * 1. 仅替换 taskkill 启动为延迟代理，最终仍调用真实 Windows taskkill /T /F；其它进程均真实运行。
- * 2. PowerShell 父进程启动继承输出句柄的常驻 Node 子进程；分别通过 pipe/file-backed 执行器取消整棵树。
- * 3. 断言取消正常完成、后代退出、输出目录释放；安全计时器只清理本测试创建的 PID，其触发本身使测试失败。
+ * 2. 真实 Node 父进程启动继承输出句柄的常驻 Node 子进程；分别通过 pipe/file-backed 执行器取消整棵树，避免 PowerShell 冷启动干扰取消阶段。
+ * 3. 启动和取消各有八秒安全期限；收到后代 PID 后才开始取消期限，避免冷启动消耗清理时间并抢先干扰 taskkill。
+ * 4. 断言取消正常完成、后代退出、输出目录释放；安全清理只针对本测试 PID，触发即失败，finally 还等待延迟代理退出。
  * 非 Windows 跳过这两个平台专属用例，不将本机验证描述为全平台进程隔离保证。
  */
 import { expect, it, vi } from "vitest";
@@ -13,8 +14,9 @@ import {
   executeProcess,
   executeProcessFileBacked,
 } from "../src/tools/process.js";
-import { detectWindowsShell } from "../src/tools/command-shell.js";
 import { temp } from "./fixtures/helpers.js";
+
+const killerCompletions = vi.hoisted(() => [] as Promise<void>[]);
 
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
@@ -35,7 +37,16 @@ vi.mock("node:child_process", async (importOriginal) => {
           }, 1500);
         `;
 
-        return actual.spawn(process.execPath, ["-e", proxy, ...args], options);
+        const killer = actual.spawn(
+          process.execPath,
+          ["-e", proxy, ...args],
+          options,
+        );
+        killerCompletions.push(
+          new Promise<void>((resolve) => killer.once("close", () => resolve())),
+        );
+
+        return killer;
       }
 
       return actual.spawn(command, args, options);
@@ -66,22 +77,31 @@ it.skipIf(process.platform !== "win32").each(["pipe", "file-backed"])(
     let descendantPid: number | undefined;
     let forcedCleanup = false;
     let text = "";
-    const script = `& '${process.execPath.replaceAll("'", "''")}' -e 'console.log(process.pid);setInterval(()=>{},1000)'`;
-    const shell = detectWindowsShell()!;
-    const args = [
-      "-NoProfile",
-      "-NonInteractive",
-      "-EncodedCommand",
-      Buffer.from(script, "utf16le").toString("base64"),
-    ];
+    let safety: NodeJS.Timeout | undefined;
+    const forceCleanup = () => {
+      forcedCleanup = true;
+      stopFixture(descendantPid);
+      stopFixture(parentPid);
+    };
+
+    const script = `
+      const child = require('node:child_process').spawn(
+        process.execPath,
+        ['-e', 'console.log(process.pid);setInterval(()=>{},1000)'],
+        { stdio: 'inherit', windowsHide: true }
+      );
+      child.on('error', () => process.exit(1));
+      child.on('exit', code => process.exit(code ?? 1));
+    `;
+    const args = ["-e", script];
     const onOutput = (chunk: string) => {
       text += chunk;
       const match = text.match(/^(\d+)\r?\n/);
-      if (match) {
+      if (match && descendantPid === undefined) {
         descendantPid = Number(match[1]);
-      }
-
-      if (descendantPid) {
+        // 八秒清理期限从真实取消开始，启动期仍由自己的八秒安全期限保护。
+        clearTimeout(safety);
+        safety = setTimeout(forceCleanup, 8000);
         controller.abort();
       }
     };
@@ -90,17 +110,13 @@ it.skipIf(process.platform !== "win32").each(["pipe", "file-backed"])(
       parentPid = pid;
     };
 
-    const safety = setTimeout(() => {
-      forcedCleanup = true;
-      stopFixture(descendantPid);
-      stopFixture(parentPid);
-    }, 8000);
+    safety = setTimeout(forceCleanup, 8000);
 
     try {
       const operation =
         mode === "pipe"
           ? executeProcess(
-              shell.command,
+              process.execPath,
               args,
               directory,
               controller.signal,
@@ -111,7 +127,7 @@ it.skipIf(process.platform !== "win32").each(["pipe", "file-backed"])(
               onPid,
             )
           : executeProcessFileBacked(
-              shell.command,
+              process.execPath,
               args,
               directory,
               controller.signal,
@@ -131,6 +147,7 @@ it.skipIf(process.platform !== "win32").each(["pipe", "file-backed"])(
       clearTimeout(safety);
       stopFixture(descendantPid);
       stopFixture(parentPid);
+      await Promise.all(killerCompletions.splice(0));
     }
   },
 );

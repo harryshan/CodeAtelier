@@ -6,7 +6,7 @@
  * 2. 传入非法工具参数，确认错误返回模型且文件没有变化。
  * 3. 检查项目规则加载、复杂任务先读取文件并获得信息后才持久化和展示计划摘要、大输出限制，以及多项互不冲突的工具调用会在同一轮全部执行。
  * 4. 检查多文件调用的逐文件进度及结果持久化、新任务必须重新读文件，以及含凭据相关源码的工具结果仍是合法 JSON。
- * 5. 检查模型实际错误会进入任务失败记录和通知，对需要批准的命令确认保存的工具耗时只从真正执行开始计算，不包含审批等待；同时记录 SandboxBroker 的安全阶段和 trace。
+ * 5. 检查模型实际错误会进入任务失败记录和通知；命令按真实审批事件确认就绪，再核对工具耗时不包含审批等待，同时记录 SandboxBroker 的安全阶段和 trace。
  * 6. 配置辅助模型时，确认审批请求带真实会话工作区、路由给低成本模型并保存决定；关闭思考失败或找不到工作区时仅转人工。
  * 7. 新任务逐次捕获模型请求/响应和未截断工具结果，供后续导出隔离 replay case。
  *
@@ -22,7 +22,7 @@ import { Store } from "../src/sessions/store.js";
 import { Config } from "../src/config/config.js";
 import type { ModelProvider } from "../src/providers/model-provider.js";
 import { ModelError } from "../src/providers/model-error.js";
-import { temp } from "./fixtures/helpers.js";
+import { temp, waitForApproval } from "./fixtures/helpers.js";
 
 const done = {
   output: [
@@ -354,7 +354,8 @@ it("starts tool duration after command approval instead of when the call is requ
 
   try {
     const task = fixture.engine.start(fixture.session.id, "run the command");
-    await expect.poll(() => fixture.engine.approvals.list()).toHaveLength(1);
+    await waitForApproval(fixture.engine, task.id);
+    expect(fixture.engine.approvals.list()).toHaveLength(1);
 
     // 模拟用户在审批界面停留十秒；命令获准后时间才应开始累计。
     now += 10_000;
@@ -539,8 +540,9 @@ it("requests human review instead of retrying with reasoning when the approval m
 
   try {
     fixture.config.settings.auxiliaryModel = "approval-model";
-    fixture.engine.start(fixture.session.id, "run a command");
-    await expect.poll(() => fixture.engine.approvals.list()).toHaveLength(1);
+    const task = fixture.engine.start(fixture.session.id, "run a command");
+    await waitForApproval(fixture.engine, task.id);
+    expect(fixture.engine.approvals.list()).toHaveLength(1);
 
     expect(fixture.engine.approvals.list()[0].reviewReason).toContain(
       "人工确认",

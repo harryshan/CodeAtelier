@@ -5,7 +5,7 @@
  * 1. 准备资源和默认回复，检查重试次数限制及退避期间的取消。
  * 2. 模拟断流，确认不执行未收齐的工具参数，并区分空闲超时、总超时和主动取消。
  * 3. 保存已完成编辑后重建或继续任务，检查原始要求和已知工具结果仍可使用。
- * 4. 检查数据库重启、取消审批和关闭服务时保留未知状态，并允许后续启动任务。
+ * 4. 检查数据库重启、取消审批和关闭服务时保留未知状态，并允许后续启动任务；延迟模型超过一秒，按真实审批事件确认就绪。
  * 5. 检查工具完成之后发生的模型重试不会重复执行编辑。
  *
  * 没保存结果不代表工具没执行过。主动取消之后只能人工恢复，不能自行重启。
@@ -16,6 +16,7 @@ import { mkdtemp, realpath, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createServer } from "node:http";
+import { setTimeout as delay } from "node:timers/promises";
 import pino from "pino";
 import { Config } from "../src/config/config.js";
 import { Store } from "../src/sessions/store.js";
@@ -24,6 +25,7 @@ import { ResponsesProvider } from "../src/providers/responses-provider.js";
 import { type ModelProvider } from "../src/providers/model-provider.js";
 import { ModelError, modelError } from "../src/providers/model-error.js";
 import { retryModel } from "../src/providers/retry.js";
+import { waitForApproval } from "./fixtures/helpers.js";
 
 const dirs: string[] = [];
 
@@ -392,6 +394,8 @@ it("shutdown and approval cancellation remain recoverable and release the task l
   const store = new Store(path.join(config.directory, "history.sqlite"));
   const provider: ModelProvider = {
     async run() {
+      await delay(1100);
+
       return {
         output: [
           {
@@ -416,13 +420,16 @@ it("shutdown and approval cancellation remain recoverable and release the task l
     const session = store.create(await temp(), "approval");
     const first = engine.start(session.id, "verify");
 
-    await expect.poll(() => engine.approvals.list().length).toBe(1);
+    // 有效模型响应可以超过默认的一秒轮询期；就绪后仍检查真实审批与中断终态。
+    await waitForApproval(engine, first.id);
+    expect(engine.approvals.list()).toHaveLength(1);
     await engine.close();
 
     expect(store.task(first.id)?.status).toBe("interrupted");
     const next = engine.resume(first.id);
 
-    await expect.poll(() => engine.approvals.list().length).toBe(1);
+    await waitForApproval(engine, next.id);
+    expect(engine.approvals.list()).toHaveLength(1);
     engine.cancel(next.id);
     await engine.active?.done;
 

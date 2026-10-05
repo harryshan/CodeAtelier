@@ -76,7 +76,7 @@ Engine 在任一节点产生副作用前校验整批 DAG，并以稳定拓扑顺
 
 ### MCP 本机客户端
 
-`src/mcp/contracts.ts` 提供模型与 Runtime 共用的有界操作契约，`config.ts` 只在宿主读取 mcp.json；`task-client.ts` 使用官方 SDK 管理每任务的 stdio/Streamable HTTP 连接、审批、串行请求、取消/清理和输出脱敏。模型通过静态 `mcp` 工具按需发现动态 schema，不声明 provider-hosted MCP。`ToolRunner` 审批准备后取得执行槽，宿主调用 Engine 的任务客户端；Runtime 通过 IPC v7 的 `prepare_mcp/execute_mcp` 在当前认证连接内消费调用绑定的单次授权。连接配置和凭据不经 Runtime。
+`src/mcp/contracts.ts` 提供模型与 Runtime 共用的有界操作契约，`config.ts` 只在宿主读取 mcp.json；`task-client.ts` 使用官方 SDK 管理每任务的 stdio/Streamable HTTP 连接、审批、串行请求、取消/清理和输出脱敏。`mcp-stdio-transport.ts` 保存启动 PID，并让 SDK 握手失败后的异步关闭与任务收尾共用同一个关闭回执，避免仍存活的进程被误报为已清理。模型通过静态 `mcp` 工具按需发现动态 schema，不声明 provider-hosted MCP。`ToolRunner` 审批准备后取得执行槽，宿主调用 Engine 的任务客户端；Runtime 通过 IPC v7 的 `prepare_mcp/execute_mcp` 在当前认证连接内消费调用绑定的单次授权。连接配置和凭据不经 Runtime。
 
 除列出配置别名外，每项操作走现有审批。结果标记 `broker-mcp/host-process` 并进入通常的历史/replay/DAG，MCP `isError` 阻断后继；失败连接在当前任务内不可重连，未知副作用不重放。任务终态前关闭全部连接；MCP 参数/正文不进入 trace，仅用安全的 `mcp.*` 阶段记录。详细能力与边界见 [MCP 指南](mcp.md)。
 

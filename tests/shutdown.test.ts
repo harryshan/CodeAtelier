@@ -3,7 +3,7 @@
  * 分别使用注入请求、真实 HTTP/SSE 连接和生产入口子进程验证。
  *
  * 1. 拒绝没有凭据、凭据伪造或缺少 confirm 的关闭请求。
- * 2. 启动任务并连接 SSE，关闭后检查流结束、端口释放及 SQLite 中的中断记录。
+ * 2. 按任务审批事件和持久化命令输出确认就绪，再连接 SSE；关闭后检查流结束、端口释放及 SQLite 中的中断记录。
  * 3. 启动 launcher.ts 父进程，确认它能在认证后的重载请求后替换后端子进程，并在关闭后正常退出。
  *
  * 收到关闭响应还不够，必须确认资源确实释放；测试负责清理自己启动的进程。
@@ -18,7 +18,7 @@ import path from "node:path";
 import { createApp } from "../src/server/app.js";
 import { Config } from "../src/config/config.js";
 import { Store } from "../src/sessions/store.js";
-import { temp } from "./fixtures/helpers.js";
+import { temp, waitForApproval } from "./fixtures/helpers.js";
 
 it("rejects unauthenticated, forged and unconfirmed shutdown requests", async () => {
   const { app } = await createApp(
@@ -135,7 +135,8 @@ it("shutdown acknowledges a running task, closes SSE, releases the port and pers
     const session = fixture.store.create(await temp(), "shutdown");
     const task = fixture.engine.start(session.id, "run");
 
-    await expect.poll(() => fixture.engine.approvals.list().length).toBe(1);
+    await waitForApproval(fixture.engine, task.id);
+    expect(fixture.engine.approvals.list()).toHaveLength(1);
     fixture.engine.approvals.decide(
       fixture.engine.approvals.list()[0].id,
       "once",

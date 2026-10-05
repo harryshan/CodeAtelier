@@ -6,12 +6,11 @@
  * 2. enqueue 按服务串行执行，connection 按需握手并在任务内复用；不同服务和不同任务互不共享连接。
  * 3. perform 用统一超时/取消包住连接和操作，失败即封闭该服务至任务结束，不自动重连或重放未知副作用。
  * 4. dispatch 映射发现、工具、资源和提示模板接口；返回内容仅作为不可信工具数据，不能注入系统提示词。
- * 5. close 等待在途操作、结束 HTTP session 并确认直接 stdio 子进程退出；traced 只记录关联 ID、操作类别、耗时和终态，不记录地址、参数或正文。
+ * 5. close 等待在途操作、结束 HTTP session 并通过 McpStdioTransport 共用 SDK 关闭回执和保存的 PID，确认直接子进程退出；traced 只记录关联 ID、操作类别、耗时和终态，不记录地址、参数或正文。
  * stdio 使用宿主用户权限及 SDK 最小继承环境，不是 Sandbox；只能管理直接子进程，不能保证第三方派生进程退出。
  */
 import { setTimeout as delay } from "node:timers/promises";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Logger } from "pino";
 import type { TraceRecorder } from "../tracing/recorder.js";
@@ -22,10 +21,11 @@ import {
   type McpResult,
 } from "./contracts.js";
 import { mcpSecrets, type McpServer, type McpServers } from "./config.js";
+import { McpStdioTransport } from "./mcp-stdio-transport.js";
 
 const MAX_WIRE_BYTES = 2 * 1024 * 1024;
 const execution = { kind: "broker-mcp", mode: "host-process" } as const;
-type Transport = StdioClientTransport | StreamableHTTPClientTransport;
+type Transport = McpStdioTransport | StreamableHTTPClientTransport;
 interface Connection {
   client: Client;
   transport: Transport;
@@ -264,7 +264,7 @@ export class McpTaskClient {
     const network = new AbortController();
     const transport =
       server.transport === "stdio"
-        ? new StdioClientTransport({
+        ? new McpStdioTransport({
             command: server.command,
             args: server.args,
             cwd: server.cwd ?? this.options.workspace,
@@ -410,7 +410,7 @@ export class McpTaskClient {
       };
     } catch (error) {
       this.failed.add(action.server);
-      await this.closeConnection(action.server);
+      await this.closeConnection(action.server, false, callId);
 
       return {
         execution,
@@ -457,63 +457,76 @@ export class McpTaskClient {
     }
   }
 
-  private async closeConnection(name: string, graceful = false) {
+  private async closeConnection(
+    name: string,
+    graceful = false,
+    callId = "task-cleanup",
+  ) {
     const connection = this.connections.get(name);
     if (!connection) {
       return;
     }
 
-    const pid =
-      connection.transport instanceof StdioClientTransport
-        ? connection.transport.pid
-        : null;
-    let sessionError: unknown;
-    if (
-      graceful &&
-      connection.transport instanceof StreamableHTTPClientTransport &&
-      connection.transport.sessionId &&
-      !connection.network.signal.aborted
-    ) {
-      try {
-        await abortable(
-          connection.transport.terminateSession(),
-          AbortSignal.timeout(2000),
-        );
-      } catch (error) {
-        sessionError = error;
-      }
-    }
-
-    connection.network.abort();
-    await abortable(connection.client.close(), AbortSignal.timeout(6000));
-    // SDK close 最后发送 kill 后不一定等到 exit；不能将仍存活的直接子进程报告为已清理。
-    if (pid !== null) {
-      const until = Date.now() + 2000;
-      while (true) {
-        try {
-          process.kill(pid, 0);
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code === "ESRCH") {
-            break;
+    await this.traced(
+      "connection_close",
+      callId,
+      async () => {
+        const pid =
+          connection.transport instanceof McpStdioTransport
+            ? connection.transport.startedPid
+            : null;
+        let sessionError: unknown;
+        if (
+          graceful &&
+          connection.transport instanceof StreamableHTTPClientTransport &&
+          connection.transport.sessionId &&
+          !connection.network.signal.aborted
+        ) {
+          try {
+            await abortable(
+              connection.transport.terminateSession(),
+              AbortSignal.timeout(2000),
+            );
+          } catch (error) {
+            sessionError = error;
           }
-
-          throw new Error("无法确认 MCP 直接子进程已退出。");
         }
 
-        if (Date.now() >= until) {
-          throw new Error("MCP 直接子进程清理超时，退出状态未知。");
+        connection.network.abort();
+        await abortable(connection.client.close(), AbortSignal.timeout(6000));
+        // SDK 握手失败会自行异步 close 并清空内部 PID；transport 共用关闭回执并保留启动 PID。
+        // close 最后发送 kill 后也不一定等到 exit，仍要确认直接子进程退出。
+        if (pid !== null) {
+          const until = Date.now() + 2000;
+          while (true) {
+            try {
+              process.kill(pid, 0);
+            } catch (error) {
+              if ((error as NodeJS.ErrnoException).code === "ESRCH") {
+                break;
+              }
+
+              throw new Error("无法确认 MCP 直接子进程已退出。");
+            }
+
+            if (Date.now() >= until) {
+              throw new Error("MCP 直接子进程清理超时，退出状态未知。");
+            }
+
+            await delay(20);
+          }
         }
 
-        await delay(20);
-      }
-    }
-
-    this.connections.delete(name);
-    if (sessionError) {
-      throw new Error(
-        `MCP 本地连接已关闭，但远端 session 清理失败：${this.safeError(sessionError)}`,
-      );
-    }
+        this.connections.delete(name);
+        if (sessionError) {
+          throw new Error(
+            `MCP 本地连接已关闭，但远端 session 清理失败：${this.safeError(sessionError)}`,
+          );
+        }
+      },
+      undefined,
+      name,
+    );
   }
 
   close(): Promise<void> {
