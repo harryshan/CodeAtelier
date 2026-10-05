@@ -1,7 +1,7 @@
 /**
  * 读取仅由本机后端 Config 持有的 MCP 配置；不从任务工作区自动发现配置，也不向 UI/Runtime 暴露凭据。
  *
- * 1. mcpServerSchema 限定 stdio 命令/环境或 Streamable HTTP 地址/请求头，并限制超时与配置大小。
+ * 1. mcpServerSchema 限定 stdio 命令/环境或 Streamable HTTP 地址/请求头，并限制公开用途 description、超时与配置大小。
  * 2. loadMcpServers 在启动时读取数据目录 mcp.json，或显式绝对路径；默认文件缺失表示关闭，损坏配置则拒绝启动。
  * 3. mcpSecrets 收集凭据值供 MCP 输出和错误脱敏；配置只在后端内存中持有，修改后须重启。
  * 本地配置属于用户信任的启动配置，不是模型可提交的连接/程序参数；它不提供操作系统隔离。
@@ -12,6 +12,7 @@ import { z } from "zod";
 
 const values = z.record(z.string().min(1).max(256), z.string().max(8192));
 const common = {
+  description: z.string().trim().min(1).max(1024).optional(),
   enabled: z.boolean().default(true),
   timeoutMs: z.number().int().min(100).max(300000).default(60000),
 };

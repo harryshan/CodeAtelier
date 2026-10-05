@@ -2,7 +2,7 @@
  * 为 Engine 的一个任务持有本机 MCP 连接；Sandbox 只通过 Broker adapter 调用，不创建 MCP 进程或网络连接。
  * 官方 SDK 负责协议握手和 stdio/Streamable HTTP，本类负责审批、任务生命周期、输出边界与观测。
  *
- * 1. prepare 校验操作和 JSON 参数，按已配置服务申请一次审批，返回只能消费一次的执行闭包；审批不占工具执行槽。
+ * 1. prepare 校验操作和 JSON 参数，按已配置服务申请一次审批，返回只能消费一次的执行闭包；审批不占工具执行槽。list_servers 复用 catalog 的公开用途摘要，不连接服务。
  * 2. enqueue 按服务串行执行，connection 按需握手并在任务内复用；不同服务和不同任务互不共享连接。
  * 3. perform 用统一超时/取消包住连接和操作，失败即封闭该服务至任务结束，不自动重连或重放未知副作用。
  * 4. dispatch 映射发现、工具、资源和提示模板接口；返回内容仅作为不可信工具数据，不能注入系统提示词。
@@ -22,6 +22,7 @@ import {
 } from "./contracts.js";
 import { mcpSecrets, type McpServer, type McpServers } from "./config.js";
 import { McpStdioTransport } from "./mcp-stdio-transport.js";
+import { mcpServerCatalog } from "./catalog.js";
 
 const MAX_WIRE_BYTES = 2 * 1024 * 1024;
 const execution = { kind: "broker-mcp", mode: "host-process" } as const;
@@ -163,9 +164,7 @@ export class McpTaskClient {
       if (action.action === "list_servers") {
         return {
           execution,
-          data: Object.entries(this.options.servers)
-            .filter(([, server]) => server.enabled)
-            .map(([name, server]) => ({ name, transport: server.transport })),
+          data: mcpServerCatalog(this.options.servers),
         };
       }
 

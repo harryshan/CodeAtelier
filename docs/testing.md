@@ -142,13 +142,13 @@ item.done 回退、失败/不完整事件、服务实际错误 message/reason/co
 
 主要测试：skills.test.ts、skills-engine.test.ts、tool-schema.test.ts。
 
-覆盖 UTF-8/BOM/CRLF、YAML 多行/坏字段/重复键/大小边界，六个预设根及同名优先级、缺省空目录、坏条目隔离和低优先级回退，链接/junction/硬链接与加载前根替换拒绝，枚举/目录容量限制，任务内版本失效、新任务重新发现，strict 工具与 IPC v7 拒绝路径/命令和旧握手、最大目录 JSON 转义后的启动传输边界。宿主及真实 Node Runtime 模拟模型往返验证摘要先行、正文按需、无审批/脚本副作用、失败后继阻断、历史/replay 及 trace 脱离元信息/正文。所有文件在临时项目/home 中，无个人密钥；不替代固定账户安装态或跨平台验收。
+覆盖 UTF-8/BOM/CRLF、YAML 多行/坏字段/重复键/大小边界，六个预设根及同名优先级、缺省空目录、坏条目隔离和低优先级回退，链接/junction/硬链接与加载前根替换拒绝，枚举/目录容量限制，任务内版本失效、新任务重新发现，strict 工具与 IPC v8 拒绝路径/命令和旧握手、最大目录 JSON 转义后的启动传输边界。宿主及真实 Node Runtime 模拟模型往返验证摘要先行、正文按需、无审批/脚本副作用、失败后继阻断、历史/replay 及 trace 脱离元信息/正文。所有文件在临时项目/home 中，无个人密钥；不替代固定账户安装态或跨平台验收。
 
 ### MCP 本机访问
 
-主要测试：mcp.test.ts、mcp-engine.test.ts、mcp-ipc.test.ts、tool-schema.test.ts；夹具 tests/fixtures/mcp-server.ts 使用官方 SDK。
+主要测试：mcp-catalog.test.ts、mcp.test.ts、mcp-engine.test.ts、mcp-ipc.test.ts、tool-schema.test.ts；夹具 tests/fixtures/mcp-server.ts 使用官方 SDK。
 
-覆盖配置缺省关闭/损坏拒绝/UTF-8 BOM/私密字段、禁用服务拒绝、stdio 真实握手与连接复用/直接子进程退出、工具/资源/模板往返、HTTP 认证头和裸 token 脱敏、分页/重定向拒绝/响应流大小限制/正常 DELETE、审批先于连接、单次授权、超时/取消及禁止自动重连、输出截断与 isError、宿主和独立 Runtime 模型往返/历史/replay、失败后继阻断及 trace 不含 MCP 参数/正文。全部离线且无个人密钥；不替代真实远端、跨平台和固定账户安装态验收。
+覆盖配置缺省关闭/损坏拒绝/UTF-8 BOM/私密字段、可选 description 的修剪/空值/长度校验、公开目录脱敏/空目录/旧配置未知用途/禁用服务过滤、最大 JSON 转义目录的 IPC v8 传输边界与旧版本拒绝。宿主、独立 Runtime 和启动前 fallback 在首次及续聊任务中主动提供目录，无工具调用时不申请审批、不启动 MCP，摘要不进入 trace；list_servers 与启动目录共用投影。另覆盖禁用服务拒绝、stdio 真实握手与连接复用/直接子进程退出、工具/资源/模板往返、HTTP 认证头和裸 token 脱敏、分页/重定向拒绝/响应流大小限制/正常 DELETE、审批先于连接、单次授权、超时/取消及禁止自动重连、输出截断与 isError、宿主和独立 Runtime 模型往返/历史/replay、失败后继阻断及 trace 不含 MCP 参数/正文。全部离线且无个人密钥；不替代真实远端、跨平台和固定账户安装态验收。
 
 ### 网页检索与来源引用
 

@@ -9,7 +9,7 @@
  * 5. model-loop 共用轮次、重试和停止控制，model-tool-batch 共用计划与成功判断；Engine 保留宿主事务、replay 与 tracing。为压缩提供 ToolRunner 的安全文件哈希探测；每轮记录上下文准备和请求计量、模型重试、实际模型请求和响应处理，再记录服务实报用量。完整响应保存后校验工具 DAG，节点先完成准备/审批，实际执行才取得有界 worker 槽。
  * 6. Sandbox Runtime 已有能力内工具免审批；全部 Git action 与 run_with_permissions 的获批命令均交给 Broker 宿主进程，push 额外预检和逐次审批，并分别留下未隔离的执行记录。一次性两阶段 IPC 授权把命令审批等待留在执行队列外；Push/Capability Runner 代码暂存但不走产品路径。
  *    Skill 每任务在 Broker 扫描预设目录，模型先看到摘要、工具按需加载正文；宿主/Runtime/fallback 共用该目录且不授权脚本。
- *    MCP 使用任务级本机连接池，宿主/Runtime 共用审批后单次执行入口；收尾关闭连接，MCP 参数和正文不进入 trace。
+ *    MCP 在首次模型请求前提供已启用服务的公开用途摘要，不提前连接；任务级本机连接池由宿主/Runtime 共用审批后单次执行入口，收尾关闭，摘要、参数和正文不进入 trace。
  * 7. Agent Runtime 取消先经 IPC 等待 runtime_complete/stopping，再关闭原生 transport；清理未知优先于取消。终态保留已验证进程身份；Broker 校验 Runtime trace 时间戳，按该进程的执行槽组织片段、从已保存工具调用附加脱敏参数并统一归档；子任务由 Broker 核对身份与原子保存问题回执，退出先停子线程再归档。
  *
  * 模型请求可以重试，但已经执行的工具不能跟着重跑。数据库回滚也撤销不了文件修改或
@@ -18,6 +18,7 @@
 
 import { TaskSkills } from "../skills/task-skills.js";
 import { McpTaskClient } from "../mcp/task-client.js";
+import { mcpCatalogInstructions } from "../mcp/catalog.js";
 import type { McpAction } from "../mcp/contracts.js";
 import { auxiliarySettings } from "../config/auxiliary-model.js";
 import type { Settings } from "../shared/types.js";
@@ -1494,6 +1495,7 @@ export class Engine {
             },
             memoryText: memory.bundle?.text,
             skillsText: skills.instructions(),
+            mcpText: mcpCatalogInstructions(this.config.mcpServers),
           },
           completionController.signal,
         );
@@ -2177,6 +2179,7 @@ export class Engine {
       const instructions = [
         baseInstructions,
         skills.instructions(),
+        mcpCatalogInstructions(this.config.mcpServers),
         memory.bundle?.text,
         task.subagentsEnabled
           ? "This task opted into read-only subagents. After inspecting the relevant code, use the subagent tool only for bounded independent research. You alone plan all edits, re-read current files, verify any subagent evidence and write the final answer. Never delegate file writes or permission upgrades."

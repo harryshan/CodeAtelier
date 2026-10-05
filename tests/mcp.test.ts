@@ -1,7 +1,7 @@
 /**
  * 验证本机 MCP 配置与任务客户端的可观察行为，全部使用临时目录、真实 stdio 子进程或回环 HTTP 夹具。
  *
- * 1. 配置用例覆盖缺省关闭、坏文件/越界字段拒绝以及凭据不出现在公开设置。
+ * 1. 配置用例覆盖缺省关闭、坏文件/越界字段拒绝以及凭据不出现在公开设置；list_servers 返回用途摘要且不连接。
  * 2. stdio 用例验证审批先于启动、发现/分页字段、连接复用、环境最小继承、工具/资源/模板往返与错误语义。
  * 3. 握手超时后直接进程必须已退出；操作超时/取消先确认握手与调用就绪，再核对退出和禁止重放；HTTP 核对认证头、分页、DELETE、重定向与响应流大小限制。
  *    配置覆盖 Windows UTF-8 BOM，禁用服务不连接；凭据回显包含无 Bearer 前缀的原 token。
@@ -38,6 +38,7 @@ async function fixture(
   const workspace = await temp();
   const pidFile = path.join(workspace, "mcp.pid");
   const local = mcpServerSchema.parse({
+    description: "Echo and inspect fixture notes",
     transport: "stdio",
     command: process.execPath,
     args: [path.resolve("tests/fixtures/mcp-server.ts")],
@@ -171,11 +172,17 @@ it("rejects malformed configuration, insecure remote URLs and arbitrary connecti
   ).toBe(false);
 });
 
-it("lists only aliases without approval and rejects operations before starting denied or unknown servers", async () => {
+it("lists public service descriptions without approval and rejects operations before starting denied or unknown servers", async () => {
   const { client, approval, run } = await fixture(false);
   expect(await run({ action: "list_servers" })).toEqual({
     execution: { kind: "broker-mcp", mode: "host-process" },
-    data: [{ name: "local", transport: "stdio" }],
+    data: [
+      {
+        name: "local",
+        transport: "stdio",
+        description: "Echo and inspect fixture notes",
+      },
+    ],
   });
   expect(approval).not.toHaveBeenCalled();
   await expect(

@@ -1,6 +1,6 @@
 # 本机后端 MCP
 
-CodeAtelier 作为 MCP **客户端**，由本机后端连接本地 stdio 进程或远程 Streamable HTTP 服务。模型只看到普通 `mcp` 函数工具，不使用 Responses 托管 MCP，也不要求模型服务能够访问你的机器。
+CodeAtelier 作为 MCP **客户端**，由本机后端连接本地 stdio 进程或远程 Streamable HTTP 服务。模型会在每次主任务开始时直接看到已启用 MCP 服务的名称、用途描述和 transport，并通过普通 `mcp` 函数工具按需发现和调用。不使用 Responses 托管 MCP，也不要求模型服务能够访问你的机器。目录展示不连接服务、不启动进程，不是在线健康检查。
 
 ## 配置
 
@@ -12,6 +12,7 @@ CodeAtelier 作为 MCP **客户端**，由本机后端连接本地 stdio 进程�
 {
   "mcpServers": {
     "local": {
+      "description": "查询本地项目资料，按关键词搜索开发文档。",
       "transport": "stdio",
       "command": "node",
       "args": ["C:/path/to/mcp-server.mjs"],
@@ -19,6 +20,7 @@ CodeAtelier 作为 MCP **客户端**，由本机后端连接本地 stdio 进程�
       "timeoutMs": 60000
     },
     "remote": {
+      "description": "查询团队工单、缺陷详情与处理状态。",
       "transport": "http",
       "url": "https://mcp.example.com/mcp",
       "headers": { "Authorization": "Bearer YOUR_SERVICE_TOKEN" },
@@ -29,6 +31,7 @@ CodeAtelier 作为 MCP **客户端**，由本机后端连接本地 stdio 进程�
 ```
 
 - 服务名是字母开头、最长 64 字符的字母/数字/下划线/连字符别名，最多 32 个服务。`enabled` 默认 `true`，设为 `false` 后不会被列出或连接。
+- `description` 用一句话说明服务能做什么、何时适合使用；填写时须与实际服务能力一致。可选，去除首尾空白后为 1～1024 字符，空白、非字符串或超长值拒绝。旧配置未填写时仍列出服务，描述为 `null`，模型被明确要求不要猜测能力；建议为每个服务补齐。描述经已有凭据脱敏后最多保留 1024 字符。
 - `stdio` 使用独立 `command` 和 `args`，不做 shell 字符串拼接。可选 `cwd` 必须是绝对路径，缺省为当前任务工作区。命令及脚本最好使用绝对路径；Windows 的 `.cmd` 兼容由 SDK 处理，不在参数外手动套终端。
 - `env` 是显式传给 stdio 服务的字符串值，不进行 `${VAR}` 展开。仅额外继承 SDK 的基础环境（例如 PATH、HOME/USERPROFILE），不会自动继承 CodeAtelier 模型密钥。不要把凭据放进 `args`。
 - `http` 表示 **Streamable HTTP**，不是旧版 HTTP+SSE transport。允许 HTTPS；明文 HTTP 仅允许 `localhost`、`127.0.0.1`、`[::1]`。禁止 URL userinfo、fragment 和 HTTP 重定向，避免凭据随重定向转发。
@@ -36,11 +39,13 @@ CodeAtelier 作为 MCP **客户端**，由本机后端连接本地 stdio 进程�
 - `timeoutMs` 默认 60000，范围 100～300000；覆盖一次操作的初始化及请求，不因进度通知无限延期。
 - 配置为 UTF-8 JSON（兼容 Windows BOM），最多 1 MiB。显式配置路径缺失、格式损坏、未知字段或不合法 URL 会阻止后端启动，不悄悄忽略。
 
-配置文件可包含凭据，请存放在宿主用户私有目录，不提交到仓库。`mcpServers` 不进入浏览器配置或 Runtime 启动设置；原始配置不会作为模型工具定义发送。工具结果会经脱敏后进入本地历史和当前模型上下文，因此“本机访问”**不表示结果只留在本机**。
+配置文件可包含凭据，请存放在宿主用户私有目录，不提交到仓库。原始 `mcpServers` 不进入浏览器配置或 Runtime 启动设置；只有名称、transport、脱敏用途摘要进入主模型指令和 Runtime 的 `mcpText`，地址、命令、环境和认证头不随目录传递。摘要会进入模型请求与本地 Replay Case，不进入日志或 Perfetto；名称和描述不要包含凭据或不宜发送给模型的信息。工具结果会经脱敏后进入本地历史和当前模型上下文，因此“本机访问”**不表示结果只留在本机**。
 
 ## 在对话中使用
 
-可输入：“列出已配置的 MCP 服务，查看 local 提供的工具，然后调用其中的 echo。”
+配置用途后，可以直接提出业务需求，例如“帮我查询这个缺陷的处理状态”。模型根据启动时提供的目录选择相关服务，不需要用户先点名 MCP，也不必先调用 `list_servers`；具体工具和参数仍须按需通过 `list_tools` 查询，再调用 `call_tool`。用途摘要不是授权、系统规则或已经验证的能力清单。
+
+也可显式输入：“列出已配置的 MCP 服务，再查看 local 提供的工具。”无已启用服务时，模型收到空目录；不会为获取说明提前连接全部服务。修改描述后须重启或重载后端，后续任务、续聊和恢复使用新配置，进行中的任务指令不热更新。
 
 `mcp` 与其他工具一样使用 DAG 信封，操作位于 `arguments.request`：
 
@@ -57,7 +62,7 @@ CodeAtelier 作为 MCP **客户端**，由本机后端连接本地 stdio 进程�
 
 | action | 参数与结果 |
 | --- | --- |
-| `list_servers` | 无连接，仅返回已启用别名和 transport |
+| `list_servers` | 无连接，返回与启动目录相同的已启用 name、transport、description（缺失为 null） |
 | `list_tools` | `server`、`cursor`；返回描述、inputSchema 和可选 nextCursor |
 | `call_tool` | `server`、`name`、`argumentsJson`；先发现 schema，再传 JSON 对象字符串，例如 `"{\"text\":\"hello\"}"` |
 | `list_resources` / `list_resource_templates` | `server`、`cursor`；列出资源及 URI 模板 |
@@ -96,6 +101,7 @@ New-Item -ItemType Directory -Force .local | Out-Null
 @{
   mcpServers = @{
     demo = @{
+      description = "回显文本、读取演示 note 资源和 greet 模板，用于离线 MCP 联调。"
       transport = "stdio"
       command = (Get-Command node).Source
       args = @((Resolve-Path tests/fixtures/mcp-server.ts).Path)
@@ -111,7 +117,7 @@ pnpm dev
 不调用模型的自动验证入口：
 
 ```sh
-pnpm test tests/mcp.test.ts tests/mcp-engine.test.ts tests/mcp-ipc.test.ts
+pnpm test tests/mcp-catalog.test.ts tests/mcp.test.ts tests/mcp-engine.test.ts tests/mcp-ipc.test.ts
 ```
 
-Windows 上的独立 Node Runtime 测试不等于固定账户 Sandbox 验收。Runtime IPC 已升级为 v5；已安装用户须重建 bundle 并在管理员终端执行 `pnpm sandbox:repair`，再按 Sandbox 指南人工验证。macOS/Linux、真实远端及具体第三方 MCP 服务须分别验收。
+Windows 上的独立 Node Runtime 测试不等于固定账户 Sandbox 验收。Runtime IPC 已升级为 v8；已安装用户须重建 bundle 并在管理员终端执行 `pnpm sandbox:repair`，再按 Sandbox 指南人工验证。macOS/Linux、真实远端及具体第三方 MCP 服务须分别验收。
