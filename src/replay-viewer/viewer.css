@@ -1,0 +1,149 @@
+/**
+ * 离线 Replay 阅读器样式，由 html.ts 内嵌，不加载字体、图片或网络资源。
+ * 1. 根元素与控件使用本机字体、高对比深色和可见焦点。
+ * 2. toolbar/layout 将筛选、分页目录和单条详情分开，目录保持可滚动。
+ * 3. entry 状态边框区分异常/未知；小屏改为上下布局，长路径和输出可换行。
+ * 本文件只控制展示，不隐藏原始记录或改变工具状态。
+ */
+:root {
+  color-scheme: dark;
+  font-family: system-ui, sans-serif;
+  background: #10151e;
+  color: #e1e8f2;
+}
+body {
+  margin: 0;
+}
+#app {
+  max-width: 1600px;
+  margin: auto;
+  padding: 24px;
+}
+h1 {
+  font-size: 26px;
+}
+h2 {
+  font-size: 20px;
+}
+h3 {
+  font-size: 16px;
+}
+p {
+  color: #b8c6d9;
+  overflow-wrap: anywhere;
+}
+button,
+input,
+select {
+  font: inherit;
+  border: 1px solid #52627a;
+  border-radius: 6px;
+  background: #202c3d;
+  color: inherit;
+  padding: 10px;
+}
+button,
+summary,
+select {
+  cursor: pointer;
+}
+button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+:focus-visible {
+  outline: 3px solid #8cbaff;
+  outline-offset: 2px;
+}
+[role="alert"] {
+  color: #ffaaa6;
+}
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  margin: 16px 0;
+}
+input[type="search"] {
+  flex: 1;
+  min-width: 180px;
+}
+.layout {
+  display: grid;
+  grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
+  gap: 24px;
+  align-items: start;
+}
+nav {
+  max-height: 80vh;
+  overflow: auto;
+  position: sticky;
+  top: 12px;
+}
+article {
+  min-width: 0;
+  border: 1px solid #35445a;
+  border-radius: 10px;
+  padding: 20px;
+  background: #161e2b;
+}
+.entry {
+  display: block;
+  width: 100%;
+  text-align: left;
+  margin: 8px 0;
+  border-left: 4px solid #7893b8;
+}
+.entry span {
+  display: block;
+  font-size: 12px;
+  color: #b8c6d9;
+  margin-top: 6px;
+  overflow-wrap: anywhere;
+}
+.entry[aria-current="true"] {
+  background: #2c4566;
+  border-color: #8cbaff;
+}
+.entry.error {
+  border-left-color: #ff9991;
+}
+.entry.unknown {
+  border-left-color: #ecc16a;
+}
+pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font:
+    13px/1.65 ui-monospace,
+    Consolas,
+    monospace;
+  background: #0c121c;
+  padding: 14px;
+  border-radius: 6px;
+  max-height: 65vh;
+  overflow: auto;
+}
+details {
+  border-top: 1px solid #35445a;
+  padding: 12px 0;
+}
+summary {
+  color: #aacdff;
+}
+.tool-links button {
+  margin: 0 8px 8px 0;
+}
+@media (max-width: 800px) {
+  #app {
+    padding: 12px;
+  }
+  .layout {
+    grid-template-columns: 1fr;
+  }
+  nav {
+    position: static;
+    max-height: 40vh;
+  }
+}

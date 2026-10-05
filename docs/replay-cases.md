@@ -44,6 +44,30 @@ pnpm replay:export -- --data-dir C:\CodeAtelierData --task-id TASK_ID --output C
 
 对于只验证提示、上下文或模型循环的测试，使用 `new RecordedModelProvider(caseFile.capture)`；它逐项比较 input、instructions、工具 schema 和输出选项，然后返回记录的模型响应。它不会运行工具，测试必须自行提供受控工具层或只测试模型交互。
 
+## 离线可视化阅读
+
+不必在编辑器里翻阅整份 JSON。安装项目依赖后，在仓库根目录运行：
+
+```sh
+# 已有导出 JSON：生成带完整数据的单文件 HTML
+pnpm replay:view --input C:\safe\case.json --output C:\safe\case-view.html
+
+# 或生成可重复使用的空白阅读器，在页面中选择本地 JSON
+pnpm replay:view --output C:\safe\replay-viewer.html
+```
+
+输出文件必须尚不存在；直接用浏览器打开 HTML，无需启动 CodeAtelier 服务，也不需要网络或 CDN。空白阅读器中的“选择 Replay JSON”只在浏览器本地读取文件，不会上传。使用的是 `replay:export` 的 **TaskReplayCase v1**，不是 Perfetto trace 或任意 JSON；现有 captured/legacy 导出均可查看。
+
+- **按轮次**：每次模型请求独立编号，展示 purpose、原始 step/attempt、回复、实报 token 用量和关联工具。重试不会合并，编号不是新的对话轮次协议。
+- **工具详情**：查看参数、可读输出、完整结果、call ID、DAG 节点、批次和依赖；可返回所属模型调用。关联只使用唯一 `function_call.call_id`，缺失或歧义记录放在“未关联模型调用”，不凭顺序猜测。
+- **原始材料**：输入上下文、instructions、工具定义、响应协议项、错误和扩展字段可分别展开；审批、压缩、状态与其他过程在“历史事件”中按导出顺序查看。模型和事件没有共同可靠时钟，不拼造精确耗时图；性能分析继续使用 Perfetto。
+- **定位**：类型/状态筛选、当前视图全文搜索、每页 40 条目录、单条详情；大文本每次显示 20,000 字符，可继续显示，不截掉底层数据。搜索按完整原始记录匹配，不仅搜索预览。
+- **诚实状态**：“已记录”只表示存在响应/结果，不等同成功；已知错误标为异常；没有结果明确为未知。legacy 缺失模型请求时不补造，缺失 usage 不当零。
+
+HTML 和 JSON 一样可能包含完整源码、提示词、命令与工具输出，必须保存在受保护本地目录，不能提交 Git 或公开。页面用纯文本而非可执行 HTML/Markdown 显示载荷，CSP 禁止网络、外部资源与表单；查看不会调用模型、重放工具或运行 Evaluation。CLI 只读取显式输入并创建新文件，不读取 case 内记录的路径。
+
+当前为独立手动阅读入口，没有主 Web UI 导出按钮。JSON 解析和搜索仍在内存中处理完整文件，分页主要减少 DOM 数量；超大文件仍受本机内存与浏览器性能限制。Windows 文件权限依赖目标目录 ACL，不能将 POSIX 的 0600 当作 Windows 隔离保证。
+
 ## 当前限制
 
 - case 不捕获未读取文件、Git 索引/提交状态、环境变量、依赖安装、子进程、网络、外部服务或操作系统状态；这些不能从工具输出可靠推导。

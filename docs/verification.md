@@ -1,5 +1,12 @@
 # 初版验证记录
 
+## 离线 Replay 对话阅读器（2026-10-05）
+
+- 增加独立 `pnpm replay:view`，将现有 TaskReplayCase v1 JSON 转为单文件 HTML，或生成空白阅读器以在浏览器本地选文件。模型请求/重试、唯一 call ID 关联工具、未知结果、legacy、事件、搜索、分页与惰性载荷由合成夹具覆盖，不改变捕获或恢复链路。
+- Windows / Node.js 26.10.0：最终 `pnpm check` 全部通过，81 个测试文件、587 项通过、1 项原有跳过；类型、ESLint、Prettier 和 Web/服务端/Runtime 测试构建通过。Chromium `pnpm test:e2e` 30/30 通过，新增两项真实 `file://` 测试覆盖离线导航、本地导入、坏输入保留旧视图、大文本分页、安全文本显示和不发起 HTTP 请求。
+- 中间一次默认并发检查中，未修改的 `process-tree.test.ts` file-backed 用例触发八秒安全清理，`mcp.test.ts` 截断用例未返回预期 `truncated` 字段；随后两者与新增阅读器独立复核 19/19 通过，再运行原样默认并发完整 `pnpm check` 通过。未放宽断言、降低默认并发或修改这些测试；不将重跑通过描述为已修复其所有时序风险。
+- 手动 CLI 已生成 `.local/replay-viewer.html` 空白阅读器（忽略的本地产物），未读取个人导出。Runtime 无 pnpm，验证经批准在 Broker 宿主执行；未运行 Evaluation、真实模型、macOS/Linux 或其它浏览器验收。保留既有 Web bundle 大小警告；超大 JSON 仍受完整解析/搜索的内存成本限制。
+
 ## pnpm check 时序调查与 MCP 清理修复（2026-10-05）
 
 - 重新检查旧日志并按默认并发复现：审批用例把 Vitest 默认一秒轮询期限当作任务启动要求；subagent 提问用例在 Worker 尚未就绪时开始一秒等待；MCP 操作超时/取消混入首次握手；Windows 进程树用例的八秒安全计时器从启动开始累计，可能在真正的 taskkill 完成前主动杀父子进程。本次记录中，后代 PID 在 6213 ms 就绪、taskkill 在 7917 ms 启动，安全清理在 8019 ms 抢先触发，taskkill 到 10334 ms 才结束；这是测试干扰取消流程的直接证据，不等于产品在正常取消时遗留后代。
