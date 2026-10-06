@@ -4,6 +4,7 @@
  *
  * 1. model_capabilities/model_run 委托 RuntimeBrokerGateway，使模型 endpoint/key 永远留在 Broker Host。
  * 2. model_run 把 provider delta 作为关联原 requestId 的事件回传，再返回完整 ModelResult。
+ *    token 锚点启动时只传计数/指纹，保存只作用于认证会话，不接受 sessionId 或模型连接配置。
  * 3. approval、受限 Git action、扩展权限命令、任务绑定子状态/问题/租约及 session 只调用显式 handlers；子模型严格比对三个只读工具与 ask_main，拒绝写工具。
  *    skill_execute 仅按名称访问本任务后端目录，Runtime 不可提供宿主路径；启动时只传 Skill 与 MCP 公开目录摘要，不传连接配置。
  * 4. MCP 与越界命令先审批并保存在当前认证连接的一次性表中，Runtime 获得执行槽后才消费 authorizationId；
@@ -37,6 +38,7 @@ import type {
 } from "./capability-request.js";
 import type { SkillAction, SkillResult } from "../skills/contracts.js";
 import type { McpAction, McpResult } from "../mcp/contracts.js";
+import type { TokenAnchor } from "../context/token-anchor.js";
 import type { ContextSnapshot } from "../context/types.js";
 
 export interface RuntimeIpcBrokerHandlers {
@@ -119,6 +121,10 @@ export interface RuntimeIpcBrokerHandlers {
   appendContext?(
     identity: RuntimeExecutionIdentity,
     items: unknown[],
+  ): Promise<void>;
+  saveTokenAnchor?(
+    identity: RuntimeExecutionIdentity,
+    anchor: TokenAnchor,
   ): Promise<void>;
   readContext(identity: RuntimeExecutionIdentity): Promise<unknown[]>;
   readEvents(identity: RuntimeExecutionIdentity): Promise<unknown[]>;
@@ -284,6 +290,7 @@ export class RuntimeIpcBrokerSession {
       memoryText?: string;
       skillsText?: string;
       mcpText?: string;
+      tokenCalibration?: { scope: string; anchor?: TokenAnchor };
     },
     signal: AbortSignal,
   ) {
@@ -540,6 +547,14 @@ export class RuntimeIpcBrokerSession {
           request.body.eventType,
           request.body.data,
         );
+
+        return { saved: true };
+      case "session_save_token_anchor":
+        if (!this.handlers.saveTokenAnchor) {
+          throw new Error("Broker 未启用 token 锚点保存。");
+        }
+
+        await this.handlers.saveTokenAnchor(this.identity, request.body.anchor);
 
         return { saved: true };
       case "session_save_context":

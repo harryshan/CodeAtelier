@@ -3,7 +3,7 @@
  * Sandbox Supervisor/Windows transport 必须先把连接绑定到已验证的 PID、Job、token、generation、nonce 和 lease，
  * 然后才能把已认证字节流交给 RuntimeIpcPeer；测试用 stdio 只验证 framing 和跨进程路由，不构成 W3 证据。
  *
- * 1. runtimeRequestSchema 限定模型、审批、session adapter、任务绑定子状态/问题/租约、受限 Git action、Skill 名称查询/加载、MCP 两阶段请求与一次性 Broker 命令授权；start_task 只携带 Skill/MCP 公开摘要而非连接凭据，Git push 旧入口只含调用 ID，不能扩展 Runtime 权限。
+ * 1. runtimeRequestSchema 限定模型、审批、session adapter、任务绑定子状态/问题/租约、受限 Git action、Skill 名称查询/加载、MCP 两阶段请求与一次性 Broker 命令授权；start_task 携带 Skill/MCP 公开摘要及无正文的 token 校准锚点而非连接凭据，Git push 旧入口只含调用 ID，不能扩展 Runtime 权限。
  * 2. runtimeResponseSchema 关联原 requestId；错误只返回受限 code/message 与模型重试元数据，避免泄露宿主异常对象。
  * 3. runtimeEventSchema 承载模型 delta、取消、Runtime 生命周期以及固定 context/tool/read_file/subagent trace span；微秒时间戳由 Runtime 单调时钟提供，Broker 核验后归档，名称与属性不是任意日志通道。
  * 4. hello schema 绑定协议版本、任务和 instance；其中 Runtime 自报字段只用于一致性核对，不能替代 transport 身份。
@@ -11,6 +11,7 @@
  */
 
 import { z } from "zod";
+import { tokenAnchorSchema } from "../context/token-anchor.js";
 import { skillActionSchema } from "../skills/contracts.js";
 import { mcpActionSchema } from "../mcp/contracts.js";
 import { capabilityCommandRequestSchema } from "./capability-request.js";
@@ -18,8 +19,8 @@ import { contextSnapshotSchema } from "../context/types.js";
 import { subtaskSchema } from "../agent/subagent-contracts.js";
 import { gitRequestSchema } from "../tools/registry.js";
 
-// v8 增加任务启动的 MCP 公开目录摘要；旧 Runtime 须重建并 Repair，避免拒绝新字段或遗漏能力提示。
-export const RUNTIME_IPC_PROTOCOL_VERSION = 8;
+// v9 增加跨任务 token 锚点及其保存/trace；旧 Runtime 须重建并 Repair。
+export const RUNTIME_IPC_PROTOCOL_VERSION = 9;
 export const MAX_RUNTIME_IPC_FRAME_BYTES = 8 * 1024 * 1024;
 
 const identifier = z.string().min(1).max(120);
@@ -29,6 +30,7 @@ const runtimeTraceAttributesSchema = z
     step: z.number().int().positive().max(1_000).optional(),
     attempt: z.number().int().positive().max(100).optional(),
     force: z.boolean().optional(),
+    restored: z.boolean().optional(),
     inputItems: z.number().int().nonnegative().max(2_000_000).optional(),
     toolCount: z.number().int().nonnegative().max(10_000).optional(),
     amount: z.number().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
@@ -56,6 +58,8 @@ const runtimeTraceAttributesSchema = z
   })
   .strict();
 const runtimeTraceNameSchema = z.enum([
+  "context.usage.restore",
+  "context.usage.save",
   "context.prepare",
   "context.prepare.measure_request_view",
   "context.request",
@@ -262,6 +266,13 @@ export const runtimeRequestSchema = z.discriminatedUnion("operation", [
           skillsText: z.string().max(500_000).optional(),
           // 32 个服务 × 1024 字符描述，含最坏六倍 JSON 转义和固定说明。
           mcpText: z.string().max(250_000).optional(),
+          tokenCalibration: z
+            .object({
+              scope: z.string().regex(/^[a-f0-9]{64}$/),
+              anchor: tokenAnchorSchema.optional(),
+            })
+            .strict()
+            .optional(),
         })
         .strict(),
     })
@@ -434,6 +445,13 @@ export const runtimeRequestSchema = z.discriminatedUnion("operation", [
       body: z
         .object({ eventType: runtimeSessionEventTypeSchema, data: z.unknown() })
         .strict(),
+    })
+    .strict(),
+  z
+    .object({
+      ...requestBase,
+      operation: z.literal("session_save_token_anchor"),
+      body: z.object({ anchor: tokenAnchorSchema }).strict(),
     })
     .strict(),
   z

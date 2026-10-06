@@ -5,12 +5,16 @@
  * 2. list/get/create 跨分片定位或聚合会话；新会话在最新分片达到容量上限后进入新文件，已有会话始终写回其初始分片。标题状态的领取、完成或失败保证首条 prompt 只生成一次标题。
  * 3. tasks/task/createTask/status 读写任务状态与不可变的 subagent 选择；旧分片逐个迁移，SQLite 的 0/1 在各读取入口转换为布尔值。queuedTasks 和 hasUnfinishedTask 供 Engine 调度跨会话队列，event/events 保存和分页读取事件。
  * 4. subagents/subagent_requests 按任务保存完整计划、检查点、报告与回执，不附加子任务文本配额；replay 元数据和逐条模型/工具增量经 replay-storage 写入，读取时兼容旧整条捕获。
- * 5. 旧 context 行在备份后原样迁入 context_chunks 基线；appendContext 只写新增批次，saveContext/压缩替换基线，读时按顺序重建；大记录由 store-worker 解析。
+ * 5. 旧 context 行在备份后原样迁入 context_chunks 基线；appendContext 只写新增批次，saveContext/压缩替换基线并原子清除会话 token 锚点，读时按顺序重建；大记录由 store-worker 解析。
  * 6. 常规事件/上下文/状态写入和大记录读取由有界串行 Store Worker 队列提交；closeAsync 排空并关闭线程后再关闭分片连接。
  *
  * 事务只能回滚数据库，不能撤销文件修改或命令执行。恢复需要的未知状态和原始记录必须保留。
  */
 
+import {
+  tokenAnchorSchema,
+  type TokenAnchor,
+} from "../context/token-anchor.js";
 import type { ContextSnapshot } from "../context/types.js";
 import type {
   RecordedModelExchange,
@@ -1041,6 +1045,37 @@ export class Store {
     } as Event;
   }
 
+  /** 锚点只有指纹和计数；读写仍经队列，重启或跨分片不会读取未提交值。 */
+  async tokenAnchorAsync(
+    sessionId: string,
+    taskId?: string,
+  ): Promise<TokenAnchor | undefined> {
+    const value = await this.runWorker<unknown>({
+      operation: "tokenAnchor",
+      file: this.selectSession(sessionId).file,
+      sessionId,
+      taskId,
+    });
+    const parsed = tokenAnchorSchema.safeParse(value);
+
+    return parsed.success ? parsed.data : undefined;
+  }
+
+  async saveTokenAnchorAsync(
+    sessionId: string,
+    anchor: TokenAnchor,
+    taskId?: string,
+  ) {
+    const value = tokenAnchorSchema.parse(anchor);
+    await this.worker.request<void>({
+      operation: "write",
+      file: this.selectSession(sessionId).file,
+      sessionId,
+      taskId,
+      writes: [{ kind: "tokenAnchor", values: [sessionId, value] }],
+    });
+  }
+
   async appendContextAsync(sessionId: string, items: any[], taskId?: string) {
     if (!items.length) {
       return;
@@ -1153,6 +1188,9 @@ export class Store {
     this.selectSession(id);
     this.db.exec("SAVEPOINT replace_context");
     try {
+      this.db
+        .prepare("DELETE FROM context_token_anchors WHERE sessionId=?")
+        .run(id);
       this.db.prepare("DELETE FROM context_chunks WHERE sessionId=?").run(id);
       this.db
         .prepare(

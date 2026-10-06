@@ -120,4 +120,4 @@ pnpm dev
 pnpm test tests/mcp-catalog.test.ts tests/mcp.test.ts tests/mcp-engine.test.ts tests/mcp-ipc.test.ts
 ```
 
-Windows 上的独立 Node Runtime 测试不等于固定账户 Sandbox 验收。Runtime IPC 已升级为 v8；已安装用户须重建 bundle 并在管理员终端执行 `pnpm sandbox:repair`，再按 Sandbox 指南人工验证。macOS/Linux、真实远端及具体第三方 MCP 服务须分别验收。
+Windows 上的独立 Node Runtime 测试不等于固定账户 Sandbox 验收。Runtime IPC 当前为 v9；已安装用户须重建 bundle 并在管理员终端执行 `pnpm sandbox:repair`，再按 Sandbox 指南人工验证。macOS/Linux、真实远端及具体第三方 MCP 服务须分别验收。

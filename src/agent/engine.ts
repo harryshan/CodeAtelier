@@ -5,7 +5,7 @@
  * 1. 构造器接好审批通知；手动评测可仅对宿主模型循环覆盖步数阈值，snapshot 读取会话状态，emit 脱敏并保存事件。
  * 2. start 原子保存用户消息和任务级 subagent 选择为 queued；多 agent 尚未就绪时拒绝开启。调度器在全局并发上限内启动不同工作区的任务，并对相同真实工作区保持互斥。
  * 3. resume 继续最后一个可恢复任务；cancel 处理用户取消，close 处理服务关闭。
- * 4. 首条 prompt 先用辅助模型生成标题；run 再读取历史和项目规则，准备工具及上下文预算。
+ * 4. 首条 prompt 先用辅助模型生成标题；run 再读取历史和项目规则，准备工具及上下文预算；首次压缩检查前恢复会话 token 锚点，响应保存后更新锚点，Runtime 经 Broker 共用持久化。
  * 5. model-loop 共用轮次、重试和停止控制，model-tool-batch 共用计划与成功判断；Engine 保留宿主事务、replay 与 tracing。为压缩提供 ToolRunner 的安全文件哈希探测；每轮记录上下文准备和请求计量、模型重试、实际模型请求和响应处理，再记录服务实报用量。完整响应保存后校验工具 DAG，节点先完成准备/审批，实际执行才取得有界 worker 槽。
  * 6. Sandbox Runtime 已有能力内工具免审批；全部 Git action 与 run_with_permissions 的获批命令均交给 Broker 宿主进程，push 额外预检和逐次审批，并分别留下未隔离的执行记录。一次性两阶段 IPC 授权把命令审批等待留在执行队列外；Push/Capability Runner 代码暂存但不走产品路径。
  *    Skill 每任务在 Broker 扫描预设目录，模型先看到摘要、工具按需加载正文；宿主/Runtime/fallback 共用该目录且不授权脚本。
@@ -22,6 +22,8 @@ import { mcpCatalogInstructions } from "../mcp/catalog.js";
 import type { McpAction } from "../mcp/contracts.js";
 import { auxiliarySettings } from "../config/auxiliary-model.js";
 import type { Settings } from "../shared/types.js";
+import { tokenScope } from "../context/token-anchor.js";
+import { SessionTokenCalibration } from "../context/session-token-calibration.js";
 import { createBudget } from "../context/token-budget.js";
 import type {
   ModelCapabilities,
@@ -1422,6 +1424,17 @@ export class Engine {
           saveContext: async (_runtime, input) => {
             await this.store.saveContextAsync(task.sessionId, input, task.id);
           },
+          saveTokenAnchor: async (_runtime, anchor) => {
+            if (anchor.scope !== tokenScope(settings)) {
+              throw new Error("Agent Runtime token 锚点不属于本任务模型配置。");
+            }
+
+            await this.store.saveTokenAnchorAsync(
+              task.sessionId,
+              anchor,
+              task.id,
+            );
+          },
           readContext: () => this.store.contextAsync(task.sessionId),
           readEvents: () => this.store.eventsAsync(task.sessionId),
           latestContextSnapshot: () =>
@@ -1496,6 +1509,13 @@ export class Engine {
             memoryText: memory.bundle?.text,
             skillsText: skills.instructions(),
             mcpText: mcpCatalogInstructions(this.config.mcpServers),
+            tokenCalibration: {
+              scope: tokenScope(settings),
+              anchor: await this.store.tokenAnchorAsync(
+                task.sessionId,
+                task.id,
+              ),
+            },
           },
           completionController.signal,
         );
@@ -2344,6 +2364,16 @@ export class Engine {
         }
       };
 
+      const calibration = new SessionTokenCalibration({
+        budget,
+        scope: tokenScope(settings),
+        read: () => this.store.tokenAnchorAsync(session.id, task.id),
+        write: (anchor) =>
+          this.store.saveTokenAnchorAsync(session.id, anchor, task.id),
+        trace: contextTrace,
+        signal,
+      });
+      await calibration.restore(input, instructions, tools);
       const context = new ContextManager({
         store: this.store,
         sessionId: session.id,
@@ -2601,13 +2631,13 @@ export class Engine {
           try {
             flush();
             signal.throwIfAborted();
+            const anchor = calibration.observe(
+              response.usage?.input_tokens,
+              requestInput,
+              instructions,
+              tools,
+            );
             if (response.usage) {
-              budget.observeUsage?.(
-                response.usage.input_tokens,
-                requestInput,
-                instructions,
-                tools,
-              );
               recordUsage(response.usage, "task");
             }
 
@@ -2617,6 +2647,7 @@ export class Engine {
               response.output,
               task.id,
             );
+            await calibration.save(anchor);
             if (response.text) {
               emit("assistant", { text: response.text, step, attempt });
             }

@@ -30,7 +30,7 @@
 输入估算包含序列化 input、instructions、tools，特殊 token 字面量当作普通文本。
 token 模式将空 input 的请求包装及各历史项分别编码；同一任务的稳定历史前缀只计量一次，
 重复请求和 usage 校准复用缓存，追加历史时只编码新增项。输入数组或指令/工具变更时重建，
-压缩提交成功后清空缓存，由下一请求重新计量压缩后的视图；新任务不继承旧缓存。
+压缩提交成功后清空缓存，由下一请求重新计量压缩后的视图。新任务在首次压缩检查前恢复经内容校验的会话实报锚点及旧前缀计量：仍需扫描历史计算 SHA-256，但不重新编码已匹配的旧前缀。
 分段编码不能精确复刻跨项 token 合并、服务内部协议包装、隐藏开销和多模态计量，
 仍需安全余量及服务实报用量校准。字符备用模式继续按原有方式计量。
 
@@ -50,10 +50,19 @@ maxOutputTokens 默认 16384，可在 Web UI“最大输出 token”中调整。
 每次正常任务响应完成后，以最新合法的 input_tokens 为该请求的输入基线，可向上或向下修正。
 旧历史未改写且指令/工具不变时，下一请求输入估算 = 上次实报输入 + 此后追加记录的本地 token 计量。
 新增记录包括保留的模型输出、工具结果和用户消息；缺失或非法 usage 不覆盖已有基线。
-更换输入数组、替换历史项、缩短历史或修改指令/工具时清除基线；历史对象内部原位修改的调用方必须主动 resetMeasurement。
-新任务和压缩提交后也清除基线。Worker 对压缩候选、切片和摘要输入使用纯本地计量，不能把旧请求的实报套到改写后的内容上。
+任务内更换输入数组、替换历史项、缩短历史或修改指令/工具时仍清除内存基线；历史对象内部原位修改的调用方必须主动 resetMeasurement。
+续聊及服务重启后，先校验锚点版本、tokenizer、模型/端点/思考配置指纹、工具定义及历史前缀内容。只有完全匹配的历史前缀才能复用，数据库重建产生的新对象不算内容变化；指令（项目规则、记忆和 Skill/MCP 目录）重新加载并单独计量，只增加固定部分的正增长，不因缩短而扣减旧实报。容量与输出预留仍按本任务重新发现和配置计算。
+显式替换历史或压缩提交，在同一 SQLite 事务中清除持久化锚点；Worker 对压缩候选、切片和摘要输入使用纯本地计量，不能把旧请求的实报套到改写后的内容上。
 不直接加入 output_tokens 或累计 total_tokens，也不减去 cached_tokens；输出和缓存明细不能代替当前请求输入计量。
 安全余量和容量错误的一次恢复仍保留，估算不是绝对不会超限的保证。
+
+## 会话锚点与升级
+
+`context_token_anchors` 每会话仅保存一条版本化记录：实报输入、历史项数、原始/固定部分本地计数及 SHA-256 指纹，不保存正文或连接凭据。主模型响应正文保存后再提交锚点；中途失败可缺少最新校准，但不重放模型或工具副作用。缺失/非法 usage 不覆盖旧锚点，摘要、标题、审批和子模型用量不参与。
+
+schema v10 在升级含会话的旧分片前备份；旧对话没有锚点时正常回退本地计量，不从累计 usage 猜测，升级后的首个合法主模型响应才建立锚点。因此不能保证升级后第一次续聊就消除一次压缩。
+
+宿主/fallback 和 Runtime 共用 `SessionTokenCalibration`。Runtime IPC v9 启动消息传入无正文锚点与配置指纹，保存仅作用于 Broker 认证会话；不发送模型端点或 key。已安装 Runtime 须重新构建并 Repair，再重载后端。`context.usage.restore/save` 与 Store queue/worker trace 覆盖耗时、成功/失败/取消；restore 只附是否命中，不记录锚点指纹或正文。
 
 ## 持久化与展示
 
@@ -67,7 +76,7 @@ ModelResult 返回可选 usage：input_tokens、output_tokens、total_tokens，
 - model_usage：服务实报，用 purpose 区分任务、摘要、标题和审批。
 
 这些事件通过既有 SQLite 历史和 SSE 保存/展示，刷新或重启后可查看。当前会话右上角的统计默认折叠；展开后汇总实报输入、输出和合计 token，以及缓存/非缓存输入、LLM 请求与任务轮次、工具成功率和累计运行时间。
-每次请求的本地输入计量只用于预算、压缩和实报校准，不再保存或显示；界面只展示服务实报用量，避免将本地估算误作实际消耗或窗口占用。若任一实报缺少 cached_tokens，统计会明确标记缓存/非缓存明细不完整，不能假定缓存为零；这不是按模型价格计算的费用统计。
+每次请求的本地输入计量只用于预算、压缩和实报校准，不作为会话事件保存或展示；最新锚点另存内部表用于续聊恢复。界面只展示服务实报用量，避免将本地估算误作实际消耗或窗口占用。若任一实报缺少 cached_tokens，统计会明确标记缓存/非缓存明细不完整，不能假定缓存为零；这不是按模型价格计算的费用统计。
 缓存 token 是输入的子集，推理 token 是输出的子集，不能再次相加。
 摘要输出结构不合格时，若已有合法完成用量，也会记录已发生的消耗；
 缺少完成事件的失败请求不虚构其用量。
@@ -86,6 +95,6 @@ node --env-file=.env --import tsx scripts/probe-model-capabilities.ts
 脚本只发最小诊断输入，记录校验后的元数据、用量、估算与计数接口状态，不打印密钥、
 原始响应、attribution 或错误正文。每次复测会产生少量模型用量。
 
-实现：providers/model-metadata.ts、responses-provider.ts、context/token-budget.ts。
-回归：tokens.test.ts、session-statistics.test.ts、provider.test.ts 与 e2e/app.spec.ts。
+实现：providers/model-metadata.ts、responses-provider.ts、context/token-budget.ts、token-anchor.ts、session-token-calibration.ts 及 sessions/Store Worker。
+回归：token-anchor.test.ts、token-continuation.test.ts、tokens.test.ts、session-statistics.test.ts、provider.test.ts 与 e2e/app.spec.ts。
 真实探测证明当前接口兼容，不等于真实摘要语义质量、窗口极限或全平台都已验证。

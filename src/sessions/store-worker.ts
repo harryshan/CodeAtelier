@@ -3,7 +3,7 @@
  * Store 的串行队列复用本 Worker；输入是数据库路径和受限 operation，输出是已解析的数据或提交回执。
  *
  * 1. readContext 顺序拼接基线与增量；其他读取从数据库加载大 JSON，仅在本线程解析。
- * 2. compact 在本线程 JSON.stringify 压缩前快照和活动上下文，并用与 Store 相同的 BEGIN IMMEDIATE 事务原子写入两张表。
+ * 2. compact 在本线程 JSON.stringify 压缩前快照和活动上下文，并用与 Store 相同的 BEGIN IMMEDIATE 事务原子写入快照/上下文并清除旧 token 锚点；显式替换也清除，普通追加不清除。
  * 3. replay 与同步 Store 共用增量编码；主线程只接收结构化克隆结果，Worker 不处理权限、模型、文件或用户输入，也不会执行任意 SQL。
  *
  * 每次请求单独打开 SQLite 连接，WAL 允许它与主 Store 的短查询共存。事务失败会回滚，不能撤销已经发生的文件或模型副作用。
@@ -16,7 +16,13 @@ import { writeReplay } from "./replay-storage.js";
 export interface StoreWorkerRequest {
   id: number;
   operation:
-    "context" | "events" | "latestSnapshot" | "snapshot" | "compact" | "write";
+    | "context"
+    | "tokenAnchor"
+    | "events"
+    | "latestSnapshot"
+    | "snapshot"
+    | "compact"
+    | "write";
   file: string;
   sessionId: string;
   taskId?: string;
@@ -29,6 +35,7 @@ export interface StoreWorkerRequest {
       | "event"
       | "context"
       | "contextReplace"
+      | "tokenAnchor"
       | "status"
       | "replay"
       | "session"
@@ -58,6 +65,14 @@ function handle(request: StoreWorkerRequest) {
         .all(request.sessionId) as Array<{ items: string }>;
 
       return rows.flatMap((row) => JSON.parse(row.items) as unknown[]);
+    }
+
+    if (request.operation === "tokenAnchor") {
+      const row = db
+        .prepare("SELECT data FROM context_token_anchors WHERE sessionId=?")
+        .get(request.sessionId);
+
+      return row ? JSON.parse(String(row.data)) : undefined;
     }
 
     if (request.operation === "events") {
@@ -125,8 +140,16 @@ function handle(request: StoreWorkerRequest) {
               sessionId as string,
               JSON.stringify(items),
             );
+          } else if (write.kind === "tokenAnchor") {
+            const [sessionId, anchor] = write.values;
+            db.prepare(
+              "INSERT OR REPLACE INTO context_token_anchors(sessionId,data) VALUES(?,?)",
+            ).run(sessionId as string, JSON.stringify(anchor));
           } else if (write.kind === "contextReplace") {
             const [sessionId, items] = write.values;
+            db.prepare(
+              "DELETE FROM context_token_anchors WHERE sessionId=?",
+            ).run(sessionId as string);
             db.prepare("DELETE FROM context_chunks WHERE sessionId=?").run(
               sessionId as string,
             );
@@ -265,6 +288,9 @@ function handle(request: StoreWorkerRequest) {
         db.prepare(
           "INSERT INTO context_snapshots(id,sessionId,data) VALUES(?,?,?)",
         ).run(snapshotId, request.sessionId, snapshot);
+        db.prepare("DELETE FROM context_token_anchors WHERE sessionId=?").run(
+          request.sessionId,
+        );
         db.prepare("DELETE FROM context_chunks WHERE sessionId=?").run(
           request.sessionId,
         );

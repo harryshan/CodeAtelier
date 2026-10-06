@@ -2,7 +2,7 @@
  * 定义 Store 初始化 SQLite 数据库时执行的 SQL，保存会话历史和任务恢复信息。
  *
  * 1. 开启 WAL 和外键检查；sessions 保存会话、工作区及标题生成状态，tasks 保存排队、实际运行、结束时间、任务级 subagent 选择和错误。
- * 2. events 保存工具与对话；context_chunks 按基线与增量保存活动模型协议项，context 只供旧库迁移。
+ * 2. events 保存工具与对话；context_chunks 按基线与增量保存活动模型协议项，context 只供旧库迁移；context_token_anchors 保存每会话一个无正文的实报校准锚点。
  * 3. context_snapshots 保存压缩前历史；task_replays 保存 replay 元数据及旧格式，replay_entries 增量保存模型/工具；subagent 表保存检查点与请求回执，末尾设置 user_version。
  *
  * 表结构要与 Store 中的 SQL 一起维护。修改时也要考虑旧数据库如何升级，不能只检查新建数据库。
@@ -54,6 +54,11 @@ export const SCHEMA_SQL = `
     PRIMARY KEY(sessionId, position)
   );
 
+  CREATE TABLE IF NOT EXISTS context_token_anchors (
+    sessionId TEXT PRIMARY KEY REFERENCES sessions(id),
+    data TEXT NOT NULL
+  );
+
   CREATE INDEX IF NOT EXISTS events_session ON events(sessionId, id);
 
   CREATE TABLE IF NOT EXISTS context_snapshots (
@@ -101,5 +106,5 @@ export const SCHEMA_SQL = `
     FOREIGN KEY(taskId, subagentId) REFERENCES subagents(taskId, id)
   );
 
-  PRAGMA user_version = 9;
+  PRAGMA user_version = 10;
 `;

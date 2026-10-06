@@ -6,7 +6,8 @@
  * 2. createBudget 检查本地是否支持 o200k_base，再用用户窗口覆盖服务报告的窗口和输入容量，结合安全余量计算预算。
  * 3. token 计量将固定请求部分与各历史项分别编码；任务级缓存复用稳定前缀，只编码新增项。
  * 4. observeUsage 将完整请求锚定到最新实报输入，后续仅估算追加项；重写历史或压缩后清除基线。
- * 5. measureContext 为 Worker 的新候选上下文提供纯本地计量，不将旧请求的实报值套在改写后的内容上。
+ * 5. snapshotUsage/restoreAnchor 跨任务保存并校验实报锚点与旧前缀计量；指令增长单独估算，缩短不扣减旧实报。
+ * 6. measureContext 为 Worker 的新候选上下文提供纯本地计量，不将旧请求的实报值套在改写后的内容上。
  *
  * 累计用量不是当前上下文大小。源码中的特殊 token 字面量按普通文本处理，不能让编码器误当控制标记。
  */
@@ -15,6 +16,13 @@ import { Tiktoken } from "js-tiktoken/lite";
 import o200k from "js-tiktoken/ranks/o200k_base";
 import type { ModelCapabilities } from "../providers/model-metadata.js";
 import { contextSize } from "./budget.js";
+import {
+  tokenAnchorSchema,
+  tokenDigest,
+  tokenItemText,
+  tokenPrefixHash,
+  type TokenAnchor,
+} from "./token-anchor.js";
 
 let encoder: Tiktoken | undefined;
 export type Measure = (
@@ -37,6 +45,20 @@ export interface ContextBudget {
   contextWindowTokens?: number;
   safetyTokens?: number;
   tokenizer?: string;
+  snapshotUsage?: (
+    scope: string,
+    actualInput: number,
+    input: any[],
+    instructions: string,
+    tools: any[],
+  ) => TokenAnchor | undefined;
+  restoreAnchor?: (
+    anchor: unknown,
+    scope: string,
+    input: any[],
+    instructions: string,
+    tools: any[],
+  ) => boolean;
   observeUsage?: (
     actualInput: number,
     input: any[],
@@ -54,9 +76,7 @@ function tokenCount(text: string): number {
 
 /** 每个协议项独立编码，使历史追加不必重新编码旧正文；边界合并仍属于本地估算误差。 */
 function itemTokens(item: any, index: number): number {
-  return tokenCount(
-    (index === 0 ? "" : ",") + (JSON.stringify(item) ?? "null"),
-  );
+  return tokenCount(tokenItemText(item, index));
 }
 
 /** 主线程和压缩 Worker 使用同一分段计量口径；固定部分包括空 input 的 JSON 包装。 */
@@ -136,6 +156,8 @@ export function createBudget(
         toolsJson: string;
         items: any[];
         raw: number;
+        fixedTokens: number;
+        prefix: ReturnType<typeof tokenPrefixHash>;
       }
     | undefined;
   const rawMeasure: Measure = (input, instructions, tools) => {
@@ -153,14 +175,17 @@ export function createBudget(
       usageOffset = 0;
     }
 
-    let raw = appendOnly
-      ? cache!.raw
+    const fixedTokens = appendOnly
+      ? cache!.fixedTokens
       : tokenCount(JSON.stringify({ input: [], instructions, tools }));
+    const prefix = appendOnly ? cache!.prefix : tokenPrefixHash([], 0);
+    let raw = appendOnly ? cache!.raw : fixedTokens;
     const start = appendOnly ? cache!.items.length : 0;
     const items = appendOnly ? cache!.items : [];
     for (let index = start; index < input.length; index++) {
       raw += itemTokens(input[index], index);
       items.push(input[index]);
+      prefix.update(tokenItemText(input[index], index));
     }
 
     cache = {
@@ -169,6 +194,8 @@ export function createBudget(
       toolsJson,
       items,
       raw,
+      fixedTokens,
+      prefix,
     };
 
     return raw;
@@ -188,6 +215,71 @@ export function createBudget(
     resetMeasurement: () => {
       cache = undefined;
       usageOffset = 0;
+    },
+    snapshotUsage: (scope, actualInput, input, instructions, tools) => {
+      if (!Number.isSafeInteger(actualInput) || actualInput < 0) {
+        return undefined;
+      }
+
+      const rawTokens = rawMeasure(input, instructions, tools);
+
+      return tokenAnchorSchema.parse({
+        version: 1,
+        tokenizer: "o200k_base",
+        scope,
+        toolsHash: tokenDigest(cache!.toolsJson),
+        instructionsHash: tokenDigest(instructions),
+        prefixHash: cache!.prefix.copy().digest("hex"),
+        inputItems: input.length,
+        rawTokens,
+        fixedTokens: cache!.fixedTokens,
+        actualInputTokens: actualInput,
+      });
+    },
+    restoreAnchor: (value, scope, input, instructions, tools) => {
+      // 内容指纹允许数据库 JSON 重建后的新对象，不能沿用任务内的引用身份判断。
+      cache = undefined;
+      usageOffset = 0;
+      const parsed = tokenAnchorSchema.safeParse(value);
+      if (!parsed.success) {
+        return false;
+      }
+
+      const anchor = parsed.data;
+      const toolsJson = JSON.stringify(tools);
+      if (
+        anchor.scope !== scope ||
+        anchor.toolsHash !== tokenDigest(toolsJson) ||
+        anchor.inputItems > input.length
+      ) {
+        return false;
+      }
+
+      const prefix = tokenPrefixHash(input, anchor.inputItems);
+      if (prefix.copy().digest("hex") !== anchor.prefixHash) {
+        return false;
+      }
+
+      const fixedTokens =
+        anchor.instructionsHash === tokenDigest(instructions)
+          ? anchor.fixedTokens
+          : tokenCount(JSON.stringify({ input: [], instructions, tools }));
+      cache = {
+        input,
+        instructions,
+        toolsJson,
+        items: input.slice(0, anchor.inputItems),
+        raw: anchor.rawTokens - anchor.fixedTokens + fixedTokens,
+        fixedTokens,
+        prefix,
+      };
+      // 指令更新（记忆/Skill/项目规则）按增长量估算；缩短不从旧实报扣减未知服务包装。
+      usageOffset =
+        anchor.actualInputTokens -
+        anchor.rawTokens +
+        Math.max(0, anchor.fixedTokens - fixedTokens);
+
+      return true;
     },
     // 仅使用当前请求的合法输入用量；最新实报可以向上或向下修正，不改变输出和安全预留。
     observeUsage: (actualInput, input, instructions, tools) => {

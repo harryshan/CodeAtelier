@@ -4,7 +4,7 @@
  *
  *    Skill 目录摘要由 Broker 提供，按需正文通过名称查询，不读取专用账户 home 或投影宿主技能根；MCP 仅接收公开服务用途摘要，不接收连接配置。
  * 1. start 接受 Broker 绑定任务的安全设置，恢复 session 上下文并在工作区生成指令和文件工具。
- * 2. ContextManager 在 Runtime 内计量/压缩，快照读写经 RuntimeSessionClient 回到 Broker。
+ * 2. SessionTokenCalibration 在首次检查前恢复 Broker 提供的实报锚点，响应保存后经 IPC 保存新锚点；ContextManager 在 Runtime 内计量/压缩，快照读写经 RuntimeSessionClient 回到 Broker。
  * 3. model-loop 共用轮次、有界重试和上下文超限恢复，model-tool-batch 共用工具计划与结果判定；每轮模型调用经 RuntimeModelProvider 代理；工具 DAG 先并行准备已就绪节点，取得有界 worker 槽后执行文件编辑、命令或请求 Broker Git。
  * 4. UI/session 事件按连接排队；无效 DAG 回传修正，实际取得执行槽的工具和 read_file 内部阶段带单调时间戳上报，由 Broker 统一组装并归档；工具结果增量保存，未知副作用不重放。
  * 5. 已选任务在 Runtime 内运行独立只读 Worker，子状态、问题回执、模型/租约及固定无正文的 trace 经任务绑定 IPC；收尾确认线程退出后再由 Broker 清理。
@@ -12,6 +12,8 @@
  * Git push 必须独占当前工具批次；全部 Git action 由 Broker 宿主执行，push 额外做预检和逐次审批。越界命令先经 IPC 审批取得一次性授权，获得 worker 槽后由 Broker 启动，因而可与无依赖的普通工具正确并行。context/tool/model tracing 经固定 schema 回到 Broker。
  */
 
+import { SessionTokenCalibration } from "../context/session-token-calibration.js";
+import type { TokenAnchor } from "../context/token-anchor.js";
 import { createBudget } from "../context/token-budget.js";
 import {
   ContextManager,
@@ -65,6 +67,7 @@ interface StartTaskInput {
   memoryText?: string;
   skillsText?: string;
   mcpText?: string;
+  tokenCalibration?: { scope: string; anchor?: TokenAnchor };
 }
 
 type RuntimeTaskStatus = "completed" | "failed" | "cancelled" | "interrupted";
@@ -274,6 +277,19 @@ export class AgentRuntimeService {
         historyDefinition,
         ...(input.settings.subagentsEnabled ? [subagentToolDefinition] : []),
       ];
+      const calibration = new SessionTokenCalibration({
+        budget,
+        scope: input.tokenCalibration?.scope ?? "0".repeat(64),
+        read: async () => input.tokenCalibration?.anchor,
+        write: async (anchor) => {
+          if (input.tokenCalibration) {
+            await session.saveTokenAnchor(anchor);
+          }
+        },
+        trace,
+        signal,
+      });
+      await calibration.restore(modelInput, instructions, tools);
       const context = new ContextManager({
         store: session,
         sessionId: this.identity.sessionId,
@@ -377,13 +393,13 @@ export class AgentRuntimeService {
           );
         },
         acceptResponse: async (response) => {
+          const anchor = calibration.observe(
+            response.usage?.input_tokens,
+            requestInput,
+            instructions,
+            tools,
+          );
           if (response.usage) {
-            budget.observeUsage?.(
-              response.usage.input_tokens,
-              requestInput,
-              instructions,
-              tools,
-            );
             events.emit("model_usage", {
               ...response.usage,
               purpose: "task",
@@ -394,6 +410,7 @@ export class AgentRuntimeService {
 
           currentInput.push(...response.output);
           await session.appendContext(this.identity.sessionId, response.output);
+          await calibration.save(anchor);
           if (response.text) {
             events.emit("assistant", { text: response.text, step, attempt });
           }
@@ -680,6 +697,8 @@ class RuntimeContextTrace implements ContextTrace {
       parentSpanId,
       timestampUs: runtimeTraceNowUs(),
       name: name as
+        | "context.usage.restore"
+        | "context.usage.save"
         | "context.prepare"
         | "context.prepare.measure_request_view"
         | "context.request"

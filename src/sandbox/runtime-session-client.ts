@@ -4,10 +4,12 @@
  *
  * 1. contextAsync/eventsAsync 读取当前 session 的模型上下文和历史事件，由 Broker 绑定的 identity 决定 session。
  * 2. appendContext 只发送新协议项，saveContext 保留显式替换入口；失败传播给 loop，工具副作用后不得假定保存成功。
+ *    saveTokenAnchor 仅提交无正文的计量锚点，身份和真实数据库由 Broker 决定。
  * 3. appendEvent 使用独立有界信号保存取消终态，避免任务 AbortSignal 阻断恢复记录；commitSubagentCollect 把子报告消费与主工具结果/上下文交给 Broker 原子保存。
  */
 
 import type { RuntimeIpcPeer } from "./runtime-ipc-peer.js";
+import type { TokenAnchor } from "../context/token-anchor.js";
 import type { Event } from "../shared/types.js";
 import type { ContextSnapshot } from "../context/types.js";
 
@@ -31,6 +33,14 @@ export class RuntimeSessionClient {
       {},
       this.signal,
     )) as Event[];
+  }
+
+  async saveTokenAnchor(anchor: TokenAnchor) {
+    await this.peer.request(
+      "session_save_token_anchor",
+      { anchor },
+      this.signal,
+    );
   }
 
   async saveContext(_sessionId: string, input: any[]) {
