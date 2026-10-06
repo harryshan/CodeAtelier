@@ -2,7 +2,7 @@
  * 验证 ToolRunner 位于 Agent Runtime 时直接在既有 restricted token/Job 中创建工具进程，且不再嵌套调用逐工具 SandboxBroker。
  * 这里只验证 TypeScript 分流，不替代 Windows token/Job 或 Broker 宿主 Git 夹具。
  *
- * 1. 普通 run_command 在既有 Runtime 权限内不再审批，使用本进程 shell并发布 sandboxed_tool_process PID。
+ * 1. 普通 run_command 在既有 Runtime 权限内不再审批，不过滤 Git 命令或普通文本，使用本进程 shell 并发布 sandboxed_tool_process PID。
  * 2. 扩展权限调用先由 adapter 准备，取得执行槽后才消费准备结果；Git push 在 Runtime 内不运行 Git 预检，只把调用 ID 交给 Broker。
  * 3. 注入的旧 SandboxBroker 若被调用会使测试失败，防止迁移后继续每条命令启动 supervisor。
  */
@@ -12,42 +12,50 @@ import { Config } from "../src/config/config.js";
 import { ToolRunner } from "../src/tools/tool-runner.js";
 import { temp } from "./fixtures/helpers.js";
 
-it("runs ordinary commands inside the existing Agent Runtime boundary", async () => {
-  const root = await temp();
-  const config = new Config(await temp());
-  const executeCommand = vi.fn(() => {
-    throw new Error("不应嵌套调用 SandboxBroker");
-  });
-  const events: Array<{ type: string; data: any }> = [];
-  const requestApproval = vi.fn(async () => false);
-  const runner = new ToolRunner({
-    root,
-    sessionId: "session-1",
-    taskId: "task-1",
-    signal: new AbortController().signal,
-    settings: config.settings,
-    approvals: { request: requestApproval },
-    sandbox: { executeCommand } as never,
-    executionBoundary: "agent-runtime",
-    emit: (type, data) => events.push({ type, data }),
-  });
+it.each([
+  ["node -e \"process.stdout.write('runtime-local')\"", "runtime-local"],
+  ["git --version", "git version"],
+  ["echo ok | git --version", "git version"],
+  ['echo "git status"', "git status"],
+])(
+  "runs %s inside the existing Agent Runtime boundary",
+  async (command, output) => {
+    const root = await temp();
+    const config = new Config(await temp());
+    const executeCommand = vi.fn(() => {
+      throw new Error("不应嵌套调用 SandboxBroker");
+    });
+    const events: Array<{ type: string; data: any }> = [];
+    const requestApproval = vi.fn(async () => false);
+    const runner = new ToolRunner({
+      root,
+      sessionId: "session-1",
+      taskId: "task-1",
+      signal: new AbortController().signal,
+      settings: config.settings,
+      approvals: { request: requestApproval },
+      sandbox: { executeCommand } as never,
+      executionBoundary: "agent-runtime",
+      emit: (type, data) => events.push({ type, data }),
+    });
 
-  const result = await runner.execute("run_command", {
-    command: "node -e \"process.stdout.write('runtime-local')\"",
-  });
+    const result = await runner.execute("run_command", {
+      command,
+    });
 
-  expect(result).toMatchObject({
-    exitCode: 0,
-    output: "runtime-local",
-    sandbox: { mode: "sandboxed", applied: true },
-  });
-  expect(executeCommand).not.toHaveBeenCalled();
-  expect(requestApproval).not.toHaveBeenCalled();
-  expect(events).toContainEqual({
-    type: "sandboxed_tool_process",
-    data: { pid: expect.any(Number) },
-  });
-});
+    expect(result).toMatchObject({
+      exitCode: 0,
+      output: expect.stringContaining(output),
+      sandbox: { mode: "sandboxed", applied: true },
+    });
+    expect(executeCommand).not.toHaveBeenCalled();
+    expect(requestApproval).not.toHaveBeenCalled();
+    expect(events).toContainEqual({
+      type: "sandboxed_tool_process",
+      data: { pid: expect.any(Number) },
+    });
+  },
+);
 
 it("routes an explicit permission request to one Broker host command", async () => {
   const root = await temp();
@@ -86,6 +94,13 @@ it("routes an explicit permission request to one Broker host command", async () 
     expect.any(AbortSignal),
     "capability-call",
   );
+  await expect(
+    runner.execute("run_with_permissions", {
+      command: "git --version",
+      reason: "Git 仍须使用专用工具请求宿主执行。",
+    }),
+  ).rejects.toThrow("Git 操作必须使用受限的 git 工具");
+  expect(prepareRunWithPermissions).toHaveBeenCalledOnce();
   expect(executePrepared).toHaveBeenCalledOnce();
 });
 

@@ -5,12 +5,13 @@
  * 1. 一次批准只放行对应请求，不能解开其他等待中的操作。
  * 2. 会话授权必须同时匹配 sessionId 和 grantKey；不支持复用的请求不能选择会话批准。
  * 3. 已取消的操作不进入待审批列表，并检查等待期间的授权变化。
- * 4. 工作区内容变化后，同一验证命令需要重新审批；sudo、runas 和直接 git 命令在审批前就被拒绝。
+ * 4. 工作区内容变化后，同一验证命令需要重新审批；sudo、runas 在审批前被拒绝。
+ * 5. run_command 不过滤 Git 命令或含 Git 的普通文本，但宿主执行仍须通过命令审批。
  *
  * 不能只按命令名称复用权限，文件变化后旧指纹对应的授权必须失效。
  */
 
-import { it, expect } from "vitest";
+import { it, expect, vi } from "vitest";
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { ApprovalManager } from "../src/permissions/approval-manager.js";
@@ -109,16 +110,51 @@ it("validation command grants expire after project content changes", async () =>
   await expect(changed).rejects.toThrow("拒绝");
 });
 
-it.each(["sudo", "runas", "git", "echo ok && git status"])(
+it.each(["sudo", "runas"])(
   "blocks prohibited direct command %s before approval",
   async (command) => {
     const { runner, approvals } = await fileFixture();
 
     await expect(
       runner.execute("run_command", {
-        command: command === "git" ? "git push" : command,
+        command,
       }),
     ).rejects.toThrow();
     expect(approvals.list()).toEqual([]);
   },
 );
+
+it.each([
+  ["git --version", "git version"],
+  ["echo ok | git --version", "git version"],
+  ['echo "git status"', "git status"],
+])("runs %s after ordinary command approval", async (command, output) => {
+  const { runner, approvals, root } = await fileFixture();
+  const approve = vi.spyOn(approvals, "request").mockResolvedValue(true);
+
+  const result = await runner.execute("run_command", { command });
+
+  expect(result).toMatchObject({
+    exitCode: 0,
+    output: expect.stringContaining(output),
+  });
+  expect(approve).toHaveBeenCalledOnce();
+  expect(JSON.parse(approve.mock.calls[0][0].description)).toEqual({
+    command,
+    cwd: root,
+  });
+});
+
+it("still honors command approval denial for Git", async () => {
+  const { runner, approvals, events } = await fileFixture();
+  const approve = vi.spyOn(approvals, "request").mockResolvedValue(false);
+
+  await expect(
+    runner.execute("run_command", { command: "git --version" }),
+  ).rejects.toThrow("用户拒绝执行命令");
+
+  expect(approve).toHaveBeenCalledOnce();
+  expect(events.some((event) => event.type === "execution_instance")).toBe(
+    false,
+  );
+});

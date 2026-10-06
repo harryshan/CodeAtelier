@@ -749,10 +749,6 @@ export class ToolRunner {
         throw new Error("初版不支持提权命令。");
       }
 
-      if (containsGitCommand(args.command)) {
-        throw new Error("请使用受限的 git 工具。");
-      }
-
       const allowed =
         this.ctx.executionBoundary === "agent-runtime"
           ? true

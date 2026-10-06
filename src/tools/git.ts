@@ -4,7 +4,7 @@
  * GitToolRunner；测试可注入 GitExecutor，因而不需要创建真实提交或远程连接。
  *
  * 1. GitRequest 描述 status、diff、log、show、branch、add、commit 和 push 的互斥参数组合；
- *    isGitExecutable 和 containsGitCommand 继续阻止 run_command 绕过本模块。
+ *    containsGitCommand 仅用于 run_with_permissions 的 Git 过滤，run_command 不再使用此过滤。
  * 2. execute 在每项动作前通知 Engine 开始计时，验证会话工作区恰好是 Git worktree 根目录，再分派固定参数的子命令。
  * 3. workspacePaths 解析真实路径、拒绝敏感/.git/绝对或选项式路径；受控 dotenv 模板需通过内容校验，目录递归检查后代。
  * 4. diff/show/log 仅接受安全 revision 和受校验路径；完整 diff 使用独立硬输出上限，模板相关 diff/show 在输出前再次扫描，避免泄露历史凭据。

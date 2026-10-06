@@ -218,13 +218,13 @@ UI 历史包含消息、工具调用、受限工具结果和修改 diff。Timeli
 
 文件操作解析真实路径，考虑符号链接与 Windows junction；工作区外或敏感路径询问用户。`edit_files` 的 create:true 只能新建不存在的路径，预检、审批等待后和写入前都会复核，拒绝覆盖期间出现的文件；它可创建父目录。create:false 的现存文件须先读取，精确修改时比对内容哈希，拒绝外部并发修改。临时文件写入后重命名，并保留已有文件的原模式。
 
-`run_command` 的模型参数只有 `{ command }`，执行器固定在会话工作区运行。Windows 内部按 `pwsh`、`powershell`、`cmd.exe` 的优先级检测真实可执行文件；macOS/Linux 使用已验证的 `/bin/sh`。执行器追加固定非交互参数，模型不提供或探测 shell。直接 Git 程序名（包括复合命令中的 Git）被拒绝，改由 `git.ts` 提供单一 action 子集。
+`run_command` 的模型参数只有 `{ command }`，执行器固定在会话工作区运行。Windows 内部按 `pwsh`、`powershell`、`cmd.exe` 的优先级检测真实可执行文件；macOS/Linux 使用已验证的 `/bin/sh`。执行器追加固定非交互参数，模型不提供或探测 shell。`run_command` 不再执行 Git 关键词过滤（D137），宿主审批与 Runtime 原有执行边界不变；模型提示及工具说明保持原样，仍优先通过 `git.ts` 的单一 action 子集操作仓库。
 
 Sandbox 关闭、macOS/Linux 或 Windows 启动前 fallback 仍沿用宿主审批和会话授权，模型只接收宿主工具定义与提示，不会看见 `run_with_permissions` 或 Sandbox 专属说明；Windows Agent Runtime 已实际启动后才接收该工具。已有权限的文件工具和普通命令免审批，Git 工具在 Broker 宿主执行且 push 逐次审批。
 
 若 Runtime 中的命令需要额外能力，模型必须改用 `run_with_permissions`，提交完整命令和理由；Broker 重新审批后以宿主用户身份启动进程，不再通过 Capability Runner 的文件根或 HTTPS host 限制。结果单独标为 `broker-command/host-process`，不能算作 Sandbox 内执行。
 
-Broker 命令与 Git push 可以使用宿主用户可访问的文件、网络和凭据；审批必须按此完整权限审查。Git push 仍由专用 `git` 工具固定 upstream/OID/ref 参数并逐次审批，通用命令仍不能调用 Git 工具绕过其契约。
+Broker 命令与 Git push 可以使用宿主用户可访问的文件、网络和凭据；审批必须按此完整权限审查。Git push 仍由专用 `git` 工具固定 upstream/OID/ref 参数并逐次审批，`run_with_permissions` 保留 Git 过滤。`run_command` 不再提供这一静态阻断，因此专用 Git 工具的参数校验不能视为所有 shell 命令的强制边界。
 
 按账户 SID 的持久 WFP fence 始终只允许固定 Broker relay/proxy 端口；host 边界不限制上传内容、URL path 或命令将哪些可读数据发送出去。supervisor 记录 process handle、PID 和创建时间，以 Job 管理后代。
 

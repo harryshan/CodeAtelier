@@ -267,11 +267,11 @@ Python、YAML、TOML、Makefile、Make 片段和 Markdown 默认是空白敏感�
 
 分类请求把后端从会话读取的工作区根目录 `workspaceRoot` 与工具名、待审批内容分字段传给无工具的模型，不从命令描述中采信工作区路径；关闭该次模型思考，输出严格限制为 JSON 决定及理由，最多 256 token。新版 prompt 按可预见的实际影响而非命令形式优先放行没有明显负面影响的请求：工作区内普通阅读、搜索、测试、构建、格式化及预期写入可直接 `approve`，无害管道和复合命令不单独触发人工确认；合理的公开网页读取、公开依赖获取或工作区外非敏感只读访问也不因网络或路径本身转人工。仍逐段辨别重定向、子进程和实际副作用；工作区外写入（含间接写入）、敏感内容、重大破坏或系统修改、来源不明的远程代码等具体风险要 `human review`，明确恶意窃密、破坏或绕过安全边界才 `reject`；对普通程序的抽象不确定性不等于风险证据。`run_with_permissions` 须按 Broker 宿主用户拥有的完整文件、网络和凭据权限审查，cwd 不约束命令访问的路径；分类仍是模型建议，不是静态只读证明。
 
-无辅助模型、服务故障或无效输出一律保守转为人工确认，不调用主模型替代。模型分类不影响现有授权：简单的 `pnpm`/`npm` test/build/lint/typecheck 或 `node --test` 在可计算项目指纹时仍可授予本次会话重复执行，包含更多 shell 语法的命令仍不支持会话放行。执行器内部选择 shell，不改变命令的权限边界；直接 Git 程序名（包括复合命令中的 Git）和提权命令会在审批模型之前直接拒绝。
+无辅助模型、服务故障或无效输出一律保守转为人工确认，不调用主模型替代。模型分类不影响现有授权：简单的 `pnpm`/`npm` test/build/lint/typecheck 或 `node --test` 在可计算项目指纹时仍可授予本次会话重复执行，包含更多 shell 语法的命令仍不支持会话放行。执行器内部选择 shell，不改变命令的权限边界；提权命令仍在审批模型之前直接拒绝。`run_command` 不再按 Git 关键词过滤命令（D137），含 Git 的命令与普通命令使用相同审批和执行路径；`run_with_permissions` 的 Git 过滤保持不变。
 
 子进程环境设置 `NO_COLOR=1`、`FORCE_COLOR=0`、`CLICOLOR=0`、`CLICOLOR_FORCE=0` 和 `TERM=dumb` 请求工具禁用颜色；执行器还会跨输出分块移除 ANSI、OSC 等控制序列，只保存、展示和回传纯文本。没有系统沙箱、回滚或提权工具。请只操作可信项目。
 
-Git 不经 `run_command` 执行，而使用单一 `git` 工具；模型可以主动调用允许的 action，不等待人工审批。`status`、`diff`、`log`、`show`、`branch` 只读；`add`、`commit`、`push` 会写入索引、仓库或已配置远程。
+模型仍优先使用单一 `git` 工具，工具说明和模型提示保持原样；仅移除 `run_command` 执行器的 Git 过滤，不改变专用工具的契约。模型可以主动调用允许的 action，不等待人工审批。`status`、`diff`、`log`、`show`、`branch` 只读；`add`、`commit`、`push` 会写入索引、仓库或已配置远程。
 
 `diff` 显式传 `staged`、`paths` 和 `contextLines`，空 paths 的全量差异先列出全部变更路径并拒绝敏感内容；`log` 传安全 revision、paths 与 limit；`show` 必须传安全 revision 和明确 paths；`add`/`commit` 必须传明确 paths，commit 另传非空 message；`push` 没有额外参数。
 

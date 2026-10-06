@@ -453,6 +453,12 @@ tool-schema.test.ts 覆盖根节点、oneOf 禁用、包装解包、历史兼容
 - `tests/agent-runtime-engine.test.ts` 使用真实 Node 子进程验证取消时先收到 `runtime_complete`，随后 clean 关闭；即使 Runtime 已回报终态，只要原生清理返回 orphaned，任务也记为失败、执行实例保留 unknown。安装态脚本最终核对取消后无 unknown 和活动 generation lease。
 - `tests/sandbox-account-generation.test.ts` 与 `tests/sandbox.test.ts` 保留旧 Push Runner 的机制测试，但不证明当前产品 push 的网络或凭据隔离。真实 remote、凭据、hook/helper 和取消清理仍须手动验收。
 
+### run_command 不过滤 Git（D137）
+
+- `tests/permissions.test.ts` 与 `tests/agent-runtime-tools.test.ts` 覆盖直接 `git --version`、管道中的 Git 以及仅输出 `git status` 文本；断言实际退出码和输出，不创建提交或访问远端。
+- 宿主命令仍经过审批，拒绝时不创建执行实例；Runtime 命令沿用原执行边界且不请求审批。提权拒绝、专用 Git 的 Broker 分流及 `run_with_permissions` 的 Git 过滤继续覆盖。
+- 测试验证 ToolRunner 分流与本机 shell，不代替固定账户安装态或跨平台验收。
+
 ### Agent Runtime 经审批的 Broker 宿主命令
 
 - `tests/agent-runtime-tools.test.ts` 验证普通 Runtime `run_command` 不请求审批；`run_with_permissions` 只把严格命令、理由和当前 `toolCallId` 交给 adapter。`tests/agent-runtime-service.test.ts` 验证该请求保留普通 DAG 并行语义；Git push 独占由共享工具图测试覆盖。
