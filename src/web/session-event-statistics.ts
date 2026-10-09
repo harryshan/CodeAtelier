@@ -10,14 +10,22 @@ import type { Event } from "../shared/types";
 import type { ModelPurpose } from "./session-statistics";
 
 function purposes(): Record<ModelPurpose, number> {
-  return { task: 0, compaction: 0, title: 0, approval: 0, subagent: 0 };
+  return {
+    task: 0,
+    compaction: 0,
+    title: 0,
+    approval: 0,
+    subagent: 0,
+    tool_review: 0,
+  };
 }
 
 function purpose(value: unknown): ModelPurpose {
   return value === "compaction" ||
     value === "title" ||
     value === "approval" ||
-    value === "subagent"
+    value === "subagent" ||
+    value === "tool_review"
     ? value
     : "task";
 }

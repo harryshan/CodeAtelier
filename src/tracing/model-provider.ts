@@ -14,8 +14,10 @@ import { TraceRecorder } from "./recorder.js";
 
 export interface ModelTraceScope {
   taskId: string;
-  purpose: "approval" | "compaction" | "task" | "title" | "subagent";
+  purpose:
+    "approval" | "compaction" | "task" | "title" | "subagent" | "tool_review";
   subagentId?: string;
+  callId?: string;
   model: string;
   step?: number;
   attempt?: number;
@@ -56,6 +58,7 @@ export function tracedModelProvider(
         parentSpanId,
         attributes: {
           purpose: scope.purpose,
+          callId: scope.callId,
           subagentId: scope.subagentId,
           model: scope.model,
           step: scope.step,

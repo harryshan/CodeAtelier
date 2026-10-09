@@ -19,8 +19,8 @@ import { contextSnapshotSchema } from "../context/types.js";
 import { subtaskSchema } from "../agent/subagent-contracts.js";
 import { gitRequestSchema } from "../tools/registry.js";
 
-// v10 容纳全部有效记忆标题在 JSON 转义后的目录；旧 Runtime 须重建并 Repair。
-export const RUNTIME_IPC_PROTOCOL_VERSION = 10;
+// v11 增加长工具复查模型用途及无时限命令设置；旧 Runtime 须重建并 Repair。
+export const RUNTIME_IPC_PROTOCOL_VERSION = 11;
 export const MAX_RUNTIME_IPC_FRAME_BYTES = 8 * 1024 * 1024;
 
 const identifier = z.string().min(1).max(120);
@@ -44,16 +44,12 @@ const runtimeTraceAttributesSchema = z
       .nonnegative()
       .max(2 * 1024 * 1024)
       .optional(),
-    computeMs: z
-      .number()
-      .nonnegative()
-      .max(24 * 60 * 60 * 1_000)
-      .optional(),
+    computeMs: z.number().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
     durationMs: z
       .number()
       .int()
       .nonnegative()
-      .max(24 * 60 * 60 * 1_000)
+      .max(Number.MAX_SAFE_INTEGER)
       .optional(),
   })
   .strict();
@@ -165,8 +161,8 @@ export const runtimeTaskSettingsSchema = z
     commandTimeoutMs: z
       .number()
       .int()
-      .positive()
-      .max(24 * 60 * 60 * 1_000),
+      .nonnegative()
+      .transform(() => 0),
     maxOutputTokens: z.number().int().positive().max(2_000_000).optional(),
     maxContextTokens: z.number().int().min(4_096).max(2_000_000).optional(),
     contextChars: z.number().int().min(10_000).max(2_000_000),
@@ -291,7 +287,8 @@ export const runtimeRequestSchema = z.discriminatedUnion("operation", [
       operation: z.literal("model_run"),
       body: z
         .object({
-          purpose: z.enum(["task", "compaction", "subagent"]),
+          purpose: z.enum(["task", "compaction", "subagent", "tool_review"]),
+          toolCallId: identifier.optional(),
           subagentId: identifier.optional(),
           subagentRequestId: identifier.optional(),
           input: z.array(z.unknown()),

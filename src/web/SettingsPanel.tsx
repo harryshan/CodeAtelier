@@ -170,21 +170,10 @@ export function SettingsPanel({
                 }
               />
             </label>
-            <label>
-              命令超时（秒）
-              <input
-                type="number"
-                min="1"
-                max="600"
-                value={value.commandTimeoutMs / 1000}
-                onChange={(e) =>
-                  setValue({
-                    ...value,
-                    commandTimeoutMs: Number(e.target.value) * 1000,
-                  })
-                }
-              />
-            </label>
+            <p>
+              工具运行不设时限，每 5
+              分钟由主模型检查最新状态，决定继续等待或中断；可随时停止任务。
+            </p>
             {(
               [
                 ["requestTimeoutMs", "模型请求超时（秒）"],

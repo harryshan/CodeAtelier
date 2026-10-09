@@ -54,6 +54,59 @@ it("handles a child closing stdin before the supplied input is consumed", async 
 
 afterEach(() => vi.unstubAllEnvs());
 
+it.each(["pipe", "file-backed"])(
+  "supports no deadline and observes output past truncation (%s)",
+  async (mode) => {
+    const directory = await temp();
+    const chunks: string[] = [];
+    const latest: string[] = [];
+    const args = [
+      "-e",
+      'process.stdout.write("old".repeat(1000));setTimeout(()=>process.stdout.write("LATEST"),150)',
+    ];
+    const signal = new AbortController().signal;
+    const result =
+      mode === "pipe"
+        ? await executeProcess(
+            process.execPath,
+            args,
+            directory,
+            signal,
+            0,
+            20,
+            (text) => chunks.push(text),
+            {},
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            (text) => latest.push(text),
+          )
+        : await executeProcessFileBacked(
+            process.execPath,
+            args,
+            directory,
+            signal,
+            0,
+            20,
+            (text) => chunks.push(text),
+            directory,
+            {},
+            undefined,
+            undefined,
+            undefined,
+            (text) => latest.push(text),
+          );
+
+    expect(result.exitCode).toBe(0);
+    expect(result.truncated).toBe(true);
+    expect(result.output).toHaveLength(20);
+    expect(chunks.join("")).toBe(result.output);
+    expect(latest.join("")).toMatch(/LATEST$/);
+    expect(await readdir(directory)).toEqual([]);
+  },
+);
+
 it("reports the actual missing-executable error and releases its timeout", async () => {
   try {
     await executeProcess(

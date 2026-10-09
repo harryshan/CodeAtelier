@@ -90,10 +90,15 @@ it.each([false, true])(
     config.settings.contextChars = Math.ceil(
       (contextSize([], instructions, tools) + 3000) / 0.6,
     );
-    expect(contextSize(source, instructions, tools)).toBeGreaterThan(
-      config.settings.contextChars,
+    // 工具描述随功能增长；动态补足历史，而不是削弱必须超过硬预算的断言。
+    source[1]!.content += "x".repeat(
+      Math.max(
+        0,
+        config.settings.contextChars -
+          contextSize(source, instructions, tools) +
+          1000,
+      ),
     );
-    store.saveContext(session.id, source);
     const chunks: any[] = [];
     const models: string[] = [];
     let mainCalls = 0;
@@ -162,6 +167,10 @@ it.each([false, true])(
       },
     );
     try {
+      expect(contextSize(source, instructions, tools)).toBeGreaterThan(
+        config.settings.contextChars,
+      );
+      store.saveContext(session.id, source);
       const task = engine.start(session.id, "Continue");
       await engine.active!.done;
       expect(models).toEqual([config.settings.model, "small"]);

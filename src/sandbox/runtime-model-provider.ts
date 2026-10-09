@@ -29,8 +29,9 @@ const modelResultSchema = z.object({
 export class RuntimeModelProvider implements ModelProvider {
   constructor(
     private peer: RuntimeIpcPeer,
-    private purpose: "task" | "compaction" | "subagent",
+    private purpose: "task" | "compaction" | "subagent" | "tool_review",
     private subagent?: { id: string; requestId: string },
+    private toolCallId?: string,
   ) {}
 
   async getCapabilities(
@@ -65,6 +66,7 @@ export class RuntimeModelProvider implements ModelProvider {
       "model_run",
       {
         purpose: this.purpose,
+        toolCallId: this.toolCallId,
         subagentId: this.subagent?.id,
         subagentRequestId: this.subagent?.requestId,
         input,

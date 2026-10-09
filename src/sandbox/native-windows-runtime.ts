@@ -7,7 +7,7 @@
  * 3. prepareAccess 在 manifest 前创建逐实例 HOME/TEMP 与协议所需的空 Git global 投影，不再投影宿主 Git 配置图；私有目录也经过原对象 ACL/capability/journal，encodeRequest 再发送固定执行帧。
  * 4. execute 启动单实例 supervisor，stdout 作为工具输出流，stderr 只解析 runtime PID/创建时间、完成和固定错误类别。
  * 5. runtime started 控制帧确认共享账户 ACE 已安装；并发 lease 在该确认前不会假定 grant 可用。
- * 6. 逐工具进程取消、JS 超时或管道失败时关闭继承 stdin 并等待退出；常驻 Agent Runtime 已启动后先让 Broker 经 IPC 取消并等待终态，close 才关闭 stdin。清理证明缺失优先于原错误或取消结果，绝不宿主重放。
+ * 6. 产品执行 timeoutMs=0 编码为 INFINITE，不创建 JS 总期限计时器；有限探测仍保留期限。逐工具进程取消、有限 JS 超时或管道失败时关闭继承 stdin 并等待退出；常驻 Agent Runtime 已启动后先让 Broker 经 IPC 取消并等待终态，close 才关闭 stdin。清理证明缺失优先于原错误或取消结果，绝不宿主重放。
  * 7. drainGeneration 关闭 relay、终止该账户全部进程并按持久 journal 撤销 ACL，供在线 quarantine 与重启恢复共用。
  * 8. 临时 HOME/TEMP 只在原生确认撤销后删除；启动失败仅记录白名单 station、Runtime pipe/身份阶段、入口固定阶段和数字错误码，日志与错误不包含命令、路径、SID、端口、密码或工具输出。
  * 9. Runtime 普通命令只向 stderr 输出固定阶段标记；启动后异常日志提取最后阶段，供区分 shell 选择、进程启动和进程关闭停滞，不记录命令内容。
@@ -299,7 +299,7 @@ export function encodeNativeSandboxRequest(input: {
     !path.isAbsolute(input.privateDirectory) ||
     input.args.length > MAXIMUM_ARGUMENTS ||
     !Number.isSafeInteger(input.timeoutMs) ||
-    input.timeoutMs < 1 ||
+    input.timeoutMs < 0 ||
     input.timeoutMs > 0xffff_ffff
   ) {
     throw new NativeWindowsSandboxError("执行请求字段无效。");
@@ -309,7 +309,8 @@ export function encodeNativeSandboxRequest(input: {
   header.writeUInt32LE(REQUEST_MAGIC, 0);
   header.writeUInt32LE(REQUEST_VERSION, 4);
   const timeout = Buffer.allocUnsafe(4);
-  timeout.writeUInt32LE(input.timeoutMs);
+  // Win32 INFINITE 哨兵，不是一个更大的有限运行期限。
+  timeout.writeUInt32LE(input.timeoutMs === 0 ? 0xffff_ffff : input.timeoutMs);
   const argumentCount = Buffer.allocUnsafe(4);
   argumentCount.writeUInt32LE(input.args.length);
   const leaseEpoch = Buffer.allocUnsafe(4);
@@ -402,7 +403,7 @@ export function encodeNativeAgentRuntimeRequest(input: {
     command: input.runtimeNode,
     args: [input.identity.sessionId, input.identity.taskId, input.nonce],
     privateDirectory: input.access.privateDirectory,
-    timeoutMs: 7 * 24 * 60 * 60 * 1_000,
+    timeoutMs: 0,
     access: input.access,
   });
 }
@@ -1141,10 +1142,13 @@ export class NativeWindowsSandboxRuntime implements SandboxRuntime {
         }
       };
 
-      const timer = setTimeout(() => {
-        timedOut = true;
-        child.stdin.end();
-      }, command.timeoutMs + 5_000);
+      const timer =
+        command.timeoutMs > 0
+          ? setTimeout(() => {
+              timedOut = true;
+              child.stdin.end();
+            }, command.timeoutMs + 5_000)
+          : undefined;
       command.signal.addEventListener("abort", cancel, { once: true });
       child.stdout.setEncoding("utf8");
       child.stderr.setEncoding("utf8");

@@ -18,7 +18,7 @@ import {
 } from "./session-event-statistics";
 
 export type ModelPurpose =
-  "task" | "compaction" | "title" | "approval" | "subagent";
+  "task" | "compaction" | "title" | "approval" | "subagent" | "tool_review";
 
 export interface SessionStatistics {
   inputTokens: number;

@@ -2,6 +2,7 @@
  * CodeAtelier 的任务执行入口，把模型请求、工具调用 DAG、审批和历史保存串起来。
  * HTTP 服务和手动评测都会创建 Engine；任务记录写入 Store，界面通过事件获知变化。
  *
+ * 0. toolReviewer/processReviewer 绑定主模型的独立状态检查，供进程与 MCP 每五分钟使用；usage/replay/trace 按 callId 关联，不追加主对话或重放执行。
  * 1. 构造器接好审批通知；手动评测可仅对宿主模型循环覆盖步数阈值，snapshot 读取会话状态，emit 脱敏并保存事件。
  * 2. start 原子保存用户消息和任务级 subagent 选择为 queued；多 agent 尚未就绪时拒绝开启。调度器在全局并发上限内启动不同工作区的任务，并对相同真实工作区保持互斥。
  * 3. resume 继续最后一个可恢复任务；cancel 处理用户取消，close 处理服务关闭。
@@ -75,6 +76,8 @@ import {
   replaySettings,
   type RecordedModelExchange,
 } from "../sessions/replay-case.js";
+import { createToolReviewer } from "./tool-review.js";
+import type { ToolReviewSubject } from "../tools/long-tool-monitor.js";
 import { ToolRunner } from "../tools/tool-runner.js";
 import { SubagentReadOnly } from "../tools/subagent-readonly.js";
 import { ProjectMemoryService } from "../memory/service.js";
@@ -146,7 +149,7 @@ class AgentRuntimeCleanupUnknownError extends Error {
 }
 
 type ModelUsagePurpose =
-  "task" | "compaction" | "title" | "approval" | "subagent";
+  "task" | "compaction" | "title" | "approval" | "subagent" | "tool_review";
 
 interface StartTaskOptions {
   subagentsEnabled?: boolean;
@@ -183,6 +186,73 @@ export class Engine {
   /** 项目记忆只写入平台数据目录；任务开始时读取固定 bundle，工具调用时执行受限维护操作。 */
   readonly memories: ProjectMemoryService;
 
+  /** 主模型独立审视在途工具；不追加未完成的 function_call_output，也不计为主循环轮次。 */
+  private toolReviewer(task: Task, settings: Settings) {
+    const prompt =
+      (this.store.taskEvent(task.id, "user") as { text?: string } | undefined)
+        ?.text ?? "";
+
+    return createToolReviewer({
+      provider: (subject) => {
+        // 只在真正检查时创建 provider；普通短工具不能引入额外模型初始化。
+        const provider =
+          this.factory?.(settings, "task") ??
+          new ResponsesProvider(settings, this.config.apiKey);
+
+        return tracedModelProvider(
+          this.replayProvider(task, provider, () => ({
+            purpose: "tool_review",
+          })),
+          this.traces,
+          {
+            taskId: task.id,
+            purpose: "tool_review",
+            model: settings.model,
+            callId: subject.callId,
+          },
+        );
+      },
+      prompt,
+      secrets: [this.config.apiKey],
+      emit: (type, data) => {
+        this.emit(task, type, data);
+        this.log.info({
+          event: "tool.review",
+          taskId: task.id,
+          sessionId: task.sessionId,
+          callId: data.callId,
+          phase: type,
+          action: data.action,
+          reviewFailed: data.reviewFailed,
+        });
+        if (type === "notice") {
+          this.traces.instant(
+            task.id,
+            "tool.review_decision",
+            "tool",
+            "Main thread",
+            {
+              callId: data.callId,
+              action: data.action,
+              reviewFailed: data.reviewFailed,
+            },
+          );
+        }
+      },
+    });
+  }
+
+  private processReviewer(
+    task: Task,
+    settings: Settings,
+    subject: ToolReviewSubject,
+  ) {
+    const review = this.toolReviewer(task, settings);
+
+    return (status: Parameters<typeof review>[1], signal: AbortSignal) =>
+      review(subject, status, signal);
+  }
+
   private prepareMcp(
     task: Task,
     workspace: string,
@@ -199,6 +269,7 @@ export class Engine {
         taskId: task.id,
         sessionId: task.sessionId,
         outputChars,
+        reviewTool: this.toolReviewer(task, this.config.settings),
         log: this.log,
         traces: this.traces,
         approve: (description, approvalSignal) =>
@@ -1745,6 +1816,13 @@ export class Engine {
                 startedPid,
                 isWrite && (args[0] === "add" || args.includes("commit")),
               ),
+            undefined,
+            undefined,
+            this.processReviewer(task, settings, {
+              name: "git",
+              arguments: request,
+              callId: toolCallId,
+            }),
           ),
         async (
           spec,
@@ -1796,6 +1874,13 @@ export class Engine {
             onOutput,
             environment,
             (startedPid) => processStarted(startedPid, true),
+            undefined,
+            undefined,
+            this.processReviewer(task, settings, {
+              name: "git",
+              arguments: request,
+              callId: toolCallId,
+            }),
           );
         },
       );
@@ -1929,7 +2014,7 @@ export class Engine {
         [...shell.args, command],
         workspace,
         signal,
-        settings.commandTimeoutMs,
+        0,
         settings.outputChars,
         (text) => emit("capability_output", { text, callId: toolCallId }),
         {},
@@ -1937,6 +2022,13 @@ export class Engine {
           pid = startedPid;
           publish("running");
         },
+        undefined,
+        undefined,
+        this.processReviewer(task, settings, {
+          name: "run_with_permissions",
+          arguments: { command },
+          callId: toolCallId,
+        }),
       );
       publish(
         result.exitCode === 0 ? "completed" : "failed",
@@ -2134,6 +2226,7 @@ export class Engine {
         taskId: task.id,
         signal,
         settings,
+        reviewTool: this.toolReviewer(task, settings),
         approvals: this.approvals,
         emit,
         sandbox: this.sandbox,

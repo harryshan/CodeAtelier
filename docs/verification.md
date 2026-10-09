@@ -1,5 +1,14 @@
 # 初版验证记录
 
+## 无总时限工具与五分钟模型状态检查（2026-10-10，本地）
+
+- 按 D141 移除命令/Broker 命令/Git/MCP 操作的固定总期限，保留握手、模型请求及清理期限。新增监视器和独立主模型适配器；五分钟虚拟时钟覆盖最新尾部、并发隔离、continue 不重放、stop 等待清理、复查失败继续、完成竞争和用户取消。真实宿主 Engine 验证审批期间不检查、输出截断后的最新状态、模型停止后主对话继续，以及历史/replay/trace/usage。
+- Windows / Node.js 26.10.0：最终原样 `pnpm check` 通过，90 个文件、660 项通过、1 项原有跳过；类型、ESLint、Prettier 及服务端/Web/Runtime 测试构建通过。完整回归曾发现提前初始化复查 provider 增加了短任务 factory 次数，已改为真正复查时才创建；工具描述增长后的压缩夹具按真实预算补足历史，保留原超限和压缩行为断言。
+- MCP 官方内存协议以虚拟时间跨越八天，确认请求不受 SDK 默认期限截断，progress、完成和主动取消仍有效；有限握手期限及真实 stdio 超过旧配置期限、取消后关闭和禁止重放均通过。SDK 私有 `_setupTimeout` 适配点须随依赖升级重新验证。
+- Chromium `pnpm test:e2e --shard=1/2` 与 `--shard=2/2` 完整通过，27 + 15 = 42 项；包括移除命令超时输入、保存值归零和现有历史/SSE/Broker 输出回归。最初不分片运行被当前运行服务的旧工具期限终止，不计作成功；标准分片不改变 worker 数或断言。
+- `pnpm sandbox:native:build` 通过，包含 `SANDBOX_NATIVE_REGRESSION` 与 `SANDBOX_RUNTIME_DUPLEX_PROBE`；新增编码回归确认 0 对应 Win32 INFINITE。取消无限任务的 Job CPU 时间上限并修正监督等待的 INFINITE 加法；产品 IPC 升至 v11，旧安装须显式构建/Repair。本次未更新安装副本、重载服务或提升权限。
+- Runtime 无 pnpm，验证经批准在 Broker 宿主执行；MCP/原生目录的写入限制通过校验 SHA-256 的精确宿主补丁处理，未修改 ACL。未运行 Evaluation、真实模型连续长跑、固定账户本次安装态或 macOS/Linux 验收。保留已有 Zod 注释及 Web bundle 大小警告；无时间限制不取消输出容量、资源上限和未知副作用边界。
+
 ## 全量有效记忆摘要目录（2026-10-09）
 
 - 按 D139 移除目录的关键词评分、重要性/时间排序、8 项与 6000 字符裁剪，以及宿主/Runtime/fallback 调用的 query 参数；仅按 enabled、active 与有效期过滤，按文件条目顺序提供完整 ID/标题摘要。原存储/来源/版本校验和同工具按需读取不变。

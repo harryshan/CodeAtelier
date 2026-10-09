@@ -28,7 +28,13 @@ export const persistedSettingsSchema = z.object({
   maxSteps: z.number().int().min(1).max(100),
   // 全局硬上限避免并行模型和子进程耗尽本机或服务端资源。
   maxConcurrentTasks: z.number().int().min(1).max(4).default(2),
-  commandTimeoutMs: z.number().int().min(1000).max(600000),
+  // 兼容旧 settings.json/API 字段，但不再让历史偏好恢复命令运行时限。
+  commandTimeoutMs: z
+    .number()
+    .int()
+    .nonnegative()
+    .default(0)
+    .transform(() => 0),
   requestTimeoutMs: z.number().int().min(1000).max(600000),
   idleTimeoutMs: z.number().int().min(1000).max(300000),
   maxOutputTokens: z.number().int().min(1).max(2000000).default(16384),

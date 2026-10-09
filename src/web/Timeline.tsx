@@ -78,6 +78,7 @@ const modelUsagePurposeLabels: Record<string, string> = {
   title: "会话标题",
   approval: "工具审批",
   subagent: "只读子任务",
+  tool_review: "长工具状态检查",
 };
 
 function ToolOutputCard({

@@ -145,7 +145,7 @@ it("transfers the maximum escaped catalog and rejects oversized text and old Run
   ).toBe(false);
   const hello = {
     type: "runtime_hello",
-    protocolVersion: 10,
+    protocolVersion: 11,
     taskId: "task",
     sessionId: "session",
     executionInstanceId: "instance",
@@ -153,6 +153,7 @@ it("transfers the maximum escaped catalog and rejects oversized text and old Run
   };
   expect(runtimeIpcMessageSchema.safeParse(hello).success).toBe(true);
   expect(
-    runtimeIpcMessageSchema.safeParse({ ...hello, protocolVersion: 9 }).success,
+    runtimeIpcMessageSchema.safeParse({ ...hello, protocolVersion: 10 })
+      .success,
   ).toBe(false);
 });

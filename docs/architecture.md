@@ -68,15 +68,17 @@ Engine 在任一节点产生副作用前校验整批 DAG，并以稳定拓扑顺
 
 `edit_files` 的 create:true 条目只新建不存在的文件，create:false 条目只精确编辑本任务已读取的已有文件。历史工具结果的展示与压缩兼容见 [上下文管理](context-management.md)。
 
+`tools/long-tool-monitor.ts` 为进程与 MCP 在途操作提供无总期限、每五分钟独立复查和持续输出尾部。`agent/tool-review.ts` 以主模型做无工具 continue/stop 判断，复查错误继续等待；Engine/Runtime 分别注入宿主 provider/认证 IPC `tool_review` provider。取消只作用于调用，执行结束移除计时器，历史/replay/trace 保留用途与 callId，详见 [长工具运行](long-running-tools.md)。
+
 ### Skill 发现与加载
 
 `src/skills/contracts.ts` 提供 strict list/load 参数；`skill-document.ts` 使用 js-yaml 的 JSON_SCHEMA 解析有界 SKILL.md，校验 name/description 并忽略权限元信息；`task-skills.ts` 管理每任务预设根扫描、固定摘要/版本、链接与容量检查，以及调用时重新读取正文。Engine 在宿主/Runtime 分流前创建目录，fallback 复用同一实例；名称、描述和来源类别进入指令，正文只通过工具结果进入模型。
 
-宿主 ToolRunner 直接调用此任务实例；Runtime 使用 IPC v10 的 `skill_execute`，启动材料只含目录提示，不投影宿主技能根。返回 `broker-skill/host-process`，不执行脚本、不增加读写授权。`skills.*` span 及普通工具历史覆盖成功/失败/取消，trace 排除技能参数/正文。格式、目录优先级和限制见 [Skill 指南](skills.md)。
+宿主 ToolRunner 直接调用此任务实例；Runtime 使用 IPC v11 的 `skill_execute`，启动材料只含目录提示，不投影宿主技能根。返回 `broker-skill/host-process`，不执行脚本、不增加读写授权。`skills.*` span 及普通工具历史覆盖成功/失败/取消，trace 排除技能参数/正文。格式、目录优先级和限制见 [Skill 指南](skills.md)。
 
 ### MCP 本机客户端
 
-`src/mcp/contracts.ts` 提供模型与 Runtime 共用的有界操作契约，`config.ts` 只在宿主读取 mcp.json；`task-client.ts` 使用官方 SDK 管理每任务的 stdio/Streamable HTTP 连接、审批、串行请求、取消/清理和输出脱敏。`mcp-stdio-transport.ts` 保存启动 PID，并让 SDK 握手失败后的异步关闭与任务收尾共用同一个关闭回执，避免仍存活的进程被误报为已清理。模型通过静态 `mcp` 工具按需发现动态 schema，不声明 provider-hosted MCP。`ToolRunner` 审批准备后取得执行槽，宿主调用 Engine 的任务客户端；Runtime 通过 IPC v10 的 `prepare_mcp/execute_mcp` 在当前认证连接内消费调用绑定的单次授权。连接配置和凭据不经 Runtime。
+`src/mcp/contracts.ts` 提供模型与 Runtime 共用的有界操作契约，`config.ts` 只在宿主读取 mcp.json；`task-client.ts` 使用官方 SDK 管理每任务的 stdio/Streamable HTTP 连接、审批、串行请求、取消/清理和输出脱敏。`mcp-stdio-transport.ts` 保存启动 PID，并让 SDK 握手失败后的异步关闭与任务收尾共用同一个关闭回执，避免仍存活的进程被误报为已清理。模型通过静态 `mcp` 工具按需发现动态 schema，不声明 provider-hosted MCP。`ToolRunner` 审批准备后取得执行槽，宿主调用 Engine 的任务客户端；Runtime 通过 IPC v11 的 `prepare_mcp/execute_mcp` 在当前认证连接内消费调用绑定的单次授权。连接配置和凭据不经 Runtime。
 
 `src/mcp/catalog.ts` 纯投影已启用服务的名称、transport 与脱敏 description；Engine 在首次主模型请求前注入指令，宿主/fallback 直接使用，Runtime 通过启动消息的 `mcpText` 接收相同摘要。`list_servers` 复用投影；缺失用途为 null，空配置给空目录。目录不发起连接或审批，完整 schema 仍按需发现；纯投影不新增独立 trace span，既有任务/上下文计量/模型请求观测覆盖整体链路，摘要不写入 trace。
 
@@ -250,7 +252,7 @@ Broker 命令与 Git push 可以使用宿主用户可访问的文件、网络和
 
 父进程等待旧进程释放端口，因而不会并行监听。新进程启动时生成新的本机会话 token，UI 轮询到 token 变化后才完整刷新页面。重载不撤销已修改文件，但不能恢复已经关闭的服务；它也不编译源码，生产模式须先 `pnpm build`。开发时 `tsx watch` 与 Vite HMR 仍分别负责源码自动更新。
 
-模型元数据与实际 usage 由 providers/model-metadata.ts 校验，context/token-budget.ts 计算本地 token 估算和输入预算。`token-anchor.ts` 定义无正文的版本化锚点及内容/配置指纹；`session-token-calibration.ts` 在宿主/Runtime 首次压缩检查前恢复基线，响应保存后更新。Store schema v10 的 `context_token_anchors` 每会话保留一条，经串行 Worker 读写，替换历史或压缩在同一事务清除；IPC v10 的校准字段只传锚点与 scope，不泄露连接配置。`context.usage.restore/save` 记录命中、耗时和终态，不记录指纹。UI 仅展示实报，详见 [model-tokens.md](model-tokens.md)。
+模型元数据与实际 usage 由 providers/model-metadata.ts 校验，context/token-budget.ts 计算本地 token 估算和输入预算。`token-anchor.ts` 定义无正文的版本化锚点及内容/配置指纹；`session-token-calibration.ts` 在宿主/Runtime 首次压缩检查前恢复基线，响应保存后更新。Store schema v10 的 `context_token_anchors` 每会话保留一条，经串行 Worker 读写，替换历史或压缩在同一事务清除；IPC v11 的校准字段只传锚点与 scope，不泄露连接配置。`context.usage.restore/save` 记录命中、耗时和终态，不记录指纹。UI 仅展示实报，详见 [model-tokens.md](model-tokens.md)。
 
 上下文压缩的触发、持久化、失败边界与模块职责见 [context-management.md](context-management.md)。活动上下文可为摘要与最近原文的组合；压缩前完整输入另存快照，不删除事件历史。
 

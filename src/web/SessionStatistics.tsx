@@ -23,6 +23,7 @@ const purposeLabels = {
   title: "标题",
   approval: "审批",
   subagent: "子任务",
+  tool_review: "工具状态检查",
 };
 
 function toolSummary(calls: Record<string, number>) {

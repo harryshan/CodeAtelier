@@ -62,7 +62,7 @@ maxOutputTokens 默认 16384，可在 Web UI“最大输出 token”中调整。
 
 schema v10 在升级含会话的旧分片前备份；旧对话没有锚点时正常回退本地计量，不从累计 usage 猜测，升级后的首个合法主模型响应才建立锚点。因此不能保证升级后第一次续聊就消除一次压缩。
 
-宿主/fallback 和 Runtime 共用 `SessionTokenCalibration`。Runtime IPC v10 启动消息传入无正文锚点与配置指纹，保存仅作用于 Broker 认证会话；不发送模型端点或 key。已安装 Runtime 须重新构建并 Repair，再重载后端。`context.usage.restore/save` 与 Store queue/worker trace 覆盖耗时、成功/失败/取消；restore 只附是否命中，不记录锚点指纹或正文。
+宿主/fallback 和 Runtime 共用 `SessionTokenCalibration`。Runtime IPC v11 启动消息传入无正文锚点与配置指纹，保存仅作用于 Broker 认证会话；不发送模型端点或 key。已安装 Runtime 须重新构建并 Repair，再重载后端。`context.usage.restore/save` 与 Store queue/worker trace 覆盖耗时、成功/失败/取消；restore 只附是否命中，不记录锚点指纹或正文。
 
 ## 持久化与展示
 

@@ -216,6 +216,9 @@ function createDefinitions(includeRuntimeOnlyTools = false) {
           ? (runtimeDescriptions[name as keyof typeof schemas] ??
             descriptions[name])
           : descriptions[name]) +
+        (["run_command", "run_with_permissions", "git", "mcp"].includes(name)
+          ? " Executing operations have no fixed total runtime deadline. Every five minutes the main model reviews the latest bounded output and decides whether to keep waiting or interrupt this invocation. Waiting does not restart the operation; interrupted or unknown effects must not be blindly replayed. Connection setup, model requests and cancellation cleanup retain their separate deadlines."
+          : "") +
         " Each call must use {execution:{id,dependsOn},arguments:{...}}. id is unique within this response; dependsOn lists only execution.id values from other tool calls returned in this same response that must succeed before this call starts. Never use node IDs, execution IDs, or tool call IDs from an earlier model response as dependencies. Include all calls with known arguments in this response, including dependent calls such as an edit followed by a known check. Dependencies control order and success gating only: another tool result cannot fill these arguments in the same response.",
       parameters: z.toJSONSchema(
         scheduledParameters(name === "git" ? gitRequestSchema : schema),

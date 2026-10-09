@@ -7,7 +7,7 @@
  * 2. execute 生成 execution/root capability SID；共享账户的目录 ACE 与可写 root capability 均包含 DELETE_CHILD，以替换未继承新 ACE 的既有文件；restricted token 另含 Everyone 以兼容系统组件，故已有 Everyone 可写对象不受根 capability 完整约束。
  * 3. CreateProcessWithLogonW 以固定 bootstrap 入口启动专用账户进程，先分配 KILL_ON_JOB_CLOSE Job 再恢复。
  * 4. 在确认不是 WinSta0 后给系统命名的非交互式 station 补齐专用账户及实例 SID，再创建私有 desktop；bootstrap 经账户管道取得命令，创建 WRITE_RESTRICTED token，常驻 Runtime 则经仅额外授权本实例 execution SID 的专属 pipe 连接 Broker。
- * 5. Broker stdin 关闭、超时或异常会终止 Job；正常/异常退出撤销本实例 capability ACE，共享账户 ACE 仅由 Broker 最后引用的两阶段 release 撤销；安装恢复从持久 journal 验证原文件身份后撤销账户 ACE，清理不确定返回专用错误码。
+ * 5. 产品运行使用 INFINITE，不附累计 CPU 时限；有限探测保留期限。Broker stdin 关闭、有限超时或异常会终止 Job；正常/异常退出撤销本实例 capability ACE，共享账户 ACE 仅由 Broker 最后引用的两阶段 release 撤销；安装恢复从持久 journal 验证原文件身份后撤销账户 ACE，清理不确定返回专用错误码。
  * 6. 保留的 Push Runner 从宿主 Credential Manager 读取绑定 host 的 HTTPS 凭据，经同 Job askpass pipe 交付；Capability Runner 只持有短期 proxy token。两条 Runner 路径当前暂停，产品 Git 和获批宿主命令交给 Broker。
  * 7. Agent Runtime 模式只启动受保护 Node/entry；bootstrap 通过已核对客户端 PID 的私有 pipe 交付进程/token 句柄值，Supervisor 限权复制查询句柄，联合核对 Runtime pipe 客户端身份后发送启动首帧并代理原始 Broker 字节流；初始 CWD 使用私有目录。
  * 8. stdout 只承载工具输出或 Agent Runtime IPC；stderr 只输出有界控制记录及每方向首帧阶段，不记录命令、路径、SID、密码或工具内容。
@@ -1650,11 +1650,14 @@ bool ConfigureProductJob(SECURITY_ATTRIBUTES* security_attributes,
   JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
   limits.BasicLimitInformation.LimitFlags =
       JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_ACTIVE_PROCESS |
-      JOB_OBJECT_LIMIT_JOB_MEMORY | JOB_OBJECT_LIMIT_JOB_TIME |
+      JOB_OBJECT_LIMIT_JOB_MEMORY |
       JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION;
   limits.BasicLimitInformation.ActiveProcessLimit = 128;
-  limits.BasicLimitInformation.PerJobUserTimeLimit.QuadPart =
-      static_cast<LONGLONG>(timeout_ms) * 10000LL * 4LL;
+  if (timeout_ms != INFINITE) {
+    limits.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_JOB_TIME;
+    limits.BasicLimitInformation.PerJobUserTimeLimit.QuadPart =
+        static_cast<LONGLONG>(timeout_ms) * 10000LL * 4LL;
+  }
   limits.JobMemoryLimit = 8ULL * 1024ULL * 1024ULL * 1024ULL;
   return SetInformationJobObject(job->get(), JobObjectExtendedLimitInformation,
                                  &limits, sizeof(limits)) != FALSE;
@@ -2506,7 +2509,10 @@ bool RunAgentRuntimeProxy(HANDLE runtime_pipe, HANDLE bootstrap_pipe,
   });
 
   DWORD wait =
-      WaitForSingleObject(bootstrap_process, request.timeout_ms + 10000);
+      WaitForSingleObject(bootstrap_process,
+                          request.timeout_ms == INFINITE
+                              ? INFINITE
+                              : request.timeout_ms + 10000);
   if (wait != WAIT_OBJECT_0) {
     proxy_failed->store(true);
     TerminateJobObject(job, 31);
@@ -2870,7 +2876,10 @@ int RunProductSupervisor(const std::wstring& state_path,
   }).detach();
 
   DWORD wait =
-      WaitForSingleObject(bootstrap_process.get(), request.timeout_ms + 10000);
+      WaitForSingleObject(bootstrap_process.get(),
+                          request.timeout_ms == INFINITE
+                              ? INFINITE
+                              : request.timeout_ms + 10000);
   if (wait != WAIT_OBJECT_0) {
     TerminateJobObject(job.get(), 31);
     if (WaitForSingleObject(bootstrap_process.get(), 5000) != WAIT_OBJECT_0) {

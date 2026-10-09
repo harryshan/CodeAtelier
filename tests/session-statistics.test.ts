@@ -123,6 +123,28 @@ it("aggregates recorded model requests, cache details, tool outcomes and complet
   expect(statistics.toolSuccessRate).toBe(0.5);
 });
 
+it("counts tool review requests without creating main-agent rounds", () => {
+  const statistics = sessionStatistics(
+    snapshot(
+      [
+        event(1, "model_request", { purpose: "task", step: 1 }),
+        event(2, "model_request", { purpose: "tool_review", callId: "slow" }),
+        event(3, "model_usage", {
+          purpose: "tool_review",
+          input_tokens: 10,
+          output_tokens: 3,
+          total_tokens: 13,
+        }),
+      ],
+      [task()],
+    ),
+  );
+  expect(statistics.llmRequests).toBe(2);
+  expect(statistics.llmRounds).toBe(1);
+  expect(statistics.modelRequestsByPurpose.tool_review).toBe(1);
+  expect(statistics.totalTokens).toBe(13);
+});
+
 it("counts subagent model requests separately without creating main-agent rounds", () => {
   const statistics = sessionStatistics(
     snapshot(

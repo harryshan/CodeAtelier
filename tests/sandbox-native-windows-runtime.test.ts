@@ -131,6 +131,23 @@ describe.skipIf(process.platform !== "win32")(
       ).toThrow("字段无效");
     });
 
+    it("encodes zero duration as Win32 INFINITE rather than a finite deadline", () => {
+      const frame = encodeNativeSandboxRequest({
+        executionInstanceId: "instance-1",
+        cwd: "C:\\workspace",
+        command: "C:\\Windows\\System32\\cmd.exe",
+        args: [],
+        privateDirectory: "C:\\private",
+        timeoutMs: 0,
+      });
+      let offset = 8;
+      for (let index = 0; index < 4; index++) {
+        offset += 4 + frame.readUInt32LE(offset);
+      }
+
+      expect(frame.readUInt32LE(offset)).toBe(0xffffffff);
+    });
+
     it("encodes only the fixed Agent Runtime launch identity", () => {
       const frame = encodeNativeAgentRuntimeRequest({
         identity: {

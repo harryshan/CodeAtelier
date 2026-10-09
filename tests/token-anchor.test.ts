@@ -412,7 +412,7 @@ it("bounds IPC anchors and rejects caller-selected sessions, raw text and old pr
   };
   expect(runtimeIpcMessageSchema.safeParse(hello).success).toBe(false);
   expect(
-    runtimeIpcMessageSchema.safeParse({ ...hello, protocolVersion: 10 })
+    runtimeIpcMessageSchema.safeParse({ ...hello, protocolVersion: 11 })
       .success,
   ).toBe(true);
 });

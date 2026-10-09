@@ -1112,6 +1112,15 @@
 - 边界：确认的是用户当前 Windows 环境下的日常功能可用性，不推导错误身份、复杂 ACL、强制终止、异常恢复、真实远端兼容性等全部专项矩阵通过。Everyone restricting SID、同账户共享风险、Broker 宿主权限及 macOS/Linux 不加载该后端等限制不变。
 - 影响：只更新状态、使用说明和证据记录；默认关闭与安装/Repair 流程不变，不自动安装或开放 subagent。subagent 仍按自身发布门禁及专项证据单独评估。本次不改变运行时、权限、配置或 tracing，无新增运行事件。
 
+## D141：工具无总运行期限，由主模型每五分钟审视状态
+
+- 日期：2026-10-10（本地）
+- 状态：用户明确要求支持长时间 tool use、移除运行时间限制，并每五分钟让模型基于最新输出判断中断或等待。
+- 决定：命令/Broker 命令/Git 使用无执行截止的进程调用；MCP 保留连接握手期限，已发出的操作无总期限。五分钟监视由执行开始计时，不含审批、执行槽或同服务队列等待；每调用独立缓存最新 12000 字符输出，检查不重叠，复查模型失败继续运行。
+- 取消：模型只可返回 continue/stop；stop 取消本调用并等待原执行器清理，不取消整任务、不重放、不回滚副作用。完成后取消在途复查并忽略晚到决定；用户取消、后端退出及未知结果禁止重放保持不变。
+- 替代与影响：不把旧 120 秒改成更大的有限值，也不自动重试工具。旧 commandTimeoutMs 字段兼容归零；Windows 原生使用 INFINITE，不设置累计 CPU 时间上限，保留 Job 资源限制和清理证明。IPC v11 带 tool_review 用途及 callId，已安装 Runtime 须构建/Repair 后使用；不改变 Sandbox 权限或 subagent 发布门禁。
+- 观测：独立主模型请求无工具，不改主对话未完成的 function-call 序列；真实 usage、决定与失败写入历史，Replay Case 保存独立请求，llm.request/tool.review_decision trace 仅附安全关联字段，不存输出/判断理由。复查不消耗主循环 maxSteps，但仍消耗真实模型 token。细节与验证边界见 [长工具运行](long-running-tools.md)。
+
 ## D140：run_with_permissions 与 run_command 一致移除 Git 过滤
 
 - 日期：2026-10-09

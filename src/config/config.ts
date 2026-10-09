@@ -86,7 +86,7 @@ export class Config {
         process.env.CODEATELIER_AUXILIARY_REASONING_EFFORT || "low",
       maxSteps: 100,
       maxConcurrentTasks: 2,
-      commandTimeoutMs: 120000,
+      commandTimeoutMs: 0,
       requestTimeoutMs: 300000,
       idleTimeoutMs: 60000,
       maxContextTokens: 300000,

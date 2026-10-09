@@ -8,6 +8,7 @@
  *    run_command 与 run_with_permissions 均不按 Git 关键词过滤；后者仍先完成 Broker 审批准备，再通知执行开始并消费授权。
  *    Skill 通过 skillExecute 读取 Broker 固定目录，不在 Runtime 扫描宿主文件或执行脚本。
  *    MCP 先经 prepareMcp 在 Broker 审批，再取得执行槽消费单次授权；ToolRunner 从不读取 MCP 配置或创建连接。
+ *    本地进程不设固定总时限，execute 为当前调用绑定 reviewTool；forCall 隔离状态/输出，进程执行器每五分钟复查，Broker 操作由 Broker 自己监视。
  * 4. 每个 execution instance 只读取 Broker 为该 task/instance 保存的状态；并发任务的 fallback/unknown 不会污染其它 PID、session 或 trace 记录。
  * 5. 只读分支只处理读取；目录浏览和代码搜索均由 run_command 在审批后执行。read_file 在主线程完成安全访问、类型检查和异步字节读取，再交给共享 Worker 池处理全文哈希与行扫描；可选 trace 将检查、读取及 Worker 阶段分开计时，不保存文件内容。
  *
@@ -27,6 +28,7 @@ import { MAX_READ_LINES, parseToolArguments } from "./registry.js";
 import type { Settings } from "../shared/types.js";
 import type { Approval } from "../shared/types.js";
 import { resolveTarget, regularFile, sensitive, inside } from "./paths.js";
+import type { ReviewTool, ToolReview } from "./long-tool-monitor.js";
 import { executeProcess, executeProcessFileBacked } from "./process.js";
 import { commandShell, resolveExecutablePath } from "./command-shell.js";
 import { FileEditor } from "./file-editor.js";
@@ -65,6 +67,9 @@ export interface ToolContext {
   taskId: string;
   signal: AbortSignal;
   settings: Settings;
+  /** 实际进程运行期间定期请求主模型；每个 forCall 独立关联输出和取消信号。 */
+  reviewTool?: ReviewTool;
+  toolCallId?: string;
   approvals: {
     request(
       data: Omit<Approval, "id" | "repeatable">,
@@ -127,6 +132,7 @@ interface ToolRunnerState {
 export class ToolRunner {
   private readHashes: Map<string, string>;
   private readFileWorkers: ReadFileWorkerPool;
+  private review?: ToolReview;
   private git: GitToolRunner;
   private editor: FileEditor;
   private sandbox: SandboxBroker;
@@ -230,6 +236,7 @@ export class ToolRunner {
     return new ToolRunner(
       {
         ...this.ctx,
+        toolCallId: callId,
         sandbox: this.sandbox,
         skillExecute: parentSkillExecute
           ? (request, signal) => parentSkillExecute(request, signal, callId)
@@ -334,6 +341,7 @@ export class ToolRunner {
           process.stderr.write(
             "CODEATELIER_AGENT_RUNTIME_STAGE command_spawn_returned\n",
           ),
+        this.review,
       );
       process.stderr.write("CODEATELIER_AGENT_RUNTIME_STAGE command_closed\n");
 
@@ -422,6 +430,9 @@ export class ToolRunner {
             input.onOutput,
             input.environment ?? {},
             (pid) => processStarted(pid, "host-process"),
+            undefined,
+            undefined,
+            this.review,
           ),
         (stage, status) => {
           this.ctx.emit("sandbox_stage", {
@@ -616,6 +627,14 @@ export class ToolRunner {
   ): Promise<any> {
     this.ctx.signal.throwIfAborted();
     const args: any = parseToolArguments(name, raw);
+    this.review = this.ctx.reviewTool
+      ? (status, signal) =>
+          this.ctx.reviewTool!(
+            { name, arguments: args, callId: this.ctx.toolCallId },
+            status,
+            signal,
+          )
+      : undefined;
     let executionStart: Promise<void> | undefined;
     const startExecution = async () => {
       executionStart ??= onExecutionStart?.() ?? Promise.resolve();
@@ -776,7 +795,7 @@ export class ToolRunner {
         args: [...shell.args, args.command],
         cwd,
         signal: this.ctx.signal,
-        timeoutMs: this.ctx.settings.commandTimeoutMs,
+        timeoutMs: 0,
         outputLimit: this.ctx.settings.outputChars,
         onOutput: (text) => this.ctx.emit("command_output", { text }),
       });

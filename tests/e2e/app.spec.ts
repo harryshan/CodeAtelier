@@ -497,6 +497,8 @@ test("settings show the environment connection and save preferences without expo
   await page.goto("/");
   await page.getByRole("button", { name: "模型与设置" }).click();
   await expect(page.getByLabel("连接配置")).toContainText("test-model");
+  await expect(page.getByLabel("命令超时（秒）")).toHaveCount(0);
+  await expect(page.getByText(/工具运行不设时限，每 5/)).toBeVisible();
   await expect(page.getByLabel("思考等级")).toHaveValue("high");
   await expect(page.getByLabel("上下文窗口上限（token）")).toHaveValue(
     "300000",
@@ -514,6 +516,7 @@ test("settings show the environment connection and save preferences without expo
   expect(saved).not.toContain("ui-test-secret");
   expect(JSON.parse(saved).settings.reasoningEffort).toBe("medium");
   expect(JSON.parse(saved).settings.maxContextTokens).toBe(240000);
+  expect(JSON.parse(saved).settings.commandTimeoutMs).toBe(0);
   expect(JSON.parse(saved).settings.auxiliaryModel).toBe("test-low-cost-model");
   await page.reload();
   await page.getByRole("button", { name: "模型与设置" }).click();

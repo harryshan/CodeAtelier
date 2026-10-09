@@ -7,7 +7,8 @@
  * 2. spawn 不经过 shell，隐藏 Windows 窗口，并从子进程环境中移除模型密钥；调用方可追加受限环境变量。
  * 3. onProcessStarted 在子进程获得 PID 后立即回传，使 session 能在命令结束前持久化恢复身份。
  * 4. stop 在 Windows 等待 taskkill 的结果后才允许单进程后备终止，不能先杀 shell 而遗留后代；Unix 使用进程组终止子进程树，超时和取消都走这里。
- * 5. stdout、stderr 按 UTF-8 流式解码，append 保留限额内的可见内容并通知调用方。
+ * 5. stdout、stderr 按 UTF-8 流式解码，append 保留限额内的可见内容；独立 observer 持续更新状态检查的尾部。
+ *    产品工具传 timeoutMs=0，不设总时限；可注入 review 每五分钟检查并取消本次进程，内部探测仍可显式限时。
  * 6. 输出/PID 回调和管道错误先停止子进程，等待 close 后再拒绝调用，避免未捕获异常结束整个服务；close 清理计时器和取消监听。
  * 7. 可选的进程创建返回回调只供已安装 Runtime 的固定阶段诊断使用，不传递命令、参数或输出。
  * 8. Windows 专用账户 Runtime 的 file-backed 入口避开 libuv 创建默认 stdio 命名管道的同步路径；在实例 TEMP 中独占创建输出文件，定时读取并施加磁盘上限，结束后关闭句柄和删除文件。
@@ -15,6 +16,7 @@
  * 输出太长时只截断保存内容。非零退出码及 shell 写入 stderr 的实际错误照实返回，命令是否获准由执行前的审批负责。
  */
 
+import { monitorTool, type ToolReview } from "./long-tool-monitor.js";
 import { spawn } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
 import { mkdtemp, open, rm, type FileHandle } from "node:fs/promises";
@@ -81,6 +83,12 @@ export class TerminalTextSanitizer {
   }
 }
 
+interface ProcessResult {
+  output: string;
+  exitCode: number | null;
+  truncated: boolean;
+}
+
 export async function executeProcess(
   command: string,
   args: string[],
@@ -93,8 +101,29 @@ export async function executeProcess(
   onProcessStarted?: (pid: number) => void,
   standardInput?: Buffer,
   onSpawnReturned?: () => void,
-) {
+  review?: ToolReview,
+  onLatestOutput?: (text: string) => void,
+): Promise<ProcessResult> {
   signal.throwIfAborted();
+  if (review) {
+    return monitorTool(signal, review, (runSignal, append) =>
+      executeProcess(
+        command,
+        args,
+        cwd,
+        runSignal,
+        0,
+        outputLimit,
+        onOutput,
+        environment,
+        onProcessStarted,
+        standardInput,
+        onSpawnReturned,
+        undefined,
+        append,
+      ),
+    );
+  }
 
   return new Promise<{
     output: string;
@@ -172,10 +201,13 @@ export async function executeProcess(
       stop();
     };
 
-    const timer = setTimeout(() => {
-      timedOut = true;
-      stop();
-    }, timeoutMs);
+    const timer =
+      timeoutMs > 0
+        ? setTimeout(() => {
+            timedOut = true;
+            stop();
+          }, timeoutMs)
+        : undefined;
 
     signal.addEventListener("abort", stop, { once: true });
     // 使用流解码器保留跨 chunk 的 UTF-8 字符，不能单独转换每个 Buffer。
@@ -189,6 +221,12 @@ export async function executeProcess(
       }
 
       const text = sanitizer.write(chunk);
+
+      try {
+        onLatestOutput?.(text);
+      } catch (error) {
+        fail(error);
+      }
 
       size += text.length;
       const accepted = text.slice(0, Math.max(0, outputLimit - output.length));
@@ -285,8 +323,30 @@ export async function executeProcessFileBacked(
   environment: NodeJS.ProcessEnv = {},
   onProcessStarted?: (pid: number) => void,
   onSpawnReturned?: () => void,
-) {
+  review?: ToolReview,
+  onLatestOutput?: (text: string) => void,
+): Promise<ProcessResult> {
   signal.throwIfAborted();
+  if (review) {
+    return monitorTool(signal, review, (runSignal, append) =>
+      executeProcessFileBacked(
+        command,
+        args,
+        cwd,
+        runSignal,
+        0,
+        outputLimit,
+        onOutput,
+        outputDirectory,
+        environment,
+        onProcessStarted,
+        onSpawnReturned,
+        undefined,
+        append,
+      ),
+    );
+  }
+
   const privateDirectory = await mkdtemp(
     path.join(outputDirectory, "codeatelier-command-output-"),
   );
@@ -314,6 +374,7 @@ export async function executeProcessFileBacked(
       environment,
       onProcessStarted,
       onSpawnReturned,
+      onLatestOutput,
     );
   } finally {
     try {
@@ -336,6 +397,7 @@ function runFileBackedProcess(
   environment: NodeJS.ProcessEnv,
   onProcessStarted?: (pid: number) => void,
   onSpawnReturned?: () => void,
+  onLatestOutput?: (text: string) => void,
 ) {
   return new Promise<{
     output: string;
@@ -419,6 +481,12 @@ function runFileBackedProcess(
       }
 
       const text = sanitizer.write(chunk);
+      try {
+        onLatestOutput?.(text);
+      } catch (error) {
+        fail(error);
+      }
+
       outputSize += text.length;
       const accepted = text.slice(0, Math.max(0, outputLimit - output.length));
       output += accepted;
@@ -457,10 +525,13 @@ function runFileBackedProcess(
     };
 
     const outputTimer = setInterval(pollOutput, FILE_OUTPUT_POLL_MS);
-    const timeoutTimer = setTimeout(() => {
-      timedOut = true;
-      stop();
-    }, timeoutMs);
+    const timeoutTimer =
+      timeoutMs > 0
+        ? setTimeout(() => {
+            timedOut = true;
+            stop();
+          }, timeoutMs)
+        : undefined;
     signal.addEventListener("abort", stop, { once: true });
 
     const cleanup = () => {

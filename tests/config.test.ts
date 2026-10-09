@@ -162,6 +162,19 @@ it("reports malformed saved settings without silently overwriting them", async (
   );
 });
 
+it("migrates old command deadlines to unlimited without changing model timeouts", async () => {
+  const root = await temp();
+  await writeFile(
+    path.join(root, "settings.json"),
+    JSON.stringify({ commandTimeoutMs: 120000, requestTimeoutMs: 123000 }),
+  );
+  const config = new Config(root);
+  expect(config.settings.commandTimeoutMs).toBe(0);
+  expect(config.settings.requestTimeoutMs).toBe(123000);
+  config.update({ settings: { ...config.settings, commandTimeoutMs: 600000 } });
+  expect(new Config(root).settings.commandTimeoutMs).toBe(0);
+});
+
 it("migrates legacy connection fields out of settings.json and persists effort", async () => {
   vi.stubEnv("CODEATELIER_REASONING_EFFORT", "");
   const root = await temp();

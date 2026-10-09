@@ -3,7 +3,7 @@
  *
  * 1. 配置用例覆盖缺省关闭、坏文件/越界字段拒绝以及凭据不出现在公开设置；list_servers 返回用途摘要且不连接。
  * 2. stdio 用例验证审批先于启动、发现/分页字段、连接复用、环境最小继承、工具/资源/模板往返与错误语义。
- * 3. 握手超时后直接进程必须已退出；操作超时/取消先确认握手与调用就绪，再核对退出和禁止重放；HTTP 核对认证头、分页、DELETE、重定向与响应流大小限制。
+ * 3. 握手超时后直接进程必须已退出；无操作期限/取消先确认握手与调用就绪，再核对退出和禁止重放；HTTP 核对认证头、分页、DELETE、重定向与响应流大小限制。
  *    配置覆盖 Windows UTF-8 BOM，禁用服务不连接；凭据回显包含无 Bearer 前缀的原 token。
  * 4. Trace 和日志只含安全阶段与关联 ID，不包含配置凭据或 MCP 正文；不启动 Evaluation 或真实模型。
  */
@@ -310,14 +310,14 @@ it("consumes approvals once and marks output truncation without dropping busines
   await expect(execute(signal)).rejects.toThrow("不能重放");
 });
 
-it.each(["timeout", "cancel"])(
-  "closes on %s and refuses another request on the failed task connection",
+it.each(["past-deadline", "cancel"])(
+  "waits without a deadline (%s), closes on cancellation and refuses replay",
   async (mode) => {
     const { client, run, local, workspace, pidFile } = await fixture(
       true,
       10000,
       32000,
-      mode === "timeout" ? 3100 : 0,
+      0,
     );
     // 完成握手后再施加取消，确保覆盖已发送调用而非仅取消启动。
     const discovery = await run({
@@ -327,8 +327,8 @@ it.each(["timeout", "cancel"])(
     });
     expect(discovery.error).toBeUndefined();
     expect(discovery.data).toHaveProperty("tools");
-    // 操作期限仍为原来的三/五秒；初始化使用单独的测试就绪期限。
-    local.timeoutMs = mode === "timeout" ? 3000 : 5000;
+    // 已有连接后缩短旧配置；它现在只管未来握手，不能截断正在执行的工具。
+    local.timeoutMs = 100;
     const startedFile = path.join(workspace, "slow.started");
     const controller = new AbortController();
     const promise = run(
@@ -341,12 +341,19 @@ it.each(["timeout", "cancel"])(
       controller.signal,
     );
     try {
-      if (mode === "cancel") {
-        await expect
-          .poll(() => readFile(startedFile, "utf8"), { timeout: 5000 })
-          .toBe("ready");
-        controller.abort(new Error("fixture cancellation"));
+      await expect
+        .poll(() => readFile(startedFile, "utf8"), { timeout: 5000 })
+        .toBe("ready");
+      if (mode === "past-deadline") {
+        let settled = false;
+        void promise.then(() => {
+          settled = true;
+        });
+        await new Promise((resolve) => setTimeout(resolve, 350));
+        expect(settled).toBe(false);
       }
+
+      controller.abort(new Error("fixture cancellation"));
 
       expect(await promise).toMatchObject({
         outcome: "unknown",

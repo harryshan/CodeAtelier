@@ -89,13 +89,15 @@ Abort 只表示 Broker 不再等待，不等于 Runtime 已终止；取消仍必
 
 关闭或重启服务会轮换该 cookie，需再次验证。它是单一共享密码，不提供账户、用户身份、角色、找回密码、限流或公网安全保证。
 
+长时间命令/Git/MCP 的等待、模型中断、旧超时设置迁移和 Windows 更新要求见 [长工具运行](long-running-tools.md)。状态复查产生独立真实模型用量，不计入主循环轮次，模型请求和清理期限不变。
+
 ### 模型思考等级与限制
 
 思考等级在“模型与设置”中选择，保存为 `reasoningEffort`；主任务 Responses 请求显式发送 `reasoning.effort`。未配置辅助模型时标题和上下文摘要沿用主模型设置。默认 high，旧配置缺少字段时采用环境默认值或 high。例如 `.env` 中设置 `CODEATELIER_REASONING_EFFORT=high`；已保存偏好优先，保存后用于后续调用。
 
 辅助模型标识由 `CODEATELIER_AUXILIARY_MODEL` 决定，其推理强度 `auxiliaryReasoningEffort` 可按同一规则保存，供标题和上下文摘要使用。自动审批仍选用辅助模型，但仅在该次 Responses 请求覆盖为 `reasoning.effort: "none"`，不修改已保存的辅助等级；服务或模型不支持 `none` 时降级到人工确认，不用原思考等级重试，也不以主模型替代未配置的辅助模型。其它模型请求不支持所选等级时按现有错误流程报告，不静默降级。
 
-默认限制：每任务 100 次模型调用、命令 120 秒、模型请求总计 300 秒、流空闲 60 秒、备用上下文 1000000 字符、单工具输出 32000 字符；全局 `maxConcurrentTasks` 默认 2，允许 1～4。这是可配置字符预算，不是精确 token 计量。发现服务容量和支持的 tokenizer 后改用 token 预算，contextChars 仅备用；已保存的自定义值继续生效，缺失时使用新默认值。maxOutputTokens 默认 16384。
+默认限制：每任务 100 次主循环模型调用、工具操作无固定总运行期限（每五分钟由主模型检查最新状态）、模型请求总计 300 秒、流空闲 60 秒、备用上下文 1000000 字符、单工具输出 32000 字符；全局 `maxConcurrentTasks` 默认 2，允许 1～4。这是可配置字符预算，不是精确 token 计量。发现服务容量和支持的 tokenizer 后改用 token 预算，contextChars 仅备用；已保存的自定义值继续生效，缺失时使用新默认值。maxOutputTokens 默认 16384。
 
 输入预算扣除输出与安全余量后，达到 80% 时尝试压缩；完整输入不超过实际预算的 60% 且比压缩前更小才提交，不另设 10% 收益门槛。失败保留原历史，超过硬上限且保底整理仍失败则停止。实测值和用量展示见 [model-tokens.md](model-tokens.md)。详见 [上下文管理](context-management.md)。高级字段可在没有运行中或排队任务时编辑 settings.json 或通过设置 API 更新。
 
@@ -121,7 +123,7 @@ tracing 默认启用：每个实际开始的任务在当前服务进程内生成
 
 模型请求、退避及响应处理保持独立，以便区分上下文处理与模型服务耗时，且不会产生完整事件交叠。`Task` 是任务生命周期包络；工具批次、参数检查、审批等待与依赖阻塞保留在 `Tool scheduler` 逻辑轨道，只有审批通过并准备实际执行的调用才排队取得最多 4 条可复用 `Tool worker 1` 至 `Tool worker 4` 轨道，后续节点复用最先空闲的槽位。
 
-这些槽位表示并发操作而不是 Node 物理线程，人工审批耗时不会显示为 worker 占用。`read_file` 的路径授权与解析发生在执行槽取得之前，不另建准备片段；取得槽位后，文件检查、字节读取、Worker 排队、冷启动等待和响应阶段在调用对应的 `Tool worker`（Agent Runtime 路径为可复用的 `Agent Runtime tool 1`～`4`）轨道上嵌套显示于 `tool.read_file`。这些工具轨道是逻辑并发槽，不是物理线程；Worker 的计算不再另建 trace 轨道，响应片段仍附纯计算耗时 `computeMs`，不能把响应总耗时当作磁盘或 CPU 耗时。`read_file.worker.startup` 从首次向刚创建的 Worker 分派请求起计，到调用侧收到该 Worker 的 `ready` 消息为止，包含剩余线程启动、模块加载和消息调度等待，并非纯文件处理耗时；开发环境的 `.ts` Worker 还需加载 `tsx`。池在任务内按需扩展至最多 4 条真实线程，已创建线程跨模型轮次复用，不在空闲时释放；成功、失败或取消后的任务收尾显式等待全部线程退出，记录 `read_file.pool.close` 耗时与终态，清理失败将任务标为失败。热 Worker 没有冷启动阶段；尚无具体 trace 时不能把某次偏长归因于其中单一因素。阶段仅附 callId、有界字节数及计时，不保存路径或内容；Runtime IPC v10 的 trace span 必须携带单调时间戳（旧版本拒绝握手），固定白名单上报这些阶段及取得执行槽后的工具执行边界；Broker 校验任务时间窗、以已验证 Runtime PID 分组、按槽号分配复用轨道、从已保存的 tool_start 提取参数，统一导出落盘。Runtime 的 `Agent Runtime` 主轨道展示上下文和池关闭；`tool_start` 到取得执行槽之间是排队/准备时间，不冒充实际执行；尚未开放的 subagent `await` 在槽位之前等待，不把事后取得槽位误记为工具执行。获批 Broker 命令仍在 Broker 的宿主执行轨道记录，Runtime 工具片段表示等待其结果，不能称为在 Sandbox 内执行命令。普通实际 tool span 的 `args.parameters` 保存传给执行器的完整结构化参数（Skill、MCP、项目记忆和 subagent 不记录正文参数），递归遮盖 API key、token、password、authorization、cookie 及 Bearer 值；因此 trace 文件可能含命令、路径和编辑文本，必须按敏感本机诊断数据保护，不能上传或提交。
+这些槽位表示并发操作而不是 Node 物理线程，人工审批耗时不会显示为 worker 占用。`read_file` 的路径授权与解析发生在执行槽取得之前，不另建准备片段；取得槽位后，文件检查、字节读取、Worker 排队、冷启动等待和响应阶段在调用对应的 `Tool worker`（Agent Runtime 路径为可复用的 `Agent Runtime tool 1`～`4`）轨道上嵌套显示于 `tool.read_file`。这些工具轨道是逻辑并发槽，不是物理线程；Worker 的计算不再另建 trace 轨道，响应片段仍附纯计算耗时 `computeMs`，不能把响应总耗时当作磁盘或 CPU 耗时。`read_file.worker.startup` 从首次向刚创建的 Worker 分派请求起计，到调用侧收到该 Worker 的 `ready` 消息为止，包含剩余线程启动、模块加载和消息调度等待，并非纯文件处理耗时；开发环境的 `.ts` Worker 还需加载 `tsx`。池在任务内按需扩展至最多 4 条真实线程，已创建线程跨模型轮次复用，不在空闲时释放；成功、失败或取消后的任务收尾显式等待全部线程退出，记录 `read_file.pool.close` 耗时与终态，清理失败将任务标为失败。热 Worker 没有冷启动阶段；尚无具体 trace 时不能把某次偏长归因于其中单一因素。阶段仅附 callId、有界字节数及计时，不保存路径或内容；Runtime IPC v11 的 trace span 必须携带单调时间戳（旧版本拒绝握手），固定白名单上报这些阶段及取得执行槽后的工具执行边界；Broker 校验任务时间窗、以已验证 Runtime PID 分组、按槽号分配复用轨道、从已保存的 tool_start 提取参数，统一导出落盘。Runtime 的 `Agent Runtime` 主轨道展示上下文和池关闭；`tool_start` 到取得执行槽之间是排队/准备时间，不冒充实际执行；尚未开放的 subagent `await` 在槽位之前等待，不把事后取得槽位误记为工具执行。获批 Broker 命令仍在 Broker 的宿主执行轨道记录，Runtime 工具片段表示等待其结果，不能称为在 Sandbox 内执行命令。普通实际 tool span 的 `args.parameters` 保存传给执行器的完整结构化参数（Skill、MCP、项目记忆和 subagent 不记录正文参数），递归遮盖 API key、token、password、authorization、cookie 及 Bearer 值；因此 trace 文件可能含命令、路径和编辑文本，必须按敏感本机诊断数据保护，不能上传或提交。
 
 导出会按时间排序，并以递增整数而非 UUID 标识 flow，保证 Perfetto Trace Event JSON importer 可解析。任务进入 completed、failed、cancelled 或 interrupted 终态后，安全 JSON 原子写入 `traces/<sessionId>/<taskId>.json`，同一会话的任务各用独立文件，绝不覆盖；写入完成或失败后立即释放该任务的内存记录，不保留完成 trace 缓存。
 

@@ -55,7 +55,8 @@ export interface RuntimeCommandApprovalResponse {
 
 export interface RuntimeModelRequest {
   requestId: string;
-  purpose: "task" | "compaction" | "subagent";
+  purpose: "task" | "compaction" | "subagent" | "tool_review";
+  toolCallId?: string;
   subagentId?: string;
   subagentRequestId?: string;
   input: any[];
@@ -283,6 +284,7 @@ export class RuntimeBrokerGateway {
     const provider = tracedModelProvider(selected.provider, this.traces, {
       taskId: identity.taskId,
       purpose: request.purpose,
+      callId: request.toolCallId,
       subagentId: request.subagentId,
       model: selected.model,
       executionMode: "windows-sandbox-user",

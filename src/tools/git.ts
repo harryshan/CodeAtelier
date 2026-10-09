@@ -11,6 +11,7 @@
  * 5. push 从当前分支的 upstream 配置推导唯一 remote 与 refs/heads 目标，拒绝本地、ext 等不安全 URL，
  *    commit 禁用 hooks/GPG，push 保留仓库 hook 语义；两者都禁用交互终端、分页和外部 diff/textconv。
  *
+ * 所有子命令（含 push）使用无总期限的执行参数；ToolRunner/Engine 注入的进程执行器负责定期模型复查和逐调用取消。
  * Git 以调用方进程用户权限访问工作区；Windows Agent Runtime 中的产品 Git action 已经改由 Broker 宿主执行，应用层校验不是操作系统沙箱。add、commit 与 push 由用户授权
  * 自动执行；取消或进程中断时结果可能未知，恢复前必须通过 git 的 status/diff/log 重新核实，不能重放。
  */
@@ -219,7 +220,7 @@ export class GitToolRunner {
       args,
       this.ctx.root,
       this.ctx.signal,
-      this.ctx.settings.commandTimeoutMs,
+      0, // 工具执行不设固定总时限；由调用方监视和取消。
       outputLimit,
       emit ? (text) => this.ctx.emit("git_output", { text }) : () => {},
     );
@@ -562,7 +563,7 @@ export class GitToolRunner {
         args,
         this.ctx.root,
         this.ctx.signal,
-        this.ctx.settings.commandTimeoutMs,
+        0, // push 同样不设固定总时限。
         this.ctx.settings.outputChars,
         (text) => this.ctx.emit("git_output", { text }),
       );

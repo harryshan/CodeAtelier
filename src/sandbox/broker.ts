@@ -461,7 +461,7 @@ export class SandboxBroker implements AgentRuntimeLauncher {
       args: [],
       cwd: input.workspace,
       signal: input.signal,
-      timeoutMs: 7 * 24 * 60 * 60 * 1_000,
+      timeoutMs: 0,
       outputLimit: 0,
       onOutput: () => {},
       onProcessStarted: () => {},

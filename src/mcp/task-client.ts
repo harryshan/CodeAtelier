@@ -4,13 +4,16 @@
  *
  * 1. prepare 校验操作和 JSON 参数，按已配置服务申请一次审批，返回只能消费一次的执行闭包；审批不占工具执行槽。list_servers 复用 catalog 的公开用途摘要，不连接服务。
  * 2. enqueue 按服务串行执行，connection 按需握手并在任务内复用；不同服务和不同任务互不共享连接。
- * 3. perform 用统一超时/取消包住连接和操作，失败即封闭该服务至任务结束，不自动重连或重放未知副作用。
+ * 3. perform 保留连接握手期限，操作不设总时限；每五分钟将 progress 尾部交给主模型检查。
+ *    模型停止/用户取消或失败即封闭该服务至任务结束，不自动重连或重放未知副作用。
  * 4. dispatch 映射发现、工具、资源和提示模板接口；返回内容仅作为不可信工具数据，不能注入系统提示词。
  * 5. close 等待在途操作、结束 HTTP session 并通过 McpStdioTransport 共用 SDK 关闭回执和保存的 PID，确认直接子进程退出；traced 只记录关联 ID、操作类别、耗时和终态，不记录地址、参数或正文。
  * stdio 使用宿主用户权限及 SDK 最小继承环境，不是 Sandbox；只能管理直接子进程，不能保证第三方派生进程退出。
  */
 import { setTimeout as delay } from "node:timers/promises";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { monitorTool, type ReviewTool } from "../tools/long-tool-monitor.js";
+import { createMcpClient } from "./unlimited-client.js";
+import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Logger } from "pino";
 import type { TraceRecorder } from "../tracing/recorder.js";
@@ -38,6 +41,7 @@ interface Options {
   taskId: string;
   sessionId: string;
   outputChars: number;
+  reviewTool?: ReviewTool;
   approve: (description: string, signal: AbortSignal) => Promise<boolean>;
   log: Logger;
   traces: TraceRecorder;
@@ -317,10 +321,7 @@ export class McpTaskClient {
               });
             },
           });
-    const client = new Client(
-      { name: "CodeAtelier", version: "0.1.0" },
-      { capabilities: {} },
-    );
+    const client = createMcpClient();
     this.connections.set(name, { client, transport, network });
     await this.traced(
       "connect",
@@ -355,11 +356,7 @@ export class McpTaskClient {
     }
 
     const server = this.options.servers[action.server]!;
-    const deadline = AbortSignal.any([
-      signal,
-      this.lifetime.signal,
-      AbortSignal.timeout(server.timeoutMs),
-    ]);
+    const deadline = AbortSignal.any([signal, this.lifetime.signal]);
     try {
       const data = await this.traced(
         action.action,
@@ -375,12 +372,27 @@ export class McpTaskClient {
               );
               deadline.throwIfAborted();
 
-              return this.dispatch(
-                client,
-                action,
-                args,
+              return monitorTool<unknown>(
                 deadline,
-                server.timeoutMs,
+                (status, reviewSignal) =>
+                  this.options.reviewTool
+                    ? this.options.reviewTool(
+                        { name: "mcp", arguments: action, callId },
+                        {
+                          ...status,
+                          latestOutput: redactText(
+                            status.latestOutput,
+                            this.secrets,
+                          ),
+                        },
+                        reviewSignal,
+                      )
+                    : Promise.resolve({
+                        action: "continue",
+                        reason: "未配置状态检查模型。",
+                      }),
+                (runSignal, append) =>
+                  this.dispatch(client, action, args, runSignal, append),
               );
             })(),
             deadline,
@@ -424,9 +436,17 @@ export class McpTaskClient {
     action: Exclude<McpAction, { action: "list_servers" }>,
     args: Record<string, unknown> | undefined,
     signal: AbortSignal,
-    timeout: number,
+    append: (text: string) => void,
   ) {
-    const options = { signal, timeout, maxTotalTimeout: timeout };
+    const options = {
+      signal,
+      timeout: 0,
+      onprogress: (progress: {
+        progress: number;
+        total?: number;
+        message?: string;
+      }) => append(JSON.stringify(progress) + "\n"),
+    };
     const page =
       "cursor" in action && action.cursor !== null
         ? { cursor: action.cursor }

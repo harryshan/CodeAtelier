@@ -6,6 +6,7 @@
  * 1. start 接受 Broker 绑定任务的安全设置，恢复 session 上下文并在工作区生成指令和文件工具。
  * 2. SessionTokenCalibration 在首次检查前恢复 Broker 提供的实报锚点，响应保存后经 IPC 保存新锚点；ContextManager 在 Runtime 内计量/压缩，快照读写经 RuntimeSessionClient 回到 Broker。
  * 3. model-loop 共用轮次、有界重试和上下文超限恢复，model-tool-batch 共用工具计划与结果判定；每轮模型调用经 RuntimeModelProvider 代理；工具 DAG 先并行准备已就绪节点，取得有界 worker 槽后执行文件编辑、命令或请求 Broker Git。
+ *    Runtime 普通命令按调用注入独立 tool_review 主模型代理，不设总运行时限；复查只返回等待/停止，usage 与决定经常规事件持久化。
  * 4. UI/session 事件按连接排队；无效 DAG 回传修正，实际取得执行槽的工具和 read_file 内部阶段带单调时间戳上报，由 Broker 统一组装并归档；工具结果增量保存，未知副作用不重放。
  * 5. 已选任务在 Runtime 内运行独立只读 Worker，子状态、问题回执、模型/租约及固定无正文的 trace 经任务绑定 IPC；收尾确认线程退出后再由 Broker 清理。
  *
@@ -32,6 +33,7 @@ import {
 } from "../agent/subagent-contracts.js";
 import { RuntimeSubagentClient } from "./runtime-subagent-client.js";
 import { runtimeDefinitions, webSearchTool } from "../tools/registry.js";
+import { createToolReviewer } from "../agent/tool-review.js";
 import { executeToolGraph, type ToolGraphNode } from "../tools/tool-graph.js";
 import { ToolRunner } from "../tools/tool-runner.js";
 import type { ReadFileTraceStage } from "../tools/read-file-worker-pool.js";
@@ -228,6 +230,17 @@ export class AgentRuntimeService {
         taskId: this.identity.taskId,
         signal,
         settings: toolSettings,
+        reviewTool: createToolReviewer({
+          provider: (subject) =>
+            new RuntimeModelProvider(
+              this.peer,
+              "tool_review",
+              undefined,
+              subject.callId,
+            ),
+          prompt: input.prompt,
+          emit: (type, data) => events.emit(type, data),
+        }),
         approvals: new RuntimeApprovalClient(this.peer),
         memory: new RuntimeMemoryClient(this.peer, signal),
         skillExecute: (request, requestSignal, toolCallId) => {
