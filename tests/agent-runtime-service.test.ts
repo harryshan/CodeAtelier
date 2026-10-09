@@ -4,7 +4,7 @@
  *
  * 1. Broker 先返回一次可重试错误，再返回无效 DAG；Runtime 有界重试并把无副作用错误保存给下一轮修正。
  * 2. Broker 随后返回 read_file function_call，Agent Runtime 在自己的进程内执行 ToolRunner；最终模型轮次观察到文件结果。
- * 3. 记忆目录只含 ID/摘要；Runtime 通过现有 memory_apply IPC 在 Broker 读取真实记忆正文，不直接访问宿主数据目录。
+ * 3. 记忆目录包含全部十条 ID/摘要并按文件顺序进入每轮模型指令；Runtime 通过现有 memory_apply IPC 在 Broker 按需读取正文，不直接访问宿主数据目录。
  * 4. 扩展权限请求保留普通 DAG 并行语义；push 独占由共享工具图测试覆盖。
  * 5. Runtime 主动报告 completed，Broker 收到后关闭通道并确认子进程干净退出。
  */
@@ -60,27 +60,26 @@ it("runs the model and tool loop in an independent Agent Runtime process", async
   const scope = { workspace, sessionId: "session-1", taskId: "task-1" };
   const created = await memories.apply(scope, {
     expectedVersion: null,
-    operations: [
-      {
-        action: "create",
-        kind: "decision",
-        title: "Runtime 记忆摘要",
-        statement: "按需返回的 Runtime 记忆正文。",
-        tags: [],
-        importance: "normal",
-        confidence: "confirmed",
-        expiresAt: null,
-        source: {
-          summary: "测试来源",
-          eventId: null,
-          filePath: null,
-          fileHash: null,
-        },
-        reason: "验证按需读取",
+    operations: Array.from({ length: 10 }, (_, index) => ({
+      action: "create",
+      kind: "decision",
+      title: `Runtime 记忆摘要 ${index}`,
+      statement:
+        index === 0 ? "按需返回的 Runtime 记忆正文。" : `历史正文 ${index}`,
+      tags: [],
+      importance: index === 9 ? "pinned" : "normal",
+      confidence: "confirmed",
+      expiresAt: null,
+      source: {
+        summary: "测试来源",
+        eventId: null,
+        filePath: null,
+        fileHash: null,
       },
-    ],
+      reason: "验证全部摘要及按需读取",
+    })),
   });
-  const memory = await memories.retrieve(workspace, "Runtime");
+  const memory = await memories.retrieve(workspace);
   const child = spawn(
     process.execPath,
     [
@@ -136,8 +135,15 @@ it("runs the model and tool loop in an independent Agent Runtime process", async
             };
           },
           async run(input, instructions) {
-            expect(instructions).toContain("Runtime 记忆摘要");
-            expect(instructions).toContain(created.operations[0].id);
+            expect(memory.bundle?.entries).toHaveLength(10);
+            let previousIndex = -1;
+            for (const [index, operation] of created.operations.entries()) {
+              const line = `- [${operation.id}] ${JSON.stringify(`Runtime 记忆摘要 ${index}`)}`;
+              const position = instructions.indexOf(line);
+              expect(position).toBeGreaterThan(previousIndex);
+              previousIndex = position;
+            }
+
             expect(instructions).not.toContain("按需返回的 Runtime 记忆正文。");
             modelCalls += 1;
             if (modelCalls === 1) {

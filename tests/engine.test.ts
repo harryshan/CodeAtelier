@@ -1086,10 +1086,7 @@ it("creates memory without approval and reads its body only on demand in a new s
       version: expect.stringMatching(/^[a-f0-9]{64}$/),
       operations: [{ action: "create", id: expect.any(String) }],
     });
-    const remembered = await fixture.engine.memories.retrieve(
-      fixture.root,
-      "pnpm 验证",
-    );
+    const remembered = await fixture.engine.memories.retrieve(fixture.root);
     expect(remembered.bundle?.entries).toEqual([
       expect.objectContaining({ summary: "使用 pnpm" }),
     ]);

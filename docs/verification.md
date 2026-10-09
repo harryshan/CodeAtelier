@@ -1,5 +1,13 @@
 # 初版验证记录
 
+## 全量有效记忆摘要目录（2026-10-09）
+
+- 按 D139 移除目录的关键词评分、重要性/时间排序、8 项与 6000 字符裁剪，以及宿主/Runtime/fallback 调用的 query 参数；仅按 enabled、active 与有效期过滤，按文件条目顺序提供完整 ID/标题摘要。原存储/来源/版本校验和同工具按需读取不变。
+- 回归先在旧实现复现两项失败：十条摘要只返回部分且被重排、256 条合法摘要被裁剪。实现后相关六个测试文件 66 项通过；另强化真实 Node Runtime 子进程的模拟模型往返，逐轮检查十条目录的完整性与顺序，正文不自动注入且仍可按 ID 读取。
+- Windows / Node.js 26.10.0：最终原样默认并发 `pnpm check` 通过，85 个测试文件、630 项通过、1 项原有跳过；类型、ESLint、Prettier 及后端/Web/Runtime 测试构建通过。首次完整检查仅在两处格式换行停止，修正后重跑全套通过。日志位于忽略的 `.local/memory-all-targeted.log` 与 `.local/memory-all-check.log`。
+- 最大存储条数下的 160 字符标题最坏 JSON 转义目录可超过原 IPC memoryText 的 100000 字符；现以 300000 字符传输校验完整容纳，越界载荷仍拒绝。共享协议升级 v10、拒绝 v9 握手，8 MiB 帧限制不变；已安装 Runtime 需重建/Repair。本次没有更新安装副本或重载当前服务。
+- Runtime PATH 无 Node/pnpm，测试经批准由 Broker 宿主执行。未改 UI 或 HTTP/SSE 接口，未运行浏览器 E2E、Evaluation、真实模型或 macOS/Linux 验收；独立 Node Runtime harness 不是专用账户安装态验证。沿用现有 tracing，不记录目录或正文；保留既有 Zod 注释和 Web bundle 大小构建警告。
+
 ## 记忆目录与同工具按需读取（2026-10-09）
 
 - 按 D138 将默认记忆输入改为 ID/标题摘要，在现有 `memory_apply.operations` 增加单条 `read`，不新增工具或 IPC operation。新增用例先在旧实现复现摘要字段缺失与 read 被拒绝，再验证正文/来源按需返回、跨项目/未知 ID、版本冲突、归档/过期/停用、损坏文件、读写混合拒绝、只读不写盘及目录排序/预算。

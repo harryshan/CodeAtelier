@@ -1,66 +1,18 @@
 /**
- * 从一个已解析的项目记忆文件构造稳定、受预算限制的 MemoryBundle。
+ * 从一个已解析的项目记忆文件构造包含全部有效条目摘要的 MemoryBundle。
  * ProjectMemoryService 在任务开始时调用，Engine 将结果固定进该任务的模型指令；本模块没有 I/O 或持久化副作用。
  *
- * 1. 从用户请求提取 Unicode 词、路径和符号片段，按标题、标签和正文的本地关键词命中评分。
- * 2. 仅选择 active、未过期条目，结合重要性、置信度、更新时间和 ID 形成稳定排序。
- * 3. 输出仅含 ID 与标题摘要，正文、来源和其他元数据由 memory_apply 的 read 按需读取；整个目录计入字符预算。
+ * 1. toBundleEntry 仅投影 ID 与标题摘要；bundleText 附文件版本、按需读取方法及历史数据边界。
+ * 2. retrieveMemoryBundle 仅检查项目启用、active 状态和有效期，按文件条目顺序保留全部有效摘要。
+ * 3. 不接收查询、不评分排序、不按条数或字符裁剪；目录仍计入整体模型输入预算，正文经 memory_apply read 按需读取。
  */
 
-import {
-  MAX_MEMORY_BUNDLE_CHARS,
-  MAX_MEMORY_BUNDLE_ENTRIES,
-  type MemoryBundle,
-  type MemoryBundleEntry,
-  type MemoryDocument,
-  type MemoryEntry,
+import type {
+  MemoryBundle,
+  MemoryBundleEntry,
+  MemoryDocument,
+  MemoryEntry,
 } from "./types.js";
-
-function normalize(value: string) {
-  return value.normalize("NFKC").toLocaleLowerCase();
-}
-
-function tokens(value: string) {
-  return [
-    ...new Set(normalize(value).match(/[\p{L}\p{N}_.\\/-]+/gu) ?? []),
-  ].filter((token) => token.length > 1);
-}
-
-function importanceScore(importance: MemoryEntry["importance"]) {
-  return { low: 0, normal: 10, high: 40, pinned: 80 }[importance];
-}
-
-function confidenceScore(confidence: MemoryEntry["confidence"]) {
-  return { tentative: 0, observed: 5, confirmed: 10 }[confidence];
-}
-
-function score(entry: MemoryEntry, queryTokens: string[]) {
-  const title = normalize(entry.title);
-  const tags = entry.tags.map(normalize);
-  const statement = normalize(entry.statement);
-  let total =
-    importanceScore(entry.importance) + confidenceScore(entry.confidence);
-
-  for (const token of queryTokens) {
-    if (title.includes(token)) {
-      total += 30;
-    }
-
-    if (tags.some((tag) => tag === token || tag.includes(token))) {
-      total += 20;
-    }
-
-    if (statement.includes(token)) {
-      total += 5;
-    }
-  }
-
-  if (entry.kind === "constraint" || entry.kind === "decision") {
-    total += 5;
-  }
-
-  return total;
-}
 
 function toBundleEntry(entry: MemoryEntry): MemoryBundleEntry {
   return {
@@ -93,49 +45,25 @@ function bundleText(entries: MemoryBundleEntry[], version: string | null) {
   return lines.join("\n");
 }
 
-/** 以确定性排序选择当前任务可见的少量历史条目。 */
+/** 按文件顺序提供全部有效摘要，相关性由模型根据目录自行判断。 */
 export function retrieveMemoryBundle(
   document: MemoryDocument,
   version: string | null,
-  query: string,
 ): MemoryBundle {
   const now = Date.now();
-  const queryTokens = tokens(query);
-  const eligible = document.entries.filter(
-    (entry) =>
-      document.enabled &&
-      entry.status === "active" &&
-      (!entry.expiresAt || Date.parse(entry.expiresAt) > now),
-  );
-  const ranked = eligible
-    .map((entry) => ({ entry, score: score(entry, queryTokens) }))
-    .sort(
-      (left, right) =>
-        right.score - left.score ||
-        Date.parse(right.entry.updatedAt) - Date.parse(left.entry.updatedAt) ||
-        left.entry.id.localeCompare(right.entry.id),
-    );
-  const selected: MemoryBundleEntry[] = [];
-
-  for (const candidate of ranked) {
-    if (selected.length >= MAX_MEMORY_BUNDLE_ENTRIES) {
-      break;
-    }
-
-    const entry = toBundleEntry(candidate.entry);
-    if (
-      bundleText([...selected, entry], version).length > MAX_MEMORY_BUNDLE_CHARS
-    ) {
-      continue;
-    }
-
-    selected.push(entry);
-  }
+  const entries = document.entries
+    .filter(
+      (entry) =>
+        document.enabled &&
+        entry.status === "active" &&
+        (!entry.expiresAt || Date.parse(entry.expiresAt) > now),
+    )
+    .map(toBundleEntry);
 
   return {
     projectKey: document.projectKey,
     version,
-    entries: selected,
-    text: bundleText(selected, version),
+    entries,
+    text: bundleText(entries, version),
   };
 }

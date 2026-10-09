@@ -1,8 +1,8 @@
 /**
- * 编排项目记忆的文件读取、关键词检索与模型结构化维护操作。
+ * 编排项目记忆的文件读取、全部有效摘要目录与模型结构化维护操作。
  * Engine 在新任务准备阶段调用 retrieve；ToolRunner/Runtime Broker 通过同一个 apply 入口执行维护或按 ID 读取。
  *
- * 1. retrieve 将文件错误安全降级为空 bundle，记录受控状态但绝不把 Markdown 正文或查询写入日志。
+ * 1. retrieve 按工作区加载全部有效摘要，将文件错误安全降级为空 bundle，记录受控状态但绝不把 Markdown 内容写入日志。
  * 2. readEntry 只加载当前项目，核对版本、启用状态与有效期后返回完整条目；不会写回 lastUsedAt 或改变任务目录。
  * 3. apply 校验单条 read 或原维护批次；维护仍在 FileStore 版本锁内运行 Mutator 并原子提交，只返回操作摘要。
  * 4. 两条路径均不在日志记录正文，复用工具生命周期 tracing；冲突不自动重试，未知写入不自动重放。
@@ -34,14 +34,10 @@ export class ProjectMemoryService {
     this.files = new MemoryFileStore(directory);
   }
 
-  async retrieve(workspace: string, query: string): Promise<MemoryRetrieval> {
+  async retrieve(workspace: string): Promise<MemoryRetrieval> {
     try {
       const stored = await this.files.load(workspace);
-      const bundle = retrieveMemoryBundle(
-        stored.document,
-        stored.version,
-        query,
-      );
+      const bundle = retrieveMemoryBundle(stored.document, stored.version);
       this.log.info({
         event: "memory.retrieval_completed",
         module: "memory",

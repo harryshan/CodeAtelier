@@ -1,22 +1,27 @@
 /**
- * 覆盖项目记忆 Markdown 存储、关键词检索及模型维护操作的可观察核心行为。
+ * 覆盖项目记忆 Markdown 存储、全量有效摘要目录及模型维护操作的可观察核心行为。
  * 测试通过临时工作区和平台数据目录调用真实 ProjectMemoryService，不依赖真实模型、用户项目或网络。
  *
- * 1. 验证 create 会在数据目录建立按真实工作区哈希隔离的 Markdown，并可被关键词检索。
+ * 1. 验证 create 会在数据目录建立按真实工作区哈希隔离的 Markdown，并提供所有有效条目的摘要。
  * 2. 验证 archive 无需确认即可停止注入但保留可恢复记录，版本冲突不会覆盖新内容。
  * 3. 验证疑似凭据被拒绝且不会留下记忆文件，直接格式错误读取会安全降级为不可用。
- * 4. 验证目录仅含 ID/摘要，read 单独返回同项目、同版本有效条目且不写盘。
+ * 4. 验证目录按文件顺序提供全部 ID/摘要，不评分或裁剪，最大转义目录可经 Runtime IPC 传递。
+ * 5. 验证所有非 active/过期条目和禁用项目不注入；read 单独返回同项目、同版本有效条目且不写盘。
  */
 
 import { expect, it } from "vitest";
+import { randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import pino from "pino";
 import { ProjectMemoryService } from "../src/memory/service.js";
 import {
-  MAX_MEMORY_BUNDLE_CHARS,
-  MAX_MEMORY_BUNDLE_ENTRIES,
-} from "../src/memory/types.js";
+  parseMemoryDocument,
+  serializeMemoryDocument,
+} from "../src/memory/markdown.js";
+import { retrieveMemoryBundle } from "../src/memory/retriever.js";
+import { MAX_MEMORY_ENTRIES } from "../src/memory/types.js";
+import { runtimeIpcMessageSchema } from "../src/sandbox/runtime-ipc-protocol.js";
 import { temp } from "./fixtures/helpers.js";
 
 async function createFixture() {
@@ -56,7 +61,7 @@ function createMutation(
   };
 }
 
-it("stores a project-isolated Markdown memory and retrieves matching active entries", async () => {
+it("stores a project-isolated Markdown memory and retrieves active summaries", async () => {
   const fixture = await createFixture();
   const created = await fixture.service.apply(
     fixture.scope,
@@ -71,10 +76,7 @@ it("stores a project-isolated Markdown memory and retrieves matching active entr
     `${created.projectKey}.md`,
   );
   const markdown = await readFile(file, "utf8");
-  const bundle = await fixture.service.retrieve(
-    fixture.workspace,
-    "如何运行 pnpm 验证？",
-  );
+  const bundle = await fixture.service.retrieve(fixture.workspace);
 
   expect(markdown).toContain("# 项目记忆");
   expect(markdown).toContain("使用 pnpm");
@@ -217,7 +219,7 @@ it("rejects reads of archived, expired, disabled or malformed memory", async () 
   const markdown = await readFile(file, "utf8");
   expect(markdown).toContain("enabled: true");
   await writeFile(file, markdown.replace("enabled: true", "enabled: false"));
-  const disabled = await fixture.service.retrieve(fixture.workspace, "pnpm");
+  const disabled = await fixture.service.retrieve(fixture.workspace);
   expect(disabled.bundle?.entries).toEqual([]);
   await expect(
     read(disabled.bundle!.version, active.operations[0].id),
@@ -226,36 +228,104 @@ it("rejects reads of archived, expired, disabled or malformed memory", async () 
   await expect(read(disabled.bundle!.version)).rejects.toThrow();
 });
 
-it("keeps ranking and bounded summaries without charging full bodies to the catalog", async () => {
+it("provides every summary in file order beyond the old entry and character caps", async () => {
   const fixture = await createFixture();
-  const empty = await fixture.service.retrieve(fixture.workspace, "target");
+  const empty = await fixture.service.retrieve(fixture.workspace);
   expect(empty.bundle?.version).toBeNull();
   expect(empty.bundle?.text).toContain("null");
   const template = createMutation(null).operations[0];
   const operations = Array.from({ length: 10 }, (_, index) => ({
     ...template,
-    title: index === 9 ? "target" : `摘要 ${index}`,
+    title: `摘要 ${index}${"\u0001".repeat(140)}`,
     statement: `条目 ${index}：${"历史正文。".repeat(200)}`,
-    importance: index === 0 ? "pinned" : "normal",
+    importance: index === 9 ? "pinned" : "low",
+    confidence: index === 9 ? "confirmed" : "tentative",
   }));
   const created = await fixture.service.apply(fixture.scope, {
     expectedVersion: null,
     operations,
   });
-  const first = await fixture.service.retrieve(fixture.workspace, "target");
-  const second = await fixture.service.retrieve(fixture.workspace, "target");
+  const first = await fixture.service.retrieve(fixture.workspace);
+  const second = await fixture.service.retrieve(fixture.workspace);
 
   expect(first).toEqual(second);
-  expect(first.bundle?.entries).toHaveLength(MAX_MEMORY_BUNDLE_ENTRIES);
-  expect(first.bundle?.entries.slice(0, 2)).toEqual([
-    { id: created.operations[0].id, summary: "摘要 0" },
-    { id: created.operations[9].id, summary: "target" },
-  ]);
-  expect(first.bundle!.text.length).toBeLessThanOrEqual(
-    MAX_MEMORY_BUNDLE_CHARS,
+  expect(first.bundle?.entries).toEqual(
+    created.operations.map((operation, index) => ({
+      id: operation.id,
+      summary: operations[index].title,
+    })),
   );
+  expect(first.bundle!.text.length).toBeGreaterThan(6000);
+  for (const operation of operations) {
+    expect(first.bundle?.text).toContain(JSON.stringify(operation.title));
+  }
+
   expect(first.bundle?.text).not.toContain("历史正文");
   expect(first.bundle?.text).not.toContain(template.source.summary);
+});
+
+it("transports all maximum-length escaped summaries and filters only invalid entries", async () => {
+  const fixture = await createFixture();
+  const created = await fixture.service.apply(
+    fixture.scope,
+    createMutation(null),
+  );
+  const file = path.join(
+    fixture.directory,
+    "memories",
+    `${created.projectKey}.md`,
+  );
+  const document = parseMemoryDocument(await readFile(file, "utf8"));
+  const template = document.entries[0];
+  document.entries = Array.from({ length: MAX_MEMORY_ENTRIES }, (_, index) => ({
+    ...template,
+    id: randomUUID(),
+    title: `${String(index).padStart(3, "0")}${"\u0001".repeat(157)}`,
+    updatedAt:
+      index % 2 ? "2000-01-01T00:00:00.000Z" : "2020-01-01T00:00:00.000Z",
+  }));
+  await writeFile(file, serializeMemoryDocument(document));
+  const memory = await fixture.service.retrieve(fixture.workspace);
+  expect(memory.available).toBe(true);
+  expect(memory.bundle?.entries).toEqual(
+    document.entries.map((entry) => ({ id: entry.id, summary: entry.title })),
+  );
+  expect(memory.bundle!.text.length).toBeGreaterThan(100_000);
+  const request = {
+    type: "request",
+    requestId: "start",
+    operation: "start_task",
+    body: {
+      workspace: fixture.workspace,
+      prompt: "unrelated",
+      memoryText: memory.bundle!.text,
+      settings: {
+        model: "test",
+        maxSteps: 2,
+        commandTimeoutMs: 1000,
+        contextChars: 500000,
+        outputChars: 1000,
+      },
+    },
+  };
+  expect(runtimeIpcMessageSchema.safeParse(request).success).toBe(true);
+  expect(
+    runtimeIpcMessageSchema.safeParse({
+      ...request,
+      body: { ...request.body, memoryText: "x".repeat(300_001) },
+    }).success,
+  ).toBe(false);
+
+  document.entries[0].status = "archived";
+  document.entries[1].status = "stale";
+  document.entries[2].status = "dismissed";
+  document.entries[3].expiresAt = "2000-01-01T00:00:00.000Z";
+  document.entries[4].expiresAt = new Date().toISOString();
+  document.entries[5].expiresAt = "2999-01-01T00:00:00.000Z";
+  const filtered = retrieveMemoryBundle(document, created.version);
+  expect(filtered.entries).toEqual(memory.bundle!.entries.slice(5));
+  document.enabled = false;
+  expect(retrieveMemoryBundle(document, created.version).entries).toEqual([]);
 });
 
 it("archives an entry without confirmation and rejects stale file versions", async () => {
@@ -274,7 +344,7 @@ it("archives an entry without confirmation and rejects stale file versions", asy
       },
     ],
   });
-  const bundle = await fixture.service.retrieve(fixture.workspace, "pnpm");
+  const bundle = await fixture.service.retrieve(fixture.workspace);
 
   expect(archived.operations).toEqual([
     { action: "archive", id: created.operations[0].id },
@@ -297,17 +367,14 @@ it("rejects sensitive content and degrades malformed external Markdown safely", 
       createMutation(null, "请使用 API_KEY=super-secret-token-value。"),
     ),
   ).rejects.toThrow("不能保存疑似凭据");
-  const missing = await fixture.service.retrieve(fixture.workspace, "API");
+  const missing = await fixture.service.retrieve(fixture.workspace);
   expect(missing).toMatchObject({ available: true, bundle: { entries: [] } });
 
   const key = missing.bundle?.projectKey;
   const memoryDirectory = path.join(fixture.directory, "memories");
   await mkdir(memoryDirectory, { recursive: true });
   await writeFile(path.join(memoryDirectory, `${key}.md`), "not a memory file");
-  const malformed = await fixture.service.retrieve(
-    fixture.workspace,
-    "anything",
-  );
+  const malformed = await fixture.service.retrieve(fixture.workspace);
 
   expect(malformed).toMatchObject({
     available: false,

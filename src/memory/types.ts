@@ -2,7 +2,7 @@
  * 定义项目记忆 Markdown 文件、检索 bundle 和模型维护操作的受限数据契约。
  * FileStore、Markdown 解析器、Mutator、Retriever 与 ToolRunner 都依赖本文件；它不读取磁盘、调用模型或写日志。
  *
- * 1. 常量限定单文件、条目和单次模型操作的大小，避免记忆绕过正常上下文和工具预算。
+ * 1. 常量限定存储文件、条目和单次维护操作的大小；摘要目录不另设条数或字符裁剪，仍接受整体模型预算。
  * 2. Zod schema 校验 Markdown、维护输入及同工具的单条 read；读取与写入不混合，Mutator 仍只接受维护操作。
  * 3. TypeScript 类型描述保存后的条目、来源、文件文档和检索结果，供纯函数和运行时编排复用。
  *
@@ -15,8 +15,6 @@ export const MEMORY_SCHEMA_VERSION = 1;
 export const MAX_MEMORY_FILE_BYTES = 512 * 1024;
 export const MAX_MEMORY_ENTRIES = 256;
 export const MAX_MEMORY_OPERATIONS = 16;
-export const MAX_MEMORY_BUNDLE_ENTRIES = 8;
-export const MAX_MEMORY_BUNDLE_CHARS = 6000;
 
 export const memoryKindSchema = z.enum([
   "project_fact",

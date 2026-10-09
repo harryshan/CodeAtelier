@@ -3,7 +3,7 @@
  * Sandbox Supervisor/Windows transport 必须先把连接绑定到已验证的 PID、Job、token、generation、nonce 和 lease，
  * 然后才能把已认证字节流交给 RuntimeIpcPeer；测试用 stdio 只验证 framing 和跨进程路由，不构成 W3 证据。
  *
- * 1. runtimeRequestSchema 限定模型、审批、session adapter、任务绑定子状态/问题/租约、受限 Git action、Skill 名称查询/加载、MCP 两阶段请求与一次性 Broker 命令授权；start_task 携带 Skill/MCP 公开摘要及无正文的 token 校准锚点而非连接凭据，Git push 旧入口只含调用 ID，不能扩展 Runtime 权限。
+ * 1. runtimeRequestSchema 限定模型、审批、session adapter、任务绑定子状态/问题/租约、受限 Git action、Skill 名称查询/加载、MCP 两阶段请求与一次性 Broker 命令授权；start_task 携带全量有效记忆目录、Skill/MCP 公开摘要及无正文的 token 校准锚点而非连接凭据，Git push 旧入口只含调用 ID，不能扩展 Runtime 权限。
  * 2. runtimeResponseSchema 关联原 requestId；错误只返回受限 code/message 与模型重试元数据，避免泄露宿主异常对象。
  * 3. runtimeEventSchema 承载模型 delta、取消、Runtime 生命周期以及固定 context/tool/read_file/subagent trace span；微秒时间戳由 Runtime 单调时钟提供，Broker 核验后归档，名称与属性不是任意日志通道。
  * 4. hello schema 绑定协议版本、任务和 instance；其中 Runtime 自报字段只用于一致性核对，不能替代 transport 身份。
@@ -19,8 +19,8 @@ import { contextSnapshotSchema } from "../context/types.js";
 import { subtaskSchema } from "../agent/subagent-contracts.js";
 import { gitRequestSchema } from "../tools/registry.js";
 
-// v9 增加跨任务 token 锚点及其保存/trace；旧 Runtime 须重建并 Repair。
-export const RUNTIME_IPC_PROTOCOL_VERSION = 9;
+// v10 容纳全部有效记忆标题在 JSON 转义后的目录；旧 Runtime 须重建并 Repair。
+export const RUNTIME_IPC_PROTOCOL_VERSION = 10;
 export const MAX_RUNTIME_IPC_FRAME_BYTES = 8 * 1024 * 1024;
 
 const identifier = z.string().min(1).max(120);
@@ -261,7 +261,8 @@ export const runtimeRequestSchema = z.discriminatedUnion("operation", [
           workspace: z.string().min(1).max(32_767),
           prompt: boundedText,
           settings: runtimeTaskSettingsSchema,
-          memoryText: z.string().max(100_000).optional(),
+          // 256 项 × 160 字符标题，覆盖最坏六倍 JSON 转义、UUID 和固定说明；不裁剪目录。
+          memoryText: z.string().max(300_000).optional(),
           // 64 项 × 1024 字符描述在 JSON 转义后可膨胀六倍；仍保留有界传输及模型预算。
           skillsText: z.string().max(500_000).optional(),
           // 32 个服务 × 1024 字符描述，含最坏六倍 JSON 转义和固定说明。

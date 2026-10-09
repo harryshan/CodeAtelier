@@ -404,7 +404,7 @@ it("bounds IPC anchors and rejects caller-selected sessions, raw text and old pr
 
   const hello = {
     type: "runtime_hello",
-    protocolVersion: 8,
+    protocolVersion: 9,
     taskId: "task",
     sessionId: "session",
     executionInstanceId: "instance",
@@ -412,6 +412,7 @@ it("bounds IPC anchors and rejects caller-selected sessions, raw text and old pr
   };
   expect(runtimeIpcMessageSchema.safeParse(hello).success).toBe(false);
   expect(
-    runtimeIpcMessageSchema.safeParse({ ...hello, protocolVersion: 9 }).success,
+    runtimeIpcMessageSchema.safeParse({ ...hello, protocolVersion: 10 })
+      .success,
   ).toBe(true);
 });
