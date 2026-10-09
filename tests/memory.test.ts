@@ -1,8 +1,8 @@
 /**
- * 覆盖项目记忆 Markdown 存储、全量有效摘要目录及模型维护操作的可观察核心行为。
+ * 覆盖项目记忆 JSONL 存储、全量有效摘要目录及模型维护操作的可观察核心行为。
  * 测试通过临时工作区和平台数据目录调用真实 ProjectMemoryService，不依赖真实模型、用户项目或网络。
  *
- * 1. 验证 create 会在数据目录建立按真实工作区哈希隔离的 Markdown，并提供所有有效条目的摘要。
+ * 1. 验证 create 会在数据目录建立按真实工作区哈希隔离的 JSONL，并提供所有有效条目的摘要。
  * 2. 验证 archive 无需确认即可停止注入但保留可恢复记录，版本冲突不会覆盖新内容。
  * 3. 验证疑似凭据被拒绝且不会留下记忆文件，直接格式错误读取会安全降级为不可用。
  * 4. 验证目录按文件顺序提供全部 ID/摘要，不评分或裁剪，最大转义目录可经 Runtime IPC 传递。
@@ -15,10 +15,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import pino from "pino";
 import { ProjectMemoryService } from "../src/memory/service.js";
-import {
-  parseMemoryDocument,
-  serializeMemoryDocument,
-} from "../src/memory/markdown.js";
+import { parseMemoryJsonl, serializeMemoryJsonl } from "../src/memory/jsonl.js";
 import { retrieveMemoryBundle } from "../src/memory/retriever.js";
 import { MAX_MEMORY_ENTRIES } from "../src/memory/types.js";
 import { runtimeIpcMessageSchema } from "../src/sandbox/runtime-ipc-protocol.js";
@@ -61,7 +58,7 @@ function createMutation(
   };
 }
 
-it("stores a project-isolated Markdown memory and retrieves active summaries", async () => {
+it("stores a project-isolated JSONL memory and retrieves active summaries", async () => {
   const fixture = await createFixture();
   const created = await fixture.service.apply(
     fixture.scope,
@@ -73,13 +70,24 @@ it("stores a project-isolated Markdown memory and retrieves active summaries", a
   const file = path.join(
     fixture.directory,
     "memories",
-    `${created.projectKey}.md`,
+    `${created.projectKey}.jsonl`,
   );
-  const markdown = await readFile(file, "utf8");
+  const jsonl = await readFile(file, "utf8");
   const bundle = await fixture.service.retrieve(fixture.workspace);
 
-  expect(markdown).toContain("# 项目记忆");
-  expect(markdown).toContain("使用 pnpm");
+  const records = jsonl
+    .trimEnd()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  expect(records).toHaveLength(2);
+  expect(records[0]).toMatchObject({
+    type: "project",
+    projectKey: created.projectKey,
+  });
+  expect(records[1]).toMatchObject({
+    type: "memory",
+    entry: { title: "使用 pnpm" },
+  });
   expect(bundle).toMatchObject({
     available: true,
     bundle: {
@@ -99,7 +107,7 @@ it("stores a project-isolated Markdown memory and retrieves active summaries", a
   expect(bundle.bundle?.text).not.toContain("当前任务已检查 package.json。");
   expect(bundle.bundle?.text).toContain("read");
   await expect(
-    readFile(path.join(fixture.workspace, "memories", "x.md")),
+    readFile(path.join(fixture.workspace, "memories", "x.jsonl")),
   ).rejects.toThrow();
 });
 
@@ -116,7 +124,7 @@ it("reads complete memory on demand without writes or cross-project access", asy
   const file = path.join(
     fixture.directory,
     "memories",
-    `${created.projectKey}.md`,
+    `${created.projectKey}.jsonl`,
   );
   const before = await readFile(file, "utf8");
   const result = await fixture.service.apply(fixture.scope, request);
@@ -205,7 +213,7 @@ it("rejects reads of archived, expired, disabled or malformed memory", async () 
   const file = path.join(
     fixture.directory,
     "memories",
-    `${created.projectKey}.md`,
+    `${created.projectKey}.jsonl`,
   );
   const active = await fixture.service.apply(
     fixture.scope,
@@ -216,9 +224,9 @@ it("rejects reads of archived, expired, disabled or malformed memory", async () 
   ).resolves.toMatchObject({
     operations: [{ action: "read", entry: { statement: "新的有效条目" } }],
   });
-  const markdown = await readFile(file, "utf8");
-  expect(markdown).toContain("enabled: true");
-  await writeFile(file, markdown.replace("enabled: true", "enabled: false"));
+  const jsonl = await readFile(file, "utf8");
+  expect(jsonl).toContain('"enabled":true');
+  await writeFile(file, jsonl.replace('"enabled":true', '"enabled":false'));
   const disabled = await fixture.service.retrieve(fixture.workspace);
   expect(disabled.bundle?.entries).toEqual([]);
   await expect(
@@ -273,9 +281,9 @@ it("transports all maximum-length escaped summaries and filters only invalid ent
   const file = path.join(
     fixture.directory,
     "memories",
-    `${created.projectKey}.md`,
+    `${created.projectKey}.jsonl`,
   );
-  const document = parseMemoryDocument(await readFile(file, "utf8"));
+  const document = parseMemoryJsonl(await readFile(file, "utf8"));
   const template = document.entries[0];
   document.entries = Array.from({ length: MAX_MEMORY_ENTRIES }, (_, index) => ({
     ...template,
@@ -284,7 +292,7 @@ it("transports all maximum-length escaped summaries and filters only invalid ent
     updatedAt:
       index % 2 ? "2000-01-01T00:00:00.000Z" : "2020-01-01T00:00:00.000Z",
   }));
-  await writeFile(file, serializeMemoryDocument(document));
+  await writeFile(file, serializeMemoryJsonl(document));
   const memory = await fixture.service.retrieve(fixture.workspace);
   expect(memory.available).toBe(true);
   expect(memory.bundle?.entries).toEqual(
@@ -358,7 +366,7 @@ it("archives an entry without confirmation and rejects stale file versions", asy
   ).rejects.toThrow("已被其他操作更新");
 });
 
-it("rejects sensitive content and degrades malformed external Markdown safely", async () => {
+it("rejects sensitive content and degrades malformed external JSONL safely", async () => {
   const fixture = await createFixture();
 
   await expect(
@@ -373,7 +381,10 @@ it("rejects sensitive content and degrades malformed external Markdown safely", 
   const key = missing.bundle?.projectKey;
   const memoryDirectory = path.join(fixture.directory, "memories");
   await mkdir(memoryDirectory, { recursive: true });
-  await writeFile(path.join(memoryDirectory, `${key}.md`), "not a memory file");
+  await writeFile(
+    path.join(memoryDirectory, `${key}.jsonl`),
+    "not a memory file",
+  );
   const malformed = await fixture.service.retrieve(fixture.workspace);
 
   expect(malformed).toMatchObject({

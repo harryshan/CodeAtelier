@@ -1,5 +1,13 @@
 # 初版验证记录
 
+## 项目记忆 JSONL 快照与旧 Markdown 迁移（2026-10-09）
+
+- 按 D142 新增 JSONL 严格编解码：项目首行、逐条完整记录、保留文本与文件顺序，拒绝重复 ID、坏记录/字段/版本、BOM/非法 UTF-8、空行、超限及敏感内容。FileStore 新写入仅生成完整 JSONL 快照；读取兼容旧 Markdown，不自动写盘。首次成功维护时转存并保留旧文件，JSONL 优先且损坏时不回退。
+- Windows / Node.js 26.10.0：相关 Memory/schema/Engine/独立 Runtime 首轮 42 项通过；新增及扩展回归最终纳入 `pnpm test --maxWorkers=4`，91 个文件、668 项通过、1 项原有跳过。其中 memory-jsonl.test.ts 的 8 项覆盖文本往返、严格边界、只读旧文件、迁移后重启、并发/版本冲突、外部修改、失败保留原件/临时文件清理、坏 JSONL 不回退及转换膨胀超限。
+- `pnpm check` 的类型、ESLint、Prettier 通过；默认并发全量测试在未修改的 core 命令终止用例发生 15 秒超时/清理 EBUSY，process-tree pipe 用例触发兜底清理，结果 666 通过、2 失败、1 跳过。随后 `pnpm test tests/core.test.ts tests/process-tree.test.ts --maxWorkers=1` 19 项通过，限 4 worker 全量也通过。未改断言、超时或默认并发，不将该结果描述为原样 pnpm check 完整通过；负载下进程清理时序风险仍在。
+- 独立 `pnpm build:test` 通过，包含服务端/Web/Windows Runtime 构建；保留既有 Zod 注释及 bundle 大小警告。文档本地文件链接检查通过。日志位于忽略的 `.local/memory-jsonl-check.log`、`memory-jsonl-process-check.log`、`memory-jsonl-unit.log` 和 `memory-jsonl-build.log`。
+- Runtime 无 Node/pnpm，验证经 Broker 宿主运行。未改 UI/HTTP/SSE，未运行浏览器 E2E、Evaluation、真实模型或 macOS/Linux 验收；本机 hard link 发布测试不等于全部文件系统兼容性验证。不改 IPC v11、不重载服务、不 Repair 安装副本、不批量迁移真实记忆；新后端使用后在首次成功维护时才转存旧文件。
+
 ## 无总时限工具与五分钟模型状态检查（2026-10-10，本地）
 
 - 按 D141 移除命令/Broker 命令/Git/MCP 操作的固定总期限，保留握手、模型请求及清理期限。新增监视器和独立主模型适配器；五分钟虚拟时钟覆盖最新尾部、并发隔离、continue 不重放、stop 等待清理、复查失败继续、完成竞争和用户取消。真实宿主 Engine 验证审批期间不检查、输出截断后的最新状态、模型停止后主对话继续，以及历史/replay/trace/usage。

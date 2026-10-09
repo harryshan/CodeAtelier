@@ -280,8 +280,8 @@ Broker 命令与 Git push 可以使用宿主用户可访问的文件、网络和
 
 `src/web/App.tsx` 按服务端保存的真实 `workspace` 路径分组已有会话，展示项目目录、对话数量和独立会话列表。项目名称右侧的加号直接以该路径调用 `POST /api/sessions` 创建独立记录；连接其他项目使用页面内目录表单，不使用“新建项目对话”弹窗。桌面保持双栏布局；最大宽度 650px 的手机视口将侧栏变为从顶部菜单打开的导航抽屉，选择会话、打开项目/设置/服务操作、点击遮罩或按 Escape 都会关闭抽屉。
 
-Engine 在每个任务开始时，从平台数据目录按真实路径 SHA-256 隔离的 Markdown 文件加载一次记忆，按文件顺序将所有已启用、active、未过期条目的 ID 和标题摘要固定追加到模型指令，不注入正文或来源。不再接收查询、关键词评分、排序或按目录条数/字符裁剪；目录整体仍计入模型输入预算。模型通过现有 `memory_apply` 的 `operations:[{action:"read",id}]` 按需读取一条完整记忆；服务核对项目、文件版本、启用状态、active 状态与有效期，读取不写盘。原 create/update/archive 批次保持兼容，FileStore 仍串行化写入并原子替换文件。
+Engine 在每个任务开始时，从平台数据目录按真实路径 SHA-256 隔离的 JSONL 快照加载一次记忆（不存在时兼容读取旧 Markdown），按文件顺序将所有已启用、active、未过期条目的 ID 和标题摘要固定追加到模型指令，不注入正文或来源。不再接收查询、关键词评分、排序或按目录条数/字符裁剪；目录整体仍计入模型输入预算。模型通过现有 `memory_apply` 的 `operations:[{action:"read",id}]` 按需读取一条完整记忆；服务核对项目、文件版本、启用状态、active 状态与有效期，读取不写盘。原 create/update/archive 批次保持兼容，FileStore 仍串行化写入并复核版本；`jsonl.ts` 严格解析首行项目元数据和后续 memory/entry 记录，保留原始文本和条目顺序。维护只写完整 JSONL 快照，不追加事件；已有目标由 flush 后的临时文件 rename 替换，首次创建/迁移通过同目录 link 原子发布且不覆盖竞争目标，原 Markdown 保留为备份。读取完全无副作用，坏 JSONL 不回退旧文件。
 
-宿主、启动前 fallback 和 Runtime 复用该服务；Runtime 沿用已认证的 `memory_apply` IPC；共享协议 v10 将 start_task.memoryText 的传输上限扩至 300000 字符，容纳现有存储上限内全部标题的最坏 JSON 转义，不作为目录裁剪规则。旧 Runtime 需重建/Repair，由 Broker 绑定真实工作区，不增加任意路径能力或新工具。该能力不新增项目 SQLite 表、不修改工作区、不需要人工确认。tracing、日志和记忆 notice 不含正文；按需读取结果作为普通工具结果进入受保护的会话上下文、历史与 Replay Case，接受既有输出限制和压缩规则。
+宿主、启动前 fallback 和 Runtime 复用该服务；Runtime 沿用已认证的 `memory_apply` IPC；共享协议现为 v11（D141），沿用 v10 扩大的 start_task.memoryText 传输上限 300000 字符，容纳现有存储上限内全部标题的最坏 JSON 转义，不作为目录裁剪规则。旧 Runtime 需重建/Repair，由 Broker 绑定真实工作区，不增加任意路径能力或新工具。该能力不新增项目 SQLite 表、不修改工作区、不需要人工确认。tracing、日志和记忆 notice 不含正文；按需读取结果作为普通工具结果进入受保护的会话上下文、历史与 Replay Case，接受既有输出限制和压缩规则。
 
 项目记忆 UI、来源失效验证和手工恢复/清空仍待实现，详见 [项目记忆系统设计](memory-system.md)。
