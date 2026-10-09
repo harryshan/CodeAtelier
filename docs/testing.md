@@ -110,7 +110,7 @@ create:true 嵌套创建、已有目标及最后一次预检之后出现目标�
 
 主要测试：process.test.ts、process-tree.test.ts、core.test.ts、permissions.test.ts、tool-schema.test.ts。
 
-不存在的命令及子进程实际错误、输出与退出码、截断、UTF-8/ANSI 分块、颜色环境与控制符清理、API key 不继承、内部 Windows/POSIX shell 选择、单一 command 契约、复合命令合并、直接 Git/提权拒绝、取消和超时；输出持久化失败及 stdin 提前关闭不会产生未捕获异常，停止子进程后返回错误。Windows 专属 process-tree.test.ts 延迟真实 taskkill，验证不能抢先杀父 shell；pipe/file-backed 均须让后代退出并释放输出资源，安全兜底清理一旦触发则测试失败。
+不存在的命令及子进程实际错误、输出与退出码、截断、UTF-8/ANSI 分块、颜色环境与控制符清理、API key 不继承、内部 Windows/POSIX shell 选择、单一 command 契约、复合命令合并、含 Git 命令不静态过滤、提权拒绝、取消和超时；输出持久化失败及 stdin 提前关闭不会产生未捕获异常，停止子进程后返回错误。Windows 专属 process-tree.test.ts 延迟真实 taskkill，验证不能抢先杀父 shell；pipe/file-backed 均须让后代退出并释放输出资源，安全兜底清理一旦触发则测试失败。
 
 ### Sandbox Broker 与专用用户目标
 
@@ -455,10 +455,11 @@ tool-schema.test.ts 覆盖根节点、oneOf 禁用、包装解包、历史兼容
 - `tests/agent-runtime-engine.test.ts` 使用真实 Node 子进程验证取消时先收到 `runtime_complete`，随后 clean 关闭；即使 Runtime 已回报终态，只要原生清理返回 orphaned，任务也记为失败、执行实例保留 unknown。安装态脚本最终核对取消后无 unknown 和活动 generation lease。
 - `tests/sandbox-account-generation.test.ts` 与 `tests/sandbox.test.ts` 保留旧 Push Runner 的机制测试，但不证明当前产品 push 的网络或凭据隔离。真实 remote、凭据、hook/helper 和取消清理仍须手动验收。
 
-### run_command 不过滤 Git（D137）
+### 通用命令工具不按 Git 关键词过滤（D137、D140）
 
 - `tests/permissions.test.ts` 与 `tests/agent-runtime-tools.test.ts` 覆盖直接 `git --version`、管道中的 Git 以及仅输出 `git status` 文本；断言实际退出码和输出，不创建提交或访问远端。
-- 宿主命令仍经过审批，拒绝时不创建执行实例；Runtime 命令沿用原执行边界且不请求审批。提权拒绝、专用 Git 的 Broker 分流及 `run_with_permissions` 的 Git 过滤继续覆盖。
+- 宿主命令仍经过审批，拒绝时不创建执行实例；Runtime 命令沿用原执行边界且不请求审批。提权拒绝与专用 Git 的 Broker 分流继续覆盖。
+- `tests/agent-runtime-tools.test.ts` 对 `run_with_permissions` 覆盖直接 Git、管道、普通输出文本与搜索参数；通过 adapter 夹具验证完整命令/理由/callId、结果和 prepare → start → execute 顺序。Broker 审批拒绝、宿主直接调用及 Runtime 缺少 adapter 时均不得进入执行阶段；不以 mock 结果声称真实 Git 已执行。
 - 测试验证 ToolRunner 分流与本机 shell，不代替固定账户安装态或跨平台验收。
 
 ### Agent Runtime 经审批的 Broker 宿主命令

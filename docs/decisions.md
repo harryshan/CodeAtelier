@@ -1112,6 +1112,14 @@
 - 边界：确认的是用户当前 Windows 环境下的日常功能可用性，不推导错误身份、复杂 ACL、强制终止、异常恢复、真实远端兼容性等全部专项矩阵通过。Everyone restricting SID、同账户共享风险、Broker 宿主权限及 macOS/Linux 不加载该后端等限制不变。
 - 影响：只更新状态、使用说明和证据记录；默认关闭与安装/Repair 流程不变，不自动安装或开放 subagent。subagent 仍按自身发布门禁及专项证据单独评估。本次不改变运行时、权限、配置或 tracing，无新增运行事件。
 
+## D140：run_with_permissions 与 run_command 一致移除 Git 过滤
+
+- 日期：2026-10-09
+- 状态：用户明确要求移除 `run_with_permissions` 的 Git 过滤，与 `run_command` 保持一致。
+- 决定：删除 ToolRunner 扩权命令分支的 `containsGitCommand` 检查及无调用方的检测函数；不更换解析器或新增过滤。替代 D137 中保留该分支过滤的部分，工具说明与模型提示仍保持原样，继续优先使用专用 `git` 工具。
+- 原因与边界：避免直接 Git 命令以及搜索参数、输出文本因相同关键词在两种工具中受到不同处理。`run_with_permissions` 仍只供已认证 Runtime 使用，完整命令与理由经 Broker 宿主审批；批准后走原宿主命令路径，不自动转交 Git action，不继承专用工具的参数、hook、目标校验或 push 专属调度。现有专用 Git 工具与 Sandbox ACL/WFP 不变，模型指导不是 shell 强制隔离。
+- 观测与验证：复用现有工具与 `broker.command` 的开始、终态、失败/取消、耗时和调用关联 trace，不新增阶段或正文属性。回归先复现旧过滤拒绝，再覆盖直接 Git、管道、普通文本、搜索参数、准备/执行顺序、审批拒绝和 Runtime 身份/adapter 校验。未执行真实远程 Git 操作；固定账户安装态副本需重建/Repair 才使用新代码，不自动修改安装。
+
 ## D139：向模型提供所有有效项目记忆的摘要
 
 - 日期：2026-10-09

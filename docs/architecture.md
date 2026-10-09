@@ -224,7 +224,7 @@ Sandbox 关闭、macOS/Linux 或 Windows 启动前 fallback 仍沿用宿主审�
 
 若 Runtime 中的命令需要额外能力，模型必须改用 `run_with_permissions`，提交完整命令和理由；Broker 重新审批后以宿主用户身份启动进程，不再通过 Capability Runner 的文件根或 HTTPS host 限制。结果单独标为 `broker-command/host-process`，不能算作 Sandbox 内执行。
 
-Broker 命令与 Git push 可以使用宿主用户可访问的文件、网络和凭据；审批必须按此完整权限审查。Git push 仍由专用 `git` 工具固定 upstream/OID/ref 参数并逐次审批，`run_with_permissions` 保留 Git 过滤。`run_command` 不再提供这一静态阻断，因此专用 Git 工具的参数校验不能视为所有 shell 命令的强制边界。
+Broker 命令与 Git push 可以使用宿主用户可访问的文件、网络和凭据；审批必须按此完整权限审查。专用 `git` 工具的 push 仍固定 upstream/OID/ref 参数并逐次审批。`run_command`（D137）与 `run_with_permissions`（D140）均不再提供 Git 关键词静态阻断；后者仍经 Broker 宿主审批，批准后作为通用宿主命令执行，不自动转交 Git action。因此专用 Git 工具的参数校验与 push 专属调度不能视为所有 shell 命令的强制边界。
 
 按账户 SID 的持久 WFP fence 始终只允许固定 Broker relay/proxy 端口；host 边界不限制上传内容、URL path 或命令将哪些可读数据发送出去。supervisor 记录 process handle、PID 和创建时间，以 Job 管理后代。
 

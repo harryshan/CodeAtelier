@@ -3,7 +3,8 @@
  * 这里只验证 TypeScript 分流，不替代 Windows token/Job 或 Broker 宿主 Git 夹具。
  *
  * 1. 普通 run_command 在既有 Runtime 权限内不再审批，不过滤 Git 命令或普通文本，使用本进程 shell 并发布 sandboxed_tool_process PID。
- * 2. 扩展权限调用先由 adapter 准备，取得执行槽后才消费准备结果；Git push 在 Runtime 内不运行 Git 预检，只把调用 ID 交给 Broker。
+ * 2. 扩展权限调用不按 Git 关键词过滤，先由 adapter 审批准备，取得执行槽后才消费结果；夹具验证命令/理由/callId 原样传递、返回值与阶段顺序，拒绝或缺少 Runtime 身份/adapter 时不执行。
+ *    Git push 在 Runtime 内不运行 Git 预检，只把调用 ID 交给 Broker。
  * 3. 注入的旧 SandboxBroker 若被调用会使测试失败，防止迁移后继续每条命令启动 supervisor。
  */
 
@@ -57,18 +58,82 @@ it.each([
   },
 );
 
-it("routes an explicit permission request to one Broker host command", async () => {
-  const root = await temp();
+it.each([
+  "node external-task.js",
+  "git --version",
+  "echo ok | git --version",
+  'echo "git status"',
+  "Select-String -Pattern 'git' README.md",
+])(
+  "routes %s to one Broker host command without Git filtering",
+  async (command) => {
+    const root = await temp();
+    const config = new Config(await temp());
+    const stages: string[] = [];
+    const executePrepared = vi.fn(async () => {
+      stages.push("execute");
+
+      return {
+        executionInstanceId: "capability-1",
+        output: "host-result",
+        exitCode: 0,
+        truncated: false,
+      };
+    });
+    const prepareRunWithPermissions = vi.fn(async () => {
+      stages.push("prepare");
+
+      return executePrepared;
+    });
+    const onExecutionStart = async () => {
+      stages.push("start");
+    };
+
+    const runner = new ToolRunner({
+      root,
+      sessionId: "session-1",
+      taskId: "task-1",
+      signal: new AbortController().signal,
+      settings: config.settings,
+      approvals: { request: vi.fn(async () => false) },
+      executionBoundary: "agent-runtime",
+      prepareRunWithPermissions,
+      emit: () => {},
+    });
+    const request = {
+      command,
+      reason: "需要 Broker 宿主权限运行外部工具。",
+    };
+
+    await expect(
+      runner
+        .forCall("capability-call")
+        .execute("run_with_permissions", request, onExecutionStart),
+    ).resolves.toMatchObject({
+      executionInstanceId: "capability-1",
+      output: "host-result",
+      exitCode: 0,
+      truncated: false,
+    });
+    expect(prepareRunWithPermissions).toHaveBeenCalledWith(
+      request,
+      expect.any(AbortSignal),
+      "capability-call",
+    );
+    expect(prepareRunWithPermissions).toHaveBeenCalledOnce();
+    expect(executePrepared).toHaveBeenCalledOnce();
+    expect(stages).toEqual(["prepare", "start", "execute"]);
+  },
+);
+
+it("does not start a Git-containing host command when Broker approval rejects", async () => {
   const config = new Config(await temp());
-  const executePrepared = vi.fn(async () => ({
-    executionInstanceId: "capability-1",
-    output: "elevated-result",
-    exitCode: 0,
-    truncated: false,
-  }));
-  const prepareRunWithPermissions = vi.fn(async () => executePrepared);
+  const onExecutionStart = vi.fn(async () => {});
+  const prepareRunWithPermissions = vi.fn(async () => {
+    throw new Error("Broker approval rejected");
+  });
   const runner = new ToolRunner({
-    root,
+    root: await temp(),
     sessionId: "session-1",
     taskId: "task-1",
     signal: new AbortController().signal,
@@ -78,31 +143,52 @@ it("routes an explicit permission request to one Broker host command", async () 
     prepareRunWithPermissions,
     emit: () => {},
   });
-  const request = {
-    command: "node external-task.js",
-    reason: "需要 Broker 宿主权限运行外部工具。",
-  };
 
   await expect(
-    runner.forCall("capability-call").execute("run_with_permissions", request),
-  ).resolves.toMatchObject({
-    executionInstanceId: "capability-1",
-    output: "elevated-result",
-  });
-  expect(prepareRunWithPermissions).toHaveBeenCalledWith(
-    request,
-    expect.any(AbortSignal),
-    "capability-call",
-  );
-  await expect(
-    runner.execute("run_with_permissions", {
-      command: "git --version",
-      reason: "Git 仍须使用专用工具请求宿主执行。",
-    }),
-  ).rejects.toThrow("Git 操作必须使用受限的 git 工具");
+    runner.execute(
+      "run_with_permissions",
+      { command: "git --version", reason: "检查宿主 Git 版本。" },
+      onExecutionStart,
+    ),
+  ).rejects.toThrow("Broker approval rejected");
   expect(prepareRunWithPermissions).toHaveBeenCalledOnce();
-  expect(executePrepared).toHaveBeenCalledOnce();
+  expect(onExecutionStart).not.toHaveBeenCalled();
 });
+
+it.each(["host-process", "missing-adapter"])(
+  "rejects permission requests with %s before preparing or executing",
+  async (boundary) => {
+    const config = new Config(await temp());
+    const executePrepared = vi.fn(async () => {
+      throw new Error("身份或 adapter 缺失时不应执行宿主命令");
+    });
+    const prepareRunWithPermissions = vi.fn(async () => executePrepared);
+    const onExecutionStart = vi.fn(async () => {});
+    const runner = new ToolRunner({
+      root: await temp(),
+      sessionId: "session-1",
+      taskId: "task-1",
+      signal: new AbortController().signal,
+      settings: config.settings,
+      approvals: { request: vi.fn(async () => false) },
+      ...(boundary === "missing-adapter"
+        ? { executionBoundary: "agent-runtime" as const }
+        : { prepareRunWithPermissions }),
+      emit: () => {},
+    });
+
+    await expect(
+      runner.execute(
+        "run_with_permissions",
+        { command: "git --version", reason: "检查宿主 Git 版本。" },
+        onExecutionStart,
+      ),
+    ).rejects.toThrow("只可由已认证的 Agent Runtime 请求");
+    expect(prepareRunWithPermissions).not.toHaveBeenCalled();
+    expect(executePrepared).not.toHaveBeenCalled();
+    expect(onExecutionStart).not.toHaveBeenCalled();
+  },
+);
 
 it("routes every Git action to Broker without spawning a Runtime Git process", async () => {
   const root = await temp();
