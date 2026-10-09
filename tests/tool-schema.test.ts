@@ -4,7 +4,8 @@
  *
  * 1. 检查根节点为 object、禁止 oneOf，再递归遍历工具定义及数组项，核对 strict 对象的属性均为必填且禁止额外属性。
  * 2. 检查每个新调用的 execution/arguments 调度信封，及唯一 edit_files 工具的 create 分支、带版本和行范围的已有文件补丁、可见空白读取和 run_command 的单一 command 字符串。
- * 3. 检查 run_with_permissions 只请求命令和理由、不伪装成受限根/host 授权；再检查单一 git 工具及内置网页搜索契约。
+ * 3. 检查 memory_apply 兼容原维护参数并仅允许单独按 ID 读取，不注册额外读取工具。
+ * 4. 检查 run_with_permissions 只请求命令和理由、不伪装成受限根/host 授权；再检查单一 git 工具及内置网页搜索契约。
  */
 
 import { expect, it } from "vitest";
@@ -249,6 +250,25 @@ it("accepts only the structured current-project memory maintenance operation", (
       operations: [{ ...operation, arbitraryMarkdown: "# 不允许" }],
     }).success,
   ).toBe(false);
+  const read = {
+    expectedVersion: "a".repeat(64),
+    operations: [
+      { action: "read", id: "00000000-0000-0000-0000-000000000000" },
+    ],
+  };
+  expect(schemas.memory_apply.parse(read)).toEqual(read);
+  for (const operations of [
+    [...read.operations, operation],
+    [...read.operations, ...read.operations],
+    [{ action: "read", id: "../other-project" }],
+    [{ ...read.operations[0], workspace: "other-project" }],
+  ]) {
+    expect(
+      schemas.memory_apply.safeParse({ ...read, operations }).success,
+    ).toBe(false);
+  }
+
+  expect(definitions.some((tool) => tool.name === "memory_read")).toBe(false);
   expect(definition?.description).toContain("without a user approval");
   expect(definition?.description).toContain("project-wide deletion");
 });

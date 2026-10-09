@@ -1,17 +1,22 @@
 /**
  * 编排项目记忆的文件读取、关键词检索与模型结构化维护操作。
- * Engine 在新任务准备阶段调用 retrieve；ToolRunner 在 `memory_apply` 中调用 apply，并向模型返回不含正文的结果摘要。
+ * Engine 在新任务准备阶段调用 retrieve；ToolRunner/Runtime Broker 通过同一个 apply 入口执行维护或按 ID 读取。
  *
  * 1. retrieve 将文件错误安全降级为空 bundle，记录受控状态但绝不把 Markdown 正文或查询写入日志。
- * 2. apply 绑定当前任务/工作区，先用 Zod 校验模型输入，再在 FileStore 版本锁内运行 Mutator 并原子提交。
- * 3. 返回的版本和操作 ID 供后续模型调用处理冲突；未知写入结果仍由恢复路径重新读取，不能自动重放。
+ * 2. readEntry 只加载当前项目，核对版本、启用状态与有效期后返回完整条目；不会写回 lastUsedAt 或改变任务目录。
+ * 3. apply 校验单条 read 或原维护批次；维护仍在 FileStore 版本锁内运行 Mutator 并原子提交，只返回操作摘要。
+ * 4. 两条路径均不在日志记录正文，复用工具生命周期 tracing；冲突不自动重试，未知写入不自动重放。
  */
 
 import type { Logger } from "pino";
 import { MemoryFileStore, MemoryVersionConflictError } from "./file-store.js";
 import { applyMemoryMutation } from "./mutator.js";
 import { retrieveMemoryBundle } from "./retriever.js";
-import { memoryMutationSchema, type MemoryScope } from "./types.js";
+import {
+  memoryMutationSchema,
+  memoryToolSchema,
+  type MemoryScope,
+} from "./types.js";
 
 export interface MemoryRetrieval {
   available: boolean;
@@ -61,8 +66,66 @@ export class ProjectMemoryService {
     }
   }
 
+  private async readEntry(
+    scope: MemoryScope,
+    version: string | null,
+    id: string,
+  ) {
+    try {
+      const stored = await this.files.load(scope.workspace);
+      if (stored.version !== version) {
+        throw new MemoryVersionConflictError();
+      }
+
+      const entry = stored.document.entries.find(
+        (candidate) => candidate.id === id,
+      );
+      if (
+        !stored.document.enabled ||
+        !entry ||
+        entry.status !== "active" ||
+        (entry.expiresAt && Date.parse(entry.expiresAt) <= Date.now())
+      ) {
+        throw new Error("记忆条目不可读取：不存在、已停用或已失效。");
+      }
+
+      this.log.info({
+        event: "memory.read_completed",
+        module: "memory",
+        sessionId: scope.sessionId,
+        taskId: scope.taskId,
+        entries: 1,
+      });
+
+      return {
+        projectKey: stored.projectKey,
+        version: stored.version,
+        operations: [{ action: "read" as const, id: entry.id, entry }],
+      };
+    } catch (error) {
+      this.log.warn({
+        event: "memory.read_failed",
+        module: "memory",
+        sessionId: scope.sessionId,
+        taskId: scope.taskId,
+        code:
+          error instanceof MemoryVersionConflictError
+            ? "memory_version_conflict"
+            : "memory_read_failed",
+        errorName: error instanceof Error ? error.name : typeof error,
+      });
+      throw error;
+    }
+  }
+
   async apply(scope: MemoryScope, raw: unknown) {
-    const mutation = memoryMutationSchema.parse(raw);
+    const request = memoryToolSchema.parse(raw);
+    const operation = request.operations[0];
+    if (operation.action === "read") {
+      return this.readEntry(scope, request.expectedVersion, operation.id);
+    }
+
+    const mutation = memoryMutationSchema.parse(request);
     try {
       const stored = await this.files.update(
         scope.workspace,

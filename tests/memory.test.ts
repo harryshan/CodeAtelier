@@ -5,6 +5,7 @@
  * 1. 验证 create 会在数据目录建立按真实工作区哈希隔离的 Markdown，并可被关键词检索。
  * 2. 验证 archive 无需确认即可停止注入但保留可恢复记录，版本冲突不会覆盖新内容。
  * 3. 验证疑似凭据被拒绝且不会留下记忆文件，直接格式错误读取会安全降级为不可用。
+ * 4. 验证目录仅含 ID/摘要，read 单独返回同项目、同版本有效条目且不写盘。
  */
 
 import { expect, it } from "vitest";
@@ -12,6 +13,10 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import pino from "pino";
 import { ProjectMemoryService } from "../src/memory/service.js";
+import {
+  MAX_MEMORY_BUNDLE_CHARS,
+  MAX_MEMORY_BUNDLE_ENTRIES,
+} from "../src/memory/types.js";
 import { temp } from "./fixtures/helpers.js";
 
 async function createFixture() {
@@ -80,14 +85,177 @@ it("stores a project-isolated Markdown memory and retrieves matching active entr
       entries: [
         expect.objectContaining({
           id: created.operations[0].id,
-          title: "使用 pnpm",
+          summary: "使用 pnpm",
         }),
       ],
     },
   });
+  expect(bundle.bundle?.entries).toEqual([
+    { id: created.operations[0].id, summary: "使用 pnpm" },
+  ]);
+  expect(bundle.bundle?.text).not.toContain("项目使用 pnpm 运行验证命令。");
+  expect(bundle.bundle?.text).not.toContain("当前任务已检查 package.json。");
+  expect(bundle.bundle?.text).toContain("read");
   await expect(
     readFile(path.join(fixture.workspace, "memories", "x.md")),
   ).rejects.toThrow();
+});
+
+it("reads complete memory on demand without writes or cross-project access", async () => {
+  const fixture = await createFixture();
+  const created = await fixture.service.apply(
+    fixture.scope,
+    createMutation(null),
+  );
+  const request = {
+    expectedVersion: created.version,
+    operations: [{ action: "read", id: created.operations[0].id }],
+  };
+  const file = path.join(
+    fixture.directory,
+    "memories",
+    `${created.projectKey}.md`,
+  );
+  const before = await readFile(file, "utf8");
+  const result = await fixture.service.apply(fixture.scope, request);
+
+  expect(result).toMatchObject({
+    projectKey: created.projectKey,
+    version: created.version,
+    operations: [
+      {
+        action: "read",
+        id: created.operations[0].id,
+        entry: {
+          statement: "项目使用 pnpm 运行验证命令。",
+          source: { summary: "当前任务已检查 package.json。" },
+          status: "active",
+        },
+      },
+    ],
+  });
+  expect(await readFile(file, "utf8")).toBe(before);
+  await expect(
+    fixture.service.apply(fixture.scope, {
+      ...request,
+      operations: [
+        { action: "read", id: "00000000-0000-0000-0000-000000000000" },
+      ],
+    }),
+  ).rejects.toThrow("不可读取");
+  await expect(
+    fixture.service.apply(
+      { ...fixture.scope, workspace: await temp() },
+      {
+        ...request,
+        expectedVersion: null,
+      },
+    ),
+  ).rejects.toThrow("不可读取");
+  await expect(
+    fixture.service.apply(fixture.scope, {
+      ...request,
+      expectedVersion: "b".repeat(64),
+    }),
+  ).rejects.toThrow("已被其他操作更新");
+  await expect(
+    fixture.service.apply(fixture.scope, {
+      ...request,
+      operations: [
+        ...request.operations,
+        ...createMutation(created.version).operations,
+      ],
+    }),
+  ).rejects.toThrow();
+  expect(await readFile(file, "utf8")).toBe(before);
+});
+
+it("rejects reads of archived, expired, disabled or malformed memory", async () => {
+  const fixture = await createFixture();
+  const mutation = createMutation(null);
+  const created = await fixture.service.apply(fixture.scope, mutation);
+  const id = created.operations[0].id;
+  const archived = await fixture.service.apply(fixture.scope, {
+    expectedVersion: created.version,
+    operations: [{ action: "archive", id, reason: "已失效" }],
+  });
+  const read = (version: string | null, entryId = id) =>
+    fixture.service.apply(fixture.scope, {
+      expectedVersion: version,
+      operations: [{ action: "read", id: entryId }],
+    });
+
+  await expect(read(archived.version)).rejects.toThrow("不可读取");
+  const expired = await fixture.service.apply(fixture.scope, {
+    expectedVersion: archived.version,
+    operations: [
+      {
+        ...mutation.operations[0],
+        statement: "过期约束",
+        expiresAt: "2000-01-01T00:00:00.000Z",
+      },
+    ],
+  });
+  await expect(read(expired.version, expired.operations[0].id)).rejects.toThrow(
+    "不可读取",
+  );
+
+  const file = path.join(
+    fixture.directory,
+    "memories",
+    `${created.projectKey}.md`,
+  );
+  const active = await fixture.service.apply(
+    fixture.scope,
+    createMutation(expired.version, "新的有效条目"),
+  );
+  await expect(
+    read(active.version, active.operations[0].id),
+  ).resolves.toMatchObject({
+    operations: [{ action: "read", entry: { statement: "新的有效条目" } }],
+  });
+  const markdown = await readFile(file, "utf8");
+  expect(markdown).toContain("enabled: true");
+  await writeFile(file, markdown.replace("enabled: true", "enabled: false"));
+  const disabled = await fixture.service.retrieve(fixture.workspace, "pnpm");
+  expect(disabled.bundle?.entries).toEqual([]);
+  await expect(
+    read(disabled.bundle!.version, active.operations[0].id),
+  ).rejects.toThrow("不可读取");
+  await writeFile(file, "invalid memory");
+  await expect(read(disabled.bundle!.version)).rejects.toThrow();
+});
+
+it("keeps ranking and bounded summaries without charging full bodies to the catalog", async () => {
+  const fixture = await createFixture();
+  const empty = await fixture.service.retrieve(fixture.workspace, "target");
+  expect(empty.bundle?.version).toBeNull();
+  expect(empty.bundle?.text).toContain("null");
+  const template = createMutation(null).operations[0];
+  const operations = Array.from({ length: 10 }, (_, index) => ({
+    ...template,
+    title: index === 9 ? "target" : `摘要 ${index}`,
+    statement: `条目 ${index}：${"历史正文。".repeat(200)}`,
+    importance: index === 0 ? "pinned" : "normal",
+  }));
+  const created = await fixture.service.apply(fixture.scope, {
+    expectedVersion: null,
+    operations,
+  });
+  const first = await fixture.service.retrieve(fixture.workspace, "target");
+  const second = await fixture.service.retrieve(fixture.workspace, "target");
+
+  expect(first).toEqual(second);
+  expect(first.bundle?.entries).toHaveLength(MAX_MEMORY_BUNDLE_ENTRIES);
+  expect(first.bundle?.entries.slice(0, 2)).toEqual([
+    { id: created.operations[0].id, summary: "摘要 0" },
+    { id: created.operations[9].id, summary: "target" },
+  ]);
+  expect(first.bundle!.text.length).toBeLessThanOrEqual(
+    MAX_MEMORY_BUNDLE_CHARS,
+  );
+  expect(first.bundle?.text).not.toContain("历史正文");
+  expect(first.bundle?.text).not.toContain(template.source.summary);
 });
 
 it("archives an entry without confirmation and rejects stale file versions", async () => {

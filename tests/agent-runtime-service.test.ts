@@ -4,14 +4,17 @@
  *
  * 1. Broker 先返回一次可重试错误，再返回无效 DAG；Runtime 有界重试并把无副作用错误保存给下一轮修正。
  * 2. Broker 随后返回 read_file function_call，Agent Runtime 在自己的进程内执行 ToolRunner；最终模型轮次观察到文件结果。
- * 3. 扩展权限请求保留普通 DAG 并行语义；push 独占由共享工具图测试覆盖。
- * 4. Runtime 主动报告 completed，Broker 收到后关闭通道并确认子进程干净退出。
+ * 3. 记忆目录只含 ID/摘要；Runtime 通过现有 memory_apply IPC 在 Broker 读取真实记忆正文，不直接访问宿主数据目录。
+ * 4. 扩展权限请求保留普通 DAG 并行语义；push 独占由共享工具图测试覆盖。
+ * 5. Runtime 主动报告 completed，Broker 收到后关闭通道并确认子进程干净退出。
  */
 
 import { spawn } from "node:child_process";
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { expect, it } from "vitest";
+import pino from "pino";
+import { ProjectMemoryService } from "../src/memory/service.js";
 import { RuntimeBrokerGateway } from "../src/sandbox/runtime-capability-core.js";
 import { RuntimeIpcBrokerSession } from "../src/sandbox/runtime-ipc-broker-session.js";
 import { TraceRecorder } from "../src/tracing/recorder.js";
@@ -50,6 +53,34 @@ it("allows a capability command beside an independent tool", () => {
 it("runs the model and tool loop in an independent Agent Runtime process", async () => {
   const workspace = await temp();
   await writeFile(path.join(workspace, "sample.txt"), "runtime-owned\n");
+  const memories = new ProjectMemoryService(
+    await temp(),
+    pino({ enabled: false }),
+  );
+  const scope = { workspace, sessionId: "session-1", taskId: "task-1" };
+  const created = await memories.apply(scope, {
+    expectedVersion: null,
+    operations: [
+      {
+        action: "create",
+        kind: "decision",
+        title: "Runtime 记忆摘要",
+        statement: "按需返回的 Runtime 记忆正文。",
+        tags: [],
+        importance: "normal",
+        confidence: "confirmed",
+        expiresAt: null,
+        source: {
+          summary: "测试来源",
+          eventId: null,
+          filePath: null,
+          fileHash: null,
+        },
+        reason: "验证按需读取",
+      },
+    ],
+  });
+  const memory = await memories.retrieve(workspace, "Runtime");
   const child = spawn(
     process.execPath,
     [
@@ -104,7 +135,10 @@ it("runs the model and tool loop in an independent Agent Runtime process", async
               },
             };
           },
-          async run(input) {
+          async run(input, instructions) {
+            expect(instructions).toContain("Runtime 记忆摘要");
+            expect(instructions).toContain(created.operations[0].id);
+            expect(instructions).not.toContain("按需返回的 Runtime 记忆正文。");
             modelCalls += 1;
             if (modelCalls === 1) {
               throw new ModelError(
@@ -152,6 +186,35 @@ it("runs the model and tool loop in an independent Agent Runtime process", async
               };
             }
 
+            if (modelCalls === 4) {
+              expect(JSON.stringify(input)).not.toContain(
+                "按需返回的 Runtime 记忆正文。",
+              );
+
+              return {
+                text: "",
+                output: [
+                  {
+                    type: "function_call",
+                    call_id: "memory-call",
+                    name: "memory_apply",
+                    arguments: JSON.stringify({
+                      execution: { id: "readMemory", dependsOn: [] },
+                      arguments: {
+                        expectedVersion: created.version,
+                        operations: [
+                          { action: "read", id: created.operations[0].id },
+                        ],
+                      },
+                    }),
+                  },
+                ],
+              };
+            }
+
+            expect(JSON.stringify(input)).toContain(
+              "按需返回的 Runtime 记忆正文。",
+            );
             expect(JSON.stringify(input)).toContain("runtime-owned");
 
             return { text: "完成", output: [] };
@@ -179,7 +242,11 @@ it("runs the model and tool loop in an independent Agent Runtime process", async
         exitCode: 0,
         truncated: false,
       }),
-      applyMemory: async () => ({ applied: true }),
+      applyMemory: async (runtime, request) => {
+        expect(runtime).toEqual(identity);
+
+        return memories.apply(scope, request);
+      },
       appendSessionEvent: async (_runtime, type, data) => {
         events.push({ type, data });
       },
@@ -202,6 +269,7 @@ it("runs the model and tool loop in an independent Agent Runtime process", async
       {
         workspace,
         prompt: "读取 sample.txt",
+        memoryText: memory.bundle?.text,
         settings: {
           model: "fixture-model",
           maxSteps: 5,
@@ -228,7 +296,7 @@ it("runs the model and tool loop in an independent Agent Runtime process", async
 
   expect(result).toEqual({ status: "completed" });
   expect(completed).toBe(true);
-  expect(modelCalls).toBe(4);
+  expect(modelCalls).toBe(5);
   expect(context.some((item) => item.type === "function_call_output")).toBe(
     true,
   );

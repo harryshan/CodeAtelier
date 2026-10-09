@@ -1,5 +1,13 @@
 # 初版验证记录
 
+## 记忆目录与同工具按需读取（2026-10-09）
+
+- 按 D138 将默认记忆输入改为 ID/标题摘要，在现有 `memory_apply.operations` 增加单条 `read`，不新增工具或 IPC operation。新增用例先在旧实现复现摘要字段缺失与 read 被拒绝，再验证正文/来源按需返回、跨项目/未知 ID、版本冲突、归档/过期/停用、损坏文件、读写混合拒绝、只读不写盘及目录排序/预算。
+- Windows / Node.js 26.10.0：记忆/schema/Engine/独立 Node Runtime 专项通过；最终 `pnpm test --maxWorkers=4` 全部通过，85 个文件、629 项通过、1 项原有跳过。宿主新会话及 Runtime/Broker 完整模型往返证明正文不在默认 instructions 中，显式 read 后才进入工具结果；宿主 trace 不含正文/来源。
+- `pnpm check` 的类型、ESLint 和 Prettier 通过，但默认并发全量测试两次分别在未修改的 process-tree pipe/file-backed 模式触发八秒兜底清理，均为 628 通过、1 失败、1 跳过；两项独立重跑通过。没有修改断言、清理期限或项目默认并发，不能把限 4 worker 的通过写成原样 `pnpm check` 通过，相关负载下时序风险仍存在。
+- Chromium E2E 按 `pnpm test:e2e --shard=1/2` 和 `--shard=2/2` 分别完整结束，27 + 10 = 37 项通过；各片前置服务端/Web/Runtime 测试构建通过，保留既有构建警告。较早的测试+构建+E2E 组合命令曾因外层总时限终止，不计为完整成功；随后独立命令结果和日志保存在忽略的 `.local/memory-unit.log`、`.local/memory-e2e-1.log`、`.local/memory-e2e-2.log`。
+- Runtime PATH 无 pnpm，验证经批准由 Broker 宿主执行。未运行 Evaluation、真实模型或跨平台验收；独立 Runtime harness 不等于专用账户安装态验证。没有重载当前服务或 Repair 安装副本；需更新后端和 Runtime 才能在新任务使用 read schema。Markdown schema 与 IPC v9 不变，旧历史不追溯改写。
+
 ## 续聊 token 校准锚点（2026-10-06）
 
 - 按 D136 修复新任务丢失 usage 基线、在首个响应前因本地高估触发压缩的问题。新增三条续聊回归先在旧代码复现失败，再验证宿主、独立 Node Runtime 与启动前 fallback：连续输入、指令刷新、容量收紧及 Engine/Store 重启仍保留旧历史，不调用摘要；缺失 usage 不覆盖已持久化锚点。

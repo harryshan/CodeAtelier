@@ -174,9 +174,9 @@ item.done 回退、失败/不完整事件、服务实际错误 message/reason/co
 
 ### 项目记忆
 
-主要测试：memory.test.ts、tool-schema.test.ts、engine.test.ts。
+主要测试：memory.test.ts、tool-schema.test.ts、engine.test.ts、agent-runtime-service.test.ts。
 
-按真实工作区 SHA-256 隔离的 Markdown 文件、严格解析/安全降级、关键词检索、archive、版本冲突、敏感内容拒绝；模型无需人工确认的 `memory_apply` 契约、任务内写入、固定检索 bundle 与仅含操作数量的任务事件。项目管理 UI、来源哈希失效验证和手工恢复/清空待后续测试覆盖
+按真实工作区 SHA-256 隔离的 Markdown 文件、严格解析/安全降级、关键词检索、archive、版本冲突、敏感内容拒绝；模型无需人工确认的 `memory_apply` 契约、任务内写入、仅含 ID/摘要的固定 bundle；同工具单条 read 返回完整条目且不写盘，拒绝跨项目/未知 ID、过期/归档/停用、版本不匹配及读写混合。宿主跨会话与独立 Node Runtime/Broker 往返验证正文仅按需进入工具结果，trace 不含正文。项目管理 UI、来源哈希失效验证和手工恢复/清空待后续测试覆盖
 
 ### 会话存储、标题与 Replay Case
 

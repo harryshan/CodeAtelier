@@ -3,7 +3,7 @@
  * FileStore、Markdown 解析器、Mutator、Retriever 与 ToolRunner 都依赖本文件；它不读取磁盘、调用模型或写日志。
  *
  * 1. 常量限定单文件、条目和单次模型操作的大小，避免记忆绕过正常上下文和工具预算。
- * 2. Zod schema 校验 Markdown 解析结果及 `memory_apply` 的结构化输入；所有模型可提交的字段均有明确长度和枚举边界。
+ * 2. Zod schema 校验 Markdown、维护输入及同工具的单条 read；读取与写入不混合，Mutator 仍只接受维护操作。
  * 3. TypeScript 类型描述保存后的条目、来源、文件文档和检索结果，供纯函数和运行时编排复用。
  *
  * 记忆正文始终是历史参考数据；类型契约不授予任何工作区、命令或任意文件写入权限。
@@ -147,6 +147,18 @@ export const memoryMutationSchema = z
   })
   .strict();
 
+/** 沿用原工具信封；read 独立于写入批次，避免读取结果与副作用的顺序歧义。 */
+export const memoryToolSchema = memoryMutationSchema.extend({
+  operations: z.union([
+    memoryMutationSchema.shape.operations,
+    z
+      .array(
+        z.object({ action: z.literal("read"), id: z.string().uuid() }).strict(),
+      )
+      .length(1),
+  ]),
+});
+
 export type MemoryEntry = z.infer<typeof memoryEntrySchema>;
 export type MemoryDocument = z.infer<typeof memoryDocumentSchema>;
 export type MemoryMutation = z.infer<typeof memoryMutationSchema>;
@@ -154,13 +166,8 @@ export type MemoryMutationOperation = MemoryMutation["operations"][number];
 
 export interface MemoryBundleEntry {
   id: string;
-  kind: MemoryEntry["kind"];
-  title: string;
-  statement: string;
-  importance: MemoryEntry["importance"];
-  confidence: MemoryEntry["confidence"];
-  updatedAt: string;
-  sourceSummary: string;
+  /** 使用已有的短标题作检索摘要，不复制正文或来源。 */
+  summary: string;
 }
 
 export interface MemoryBundle {

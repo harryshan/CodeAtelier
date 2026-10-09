@@ -1112,6 +1112,15 @@
 - 边界：确认的是用户当前 Windows 环境下的日常功能可用性，不推导错误身份、复杂 ACL、强制终止、异常恢复、真实远端兼容性等全部专项矩阵通过。Everyone restricting SID、同账户共享风险、Broker 宿主权限及 macOS/Linux 不加载该后端等限制不变。
 - 影响：只更新状态、使用说明和证据记录；默认关闭与安装/Repair 流程不变，不自动安装或开放 subagent。subagent 仍按自身发布门禁及专项证据单独评估。本次不改变运行时、权限、配置或 tracing，无新增运行事件。
 
+## D138：项目记忆仅注入目录，在现有工具中按需读取正文
+
+- 日期：2026-10-09
+- 状态：用户要求默认 prompt 只提供 ID 和摘要，并明确不新增 memory_read，而在现有 memory 工具中增加读取方法。
+- 决定：MemoryBundle 条目只保留 ID 与已有 title 作为简短摘要，不注入 statement、来源或完整元数据；排序和最多 8 项的规则保持，6000 字符预算改为完整目录文本。无需新增摘要模型或迁移 Markdown。memory_apply 兼容原维护参数，在 operations 中增加单独的 `{action:"read",id}`；一次读取一条，不与写入混合。
+- 边界：read 使用同一 expectedVersion 校验当前文件，仅返回当前项目已启用、active、未过期的完整条目，不修改文件或 lastUsedAt；文件损坏、跨项目/未知 ID、状态失效与版本不符均失败，不静默换成新正文，冲突仍待下一任务刷新。正文是历史参考，不成为权限或文件读取凭证；旧历史不追溯改写。
+- 通道与观测：不增加工具或 IPC operation，沿用 ToolRunner、RuntimeMemoryClient 和 Broker 的工作区绑定；IPC v9 不变，旧安装 Runtime 需重建/Repair 才能使用新 schema。读取复用现有 memory.apply（宿主）/tool.memory_apply（Runtime）生命周期 span，保留开始、终态、取消/失败、耗时及调用关联，不增加正文属性；服务增加 memory.read_completed/read_failed 安全日志。读取结果按普通工具结果进入受保护历史/Replay Case并计入上下文预算。
+- 替代：替代原 MemoryBundle 直接注入正文的实现，不改变自动维护、项目隔离、来源校验、未知写入不重放和 subagent 发布边界。
+
 ## D137：暂时移除 run_command 的 Git 过滤
 
 - 日期：2026-10-06

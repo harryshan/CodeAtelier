@@ -9,6 +9,7 @@
  * 5. 检查模型实际错误会进入任务失败记录和通知；命令按真实审批事件确认就绪，再核对工具耗时不包含审批等待，同时记录 SandboxBroker 的安全阶段和 trace。
  * 6. 配置辅助模型时，确认审批请求带真实会话工作区、路由给低成本模型并保存决定；关闭思考失败或找不到工作区时仅转人工。
  * 7. 新任务逐次捕获模型请求/响应和未截断工具结果，供后续导出隔离 replay case。
+ * 8. 项目记忆跨会话仅注入 ID/摘要，模型沿用 memory_apply 按需获取正文；trace 不包含记忆内容。
  *
  * 只模拟模型响应，文件操作、审批和保存使用实际实现。
  */
@@ -977,12 +978,60 @@ it("persists multi-file progress with the call id and returns one batch result",
   }
 });
 
-it("lets the model create current-project memory without approval and exposes only a safe result", async () => {
+it("creates memory without approval and reads its body only on demand in a new session", async () => {
   let calls = 0;
   let receivedResult: any;
   const fixture = await createFixture({
-    async run(input, _instructions, tools) {
-      if (++calls === 1) {
+    async run(input, instructions, tools) {
+      expect(instructions).not.toContain("项目使用 pnpm 运行验证命令。");
+      expect(instructions).not.toContain("当前任务已检查 package.json。");
+      if (++calls === 3) {
+        expect(instructions).toContain(receivedResult.operations[0].id);
+        expect(instructions).toContain("使用 pnpm");
+        expect(JSON.stringify(input)).not.toContain(
+          "项目使用 pnpm 运行验证命令。",
+        );
+
+        return {
+          text: "",
+          output: [
+            {
+              type: "function_call",
+              call_id: "read-memory",
+              name: "memory_apply",
+              arguments: JSON.stringify({
+                execution: { id: "readMemory", dependsOn: [] },
+                arguments: {
+                  expectedVersion: receivedResult.version,
+                  operations: [
+                    { action: "read", id: receivedResult.operations[0].id },
+                  ],
+                },
+              }),
+            },
+          ],
+        };
+      }
+
+      if (calls === 4) {
+        const result = JSON.parse(
+          input.find(
+            (item) =>
+              item.type === "function_call_output" &&
+              item.call_id === "read-memory",
+          ).output,
+        );
+        expect(result.operations[0].entry.statement).toBe(
+          "项目使用 pnpm 运行验证命令。",
+        );
+        expect(result.operations[0].entry.source.summary).toBe(
+          "当前任务已检查 package.json。",
+        );
+
+        return done;
+      }
+
+      if (calls === 1) {
         expect(tools.map((tool) => tool.name)).toContain("memory_apply");
 
         return {
@@ -1042,7 +1091,7 @@ it("lets the model create current-project memory without approval and exposes on
       "pnpm 验证",
     );
     expect(remembered.bundle?.entries).toEqual([
-      expect.objectContaining({ title: "使用 pnpm" }),
+      expect.objectContaining({ summary: "使用 pnpm" }),
     ]);
     expect(
       fixture.store
@@ -1052,6 +1101,17 @@ it("lets the model create current-project memory without approval and exposes on
             event.type === "tool_start" && event.data.name === "memory_apply",
         )?.data.args,
     ).toEqual({ operationCount: 1 });
+
+    const next = fixture.store.create(fixture.root, "read memory");
+    const task = fixture.engine.start(next.id, "查阅包管理器记忆");
+    await fixture.engine.active?.done;
+    expect(calls).toBe(4);
+    expect(fixture.store.tasks(next.id)[0].status).toBe("completed");
+    expect(fixture.engine.approvals.list()).toEqual([]);
+    const trace = await fixture.engine.savedTrace(task);
+    expect(trace).toContain("memory.apply");
+    expect(trace).not.toContain("项目使用 pnpm 运行验证命令。");
+    expect(trace).not.toContain("当前任务已检查 package.json。");
   } finally {
     await fixture.engine.close();
     fixture.store.close();
