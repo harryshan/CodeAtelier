@@ -1,5 +1,14 @@
 # 初版验证记录
 
+## 已有项目记忆一次性迁移与 JSONL-only（2026-10-10，本地）
+
+- 按 D143，先通过获准的 Broker 宿主命令盘点当前配置数据目录：2 个 Markdown 项目、共 29 条记录，无既有 JSONL。使用当时的严格解析器预检，在数据目录 `backups/memory-jsonl-*` 写入原始字节和哈希清单，再以非覆盖原子发布生成两份 JSONL；深比较全部字段、来源、状态与文件条目顺序，迁移前后核对旧文件未变化。后续独立核验确认原件、备份及 JSONL 均与清单一致。没有输出正文，没有将用户记忆或备份提交到仓库。
+- 随后删除 `src/memory/markdown.ts`、MD 路径/回退、首次维护迁移及 migratedFromMarkdown 日志标记；仅以 JSONL 缺失返回空文档。一次性临时迁移脚本已移除，不新增常驻迁移入口。保留现有 memory/工具 tracing，不增加含正文的事件。
+- 新增两条 JSONL-only 回归先在旧实现失败，随后 memory/schema/Engine/独立 Runtime 共 6 个文件、46 项通过。JSONL-only 用例验证有效/损坏 MD 和同名目录均不参与读取，旧 ID 不可 read，首次创建不继承旧条目，删除 JSONL 后不复活旧记忆；原 JSONL 回归保留读写/重启、冲突、并发更新及首次创建、外部修改、临时文件清理和大小边界。
+- Windows / Node.js 26.10.0：原样 `pnpm check` 的类型、ESLint、Prettier 通过，默认并发在未修改的 process-tree pipe 用例发生 15 秒超时，669 项通过、1 项失败、1 项原有跳过。随后 `pnpm test --maxWorkers=4` 全量通过：92 个文件、670 项通过、1 项原有跳过，包括上述进程用例；独立 `pnpm build:test` 也通过。没有修改默认并发、超时或断言，不将限并发验证描述为原样 check 通过；保留既有构建警告。
+- 源码/测试/脚本中旧编解码器和迁移字段引用检查通过，变更文档的本地文件链接通过。日志在忽略的 `.local/memory-jsonl-only-{red,targeted,check,unit,build}.log`。未改 UI/HTTP/SSE，未运行浏览器 E2E、Evaluation、真实模型或 macOS/Linux 验收；独立 Runtime harness 不替代安装态验证。
+- 当前后端未重启，安装副本未 Repair。新后端加载后才只读写 JSONL；旧服务仍可能维护 MD，因此本任务迁移后没有再通过 memory 工具写入，用户应在继续维护记忆前重启后端。原 MD 及独立备份保留为离线恢复材料，新代码不读取它们。
+
 ## 项目记忆 JSONL 快照与旧 Markdown 迁移（2026-10-09）
 
 - 按 D142 新增 JSONL 严格编解码：项目首行、逐条完整记录、保留文本与文件顺序，拒绝重复 ID、坏记录/字段/版本、BOM/非法 UTF-8、空行、超限及敏感内容。FileStore 新写入仅生成完整 JSONL 快照；读取兼容旧 Markdown，不自动写盘。首次成功维护时转存并保留旧文件，JSONL 优先且损坏时不回退。

@@ -1,6 +1,6 @@
 /**
- * 定义项目记忆 JSONL 快照及旧 Markdown 兼容文档、检索 bundle 和模型维护操作的受限数据契约。
- * FileStore、JSONL/旧 Markdown 编解码器、Mutator、Retriever 与 ToolRunner 都依赖本文件；它不读取磁盘、调用模型或写日志。
+ * 定义项目记忆 JSONL 快照文档、检索 bundle 和模型维护操作的受限数据契约。
+ * FileStore、JSONL 编解码器、Mutator、Retriever 与 ToolRunner 都依赖本文件；它不读取磁盘、调用模型或写日志。
  *
  * 1. 常量限定存储文件、条目和单次维护操作的大小；摘要目录不另设条数或字符裁剪，仍接受整体模型预算。
  * 2. Zod schema 校验存储文档、维护输入及同工具的单条 read；读取与写入不混合，Mutator 仍只接受维护操作。

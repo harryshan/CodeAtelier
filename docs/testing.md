@@ -180,9 +180,9 @@ item.done 回退、失败/不完整事件、服务实际错误 message/reason/co
 
 ### 项目记忆
 
-主要测试：memory.test.ts、memory-jsonl.test.ts、tool-schema.test.ts、engine.test.ts、agent-runtime-service.test.ts。
+主要测试：memory.test.ts、memory-jsonl.test.ts、memory-jsonl-only.test.ts、tool-schema.test.ts、engine.test.ts、agent-runtime-service.test.ts。
 
-按真实工作区 SHA-256 隔离的 JSONL 快照、严格解析/安全降级、全量有效摘要目录、archive、版本冲突、敏感内容拒绝；模型无需人工确认的 `memory_apply` 契约、任务内写入、仅含 ID/摘要的固定 bundle，按文件顺序提供全部有效条目，不受重要性/置信度/时间排序或原 8 项/6000 字符限制；256 条最大长度转义标题可经 IPC v11 传输，越界载荷与旧 v10 握手被拒绝；同工具单条 read 返回完整条目且不写盘，拒绝跨项目/未知 ID、过期/归档/停用、版本不匹配及读写混合。宿主跨会话与独立 Node Runtime/Broker 往返验证正文仅按需进入工具结果，trace 不含正文。JSONL 专项覆盖多行正文/标题、Unicode/引号/反斜杠、LF/CRLF/无末尾换行和混合类型顺序，拒绝 BOM、空行、截断、未知字段/版本/记录、重复 ID、超限、非法 UTF-8 和敏感内容；旧 Markdown 只读无写盘、首次维护转存并保留原件、重启优先 JSONL、坏 JSONL 不回退、版本冲突、并发迁移、外部修改、提交失败清理和转换膨胀超限不损坏旧文件。项目管理 UI、来源哈希失效验证和手工恢复/清空待后续测试覆盖
+按真实工作区 SHA-256 隔离的 JSONL 快照、严格解析/安全降级、全量有效摘要目录、archive、版本冲突、敏感内容拒绝；模型无需人工确认的 `memory_apply` 契约、任务内写入、仅含 ID/摘要的固定 bundle，按文件顺序提供全部有效条目，不受重要性/置信度/时间排序或原 8 项/6000 字符限制；256 条最大长度转义标题可经 IPC v11 传输，越界载荷与旧 v10 握手被拒绝；同工具单条 read 返回完整条目且不写盘，拒绝跨项目/未知 ID、过期/归档/停用、版本不匹配及读写混合。宿主跨会话与独立 Node Runtime/Broker 往返验证正文仅按需进入工具结果，trace 不含正文。JSONL 专项覆盖多行正文/标题、Unicode/引号/反斜杠、LF/CRLF/无末尾换行和混合类型顺序，拒绝 BOM、空行、截断、未知字段/版本/记录、重复 ID、超限、非法 UTF-8 和敏感内容；JSONL 无副作用读取、维护后重启、版本冲突、并发更新/首次创建、外部修改、提交失败清理和转义膨胀超限不损坏原文件。JSONL-only 回归覆盖仅存有效/损坏 Markdown 或同名目录时均为空记忆、read 拒绝旧 ID、新建 JSONL 不导入旧条目、删除 JSONL 后旧备份不复活。真实数据一次性迁移独立备份并逐份深比较，见 verification.md，不由默认测试访问个人 memory。项目管理 UI、来源哈希失效验证和手工恢复/清空待后续测试覆盖
 
 ### 会话存储、标题与 Replay Case
 

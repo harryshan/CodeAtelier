@@ -1,12 +1,12 @@
 /**
- * 将按工作区隔离的项目记忆保存为平台数据目录中的 JSONL 快照，兼容已有 Markdown 文件。
+ * 将按工作区隔离的项目记忆保存为平台数据目录中的 JSONL 快照，只读写该格式。
  * ProjectMemoryService 是唯一调用方；它提供结构化文档和期望版本，本模块完成真实路径哈希、读取、互斥和原子替换。
  *
  * 1. identity 解析真实工作区，再从其 SHA-256 推导不暴露路径的文件名。
- * 2. readStored/readCurrent 严格读取 JSONL，只有不存在时回读 Markdown；load 不写盘、不自动修复坏文件。
+ * 2. readStored/readCurrent 严格读取 JSONL，缺失时返回空文档；load 不写盘，不探测其他格式或修复坏文件。
  * 3. update 按 JSONL 目标串行，复核来源版本、序列化并 flush 临时快照，提交前再次检查来源。
- * 4. 已有 JSONL 使用 rename 替换；首次建立使用 link 原子发布且不覆盖竞争目标，旧 Markdown 原件保持不动。
- *    迁移只随成功维护发生，返回安全迁移标记供 Service 审计；失败不自动重试，临时文件不参与读取。
+ * 4. 已有 JSONL 使用 rename 替换；首次建立使用 link 原子发布且不覆盖竞争目标。
+ *    失败不自动重试，临时文件和离线备份不参与读取；不提供旧格式自动迁移。
  *
  * 本模块从不访问用户工作区内容，也不执行命令；写入范围固定为 Config 的平台数据目录 memories 子目录。
  */
@@ -28,7 +28,6 @@ import {
   MEMORY_SCHEMA_VERSION,
   type MemoryDocument,
 } from "./types.js";
-import { parseMemoryDocument } from "./markdown.js";
 import { parseMemoryJsonl, serializeMemoryJsonl } from "./jsonl.js";
 
 const locks = new Map<string, Promise<void>>();
@@ -45,14 +44,12 @@ export interface StoredMemoryDocument {
   version: string | null;
   projectKey: string;
   filePath: string;
-  migratedFromMarkdown?: boolean;
 }
 
 interface MemoryFileIdentity {
   canonicalWorkspace: string;
   projectKey: string;
   filePath: string;
-  legacyPath: string;
 }
 
 function hash(bytes: Uint8Array) {
@@ -94,13 +91,8 @@ export class MemoryFileStore {
       "memories",
       `${projectKey}.jsonl`,
     );
-    const legacyPath = path.join(
-      this.directory,
-      "memories",
-      `${projectKey}.md`,
-    );
 
-    return { canonicalWorkspace, projectKey, filePath, legacyPath };
+    return { canonicalWorkspace, projectKey, filePath };
   }
 
   private emptyDocument(projectKey: string, workspace: string): MemoryDocument {
@@ -129,9 +121,7 @@ export class MemoryFileStore {
         fatal: true,
         ignoreBOM: true,
       }).decode(file);
-      const document = filePath.endsWith(".md")
-        ? parseMemoryDocument(text)
-        : parseMemoryJsonl(text);
+      const document = parseMemoryJsonl(text);
       if (
         document.projectKey !== projectKey ||
         document.workspace !== workspace
@@ -157,18 +147,9 @@ export class MemoryFileStore {
       identity.canonicalWorkspace,
       identity.filePath,
     );
-    if (current) {
-      return current;
-    }
-
-    const legacy = await this.readStored(
-      identity.projectKey,
-      identity.canonicalWorkspace,
-      identity.legacyPath,
-    );
 
     return (
-      legacy ?? {
+      current ?? {
         document: this.emptyDocument(
           identity.projectKey,
           identity.canonicalWorkspace,
@@ -220,18 +201,12 @@ export class MemoryFileStore {
         }
 
         const latest = await this.readCurrent(identity);
-        if (
-          latest.version !== current.version ||
-          latest.filePath !== current.filePath
-        ) {
+        if (latest.version !== current.version) {
           throw new MemoryVersionConflictError();
         }
 
-        if (
-          current.version === null ||
-          current.filePath === identity.legacyPath
-        ) {
-          // 原子发布完整文件，不让迁移或首次创建覆盖竞争进程已建立的 JSONL。
+        if (current.version === null) {
+          // 原子发布完整文件，不让首次创建覆盖竞争进程已建立的 JSONL。
           try {
             await link(temporaryPath, identity.filePath);
           } catch (error: any) {
@@ -259,7 +234,6 @@ export class MemoryFileStore {
         projectKey: identity.projectKey,
         filePath: identity.filePath,
         result: changed.result,
-        migratedFromMarkdown: current.filePath === identity.legacyPath,
       };
     });
   }

@@ -1,5 +1,5 @@
 /**
- * 在项目记忆 JSONL 快照和 MemoryDocument 之间转换，供 FileStore 读取、迁移及完整快照写入。
+ * 在项目记忆 JSONL 快照和 MemoryDocument 之间转换，供 FileStore 读取及完整快照写入。
  * 不读取文件、不调用模型；所有错误使用受控描述，不能回显原始 JSON 或记忆正文。
  *
  * 1. record schema 固定首行 project 元数据及后续 memory/entry 记录，复用现有字段与大小契约。

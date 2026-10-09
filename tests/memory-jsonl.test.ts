@@ -1,9 +1,9 @@
 /**
- * 验证项目记忆 JSONL 快照、旧 Markdown 兼容和首次维护迁移的可观察行为。
+ * 验证项目记忆 JSONL 快照、文件版本与原子写入的可观察行为。
  * 使用临时工作区中的真实 MemoryFileStore/ProjectMemoryService，不依赖模型、网络或个人记忆。
  *
  * 1. document 建立带有效来源的文档；JSONL 编解码用例覆盖文本往返、顺序、严格格式与重复 ID。
- * 2. legacyFixture 仅写入旧 Markdown；读取必须无副作用，首次维护生成 JSONL 并保留原件。
+ * 2. jsonlFixture 写入真实 JSONL；读取必须无副作用，维护与重启保留条目和来源。
  * 3. 版本、并发、外部替换和提交失败用例保证不覆盖未知数据，不在坏 JSONL 上回退旧记忆。
  * 4. 所有文件由测试临时目录清理；错误只断言受控诊断，不要求泄露非法内容。
  */
@@ -15,13 +15,13 @@ import {
   readFile,
   readdir,
   realpath,
+  rm,
   writeFile,
 } from "node:fs/promises";
 import path from "node:path";
 import pino from "pino";
 import { MemoryFileStore } from "../src/memory/file-store.js";
 import { parseMemoryJsonl, serializeMemoryJsonl } from "../src/memory/jsonl.js";
-import { serializeMemoryDocument } from "../src/memory/markdown.js";
 import { ProjectMemoryService } from "../src/memory/service.js";
 import {
   MAX_MEMORY_ENTRIES,
@@ -65,7 +65,7 @@ function document(): MemoryDocument {
   };
 }
 
-async function legacyFixture() {
+async function jsonlFixture() {
   const workspace = await temp();
   const directory = await temp();
   const store = new MemoryFileStore(directory);
@@ -76,9 +76,9 @@ async function legacyFixture() {
   const folder = path.join(directory, "memories");
   const legacy = path.join(folder, `${empty.projectKey}.md`);
   const current = path.join(folder, `${empty.projectKey}.jsonl`);
-  const text = serializeMemoryDocument(value);
+  const text = serializeMemoryJsonl(value);
   await mkdir(folder);
-  await writeFile(legacy, text);
+  await writeFile(current, text);
   const service = new ProjectMemoryService(directory, pino({ enabled: false }));
   const scope = { workspace, sessionId: "session", taskId: "task" };
 
@@ -175,8 +175,8 @@ it("rejects bad records, duplicate IDs, oversized files and credentials without 
   );
 });
 
-it("reads legacy memory without writing, then migrates on successful maintenance and retains the original", async () => {
-  const fixture = await legacyFixture();
+it("reads JSONL without writing and persists maintenance across restarts", async () => {
+  const fixture = await jsonlFixture();
   const bundle = await fixture.service.retrieve(fixture.workspace);
   const version = bundle.bundle!.version;
   const result = await fixture.service.apply(fixture.scope, {
@@ -188,9 +188,9 @@ it("reads legacy memory without writing, then migrates on successful maintenance
     entry: fixture.value.entries[0],
   });
   expect(await readdir(fixture.folder)).toEqual([
-    path.basename(fixture.legacy),
+    path.basename(fixture.current),
   ]);
-  expect(await readFile(fixture.legacy, "utf8")).toBe(fixture.text);
+  expect(await readFile(fixture.current, "utf8")).toBe(fixture.text);
   const changed = await fixture.service.apply(fixture.scope, {
     expectedVersion: version,
     operations: [
@@ -209,7 +209,6 @@ it("reads legacy memory without writing, then migrates on successful maintenance
     updatedAt: expect.any(String),
   });
   expect(changed.version).not.toBe(version);
-  expect(await readFile(fixture.legacy, "utf8")).toBe(fixture.text);
   expect(
     (await new MemoryFileStore(fixture.directory).load(fixture.workspace))
       .document,
@@ -225,8 +224,8 @@ it("reads legacy memory without writing, then migrates on successful maintenance
   ).rejects.toThrow("已被其他操作更新");
 });
 
-it("keeps legacy files untouched on stale versions, failed changes and concurrent migration", async () => {
-  const fixture = await legacyFixture();
+it("preserves JSONL on stale versions and failed changes and serializes concurrent updates", async () => {
+  const fixture = await jsonlFixture();
   const loaded = await fixture.store.load(fixture.workspace);
   await expect(
     fixture.store.update(fixture.workspace, "b".repeat(64), (value) => ({
@@ -240,12 +239,12 @@ it("keeps legacy files untouched on stale versions, failed changes and concurren
     }),
   ).rejects.toThrow("fixture failure");
   expect(await readdir(fixture.folder)).toEqual([
-    path.basename(fixture.legacy),
+    path.basename(fixture.current),
   ]);
   const attempts = await Promise.allSettled(
     [fixture.store, new MemoryFileStore(fixture.directory)].map((store) =>
       store.update(fixture.workspace, loaded.version, (value) => ({
-        document: value,
+        document: { ...value, enabled: false },
         result: null,
       })),
     ),
@@ -257,17 +256,18 @@ it("keeps legacy files untouched on stale versions, failed changes and concurren
   expect(
     attempts.filter((result) => result.status === "rejected"),
   ).toHaveLength(1);
-  expect(await readFile(fixture.legacy, "utf8")).toBe(fixture.text);
-  expect(parseMemoryJsonl(await readFile(fixture.current, "utf8"))).toEqual(
-    fixture.value,
-  );
+  expect(parseMemoryJsonl(await readFile(fixture.current, "utf8"))).toEqual({
+    ...fixture.value,
+    enabled: false,
+  });
   expect(
     (await readdir(fixture.folder)).filter((file) => file.endsWith(".tmp")),
   ).toEqual([]);
 });
 
-it("never falls back from corrupt or wrong-project JSONL to a valid legacy file", async () => {
-  const fixture = await legacyFixture();
+it("rejects corrupt or wrong-project JSONL without loading leftover backups", async () => {
+  const fixture = await jsonlFixture();
+  await writeFile(fixture.legacy, "offline backup");
   await writeFile(fixture.current, "broken");
   expect(await fixture.service.retrieve(fixture.workspace)).toMatchObject({
     available: false,
@@ -281,11 +281,11 @@ it("never falls back from corrupt or wrong-project JSONL to a valid legacy file"
   const other = { ...fixture.value, projectKey: "b".repeat(64) };
   await writeFile(fixture.current, serializeMemoryJsonl(other));
   await expect(fixture.store.load(fixture.workspace)).rejects.toThrow("不匹配");
-  expect(await readFile(fixture.legacy, "utf8")).toBe(fixture.text);
+  expect(await readFile(fixture.legacy, "utf8")).toBe("offline backup");
 });
 
 it("keeps JSONL authoritative and preserves its bytes on failed maintenance", async () => {
-  const fixture = await legacyFixture();
+  const fixture = await jsonlFixture();
   const initial = serializeMemoryJsonl(fixture.value);
   await writeFile(fixture.current, initial);
   await writeFile(fixture.legacy, "broken old backup");
@@ -319,67 +319,58 @@ it("keeps JSONL authoritative and preserves its bytes on failed maintenance", as
   });
 });
 
-it("preserves malformed legacy data and refuses a conversion that exceeds the JSONL byte limit", async () => {
-  const fixture = await legacyFixture();
-  await writeFile(fixture.legacy, "broken legacy");
-  expect(await fixture.service.retrieve(fixture.workspace)).toMatchObject({
-    available: false,
-  });
-  await expect(readFile(fixture.current)).rejects.toMatchObject({
-    code: "ENOENT",
-  });
-
-  fixture.value.enabled = false;
-  fixture.value.entries = Array.from({ length: 100 }, () => ({
-    ...fixture.value.entries[0],
-    id: randomUUID(),
-    statement: "\u0001".repeat(1000),
-  }));
-  const legacy = serializeMemoryDocument(fixture.value);
-  expect(Buffer.byteLength(legacy)).toBeLessThan(MAX_MEMORY_FILE_BYTES);
-  await writeFile(fixture.legacy, legacy);
+it("preserves JSONL when escaped content would exceed the byte limit", async () => {
+  const fixture = await jsonlFixture();
   const loaded = await fixture.store.load(fixture.workspace);
-  expect(loaded.document.enabled).toBe(false);
+  const oversized = {
+    ...fixture.value,
+    entries: Array.from({ length: 100 }, () => ({
+      ...fixture.value.entries[0],
+      id: randomUUID(),
+      statement: "\u0001".repeat(1000),
+    })),
+  };
+
   await expect(
-    fixture.store.update(fixture.workspace, loaded.version, (value) => ({
-      document: value,
+    fixture.store.update(fixture.workspace, loaded.version, () => ({
+      document: oversized,
       result: null,
     })),
   ).rejects.toThrow("512 KiB");
-  expect(await readFile(fixture.legacy, "utf8")).toBe(legacy);
-  await expect(readFile(fixture.current)).rejects.toMatchObject({
-    code: "ENOENT",
-  });
+  expect(await readFile(fixture.current, "utf8")).toBe(fixture.text);
+  expect(await readdir(fixture.folder)).toEqual([
+    path.basename(fixture.current),
+  ]);
 });
 
-it("rejects external changes during migration and leaves both formats intact on publish failure", async () => {
-  const fixture = await legacyFixture();
-  const loaded = await fixture.store.load(fixture.workspace);
-  const external = serializeMemoryDocument({
-    ...fixture.value,
-    enabled: false,
-  });
-  await expect(
-    fixture.store.update(fixture.workspace, loaded.version, async (value) => {
-      await writeFile(fixture.legacy, external);
+it("rejects competing first creation and cleans temporary files after a failed publish", async () => {
+  const fixture = await jsonlFixture();
+  await rm(fixture.current);
+  const attempts = await Promise.allSettled(
+    [fixture.store, new MemoryFileStore(fixture.directory)].map((store) =>
+      store.update(fixture.workspace, null, () => ({
+        document: fixture.value,
+        result: null,
+      })),
+    ),
+  );
+  expect(
+    attempts.filter((result) => result.status === "fulfilled"),
+  ).toHaveLength(1);
+  expect(
+    attempts.filter((result) => result.status === "rejected"),
+  ).toHaveLength(1);
+  expect(await readFile(fixture.current, "utf8")).toBe(fixture.text);
 
-      return { document: value, result: null };
-    }),
-  ).rejects.toThrow("已被其他操作更新");
-  expect(await readFile(fixture.legacy, "utf8")).toBe(external);
-  await expect(readFile(fixture.current)).rejects.toMatchObject({
-    code: "ENOENT",
-  });
-
-  const latest = await fixture.store.load(fixture.workspace);
+  await rm(fixture.current);
   await expect(
-    fixture.store.update(fixture.workspace, latest.version, async (value) => {
+    fixture.store.update(fixture.workspace, null, async () => {
       await mkdir(fixture.current);
 
-      return { document: value, result: null };
+      return { document: fixture.value, result: null };
     }),
   ).rejects.toThrow();
-  expect(await readFile(fixture.legacy, "utf8")).toBe(external);
+  expect(await readdir(fixture.current)).toEqual([]);
   expect(
     (await readdir(fixture.folder)).filter((file) => file.endsWith(".tmp")),
   ).toEqual([]);

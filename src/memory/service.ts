@@ -4,7 +4,7 @@
  *
  * 1. retrieve 按工作区加载全部有效摘要，将文件错误安全降级为空 bundle，记录受控状态但绝不把记忆文件内容写入日志。
  * 2. readEntry 只加载当前项目，核对版本、启用状态与有效期后返回完整条目；不会写回 lastUsedAt 或改变任务目录。
- * 3. apply 校验单条 read 或原维护批次；维护仍在 FileStore 版本锁内运行 Mutator 并原子提交 JSONL，必要时保留旧 Markdown 迁移；只返回操作摘要。
+ * 3. apply 校验单条 read 或原维护批次；维护仍在 FileStore 版本锁内运行 Mutator 并原子提交 JSONL；只返回操作摘要，不迁移其他格式。
  * 4. 两条路径均不在日志记录正文，复用工具生命周期 tracing；冲突不自动重试，未知写入不自动重放。
  */
 
@@ -135,7 +135,6 @@ export class ProjectMemoryService {
         taskId: scope.taskId,
         projectKey: stored.projectKey,
         operations: stored.result.length,
-        migratedFromMarkdown: stored.migratedFromMarkdown === true,
       });
 
       return {
