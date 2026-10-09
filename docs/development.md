@@ -301,6 +301,8 @@ Broker 不信任 Runtime 自报审批，把完整命令、理由和“将使用�
 
 获批命令由 Broker 以当前宿主用户权限执行，不附加 Sandbox 文件根、网络 host、WFP 或 Job 限制；可访问该用户的文件、网络和凭据。它单独记录为 `broker-command/host-process`，不能标成 Sandbox 内命令。Capability Runner、其权限 schema 和原生路径保留，但当前工具不触发它。
 
+Web UI 将 `run_with_permissions` 显示为“执行命令（宿主权限）”：stdout/stderr 实时合并到同一输出卡片，结束后保留退出码、截断或错误提示，刷新后从历史重建。Broker 的 `capability_output` 事件带有 `callId`，避免并行命令串流；旧无 ID 记录沿用最近同类卡片的兼容归属，无法可靠还原旧并行命令的输出归属。无流式事件时使用最终结果的 output，未匹配的输出仍单独显示。此展示沿用既有输出限长、脱敏与 `broker.command` 生命周期 trace，不向 Perfetto 属性写入输出正文，也不提供交互式 stdin。
+
 审批时必须考虑命令在宿主用户权限下可能访问多个 host、私网、设备、注册表、服务或凭据；这些不再由 Sandbox 额外拦截。
 
 Sandbox 模式下全部 Git 工具 action 在 Broker 中以宿主用户权限运行，工作区内部不保护 `.git`、`.env` 或其他子路径。非 push action 沿用受限参数契约但不逐次审批；push 另经 Broker 预检和逐次审批。

@@ -4,6 +4,7 @@
  * 2. 分批、重复推送与全量重建必须得到相同的时间线、工具状态和统计。
  * 3. 已发布视图保持不变；追加期间旧正文不可重读，空增量复用视图。
  * 4. 替换与跨会话数据检查保证恢复和切换不会混合事件。
+ * 5. Broker 宿主命令输出按任务/调用归属聚合，覆盖交错输出、终态、旧无 ID 事件和历史重建。
  */
 
 import { expect, it } from "vitest";
@@ -82,6 +83,81 @@ it("matches full reconstruction across batches, retries and duplicate delivery",
   ).toEqual([
     { key: "streaming:t:1:1", kind: "streaming", taskId: "t", text: "failed" },
   ]);
+});
+
+it("associates interleaved Broker command output and results with their calls", () => {
+  const events = [
+    event(1, "tool_start", { name: "run_with_permissions", callId: "a" }),
+    event(2, "tool_start", { name: "run_with_permissions", callId: "b" }),
+    event(3, "tool_start", { name: "run_command", callId: "c" }),
+    event(4, "capability_output", { callId: "b", text: "b stdout\n" }),
+    event(5, "command_output", { callId: "c", text: "ordinary\n" }),
+    event(6, "capability_output", { callId: "a", text: "a stdout\n" }),
+    event(7, "capability_output", { callId: "b", text: "b stderr\n" }),
+    event(8, "tool_result", {
+      name: "run_with_permissions",
+      callId: "b",
+      result: { exitCode: 7, truncated: true },
+    }),
+    event(9, "capability_output", { callId: "a", text: "a stderr\n" }),
+    event(10, "tool_result", {
+      name: "run_with_permissions",
+      callId: "a",
+      result: { error: "cancelled" },
+    }),
+  ];
+  const model = new SessionViewModel("s");
+  const live = model.update(snapshot(events.slice(0, 7)));
+  expect(live.timeline.outputEvents.cards.get(2)).toEqual({
+    output: "b stdout\nb stderr\n",
+  });
+
+  const finished = model.update(snapshot(events.slice(7)));
+  expect(finished.timeline.outputEvents.cards.get(1)).toEqual({
+    output: "a stdout\na stderr\n",
+    result: events[9],
+  });
+  expect(finished.timeline.outputEvents.cards.get(2)).toEqual({
+    output: "b stdout\nb stderr\n",
+    result: events[7],
+  });
+  expect(finished.timeline.outputEvents.cards.get(3)?.output).toBe(
+    "ordinary\n",
+  );
+  expect(finished.timeline.entries).toHaveLength(3);
+  expect(live.timeline.outputEvents.cards.get(2)?.result).toBeUndefined();
+  expect(new SessionViewModel("s").update(snapshot(events)).timeline).toEqual(
+    finished.timeline,
+  );
+});
+
+it("preserves legacy Broker output and unmatched output without losing final-only results", () => {
+  const events = [
+    event(1, "capability_output", { callId: "missing", text: "orphan" }),
+    event(2, "tool_start", { name: "run_with_permissions", callId: "legacy" }),
+    event(3, "capability_output", { text: "legacy stdout\n" }),
+    event(4, "tool_result", {
+      name: "run_with_permissions",
+      callId: "legacy",
+      result: { output: "legacy stdout\n", exitCode: 0 },
+    }),
+    event(5, "tool_start", { name: "run_with_permissions", callId: "final" }),
+    event(6, "tool_result", {
+      name: "run_with_permissions",
+      callId: "final",
+      result: { output: "final-only output", exitCode: 0 },
+    }),
+  ];
+  const view = new SessionViewModel("s").update(snapshot(events));
+  expect(view.timeline.outputEvents.cards.get(2)?.output).toBe(
+    "legacy stdout\n",
+  );
+  expect(view.timeline.outputEvents.cards.get(5)).toEqual({
+    output: "",
+    result: events[5],
+  });
+  expect(view.timeline.entries).toHaveLength(3);
+  expect(view.timeline.entries[0]).toMatchObject({ event: events[0] });
 });
 
 it("does not reread old bodies or mutate a published view on append", () => {

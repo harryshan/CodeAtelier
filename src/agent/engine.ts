@@ -1906,7 +1906,7 @@ export class Engine {
         signal,
         settings.commandTimeoutMs,
         settings.outputChars,
-        (text) => emit("capability_output", { text }),
+        (text) => emit("capability_output", { text, callId: toolCallId }),
         {},
         (startedPid) => {
           pid = startedPid;

@@ -4,7 +4,7 @@
  *
  * 1. labels 和 textResult 处理工具名称及结果的显示格式。
  * 2. 读取连接层 timeline-projection 的流式文本、输出和状态视图；渲染期间不聚合历史。MarkdownMessage 缓存相同正文的安全渲染。
- * 3. 显示编辑进度、工具输出及子任务记录；StreamingMessage 使用通知索引判断尝试是否仍在生成。
+ * 3. 显示编辑进度、工具输出及子任务记录；普通/Broker 宿主命令和 Git 共用输出卡片，未匹配的输出仍显示为文本。StreamingMessage 使用通知索引判断尝试是否仍在生成。
  * 4. 已完成任务默认仅保留用户输入和最后一条 agent 输出，将中间过程收纳为可展开区域；未完成、失败、取消和中断任务继续完整显示。
  * 5. useVirtualTimeline 缓存高度前缀和，滚动每帧合并并二分定位；ResizeObserver 批量更新高度，条目 ref 保持稳定。
  * 6. 显示仍在接收的文本和待审批按钮，把用户选择发给后端。
@@ -48,6 +48,7 @@ const labels: Record<string, string> = {
   edit_files: "新建或精确修改文件",
   write_file: "写入文件（旧记录）",
   run_command: "执行命令",
+  run_with_permissions: "执行命令（宿主权限）",
   git: "Git 操作",
   subagent: "只读子代理协调",
   // 保留旧会话事件的中文标签；旧调用只展示，不会被新版 ToolRunner 执行。
@@ -317,7 +318,11 @@ const TimelineEvent = memo(
       );
     }
 
-    if (event.type === "command_output" || event.type === "git_output") {
+    if (
+      event.type === "command_output" ||
+      event.type === "capability_output" ||
+      event.type === "git_output"
+    ) {
       return <pre className={s.toolResult}>{event.data.text}</pre>;
     }
 

@@ -6,7 +6,7 @@
  * 2. 子进程并行运行五次 read_file，验证 Broker 按已验证 PID/最多四个可复用槽重建实际执行与内部阶段、附参数和任务结束清理 trace；固定白名单细分 trace 不包含文件内容。
  * 3. Engine 等待 Runtime 终态与 clean 退出，再把任务和带有已验证进程身份的 execution instance 记为 completed。
  * 4. 取消等待 Runtime 写回可信终态后才关闭 transport；无法证明终态时仍保持 unknown。
- * 5. run_with_permissions 经低成本模型审批后由 Broker 宿主进程执行，单独记录 host-process，而不创建 Capability Runner。
+ * 5. run_with_permissions 经低成本模型审批后由 Broker 宿主进程执行，单独记录 host-process，而不创建 Capability Runner；stdout/stderr 在结果前按调用 ID 持久化，拒绝时无输出。
  * 6. Runtime IPC 在可信终态前断开时，Engine 以 unknown 关闭 launcher 并持久化可能副作用。
  * 7. Broker 宿主 Git 处理普通 action 的结果形状和写入归因；push 先做固定预检、审批，已启动后取消仍记录可能的远端副作用。
  * 8. launcher 证明 Runtime 尚未启动且 provision 已回滚时，Engine 明确记录 host fallback 并继续宿主 loop。
@@ -471,8 +471,8 @@ for (const approve of [true, false]) {
     );
     const command =
       process.platform === "win32"
-        ? `Set-Content -LiteralPath '${quotedMarker}' -Value 'broker-result' -NoNewline; Write-Output 'broker-result'`
-        : `printf 'broker-result' > '${quotedMarker}' && printf 'broker-result'`;
+        ? `Set-Content -LiteralPath '${quotedMarker}' -Value 'broker-result' -NoNewline; Write-Output 'broker-result'; [Console]::Error.WriteLine('broker-stderr')`
+        : `printf 'broker-result' > '${quotedMarker}' && printf 'broker-result'; printf 'broker-stderr' >&2`;
     const config = new Config(await temp());
     config.sandbox.enabled = true;
     config.settings.auxiliaryModel = "approval-model";
@@ -599,6 +599,28 @@ for (const approve of [true, false]) {
       expect(store.task(task.id)?.status, store.task(task.id)?.error).toBe(
         approve ? "completed" : "failed",
       );
+      const events = store.events(session.id);
+      const outputEvents = events.filter(
+        (event) => event.type === "capability_output",
+      );
+      if (approve) {
+        const output = outputEvents.map((event) => event.data.text).join("");
+        expect(output).toContain("broker-result");
+        expect(output).toContain("broker-stderr");
+        const result = events.find(
+          (event) =>
+            event.type === "tool_result" &&
+            event.data.callId === "capability-call",
+        );
+        expect(result).toBeDefined();
+        for (const event of outputEvents) {
+          expect(event.data.callId).toBe("capability-call");
+          expect(event.id).toBeLessThan(result!.id);
+        }
+      } else {
+        expect(outputEvents).toEqual([]);
+      }
+
       expect(approvalCalls).toBe(1);
       expect(engine.approvals.list(session.id)).toEqual([]);
       expect(execute).not.toHaveBeenCalled();

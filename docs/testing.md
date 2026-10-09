@@ -462,7 +462,8 @@ tool-schema.test.ts 覆盖根节点、oneOf 禁用、包装解包、历史兼容
 ### Agent Runtime 经审批的 Broker 宿主命令
 
 - `tests/agent-runtime-tools.test.ts` 验证普通 Runtime `run_command` 不请求审批；`run_with_permissions` 只把严格命令、理由和当前 `toolCallId` 交给 adapter。`tests/agent-runtime-service.test.ts` 验证该请求保留普通 DAG 并行语义；Git push 独占由共享工具图测试覆盖。
-- `tests/agent-runtime-engine.test.ts` 通过真实 Runtime 子进程验证低成本模型审批后，Broker 宿主命令可写入工作区外标记，且独立记为 `broker-command/host-process`，不会调用 Sandbox runner；命令和理由不进入任务 trace。
+- `tests/agent-runtime-engine.test.ts` 通过真实 Runtime 子进程验证低成本模型审批后，Broker 宿主命令可写入工作区外标记，且独立记为 `broker-command/host-process`，不会调用 Sandbox runner；stdout/stderr 的 `capability_output` 在工具结果前持久化且携带对应 callId，拒绝时无命令输出；命令和理由不进入任务 trace。
+- `tests/session-view.test.ts` 验证宿主命令与普通命令交错输出不串卡片、实时视图不可变、失败/取消结果关联、旧无 ID 输出及未匹配输出可见、仅最终结果与全量历史重建。`tests/e2e/broker-command-output.spec.ts` 用合成会话和增量刷新验证真实 UI 的 stdout/stderr 卡片、成功/非零退出/截断/取消、最终 output 兜底与刷新重建；输出按纯文本显示，不重复渲染结果。这些浏览器夹具不执行真实宿主命令，不代替固定账户安装态验收。
 - `tests/runtime-ipc.test.ts` 与 `tests/tool-schema.test.ts` 验证命令/理由的有界 schema 与调用关联，并拒绝旧权限字段或其它额外参数。
 - `tests/sandbox.test.ts` 和原生构建仍覆盖保留的 Capability/Push Runner 代码，但它们当前不由产品工具触发；其中 ACL、代理及限制断言不能证明现行 Broker 宿主命令或 Git push 的权限边界。
 

@@ -1,6 +1,6 @@
 /**
  * 在连接收到新事件时聚合时间线，Timeline 只读取发布后的不可变视图。
- * 1. 输出卡片类型与 outputTypeForTool 保留普通命令/Git 及旧记录的显示约定。
+ * 1. 输出卡片类型与 outputTypeForTool 关联普通命令、Broker 宿主命令和 Git 输出，保留旧无调用 ID 记录的显示约定。
  * 2. TimelineProjection.append 逐个消费新事件，索引流式尝试、工具输出/状态、编辑批次和最后回复。
  * 3. publish 复制展示索引并按任务状态收纳过程；仅复制引用，不重新读取历史正文。
  *    没有事件或任务/审批变化时直接复用上次视图。旧视图的 Map、Set 和记录不再修改。
@@ -38,9 +38,11 @@ export interface TimelineView {
 export function outputTypeForTool(name: string): string | undefined {
   return name === "run_command"
     ? "command_output"
-    : name === "git"
-      ? "git_output"
-      : undefined;
+    : name === "run_with_permissions"
+      ? "capability_output"
+      : name === "git"
+        ? "git_output"
+        : undefined;
 }
 
 const visibleTypes = new Set([
@@ -59,6 +61,7 @@ const visibleTypes = new Set([
   "sandbox_fallback",
   "notice",
   "command_output",
+  "capability_output",
   "git_output",
   "edit_progress",
 ]);
@@ -182,7 +185,11 @@ export class TimelineProjection {
       this.activeCards.set(outputType, event.id);
     }
 
-    if (event.type === "command_output" || event.type === "git_output") {
+    if (
+      event.type === "command_output" ||
+      event.type === "capability_output" ||
+      event.type === "git_output"
+    ) {
       const id = event.data.callId
         ? this.calls.get(callKey)
         : this.activeCards.get(event.type);
