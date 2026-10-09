@@ -210,6 +210,8 @@ item.done 回退、失败/不完整事件、服务实际错误 message/reason/co
 
 宿主与真实 Runtime 子进程的 `read_file` 路径准备/检查/字节读取/Worker 排队/冷启动/处理回传阶段及结果字节数与纯计算耗时，冷/热 Worker、二进制失败与排队取消的阶段配对；`context.prepare`/`context.request` 及计量子阶段、Runtime `tool.result_persist`、独立模型与响应处理、工具计划/持久化及 instant/flow 事件导出；Runtime trace IPC 只接受固定阶段、工具槽位、单调微秒时间戳和有界数值属性，Broker 校验时间窗、以已验证 Runtime PID 分组、对五次 read_file 复用最多四条槽位轨道，参数在 Broker 侧从 tool_start 脱敏附加；任意名称/文本字段关闭通道；主线程嵌套 begin/end slice、Task 包络、时序排序、整数 flow ID、可复用工具轨道、实际 tool 的完整结构化参数及递归凭据脱敏、按 session/task 独立持久化、终态后释放内存、认证下载、仅显示真实文件的统计框入口、关联元数据与普通长属性限长
 
+`agent-runtime-engine.test.ts` 另核对并行读取结果的 `durationMs` 与各自 `tool.execute` 片段一致，获批宿主命令有数值、拒绝为零；`agent-runtime-duration.test.ts` 使用真实 Runtime 子进程覆盖执行失败、无效图和依赖阻断，再重开数据库验证耗时持久化。`e2e/broker-command-output.spec.ts` 检查命令卡片及普通工具结果中的数值、0 ms、旧记录缺失提示与刷新重建。计时来自执行片段而非 tool_start 到结果的墙钟间隔，避免加入审批、排队和落盘时间；这些测试不替代固定账户安装态或跨平台验收。
+
 ### HTTP API、访问密码与监听范围
 
 主要测试：access-password.test.ts、server.test.ts、listen-address.test.ts、core.test.ts。

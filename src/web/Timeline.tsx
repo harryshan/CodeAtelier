@@ -2,7 +2,7 @@
  * 将 Snapshot 中的历史事件和待审批操作显示为对话时间线，并通过 api 提交审批决定。
  * 请求失败时交给传入的错误回调处理。
  *
- * 1. labels 和 textResult 处理工具名称及结果的显示格式。
+ * 1. labels、textResult 和 toolDuration 处理工具名称、结果及耗时；旧记录缺少耗时时明确提示，不根据事件间隔猜测。
  * 2. 读取连接层 timeline-projection 的流式文本、输出和状态视图；渲染期间不聚合历史。MarkdownMessage 缓存相同正文的安全渲染。
  * 3. 显示编辑进度、工具输出及子任务记录；普通/Broker 宿主命令和 Git 共用输出卡片，未匹配的输出仍显示为文本。StreamingMessage 使用通知索引判断尝试是否仍在生成。
  * 4. 已完成任务默认仅保留用户输入和最后一条 agent 输出，将中间过程收纳为可展开区域；未完成、失败、取消和中断任务继续完整显示。
@@ -64,6 +64,14 @@ function textResult(event: Event) {
     : JSON.stringify(event.data.result, null, 2);
 }
 
+function toolDuration(durationMs: unknown) {
+  return typeof durationMs === "number" &&
+    Number.isFinite(durationMs) &&
+    durationMs >= 0
+    ? `${durationMs} ms`
+    : "耗时未记录";
+}
+
 const modelUsagePurposeLabels: Record<string, string> = {
   task: "任务执行",
   compaction: "上下文摘要",
@@ -111,7 +119,7 @@ function ToolOutputCard({
             ? "错误：" + result.error
             : "退出码：" + (result.exitCode ?? "未知")}
           {result.truncated ? "；输出已截断" : ""}
-          <span>{state.result?.data.durationMs} ms</span>
+          <span>{toolDuration(state.result?.data.durationMs)}</span>
         </div>
       )}
     </details>
@@ -263,7 +271,7 @@ const TimelineEvent = memo(
         <details className={s.toolResult}>
           <summary>
             {event.data.result?.error ? "⚠ 操作未完成" : "✓ 工具结果"}
-            <span>{event.data.durationMs} ms</span>
+            <span>{toolDuration(event.data.durationMs)}</span>
           </summary>
           <pre>{textResult(event)}</pre>
         </details>

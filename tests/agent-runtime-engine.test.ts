@@ -3,7 +3,7 @@
  * 测试 launcher 只用 stdio 和环境变量传递测试身份，不提供 Windows token/Job/ACL 证明，不是产品 Sandbox 验收。
  *
  * 1. Engine 生成 instance/nonce，launcher 启动真实 Node 子进程并返回 IPC 流。
- * 2. 子进程并行运行五次 read_file，验证 Broker 按已验证 PID/最多四个可复用槽重建实际执行与内部阶段、附参数和任务结束清理 trace；固定白名单细分 trace 不包含文件内容。
+ * 2. 子进程并行运行五次 read_file，验证 Broker 按已验证 PID/最多四个可复用槽重建实际执行与内部阶段、附参数和任务结束清理 trace；会话耗时与对应执行片段一致，固定白名单细分 trace 不包含文件内容。
  * 3. Engine 等待 Runtime 终态与 clean 退出，再把任务和带有已验证进程身份的 execution instance 记为 completed。
  * 4. 取消等待 Runtime 写回可信终态后才关闭 transport；无法证明终态时仍保持 unknown。
  * 5. run_with_permissions 经低成本模型审批后由 Broker 宿主进程执行，单独记录 host-process，而不创建 Capability Runner；stdout/stderr 在结果前按调用 ID 持久化，拒绝时无输出。
@@ -255,6 +255,26 @@ it("moves the Engine agent loop into the launched Runtime process", async () => 
     const toolStarts = trace.traceEvents.filter(
       (event: any) => event.name === "tool.read_file" && event.ph === "B",
     );
+    const results = store
+      .events(session.id)
+      .filter((event) => event.type === "tool_result");
+    expect(results).toHaveLength(5);
+    for (const start of toolStarts) {
+      const end = trace.traceEvents.find(
+        (event: any) =>
+          event.name === start.name &&
+          event.ph === "E" &&
+          event.tid === start.tid &&
+          event.ts >= start.ts,
+      );
+      const result = results.find(
+        (event) => event.data.callId === start.args.callId,
+      );
+      expect(result?.data.durationMs).toBe(
+        Math.round((end.ts - start.ts) / 1000),
+      );
+    }
+
     const toolLanes = new Set(toolStarts.map((event: any) => event.tid));
     expect(toolStarts).toHaveLength(5);
     expect(toolLanes.size).toBeLessThan(5);
@@ -619,6 +639,17 @@ for (const approve of [true, false]) {
         }
       } else {
         expect(outputEvents).toEqual([]);
+      }
+
+      const commandResult = events.find(
+        (event) =>
+          event.type === "tool_result" &&
+          event.data.callId === "capability-call",
+      );
+      if (approve) {
+        expect(commandResult?.data.durationMs).toBeGreaterThan(0);
+      } else {
+        expect(commandResult?.data.durationMs).toBe(0);
       }
 
       expect(approvalCalls).toBe(1);

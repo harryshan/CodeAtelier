@@ -1,7 +1,7 @@
 /**
  * 验证获批宿主命令的输出在真实浏览器时间线中可见，不启动模型或宿主命令。
  * 1. 合成持久化 Snapshot 和增量 SSE 刷新，先提供执行中 stdout/stderr，再提供工具终态。
- * 2. 各用例检查同一卡片中的实时输出、退出码/截断/错误，以及刷新后的历史重建。
+ * 2. 各用例检查同一卡片中的实时输出、退出码/截断/错误，以及刷新后的历史重建；命令卡片和普通工具结果均检查耗时、零值与旧记录缺失提示。
  * 3. 无流式事件的旧结果使用最终 output 兜底；内容只作文本，不执行输出中的 HTML。
  * 路由只替换测试会话接口，沿用测试服务的 bootstrap 与实际 UI，不提供 Sandbox 验收证明。
  */
@@ -12,24 +12,35 @@ import type { Event, Snapshot } from "../../src/shared/types.js";
 const cases = [
   {
     name: "success",
+    durationMs: 120,
     result: { exitCode: 0 },
     status: "退出码：0",
     stream: true,
   },
   {
     name: "nonzero",
+    durationMs: 250,
     result: { exitCode: 7, truncated: true },
     status: "退出码：7；输出已截断",
     stream: true,
   },
   {
     name: "cancelled",
+    durationMs: 350,
     result: { error: "命令已取消" },
     status: "错误：命令已取消",
     stream: true,
   },
   {
     name: "final-only",
+    durationMs: 0,
+    result: { exitCode: 0 },
+    status: "退出码：0",
+    stream: false,
+  },
+  {
+    name: "legacy-missing-duration",
+    durationMs: undefined,
     result: { exitCode: 0 },
     status: "退出码：0",
     stream: false,
@@ -80,8 +91,23 @@ for (const scenario of cases) {
       name: "run_with_permissions",
       callId,
       result: { ...scenario.result, output },
-      durationMs: 120,
+      durationMs: scenario.durationMs,
     });
+    append("tool_start", {
+      name: "read_file",
+      callId: "read",
+      args: { path: "example.txt" },
+    });
+    append("tool_result", {
+      name: "read_file",
+      callId: "read",
+      result: { text: "file content" },
+      durationMs: scenario.durationMs,
+    });
+    const duration =
+      scenario.durationMs === undefined
+        ? "耗时未记录"
+        : `${scenario.durationMs} ms`;
     const base: Snapshot = {
       session,
       events: [],
@@ -143,7 +169,13 @@ for (const scenario of cases) {
     await expect(card).toContainText(scenario.status);
     await expect(card.locator("pre")).toHaveText(output);
     await expect(card.locator("pre b")).toHaveCount(0);
-    await expect(page.getByText("✓ 工具结果", { exact: true })).toHaveCount(0);
+    await expect(card.getByText(duration, { exact: true })).toBeVisible();
+    await expect(page.getByText(duration, { exact: true })).toHaveCount(2);
+    const readResult = page.locator("summary").filter({
+      hasText: /^✓ 工具结果/,
+    });
+    await expect(readResult).toHaveCount(1);
+    await expect(readResult.getByText(duration, { exact: true })).toBeVisible();
 
     await page.reload();
     await page
@@ -152,5 +184,9 @@ for (const scenario of cases) {
     await expect(card).toHaveCount(1);
     await expect(card.locator("pre")).toHaveText(output);
     await expect(card).toContainText(scenario.status);
+    await expect(card.getByText(duration, { exact: true })).toBeVisible();
+    await expect(page.getByText(duration, { exact: true })).toHaveCount(2);
+    await expect(readResult).toHaveCount(1);
+    await expect(readResult.getByText(duration, { exact: true })).toBeVisible();
   });
 }
