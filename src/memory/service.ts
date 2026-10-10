@@ -3,13 +3,18 @@
  * Engine 在新任务准备阶段调用 retrieve；ToolRunner/Runtime Broker 通过同一个 apply 入口执行维护或按 ID 读取。
  *
  * 1. retrieve 按工作区加载全部有效摘要，将文件错误安全降级为空 bundle，记录受控状态但绝不把记忆文件内容写入日志。
- * 2. readEntry 只加载当前项目，核对版本、启用状态与有效期后返回完整条目；不会写回 lastUsedAt 或改变任务目录。
- * 3. apply 校验单条 read 或原维护批次；维护仍在 FileStore 版本锁内运行 Mutator 并原子提交 JSONL；只返回操作摘要，不迁移其他格式。
+ * 2. readEntry 只加载当前项目，核对目标条目版本、启用状态与有效期后返回完整条目；不会写回 lastUsedAt 或改变任务目录。
+ * 3. apply 校验单条 read 或原维护批次；维护仍在 FileStore 串行提交中运行 Mutator 并原子提交 JSONL；只返回操作摘要，不迁移其他格式。
  * 4. 两条路径均不在日志记录正文，复用工具生命周期 tracing；冲突不自动重试，未知写入不自动重放。
  */
 
 import type { Logger } from "pino";
-import { MemoryFileStore, MemoryVersionConflictError } from "./file-store.js";
+import { MemoryFileStore } from "./file-store.js";
+import {
+  assertMemoryEntryVersion,
+  memoryEntryVersion,
+  MemoryVersionConflictError,
+} from "./entry-version.js";
 import { applyMemoryMutation } from "./mutator.js";
 import { retrieveMemoryBundle } from "./retriever.js";
 import {
@@ -37,7 +42,7 @@ export class ProjectMemoryService {
   async retrieve(workspace: string): Promise<MemoryRetrieval> {
     try {
       const stored = await this.files.load(workspace);
-      const bundle = retrieveMemoryBundle(stored.document, stored.version);
+      const bundle = retrieveMemoryBundle(stored.document);
       this.log.info({
         event: "memory.retrieval_completed",
         module: "memory",
@@ -62,17 +67,9 @@ export class ProjectMemoryService {
     }
   }
 
-  private async readEntry(
-    scope: MemoryScope,
-    version: string | null,
-    id: string,
-  ) {
+  private async readEntry(scope: MemoryScope, version: string, id: string) {
     try {
       const stored = await this.files.load(scope.workspace);
-      if (stored.version !== version) {
-        throw new MemoryVersionConflictError();
-      }
-
       const entry = stored.document.entries.find(
         (candidate) => candidate.id === id,
       );
@@ -85,6 +82,7 @@ export class ProjectMemoryService {
         throw new Error("记忆条目不可读取：不存在、已停用或已失效。");
       }
 
+      assertMemoryEntryVersion(entry, version);
       this.log.info({
         event: "memory.read_completed",
         module: "memory",
@@ -95,8 +93,14 @@ export class ProjectMemoryService {
 
       return {
         projectKey: stored.projectKey,
-        version: stored.version,
-        operations: [{ action: "read" as const, id: entry.id, entry }],
+        operations: [
+          {
+            action: "read" as const,
+            id: entry.id,
+            version: memoryEntryVersion(entry),
+            entry,
+          },
+        ],
       };
     } catch (error) {
       this.log.warn({
@@ -118,15 +122,13 @@ export class ProjectMemoryService {
     const request = memoryToolSchema.parse(raw);
     const operation = request.operations[0];
     if (operation.action === "read") {
-      return this.readEntry(scope, request.expectedVersion, operation.id);
+      return this.readEntry(scope, operation.expectedVersion, operation.id);
     }
 
     const mutation = memoryMutationSchema.parse(request);
     try {
-      const stored = await this.files.update(
-        scope.workspace,
-        mutation.expectedVersion,
-        (document) => applyMemoryMutation(document, mutation, scope),
+      const stored = await this.files.update(scope.workspace, (document) =>
+        applyMemoryMutation(document, mutation, scope),
       );
       this.log.info({
         event: "memory.apply_completed",
@@ -139,7 +141,6 @@ export class ProjectMemoryService {
 
       return {
         projectKey: stored.projectKey,
-        version: stored.version,
         operations: stored.result,
       };
     } catch (error) {

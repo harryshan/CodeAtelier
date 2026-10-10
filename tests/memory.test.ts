@@ -5,7 +5,7 @@
  * 1. 验证 create 会在数据目录建立按真实工作区哈希隔离的 JSONL，并提供所有有效条目的摘要。
  * 2. 验证 archive 无需确认即可停止注入但保留可恢复记录，版本冲突不会覆盖新内容。
  * 3. 验证疑似凭据被拒绝且不会留下记忆文件，直接格式错误读取会安全降级为不可用。
- * 4. 验证目录按文件顺序提供全部 ID/摘要，不评分或裁剪，最大转义目录可经 Runtime IPC 传递。
+ * 4. 验证目录按文件顺序提供全部 ID/条目版本/摘要，不评分或裁剪，最大转义目录可经 Runtime IPC 传递。
  * 5. 验证所有非 active/过期条目和禁用项目不注入；read 单独返回同项目、同版本有效条目且不写盘。
  */
 
@@ -16,6 +16,7 @@ import path from "node:path";
 import pino from "pino";
 import { ProjectMemoryService } from "../src/memory/service.js";
 import { parseMemoryJsonl, serializeMemoryJsonl } from "../src/memory/jsonl.js";
+import { memoryEntryVersion } from "../src/memory/entry-version.js";
 import { retrieveMemoryBundle } from "../src/memory/retriever.js";
 import { MAX_MEMORY_ENTRIES } from "../src/memory/types.js";
 import { runtimeIpcMessageSchema } from "../src/sandbox/runtime-ipc-protocol.js";
@@ -30,12 +31,8 @@ async function createFixture() {
   return { workspace, directory, service, scope };
 }
 
-function createMutation(
-  expectedVersion: string | null,
-  statement = "项目使用 pnpm 运行验证命令。",
-) {
+function createMutation(statement = "项目使用 pnpm 运行验证命令。") {
   return {
-    expectedVersion,
     operations: [
       {
         action: "create" as const,
@@ -60,12 +57,9 @@ function createMutation(
 
 it("stores a project-isolated JSONL memory and retrieves active summaries", async () => {
   const fixture = await createFixture();
-  const created = await fixture.service.apply(
-    fixture.scope,
-    createMutation(null),
-  );
+  const created = await fixture.service.apply(fixture.scope, createMutation());
 
-  expect(created.version).toMatch(/^[a-f0-9]{64}$/);
+  expect(created.operations[0].version).toMatch(/^[a-f0-9]{64}$/);
   expect(created.operations).toHaveLength(1);
   const file = path.join(
     fixture.directory,
@@ -91,7 +85,6 @@ it("stores a project-isolated JSONL memory and retrieves active summaries", asyn
   expect(bundle).toMatchObject({
     available: true,
     bundle: {
-      version: created.version,
       entries: [
         expect.objectContaining({
           id: created.operations[0].id,
@@ -101,7 +94,11 @@ it("stores a project-isolated JSONL memory and retrieves active summaries", asyn
     },
   });
   expect(bundle.bundle?.entries).toEqual([
-    { id: created.operations[0].id, summary: "使用 pnpm" },
+    {
+      id: created.operations[0].id,
+      version: created.operations[0].version,
+      summary: "使用 pnpm",
+    },
   ]);
   expect(bundle.bundle?.text).not.toContain("项目使用 pnpm 运行验证命令。");
   expect(bundle.bundle?.text).not.toContain("当前任务已检查 package.json。");
@@ -113,13 +110,15 @@ it("stores a project-isolated JSONL memory and retrieves active summaries", asyn
 
 it("reads complete memory on demand without writes or cross-project access", async () => {
   const fixture = await createFixture();
-  const created = await fixture.service.apply(
-    fixture.scope,
-    createMutation(null),
-  );
+  const created = await fixture.service.apply(fixture.scope, createMutation());
   const request = {
-    expectedVersion: created.version,
-    operations: [{ action: "read", id: created.operations[0].id }],
+    operations: [
+      {
+        action: "read",
+        id: created.operations[0].id,
+        expectedVersion: created.operations[0].version,
+      },
+    ],
   };
   const file = path.join(
     fixture.directory,
@@ -131,11 +130,11 @@ it("reads complete memory on demand without writes or cross-project access", asy
 
   expect(result).toMatchObject({
     projectKey: created.projectKey,
-    version: created.version,
     operations: [
       {
         action: "read",
         id: created.operations[0].id,
+        version: created.operations[0].version,
         entry: {
           statement: "项目使用 pnpm 运行验证命令。",
           source: { summary: "当前任务已检查 package.json。" },
@@ -149,7 +148,11 @@ it("reads complete memory on demand without writes or cross-project access", asy
     fixture.service.apply(fixture.scope, {
       ...request,
       operations: [
-        { action: "read", id: "00000000-0000-0000-0000-000000000000" },
+        {
+          action: "read",
+          id: "00000000-0000-0000-0000-000000000000",
+          expectedVersion: created.operations[0].version,
+        },
       ],
     }),
   ).rejects.toThrow("不可读取");
@@ -158,23 +161,21 @@ it("reads complete memory on demand without writes or cross-project access", asy
       { ...fixture.scope, workspace: await temp() },
       {
         ...request,
-        expectedVersion: null,
       },
     ),
   ).rejects.toThrow("不可读取");
   await expect(
     fixture.service.apply(fixture.scope, {
       ...request,
-      expectedVersion: "b".repeat(64),
+      operations: [
+        { ...request.operations[0], expectedVersion: "b".repeat(64) },
+      ],
     }),
   ).rejects.toThrow("已被其他操作更新");
   await expect(
     fixture.service.apply(fixture.scope, {
       ...request,
-      operations: [
-        ...request.operations,
-        ...createMutation(created.version).operations,
-      ],
+      operations: [...request.operations, ...createMutation().operations],
     }),
   ).rejects.toThrow();
   expect(await readFile(file, "utf8")).toBe(before);
@@ -182,22 +183,28 @@ it("reads complete memory on demand without writes or cross-project access", asy
 
 it("rejects reads of archived, expired, disabled or malformed memory", async () => {
   const fixture = await createFixture();
-  const mutation = createMutation(null);
+  const mutation = createMutation();
   const created = await fixture.service.apply(fixture.scope, mutation);
   const id = created.operations[0].id;
   const archived = await fixture.service.apply(fixture.scope, {
-    expectedVersion: created.version,
-    operations: [{ action: "archive", id, reason: "已失效" }],
+    operations: [
+      {
+        action: "archive",
+        id,
+        expectedVersion: created.operations[0].version,
+        reason: "已失效",
+      },
+    ],
   });
-  const read = (version: string | null, entryId = id) =>
+  const read = (version: string, entryId = id) =>
     fixture.service.apply(fixture.scope, {
-      expectedVersion: version,
-      operations: [{ action: "read", id: entryId }],
+      operations: [{ action: "read", id: entryId, expectedVersion: version }],
     });
 
-  await expect(read(archived.version)).rejects.toThrow("不可读取");
+  await expect(read(archived.operations[0].version)).rejects.toThrow(
+    "不可读取",
+  );
   const expired = await fixture.service.apply(fixture.scope, {
-    expectedVersion: archived.version,
     operations: [
       {
         ...mutation.operations[0],
@@ -206,9 +213,9 @@ it("rejects reads of archived, expired, disabled or malformed memory", async () 
       },
     ],
   });
-  await expect(read(expired.version, expired.operations[0].id)).rejects.toThrow(
-    "不可读取",
-  );
+  await expect(
+    read(expired.operations[0].version, expired.operations[0].id),
+  ).rejects.toThrow("不可读取");
 
   const file = path.join(
     fixture.directory,
@@ -217,10 +224,10 @@ it("rejects reads of archived, expired, disabled or malformed memory", async () 
   );
   const active = await fixture.service.apply(
     fixture.scope,
-    createMutation(expired.version, "新的有效条目"),
+    createMutation("新的有效条目"),
   );
   await expect(
-    read(active.version, active.operations[0].id),
+    read(active.operations[0].version, active.operations[0].id),
   ).resolves.toMatchObject({
     operations: [{ action: "read", entry: { statement: "新的有效条目" } }],
   });
@@ -230,18 +237,18 @@ it("rejects reads of archived, expired, disabled or malformed memory", async () 
   const disabled = await fixture.service.retrieve(fixture.workspace);
   expect(disabled.bundle?.entries).toEqual([]);
   await expect(
-    read(disabled.bundle!.version, active.operations[0].id),
+    read(active.operations[0].version, active.operations[0].id),
   ).rejects.toThrow("不可读取");
   await writeFile(file, "invalid memory");
-  await expect(read(disabled.bundle!.version)).rejects.toThrow();
+  await expect(read(active.operations[0].version)).rejects.toThrow();
 });
 
 it("provides every summary in file order beyond the old entry and character caps", async () => {
   const fixture = await createFixture();
   const empty = await fixture.service.retrieve(fixture.workspace);
-  expect(empty.bundle?.version).toBeNull();
-  expect(empty.bundle?.text).toContain("null");
-  const template = createMutation(null).operations[0];
+  expect(empty.bundle).not.toHaveProperty("version");
+  expect(empty.bundle?.text).toContain("create 无需版本");
+  const template = createMutation().operations[0];
   const operations = Array.from({ length: 10 }, (_, index) => ({
     ...template,
     title: `摘要 ${index}${"\u0001".repeat(140)}`,
@@ -250,7 +257,6 @@ it("provides every summary in file order beyond the old entry and character caps
     confidence: index === 9 ? "confirmed" : "tentative",
   }));
   const created = await fixture.service.apply(fixture.scope, {
-    expectedVersion: null,
     operations,
   });
   const first = await fixture.service.retrieve(fixture.workspace);
@@ -260,6 +266,7 @@ it("provides every summary in file order beyond the old entry and character caps
   expect(first.bundle?.entries).toEqual(
     created.operations.map((operation, index) => ({
       id: operation.id,
+      version: operation.version,
       summary: operations[index].title,
     })),
   );
@@ -274,10 +281,7 @@ it("provides every summary in file order beyond the old entry and character caps
 
 it("transports all maximum-length escaped summaries and filters only invalid entries", async () => {
   const fixture = await createFixture();
-  const created = await fixture.service.apply(
-    fixture.scope,
-    createMutation(null),
-  );
+  const created = await fixture.service.apply(fixture.scope, createMutation());
   const file = path.join(
     fixture.directory,
     "memories",
@@ -296,7 +300,11 @@ it("transports all maximum-length escaped summaries and filters only invalid ent
   const memory = await fixture.service.retrieve(fixture.workspace);
   expect(memory.available).toBe(true);
   expect(memory.bundle?.entries).toEqual(
-    document.entries.map((entry) => ({ id: entry.id, summary: entry.title })),
+    document.entries.map((entry) => ({
+      id: entry.id,
+      version: memoryEntryVersion(entry),
+      summary: entry.title,
+    })),
   );
   expect(memory.bundle!.text.length).toBeGreaterThan(100_000);
   const request = {
@@ -330,24 +338,27 @@ it("transports all maximum-length escaped summaries and filters only invalid ent
   document.entries[3].expiresAt = "2000-01-01T00:00:00.000Z";
   document.entries[4].expiresAt = new Date().toISOString();
   document.entries[5].expiresAt = "2999-01-01T00:00:00.000Z";
-  const filtered = retrieveMemoryBundle(document, created.version);
-  expect(filtered.entries).toEqual(memory.bundle!.entries.slice(5));
+  const filtered = retrieveMemoryBundle(document);
+  expect(filtered.entries).toEqual(
+    document.entries.slice(5).map((entry) => ({
+      id: entry.id,
+      version: memoryEntryVersion(entry),
+      summary: entry.title,
+    })),
+  );
   document.enabled = false;
-  expect(retrieveMemoryBundle(document, created.version).entries).toEqual([]);
+  expect(retrieveMemoryBundle(document).entries).toEqual([]);
 });
 
-it("archives an entry without confirmation and rejects stale file versions", async () => {
+it("archives an entry without confirmation and rejects stale entry versions", async () => {
   const fixture = await createFixture();
-  const created = await fixture.service.apply(
-    fixture.scope,
-    createMutation(null),
-  );
+  const created = await fixture.service.apply(fixture.scope, createMutation());
   const archived = await fixture.service.apply(fixture.scope, {
-    expectedVersion: created.version,
     operations: [
       {
         action: "archive",
         id: created.operations[0].id,
+        expectedVersion: created.operations[0].version,
         reason: "当前任务确认该约束已经被新配置取代。",
       },
     ],
@@ -355,14 +366,24 @@ it("archives an entry without confirmation and rejects stale file versions", asy
   const bundle = await fixture.service.retrieve(fixture.workspace);
 
   expect(archived.operations).toEqual([
-    { action: "archive", id: created.operations[0].id },
+    {
+      action: "archive",
+      id: created.operations[0].id,
+      version: expect.stringMatching(/^[a-f0-9]{64}$/),
+    },
   ]);
   expect(bundle.bundle?.entries).toEqual([]);
   await expect(
-    fixture.service.apply(
-      fixture.scope,
-      createMutation(created.version, "过期版本不能覆盖新记忆。"),
-    ),
+    fixture.service.apply(fixture.scope, {
+      operations: [
+        {
+          action: "archive",
+          id: created.operations[0].id,
+          expectedVersion: created.operations[0].version,
+          reason: "过期版本不能覆盖新记忆。",
+        },
+      ],
+    }),
   ).rejects.toThrow("已被其他操作更新");
 });
 
@@ -372,7 +393,7 @@ it("rejects sensitive content and degrades malformed external JSONL safely", asy
   await expect(
     fixture.service.apply(
       fixture.scope,
-      createMutation(null, "请使用 API_KEY=super-secret-token-value。"),
+      createMutation("请使用 API_KEY=super-secret-token-value。"),
     ),
   ).rejects.toThrow("不能保存疑似凭据");
   const missing = await fixture.service.retrieve(fixture.workspace);

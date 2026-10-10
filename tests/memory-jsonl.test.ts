@@ -1,5 +1,5 @@
 /**
- * 验证项目记忆 JSONL 快照、文件版本与原子写入的可观察行为。
+ * 验证项目记忆 JSONL 快照、条目版本与原子写入的可观察行为。
  * 使用临时工作区中的真实 MemoryFileStore/ProjectMemoryService，不依赖模型、网络或个人记忆。
  *
  * 1. document 建立带有效来源的文档；JSONL 编解码用例覆盖文本往返、顺序、严格格式与重复 ID。
@@ -178,10 +178,15 @@ it("rejects bad records, duplicate IDs, oversized files and credentials without 
 it("reads JSONL without writing and persists maintenance across restarts", async () => {
   const fixture = await jsonlFixture();
   const bundle = await fixture.service.retrieve(fixture.workspace);
-  const version = bundle.bundle!.version;
+  const version = bundle.bundle!.entries[0].version;
   const result = await fixture.service.apply(fixture.scope, {
-    expectedVersion: version,
-    operations: [{ action: "read", id: fixture.value.entries[0].id }],
+    operations: [
+      {
+        action: "read",
+        id: fixture.value.entries[0].id,
+        expectedVersion: version,
+      },
+    ],
   });
 
   expect(result.operations[0]).toMatchObject({
@@ -192,11 +197,11 @@ it("reads JSONL without writing and persists maintenance across restarts", async
   ]);
   expect(await readFile(fixture.current, "utf8")).toBe(fixture.text);
   const changed = await fixture.service.apply(fixture.scope, {
-    expectedVersion: version,
     operations: [
       {
         action: "archive",
         id: fixture.value.entries[0].id,
+        expectedVersion: version,
         reason: "新决定替代",
       },
     ],
@@ -208,7 +213,7 @@ it("reads JSONL without writing and persists maintenance across restarts", async
     lastReason: "新决定替代",
     updatedAt: expect.any(String),
   });
-  expect(changed.version).not.toBe(version);
+  expect(changed.operations[0].version).not.toBe(version);
   expect(
     (await new MemoryFileStore(fixture.directory).load(fixture.workspace))
       .document,
@@ -218,23 +223,35 @@ it("reads JSONL without writing and persists maintenance across restarts", async
   ).toEqual([]);
   await expect(
     fixture.service.apply(fixture.scope, {
-      expectedVersion: version,
-      operations: [{ action: "read", id: fixture.value.entries[0].id }],
+      operations: [
+        {
+          action: "read",
+          id: fixture.value.entries[0].id,
+          expectedVersion: version,
+        },
+      ],
     }),
-  ).rejects.toThrow("已被其他操作更新");
+  ).rejects.toThrow("不可读取");
 });
 
 it("preserves JSONL on stale versions and failed changes and serializes concurrent updates", async () => {
   const fixture = await jsonlFixture();
-  const loaded = await fixture.store.load(fixture.workspace);
+  const bundle = (await fixture.service.retrieve(fixture.workspace)).bundle!;
+  const target = bundle.entries[0];
   await expect(
-    fixture.store.update(fixture.workspace, "b".repeat(64), (value) => ({
-      document: value,
-      result: null,
-    })),
+    fixture.service.apply(fixture.scope, {
+      operations: [
+        {
+          action: "archive",
+          id: target.id,
+          expectedVersion: "b".repeat(64),
+          reason: "过期版本",
+        },
+      ],
+    }),
   ).rejects.toThrow("已被其他操作更新");
   await expect(
-    fixture.store.update(fixture.workspace, loaded.version, () => {
+    fixture.store.update(fixture.workspace, () => {
       throw new Error("fixture failure");
     }),
   ).rejects.toThrow("fixture failure");
@@ -242,11 +259,20 @@ it("preserves JSONL on stale versions and failed changes and serializes concurre
     path.basename(fixture.current),
   ]);
   const attempts = await Promise.allSettled(
-    [fixture.store, new MemoryFileStore(fixture.directory)].map((store) =>
-      store.update(fixture.workspace, loaded.version, (value) => ({
-        document: { ...value, enabled: false },
-        result: null,
-      })),
+    [
+      fixture.service,
+      new ProjectMemoryService(fixture.directory, pino({ enabled: false })),
+    ].map((service) =>
+      service.apply(fixture.scope, {
+        operations: [
+          {
+            action: "archive",
+            id: target.id,
+            expectedVersion: target.version,
+            reason: "并发归档",
+          },
+        ],
+      }),
     ),
   );
 
@@ -256,9 +282,13 @@ it("preserves JSONL on stale versions and failed changes and serializes concurre
   expect(
     attempts.filter((result) => result.status === "rejected"),
   ).toHaveLength(1);
-  expect(parseMemoryJsonl(await readFile(fixture.current, "utf8"))).toEqual({
-    ...fixture.value,
-    enabled: false,
+  expect(
+    parseMemoryJsonl(await readFile(fixture.current, "utf8")).entries[0],
+  ).toMatchObject({
+    ...fixture.value.entries[0],
+    status: "archived",
+    lastReason: "并发归档",
+    updatedAt: expect.any(String),
   });
   expect(
     (await readdir(fixture.folder)).filter((file) => file.endsWith(".tmp")),
@@ -273,7 +303,7 @@ it("rejects corrupt or wrong-project JSONL without loading leftover backups", as
     available: false,
   });
   await expect(
-    fixture.store.update(fixture.workspace, null, (value) => ({
+    fixture.store.update(fixture.workspace, (value) => ({
       document: value,
       result: null,
     })),
@@ -293,7 +323,7 @@ it("keeps JSONL authoritative and preserves its bytes on failed maintenance", as
   expect(loaded.document).toEqual(fixture.value);
   expect(loaded.filePath).toBe(fixture.current);
   await expect(
-    fixture.store.update(fixture.workspace, loaded.version, (value) => ({
+    fixture.store.update(fixture.workspace, (value) => ({
       document: { ...value, entries: [value.entries[0], value.entries[0]] },
       result: null,
     })),
@@ -302,12 +332,16 @@ it("keeps JSONL authoritative and preserves its bytes on failed maintenance", as
 
   const external = serializeMemoryJsonl({ ...fixture.value, enabled: false });
   await expect(
-    fixture.store.update(fixture.workspace, loaded.version, async (value) => {
+    fixture.store.update(fixture.workspace, async (value) => {
+      if (!value.enabled) {
+        throw new Error("项目记忆已停用");
+      }
+
       await writeFile(fixture.current, external);
 
       return { document: value, result: null };
     }),
-  ).rejects.toThrow("已被其他操作更新");
+  ).rejects.toThrow("已停用");
   expect(await readFile(fixture.current, "utf8")).toBe(external);
   expect(
     (await readdir(fixture.folder)).filter((file) => file.endsWith(".tmp")),
@@ -321,7 +355,7 @@ it("keeps JSONL authoritative and preserves its bytes on failed maintenance", as
 
 it("preserves JSONL when escaped content would exceed the byte limit", async () => {
   const fixture = await jsonlFixture();
-  const loaded = await fixture.store.load(fixture.workspace);
+
   const oversized = {
     ...fixture.value,
     entries: Array.from({ length: 100 }, () => ({
@@ -332,7 +366,7 @@ it("preserves JSONL when escaped content would exceed the byte limit", async () 
   };
 
   await expect(
-    fixture.store.update(fixture.workspace, loaded.version, () => ({
+    fixture.store.update(fixture.workspace, () => ({
       document: oversized,
       result: null,
     })),
@@ -348,10 +382,13 @@ it("rejects competing first creation and cleans temporary files after a failed p
   await rm(fixture.current);
   const attempts = await Promise.allSettled(
     [fixture.store, new MemoryFileStore(fixture.directory)].map((store) =>
-      store.update(fixture.workspace, null, () => ({
-        document: fixture.value,
-        result: null,
-      })),
+      store.update(fixture.workspace, (value) => {
+        if (value.entries.length) {
+          throw new Error("条目已存在");
+        }
+
+        return { document: fixture.value, result: null };
+      }),
     ),
   );
   expect(
@@ -364,7 +401,7 @@ it("rejects competing first creation and cleans temporary files after a failed p
 
   await rm(fixture.current);
   await expect(
-    fixture.store.update(fixture.workspace, null, async () => {
+    fixture.store.update(fixture.workspace, async () => {
       await mkdir(fixture.current);
 
       return { document: fixture.value, result: null };

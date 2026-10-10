@@ -1,10 +1,11 @@
 /**
  * 将已校验的模型记忆操作应用到单个项目的结构化 MemoryDocument。
- * ProjectMemoryService 在 FileStore 的版本锁内调用本模块；它不读取磁盘、不执行工具，也不决定跨项目权限。
+ * ProjectMemoryService 在 FileStore 的串行提交中调用本模块；它不读取磁盘、不执行工具，也不决定跨项目权限。
  *
- * 1. create 绑定当前任务来源、生成条目 ID 并拒绝完全重复的有效事实。
- * 2. update 只替换已有条目的受限字段并重新绑定当前任务来源；archive 只停止未来检索，保留可恢复记录。
- * 3. 所有路径都再次检查敏感文本和文件来源完整性，避免绕过模型工具 schema 或直接服务调用。
+ * 1. 先验证项目启用、目标 ID 唯一和逐条版本；整批任何冲突都不会部分写入。
+ * 2. create 绑定当前任务来源、生成条目 ID 并拒绝完全重复的有效事实。
+ * 3. update 只替换已有条目的受限字段并重新绑定当前任务来源；archive 只停止未来检索，保留可恢复记录。
+ * 4. 所有路径都再次检查敏感文本和文件来源完整性，避免绕过模型工具 schema 或直接服务调用。
  */
 
 import { randomUUID } from "node:crypto";
@@ -16,10 +17,15 @@ import {
   type MemoryScope,
 } from "./types.js";
 import { assertCompleteFileSource, assertSafeMemoryText } from "./redaction.js";
+import {
+  assertMemoryEntryVersion,
+  memoryEntryVersion,
+} from "./entry-version.js";
 
 export interface AppliedMemoryOperation {
   action: "archive" | "create" | "update";
   id: string;
+  version: string;
 }
 
 function normalize(value: string) {
@@ -80,6 +86,31 @@ export function applyMemoryMutation(
   mutation: MemoryMutation,
   scope: MemoryScope,
 ) {
+  if (!document.enabled) {
+    throw new Error("当前项目记忆已停用。");
+  }
+
+  const targets = new Set<string>();
+  for (const operation of mutation.operations) {
+    if (operation.action === "create") {
+      continue;
+    }
+
+    if (targets.has(operation.id.toLowerCase())) {
+      throw new Error("同一批次不能重复修改同一记忆条目。");
+    }
+
+    targets.add(operation.id.toLowerCase());
+    const entry = document.entries.find(
+      (candidate) => candidate.id === operation.id,
+    );
+    if (!entry) {
+      throw new Error("项目记忆条目不存在或不属于当前项目。");
+    }
+
+    assertMemoryEntryVersion(entry, operation.expectedVersion);
+  }
+
   const entries = document.entries.map((entry) => ({ ...entry }));
   const applied: AppliedMemoryOperation[] = [];
   const now = new Date().toISOString();
@@ -115,7 +146,11 @@ export function applyMemoryMutation(
         lastUsedAt: null,
       };
       entries.push(entry);
-      applied.push({ action: "create", id: entry.id });
+      applied.push({
+        action: "create",
+        id: entry.id,
+        version: memoryEntryVersion(entry),
+      });
       continue;
     }
 
@@ -132,7 +167,11 @@ export function applyMemoryMutation(
         lastReason: operation.reason.trim(),
         updatedAt: now,
       };
-      applied.push({ action: "archive", id: existing.id });
+      applied.push({
+        action: "archive",
+        id: existing.id,
+        version: memoryEntryVersion(entries[index]),
+      });
       continue;
     }
 
@@ -151,7 +190,11 @@ export function applyMemoryMutation(
       updatedAt: now,
     };
     entries[index] = replacement;
-    applied.push({ action: "update", id: existing.id });
+    applied.push({
+      action: "update",
+      id: existing.id,
+      version: memoryEntryVersion(replacement),
+    });
   }
 
   return {

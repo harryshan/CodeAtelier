@@ -1,12 +1,13 @@
 /**
  * 将按工作区隔离的项目记忆保存为平台数据目录中的 JSONL 快照，只读写该格式。
- * ProjectMemoryService 是唯一调用方；它提供结构化文档和期望版本，本模块完成真实路径哈希、读取、互斥和原子替换。
+ * ProjectMemoryService 是唯一调用方；它提供校验逐条版本的纯转换函数，本模块完成真实路径哈希、读取、互斥和原子替换。
  *
  * 1. identity 解析真实工作区，再从其 SHA-256 推导不暴露路径的文件名。
  * 2. readStored/readCurrent 严格读取 JSONL，缺失时返回空文档；load 不写盘，不探测其他格式或修复坏文件。
- * 3. update 按 JSONL 目标串行，复核来源版本、序列化并 flush 临时快照，提交前再次检查来源。
- * 4. 已有 JSONL 使用 rename 替换；首次建立使用 link 原子发布且不覆盖竞争目标。
- *    失败不自动重试，临时文件和离线备份不参与读取；不提供旧格式自动迁移。
+ * 3. update 按 JSONL 目标串行，转换函数对最新文档逐条校验；无关条目的新变化保留在完整快照中。
+ * 4. publish 写出并 flush 临时快照，文件哈希仅检测提交期间竞争；明确未提交时才重算，最多进行四轮生成/发布尝试。
+ *    转换函数必须无外部副作用；已提交、未知结果或 I/O 失败绝不重放。持续竞争安全失败。
+ * 5. 已有 JSONL 用 rename 替换，首次建立用 link 防覆盖；原子发布仍不消除外部程序最终检查后的竞态。
  *
  * 本模块从不访问用户工作区内容，也不执行命令；写入范围固定为 Config 的平台数据目录 memories 子目录。
  */
@@ -31,13 +32,6 @@ import {
 import { parseMemoryJsonl, serializeMemoryJsonl } from "./jsonl.js";
 
 const locks = new Map<string, Promise<void>>();
-
-export class MemoryVersionConflictError extends Error {
-  constructor() {
-    super("项目记忆文件已被其他操作更新，请重新读取后再决定。");
-    this.name = "MemoryVersionConflictError";
-  }
-}
 
 export interface StoredMemoryDocument {
   document: MemoryDocument;
@@ -165,9 +159,55 @@ export class MemoryFileStore {
     return this.readCurrent(await this.identity(workspace));
   }
 
+  /** 仅在能证明尚未发布时返回 false；其它失败传播，绝不把未知写入当作可重试。 */
+  private async publish(
+    identity: MemoryFileIdentity,
+    baseVersion: string | null,
+    bytes: Buffer,
+  ): Promise<boolean> {
+    await mkdir(path.dirname(identity.filePath), { recursive: true });
+    const temporaryPath = `${identity.filePath}.${randomUUID()}.tmp`;
+    try {
+      const handle = await open(temporaryPath, "wx", 0o600);
+      try {
+        await handle.writeFile(bytes);
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+
+      const latest = await this.readCurrent(identity);
+      if (latest.version !== baseVersion) {
+        return false;
+      }
+
+      if (baseVersion === null) {
+        try {
+          await link(temporaryPath, identity.filePath);
+        } catch (error: any) {
+          if (error?.code === "EEXIST") {
+            return false;
+          }
+
+          throw error;
+        }
+      } else {
+        await rename(temporaryPath, identity.filePath);
+      }
+    } finally {
+      await rm(temporaryPath, { force: true });
+    }
+
+    const written = await stat(identity.filePath);
+    if (written.size !== bytes.byteLength) {
+      throw new Error("项目记忆原子写入后的文件大小不一致。");
+    }
+
+    return true;
+  }
+
   async update<T>(
     workspace: string,
-    expectedVersion: string | null,
     change: (
       document: MemoryDocument,
     ) =>
@@ -177,64 +217,29 @@ export class MemoryFileStore {
     const identity = await this.identity(workspace);
 
     return withFileLock(identity.filePath, async () => {
-      const current = await this.readCurrent(identity);
-      if (current.version !== expectedVersion) {
-        throw new MemoryVersionConflictError();
-      }
-
-      const changed = await change(current.document);
-      const serialized = serializeMemoryJsonl(changed.document);
-      const bytes = Buffer.from(serialized, "utf8");
-      if (bytes.byteLength > MAX_MEMORY_FILE_BYTES) {
-        throw new Error("项目记忆文件超过 512 KiB 限制。");
-      }
-
-      await mkdir(path.dirname(identity.filePath), { recursive: true });
-      const temporaryPath = `${identity.filePath}.${randomUUID()}.tmp`;
-      try {
-        const handle = await open(temporaryPath, "wx", 0o600);
-        try {
-          await handle.writeFile(bytes);
-          await handle.sync();
-        } finally {
-          await handle.close();
+      for (let attempt = 0; attempt < 4; attempt++) {
+        const current = await this.readCurrent(identity);
+        const changed = await change(current.document);
+        const bytes = Buffer.from(
+          serializeMemoryJsonl(changed.document),
+          "utf8",
+        );
+        if (!(await this.publish(identity, current.version, bytes))) {
+          continue;
         }
 
-        const latest = await this.readCurrent(identity);
-        if (latest.version !== current.version) {
-          throw new MemoryVersionConflictError();
-        }
-
-        if (current.version === null) {
-          // 原子发布完整文件，不让首次创建覆盖竞争进程已建立的 JSONL。
-          try {
-            await link(temporaryPath, identity.filePath);
-          } catch (error: any) {
-            if (error?.code === "EEXIST") {
-              throw new MemoryVersionConflictError();
-            }
-
-            throw error;
-          }
-        } else {
-          await rename(temporaryPath, identity.filePath);
-        }
-      } finally {
-        await rm(temporaryPath, { force: true });
+        return {
+          document: changed.document,
+          version: hash(bytes),
+          projectKey: identity.projectKey,
+          filePath: identity.filePath,
+          result: changed.result,
+        };
       }
 
-      const written = await stat(identity.filePath);
-      if (written.size !== bytes.byteLength) {
-        throw new Error("项目记忆原子写入后的文件大小不一致。");
-      }
-
-      return {
-        document: changed.document,
-        version: hash(bytes),
-        projectKey: identity.projectKey,
-        filePath: identity.filePath,
-        result: changed.result,
-      };
+      throw new Error(
+        "项目记忆存储持续被外部修改，本次操作未提交；请稍后重新核对目标条目。",
+      );
     });
   }
 }

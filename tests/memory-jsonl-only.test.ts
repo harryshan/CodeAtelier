@@ -77,14 +77,15 @@ it("ignores valid Markdown for retrieval, read and new JSONL maintenance without
   expect(loaded.filePath).toBe(fixture.empty.filePath);
   expect(await fixture.service.retrieve(fixture.workspace)).toMatchObject({
     available: true,
-    bundle: { version: null, entries: [] },
+    bundle: { entries: [] },
   });
   await expect(
     fixture.service.apply(
       { workspace: fixture.workspace, sessionId: "fixture", taskId: "fixture" },
       {
-        expectedVersion: null,
-        operations: [{ action: "read", id: fixture.id }],
+        operations: [
+          { action: "read", id: fixture.id, expectedVersion: "a".repeat(64) },
+        ],
       },
     ),
   ).rejects.toThrow("不可读取");
@@ -92,7 +93,7 @@ it("ignores valid Markdown for retrieval, read and new JSONL maintenance without
     path.basename(fixture.legacy),
   ]);
 
-  await fixture.store.update(fixture.workspace, null, (document) => ({
+  await fixture.store.update(fixture.workspace, (document) => ({
     document,
     result: null,
   }));
@@ -114,7 +115,7 @@ it("does not inspect malformed Markdown or a same-named directory when JSONL is 
   await writeFile(fixture.legacy, "broken historical backup");
   expect(await fixture.service.retrieve(fixture.workspace)).toMatchObject({
     available: true,
-    bundle: { version: null, entries: [] },
+    bundle: { entries: [] },
   });
   expect(await readFile(fixture.legacy, "utf8")).toBe(
     "broken historical backup",

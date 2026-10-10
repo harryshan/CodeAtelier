@@ -9,7 +9,7 @@
  * 5. 检查模型实际错误会进入任务失败记录和通知；命令按真实审批事件确认就绪，再核对工具耗时不包含审批等待，同时记录 SandboxBroker 的安全阶段和 trace。
  * 6. 配置辅助模型时，确认审批请求带真实会话工作区、路由给低成本模型并保存决定；关闭思考失败或找不到工作区时仅转人工。
  * 7. 新任务逐次捕获模型请求/响应和未截断工具结果，供后续导出隔离 replay case。
- * 8. 项目记忆跨会话仅注入 ID/摘要，模型沿用 memory_apply 按需获取正文；trace 不包含记忆内容。
+ * 8. 项目记忆跨会话仅注入 ID/条目版本/摘要，模型沿用 memory_apply 按需获取正文；trace 不包含记忆内容。
  *
  * 只模拟模型响应，文件操作、审批和保存使用实际实现。
  */
@@ -1002,9 +1002,12 @@ it("creates memory without approval and reads its body only on demand in a new s
               arguments: JSON.stringify({
                 execution: { id: "readMemory", dependsOn: [] },
                 arguments: {
-                  expectedVersion: receivedResult.version,
                   operations: [
-                    { action: "read", id: receivedResult.operations[0].id },
+                    {
+                      action: "read",
+                      id: receivedResult.operations[0].id,
+                      expectedVersion: receivedResult.operations[0].version,
+                    },
                   ],
                 },
               }),
@@ -1042,7 +1045,6 @@ it("creates memory without approval and reads its body only on demand in a new s
               call_id: "remember-pnpm",
               name: "memory_apply",
               arguments: JSON.stringify({
-                expectedVersion: null,
                 operations: [
                   {
                     action: "create",
@@ -1083,8 +1085,13 @@ it("creates memory without approval and reads its body only on demand in a new s
 
     expect(calls).toBe(2);
     expect(receivedResult).toMatchObject({
-      version: expect.stringMatching(/^[a-f0-9]{64}$/),
-      operations: [{ action: "create", id: expect.any(String) }],
+      operations: [
+        {
+          action: "create",
+          id: expect.any(String),
+          version: expect.stringMatching(/^[a-f0-9]{64}$/),
+        },
+      ],
     });
     const remembered = await fixture.engine.memories.retrieve(fixture.root);
     expect(remembered.bundle?.entries).toEqual([

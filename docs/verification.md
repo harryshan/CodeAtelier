@@ -1,5 +1,13 @@
 # 初版验证记录
 
+## 项目记忆逐条版本校验（2026-10-10）
+
+- 按 D144，目录改为每条 ID/version/title；read/update/archive 在各自 operation 内携带 expectedVersion，create 无版本条件，移除工具顶层与 bundle 的文件版本。完整条目规范化后计算 SHA-256；JSON 排版/键顺序、文件顺序与其他条目变动不使目标版本失效，JSONL schema v1 不变，不迁移真实数据。
+- 新增逐条版本回归先在旧实现失败，最终 memory-entry-versions 的 10 项覆盖运行中任务读取/维护未变条目、外部目标正文修改（即使时间未变）/删除/停用拒绝、混合批次全不写、独立并发更新和创建、同目标竞争/同批重复 ID，以及发布前无关变更重算合并、目标变更拒绝和持续竞争四轮退出/临时文件清理。memory/schema/宿主 Engine/独立 Runtime/IPC/token-anchor 专项 9 个文件、81 项通过；Runtime 任务目录固定后外部归档另一条，仍可读取未变条目。
+- Windows / Node.js 26.10.0：最终原样 `pnpm check` 通过，93 个文件、680 项通过、1 项原有跳过；类型、ESLint、Prettier 和服务端/Web/Windows Runtime 测试构建均通过。早期完整检查止于一处格式差异，修正后重跑全套通过；未降低默认并发、放宽断言或改动进程清理测试。保留已有 Zod 注释及 Web bundle 大小构建警告。
+- 共享 IPC 升至 v12、拒绝 v11 握手；最大转义摘要加逐条版本仍通过 300000 字符传输边界。复用 memory/工具 tracing，不记录正文、来源或版本摘要。受控服务内串行与发布前复核有测试，但不保证外部程序在最终检查后强制覆盖的跨进程竞态已消除；结果未知和一般 I/O 错误不自动重放。
+- 变更文档本地文件链接通过。检查输出在忽略的 `.local/memory-entry-*.log`；Runtime 无 pnpm，验证由获准 Broker 宿主命令执行。未改 UI/HTTP/SSE，未运行浏览器 E2E、Evaluation、真实模型或 macOS/Linux 验收；独立 Runtime harness 不替代固定账户安装态验收。未修改真实用户 memory、重启后端或 Repair 安装副本；新接口需更新后端及 Runtime 后在新任务生效。
+
 ## 已有项目记忆一次性迁移与 JSONL-only（2026-10-10，本地）
 
 - 按 D143，先通过获准的 Broker 宿主命令盘点当前配置数据目录：2 个 Markdown 项目、共 29 条记录，无既有 JSONL。使用当时的严格解析器预检，在数据目录 `backups/memory-jsonl-*` 写入原始字节和哈希清单，再以非覆盖原子发布生成两份 JSONL；深比较全部字段、来源、状态与文件条目顺序，迁移前后核对旧文件未变化。后续独立核验确认原件、备份及 JSONL 均与清单一致。没有输出正文，没有将用户记忆或备份提交到仓库。

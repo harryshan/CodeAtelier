@@ -3,7 +3,7 @@
  * FileStore、JSONL 编解码器、Mutator、Retriever 与 ToolRunner 都依赖本文件；它不读取磁盘、调用模型或写日志。
  *
  * 1. 常量限定存储文件、条目和单次维护操作的大小；摘要目录不另设条数或字符裁剪，仍接受整体模型预算。
- * 2. Zod schema 校验存储文档、维护输入及同工具的单条 read；读取与写入不混合，Mutator 仍只接受维护操作。
+ * 2. Zod schema 校验存储文档、维护输入及同工具的单条 read；读取与写入不混合；read/update/archive 在各自操作内携带条目版本，create 无版本条件。
  * 3. TypeScript 类型描述保存后的条目、来源、文件文档和检索结果，供纯函数和运行时编排复用。
  *
  * 记忆正文始终是历史参考数据；类型契约不授予任何工作区、命令或任意文件写入权限。
@@ -109,12 +109,10 @@ const mutationFieldsSchema = {
   reason: z.string().min(1).max(500),
 };
 
+const entryVersionSchema = z.string().regex(/^[a-f0-9]{64}$/);
+
 export const memoryMutationSchema = z
   .object({
-    expectedVersion: z
-      .string()
-      .regex(/^[a-f0-9]{64}$/)
-      .nullable(),
     operations: z
       .array(
         z.union([
@@ -128,6 +126,7 @@ export const memoryMutationSchema = z
             .object({
               action: z.literal("update"),
               id: z.string().uuid(),
+              expectedVersion: entryVersionSchema,
               ...mutationFieldsSchema,
             })
             .strict(),
@@ -135,6 +134,7 @@ export const memoryMutationSchema = z
             .object({
               action: z.literal("archive"),
               id: z.string().uuid(),
+              expectedVersion: entryVersionSchema,
               reason: z.string().min(1).max(500),
             })
             .strict(),
@@ -151,7 +151,13 @@ export const memoryToolSchema = memoryMutationSchema.extend({
     memoryMutationSchema.shape.operations,
     z
       .array(
-        z.object({ action: z.literal("read"), id: z.string().uuid() }).strict(),
+        z
+          .object({
+            action: z.literal("read"),
+            id: z.string().uuid(),
+            expectedVersion: entryVersionSchema,
+          })
+          .strict(),
       )
       .length(1),
   ]),
@@ -164,13 +170,13 @@ export type MemoryMutationOperation = MemoryMutation["operations"][number];
 
 export interface MemoryBundleEntry {
   id: string;
+  version: string;
   /** 使用已有的短标题作检索摘要，不复制正文或来源。 */
   summary: string;
 }
 
 export interface MemoryBundle {
   projectKey: string;
-  version: string | null;
   entries: MemoryBundleEntry[];
   text: string;
 }

@@ -4,7 +4,7 @@
  *
  * 1. Broker 先返回一次可重试错误，再返回无效 DAG；Runtime 有界重试并把无副作用错误保存给下一轮修正。
  * 2. Broker 随后返回 read_file function_call，Agent Runtime 在自己的进程内执行 ToolRunner；最终模型轮次观察到文件结果。
- * 3. 记忆目录包含全部十条 ID/摘要并按文件顺序进入每轮模型指令；Runtime 通过现有 memory_apply IPC 在 Broker 按需读取正文，不直接访问宿主数据目录。
+ * 3. 记忆目录包含全部十条 ID/版本/摘要；任务中修改另一条仍可读未变条目；目录按文件顺序进入每轮模型指令；Runtime 通过现有 memory_apply IPC 在 Broker 按需读取正文，不直接访问宿主数据目录。
  * 4. 扩展权限请求保留普通 DAG 并行语义；push 独占由共享工具图测试覆盖。
  * 5. Runtime 主动报告 completed，Broker 收到后关闭通道并确认子进程干净退出。
  */
@@ -59,7 +59,6 @@ it("runs the model and tool loop in an independent Agent Runtime process", async
   );
   const scope = { workspace, sessionId: "session-1", taskId: "task-1" };
   const created = await memories.apply(scope, {
-    expectedVersion: null,
     operations: Array.from({ length: 10 }, (_, index) => ({
       action: "create",
       kind: "decision",
@@ -138,7 +137,7 @@ it("runs the model and tool loop in an independent Agent Runtime process", async
             expect(memory.bundle?.entries).toHaveLength(10);
             let previousIndex = -1;
             for (const [index, operation] of created.operations.entries()) {
-              const line = `- [${operation.id}] ${JSON.stringify(`Runtime 记忆摘要 ${index}`)}`;
+              const line = `- [${operation.id}] version=${operation.version} ${JSON.stringify(`Runtime 记忆摘要 ${index}`)}`;
               const position = instructions.indexOf(line);
               expect(position).toBeGreaterThan(previousIndex);
               previousIndex = position;
@@ -193,6 +192,17 @@ it("runs the model and tool loop in an independent Agent Runtime process", async
             }
 
             if (modelCalls === 4) {
+              // 模拟任务目录固定之后的外部来源变更；另一条被归档不应阻止目标正文读取。
+              await memories.apply(scope, {
+                operations: [
+                  {
+                    action: "archive",
+                    id: created.operations[9].id,
+                    expectedVersion: created.operations[9].version,
+                    reason: "外部更新",
+                  },
+                ],
+              });
               expect(JSON.stringify(input)).not.toContain(
                 "按需返回的 Runtime 记忆正文。",
               );
@@ -207,9 +217,12 @@ it("runs the model and tool loop in an independent Agent Runtime process", async
                     arguments: JSON.stringify({
                       execution: { id: "readMemory", dependsOn: [] },
                       arguments: {
-                        expectedVersion: created.version,
                         operations: [
-                          { action: "read", id: created.operations[0].id },
+                          {
+                            action: "read",
+                            id: created.operations[0].id,
+                            expectedVersion: created.operations[0].version,
+                          },
                         ],
                       },
                     }),

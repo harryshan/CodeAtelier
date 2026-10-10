@@ -81,7 +81,7 @@ node -e "require('node:fs').mkdirSync('.codeatelier/skills/review', {recursive:t
 - 自动发现和加载只允许上述固定根及已发现名称，不单独请求审批；这不是任意宿主文件读取接口。
 - Skill 是不可信参考，不能覆盖当前用户要求、项目规则、系统约束或工具权限；不把技能安装者写入的授权声明当成用户批准。
 - 根/技能目录的直接符号链接或 junction、跨锚点的祖先链接、文件符号链接和硬链接均拒绝。加载前后复核真实路径、普通文件、大小和版本；这是应用层检查，不宣称能抵御恶意宿主并发文件系统竞争或提供 OS 隔离。
-- 宿主任务与 Sandbox Runtime 都由 Broker 的任务级 `TaskSkills` 读取；Runtime 经认证 IPC v11 的 `skill_execute` 只传名称/操作/调用 ID，不自行读取宿主 home。结果归因为 `broker-skill/host-process`。
+- 宿主任务与 Sandbox Runtime 都由 Broker 的任务级 `TaskSkills` 读取；Runtime 经认证 IPC v12 的 `skill_execute` 只传名称/操作/调用 ID，不自行读取宿主 home。结果归因为 `broker-skill/host-process`。
 - `skills.discover/list/load` trace 记录开始、终态、耗时、调用 ID 和条目数量；日志只记录计数和诊断数量，不记录路径、技能名称、描述或正文。模型/工具历史与 trace 分开管理。
 
 没有技能安装市场、网络下载、自定义扫描根配置、自动脚本入口、热更新 watcher 或管理 UI。本版只向主 agent 提供 Skill，不扩大尚未开放的只读 subagent 工具集。
