@@ -119,11 +119,13 @@ schema v10 另增每会话一条无正文的 token 校准锚点，同样在升�
 
 tracing 默认启用：每个实际开始的任务在当前服务进程内生成一条性能 timeline。`context.usage.restore/save` 记录会话 token 锚点恢复/保存的耗时和终态，restore 附 `restored` 布尔值；不保存锚点指纹或正文，数据库读写另归 Store queue/worker。
 
-宿主 loop 的模型请求、上下文准备/压缩、模型重试退避、响应处理、工具计划及工具结果的 SQLite 持久化都在 `Main thread` 轨道记录；Runtime 的上下文计量、结果持久化等待与线程池清理归于已验证 PID 的 `Agent Runtime` 轨道，实际数据库提交仍归 Broker 的 Store worker。Runtime 压缩的异步 session 事件时间只是 Broker 观察时刻，单列于同进程的 `Agent Runtime compaction` 轨道，不冒充 Runtime 精确执行区间。主线程和 Runtime 的上下文轨道均以可嵌套的 begin/end slice 导出：`context.prepare` 保持在实际准备/压缩边界内，其子阶段记录预算输入计量与压缩；`context.request` 保持在实际请求边界内，其子阶段记录完整输入计量。
+宿主 loop 的模型请求、上下文准备/压缩、模型重试退避、响应处理、工具计划及工具结果的 SQLite 持久化都在 `Main thread` 轨道记录；Runtime 的上下文计量与结果持久化等待归于已验证 PID 的 `Agent Runtime` 轨道，实际数据库提交仍归 Broker 的 Store worker。Runtime 压缩的异步 session 事件时间只是 Broker 观察时刻，单列于同进程的 `Agent Runtime compaction` 轨道，不冒充 Runtime 精确执行区间。主线程和 Runtime 的上下文轨道均以可嵌套的 begin/end slice 导出：`context.prepare` 保持在实际准备/压缩边界内，其子阶段记录预算输入计量与压缩；`context.request` 保持在实际请求边界内，其子阶段记录完整输入计量。
 
 模型请求、退避及响应处理保持独立，以便区分上下文处理与模型服务耗时，且不会产生完整事件交叠。`Task` 是任务生命周期包络；工具批次、参数检查、审批等待与依赖阻塞保留在 `Tool scheduler` 逻辑轨道，只有审批通过并准备实际执行的调用才排队取得最多 4 条可复用 `Tool worker 1` 至 `Tool worker 4` 轨道，后续节点复用最先空闲的槽位。
 
-这些槽位表示并发操作而不是 Node 物理线程，人工审批耗时不会显示为 worker 占用。`read_file` 的路径授权与解析发生在执行槽取得之前，不另建准备片段；取得槽位后，文件检查、字节读取、Worker 排队、冷启动等待和响应阶段在调用对应的 `Tool worker`（Agent Runtime 路径为可复用的 `Agent Runtime tool 1`～`4`）轨道上嵌套显示于 `tool.read_file`。这些工具轨道是逻辑并发槽，不是物理线程；Worker 的计算不再另建 trace 轨道，响应片段仍附纯计算耗时 `computeMs`，不能把响应总耗时当作磁盘或 CPU 耗时。`read_file.worker.startup` 从首次向刚创建的 Worker 分派请求起计，到调用侧收到该 Worker 的 `ready` 消息为止，包含剩余线程启动、模块加载和消息调度等待，并非纯文件处理耗时；开发环境的 `.ts` Worker 还需加载 `tsx`。池在任务内按需扩展至最多 4 条真实线程，已创建线程跨模型轮次复用，不在空闲时释放；成功、失败或取消后的任务收尾显式等待全部线程退出，记录 `read_file.pool.close` 耗时与终态，清理失败将任务标为失败。热 Worker 没有冷启动阶段；尚无具体 trace 时不能把某次偏长归因于其中单一因素。阶段仅附 callId、有界字节数及计时，不保存路径或内容；Runtime IPC v12 的 trace span 必须携带单调时间戳（旧版本拒绝握手），固定白名单上报这些阶段及取得执行槽后的工具执行边界；Broker 校验任务时间窗、以已验证 Runtime PID 分组、按槽号分配复用轨道、从已保存的 tool_start 提取参数，统一导出落盘。Runtime 的 `Agent Runtime` 主轨道展示上下文和池关闭；`tool_start` 到取得执行槽之间是排队/准备时间，不冒充实际执行；尚未开放的 subagent `await` 在槽位之前等待，不把事后取得槽位误记为工具执行。获批 Broker 命令仍在 Broker 的宿主执行轨道记录，Runtime 工具片段表示等待其结果，不能称为在 Sandbox 内执行命令。普通实际 tool span 的 `args.parameters` 保存传给执行器的完整结构化参数（Skill、MCP、项目记忆和 subagent 不记录正文参数），递归遮盖 API key、token、password、authorization、cookie 及 Bearer 值；因此 trace 文件可能含命令、路径和编辑文本，必须按敏感本机诊断数据保护，不能上传或提交。
+这些槽位表示并发操作而不是 Node 物理线程，人工审批耗时不会显示为 worker 占用。`read_file` 的路径授权与解析发生在执行槽取得之前，不另建准备片段；取得槽位后，文件检查（`read_file.stat`）、异步字节读取（`read_file.bytes`）和读完后直接计算（`read_file.compute`）阶段在调用对应的 `Tool worker`（Agent Runtime 路径为可复用的 `Agent Runtime tool 1`～`4`）轨道上嵌套显示于 `tool.read_file`。这些工具轨道是逻辑并发槽，不是物理线程。哈希与行扫描直接在工具所在进程的执行线程计算，`computeMs` 表示同步计算的墙钟耗时；不再有读取 Worker 启动、排队、消息传输或池关闭。计算前后检查取消，正在进行的同步扫描不支持中途抢占。
+
+阶段仅附 callId、有界字节数及计时，不保存路径或内容；Runtime IPC v13 的 trace span 必须携带单调时间戳（旧版本拒绝握手），固定白名单上报这些阶段及取得执行槽后的工具执行边界；Broker 校验任务时间窗、以已验证 Runtime PID 分组、按槽号分配复用轨道、从已保存的 tool_start 提取参数，统一导出落盘。Runtime 的 `Agent Runtime` 主轨道展示上下文；`tool_start` 到取得执行槽之间是排队/准备时间，不冒充实际执行；尚未开放的 subagent `await` 在槽位之前等待，不把事后取得槽位误记为工具执行。获批 Broker 命令仍在 Broker 的宿主执行轨道记录，Runtime 工具片段表示等待其结果，不能称为在 Sandbox 内执行命令。普通实际 tool span 的 `args.parameters` 保存传给执行器的完整结构化参数（Skill、MCP、项目记忆和 subagent 不记录正文参数），递归遮盖 API key、token、password、authorization、cookie 及 Bearer 值；因此 trace 文件可能含命令、路径和编辑文本，必须按敏感本机诊断数据保护，不能上传或提交。
 
 导出会按时间排序，并以递增整数而非 UUID 标识 flow，保证 Perfetto Trace Event JSON importer 可解析。任务进入 completed、failed、cancelled 或 interrupted 终态后，安全 JSON 原子写入 `traces/<sessionId>/<taskId>.json`，同一会话的任务各用独立文件，绝不覆盖；写入完成或失败后立即释放该任务的内存记录，不保留完成 trace 缓存。
 
@@ -325,7 +327,7 @@ Windows 原生安装命令是显式维护入口，不属于服务启动或默认
 
 随后必须由用户**先打开“以管理员身份运行”的 PowerShell**，进入仓库目录，再运行 `pnpm sandbox:install`、`sandbox:repair`、`sandbox:verify`、`sandbox:uninstall` 或 `sandbox:recover`；`run.ts` 使用非 shell `spawn`，不会自行触发 UAC 或重新提升。
 
-安装器校验 v3 build manifest 后，把 supervisor/WFP manager、Node 24 或 26、Agent Runtime entry 和 compaction、read_file、subagent 三种 Worker 复制到受保护的 ProgramData 目录，并在 v4 state 记录安装副本摘要；旧 v3 安装须由用户显式运行 `pnpm sandbox:repair`（转交 `install.ps1 -Mode Repair`），TypeScript 启动前与 native self-check 均拒绝旧状态或不匹配的摘要。安装器还配置专用账户的网络、batch、service 和远程交互拒绝登录权；服务不得自行提权或自动安装。
+安装器校验 v4 build manifest 后，把 supervisor/WFP manager、Node 24 或 26、Agent Runtime entry 和 compaction、subagent 两种 Worker 复制到受保护的 ProgramData 目录，并在 v5 state 记录安装副本摘要；旧安装须重新构建 native/runtime 后由用户显式运行 `pnpm sandbox:repair`（转交 `install.ps1 -Mode Repair`），TypeScript 启动前与 native self-check 均拒绝旧状态或不匹配的摘要。安装器还配置专用账户的网络、batch、service 和远程交互拒绝登录权；服务不得自行提权或自动安装。
 
 macOS/Linux 调用这些命令只输出 `SKIP`，不启动 PowerShell 或任何 Windows 原生代码；它们的 Sandbox 由 `pnpm sandbox:posix:build` 及 `CODEATELIER_SANDBOX_ENABLED=true` 单独启用，步骤和额外授权根配置见 [POSIX 指南](posix-sandbox.md)；macOS 尚未实机验证。Windows 上启用开关后若启动前自检失败，仍按既有安全回滚条件提示并回退宿主；已通过日常使用验证不改变该失败处理契约。
 

@@ -336,7 +336,7 @@ try {
         for (const name of [
           "sandbox.mxc.launch",
           "sandbox.mxc.cleanup",
-          "read_file.worker.response",
+          "read_file.compute",
         ]) {
           assert.ok(
             trace.traceEvents.some((event) => event.name === name),

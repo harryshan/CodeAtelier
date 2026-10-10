@@ -38,7 +38,7 @@ Windows 启用时的产品调用链现为 `Broker Engine → SandboxBroker launc
 
 全部 Git 工具 action 都是宿主执行分支：`Agent Runtime → Runtime IPC 固定 action/toolCallId → Broker 宿主 Git`；其中 push 还经过 Broker 预检和逐次审批，并独占工具批次。原 Agent Runtime 保持存活，但不取得宿主网络或凭据能力；Push Runner 代码保留且暂停使用。
 
-安装版 Runtime 的 argv 只携带 Supervisor 生成的本机任务 pipe 名，identity/nonce 由有界首帧交付；产品 build 生成以 Node 24 为兼容基线、支持 Node 24/26 的单文件 Runtime 与独立 compaction、read_file、subagent Worker bundle，安装器把选定的 Node 24 或 26 和 bundle 固定到受保护目录，TypeScript/native self-check 复核 v4 state 中的 SHA-256。
+安装版 Runtime 的 argv 只携带 Supervisor 生成的本机任务 pipe 名，identity/nonce 由有界首帧交付；产品 build 生成以 Node 24 为兼容基线、支持 Node 24/26 的单文件 Runtime 与独立 compaction、subagent Worker bundle（read_file 直接在读取后计算），安装器把选定的 Node 24 或 26 和 bundle 固定到受保护目录，TypeScript/native self-check 复核 v5 state 中的 SHA-256。
 
 启动前回退时由宿主 loop 继续执行，实际模式记录为 `host-process`。用户已确认当前 Windows 链路的日常功能可用性；身份、取消、清理与恢复的专项证据仍分别记录，不由该确认推导全矩阵通过。
 
@@ -74,11 +74,11 @@ Engine 在任一节点产生副作用前校验整批 DAG，并以稳定拓扑顺
 
 `src/skills/contracts.ts` 提供 strict list/load 参数；`skill-document.ts` 使用 js-yaml 的 JSON_SCHEMA 解析有界 SKILL.md，校验 name/description 并忽略权限元信息；`task-skills.ts` 管理每任务预设根扫描、固定摘要/版本、链接与容量检查，以及调用时重新读取正文。Engine 在宿主/Runtime 分流前创建目录，fallback 复用同一实例；名称、描述和来源类别进入指令，正文只通过工具结果进入模型。
 
-宿主 ToolRunner 直接调用此任务实例；Runtime 使用 IPC v12 的 `skill_execute`，启动材料只含目录提示，不投影宿主技能根。返回 `broker-skill/host-process`，不执行脚本、不增加读写授权。`skills.*` span 及普通工具历史覆盖成功/失败/取消，trace 排除技能参数/正文。格式、目录优先级和限制见 [Skill 指南](skills.md)。
+宿主 ToolRunner 直接调用此任务实例；Runtime 使用 IPC v13 的 `skill_execute`，启动材料只含目录提示，不投影宿主技能根。返回 `broker-skill/host-process`，不执行脚本、不增加读写授权。`skills.*` span 及普通工具历史覆盖成功/失败/取消，trace 排除技能参数/正文。格式、目录优先级和限制见 [Skill 指南](skills.md)。
 
 ### MCP 本机客户端
 
-`src/mcp/contracts.ts` 提供模型与 Runtime 共用的有界操作契约，`config.ts` 只在宿主读取 mcp.json；`task-client.ts` 使用官方 SDK 管理每任务的 stdio/Streamable HTTP 连接、审批、串行请求、取消/清理和输出脱敏。`mcp-stdio-transport.ts` 保存启动 PID，并让 SDK 握手失败后的异步关闭与任务收尾共用同一个关闭回执，避免仍存活的进程被误报为已清理。模型通过静态 `mcp` 工具按需发现动态 schema，不声明 provider-hosted MCP。`ToolRunner` 审批准备后取得执行槽，宿主调用 Engine 的任务客户端；Runtime 通过 IPC v12 的 `prepare_mcp/execute_mcp` 在当前认证连接内消费调用绑定的单次授权。连接配置和凭据不经 Runtime。
+`src/mcp/contracts.ts` 提供模型与 Runtime 共用的有界操作契约，`config.ts` 只在宿主读取 mcp.json；`task-client.ts` 使用官方 SDK 管理每任务的 stdio/Streamable HTTP 连接、审批、串行请求、取消/清理和输出脱敏。`mcp-stdio-transport.ts` 保存启动 PID，并让 SDK 握手失败后的异步关闭与任务收尾共用同一个关闭回执，避免仍存活的进程被误报为已清理。模型通过静态 `mcp` 工具按需发现动态 schema，不声明 provider-hosted MCP。`ToolRunner` 审批准备后取得执行槽，宿主调用 Engine 的任务客户端；Runtime 通过 IPC v13 的 `prepare_mcp/execute_mcp` 在当前认证连接内消费调用绑定的单次授权。连接配置和凭据不经 Runtime。
 
 `src/mcp/catalog.ts` 纯投影已启用服务的名称、transport 与脱敏 description；Engine 在首次主模型请求前注入指令，宿主/fallback 直接使用，Runtime 通过启动消息的 `mcpText` 接收相同摘要。`list_servers` 复用投影；缺失用途为 null，空配置给空目录。目录不发起连接或审批，完整 schema 仍按需发现；纯投影不新增独立 trace span，既有任务/上下文计量/模型请求观测覆盖整体链路，摘要不写入 trace。
 
@@ -132,13 +132,13 @@ Linux 验证原型以 MXC 私有 stdio 调用同一个入口，不开 TCP 或 UN
 
 ### Linux/macOS MXC 产品启动器
 
-`runtime-factory.ts` 在 POSIX 显式启用时创建 `MxcSandboxRuntime`；`mxc-policy.ts` 生成固定后端、文件、环境和断网请求，`mxc-runtime-files.ts` 核对四个 bundle、创建私有快照并管理 Broker 启动标记。`agent-runtime-posix-main.ts` 接管私有 stdio；`scripts/build-posix-runtime.ts` 同时接入普通与测试构建，不在构建时运行 MXC。
+`runtime-factory.ts` 在 POSIX 显式启用时创建 `MxcSandboxRuntime`；`mxc-policy.ts` 生成固定后端、文件、环境和断网请求，`mxc-runtime-files.ts` 核对三个 bundle、创建私有快照并管理 Broker 启动标记。`agent-runtime-posix-main.ts` 接管私有 stdio；`scripts/build-posix-runtime.ts` 同时接入普通与测试构建，不在构建时运行 MXC。
 
 Broker 通过 `SandboxRuntime.launchTask` 路由，不进入 Windows ACL/generation 分支。SDK 动态加载；启动器等待退出和清理、接管迟到 handle，并在未知状态隔离/排空活动实例。故障标记保留供人工核对，POSIX 不自动宿主 fallback。execution mode 区分 linux-bubblewrap/macos-seatbelt，宿主可见 SDK PID 只记 runtime-launcher；沿用 Runtime 模型/工具/SQLite 协议并增加安全的 preflight/launch/cleanup trace。两端的权限差异、同 UID 与 socket 风险及启用步骤见 [POSIX Sandbox](posix-sandbox.md)。
 
 ### 性能追踪
 
-`src/tracing` 默认只在任务运行期间于 Broker 构造性能 timeline：宿主 loop 直接记录上下文计量/压缩、模型请求与退避、响应处理、工具计划、SandboxBroker 阶段、工具真实执行和工具结果持久化；`read_file` 在工具执行片段内细分检查、字节读取和 Worker 排队、冷启动与回传，并在响应中附纯计算耗时；路径准备与 Worker 计算不另建片段；真实读取线程池每个任务按需扩到最多 4 条、任务内保持复用，宿主与 Runtime 的任务收尾显式清理并记录 `read_file.pool.close`；Agent Runtime loop 以严格 IPC trace event 上报固定的 `context.prepare`、`context.request`、`read_file.*`、`tool.result_persist` 及计量子阶段，Broker 校验 Runtime 单调时间戳并重建 span：以已验证的 Runtime PID 分组，内部上下文/池关闭共用 `Agent Runtime` 轨道，实际工具与 read_file 阶段按执行槽复用最多四条 `Agent Runtime tool` 轨道，不按 callId 新建轨道；参数从已保存的 tool_start 在 Broker 脱敏加入，Broker 统一导出落盘。已标记任务的 Worker/model/read 和显式 question/message/cancel 在 `Subagent <id>` 轨道上报开始、终态与耗时；Broker 核对已登记子 ID，IPC 白名单不接受消息正文或报告。
+`src/tracing` 默认只在任务运行期间于 Broker 构造性能 timeline：宿主 loop 直接记录上下文计量/压缩、模型请求与退避、响应处理、工具计划、SandboxBroker 阶段、工具真实执行和工具结果持久化；`read_file` 在工具执行片段内细分 `stat`、异步 `bytes` 与读完后的同步 `compute`，附字节数和计算耗时；路径准备不另建片段，不再创建读取 Worker、线程池或关闭阶段；Agent Runtime loop 以严格 IPC trace event 上报固定的 `context.prepare`、`context.request`、`read_file.*`、`tool.result_persist` 及计量子阶段，Broker 校验 Runtime 单调时间戳并重建 span：以已验证的 Runtime PID 分组，内部上下文共用 `Agent Runtime` 轨道，实际工具与 read_file 阶段按执行槽复用最多四条 `Agent Runtime tool` 轨道，不按 callId 新建轨道；参数从已保存的 tool_start 在 Broker 脱敏加入，Broker 统一导出落盘。已标记任务的 Worker/model/read 和显式 question/message/cancel 在 `Subagent <id>` 轨道上报开始、终态与耗时；Broker 核对已登记子 ID，IPC 白名单不接受消息正文或报告。
 
 该事件只允许固定名称以及 step/attempt/数量/状态等有界属性，不能充当任意 Runtime 日志通道。模型、退避与响应处理仍是独立 span，模型包装器记录长度、数量、usage、错误类别和首包时间。Broker 主事件循环执行的模型、响应及宿主上下文/计划/持久化 span 汇集于 `Main thread`，Runtime 上下文归入 Runtime PID，并以 begin/end slice 表示这些内部阶段；`Task` 根是生命周期包络。
 
@@ -264,7 +264,7 @@ Broker 命令与 Git push 可以使用宿主用户可访问的文件、网络和
 
 父进程等待旧进程释放端口，因而不会并行监听。新进程启动时生成新的本机会话 token，UI 轮询到 token 变化后才完整刷新页面。重载不撤销已修改文件，但不能恢复已经关闭的服务；它也不编译源码，生产模式须先 `pnpm build`。开发时 `tsx watch` 与 Vite HMR 仍分别负责源码自动更新。
 
-模型元数据与实际 usage 由 providers/model-metadata.ts 校验，context/token-budget.ts 计算本地 token 估算和输入预算。`token-anchor.ts` 定义无正文的版本化锚点及内容/配置指纹；`session-token-calibration.ts` 在宿主/Runtime 首次压缩检查前恢复基线，响应保存后更新。Store schema v10 的 `context_token_anchors` 每会话保留一条，经串行 Worker 读写，替换历史或压缩在同一事务清除；IPC v12 的校准字段只传锚点与 scope，不泄露连接配置。`context.usage.restore/save` 记录命中、耗时和终态，不记录指纹。UI 仅展示实报，详见 [model-tokens.md](model-tokens.md)。
+模型元数据与实际 usage 由 providers/model-metadata.ts 校验，context/token-budget.ts 计算本地 token 估算和输入预算。`token-anchor.ts` 定义无正文的版本化锚点及内容/配置指纹；`session-token-calibration.ts` 在宿主/Runtime 首次压缩检查前恢复基线，响应保存后更新。Store schema v10 的 `context_token_anchors` 每会话保留一条，经串行 Worker 读写，替换历史或压缩在同一事务清除；IPC v13 的校准字段只传锚点与 scope，不泄露连接配置。`context.usage.restore/save` 记录命中、耗时和终态，不记录指纹。UI 仅展示实报，详见 [model-tokens.md](model-tokens.md)。
 
 上下文压缩的触发、持久化、失败边界与模块职责见 [context-management.md](context-management.md)。活动上下文可为摘要与最近原文的组合；压缩前完整输入另存快照，不删除事件历史。
 
@@ -294,6 +294,6 @@ Broker 命令与 Git push 可以使用宿主用户可访问的文件、网络和
 
 Engine 在每个任务开始时，从平台数据目录按真实路径 SHA-256 隔离的 JSONL 快照加载一次记忆（不存在时返回空文档，不读取旧 Markdown），按文件顺序将所有已启用、active、未过期条目的 ID、独立版本和标题摘要固定追加到模型指令，不注入正文或来源。不再接收查询、关键词评分、排序或按目录条数/字符裁剪；目录整体仍计入模型输入预算。模型通过现有 `memory_apply` 的 `operations:[{action:"read",id,expectedVersion}]` 按需读取一条完整记忆；服务核对项目、目标条目版本、启用状态、active 状态与有效期，读取不写盘。create 无需版本，update/archive 各自携带目标版本；顶层文件版本已移除（D144）。`entry-version.ts` 对完整条目规范化后计算 SHA-256，不受其他条目、排版/键顺序影响。FileStore 串行化写入，在最新文档逐条校验并保留无关变更；整批全成或全不写。内部文件哈希仅检测提交竞争，明确未发布时最多 4 轮重算，目标冲突及未知结果不重放；`jsonl.ts` 严格解析首行项目元数据和后续 memory/entry 记录，保留原始文本和条目顺序。维护只写完整 JSONL 快照，不追加事件；已有目标由 flush 后的临时文件 rename 替换，首次创建通过同目录 link 原子发布且不覆盖竞争目标。旧项目数据已按 D143 一次性备份、转换和完整核对，Markdown 编解码器及自动迁移分支已移除。读取完全无副作用，JSONL 缺失或损坏均不探测旧文件。
 
-宿主、启动前 fallback 和 Runtime 复用该服务；Runtime 沿用已认证的 `memory_apply` IPC；共享协议现为 v12（D144，逐条版本工具契约不兼容旧顶层版本），沿用 v10 扩大的 start_task.memoryText 传输上限 300000 字符，容纳现有存储上限内全部标题的最坏 JSON 转义及逐条版本，不作为目录裁剪规则。旧 Runtime 需重建/Repair，由 Broker 绑定真实工作区，不增加任意路径能力或新工具。该能力不新增项目 SQLite 表、不修改工作区、不需要人工确认。tracing、日志和记忆 notice 不含正文；按需读取结果作为普通工具结果进入受保护的会话上下文、历史与 Replay Case，接受既有输出限制和压缩规则。
+宿主、启动前 fallback 和 Runtime 复用该服务；Runtime 沿用已认证的 `memory_apply` IPC；共享协议现为 v13（D147；保留 D144 的逐条版本工具契约，不兼容旧顶层版本），沿用 v10 扩大的 start_task.memoryText 传输上限 300000 字符，容纳现有存储上限内全部标题的最坏 JSON 转义及逐条版本，不作为目录裁剪规则。旧 Runtime 需重建/Repair，由 Broker 绑定真实工作区，不增加任意路径能力或新工具。该能力不新增项目 SQLite 表、不修改工作区、不需要人工确认。tracing、日志和记忆 notice 不含正文；按需读取结果作为普通工具结果进入受保护的会话上下文、历史与 Replay Case，接受既有输出限制和压缩规则。
 
 项目记忆 UI、来源失效验证和手工恢复/清空仍待实现，详见 [项目记忆系统设计](memory-system.md)。

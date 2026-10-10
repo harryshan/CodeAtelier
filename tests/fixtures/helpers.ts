@@ -1,7 +1,7 @@
 /**
  * 给普通测试提供临时目录和真实文件工具，避免读写用户项目。
  *
- * 1. createTestRunner 连接测试取消并跟踪根/forCall 操作；trackRunner 为已有实例登记等待与关闭。
+ * 1. createTestRunner 连接测试取消并跟踪根/forCall 操作；trackRunner 为已有实例登记在途操作等待。
  *    temp 在创建目录前捕获所属测试，登记后再解析真实路径，取消后的晚返回也会清理。
  * 2. waitForApproval 监听 Engine 状态变更并检查指定任务，允许正常冷启动；任务提前结束或十秒未就绪时拒绝并移除监听。
  * 3. TestResources 的 afterEach 取消并排空在途操作、关闭资源，最后删除本测试的目录。
@@ -32,7 +32,6 @@ function trackExecutions(runner: ToolRunner, scope: TestResources) {
 
 export function trackRunner(runner: ToolRunner) {
   const scope = currentTestResources();
-  scope.defer(() => runner.close());
 
   return trackExecutions(runner, scope);
 }

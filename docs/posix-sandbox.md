@@ -20,7 +20,7 @@ CODEATELIER_SANDBOX_ENABLED=true pnpm start
 
 ## 文件、环境与网络
 
-- 每个任务具有独立私有 HOME/tmp、只读 Runtime/三个 Worker 代码快照。固定 manifest 的四个文件和摘要在复制前核对；构建目录是可信应用安装内容，摘要不是第三方签名。
+- 每个任务具有独立私有 HOME/tmp、只读 Runtime/两个 Worker 代码快照（read_file 读取后直接计算）。固定 manifest 的三个文件和摘要在复制前核对；构建目录是可信应用安装内容，摘要不是第三方签名。
 - 工作区直接可写，包括 `.git`、`.env`；不提供回滚。Node 安装前缀和显式只读根可读，MXC 自身还提供系统运行基线，不能宣称工作区外完全不可见。
 - 不继承宿主环境，PATH 只包含固定 Node 路径和系统命令目录。模型、Store、审批、项目记忆等留在 Broker。
 - 使用真实路径检查，拒绝授权根与 Broker 数据或实例私有根交叉，以及可写根覆盖固定 Node。Broker 数据不应位于工作区、额外授权根或 Node 安装前缀中。不要把整个 HOME、`/tmp` 或 `/` 授权给 Runtime。

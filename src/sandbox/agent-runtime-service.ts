@@ -36,7 +36,7 @@ import { runtimeDefinitions, webSearchTool } from "../tools/registry.js";
 import { createToolReviewer } from "../agent/tool-review.js";
 import { executeToolGraph, type ToolGraphNode } from "../tools/tool-graph.js";
 import { ToolRunner } from "../tools/tool-runner.js";
-import type { ReadFileTraceStage } from "../tools/read-file-worker-pool.js";
+import type { ReadFileTraceStage } from "../tools/read-file-content.js";
 import { RuntimeIpcError, type RuntimeIpcPeer } from "./runtime-ipc-peer.js";
 import type {
   RuntimeIpcRequest,
@@ -110,7 +110,6 @@ export class AgentRuntimeService {
     );
     const trace = new RuntimeContextTrace(this.peer);
     let subagents: SubagentCoordinator | undefined;
-    let taskRunner: ToolRunner | undefined;
     let status: RuntimeTaskStatus = "completed";
     let failure: string | undefined;
 
@@ -282,7 +281,6 @@ export class AgentRuntimeService {
         parentExecutionInstanceId: this.identity.executionInstanceId,
         emit: (type, data) => events.emit(type, data),
       });
-      taskRunner = runner;
       // 内置网页搜索在 Broker 代理的 Responses 请求中完成，不会伪装为 Runtime 本地工具调用。
       const tools = [
         ...runtimeDefinitions,
@@ -633,19 +631,6 @@ export class AgentRuntimeService {
       events.emit("notice", { text: failure, status });
     }
 
-    if (taskRunner) {
-      const poolSpan = trace.start("read_file.pool.close");
-      try {
-        await taskRunner.close();
-        trace.end(poolSpan, signal.aborted ? "cancelled" : "ok");
-      } catch {
-        trace.end(poolSpan, "error");
-        status = "failed";
-        failure = "读取 Worker 退出失败，不能确认主任务完成。";
-        events.emit("notice", { text: failure, status });
-      }
-    }
-
     try {
       await subagents?.close();
     } catch {
@@ -716,8 +701,7 @@ class RuntimeContextTrace implements ContextTrace {
         | "context.prepare.measure_request_view"
         | "context.request"
         | "context.request.measure_input"
-        | "tool.result_persist"
-        | "read_file.pool.close",
+        | "tool.result_persist",
       attributes,
     });
     this.stack.push(spanId);

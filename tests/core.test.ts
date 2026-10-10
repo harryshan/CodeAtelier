@@ -2,7 +2,7 @@
  * 覆盖文件权限、模型调用工具、历史保存和本机 HTTP 安全的基础流程。
  * 测试使用临时目录、真实数据库和模拟模型。
  *
- * 1. temp/runner 准备并在用例后关闭工具/临时目录；files and permissions 检查 shell/search 检测、Runtime 专属指引分流、先读后写、越界和取消。
+ * 1. temp/runner 准备工具并在用例后清理临时目录；files and permissions 检查 shell/search 检测、Runtime 专属指引分流、先读后写、越界和取消。
  * 2. waitFor 等待任务结束；execution and persistence 检查超时、输出限制和工具执行。
  * 3. server security and configuration 检查请求来源、凭据和脱敏。
  *
@@ -37,7 +37,6 @@ import pino from "pino";
 import { redactText } from "../src/logging/redact.js";
 
 const cleanup: string[] = [];
-const activeRunners: ToolRunner[] = [];
 
 async function temp() {
   const p = await mkdtemp(path.join(tmpdir(), "codeatelier-"));
@@ -48,7 +47,6 @@ async function temp() {
 }
 
 afterEach(async () => {
-  await Promise.all(activeRunners.splice(0).map((runner) => runner.close()));
   for (const p of cleanup.splice(0)) {
     await rm(p, { recursive: true, force: true });
   }
@@ -69,7 +67,6 @@ function runner(
     approvals,
     emit: () => {},
   });
-  activeRunners.push(toolRunner);
 
   return toolRunner;
 }

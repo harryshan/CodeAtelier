@@ -127,7 +127,6 @@ interface InstallationPaths {
   runtimeNode: string;
   runtimeEntry: string;
   runtimeWorker: string;
-  runtimeReadWorker: string;
   runtimeSubagentWorker: string;
   state: string;
   dataRoot: string;
@@ -140,7 +139,6 @@ interface InstallationMetadata {
   runtimeNodeSha256: string;
   runtimeEntrySha256: string;
   runtimeWorkerSha256: string;
-  runtimeReadWorkerSha256: string;
   runtimeSubagentWorkerSha256: string;
   relayPortV4: number;
 }
@@ -195,7 +193,6 @@ function installationPaths(
     runtimeNode: path.join(runtimeRoot, "node.exe"),
     runtimeEntry: path.join(runtimeRoot, "agent-runtime.mjs"),
     runtimeWorker: path.join(runtimeRoot, "compaction-worker.mjs"),
-    runtimeReadWorker: path.join(runtimeRoot, "read-file-worker.mjs"),
     runtimeSubagentWorker: path.join(runtimeRoot, "subagent-worker.mjs"),
     state,
     dataRoot,
@@ -228,19 +225,17 @@ function parseState(content: string): InstallationMetadata {
   const runtimeNodeSha256 = values.get("runtimeNodeSha256") ?? "";
   const runtimeEntrySha256 = values.get("runtimeEntrySha256") ?? "";
   const runtimeWorkerSha256 = values.get("runtimeWorkerSha256") ?? "";
-  const runtimeReadWorkerSha256 = values.get("runtimeReadWorkerSha256") ?? "";
   const runtimeSubagentWorkerSha256 =
     values.get("runtimeSubagentWorkerSha256") ?? "";
   const relayPortV4 = Number(values.get("relayPortV4"));
   if (
-    values.get("version") !== "4" ||
+    values.get("version") !== "5" ||
     !/^[0-9a-f-]{36}$/i.test(generationId) ||
     !/^[a-f0-9]{64}$/i.test(supervisorSha256) ||
     !/^[a-f0-9]{64}$/i.test(networkSha256) ||
     !/^[a-f0-9]{64}$/i.test(runtimeNodeSha256) ||
     !/^[a-f0-9]{64}$/i.test(runtimeEntrySha256) ||
     !/^[a-f0-9]{64}$/i.test(runtimeWorkerSha256) ||
-    !/^[a-f0-9]{64}$/i.test(runtimeReadWorkerSha256) ||
     !/^[a-f0-9]{64}$/i.test(runtimeSubagentWorkerSha256) ||
     !Number.isInteger(relayPortV4) ||
     relayPortV4 < 1024 ||
@@ -256,7 +251,6 @@ function parseState(content: string): InstallationMetadata {
     runtimeNodeSha256,
     runtimeEntrySha256,
     runtimeWorkerSha256,
-    runtimeReadWorkerSha256,
     runtimeSubagentWorkerSha256,
     relayPortV4,
   };
@@ -520,7 +514,6 @@ export class NativeWindowsSandboxRuntime implements SandboxRuntime {
         runtimeNodeDigest,
         runtimeEntryDigest,
         runtimeWorkerDigest,
-        runtimeReadWorkerDigest,
         runtimeSubagentWorkerDigest,
       ] = await Promise.all([
         fileSha256(this.paths.supervisor),
@@ -528,7 +521,6 @@ export class NativeWindowsSandboxRuntime implements SandboxRuntime {
         fileSha256(this.paths.runtimeNode),
         fileSha256(this.paths.runtimeEntry),
         fileSha256(this.paths.runtimeWorker),
-        fileSha256(this.paths.runtimeReadWorker),
         fileSha256(this.paths.runtimeSubagentWorker),
       ]);
       if (
@@ -537,8 +529,6 @@ export class NativeWindowsSandboxRuntime implements SandboxRuntime {
         runtimeNodeDigest !== metadata.runtimeNodeSha256.toLowerCase() ||
         runtimeEntryDigest !== metadata.runtimeEntrySha256.toLowerCase() ||
         runtimeWorkerDigest !== metadata.runtimeWorkerSha256.toLowerCase() ||
-        runtimeReadWorkerDigest !==
-          metadata.runtimeReadWorkerSha256.toLowerCase() ||
         runtimeSubagentWorkerDigest !==
           metadata.runtimeSubagentWorkerSha256.toLowerCase()
       ) {

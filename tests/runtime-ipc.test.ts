@@ -355,7 +355,7 @@ it("accepts only bounded context trace events", async () => {
   });
 
   for (const name of [
-    "read_file.worker.response",
+    "read_file.compute",
     "subagent.message",
     "subagent.cancel",
   ]) {
@@ -402,7 +402,7 @@ it("accepts only bounded context trace events", async () => {
       name: "read_file.pool.close",
       attributes: {},
     }).success,
-  ).toBe(true);
+  ).toBe(false);
   expect(
     runtimeIpcMessageSchema.safeParse({
       type: "event",

@@ -2,7 +2,7 @@
  * 执行模型提出的文件操作和命令，并在操作前完成参数、路径和审批检查。
  * Engine 为每个任务创建共享读取快照的 ToolRunner，并为 DAG 中每个节点派生带独立 callId 的输出作用域。
  *
- * 1. ignored 列出遍历时跳过的目录；ToolContext 定义依赖，readHashes 记住本任务读过的文件版本；forCall 共享该状态但隔离事件关联，任务收尾由根 runner.close 等待读取线程退出。
+ * 1. ignored 列出遍历时跳过的目录；ToolContext 定义依赖，readHashes 记住本任务读过的文件版本；forCall 共享该状态但隔离事件关联，不持有读取线程或需关闭的读取资源。
  * 2. currentFileHash 仅探测安全工作区文件的字节哈希，不更新读取凭证；access 解析路径并申请必要的权限；entries 限量遍历，commandGrant 为可复用命令计算指纹。
  * 3. execute 先通过 parseToolArguments 校验参数并解开 Git 的 request 包装（兼容历史扁平调用）。统一的精确编辑和显式新建文件均分流给共享读取哈希的 FileEditor，已有文件成功编辑后会作废对应哈希；Runtime 的全部 Git action 交给 Broker 宿主执行，push 额外预检审批，越界命令经 run_with_permissions adapter 审批后也在宿主执行。
  *    run_command 与 run_with_permissions 均不按 Git 关键词过滤；后者仍先完成 Broker 审批准备，再通知执行开始并消费授权。
@@ -10,7 +10,7 @@
  *    MCP 先经 prepareMcp 在 Broker 审批，再取得执行槽消费单次授权；ToolRunner 从不读取 MCP 配置或创建连接。
  *    本地进程不设固定总时限，execute 为当前调用绑定 reviewTool；forCall 隔离状态/输出，进程执行器每五分钟复查，Broker 操作由 Broker 自己监视。
  * 4. 每个 execution instance 只读取 Broker 为该 task/instance 保存的状态；并发任务的 fallback/unknown 不会污染其它 PID、session 或 trace 记录。
- * 5. 只读分支只处理读取；目录浏览和代码搜索均由 run_command 在审批后执行。read_file 在主线程完成安全访问、类型检查和异步字节读取，再交给共享 Worker 池处理全文哈希与行扫描；可选 trace 将检查、读取及 Worker 阶段分开计时，不保存文件内容。
+ * 5. 只读分支只处理读取；目录浏览和代码搜索均由 run_command 在审批后执行。read_file 在主线程完成安全访问、类型检查和异步字节读取，读完后直接计算全文哈希与行扫描；可选 trace 将检查、读取及同步计算阶段分开计时，不保存文件内容。
  *
  * 新建文件使用 edit_files 的 create:true 条目，已有文件只能用 create:false 的精确快照编辑；
  * FileEditor 会在写入前复核路径、存在性和读取版本，并以同目录临时文件替换目标。
@@ -34,11 +34,11 @@ import { commandShell, resolveExecutablePath } from "./command-shell.js";
 import { FileEditor } from "./file-editor.js";
 import { GitToolRunner, type GitRequest } from "./git.js";
 import type { GitProcessResult, GitToolResult } from "./git.js";
-import { ReadFileWorkerPool } from "./read-file-worker-pool.js";
-import type {
-  ReadFileTrace,
-  ReadFileTraceStage,
-} from "./read-file-worker-pool.js";
+import {
+  processReadFile,
+  type ReadFileTrace,
+  type ReadFileTraceStage,
+} from "./read-file-content.js";
 import type {
   CapabilityCommandRequest,
   CapabilityCommandResult,
@@ -126,12 +126,10 @@ export interface ToolContext {
 
 interface ToolRunnerState {
   readHashes: Map<string, string>;
-  readFileWorkers: ReadFileWorkerPool;
 }
 
 export class ToolRunner {
   private readHashes: Map<string, string>;
-  private readFileWorkers: ReadFileWorkerPool;
   private review?: ToolReview;
   private git: GitToolRunner;
   private editor: FileEditor;
@@ -141,11 +139,9 @@ export class ToolRunner {
     private ctx: ToolContext,
     state: ToolRunnerState = {
       readHashes: new Map<string, string>(),
-      readFileWorkers: new ReadFileWorkerPool(),
     },
   ) {
     this.readHashes = state.readHashes;
-    this.readFileWorkers = state.readFileWorkers;
     this.sandbox = ctx.sandbox ?? new SandboxBroker(sandboxConfiguration());
     this.git = new GitToolRunner(
       ctx,
@@ -217,11 +213,6 @@ export class ToolRunner {
     });
   }
 
-  /** 根 runner 在任务收尾调用；派生的 call runner 与之共享同一读取池。 */
-  close(): Promise<void> {
-    return this.readFileWorkers.close();
-  }
-
   /**
    * 并行图中的每个节点必须有独立输出作用域，不能复用 Engine 的可变当前 callId。
    * 子实例共享本任务读取哈希；已有文件成功编辑后，FileEditor 会作废其凭证，后继 edit_files 必须先重新读取。
@@ -258,7 +249,6 @@ export class ToolRunner {
       },
       {
         readHashes: this.readHashes,
-        readFileWorkers: this.readFileWorkers,
       },
     );
   }
@@ -844,30 +834,33 @@ export class ToolRunner {
         () => readFile(file, { signal: this.ctx.signal }),
         (value) => ({ bytes: value.byteLength }),
       );
-      const buffer =
-        bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength
-          ? bytes.buffer
-          : bytes.buffer.slice(
-              bytes.byteOffset,
-              bytes.byteOffset + bytes.byteLength,
-            );
-      // Worker 只接收已由主线程授权且读取的字节；它不能用路径绕过权限、链接或大小检查。
-      const result = await this.readFileWorkers.process(
-        buffer as ArrayBuffer,
-        {
+      // 直接处理 readFile 返回的字节视图，无需复制或跨线程传输。
+      traceReadFile?.("read_file.compute", "started");
+      const startedAt = performance.now();
+      try {
+        this.ctx.signal.throwIfAborted();
+        const result = processReadFile(bytes, {
           startLine: args.startLine,
           endLine: args.endLine,
           maxLines: MAX_READ_LINES,
           whitespaceMode: args.whitespaceMode,
-        },
-        this.ctx.signal,
-        traceReadFile,
-      );
+        });
+        this.ctx.signal.throwIfAborted();
+        traceReadFile?.("read_file.compute", "ok", {
+          computeMs: performance.now() - startedAt,
+        });
 
-      // 读取凭证使用 Worker 返回的全文字节哈希，避免文本重编码掩盖版本差异。
-      this.readHashes.set(file, result.contentHash);
+        // 全文字节哈希避免文本重编码掩盖版本差异；失败或取消不登记凭证。
+        this.readHashes.set(file, result.contentHash);
 
-      return { path: file, ...result };
+        return { path: file, ...result };
+      } catch (error) {
+        traceReadFile?.(
+          "read_file.compute",
+          this.ctx.signal.aborted ? "cancelled" : "error",
+        );
+        throw error;
+      }
     }
 
     throw new Error("未知工具");

@@ -16,7 +16,7 @@ only. Uninstall removes only the fixed WFP provider/sublayer, the account whose
 SID matches recorded state, the welcome-screen registry value, and the state
 directory. No operation scans or deletes unrelated users, filters, or folders.
 
-1. Source and manifest helpers validate regular files, hashes and the Node 24 bundle baseline.
+1. Source and v4 manifest helpers validate entry/compaction/subagent files, hashes and the Node 24 baseline; v5 installed state no longer includes a read Worker.
 2. Assert-RuntimeNodeVersion accepts Node 24/26 for both source selection and installed verification.
 3. Account, credential, ACL and WFP helpers implement the selected maintenance mode and rollback.
 #>
@@ -42,7 +42,6 @@ $BuildRuntimeRoot = Join-Path $RepositoryRoot "dist\runtime\windows-x64"
 $BuildRuntimeManifest = Join-Path $BuildRuntimeRoot "runtime.manifest.json"
 $BuildRuntimeEntry = Join-Path $BuildRuntimeRoot "agent-runtime.mjs"
 $BuildRuntimeWorker = Join-Path $BuildRuntimeRoot "compaction-worker.mjs"
-$BuildRuntimeReadWorker = Join-Path $BuildRuntimeRoot "read-file-worker.mjs"
 $BuildRuntimeSubagentWorker = Join-Path $BuildRuntimeRoot "subagent-worker.mjs"
 $InstalledBinaryRoot = Join-Path $DataRoot "bin"
 $InstalledRuntimeRoot = Join-Path $DataRoot "runtime"
@@ -51,7 +50,6 @@ $Supervisor = Join-Path $InstalledBinaryRoot "codeatelier-sandbox-supervisor.exe
 $RuntimeNode = Join-Path $InstalledRuntimeRoot "node.exe"
 $RuntimeEntry = Join-Path $InstalledRuntimeRoot "agent-runtime.mjs"
 $RuntimeWorker = Join-Path $InstalledRuntimeRoot "compaction-worker.mjs"
-$RuntimeReadWorker = Join-Path $InstalledRuntimeRoot "read-file-worker.mjs"
 $RuntimeSubagentWorker = Join-Path $InstalledRuntimeRoot "subagent-worker.mjs"
 $StatePath = Join-Path $DataRoot "installation.state"
 $AccountDescription = "CodeAtelier dedicated sandbox runtime account"
@@ -174,36 +172,30 @@ function Read-RuntimeBuildManifest {
     catch {
         throw "Agent Runtime build manifest 不是合法 JSON。"
     }
-    Assert-ExactPropertyNames -Object $Manifest -Expected @("version", "nodeMajor", "entry", "worker", "readWorker", "subagentWorker") -Label "Agent Runtime build manifest"
+    Assert-ExactPropertyNames -Object $Manifest -Expected @("version", "nodeMajor", "entry", "worker", "subagentWorker") -Label "Agent Runtime build manifest"
     Assert-ExactPropertyNames -Object $Manifest.entry -Expected @("file", "sha256") -Label "Agent Runtime entry manifest"
     Assert-ExactPropertyNames -Object $Manifest.worker -Expected @("file", "sha256") -Label "Agent Runtime worker manifest"
-    Assert-ExactPropertyNames -Object $Manifest.readWorker -Expected @("file", "sha256") -Label "Agent Runtime read worker manifest"
     Assert-ExactPropertyNames -Object $Manifest.subagentWorker -Expected @("file", "sha256") -Label "Agent Runtime subagent worker manifest"
     if (
-        $Manifest.version -ne 3 -or
+        $Manifest.version -ne 4 -or
         $Manifest.nodeMajor -ne 24 -or
         $Manifest.entry.file -ne "agent-runtime.mjs" -or
         $Manifest.worker.file -ne "compaction-worker.mjs" -or
-        $Manifest.readWorker.file -ne "read-file-worker.mjs" -or
         $Manifest.subagentWorker.file -ne "subagent-worker.mjs" -or
         $Manifest.entry.sha256 -notmatch '^[a-f0-9]{64}$' -or
         $Manifest.worker.sha256 -notmatch '^[a-f0-9]{64}$' -or
-        $Manifest.readWorker.sha256 -notmatch '^[a-f0-9]{64}$' -or
         $Manifest.subagentWorker.sha256 -notmatch '^[a-f0-9]{64}$' -or
         -not (Test-Path -LiteralPath $BuildRuntimeEntry -PathType Leaf) -or
         -not (Test-Path -LiteralPath $BuildRuntimeWorker -PathType Leaf) -or
-        -not (Test-Path -LiteralPath $BuildRuntimeReadWorker -PathType Leaf) -or
         -not (Test-Path -LiteralPath $BuildRuntimeSubagentWorker -PathType Leaf) -or
         (Get-LowerSha256 -Path $BuildRuntimeEntry) -ne $Manifest.entry.sha256 -or
         (Get-LowerSha256 -Path $BuildRuntimeWorker) -ne $Manifest.worker.sha256 -or
-        (Get-LowerSha256 -Path $BuildRuntimeReadWorker) -ne $Manifest.readWorker.sha256 -or
         (Get-LowerSha256 -Path $BuildRuntimeSubagentWorker) -ne $Manifest.subagentWorker.sha256
     ) {
         throw "Agent Runtime bundle 与 build manifest 不匹配。"
     }
     Assert-RegularSourceFile -Path $BuildRuntimeEntry -Label "Agent Runtime entry"
     Assert-RegularSourceFile -Path $BuildRuntimeWorker -Label "Agent Runtime worker"
-    Assert-RegularSourceFile -Path $BuildRuntimeReadWorker -Label "Agent Runtime read worker"
     Assert-RegularSourceFile -Path $BuildRuntimeSubagentWorker -Label "Agent Runtime subagent worker"
 
     return $Manifest
@@ -276,16 +268,15 @@ function Read-InstallationState {
         $Values[$Key] = $Line.Substring($Separator + 1)
     }
     $State = [pscustomobject]$Values
-    if ($State.version -notin @("1", "2", "3", "4") -or -not $State.accountSid -or -not $State.accountName) {
+    if ($State.version -notin @("1", "2", "3", "4", "5") -or -not $State.accountSid -or -not $State.accountName) {
         throw "Sandbox installation state 版本或字段无效。"
     }
     if (
         $RequireCurrent -and
-        ($State.version -ne "4" -or
+        ($State.version -ne "5" -or
             $State.runtimeNodeSha256 -notmatch '^[a-f0-9]{64}$' -or
             $State.runtimeEntrySha256 -notmatch '^[a-f0-9]{64}$' -or
             $State.runtimeWorkerSha256 -notmatch '^[a-f0-9]{64}$' -or
-            $State.runtimeReadWorkerSha256 -notmatch '^[a-f0-9]{64}$' -or
             $State.runtimeSubagentWorkerSha256 -notmatch '^[a-f0-9]{64}$')
     ) {
         throw "Sandbox installation state 缺少当前 Agent Runtime 摘要；请运行 Repair。"
@@ -340,7 +331,6 @@ function Test-Installation {
         @{ Path = $RuntimeNode; StateKey = "runtimeNodeSha256" },
         @{ Path = $RuntimeEntry; StateKey = "runtimeEntrySha256" },
         @{ Path = $RuntimeWorker; StateKey = "runtimeWorkerSha256" },
-        @{ Path = $RuntimeReadWorker; StateKey = "runtimeReadWorkerSha256" },
         @{ Path = $RuntimeSubagentWorker; StateKey = "runtimeSubagentWorkerSha256" }
     )) {
         $ExpectedHash = $State.PSObject.Properties[$Artifact.StateKey].Value
@@ -361,7 +351,7 @@ function Test-Installation {
         $State.relayPortV6
     )
     Invoke-Supervisor -Arguments @("--self-check", $StatePath, $NetworkManager)
-    Write-Host "SANDBOX_INSTALL_VERIFY PASS version=4"
+    Write-Host "SANDBOX_INSTALL_VERIFY PASS version=5"
 }
 
 function Remove-Installation {
@@ -448,18 +438,16 @@ function Install-Sandbox {
         Copy-Item -LiteralPath $SourceRuntimeNode -Destination $RuntimeNode
         Copy-Item -LiteralPath $BuildRuntimeEntry -Destination $RuntimeEntry
         Copy-Item -LiteralPath $BuildRuntimeWorker -Destination $RuntimeWorker
-        Copy-Item -LiteralPath $BuildRuntimeReadWorker -Destination $RuntimeReadWorker
         Copy-Item -LiteralPath $BuildRuntimeSubagentWorker -Destination $RuntimeSubagentWorker
         if (
             (Get-LowerSha256 -Path $RuntimeEntry) -ne $RuntimeBuild.entry.sha256 -or
             (Get-LowerSha256 -Path $RuntimeWorker) -ne $RuntimeBuild.worker.sha256 -or
-            (Get-LowerSha256 -Path $RuntimeReadWorker) -ne $RuntimeBuild.readWorker.sha256 -or
             (Get-LowerSha256 -Path $RuntimeSubagentWorker) -ne $RuntimeBuild.subagentWorker.sha256
         ) {
             throw "安装后的 Agent Runtime bundle 与已验证 build manifest 不匹配。"
         }
         $State = [ordered]@{
-            version = "4"
+            version = "5"
             accountName = $AccountName
             accountSid = $Account.SID.Value
             generationId = [guid]::NewGuid().ToString("D")
@@ -473,7 +461,6 @@ function Install-Sandbox {
             runtimeNodeSha256 = Get-LowerSha256 -Path $RuntimeNode
             runtimeEntrySha256 = Get-LowerSha256 -Path $RuntimeEntry
             runtimeWorkerSha256 = Get-LowerSha256 -Path $RuntimeWorker
-            runtimeReadWorkerSha256 = Get-LowerSha256 -Path $RuntimeReadWorker
             runtimeSubagentWorkerSha256 = Get-LowerSha256 -Path $RuntimeSubagentWorker
         }
         $TemporaryState = "$StatePath.tmp"
@@ -484,7 +471,7 @@ function Install-Sandbox {
         Invoke-NetworkManager -Arguments @("--wfp-persistent-install", $AccountName, [string]$RelayPortV4, [string]$RelayPortV6)
         Invoke-Supervisor -Arguments @("--install-account-rights", $StatePath, $NetworkManager)
         Test-Installation
-        Write-Host "SANDBOX_INSTALL PASS version=4"
+        Write-Host "SANDBOX_INSTALL PASS version=5"
     }
     catch {
         try {

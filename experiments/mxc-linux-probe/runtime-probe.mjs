@@ -1,7 +1,7 @@
 /**
  * 手动验证 native Linux 目标的真实 AgentRuntimeService ↔ Broker gateway/session 通信，仅在 Linux 原生目录运行。
  * 1. launch 为每次测试创建 workspace/HOME/tmp/private 假夹具，用 MXC Bubblewrap 启动固定 bundle；私有 stdio 交付首帧。
- * 2. 正常路径执行真实 read_file Worker、edit_files、run_command，校验模型/session 往返及安全 trace；四任务另做并发对照。
+ * 2. 正常路径执行真实 read_file 同步计算、edit_files、run_command，校验模型/session 往返及安全 trace；四任务另做并发对照。
  * 3. 错误 nonce/首帧、模型取消、命令取消/断连/Runtime kill 分别验证失败、不重放、终态及心跳停止。
  * 4. 所有测试独立捕获结果并写本地报告，finally 收回 MXC handle；不触发真实模型、宿主能力、Evaluation 或产品后端。
  * Broker 使用生产协议/gateway，但 session 是内存 fixture；WSL 只是 Linux 内核侧运行环境，不测试 DrvFS，不声称裸机验收。
@@ -201,7 +201,7 @@ async function normal(label) {
       "command-executed-in-runtime",
     );
     const trace = probe.traces.exportTask(probe.identity.taskId);
-    assert.ok(JSON.stringify(trace).includes("read_file.worker"));
+    assert.ok(JSON.stringify(trace).includes("read_file.compute"));
     assert.ok(!JSON.stringify(trace).includes("fake-broker-private"));
     assert.ok(probe.state.events.some((event) => event.type === "assistant"));
     assert.ok(

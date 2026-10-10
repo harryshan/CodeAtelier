@@ -19,8 +19,8 @@ import { contextSnapshotSchema } from "../context/types.js";
 import { subtaskSchema } from "../agent/subagent-contracts.js";
 import { gitRequestSchema } from "../tools/registry.js";
 
-// v12 将 memory_apply 的版本条件移至各条操作，目录含逐条版本；旧 Runtime 须重建并 Repair。
-export const RUNTIME_IPC_PROTOCOL_VERSION = 12;
+// v13 用同步 read_file.compute 替代读取 Worker/池阶段；旧 Runtime 须重建并 Repair。
+export const RUNTIME_IPC_PROTOCOL_VERSION = 13;
 export const MAX_RUNTIME_IPC_FRAME_BYTES = 8 * 1024 * 1024;
 
 const identifier = z.string().min(1).max(120);
@@ -62,12 +62,9 @@ const runtimeTraceNameSchema = z.enum([
   "context.request.measure_input",
   "tool.result_persist",
   "tool.execute",
-  "read_file.pool.close",
   "read_file.stat",
   "read_file.bytes",
-  "read_file.worker.queue",
-  "read_file.worker.startup",
-  "read_file.worker.response",
+  "read_file.compute",
   "subagent.worker",
   "subagent.model",
   "subagent.tool.read",
@@ -592,9 +589,8 @@ export const runtimeEventSchema = z.discriminatedUnion("event", [
     .strict()
     .refine(
       (event) =>
-        (event.name === "read_file.pool.close" ||
-          (!event.name.startsWith("read_file.") &&
-            event.name !== "tool.execute") ||
+        ((!event.name.startsWith("read_file.") &&
+          event.name !== "tool.execute") ||
           !!event.attributes.callId) &&
         (event.name !== "tool.execute" || event.attributes.slot !== undefined),
       { message: "工具 trace 阶段必须关联调用标识和执行槽。" },

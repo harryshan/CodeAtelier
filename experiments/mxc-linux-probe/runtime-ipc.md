@@ -82,7 +82,7 @@ env -i HOME="$ROOT/home" \
 
 ## 文件、日志与 tracing
 
-- `build-runtime.mjs`：固定 Runtime、三个 Worker 与 Broker fixture 的纯 JS bundle；不注册默认脚本、产品后端或变更根依赖。
+- `build-runtime.mjs`：固定 Runtime、两个 Worker 与 Broker fixture 的纯 JS bundle（D147 已移除读取 Worker，当前 IPC 为 v13；上面的矩阵保留原验证时行为）；不注册默认脚本、产品后端或变更根依赖。
 - `runtime-probe.mjs`：MXC launcher 与八项手动矩阵。
 - `runtime-workload.mjs`：由真实 `run_command` 执行的固定文件/namespace/心跳夹具。
 - `tests/fixtures/runtime-stream-broker.ts`：共用真实 Broker adapter + 确定性模型/内存 session。

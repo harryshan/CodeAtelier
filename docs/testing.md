@@ -74,7 +74,9 @@ Windows `process-tree.test.ts` 用真实 Node 父子进程和继承的输出句�
 
 诊断四场景中两个故意超时、两个通过；超时失败是实验输入，不是新增默认回归失败。当时脚本和元数据只在忽略目录 `.local/lock-investigation/`，未纳入默认收集；日志为 `probe.log`、`observations.json`。诊断测试脚本及专用配置现已按用户要求删除，已有日志和元数据保留。本轮未改产品、测试夹具或测试配置，未运行 Evaluation。
 
-#### 对应代码与顺序
+#### 对应代码与顺序（诊断时实现）
+
+以下保留当时的故障证据；后续测试级清理改造见本节下文，D147 又删除了读取线程池与 ToolRunner.close，不应据此还原旧实现。
 
 - 当前安装的 Vitest `withTimeout` 在期限到达时拒绝包装 Promise 并取消测试 signal，不等待原异步正文完成；`runTest` 随后执行 `afterEach`。超时本身不会使仍挂起的 `await` 立即进入正文 `finally`。
 - `tests/fixtures/helpers.ts` 的 `afterEach` 只关闭已登记 ToolRunner，随后直接 `rm` 目录；`fileFixture` 的 AbortController 没有连接测试 signal，也没有登记取消及命令完成 Promise。`agent-runtime-tools.test.ts` 的直接 ToolRunner 连这项登记也没有。
@@ -100,7 +102,7 @@ Windows `process-tree.test.ts` 用真实 Node 父子进程和继承的输出句�
 
 `tests/fixtures/test-resources.ts` 按 Vitest task 登记资源，替代公共 helper 的文件级目录/runner 数组。顺序是取消作用域、等待在途操作结束、逆序关闭资源、最后逐个删除临时目录；独立清理失败汇总为 `AggregateError`，不再因首个目录失败跳过其余目录。`temp()` 在第一次 await 前捕获作用域，目录一创建就登记，即使取消后才返回也会清理。不增加删除重试、默认 worker 限制或已有测试的超时。
 
-- `fileFixture` 与 `createTestRunner` 把测试 signal 和调用方 signal 合并，跟踪根 runner 和 `forCall` 的在途操作，等真实命令结束后再关闭读取线程池。`trackRunner` 只为已有实例登记等待/关闭；新建命令 runner 应使用 `createTestRunner`，确保 signal 接入。
+- `fileFixture` 与 `createTestRunner` 把测试 signal 和调用方 signal 合并，跟踪根 runner 和 `forCall` 的在途操作，等待真实命令结束后才清理临时目录（D147 已移除读取线程池）。`trackRunner` 只为已有实例登记在途等待；新建命令 runner 应使用 `createTestRunner`，确保 signal 接入。
 - `managed-runtime.ts` 的 `TestStore`、`TestEngine` 使用生产实现，只增加创建即登记以及正文/hook 共享一次关闭 Promise。Store 必须使用并等待 `closeAsync()`，不能混用不等待 Worker 的 `close()`。已接入本次调查涉及的 `engine`、`agent-runtime-engine`、`auxiliary-model` 与 `shutdown`，以及直接运行命令的 `agent-runtime-tools`。
 - `createTestApp` 跟踪异步初始化并登记 `app.close()`；shutdown 的 launcher 夹具改用可取消、等待整棵进程树退出的执行器，避免仅终止父进程或依赖正文 finally。HTTP/SSE 的行为断言保留。
 - `fixture-cleanup.test.ts` 保留两项不启动子进程的轻量回归，覆盖晚返回目录、取消后等待在途操作、关闭幂等和失败后继续清理。排查期间用于真实命令/SQLite/Engine 主动超时验证的嵌套 Vitest 用例、`cleanup-timeout.case.ts` 及专用配置已按用户要求移除，不再进入默认运行；资源清理实现和既有 Engine/HTTP/命令功能测试保留。默认套件因此由 671 项减至 670 项；下列修复时的验证数字为删除诊断用例前的历史记录。
@@ -127,7 +129,7 @@ Windows `process-tree.test.ts` 用真实 Node 父子进程和继承的输出句�
 
   测试不继承本机 `.env`、系统中的 CodeAtelier 配置或真实 API key；模型只可使用注入式模拟值和本机测试 HTTP/SSE 服务。
 
-- `pnpm build` 与 `pnpm build:test` 还会生成 `dist/runtime/windows-x64` 下以 Node 24 为兼容基线、支持 Node 24/26 的 Agent Runtime、compaction/read_file/subagent 三种 Worker bundle 和 SHA-256 manifest；构建成功只验证 bundle 可生成，不代表安装器已把它复制到受保护目录或 native Supervisor 已核对并启动它。
+- `pnpm build` 与 `pnpm build:test` 还会生成 `dist/runtime/windows-x64` 下以 Node 24 为兼容基线、支持 Node 24/26 的 Agent Runtime、compaction/subagent 两种 Worker bundle 和 SHA-256 manifest；构建成功只验证 bundle 可生成，不代表安装器已把它复制到受保护目录或 native Supervisor 已核对并启动它。
 - `windows-sandbox-scripts.test.ts` 使用模拟平台与子进程核对 run.ts 全部固定维护 action 的 PowerShell 参数、非 shell 启动、退出码/启动错误与非 Windows `SKIP`；不实际执行安装、修复、账户、ACL 或 WFP 操作，也不替代平台安装态验收。
 - `pnpm sandbox:native:build` 的原生回归核对产品受限 token 的 execution/root capability 与 Everyone restricting SID、Runtime bootstrap 句柄帧、进程 PID 绑定、仅复制查询权限及畸形帧拒绝；显式 `codeatelier-sandbox-state-parser-test.exe --handle-transfer-probe` 还以真实子进程验证私有管道读帧和跨进程句柄复制。这些都不代替固定账户下的 BCrypt/PowerShell、Job 与 Runtime pipe 联合身份验收。
 - 原生 `codeatelier-sandbox-state-parser-test.exe --runtime-descriptor-probe` 可输出固定启动描述符二进制首帧，供 Node 解码器跨语言核对；`runtime-startup-protocol.test.ts` 验证真实本机管道的成功握手，以及无效首帧后入口关闭 socket 并退出。安装态首帧和 IPC 双向代理仍须用显式产品验收验证。
@@ -162,9 +164,9 @@ Windows `process-tree.test.ts` 用真实 Node 父子进程和继承的输出句�
 
 ### 文件读取
 
-主要测试：files.test.ts、core.test.ts、read-file-worker.test.ts。
+主要测试：files.test.ts、core.test.ts、read-file-content.test.ts。
 
-行号/范围/500 行限制、分页与截断元数据、无效范围、文件大小、二进制、链接越界；宿主及 Agent Runtime 的 read_file 工具内阶段嵌套、无独立准备/计算片段、冷/热 Worker 启动、超过旧空闲回收间隔仍复用、任务结束关闭/排队与执行中取消、部分线程退出失败仍等待其余线程、失败 trace
+行号/范围/500 行限制、分页与截断元数据、无效范围、文件大小、二进制、链接越界；UTF-8/CRLF/末尾空行、Buffer 子视图的全文哈希、四个大文件并发读取和跨 forCall 编辑凭证；宿主及 Agent Runtime 工具轨道内 stat/bytes/compute 阶段、无读取 Worker/关闭阶段、二进制失败不登记凭证、读后计算前取消与失败 trace。同步计算不承诺抢占式取消
 
 ### 新建与精确编辑
 
@@ -232,13 +234,13 @@ item.done 回退、失败/不完整事件、服务实际错误 message/reason/co
 
 主要测试：skills.test.ts、skills-engine.test.ts、tool-schema.test.ts。
 
-覆盖 UTF-8/BOM/CRLF、YAML 多行/坏字段/重复键/大小边界，六个预设根及同名优先级、缺省空目录、坏条目隔离和低优先级回退，链接/junction/硬链接与加载前根替换拒绝，枚举/目录容量限制，任务内版本失效、新任务重新发现，strict 工具与 IPC v12 拒绝路径/命令和旧握手、最大目录 JSON 转义后的启动传输边界。宿主及真实 Node Runtime 模拟模型往返验证摘要先行、正文按需、无审批/脚本副作用、失败后继阻断、历史/replay 及 trace 脱离元信息/正文。所有文件在临时项目/home 中，无个人密钥；不替代固定账户安装态或跨平台验收。
+覆盖 UTF-8/BOM/CRLF、YAML 多行/坏字段/重复键/大小边界，六个预设根及同名优先级、缺省空目录、坏条目隔离和低优先级回退，链接/junction/硬链接与加载前根替换拒绝，枚举/目录容量限制，任务内版本失效、新任务重新发现，strict 工具与 IPC v13 拒绝路径/命令和旧握手、最大目录 JSON 转义后的启动传输边界。宿主及真实 Node Runtime 模拟模型往返验证摘要先行、正文按需、无审批/脚本副作用、失败后继阻断、历史/replay 及 trace 脱离元信息/正文。所有文件在临时项目/home 中，无个人密钥；不替代固定账户安装态或跨平台验收。
 
 ### MCP 本机访问
 
 主要测试：mcp-catalog.test.ts、mcp.test.ts、mcp-engine.test.ts、mcp-ipc.test.ts、tool-schema.test.ts；夹具 tests/fixtures/mcp-server.ts 使用官方 SDK。
 
-覆盖配置缺省关闭/损坏拒绝/UTF-8 BOM/私密字段、可选 description 的修剪/空值/长度校验、公开目录脱敏/空目录/旧配置未知用途/禁用服务过滤、最大 JSON 转义目录的 IPC v12 传输边界与旧版本拒绝。宿主、独立 Runtime 和启动前 fallback 在首次及续聊任务中主动提供目录，无工具调用时不申请审批、不启动 MCP，摘要不进入 trace；list_servers 与启动目录共用投影。另覆盖禁用服务拒绝、stdio 真实握手与连接复用/直接子进程退出、工具/资源/模板往返、HTTP 认证头和裸 token 脱敏、分页/重定向拒绝/响应流大小限制/正常 DELETE、审批先于连接、单次授权、超时/取消及禁止自动重连、输出截断与 isError、宿主和独立 Runtime 模型往返/历史/replay、失败后继阻断及 trace 不含 MCP 参数/正文。全部离线且无个人密钥；不替代真实远端、跨平台和固定账户安装态验收。
+覆盖配置缺省关闭/损坏拒绝/UTF-8 BOM/私密字段、可选 description 的修剪/空值/长度校验、公开目录脱敏/空目录/旧配置未知用途/禁用服务过滤、最大 JSON 转义目录的 IPC v13 传输边界与旧版本拒绝。宿主、独立 Runtime 和启动前 fallback 在首次及续聊任务中主动提供目录，无工具调用时不申请审批、不启动 MCP，摘要不进入 trace；list_servers 与启动目录共用投影。另覆盖禁用服务拒绝、stdio 真实握手与连接复用/直接子进程退出、工具/资源/模板往返、HTTP 认证头和裸 token 脱敏、分页/重定向拒绝/响应流大小限制/正常 DELETE、审批先于连接、单次授权、超时/取消及禁止自动重连、输出截断与 isError、宿主和独立 Runtime 模型往返/历史/replay、失败后继阻断及 trace 不含 MCP 参数/正文。全部离线且无个人密钥；不替代真实远端、跨平台和固定账户安装态验收。
 
 ### 网页检索与来源引用
 
@@ -266,7 +268,7 @@ item.done 回退、失败/不完整事件、服务实际错误 message/reason/co
 
 主要测试：memory.test.ts、memory-jsonl.test.ts、memory-jsonl-only.test.ts、memory-entry-versions.test.ts、tool-schema.test.ts、engine.test.ts、agent-runtime-service.test.ts。
 
-按真实工作区 SHA-256 隔离的 JSONL 快照、严格解析/安全降级、全量有效摘要目录、archive、版本冲突、敏感内容拒绝；模型无需人工确认的 `memory_apply` 契约、任务内写入、仅含 ID/逐条版本/摘要的固定 bundle，按文件顺序提供全部有效条目，不受重要性/置信度/时间排序或原 8 项/6000 字符限制；256 条最大长度转义标题可经 IPC v12 传输，越界载荷与旧 v11 握手被拒绝；逐条版本回归覆盖同任务中无关条目变化后仍可读写、JSON 键顺序/换行/文件顺序不改变版本、目标内容变化（即使时间未变）/删除/停用拒绝、独立并发更新/创建无丢失、同目标旧版本最多一次成功、重复 ID 与混合批次整批拒绝、提交期间外部无关变化重算合并和持续竞争清理；同工具单条 read 返回完整条目且不写盘，拒绝跨项目/未知 ID、过期/归档/停用、版本不匹配及读写混合。宿主跨会话与独立 Node Runtime/Broker 往返验证任务中另一条被外部归档后仍可读取未变条目、正文仅按需进入工具结果，trace 不含正文。JSONL 专项覆盖多行正文/标题、Unicode/引号/反斜杠、LF/CRLF/无末尾换行和混合类型顺序，拒绝 BOM、空行、截断、未知字段/版本/记录、重复 ID、超限、非法 UTF-8 和敏感内容；JSONL 无副作用读取、维护后重启、版本冲突、并发更新/首次创建、外部修改、提交失败清理和转义膨胀超限不损坏原文件。JSONL-only 回归覆盖仅存有效/损坏 Markdown 或同名目录时均为空记忆、read 拒绝旧 ID、新建 JSONL 不导入旧条目、删除 JSONL 后旧备份不复活。真实数据一次性迁移独立备份并逐份深比较，见 verification.md，不由默认测试访问个人 memory。项目管理 UI、来源哈希失效验证和手工恢复/清空待后续测试覆盖
+按真实工作区 SHA-256 隔离的 JSONL 快照、严格解析/安全降级、全量有效摘要目录、archive、版本冲突、敏感内容拒绝；模型无需人工确认的 `memory_apply` 契约、任务内写入、仅含 ID/逐条版本/摘要的固定 bundle，按文件顺序提供全部有效条目，不受重要性/置信度/时间排序或原 8 项/6000 字符限制；256 条最大长度转义标题可经 IPC v13 传输，越界载荷与旧 v11 握手被拒绝；逐条版本回归覆盖同任务中无关条目变化后仍可读写、JSON 键顺序/换行/文件顺序不改变版本、目标内容变化（即使时间未变）/删除/停用拒绝、独立并发更新/创建无丢失、同目标旧版本最多一次成功、重复 ID 与混合批次整批拒绝、提交期间外部无关变化重算合并和持续竞争清理；同工具单条 read 返回完整条目且不写盘，拒绝跨项目/未知 ID、过期/归档/停用、版本不匹配及读写混合。宿主跨会话与独立 Node Runtime/Broker 往返验证任务中另一条被外部归档后仍可读取未变条目、正文仅按需进入工具结果，trace 不含正文。JSONL 专项覆盖多行正文/标题、Unicode/引号/反斜杠、LF/CRLF/无末尾换行和混合类型顺序，拒绝 BOM、空行、截断、未知字段/版本/记录、重复 ID、超限、非法 UTF-8 和敏感内容；JSONL 无副作用读取、维护后重启、版本冲突、并发更新/首次创建、外部修改、提交失败清理和转义膨胀超限不损坏原文件。JSONL-only 回归覆盖仅存有效/损坏 Markdown 或同名目录时均为空记忆、read 拒绝旧 ID、新建 JSONL 不导入旧条目、删除 JSONL 后旧备份不复活。真实数据一次性迁移独立备份并逐份深比较，见 verification.md，不由默认测试访问个人 memory。项目管理 UI、来源哈希失效验证和手工恢复/清空待后续测试覆盖
 
 ### 会话存储、标题与 Replay Case
 
@@ -296,9 +298,9 @@ item.done 回退、失败/不完整事件、服务实际错误 message/reason/co
 
 ### Perfetto tracing
 
-主要测试：tracing.test.ts、read-file-worker.test.ts、agent-runtime-engine.test.ts、runtime-ipc.test.ts、tool-graph.test.ts、e2e/app.spec.ts。
+主要测试：tracing.test.ts、read-file-content.test.ts、agent-runtime-engine.test.ts、runtime-ipc.test.ts、tool-graph.test.ts、e2e/app.spec.ts。
 
-宿主与真实 Runtime 子进程的 `read_file` 路径准备/检查/字节读取/Worker 排队/冷启动/处理回传阶段及结果字节数与纯计算耗时，冷/热 Worker、二进制失败与排队取消的阶段配对；`context.prepare`/`context.request` 及计量子阶段、Runtime `tool.result_persist`、独立模型与响应处理、工具计划/持久化及 instant/flow 事件导出；Runtime trace IPC 只接受固定阶段、工具槽位、单调微秒时间戳和有界数值属性，Broker 校验时间窗、以已验证 Runtime PID 分组、对五次 read_file 复用最多四条槽位轨道，参数在 Broker 侧从 tool_start 脱敏附加；任意名称/文本字段关闭通道；主线程嵌套 begin/end slice、Task 包络、时序排序、整数 flow ID、可复用工具轨道、实际 tool 的完整结构化参数及递归凭据脱敏、按 session/task 独立持久化、终态后释放内存、认证下载、仅显示真实文件的统计框入口、关联元数据与普通长属性限长
+宿主与真实 Runtime 子进程的 `read_file` 检查/异步字节读取/直接同步计算阶段及结果字节数与计算耗时，二进制失败与读后取消的阶段配对，不再输出读取 Worker 或池关闭事件；`context.prepare`/`context.request` 及计量子阶段、Runtime `tool.result_persist`、独立模型与响应处理、工具计划/持久化及 instant/flow 事件导出；Runtime trace IPC 只接受固定阶段、工具槽位、单调微秒时间戳和有界数值属性，Broker 校验时间窗、以已验证 Runtime PID 分组、对五次 read_file 复用最多四条槽位轨道，参数在 Broker 侧从 tool_start 脱敏附加；任意名称/文本字段关闭通道；主线程嵌套 begin/end slice、Task 包络、时序排序、整数 flow ID、可复用工具轨道、实际 tool 的完整结构化参数及递归凭据脱敏、按 session/task 独立持久化、终态后释放内存、认证下载、仅显示真实文件的统计框入口、关联元数据与普通长属性限长
 
 `agent-runtime-engine.test.ts` 另核对并行读取结果的 `durationMs` 与各自 `tool.execute` 片段一致，获批宿主命令有数值、拒绝为零；`agent-runtime-duration.test.ts` 使用真实 Runtime 子进程覆盖执行失败、无效图和依赖阻断，再重开数据库验证耗时持久化。`e2e/broker-command-output.spec.ts` 检查命令卡片及普通工具结果中的数值、0 ms、旧记录缺失提示与刷新重建。计时来自执行片段而非 tool_start 到结果的墙钟间隔，避免加入审批、排队和落盘时间；这些测试不替代固定账户安装态或跨平台验收。
 
@@ -580,13 +582,13 @@ tool-schema.test.ts 覆盖根节点、oneOf 禁用、包装解包、历史兼容
 - 验证真实 Bubblewrap 的文件/环境/链接边界、无沙箱负对照、Node Worker/子进程、双向 stdio、IPv4/IPv6 宿主回环和公网 IPv4 TCP 对照、四工作区交叉访问、取消/超时/SDK 宿主崩溃后的 detached 后代退出。报告单独记录硬链接、denied tmpfs 及 UNIX socket 边界特征，不将它们描述为完全拒绝能力。
 - 目标已明确为 native Linux；只在 Linux 原生文件系统继续验证，不把 DrvFS 当作验收门槛。此前挂载盘对照保留为历史记录，不再扩展相关测试。
 - `tests/runtime-streams.test.ts` 在默认普通测试中以真实 Node 子进程验证共用流入口的文件工具、模型/session/trace 往返、流式 delta、错误 nonce/首帧、提前 EOF、取消及断连；不加载 MXC，不声称提供 OS Sandbox。原 `runtime-startup-protocol` 的真实 Windows Named Pipe 回归继续执行。
-- 手动 [Runtime IPC 探针](../experiments/mxc-linux-probe/runtime-ipc.md) 将生产 Runtime 及三个 Worker 打包到 Linux 原生目录，通过 MXC 启动；验证实际工具/命令、四 Runtime 通道、坏握手/首帧、模型取消与命令取消/断连/kill 后心跳停止。Broker 使用生产 gateway/session，但模型与持久化使用 fixture。脚本不进入默认 check、CI 或 Evaluation；通过不代表 Linux 产品集成、macOS、完整恢复或资源配额验收。
+- 手动 [Runtime IPC 探针](../experiments/mxc-linux-probe/runtime-ipc.md) 将生产 Runtime 及两个 Worker 打包到 Linux 原生目录，通过 MXC 启动；验证实际工具/命令、四 Runtime 通道、坏握手/首帧、模型取消与命令取消/断连/kill 后心跳停止。Broker 使用生产 gateway/session，但模型与持久化使用 fixture。脚本不进入默认 check、CI 或 Evaluation；通过不代表 Linux 产品集成、macOS、完整恢复或资源配额验收。
 
 ## MXC 产品启动器与恢复
 
 - `tests/mxc-runtime.test.ts` 用假 SDK 和真实临时文件系统检查策略、首帧、归因、摘要损坏/危险根、持久残留、spawn 失败、取消、迟到句柄和清理未知时排空及禁止重用；macOS 只检查策略，不启动 Seatbelt。
 - `tests/sandbox.test.ts` 覆盖平台工厂与开关；`tests/agent-runtime-engine.test.ts` 的真实子进程覆盖用户取消和服务关闭、clean/orphaned 四种组合；清理成功的关闭保存 interrupted，不能被 Runtime 的 cancelled 覆盖，清理未知仍 failed。该套件也解析结构化 trace，确保 `run_with_permissions` 的宿主命令与审批理由不进入 Runtime 等待片段；不再仅比较 JSON 字符串，以免 Windows 转义造成假阴性。
-- 手动 `experiments/mxc-linux-probe/product-probe.mjs` 走真实 Linux 产品工厂、Engine、Store Worker/SQLite、MXC、Runtime 与 read_file Worker，模型为确定性夹具。覆盖等待循环让出事件循环、四工作区读写/命令/trace/环境/网络边界、普通和 detached 心跳取消、服务关闭与重开 Store 人工恢复、旧上下文续聊不重复编辑。每阶段输出和保存报告，外层保护仅限探针，不增加产品工具总期限。
+- 手动 `experiments/mxc-linux-probe/product-probe.mjs` 走真实 Linux 产品工厂、Engine、Store Worker/SQLite、MXC、Runtime 与 read_file 同步计算，模型为确定性夹具。覆盖等待循环让出事件循环、四工作区读写/命令/trace/环境/网络边界、普通和 detached 心跳取消、服务关闭与重开 Store 人工恢复、旧上下文续聊不重复编辑。每阶段输出和保存报告，外层保护仅限探针，不增加产品工具总期限。
 - 复现见 [POSIX Sandbox](posix-sandbox.md)。手动原生探针不接默认 test/check、CI 或 Evaluation；build/check 只构建 POSIX bundle，不执行原生探针。不能把 Linux WSL/ext4 结果推导为 macOS、裸机、全部发行版或完整安全矩阵通过。
 
 ## Sandbox 审查回归

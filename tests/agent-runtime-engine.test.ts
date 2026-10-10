@@ -180,9 +180,7 @@ it("moves the Engine agent loop into the launched Runtime process", async () => 
     for (const name of [
       "read_file.stat",
       "read_file.bytes",
-      "read_file.worker.queue",
-      "read_file.worker.startup",
-      "read_file.worker.response",
+      "read_file.compute",
     ]) {
       const stage = trace.traceEvents.find(
         (event: any) =>
@@ -239,7 +237,6 @@ it("moves the Engine agent loop into the launched Runtime process", async () => 
     const runtimeStages = trace.traceEvents.filter(
       (event: any) =>
         event.name.startsWith("read_file.") &&
-        event.name !== "read_file.pool.close" &&
         event.args?.callId === "runtime-read" &&
         event.ph === "B",
     );
@@ -286,20 +283,7 @@ it("moves the Engine agent loop into the launched Runtime process", async () => 
     const shutdown = trace.traceEvents.filter(
       (event: any) => event.name === "read_file.pool.close",
     );
-    expect(shutdown.map((event: any) => event.ph)).toEqual(["B", "E"]);
-    expect(shutdown[0].args.status).toBe("ok");
-    expect(shutdown[0].cat).toBe("read_file");
-    expect(shutdown[0].tid).not.toBe(toolSpan.tid);
-    expect(shutdown[0].pid).toBe(toolSpan.pid);
-    expect(shutdown[0].ts).toBeGreaterThanOrEqual(
-      Math.max(
-        ...trace.traceEvents
-          .filter(
-            (event: any) => event.name === "tool.read_file" && event.ph === "E",
-          )
-          .map((event: any) => event.ts),
-      ),
-    );
+    expect(shutdown).toHaveLength(0);
     expect(trace.traceEvents.map((event: any) => event.name)).not.toContain(
       "read_file.access",
     );

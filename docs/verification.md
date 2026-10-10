@@ -1,5 +1,14 @@
 # 初版验证记录
 
+## read_file 移除 Worker、读取后直接计算（2026-10-11）
+
+- 按 D147 删除专属 Worker/池与任务收尾，读取的 Buffer 直接用于哈希和行扫描。保留文件权限、大小/行数、长行和空白显示、分页及编辑版本凭证；同步计算前后检查取消，不承诺扫描中途抢占。tracing 改为工具轨道内 stat/bytes/compute，无 Worker 启动、排队、回传或 pool.close。
+- 同步调整宿主/Runtime、Windows TS/native 安装校验和安装器、POSIX 固定 bundle、实验探针及文档。IPC v13、Windows manifest v4/state v5；构建 manifest 只含 Runtime entry、compaction、subagent 三个 bundle，保留其摘要核验。旧 Runtime 需重建/Repair 后启用，不自动改动安装副本。
+- Windows / Node 26.10.0：`pnpm check` 类型、ESLint、Prettier 通过；默认并发单测 **7 失败、679 通过、1 跳过**，未进入构建。失败包含 agent-runtime-tools、auxiliary-model、engine、permissions、shutdown 超时，process-tree 清理断言及 Windows PowerShell Node 探针失败。读取专项 7 项已在该轮通过；早期类型检查发现一处剩余 close 调用，已修正。
+- 负载对照 `pnpm test --maxWorkers=2` 全量 **96 文件、686 通过、1 跳过**，未改变测试配置、期限或断言。随后按顺序运行 `pnpm test:e2e`，完整 server/web/Windows/POSIX Runtime 测试构建及 Chromium **42/42 通过**；保留既有 Zod 注释与 Web chunk 警告。不把限并发结果写成原样 check 全绿。
+- MSVC native 编译及安装状态解析回归通过；与默认并发单测同时运行时双向 Named Pipe 探针超时，随后单独 `pnpm sandbox:native:build` 编译、状态解析及真实管道回归全部通过。编译脚本未安装或修改账户、ACL、WFP。
+- 本轮没有运行 Evaluation、真实模型、固定账户 Repair/安装态验收或 Linux/macOS 实机探针；此前 Linux 记录保留为历史证据，不扩展为本次 v13 的实机验证。检查日志位于忽略目录 `.local/read-file-inline-*.log`，不提交原始日志或 `.pnpm-store/`。
+
 ## Linux/macOS MXC 产品实现与 Linux 链路验证（2026-10-10～11）
 
 - 按 D146 实现可选 `@microsoft/mxc-sdk@1.0.0` 产品后端，Linux/Bubblewrap、macOS/Seatbelt 均默认关闭。接入工厂、Broker/Engine、固定 Runtime/Worker bundle、平台执行归因和 preflight/launch/cleanup trace。POSIX 启用失败不 fallback；未知结果保留持久标记、隔离启动器并排空活动实例。Windows 后端原契约保留。使用与限制见 [POSIX Sandbox](posix-sandbox.md)。

@@ -3,7 +3,7 @@
  * 本脚本只生成可再生构建产物，不安装账户、ACL、WFP、服务或机器级状态；native Supervisor 后续只允许启动安装状态中记录摘要的固定文件。
  *
  * 1. esbuild 将固定 Agent Runtime 入口及其生产依赖打成兼容 Node 24/26 的 ESM 文件，以 Node 24 为语法基线，避免运行时读取开发仓库或 pnpm symlink 图。
- * 2. 上下文压缩、read_file CPU Worker 与只读 subagent loop 分别打包，以保留 worker_threads 的进程内隔离和相对 URL 启动语义。
+ * 2. 上下文压缩与只读 subagent loop 分别打包，保留各自的 worker_threads 和相对 URL 启动语义；read_file 直接包含在 Runtime 入口中。
  * 3. 对全部输出计算 SHA-256 并原子写入严格 manifest；安装器必须重新核对摘要后才能复制。
  */
 
@@ -15,7 +15,6 @@ import { build } from "esbuild";
 const outputRoot = path.resolve("dist/runtime/windows-x64");
 const entryOutput = path.join(outputRoot, "agent-runtime.mjs");
 const workerOutput = path.join(outputRoot, "compaction-worker.mjs");
-const readWorkerOutput = path.join(outputRoot, "read-file-worker.mjs");
 const subagentWorkerOutput = path.join(outputRoot, "subagent-worker.mjs");
 const manifestOutput = path.join(outputRoot, "runtime.manifest.json");
 
@@ -42,11 +41,10 @@ async function sha256(file: string) {
 await mkdir(outputRoot, { recursive: true });
 await bundle("src/sandbox/agent-runtime-main.ts", entryOutput);
 await bundle("src/context/compaction-worker.ts", workerOutput);
-await bundle("src/tools/read-file-worker.ts", readWorkerOutput);
 await bundle("src/agent/subagent-worker.ts", subagentWorkerOutput);
 
 const manifest = {
-  version: 3,
+  version: 4,
   // nodeMajor 记录 bundle 的最低语法目标；安装器可选择受支持的 Node 24 或 26。
   nodeMajor: 24,
   entry: {
@@ -56,10 +54,6 @@ const manifest = {
   worker: {
     file: path.basename(workerOutput),
     sha256: await sha256(workerOutput),
-  },
-  readWorker: {
-    file: path.basename(readWorkerOutput),
-    sha256: await sha256(readWorkerOutput),
   },
   subagentWorker: {
     file: path.basename(subagentWorkerOutput),

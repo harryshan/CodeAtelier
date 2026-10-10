@@ -92,7 +92,7 @@ it("runs real tools, model round trips and trace over the shared stdio entry", a
     ).toBe("stream-created");
     expect(
       JSON.stringify(probe.traces.exportTask(probe.identity.taskId)),
-    ).toContain("read_file.worker");
+    ).toContain("read_file.compute");
     expect(probe.state.events.some((event) => event.type === "assistant")).toBe(
       true,
     );

@@ -4,7 +4,7 @@
  * 默认只创建进程内测试 ACL；显式 OS 探针会创建并关闭会话内 station/desktop。
  * 两种模式都不修改机器账户、LSA 对象或 WFP 规则，也不运行产品的 Supervisor 入口。
  *
- * 1. 写入包含两个非默认 relay 端口的安装状态夹具。
+ * 1. 写入包含两个非默认 relay 端口的 v5 安装状态夹具，不提供已移除的读取 Worker 摘要。
  * 2. 调用 ReadInstallationState，核对端口与版本，并拒绝无效端口。
  * 3. 用真实二进制 journal 帧验证恢复入口接受已安装授权的合法标志，普通撤销入口仍拒绝这些标志。
  * 4. 在进程内 ACL 上验证新增的安装者读取 ACE 不丢弃既有 ACE，也不授予写入。
@@ -30,7 +30,7 @@ bool WriteFixture(const std::filesystem::path& path, uint16_t port_v4,
     return false;
   }
   const std::wstring digest(64, L'a');
-  output << L"version=4\n"
+  output << L"version=5\n"
          << L"accountName=CodeAtelierSandbox\n"
          << L"accountSid=S-1-5-21-1\n"
          << L"generationId=test-generation\n"
@@ -43,7 +43,6 @@ bool WriteFixture(const std::filesystem::path& path, uint16_t port_v4,
          << L"runtimeNodeSha256=" << digest << L"\n"
          << L"runtimeEntrySha256=" << digest << L"\n"
          << L"runtimeWorkerSha256=" << digest << L"\n"
-         << L"runtimeReadWorkerSha256=" << digest << L"\n"
          << L"runtimeSubagentWorkerSha256=" << digest << L"\n";
   return output.good();
 }
@@ -596,7 +595,7 @@ int wmain(int argc, wchar_t* argv[]) {
   InstallationState state;
   bool valid = WriteFixture(fixture, 42871) &&
                ReadInstallationState(fixture.wstring(), &state) &&
-               state.version == 4 && state.relay_port_v4 == 42871 &&
+               state.version == 5 && state.relay_port_v4 == 42871 &&
                state.relay_port_v6 == 42872;
   valid = valid && WriteFixture(fixture, 0) &&
           !ReadInstallationState(fixture.wstring(), &state);

@@ -215,7 +215,6 @@ describe.skipIf(process.platform !== "win32")(
       const runtimeNode = path.join(runtimeRoot, "node.exe");
       const runtimeEntry = path.join(runtimeRoot, "agent-runtime.mjs");
       const runtimeWorker = path.join(runtimeRoot, "compaction-worker.mjs");
-      const runtimeReadWorker = path.join(runtimeRoot, "read-file-worker.mjs");
       const runtimeSubagentWorker = path.join(
         runtimeRoot,
         "subagent-worker.mjs",
@@ -226,12 +225,11 @@ describe.skipIf(process.platform !== "win32")(
       await writeFile(runtimeNode, "node-24");
       await writeFile(runtimeEntry, "runtime-entry");
       await writeFile(runtimeWorker, "runtime-worker");
-      await writeFile(runtimeReadWorker, "runtime-read-worker");
       await writeFile(runtimeSubagentWorker, "runtime-subagent-worker");
       await writeFile(
         statePath,
         [
-          "version=4",
+          "version=5",
           "generationId=12345678-1234-1234-1234-123456789abc",
           "relayPortV4=42871",
           `supervisorSha256=${digest("supervisor")}`,
@@ -239,7 +237,6 @@ describe.skipIf(process.platform !== "win32")(
           `runtimeNodeSha256=${digest("node-24")}`,
           `runtimeEntrySha256=${digest("runtime-entry")}`,
           `runtimeWorkerSha256=${digest("runtime-worker")}`,
-          `runtimeReadWorkerSha256=${digest("runtime-read-worker")}`,
           `runtimeSubagentWorkerSha256=${digest("runtime-subagent-worker")}`,
         ].join("\n"),
       );
@@ -279,7 +276,7 @@ describe.skipIf(process.platform !== "win32")(
       expect(runSelfCheck).toHaveBeenCalledTimes(3);
 
       const validState = await readFile(statePath, "utf8");
-      await writeFile(statePath, validState.replace("version=4", "version=3"));
+      await writeFile(statePath, validState.replace("version=5", "version=4"));
       await expect(
         runtime.selfCheck(new AbortController().signal, workspace(root)),
       ).rejects.toThrow("版本");
