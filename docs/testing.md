@@ -578,7 +578,9 @@ tool-schema.test.ts 覆盖根节点、oneOf 禁用、包装解包、历史兼容
 
 - [experiments/mxc-linux-probe](../experiments/mxc-linux-probe/README.md) 是独立依赖、固定版本的 WSL/Linux 验证，不接默认 `pnpm test/check`、CI 或 Evaluation；准备及执行均由开发者手动发起，不修改系统配置或产品 Sandbox。
 - 验证真实 Bubblewrap 的文件/环境/链接边界、无沙箱负对照、Node Worker/子进程、双向 stdio、IPv4/IPv6 宿主回环和公网 IPv4 TCP 对照、四工作区交叉访问、取消/超时/SDK 宿主崩溃后的 detached 后代退出。报告单独记录硬链接、denied tmpfs 及 UNIX socket 边界特征，不将它们描述为完全拒绝能力。
-- 可用 `MXC_PROBE_BASE` 对照 ext4 与 Windows 挂载目录；DrvFS 不支持原地 UNIX socket 的宿主失败仍保留为失败，另有 Linux 私有 temp socket 对照。当前矩阵及限制见实验说明与 [验证记录](verification.md)；通过不代表 Linux 产品集成、macOS、完整恢复或资源配额验收。
+- 目标已明确为 native Linux；只在 Linux 原生文件系统继续验证，不把 DrvFS 当作验收门槛。此前挂载盘对照保留为历史记录，不再扩展相关测试。
+- `tests/runtime-streams.test.ts` 在默认普通测试中以真实 Node 子进程验证共用流入口的文件工具、模型/session/trace 往返、流式 delta、错误 nonce/首帧、提前 EOF、取消及断连；不加载 MXC，不声称提供 OS Sandbox。原 `runtime-startup-protocol` 的真实 Windows Named Pipe 回归继续执行。
+- 手动 [Runtime IPC 探针](../experiments/mxc-linux-probe/runtime-ipc.md) 将生产 Runtime 及三个 Worker 打包到 Linux 原生目录，通过 MXC 启动；验证实际工具/命令、四 Runtime 通道、坏握手/首帧、模型取消与命令取消/断连/kill 后心跳停止。Broker 使用生产 gateway/session，但模型与持久化使用 fixture。脚本不进入默认 check、CI 或 Evaluation；通过不代表 Linux 产品集成、macOS、完整恢复或资源配额验收。
 
 ## Sandbox 审查回归
 

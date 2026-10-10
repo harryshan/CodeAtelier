@@ -1,5 +1,15 @@
 # 初版验证记录
 
+## native Linux Runtime / Broker 统一流 IPC 验证（2026-10-10）
+
+- 按用户新要求，目标是 native Linux，WSL 仅作当前 Linux 内核侧环境，DrvFS 不再测试或作为验收门槛。按 D145 抽取 RuntimeIpcTransport 与 runAgentRuntimeTransport，Windows Named Pipe 连接后也走相同服务生命周期；保留 Supervisor 联合身份校验与 startup v1 / IPC v12。未注册 Linux/macOS 产品后端、未改根依赖或运行配置。
+- Linux Node 24.19.0 / MXC 1.0.0 / bwrap 0.11.1 / Ubuntu 26.04 WSL2 / ext4 / UID 1000，三轮真实 Sandbox 矩阵均 **8/8 通过**（最后一轮增加显式模型 delta 断言）。固定 bundle 使用生产 AgentRuntimeService、read_file Worker、ToolRunner、RuntimeIpcBrokerSession 与 RuntimeBrokerGateway，Broker 模型是确定性 fixture、session 是内存账本；不是 echo 替身，也不是完整产品 Engine/Store 验收。
+- 正常路径三工具真实读写/执行，第二轮模型收到结果，delta 往返回到 session，收到 completed/stopping，退出码 0；四 Runtime 并发各自两轮模型/文件标记正确。错误 nonce 与超限首帧在模型/工具执行前拒绝。Runtime 命令无法继承假 Broker 环境秘密或读取假私有文件，并使用不同 network namespace。
+- 模型请求取消传到 Broker provider 的 AbortSignal，Runtime 回报 cancelled；普通命令运行时取消、断连、强制结束 Runtime 均不进入下一模型轮次。MXC Runtime 退出后普通与 detached 心跳停止；断连/kill 保留 unknown，不因进程退出冒称任务成功。收尾 /proc 检查无实验 Runtime/workload 残留；不推导任意 detached 后代在 Runtime 仍存活时已由工具级取消清除。
+- Runtime 真实 context/tool/Worker trace 经 IPC 接入 TraceRecorder，Broker gateway 记录模型请求，终态归档 completed/cancelled/unknown；临时 MXC spawn/release 仅计入实验用例耗时，产品 Linux launcher 专项 tracing 尚未接入，例外见 D145。输出、nonce、正文和凭据不作为新增 trace 属性。
+- Windows / Node 26.10.0：IPC/启动首帧/服务专项 4 个文件、27 项通过，包括真实 Windows Named Pipe；新增统一流回归 6 项，覆盖工具/trace/delta、错误 nonce、非法首帧、提前 EOF、取消与断连。原样 `pnpm check` 类型、ESLint、格式通过，默认并发普通测试 6 项失败、669 通过、1 跳过（agent-runtime-engine/tools 超时及一次清理错误、process-tree 两项清理断言、shutdown 超时、PowerShell Node 探测失败）；新回归六项通过。随后 `pnpm test --maxWorkers=4` 全部 95 文件、675 通过、1 跳过，`pnpm build:test` 通过，保留 Zod 注释/Web bundle 警告。不改默认并发、超时或断言，不将限并发成功写成原样 check 通过。
+- 复现和完整边界见 [Runtime IPC 实验](../experiments/mxc-linux-probe/runtime-ipc.md)。SDK 矩阵副本在 `.local/mxc-linux-probe-results/runtime-{first,final,delta}.{log,json}`，构建摘要在 `runtime-bundle-hashes.json`，普通检查日志为 `.local/mxc-runtime-{unit,check,unit-all,build}.log`。没有运行真实模型、Evaluation、UI/HTTP/SSE E2E 或 Windows 固定账户 Repair；未验证产品持久化/重启恢复、完整宿主 capability、macOS 或其它原生 Linux 发行版。
+
 ## MXC Linux / WSL 独立 SDK 验证（2026-10-10）
 
 - 用户要求先通过 WSL 验证 Linux 端。新增独立 [MXC 实验与复现步骤](../experiments/mxc-linux-probe/README.md)，固定 `@microsoft/mxc-sdk@1.0.0` 与 pnpm 12.8.1；不改根依赖、Windows 后端、产品配置或平台支持声明。实验不进入默认 test/check、CI 或 Evaluation。

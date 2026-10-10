@@ -1,6 +1,8 @@
 # MXC Linux / WSL 手动验证
 
-状态：2026-10-10 已完成本机 WSL2 的独立 SDK 验证；**不是 CodeAtelier Linux Sandbox 产品集成或全平台安全验收**。Windows 后端、主项目依赖和运行配置未改动。
+当前目标：**native Linux**。WSL 仅作为 Linux 内核侧实验环境，后续不测试 DrvFS。已继续完成真实 Agent Runtime/Broker 通信验证与共用流接口，见 [Runtime IPC 实验](runtime-ipc.md)；仍不是产品 Linux Sandbox 或全平台安全验收。
+
+以下是 2026-10-10 第一阶段独立 SDK 验证的历史记录（该阶段没有修改 Windows 后端、主依赖或配置）；原 DrvFS 对照保留事实，不作为目标或后续验收门槛。
 
 ## 环境与结果
 

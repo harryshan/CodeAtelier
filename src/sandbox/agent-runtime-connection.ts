@@ -7,7 +7,7 @@
  * 3. 握手只补充 replay/路由证明，不能替代 Windows transport 对 PID、Job、token 和 generation 的联合验证。
  */
 
-import type { Readable, Writable } from "node:stream";
+import type { RuntimeIpcTransport } from "./runtime-ipc-peer.js";
 import {
   RUNTIME_IPC_PROTOCOL_VERSION,
   type RuntimeIpcMessage,
@@ -16,7 +16,7 @@ import { RuntimeIpcError, RuntimeIpcPeer } from "./runtime-ipc-peer.js";
 import type { RuntimeExecutionIdentity } from "./runtime-capability-core.js";
 
 export async function connectAgentRuntime(
-  streams: { input: Readable; output: Writable },
+  streams: RuntimeIpcTransport,
   identity: RuntimeExecutionIdentity,
   nonce: string,
   signal: AbortSignal,

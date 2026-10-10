@@ -1,6 +1,7 @@
 /**
  * 在一对已认证的双向字节流上实现 Agent Runtime IPC 的有界 JSONL request/response/event 路由。
- * Windows 产品 transport 负责先验证连接身份；本类只处理应用协议，不能单独证明 Named Pipe、PID 或 Job 边界。
+ * RuntimeIpcTransport 统一 Named Pipe、启动器私有 stdio 或未来 UNIX socket 的流接口；平台启动器负责身份与进程生命周期。
+ * Windows 产品 transport 仍先验证 PID/Job 等联合身份；共同的流类型和握手不能替代平台身份边界。
  *
  * 1. request 生成不可复用 requestId、注册取消监听并等待精确匹配的 response；本地取消发送 request_cancel 以中止远端 handler。
  * 2. consume 逐帧校验 schema 和大小；非法帧、重复/未知 response 或半帧断开会关闭整条连接。
@@ -48,9 +49,13 @@ export class RuntimeIpcError extends Error {
   }
 }
 
-export interface RuntimeIpcPeerOptions {
+/** 平台启动器交付的私有字节通道；类型本身不授予身份或权限。 */
+export interface RuntimeIpcTransport {
   input: Readable;
   output: Writable;
+}
+
+export interface RuntimeIpcPeerOptions extends RuntimeIpcTransport {
   handleRequest?: (
     request: RuntimeIpcRequest,
     signal: AbortSignal,

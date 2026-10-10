@@ -124,6 +124,12 @@ Agent Runtime 已有权限内的普通命令在 Runtime 内执行且免审批；
 
 完整边界与验收状态见 [windows-integrity-sandbox.md](windows-integrity-sandbox.md)。
 
+### Runtime IPC 的平台无关接口
+
+`runtime-ipc-peer.ts` 的 `RuntimeIpcTransport` 统一 `{ input: Readable, output: Writable }`，连接握手、Broker session 与 `LaunchedAgentRuntime` 使用同一类型。`agent-runtime-streams.ts` 的 `runAgentRuntimeTransport` 接管首帧读取、nonce/instance 握手、AgentRuntimeService 和流结束；`agent-runtime-entry.ts` 仅保留 Windows Named Pipe 的名称校验与连接建立。协议版本未变，不改 Windows 原生身份验证。
+
+Linux 验证原型以 MXC 私有 stdio 调用同一个入口，不开 TCP 或 UNIX listener、不把身份材料放入环境变量。统一的是协议与服务生命周期，不是 OS 身份认证、授权根或进程清理实现。平台 launcher 必须绑定它亲自启动的固定 Runtime 和通道，EOF 后不能把未知工具结果当作成功。面向 native Linux；本次 WSL/ext4 是验证环境，DrvFS 不属于目标。macOS 尚无实测，产品工厂仍不注册 Linux/macOS Sandbox，详见 [D145](decisions.md#d145面向-native-linux-验证真实-runtimebroker并复用流式-ipc-接口) 与 [手动实验](../experiments/mxc-linux-probe/runtime-ipc.md)。
+
 ### 性能追踪
 
 `src/tracing` 默认只在任务运行期间于 Broker 构造性能 timeline：宿主 loop 直接记录上下文计量/压缩、模型请求与退避、响应处理、工具计划、SandboxBroker 阶段、工具真实执行和工具结果持久化；`read_file` 在工具执行片段内细分检查、字节读取和 Worker 排队、冷启动与回传，并在响应中附纯计算耗时；路径准备与 Worker 计算不另建片段；真实读取线程池每个任务按需扩到最多 4 条、任务内保持复用，宿主与 Runtime 的任务收尾显式清理并记录 `read_file.pool.close`；Agent Runtime loop 以严格 IPC trace event 上报固定的 `context.prepare`、`context.request`、`read_file.*`、`tool.result_persist` 及计量子阶段，Broker 校验 Runtime 单调时间戳并重建 span：以已验证的 Runtime PID 分组，内部上下文/池关闭共用 `Agent Runtime` 轨道，实际工具与 read_file 阶段按执行槽复用最多四条 `Agent Runtime tool` 轨道，不按 callId 新建轨道；参数从已保存的 tool_start 在 Broker 脱敏加入，Broker 统一导出落盘。已标记任务的 Worker/model/read 和显式 question/message/cancel 在 `Subagent <id>` 轨道上报开始、终态与耗时；Broker 核对已登记子 ID，IPC 白名单不接受消息正文或报告。

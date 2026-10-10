@@ -1112,6 +1112,16 @@
 - 边界：确认的是用户当前 Windows 环境下的日常功能可用性，不推导错误身份、复杂 ACL、强制终止、异常恢复、真实远端兼容性等全部专项矩阵通过。Everyone restricting SID、同账户共享风险、Broker 宿主权限及 macOS/Linux 不加载该后端等限制不变。
 - 影响：只更新状态、使用说明和证据记录；默认关闭与安装/Repair 流程不变，不自动安装或开放 subagent。subagent 仍按自身发布门禁及专项证据单独评估。本次不改变运行时、权限、配置或 tracing，无新增运行事件。
 
+## D145：面向 native Linux 验证真实 Runtime/Broker，并复用流式 IPC 接口
+
+- 日期：2026-10-10
+- 状态：用户确认 native Linux 是目标、不需关注 DrvFS，要求继续验证 Agent Runtime/Broker 通信并尽量统一跨平台 IPC 接口。本条记录验证阶段实现，不视为产品 Linux/macOS 后端已开放。
+- 接口：现有 input/output 字节流抽为 `RuntimeIpcTransport`，由 peer、连接握手、Broker session 与 launcher 共用；`runAgentRuntimeTransport` 统一严格首帧、握手、真实 AgentRuntimeService、ready 与流关闭清理。保留 startup v1 / Runtime IPC v12，不修改消息 schema 或协议权限。
+- 平台适配：Windows 固定入口仍只接受受保护 Supervisor 的本机 Named Pipe，PID/Job/token/generation 校验不变。Linux 实验用 MXC 启动器持有的私有 stdin/stdout，首帧交付 nonce/identity，不放到 argv、环境或工作区；stderr 专用于固定阶段诊断。优先验证已有私有流而非再引入 TCP listener、可连接 UNIX socket 和对端身份认证。未来 macOS 可复用同一接口，但本次未验证。
+- 边界：统一协议不统一 OS 身份凭据，不把 nonce/Readable/Writable 类型当成认证。Launcher 仍须证明端点归属、固定执行目标、任务绑定和进程树退出；EOF、kill 和 cleanup 成功不代表未收到的工具结果成功，不自动重放。MXC timeout 仅用于有界实验，不给产品工具增加总期限。
+- 观测：生产 Windows 仍由已有 launcher 生命周期 trace 包围启动；共用服务继续通过原有严格 IPC 发送 context/tool/Worker trace。实验将真实 Runtime trace 接入 `src/tracing` 的 TraceRecorder，以任务 ID 关联 trace 的开始/终态，并在实验报告记录逐用例终态和耗时；临时 MXC spawn/释放仅计入用例包络，尚未实现产品 Linux launcher 独立 span，此实验性例外不延伸到后续产品接入。正文、启动 nonce、输出和凭据不进入新增 trace 属性。
+- 验证：真实 Linux Bubblewrap 内执行生产 Runtime loop、读文件 Worker、编辑与普通命令；Broker 复用生产 gateway/session，但模型为确定性 fixture、session 为内存账本。专项覆盖正常往返、并发通道、错误握手/首帧、取消/断连/kill 与后代停止；不是产品 Store/恢复、完整宿主能力、安全攻击矩阵或原生发行版验收。详见 [实验记录](../experiments/mxc-linux-probe/runtime-ipc.md)。
+
 ## D144：项目记忆的读取与维护按条目校验版本
 
 - 日期：2026-10-10

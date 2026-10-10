@@ -1,5 +1,5 @@
 /**
- * 把一条已经由 Windows transport 认证的 Agent Runtime IPC 连接接到 Broker capability 与 session adapter。
+ * 把平台启动器交付的私有 RuntimeIpcTransport 接到 Broker capability 与 session adapter；Windows 产品仍须先完成联合身份认证。
  * 创建方必须提供该连接的权威 RuntimeExecutionIdentity；本类不读取或相信 Runtime 自报 PID/SID，也不创建 Named Pipe。
  *
  * 1. model_capabilities/model_run 委托 RuntimeBrokerGateway，使模型 endpoint/key 永远留在 Broker Host。
@@ -17,7 +17,7 @@ import type {
   RuntimeExecutionIdentity,
 } from "./runtime-capability-core.js";
 import { randomUUID } from "node:crypto";
-import type { Readable, Writable } from "node:stream";
+import type { RuntimeIpcTransport } from "./runtime-ipc-peer.js";
 import { RuntimeIpcPeer } from "./runtime-ipc-peer.js";
 import type {
   RuntimeIpcEvent,
@@ -181,7 +181,7 @@ export class RuntimeIpcBrokerSession {
   >();
 
   constructor(
-    streams: { input: Readable; output: Writable },
+    streams: RuntimeIpcTransport,
     private identity: RuntimeExecutionIdentity,
     private nonce: string,
     private gateway: RuntimeBrokerGateway,
