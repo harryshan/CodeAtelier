@@ -72,7 +72,7 @@ Windows `process-tree.test.ts` 用真实 Node 父子进程和继承的输出句�
 3. `await runner.close()` 后子进程仍存活，删除其工作目录得到 `EBUSY/rmdir`；另一场景的 Store 仍打开，删除数据库得到 `EBUSY/unlink`。
 4. 在同一 hook 中显式取消命令／解除等待、等待原操作和正文清理完成、关闭 Store 后，再次删除立即成功，**没有使用重试或延时**。两个先结束再清理的对照场景首次删除成功。
 
-诊断四场景中两个故意超时、两个通过；超时失败是实验输入，不是新增默认回归失败。脚本和元数据只在忽略目录 `.local/lock-investigation/`，未纳入默认收集；日志为 `probe.log`、`observations.json`。本轮未改产品、测试夹具或测试配置，未运行 Evaluation。
+诊断四场景中两个故意超时、两个通过；超时失败是实验输入，不是新增默认回归失败。当时脚本和元数据只在忽略目录 `.local/lock-investigation/`，未纳入默认收集；日志为 `probe.log`、`observations.json`。诊断测试脚本及专用配置现已按用户要求删除，已有日志和元数据保留。本轮未改产品、测试夹具或测试配置，未运行 Evaluation。
 
 #### 对应代码与顺序
 
@@ -103,14 +103,16 @@ Windows `process-tree.test.ts` 用真实 Node 父子进程和继承的输出句�
 - `fileFixture` 与 `createTestRunner` 把测试 signal 和调用方 signal 合并，跟踪根 runner 和 `forCall` 的在途操作，等真实命令结束后再关闭读取线程池。`trackRunner` 只为已有实例登记等待/关闭；新建命令 runner 应使用 `createTestRunner`，确保 signal 接入。
 - `managed-runtime.ts` 的 `TestStore`、`TestEngine` 使用生产实现，只增加创建即登记以及正文/hook 共享一次关闭 Promise。Store 必须使用并等待 `closeAsync()`，不能混用不等待 Worker 的 `close()`。已接入本次调查涉及的 `engine`、`agent-runtime-engine`、`auxiliary-model` 与 `shutdown`，以及直接运行命令的 `agent-runtime-tools`。
 - `createTestApp` 跟踪异步初始化并登记 `app.close()`；shutdown 的 launcher 夹具改用可取消、等待整棵进程树退出的执行器，避免仅终止父进程或依赖正文 finally。HTTP/SSE 的行为断言保留。
-- `fixture-cleanup.test.ts` 的独立 Vitest 子进程先准备真实命令/SQLite Worker/Engine，再故意触发 200ms 正文超时；后继用例检查命令已结束、模型已取消、数据库已关闭且目录消失。Store/Engine 组的正文直到 afterAll 才解除等待，避免用正文 finally 冒充 hook 清理。外层要求恰好三项主动超时失败、三项后继检查通过且无 EBUSY；另覆盖晚返回目录、关闭幂等和失败后继续清理。子配置不收集 Evaluation，也不改变默认测试并发。
+- `fixture-cleanup.test.ts` 保留两项不启动子进程的轻量回归，覆盖晚返回目录、取消后等待在途操作、关闭幂等和失败后继续清理。排查期间用于真实命令/SQLite/Engine 主动超时验证的嵌套 Vitest 用例、`cleanup-timeout.case.ts` 及专用配置已按用户要求移除，不再进入默认运行；资源清理实现和既有 Engine/HTTP/命令功能测试保留。默认套件因此由 671 项减至 670 项；下列修复时的验证数字为删除诊断用例前的历史记录。
 
-本轮 Windows／Node 26.10.0 验证：
+资源清理修复时的 Windows／Node 26.10.0 验证（移除辅助诊断测试前）：
 
 - 命令超时回归先在旧公共夹具上失败，修复后通过；定向七文件 **62 项通过**。默认套件新增三项生命周期回归，总数为 671。
 - 最终默认 `pnpm check` 的类型、lint、格式通过；全量测试 **666 通过、4 项 15 秒超时、1 个平台跳过**，新增资源清理回归通过，日志没有 `EBUSY`、资源清理聚合错误或 hook 超时。剩余失败为 `agent-runtime-tools` 的 Node 命令、`auxiliary-model` 的成功压缩、`permissions` 的管道 Git 命令及 `shutdown` 的 HTTP/SSE 关闭。**完整 check 仍未通过**；日志保留于 `.local/cleanup-check-final.log`。
 - 同一套件的诊断命令 `pnpm test --maxWorkers=2` 为 **670 通过、1 跳过、0 失败**，报告为 `.local/cleanup-two-workers-final.json`；这不改变默认并发，也不能冒充默认 check 通过。
 - `pnpm test:e2e` 的测试模式构建与 **42 项 Chromium E2E 通过**；Evaluation、原生安装态探针和其他操作系统未运行。
+
+移除辅助诊断测试后的默认 `pnpm check`：类型、lint、格式检查通过；**665 通过、4 失败、1 跳过（670 项）**，保留的两项轻量清理回归通过。失败为 process-tree 的两个安全清理兜底断言、shutdown 的十五秒超时和 Windows PowerShell 版本探针，完整 check 仍未通过；本次不修改这些断言、时限或默认并发。日志为 `.local/remove-cleanup-diagnostics-check.log`。本次仅移除诊断测试，未重跑 E2E 或 Evaluation。
 
 该改动仅涉及测试基础设施，没有改变产品运行时生命周期或 tracing。未登记的任意 Promise 不会自动变得可取消；直接使用生产资源的其他专项测试仍需负责自己的生命周期。资源清理修复不代表解决所有默认高并发冷启动/调度超时，也不等于跨平台验收。
 
