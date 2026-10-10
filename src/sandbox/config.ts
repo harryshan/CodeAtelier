@@ -4,8 +4,8 @@
  *
  * 1. sandboxConfiguration 严格接受未设置、true 或 false，并为浏览器准备不含敏感信息的初始状态。
  * 2. 未设置或 false 表示保留 V1 宿主执行，状态明确标为 non-isolated。
- * 3. true 只在 Windows 请求专用账户隔离；macOS/Linux 明确保持 non-isolated，不加载或尝试 Windows 后端。
- * 4. Windows true 表示请求隔离但尚未证明运行时可用，Broker preflight 后才改为 sandboxed 或显式 fallback。
+ * 3. true 在 Windows/Linux/macOS 请求对应平台后端；不支持的平台拒绝启动配置，不能静默取消用户的隔离请求。
+ * 4. true 只表示请求，Broker 启动后才标为 sandboxed；Windows 保留原 fallback，MXC 失败关闭。
  *
  * 非法值会在服务构造 Config 时立即失败；运行中环境变化不会改写已经创建的配置。
  */
@@ -36,19 +36,10 @@ export function sandboxConfiguration(
   }
 
   if (raw === "true") {
-    if (platform !== "win32") {
-      return {
-        enabled: false,
-        initialStatus: {
-          enabled: false,
-          requested: false,
-          applied: false,
-          mode: "non-isolated",
-          platform,
-          level: null,
-          reason: "Windows 专用账户 Sandbox 在 macOS/Linux 上已禁用。",
-        },
-      };
+    if (!["win32", "linux", "darwin"].includes(platform)) {
+      throw new Error(
+        "当前平台没有 Sandbox 后端；如需宿主执行请显式关闭 Sandbox。",
+      );
     }
 
     return {

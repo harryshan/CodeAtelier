@@ -9,7 +9,7 @@
  * 4. SandboxCommand 与 SandboxRuntime 划定 Broker 可交给平台后端的固定命令请求；capability-runner 只能增加 Broker 已审核并可由 AccessManifest/relay 强制落实的根和 host。
  * 5. onAccessProvisioned 只确认原生 ACL 已安装且 Runtime 已启动，供共享 grant 的等待者解除阻塞。
  * 6. drainGeneration 是 unknown/orphaned 后的整代账户排空入口，必须终止账户进程并按持久 journal 对账。
- * 7. launchAgentRuntime 只接受 Broker 已完成 manifest/lease provision 的固定 Runtime 身份和 nonce，不接受模型可选 executable。
+ * 7. launchTask 是 POSIX 私有实例入口；launchAgentRuntime 是 Windows 共享账户入口，只接受 Broker 已完成 manifest/lease provision 的固定 Runtime 身份和 nonce，不接受模型可选 executable。
  * 8. SandboxStage 仅记录无敏感内容的生命周期事实，供事件与 tracing 关联。
  * 9. ExecutionInstanceRecord 持久化实际进程模式、PID 种类、恢复状态和可选 toolCallId，不保存命令、路径或输出。
  *
@@ -55,6 +55,8 @@ export type ExecutionInstanceMode =
   | "host-process"
   | "legacy-wsl2-inspect"
   | "windows-sandbox-user"
+  | "linux-bubblewrap"
+  | "macos-seatbelt"
   | "sandbox-runtime"
   | "unknown";
 
@@ -146,6 +148,8 @@ export type SandboxRevokeRoot =
   };
 
 export interface SandboxRuntime {
+  /** 私有 per-instance 后端自行管理启动/清理；不伪造 Windows 共享账户 ACL lease。 */
+  launchTask?: import("./agent-runtime-launcher.js").AgentRuntimeLauncher["launch"];
   selfCheck(
     signal: AbortSignal,
     workspace: SandboxWorkspace,

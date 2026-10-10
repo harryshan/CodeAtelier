@@ -22,7 +22,7 @@ export interface ModelTraceScope {
   step?: number;
   attempt?: number;
   parentSpanId?: string | (() => string | undefined);
-  executionMode?: "host-process" | "windows-sandbox-user";
+  executionMode?: import("../sandbox/types.js").ExecutionInstanceMode;
   executionInstanceId?: string;
   runtimeKind?: "agent-runtime" | "push-runner";
   brokered?: boolean;

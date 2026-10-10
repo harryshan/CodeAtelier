@@ -1,6 +1,6 @@
 # CodeAtelier 需求说明
 
-状态：初版功能边界已确认，进入实现与验证阶段。最后更新：2026-10-10。
+状态：初版功能边界已确认，进入实现与验证阶段。最后更新：2026-10-11。
 
 本文区分用户已确认的要求与尚待讨论的建议。候选内容不能直接作为实施授权。
 
@@ -93,11 +93,11 @@
 
 ### Linux Sandbox 验证目标（2026-10-10）
 
-用户要求继续验证微软 MXC SDK 下的 Agent Runtime 与 Broker 通信，并优先以统一接口封装多平台 IPC；Linux 目标是 native Linux，WSL 仅用于当前 Linux 内核侧验证，DrvFS 不属于目标或后续验收门槛。按 D145 抽取共同的流协议与 Runtime 启动生命周期，保持平台启动器的身份验证、权限和进程树清理职责；本阶段只做独立原型，不自动开启产品 Linux/macOS Sandbox。实测与未覆盖范围见 [Runtime IPC 实验](../experiments/mxc-linux-probe/runtime-ipc.md)。
+用户要求继续验证微软 MXC SDK 下的 Agent Runtime 与 Broker 通信，并优先以统一接口封装多平台 IPC；Linux 目标是 native Linux，WSL 仅用于当前 Linux 内核侧验证，DrvFS 不属于目标或后续验收门槛。按 D145 抽取共同的流协议与 Runtime 启动生命周期，保持平台启动器的身份验证、权限和进程树清理职责；D145 原型之后，用户进一步授权实现 Linux/macOS 产品 Sandbox，macOS 暂不实机验证（D146）。两端已接入 MXC 启动器与共用 Runtime IPC，仍默认关闭；POSIX 启用失败不转宿主。实测与未覆盖范围见 [Runtime IPC 实验](../experiments/mxc-linux-probe/runtime-ipc.md)。
 
 ### Windows Sandbox 范围与验证状态
 
-Windows 专用用户 Sandbox 已通过用户实际使用验证：2026-10-03 用户确认持续使用一段时间功能正常，按可用于日常开发记录（D130）。默认关闭，需要显式安装和启用。macOS/Linux 不加载该后端，继续使用宿主路径。此确认不等于逐项完成所有安全/故障矩阵，也不开放只读 subagent。
+Windows 专用用户 Sandbox 已通过用户实际使用验证：2026-10-03 用户确认持续使用一段时间功能正常，按可用于日常开发记录（D130）。默认关闭，需要显式安装和启用。macOS/Linux 不加载该 Windows 后端；默认宿主模式，显式启用时选择独立的 [MXC 后端](posix-sandbox.md)。此确认不等于逐项完成所有安全/故障矩阵，也不开放只读 subagent。
 
 - **执行位置**：常驻 Agent Runtime 在专用账户、restricted token 和 Job 中运行。Broker 保留模型密钥、会话存储和审批；全部 Git 工具 action 在 Broker 以宿主用户权限执行，push 另做预检和逐次审批。获批的 `run_with_permissions` 命令也由 Broker 执行；这些宿主执行均明确记为未受 Sandbox 保护。
 - **文件与并发**：AccessManifest 投影工作区、显式读写根和运行依赖；实例 token 包含 root capability 与 `Everyone` restricting SID。已有 ACL 允许 Everyone 写入的对象可能绕过 root capability，因此不承诺完整写入隔离。多个实例共用账户，读取根会形成并集，存在 peer 干扰风险；不同对话不是 OS 安全边界，也不承诺纯读取 allowlist。

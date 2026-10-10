@@ -582,6 +582,13 @@ tool-schema.test.ts 覆盖根节点、oneOf 禁用、包装解包、历史兼容
 - `tests/runtime-streams.test.ts` 在默认普通测试中以真实 Node 子进程验证共用流入口的文件工具、模型/session/trace 往返、流式 delta、错误 nonce/首帧、提前 EOF、取消及断连；不加载 MXC，不声称提供 OS Sandbox。原 `runtime-startup-protocol` 的真实 Windows Named Pipe 回归继续执行。
 - 手动 [Runtime IPC 探针](../experiments/mxc-linux-probe/runtime-ipc.md) 将生产 Runtime 及三个 Worker 打包到 Linux 原生目录，通过 MXC 启动；验证实际工具/命令、四 Runtime 通道、坏握手/首帧、模型取消与命令取消/断连/kill 后心跳停止。Broker 使用生产 gateway/session，但模型与持久化使用 fixture。脚本不进入默认 check、CI 或 Evaluation；通过不代表 Linux 产品集成、macOS、完整恢复或资源配额验收。
 
+## MXC 产品启动器与恢复
+
+- `tests/mxc-runtime.test.ts` 用假 SDK 和真实临时文件系统检查策略、首帧、归因、摘要损坏/危险根、持久残留、spawn 失败、取消、迟到句柄和清理未知时排空及禁止重用；macOS 只检查策略，不启动 Seatbelt。
+- `tests/sandbox.test.ts` 覆盖平台工厂与开关；`tests/agent-runtime-engine.test.ts` 的真实子进程覆盖用户取消和服务关闭、clean/orphaned 四种组合；清理成功的关闭保存 interrupted，不能被 Runtime 的 cancelled 覆盖，清理未知仍 failed。该套件也解析结构化 trace，确保 `run_with_permissions` 的宿主命令与审批理由不进入 Runtime 等待片段；不再仅比较 JSON 字符串，以免 Windows 转义造成假阴性。
+- 手动 `experiments/mxc-linux-probe/product-probe.mjs` 走真实 Linux 产品工厂、Engine、Store Worker/SQLite、MXC、Runtime 与 read_file Worker，模型为确定性夹具。覆盖等待循环让出事件循环、四工作区读写/命令/trace/环境/网络边界、普通和 detached 心跳取消、服务关闭与重开 Store 人工恢复、旧上下文续聊不重复编辑。每阶段输出和保存报告，外层保护仅限探针，不增加产品工具总期限。
+- 复现见 [POSIX Sandbox](posix-sandbox.md)。手动原生探针不接默认 test/check、CI 或 Evaluation；build/check 只构建 POSIX bundle，不执行原生探针。不能把 Linux WSL/ext4 结果推导为 macOS、裸机、全部发行版或完整安全矩阵通过。
+
 ## Sandbox 审查回归
 
 - `tests/sandbox-session-boundary.test.ts` 以两个真实 SQLite 会话验证 `session_compact` 的严格快照 schema、认证 session 绑定和父快照归属；跨会话写入不会改变任一会话。

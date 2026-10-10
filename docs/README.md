@@ -15,6 +15,8 @@
 - [Skill 系统](skills.md)：预设目录、SKILL.md 格式、模型加载接口、优先级与权限边界。
 - [MCP 本机客户端](mcp.md)：stdio/远程 HTTP 配置、工具和资源调用、审批、凭据与失败边界。
 
+- [Linux / macOS Sandbox](posix-sandbox.md)：可选 MXC 后端、启用与手动验证、失败关闭和残留核对；macOS 尚未实机验收。
+
 ## 开发与当前设计
 
 | 文档                              | 内容                                     |

@@ -9,7 +9,7 @@
  * 4. 启用而没有 runtime 或自检失败时明确回退宿主，同一任务保持 fallback；runtime 执行已开始后的失败不重放。
  * 5. 共享 grant acquire 不越过进行中的 native revoke；审批时对象身份变化会在 Runner provision 前拒绝。
  * 6. 同任务 Agent Runtime 可在阻塞期间重叠一个独立 Push Runner，且 Runner 启动失败不回退宿主 Git。
- * 7. 测试 runtime 必须声明并接收工作区保护契约；只有 Windows 注册专用账户 Runtime。
+ * 7. 测试 runtime 必须声明并接收工作区保护契约；Windows 注册专用账户，Linux/macOS 请求 MXC 后端。
  *
  * 用例不启动真实 shell、不访问网络或用户项目。它证明策略、请求形状与安全失败，
  * 不证明固定账户安装态或其他平台的 OS 级隔离。
@@ -80,22 +80,30 @@ it("parses the startup-only sandbox switch strictly and exposes an honest initia
   expect(config.publicValue().sandbox).toEqual(expectedHostStatus);
 });
 
-it("keeps the Windows sandbox implementation disabled on macOS and Linux", () => {
+it("requests platform isolation without pretending it has already been applied", () => {
   for (const platform of ["darwin", "linux"] as const) {
     expect(
       sandboxConfiguration({ CODEATELIER_SANDBOX_ENABLED: "true" }, platform),
-    ).toEqual({
-      enabled: false,
+    ).toMatchObject({
+      enabled: true,
       initialStatus: {
-        enabled: false,
-        requested: false,
+        enabled: true,
+        requested: true,
         applied: false,
-        mode: "non-isolated",
+        mode: "unknown",
         platform,
         level: null,
-        reason: "Windows 专用账户 Sandbox 在 macOS/Linux 上已禁用。",
       },
     });
+    expect(
+      createSandboxRuntime(sandboxConfiguration({}, platform), platform),
+    ).toBeUndefined();
+    expect(
+      createSandboxRuntime(
+        sandboxConfiguration({ CODEATELIER_SANDBOX_ENABLED: "true" }, platform),
+        platform,
+      )?.launchTask,
+    ).toBeTypeOf("function");
   }
 });
 
@@ -114,7 +122,7 @@ it("selects the native dedicated-user runtime for enabled Windows", () => {
   expect(
     createSandboxRuntime(
       sandboxConfiguration({ CODEATELIER_SANDBOX_ENABLED: "true" }, "win32"),
-      "linux",
+      "freebsd",
     ),
   ).toBeUndefined();
 });

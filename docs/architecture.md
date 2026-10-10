@@ -128,7 +128,13 @@ Agent Runtime 已有权限内的普通命令在 Runtime 内执行且免审批；
 
 `runtime-ipc-peer.ts` 的 `RuntimeIpcTransport` 统一 `{ input: Readable, output: Writable }`，连接握手、Broker session 与 `LaunchedAgentRuntime` 使用同一类型。`agent-runtime-streams.ts` 的 `runAgentRuntimeTransport` 接管首帧读取、nonce/instance 握手、AgentRuntimeService 和流结束；`agent-runtime-entry.ts` 仅保留 Windows Named Pipe 的名称校验与连接建立。协议版本未变，不改 Windows 原生身份验证。
 
-Linux 验证原型以 MXC 私有 stdio 调用同一个入口，不开 TCP 或 UNIX listener、不把身份材料放入环境变量。统一的是协议与服务生命周期，不是 OS 身份认证、授权根或进程清理实现。平台 launcher 必须绑定它亲自启动的固定 Runtime 和通道，EOF 后不能把未知工具结果当作成功。面向 native Linux；本次 WSL/ext4 是验证环境，DrvFS 不属于目标。macOS 尚无实测，产品工厂仍不注册 Linux/macOS Sandbox，详见 [D145](decisions.md#d145面向-native-linux-验证真实-runtimebroker并复用流式-ipc-接口) 与 [手动实验](../experiments/mxc-linux-probe/runtime-ipc.md)。
+Linux 验证原型以 MXC 私有 stdio 调用同一个入口，不开 TCP 或 UNIX listener、不把身份材料放入环境变量。统一的是协议与服务生命周期，不是 OS 身份认证、授权根或进程清理实现。平台 launcher 必须绑定它亲自启动的固定 Runtime 和通道，EOF 后不能把未知工具结果当作成功。面向 native Linux；本次 WSL/ext4 是验证环境，DrvFS 不属于目标。D146 已将 Linux/macOS 注册到产品工厂，默认关闭，macOS 仍无实机验证；早期原型见 [D145](decisions.md#d145面向-native-linux-验证真实-runtimebroker并复用流式-ipc-接口) 与 [手动实验](../experiments/mxc-linux-probe/runtime-ipc.md)。
+
+### Linux/macOS MXC 产品启动器
+
+`runtime-factory.ts` 在 POSIX 显式启用时创建 `MxcSandboxRuntime`；`mxc-policy.ts` 生成固定后端、文件、环境和断网请求，`mxc-runtime-files.ts` 核对四个 bundle、创建私有快照并管理 Broker 启动标记。`agent-runtime-posix-main.ts` 接管私有 stdio；`scripts/build-posix-runtime.ts` 同时接入普通与测试构建，不在构建时运行 MXC。
+
+Broker 通过 `SandboxRuntime.launchTask` 路由，不进入 Windows ACL/generation 分支。SDK 动态加载；启动器等待退出和清理、接管迟到 handle，并在未知状态隔离/排空活动实例。故障标记保留供人工核对，POSIX 不自动宿主 fallback。execution mode 区分 linux-bubblewrap/macos-seatbelt，宿主可见 SDK PID 只记 runtime-launcher；沿用 Runtime 模型/工具/SQLite 协议并增加安全的 preflight/launch/cleanup trace。两端的权限差异、同 UID 与 socket 风险及启用步骤见 [POSIX Sandbox](posix-sandbox.md)。
 
 ### 性能追踪
 
@@ -228,7 +234,7 @@ UI 历史包含消息、工具调用、受限工具结果和修改 diff。Timeli
 
 `run_command` 的模型参数只有 `{ command }`，执行器固定在会话工作区运行。Windows 内部按 `pwsh`、`powershell`、`cmd.exe` 的优先级检测真实可执行文件；macOS/Linux 使用已验证的 `/bin/sh`。执行器追加固定非交互参数，模型不提供或探测 shell。`run_command` 不再执行 Git 关键词过滤（D137），宿主审批与 Runtime 原有执行边界不变；模型提示及工具说明保持原样，仍优先通过 `git.ts` 的单一 action 子集操作仓库。
 
-Sandbox 关闭、macOS/Linux 或 Windows 启动前 fallback 仍沿用宿主审批和会话授权，模型只接收宿主工具定义与提示，不会看见 `run_with_permissions` 或 Sandbox 专属说明；Windows Agent Runtime 已实际启动后才接收该工具。已有权限的文件工具和普通命令免审批，Git 工具在 Broker 宿主执行且 push 逐次审批。
+Sandbox 关闭或 Windows 启动前 fallback 仍沿用宿主审批和会话授权，模型只接收宿主工具定义与提示，不会看见 `run_with_permissions` 或 Sandbox 专属说明；对应平台的 Sandbox Agent Runtime 已实际启动后才接收该工具。已有权限的文件工具和普通命令免审批，Git 工具在 Broker 宿主执行且 push 逐次审批。
 
 若 Runtime 中的命令需要额外能力，模型必须改用 `run_with_permissions`，提交完整命令和理由；Broker 重新审批后以宿主用户身份启动进程，不再通过 Capability Runner 的文件根或 HTTPS host 限制。结果单独标为 `broker-command/host-process`，不能算作 Sandbox 内执行。
 

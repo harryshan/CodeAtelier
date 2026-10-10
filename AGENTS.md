@@ -15,6 +15,8 @@
 
   Windows 专用账户 Runtime 已接入 C++ Supervisor launcher、任务专属 Named Pipe 字节代理和 PID/创建时间/Job/token/capability/映像联合检查。2026-10-03 用户确认持续使用一段时间功能正常，Windows Sandbox 按实际使用验证通过、可用于日常开发记录，不再笼统描述为尚不可用的预览。默认关闭及显式安装规则不变；该结论不扩展为跨平台实现、完整安全矩阵通过或 subagent 已开放。来源与专项证据边界见 docs/verification.md、D130。
 
+- 用户于 2026-10-10 追加授权 Linux/macOS Sandbox 产品实现（D146），macOS 暂不实机验证。已接入固定 MXC SDK、Linux/Bubblewrap 与 macOS/Seatbelt，共用 Runtime 字节流接口，仍默认关闭；POSIX 启用失败不静默转宿主，未知实例保留标记并阻止新任务。Linux 目标为 native Linux，WSL/ext4 只是当前验证环境，不扩展 DrvFS；详见 docs/posix-sandbox.md。Windows 的既有权限和日常使用结论不变，不推导 macOS 已可用。
+
 - 默认采用本机后端 + 本机浏览器访问并监听回环地址；用户显式配置后可在受信任局域网监听，仍不提供公网部署、多用户账户或权限分级。Web UI 可由环境变量启用单一访问密码门禁；此限制针对 UI 和后端服务的入站访问，不限制已配置的模型 API 调用。
 - 跨平台设计需覆盖路径、shell、进程取消和文件权限差异；不得将单一系统验证描述为全平台验证。具体系统版本与浏览器支持矩阵待定。
 - 首个模型服务为用户自建 Responses API server，预留其他提供商接口；实际端点、模型标识与 Bearer API key 仅在本地 .env 配置，不写入源码、示例或文档；示例仅使用占位值。模型标识原样传递，不内置特定服务的简称转换。

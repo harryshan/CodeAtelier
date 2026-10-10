@@ -8,7 +8,7 @@
  * 3. resume 继续最后一个可恢复任务；cancel 处理用户取消，close 处理服务关闭。
  * 4. 首条 prompt 先用辅助模型生成标题；run 再读取历史和项目规则，准备工具及上下文预算；首次压缩检查前恢复会话 token 锚点，响应保存后更新锚点，Runtime 经 Broker 共用持久化。
  * 5. model-loop 共用轮次、重试和停止控制，model-tool-batch 共用计划与成功判断；Engine 保留宿主事务、replay 与 tracing。为压缩提供 ToolRunner 的安全文件哈希探测；每轮记录上下文准备和请求计量、模型重试、实际模型请求和响应处理，再记录服务实报用量。完整响应保存后校验工具 DAG，节点先完成准备/审批，实际执行才取得有界 worker 槽。
- * 6. Sandbox Runtime 已有能力内工具免审批；全部 Git action 与 run_with_permissions 的获批命令均交给 Broker 宿主进程，push 额外预检和逐次审批，并分别留下未隔离的执行记录。一次性两阶段 IPC 授权把命令审批等待留在执行队列外；Push/Capability Runner 代码暂存但不走产品路径。
+ * 6. Windows/MXC Runtime 通过共同 launcher/IPC 接入；实例 mode 与 pidKind 保留平台真实归因。Sandbox Runtime 已有能力内工具免审批；全部 Git action 与 run_with_permissions 的获批命令均交给 Broker 宿主进程，push 额外预检和逐次审批，并分别留下未隔离的执行记录。一次性两阶段 IPC 授权把命令审批等待留在执行队列外；Push/Capability Runner 代码暂存但不走产品路径。
  *    项目记忆每任务提供当前项目全部有效条目的 ID/摘要，宿主/Runtime/fallback 共用无查询参数的目录读取，正文按需获取。
  *    Skill 每任务在 Broker 扫描预设目录，模型先看到摘要、工具按需加载正文；宿主/Runtime/fallback 共用该目录且不授权脚本。
  *    MCP 在首次模型请求前提供已启用服务的公开用途摘要，不提前连接；任务级本机连接池由宿主/Runtime 共用审批后单次执行入口，收尾关闭，摘要、参数和正文不进入 trace。
@@ -141,9 +141,12 @@ class AgentRuntimeCleanupUnknownError extends Error {
   readonly code = "SANDBOX_RUNTIME_CLEANUP_UNKNOWN";
 
   constructor(cause?: unknown) {
-    super("Agent Runtime 结果或清理状态未知，账户 generation 必须隔离。", {
-      cause,
-    });
+    super(
+      "Agent Runtime 结果或清理状态未知，平台启动器必须隔离并核对残留实例。",
+      {
+        cause,
+      },
+    );
     this.name = "AgentRuntimeCleanupUnknownError";
   }
 }
@@ -329,13 +332,13 @@ export class Engine {
         process.platform,
         this.sandboxLog,
         this.traces,
+        config.directory,
       ),
       this.sandboxLog,
     );
-    this.agentRuntimeLauncher ??=
-      config.sandbox.enabled && process.platform === "win32"
-        ? this.sandbox
-        : undefined;
+    this.agentRuntimeLauncher ??= config.sandbox.enabled
+      ? this.sandbox
+      : undefined;
     this.memories = new ProjectMemoryService(config.directory, log);
     this.approvals = new ApprovalManager(
       () => this.updateWaitingTaskStatuses(),
@@ -1000,6 +1003,12 @@ export class Engine {
       executionInstanceId,
       kind: "agent-runtime",
     };
+    const requestedMode =
+      process.platform === "linux"
+        ? "linux-bubblewrap"
+        : process.platform === "darwin"
+          ? "macos-seatbelt"
+          : "windows-sandbox-user";
     const nonce = randomBytes(32).toString("hex");
     let authorized = true;
     let launched:
@@ -1020,7 +1029,7 @@ export class Engine {
     let processIdentity:
       | {
           pid: number;
-          pidKind: "runtime";
+          pidKind: "runtime" | "runtime-launcher";
           processCreationTime100ns?: string;
           accountGenerationDigest?: string;
         }
@@ -1051,12 +1060,12 @@ export class Engine {
       const record = {
         executionInstanceId,
         kind: "agent-runtime" as const,
-        mode: "windows-sandbox-user" as const,
+        mode: launched?.mode ?? requestedMode,
         state,
         createdAt,
         updatedAt: new Date().toISOString(),
         sandboxRequested: true,
-        sandboxApplied: state !== "created",
+        sandboxApplied: launched !== undefined && state !== "created",
         // 终态是独立事件；不能让已验证的 PID 只存在于 running 事件中。
         ...processIdentity,
         ...extra,
@@ -1111,7 +1120,7 @@ export class Engine {
       onLaunched(launched.pid);
       processIdentity = {
         pid: launched.pid,
-        pidKind: "runtime",
+        pidKind: launched.pidKind ?? "runtime",
         processCreationTime100ns: launched.processCreationTime100ns,
         accountGenerationDigest: launched.accountGenerationDigest,
       };
@@ -1121,6 +1130,7 @@ export class Engine {
         {
           authorize: (candidate) => authorized && candidate === identity,
           getErrorSecrets: () => [this.config.apiKey],
+          executionMode: launched.mode ?? requestedMode,
           approveCommand: async (_runtime, request, requestSignal) => ({
             approved: await this.approvals.request(
               {
@@ -1399,6 +1409,8 @@ export class Engine {
                             ? "broker-host-wait"
                             : "runtime",
                         parameters:
+                          // 宿主命令和审批理由只留会话记录，不进入 Runtime 等待片段。
+                          tool!.name === "run_with_permissions" ||
                           tool!.name === "memory_apply" ||
                           tool!.name === "mcp" ||
                           tool!.name === "skill" ||
@@ -1681,7 +1693,19 @@ export class Engine {
         );
         publishSandboxStage(status === "completed" ? "completed" : "failed");
 
-        return { status, failure: reported?.failure ?? response.failure };
+        // Runtime 只知道 IPC cancel；是否由服务关闭引起须由 Broker 的原始信号判定。
+        // 仅在已确认 Runtime 停止且清理成功后映射，unknown/orphaned 不会被关闭原因覆盖。
+        const interrupted =
+          status === "cancelled" &&
+          signal.aborted &&
+          signal.reason?.message?.startsWith("服务关闭");
+
+        return {
+          status: interrupted ? "interrupted" : status,
+          failure: interrupted
+            ? "服务关闭，任务中断，可手动恢复。"
+            : (reported?.failure ?? response.failure),
+        };
       } finally {
         signal.removeEventListener("abort", cancelled);
         if (cancellationDeadline) {
@@ -3085,6 +3109,7 @@ export class Engine {
                       callId: node.callId,
                       nodeId: node.nodeId,
                       parameters:
+                        node.name === "run_with_permissions" ||
                         node.name === "memory_apply" ||
                         node.name === "subagent" ||
                         node.name === "mcp" ||

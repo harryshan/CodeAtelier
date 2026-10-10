@@ -1,5 +1,18 @@
 # 初版验证记录
 
+## Linux/macOS MXC 产品实现与 Linux 链路验证（2026-10-10～11）
+
+- 按 D146 实现可选 `@microsoft/mxc-sdk@1.0.0` 产品后端，Linux/Bubblewrap、macOS/Seatbelt 均默认关闭。接入工厂、Broker/Engine、固定 Runtime/Worker bundle、平台执行归因和 preflight/launch/cleanup trace。POSIX 启用失败不 fallback；未知结果保留持久标记、隔离启动器并排空活动实例。Windows 后端原契约保留。使用与限制见 [POSIX Sandbox](posix-sandbox.md)。
+- Linux 环境：WSL2 Ubuntu 26.04 x64 / ext4 / 非 root UID 1000 / Node 24.19.0 / MXC 1.0.0 / bwrap 0.11.1；目标为 native Linux，未继续测试 DrvFS。实际 factory、Engine、Store Worker/SQLite、Runtime、文件 Worker/命令和 tracing 全部走产品实现，模型为确定性 fixture，不调用真实服务。
+- 手动产品探针最终两轮均 **5/5 通过**：等待循环让出事件循环；四工作区并发工具/namespace/环境边界/SQLite/trace；普通及 detached 心跳取消后停止；服务关闭保存 interrupted、重建 Store/工厂后人工恢复；持久上下文续聊不重放先前编辑。最后一轮包含 trace 修复后的最终功能源码，退出码 0、清理完成；另一次只读 `/proc` 核对未发现 Runtime/探针/心跳进程，活动启动标记为 0。Store 恢复用例在同一探针进程内关闭并重建对象，不是宿主重启或 SIGKILL 故障注入。
+- 用户反馈的长时间无输出确有探针缺陷：把 `activeTasks` 中的 Task 当成带 `done` 的执行对象，导致微任务忙循环阻塞结束条件。检查当时数据库发现四任务已 completed，不是 Sandbox 任务一直执行。修复为有期限的定时器轮询，增加回归、START/PASS/FAIL 实时输出及阶段/清理前报告；外层 120 秒看门狗只保护实验，不成为产品工具期限。
+- 首次完整产品探针又发现服务关闭被记录 cancelled；先用真实 Runtime 子进程回归复现，再修复 Broker 原始 abort reason 到 clean 任务终态的映射。用户取消仍 cancelled，服务关闭为 interrupted，orphaned/unknown 优先 failed，不掩盖未知副作用。
+- Linux 相关离线回归首轮 **62 通过、1 失败**，暴露 `run_with_permissions` 参数泄漏到 Runtime 等待 trace。Windows 原断言因 JSON 路径转义漏检；改成解析结构化事件后先在 Windows 复现失败，再在宿主和 Runtime 两条参数投影中排除该工具的参数。最终 Linux **6 文件、63 项通过**，包括授权宿主命令、拒绝、Git、关闭/取消、流协议与 9 项假 SDK 故障回归。Mac 用例仅验证请求策略，不执行 Seatbelt。
+- Windows Node 26.10.0：原样 `pnpm check` 类型、ESLint、格式通过，但默认并发单测 **6 失败、680 通过、1 跳过**，未进入构建。失败为 agent-runtime-tools、engine、permissions、process-tree、shutdown 的 15 秒超时和 windows-sandbox-node-version 的 PowerShell 探测失败。限并发复核（包括最后 trace 修复后）`pnpm test --maxWorkers=4` 均 **96 文件、686 通过、1 跳过**。不改默认并发、超时或断言，默认高并发稳定性仍未解决，不能表述为原样 check 全绿。
+- `pnpm test:e2e` **42/42 通过**，包含 server/web 和 Windows/POSIX 固定 bundle 构建；这是 Windows 浏览器/HTTP 回归，不是 POSIX 浏览器或 macOS 实机验收。之后仅 trace 参数修复再通过全量静态及 686 项单测、Linux 63 项回归与产品探针。构建保留现有 Zod 注释/Web chunk 警告。手动探针单独 ESLint、Prettier、Node 语法检查通过。
+- 报告副本在忽略目录 `.local/mxc-linux-probe-results/product-{shutdown-fixed,final}.{json,log}`；Windows 检查日志为 `.local/posix-sandbox-{check,unit,e2e}.log`。不提交用户路径的原始报告/数据库，不清理已有 `.pnpm-store/`。
+- **未验证**：macOS 实机（用户要求暂缓）、其它原生 Linux 发行版/架构/裸机、恶意同 UID peer、资源配额、完整崩溃/攻击矩阵、真实模型/远端能力。没有运行 Evaluation；不能从功能闭环通过推导完全隔离或生产安全验收。
+
 ## native Linux Runtime / Broker 统一流 IPC 验证（2026-10-10）
 
 - 按用户新要求，目标是 native Linux，WSL 仅作当前 Linux 内核侧环境，DrvFS 不再测试或作为验收门槛。按 D145 抽取 RuntimeIpcTransport 与 runAgentRuntimeTransport，Windows Named Pipe 连接后也走相同服务生命周期；保留 Supervisor 联合身份校验与 startup v1 / IPC v12。未注册 Linux/macOS 产品后端、未改根依赖或运行配置。

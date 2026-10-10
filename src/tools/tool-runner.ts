@@ -112,7 +112,7 @@ export interface ToolContext {
     signal: AbortSignal,
     toolCallId?: string,
   ) => Promise<() => Promise<CapabilityCommandResult>>;
-  /** Agent Runtime 内的工具进程已处于任务 Job/token，不得再次调用 Broker 的逐工具 Sandbox。 */
+  /** Agent Runtime 子进程已继承 Windows Job/token 或 MXC 策略，不再调用逐工具 Sandbox。 */
   executionBoundary?: "broker-host" | "agent-runtime";
   /** Agent Runtime 内普通工具进程的父 execution instance，供恢复把 call 与常驻 Runtime 关联。 */
   parentExecutionInstanceId?: string;
@@ -287,6 +287,14 @@ export class ToolRunner {
       return "windows-sandbox-user";
     }
 
+    if (status.level?.startsWith("linux-bubblewrap")) {
+      return "linux-bubblewrap";
+    }
+
+    if (status.level?.startsWith("macos-seatbelt")) {
+      return "macos-seatbelt";
+    }
+
     return "sandbox-runtime";
   }
 
@@ -353,7 +361,12 @@ export class ToolRunner {
           applied: true,
           mode: "sandboxed" as const,
           platform: process.platform,
-          level: "windows-sandbox-user-agent-runtime",
+          level:
+            process.platform === "linux"
+              ? "linux-bubblewrap-agent-runtime"
+              : process.platform === "darwin"
+                ? "macos-seatbelt-agent-runtime"
+                : "windows-sandbox-user-agent-runtime",
         },
       };
     }

@@ -5,8 +5,8 @@
  * 1. Engine 生成 instance/nonce，launcher 启动真实 Node 子进程并返回 IPC 流。
  * 2. 子进程并行运行五次 read_file，验证 Broker 按已验证 PID/最多四个可复用槽重建实际执行与内部阶段、附参数和任务结束清理 trace；会话耗时与对应执行片段一致，固定白名单细分 trace 不包含文件内容。
  * 3. Engine 等待 Runtime 终态与 clean 退出，再把任务和带有已验证进程身份的 execution instance 记为 completed。
- * 4. 取消等待 Runtime 写回可信终态后才关闭 transport；无法证明终态时仍保持 unknown。
- * 5. run_with_permissions 经低成本模型审批后由 Broker 宿主进程执行，单独记录 host-process，而不创建 Capability Runner；stdout/stderr 在结果前按调用 ID 持久化，拒绝时无输出。
+ * 4. 取消/服务关闭等待 Runtime 写回可信终态后才关闭 transport；关闭保存 interrupted，用户取消保存 cancelled，无法证明清理时仍保持 unknown/failed。
+ * 5. run_with_permissions 经低成本模型审批后由 Broker 宿主进程执行，单独记录 host-process，而不创建 Capability Runner；结构化 trace 不含宿主命令参数（避免 Windows JSON 转义导致假阴性）；stdout/stderr 在结果前按调用 ID 持久化，拒绝时无输出。
  * 6. Runtime IPC 在可信终态前断开时，Engine 以 unknown 关闭 launcher 并持久化可能副作用。
  * 7. Broker 宿主 Git 处理普通 action 的结果形状和写入归因；push 先做固定预检、审批，已启动后取消仍记录可能的远端副作用。
  * 8. launcher 证明 Runtime 尚未启动且 provision 已回滚时，Engine 明确记录 host fallback 并继续宿主 loop。
@@ -104,13 +104,12 @@ it("moves the Engine agent loop into the launched Runtime process", async () => 
         },
       };
     },
-    async run(input, instructions, tools) {
+    async run(input, _instructions, tools) {
       modelCalls += 1;
       expect(tools).toContainEqual({ type: "web_search" });
       expect(tools.map((tool: any) => tool.name)).toContain(
         "run_with_permissions",
       );
-      expect(instructions).toContain("Windows Agent Runtime");
       if (modelCalls === 1) {
         return {
           text: "",
@@ -350,7 +349,12 @@ it("moves the Engine agent loop into the launched Runtime process", async () => 
     expect(runningRuntime?.pid).toBeGreaterThan(0);
     expect(completedRuntime).toMatchObject({
       executionInstanceId: runningRuntime?.executionInstanceId,
-      mode: "windows-sandbox-user",
+      mode:
+        process.platform === "linux"
+          ? "linux-bubblewrap"
+          : process.platform === "darwin"
+            ? "macos-seatbelt"
+            : "windows-sandbox-user",
       sandboxApplied: true,
       pid: runningRuntime?.pid,
       pidKind: "runtime",
@@ -361,8 +365,13 @@ it("moves the Engine agent loop into the launched Runtime process", async () => 
   }
 });
 
-for (const cleanupProof of ["clean", "orphaned"] as const) {
-  it(`waits for a cancelled Runtime terminal state and ${cleanupProof} cleanup`, async () => {
+for (const [cleanupProof, stopKind] of [
+  ["clean", "cancel"],
+  ["orphaned", "cancel"],
+  ["clean", "shutdown"],
+  ["orphaned", "shutdown"],
+] as const) {
+  it(`waits for Runtime ${stopKind} and ${cleanupProof} cleanup`, async () => {
     const root = await temp();
     const config = new Config(await temp());
     config.sandbox.enabled = true;
@@ -453,14 +462,27 @@ for (const cleanupProof of ["clean", "orphaned"] as const) {
       const done = engine.active!.done;
       await entered;
       const cancelledAt = Date.now();
-      engine.cancel(task.id);
+      if (stopKind === "shutdown") {
+        await engine.close();
+      } else {
+        engine.cancel(task.id);
+      }
+
       await done;
 
       expect(runtimeCompleted).toBe(true);
       expect(Date.now() - cancelledAt).toBeLessThan(5_000);
-      expect(store.task(task.id)?.status).toBe(
-        cleanupProof === "clean" ? "cancelled" : "failed",
-      );
+      const expectedStatus =
+        cleanupProof !== "clean"
+          ? "failed"
+          : stopKind === "shutdown"
+            ? "interrupted"
+            : "cancelled";
+      expect(store.task(task.id)?.status).toBe(expectedStatus);
+      expect(
+        store.taskEvents(task.id).find((event) => event.type === "task_end")
+          ?.data,
+      ).toMatchObject({ status: expectedStatus });
       const executions = store
         .events(session.id)
         .filter((event) => event.type === "execution_instance")
@@ -685,6 +707,19 @@ for (const approve of [true, false]) {
         expect(trace).toContain("broker.command");
       } else {
         expect(trace).not.toContain("broker.command");
+      }
+
+      // 检查解析后的事件；Windows 路径在 JSON 字符串里转义，原字符串搜索会漏检。
+      const hostWait = JSON.parse(trace!).traceEvents.filter(
+        (event: any) =>
+          event.name === "tool.run_with_permissions" && event.ph === "B",
+      );
+      if (approve) {
+        expect(hostWait).toHaveLength(1);
+      }
+
+      for (const event of hostWait) {
+        expect(event.args.parameters).toBeUndefined();
       }
 
       expect(trace).not.toContain(command);

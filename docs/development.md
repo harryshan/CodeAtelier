@@ -53,7 +53,7 @@ Node.js 24 或 26，pnpm 版本由 package.json 的 packageManager 固定。提�
 
 ### Windows Sandbox 配置与启动
 
-`CODEATELIER_SANDBOX_ENABLED` 在 Windows 启用专用账户原生后端；默认关闭，macOS/Linux 明确保持关闭。Windows Sandbox 已由用户持续使用并确认功能正常，按实际使用验证通过记录（D130），可用于日常开发。关闭时 `run_command` 完全沿用原有宿主 shell、审批、取消和恢复路径。启用后，缺少后端、工作区 preflight 或 Runtime 自检在命令启动前失败会产生 `host-process-fallback` 时间线警告，并以原宿主 shell 自动继续；同一任务后续命令保持宿主模式。
+`CODEATELIER_SANDBOX_ENABLED` 在 Windows 启用专用账户原生后端；默认关闭；macOS/Linux 使用独立的可选 [MXC 后端](posix-sandbox.md)，不是 Windows 专用账户机制。Windows Sandbox 已由用户持续使用并确认功能正常，按实际使用验证通过记录（D130），可用于日常开发。关闭时 `run_command` 完全沿用原有宿主 shell、审批、取消和恢复路径。启用后，缺少后端、工作区 preflight 或 Runtime 自检在命令启动前失败会产生 `host-process-fallback` 时间线警告，并以原宿主 shell 自动继续；同一任务后续命令保持宿主模式。
 
 Runtime 执行开始后的错误标为 `unknown`，绝不自动重放；ACL/Job 清理失败即使同时收到取消也优先记为 unknown/orphaned，冻结 account generation，调用原生账户进程终止和 ACL journal 对账。服务监听前主动执行同一恢复路径，以清理上次进程崩溃遗留；恢复失败会记录安全错误并使后续 Sandbox self-check fallback，不阻止宿主服务启动。
 
@@ -63,7 +63,7 @@ Runtime IPC 失败在会话中显示具体 operation、requestId、错误码和�
 
 `runtime-capability-core.ts` 提供传输无关的一次性 command grant 与模型代理核心；`runtime-ipc-*`、`AgentRuntimeService` 和 Runtime 侧 adapter 已实现完整 agent loop 的应用层边界。
 
-Windows 且 Sandbox 开启时，`createApp` 默认注入 `SandboxBroker` 作为 `AgentRuntimeLauncher`：Engine 通过 C++ Sandbox Supervisor 启动每任务一个常驻 Agent Runtime，模型、session、审批和 memory 经任务专属 Runtime IPC 返回 Broker；禁用、非 Windows 或可证明启动前完整回滚的 fallback 才由 Broker Host 运行 loop。
+Windows 且 Sandbox 开启时，`createApp` 默认注入 `SandboxBroker` 作为 `AgentRuntimeLauncher`：Engine 通过 C++ Sandbox Supervisor 启动每任务一个常驻 Agent Runtime，模型、session、审批和 memory 经任务专属 Runtime IPC 返回 Broker；禁用或 Windows 可证明启动前完整回滚的 fallback 才由 Broker Host 运行 loop。Linux/macOS 启用时经 MXC 私有 stdio 启动同一 Runtime 服务，失败关闭而不 fallback。
 
 独立 Push Runner 和 Capability Runner 代码保留但暂不用于产品路径；获批 `run_with_permissions` 命令与全部 Git 工具 action 在 Broker 宿主用户权限下运行并分别归因。安装态链路与用户日常使用验证已通过；错误身份、崩溃/强制取消/恢复等专项矩阵仍需具体证据，不把日常可用性确认等同于 W0--W6 全项通过。
 
@@ -327,7 +327,7 @@ Windows 原生安装命令是显式维护入口，不属于服务启动或默认
 
 安装器校验 v3 build manifest 后，把 supervisor/WFP manager、Node 24 或 26、Agent Runtime entry 和 compaction、read_file、subagent 三种 Worker 复制到受保护的 ProgramData 目录，并在 v4 state 记录安装副本摘要；旧 v3 安装须由用户显式运行 `pnpm sandbox:repair`（转交 `install.ps1 -Mode Repair`），TypeScript 启动前与 native self-check 均拒绝旧状态或不匹配的摘要。安装器还配置专用账户的网络、batch、service 和远程交互拒绝登录权；服务不得自行提权或自动安装。
 
-macOS/Linux 调用这些命令只输出 `SKIP`，不启动 PowerShell 或任何 Windows 原生代码；设置 `CODEATELIER_SANDBOX_ENABLED=true` 也保持 non-isolated 宿主路径。Windows 上启用开关后若启动前自检失败，仍按既有安全回滚条件提示并回退宿主；已通过日常使用验证不改变该失败处理契约。
+macOS/Linux 调用这些命令只输出 `SKIP`，不启动 PowerShell 或任何 Windows 原生代码；它们的 Sandbox 由 `pnpm sandbox:posix:build` 及 `CODEATELIER_SANDBOX_ENABLED=true` 单独启用，步骤和额外授权根配置见 [POSIX 指南](posix-sandbox.md)；macOS 尚未实机验证。Windows 上启用开关后若启动前自检失败，仍按既有安全回滚条件提示并回退宿主；已通过日常使用验证不改变该失败处理契约。
 
 ## 常见问题
 

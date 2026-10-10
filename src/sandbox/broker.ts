@@ -8,7 +8,8 @@
  * 3. 启用时先建立 WorkspaceView 并调用 runtime.selfCheck；缺后端或启动前检查失败时按任务固定转为宿主执行。
  * 4. runtime.execute 开始后的异常绝不自动重放到宿主；unknown/orphaned 会冻结 generation 并调用原生整代排空。
  * 5. 共享 ACL acquire 与 prepare/native revoke/commit 共用串行队列；provision waiter 可取消，安装者失败会拒绝全部等待者。
- * 6. 独立 Sandbox logger 只接收类别、阶段、关联 ID、耗时和结果，不记录命令、路径、SID、端口或输出。
+ * 6. MXC launchTask 使用私有实例生命周期，不进入 Windows ACL/generation 分支；启用后失败关闭，禁止逐命令旁路。
+ * 7. 独立 Sandbox logger 只接收类别、阶段、关联 ID、耗时和结果，不记录命令、路径、SID、端口或输出。
  *
  * WorkspaceView 仍是历史 WSL2 Runtime 的契约；目标 Windows Runtime 将以 AccessManifest 取代它。fallback
  * 只保证功能继续，不具备 Sandbox 的文件、进程和网络隔离能力。
@@ -84,7 +85,7 @@ export class SandboxBroker implements AgentRuntimeLauncher {
     await this.runtime?.shutdown?.();
   }
 
-  /** 服务监听前主动排空上次进程遗留；失败不阻止服务启动，但后续 Sandbox self-check 会安全 fallback。 */
+  /** 服务监听前执行平台恢复检查；失败不阻止服务监听。Windows 保留原 fallback，MXC 阻止后续 Sandbox 任务。 */
   async recoverAtStartup() {
     if (!this.configuration.enabled || !this.runtime?.recoverStartup) {
       return;
@@ -93,12 +94,16 @@ export class SandboxBroker implements AgentRuntimeLauncher {
     try {
       await this.runtime.recoverStartup(AbortSignal.timeout(30_000));
       this.log?.info({
-        event: "sandbox.account_generation.startup_recovery_completed",
+        event: this.runtime.launchTask
+          ? "sandbox.mxc.startup_recovery_completed"
+          : "sandbox.account_generation.startup_recovery_completed",
         module: "sandbox",
       });
     } catch (error) {
       this.log?.error({
-        event: "sandbox.account_generation.startup_recovery_failed",
+        event: this.runtime.launchTask
+          ? "sandbox.mxc.startup_recovery_failed"
+          : "sandbox.account_generation.startup_recovery_failed",
         module: "sandbox",
         ...this.errorMetadata(error),
       });
@@ -152,7 +157,9 @@ export class SandboxBroker implements AgentRuntimeLauncher {
       mode: "unknown",
       platform: process.platform,
       level: null,
-      reason: "Sandbox 实例结果或清理状态未知；账户 generation 已隔离。",
+      reason: this.runtime?.launchTask
+        ? "Sandbox 实例结果或清理状态未知；MXC 启动器已隔离。"
+        : "Sandbox 实例结果或清理状态未知；账户 generation 已隔离。",
       failureCategory: "runtime_execution",
     };
   }
@@ -441,6 +448,47 @@ export class SandboxBroker implements AgentRuntimeLauncher {
     }
   }
 
+  private async launchPrivateTask(
+    input: Parameters<AgentRuntimeLauncher["launch"]>[0],
+  ) {
+    const id = input.identity.executionInstanceId;
+    this.executionTasks.set(id, input.identity.taskId);
+    const unknown: SandboxStatus = {
+      ...this.configuration.initialStatus,
+      mode: "unknown",
+      applied: false,
+      failureCategory: "runtime_execution",
+      reason: "MXC 启动或清理未确认；未回退宿主，禁止自动重放。",
+    };
+    try {
+      const launched = await this.runtime!.launchTask!(input);
+      this.executionStatuses.set(id, {
+        ...this.configuration.initialStatus,
+        mode: "sandboxed",
+        applied: true,
+        level: `${launched.mode}-mxc-v1`,
+        reason: undefined,
+      });
+
+      return {
+        ...launched,
+        close: async (reason: Parameters<LaunchedAgentRuntime["close"]>[0]) => {
+          const result = await launched
+            .close(reason)
+            .catch(() => "orphaned" as const);
+          if (result !== "clean" || reason === "unknown") {
+            this.executionStatuses.set(id, unknown);
+          }
+
+          return result;
+        },
+      };
+    } catch (error) {
+      this.executionStatuses.set(id, unknown);
+      throw error;
+    }
+  }
+
   /**
    * 为 Engine 的常驻 agent loop 建立完整的 manifest/lease/ACL 生命周期。
    * 只有 native Runtime 尚未启动且所有 provision 都已回滚时才抛出 AgentRuntimeFallbackError；
@@ -452,6 +500,10 @@ export class SandboxBroker implements AgentRuntimeLauncher {
     workspace: string;
     signal: AbortSignal;
   }): Promise<LaunchedAgentRuntime> {
+    if (this.configuration.enabled && this.runtime?.launchTask) {
+      return this.launchPrivateTask(input);
+    }
+
     const command: SandboxCommand = {
       sessionId: input.identity.sessionId,
       taskId: input.identity.taskId,
@@ -696,6 +748,12 @@ export class SandboxBroker implements AgentRuntimeLauncher {
     onStage: (stage: SandboxStage, status: SandboxStatus) => void,
     options: { allowHostFallback?: boolean } = {},
   ) {
+    if (this.configuration.enabled && this.runtime?.launchTask) {
+      throw new SandboxUnavailableError(
+        "MXC 命令只能在常驻 Runtime 内执行，禁止逐命令宿主旁路。",
+      );
+    }
+
     const runnerLabel =
       command.kind === "capability-runner" ? "扩展权限 Runner" : "Push Runner";
     const deniedHostExecution = `${runnerLabel} 要求已启用 Sandbox；Broker 未以宿主身份执行命令。`;

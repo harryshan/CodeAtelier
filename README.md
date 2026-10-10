@@ -60,7 +60,9 @@ pnpm start
 
 Sandbox 默认关闭。首次使用需要 Windows C++ 构建环境和管理员安装，完成后设置 `CODEATELIER_SANDBOX_ENABLED=true` 并重启服务。具体步骤见 [安装与使用指南](docs/windows-sandbox-guide.md)。
 
-Git、MCP 和经审批在沙箱外执行的命令仍使用你的系统账户权限。沙箱不保证文件访问和各会话之间完全隔离；启动前检查失败时可能提示后改用普通模式，请留意任务的实际执行状态。完整限制见 [安全边界](docs/windows-integrity-sandbox.md)。这套沙箱仅适用于 Windows，macOS/Linux 使用普通本机执行模式。
+Git、MCP 和经审批在沙箱外执行的命令仍使用你的系统账户权限。沙箱不保证文件访问和各会话之间完全隔离；启动前检查失败时可能提示后改用普通模式，请留意任务的实际执行状态。完整限制见 [安全边界](docs/windows-integrity-sandbox.md)。这套专用账户机制仅适用于 Windows。
+
+Linux/macOS 另已接入可选的 **MXC Sandbox**，同样默认关闭：Linux 已验证 WSL/ext4 下的产品链路；macOS 实现尚未实机验证。启用步骤、依赖及不同的失败处理见 [Linux / macOS Sandbox](docs/posix-sandbox.md)。
 
 ## 日常使用
 

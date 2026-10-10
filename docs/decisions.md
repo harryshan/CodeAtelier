@@ -1112,6 +1112,15 @@
 - 边界：确认的是用户当前 Windows 环境下的日常功能可用性，不推导错误身份、复杂 ACL、强制终止、异常恢复、真实远端兼容性等全部专项矩阵通过。Everyone restricting SID、同账户共享风险、Broker 宿主权限及 macOS/Linux 不加载该后端等限制不变。
 - 影响：只更新状态、使用说明和证据记录；默认关闭与安装/Repair 流程不变，不自动安装或开放 subagent。subagent 仍按自身发布门禁及专项证据单独评估。本次不改变运行时、权限、配置或 tracing，无新增运行事件。
 
+## D146：实现可选 Linux/macOS MXC Sandbox，macOS 暂不实机验证
+
+- 日期：2026-10-10 用户授权，2026-10-11 完成当前实现与 Linux 产品链路验证。
+- 决定：固定可选依赖 MXC SDK 1.0.0；Linux 显式选择 Bubblewrap，macOS 显式选择 Seatbelt。默认关闭，启用后 SDK/后端/固定 bundle/授权根自检失败不静默回退宿主。Windows 的 Supervisor/Named Pipe、专用账户和原 fallback 契约不变。
+- 接口与边界：复用 D145 的字节流和 Runtime 服务；POSIX 以 launcher 自有 stdio 交付启动首帧。工作区可写、代码快照只读、HOME/tmp 独立、环境不继承、默认断网。Linux/macOS 不因统一接口获得相同 OS 隔离保证；Mac GUI/Keychain/PTY 默认不授予。Git/MCP/获批宿主命令仍由 Broker 执行。
+- 生命周期：持久启动标记在 spawn 前 flush；未知执行或清理失败隔离 launcher 并排空活动实例，旧标记阻止新任务，不按陈旧 PID 杀进程、不自动重放。SDK spawn 迟到仍接管清理。只限制启动及清理等待，不增加产品任务总期限。明确使用 runtime-launcher PID kind，不伪造 Windows token/account 身份。
+- 观测：新增 sandbox.mxc.preflight/launch/cleanup span 和安全阶段日志，沿用模型/工具/Store IPC trace；新增属性不写 nonce、正文或 SDK stderr。SDK 错误可能附命令，原始输出不进入这些属性。正常 shutdown 的 Runtime cancelled 结果由 Broker 在确认 clean 后转换为 interrupted；unknown/failed 保持优先级。
+- 验证：Linux 在 WSL/ext4、非 root 下使用真实工厂、Engine、Store/SQLite 和 Runtime，模型为确定性夹具。Mac 只做静态及离线策略检查，按用户指令暂不实机验证，不宣称可用于日常开发。裸机/其它发行版、完整安全与崩溃攻击矩阵另需验收；复现、手工残留核对和限制见 [POSIX Sandbox](posix-sandbox.md)。
+
 ## D145：面向 native Linux 验证真实 Runtime/Broker，并复用流式 IPC 接口
 
 - 日期：2026-10-10

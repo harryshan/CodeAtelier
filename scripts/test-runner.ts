@@ -4,7 +4,7 @@
  *
  * 1. createTestEnvironment 只构造预设的 CodeAtelier 连接、空 API key、Node、必要系统工具和标准 Git 安装路径及临时目录，不复制父进程环境。
  * 2. run 以该环境顺序启动子进程，并将输出和退出状态原样交给调用终端。
- * 3. build 完成隔离的 server/web test mode 构建和 Agent Runtime bundle；unit 可透传 coverage 参数，watch 运行 Vitest 监听模式；e2e 复用构建后运行 Playwright。
+ * 3. build 完成隔离的 server/web test mode 构建和 Windows/POSIX Agent Runtime bundle（只构建，不运行原生后端）；unit 可透传 coverage 参数，watch 运行 Vitest 监听模式；e2e 复用构建后运行 Playwright。
  *
  * 脚本不加载 dotenv、不调用模型服务，也不写用户工作区；临时运行目录仅供测试进程和子进程使用。Vitest 自身不接收父进程环境，Vite test 模式另行禁用 dotenv。
  */
@@ -94,6 +94,11 @@ async function buildTestArtifacts() {
     "--import",
     "tsx",
     "scripts/windows-sandbox/build-runtime.ts",
+  ]);
+  await run(process.execPath, [
+    "--import",
+    "tsx",
+    "scripts/build-posix-runtime.ts",
   ]);
 }
 
