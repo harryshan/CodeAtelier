@@ -1,0 +1,12 @@
+{
+  "name": "codeatelier-mxc-linux-probe",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@12.8.1",
+  "scripts": {
+    "probe": "node probe.mjs"
+  },
+  "dependencies": {
+    "@microsoft/mxc-sdk": "1.0.0"
+  }
+}

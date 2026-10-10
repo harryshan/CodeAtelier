@@ -1,5 +1,15 @@
 # 初版验证记录
 
+## MXC Linux / WSL 独立 SDK 验证（2026-10-10）
+
+- 用户要求先通过 WSL 验证 Linux 端。新增独立 [MXC 实验与复现步骤](../experiments/mxc-linux-probe/README.md)，固定 `@microsoft/mxc-sdk@1.0.0` 与 pnpm 12.8.1；不改根依赖、Windows 后端、产品配置或平台支持声明。实验不进入默认 test/check、CI 或 Evaluation。
+- 本机 WSL2 Ubuntu 26.04 LTS / x86_64 / UID 1000，内核 `6.18.33.2-microsoft-standard-WSL2`，Linux Node 24.19.0，bwrap 0.11.1，非特权 user namespace 可用。Node/pnpm 下载摘要核对通过，安装禁用依赖脚本，无 root、系统包安装或 sysctl 变更；离线 frozen-lockfile 安装复核通过。
+- ext4 最终 **13/13 通过**；此前 12 项矩阵三次通过。覆盖文件/环境/symlink、宿主无沙箱负对照、Node Worker/子进程、存活期间两轮 stdio、网络 namespace、宿主 IPv4/IPv6 回环与真实可达公网 IPv4 TCP 拒绝、四工作区交叉文件拒绝，以及 kill、超时、独立 SDK 宿主 SIGKILL 后 detached 后代和心跳停止。收尾只读核对无 workload/controller 夹具进程残留。
+- G 盘 9p/DrvFS 最终 **12/13 通过**：原地 UNIX socket 在宿主 listener 正对照即报 ENOTSUP，不是 MXC 拒绝；保留失败与非零退出。另行授权 ext4 私有 temp 后 socket 对照通过。ext4 可写根中的 UNIX socket 仍可连接、授权目录的既有硬链接仍可读：这是已确认边界，不是对应禁止能力通过。
+- 首轮 7/10 的失败来自夹具对 SDK 契约的两个错误假设：`wait()` 会关闭尚未取得所有权的 stdin；denied 目录用空 tmpfs 遮蔽但允许影子写入。修正夹具后保留交互及宿主原文件不变断言，不修改 SDK。最早 smoke 还出现 discovery 版本探测超时而显式 spawn 成功，后续未复现，原因未定位；不声称已修复。
+- 独立脚本 Node 语法、ESLint 与 Python compile 通过。Windows / Node 26.10.0 的原样 `pnpm check` 类型、lint、格式通过，但默认并发普通测试 6 项失败、663 通过、1 跳过，涉及未修改的 agent-runtime-tools、engine、permissions、process-tree、shutdown 和 windows-sandbox-node-version。显式 `pnpm test --maxWorkers=4` 复核 94 个文件、669 通过、1 跳过；独立 `pnpm build:test` 通过，保留既有 Zod 注释/Web bundle 警告。没有改默认并发、超时或断言，不将复核冒充原样 check 通过。
+- 原始 SDK 矩阵日志在 `.local/mxc-linux-probe-results/`，普通检查日志在 `.local/mxc-linux-probe-{check,unit,build}.log`。未验证真实 Agent Runtime/Broker IPC 集成、完整工具链、产品恢复、资源配额、原生 Linux 其它环境、Node 26 Linux、macOS、PTY 或浏览器 E2E；没有运行模型或 Evaluation。独立实验以逐项报告记录生命周期证据，不接产品 tracing；该例外及后续 tracing 要求见实验说明。
+
 ## 项目记忆逐条版本校验（2026-10-10）
 
 - 按 D144，目录改为每条 ID/version/title；read/update/archive 在各自 operation 内携带 expectedVersion，create 无版本条件，移除工具顶层与 bundle 的文件版本。完整条目规范化后计算 SHA-256；JSON 排版/键顺序、文件顺序与其他条目变动不使目标版本失效，JSONL schema v1 不变，不迁移真实数据。
