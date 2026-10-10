@@ -4,7 +4,7 @@
  * 替身代替，因而不会产生提交、远程写入或真实凭据交互。
  *
  * 1. createFixture 模拟 worktree 根目录、当前分支及其安全 upstream，并记录 Git 参数和流式输出。
- * 2. 只读用例检查 status、diff、log、show、branch 的固定参数、路径和 revision 限制。
+ * 2. 只读用例检查 status、diff、log、show、branch 的固定参数、路径和 revision 限制；schema 集中在 tool-schema.test.ts，Broker 路由由 agent-runtime-tools/engine 回归覆盖。
  * 3. 写入用例检查 add、commit、push 都无需审批，且 commit 仅暂存明确路径、暂存失败不继续提交。
  * 4. 安全用例拒绝敏感目录、未通过内容校验的 dotenv 模板、跨 worktree、危险 revision 与不安全 upstream，且仓库探测失败保留有界 Git 错误，确保不能借 action 传递任意 Git 选项。
  *
@@ -15,16 +15,11 @@ import { expect, it } from "vitest";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { Config } from "../src/config/config.js";
-import { ApprovalManager } from "../src/permissions/approval-manager.js";
-import { SandboxBroker } from "../src/sandbox/broker.js";
-import type { SandboxRuntime } from "../src/sandbox/types.js";
 import {
   GitToolRunner,
   MAX_GIT_DIFF_OUTPUT_CHARS,
   type GitExecutor,
 } from "../src/tools/git.js";
-import { ToolRunner } from "../src/tools/tool-runner.js";
-import { schemas } from "../src/tools/registry.js";
 import { temp } from "./fixtures/helpers.js";
 
 interface FixtureOptions {
@@ -208,71 +203,6 @@ it("reports bounded Git output when repository detection fails", async () => {
   expect(error.message.length).toBeLessThan(650);
 });
 
-it("routes every Git subprocess through the configured Sandbox Runtime", async () => {
-  const root = await temp();
-  const config = new Config(await temp());
-  const calls: string[][] = [];
-  const runtime: SandboxRuntime = {
-    async selfCheck() {
-      return {
-        level: "test-sandbox",
-        workspaceProtection: "direct-path",
-      };
-    },
-    async execute(command) {
-      calls.push(command.args);
-      command.onProcessStarted(1234, "runtime");
-
-      return {
-        output:
-          command.args.join(" ") === "rev-parse --show-toplevel"
-            ? root
-            : "## main",
-        exitCode: 0,
-        truncated: false,
-      };
-    },
-  };
-  const sandbox = new SandboxBroker(
-    {
-      enabled: true,
-      initialStatus: {
-        enabled: true,
-        requested: true,
-        applied: false,
-        mode: "non-isolated",
-        platform: process.platform,
-        level: null,
-      },
-    },
-    runtime,
-  );
-  const runner = new ToolRunner({
-    root,
-    sessionId: "session",
-    taskId: "task",
-    signal: new AbortController().signal,
-    settings: config.settings,
-    approvals: new ApprovalManager(() => {}),
-    sandbox,
-    emit: () => {},
-  });
-
-  await expect(
-    runner.execute("git", { action: "status" }),
-  ).resolves.toMatchObject({ exitCode: 0, output: "## main" });
-  expect(calls).toEqual([
-    ["rev-parse", "--show-toplevel"],
-    [
-      "--no-optional-locks",
-      "status",
-      "--short",
-      "--branch",
-      "--untracked-files=normal",
-    ],
-  ]);
-});
-
 it("caps long diff output independently from the general command output limit", async () => {
   const fixture = await createFixture({
     diffOutput: "x".repeat(MAX_GIT_DIFF_OUTPUT_CHARS + 1),
@@ -363,9 +293,6 @@ it("automatically pushes only the checked configured upstream", async () => {
     ["rev-parse", "HEAD"],
     ["push", "--porcelain", "origin", `${"a".repeat(40)}:refs/heads/main`],
   ]);
-  expect(schemas.git.safeParse({ action: "push", force: true }).success).toBe(
-    false,
-  );
 });
 
 it("allows checked dotenv templates but rejects runtime and credential-bearing variants", async () => {
@@ -458,21 +385,4 @@ it("rejects sensitive paths, dangerous revisions, foreign repositories and unsaf
   await expect(
     insecureRemote.tools.execute({ action: "push" }),
   ).rejects.toThrow("HTTPS、SSH");
-});
-
-it("keeps action schemas narrow and requires the action-specific fields", () => {
-  expect(schemas.git.safeParse({ action: "diff" }).success).toBe(false);
-  expect(
-    schemas.git.parse({
-      action: "diff",
-      staged: false,
-      paths: [],
-      contextLines: 3,
-    }),
-  ).toEqual({ action: "diff", staged: false, paths: [], contextLines: 3 });
-  expect(
-    schemas.git.safeParse({ action: "commit", message: "x", paths: [] })
-      .success,
-  ).toBe(false);
-  expect(schemas.git.safeParse({ action: "reset" }).success).toBe(false);
 });

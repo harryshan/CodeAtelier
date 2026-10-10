@@ -701,7 +701,7 @@ it("returns invalid tool arguments as model feedback without mutating files", as
   }
 });
 
-it("loads project guidance, requires evidence-based complex-task plans, encourages independent batches, and bounds large tool feedback", async () => {
+it("loads project guidance and bounds large tool feedback", async () => {
   let calls = 0;
   let guidance = "";
   let result: any;
@@ -745,19 +745,6 @@ it("loads project guidance, requires evidence-based complex-task plans, encourag
     await fixture.engine.active?.done;
 
     expect(guidance).toContain("Project convention");
-    expect(guidance).toContain("Complete the user's whole request");
-    expect(guidance).toContain("plan-and-execute workflow");
-    expect(guidance).toContain("计划摘要");
-    expect(guidance).toContain("Only after that initial investigation");
-    expect(guidance).toContain(
-      "do not produce a plan from assumptions before reading code or files",
-    );
-    expect(guidance).toContain(
-      "Then immediately execute that evidence-based plan",
-    );
-    expect(guidance).toContain("multiple independent tool calls");
-    expect(guidance).toContain("true DAG-parallel execution");
-    expect(guidance).toContain("largest safe set of relevant tool calls");
     expect(result.truncated).toBe(true);
     expect(result.text.length).toBe(1000);
   } finally {

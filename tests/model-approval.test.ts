@@ -2,7 +2,7 @@
  * 验证低成本模型审批的协议解析及三级决定如何改变 ApprovalManager 的行为。
  * 测试使用注入的 ModelProvider 或分类器，不访问真实服务、文件或命令。
  *
- * 1. assessApproval 检查后端工作区根目录与请求内容分别传递、无工具低输出额度、低风险优先与重大风险分级的分类指引及严格 JSON 解析。
+ * 1. assessApproval 检查后端工作区根目录与请求内容分别传递、分类指令传给 provider、无工具低输出额度及严格 JSON 解析，不以文案子串断言代替真实模型分类质量。
  * 2. ApprovalManager 检查 approve 不创建待审批项，human review 保留原有点击流程和模型理由。
  * 3. reject 必须立即阻止操作并返回模型理由；分类器缺失时保持人工确认，不能意外自动通过。
  *
@@ -62,44 +62,12 @@ it("sends only the approval subject to the low-cost provider and strictly parses
   );
 
   expect(assessment).toEqual({ decision: "approve", reason: "固定验证命令" });
-  expect(APPROVAL_INSTRUCTIONS).toContain(
-    "没有明显负面或恶性影响的请求优先通过",
-  );
-  expect(APPROVAL_INSTRUCTIONS).toContain("pnpm/npm/yarn/bun");
   expect(() =>
     parseAssessment('```json\n{"decision":"approve","reason":"x"}\n```'),
   ).toThrow("JSON");
   expect(() =>
     parseAssessment('{"decision":"approve","reason":"x","extra":true}'),
   ).toThrow("无效决定");
-});
-
-it("prioritizes low-risk exploration, development and public reads even with shell composition or network", () => {
-  expect(APPROVAL_INSTRUCTIONS).toContain("默认倾向 approve");
-  expect(APPROVAL_INSTRUCTIONS).toContain("工作区内文件修改和构建产物写入");
-  expect(APPROVAL_INSTRUCTIONS).toContain("无害的管道、多段命令或临时产物");
-  expect(APPROVAL_INSTRUCTIONS).toContain("只读访问工作区外或访问网络本身");
-  expect(APPROVAL_INSTRUCTIONS).toContain("读取公开网页、获取公开依赖或元数据");
-  expect(APPROVAL_INSTRUCTIONS).toContain(
-    "Get-ChildItem/Select-String/Get-Content",
-  );
-  expect(APPROVAL_INSTRUCTIONS).toContain("ls/find/rg/grep/cat");
-  expect(APPROVAL_INSTRUCTIONS).toContain("逐段检查命令、参数、管道");
-  expect(APPROVAL_INSTRUCTIONS).toContain("cwd 不是文件或网络权限限制");
-});
-
-it("reserves human review for concrete risks and rejection for clear malicious harm", () => {
-  expect(APPROVAL_INSTRUCTIONS).toContain("外部写入即使看起来有用也需人工确认");
-  expect(APPROVAL_INSTRUCTIONS).toContain("删除/覆盖大量文件");
-  expect(APPROVAL_INSTRUCTIONS).toContain("来源不明的远程代码");
-  expect(APPROVAL_INSTRUCTIONS).toContain("触及密钥/凭据/私密内容");
-  expect(APPROVAL_INSTRUCTIONS).toContain(
-    "对普通命令的抽象不确定性不足以转人工",
-  );
-  expect(APPROVAL_INSTRUCTIONS).toContain("窃取或外传秘密");
-  expect(APPROVAL_INSTRUCTIONS).toContain("不要凭猜测 reject");
-  expect(APPROVAL_INSTRUCTIONS).toContain("以宿主用户权限执行");
-  expect(APPROVAL_INSTRUCTIONS).toContain("不能替代它们");
 });
 
 it("keeps the server-provided workspace separate from untrusted command text", async () => {

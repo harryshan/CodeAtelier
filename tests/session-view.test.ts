@@ -301,32 +301,30 @@ it("preserves legacy output, batch wildcard precedence, completed groups and imm
   expect(third.timeline.entries[1]).toBe(process);
 });
 
-it.each([3000, 12000, 50000])(
-  "only consumes new bodies after loading %i events",
-  (size) => {
-    const history = Array.from({ length: size }, (_, index) =>
-      event(index + 1, "delta", { step: 1, text: "x" }),
-    );
-    const model = new SessionViewModel("s");
-    model.update(snapshot(history));
-    for (const item of history) {
-      Object.defineProperty(item, "data", {
-        get() {
-          throw new Error("historical body revisited");
-        },
-      });
-    }
-
-    const next = model.update(
-      snapshot([event(size + 1, "delta", { step: 1, text: "y" })]),
-    );
-    expect(next.timeline.entries).toHaveLength(1);
-    expect(next.timeline.entries[0]).toMatchObject({
-      text: "x".repeat(size) + "y",
+it("only consumes new bodies after loading 50000 events", () => {
+  const size = 50_000;
+  const history = Array.from({ length: size }, (_, index) =>
+    event(index + 1, "delta", { step: 1, text: "x" }),
+  );
+  const model = new SessionViewModel("s");
+  model.update(snapshot(history));
+  for (const item of history) {
+    Object.defineProperty(item, "data", {
+      get() {
+        throw new Error("historical body revisited");
+      },
     });
-    expect(next.statistics(Date.parse(date) + 1000).totalRunMs).toBe(1000);
-  },
-);
+  }
+
+  const next = model.update(
+    snapshot([event(size + 1, "delta", { step: 1, text: "y" })]),
+  );
+  expect(next.timeline.entries).toHaveLength(1);
+  expect(next.timeline.entries[0]).toMatchObject({
+    text: "x".repeat(size) + "y",
+  });
+  expect(next.statistics(Date.parse(date) + 1000).totalRunMs).toBe(1000);
+});
 
 it("orders out-of-order batches, rebuilds late events and maintains sandbox state", () => {
   const model = new SessionViewModel("s");

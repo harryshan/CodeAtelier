@@ -32,6 +32,37 @@ Windows `process-tree.test.ts` 用真实 Node 父子进程和继承的输出句�
 
 保留有独立安全或兼容价值的旧投影、旧 Runner、历史数据迁移、平台条件跳过以及运行中/已完成任务分别覆盖的长时间线 UI 测试。历史 WSL 代码仍在仓库，但 Runtime 工厂只选择 Windows 专用账户后端；单测、原生构建和 Chromium 测试均不替代安装态验收。审计不以用例数量或单纯调用 spy 作为删除理由。
 
+## 测试审计（2026-10-10）
+
+本轮清点 93 个默认 Vitest 文件、7 个 Playwright 文件、1 个手动 Evaluation TS 文件、3 个 Python 测试文件及 1 个原生 C++ 测试入口。全量扫描测试声明、断言、生产模块依赖、跳过条件与重复主题，再对删除候选核对实现和保留覆盖。没有永久 `skip/todo/only`；平台条件跳过不视为过时。Evaluation 与原生探针仅静态审查，不因审计自动执行。
+
+| 精简项 | 理由及保留覆盖 |
+| --- | --- |
+| `core` 的 DAG 指引、`files` 的搜索指引、`model-approval` 的两项分类文案测试 | 仅锁定提示词子串，不能证明模型遵循策略。保留 DAG 实际调度、读取分页/版本、审批请求组装和三级分流。同步移除 `core`、`engine`、`tool-schema` 中同类措辞断言；保留动态项目规则、环境目录、host/Runtime 指引分流。 |
+| `git-tools` 的旧 Sandbox Git 路由 | 夹具强行走 D121 之前的路径；当前 Broker 路由由 `agent-runtime-tools`、`agent-runtime-engine`、`runtime-ipc` 覆盖。旧 Runner 独立隔离测试按 D120 仍保留。 |
+| `git-tools` 的重复 action schema | 统一留在 `tool-schema`，将缺少 diff 必填字段的断言移入该处；非法 action、空提交路径和额外字段仍被拒绝。 |
+| `files` 的退役工具注册检查 | `tool-schema` 已覆盖工具注册及解析拒绝；`files` 仍覆盖 ToolRunner 对未知工具/非法参数的无副作用拒绝。 |
+| `config` 的重复端点/模型透传 | 连接规范化与偏好落盘用例已经核对相同后缀处理、模型原样传递与重开结果。 |
+| `multi-file-edit` 的重复行范围/重叠失败夹具 | 集中到完整匹配失败用例，保留不完整行范围及无范围重叠场景和磁盘不变断言。 |
+| `subagent-coordinator` 的两轮累计 token 越限用例 | `subagent-capacity` 已通过真实 Worker 验证 21 轮、840,000 token、完整报告及精确调用次数；读取、请求持久化仍由协调器闭环覆盖。 |
+| `session-view` 的 3,000/12,000 同路径规模样本 | 保留 50,000 事件和禁止重读旧正文断言；不同输入状态、小历史、浏览器重连及虚拟滚动测试不删。 |
+| `windows-sandbox-scripts` 的 package.json 字符串快照 | 只锁定脚本拼写；保留 run.ts 全部 action 的真实入口分流、固定参数、退出码及平台行为测试。 |
+
+不改产品实现、测试收集范围、默认并发配置、超时或断言容错；不以失败、测试耗时、mock 数量或文件年代作为删除理由。保留有独立层次价值的 HTTP/IPC/Worker/E2E、历史 SQLite/JSONL/投影兼容、安全拒绝及取消清理测试。
+
+后续新增测试先明确新增的可观察失败模式，并复用相应主题的夹具；同层同输入类别已有覆盖时扩展现有用例，而不是再建一套。提示词语义靠人工审核或用户显式要求的评测验证，不用逐字断言冒充模型行为保证。
+
+### 本轮验证与剩余限制
+
+默认 Vitest 实例由 **681 减至 668（净减 13）**，测试文件数不变。Windows／Node 26.10.0 下：
+
+- 修改前默认全量基线为 676 通过、4 失败、1 跳过；四个失败均报告临时目录或 SQLite 文件清理 `EBUSY`。
+- 修改后 `pnpm check` 的类型、lint、格式检查通过，但默认并发测试未全绿：首次 worker 报 `ERR_IPC_CHANNEL_CLOSED`，再次为 660 通过、7 失败、1 跳过，涉及 Windows 子进程超时、`EBUSY`、process-tree 安全清理兜底及 Node 版本 PowerShell 探针失败。失败用例全部保留；这些结果不能证明均由同一原因引起。
+- 诊断命令 `pnpm test --maxWorkers=2` 完整运行同一套用例，**667 通过、1 个非 Windows 执行位用例跳过、0 失败**。只覆盖本次命令的并发数，不更改默认配置，也不等同于默认 `pnpm check` 已通过。
+- `pnpm test:e2e` 的测试模式构建及 **42 个 Chromium 用例全部通过**；文档本地链接检查通过。Evaluation、原生探针及跨平台验收未执行。
+
+默认并发下的 Windows 稳定性仍需独立排查进程退出、临时文件/SQLite 清理与资源竞争；不通过删测试、放宽断言或默认提高超时来掩盖它。
+
 ## 测试分层
 
 - Node 版本兼容性按 `package.json` 的 Node 24/26 范围验证；`@types/node` 和 Runtime bundle 保留 Node 24 基线，避免引入仅 Node 26 可用的 API。`windows-sandbox-node-version.test.ts` 在真实 PowerShell 中单独加载安装器函数，验证 Node 24/26 选择成功、不受支持版本和探测失败被拒绝；不执行账户安装或 WFP 操作。
@@ -44,7 +75,7 @@ Windows `process-tree.test.ts` 用真实 Node 父子进程和继承的输出句�
   测试不继承本机 `.env`、系统中的 CodeAtelier 配置或真实 API key；模型只可使用注入式模拟值和本机测试 HTTP/SSE 服务。
 
 - `pnpm build` 与 `pnpm build:test` 还会生成 `dist/runtime/windows-x64` 下以 Node 24 为兼容基线、支持 Node 24/26 的 Agent Runtime、compaction/read_file/subagent 三种 Worker bundle 和 SHA-256 manifest；构建成功只验证 bundle 可生成，不代表安装器已把它复制到受保护目录或 native Supervisor 已核对并启动它。
-- `windows-sandbox-scripts.test.ts` 使用模拟平台与子进程核对 `sandbox:repair` 的 pnpm 入口、全部固定维护 action 的 PowerShell 参数、非 shell 启动、退出码/启动错误与非 Windows `SKIP`；不实际执行安装、修复、账户、ACL 或 WFP 操作，也不替代平台安装态验收。
+- `windows-sandbox-scripts.test.ts` 使用模拟平台与子进程核对 run.ts 全部固定维护 action 的 PowerShell 参数、非 shell 启动、退出码/启动错误与非 Windows `SKIP`；不实际执行安装、修复、账户、ACL 或 WFP 操作，也不替代平台安装态验收。
 - `pnpm sandbox:native:build` 的原生回归核对产品受限 token 的 execution/root capability 与 Everyone restricting SID、Runtime bootstrap 句柄帧、进程 PID 绑定、仅复制查询权限及畸形帧拒绝；显式 `codeatelier-sandbox-state-parser-test.exe --handle-transfer-probe` 还以真实子进程验证私有管道读帧和跨进程句柄复制。这些都不代替固定账户下的 BCrypt/PowerShell、Job 与 Runtime pipe 联合身份验收。
 - 原生 `codeatelier-sandbox-state-parser-test.exe --runtime-descriptor-probe` 可输出固定启动描述符二进制首帧，供 Node 解码器跨语言核对；`runtime-startup-protocol.test.ts` 验证真实本机管道的成功握手，以及无效首帧后入口关闭 socket 并退出。安装态首帧和 IPC 双向代理仍须用显式产品验收验证。
 - `pnpm sandbox:native:build` 还以五秒上限运行原生 `--runtime-duplex-probe`：在真实本机 Named Pipe 上覆盖预连接与待决连接两种顺序，并在 server 读取下一帧时向 client 写入 Broker 回复；它曾在同步 pipe 上超时，overlapped I/O 修复后通过。该探针不覆盖固定账户 ACL、Job 或完整任务协议。
@@ -168,7 +199,7 @@ item.done 回退、失败/不完整事件、服务实际错误 message/reason/co
 
 主要测试：tool-graph.test.ts、tool-status.test.ts、engine.test.ts、core.test.ts、recovery.test.ts、server.test.ts。
 
-复杂任务先读取代码/文件并获得信息后才输出计划摘要的指令与随后执行、已知参数的依赖调用同轮提交指引（依赖只能引用本轮节点，禁止跨轮历史 ID）与过时顺序指令回归、工具往返、同轮 DAG 的稳定拓扑并发、审批准备与执行槽分离、单槽下独立节点越过审批等待、并发上限、重复/未知/环拒绝、失败后继阻断与反馈；跨会话不同工作目录并行、同目录排队、同会话互斥、取消/关闭队列、步骤/上下文预算、参数错误反馈、根规则、输出预算、跨任务重新读取、不重放副作用、工具耗时排除审批等待
+模拟模型返回计划摘要时，先前读取结果、摘要持久化与后续工具执行的事件顺序（不声称模型必然遵循计划指引）、工具往返、同轮 DAG 的稳定拓扑并发、审批准备与执行槽分离、单槽下独立节点越过审批等待、并发上限、重复/未知/环拒绝、失败后继阻断与反馈；跨会话不同工作目录并行、同目录排队、同会话互斥、取消/关闭队列、步骤/上下文预算、参数错误反馈、根规则、输出预算、跨任务重新读取、不重放副作用、工具耗时排除审批等待
 
 ### 可选 subagent（内部双执行路径，尚未开放）
 
@@ -250,7 +281,7 @@ Sandbox 徽标浏览器回归以合成历史阶段验证：bootstrap 的待确�
 
 时间线按滚动位置和缓冲范围只创建可视条目，其余历史以准确高度占位；高度前缀和复用与二分查询覆盖 50,000 项下的索引读取次数。
 
-增量会话投影覆盖分批与全量结果一致、重复事件去重、乱序重建、显式替换、跨会话拒绝、attempt 隔离、完整回复替换流式项、旧命令输出和 batch 通配兼容、任务完成分组复用、不可变旧视图、usage 回退在 request 到达后撤销以及时钟独立计量。3,000／12,000／50,000 事件用例通过禁止读取旧正文验证增量边界；浏览器以 12,001 个合成事件验证有限节点、滚动、输入、真实 EventSource 重连游标与重复统计防护。测试不访问真实模型或个人历史。
+增量会话投影覆盖分批与全量结果一致、重复事件去重、乱序重建、显式替换、跨会话拒绝、attempt 隔离、完整回复替换流式项、旧命令输出和 batch 通配兼容、任务完成分组复用、不可变旧视图、usage 回退在 request 到达后撤销以及时钟独立计量。50,000 事件用例通过禁止读取旧正文验证增量边界；浏览器以 12,001 个合成事件验证有限节点、滚动、输入、真实 EventSource 重连游标与重复统计防护。测试不访问真实模型或个人历史。
 
 ## 关键缺陷回归
 
@@ -309,7 +340,7 @@ Git 配置图按两个 global 入口递归解析 `include` 与适用的 `gitdir/
 
 account generation 状态机验证 1～4 个不同工作区并发、同工作区串行、共享 grant 引用计数、epoch 防重放和整代 quarantine；
 
-ToolRunner 回归夹具证明受限 Git 的仓库探测和实际 action 都经过配置的 Sandbox Runtime；
+当前 Git action 通过 Broker 以宿主用户权限执行，由 Agent Runtime tools/engine 及 IPC 回归覆盖；旧 ToolRunner→Sandbox Runtime 路由夹具已于 2026-10-10 审计移除，不再作为现行执行边界证据；
 
 CONNECT relay 夹具验证 proxy token、精确 host、私网 DNS、IPv4/IPv6 公网分类和 lease 撤销，其中 IPv6 只接受普通全球单播并拒绝 Teredo、6to4、NAT64、文档和本地前缀。
 
@@ -377,7 +408,7 @@ context-stages.test.ts 覆盖长记录中间材料的全文连续送出、默认
 
 context-request.test.ts 覆盖低于阈值时重复读取结果原样发送、原始输入计量、瞬态重试和新工具轮次保持完整历史。context-stages.test.ts 覆盖达到阈值后默认直接摘要全文以及旧投影数据的兼容回读。context.test.ts 额外覆盖常规摘要在超预算失败时的保底视图：完整快照保留，活动输入保留用户原文与最新结论，并移除超长中间工具输出。
 
-git-tools.test.ts 覆盖 diff 独立输出硬上限；core.test.ts 覆盖模型收到避免无必要全量 diff 的指令。它们均属于普通功能回归，不启动 Evaluation。
+git-tools.test.ts 覆盖 diff 独立输出硬上限，属于普通功能回归，不启动 Evaluation；不再用 core.test.ts 的提示词子串匹配证明模型会避免全量 diff。
 
 评测报告手动回归 `scripts/swebench/test_report.py` 覆盖缺失数据不当作零或失败、官方回归测试失败、补丁头排除、缺失工具结果、非零测试退出、不可解析的脱敏命令参数和分位数样本口径。该套件不进入默认 test/check。另覆盖 list_files 数组形式的工具结果；2026-09-12 用户授权三题评测期间，报告回归 6 项通过。
 
@@ -395,7 +426,7 @@ git-tools.test.ts 覆盖 diff 独立输出硬上限；core.test.ts 覆盖模型�
 
 - `tests/auxiliary-model.test.ts`：旧配置兼容、主模型继承、环境辅助模型来源、可保存推理强度、模型改动拒绝、非法输入拒绝；生产 Engine 路由、辅助模型独立预算、完整摘要来源、摘要失败保留历史。使用模拟模型，不访问真实服务。
 - `tests/title-generation.test.ts`：首条 prompt 选择辅助模型、输入分隔和输出清理、未知标题模型故障最多额外重试 3 次、永久失败不阻断主任务、取消结束标题状态，以及旧 SQLite 标题迁移。
-- `tests/model-approval.test.ts`：审批请求把后端会话工作区根目录与不可信的工具名、待审批内容分字段发送给无工具、单次关闭思考（不修改辅助等级）、256 token 的低成本模型；`tests/engine.test.ts` 验证审批专属请求路由，`tests/provider.test.ts` 验证真实 Responses 请求为 `reasoning.effort: "none"` 且其它请求保留配置等级；严格 JSON 输出分别自动通过、保留人工点击或直接拒绝并返回理由；检查 prompt 按实际影响优先放行工作区内常用开发命令、只读探索、无害组合及合理的公开网络/工作区外非敏感只读访问；对工作区外写入、敏感内容和重大风险保留人工确认，明确恶意行为才拒绝；Engine 的宿主及 Runtime 请求均携带真实工作区根目录；分类器缺失时不自动放行。
+- `tests/model-approval.test.ts`：审批请求把后端会话工作区根目录与不可信的工具名、待审批内容分字段发送给无工具、单次关闭思考（不修改辅助等级）、256 token 的低成本模型；`tests/engine.test.ts` 验证审批专属请求路由，`tests/provider.test.ts` 验证真实 Responses 请求为 `reasoning.effort: "none"` 且其它请求保留配置等级；严格 JSON 输出分别自动通过、保留人工点击或直接拒绝并返回理由；分类策略措辞及其真实模型效果不以子串匹配单测证明；Engine 的宿主及 Runtime 请求均携带真实工作区根目录；分类器缺失时不自动放行。
 - `tests/e2e/app.spec.ts`：只读展示环境连接、保存思考偏好并在刷新后回显，且不暴露密钥；首条 prompt 完成后在侧栏显示并在刷新后保留自动标题。
 
 评测包装器的辅助模型路由与主模型共用累计用量和调用上限；本次仅静态检查评测改动，未运行 Evaluation。
@@ -415,7 +446,7 @@ git-tools.test.ts 覆盖 diff 独立输出硬上限；core.test.ts 覆盖模型�
 
 统一文件编辑：`files.test.ts` 覆盖 create:true 的嵌套创建、已有路径与创建期间出现路径的覆盖拒绝，以及 create:false 单文件条目中的同快照多处替换和成功修改后必须重新读取；`multi-file-edit.test.ts` 覆盖单/多文件条目的逐文件预检、重复真实路径、外部修改、审批拒绝、行号消歧、重叠拒绝、CRLF、取消，以及单文件预检/写入故障后继续独立文件、汇总全部失败路径和未知状态。
 
-`tool-schema.test.ts` 递归检查唯一 `edit_files` 的 create 分支、无前后锚点的已有文件补丁及 strict 契约；`core.test.ts` 验证模型指令要求将参数已知、互不冲突的同一逻辑改动合并为单次 `edit_files` 调用；`engine.test.ts` 验证单次多文件调用及逐文件进度持久化；`e2e/app.spec.ts` 检查进度、diff 和刷新历史。
+`tool-schema.test.ts` 递归检查唯一 `edit_files` 的 create 分支、无前后锚点的已有文件补丁及 strict 契约；`engine.test.ts` 验证单次多文件调用及逐文件进度持久化；`e2e/app.spec.ts` 检查进度、diff 和刷新历史。
 
 已有 core 测试继续覆盖未读取及外部变化拒绝。
 

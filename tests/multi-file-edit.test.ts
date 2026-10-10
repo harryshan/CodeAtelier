@@ -190,24 +190,6 @@ it("uses original line ranges to disambiguate repeated text despite earlier inse
   );
 });
 
-it("rejects wrong lines and overlapping replacements without changing content", async () => {
-  const { root, runner } = await fileFixture();
-  await createFile(runner, "a.txt", "alpha\nbeta");
-  for (const edits of [
-    [{ oldText: "alpha", newText: "x", startLine: 2, endLine: 2 }],
-    [{ oldText: "alpha", newText: "x", startLine: 1, endLine: null }],
-    [
-      { oldText: "alpha", newText: "x" },
-      { oldText: "lph", newText: "y" },
-    ],
-  ]) {
-    await expect(editSingleFile(runner, "a.txt", edits)).rejects.toThrow();
-    expect(await readFile(path.join(root, "a.txt"), "utf8")).toBe(
-      "alpha\nbeta",
-    );
-  }
-});
-
 it("rejects aliases of one file and stale read versions before writing", async () => {
   const { root, runner } = await fileFixture();
   await createFile(runner, "a.txt", "old");
@@ -510,6 +492,11 @@ it("rejects missing, ambiguous, out-of-range and overlapping matches without fal
   await createFile(runner, "a.txt", original);
   for (const edits of [
     [{ oldText: "outside", newText: "x", startLine: 2, endLine: 2 }],
+    [{ oldText: "outside", newText: "x", startLine: 1, endLine: null }],
+    [
+      { oldText: "outside", newText: "x" },
+      { oldText: "side", newText: "y" },
+    ],
     [{ oldText: "value", newText: "x", startLine: 2, endLine: 2 }],
     [{ oldText: "aa", newText: "x", startLine: 2, endLine: 2 }],
     [{ oldText: "value\nlast", newText: "x", startLine: 2, endLine: 2 }],

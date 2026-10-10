@@ -2,8 +2,8 @@
  * 通过 fileFixture 调用真实 ToolRunner，检查文件工具的结果和磁盘上的变化。
  * 所有文件都建在临时目录，审批由用例明确处理。
  *
- * 1. 检查已移除目录/搜索工具的拒绝，以及带行号、分页、版本和可见空白元数据的分段读取。
- * 2. 检查模型可见的定位/小范围读取契约，以及反向行区间、二进制文件和过大文件被拒绝。
+ * 1. 检查带行号、分页、版本和可见空白元数据的分段读取。
+ * 2. 检查反向行区间、二进制文件和过大文件被拒绝；工具注册与参数契约由 tool-schema.test.ts 覆盖。
  * 3. 检查已有文件成功编辑后必须重新读取、显式新建父目录、美元符号按原文替换，以及 create 防止覆盖。
  * 4. 在等待审批时修改文件，并检查规则文件、敏感文件和非法工具参数的处理。
  *
@@ -13,7 +13,6 @@
 import { it, expect } from "vitest";
 import { writeFile, readFile, readdir } from "node:fs/promises";
 import path from "node:path";
-import { definitions } from "../src/tools/registry.js";
 import type { ToolRunner } from "../src/tools/tool-runner.js";
 import { fileFixture } from "./fixtures/helpers.js";
 
@@ -41,17 +40,6 @@ async function createFile(runner: ToolRunner, path: string, content: string) {
 
   return result;
 }
-
-it("does not expose retired directory, write, or search tools and rejects direct calls", async () => {
-  const { runner } = await fileFixture();
-
-  for (const name of ["list_files", "write_file", "search"]) {
-    expect(definitions.map((definition) => definition.name)).not.toContain(
-      name,
-    );
-    await expect(runner.execute(name, {})).rejects.toThrow("未知工具");
-  }
-});
 
 it("reads focused numbered lines and describes pagination when a request reaches the cap", async () => {
   const { root, runner } = await fileFixture();
@@ -114,18 +102,6 @@ it("returns a copyable source view and optional visible whitespace diagnostics",
   expect(result.text).toBe("1:   alpha\t\r");
   expect(result.visibleText).toBe("1: ··alpha→␍↵");
   expect(result.contentHash).toMatch(/^[a-f0-9]{64}$/);
-});
-
-it("tells the model to use a command search before using a focused file range", () => {
-  const readFile = definitions.find(
-    (definition) => definition.name === "read_file",
-  );
-
-  expect(readFile?.description).toContain(
-    "Use run_command with an environment-detected search command to locate",
-  );
-  expect(readFile?.description).toContain("normally request 80-200 lines");
-  expect(readFile?.description).toContain("Maximum 500 lines");
 });
 
 it("rejects reversed line ranges instead of claiming a successful empty read", async () => {

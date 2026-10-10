@@ -2,7 +2,7 @@
  * 覆盖文件权限、模型调用工具、历史保存和本机 HTTP 安全的基础流程。
  * 测试使用临时目录、真实数据库和模拟模型。
  *
- * 1. temp/runner 准备并在用例后关闭工具/临时目录；files and permissions 检查渐进式阅读指令、先读后写、越界和取消。
+ * 1. temp/runner 准备并在用例后关闭工具/临时目录；files and permissions 检查 shell/search 检测、Runtime 专属指引分流、先读后写、越界和取消。
  * 2. waitFor 等待任务结束；execution and persistence 检查超时、输出限制和工具执行。
  * 3. server security and configuration 检查请求来源、凭据和脱敏。
  *
@@ -75,7 +75,7 @@ function runner(
 }
 
 describe("files and permissions", () => {
-  it("keeps Windows shell details out of model instructions", async () => {
+  it("prefers PowerShell 7 when it is available on Windows", () => {
     const environment = {
       Path: "C:\\Tools;C:\\Windows\\System32\\WindowsPowerShell\\v1.0",
       ComSpec: "C:\\Windows\\System32\\cmd.exe",
@@ -85,38 +85,11 @@ describe("files and permissions", () => {
       (candidate) => candidate === "C:\\Tools\\pwsh.exe",
       "win32",
     );
-    const instructions = await createInstructions(await temp());
 
     expect(shell).toEqual({
       command: "C:\\Tools\\pwsh.exe",
       args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"],
     });
-    expect(instructions).toContain(
-      "Use the built-in web_search tool for current public web information",
-    );
-    expect(instructions).not.toContain("run_with_permissions");
-    expect(instructions).not.toContain("Windows Agent Runtime");
-    expect(instructions).toContain("Use progressive code reading");
-    expect(instructions).toContain(
-      "Search before reading ordinary code or files",
-    );
-    expect(instructions).toContain("smallest focused line range");
-    expect(instructions).toContain("start with 80-200 lines");
-    expect(instructions).toContain("Read complete files only");
-    expect(instructions).toContain(
-      "After successfully editing an existing file, read that file again",
-    );
-    expect(instructions).toContain(
-      "collect all files for the same logical change",
-    );
-
-    expect(instructions).toContain("only one command string");
-    expect(instructions).toContain("Never wrap it in a terminal invocation");
-    expect(instructions).toContain("`pwsh -Command`");
-    expect(instructions).toContain("independent checks");
-    expect(instructions).toContain("do not casually request a full git diff");
-    expect(instructions).not.toContain("C:\\\\Tools\\\\pwsh.exe");
-    expect(instructions).not.toContain("CODEATELIER_STEP");
   });
 
   it("adds capability guidance only for the actual Agent Runtime", async () => {
@@ -131,25 +104,6 @@ describe("files and permissions", () => {
     expect(hostInstructions).not.toContain("Windows Agent Runtime");
     expect(runtimeInstructions).toContain("run_with_permissions");
     expect(runtimeInstructions).toContain("Windows Agent Runtime");
-  });
-
-  it("guides known dependent tool calls into one response", async () => {
-    const instructions = await createInstructions(await temp());
-
-    expect(instructions).toContain("edit_files -> run_command");
-    expect(instructions).toContain('dependsOn:["edit"]');
-    expect(instructions).toContain(
-      "DAG dependencies are scoped strictly to this response",
-    );
-    expect(instructions).toContain(
-      "Never reference execution IDs, node IDs, or tool call IDs from an earlier model response",
-    );
-    expect(instructions).toContain(
-      "only when the next call's arguments require the preceding result",
-    );
-    expect(instructions).not.toContain(
-      "The application executes each returned call in order",
-    );
   });
 
   it("detects performance-ordered search commands before building instructions", async () => {
@@ -173,8 +127,6 @@ describe("files and permissions", () => {
     expect(instructions).toContain(
       "repository search commands available through run_command, ordered by estimated performance: `rg` (content), `grep` (content), `findstr` (content)",
     );
-    expect(instructions).toContain("There is no search tool");
-    expect(instructions).toContain("multiple relevant symbols");
 
     const powershell = detectSearchCommands(
       { Path: "C:\\Tools" },

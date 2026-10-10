@@ -54,15 +54,6 @@ it("declares every property as required for strict function tools", () => {
 });
 
 it("requires a strict DAG execution envelope for new model calls", () => {
-  for (const definition of definitions) {
-    expect(definition.description).toContain(
-      "dependsOn lists only execution.id values from other tool calls returned in this same response",
-    );
-    expect(definition.description).toContain(
-      "Never use node IDs, execution IDs, or tool call IDs from an earlier model response as dependencies",
-    );
-  }
-
   expect(
     parseScheduledToolArguments(
       "read_file",
@@ -151,16 +142,6 @@ it("exposes only edit_files for file writes and no directory or search tool", ()
   const editDefinition = definitions.find(
     (definition) => definition.name === "edit_files",
   );
-  expect(editDefinition?.description).toContain(
-    "Default startLine/endLine to null",
-  );
-  expect(editDefinition?.description).toContain(
-    "unique CRLF/LF-equivalent matching for every text file",
-  );
-  expect(editDefinition?.description).toContain(
-    "read that file again before editing it again",
-  );
-  expect(editDefinition?.description).not.toContain("beforeContext");
   expect(JSON.stringify(editDefinition?.parameters)).not.toContain(
     "beforeContext",
   );
@@ -217,9 +198,6 @@ it("exposes only edit_files for file writes and no directory or search tool", ()
 });
 
 it("accepts only the structured current-project memory maintenance operation", () => {
-  const definition = definitions.find(
-    (candidate) => candidate.name === "memory_apply",
-  );
   const operation = {
     action: "create",
     kind: "constraint",
@@ -299,15 +277,9 @@ it("accepts only the structured current-project memory maintenance operation", (
   }
 
   expect(definitions.some((tool) => tool.name === "memory_read")).toBe(false);
-  expect(definition?.description).toContain("without a user approval");
-  expect(definition?.description).toContain("project-wide deletion");
 });
 
 it("accepts only one direct command string for run_command", () => {
-  const runCommand = definitions.find(
-    (definition) => definition.name === "run_command",
-  );
-
   expect(schemas.run_command.parse({ command: "pnpm test" })).toEqual({
     command: "pnpm test",
   });
@@ -318,15 +290,10 @@ it("accepts only one direct command string for run_command", () => {
       cwd: ".",
     }).success,
   ).toBe(false);
-  expect(runCommand?.description).toContain(
-    "Provide the command to run directly",
-  );
-  expect(runCommand?.description).toContain("environment-detected");
-  expect(runCommand?.description).toContain("multiple keywords");
-  expect(runCommand?.description).toContain("`pwsh -Command`");
 });
 
 it("declares strict action-specific parameters for the single git tool", () => {
+  expect(schemas.git.safeParse({ action: "diff" }).success).toBe(false);
   expect(schemas.git.safeParse({ action: "status" }).success).toBe(true);
   expect(
     schemas.git.safeParse({ action: "status", staged: false }).success,

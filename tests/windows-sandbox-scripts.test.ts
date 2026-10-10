@@ -1,9 +1,9 @@
 /**
- * 验证 package.json 的 Windows Sandbox 维护入口及 run.ts 的平台分流，不执行真实 PowerShell。
+ * 验证 Windows Sandbox 维护脚本 run.ts 的 action 与平台分流，不执行真实 PowerShell。
  * 普通 Vitest 测试通过动态导入运行脚本；平台、argv 和 spawn 都由本文件控制，系统安装状态不变。
  *
  * 1. 保存进程字段并在 afterEach 恢复；runEntry 每次清空模块缓存，让脚本重新解析固定 action。
- * 2. pnpm 入口与 Windows action 用例核对脚本路径、固定 Mode、非 shell 启动和退出状态。
+ * 2. Windows action 用例核对实际传给执行器的脚本路径、固定 Mode、非 shell 启动和退出状态。
  * 3. 失败与非 Windows 用例验证错误传播、无子进程的 SKIP，以及未知或缺失 action 的拒绝。
  *
  * spawn 替身仅发出 exit/error 事件；不触发 UAC、不创建账户或修改 ACL/WFP，不能作为安装态验收。
@@ -11,7 +11,6 @@
 
 import * as childProcess from "node:child_process";
 import { EventEmitter } from "node:events";
-import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, expect, it, vi } from "vitest";
@@ -58,16 +57,6 @@ async function runEntry(
 
   await import("../scripts/windows-sandbox/run.js");
 }
-
-it("provides the pnpm repair entry without changing the installer", async () => {
-  const manifest = JSON.parse(
-    await readFile(new URL("../package.json", import.meta.url), "utf8"),
-  );
-
-  expect(manifest.scripts["sandbox:repair"]).toBe(
-    "tsx scripts/windows-sandbox/run.ts repair",
-  );
-});
 
 it.each([
   ["build", "build-native.ps1", []],

@@ -201,15 +201,6 @@ it("migrates legacy connection fields out of settings.json and persists effort",
   expect(saved).not.toContain("model");
 });
 
-it("uses the configured endpoint and model verbatim except endpoint suffix", async () => {
-  vi.stubEnv("CODEATELIER_BASE_URL", "https://api.example.com/v1/responses/");
-  vi.stubEnv("CODEATELIER_MODEL", "custom/model-id");
-  const config = new Config(await temp());
-
-  expect(config.settings.baseUrl).toBe("https://api.example.com/v1");
-  expect(config.settings.model).toBe("custom/model-id");
-});
-
 it.each(["CODEATELIER_BASE_URL", "CODEATELIER_MODEL"])(
   "requires %s even when a legacy settings.json has connection values",
   async (name) => {
