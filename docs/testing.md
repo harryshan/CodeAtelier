@@ -63,6 +63,39 @@ Windows `process-tree.test.ts` 用真实 Node 父子进程和继承的输出句�
 
 默认并发下的 Windows 稳定性仍需独立排查进程退出、临时文件/SQLite 清理与资源竞争；不通过删测试、放宽断言或默认提高超时来掩盖它。
 
+### Windows 文件占用调查（2026-10-10，尚未修复）
+
+**已确认的机制是测试超时后的清理竞争，不是已经正常关闭的文件需要多等几次删除。** 本机 Node 26.10.0／Vitest 3.2.7 下，通过单 worker、真实 ToolRunner 子进程和真实 SQLite Store 的隔离诊断复现：
+
+1. 在 `beforeEach` 等资源就绪后，故意让测试正文超过 200ms；排除命令冷启动与全量负载作为实验前提。
+2. 进入 `afterEach` 时，Vitest `context.signal.aborted=true`，工具自己的 signal 仍为 false，测试正文的 `finally` 尚未运行。
+3. `await runner.close()` 后子进程仍存活，删除其工作目录得到 `EBUSY/rmdir`；另一场景的 Store 仍打开，删除数据库得到 `EBUSY/unlink`。
+4. 在同一 hook 中显式取消命令／解除等待、等待原操作和正文清理完成、关闭 Store 后，再次删除立即成功，**没有使用重试或延时**。两个先结束再清理的对照场景首次删除成功。
+
+诊断四场景中两个故意超时、两个通过；超时失败是实验输入，不是新增默认回归失败。脚本和元数据只在忽略目录 `.local/lock-investigation/`，未纳入默认收集；日志为 `probe.log`、`observations.json`。本轮未改产品、测试夹具或测试配置，未运行 Evaluation。
+
+#### 对应代码与顺序
+
+- 当前安装的 Vitest `withTimeout` 在期限到达时拒绝包装 Promise 并取消测试 signal，不等待原异步正文完成；`runTest` 随后执行 `afterEach`。超时本身不会使仍挂起的 `await` 立即进入正文 `finally`。
+- `tests/fixtures/helpers.ts` 的 `afterEach` 只关闭已登记 ToolRunner，随后直接 `rm` 目录；`fileFixture` 的 AbortController 没有连接测试 signal，也没有登记取消及命令完成 Promise。`agent-runtime-tools.test.ts` 的直接 ToolRunner 连这项登记也没有。
+- `src/tools/tool-runner.ts` 的 `close()` 仅关闭 read_file Worker，不表示取消或等待在途命令。命令正常执行本身在 `src/tools/process.ts` 的子进程 `close` 事件后才完成，不能把测试超时的提前返回等同于命令已退出。
+- `engine.test.ts`、`auxiliary-model.test.ts`、`agent-runtime-engine.test.ts` 的 Engine/Store 清理，以及 `shutdown.test.ts` 的服务关闭，主要位于测试正文 `finally`；框架超时后可能还没有执行完，而公共 hook 已开始删目录。`Store.close()` 另外不等待后台 Worker 排空，异步资源收尾应使用并等待 `closeAsync()`；这一点是需处理的边界，不能单独归因为本轮所有占用的来源。
+- 公共 hook 先 `directories.splice(0)` 再串行删除，一处删除抛错会跳过剩余目录，且这些目录已经退出登记列表。
+
+#### 全量对照及证据边界
+
+本机 `availableParallelism()` 为 24；项目没有设置 `maxWorkers`，当前 Vitest 非 watch 模式默认 worker 上限按 CPU−1 算得 **23**。许多文件还会启动 Store/Runtime Worker 和 PowerShell/Node 子进程，这不是只有 23 项轻量工作。
+
+- 本轮默认全量：**663 通过、4 失败、1 跳过**。两项 `EBUSY`（Broker command 的 `db-shm`、shutdown 的 `history.sqlite`）均同时报告 15 秒测试超时；另两项是 process-tree 八秒安全兜底触发及 PowerShell 探针十秒后被终止，不能统称文件锁失败。
+- 同一代码、同一 668 用例，仅命令加 `--maxWorkers=2`：**667 通过、1 跳过、0 失败**。上述 Broker command 和 shutdown 分别约 1.13 秒、3.87 秒完成；PowerShell 探针约 0.95 秒。日志为 `default-suite.log`、`two-workers.json`。
+- 这些对照支持高并发放大 Windows 冷启动/调度负载的判断，但没有系统性能追踪来区分 CPU、磁盘、安全扫描等各自贡献；也没有证据把此前 `ERR_IPC_CHANNEL_CLOSED` 都归为同一原因。不宣称已排除所有其他占用或产品资源泄漏。
+
+#### 建议修复顺序
+
+先建立**每测试的资源登记和统一收尾**：资源创建后、第一次长 `await` 前登记；测试取消传递给控制器，收尾明确等待命令/Engine 结束，再 `await store.closeAsync()`、关闭工具线程池，最后删除目录。不能只给正文加 `finally`，也不能把清理简单移到 `onTestFinished`——当前 Vitest 在 `afterEach` 之后才调用它。独立资源应尽力全部清理并汇总错误，不因首个目录失败遗漏后续资源。
+
+完成确定性超时清理回归后，再评估 Windows 重型集成测试与纯单测的并发划分。降低 worker 可作诊断或运行策略，但不修复超时后的生命周期缺口；不以加大 `rm.maxRetries`、提高测试超时或删除失败测试替代修复。
+
 ## 测试分层
 
 - Node 版本兼容性按 `package.json` 的 Node 24/26 范围验证；`@types/node` 和 Runtime bundle 保留 Node 24 基线，避免引入仅 Node 26 可用的 API。`windows-sandbox-node-version.test.ts` 在真实 PowerShell 中单独加载安装器函数，验证 Node 24/26 选择成功、不受支持版本和探测失败被拒绝；不执行账户安装或 WFP 操作。
