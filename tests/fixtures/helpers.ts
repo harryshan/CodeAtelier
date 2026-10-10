@@ -1,42 +1,64 @@
 /**
  * 给普通测试提供临时目录和真实文件工具，避免读写用户项目。
  *
- * 1. trackRunner 登记直接创建的工具，temp 创建并解析临时目录的真实路径，再登记清理范围。
+ * 1. createTestRunner 连接测试取消并跟踪根/forCall 操作；trackRunner 为已有实例登记等待与关闭。
+ *    temp 在创建目录前捕获所属测试，登记后再解析真实路径，取消后的晚返回也会清理。
  * 2. waitForApproval 监听 Engine 状态变更并检查指定任务，允许正常冷启动；任务提前结束或十秒未就绪时拒绝并移除监听。
- * 3. afterEach 先关闭真实读取线程池，再删除本文件创建的目录。
+ * 3. TestResources 的 afterEach 取消并排空在途操作、关闭资源，最后删除本测试的目录。
  * 4. fileFixture 创建工作区和配置目录，组装并登记 ToolRunner、ApprovalManager 和取消信号。
  * 5. 返回工具实例、审批列表、事件数组和控制器，供用例执行、批准或取消操作。
  *
  * 不会自动批准工具请求；清理范围仅限夹具创建的目录。
  */
 
-import { afterEach } from "vitest";
-import { mkdtemp, realpath, rm } from "node:fs/promises";
+import { mkdtemp, realpath } from "node:fs/promises";
+import { currentTestResources, type TestResources } from "./test-resources.js";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Config } from "../../src/config/config.js";
-import { ToolRunner } from "../../src/tools/tool-runner.js";
+import { ToolRunner, type ToolContext } from "../../src/tools/tool-runner.js";
 import { ApprovalManager } from "../../src/permissions/approval-manager.js";
 import type { Engine } from "../../src/agent/engine.js";
 import type { Approval } from "../../src/shared/types.js";
 
-const directories: string[] = [];
-const runners: ToolRunner[] = [];
-
-export function trackRunner(runner: ToolRunner) {
-  runners.push(runner);
+function trackExecutions(runner: ToolRunner, scope: TestResources) {
+  const execute = runner.execute.bind(runner);
+  const forCall = runner.forCall.bind(runner);
+  runner.execute = (...args) => scope.track(() => execute(...args));
+  runner.forCall = (callId) => trackExecutions(forCall(callId), scope);
 
   return runner;
 }
 
-export async function temp() {
-  const directory = await realpath(
-    await mkdtemp(path.join(tmpdir(), "ca-test-")),
+export function trackRunner(runner: ToolRunner) {
+  const scope = currentTestResources();
+  scope.defer(() => runner.close());
+
+  return trackExecutions(runner, scope);
+}
+
+export function createTestRunner(context: ToolContext) {
+  const scope = currentTestResources();
+
+  return trackRunner(
+    new ToolRunner({
+      ...context,
+      signal: AbortSignal.any([context.signal, scope.signal]),
+    }),
   );
+}
 
-  directories.push(directory);
+export function temp() {
+  const scope = currentTestResources();
 
-  return directory;
+  return scope.track(async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "ca-test-"));
+    scope.directory(directory);
+    const resolved = await realpath(directory);
+    scope.assertOpen();
+
+    return resolved;
+  });
 }
 
 /** 审批出现是就绪条件；这些用例验证取消与恢复，没有一秒内启动的产品契约。 */
@@ -75,30 +97,21 @@ export function waitForApproval(engine: Engine, taskId: string) {
   });
 }
 
-afterEach(async () => {
-  await Promise.all(runners.splice(0).map((runner) => runner.close()));
-  for (const directory of directories.splice(0)) {
-    await rm(directory, { recursive: true, force: true });
-  }
-});
-
 export async function fileFixture() {
   const root = await temp();
   const config = new Config(await temp());
   const controller = new AbortController();
   const approvals = new ApprovalManager(() => {});
   const events: { type: string; data: any }[] = [];
-  const runner = trackRunner(
-    new ToolRunner({
-      root,
-      settings: config.settings,
-      sessionId: "s",
-      taskId: "t",
-      signal: controller.signal,
-      approvals,
-      emit: (type, data) => events.push({ type, data }),
-    }),
-  );
+  const runner = createTestRunner({
+    root,
+    settings: config.settings,
+    sessionId: "s",
+    taskId: "t",
+    signal: controller.signal,
+    approvals,
+    emit: (type, data) => events.push({ type, data }),
+  });
 
   return { root, config, controller, approvals, events, runner };
 }

@@ -18,8 +18,10 @@ import { it, expect, vi } from "vitest";
 import { writeFile, readFile } from "node:fs/promises";
 import path from "node:path";
 import pino from "pino";
-import { Engine } from "../src/agent/engine.js";
-import { Store } from "../src/sessions/store.js";
+import {
+  TestEngine as Engine,
+  TestStore as Store,
+} from "./fixtures/managed-runtime.js";
 import { Config } from "../src/config/config.js";
 import type { ModelProvider } from "../src/providers/model-provider.js";
 import { ModelError } from "../src/providers/model-error.js";
@@ -89,7 +91,7 @@ it("enforces step budget after saving removed-tool errors as tool results", asyn
     expect(fixture.engine.active).toBeUndefined();
   } finally {
     await fixture.engine.close();
-    fixture.store.close();
+    await fixture.store.closeAsync();
   }
 });
 
@@ -165,7 +167,7 @@ it("captures model exchanges and complete tool results for a replay case", async
     });
   } finally {
     await fixture.engine.close();
-    fixture.store.close();
+    await fixture.store.closeAsync();
   }
 });
 
@@ -223,7 +225,7 @@ it("creates independent files through one unified batch returned in one model re
     expect(fixture.store.tasks(fixture.session.id)[0].status).toBe("completed");
   } finally {
     await fixture.engine.close();
-    fixture.store.close();
+    await fixture.store.closeAsync();
   }
 });
 
@@ -243,7 +245,7 @@ it("includes the built-in web search tool in host task requests", async () => {
     expect(fixture.store.tasks(fixture.session.id)[0].status).toBe("completed");
   } finally {
     await fixture.engine.close();
-    fixture.store.close();
+    await fixture.store.closeAsync();
   }
 });
 
@@ -323,7 +325,7 @@ it("persists a complex-task plan after inspection and before executing its next 
     expect(fixture.store.tasks(fixture.session.id)[0].status).toBe("completed");
   } finally {
     await fixture.engine.close();
-    fixture.store.close();
+    await fixture.store.closeAsync();
   }
 });
 
@@ -413,7 +415,7 @@ it("starts tool duration after command approval instead of when the call is requ
   } finally {
     clock.mockRestore();
     await fixture.engine.close();
-    fixture.store.close();
+    await fixture.store.closeAsync();
   }
 });
 
@@ -500,7 +502,7 @@ it("routes an approval to the configured low-cost model and persists an automati
     );
   } finally {
     await engine.close();
-    store.close();
+    await store.closeAsync();
   }
 });
 
@@ -566,7 +568,7 @@ it("requests human review instead of retrying with reasoning when the approval m
     );
   } finally {
     await fixture.engine.close();
-    fixture.store.close();
+    await fixture.store.closeAsync();
   }
 });
 
@@ -600,7 +602,7 @@ it("requires a real session workspace before asking the approval model", async (
     await expect(pending).resolves.toBe(false);
   } finally {
     await fixture.engine.close();
-    fixture.store.close();
+    await fixture.store.closeAsync();
   }
 });
 
@@ -625,7 +627,7 @@ it("fails an over-budget context before calling the provider", async () => {
     );
   } finally {
     await fixture.engine.close();
-    fixture.store.close();
+    await fixture.store.closeAsync();
   }
 });
 
@@ -660,7 +662,7 @@ it("persists the actual model error in the failed task and user notice", async (
     ).toBe(true);
   } finally {
     await fixture.engine.close();
-    fixture.store.close();
+    await fixture.store.closeAsync();
   }
 });
 
@@ -697,7 +699,7 @@ it("returns invalid tool arguments as model feedback without mutating files", as
     expect(fixture.store.tasks(fixture.session.id)[0].status).toBe("completed");
   } finally {
     await fixture.engine.close();
-    fixture.store.close();
+    await fixture.store.closeAsync();
   }
 });
 
@@ -749,7 +751,7 @@ it("loads project guidance and bounds large tool feedback", async () => {
     expect(result.text.length).toBe(1000);
   } finally {
     await fixture.engine.close();
-    fixture.store.close();
+    await fixture.store.closeAsync();
   }
 });
 
@@ -823,7 +825,7 @@ it("requires a fresh read in a later task even when history contains an earlier 
     ).toBe(true);
   } finally {
     await fixture.engine.close();
-    fixture.store.close();
+    await fixture.store.closeAsync();
   }
 });
 
@@ -874,7 +876,7 @@ it("reads credential-related source without corrupting tool-result JSON", async 
     expect(result?.data.result.text).toContain("const result = 42;");
   } finally {
     await fixture.engine.close();
-    fixture.store.close();
+    await fixture.store.closeAsync();
   }
 });
 
@@ -961,7 +963,7 @@ it("persists multi-file progress with the call id and returns one batch result",
     }
   } finally {
     await fixture.engine.close();
-    fixture.store.close();
+    await fixture.store.closeAsync();
   }
 });
 
@@ -1105,7 +1107,7 @@ it("creates memory without approval and reads its body only on demand in a new s
     expect(trace).not.toContain("当前任务已检查 package.json。");
   } finally {
     await fixture.engine.close();
-    fixture.store.close();
+    await fixture.store.closeAsync();
   }
 });
 
@@ -1169,6 +1171,6 @@ it("executes a scheduled DAG and returns blocked descendants without invoking th
     ).toBe(true);
   } finally {
     await fixture.engine.close();
-    fixture.store.close();
+    await fixture.store.closeAsync();
   }
 });

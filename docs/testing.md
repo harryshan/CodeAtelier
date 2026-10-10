@@ -63,7 +63,7 @@ Windows `process-tree.test.ts` 用真实 Node 父子进程和继承的输出句�
 
 默认并发下的 Windows 稳定性仍需独立排查进程退出、临时文件/SQLite 清理与资源竞争；不通过删测试、放宽断言或默认提高超时来掩盖它。
 
-### Windows 文件占用调查（2026-10-10，尚未修复）
+### Windows 文件占用调查（2026-10-10，修复前记录）
 
 **已确认的机制是测试超时后的清理竞争，不是已经正常关闭的文件需要多等几次删除。** 本机 Node 26.10.0／Vitest 3.2.7 下，通过单 worker、真实 ToolRunner 子进程和真实 SQLite Store 的隔离诊断复现：
 
@@ -95,6 +95,24 @@ Windows `process-tree.test.ts` 用真实 Node 父子进程和继承的输出句�
 先建立**每测试的资源登记和统一收尾**：资源创建后、第一次长 `await` 前登记；测试取消传递给控制器，收尾明确等待命令/Engine 结束，再 `await store.closeAsync()`、关闭工具线程池，最后删除目录。不能只给正文加 `finally`，也不能把清理简单移到 `onTestFinished`——当前 Vitest 在 `afterEach` 之后才调用它。独立资源应尽力全部清理并汇总错误，不因首个目录失败遗漏后续资源。
 
 完成确定性超时清理回归后，再评估 Windows 重型集成测试与纯单测的并发划分。降低 worker 可作诊断或运行策略，但不修复超时后的生命周期缺口；不以加大 `rm.maxRetries`、提高测试超时或删除失败测试替代修复。
+
+### 测试资源生命周期修复（2026-10-10）
+
+`tests/fixtures/test-resources.ts` 按 Vitest task 登记资源，替代公共 helper 的文件级目录/runner 数组。顺序是取消作用域、等待在途操作结束、逆序关闭资源、最后逐个删除临时目录；独立清理失败汇总为 `AggregateError`，不再因首个目录失败跳过其余目录。`temp()` 在第一次 await 前捕获作用域，目录一创建就登记，即使取消后才返回也会清理。不增加删除重试、默认 worker 限制或已有测试的超时。
+
+- `fileFixture` 与 `createTestRunner` 把测试 signal 和调用方 signal 合并，跟踪根 runner 和 `forCall` 的在途操作，等真实命令结束后再关闭读取线程池。`trackRunner` 只为已有实例登记等待/关闭；新建命令 runner 应使用 `createTestRunner`，确保 signal 接入。
+- `managed-runtime.ts` 的 `TestStore`、`TestEngine` 使用生产实现，只增加创建即登记以及正文/hook 共享一次关闭 Promise。Store 必须使用并等待 `closeAsync()`，不能混用不等待 Worker 的 `close()`。已接入本次调查涉及的 `engine`、`agent-runtime-engine`、`auxiliary-model` 与 `shutdown`，以及直接运行命令的 `agent-runtime-tools`。
+- `createTestApp` 跟踪异步初始化并登记 `app.close()`；shutdown 的 launcher 夹具改用可取消、等待整棵进程树退出的执行器，避免仅终止父进程或依赖正文 finally。HTTP/SSE 的行为断言保留。
+- `fixture-cleanup.test.ts` 的独立 Vitest 子进程先准备真实命令/SQLite Worker/Engine，再故意触发 200ms 正文超时；后继用例检查命令已结束、模型已取消、数据库已关闭且目录消失。Store/Engine 组的正文直到 afterAll 才解除等待，避免用正文 finally 冒充 hook 清理。外层要求恰好三项主动超时失败、三项后继检查通过且无 EBUSY；另覆盖晚返回目录、关闭幂等和失败后继续清理。子配置不收集 Evaluation，也不改变默认测试并发。
+
+本轮 Windows／Node 26.10.0 验证：
+
+- 命令超时回归先在旧公共夹具上失败，修复后通过；定向七文件 **62 项通过**。默认套件新增三项生命周期回归，总数为 671。
+- 最终默认 `pnpm check` 的类型、lint、格式通过；全量测试 **666 通过、4 项 15 秒超时、1 个平台跳过**，新增资源清理回归通过，日志没有 `EBUSY`、资源清理聚合错误或 hook 超时。剩余失败为 `agent-runtime-tools` 的 Node 命令、`auxiliary-model` 的成功压缩、`permissions` 的管道 Git 命令及 `shutdown` 的 HTTP/SSE 关闭。**完整 check 仍未通过**；日志保留于 `.local/cleanup-check-final.log`。
+- 同一套件的诊断命令 `pnpm test --maxWorkers=2` 为 **670 通过、1 跳过、0 失败**，报告为 `.local/cleanup-two-workers-final.json`；这不改变默认并发，也不能冒充默认 check 通过。
+- `pnpm test:e2e` 的测试模式构建与 **42 项 Chromium E2E 通过**；Evaluation、原生安装态探针和其他操作系统未运行。
+
+该改动仅涉及测试基础设施，没有改变产品运行时生命周期或 tracing。未登记的任意 Promise 不会自动变得可取消；直接使用生产资源的其他专项测试仍需负责自己的生命周期。资源清理修复不代表解决所有默认高并发冷启动/调度超时，也不等于跨平台验收。
 
 ## 测试分层
 

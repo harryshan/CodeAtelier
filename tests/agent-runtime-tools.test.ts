@@ -10,7 +10,7 @@
 
 import { expect, it, vi } from "vitest";
 import { Config } from "../src/config/config.js";
-import { ToolRunner } from "../src/tools/tool-runner.js";
+import { createTestRunner } from "./fixtures/helpers.js";
 import { temp } from "./fixtures/helpers.js";
 
 it.each([
@@ -28,7 +28,7 @@ it.each([
     });
     const events: Array<{ type: string; data: any }> = [];
     const requestApproval = vi.fn(async () => false);
-    const runner = new ToolRunner({
+    const runner = createTestRunner({
       root,
       sessionId: "session-1",
       taskId: "task-1",
@@ -89,7 +89,7 @@ it.each([
       stages.push("start");
     };
 
-    const runner = new ToolRunner({
+    const runner = createTestRunner({
       root,
       sessionId: "session-1",
       taskId: "task-1",
@@ -132,7 +132,7 @@ it("does not start a Git-containing host command when Broker approval rejects", 
   const prepareRunWithPermissions = vi.fn(async () => {
     throw new Error("Broker approval rejected");
   });
-  const runner = new ToolRunner({
+  const runner = createTestRunner({
     root: await temp(),
     sessionId: "session-1",
     taskId: "task-1",
@@ -164,7 +164,7 @@ it.each(["host-process", "missing-adapter"])(
     });
     const prepareRunWithPermissions = vi.fn(async () => executePrepared);
     const onExecutionStart = vi.fn(async () => {});
-    const runner = new ToolRunner({
+    const runner = createTestRunner({
       root: await temp(),
       sessionId: "session-1",
       taskId: "task-1",
@@ -202,7 +202,7 @@ it("routes every Git action to Broker without spawning a Runtime Git process", a
     truncated: false,
   }));
   const events: Array<{ type: string; data: any }> = [];
-  const runner = new ToolRunner({
+  const runner = createTestRunner({
     root,
     sessionId: "session-1",
     taskId: "task-1",

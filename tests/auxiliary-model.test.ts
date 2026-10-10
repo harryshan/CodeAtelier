@@ -11,12 +11,14 @@ import path from "node:path";
 import pino from "pino";
 import { Config } from "../src/config/config.js";
 import { auxiliarySettings } from "../src/config/auxiliary-model.js";
-import { Engine } from "../src/agent/engine.js";
+import {
+  TestEngine as Engine,
+  TestStore as Store,
+} from "./fixtures/managed-runtime.js";
 import { createInstructions } from "../src/agent/instructions.js";
 import { definitions } from "../src/tools/registry.js";
 import { historyDefinition } from "../src/context/history.js";
 import { contextSize } from "../src/context/budget.js";
-import { Store } from "../src/sessions/store.js";
 import { createBudget } from "../src/context/token-budget.js";
 import { temp } from "./fixtures/helpers.js";
 
@@ -198,7 +200,7 @@ it.each([false, true])(
       }
     } finally {
       await engine.close();
-      store.close();
+      await store.closeAsync();
     }
   },
 );

@@ -19,7 +19,10 @@ import { PassThrough } from "node:stream";
 import { promisify } from "node:util";
 import pino from "pino";
 import { expect, it, vi } from "vitest";
-import { Engine } from "../src/agent/engine.js";
+import {
+  TestEngine as Engine,
+  TestStore as Store,
+} from "./fixtures/managed-runtime.js";
 import { Config } from "../src/config/config.js";
 import type { ModelProvider } from "../src/providers/model-provider.js";
 import type {
@@ -27,7 +30,6 @@ import type {
   LaunchedAgentRuntime,
 } from "../src/sandbox/agent-runtime-launcher.js";
 import { AgentRuntimeFallbackError } from "../src/sandbox/agent-runtime-launcher.js";
-import { Store } from "../src/sessions/store.js";
 import { temp } from "./fixtures/helpers.js";
 
 const runFile = promisify(execFile);
@@ -355,7 +357,7 @@ it("moves the Engine agent loop into the launched Runtime process", async () => 
     });
   } finally {
     await engine.close();
-    store.close();
+    await store.closeAsync();
   }
 });
 
@@ -475,7 +477,7 @@ for (const cleanupProof of ["clean", "orphaned"] as const) {
       );
     } finally {
       await engine.close();
-      store.close();
+      await store.closeAsync();
     }
   });
 }
@@ -688,7 +690,7 @@ for (const approve of [true, false]) {
       expect(trace).not.toContain(command);
     } finally {
       await engine.close();
-      store.close();
+      await store.closeAsync();
     }
   });
 }
@@ -756,7 +758,7 @@ it("records unknown when Runtime IPC closes before a trusted terminal result", a
     ).toBe(true);
   } finally {
     await engine.close();
-    store.close();
+    await store.closeAsync();
   }
 });
 
@@ -845,7 +847,7 @@ it("keeps a cancelled Broker Git push out of the Sandbox Runner", async () => {
     });
   } finally {
     await engine.close();
-    store.close();
+    await store.closeAsync();
   }
 });
 
@@ -891,7 +893,7 @@ it("runs ordinary Runtime Git through the Broker host process", async () => {
     });
   } finally {
     await engine.close();
-    store.close();
+    await store.closeAsync();
   }
 });
 
@@ -961,7 +963,7 @@ it("preserves Broker Git add and commit results and write attribution", async ()
     }
   } finally {
     await engine.close();
-    store.close();
+    await store.closeAsync();
   }
 });
 
@@ -1048,6 +1050,6 @@ it("continues in the host loop only for an explicit pre-start Runtime fallback",
     ).toBe(true);
   } finally {
     await engine.close();
-    store.close();
+    await store.closeAsync();
   }
 });

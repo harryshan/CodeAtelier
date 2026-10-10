@@ -6,18 +6,21 @@
  * 2. 按任务审批事件和持久化命令输出确认就绪，再连接 SSE；关闭后检查流结束、端口释放及 SQLite 中的中断记录。
  * 3. 启动 launcher.ts 父进程，确认它能在认证后的重载请求后替换后端子进程，并在关闭后正常退出。
  *
- * 收到关闭响应还不够，必须确认资源确实释放；测试负责清理自己启动的进程。
+ * 收到关闭响应还不够，必须确认资源确实释放；服务登记到测试作用域，launcher 超时也会终止并等待整个进程树。
  */
 
 import { it, expect } from "vitest";
 import pino from "pino";
-import { spawn } from "node:child_process";
+import { executeProcess } from "../src/tools/process.js";
+import { currentTestResources } from "./fixtures/test-resources.js";
 import { once } from "node:events";
 import { createServer, type AddressInfo } from "node:net";
 import path from "node:path";
-import { createApp } from "../src/server/app.js";
+import {
+  createTestApp as createApp,
+  TestStore as Store,
+} from "./fixtures/managed-runtime.js";
 import { Config } from "../src/config/config.js";
-import { Store } from "../src/sessions/store.js";
 import { temp, waitForApproval } from "./fixtures/helpers.js";
 
 it("rejects unauthenticated, forged and unconfirmed shutdown requests", async () => {
@@ -185,7 +188,7 @@ it("shutdown acknowledges a running task, closes SSE, releases the port and pers
         saved.events(session.id).some((e) => e.type === "command_output"),
       ).toBe(true);
     } finally {
-      saved.close();
+      await saved.closeAsync();
     }
 
     await fixture.shutdown();
@@ -219,27 +222,26 @@ function listeningUrls(output: string) {
 it("the production launcher replaces the backend after authenticated reload and exits after shutdown", async () => {
   const directory = await temp();
   const port = await availablePort();
-  const child = spawn(
-    process.execPath,
-    ["--import", "tsx", path.resolve("src/server/launcher.ts")],
-    {
-      cwd: process.cwd(),
-      windowsHide: true,
-      env: {
-        ...process.env,
+  const scope = currentTestResources();
+  let output = "";
+  const execution = scope.track(() =>
+    executeProcess(
+      process.execPath,
+      ["--import", "tsx", path.resolve("src/server/launcher.ts")],
+      process.cwd(),
+      scope.signal,
+      0,
+      64 * 1024,
+      (chunk) => {
+        output += chunk;
+      },
+      {
         CODEATELIER_DATA_DIR: directory,
         CODEATELIER_PORT: String(port),
         CODEATELIER_API_KEY: "",
       },
-      stdio: ["ignore", "pipe", "pipe"],
-    },
+    ),
   );
-  const exit = once(child, "exit");
-  let output = "";
-
-  child.stdout.setEncoding("utf8");
-  child.stdout.on("data", (chunk) => (output += chunk));
-  child.stderr.resume();
   try {
     await expect
       .poll(() => listeningUrls(output).length, { timeout: 10000 })
@@ -277,12 +279,9 @@ it("the production launcher replaces the backend after authenticated reload and 
 
     expect(shutdown.status).toBe(200);
     expect(await shutdown.json()).toEqual({ ok: true });
-    await expect.poll(() => child.exitCode, { timeout: 10000 }).toBe(0);
-    await exit;
+    await expect(execution).resolves.toMatchObject({ exitCode: 0 });
   } finally {
-    if (child.exitCode === null) {
-      child.kill();
-      await exit;
-    }
+    scope.controller.abort();
+    await Promise.allSettled([execution]);
   }
 });
