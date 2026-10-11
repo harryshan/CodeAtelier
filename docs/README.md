@@ -32,6 +32,8 @@
 
 ## 专题与未完成边界
 
+- [SQLite 存储改造与完整历史迁移](database-migration.md)：待实施交接设计；保留 SQLite、全部旧记录离线转换、全量验证与切换/回退，不代表迁移已执行。
+
 - [上下文管理](context-management.md)：已实现的会话压缩、历史回读与保留规则。
 - [项目记忆](memory-system.md)：核心检索和模型维护已实现；管理 UI、来源失效验证和手工恢复/清空仍待实现。
 - [多 agent 协作设计草案](multi-agent-design.md)：任务级开关、subagent 线程、只读权限、协调通信与 Sandbox/tracing 的待实现设计；不改变当前单 agent 范围。
