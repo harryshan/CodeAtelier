@@ -7,6 +7,7 @@
  * 3. 断线时移除连接、定时器和监听；返回的清理函数供服务关闭时结束全部流。
  *
  * SSE 不保存或重放任务。断线期间发生了什么，以 Store 中的快照为准。
+ * 连接内记录最后已提交事件 ID，refresh trace 只表示后端写出；不推导浏览器已经读取或渲染。
  */
 
 import type { HttpServer } from "./http-server.js";
@@ -37,8 +38,17 @@ export function registerSessionEvents(
       Connection: "keep-alive",
       "X-Accel-Buffering": "no",
     });
+    let eventId: number | undefined;
+    const committed = (event: { sessionId: string; id: number }) => {
+      if (event.sessionId === id) {
+        eventId = event.id;
+      }
+    };
+
+    engine.events.on("event", committed);
     const send = () => {
       if (!reply.raw.destroyed) {
+        engine.traceRefresh(id, eventId);
         reply.raw.write("event: refresh\ndata: {}\n\n");
       }
     };
@@ -57,6 +67,7 @@ export function registerSessionEvents(
       streams.delete(reply.raw);
       clearInterval(timer);
       engine.events.off("change", listener);
+      engine.events.off("event", committed);
     });
   });
 

@@ -9,6 +9,7 @@
  * 5. preClose 中断任务并结束 SSE，onClose 关闭数据库。
  *
  * 关闭时要先确认任务已经中断，再结束服务。页面从保存的会话快照读取状态，任务循环由 Engine 执行。
+ * trace/live 在相同鉴权下返回 partial 内存快照或持久检查点，no-store；完整下载接口仍只读取终态归档。
  */
 
 import Fastify, { LogController } from "fastify";
@@ -239,6 +240,24 @@ export async function createApp(
     await engine.cancelAsync((req.params as { id: string }).id);
 
     return { ok: true };
+  });
+  app.get("/api/tasks/:id/trace/live", async (req, reply) => {
+    const task = store.task((req.params as { id: string }).id);
+    if (!task) {
+      return reply.code(404).send({ error: "任务不存在" });
+    }
+
+    const trace = await engine.liveTrace(task);
+    if (!trace) {
+      return reply
+        .code(404)
+        .send({ error: "该任务没有运行中 trace 或检查点。" });
+    }
+
+    return reply
+      .header("Cache-Control", "no-store")
+      .type("application/json")
+      .send(trace);
   });
   app.get("/api/tasks/:id/trace", async (req, reply) => {
     const id = (req.params as { id: string }).id;

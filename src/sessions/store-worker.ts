@@ -7,9 +7,10 @@
  * 3. replay 与同步 Store 共用增量编码；主线程只接收结构化克隆结果，Worker 不处理权限、模型、文件或用户输入，也不会执行任意 SQL。
  *
  * 每次请求单独打开 SQLite 连接，WAL 允许它与主 Store 的短查询共存。事务失败会回滚，不能撤销已经发生的文件或模型副作用。
+ * WorkerTimings 包装实际 SQLite/事务和本文件 JSON 阶段，有界回传安全时间记录；不包含 SQL、路径或正文。
  */
 
-import { DatabaseSync } from "node:sqlite";
+import { WorkerTimings, type WorkerTiming } from "./worker-timing.js";
 import { parentPort } from "node:worker_threads";
 import { writeReplay } from "./replay-storage.js";
 
@@ -50,10 +51,12 @@ export interface StoreWorkerResponse {
   ok: boolean;
   value?: unknown;
   error?: string;
+  timings?: WorkerTiming[];
+  droppedTimings?: number;
 }
 
-function handle(request: StoreWorkerRequest) {
-  const db = new DatabaseSync(request.file, { timeout: 5000 });
+function handle(request: StoreWorkerRequest, timings: WorkerTimings) {
+  const db = timings.database(request.file);
   db.exec("PRAGMA foreign_keys = ON");
 
   try {
@@ -64,7 +67,7 @@ function handle(request: StoreWorkerRequest) {
         )
         .all(request.sessionId) as Array<{ items: string }>;
 
-      return rows.flatMap((row) => JSON.parse(row.items) as unknown[]);
+      return rows.flatMap((row) => timings.parse(row.items) as unknown[]);
     }
 
     if (request.operation === "tokenAnchor") {
@@ -72,14 +75,14 @@ function handle(request: StoreWorkerRequest) {
         .prepare("SELECT data FROM context_token_anchors WHERE sessionId=?")
         .get(request.sessionId);
 
-      return row ? JSON.parse(String(row.data)) : undefined;
+      return row ? timings.parse(String(row.data)) : undefined;
     }
 
     if (request.operation === "events") {
       return db
         .prepare("SELECT * FROM events WHERE sessionId=? AND id>? ORDER BY id")
         .all(request.sessionId, request.after || 0)
-        .map((row: any) => ({ ...row, data: JSON.parse(String(row.data)) }));
+        .map((row: any) => ({ ...row, data: timings.parse(String(row.data)) }));
     }
 
     if (request.operation === "latestSnapshot") {
@@ -89,7 +92,7 @@ function handle(request: StoreWorkerRequest) {
         )
         .get(request.sessionId) as { data: string } | undefined;
 
-      return row ? JSON.parse(row.data) : undefined;
+      return row ? timings.parse(row.data) : undefined;
     }
 
     if (request.operation === "snapshot") {
@@ -104,7 +107,7 @@ function handle(request: StoreWorkerRequest) {
         .get(request.sessionId, request.snapshotId) as
         { data: string } | undefined;
 
-      return row ? JSON.parse(row.data) : undefined;
+      return row ? timings.parse(row.data) : undefined;
     }
 
     if (request.operation === "write") {
@@ -124,7 +127,7 @@ function handle(request: StoreWorkerRequest) {
               sessionId as string,
               taskId as string,
               type as string,
-              JSON.stringify(data),
+              timings.stringify(data),
               createdAt as string,
             );
             db.prepare("UPDATE sessions SET updatedAt=? WHERE id=?").run(
@@ -138,13 +141,13 @@ function handle(request: StoreWorkerRequest) {
             ).run(
               sessionId as string,
               sessionId as string,
-              JSON.stringify(items),
+              timings.stringify(items),
             );
           } else if (write.kind === "tokenAnchor") {
             const [sessionId, anchor] = write.values;
             db.prepare(
               "INSERT OR REPLACE INTO context_token_anchors(sessionId,data) VALUES(?,?)",
-            ).run(sessionId as string, JSON.stringify(anchor));
+            ).run(sessionId as string, timings.stringify(anchor));
           } else if (write.kind === "contextReplace") {
             const [sessionId, items] = write.values;
             db.prepare(
@@ -155,7 +158,7 @@ function handle(request: StoreWorkerRequest) {
             );
             db.prepare(
               "INSERT INTO context_chunks(sessionId,position,items) VALUES(?,0,?)",
-            ).run(sessionId as string, JSON.stringify(items));
+            ).run(sessionId as string, timings.stringify(items));
           } else if (write.kind === "status") {
             const [status, error, startedAt, finishedAt, taskId] = write.values;
             db.prepare(
@@ -214,7 +217,7 @@ function handle(request: StoreWorkerRequest) {
               sessionId as string,
               id as string,
               "user",
-              JSON.stringify({ text: prompt }),
+              timings.stringify({ text: prompt }),
               date as string,
             );
             if (recovery) {
@@ -223,7 +226,7 @@ function handle(request: StoreWorkerRequest) {
                 sessionId as string,
                 id as string,
                 "recovery",
-                JSON.stringify(recovery),
+                timings.stringify(recovery),
                 date as string,
               );
             }
@@ -276,8 +279,8 @@ function handle(request: StoreWorkerRequest) {
         throw new Error("压缩存储请求缺少快照或活动上下文。");
       }
 
-      const snapshot = JSON.stringify(request.snapshot);
-      const input = JSON.stringify(request.input);
+      const snapshot = timings.stringify(request.snapshot);
+      const input = timings.stringify(request.input);
       const snapshotId = (request.snapshot as { id?: unknown }).id;
       if (typeof snapshotId !== "string") {
         throw new Error("压缩快照缺少 ID。");
@@ -313,16 +316,22 @@ function handle(request: StoreWorkerRequest) {
 }
 
 parentPort?.on("message", (request: StoreWorkerRequest) => {
+  const timings = new WorkerTimings();
   try {
+    const value = timings.measure("execute", () => handle(request, timings));
     parentPort?.postMessage({
       id: request.id,
       ok: true,
-      value: handle(request),
+      value,
+      timings: timings.entries,
+      droppedTimings: timings.dropped,
     });
   } catch (error) {
     parentPort?.postMessage({
       id: request.id,
       ok: false,
+      timings: timings.entries,
+      droppedTimings: timings.dropped,
       error: error instanceof Error ? error.message : "Store Worker 执行失败。",
     });
   }

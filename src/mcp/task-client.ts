@@ -9,6 +9,7 @@
  * 4. dispatch 映射发现、工具、资源和提示模板接口；返回内容仅作为不可信工具数据，不能注入系统提示词。
  * 5. close 等待在途操作、结束 HTTP session 并通过 McpStdioTransport 共用 SDK 关闭回执和保存的 PID，确认直接子进程退出；traced 只记录关联 ID、操作类别、耗时和终态，不记录地址、参数或正文。
  * stdio 使用宿主用户权限及 SDK 最小继承环境，不是 Sandbox；只能管理直接子进程，不能保证第三方派生进程退出。
+ * 每服务队列另外记录 mcp.queue 与 callId/数字服务索引，不把服务配置或排队参数写入 trace。
  */
 import { setTimeout as delay } from "node:timers/promises";
 import { monitorTool, type ReviewTool } from "../tools/long-tool-monitor.js";
@@ -172,15 +173,46 @@ export class McpTaskClient {
         };
       }
 
-      return this.enqueue(action.server, () =>
+      return this.enqueue(action.server, toolCallId, executionSignal, () =>
         this.perform(action, args, toolCallId, executionSignal),
       );
     };
   }
 
-  private enqueue(server: string, operation: () => Promise<McpResult>) {
+  private enqueue(
+    server: string,
+    callId: string,
+    signal: AbortSignal,
+    operation: () => Promise<McpResult>,
+  ) {
+    const queued = this.options.traces.startSpan(this.options.taskId, {
+      name: "mcp.queue",
+      category: "mcp",
+      track: "MCP queue",
+      attributes: {
+        serverIndex: Object.keys(this.options.servers).indexOf(server) + 1,
+        callId,
+      },
+    });
     const previous = this.queues.get(server) ?? Promise.resolve();
-    const next = previous.catch(() => undefined).then(operation);
+    const aborted = () => this.options.traces.endSpan(queued, "cancelled");
+    signal.addEventListener("abort", aborted, { once: true });
+    if (signal.aborted) {
+      aborted();
+    }
+
+    const next = previous
+      .catch(() => undefined)
+      .then(() => {
+        signal.removeEventListener("abort", aborted);
+        this.options.traces.endSpan(
+          queued,
+          signal.aborted ? "cancelled" : "ok",
+        );
+        signal.throwIfAborted();
+
+        return operation();
+      });
     this.queues.set(server, next);
 
     return next;

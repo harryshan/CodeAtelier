@@ -9,9 +9,11 @@
  * 3. read 返回持久化 JSON 文本供 HTTP 响应直接下载；taskIds 只列举目录中真实存在的任务文件，供统计框避免展示失效链接。
  *
  * 此模块只管理本机诊断文件，不参与 SQLite 历史、权限判断或任务重放。
+ * 检查点写入独立目录并标 partial，成功终态后删除；显式保留期才清理过期普通 JSON，归档耗时写 DEBUG 日志。
  */
 
 import { randomUUID } from "node:crypto";
+import { performance } from "node:perf_hooks";
 import {
   mkdir,
   readFile,
@@ -19,6 +21,7 @@ import {
   rename,
   rm,
   writeFile,
+  lstat,
 } from "node:fs/promises";
 import path from "node:path";
 import type { Logger } from "pino";
@@ -27,6 +30,7 @@ export class TraceArchive {
   constructor(
     private dataDirectory: string,
     private log: Logger,
+    private retentionDays = 0,
   ) {}
 
   /** 按会话隔离每个任务的文件，调用方只传递 Store 已保存的任务与会话 ID。 */
@@ -36,7 +40,26 @@ export class TraceArchive {
 
   /** 以临时文件后原子替换保存完整 trace；故障不能让已执行工具或任务状态回滚。 */
   async write(sessionId: string, taskId: string, trace: unknown) {
-    const archiveFile = this.archiveFile(sessionId, taskId);
+    const saved = await this.writeFile(
+      this.archiveFile(sessionId, taskId),
+      sessionId,
+      taskId,
+      trace,
+    );
+    if (saved && this.retentionDays > 0) {
+      await this.pruneExpired();
+    }
+
+    return saved;
+  }
+
+  private async writeFile(
+    archiveFile: string,
+    sessionId: string,
+    taskId: string,
+    trace: unknown,
+  ) {
+    const started = performance.now();
     const temporaryFile = path.join(
       path.dirname(archiveFile),
       `.${taskId}.${randomUUID()}.tmp`,
@@ -46,6 +69,14 @@ export class TraceArchive {
       await mkdir(path.dirname(archiveFile), { recursive: true });
       await writeFile(temporaryFile, JSON.stringify(trace), "utf8");
       await rename(temporaryFile, archiveFile);
+      this.log.debug({
+        event: "tracing.archive_written",
+        taskId,
+        sessionId,
+        durationMs: performance.now() - started,
+      });
+
+      return true;
     } catch (error) {
       await rm(temporaryFile, { force: true }).catch(() => undefined);
       this.log.warn({
@@ -55,7 +86,99 @@ export class TraceArchive {
         taskId,
         err: error,
       });
+
+      return false;
     }
+  }
+
+  async writeCheckpoint(sessionId: string, taskId: string, trace: any) {
+    return this.writeFile(
+      path.join(
+        this.dataDirectory,
+        "trace-checkpoints",
+        sessionId,
+        taskId + ".json",
+      ),
+      sessionId,
+      taskId,
+      {
+        ...trace,
+        metadata: {
+          ...trace.metadata,
+          partial: true,
+          checkpointAt: new Date().toISOString(),
+        },
+      },
+    );
+  }
+
+  /** 仅在显式配置保留期后清理普通 JSON；跳过链接、临时文件及仍在更新的检查点。 */
+  private async pruneExpired() {
+    const cutoff = Date.now() - this.retentionDays * 86400000;
+    try {
+      for (const directory of ["traces", "trace-checkpoints"]) {
+        const root = path.join(this.dataDirectory, directory);
+        const sessions = await readdir(root, { withFileTypes: true }).catch(
+          () => [],
+        );
+        for (const session of sessions) {
+          if (!session.isDirectory() || session.isSymbolicLink()) {
+            continue;
+          }
+
+          const folder = path.join(root, session.name);
+          for (const entry of await readdir(folder, { withFileTypes: true })) {
+            if (!entry.isFile() || !entry.name.endsWith(".json")) {
+              continue;
+            }
+
+            const file = path.join(folder, entry.name);
+            const stat = await lstat(file);
+            if (stat.isFile() && stat.mtimeMs < cutoff) {
+              await rm(file, { force: true });
+            }
+          }
+        }
+      }
+    } catch (error) {
+      this.log.warn({ event: "tracing.retention_failed", err: error });
+    }
+  }
+
+  async readCheckpoint(sessionId: string, taskId: string) {
+    try {
+      return await readFile(
+        path.join(
+          this.dataDirectory,
+          "trace-checkpoints",
+          sessionId,
+          taskId + ".json",
+        ),
+        "utf8",
+      );
+    } catch (error: any) {
+      if (error.code !== "ENOENT") {
+        this.log.warn({
+          event: "tracing.checkpoint_read_failed",
+          err: error,
+          taskId,
+        });
+      }
+
+      return undefined;
+    }
+  }
+
+  async removeCheckpoint(sessionId: string, taskId: string) {
+    await rm(
+      path.join(
+        this.dataDirectory,
+        "trace-checkpoints",
+        sessionId,
+        taskId + ".json",
+      ),
+      { force: true },
+    );
   }
 
   /** 只返回数据目录中存在的 JSON 文件名，不能根据任务终态猜测 trace 已成功写入。 */

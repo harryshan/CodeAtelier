@@ -8,6 +8,7 @@
  * 3. runtimeEventSchema 承载模型 delta、取消、Runtime 生命周期以及固定 context/tool/read_file/subagent trace span；微秒时间戳由 Runtime 单调时钟提供，Broker 核验后归档，名称与属性不是任意日志通道。
  * 4. hello schema 绑定协议版本、任务和 instance；其中 Runtime 自报字段只用于一致性核对，不能替代 transport 身份。
  * 5. 子任务计划、问题、检查点和报告不加专属容量阈值；统一的帧大小与背压限制仍由 IPC transport 执行。
+ * v14 增加固定 process 阶段及 PID/退出/终止类别白名单，必须携带 callId；不接受命令、输出或清理成功声明。
  */
 
 import { z } from "zod";
@@ -19,8 +20,8 @@ import { contextSnapshotSchema } from "../context/types.js";
 import { subtaskSchema } from "../agent/subagent-contracts.js";
 import { gitRequestSchema } from "../tools/registry.js";
 
-// v13 用同步 read_file.compute 替代读取 Worker/池阶段；旧 Runtime 须重建并 Repair。
-export const RUNTIME_IPC_PROTOCOL_VERSION = 13;
+// v14 增加固定进程诊断和审批调用 ID；旧 Runtime 须重建并 Repair。
+export const RUNTIME_IPC_PROTOCOL_VERSION = 14;
 export const MAX_RUNTIME_IPC_FRAME_BYTES = 8 * 1024 * 1024;
 
 const identifier = z.string().min(1).max(120);
@@ -37,6 +38,12 @@ const runtimeTraceAttributesSchema = z
     errorName: z.string().min(1).max(120).optional(),
     subagentId: identifier.optional(),
     callId: identifier.optional(),
+    pid: z.number().int().positive().optional(),
+    exitCode: z.number().int().nullable().optional(),
+    stopReason: z.enum(["cancel", "timeout", "failure"]).optional(),
+    terminationMethod: z.enum(["taskkill", "process-group"]).optional(),
+    accepted: z.boolean().optional(),
+    treeCleanup: z.literal("unknown").optional(),
     slot: z.number().int().min(0).max(3).optional(),
     bytes: z
       .number()
@@ -54,6 +61,9 @@ const runtimeTraceAttributesSchema = z
   })
   .strict();
 const runtimeTraceNameSchema = z.enum([
+  "process.cancel",
+  "process.termination",
+  "process.direct_exit",
   "context.usage.restore",
   "context.usage.save",
   "context.prepare",
@@ -310,6 +320,7 @@ export const runtimeRequestSchema = z.discriminatedUnion("operation", [
           tool: identifier,
           description: z.string().min(1).max(32_000),
           grantKey: z.string().min(1).max(64_000).optional(),
+          toolCallId: identifier.optional(),
         })
         .strict(),
     })
@@ -590,6 +601,7 @@ export const runtimeEventSchema = z.discriminatedUnion("event", [
     .refine(
       (event) =>
         ((!event.name.startsWith("read_file.") &&
+          !event.name.startsWith("process.") &&
           event.name !== "tool.execute") ||
           !!event.attributes.callId) &&
         (event.name !== "tool.execute" || event.attributes.slot !== undefined),

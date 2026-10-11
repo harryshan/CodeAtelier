@@ -9,6 +9,7 @@
  * 5. 将流错误和连接异常转成 ModelError，最后清理计时器和监听。
  *
  * 半截文本和未收齐的工具参数不能算成功响应。重试统一交给上层，避免 SDK 与 Engine 重复重试。
+ * 消费每个 SDK 流事件时通知无参数 onStreamEvent，再处理原有超时、文本与结果；不额外序列化输入。
  */
 
 import { capabilitiesSchema, parseUsage } from "./model-metadata.js";
@@ -178,6 +179,7 @@ export class ResponsesProvider implements ModelProvider {
       );
 
       for await (const event of stream) {
+        options?.onStreamEvent?.();
         reset();
         if (event.type === "response.output_text.delta") {
           text += event.delta;

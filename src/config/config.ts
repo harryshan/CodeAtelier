@@ -10,6 +10,7 @@
  *
  * API 地址、主/辅助模型、环境密钥和 sandbox 开关的基线只来自 .env 或进程环境，避免与 settings.json 竞争。
  * 密钥不写进 settings.json。已保存的配置损坏时应报错，不能悄悄用默认值覆盖。
+ * tracing 环境配置在启动时校验容量、检查点和可选保留期；不向浏览器暴露或持久化为偏好。
  */
 
 import {
@@ -30,6 +31,7 @@ import { loadMcpServers, type McpServers } from "../mcp/config.js";
 import { dataDirectory } from "./data-directory.js";
 import { sandboxConfiguration } from "../sandbox/config.js";
 import type { SandboxConfiguration } from "../sandbox/types.js";
+import { traceConfiguration } from "../tracing/config.js";
 
 type ConnectionSettings = z.infer<typeof connectionSettingsSchema>;
 type PersistedSettings = z.infer<typeof persistedSettingsSchema>;
@@ -44,6 +46,7 @@ export class Config {
   apiKey = process.env.CODEATELIER_API_KEY || "";
   readonly sandbox: SandboxConfiguration;
   readonly mcpServers: McpServers;
+  readonly tracing = traceConfiguration();
 
   constructor(public directory = dataDirectory()) {
     mkdirSync(directory, { recursive: true });

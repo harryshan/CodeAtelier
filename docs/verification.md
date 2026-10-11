@@ -1,5 +1,16 @@
 # 初版验证记录
 
+## trace 后续关联、等待与运行期诊断（2026-10-12）
+
+- 按 D150 完成模型/工具/持久化精确关联、首流与首文本、任务/工具/审批/MCP 等待、Worker 实际阶段、Sandbox/IPC/进程取消、资源 counters、容量预算和 partial 检查点。新增环境变量、live API、保留策略与证据边界见 [tracing 指南](tracing.md)。Runtime IPC v14，未修改真实安装副本。
+- 回归先行：模型关联/审批等待/容量三项先在旧实现全部失败；IPC 回归先失败再通过。清理故障注入复现 cleanup 被任务 error 覆盖，修后保留 unknown。最后增加从 Engine 导出 trace 的集成断言，复现 Broker/IPC 未传 recorder 的两处接线遗漏后修复；不能以单模块测试代替实际接线覆盖。
+- 最终静态检查（TypeScript、ESLint、Prettier）通过。原样 pnpm check 在默认高并发下仍未全绿：第二轮是 process-tree 两例与 permissions 命令授权过期用例超时；没有放宽超时、断言或更改默认并发。第一次还暴露旧模型夹具未包含新增流观察回调、标题测试 runAllTimers 与周期采样冲突，已按新接口与有限计时范围修正。受限执行中的临时记忆写入失败在获准普通宿主复核通过，不改产品权限语义。
+- 冻结版本 pnpm test --maxWorkers=2：**100 文件、725 通过、1 跳过**（726 项，79.10 秒）。原样 check 失败不描述为已通过；完整单元结果属于显式限并发复核。
+- 官方 Perfetto Trace Processor **v58.2-add693d8b** 离线导入纯合成文件：**21 slices、7 flows、2 counters、0 importer error**。SQL 核对模型→工具 2 条、成功依赖 1 条、工具→持久化 2 条、持久化→模型 2 条，源/目标名称匹配；不是 UI 渲染或真实模型性能验收。CLI SHA-256 与上一轮相同：adfa6bad3d72be3ba9b83fa2b17b69fa13b3ab1cad0f42e52b86188bd5f0f997。
+- 冻结版本 pnpm test:e2e：完整 server/web/Windows 与 POSIX Runtime 测试构建通过，Chromium **42/42 通过**（2.2 分钟）；保留既有 Zod 注释和 Web chunk 构建警告。最终 TypeScript、ESLint、Prettier 复核与文档本地链接检查通过。
+- 没有运行 Evaluation、真实模型、固定账户安装/Repair 或 Linux/macOS 实机验收。Browser 渲染埋点、全部同步 SQLite 路径的逐语句计时、子进程资源归因不属于本次实现/证据。全部原始日志与合成输入位于忽略目录 .local/trace-*.log 和 .local/trace-validation/；不提交原始 trace、用户数据或既有 .pnpm-store/。
+
+
 ## trace 异步导出、凭据脱敏与异常收尾（2026-10-12）
 
 - 按 D149 先增加 `tracing-regressions.test.ts`，旧实现 **7/7 失败**，覆盖交叉区间、零时长、跨进程 flow、凭据、终态写库及导出/归档故障；修复后全部通过。再以假凭据补齐别名、带引号赋值/命令选项、完整 Cookie/Digest 头及 JSON 非字符串值的脱敏回归，先复现遗漏再修复；两文件合计新增 **20 项**。宿主/真实 Runtime、MCP 本机 HTTP、日志和 trace 下载专项 **8 文件、57 项通过**。普通 sandbox 的 MCP HTTP fetch 失败在获准宿主重跑后通过，不改产品语义。

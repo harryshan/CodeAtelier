@@ -276,6 +276,21 @@ it("moves the Engine agent loop into the launched Runtime process", async () => 
     }
 
     const toolLanes = new Set(toolStarts.map((event: any) => event.tid));
+    for (const flowName of [
+      "llm_to_tool",
+      "tool_to_result",
+      "result_to_model",
+    ]) {
+      expect(
+        trace.traceEvents.filter(
+          (event: any) =>
+            event.ph === "n" &&
+            event.flow_out &&
+            event.args.flowName === flowName,
+        ),
+      ).toHaveLength(5);
+    }
+
     expect(toolStarts).toHaveLength(5);
     expect(toolLanes.size).toBeLessThan(5);
     expect(toolLanes.size).toBeLessThanOrEqual(4);
@@ -294,6 +309,9 @@ it("moves the Engine agent loop into the launched Runtime process", async () => 
     );
 
     for (const name of [
+      "ipc.handler",
+      "ipc.request",
+      "sandbox.handshake",
       "context.prepare",
       "context.prepare.measure_request_view",
       "context.request",

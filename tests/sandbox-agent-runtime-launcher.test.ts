@@ -16,6 +16,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { SandboxBroker } from "../src/sandbox/broker.js";
 import { AgentRuntimeFallbackError } from "../src/sandbox/agent-runtime-launcher.js";
 import type { SandboxRuntime } from "../src/sandbox/types.js";
+import { TraceRecorder } from "../src/tracing/recorder.js";
 
 const temporaryRoots: string[] = [];
 
@@ -66,66 +67,108 @@ afterEach(async () => {
 });
 
 describe("SandboxBroker Agent Runtime launcher", () => {
-  it("commits provision only after Runtime start and releases every grant on clean close", async () => {
-    const files = await fixture();
-    const cleanup = vi.fn(async () => {});
-    const revokeAccess = vi.fn(async () => {});
-    const nativeClose = vi.fn(async () => "clean" as const);
-    const runtime: SandboxRuntime = {
-      selfCheck: vi.fn(async () => ({
-        level: "windows-sandbox-user-test",
-        workspaceProtection: "direct-path" as const,
-        accountGenerationDigest: "a".repeat(64),
-      })),
-      prepareAccess: vi.fn(async () => ({
-        readOnlyRoots: [],
-        readWriteRoots: [files.privateDirectory],
-        gitConfigFiles: [files.gitConfig],
-        privateDirectory: files.privateDirectory,
-        gitGlobalConfigPath: files.gitConfig,
-        cleanup,
-      })),
-      execute: vi.fn(async () => ({
-        output: "",
-        exitCode: 0,
-        truncated: false,
-      })),
-      launchAgentRuntime: vi.fn(async (command) => {
-        command.onAccessProvisioned?.();
-        const transport = new PassThrough();
-
-        return {
-          input: transport,
-          output: transport,
-          pid: 42,
-          processCreationTime100ns: "1234",
+  it.each([false, true])(
+    "records provision and cleanup without masking cleanup failure (%s)",
+    async (cleanupFails) => {
+      const files = await fixture();
+      const cleanup = vi.fn(async () => {
+        if (cleanupFails) {
+          throw new Error("fixture cleanup failure");
+        }
+      });
+      const revokeAccess = vi.fn(async () => {});
+      const nativeClose = vi.fn(async () => "clean" as const);
+      const runtime: SandboxRuntime = {
+        selfCheck: vi.fn(async () => ({
+          level: "windows-sandbox-user-test",
+          workspaceProtection: "direct-path" as const,
           accountGenerationDigest: "a".repeat(64),
-          close: nativeClose,
-        };
-      }),
-      revokeAccess,
-    };
-    const broker = new SandboxBroker(configuration(), runtime);
+        })),
+        prepareAccess: vi.fn(async () => ({
+          readOnlyRoots: [],
+          readWriteRoots: [files.privateDirectory],
+          gitConfigFiles: [files.gitConfig],
+          privateDirectory: files.privateDirectory,
+          gitGlobalConfigPath: files.gitConfig,
+          cleanup,
+        })),
+        execute: vi.fn(async () => ({
+          output: "",
+          exitCode: 0,
+          truncated: false,
+        })),
+        launchAgentRuntime: vi.fn(async (command) => {
+          command.onAccessProvisioned?.();
+          const transport = new PassThrough();
 
-    const launched = await broker.launch({
-      identity: identity(),
-      nonce: "b".repeat(64),
-      workspace: files.workspace,
-      signal: new AbortController().signal,
-    });
+          return {
+            input: transport,
+            output: transport,
+            pid: 42,
+            processCreationTime100ns: "1234",
+            accountGenerationDigest: "a".repeat(64),
+            close: nativeClose,
+          };
+        }),
+        revokeAccess,
+      };
+      const traces = new TraceRecorder();
+      traces.startTask("task-1", "session-1");
+      const broker = new SandboxBroker(
+        configuration(),
+        runtime,
+        undefined,
+        traces,
+      );
 
-    expect(broker.accountGenerationSnapshot()?.activeInstanceCount).toBe(1);
-    expect(broker.statusFor("task-1", "instance-1")).toMatchObject({
-      mode: "sandboxed",
-      applied: true,
-      level: "windows-sandbox-user-test",
-    });
-    await expect(launched.close("completed")).resolves.toBe("clean");
-    expect(nativeClose).toHaveBeenCalledWith("completed");
-    expect(revokeAccess).toHaveBeenCalledOnce();
-    expect(cleanup).toHaveBeenCalledOnce();
-    expect(broker.accountGenerationSnapshot()?.activeInstanceCount).toBe(0);
-  });
+      const launched = await broker.launch({
+        identity: identity(),
+        nonce: "b".repeat(64),
+        workspace: files.workspace,
+        signal: new AbortController().signal,
+      });
+
+      expect(broker.accountGenerationSnapshot()?.activeInstanceCount).toBe(1);
+      expect(broker.statusFor("task-1", "instance-1")).toMatchObject({
+        mode: "sandboxed",
+        applied: true,
+        level: "windows-sandbox-user-test",
+      });
+      await expect(launched.close("completed")).resolves.toBe(
+        cleanupFails ? "orphaned" : "clean",
+      );
+      expect(nativeClose).toHaveBeenCalledWith("completed");
+      expect(revokeAccess).toHaveBeenCalledOnce();
+      expect(cleanup).toHaveBeenCalledOnce();
+      expect(broker.accountGenerationSnapshot()?.activeInstanceCount).toBe(0);
+      traces.finishTask("task-1", cleanupFails ? "error" : "ok");
+      const events = traces.exportTask("task-1")!.traceEvents;
+      expect(events).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            name: "sandbox.cleanup",
+            ph: "b",
+            args: expect.objectContaining({
+              status: cleanupFails ? "unknown" : "ok",
+            }),
+          }),
+        ]),
+      );
+      for (const name of [
+        "self_check",
+        "manifest",
+        "shared_provision",
+        "native_launch",
+        "revoke_access",
+      ]) {
+        expect(
+          events.some((e) => e.name === `sandbox.${name}` && e.ph === "b"),
+        ).toBe(true);
+      }
+
+      expect(JSON.stringify(events)).not.toContain(files.workspace);
+    },
+  );
 
   it("allows host fallback only when preflight fails before a Runtime starts", async () => {
     const files = await fixture();

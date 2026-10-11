@@ -1,19 +1,22 @@
 /**
  * 在服务进程内记录任务级性能时间线，并导出 Perfetto 可导入的 Chrome Trace Event JSON。
- * Engine 为每个实际运行的任务调用 startTask/finishTask；模型和工具包装器在真实执行边界创建 span，
- * Engine 在终态通过 exportTask 生成归档；server/app.ts 只下载已经落盘的文件。
+ * Engine 为每个提交的任务调用 startTask/finishTask；模型和工具包装器在真实执行边界创建 span，
+ * Engine 在终态通过 exportTask 生成归档；server/app.ts 分别提供完整下载与 partial 快照。
  *
  * 1. 本进程单调时钟和已认证 Runtime 报时映射到微秒时间轴；业务生命周期用进程内独立 ID 的异步 b/e 配对，允许交叉结束，未结束片段由任务终态收口。
- * 2. startSpan/endSpan/instant 接收受控 JSON 属性：普通字符串限长；tool parameters 允许完整结构但递归遮盖凭据字段，避免密钥进入本机 trace。
+ * 2. startSpan/endSpan/instant 接收受控 JSON 属性：普通字符串限长；tool parameters 允许有界结构但递归遮盖凭据字段，避免密钥进入本机 trace。
  * 3. link 保存跨轨道因果关系；exportTask 保留逻辑轨道和父 span 属性，通过异步 n 事件及 bind_id 将 flow 绑定到正确生命周期；同刻事件按开始/端点/结束的约束排序。
  * 4. recorder 只保存运行中任务构造完整 JSON 所需的短暂状态；Engine 成功或失败写入 TraceArchive 后立即 discardTask，不保留完成 trace 缓存。
  *
  * 此记录器不参与任务恢复，也不改变工具或模型的执行顺序。记录故障必须不影响 agent 主流程。
+ * 每任务按记录数/估算字节预算截断并报告 droppedRecords，超额句柄仍可结束；参数有结构/字符上限，counter 导出 C。
  */
 
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import { isCredentialKey, redactText } from "../logging/redact.js";
+import { TraceRelations } from "./relations.js";
+import { currentTraceContext, withTraceContext } from "./context.js";
 import type {
   TraceAttribute,
   TraceAttributes,
@@ -38,9 +41,12 @@ type TraceRecord = {
     timestampUs: number;
     processId: number;
     attributes: TraceAttributes;
+    counter?: boolean;
   }>;
   links: TraceLink[];
   rootSpanId: string;
+  retainedBytes: number;
+  droppedRecords: number;
 };
 
 /**
@@ -53,7 +59,14 @@ function safeAttribute(
   key: string,
   preserveText: boolean,
   depth = 0,
+  budget = { remaining: 2048, characters: 131072, truncated: false },
 ): TraceAttribute {
+  if (--budget.remaining < 0) {
+    budget.truncated = true;
+
+    return "[TRUNCATED]";
+  }
+
   if (isCredentialKey(key)) {
     return "[REDACTED]";
   }
@@ -67,40 +80,71 @@ function safeAttribute(
   }
 
   if (typeof value === "string") {
+    if (value.length > 65536 || value.length > budget.characters) {
+      budget.truncated = true;
+
+      return "[TRUNCATED oversized value]";
+    }
+
+    budget.characters -= value.length;
     const redacted = redactText(value);
 
     return preserveText ? redacted : redacted.slice(0, MAX_ATTRIBUTE_LENGTH);
   }
 
   if (depth >= MAX_ATTRIBUTE_DEPTH) {
+    budget.truncated = true;
+
     return "[TRUNCATED]";
   }
 
   if (Array.isArray(value)) {
-    return value.map((item) =>
-      safeAttribute(item, key, preserveText, depth + 1),
-    );
+    if (value.length > budget.remaining) {
+      budget.truncated = true;
+    }
+
+    return value
+      .slice(0, Math.max(0, budget.remaining))
+      .map((item) => safeAttribute(item, key, preserveText, depth + 1, budget));
+  }
+
+  const entries = Object.entries(value);
+  if (entries.length > budget.remaining) {
+    budget.truncated = true;
   }
 
   return Object.fromEntries(
-    Object.entries(value)
+    entries
+      .slice(0, Math.max(0, budget.remaining))
       .filter(([, item]) => item !== undefined)
       .map(([childKey, item]) => [
-        childKey,
-        safeAttribute(item, childKey, preserveText, depth + 1),
+        childKey.length > 500 ? "[TRUNCATED key]" : childKey,
+        safeAttribute(item, childKey, preserveText, depth + 1, budget),
       ]),
   );
 }
 
 function safeAttributes(attributes: TraceAttributes = {}): TraceAttributes {
-  return Object.fromEntries(
-    Object.entries(attributes)
+  const budget = { remaining: 2048, characters: 131072, truncated: false };
+  const entries = Object.entries(attributes);
+  if (entries.length > 2048) {
+    budget.truncated = true;
+  }
+
+  const result = Object.fromEntries(
+    entries
+      .slice(0, 2048)
       .filter(([, value]) => value !== undefined)
       .map(([key, value]) => [
         key,
-        safeAttribute(value, key, key === "parameters"),
+        safeAttribute(value, key, key === "parameters", 0, budget),
       ]),
   );
+  if (budget.truncated) {
+    result.traceAttributesTruncated = true;
+  }
+
+  return result;
 }
 
 /** 将逻辑轨道稳定映射为同一 trace 内的数字 tid，避免依赖 Node 真实线程实现细节。 */
@@ -135,6 +179,50 @@ function trackIds(record: TraceRecord) {
 
 export class TraceRecorder {
   private traces = new Map<string, TraceRecord>();
+  readonly relations = new TraceRelations(this);
+
+  constructor(
+    private limits = { maxRecords: 100000, maxBytes: 32 * 1024 * 1024 },
+  ) {}
+
+  hasTask(taskId: string) {
+    return this.traces.has(taskId);
+  }
+
+  private retain(record: TraceRecord, bytes: number, newRecord = true) {
+    if (
+      record.retainedBytes + bytes > this.limits.maxBytes ||
+      (newRecord &&
+        record.spans.size + record.instants.length + record.links.length >=
+          this.limits.maxRecords)
+    ) {
+      record.droppedRecords++;
+
+      return false;
+    }
+
+    record.retainedBytes += bytes;
+
+    return true;
+  }
+
+  async measure<T>(
+    taskId: string,
+    options: TraceSpanOptions,
+    operation: () => Promise<T>,
+    signal?: AbortSignal,
+  ): Promise<T> {
+    const span = this.startSpan(taskId, options);
+    try {
+      const value = await withTraceContext(this, span, operation);
+      this.endSpan(span, "ok");
+
+      return value;
+    } catch (error) {
+      this.endSpan(span, signal?.aborted ? "cancelled" : "error");
+      throw error;
+    }
+  }
 
   /** 使用固定的 wall-clock origin 加单调 performance.now，既可导入 Perfetto，又不受任务期间系统校时影响。 */
   private nowUs() {
@@ -164,6 +252,8 @@ export class TraceRecorder {
       instants: [],
       links: [],
       rootSpanId: root.id,
+      retainedBytes: 512,
+      droppedRecords: 0,
     });
 
     return root;
@@ -182,11 +272,20 @@ export class TraceRecorder {
       category: options.category,
       track: options.track,
       processId: options.processId,
-      parentSpanId: options.parentSpanId ?? record.rootSpanId,
+      parentSpanId:
+        options.parentSpanId ??
+        (currentTraceContext()?.span.taskId === taskId
+          ? currentTraceContext()?.span.id
+          : undefined) ??
+        record.rootSpanId,
       startedAtUs: options.startedAtUs ?? this.nowUs(),
       attributes: safeAttributes(options.attributes),
     };
-    record.spans.set(span.id, span);
+    if (this.retain(record, 512 + JSON.stringify(span.attributes).length * 2)) {
+      record.spans.set(span.id, span);
+    } else {
+      span.attributes = {};
+    }
 
     return span;
   }
@@ -223,7 +322,13 @@ export class TraceRecorder {
       finishedAtUs ?? this.nowUs(),
     );
     span.status = status;
-    Object.assign(span.attributes, safeAttributes(attributes));
+    const record = this.traces.get(span.taskId);
+    if (record?.spans.has(span.id)) {
+      const safe = safeAttributes(attributes);
+      if (this.retain(record, JSON.stringify(safe).length * 2, false)) {
+        Object.assign(span.attributes, safe);
+      }
+    }
   }
 
   instant(
@@ -239,14 +344,40 @@ export class TraceRecorder {
       return;
     }
 
-    record.instants.push({
+    const safe = safeAttributes(attributes);
+    if (!this.retain(record, 256 + JSON.stringify(safe).length * 2)) {
+      return;
+    }
+
+    const entry = {
       name,
       category,
       track,
       timestampUs: this.nowUs(),
       processId,
-      attributes: safeAttributes(attributes),
-    });
+      attributes: safe,
+    };
+    record.instants.push(entry);
+
+    return entry;
+  }
+
+  counter(
+    taskId: string,
+    name: string,
+    track: string,
+    values: Record<string, number>,
+  ) {
+    const entry: TraceRecord["instants"][number] | undefined = this.instant(
+      taskId,
+      name,
+      "counter",
+      track,
+      values,
+    );
+    if (entry) {
+      entry.counter = true;
+    }
   }
 
   /** 不信任跨进程报时：只接受本任务开始之后且不超前 Broker 当前时间的有限误差。 */
@@ -268,7 +399,12 @@ export class TraceRecorder {
     }
 
     const record = this.traces.get(from.taskId);
-    if (!record) {
+    if (
+      !record ||
+      !record.spans.has(from.id) ||
+      !record.spans.has(to.id) ||
+      !this.retain(record, 256)
+    ) {
       return;
     }
 
@@ -299,10 +435,12 @@ export class TraceRecorder {
   /** 任务已经导出并尝试落盘后释放其运行期状态；不可把该方法用于仍在执行的任务。 */
   discardTask(taskId: string) {
     this.traces.delete(taskId);
+    this.relations.discard(taskId);
   }
 
   /** 返回可直接导入 ui.perfetto.dev 的 JSON；运行中 span 以导出时刻截断，但不会改写其内存状态。 */
   exportTask(taskId: string) {
+    const exportStarted = performance.now();
     const record = this.traces.get(taskId);
     if (!record) {
       return undefined;
@@ -398,7 +536,7 @@ export class TraceRecorder {
         event: {
           name: instant.name,
           cat: instant.category,
-          ph: "i",
+          ph: instant.counter ? "C" : "i",
           s: "t",
           ts: instant.timestampUs,
           pid: instant.processId,
@@ -463,6 +601,11 @@ export class TraceRecorder {
         traceId: record.id,
         taskId: record.taskId,
         sessionId: record.sessionId,
+        retainedBytesEstimate: record.retainedBytes,
+        droppedRecords: record.droppedRecords,
+        maxRecords: this.limits.maxRecords,
+        maxRetainedBytes: this.limits.maxBytes,
+        exportDurationMs: performance.now() - exportStarted,
         format: "CodeAtelier Perfetto Trace Event JSON v2",
       },
     };

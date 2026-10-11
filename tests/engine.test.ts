@@ -448,6 +448,7 @@ it("routes an approval to the configured low-cost model and persists an automati
             expect(options).toEqual({
               maxOutputTokens: 256,
               reasoningEffort: "none",
+              onStreamEvent: expect.any(Function),
             });
 
             return {

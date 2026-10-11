@@ -7,6 +7,7 @@
  * 3. 请求选项可限制本次输出，也可只为审批请求覆盖思考等级而不修改持久配置。
  *
  * 流式回调只负责展示。调用方必须等完整结果返回后再执行工具；历史保存也由调用方负责。
+ * onStreamEvent 是无正文的本地流事件观察回调，供 tracing 区分首流事件与首文本；不属于服务请求参数。
  */
 
 import type { Settings } from "../shared/types.js";
@@ -23,6 +24,8 @@ export type ModelProviderFactory = (
 
 /** 单次请求的可选覆盖；none 只用于关闭审批分类时的思考，不是公开设置项。 */
 export interface ModelRunOptions {
+  /** 仅在本地观测流事件到达，不传递事件正文，不进入供应商请求。 */
+  onStreamEvent?: () => void;
   maxOutputTokens?: number;
   reasoningEffort?: Settings["reasoningEffort"] | "none";
 }

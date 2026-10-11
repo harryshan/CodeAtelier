@@ -3,6 +3,7 @@
  * 审批 UI、分类模型和平台数据目录都留在 Broker Host；Runtime 只发送当前任务绑定的固定 schema 请求。
  *
  * 1. RuntimeApprovalClient 忽略调用方提供的 session/task 路由字段，Broker 使用已认证 identity 归属请求。
+ *    审批携带当前工具的可选诊断 toolCallId；它不参与授权或改变会话身份。
  * 2. grantKey 原样绑定审批语义，但不能改变 operation；Broker ApprovalManager 决定是否允许复用。
  * 3. RuntimeMemoryClient 不接收宿主路径，Broker handler 固定使用 identity 对应工作区和项目记忆服务。
  * 4. RuntimeGitClient 发送受限 action 和 toolCallId，保留各 action 的结果形状；旧 RuntimeGitPushClient 只发送调用 ID，Broker 完成 push 预检与审批。
@@ -15,6 +16,7 @@
 import type { SkillAction, SkillResult } from "../skills/contracts.js";
 import type { McpAction, McpResult } from "../mcp/contracts.js";
 import type { Approval } from "../shared/types.js";
+import { currentTraceCallId } from "../tracing/context.js";
 import type { RuntimeIpcPeer } from "./runtime-ipc-peer.js";
 import {
   runtimeGitPushResultSchema,
@@ -40,6 +42,7 @@ export class RuntimeApprovalClient {
         tool: data.tool,
         description: data.description,
         grantKey,
+        toolCallId: currentTraceCallId(),
       },
       signal,
     )) as { approved?: boolean };

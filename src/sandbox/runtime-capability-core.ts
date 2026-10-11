@@ -11,6 +11,7 @@
  * Windows 产品已由 native Supervisor 在调用本模块前完成 Named Pipe 客户端联合身份核验；本模块仍只负责
  * transport 之上的 capability，不是 Agent Runtime、进程启动器或 W1--W3 平台验收本身。测试用 mock/stdio
  * transport 也不能凭借调用本模块而获得产品身份保证。
+ * capabilities 与模型请求共用任务 trace，Broker 计时不包含 Runtime 尚未发出的工作。
  */
 
 import { createHash, randomUUID } from "node:crypto";
@@ -259,7 +260,22 @@ export class RuntimeBrokerGateway {
     signal.throwIfAborted();
     const selected = this.handlers.modelProvider(identity, purpose);
 
-    return selected.provider.getCapabilities?.(signal);
+    return this.traces.measure(
+      identity.taskId,
+      {
+        name: "llm.capabilities",
+        category: "llm",
+        track: "Model metadata",
+        attributes: {
+          purpose,
+          executionInstanceId: identity.executionInstanceId,
+        },
+      },
+      () =>
+        selected.provider.getCapabilities?.(signal) ??
+        Promise.resolve(undefined),
+      signal,
+    );
   }
 
   async requestModel(

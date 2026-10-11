@@ -330,7 +330,7 @@ it("persists each Engine task trace by session and task, then exports it only th
           event.tid === storeTrack.tid && event.ph === "b",
       );
     expect(storeSlices.map((event: { name: string }) => event.name)).toContain(
-      "store.write",
+      "store.worker.execute",
     );
     expect(JSON.stringify(storeSlices)).not.toContain("answer briefly");
 

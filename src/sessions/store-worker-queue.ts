@@ -3,9 +3,11 @@
  * 1. request 为每项工作分配单调 ID，限制等待队列，并按提交顺序逐条发送；不在失败后重试未知写入。
  * 2. 消息回执才完成 Promise；Worker 崩溃会拒绝当前和排队请求，阻止继续写入。
  * 3. close 等待已提交请求的结果后释放线程；trace 的排队和执行分别占独立轨道，不记录 SQL 参数。
+ * Store roundtrip 表示 dispatch 到回执，Store worker 使用 Worker 返回的真实阶段时间；请求 ID 串联队列与事务。
  */
 
 import { Worker } from "node:worker_threads";
+import { currentTraceContext } from "../tracing/context.js";
 import type { TraceRecorder } from "../tracing/recorder.js";
 import type {
   StoreWorkerRequest,
@@ -44,14 +46,18 @@ export class StoreWorkerQueue {
       return Promise.reject(new Error("Store 写入队列已满。"));
     }
 
-    const item: StoreWorkerRequest = { ...request, id: this.nextId++ };
+    const item: StoreWorkerRequest = {
+      ...request,
+      taskId: request.taskId ?? currentTraceContext()?.span.taskId,
+      id: this.nextId++,
+    };
 
     return new Promise<T>((resolve, reject) => {
-      const queued = this.traces?.startSpan(request.taskId ?? "", {
+      const queued = this.traces?.startSpan(item.taskId ?? "", {
         name: "store.queue",
         category: "storage",
         track: "Store queue",
-        attributes: { operation: request.operation },
+        attributes: { operation: request.operation, requestId: item.id },
       });
       this.pending.push({
         request: item,
@@ -101,7 +107,7 @@ export class StoreWorkerQueue {
     next.running = this.traces?.startSpan(next.request.taskId ?? "", {
       name: `store.${next.request.operation}`,
       category: "storage",
-      track: "Store worker",
+      track: "Store roundtrip",
       attributes: {
         requestId: next.request.id,
         operation: next.request.operation,
@@ -144,7 +150,28 @@ export class StoreWorkerQueue {
     }
 
     this.current = undefined;
+    for (const timing of message.timings ?? []) {
+      const span = this.traces?.startSpan(current.request.taskId ?? "", {
+        name: `store.worker.${timing.phase}`,
+        category: "storage",
+        track: "Store worker",
+        parentSpanId: current.running?.id,
+        startedAtUs: timing.start,
+        attributes: {
+          requestId: message.id,
+          operation: current.request.operation,
+        },
+      });
+      this.traces?.endSpan(
+        span,
+        timing.failed ? "error" : "ok",
+        {},
+        timing.end,
+      );
+    }
+
     this.traces?.endSpan(current.running, message.ok ? "ok" : "error", {
+      droppedTimings: message.droppedTimings,
       errorName: message.ok ? undefined : "StoreWorkerError",
     });
     if (message.ok) {

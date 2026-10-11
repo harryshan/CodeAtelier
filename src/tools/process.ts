@@ -14,8 +14,10 @@
  * 8. Windows 专用账户 Runtime 的 file-backed 入口避开 libuv 创建默认 stdio 命名管道的同步路径；在实例 TEMP 中独占创建输出文件，定时读取并施加磁盘上限，结束后关闭句柄和删除文件。
  *
  * 输出太长时只截断保存内容。非零退出码及 shell 写入 stderr 的实际错误照实返回，命令是否获准由执行前的审批负责。
+ * pipe/file-backed 路径观察 stop、终止结果与直子 close；从本地上下文选择宿主 Recorder 或 Runtime IPC，不改变清理策略。
  */
 
+import { processObserver } from "../tracing/process-observer.js";
 import { monitorTool, type ToolReview } from "./long-tool-monitor.js";
 import { spawn } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
@@ -130,6 +132,7 @@ export async function executeProcess(
     exitCode: number | null;
     truncated: boolean;
   }>((resolve, reject) => {
+    const traceProcess = processObserver();
     const child = spawn(command, args, {
       cwd,
       shell: false,
@@ -161,6 +164,7 @@ export async function executeProcess(
       }
 
       stopped = true;
+      traceProcess.stop(child.pid, signal.aborted, timedOut);
       if (child.pid) {
         if (process.platform === "win32") {
           const killer = spawn(
@@ -174,9 +178,11 @@ export async function executeProcess(
           // taskkill 冷启动可能超过一秒。提前杀 shell 会令 /T 找不到父 PID，
           // 留下持有 stdout 的后代并让 close 永久等待；只在明确失败后退回直子进程 kill。
           killer.once("error", () => {
+            traceProcess.termination("taskkill", false);
             child.kill();
           });
           killer.once("close", (code) => {
+            traceProcess.termination("taskkill", code === 0);
             if (code !== 0) {
               child.kill();
             }
@@ -184,7 +190,9 @@ export async function executeProcess(
         } else {
           try {
             process.kill(-child.pid, "SIGKILL");
+            traceProcess.termination("process-group", true);
           } catch {
+            traceProcess.termination("process-group", false);
             child.kill("SIGKILL");
           }
         }
@@ -267,6 +275,7 @@ export async function executeProcess(
       );
     });
     child.on("close", (code) => {
+      traceProcess.exit(code);
       if (finished) {
         return;
       }
@@ -404,6 +413,7 @@ function runFileBackedProcess(
     exitCode: number | null;
     truncated: boolean;
   }>((resolve, reject) => {
+    const traceProcess = processObserver();
     const child = spawn(command, args, {
       cwd,
       shell: false,
@@ -439,6 +449,7 @@ function runFileBackedProcess(
       }
 
       stopped = true;
+      traceProcess.stop(child.pid, signal.aborted, timedOut);
       if (!child.pid) {
         return;
       }
@@ -454,9 +465,11 @@ function runFileBackedProcess(
         );
         // 与 pipe 入口相同：不能在 taskkill /T 仍工作时先终止父 shell。
         killer.once("error", () => {
+          traceProcess.termination("taskkill", false);
           child.kill();
         });
         killer.once("close", (code) => {
+          traceProcess.termination("taskkill", code === 0);
           if (code !== 0) {
             child.kill();
           }
@@ -554,6 +567,7 @@ function runFileBackedProcess(
       );
     });
     child.once("close", (code) => {
+      traceProcess.exit(code);
       if (finished) {
         return;
       }

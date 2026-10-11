@@ -17,6 +17,7 @@
  *
  * 模型请求可以重试，但已经执行的工具不能跟着重跑。数据库回滚也撤销不了文件修改或
  * 已启动的命令，所以保存失败时必须停止任务，并留下足够的记录供后续恢复。
+ * 诊断生命周期：从入队建立 trace，精确关联模型/工具/持久化；关闭时等待检查点与终态归档，SSE 和快照只记录安全游标。
  */
 
 import { TaskSkills } from "../skills/task-skills.js";
@@ -92,6 +93,8 @@ import {
 } from "../tools/tool-graph.js";
 import { redactJson, redactText } from "../logging/redact.js";
 import { createSandboxLogger } from "../logging/logger.js";
+import { withTraceContext } from "../tracing/context.js";
+import { TraceTaskMonitor } from "../tracing/task-monitor.js";
 import { tracedModelProvider } from "../tracing/model-provider.js";
 import { TraceArchive } from "../tracing/archive.js";
 import { TraceRecorder } from "../tracing/recorder.js";
@@ -178,11 +181,12 @@ export class Engine {
   /** 全部宿主任务共享 Worker 配额；Sandbox Runtime 另须通过 Broker 取得同一全局 lease。 */
   private readonly subagentLimits = new SubagentLimits();
   /** 当前进程仅保留运行中任务构造 trace 所需的状态，任务落盘后立即释放。 */
-  readonly traces = new TraceRecorder();
+  readonly traces: TraceRecorder;
   private readonly workerTasks = new Set<string>();
   private readonly persistenceErrors = new Map<string, Error>();
   /** 已结束任务的 trace 另行按会话/任务写入数据目录，服务重启后仍可下载。 */
   readonly traceArchive: TraceArchive;
+  private readonly traceTasks: TraceTaskMonitor;
   /** SandboxBroker 在任务内固定安全 fallback；执行已开始后的未知结果仍不会重放。 */
   readonly sandbox: SandboxBroker;
   /** Sandbox 安装、自检、Runtime、Broker 和 fallback 生命周期写入独立 sandbox.log。 */
@@ -311,6 +315,33 @@ export class Engine {
     return this.traceArchive.read(task.sessionId, task.id);
   }
 
+  /** 运行中快照和崩溃前检查点始终标为 partial，不能据此认定任务完成。 */
+  async liveTrace(task: Task) {
+    const trace = this.traces.exportTask(task.id);
+    if (trace) {
+      return JSON.stringify({
+        ...trace,
+        metadata: { ...trace.metadata, partial: true },
+      });
+    }
+
+    return this.traceArchive.readCheckpoint(task.sessionId, task.id);
+  }
+
+  traceRefresh(sessionId: string, eventId?: number) {
+    for (const task of this.activeTasks) {
+      if (task.sessionId === sessionId) {
+        this.traces.instant(
+          task.id,
+          "session.sse_refresh",
+          "http",
+          "Session delivery",
+          { eventId },
+        );
+      }
+    }
+  }
+
   constructor(
     public store: Store,
     public config: Config,
@@ -319,8 +350,31 @@ export class Engine {
     private agentRuntimeLauncher?: AgentRuntimeLauncher,
     private modelStepLimitOverride?: number | null,
   ) {
-    this.traceArchive = new TraceArchive(config.directory, log);
+    this.traces = new TraceRecorder(config.tracing);
+    this.traceArchive = new TraceArchive(
+      config.directory,
+      log,
+      config.tracing.retentionDays,
+    );
+    this.traceTasks = new TraceTaskMonitor(
+      this.traces,
+      this.traceArchive,
+      log,
+      config.tracing.checkpointMs,
+    );
     this.store.setTracer(this.traces);
+    this.events.on(
+      "event",
+      (event: { taskId: string; id: number; type: string }) => {
+        this.traces.instant(
+          event.taskId,
+          "session.event_committed",
+          "storage",
+          "Session delivery",
+          { eventId: event.id, type: event.type },
+        );
+      },
+    );
     this.sandboxLog = createSandboxLogger(
       config.directory,
       config.settings.logLevel,
@@ -336,6 +390,7 @@ export class Engine {
         config.directory,
       ),
       this.sandboxLog,
+      this.traces,
     );
     this.agentRuntimeLauncher ??= config.sandbox.enabled
       ? this.sandbox
@@ -356,6 +411,7 @@ export class Engine {
           });
         }
       },
+      this.traces,
     );
   }
 
@@ -452,17 +508,34 @@ export class Engine {
 
   /** HTTP 快照首次加载全量事件，后续刷新只解析游标后的新增事件；任务状态和审批始终从小索引重新读取。 */
   async snapshot(id: string, after = 0) {
-    const events = await this.store.eventsAsync(id, after);
+    const task = this.activeTasks.find((task) => task.sessionId === id);
+    const span = this.traces.startSpan(task?.id ?? "", {
+      name: "session.snapshot",
+      category: "http",
+      track: "Session delivery",
+      attributes: { after },
+    });
+    try {
+      const events = await withTraceContext(this.traces, span, () =>
+        this.store.eventsAsync(id, after),
+      );
 
-    return {
-      session: this.store.get(id),
-      events,
-      tasks: this.store.tasks(id),
-      approvals: this.approvals.list(id),
-    };
+      return {
+        session: this.store.get(id),
+        events,
+        tasks: this.store.tasks(id),
+        approvals: this.approvals.list(id),
+      };
+    } catch (error) {
+      this.traces.endSpan(span, "error");
+      throw error;
+    } finally {
+      this.traces.endSpan(span, "ok");
+    }
   }
 
   private emit(task: Task, type: string, data: any) {
+    this.traces.relations.event(task.id, type, data);
     const clean = JSON.parse(
       redactJson(JSON.stringify(data), [this.config.apiKey]),
     );
@@ -579,6 +652,7 @@ export class Engine {
       return created;
     });
 
+    this.traceTasks.submitted(task.id, task.sessionId);
     this.events.emit("change", sessionId);
     this.schedule();
 
@@ -608,6 +682,7 @@ export class Engine {
       this.events.emit("event", event);
     }
 
+    this.traceTasks.submitted(task.id, task.sessionId);
     this.events.emit("change", sessionId);
     this.schedule();
     await this.store.drain();
@@ -645,6 +720,21 @@ export class Engine {
 
     this.scheduling = true;
     try {
+      for (const candidate of this.store.queuedTasks()) {
+        this.traceTasks.submitted(candidate.id, candidate.sessionId);
+        this.traceTasks.waiting(
+          candidate.id,
+          [...this.activeByTaskId.values()].some(
+            (active) => active.workspace === candidate.workspace,
+          )
+            ? "workspace"
+            : this.activeByTaskId.size >=
+                this.config.settings.maxConcurrentTasks
+              ? "capacity"
+              : "ready",
+        );
+      }
+
       while (
         this.activeByTaskId.size < this.config.settings.maxConcurrentTasks
       ) {
@@ -663,17 +753,30 @@ export class Engine {
         this.launch(next);
       }
     } finally {
+      for (const candidate of this.store.queuedTasks()) {
+        this.traceTasks.waiting(
+          candidate.id,
+          [...this.activeByTaskId.values()].some(
+            (active) => active.workspace === candidate.workspace,
+          )
+            ? "workspace"
+            : "capacity",
+        );
+      }
+
       this.scheduling = false;
     }
   }
 
   /** 将已领取任务转为 running 后再启动异步循环，确保同工作区的后续任务看见锁。 */
   private launch(queued: Task & { workspace: string }) {
+    this.traceTasks.started(queued.id);
     const user = this.store.taskEvent(queued.id, "user") as
       { text?: string } | undefined;
     if (!user?.text) {
       this.store.failTitleGeneration(queued.sessionId);
       this.store.status(queued.id, "failed", "缺少任务描述，无法执行。");
+      void this.traceTasks.finish(queued.id, queued.sessionId, "error");
       this.emit(queued, "task_end", { status: "failed" });
       this.events.emit("change", queued.sessionId);
 
@@ -696,11 +799,16 @@ export class Engine {
     active.done = this.store
       .statusAsync(task.id, "running")
       .then(() =>
-        this.run(
-          this.store.task(task.id)!,
-          user.text!,
-          controller.signal,
-          generateTitle,
+        withTraceContext(
+          this.traces,
+          this.traces.startTask(task.id, task.sessionId),
+          () =>
+            this.run(
+              this.store.task(task.id)!,
+              user.text!,
+              controller.signal,
+              generateTitle,
+            ),
         ),
       )
       .catch(async (error) => {
@@ -720,7 +828,11 @@ export class Engine {
           /* 下次启动时会将未完成任务标为中断。 */
         }
       })
-      .finally(() => {
+      .finally(async () => {
+        if (this.traces.hasTask(task.id)) {
+          await this.traceTasks.finish(task.id, task.sessionId, "error");
+        }
+
         this.activeByTaskId.delete(task.id);
         this.workerTasks.delete(task.id);
         this.events.emit("change", task.sessionId);
@@ -796,6 +908,7 @@ export class Engine {
         status: "cancelled",
       });
       this.emit(queued, "task_end", { status: "cancelled" });
+      void this.traceTasks.finish(queued.id, queued.sessionId, "cancelled");
       this.events.emit("change", queued.sessionId);
       this.schedule();
     }
@@ -831,6 +944,7 @@ export class Engine {
     });
     this.events.emit("event", notice);
     this.events.emit("event", end);
+    await this.traceTasks.finish(queued.id, queued.sessionId, "cancelled");
     this.events.emit("change", queued.sessionId);
     this.schedule();
   }
@@ -861,6 +975,7 @@ export class Engine {
         );
         this.events.emit("event", notice);
         this.events.emit("event", end);
+        await this.traceTasks.finish(queued.id, queued.sessionId, "cancelled");
         this.events.emit("change", queued.sessionId);
       }
 
@@ -870,6 +985,8 @@ export class Engine {
       }
 
       await Promise.all(active.map((item) => item.done));
+      await this.traceTasks.drain();
+      this.traceTasks.stop();
       await this.store.drain();
       await this.sandbox.shutdown();
     } finally {
@@ -1171,6 +1288,7 @@ export class Engine {
         nonce,
         gateway,
         {
+          traces: this.traces,
           getErrorSecrets: () => [this.config.apiKey],
           subagentStore: async (candidate, request, requestSignal) => {
             assertSubagentTask(candidate);
@@ -1343,11 +1461,15 @@ export class Engine {
 
               const subagentTrace = event.name.startsWith("subagent.");
               const readFileTrace = event.name.startsWith("read_file.");
+              const processTrace = event.name.startsWith("process.");
               const executionTrace = event.name === "tool.execute";
               const readFileToolStage = readFileTrace;
               const callId = event.attributes.callId;
               const tool = callId ? runtimeToolCalls.get(callId) : undefined;
-              if ((executionTrace || readFileToolStage) && !tool) {
+              if (
+                (executionTrace || readFileToolStage || processTrace) &&
+                !tool
+              ) {
                 throw new Error("Agent Runtime trace 工具调用未登记。");
               }
 
@@ -1380,18 +1502,22 @@ export class Engine {
                 event.spanId,
                 this.traces.startSpan(task.id, {
                   name: executionTrace ? `tool.${tool!.name}` : event.name,
-                  category: subagentTrace
-                    ? "subagent"
-                    : readFileTrace
-                      ? "read_file"
-                      : executionTrace
-                        ? "tool"
-                        : "context",
-                  track: subagentTrace
-                    ? `Subagent ${subagentId}`
-                    : readFileToolStage || executionTrace
-                      ? runtimeToolTracks.get(callId!)!
-                      : "Agent Runtime",
+                  category: processTrace
+                    ? "process"
+                    : subagentTrace
+                      ? "subagent"
+                      : readFileTrace
+                        ? "read_file"
+                        : executionTrace
+                          ? "tool"
+                          : "context",
+                  track: processTrace
+                    ? "Runtime process lifecycle"
+                    : subagentTrace
+                      ? `Subagent ${subagentId}`
+                      : readFileToolStage || executionTrace
+                        ? runtimeToolTracks.get(callId!)!
+                        : "Agent Runtime",
                   processId: launched?.pid,
                   startedAtUs: event.timestampUs,
                   parentSpanId: parent?.id,
@@ -1426,8 +1552,13 @@ export class Engine {
                 }),
               );
               const span = runtimeContextSpans.get(event.spanId);
+              if (event.name === "tool.result_persist") {
+                this.traces.relations.persistStarted(span);
+              }
+
               if (executionTrace && callId && span) {
                 runtimeToolExecutions.set(callId, span);
+                this.traces.relations.toolStarted(span);
               }
 
               return;
@@ -2141,6 +2272,7 @@ export class Engine {
         let runtimeProcessId: number | undefined;
         let runtimeCompactionSpan: TraceSpan | undefined;
         const captureRuntimeToolEvent = async (type: string, data: any) => {
+          this.traces.relations.event(task.id, type, data, true);
           if (type === "tool_start") {
             await this.store.replayAsync(
               task.id,
@@ -2395,7 +2527,18 @@ export class Engine {
 
       let capabilities: ModelCapabilities | undefined;
       try {
-        capabilities = await provider.getCapabilities?.(signal);
+        capabilities = await this.traces.measure(
+          task.id,
+          {
+            name: "llm.capabilities",
+            category: "llm",
+            track: "Model metadata",
+            attributes: { purpose: "task" },
+          },
+          () =>
+            provider.getCapabilities?.(signal) ?? Promise.resolve(undefined),
+          signal,
+        );
       } catch (error) {
         signal.throwIfAborted();
         log.warn({ event: "model.capabilities_unavailable", err: error });
@@ -2551,7 +2694,19 @@ export class Engine {
                 new ResponsesProvider(selected, this.config.apiKey);
               let metadata: ModelCapabilities | undefined;
               try {
-                metadata = await auxiliary.getCapabilities?.(signal);
+                metadata = await this.traces.measure(
+                  task.id,
+                  {
+                    name: "llm.capabilities",
+                    category: "llm",
+                    track: "Model metadata",
+                    attributes: { purpose: "compaction" },
+                  },
+                  () =>
+                    auxiliary.getCapabilities?.(signal) ??
+                    Promise.resolve(undefined),
+                  signal,
+                );
               } catch (error) {
                 signal.throwIfAborted();
                 log.warn({
@@ -2813,7 +2968,6 @@ export class Engine {
         },
         executeTools: async (calls) => {
           const batchId = randomUUID();
-          const modelSpan = this.traces.latestSpan(task.id, "llm");
           const saveResult = async (
             node: ToolGraphNode,
             result: any,
@@ -2844,6 +2998,7 @@ export class Engine {
                 nodeId: node.nodeId,
               },
             });
+            this.traces.relations.persistStarted(persistenceSpan);
             // 工具副作用无法由 SQLite 回滚；每个并行节点完成后立即原子保存结果和模型反馈。
             try {
               const eventData = {
@@ -3049,170 +3204,190 @@ export class Engine {
           });
           try {
             await executeToolGraph(graph, {
-              execute: async (node, acquireExecutionSlot) => {
-                signal.throwIfAborted();
-                let slot: number | undefined;
-                let executionStartedAt: number | undefined;
-                let toolSpan: ReturnType<TraceRecorder["startSpan"]>;
-                let result: any;
-                const readFileSpans = new Map<
-                  ReadFileTraceStage,
-                  ReturnType<TraceRecorder["startSpan"]>
-                >();
-                const traceReadFile: ReadFileTrace = (
-                  stage,
-                  state,
-                  details,
-                ) => {
-                  if (state === "started") {
-                    readFileSpans.set(
+              execute: async (node, acquireExecutionSlot) =>
+                this.traces.measure(
+                  task.id,
+                  {
+                    name: "tool.node",
+                    category: "scheduler",
+                    track: "Tool scheduler",
+                    attributes: {
+                      callId: node.callId,
+                      batchId,
+                      nodeId: node.nodeId,
+                    },
+                  },
+                  async () => {
+                    signal.throwIfAborted();
+                    let slot: number | undefined;
+                    let executionStartedAt: number | undefined;
+                    let toolSpan: ReturnType<TraceRecorder["startSpan"]>;
+                    let result: any;
+                    const readFileSpans = new Map<
+                      ReadFileTraceStage,
+                      ReturnType<TraceRecorder["startSpan"]>
+                    >();
+                    const traceReadFile: ReadFileTrace = (
                       stage,
-                      this.traces.startSpan(task.id, {
-                        name: stage,
-                        category: "read_file",
-                        // 路径准备已结束；所有剩余阶段都在取得执行槽后上报。
-                        track: `Tool worker ${slot! + 1}`,
-                        parentSpanId: toolSpan?.id,
+                      state,
+                      details,
+                    ) => {
+                      if (state === "started") {
+                        readFileSpans.set(
+                          stage,
+                          this.traces.startSpan(task.id, {
+                            name: stage,
+                            category: "read_file",
+                            // 路径准备已结束；所有剩余阶段都在取得执行槽后上报。
+                            track: `Tool worker ${slot! + 1}`,
+                            parentSpanId: toolSpan?.id,
+                            attributes: {
+                              batchId,
+                              callId: node.callId,
+                              nodeId: node.nodeId,
+                            },
+                          }),
+                        );
+                      } else {
+                        this.traces.endSpan(
+                          readFileSpans.get(stage),
+                          state,
+                          details,
+                        );
+                        readFileSpans.delete(stage);
+                      }
+                    };
+
+                    const startExecution = async () => {
+                      slot ??= await acquireExecutionSlot();
+                      executionStartedAt = Date.now();
+                      toolSpan = this.traces.startSpan(task.id, {
+                        name:
+                          node.name === "memory_apply"
+                            ? "memory.apply"
+                            : node.name === historyDefinition.name
+                              ? "tool.read_context_history"
+                              : `tool.${node.name}`,
+                        category:
+                          node.name === "memory_apply" ? "memory" : "tool",
+                        track: `Tool worker ${slot + 1}`,
                         attributes: {
                           batchId,
                           callId: node.callId,
                           nodeId: node.nodeId,
+                          parameters:
+                            node.name === "run_with_permissions" ||
+                            node.name === "memory_apply" ||
+                            node.name === "subagent" ||
+                            node.name === "mcp" ||
+                            node.name === "skill"
+                              ? undefined
+                              : traceToolParameters(node.arguments),
                         },
-                      }),
-                    );
-                  } else {
+                      });
+                      this.traces.relations.toolStarted(toolSpan);
+                    };
+
+                    try {
+                      if (node.name === "subagent") {
+                        if (!task.subagentsEnabled || !subagents) {
+                          throw new Error("当前任务未开启 subagent。");
+                        }
+
+                        const action = (
+                          node.arguments as { request?: SubagentAction }
+                        ).request;
+                        if (!action) {
+                          throw new Error("subagent 缺少结构化操作。");
+                        }
+
+                        if (action.action !== "await") {
+                          await startExecution();
+                        }
+
+                        result = await subagents.execute(action);
+                        if (action.action === "await") {
+                          await startExecution();
+                        }
+                      } else if (node.name === historyDefinition.name) {
+                        await startExecution();
+                        result = await readContextHistoryAsync(
+                          this.store,
+                          session.id,
+                          node.arguments,
+                          settings.outputChars,
+                        );
+                      } else {
+                        result = await runner
+                          .forCall(node.callId)
+                          .execute(
+                            node.name,
+                            node.arguments,
+                            startExecution,
+                            node.name === "read_file"
+                              ? traceReadFile
+                              : undefined,
+                          );
+                      }
+                    } catch (error: any) {
+                      if (signal.aborted) {
+                        throw error;
+                      }
+
+                      result = {
+                        error: redactText(error.message, [this.config.apiKey]),
+                      };
+                      log.warn({
+                        event: "tool.failed",
+                        tool: node.name,
+                        toolCallId: node.callId,
+                        nodeId: node.nodeId,
+                        batchId,
+                        err: error,
+                      });
+                    }
+
+                    // 只记录匹配策略的计数；源码、oldText 和替换内容不进入 trace。
+                    const editMatchModes: string[] =
+                      node.name === "edit_files" && Array.isArray(result?.files)
+                        ? result.files.flatMap((file: any) =>
+                            Array.isArray(file.matchModes)
+                              ? file.matchModes
+                              : [],
+                          )
+                        : [];
                     this.traces.endSpan(
-                      readFileSpans.get(stage),
-                      state,
-                      details,
+                      toolSpan,
+                      toolSucceeded(result) ? "ok" : "error",
+                      {
+                        durationMs: executionStartedAt
+                          ? Date.now() - executionStartedAt
+                          : 0,
+                        editExactMatches:
+                          node.name === "edit_files"
+                            ? editMatchModes.filter((mode) => mode === "exact")
+                                .length
+                            : undefined,
+                        editLineEndingMatches:
+                          node.name === "edit_files"
+                            ? editMatchModes.filter(
+                                (mode) => mode === "normalized_line_endings",
+                              ).length
+                            : undefined,
+                        editWhitespaceMatches:
+                          node.name === "edit_files"
+                            ? editMatchModes.filter(
+                                (mode) => mode === "normalized_whitespace",
+                              ).length
+                            : undefined,
+                      },
                     );
-                    readFileSpans.delete(stage);
-                  }
-                };
+                    await saveResult(node, result, executionStartedAt);
 
-                const startExecution = async () => {
-                  slot ??= await acquireExecutionSlot();
-                  executionStartedAt = Date.now();
-                  toolSpan = this.traces.startSpan(task.id, {
-                    name:
-                      node.name === "memory_apply"
-                        ? "memory.apply"
-                        : node.name === historyDefinition.name
-                          ? "tool.read_context_history"
-                          : `tool.${node.name}`,
-                    category: node.name === "memory_apply" ? "memory" : "tool",
-                    track: `Tool worker ${slot + 1}`,
-                    attributes: {
-                      batchId,
-                      callId: node.callId,
-                      nodeId: node.nodeId,
-                      parameters:
-                        node.name === "run_with_permissions" ||
-                        node.name === "memory_apply" ||
-                        node.name === "subagent" ||
-                        node.name === "mcp" ||
-                        node.name === "skill"
-                          ? undefined
-                          : traceToolParameters(node.arguments),
-                    },
-                  });
-                };
-
-                try {
-                  if (node.name === "subagent") {
-                    if (!task.subagentsEnabled || !subagents) {
-                      throw new Error("当前任务未开启 subagent。");
-                    }
-
-                    const action = (
-                      node.arguments as { request?: SubagentAction }
-                    ).request;
-                    if (!action) {
-                      throw new Error("subagent 缺少结构化操作。");
-                    }
-
-                    if (action.action !== "await") {
-                      await startExecution();
-                    }
-
-                    result = await subagents.execute(action);
-                    if (action.action === "await") {
-                      await startExecution();
-                    }
-                  } else if (node.name === historyDefinition.name) {
-                    await startExecution();
-                    result = await readContextHistoryAsync(
-                      this.store,
-                      session.id,
-                      node.arguments,
-                      settings.outputChars,
-                    );
-                  } else {
-                    result = await runner
-                      .forCall(node.callId)
-                      .execute(
-                        node.name,
-                        node.arguments,
-                        startExecution,
-                        node.name === "read_file" ? traceReadFile : undefined,
-                      );
-                  }
-                } catch (error: any) {
-                  if (signal.aborted) {
-                    throw error;
-                  }
-
-                  result = {
-                    error: redactText(error.message, [this.config.apiKey]),
-                  };
-                  log.warn({
-                    event: "tool.failed",
-                    tool: node.name,
-                    toolCallId: node.callId,
-                    nodeId: node.nodeId,
-                    batchId,
-                    err: error,
-                  });
-                }
-
-                // 只记录匹配策略的计数；源码、oldText 和替换内容不进入 trace。
-                const editMatchModes: string[] =
-                  node.name === "edit_files" && Array.isArray(result?.files)
-                    ? result.files.flatMap((file: any) =>
-                        Array.isArray(file.matchModes) ? file.matchModes : [],
-                      )
-                    : [];
-                this.traces.link(modelSpan, toolSpan, "llm_to_tool");
-                this.traces.endSpan(
-                  toolSpan,
-                  toolSucceeded(result) ? "ok" : "error",
-                  {
-                    durationMs: executionStartedAt
-                      ? Date.now() - executionStartedAt
-                      : 0,
-                    editExactMatches:
-                      node.name === "edit_files"
-                        ? editMatchModes.filter((mode) => mode === "exact")
-                            .length
-                        : undefined,
-                    editLineEndingMatches:
-                      node.name === "edit_files"
-                        ? editMatchModes.filter(
-                            (mode) => mode === "normalized_line_endings",
-                          ).length
-                        : undefined,
-                    editWhitespaceMatches:
-                      node.name === "edit_files"
-                        ? editMatchModes.filter(
-                            (mode) => mode === "normalized_whitespace",
-                          ).length
-                        : undefined,
+                    return toolSucceeded(result);
                   },
-                );
-                await saveResult(node, result, executionStartedAt);
-
-                return toolSucceeded(result);
-              },
+                  signal,
+                ),
               block: async (node, failedDependency) => {
                 this.traces.instant(
                   task.id,
@@ -3330,18 +3505,15 @@ export class Engine {
       } finally {
         // 诊断失败不能覆盖产品失败或把完成任务改成 failed；即使导出抛错也必须释放运行期记录。
         try {
-          this.traces.finishTask(
+          await this.traceTasks.finish(
             task.id,
+            task.sessionId,
             status === "completed"
               ? "ok"
               : status === "cancelled" || status === "interrupted"
                 ? "cancelled"
                 : "error",
           );
-          const trace = this.traces.exportTask(task.id);
-          if (trace) {
-            await this.traceArchive.write(task.sessionId, task.id, trace);
-          }
         } catch (error) {
           log.warn({ event: "tracing.finalize_failed", err: error });
         } finally {

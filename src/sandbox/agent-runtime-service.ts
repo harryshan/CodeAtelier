@@ -11,6 +11,7 @@
  * 5. 已选任务在 Runtime 内运行独立只读 Worker，子状态、问题回执、模型/租约及固定无正文的 trace 经任务绑定 IPC；收尾确认线程退出后再由 Broker 清理。
  *
  * Git push 必须独占当前工具批次；全部 Git action 由 Broker 宿主执行，push 额外做预检和逐次审批。越界命令先经 IPC 审批取得一次性授权，获得 worker 槽后由 Broker 启动，因而可与无依赖的普通工具正确并行。context/tool/model tracing 经固定 schema 回到 Broker。
+ * 工具异步上下文安装固定进程 observer，取消/终止/直子退出经白名单 IPC 回传；持久化阶段携带 callId。
  */
 
 import { SessionTokenCalibration } from "../context/session-token-calibration.js";
@@ -59,6 +60,9 @@ import {
   RuntimeMcpClient,
   RuntimeSkillClient,
 } from "./runtime-tool-adapters.js";
+import { withProcessObserver } from "../tracing/process-observer.js";
+import { withTraceCall } from "../tracing/context.js";
+import { runtimeProcessTrace } from "./runtime-process-trace.js";
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 
@@ -495,107 +499,116 @@ export class AgentRuntimeService {
             trace,
           );
           await executeToolGraph(graph, {
-            execute: async (node, acquireExecutionSlot) => {
-              signal.throwIfAborted();
-              events.emit("tool_start", {
-                name: node.name,
-                callId: node.callId,
-                batchId,
-                nodeId: node.nodeId,
-                dependsOn: node.dependsOn,
-                args: node.arguments,
-              });
-              // 参数先在 Broker 登记；后续固定 trace IPC 只携带调用 ID、槽号与安全数值。
-              await events.flush();
+            execute: async (node, acquireExecutionSlot) =>
+              withTraceCall(node.callId, () =>
+                withProcessObserver(
+                  () => runtimeProcessTrace(this.peer, node.callId),
+                  async () => {
+                    signal.throwIfAborted();
+                    events.emit("tool_start", {
+                      name: node.name,
+                      callId: node.callId,
+                      batchId,
+                      nodeId: node.nodeId,
+                      dependsOn: node.dependsOn,
+                      args: node.arguments,
+                    });
+                    // 参数先在 Broker 登记；后续固定 trace IPC 只携带调用 ID、槽号与安全数值。
+                    await events.flush();
 
-              let result: unknown;
-              let executionSpan: string | undefined;
-              const startExecution = async () => {
-                const slot = await acquireExecutionSlot();
-                executionSpan = trace.startToolExecution(node.callId, slot);
-              };
+                    let result: unknown;
+                    let executionSpan: string | undefined;
+                    const startExecution = async () => {
+                      const slot = await acquireExecutionSlot();
+                      executionSpan = trace.startToolExecution(
+                        node.callId,
+                        slot,
+                      );
+                    };
 
-              const readFileSpans = new Map<ReadFileTraceStage, string>();
-              try {
-                if (node.name === "subagent") {
-                  if (!input.settings.subagentsEnabled || !subagents) {
-                    throw new Error("当前任务未开启 subagent。");
-                  }
-
-                  const action = (
-                    node.arguments as { request?: SubagentAction }
-                  ).request;
-                  if (!action) {
-                    throw new Error("subagent 缺少结构化操作。");
-                  }
-
-                  if (action.action !== "await") {
-                    await startExecution();
-                  }
-
-                  result = await subagents.execute(action);
-                  if (action.action === "await") {
-                    // await 的实际等待发生在取得执行槽之前，不能事后记录成工具执行耗时。
-                    await acquireExecutionSlot();
-                  }
-                } else if (node.name === historyDefinition.name) {
-                  await startExecution();
-                  result = await readContextHistoryAsync(
-                    session,
-                    this.identity.sessionId,
-                    node.arguments,
-                    input.settings.outputChars,
-                  );
-                } else {
-                  result = await runner.forCall(node.callId).execute(
-                    node.name,
-                    node.arguments,
-                    async () => {
-                      await startExecution();
-                    },
-                    node.name === "read_file"
-                      ? (stage, state, details) => {
-                          if (state === "started") {
-                            readFileSpans.set(
-                              stage,
-                              trace.startToolStage(stage, node.callId),
-                            );
-                          } else {
-                            const handle = readFileSpans.get(stage);
-                            if (handle) {
-                              trace.endToolStage(handle, state, details);
-                              readFileSpans.delete(stage);
-                            }
-                          }
+                    const readFileSpans = new Map<ReadFileTraceStage, string>();
+                    try {
+                      if (node.name === "subagent") {
+                        if (!input.settings.subagentsEnabled || !subagents) {
+                          throw new Error("当前任务未开启 subagent。");
                         }
-                      : undefined,
-                  );
-                }
-              } catch (error) {
-                signal.throwIfAborted();
-                result = {
-                  error:
-                    error instanceof Error
-                      ? error.message.slice(0, 2_000)
-                      : "工具执行失败。",
-                };
-              } finally {
-                if (executionSpan) {
-                  trace.endToolStage(
-                    executionSpan,
-                    signal.aborted
-                      ? "cancelled"
-                      : toolSucceeded(result)
-                        ? "ok"
-                        : "error",
-                  );
-                }
-              }
 
-              await persistence.save(node, result);
+                        const action = (
+                          node.arguments as { request?: SubagentAction }
+                        ).request;
+                        if (!action) {
+                          throw new Error("subagent 缺少结构化操作。");
+                        }
 
-              return toolSucceeded(result);
-            },
+                        if (action.action !== "await") {
+                          await startExecution();
+                        }
+
+                        result = await subagents.execute(action);
+                        if (action.action === "await") {
+                          // await 的实际等待发生在取得执行槽之前，不能事后记录成工具执行耗时。
+                          await acquireExecutionSlot();
+                        }
+                      } else if (node.name === historyDefinition.name) {
+                        await startExecution();
+                        result = await readContextHistoryAsync(
+                          session,
+                          this.identity.sessionId,
+                          node.arguments,
+                          input.settings.outputChars,
+                        );
+                      } else {
+                        result = await runner.forCall(node.callId).execute(
+                          node.name,
+                          node.arguments,
+                          async () => {
+                            await startExecution();
+                          },
+                          node.name === "read_file"
+                            ? (stage, state, details) => {
+                                if (state === "started") {
+                                  readFileSpans.set(
+                                    stage,
+                                    trace.startToolStage(stage, node.callId),
+                                  );
+                                } else {
+                                  const handle = readFileSpans.get(stage);
+                                  if (handle) {
+                                    trace.endToolStage(handle, state, details);
+                                    readFileSpans.delete(stage);
+                                  }
+                                }
+                              }
+                            : undefined,
+                        );
+                      }
+                    } catch (error) {
+                      signal.throwIfAborted();
+                      result = {
+                        error:
+                          error instanceof Error
+                            ? error.message.slice(0, 2_000)
+                            : "工具执行失败。",
+                      };
+                    } finally {
+                      if (executionSpan) {
+                        trace.endToolStage(
+                          executionSpan,
+                          signal.aborted
+                            ? "cancelled"
+                            : toolSucceeded(result)
+                              ? "ok"
+                              : "error",
+                        );
+                      }
+                    }
+
+                    await persistence.save(node, result);
+
+                    return toolSucceeded(result);
+                  },
+                ),
+              ),
             block: async (node, failedDependency) => {
               await persistence.save(node, {
                 error: `依赖工具 ${failedDependency.nodeId} 未成功，未执行当前调用。`,
@@ -854,7 +867,10 @@ class OrderedContextPersistence {
           },
         );
       } else {
-        const span = this.trace.start("tool.result_persist", { inputItems: 1 });
+        const span = this.trace.start("tool.result_persist", {
+          inputItems: 1,
+          callId: node.callId,
+        });
         try {
           this.events.emit("tool_result", event);
           await this.events.flush();

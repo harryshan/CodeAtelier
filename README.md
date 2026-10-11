@@ -112,3 +112,5 @@ pnpm dev:web  # 前端，需另开终端
 - [配置与排错](docs/development.md) · [任务恢复](docs/recovery.md)
 - [Windows Sandbox 使用指南](docs/windows-sandbox-guide.md) · [Skill](docs/skills.md) · [MCP](docs/mcp.md)
 - [架构说明](docs/architecture.md) · [全部文档](docs/README.md)
+
+- [Trace 关联、实时快照与容量维护](docs/tracing.md)

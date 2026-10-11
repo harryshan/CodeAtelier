@@ -58,7 +58,10 @@ it("generates and persists one title from the first prompt with the auxiliary mo
             ]);
             expect(instructions).toContain(TITLE_INSTRUCTIONS);
             expect(tools).toEqual([]);
-            expect(options).toEqual({ maxOutputTokens: 64 });
+            expect(options).toEqual({
+              maxOutputTokens: 64,
+              onStreamEvent: expect.any(Function),
+            });
 
             return { output: [], text: "# 标题：修复登录失败\n不要保留这一行" };
           },
@@ -101,7 +104,8 @@ it("generates and persists one title from the first prompt with the auxiliary mo
 });
 
 it("retries unknown title failures up to three times before completing the coding task", async () => {
-  vi.useFakeTimers();
+  // 只控制重试超时；周期资源采样不属于标题重试的待清空计时器。
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const config = new Config(await temp());
   const store = new Store(path.join(config.directory, "history.sqlite"));
   const session = store.create(await temp());

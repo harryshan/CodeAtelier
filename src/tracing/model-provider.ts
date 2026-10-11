@@ -4,11 +4,14 @@
  * 仅把请求/响应的长度、数量、usage、错误类别及首个文本分块时间交给 TraceRecorder。
  *
  * 1. ModelTraceScope 固定任务、用途、模型和可选 step/attempt，作为单次调用的关联字段。
- * 2. tracedModelProvider 透传 capabilities，并在 run 前创建可由当前上下文阶段动态指定父 span 的 llm.request；第一个 delta 生成 instant，完成或失败结束 span。
+ * 2. tracedModelProvider 计量 capabilities，并在 run 前创建可由当前上下文阶段动态指定父 span 的 llm.request；第一个 delta 生成 instant，完成或失败结束 span。
  * 3. Sandbox Runtime 经 Broker 请求模型时可附 execution mode/instance/kind、subagentId 与 brokered 标记，仍复用相同安全计量。
  * 4. 仅附带安全的请求参数（含思考等级），不记录 input、instructions、tools、输出文本、服务错误消息或 API key 的原文；LLM span 标记 Main thread 逻辑归属并以异步生命周期导出，不表示 CPU 占用，高保真 replay 独立保存。
+ * 请求采用独立 requestId，首流事件/首文本共享 ID 与轨道；按 call_id 建立工具来源，不序列化完整输入计量。
  */
 
+import { randomUUID } from "node:crypto";
+import { performance } from "node:perf_hooks";
 import type { ModelProvider } from "../providers/model-provider.js";
 import { TraceRecorder } from "./recorder.js";
 
@@ -28,14 +31,6 @@ export interface ModelTraceScope {
   brokered?: boolean;
 }
 
-function serializedLength(value: unknown) {
-  try {
-    return JSON.stringify(value).length;
-  } catch {
-    return 0;
-  }
-}
-
 /** 返回接口等价的包装器；模型模拟实现也可直接使用，因此不会把 tracing 细节泄漏到 provider 契约。 */
 export function tracedModelProvider(
   provider: ModelProvider,
@@ -43,28 +38,43 @@ export function tracedModelProvider(
   scope: ModelTraceScope,
 ): ModelProvider {
   return {
-    getCapabilities: provider.getCapabilities?.bind(provider),
+    getCapabilities: provider.getCapabilities
+      ? (signal) =>
+          recorder.measure(
+            scope.taskId,
+            {
+              name: "llm.capabilities",
+              category: "llm",
+              track: "Model metadata",
+              attributes: { purpose: scope.purpose },
+            },
+            () => provider.getCapabilities!(signal),
+            signal,
+          )
+      : undefined,
     async run(input, instructions, tools, signal, onDelta, options) {
       const parentSpanId =
         typeof scope.parentSpanId === "function"
           ? scope.parentSpanId()
           : scope.parentSpanId;
+      const requestId = randomUUID();
+      const track = scope.subagentId
+        ? `Subagent ${scope.subagentId} broker`
+        : "Main thread";
       const span = recorder.startSpan(scope.taskId, {
         name: "llm.request",
         category: "llm",
-        track: scope.subagentId
-          ? `Subagent ${scope.subagentId} broker`
-          : "Main thread",
+        track,
         parentSpanId,
         attributes: {
           purpose: scope.purpose,
+          requestId,
           callId: scope.callId,
           subagentId: scope.subagentId,
           model: scope.model,
           step: scope.step,
           attempt: scope.attempt,
           inputItems: input.length,
-          inputChars: serializedLength(input),
           instructionsChars: instructions.length,
           toolCount: tools.length,
           maxOutputTokens: options?.maxOutputTokens,
@@ -76,6 +86,20 @@ export function tracedModelProvider(
         },
       });
       let receivedFirstDelta = false;
+      let receivedFirstEvent = false;
+      let lastEventAt: number | undefined;
+      const milestone = (name: string, attributes = {}) =>
+        recorder.instant(scope.taskId, name, "llm", track, {
+          requestId,
+          spanId: span?.id,
+          purpose: scope.purpose,
+          callId: scope.callId,
+          subagentId: scope.subagentId,
+          ...attributes,
+        });
+      if (scope.purpose === "task") {
+        recorder.relations.modelStarted(span, input);
+      }
 
       try {
         const result = await provider.run(
@@ -86,21 +110,23 @@ export function tracedModelProvider(
           (delta) => {
             if (!receivedFirstDelta) {
               receivedFirstDelta = true;
-              recorder.instant(
-                scope.taskId,
-                "llm.first_output",
-                "llm",
-                "Main thread",
-                {
-                  chars: delta.length,
-                  purpose: scope.purpose,
-                },
-              );
+              milestone("llm.first_output", { chars: delta.length });
             }
 
             onDelta(delta);
           },
-          options,
+          {
+            ...options,
+            onStreamEvent: () => {
+              lastEventAt = performance.now();
+              if (!receivedFirstEvent) {
+                receivedFirstEvent = true;
+                milestone("llm.first_event");
+              }
+
+              options?.onStreamEvent?.();
+            },
+          },
         );
         recorder.endSpan(span, "ok", {
           outputItems: result.output.length,
@@ -108,7 +134,14 @@ export function tracedModelProvider(
           inputTokens: result.usage?.input_tokens,
           outputTokens: result.usage?.output_tokens,
           totalTokens: result.usage?.total_tokens,
+          lastEventToCompleteMs:
+            lastEventAt === undefined
+              ? undefined
+              : performance.now() - lastEventAt,
         });
+        if (scope.purpose === "task") {
+          recorder.relations.modelFinished(span, result.output);
+        }
 
         return result;
       } catch (error: any) {

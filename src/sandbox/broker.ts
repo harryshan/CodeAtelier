@@ -13,8 +13,11 @@
  *
  * WorkspaceView 仍是历史 WSL2 Runtime 的契约；目标 Windows Runtime 将以 AccessManifest 取代它。fallback
  * 只保证功能继续，不具备 Sandbox 的文件、进程和网络隔离能力。
+ * 可选 Recorder 按实际 Windows provision 阶段、撤权与清理记录关联实例；未知清理保持 unknown，不以正常返回冒称 clean。
  */
 
+import type { TraceRecorder } from "../tracing/recorder.js";
+import type { TraceSpan } from "../tracing/types.js";
 import type { Logger } from "pino";
 import type {
   SandboxCommand,
@@ -50,6 +53,7 @@ export class SandboxBroker implements AgentRuntimeLauncher {
     private configuration: SandboxConfiguration,
     private runtime?: SandboxRuntime,
     private log?: Logger,
+    private traces?: TraceRecorder,
   ) {}
 
   get status() {
@@ -232,7 +236,25 @@ export class SandboxBroker implements AgentRuntimeLauncher {
             throw new Error("平台 Runtime 未实现共享 ACL 撤销。");
           }
 
-          await this.runtime.revokeAccess(roots, AbortSignal.timeout(20_000));
+          const revoke = () =>
+            this.runtime!.revokeAccess!(roots, AbortSignal.timeout(20_000));
+          if (this.traces) {
+            await this.traces.measure(
+              command.taskId,
+              {
+                name: "sandbox.revoke_access",
+                category: "sandbox",
+                track: "Sandbox cleanup",
+                attributes: {
+                  executionInstanceId: command.executionInstanceId,
+                  rootCount: roots.length,
+                },
+              },
+              revoke,
+            );
+          } else {
+            await revoke();
+          }
         }
 
         this.accountGeneration!.commitRelease(release.releaseId, manifest);
@@ -526,14 +548,27 @@ export class SandboxBroker implements AgentRuntimeLauncher {
     let acquired: ReturnType<AccountGenerationRegistry["acquire"]> | undefined;
     let runtimeStarted = false;
     let launchPhase = "availability";
+    let phaseSpan: TraceSpan | undefined;
+    const phase = (name: string) => {
+      this.traces?.endSpan(phaseSpan, "ok");
+      launchPhase = name;
+      phaseSpan = this.traces?.startSpan(command.taskId, {
+        name: `sandbox.${name}`,
+        category: "sandbox",
+        track: "Sandbox provision",
+        attributes: { executionInstanceId: command.executionInstanceId },
+      });
+    };
+
+    phase(launchPhase);
     try {
       if (!this.configuration.enabled || !this.runtime?.launchAgentRuntime) {
         throw new Error("当前平台缺少 Agent Runtime launcher。");
       }
 
-      launchPhase = "workspace";
+      phase("workspace");
       workspace = (await WorkspaceView.open(input.workspace)).descriptor();
-      launchPhase = "self_check";
+      phase("self_check");
       const checked = await this.runtime.selfCheck(input.signal, workspace);
       input.signal.throwIfAborted();
       if (
@@ -543,13 +578,13 @@ export class SandboxBroker implements AgentRuntimeLauncher {
         throw new Error("平台 Runtime 未证明账户 generation 与直接路径防护。");
       }
 
-      launchPhase = "prepare_access";
+      phase("prepare_access");
       prepared = await this.runtime.prepareAccess?.(command, workspace);
       if (!prepared?.privateDirectory || !prepared.gitGlobalConfigPath) {
         throw new Error("Agent Runtime 缺少私有目录或 Git 配置投影。");
       }
 
-      launchPhase = "manifest";
+      phase("manifest");
       manifest = await buildAccessManifest({
         workspaceRoot: workspace.root,
         readOnlyRoots: prepared.readOnlyRoots,
@@ -571,7 +606,7 @@ export class SandboxBroker implements AgentRuntimeLauncher {
         checked.accountGenerationDigest,
         4,
       );
-      launchPhase = "acquire";
+      phase("acquire");
       acquired = await this.withGrantMutation(() =>
         this.accountGeneration!.acquire({
           executionInstanceId: command.executionInstanceId,
@@ -580,7 +615,7 @@ export class SandboxBroker implements AgentRuntimeLauncher {
           accessManifest: manifest!,
         }),
       );
-      launchPhase = "shared_provision";
+      phase("shared_provision");
       await acquired.waitForSharedProvision(input.signal);
 
       command.onAccessProvisioned = () => {
@@ -595,7 +630,7 @@ export class SandboxBroker implements AgentRuntimeLauncher {
         );
       };
 
-      launchPhase = "native_launch";
+      phase("native_launch");
       const launched = await this.runtime.launchAgentRuntime(
         command,
         workspace,
@@ -623,6 +658,7 @@ export class SandboxBroker implements AgentRuntimeLauncher {
         );
       }
 
+      this.traces?.endSpan(phaseSpan, "ok");
       const sandboxedStatus: SandboxStatus = {
         enabled: true,
         requested: true,
@@ -639,6 +675,15 @@ export class SandboxBroker implements AgentRuntimeLauncher {
         ...launched,
         close: (reason) => {
           closePromise ??= (async () => {
+            const cleanupSpan = this.traces?.startSpan(command.taskId, {
+              name: "sandbox.cleanup",
+              category: "sandbox",
+              track: "Sandbox cleanup",
+              attributes: {
+                executionInstanceId: command.executionInstanceId,
+                reason,
+              },
+            });
             const nativeCleanup = await launched
               .close(reason)
               .catch(() => "orphaned" as const);
@@ -649,6 +694,8 @@ export class SandboxBroker implements AgentRuntimeLauncher {
               );
               await this.quarantineGeneration(command, "process_unknown");
 
+              this.traces?.endSpan(cleanupSpan, "unknown");
+
               return "orphaned";
             }
 
@@ -656,9 +703,12 @@ export class SandboxBroker implements AgentRuntimeLauncher {
               await this.releaseAccess(command, manifest!, acquired!);
               await prepared!.cleanup();
 
+              this.traces?.endSpan(cleanupSpan, "ok");
+
               return "clean";
             } catch {
               await this.quarantineGeneration(command, "acl_cleanup");
+              this.traces?.endSpan(cleanupSpan, "unknown");
 
               return "orphaned";
             }
@@ -668,6 +718,10 @@ export class SandboxBroker implements AgentRuntimeLauncher {
         },
       };
     } catch (error) {
+      this.traces?.endSpan(
+        phaseSpan,
+        input.signal.aborted ? "cancelled" : "error",
+      );
       this.log?.warn({
         event: "sandbox.agent_runtime_launch_failed",
         module: "sandbox",

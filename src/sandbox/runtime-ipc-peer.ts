@@ -8,9 +8,13 @@
  * 3. 收到 request 后调用固定 handler，返回操作、关联 ID、脱敏原因及错误码；event/handshake observer 抛错时安全关闭通道。
  * 4. 已取消 requestId 使用有界 tombstone 忽略竞态中的迟到响应，其他未知响应仍关闭连接。
  * 5. close 使全部 pending/handling 请求失败并移除监听，避免断连后把未知操作当成成功或继续等待。
+ * 可选本地 trace 关联 request/handler、帧字节与在途数；取消接收和 handler 结束不等于远端清理确认。
  */
 
 import { randomUUID } from "node:crypto";
+import type { TraceRecorder } from "../tracing/recorder.js";
+import type { TraceSpan } from "../tracing/types.js";
+import { withTraceContext } from "../tracing/context.js";
 import type { Readable, Writable } from "node:stream";
 import {
   ipcErrorText,
@@ -29,6 +33,7 @@ import {
 } from "./runtime-ipc-protocol.js";
 
 interface PendingRequest {
+  span?: TraceSpan;
   operation: RuntimeIpcOperation;
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
@@ -56,6 +61,8 @@ export interface RuntimeIpcTransport {
 }
 
 export interface RuntimeIpcPeerOptions extends RuntimeIpcTransport {
+  /** 仅本地 Broker 诊断；帧正文、错误内容及握手凭据不进入 trace。 */
+  trace?: { recorder: TraceRecorder; taskId: string };
   handleRequest?: (
     request: RuntimeIpcRequest,
     signal: AbortSignal,
@@ -83,6 +90,34 @@ export class RuntimeIpcPeer {
   private eventListeners = new Set<(event: RuntimeIpcEvent) => void>();
   private maxFrameBytes: number;
   private requestHandler?: RuntimeIpcPeerOptions["handleRequest"];
+
+  private traceFrame(
+    message: RuntimeIpcMessage,
+    bytes: number,
+    direction: string,
+  ) {
+    const trace = this.options.trace;
+    trace?.recorder.instant(trace.taskId, "ipc.frame", "ipc", "Runtime IPC", {
+      direction,
+      bytes,
+      type: message.type,
+      event: message.type === "event" ? message.event : undefined,
+      state:
+        message.type === "event" && message.event === "runtime_state"
+          ? message.state
+          : undefined,
+      requestId: "requestId" in message ? message.requestId : undefined,
+    });
+    this.traceInflight();
+  }
+
+  private traceInflight() {
+    const trace = this.options.trace;
+    trace?.recorder.counter(trace.taskId, "ipc.inflight", "Runtime IPC", {
+      pending: this.pending.size,
+      handling: this.handling.size,
+    });
+  }
 
   constructor(private options: RuntimeIpcPeerOptions) {
     this.maxFrameBytes = options.maxFrameBytes ?? MAX_RUNTIME_IPC_FRAME_BYTES;
@@ -137,9 +172,20 @@ export class RuntimeIpcPeer {
       };
     }
 
+    const trace = this.options.trace;
+    const span = trace?.recorder.startSpan(trace.taskId, {
+      name: "ipc.request",
+      category: "ipc",
+      track: "IPC roundtrip",
+      attributes: { requestId: request.requestId, operation },
+    });
     const result = new Promise<unknown>((resolve, reject) => {
       const aborted = () => {
+        trace?.recorder.endSpan(span, "cancelled", {
+          remoteCompletion: "unknown",
+        });
         this.pending.delete(request.requestId);
+        this.traceInflight();
         this.rememberCancelledRequest(request.requestId);
         try {
           this.event({
@@ -160,6 +206,7 @@ export class RuntimeIpcPeer {
       const removeAbortListener = () =>
         signal.removeEventListener("abort", aborted);
       this.pending.set(request.requestId, {
+        span,
         operation,
         resolve,
         reject,
@@ -169,6 +216,7 @@ export class RuntimeIpcPeer {
       try {
         this.send(parsed.data);
       } catch (error) {
+        trace?.recorder.endSpan(span, "error");
         this.pending.delete(request.requestId);
         removeAbortListener();
         reject(error as Error);
@@ -223,6 +271,8 @@ export class RuntimeIpcPeer {
     if (Buffer.byteLength(frame, "utf8") > this.maxFrameBytes) {
       throw new RuntimeIpcError("Runtime IPC 帧超过大小限制。");
     }
+
+    this.traceFrame(message, Buffer.byteLength(frame, "utf8"), "send");
 
     this.options.output.write(frame, "utf8", (error) => {
       if (error) {
@@ -283,6 +333,11 @@ export class RuntimeIpcPeer {
         return;
       }
 
+      this.traceFrame(
+        parsed.data,
+        Buffer.byteLength(frame, "utf8") + 1,
+        "receive",
+      );
       void this.dispatch(parsed.data).catch((error) => {
         this.close(
           `Runtime IPC 消息分发失败（type=${parsed.data.type}）：${ipcFailureDetails(error)}`,
@@ -310,6 +365,17 @@ export class RuntimeIpcPeer {
       }
 
       if (message.event === "request_cancel") {
+        const trace = this.options.trace;
+        trace?.recorder.instant(
+          trace.taskId,
+          "ipc.cancel_received",
+          "ipc",
+          "Runtime IPC",
+          {
+            requestId: message.requestId,
+            handlerPresent: this.handling.has(message.requestId),
+          },
+        );
         this.handling
           .get(message.requestId)
           ?.abort(new RuntimeIpcError(message.reason));
@@ -345,8 +411,28 @@ export class RuntimeIpcPeer {
 
     const controller = new AbortController();
     this.handling.set(message.requestId, controller);
+    const trace = this.options.trace;
+    const span = trace?.recorder.startSpan(trace.taskId, {
+      name: "ipc.handler",
+      category: "ipc",
+      track: "IPC handler",
+      attributes: {
+        requestId: message.requestId,
+        operation: message.operation,
+        callId:
+          "toolCallId" in message.body &&
+          typeof message.body.toolCallId === "string"
+            ? message.body.toolCallId
+            : undefined,
+      },
+    });
+    let failed = false;
+    let responseQueued = false;
     try {
-      const value = await this.requestHandler(message, controller.signal);
+      const operation = () => this.requestHandler!(message, controller.signal);
+      const value = await (trace
+        ? withTraceContext(trace.recorder, span, operation)
+        : operation());
       if (!controller.signal.aborted) {
         this.send({
           type: "response",
@@ -354,8 +440,10 @@ export class RuntimeIpcPeer {
           ok: true,
           value,
         });
+        responseQueued = true;
       }
     } catch (error) {
+      failed = true;
       if (controller.signal.aborted) {
         return;
       }
@@ -400,8 +488,15 @@ export class RuntimeIpcPeer {
               : undefined,
         },
       });
+      responseQueued = true;
     } finally {
+      trace?.recorder.endSpan(
+        span,
+        controller.signal.aborted ? "cancelled" : failed ? "error" : "ok",
+        { responseQueued },
+      );
       this.handling.delete(message.requestId);
+      this.traceInflight();
     }
   }
 
@@ -418,6 +513,11 @@ export class RuntimeIpcPeer {
     }
 
     this.pending.delete(response.requestId);
+    this.traceInflight();
+    this.options.trace?.recorder.endSpan(
+      pending.span,
+      response.ok ? "ok" : "error",
+    );
     pending.removeAbortListener();
     if (response.ok) {
       pending.resolve(response.value);
@@ -455,6 +555,9 @@ export class RuntimeIpcPeer {
       ipcErrorText(message, this.options.getErrorSecrets?.()),
     );
     for (const pending of this.pending.values()) {
+      this.options.trace?.recorder.endSpan(pending.span, "unknown", {
+        disconnected: true,
+      });
       pending.removeAbortListener();
       pending.reject(
         new RuntimeIpcError(
@@ -472,6 +575,7 @@ export class RuntimeIpcPeer {
 
     this.pending.clear();
     this.handling.clear();
+    this.traceInflight();
     this.cancelledPending.clear();
     this.cancelledPendingOrder = [];
     this.eventListeners.clear();
