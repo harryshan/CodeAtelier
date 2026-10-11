@@ -141,7 +141,7 @@ it("traces brokered sandbox model requests without prompt or output text", async
   const exported = traces.exportTask(identity.taskId);
   const model = exported?.traceEvents.find(
     (event: { name: string; ph: string }) =>
-      event.name === "llm.request" && event.ph === "B",
+      event.name === "llm.request" && event.ph === "b",
   );
 
   expect(result.text).toBe("model-secret");

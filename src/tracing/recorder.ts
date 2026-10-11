@@ -1,11 +1,11 @@
 /**
  * 在服务进程内记录任务级性能时间线，并导出 Perfetto 可导入的 Chrome Trace Event JSON。
  * Engine 为每个实际运行的任务调用 startTask/finishTask；模型和工具包装器在真实执行边界创建 span，
- * server/app.ts 通过 exportTask 将已完成或运行中的 trace 作为本地下载接口返回。
+ * Engine 在终态通过 exportTask 生成归档；server/app.ts 只下载已经落盘的文件。
  *
- * 1. 本进程单调时钟和已认证 Runtime 报时映射到微秒时间轴；按进程和可复用轨道导出可嵌套的 begin/end，未结束片段由任务终态收口。
+ * 1. 本进程单调时钟和已认证 Runtime 报时映射到微秒时间轴；业务生命周期用进程内独立 ID 的异步 b/e 配对，允许交叉结束，未结束片段由任务终态收口。
  * 2. startSpan/endSpan/instant 接收受控 JSON 属性：普通字符串限长；tool parameters 允许完整结构但递归遮盖凭据字段，避免密钥进入本机 trace。
- * 3. link 保存跨轨道因果关系；exportTask 输出进程/轨道元数据、按时间排序的耗时片段和使用递增整数 ID 的 Perfetto flow 事件。
+ * 3. link 保存跨轨道因果关系；exportTask 保留逻辑轨道和父 span 属性，通过异步 n 事件及 bind_id 将 flow 绑定到正确生命周期；同刻事件按开始/端点/结束的约束排序。
  * 4. recorder 只保存运行中任务构造完整 JSON 所需的短暂状态；Engine 成功或失败写入 TraceArchive 后立即 discardTask，不保留完成 trace 缓存。
  *
  * 此记录器不参与任务恢复，也不改变工具或模型的执行顺序。记录故障必须不影响 agent 主流程。
@@ -13,7 +13,7 @@
 
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
-import { redactText } from "../logging/redact.js";
+import { isCredentialKey, redactText } from "../logging/redact.js";
 import type {
   TraceAttribute,
   TraceAttributes,
@@ -25,8 +25,6 @@ import type {
 
 const MAX_ATTRIBUTE_DEPTH = 20;
 const MAX_ATTRIBUTE_LENGTH = 500;
-const SENSITIVE_ATTRIBUTE_KEY =
-  /^(?:api[_-]?key|authorization|cookie|password|token)$/i;
 
 type TraceRecord = {
   id: string;
@@ -56,16 +54,16 @@ function safeAttribute(
   preserveText: boolean,
   depth = 0,
 ): TraceAttribute {
+  if (isCredentialKey(key)) {
+    return "[REDACTED]";
+  }
+
   if (value === undefined || value === null || typeof value === "boolean") {
     return value;
   }
 
   if (typeof value === "number") {
     return Number.isFinite(value) ? value : String(value);
-  }
-
-  if (SENSITIVE_ATTRIBUTE_KEY.test(key)) {
-    return "[REDACTED]";
   }
 
   if (typeof value === "string") {
@@ -291,8 +289,8 @@ export class TraceRecorder {
     const finishedAtUs = this.nowUs();
     for (const span of record.spans.values()) {
       if (span.finishedAtUs === undefined) {
-        // 所有未结束的并行操作与根任务共用同一终点，保证根 span 覆盖取消或异常时仍在运行的子操作。
-        span.finishedAtUs = finishedAtUs;
+        // 未结束操作按任务终态收口；跨进程报时略超前时保留零长区间，不能导出负耗时。
+        span.finishedAtUs = Math.max(span.startedAtUs, finishedAtUs);
         span.status = span.status ?? status;
       }
     }
@@ -321,7 +319,18 @@ export class TraceRecorder {
         args: { name: "CodeAtelier server" },
       },
     ];
-    const timelineEvents: any[] = [];
+    const timelineEvents: Array<{ event: any; order: number }> = [];
+    const spanIds = new Map(
+      [...record.spans.keys()].map((spanId, index) => [
+        spanId,
+        (index + 1).toString(16),
+      ]),
+    );
+    const endpoint = (span: TraceSpan) => ({
+      pid: span.processId ?? process.pid,
+      tid: id(span.processId ?? process.pid, span.track),
+      id2: { local: spanIds.get(span.id)! },
+    });
 
     for (const [processId, processTracks] of tracks) {
       if (processId !== process.pid) {
@@ -346,57 +355,56 @@ export class TraceRecorder {
     }
 
     for (const span of record.spans.values()) {
-      const finishedAtUs = span.finishedAtUs ?? exportedAtUs;
-      const args = { ...span.attributes, status: span.status ?? "unknown" };
-      const processId = span.processId ?? process.pid;
-      const tid = id(processId, span.track);
-      if (
-        span.track === "Main thread" ||
-        span.track.startsWith("Agent Runtime")
-      ) {
-        // 主线程阶段经常自然嵌套，例如 context.prepare 内的压缩和模型请求。
-        // Trace Event 的 X 片段不能在同一 tid 交叠；B/E 保留这种真实调用栈关系。
-        timelineEvents.push({
+      const finishedAtUs = Math.max(
+        span.startedAtUs,
+        span.finishedAtUs ?? exportedAtUs,
+      );
+      const args = {
+        ...span.attributes,
+        status: span.status ?? "unknown",
+        spanId: span.id,
+        parentSpanId: span.parentSpanId,
+        logicalTrack: span.track,
+      };
+      // 所有 span 都描述从开始到完成的生命周期，不借助轨道名称假定 JS 调用栈或 CPU 执行。
+      // Perfetto 按进程/名称复用异步轨道；id2.local 负责配对，原槽位保留在 tid/logicalTrack。
+      timelineEvents.push({
+        order: 3,
+        event: {
           name: span.name,
           cat: span.category,
-          ph: "B",
+          ph: "b",
           ts: span.startedAtUs,
-          pid: processId,
-          tid,
+          ...endpoint(span),
           args,
-        });
-        timelineEvents.push({
+        },
+      });
+      timelineEvents.push({
+        // 先关闭已有区间以复用轨道；零时长区间必须先 begin，再处理端点，最后 end。
+        order: finishedAtUs === span.startedAtUs ? 6 : 2,
+        event: {
           name: span.name,
           cat: span.category,
-          ph: "E",
+          ph: "e",
           ts: finishedAtUs,
-          pid: processId,
-          tid,
-        });
-      } else {
-        timelineEvents.push({
-          name: span.name,
-          cat: span.category,
-          ph: "X",
-          ts: span.startedAtUs,
-          dur: Math.max(0, finishedAtUs - span.startedAtUs),
-          pid: processId,
-          tid,
-          args,
-        });
-      }
+          ...endpoint(span),
+        },
+      });
     }
 
     for (const instant of record.instants) {
       timelineEvents.push({
-        name: instant.name,
-        cat: instant.category,
-        ph: "i",
-        s: "t",
-        ts: instant.timestampUs,
-        pid: instant.processId,
-        tid: id(instant.processId, instant.track),
-        args: instant.attributes,
+        order: 7,
+        event: {
+          name: instant.name,
+          cat: instant.category,
+          ph: "i",
+          s: "t",
+          ts: instant.timestampUs,
+          pid: instant.processId,
+          tid: id(instant.processId, instant.track),
+          args: instant.attributes,
+        },
       });
     }
 
@@ -408,69 +416,54 @@ export class TraceRecorder {
         continue;
       }
 
-      // Perfetto 的 Trace Event JSON importer 接受 64 位整数 ID，不接受 UUID 字符串。
-      // 因果边只有在源操作结束后目标操作才开始时才有效，逆序边不导出为 flow。
+      // s/f 绑定同步线程轨道，不能连接 b/e。n 沿用生命周期的 id2，在其内创建零时长端点，
+      // n 必须沿用 span 的名称和分类，否则 importer 会另建轨道；关系名放在 flowName 属性。
+      // bind_id 把这两个端点连成 flow；支持一个模型响应派生多个工具，且不改写实测时间。
       const flowId = flowIndex + 1;
       timelineEvents.push({
-        name: link.name,
-        cat: "flow",
-        ph: "s",
-        ts: fromTimestampUs,
-        pid: from.processId ?? process.pid,
-        tid: id(from.processId ?? process.pid, from.track),
-        id: flowId,
+        order: fromTimestampUs === from.startedAtUs ? 4 : 0,
+        event: {
+          name: from.name,
+          cat: from.category,
+          ph: "n",
+          ts: fromTimestampUs,
+          ...endpoint(from),
+          bind_id: flowId,
+          flow_out: true,
+          args: { flowName: link.name, spanId: from.id },
+        },
       });
       timelineEvents.push({
-        name: link.name,
-        cat: "flow",
-        ph: "f",
-        ts: to.startedAtUs,
-        pid: to.processId ?? process.pid,
-        tid: id(to.processId ?? process.pid, to.track),
-        id: flowId,
+        order: 5,
+        event: {
+          name: to.name,
+          cat: to.category,
+          ph: "n",
+          ts: to.startedAtUs,
+          ...endpoint(to),
+          bind_id: flowId,
+          flow_in: true,
+          args: { flowName: link.name, spanId: to.id },
+        },
       });
     }
 
-    timelineEvents.sort((left, right) => {
-      if (left.ts !== right.ts) {
-        return left.ts - right.ts;
-      }
-
-      if (left.ph === "E") {
-        return -1;
-      }
-
-      if (right.ph === "E") {
-        return 1;
-      }
-
-      if (left.ph === "s") {
-        return -1;
-      }
-
-      if (right.ph === "s") {
-        return 1;
-      }
-
-      if (left.ph === "f") {
-        return 1;
-      }
-
-      if (right.ph === "f") {
-        return -1;
-      }
-
-      return 0;
-    });
+    timelineEvents.sort(
+      (left, right) =>
+        left.event.ts - right.event.ts || left.order - right.order,
+    );
 
     return {
-      traceEvents: [...metadataEvents, ...timelineEvents],
+      traceEvents: [
+        ...metadataEvents,
+        ...timelineEvents.map(({ event }) => event),
+      ],
       displayTimeUnit: "ms",
       metadata: {
         traceId: record.id,
         taskId: record.taskId,
         sessionId: record.sessionId,
-        format: "CodeAtelier Perfetto Trace Event JSON v1",
+        format: "CodeAtelier Perfetto Trace Event JSON v2",
       },
     };
   }

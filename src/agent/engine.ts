@@ -13,6 +13,7 @@
  *    Skill 每任务在 Broker 扫描预设目录，模型先看到摘要、工具按需加载正文；宿主/Runtime/fallback 共用该目录且不授权脚本。
  *    MCP 在首次模型请求前提供已启用服务的公开用途摘要，不提前连接；任务级本机连接池由宿主/Runtime 共用审批后单次执行入口，收尾关闭，摘要、参数和正文不进入 trace。
  * 7. Agent Runtime 取消先经 IPC 等待 runtime_complete/stopping，再关闭原生 transport；清理未知优先于取消。终态保留已验证进程身份；Broker 校验 Runtime trace 时间戳，按该进程的执行槽组织片段、从已保存工具调用附加脱敏参数并统一归档，在结果持久化前按对应执行片段补齐耗时；子任务由 Broker 核对身份与原子保存问题回执，退出先停子线程再归档。
+ * 8. run 的终态持久化与 trace 收尾分开保护；写库失败仍尝试归档失败 trace，导出/归档故障只记警告，最外层 finally 释放 trace 内存和任务级 Sandbox 状态。
  *
  * 模型请求可以重试，但已经执行的工具不能跟着重跑。数据库回滚也撤销不了文件修改或
  * 已启动的命令，所以保存失败时必须停止任务，并留下足够的记录供后续恢复。
@@ -3308,32 +3309,46 @@ export class Engine {
         log.error({ event: "task.persistence_failed", err: error });
       }
 
-      await this.store.statusAsync(task.id, status, failure);
       try {
-        await this.store.replayAsync(task.id, "finish", null, status);
-        this.traces.endSpan(replayCaptureSpan, "ok");
-      } catch (error) {
-        this.traces.endSpan(replayCaptureSpan, "error", {
-          errorName: error instanceof Error ? error.name : typeof error,
-        });
-        log.error({ event: "replay.capture_failed", err: error });
-      }
+        try {
+          await this.store.statusAsync(task.id, status, failure);
+        } catch (error) {
+          // 保留原始写入失败给 launch 的恢复入口；不能让 trace 仍把已执行但未落盘的任务标成成功。
+          status = "failed";
+          throw error;
+        }
 
-      this.traces.finishTask(
-        task.id,
-        status === "completed"
-          ? "ok"
-          : status === "cancelled" || status === "interrupted"
-            ? "cancelled"
-            : "error",
-      );
-      const trace = this.traces.exportTask(task.id);
-      if (trace) {
-        await this.traceArchive.write(task.sessionId, task.id, trace);
+        try {
+          await this.store.replayAsync(task.id, "finish", null, status);
+          this.traces.endSpan(replayCaptureSpan, "ok");
+        } catch (error) {
+          this.traces.endSpan(replayCaptureSpan, "error", {
+            errorName: error instanceof Error ? error.name : typeof error,
+          });
+          log.error({ event: "replay.capture_failed", err: error });
+        }
+      } finally {
+        // 诊断失败不能覆盖产品失败或把完成任务改成 failed；即使导出抛错也必须释放运行期记录。
+        try {
+          this.traces.finishTask(
+            task.id,
+            status === "completed"
+              ? "ok"
+              : status === "cancelled" || status === "interrupted"
+                ? "cancelled"
+                : "error",
+          );
+          const trace = this.traces.exportTask(task.id);
+          if (trace) {
+            await this.traceArchive.write(task.sessionId, task.id, trace);
+          }
+        } catch (error) {
+          log.warn({ event: "tracing.finalize_failed", err: error });
+        } finally {
+          this.traces.discardTask(task.id);
+          this.sandbox.releaseTask(task.id);
+        }
       }
-
-      this.traces.discardTask(task.id);
-      this.sandbox.releaseTask(task.id);
 
       emit("task_end", { status });
       await this.drainEvents(task.id);

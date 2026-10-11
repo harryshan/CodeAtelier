@@ -1,6 +1,6 @@
 /**
  * 验证 Perfetto tracing 的可导出时间线、敏感原文边界、会话/任务级持久化和真实 HTTP 下载接口。
- * 第一组直接驱动 TraceRecorder，检查主线程和跨进程可复用轨道、单调时间、instant/flow 及递归脱敏参数导出；
+ * 第一组直接驱动 TraceRecorder，检查独立 ID 的异步生命周期、跨进程逻辑轨道、单调时间、instant/flow 及递归脱敏参数导出；
  * 第二组通过生产 createApp、Engine 和模拟模型完成并发工具任务，确认 read_file 工具内读取/同步计算阶段且不再有读取线程池关闭片段、context 预算计量、响应/计划/持久化阶段、独立 Store worker 与工具轨道及任务根 span 写入后即释放内存，并可经受保护 API 下载。
  *
  * 测试不连接真实模型服务，也不写入用户工作区；它只检查导出的可观察结构和临时数据目录，不依赖具体微秒耗时。
@@ -14,6 +14,7 @@ import { TraceRecorder } from "../src/tracing/recorder.js";
 import { Config } from "../src/config/config.js";
 import { createApp } from "../src/server/app.js";
 import { temp } from "./fixtures/helpers.js";
+import { traceSlices } from "./fixtures/trace-slices.js";
 
 it("exports spans, instants and cross-track flows as Perfetto Trace Event JSON", () => {
   const recorder = new TraceRecorder();
@@ -64,13 +65,21 @@ it("exports spans, instants and cross-track flows as Perfetto Trace Event JSON",
   });
   expect(exported?.traceEvents).toEqual(
     expect.arrayContaining([
-      expect.objectContaining({ name: "task.run", ph: "X", cat: "agent" }),
-      expect.objectContaining({ name: "llm.request", ph: "B", cat: "llm" }),
-      expect.objectContaining({ name: "llm.request", ph: "E", cat: "llm" }),
-      expect.objectContaining({ name: "tool.batch", ph: "X", cat: "tool" }),
+      expect.objectContaining({ name: "task.run", ph: "b", cat: "agent" }),
+      expect.objectContaining({ name: "llm.request", ph: "b", cat: "llm" }),
+      expect.objectContaining({ name: "llm.request", ph: "e", cat: "llm" }),
+      expect.objectContaining({ name: "tool.batch", ph: "b", cat: "tool" }),
       expect.objectContaining({ name: "llm.first_output", ph: "i" }),
-      expect.objectContaining({ name: "llm_to_tool", ph: "s" }),
-      expect.objectContaining({ name: "llm_to_tool", ph: "f" }),
+      expect.objectContaining({
+        ph: "n",
+        flow_out: true,
+        args: expect.objectContaining({ flowName: "llm_to_tool" }),
+      }),
+      expect.objectContaining({
+        ph: "n",
+        flow_in: true,
+        args: expect.objectContaining({ flowName: "llm_to_tool" }),
+      }),
     ]),
   );
   const timelineEvents = exported?.traceEvents.filter(
@@ -78,9 +87,10 @@ it("exports spans, instants and cross-track flows as Perfetto Trace Event JSON",
   );
   expect(
     timelineEvents?.every(
-      (event: { id?: unknown; ph: string }) =>
-        (event.ph !== "s" && event.ph !== "f") ||
-        (typeof event.id === "number" && Number.isSafeInteger(event.id)),
+      (event: { bind_id?: unknown; ph: string }) =>
+        event.ph !== "n" ||
+        (typeof event.bind_id === "number" &&
+          Number.isSafeInteger(event.bind_id)),
     ),
   ).toBe(true);
   expect(
@@ -90,19 +100,15 @@ it("exports spans, instants and cross-track flows as Perfetto Trace Event JSON",
     ),
   ).toBe(true);
   const flowEvents =
-    timelineEvents?.filter(
-      (event: { ph: string }) => event.ph === "s" || event.ph === "f",
-    ) ?? [];
+    timelineEvents?.filter((event: { ph: string }) => event.ph === "n") ?? [];
   expect(flowEvents).toHaveLength(2);
-  expect(flowEvents[0].id).toBe(flowEvents[1].id);
+  expect(flowEvents[0].bind_id).toBe(flowEvents[1].bind_id);
   expect(flowEvents[0].ts).toBeLessThanOrEqual(flowEvents[1].ts);
   const completeEventsByTrack = new Map<
     number,
     Array<{ ts: number; dur: number }>
   >();
-  for (const event of timelineEvents?.filter(
-    (candidate: { ph: string }) => candidate.ph === "X",
-  ) ?? []) {
+  for (const event of traceSlices(exported!.traceEvents)) {
     const completeEvent = event as { tid: number; ts: number; dur: number };
     const trackEvents = completeEventsByTrack.get(completeEvent.tid) ?? [];
     trackEvents.push(completeEvent);
@@ -133,12 +139,12 @@ it("exports spans, instants and cross-track flows as Perfetto Trace Event JSON",
   expect(taskTrack.tid).not.toBe(mainThreadTrack.tid);
   const request = exported?.traceEvents.find(
     (event: { name: string; ph: string }) =>
-      event.name === "llm.request" && event.ph === "B",
+      event.name === "llm.request" && event.ph === "b",
   );
   expect(request.args.forbiddenPrompt).toHaveLength(500);
   const toolEvent = exported?.traceEvents.find(
     (event: { name: string; ph: string }) =>
-      event.name === "tool.read_file" && event.ph === "X",
+      event.name === "tool.read_file" && event.ph === "b",
   );
   expect(toolEvent.args.parameters).toEqual({
     authorization: "[REDACTED]",
@@ -181,13 +187,13 @@ it("groups runtime slices by process and reusable track without shifting their m
 
   const events = recorder.exportTask(task.taskId)!.traceEvents;
   const toolBegin = events.find(
-    (event: any) => event.name === "tool.read_file" && event.ph === "B",
+    (event: any) => event.name === "tool.read_file" && event.ph === "b",
   );
   const toolEnd = events.find(
-    (event: any) => event.name === "tool.read_file" && event.ph === "E",
+    (event: any) => event.name === "tool.read_file" && event.ph === "e",
   );
   const readBegin = events.find(
-    (event: any) => event.name === "read_file.bytes" && event.ph === "B",
+    (event: any) => event.name === "read_file.bytes" && event.ph === "b",
   );
   expect(toolBegin).toMatchObject({ pid: 12345, ts: startedAtUs });
   expect(readBegin).toMatchObject({
@@ -283,20 +289,29 @@ it("persists each Engine task trace by session and task, then exports it only th
     });
 
     expect(response.statusCode).toBe(200);
+    const slices = traceSlices(response.json().traceEvents);
     expect(response.headers["content-disposition"]).toContain(task.id);
     expect(response.json().traceEvents).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ name: "task.run", ph: "X" }),
-        expect.objectContaining({ name: "context.prepare", ph: "B" }),
-        expect.objectContaining({ name: "context.request", ph: "B" }),
-        expect.objectContaining({ name: "llm.request", ph: "B" }),
-        expect.objectContaining({ name: "model.response_process", ph: "B" }),
-        expect.objectContaining({ name: "tool.plan", ph: "B" }),
-        expect.objectContaining({ name: "tool.batch", ph: "X" }),
-        expect.objectContaining({ name: "tool.read_file", ph: "X" }),
-        expect.objectContaining({ name: "tool.result_persist", ph: "B" }),
-        expect.objectContaining({ name: "llm_to_tool", ph: "s" }),
-        expect.objectContaining({ name: "llm_to_tool", ph: "f" }),
+        expect.objectContaining({ name: "task.run", ph: "b" }),
+        expect.objectContaining({ name: "context.prepare", ph: "b" }),
+        expect.objectContaining({ name: "context.request", ph: "b" }),
+        expect.objectContaining({ name: "llm.request", ph: "b" }),
+        expect.objectContaining({ name: "model.response_process", ph: "b" }),
+        expect.objectContaining({ name: "tool.plan", ph: "b" }),
+        expect.objectContaining({ name: "tool.batch", ph: "b" }),
+        expect.objectContaining({ name: "tool.read_file", ph: "b" }),
+        expect.objectContaining({ name: "tool.result_persist", ph: "b" }),
+        expect.objectContaining({
+          ph: "n",
+          flow_out: true,
+          args: expect.objectContaining({ flowName: "llm_to_tool" }),
+        }),
+        expect.objectContaining({
+          ph: "n",
+          flow_in: true,
+          args: expect.objectContaining({ flowName: "llm_to_tool" }),
+        }),
       ]),
     );
     const storeTrack = response
@@ -312,7 +327,7 @@ it("persists each Engine task trace by session and task, then exports it only th
       .json()
       .traceEvents.filter(
         (event: { tid: number; ph: string }) =>
-          event.tid === storeTrack.tid && event.ph === "X",
+          event.tid === storeTrack.tid && event.ph === "b",
       );
     expect(storeSlices.map((event: { name: string }) => event.name)).toContain(
       "store.write",
@@ -340,7 +355,7 @@ it("persists each Engine task trace by session and task, then exports it only th
       .json()
       .traceEvents.filter(
         (event: { tid: number; ph: string }) =>
-          event.tid === mainThreadTrack.tid && event.ph === "B",
+          event.tid === mainThreadTrack.tid && event.ph === "b",
       )
       .map((event: { name: string }) => event.name);
     expect(mainThreadNames).toEqual(
@@ -360,27 +375,27 @@ it("persists each Engine task trace by session and task, then exports it only th
       .traceEvents.filter(
         (event: { tid: number; ph: string }) =>
           event.tid === mainThreadTrack.tid &&
-          (event.ph === "B" || event.ph === "E"),
+          (event.ph === "b" || event.ph === "e"),
       );
-    const sliceIndex = (name: string, phase: "B" | "E") =>
+    const sliceIndex = (name: string, phase: "b" | "e") =>
       mainThreadSlices.findIndex(
         (event: { name: string; ph: string }) =>
           event.name === name && event.ph === phase,
       );
 
-    const prepareBegin = sliceIndex("context.prepare", "B");
+    const prepareBegin = sliceIndex("context.prepare", "b");
     const prepareMeasureBegin = sliceIndex(
       "context.prepare.measure_request_view",
-      "B",
+      "b",
     );
     const prepareMeasureEnd = sliceIndex(
       "context.prepare.measure_request_view",
-      "E",
+      "e",
     );
-    const prepareEnd = sliceIndex("context.prepare", "E");
-    const requestBegin = sliceIndex("context.request", "B");
-    const requestEnd = sliceIndex("context.request", "E");
-    const modelBegin = sliceIndex("llm.request", "B");
+    const prepareEnd = sliceIndex("context.prepare", "e");
+    const requestBegin = sliceIndex("context.request", "b");
+    const requestEnd = sliceIndex("context.request", "e");
+    const modelBegin = sliceIndex("llm.request", "b");
     expect(prepareMeasureBegin).toBeGreaterThan(prepareBegin);
     expect(prepareMeasureEnd).toBeGreaterThan(prepareMeasureBegin);
     expect(prepareEnd).toBeGreaterThan(prepareMeasureEnd);
@@ -392,33 +407,29 @@ it("persists each Engine task trace by session and task, then exports it only th
       .json()
       .traceEvents.find(
         (event: { name: string; ph: string }) =>
-          event.name === "context.request.measure_input" && event.ph === "B",
+          event.name === "context.request.measure_input" && event.ph === "b",
       );
     expect(requestMeasure.args).toMatchObject({
       inputItems: expect.any(Number),
     });
     expect(JSON.stringify(requestMeasure.args)).not.toContain("answer briefly");
 
-    const tool = response
-      .json()
-      .traceEvents.find(
-        (event: { name: string; ph: string }) =>
-          event.name === "tool.read_file" && event.ph === "X",
-      );
+    const tool = slices.find(
+      (event: { name: string; ph: string }) =>
+        event.name === "tool.read_file" && event.ph === "b",
+    );
     expect(tool.args.parameters).toEqual({
       path: "trace-target.txt",
       startLine: 1,
       endLine: 1,
       whitespaceMode: false,
     });
-    const stages = response
-      .json()
-      .traceEvents.filter(
-        (event: { name: string; ph: string; args?: { callId?: string } }) =>
-          event.name.startsWith("read_file.") &&
-          event.ph === "X" &&
-          event.args?.callId === tool.args.callId,
-      );
+    const stages = slices.filter(
+      (event: { name: string; ph: string; args?: { callId?: string } }) =>
+        event.name.startsWith("read_file.") &&
+        event.ph === "b" &&
+        event.args?.callId === tool.args.callId,
+    );
     expect(stages.map((event: { name: string }) => event.name)).toEqual(
       expect.arrayContaining([
         "read_file.stat",
@@ -467,22 +478,18 @@ it("persists each Engine task trace by session and task, then exports it only th
         (event: { name: string }) => event.name === "read_file.pool.close",
       );
     expect(shutdown).toHaveLength(0);
-    const allTools = response
-      .json()
-      .traceEvents.filter(
-        (event: { name: string; ph: string }) =>
-          event.name === "tool.read_file" && event.ph === "X",
-      );
+    const allTools = slices.filter(
+      (event: { name: string; ph: string }) =>
+        event.name === "tool.read_file" && event.ph === "b",
+    );
     expect(allTools.length).toBeGreaterThanOrEqual(4);
     for (const readTool of allTools) {
-      const details = response
-        .json()
-        .traceEvents.filter(
-          (event: { name: string; ph: string; args?: { callId?: string } }) =>
-            event.name.startsWith("read_file.") &&
-            event.ph === "X" &&
-            event.args?.callId === readTool.args.callId,
-        );
+      const details = slices.filter(
+        (event: { name: string; ph: string; args?: { callId?: string } }) =>
+          event.name.startsWith("read_file.") &&
+          event.ph === "b" &&
+          event.args?.callId === readTool.args.callId,
+      );
       expect(details.length).toBeGreaterThan(0);
       expect(
         details.every(

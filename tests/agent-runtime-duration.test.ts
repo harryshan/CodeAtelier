@@ -137,14 +137,15 @@ it("persists execution duration for failures and zero for invalid or blocked cal
 
     const trace = JSON.parse((await engine.savedTrace(task))!);
     const starts = trace.traceEvents.filter(
-      (event: any) => event.name === "tool.read_file" && event.ph === "B",
+      (event: any) => event.name === "tool.read_file" && event.ph === "b",
     );
     expect(starts).toHaveLength(1);
     expect(starts[0].args).toMatchObject({ callId: "binary", status: "error" });
     const end = trace.traceEvents.find(
       (event: any) =>
         event.name === "tool.read_file" &&
-        event.ph === "E" &&
+        event.ph === "e" &&
+        event.id2.local === starts[0].id2.local &&
         event.tid === starts[0].tid,
     );
     expect(byCall.get("binary")?.durationMs).toBe(

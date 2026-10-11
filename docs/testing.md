@@ -298,9 +298,11 @@ item.done 回退、失败/不完整事件、服务实际错误 message/reason/co
 
 ### Perfetto tracing
 
-主要测试：tracing.test.ts、read-file-content.test.ts、agent-runtime-engine.test.ts、runtime-ipc.test.ts、tool-graph.test.ts、e2e/app.spec.ts。
+主要测试：tracing.test.ts、tracing-regressions.test.ts、redact.test.ts、read-file-content.test.ts、agent-runtime-engine.test.ts、runtime-ipc.test.ts、tool-graph.test.ts、e2e/app.spec.ts。
 
-宿主与真实 Runtime 子进程的 `read_file` 检查/异步字节读取/直接同步计算阶段及结果字节数与计算耗时，二进制失败与读后取消的阶段配对，不再输出读取 Worker 或池关闭事件；`context.prepare`/`context.request` 及计量子阶段、Runtime `tool.result_persist`、独立模型与响应处理、工具计划/持久化及 instant/flow 事件导出；Runtime trace IPC 只接受固定阶段、工具槽位、单调微秒时间戳和有界数值属性，Broker 校验时间窗、以已验证 Runtime PID 分组、对五次 read_file 复用最多四条槽位轨道，参数在 Broker 侧从 tool_start 脱敏附加；任意名称/文本字段关闭通道；主线程嵌套 begin/end slice、Task 包络、时序排序、整数 flow ID、可复用工具轨道、实际 tool 的完整结构化参数及递归凭据脱敏、按 session/task 独立持久化、终态后释放内存、认证下载、仅显示真实文件的统计框入口、关联元数据与普通长属性限长
+宿主与真实 Runtime 子进程的 `read_file` 检查/异步字节读取/直接同步计算阶段及结果字节数与计算耗时，二进制失败与读后取消的阶段配对，不再输出读取 Worker 或池关闭事件；`context.prepare`/`context.request` 及计量子阶段、Runtime `tool.result_persist`、独立模型与响应处理、工具计划/持久化及 instant/flow 事件导出；Runtime trace IPC 只接受固定阶段、工具槽位、单调微秒时间戳和有界数值属性，Broker 校验时间窗、以已验证 Runtime PID 分组、对五次 read_file 复用最多四条槽位轨道，参数在 Broker 侧从 tool_start 脱敏附加；任意名称/文本字段关闭通道；独立 ID 的异步 b/e 配对、Task 生命周期、同刻边界排序、n/bind_id flow 端点、可复用工具轨道、实际 tool 的完整结构化参数及递归凭据脱敏、按 session/task 独立持久化、终态后释放内存、认证下载、仅显示真实文件的统计框入口、关联元数据与普通长属性限长
+
+`tracing-regressions.test.ts` 用固定时间覆盖 Main thread/Store queue/Broker 并发交叉区间、零时长及取消收口、跨进程 flow 的同名/同分类/ID 绑定；Engine 故障注入覆盖终态写库失败仍归档并释放内存、导出或归档抛错不改变已完成结果。`redact.test.ts` 覆盖凭据别名、带空格/转义的赋值和命令选项、Basic/Bearer/Cookie 头、非字符串敏感字段、重复脱敏稳定性，以及普通路径和 token 计数保留。测试用 `fixtures/trace-slices.ts` 按进程及 ID 还原区间再断言耗时，不依赖事件名称寻找同名结束。真实 Perfetto importer 的离线合成数据验证见 [验证记录](verification.md)，不是浏览器 UI 或全平台验收。
 
 `agent-runtime-engine.test.ts` 另核对并行读取结果的 `durationMs` 与各自 `tool.execute` 片段一致，获批宿主命令有数值、拒绝为零；`agent-runtime-duration.test.ts` 使用真实 Runtime 子进程覆盖执行失败、无效图和依赖阻断，再重开数据库验证耗时持久化。`e2e/broker-command-output.spec.ts` 检查命令卡片及普通工具结果中的数值、0 ms、旧记录缺失提示与刷新重建。计时来自执行片段而非 tool_start 到结果的墙钟间隔，避免加入审批、排队和落盘时间；这些测试不替代固定账户安装态或跨平台验收。
 

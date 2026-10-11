@@ -185,7 +185,7 @@ it("moves the Engine agent loop into the launched Runtime process", async () => 
       const stage = trace.traceEvents.find(
         (event: any) =>
           event.name === name &&
-          event.ph === "B" &&
+          event.ph === "b" &&
           event.args?.callId === "runtime-read",
       );
       expect(stage?.args).toMatchObject({
@@ -198,13 +198,14 @@ it("moves the Engine agent loop into the launched Runtime process", async () => 
     const toolSpan = trace.traceEvents.find(
       (event: any) =>
         event.name === "tool.read_file" &&
-        event.ph === "B" &&
+        event.ph === "b" &&
         event.args.callId === "runtime-read",
     );
     const toolEnd = trace.traceEvents.find(
       (event: any) =>
         event.name === "tool.read_file" &&
-        event.ph === "E" &&
+        event.ph === "e" &&
+        event.id2.local === toolSpan.id2.local &&
         event.tid === toolSpan.tid &&
         event.ts >= toolSpan.ts,
     );
@@ -219,12 +220,12 @@ it("moves the Engine agent loop into the launched Runtime process", async () => 
     expect(toolEnd.ts).toBeGreaterThanOrEqual(toolSpan.ts);
     expect(
       trace.traceEvents.find(
-        (event: any) => event.name === "context.prepare" && event.ph === "B",
+        (event: any) => event.name === "context.prepare" && event.ph === "b",
       ).pid,
     ).toBe(toolSpan.pid);
     expect(
       trace.traceEvents.find(
-        (event: any) => event.name === "llm.request" && event.ph === "B",
+        (event: any) => event.name === "llm.request" && event.ph === "b",
       ).pid,
     ).toBe(process.pid);
     const runtimeTracks = trace.traceEvents.filter(
@@ -238,7 +239,7 @@ it("moves the Engine agent loop into the launched Runtime process", async () => 
       (event: any) =>
         event.name.startsWith("read_file.") &&
         event.args?.callId === "runtime-read" &&
-        event.ph === "B",
+        event.ph === "b",
     );
     expect(
       runtimeStages.every(
@@ -251,7 +252,7 @@ it("moves the Engine agent loop into the launched Runtime process", async () => 
     ).toBe(true);
     expect(runtimeStages.length).toBeGreaterThan(0);
     const toolStarts = trace.traceEvents.filter(
-      (event: any) => event.name === "tool.read_file" && event.ph === "B",
+      (event: any) => event.name === "tool.read_file" && event.ph === "b",
     );
     const results = store
       .events(session.id)
@@ -261,7 +262,8 @@ it("moves the Engine agent loop into the launched Runtime process", async () => 
       const end = trace.traceEvents.find(
         (event: any) =>
           event.name === start.name &&
-          event.ph === "E" &&
+          event.ph === "e" &&
+          event.id2.local === start.id2.local &&
           event.tid === start.tid &&
           event.ts >= start.ts,
       );
@@ -300,12 +302,12 @@ it("moves the Engine agent loop into the launched Runtime process", async () => 
     ]) {
       expect(
         trace.traceEvents.some(
-          (event: any) => event.name === name && event.ph === "B",
+          (event: any) => event.name === name && event.ph === "b",
         ),
       ).toBe(true);
       expect(
         trace.traceEvents.some(
-          (event: any) => event.name === name && event.ph === "E",
+          (event: any) => event.name === name && event.ph === "e",
         ),
       ).toBe(true);
     }
@@ -696,7 +698,7 @@ for (const approve of [true, false]) {
       // 检查解析后的事件；Windows 路径在 JSON 字符串里转义，原字符串搜索会漏检。
       const hostWait = JSON.parse(trace!).traceEvents.filter(
         (event: any) =>
-          event.name === "tool.run_with_permissions" && event.ph === "B",
+          event.name === "tool.run_with_permissions" && event.ph === "b",
       );
       if (approve) {
         expect(hostWait).toHaveLength(1);

@@ -1,8 +1,8 @@
 /**
  * 将已结束任务的安全 Perfetto Trace Event JSON 持久化到平台数据目录，并按会话与任务隔离文件。
- * Engine 在任务进入终态后调用 write；Engine 和 server/app.ts 通过 read 为历史任务提供下载，
+ * Engine 在尝试保存任务终态后调用 write（包括终态写库失败）；Engine 和 server/app.ts 通过 read 为历史任务提供下载，
  * 因此服务重启不会丢失已完成的性能时间线。输入是 TraceRecorder 已导出的安全 JSON 文本对象，
- * 输出是 data-directory/traces/<sessionId>/<taskId>.json，绝不保存原始模型或工具 payload。
+ * 输出是 data-directory/traces/<sessionId>/<taskId>.json，不保存模型或工具输出正文；脱敏工具参数仍属敏感本机数据。
  *
  * 1. archiveFile 统一构造以 sessionId 和 taskId 分层的路径，使同一会话的每个任务各有独立文件而不覆盖。
  * 2. write 先在目标目录写入随机临时文件，再 rename 为最终文件；写入故障记录受控警告并吞掉，不能妨碍任务终态、恢复或通知。

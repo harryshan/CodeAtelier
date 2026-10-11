@@ -105,10 +105,15 @@ it("waits for a timed-out stdio handshake to release its process before returnin
       .exportTask("mcp-task")
       ?.traceEvents.find((event) => event.name === "mcp.connection_close");
     expect(cleanup).toMatchObject({
-      ph: "X",
+      ph: "b",
       args: { status: "ok", callId: "call-fixture" },
     });
-    expect(cleanup?.dur).toBeGreaterThan(0);
+    const cleanupEnd = traces
+      .exportTask("mcp-task")
+      ?.traceEvents.find(
+        (event) => event.ph === "e" && event.id2.local === cleanup?.id2.local,
+      );
+    expect(cleanupEnd?.ts - cleanup?.ts).toBeGreaterThan(0);
     await expect(
       run({ action: "list_tools", server: "local", cursor: null }),
     ).rejects.toThrow("不自动重连");

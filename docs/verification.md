@@ -1,5 +1,14 @@
 # 初版验证记录
 
+## trace 异步导出、凭据脱敏与异常收尾（2026-10-12）
+
+- 按 D149 先增加 `tracing-regressions.test.ts`，旧实现 **7/7 失败**，覆盖交叉区间、零时长、跨进程 flow、凭据、终态写库及导出/归档故障；修复后全部通过。再以假凭据补齐别名、带引号赋值/命令选项、完整 Cookie/Digest 头及 JSON 非字符串值的脱敏回归，先复现遗漏再修复；两文件合计新增 **20 项**。宿主/真实 Runtime、MCP 本机 HTTP、日志和 trace 下载专项 **8 文件、57 项通过**。普通 sandbox 的 MCP HTTP fetch 失败在获准宿主重跑后通过，不改产品语义。
+- 使用官方 **Perfetto Trace Processor v58.2-add693d8b** 在本机导入纯合成 v2 JSON：16 个生命周期完整保留，6 个交叉片段分别为 3 × 20 μs 和 3 × 30 μs，6 条 flow（包括跨进程扇出及零时长端点），5 次工具操作复用 4 条异步轨道；`stats` 中非零 error/data_loss 为 **0**。真实 importer 检查发现 n 端点若使用关系名称会另建轨道，已修正为沿用 span 名称/分类并补充断言；关系名进入 flowName。没有上传任何 trace，也没有做 Perfetto 浏览器 UI 视觉验收。
+- Windows / Node **26.10.0**：原样 `pnpm check` 的类型、ESLint、Prettier 通过，但默认并发单测非零退出，报告 process-tree pipe 清理断言、Windows PowerShell Node 探测和 long-tool-engine 超时/清理共 **3 项失败**，未进入构建；早期 lint 的三处空行问题已修正。随后 `pnpm test --maxWorkers=2` 全量 **98 文件、706 通过、1 项原有跳过**，包括这三项。没有修改默认并发、期限或断言，不将限并发结果表述为原样 check 全绿。
+- `pnpm test:e2e` 完整通过：先完成服务端/Web/Windows 和 POSIX Runtime 测试构建，随后 Chromium **42/42 通过**；保留既有 Zod 注释及 Web chunk 大小警告。这是 Windows 浏览器/HTTP/SSE 回归，不代表 POSIX 实机验证。变更文档的本地链接及 `git diff --check` 通过。
+- 检查日志及纯合成导入夹具保留于忽略目录 `.local/trace-validation/`：`check.log`、`unit.log`、`e2e.log`、`fixture.ts/json`、`import.log`。导入器来自官方 v58.2 Windows amd64 产物，SHA-256 校验为 `adfa6bad3d72be3ba9b83fa2b17b69fa13b3ab1cad0f42e52b86188bd5f0f997`；SQL 核对 slice 的 name/dur/track_id、flow 端点及 stats，不以自写 JSON 配对器替代真实导入。
+- 本轮不运行 Evaluation、真实模型、固定账户安装/Repair 或 Linux/macOS 实机验证，不改 IPC/数据库格式、不重启现有后端、不重写历史 trace。新导出与脱敏在后端加载新代码后用于新任务；旧归档保持原样。运行中缓冲容量、增量落盘、更多子系统和完整因果关系仍不在第一轮范围内。
+
 ## read_file 移除 Worker、读取后直接计算（2026-10-11）
 
 - 按 D147 删除专属 Worker/池与任务收尾，读取的 Buffer 直接用于哈希和行扫描。保留文件权限、大小/行数、长行和空白显示、分页及编辑版本凭证；同步计算前后检查取消，不承诺扫描中途抢占。tracing 改为工具轨道内 stat/bytes/compute，无 Worker 启动、排队、回传或 pool.close。

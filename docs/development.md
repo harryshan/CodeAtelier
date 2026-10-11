@@ -119,21 +119,23 @@ schema v10 另增每会话一条无正文的 token 校准锚点，同样在升�
 
 tracing 默认启用：每个实际开始的任务在当前服务进程内生成一条性能 timeline。`context.usage.restore/save` 记录会话 token 锚点恢复/保存的耗时和终态，restore 附 `restored` 布尔值；不保存锚点指纹或正文，数据库读写另归 Store queue/worker。
 
-宿主 loop 的模型请求、上下文准备/压缩、模型重试退避、响应处理、工具计划及工具结果的 SQLite 持久化都在 `Main thread` 轨道记录；Runtime 的上下文计量与结果持久化等待归于已验证 PID 的 `Agent Runtime` 轨道，实际数据库提交仍归 Broker 的 Store worker。Runtime 压缩的异步 session 事件时间只是 Broker 观察时刻，单列于同进程的 `Agent Runtime compaction` 轨道，不冒充 Runtime 精确执行区间。主线程和 Runtime 的上下文轨道均以可嵌套的 begin/end slice 导出：`context.prepare` 保持在实际准备/压缩边界内，其子阶段记录预算输入计量与压缩；`context.request` 保持在实际请求边界内，其子阶段记录完整输入计量。
+宿主 loop 的模型请求、上下文准备/压缩、模型重试退避、响应处理、工具计划及工具结果的 SQLite 持久化都在 `Main thread` 轨道记录；Runtime 的上下文计量与结果持久化等待归于已验证 PID 的 `Agent Runtime` 轨道，实际数据库提交仍归 Broker 的 Store worker。Runtime 压缩的异步 session 事件时间只是 Broker 观察时刻，单列于同进程的 `Agent Runtime compaction` 轨道，不冒充 Runtime 精确执行区间。这些名称表示逻辑归属，生命周期以独立 ID 的异步 `b/e` 导出：`context.prepare` 保持在实际准备/压缩边界内，其子阶段记录预算输入计量与压缩；`context.request` 保持在实际请求边界内，其子阶段记录完整输入计量。
 
-模型请求、退避及响应处理保持独立，以便区分上下文处理与模型服务耗时，且不会产生完整事件交叠。`Task` 是任务生命周期包络；工具批次、参数检查、审批等待与依赖阻塞保留在 `Tool scheduler` 逻辑轨道，只有审批通过并准备实际执行的调用才排队取得最多 4 条可复用 `Tool worker 1` 至 `Tool worker 4` 轨道，后续节点复用最先空闲的槽位。
+模型请求、退避及响应处理保持独立，以便区分上下文处理与模型服务耗时，允许异步操作的区间交叉。`Task` 是任务生命周期包络；工具批次、参数检查、审批等待与依赖阻塞保留在 `Tool scheduler` 逻辑轨道，只有审批通过并准备实际执行的调用才排队取得最多 4 条可复用 `Tool worker 1` 至 `Tool worker 4` 轨道，后续节点复用最先空闲的槽位。
 
-这些槽位表示并发操作而不是 Node 物理线程，人工审批耗时不会显示为 worker 占用。`read_file` 的路径授权与解析发生在执行槽取得之前，不另建准备片段；取得槽位后，文件检查（`read_file.stat`）、异步字节读取（`read_file.bytes`）和读完后直接计算（`read_file.compute`）阶段在调用对应的 `Tool worker`（Agent Runtime 路径为可复用的 `Agent Runtime tool 1`～`4`）轨道上嵌套显示于 `tool.read_file`。这些工具轨道是逻辑并发槽，不是物理线程。哈希与行扫描直接在工具所在进程的执行线程计算，`computeMs` 表示同步计算的墙钟耗时；不再有读取 Worker 启动、排队、消息传输或池关闭。计算前后检查取消，正在进行的同步扫描不支持中途抢占。
+这些槽位表示并发操作而不是 Node 物理线程，人工审批耗时不会显示为 worker 占用。`read_file` 的路径授权与解析发生在执行槽取得之前，不另建准备片段；取得槽位后，文件检查（`read_file.stat`）、异步字节读取（`read_file.bytes`）和读完后直接计算（`read_file.compute`）阶段在调用对应的 `Tool worker`（Agent Runtime 路径为可复用的 `Agent Runtime tool 1`～`4`）逻辑槽位中记录，并通过 `parentSpanId` 关联 `tool.read_file`。这些工具轨道是逻辑并发槽，不是物理线程。哈希与行扫描直接在工具所在进程的执行线程计算，`computeMs` 表示同步计算的墙钟耗时；不再有读取 Worker 启动、排队、消息传输或池关闭。计算前后检查取消，正在进行的同步扫描不支持中途抢占。
 
-阶段仅附 callId、有界字节数及计时，不保存路径或内容；Runtime IPC v13 的 trace span 必须携带单调时间戳（旧版本拒绝握手），固定白名单上报这些阶段及取得执行槽后的工具执行边界；Broker 校验任务时间窗、以已验证 Runtime PID 分组、按槽号分配复用轨道、从已保存的 tool_start 提取参数，统一导出落盘。Runtime 的 `Agent Runtime` 主轨道展示上下文；`tool_start` 到取得执行槽之间是排队/准备时间，不冒充实际执行；尚未开放的 subagent `await` 在槽位之前等待，不把事后取得槽位误记为工具执行。获批 Broker 命令仍在 Broker 的宿主执行轨道记录，Runtime 工具片段表示等待其结果，不能称为在 Sandbox 内执行命令。普通实际 tool span 的 `args.parameters` 保存传给执行器的完整结构化参数（Skill、MCP、项目记忆和 subagent 不记录正文参数），递归遮盖 API key、token、password、authorization、cookie 及 Bearer 值；因此 trace 文件可能含命令、路径和编辑文本，必须按敏感本机诊断数据保护，不能上传或提交。
+阶段仅附 callId、有界字节数及计时，不保存路径或内容；Runtime IPC v13 的 trace span 必须携带单调时间戳（旧版本拒绝握手），固定白名单上报这些阶段及取得执行槽后的工具执行边界；Broker 校验任务时间窗、以已验证 Runtime PID 分组、按槽号分配复用轨道、从已保存的 tool_start 提取参数，统一导出落盘。Runtime 的 `Agent Runtime` 主轨道展示上下文；`tool_start` 到取得执行槽之间是排队/准备时间，不冒充实际执行；尚未开放的 subagent `await` 在槽位之前等待，不把事后取得槽位误记为工具执行。获批 Broker 命令仍在 Broker 的宿主执行轨道记录，Runtime 工具片段表示等待其结果，不能称为在 Sandbox 内执行命令。普通实际 tool span 的 `args.parameters` 保存传给执行器的完整结构化参数（run_with_permissions、Skill、MCP、项目记忆和 subagent 不记录正文参数），递归遮盖 API key、access/refresh/session token、client secret、private/secret key、password、authorization、cookie 等凭据字段（包括非字符串值）；文本同时处理带引号的赋值、长命令选项、认证头及已知密钥；因此 trace 文件可能含命令、路径和编辑文本，必须按敏感本机诊断数据保护，不能上传或提交。
 
-导出会按时间排序，并以递增整数而非 UUID 标识 flow，保证 Perfetto Trace Event JSON importer 可解析。任务进入 completed、failed、cancelled 或 interrupted 终态后，安全 JSON 原子写入 `traces/<sessionId>/<taskId>.json`，同一会话的任务各用独立文件，绝不覆盖；写入完成或失败后立即释放该任务的内存记录，不保留完成 trace 缓存。
+导出格式 v2 统一使用进程内唯一 `id2.local` 的异步 `b/e`，不再用同步 `B/E` 栈或 `X` 表达可交叉生命周期；普通同刻区间先结束再开始，零时长区间先开始再结束。Perfetto 按进程和操作名称分组、复用异步展示轨道，原逻辑槽位保留于 `tid`/`args.logicalTrack`，父关系保留于 `args.parentSpanId`，不承诺按槽位嵌套显示，也不表示 CPU 占用。模型到工具的 flow 使用同名同分类的异步 `n` 端点和整数 `bind_id`，关系名在 `args.flowName`，支持跨进程及一对多连接。旧归档保持原样，不重写。
+
+任务尝试保存 completed、failed、cancelled 或 interrupted 终态后，JSON 原子写入 `traces/<sessionId>/<taskId>.json`，同一会话的任务各用独立文件，绝不覆盖；终态写库失败仍以 error 收尾并尝试归档，原始存储错误交回任务失败处理，不重放工具。导出/归档故障只记录警告，不覆盖产品结果；无论是否成功均释放该任务的 trace 内存及任务级 Sandbox 状态，不保留完成 trace 缓存。
 
 统计框通过受保护的 `GET /api/sessions/:id/traces` 查询实际存在的文件，只有已保存 trace 才显示下载入口；`GET /api/tasks/:id/trace` 也只读取该文件并可在 [ui.perfetto.dev](https://ui.perfetto.dev) 打开。接口不接受写入，也沿用 cookie 校验；任务不存在、仍在执行或尚未成功保存 trace 时返回 404。
 
-常规 SQLite 请求在 `Store queue` 和 `Store worker` 两条独立 Perfetto 轨道展示排队和执行/提交回执；轨道只记录任务与请求 ID、操作类别、耗时和失败类别，不记录 SQL 参数或持久化正文。Worker 故障会使当前及待处理写入失败，不自动重放；诊断后人工恢复。未迁移的同步兼容入口及未开放的 subagent 账本不走此队列，与 Worker 写同一分片时主线程连接最多等待 SQLite 写锁 1 秒；仍可能短暂阻塞主线程，不能将其计入 Store worker 轨道。
+常规 SQLite 请求在 `Store queue` 和 `Store worker` 两种逻辑归属中记录排队和执行/提交回执，以异步区间展示并发请求；轨道只记录任务与请求 ID、操作类别、耗时和失败类别，不记录 SQL 参数或持久化正文。Worker 故障会使当前及待处理写入失败，不自动重放；诊断后人工恢复。未迁移的同步兼容入口及未开放的 subagent 账本不走此队列，与 Worker 写同一分片时主线程连接最多等待 SQLite 写锁 1 秒；仍可能短暂阻塞主线程，不能将其计入 Store worker 轨道。
 
-trace 含关联 ID、模型名称、步骤/尝试、字节/项目数量、usage、退出/错误类别、耗时及已脱敏的完整工具参数；不含完整提示词、模型输出、工具输出或服务错误正文。tool 参数中的源码、命令与路径会持久化到本机 trace，API key、认证头、cookie、token 与 password 等值会递归遮盖。它不是会话历史、运行日志或高保真 replay 存档；服务重启不影响已结束任务的 trace 文件下载。
+trace 含关联 ID、模型名称、步骤/尝试、字节/项目数量、usage、退出/错误类别、耗时及已脱敏的完整工具参数；不含完整提示词、模型输出、工具输出或服务错误正文。tool 参数中的源码、命令与路径会持久化到本机 trace，API key、认证头、cookie、token 与 password 等已识别凭据会递归遮盖；任意未标记秘密不保证可识别，脱敏不代表可公开分享。它不是会话历史、运行日志或高保真 replay 存档；服务重启不影响已结束任务的 trace 文件下载。
 
 Replay Case 已独立实现脱敏、存储与手动导出，见 [任务 Replay Case](replay-cases.md)；原始模型 payload 不进入 Perfetto 属性。
 

@@ -140,11 +140,11 @@ Broker 通过 `SandboxRuntime.launchTask` 路由，不进入 Windows ACL/generat
 
 `src/tracing` 默认只在任务运行期间于 Broker 构造性能 timeline：宿主 loop 直接记录上下文计量/压缩、模型请求与退避、响应处理、工具计划、SandboxBroker 阶段、工具真实执行和工具结果持久化；`read_file` 在工具执行片段内细分 `stat`、异步 `bytes` 与读完后的同步 `compute`，附字节数和计算耗时；路径准备不另建片段，不再创建读取 Worker、线程池或关闭阶段；Agent Runtime loop 以严格 IPC trace event 上报固定的 `context.prepare`、`context.request`、`read_file.*`、`tool.result_persist` 及计量子阶段，Broker 校验 Runtime 单调时间戳并重建 span：以已验证的 Runtime PID 分组，内部上下文共用 `Agent Runtime` 轨道，实际工具与 read_file 阶段按执行槽复用最多四条 `Agent Runtime tool` 轨道，不按 callId 新建轨道；参数从已保存的 tool_start 在 Broker 脱敏加入，Broker 统一导出落盘。已标记任务的 Worker/model/read 和显式 question/message/cancel 在 `Subagent <id>` 轨道上报开始、终态与耗时；Broker 核对已登记子 ID，IPC 白名单不接受消息正文或报告。
 
-该事件只允许固定名称以及 step/attempt/数量/状态等有界属性，不能充当任意 Runtime 日志通道。模型、退避与响应处理仍是独立 span，模型包装器记录长度、数量、usage、错误类别和首包时间。Broker 主事件循环执行的模型、响应及宿主上下文/计划/持久化 span 汇集于 `Main thread`，Runtime 上下文归入 Runtime PID，并以 begin/end slice 表示这些内部阶段；`Task` 根是生命周期包络。
+该事件只允许固定名称以及 step/attempt/数量/状态等有界属性，不能充当任意 Runtime 日志通道。模型、退避与响应处理仍是独立 span，模型包装器记录长度、数量、usage、错误类别和首包时间。Broker 主事件循环执行的模型、响应及宿主上下文/计划/持久化 span 汇集于 `Main thread`，Runtime 上下文归入 Runtime PID，导出时均以独立 ID 的异步 `b/e` 表示生命周期，不借逻辑轨道假定同步调用栈；`Task` 根是生命周期包络。
 
-工具批次/依赖属于 `Tool scheduler` 逻辑轨道，实际执行节点映射到可复用工具轨道。导出事件按时间排序，并用递增整数 ID 连接模型到工具的 flow，保证 Perfetto Trace Event JSON 兼容性。每个实际 tool span 保存经递归凭据脱敏后的结构化执行参数，因此 trace 是不得上传或提交的敏感本机诊断文件；它仍不保存提示词、模型/工具输出或凭据原文。
+工具批次/依赖属于 `Tool scheduler` 逻辑轨道，实际执行节点映射到可复用工具轨道。v2 导出按时间和同刻边界约束排序，以进程内唯一 `id2.local` 配对所有 span，支持同轨道交叉及零时长区间。Perfetto 按进程/操作名称复用异步展示轨道；`logicalTrack`/`spanId`/`parentSpanId` 保留逻辑槽位与父关系，不保证 UI 栈嵌套，也不代表 CPU 时间。模型到工具的 flow 由同名同分类的 `n` 端点及整数 `bind_id` 连接，`flowName` 保存关系名。每个实际 tool span 保存经递归凭据脱敏后的结构化执行参数，因此 trace 是不得上传或提交的敏感本机诊断文件；它不保存提示词或模型/工具输出；共用日志脱敏器处理凭据别名、非字符串敏感值、命令选项和认证头，不能保证识别任意未标记秘密。
 
-高保真 replay payload 独立保存在 Store 的 `task_replays` 元数据与 `replay_entries` 增量记录中，不混入 Perfetto；模型/工具 replay 只用于隔离测试，文件物化还必须验证完整读取版本。任务进入终态时 TraceArchive 以临时文件后 rename 的方式保存 `traces/<sessionId>/<taskId>.json`，然后立即释放内存记录，所以同一会话各任务不覆盖且没有完成 trace 缓存。
+高保真 replay payload 独立保存在 Store 的 `task_replays` 元数据与 `replay_entries` 增量记录中，不混入 Perfetto；模型/工具 replay 只用于隔离测试，文件物化还必须验证完整读取版本。任务尝试保存终态后 TraceArchive 以临时文件后 rename 的方式保存 `traces/<sessionId>/<taskId>.json`，然后立即释放内存记录，所以同一会话各任务不覆盖且没有完成 trace 缓存。终态写库失败也走 finally 尝试归档失败 trace，并保留原始失败语义；导出/归档异常只警告，内存与任务级 Sandbox 状态始终释放，不触发工具重放。已有归档不重写。
 
 `GET /api/tasks/:id/trace` 在本机 cookie 保护下只读取该文件；`GET /api/sessions/:id/traces` 只列出实际存在的文件，统计框据此显示下载入口。
 
