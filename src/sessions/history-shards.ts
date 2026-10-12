@@ -6,7 +6,7 @@
  * 2. 统计主数据库与 WAL 文件的实际磁盘字节数；创建新会话前，已含会话且达到容量上限的最新分片会轮换到下一个文件。
  * 3. 保持单个会话始终位于其初始分片，避免跨 SQLite 文件的外键、事务和恢复语义变化；因此单个会话的一次不可分割写入仍可能使其所属分片略超阈值。
  * 4. 先只读检查整个文件集；旧版本和未验证迁移目标直接拒绝，不能在启动时隐式转换或部分升级。
- * 5. 主线程兼容连接遇到 Worker 短事务时最多等待 1 秒；发现分片失败时关闭已打开连接，正常 close 关闭全部连接。
+ * 5. Worker 复用最多 8 个 LRU 连接和有界定位缓存；事务中的连接不驱逐。SQLite 写锁最多等待 5 秒，发现失败和正常关闭均释放连接。
  *
  * 分片不构成安全隔离，也不跨文件迁移已有会话；旧版本必须通过独立离线迁移；后续新会话才会轮换到新的文件。
  */
@@ -15,6 +15,8 @@ import { DatabaseSync } from "node:sqlite";
 import { existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import { SCHEMA_SQL } from "./schema.js";
+import { generationSourceHash } from "./history-generation.js";
+import { cachedDatabase } from "./database-cache.js";
 
 export const DEFAULT_HISTORY_SHARD_MAX_BYTES = 1024 * 1024 * 1024;
 
@@ -34,19 +36,36 @@ function fileBytes(file: string) {
 
 export class HistoryShards {
   readonly all: HistoryShard[];
+  private readonly connections = new Map<string, DatabaseSync>();
+  private readonly locations = new Map<string, HistoryShard>();
 
   constructor(
     private readonly primaryFile: string,
     private readonly maxBytes = DEFAULT_HISTORY_SHARD_MAX_BYTES,
+    private readonly readOnly = false,
   ) {
     if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) {
       throw new Error("历史 SQLite 分片容量必须是正整数。");
     }
 
-    mkdirSync(path.dirname(primaryFile), { recursive: true });
+    if (!readOnly) {
+      mkdirSync(path.dirname(primaryFile), { recursive: true });
+    }
+
     this.all = this.discover();
     if (this.all.length === 0) {
+      if (readOnly) {
+        throw new Error("历史不存在。");
+      }
+
       this.all.push(this.open(0, primaryFile));
+    }
+  }
+
+  refresh() {
+    const fresh = this.discover();
+    for (const shard of fresh) {
+      this.all.push(shard);
     }
   }
 
@@ -71,7 +90,13 @@ export class HistoryShards {
   }
 
   findSession(sessionId: string) {
-    return [...this.all]
+    const key = `session:${sessionId}`;
+    const cached = this.locations.get(key);
+    if (cached) {
+      return cached;
+    }
+
+    const found = [...this.all]
       .reverse()
       .find((shard) =>
         Boolean(
@@ -80,10 +105,19 @@ export class HistoryShards {
             .get(sessionId),
         ),
       );
+    this.cacheLocation(key, found);
+
+    return found;
   }
 
   findTask(taskId: string) {
-    return [...this.all]
+    const key = `task:${taskId}`;
+    const cached = this.locations.get(key);
+    if (cached) {
+      return cached;
+    }
+
+    const found = [...this.all]
       .reverse()
       .find((shard) =>
         Boolean(
@@ -92,6 +126,21 @@ export class HistoryShards {
             .get(taskId),
         ),
       );
+    this.cacheLocation(key, found);
+
+    return found;
+  }
+
+  private cacheLocation(key: string, shard: HistoryShard | undefined) {
+    if (!shard) {
+      return;
+    }
+
+    if (this.locations.size >= 8192) {
+      this.locations.delete(this.locations.keys().next().value!);
+    }
+
+    this.locations.set(key, shard);
   }
 
   maxEventId() {
@@ -108,9 +157,11 @@ export class HistoryShards {
   }
 
   close() {
-    for (const shard of this.all) {
-      shard.db.close();
+    for (const db of this.connections.values()) {
+      db.close();
     }
+
+    this.connections.clear();
   }
 
   private discover() {
@@ -141,8 +192,12 @@ export class HistoryShards {
     }
 
     const opened: HistoryShard[] = [];
+    const existingFiles = new Set(this.all?.map((shard) => shard.file));
+    const newFiles = discovered.filter(
+      (shard) => !existingFiles.has(shard.file),
+    );
     try {
-      for (const shard of discovered) {
+      for (const shard of newFiles) {
         const source = new DatabaseSync(shard.file, { readOnly: true });
         try {
           if (
@@ -152,10 +207,24 @@ export class HistoryShards {
           }
 
           const identity = source
-            .prepare("SELECT state FROM migration_identity WHERE singleton=1")
+            .prepare(
+              "SELECT state,sourceHash FROM migration_identity WHERE singleton=1",
+            )
             .get();
           if (identity && identity.state !== "verified") {
             throw new Error("迁移目标尚未通过完整验证，禁止启动。");
+          }
+
+          const expectedHash = generationSourceHash(
+            path.dirname(shard.file),
+            path.basename(shard.file),
+          );
+          if (
+            (typeof expectedHash === "string" &&
+              identity?.sourceHash !== expectedHash) ||
+            (expectedHash === null && identity)
+          ) {
+            throw new Error("分片身份与活动 generation 不一致，禁止混用。");
           }
 
           // 版本号不能掩盖缺列/部分 DDL；查询准备阶段不执行恢复写入。
@@ -167,12 +236,15 @@ export class HistoryShards {
             "SELECT outcome,checkpoint FROM replay_entries LIMIT 0",
           );
           source.prepare("SELECT orderKey FROM subagents LIMIT 0");
+          source.prepare(
+            "SELECT version,eventId,data FROM session_statistics LIMIT 0",
+          );
         } finally {
           source.close();
         }
       }
 
-      for (const shard of discovered.sort(
+      for (const shard of newFiles.sort(
         (left, right) => left.sequence - right.sequence,
       )) {
         opened.push(this.open(shard.sequence, shard.file));
@@ -181,18 +253,51 @@ export class HistoryShards {
       return opened;
     } catch (error) {
       // 后续分片验证/打开失败时不能留下前面分片的活动句柄。
-      for (const shard of opened) {
-        shard.db.close();
-      }
+      this.close();
 
       throw error;
     }
   }
 
   private open(sequence: number, file: string): HistoryShard {
+    const connection = () => this.connection(file);
+
+    // Getter only borrows a connection for the current synchronous operation.
+    // Active transactions are never eviction candidates.
+    return {
+      sequence,
+      file,
+      get db() {
+        return connection();
+      },
+    };
+  }
+
+  private connection(file: string): DatabaseSync {
+    const cached = this.connections.get(file);
+    if (cached) {
+      this.connections.delete(file);
+      this.connections.set(file, cached);
+
+      return cached;
+    }
+
+    if (this.connections.size >= 8) {
+      const oldest = [...this.connections].find(([, db]) => !db.isTransaction);
+      if (!oldest) {
+        throw new Error("分片连接均被事务占用。");
+      }
+
+      oldest[1].close();
+      this.connections.delete(oldest[0]);
+    }
+
     const existing = existsSync(file);
-    // 未迁移的同步兼容事务可能与 Store Worker 的短事务交错；只作有界等待，不重放结果未知的写入。
-    const db = new DatabaseSync(file, { timeout: 1000 });
+    // 外部读者/维护可能短暂持锁；只作有界等待，不重放结果未知的写入。
+    const db = new DatabaseSync(file, {
+      timeout: 5000,
+      readOnly: this.readOnly,
+    });
     try {
       if (!existing) {
         db.exec(SCHEMA_SQL);
@@ -202,7 +307,10 @@ export class HistoryShards {
         "PRAGMA foreign_keys=ON; PRAGMA synchronous=FULL; PRAGMA wal_autocheckpoint=1000",
       );
 
-      return { sequence, file, db };
+      const connection = cachedDatabase(db);
+      this.connections.set(file, connection);
+
+      return connection;
     } catch (error) {
       db.close();
       throw error;

@@ -253,8 +253,8 @@ it("requires authentication for partial live trace and distinguishes it from com
     },
   }));
   try {
-    const session = fixture.store.create(await temp(), "fixture");
-    const task = fixture.engine.start(session.id, "fixture");
+    const session = await fixture.store.create(await temp(), "fixture");
+    const task = await fixture.engine.start(session.id, "fixture");
     expect(
       (await fixture.app.inject({ url: `/api/tasks/${task.id}/trace/live` }))
         .statusCode,

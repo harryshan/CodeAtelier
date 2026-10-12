@@ -609,3 +609,11 @@ tool-schema.test.ts 覆盖根节点、oneOf 禁用、包装解包、历史兼容
 `database-migration.test.ts` 使用冻结夹具覆盖显式顺序、旧 context 映射、整条 Replay 转换、Unicode/换行及 JSON 键顺序、未完成结果、批次提交后回执丢失的续跑、输入变化拒绝、未知源表和目标顺序篡改。`replay-checkpoints.test.ts` 核对终态不重写请求正文及检查点随机读取；`store-queue.test.ts` 核对字节背压未发送、拒绝后继续使用、连接复用和等待关闭。标题与 token 锚点的旧格式测试改为真实离线转换后读目标，不伪造缺失的锚点。
 
 这些回归及两份真实冻结快照的转换演练仅覆盖当前转换核心。异步元数据接口、读池、分页/统计投影、Runtime 复合写入、压缩完整材料查询、generation 激活和空间治理仍须完成对应产品及故障测试；不能将本节当作完整迁移交付验收。
+
+## 完整数据库迁移覆盖（schema v11 / Replay v3）
+
+- database-migration、history-generation：旧格式逐字段/顺序、批次续跑、验证门禁、文件移动中断恢复、原件保留、旧默认入口阻断和业务启动后拒绝重激活。
+- async-store、store-queue：并发创建任务、读写因果回执、队列预算、只读超时、排空关闭和 WAL 收尾。
+- history-query、storage-maintenance：固定高水位、页外统计、重复调用候选、Unicode 正文分段、长读阻碍 checkpoint、释放后整理与完整性。
+- replay-api、Replay E2E：按目录/请求读取、归属与鉴权、切换取消、显式导出、重启回读；既有 Context/Runtime 用例覆盖正常和兜底压缩及原子结果提交。
+- scripts/measure-history-storage.ts 是手动合成存储负载，不调用模型或 Evaluation，不加入默认 check；基线和新版本采用相同 1/2/4 并发写入负载，浏览分别为旧全量读取与新分页。实际结果及平台限制见 verification.md。

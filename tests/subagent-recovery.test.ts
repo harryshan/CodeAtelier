@@ -104,7 +104,10 @@ it("inherits opt-in without restarting interrupted Workers or retrying unknown m
       store.subagentRequest(original.id, "reader", "model-1")?.status,
     ).toBe("unknown");
 
-    const resumed = engine.resume(original.id, "verify current files first");
+    const resumed = await engine.resume(
+      original.id,
+      "verify current files first",
+    );
     await engine.active?.done;
 
     expect(store.task(resumed.id)).toMatchObject({

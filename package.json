@@ -34,6 +34,7 @@
     "eval": "tsx src/evaluation/main.ts",
     "replay:export": "tsx src/evaluation/export-replay-case.ts",
     "replay:view": "tsx scripts/replay-view.ts",
+    "history:migrate": "tsx scripts/migrate-history.ts",
     "eval:build": "tsc -p tsconfig.server.json",
     "eval:test": "vitest run --config vitest.evaluation.config.ts"
   },

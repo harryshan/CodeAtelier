@@ -20,6 +20,9 @@ import {
 } from "node:fs";
 import path from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
+import { rebuildStatistics, readStatistics } from "./statistics-projection.js";
+import { SessionEventStatistics } from "../shared/session-event-statistics.js";
+import type { Event } from "../shared/types.js";
 import { SCHEMA_SQL } from "./schema.js";
 import {
   inspectSource,
@@ -30,7 +33,7 @@ import {
 import { readReplayExchange, writeReplay } from "./replay-storage.js";
 import type { RecordedModelExchange, RecordedToolCall } from "./replay-case.js";
 
-const ADAPTER_VERSION = 1;
+const ADAPTER_VERSION = 2;
 const copyOrder = [
   "sessions",
   "tasks",
@@ -348,6 +351,13 @@ export async function migrateShard(
     );
     copyTables(source, target, inventory.tables, options);
     copyReplays(source, target, inventory.tables, options);
+    batch(
+      target,
+      "statistics",
+      source.prepare("SELECT id FROM sessions ORDER BY id").iterate(),
+      (row) => rebuildStatistics(target!, String(row.id)),
+      options,
+    );
     // AUTOINCREMENT 的高水位可能高于现存最大 ID；不能重用源中曾经发布过的游标。
     if (
       source
@@ -559,8 +569,22 @@ export function verifyShard(sourceFile: string, targetFile: string) {
 
       const keys = identities[table]!;
       const sourceFields = columns(source, table);
+      const defaults: Record<string, unknown> =
+        table === "tasks"
+          ? {
+              startedAt: null,
+              finishedAt: null,
+              error: null,
+              subagentsEnabled: 0,
+            }
+          : {};
+      for (const field of sourceFields) {
+        delete defaults[field];
+      }
+
       const fields = [
         ...sourceFields,
+        ...Object.keys(defaults),
         ...(table === "sessions" && !sourceFields.includes("titleState")
           ? ["titleState"]
           : []),
@@ -572,6 +596,7 @@ export function verifyShard(sourceFile: string, targetFile: string) {
         const actual = select.get(...keys.map((key) => row[key]!));
         const expected = {
           ...row,
+          ...defaults,
           ...(table === "sessions" && !sourceFields.includes("titleState")
             ? { titleState: "completed" }
             : {}),
@@ -684,6 +709,26 @@ export function verifyShard(sourceFile: string, targetFile: string) {
 
     if (replayEntries !== count(target, "replay_entries")) {
       throw new Error("Replay 存在遗漏或孤立记录。");
+    }
+
+    for (const session of source
+      .prepare("SELECT id FROM sessions ORDER BY id")
+      .iterate()) {
+      const expected = new SessionEventStatistics();
+      for (const row of source
+        .prepare("SELECT * FROM events WHERE sessionId=? ORDER BY id")
+        .iterate(session.id!)) {
+        expected.append({
+          ...row,
+          data: JSON.parse(String(row.data)),
+        } as unknown as Event);
+      }
+
+      assertSameFields(
+        readStatistics(target, String(session.id)).exportState(),
+        expected.exportState(),
+        "会话统计",
+      );
     }
 
     return {

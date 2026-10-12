@@ -206,8 +206,8 @@ it("archives a failed trace and releases it when terminal task persistence rejec
   );
 
   try {
-    const session = fixture.store.create(await temp(), "trace failure");
-    const task = fixture.engine.start(session.id, "fixture");
+    const session = await fixture.store.create(await temp(), "trace failure");
+    const task = await fixture.engine.start(session.id, "fixture");
     await fixture.engine.active?.done;
 
     const trace = JSON.parse(
@@ -222,11 +222,11 @@ it("archives a failed trace and releases it when terminal task persistence rejec
       ).args.status,
     ).toBe("error");
     expect(fixture.engine.traces.exportTask(task.id)).toBeUndefined();
-    expect(fixture.store.task(task.id)?.status).toBe("failed");
+    expect((await fixture.store.task(task.id))?.status).toBe("failed");
     expect(
-      fixture.store
-        .taskEvents(task.id)
-        .filter((event) => event.type === "tool_start"),
+      (await fixture.store.taskEvents(task.id)).filter(
+        (event) => event.type === "tool_start",
+      ),
     ).toHaveLength(0);
   } finally {
     await fixture.app.close();
@@ -257,14 +257,14 @@ it.each(["export", "archive"] as const)(
             .mockImplementation(failure);
 
     try {
-      const session = fixture.store.create(await temp(), "trace failure");
-      const task = fixture.engine.start(session.id, "fixture");
+      const session = await fixture.store.create(await temp(), "trace failure");
+      const task = await fixture.engine.start(session.id, "fixture");
       await fixture.engine.active?.done;
       injection.mockRestore();
 
       expect(fixture.engine.traces.exportTask(task.id)).toBeUndefined();
-      expect(fixture.store.task(task.id)?.status).toBe("completed");
-      expect(fixture.store.taskEvents(task.id)).toEqual(
+      expect((await fixture.store.task(task.id))?.status).toBe("completed");
+      expect(await fixture.store.taskEvents(task.id)).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
             type: "task_end",

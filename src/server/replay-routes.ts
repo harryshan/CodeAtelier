@@ -13,14 +13,15 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
 import type { HttpServer } from "./http-server.js";
 import type { Logger } from "pino";
-import type { Store } from "../sessions/store.js";
+import type { SessionStore } from "../sessions/async-store.js";
+import { z } from "zod";
 
 export function registerReplayRoutes(
   app: HttpServer,
-  store: Store,
+  store: SessionStore,
   log: Logger,
 ) {
-  function read(
+  async function read(
     req: FastifyRequest,
     reply: FastifyReply,
     query: () => unknown,
@@ -29,7 +30,7 @@ export function registerReplayRoutes(
     const context = { module: "server", requestId: req.id };
     log.debug({ ...context, event: "replay.read_started" });
     try {
-      const result = query();
+      const result = await query();
       log.debug({
         ...context,
         event: "replay.read_finished",
@@ -52,28 +53,102 @@ export function registerReplayRoutes(
   }
 
   app.get("/api/sessions/:id/tasks", (req, reply) =>
-    read(req, reply, () => {
+    read(req, reply, async () => {
       const { id } = req.params as { id: string };
-      if (!store.get(id)) {
+      if (!(await store.get(id))) {
         return reply.code(404).send({ error: "会话不存在" });
       }
 
-      return store.tasks(id);
+      return await store.tasks(id);
     }),
   );
-  app.get("/api/sessions/:id/tasks/:taskId/replay", (req, reply) =>
-    read(req, reply, () => {
+  app.get("/api/sessions/:id/tasks/:taskId/replay/export", (req, reply) =>
+    read(req, reply, async () => {
       const { id, taskId } = req.params as { id: string; taskId: string };
-      if (!store.get(id) || store.task(taskId)?.sessionId !== id) {
+      if (
+        !(await store.get(id)) ||
+        (await store.task(taskId))?.sessionId !== id
+      ) {
         return reply.code(404).send({ error: "会话或任务不存在" });
       }
 
-      const value = store.replayCase(taskId);
+      const value = await store.replayCase(taskId);
       if (!value) {
         return reply.code(404).send({ error: "会话或任务不存在" });
       }
 
       return value;
+    }),
+  );
+  app.get("/api/sessions/:id/task-page", (req, reply) =>
+    read(req, reply, async () => {
+      const { id } = req.params as { id: string };
+      const { before } = z
+        .object({ before: z.string().optional() })
+        .parse(req.query);
+      if (!(await store.get(id))) {
+        return reply.code(404).send({ error: "会话不存在" });
+      }
+
+      return store.taskPage(id, before);
+    }),
+  );
+  app.get("/api/sessions/:id/tasks/:taskId", (req, reply) =>
+    read(req, reply, async () => {
+      const { id, taskId } = req.params as { id: string; taskId: string };
+      const task = await store.task(taskId);
+
+      return task?.sessionId === id
+        ? task
+        : reply.code(404).send({ error: "任务不存在" });
+    }),
+  );
+  app.get("/api/sessions/:id/tasks/:taskId/replay-directory", (req, reply) =>
+    read(req, reply, async () => {
+      const { id, taskId } = req.params as { id: string; taskId: string };
+      const { after } = z
+        .object({ after: z.coerce.number().int().min(0).default(0) })
+        .parse(req.query);
+      if ((await store.task(taskId))?.sessionId !== id) {
+        return reply.code(404).send({ error: "任务不存在" });
+      }
+
+      return store.replayDirectory(taskId, after);
+    }),
+  );
+  app.get("/api/sessions/:id/tasks/:taskId/replay-entry", (req, reply) =>
+    read(req, reply, async () => {
+      const { id, taskId } = req.params as { id: string; taskId: string };
+      const { kind, itemId } = z
+        .object({
+          kind: z.enum(["model", "tool"]),
+          itemId: z.string().min(1).max(200),
+        })
+        .parse(req.query);
+      if ((await store.task(taskId))?.sessionId !== id) {
+        return reply.code(404).send({ error: "任务不存在" });
+      }
+
+      const entry = await store.replayEntry(taskId, kind, itemId);
+
+      return entry ?? reply.code(404).send({ error: "记录不存在" });
+    }),
+  );
+  app.get("/api/sessions/:id/call-events", (req, reply) =>
+    read(req, reply, async () => {
+      const { id } = req.params as { id: string };
+      const { taskId, callId, after } = z
+        .object({
+          taskId: z.string(),
+          callId: z.string().max(200),
+          after: z.coerce.number().int().min(0).default(0),
+        })
+        .parse(req.query);
+      if ((await store.task(taskId))?.sessionId !== id) {
+        return reply.code(404).send({ error: "任务不存在" });
+      }
+
+      return store.relatedEvents(id, taskId, callId, after);
     }),
   );
 }

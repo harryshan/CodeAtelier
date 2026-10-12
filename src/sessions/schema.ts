@@ -149,5 +149,12 @@ export const SCHEMA_SQL = `
     UPDATE subagents SET orderKey=(SELECT coalesce(max(orderKey),0)+1 FROM subagents WHERE taskId=new.taskId) WHERE taskId=new.taskId AND id=new.id;
   END;
 
+  CREATE INDEX IF NOT EXISTS events_session_type ON events(sessionId,type,id);
+  CREATE TABLE IF NOT EXISTS session_statistics (
+    sessionId TEXT PRIMARY KEY REFERENCES sessions(id),
+    version INTEGER NOT NULL,
+    eventId INTEGER NOT NULL,
+    data TEXT NOT NULL
+  );
   PRAGMA user_version = 11;
 `;

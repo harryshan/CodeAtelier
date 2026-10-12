@@ -31,26 +31,26 @@ async function fixture(existingConfig?: Config) {
 it("reads captured and legacy tasks without mixing records or executing them", async () => {
   const { app, store, engine, config, headers } = await fixture();
   try {
-    const session = store.create(await temp());
-    const captured = store.createTask(session.id);
-    const legacy = store.createTask(session.id);
-    store.startReplayCapture(captured, {
+    const session = await store.create(await temp());
+    const captured = await store.createTask(session.id);
+    const legacy = await store.createTask(session.id);
+    await store.startReplayCapture(captured, {
       schemaVersion: 1,
       capturedAt: captured.createdAt,
       platform: "win32",
       settings: replaySettings(config.settings),
     });
-    store.startReplayModelExchange(captured.id, {
+    await store.startReplayModelExchange(captured.id, {
       id: "model-1",
       purpose: "task",
       input: [],
       instructions: "synthetic-instructions",
       tools: [],
     });
-    store.finishReplayModelExchange(captured.id, "model-1", {
+    await store.finishReplayModelExchange(captured.id, "model-1", {
       response: { output: [], text: "captured model reply" },
     });
-    store.startReplayTool(captured.id, {
+    await store.startReplayTool(captured.id, {
       callId: "pending-tool",
       nodeId: "pending-tool",
       batchId: "batch",
@@ -58,25 +58,27 @@ it("reads captured and legacy tasks without mixing records or executing them", a
       arguments: { path: "sample.txt" },
       dependsOn: [],
     });
-    store.event(session.id, captured.id, "user", { text: "captured user" });
-    store.event(session.id, legacy.id, "tool_start", {
+    await store.event(session.id, captured.id, "user", {
+      text: "captured user",
+    });
+    await store.event(session.id, legacy.id, "tool_start", {
       callId: "old-call",
       name: "read_file",
       args: { path: "old.txt" },
     });
-    store.event(session.id, legacy.id, "tool_result", {
+    await store.event(session.id, legacy.id, "tool_result", {
       callId: "old-call",
       result: { text: "legacy source" },
     });
-    const before = store.replayCase(captured.id);
+    const before = await store.replayCase(captured.id);
     const base = `/api/sessions/${session.id}/tasks`;
     const directory = await app.inject({ url: base, headers });
     const result = await app.inject({
-      url: `${base}/${captured.id}/replay`,
+      url: `${base}/${captured.id}/replay/export`,
       headers,
     });
     const old = await app.inject({
-      url: `${base}/${legacy.id}/replay`,
+      url: `${base}/${legacy.id}/replay/export`,
       headers,
     });
 
@@ -103,10 +105,10 @@ it("reads captured and legacy tasks without mixing records or executing them", a
       tools: [{ result: { text: "legacy source" } }],
     });
     expect(old.body).not.toContain("captured model reply");
-    expect(store.replayCase(captured.id)).toEqual(before);
+    expect(await store.replayCase(captured.id)).toEqual(before);
     // hasActiveTasks 也统计我们手动写入的 queued 行；activeTasks 才是实际运行中的引擎任务。
     expect(engine.activeTasks).toEqual([]);
-    expect(store.task(legacy.id)?.status).toBe("queued");
+    expect((await store.task(legacy.id))?.status).toBe("queued");
   } finally {
     await app.close();
   }
@@ -115,11 +117,11 @@ it("reads captured and legacy tasks without mixing records or executing them", a
 it("rejects unauthorized and cross-session reads and safely reports storage failures", async () => {
   const { app, store, headers } = await fixture();
   try {
-    const one = store.create(await temp());
-    const two = store.create(await temp());
-    const task = store.createTask(two.id);
+    const one = await store.create(await temp());
+    const two = await store.create(await temp());
+    const task = await store.createTask(two.id);
     const directory = `/api/sessions/${two.id}/tasks`;
-    const detail = `${directory}/${task.id}/replay`;
+    const detail = `${directory}/${task.id}/replay/export`;
     for (const url of [directory, detail]) {
       expect(
         (await app.inject({ url, headers: { host: "127.0.0.1" } })).statusCode,
@@ -136,8 +138,8 @@ it("rejects unauthorized and cross-session reads and safely reports storage fail
 
     for (const url of [
       "/api/sessions/missing/tasks",
-      `${directory}/missing/replay`,
-      `/api/sessions/${one.id}/tasks/${task.id}/replay`,
+      `${directory}/missing/replay/export`,
+      `/api/sessions/${one.id}/tasks/${task.id}/replay/export`,
     ]) {
       expect((await app.inject({ url, headers })).statusCode).toBe(404);
     }
@@ -166,17 +168,17 @@ it("rejects unauthorized and cross-session reads and safely reports storage fail
 
 it("can read persisted records after reopening the service", async () => {
   const original = await fixture();
-  const session = original.store.create(await temp());
-  const task = original.store.createTask(session.id);
-  original.store.event(session.id, task.id, "user", {
+  const session = await original.store.create(await temp());
+  const task = await original.store.createTask(session.id);
+  await original.store.event(session.id, task.id, "user", {
     text: "persisted message",
   });
-  original.store.status(task.id, "completed");
+  await original.store.status(task.id, "completed");
   await original.app.close();
   const reopened = await fixture(original.config);
   try {
     const result = await reopened.app.inject({
-      url: `/api/sessions/${session.id}/tasks/${task.id}/replay`,
+      url: `/api/sessions/${session.id}/tasks/${task.id}/replay/export`,
       headers: reopened.headers,
     });
     expect(result.statusCode).toBe(200);

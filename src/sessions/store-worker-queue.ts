@@ -1,8 +1,8 @@
 /**
- * 串行调度 Store 的 SQLite Worker 请求；Store 是唯一调用方，Worker 独占后台写连接。
+ * 串行调度 Store/AsyncStore 的 SQLite Worker 请求；每队列独占一个后台线程及其连接。
  * 1. request 为每项工作分配单调 ID，限制总请求数与保守字节预算，并按提交顺序逐条发送；不在失败后重试未知写入。
  * 2. 消息回执才完成 Promise；Worker 崩溃会拒绝当前和排队请求，阻止继续写入。
- * 3. close 拒绝新请求，等待已接受请求及连接池关闭回执后释放线程；trace 的排队和执行分别占独立轨道，不记录 SQL 参数。
+ * 3. 只读队列可设执行期限，超期终止读 Worker；写队列不以超时推断提交失败。close 排空已接受请求及连接池关闭回执后释放线程；trace 不记录 SQL 参数。
  * Store roundtrip 表示 dispatch 到回执，Store worker 使用 Worker 返回的真实阶段时间；请求 ID 串联队列与事务。
  */
 
@@ -34,10 +34,13 @@ export class StoreWorkerQueue {
   private idle: Array<() => void> = [];
   private closePromise?: Promise<void>;
   private queuedBytes = 0;
+  private deadline?: NodeJS.Timeout;
 
   constructor(
     private traces?: TraceRecorder,
     private readonly limits = { requests: 1024, bytes: 128 * 1024 * 1024 },
+    private readonly entry?: URL,
+    private readonly readDeadlineMs?: number,
   ) {}
 
   setTracer(traces: TraceRecorder) {
@@ -156,9 +159,11 @@ export class StoreWorkerQueue {
     });
     try {
       if (!this.worker) {
-        const source = import.meta.url.endsWith(".ts")
-          ? new URL("./store-worker.ts", import.meta.url)
-          : new URL("./store-worker.js", import.meta.url);
+        const source =
+          this.entry ??
+          (import.meta.url.endsWith(".ts")
+            ? new URL("./store-worker.ts", import.meta.url)
+            : new URL("./store-worker.js", import.meta.url));
         this.worker = new Worker(source, {
           execArgv: source.pathname.endsWith(".ts")
             ? ["--import", "tsx"]
@@ -177,12 +182,24 @@ export class StoreWorkerQueue {
 
       this.worker.ref();
       this.worker.postMessage(next.request);
+      if (this.readDeadlineMs && next.request.operation !== "close") {
+        this.deadline = setTimeout(() => {
+          const worker = this.worker;
+          this.fail(
+            new Error(
+              "只读请求超期，读 Worker 已终止；请重启服务恢复该读通道。",
+            ),
+          );
+          void worker?.terminate();
+        }, this.readDeadlineMs);
+      }
     } catch (error) {
       this.fail(error instanceof Error ? error : new Error(String(error)));
     }
   }
 
   private receive(message: StoreWorkerResponse) {
+    clearTimeout(this.deadline);
     const current = this.current;
     if (!current || message.id !== current.request.id) {
       this.fail(new Error("Store Worker 回执 ID 不匹配，写入结果未知。"));
@@ -231,17 +248,28 @@ export class StoreWorkerQueue {
     }
 
     this.error = error;
+    clearTimeout(this.deadline);
     this.worker?.unref();
     const jobs = [this.current, ...this.pending].filter(
       (item): item is Pending => Boolean(item),
     );
+    const sent = this.current;
     this.current = undefined;
     this.pending.length = 0;
     this.queuedBytes = 0;
     for (const job of jobs) {
       this.traces?.endSpan(job.queued, "error", { errorName: error.name });
       this.traces?.endSpan(job.running, "error", { errorName: error.name });
-      job.reject(error);
+      job.reject(
+        new Error(
+          job === sent
+            ? this.readDeadlineMs
+              ? `Store 只读通道失败：${error.message}`
+              : "Store Worker 已发送请求未收到回执，提交结果未知；禁止自动重放。"
+            : "Store Worker 停止，请求尚未发送。",
+          { cause: error },
+        ),
+      );
     }
 
     for (const resolve of this.idle.splice(0)) {

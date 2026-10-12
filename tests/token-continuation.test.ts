@@ -140,7 +140,7 @@ it.each(["host", "runtime", "fallback"])(
       );
     let engine = makeEngine();
     try {
-      const first = engine.start(session.id, "First turn");
+      const first = await engine.start(session.id, "First turn");
       await engine.active?.done;
       expect(store.task(first.id)?.status).toBe("completed");
       const anchor = (await store.tokenAnchorAsync(session.id))!;
@@ -157,7 +157,7 @@ it.each(["host", "runtime", "fallback"])(
         "Explain verification results clearly.\n",
       );
 
-      const second = engine.start(session.id, "Continue");
+      const second = await engine.start(session.id, "Continue");
       await engine.active?.done;
       expect(store.task(second.id)?.status).toBe("completed");
       expect(summaries).toBe(0);
@@ -167,7 +167,7 @@ it.each(["host", "runtime", "fallback"])(
       await store.closeAsync();
       store = new Store(database);
       engine = makeEngine();
-      const third = engine.start(session.id, "Continue after restart");
+      const third = await engine.start(session.id, "Continue after restart");
       await engine.active?.done;
       expect(store.task(third.id)?.status).toBe("completed");
       expect(await store.tokenAnchorAsync(session.id)).toEqual(anchor);

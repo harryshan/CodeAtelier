@@ -336,7 +336,7 @@ it("coordinates subagent Workers inside the Runtime through task-bound Broker IP
 
       return created;
     });
-    (engine as unknown as { schedule(): void }).schedule();
+    await (engine as unknown as { schedule(): Promise<void> }).schedule();
     await engine.active?.done;
 
     expect(store.task(task.id)?.status).toBe("completed");

@@ -28,6 +28,7 @@ export interface ContextStore {
     sessionId: string,
   ): Promise<ContextSnapshot | undefined>;
   eventsAsync(sessionId: string): Promise<unknown[]>;
+  relevantEventsAsync?(sessionId: string): Promise<unknown[]>;
   compactContextAsync(
     sessionId: string,
     snapshot: ContextSnapshot,
@@ -255,7 +256,9 @@ export class ContextManager {
     const options = this.options;
     const [previous, events] = await Promise.all([
       options.store.latestContextSnapshotAsync(options.sessionId),
-      options.store.eventsAsync(options.sessionId),
+      options.store.relevantEventsAsync
+        ? options.store.relevantEventsAsync(options.sessionId)
+        : options.store.eventsAsync(options.sessionId),
     ]);
     const worker = new CompactionWorkerClient();
 
@@ -301,7 +304,9 @@ export class ContextManager {
     const options = this.options;
     const [previous, events] = await Promise.all([
       options.store.latestContextSnapshotAsync(options.sessionId),
-      options.store.eventsAsync(options.sessionId),
+      options.store.relevantEventsAsync
+        ? options.store.relevantEventsAsync(options.sessionId)
+        : options.store.eventsAsync(options.sessionId),
     ]);
     const snapshots = await this.snapshotChain(previous);
     const worker = new CompactionWorkerClient();

@@ -25,6 +25,8 @@ import {
 } from "react";
 import type { Snapshot, Event } from "../shared/types";
 import { api } from "./api";
+import { EventBody } from "./EventBody.js";
+import { CallDetails } from "./CallDetails.js";
 import s from "./app.module.css";
 import { MarkdownMessage } from "./MarkdownMessage";
 import type { ToolDisplayStatus } from "./tool-status";
@@ -114,6 +116,8 @@ function ToolOutputCard({
         <span className={s.outputStatus}>{status}</span>
       </summary>
       {output && <pre className={s.outputText}>{output}</pre>}
+      {state.result?.bodyDeferred && <EventBody event={state.result} />}
+      <CallDetails event={start} />
       {result && (
         <div className={s.outputResult}>
           {result.error
@@ -144,6 +148,10 @@ const TimelineEvent = memo(
     toolStatuses: Map<number, ToolDisplayStatus>;
     subagentTaskIds: Set<string>;
   }) {
+    if (event.bodyDeferred) {
+      return <EventBody event={event} />;
+    }
+
     if (event.type === "user" || event.type === "assistant") {
       return (
         <article
@@ -263,6 +271,7 @@ const TimelineEvent = memo(
             <span className={s.outputStatus}>{toolStatus.label}</span>
           </summary>
           <pre>{JSON.stringify(event.data.args, null, 2)}</pre>
+          <CallDetails event={event} />
         </details>
       );
     }
@@ -275,6 +284,7 @@ const TimelineEvent = memo(
             <span>{toolDuration(event.data.durationMs)}</span>
           </summary>
           <pre>{textResult(event)}</pre>
+          <CallDetails event={event} />
         </details>
       );
     }

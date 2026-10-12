@@ -135,8 +135,8 @@ it("shutdown acknowledges a running task, closes SSE, releases the port and pers
       "x-codeatelier-token": auth.token,
       "content-type": "application/json",
     };
-    const session = fixture.store.create(await temp(), "shutdown");
-    const task = fixture.engine.start(session.id, "run");
+    const session = await fixture.store.create(await temp(), "shutdown");
+    const task = await fixture.engine.start(session.id, "run");
 
     await waitForApproval(fixture.engine, task.id);
     expect(fixture.engine.approvals.list()).toHaveLength(1);
@@ -148,13 +148,10 @@ it("shutdown acknowledges a running task, closes SSE, releases the port and pers
     // 首次命令输出要等待冷启动的 Store Worker 提交，不能用默认的短轮询期限判断子进程未启动。
     await expect
       .poll(
-        () =>
-          fixture.store
-            .events(session.id)
-            .some(
-              (e) =>
-                e.type === "command_output" && e.data.text.includes("ready"),
-            ),
+        async () =>
+          (await fixture.store.events(session.id)).some(
+            (e) => e.type === "command_output" && e.data.text.includes("ready"),
+          ),
         { timeout: 10_000 },
       )
       .toBe(true);

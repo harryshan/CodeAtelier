@@ -68,7 +68,7 @@ export function waitForApproval(engine: Engine, taskId: string) {
       engine.events.off("change", check);
     };
 
-    const check = () => {
+    const check = async () => {
       const approval = engine.approvals
         .list()
         .find((item) => item.taskId === taskId);
@@ -79,7 +79,7 @@ export function waitForApproval(engine: Engine, taskId: string) {
         return;
       }
 
-      const status = engine.store.task(taskId)?.status;
+      const status = (await engine.store.task(taskId))?.status;
       if (status && !["queued", "running", "waiting"].includes(status)) {
         cleanup();
         reject(new Error(`任务在审批前结束：${status}`));

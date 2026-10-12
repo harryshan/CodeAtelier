@@ -74,11 +74,11 @@ Engine 在任一节点产生副作用前校验整批 DAG，并以稳定拓扑顺
 
 `src/skills/contracts.ts` 提供 strict list/load 参数；`skill-document.ts` 使用 js-yaml 的 JSON_SCHEMA 解析有界 SKILL.md，校验 name/description 并忽略权限元信息；`task-skills.ts` 管理每任务预设根扫描、固定摘要/版本、链接与容量检查，以及调用时重新读取正文。Engine 在宿主/Runtime 分流前创建目录，fallback 复用同一实例；名称、描述和来源类别进入指令，正文只通过工具结果进入模型。
 
-宿主 ToolRunner 直接调用此任务实例；Runtime 使用 IPC v14 的 `skill_execute`，启动材料只含目录提示，不投影宿主技能根。返回 `broker-skill/host-process`，不执行脚本、不增加读写授权。`skills.*` span 及普通工具历史覆盖成功/失败/取消，trace 排除技能参数/正文。格式、目录优先级和限制见 [Skill 指南](skills.md)。
+宿主 ToolRunner 直接调用此任务实例；Runtime 使用 IPC v15 的 `skill_execute`，启动材料只含目录提示，不投影宿主技能根。返回 `broker-skill/host-process`，不执行脚本、不增加读写授权。`skills.*` span 及普通工具历史覆盖成功/失败/取消，trace 排除技能参数/正文。格式、目录优先级和限制见 [Skill 指南](skills.md)。
 
 ### MCP 本机客户端
 
-`src/mcp/contracts.ts` 提供模型与 Runtime 共用的有界操作契约，`config.ts` 只在宿主读取 mcp.json；`task-client.ts` 使用官方 SDK 管理每任务的 stdio/Streamable HTTP 连接、审批、串行请求、取消/清理和输出脱敏。`mcp-stdio-transport.ts` 保存启动 PID，并让 SDK 握手失败后的异步关闭与任务收尾共用同一个关闭回执，避免仍存活的进程被误报为已清理。模型通过静态 `mcp` 工具按需发现动态 schema，不声明 provider-hosted MCP。`ToolRunner` 审批准备后取得执行槽，宿主调用 Engine 的任务客户端；Runtime 通过 IPC v14 的 `prepare_mcp/execute_mcp` 在当前认证连接内消费调用绑定的单次授权。连接配置和凭据不经 Runtime。
+`src/mcp/contracts.ts` 提供模型与 Runtime 共用的有界操作契约，`config.ts` 只在宿主读取 mcp.json；`task-client.ts` 使用官方 SDK 管理每任务的 stdio/Streamable HTTP 连接、审批、串行请求、取消/清理和输出脱敏。`mcp-stdio-transport.ts` 保存启动 PID，并让 SDK 握手失败后的异步关闭与任务收尾共用同一个关闭回执，避免仍存活的进程被误报为已清理。模型通过静态 `mcp` 工具按需发现动态 schema，不声明 provider-hosted MCP。`ToolRunner` 审批准备后取得执行槽，宿主调用 Engine 的任务客户端；Runtime 通过 IPC v15 的 `prepare_mcp/execute_mcp` 在当前认证连接内消费调用绑定的单次授权。连接配置和凭据不经 Runtime。
 
 `src/mcp/catalog.ts` 纯投影已启用服务的名称、transport 与脱敏 description；Engine 在首次主模型请求前注入指令，宿主/fallback 直接使用，Runtime 通过启动消息的 `mcpText` 接收相同摘要。`list_servers` 复用投影；缺失用途为 null，空配置给空目录。目录不发起连接或审批，完整 schema 仍按需发现；纯投影不新增独立 trace span，既有任务/上下文计量/模型请求观测覆盖整体链路，摘要不写入 trace。
 
@@ -100,9 +100,9 @@ Engine 在任一节点产生副作用前校验整批 DAG，并以稳定拓扑顺
 
 replay 捕获将任务元数据和单条模型/工具记录分开保存，模型 input 按前缀与新增尾部增量编码，导出时重建完整 input/instructions/响应及脱敏工具材料；旧整条 JSON 可读。导出还可从同一哈希的完整 `read_file` 页拼接 `edit_files` 的原始文件；只读到部分行或旧历史则明确拒绝真实文件物化。
 
-会话初始快照读取全量事件，SSE 后续刷新按跨分片仍单调的 event ID 游标只读取新增事件；常规事件、上下文、任务状态、replay 和 HTTP 新建会话/任务通过串行复用的 `store-worker.ts` 提交后再返回，工具结果/反馈保持同一事务。事件/上下文和历史快照统一通过此 Worker 读取，不再在主线程进行长度聚合预检。Worker 复用最多 8 个连接，每连接最多 128 条 prepared statement；队列限制 1024 项及保守估算的 128 MiB 数据预算，未发送的超预算请求明确拒绝。关闭须等待 `closeAsync()`，连接池释放后才结束线程。同步 Store 兼容入口和未开放的 subagent 原子账本暂保留主线程写入；兼容事务只锁首次选定分片，尝试跨文件写入会整笔回滚。这些事务未进入 Worker 队列，若交错写入同一分片，主线程连接最多等待 SQLite 写锁 1 秒后失败，不自动重试结果未知的写入。启动时将 queued/running/waiting 任务标为 interrupted 并记录结束时间；子任务的未完成状态同样中断，未确认的子模型请求保留 unknown，不自动重放。
+生产存储入口为 AsyncStore：一个写 Worker、两个读 Worker，读操作先等待调用前的写回执；元数据和正文都不在 HTTP 主线程执行 SQLite。每队列及总入口限制 1024 项和 128 MiB 请求，每 Worker 复用最多 8 个分片连接、每连接 128 条语句。固定业务 RPC 不接受 SQL 或事务回调；工具结果、Replay 终态、上下文和已收集报告在同分片事务提交后才发布 SSE。Runtime IPC v15 使用 session_commit_tool_result。启动将未完成任务标为 interrupted；只读打开不改状态。读请求超 60 秒终止该读通道，关闭先读后写，未知写入不自动重放。
 
-可视化位于 `src/replay-viewer`：`projection.ts` 校验 TaskReplayCase v1 并按唯一 call ID 建立模型/工具关联；`browser.ts` 提供可挂载/清理的纯文本 DOM 阅读器。现有 `main.tsx` 在 `/?view=replay` 经共用 AccessGate 惰性加载 `ReplayViewer.tsx`，主页面与阅读器的模块/样式分别加载，Fastify 与 Vite 均沿用根 HTML 入口。默认数据库模式通过现有 `/api/sessions` 和 `server/replay-routes.ts` 的会话 Task 目录、单任务 Replay GET 接口，复用 `Store.tasks/replayCase` 与历史分片；任务归属、cookie/密码/来源和 no-store 在后端校验。目录不携带模型/事件载荷，详情只按选中的 Task 重建；同步重建仍有大任务阻塞/内存成本。URL 仅保存数据源/记录 ID，取消和清理信号禁止旧请求覆盖新选择。本地 JSON 为可选模式，不上传文件；卸载清除搜索计时器并废弃在途读取。旧 `scripts/replay-view.ts` / `html.ts` / `standalone.ts` 保留可选单文件导出，共用同一阅读器，不修改捕获协议。使用说明见 [Replay Case](replay-cases.md#可视化阅读)。
+可视化位于 src/replay-viewer：默认数据库模式通过同源鉴权 API 读取 Task 分页、每页 100 项请求目录和选中单条请求；读 Worker 从 Replay v3 最近检查点重建，完整 Task 仅显式导出。任务归属、cookie/来源、no-store 在后端验证；URL 只保存记录 ID，切换取消 HTTP 请求并丢弃旧材料。DatabaseReplay 与本地 JSON 的旧 DOM 阅读器分开挂载；后者仍解析完整文件，不上传材料。大 input 每页渲染 20 个协议项，单条请求和完整导出仍有自身载荷内存成本。
 
 ### 配置
 
@@ -200,13 +200,13 @@ Engine、Store 及其上下文/schema 辅助模块、共享数据契约、测试
 
    TraceRecorder 同时在任务、上下文、模型和实际工具执行边界记录单调时钟 span，模型只写安全计数和 usage，工具审批等待不计入执行 span；任务结束后将 trace 原子写入数据目录的会话/任务独立文件并立即释放内存记录，同一任务可导出 Perfetto JSON 分析轨道、并行度和关键路径。没有工具调用且收到完成文本时任务结束，Store 保存 finishedAt；超时、取消、失败或超过步骤上限时明确停止。
 
-   前端通过 SSE 得知标题或任务状态变化：首个 refresh 读取完整快照，之后携带最后已见 event ID 只读取新增事件、按 ID 去重合并，任务和审批状态仍每次刷新；在默认折叠的会话统计中聚合服务实报 token、LLM 请求/轮次、工具成功率与累计运行时间，并只为后端清单确认已保存的任务显示 trace 下载入口。
+   前端通过 SSE 得知标题和任务状态变化。初始快照仅带最新历史页及持久统计，后续按 event ID 分页拉取新增事件；读取旧页使用固定高水位独立视图，新事件不会改写该页。工具详情按任务/call ID 查询完整关联候选，大正文按需分段，统计不依赖当前可见页。
 
    `useSessionConnection` 在 React 渲染之外持有 `SessionViewModel`，每批新增事件只聚合一次。`timeline-projection.ts` 更新流式文本、工具状态/输出和编辑进度索引；`timeline-entries.ts` 复用未变化的连续任务段折叠结果。工具状态按调用及批次查询，并保留缺少 batch 的旧记录匹配规则。`session-event-statistics.ts` 增量累计事件计数，`session-statistics.ts` 在任务变化时编译运行时间基线，每秒时钟不扫描历史事件。
 
    Timeline 将未被完整回复收敛的流式文本放回其最后一个 delta 后，避免旧断流残片错误显示在末尾；高度变化时构建前缀和，滚动每帧合并并二分定位可见范围，ResizeObserver 批量提交测量。历史卡片和相同 Markdown 文本复用渲染结果。切换时立即显示“正在打开对话”，同时重建会话索引及虚拟列表状态；重新连接只读状态，不会再次启动任务，人工恢复后的刷新也走同一游标入口。
 
-   初次打开仍需读取完整历史；增量发布不可变视图时仍会复制事件引用与索引，并线性检查展示条目，因此不宣称所有更新均为 O(增量)。已消除旧正文的重复聚合、每个工具扫描全部事件以及滚动/时钟驱动的全历史计算。仅改变浏览器内展示计算，不增加 agent/runtime 行为或后端 tracing 事件；性能验证使用合成历史和浏览器测试，不记录用户正文。
+   页面最多保留有界事件缓存：超过 1200 条时重建最近 600 条，旧历史通过翻页访问。虚拟列表仍执行当前缓存内的投影与布局，不宣称所有更新均为 O(增量)。统计投影由写事务增量维护；运行时间从完整任务状态计算，不把当前页视为全会话。
 
 ### 宿主与 Sandbox 的共享执行逻辑
 
@@ -264,7 +264,7 @@ Broker 命令与 Git push 可以使用宿主用户可访问的文件、网络和
 
 父进程等待旧进程释放端口，因而不会并行监听。新进程启动时生成新的本机会话 token，UI 轮询到 token 变化后才完整刷新页面。重载不撤销已修改文件，但不能恢复已经关闭的服务；它也不编译源码，生产模式须先 `pnpm build`。开发时 `tsx watch` 与 Vite HMR 仍分别负责源码自动更新。
 
-模型元数据与实际 usage 由 providers/model-metadata.ts 校验，context/token-budget.ts 计算本地 token 估算和输入预算。`token-anchor.ts` 定义无正文的版本化锚点及内容/配置指纹；`session-token-calibration.ts` 在宿主/Runtime 首次压缩检查前恢复基线，响应保存后更新。Store schema v11 沿用的 `context_token_anchors` 每会话保留一条，经串行 Worker 读写，替换历史或压缩在同一事务清除；IPC v14 的校准字段只传锚点与 scope，不泄露连接配置。`context.usage.restore/save` 记录命中、耗时和终态，不记录指纹。UI 仅展示实报，详见 [model-tokens.md](model-tokens.md)。
+模型元数据与实际 usage 由 providers/model-metadata.ts 校验，context/token-budget.ts 计算本地 token 估算和输入预算。`token-anchor.ts` 定义无正文的版本化锚点及内容/配置指纹；`session-token-calibration.ts` 在宿主/Runtime 首次压缩检查前恢复基线，响应保存后更新。Store schema v11 沿用的 `context_token_anchors` 每会话保留一条，经串行 Worker 读写，替换历史或压缩在同一事务清除；IPC v15 的校准字段只传锚点与 scope，不泄露连接配置。`context.usage.restore/save` 记录命中、耗时和终态，不记录指纹。UI 仅展示实报，详见 [model-tokens.md](model-tokens.md)。
 
 上下文压缩的触发、持久化、失败边界与模块职责见 [context-management.md](context-management.md)。活动上下文可为摘要与最近原文的组合；压缩前完整输入另存快照，不删除事件历史。
 
@@ -294,6 +294,6 @@ Broker 命令与 Git push 可以使用宿主用户可访问的文件、网络和
 
 Engine 在每个任务开始时，从平台数据目录按真实路径 SHA-256 隔离的 JSONL 快照加载一次记忆（不存在时返回空文档，不读取旧 Markdown），按文件顺序将所有已启用、active、未过期条目的 ID、独立版本和标题摘要固定追加到模型指令，不注入正文或来源。不再接收查询、关键词评分、排序或按目录条数/字符裁剪；目录整体仍计入模型输入预算。模型通过现有 `memory_apply` 的 `operations:[{action:"read",id,expectedVersion}]` 按需读取一条完整记忆；服务核对项目、目标条目版本、启用状态、active 状态与有效期，读取不写盘。create 无需版本，update/archive 各自携带目标版本；顶层文件版本已移除（D144）。`entry-version.ts` 对完整条目规范化后计算 SHA-256，不受其他条目、排版/键顺序影响。FileStore 串行化写入，在最新文档逐条校验并保留无关变更；整批全成或全不写。内部文件哈希仅检测提交竞争，明确未发布时最多 4 轮重算，目标冲突及未知结果不重放；`jsonl.ts` 严格解析首行项目元数据和后续 memory/entry 记录，保留原始文本和条目顺序。维护只写完整 JSONL 快照，不追加事件；已有目标由 flush 后的临时文件 rename 替换，首次创建通过同目录 link 原子发布且不覆盖竞争目标。旧项目数据已按 D143 一次性备份、转换和完整核对，Markdown 编解码器及自动迁移分支已移除。读取完全无副作用，JSONL 缺失或损坏均不探测旧文件。
 
-宿主、启动前 fallback 和 Runtime 复用该服务；Runtime 沿用已认证的 `memory_apply` IPC；共享协议现为 v14（D150；保留 D144 的逐条版本工具契约，不兼容旧顶层版本），沿用 v10 扩大的 start_task.memoryText 传输上限 300000 字符，容纳现有存储上限内全部标题的最坏 JSON 转义及逐条版本，不作为目录裁剪规则。旧 Runtime 需重建/Repair，由 Broker 绑定真实工作区，不增加任意路径能力或新工具。该能力不新增项目 SQLite 表、不修改工作区、不需要人工确认。tracing、日志和记忆 notice 不含正文；按需读取结果作为普通工具结果进入受保护的会话上下文、历史与 Replay Case，接受既有输出限制和压缩规则。
+宿主、启动前 fallback 和 Runtime 复用该服务；Runtime 沿用已认证的 `memory_apply` IPC；共享协议现为 v15（D148、D150；保留 D144 的逐条版本工具契约，不兼容旧顶层版本），沿用 v10 扩大的 start_task.memoryText 传输上限 300000 字符，容纳现有存储上限内全部标题的最坏 JSON 转义及逐条版本，不作为目录裁剪规则。旧 Runtime 需重建/Repair，由 Broker 绑定真实工作区，不增加任意路径能力或新工具。该能力不新增项目 SQLite 表、不修改工作区、不需要人工确认。tracing、日志和记忆 notice 不含正文；按需读取结果作为普通工具结果进入受保护的会话上下文、历史与 Replay Case，接受既有输出限制和压缩规则。
 
 项目记忆 UI、来源失效验证和手工恢复/清空仍待实现，详见 [项目记忆系统设计](memory-system.md)。

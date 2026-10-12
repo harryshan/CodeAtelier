@@ -66,3 +66,14 @@ it("bounds cyclic metadata without serializing the body", () => {
   expect(transferBytes(cyclic, 1024)).toBeGreaterThan(0);
   expect(() => transferBytes({ text: "x".repeat(5000) }, 100)).toThrow("预算");
 });
+
+it("terminates an overdue reader instead of pinning its transaction indefinitely", async () => {
+  const entry = new URL(
+    "data:text/javascript,import {parentPort} from 'node:worker_threads';parentPort.on('message',()=>{});",
+  );
+  const queue = new StoreWorkerQueue(undefined, undefined, entry, 50);
+  await expect(
+    queue.request({ operation: "context", file: "unused", sessionId: "s" }),
+  ).rejects.toThrow("只读");
+  await queue.close();
+});

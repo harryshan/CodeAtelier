@@ -14,6 +14,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { Session, Task } from "../shared/types.js";
 import { api } from "../web/api.js";
+import { DatabaseReplay } from "./DatabaseReplay.js";
 import { mountViewer } from "./browser.js";
 import "./viewer.css";
 
@@ -58,6 +59,8 @@ export default function ReplayViewer() {
   const [resolved, setResolved] = useState(selection);
   const [conversations, setConversations] = useState<Session[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
+  const [taskBefore, setTaskBefore] = useState<string>();
+  const [olderTasks, setOlderTasks] = useState(false);
   const [filter, setFilter] = useState("");
   const [revision, setRevision] = useState(0);
   const [loading, setLoading] = useState(false);
@@ -67,12 +70,13 @@ export default function ReplayViewer() {
   useEffect(() => {
     const previousTitle = document.title;
     document.title = "CodeAtelier · 对话阅读器";
-    const view = mountViewer(container.current!, null, mode === "file");
-    renderer.current = view;
+    const view =
+      mode === "file" ? mountViewer(container.current!, null, true) : undefined;
+    renderer.current = view ?? null;
 
     return () => {
       renderer.current = null;
-      view.dispose();
+      view?.dispose();
       document.title = previousTitle;
     };
   }, [mode]);
@@ -81,7 +85,7 @@ export default function ReplayViewer() {
     const controller = new AbortController();
     const signal = controller.signal;
     const view = renderer.current!;
-    view.clear();
+    view?.clear();
     setError("");
     setMessage("");
     setTasks([]);
@@ -119,9 +123,9 @@ export default function ReplayViewer() {
           throw new Error("所选对话不存在，请重新选择。");
         }
 
-        const base = `/sessions/${encodeURIComponent(sessionId)}/tasks`;
-        const taskList = await api<Task[]>(
-          base,
+        const taskPage = await api<{ tasks: Task[]; hasOlder: boolean }>(
+          `/sessions/${encodeURIComponent(sessionId)}/task-page` +
+            (taskBefore ? `?before=${encodeURIComponent(taskBefore)}` : ""),
           undefined,
           "GET",
           false,
@@ -131,6 +135,8 @@ export default function ReplayViewer() {
           return;
         }
 
+        const taskList = taskPage.tasks;
+        setOlderTasks(taskPage.hasOlder);
         setTasks(taskList);
         const taskId = selection.taskId || taskList.at(-1)?.id || "";
         const current = { sessionId, taskId };
@@ -143,23 +149,22 @@ export default function ReplayViewer() {
         }
 
         if (!taskList.some((task) => task.id === taskId)) {
-          throw new Error("所选 Task 不属于这个对话或已不存在，请重新选择。");
+          const selected = await api<Task>(
+            `/sessions/${encodeURIComponent(sessionId)}/tasks/${encodeURIComponent(taskId)}`,
+            undefined,
+            "GET",
+            false,
+            signal,
+          );
+          if (signal.aborted) {
+            return;
+          }
+
+          setTasks([selected, ...taskList]);
         }
 
-        const value = await api<unknown>(
-          `${base}/${encodeURIComponent(taskId)}/replay`,
-          undefined,
-          "GET",
-          false,
-          signal,
-        );
-        if (signal.aborted) {
-          return;
-        }
-
-        view.load(value, "数据库记录");
         setMessage(
-          "已读取当前已保存记录；运行中 Task 可手动刷新，不会重新执行。",
+          "请选择请求目录中的一条记录；仅重建选中的请求。完整 Task 可显式导出。",
         );
       } catch (cause) {
         if (!signal.aborted) {
@@ -177,7 +182,7 @@ export default function ReplayViewer() {
     void load();
 
     return () => controller.abort();
-  }, [mode, selection, revision]);
+  }, [mode, selection, revision, taskBefore]);
 
   const visibleConversations = conversations.filter(
     (session) =>
@@ -189,6 +194,7 @@ export default function ReplayViewer() {
 
   return (
     <main id="app">
+      {mode === "database" && <h1>CodeAtelier · 对话阅读器</h1>}
       <a className="viewer-home" href="/">
         ← 返回 CodeAtelier
       </a>
@@ -225,6 +231,7 @@ export default function ReplayViewer() {
                 const next = { sessionId: event.target.value, taskId: "" };
                 setResolved(next);
                 setSelection(next);
+                setTaskBefore(undefined);
               }}
             >
               <option value="" disabled>
@@ -265,11 +272,37 @@ export default function ReplayViewer() {
               刷新记录
             </button>
           </div>
+          <button
+            disabled={!olderTasks}
+            onClick={() => {
+              setTaskBefore(tasks[0]?.id);
+              setSelection({ sessionId: resolved.sessionId, taskId: "" });
+            }}
+          >
+            更早的 Task
+          </button>
+          <button
+            disabled={!taskBefore}
+            onClick={() => {
+              setTaskBefore(undefined);
+              setSelection({ sessionId: resolved.sessionId, taskId: "" });
+            }}
+          >
+            最新 Task
+          </button>
           <p role="status">{loading ? "正在读取数据库记录…" : message}</p>
           {error && <p role="alert">{error}</p>}
         </section>
       )}
-      <div ref={container} />
+      {mode === "database" && resolved.taskId && !loading && !error && (
+        <DatabaseReplay
+          key={`${resolved.sessionId}:${resolved.taskId}`}
+          sessionId={resolved.sessionId}
+          taskId={resolved.taskId}
+          revision={revision}
+        />
+      )}
+      <div ref={container} hidden={mode === "database"} />
     </main>
   );
 }

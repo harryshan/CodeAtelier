@@ -282,7 +282,7 @@ it("persists service usage and exposes the discovered capacity while sending the
     },
   }));
   try {
-    engine.start(session.id, "hello");
+    await engine.start(session.id, "hello");
     await engine.active?.done;
     expect(store.tasks(session.id)[0].status).toBe("completed");
     expect(sentLimit).toBe(16384);
@@ -331,7 +331,7 @@ it("metadata failure falls back without blocking the task", async () => {
     },
   }));
   try {
-    engine.start(session.id, "hello");
+    await engine.start(session.id, "hello");
     await engine.active?.done;
     expect(store.tasks(session.id)[0].status).toBe("completed");
     expect(

@@ -92,24 +92,58 @@ export class SessionViewModel {
     const events = added.length
       ? [...(this.view?.events ?? []), ...added]
       : (this.view?.events ?? []);
+    if (snapshot.history && events.length > 1200) {
+      return this.update(
+        {
+          ...snapshot,
+          events: events.slice(-600),
+          history: snapshot.history
+            ? { ...snapshot.history, hasOlder: true }
+            : undefined,
+        },
+        true,
+      );
+    }
+
+    if (snapshot.history) {
+      this.lastId = snapshot.history.cursor;
+    }
+
     const counts = this.counters.snapshot();
-    const statistics =
-      this.view &&
-      tasks === this.view.tasks &&
-      added.every(
-        (event) =>
-          ![
-            "model_request",
-            "model_usage",
-            "tool_start",
-            "tool_result",
-            "task_end",
-          ].includes(event.type),
-      )
+    const statistics = snapshot.statisticsProjection
+      ? (now: number) => ({
+          ...snapshot.statisticsProjection!.base,
+          totalRunMs:
+            snapshot.statisticsProjection!.base.totalRunMs +
+            snapshot.statisticsProjection!.runningStarts.reduce(
+              (sum, start) => sum + Math.max(0, now - start),
+              0,
+            ),
+        })
+      : this.view &&
+          tasks === this.view.tasks &&
+          added.every(
+            (event) =>
+              ![
+                "model_request",
+                "model_usage",
+                "tool_start",
+                "tool_result",
+                "task_end",
+              ].includes(event.type),
+          )
         ? this.view.statistics
         : prepareSessionStatistics(counts, tasks);
     this.view = {
       ...snapshot,
+      history: snapshot.history
+        ? {
+            ...snapshot.history,
+            hasOlder:
+              snapshot.history.hasOlder ||
+              Boolean(this.view?.history?.hasOlder),
+          }
+        : undefined,
       session: reuse(this.view?.session, snapshot.session),
       events,
       tasks,

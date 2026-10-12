@@ -168,7 +168,7 @@ it.each([false, true])(
         version = next;
         calls = 0;
         await save(version);
-        const task = engine.start(session.id, "Use the review skill");
+        const task = await engine.start(session.id, "Use the review skill");
         await engine.active?.done;
         expect(store.task(task.id)?.status).toBe("completed");
         expect(calls).toBe(3);

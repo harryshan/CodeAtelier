@@ -97,7 +97,7 @@ it("reviews only executing commands and resumes the main conversation after stop
     },
   }));
   try {
-    const task = engine.start(session.id, "检查输出然后结束常驻命令");
+    const task = await engine.start(session.id, "检查输出然后结束常驻命令");
     const approval = await waitForApproval(engine, task.id);
     await new Promise((resolve) => setTimeout(resolve, 150));
     expect(reviews).toBe(0);

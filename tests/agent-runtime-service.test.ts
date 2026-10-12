@@ -272,6 +272,10 @@ it("runs the model and tool loop in an independent Agent Runtime process", async
       saveContext: async (_runtime, input) => {
         context = structuredClone(input);
       },
+      commitToolResult: async (_runtime, body) => {
+        events.push({ type: "tool_result", data: structuredClone(body.event) });
+        context.push(structuredClone(body.feedback));
+      },
       readContext: async () => structuredClone(context),
       readEvents: async () => [],
       latestContextSnapshot: async () => undefined,

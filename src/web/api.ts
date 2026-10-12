@@ -72,9 +72,20 @@ export async function bootstrap() {
 
 export const sessions = () => api<Session[]>("/sessions");
 
-export const snapshot = (id: string, signal?: AbortSignal, after = 0) =>
+export const snapshot = (
+  id: string,
+  signal?: AbortSignal,
+  after = 0,
+  history?: { before: number; highWater: number },
+) =>
   api<Snapshot>(
-    "/sessions/" + id + (after > 0 ? "?after=" + after : ""),
+    "/sessions/" +
+      id +
+      (history
+        ? `?before=${history.before}&highWater=${history.highWater}`
+        : after > 0
+          ? "?after=" + after
+          : ""),
     undefined,
     "GET",
     false,

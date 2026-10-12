@@ -1,5 +1,36 @@
 # 初版验证记录
 
+## 完整 SQLite 迁移验收（2026-10-13，Windows / Node 24.21.0）
+
+**正式状态：已激活。** generation `d275a4b5-c2a0-4bdb-9f5c-8000ac6e4453` 的活动目录为 `C:\Users\harryshan\CodeAtelier-migration\20261013-final\generation`，这是运行库，不能作为可清理临时副本。默认 AppData 的 `history-active.json` 已正确解析到该目录，包括本次 MSIX 环境的常规路径读取。物理旧入口已变为阻断目录，原件保存在物理数据目录的 `history-before-d275a4b5-c2a0-4bdb-9f5c-8000ac6e4453`；raw、冻结快照及验收副本均保留。激活后原件与目标 SHA256 再次一致，启动门禁已撤销，只读回读 134 会话/405 任务通过，未启动业务或写入 business-started。
+
+最终类型、ESLint、Prettier 和构建通过；完整单元测试以 4 个 worker 运行，108 文件、738 通过、1 跳过。浏览器 42 项先全通过；取消竞态修复后复验 41 通过，1 项因同时构建替换静态产物导致初始 `/` 返回 404，该项在无并行构建时独立重跑通过。默认 `pnpm check` 的高并发运行仍有 Windows 进程树/关闭时序失败，四 worker 全套不改断言通过；不将默认命令描述为全绿。
+
+代码采用 schema v11、Replay v3、适配器 v2。生产 AsyncStore 单写/双读、持久统计、历史及请求分页、正文分段、恢复相关事件查询、Runtime IPC v15 原子工具结果提交均已接入。冻结工具持有全部源文件的拒绝写共享句柄后复制、Flush 和核对 SHA256；未修复原库，原来的“损坏”来自 MSIX 重定向错误视图，实际源完整性正常。
+
+正式备份/快照及目标位于用户目录 `CodeAtelier-migration/20261013-final`，原件和报告沿用源 DACL。全量独立核对通过：134 sessions、405 tasks、252617 events、2585 context_chunks、135 snapshots、17 anchors、12983 Replay model/tool entries；subagents/subagent_requests 为 0。逐条原始字段、顺序、序列化、请求重建、业务引用、统计投影、全局 ID 和 SQLite integrity 均通过；没有未转换记录或未解释差异。
+
+| 分片 | 新主库字节 | 空闲页 | dbstat 载荷比例 | WAL 字节 |
+| --- | ---: | ---: | ---: | ---: |
+| history.sqlite | 881127424 | 0 | 97.926% | 0 |
+| history-000001.sqlite | 800948224 | 0 | 97.107% | 0 |
+
+原主库合计 2559488000 字节，新主库合计 1682075648 字节，减少约 34.28%。新库符合既定空间阈值，无需额外 VACUUM。减少包含重建与 Replay 编码变化，不能全部称为“碎片回收”；raw、冻结快照、旧代及验收副本保留占用另计，不因此减少总备份空间，也不承诺后续永久零碎片。
+
+生产读取在独立目标副本上遍历全部 134 会话、405 任务、252617 事件和 12983 条 Replay 目录，回读上下文/快照并按目录选择请求，计数全部匹配。没有旧源路径 fallback，历史工具执行为 0。正常/兜底压缩、受控续聊及 IPC 使用合成确定性夹具验证，没有对真实历史发模型请求。
+
+固定合成存储负载（每任务 512 条 16 KiB notice，交错上下文、Replay、快照和浏览）对比改造前 16062f1：
+
+| 并发 | 旧写入 p99 ms | 新写入 p99 ms | 旧浏览 p99 ms | 新浏览 p99 ms | 新峰值 WAL MiB | 新峰值 RSS MiB |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 2.98 | 4.71 | 28.75 | 5.99 | 4.00 | 231.4 |
+| 2 | 10.29 | 8.50 | 46.23 | 20.10 | 4.20 | 226.0 |
+| 4 | 18.41 | 14.59 | 95.26 | 23.99 | 4.40 | 333.5 |
+
+新版事件循环 p99 均低于 12 ms，关闭后 WAL 为 0，空间和固定负载性能界限均通过。旧浏览读取完整事件，新浏览读取产品分页；这不是等载荷 SQL 微基准，不能泛化提速倍数。报告保存在本机 `.local/storage-measure-baseline-v2/report.json`、`.local/storage-measure-target-final/report.json`，不执行 Evaluation。
+
+故障回归覆盖源/目标摘要变化、批次回执丢失、激活移动中断恢复、旧入口阻断、启动后拒绝重激活、只读超时、长读阻碍 checkpoint、释放后整理与完整性。实际数据库迁移结论仅覆盖本机 Windows；Linux/macOS 未做真实数据迁移。Runtime v15 已构建，受保护的 Windows 安装副本未自动改动，使用安装式 Sandbox 前须按已有管理员更新流程更新。
+
 ## trace 后续关联、等待与运行期诊断（2026-10-12）
 
 - 按 D150 完成模型/工具/持久化精确关联、首流与首文本、任务/工具/审批/MCP 等待、Worker 实际阶段、Sandbox/IPC/进程取消、资源 counters、容量预算和 partial 检查点。新增环境变量、live API、保留策略与证据边界见 [tracing 指南](tracing.md)。Runtime IPC v14，未修改真实安装副本。

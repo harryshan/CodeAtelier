@@ -735,7 +735,7 @@ async function main() {
       pino({ enabled: false }),
       () => completionModel,
     );
-    const completedTask = engine.start(
+    const completedTask = await engine.start(
       completedSession.id,
       "Create the fixed verification marker.",
     );
@@ -769,7 +769,7 @@ async function main() {
       pino({ enabled: false }),
       () => runtimeCommandModel,
     );
-    const runtimeCommandTask = engine.start(
+    const runtimeCommandTask = await engine.start(
       runtimeCommandSession.id,
       "Run the fixed read-only command inside the installed Runtime.",
     );
@@ -800,7 +800,7 @@ async function main() {
       (_settings, purpose) =>
         purpose === "approval" ? approvalProvider() : brokerCommandModel,
     );
-    const brokerCommandTask = engine.start(
+    const brokerCommandTask = await engine.start(
       brokerCommandSession.id,
       "Write the fixed external marker through a reviewed Broker host command.",
     );
@@ -835,7 +835,7 @@ async function main() {
       (_settings, purpose) =>
         purpose === "approval" ? approvalProvider() : pushModel,
     );
-    const pushTask = engine.start(
+    const pushTask = await engine.start(
       pushSession.id,
       "Attempt the fixed verification push and report its bounded failure.",
     );
@@ -863,13 +863,13 @@ async function main() {
       () => cancellationModel,
     );
     const cancelledSession = store.create(workspace, "Runtime cancel probe");
-    const cancelledTask = engine.start(
+    const cancelledTask = await engine.start(
       cancelledSession.id,
       "Wait until the Broker cancels this verification task.",
     );
     const cancelDone = engine.active!.done;
     await waitFor(entered, "Runtime model request");
-    engine.cancel(cancelledTask.id);
+    await engine.cancel(cancelledTask.id);
     await waitFor(cancelDone, "cancelled Runtime task");
     if (store.task(cancelledTask.id)?.status !== "cancelled") {
       fail("task cancellation did not persist cancelled");

@@ -1,12 +1,12 @@
 /**
- * 用 SQLite 保存会话、任务、事件和模型上下文，供 Engine、HTTP 接口和 ContextManager 使用。
+ * Worker 内部 SQLite 实现及同步测试适配器；生产 Engine、HTTP 与 ContextManager 经 AsyncStore 固定 RPC 访问。
  *
  * 1. 构造器发现兼容的 history.sqlite 与后续容量分片，只为新文件初始化目标 schema并把重启前未完成的任务标为 interrupted；transaction 同步提交，取锁或执行失败时释放本次已开启的事务。
  * 2. list/get/create 跨分片定位或聚合会话；新会话在最新分片达到容量上限后进入新文件，已有会话始终写回其初始分片。标题状态的领取、完成或失败保证首条 prompt 只生成一次标题。
  * 3. tasks/task/createTask/status 读写任务状态与不可变的 subagent 选择；旧分片必须离线迁移，SQLite 的 0/1 在各读取入口转换为布尔值。queuedTasks 和 hasUnfinishedTask 供 Engine 调度跨会话队列，event/events 保存和分页读取事件。
  * 4. subagents/subagent_requests 按任务保存完整计划、检查点、报告与回执，不附加子任务文本配额；replay 元数据和逐条模型/工具增量经 replay-storage 写入，只读取已经转换的 v3 捕获。
  * 5. 离线转换器将旧 context 原样迁入 context_chunks 基线；appendContext 只写新增批次，saveContext/压缩替换基线并原子清除会话 token 锚点，读时按顺序重建；大记录由 store-worker 解析。
- * 6. 常规事件/上下文/状态写入和大记录读取由有界串行 Store Worker 队列提交；closeAsync 排空并关闭线程后再关闭分片连接。
+ * 6. inline 模式在所属 Worker 内完成固定操作；测试适配器可使用独立队列。统计随事件提交，分页延迟正文，Replay 多查询使用同一读事务；closeAsync 排空并释放连接。
  *
  * 事务只能回滚数据库，不能撤销文件修改或命令执行。恢复需要的未知状态和原始记录必须保留。
  */
@@ -41,8 +41,16 @@ import {
   DEFAULT_HISTORY_SHARD_MAX_BYTES,
   HistoryShards,
 } from "./history-shards.js";
+import { handle } from "./store-operations.js";
+import { WorkerTimings } from "./worker-timing.js";
+import { appendStatistics, readStatistics } from "./statistics-projection.js";
+import { prepareSessionStatistics } from "../shared/session-statistics.js";
 import { StoreWorkerQueue } from "./store-worker-queue.js";
-import { readReplayCapture, writeReplay } from "./replay-storage.js";
+import {
+  readReplayCapture,
+  readReplayExchange,
+  writeReplay,
+} from "./replay-storage.js";
 import type { StoreWorkerRequest } from "./store-worker.js";
 
 type TaskRow = Omit<Task, "subagentsEnabled"> & {
@@ -57,20 +65,52 @@ export class Store {
   private closing?: Promise<void>;
   private transactionActive = false;
   private transactionDatabase?: DatabaseSync;
-  private readonly worker = new StoreWorkerQueue();
+  private readonly worker: Pick<
+    StoreWorkerQueue,
+    "request" | "drain" | "close" | "setTracer"
+  >;
 
   constructor(
     file: string,
-    options: { interruptActive?: boolean; maxShardBytes?: number } = {},
+    options: {
+      interruptActive?: boolean;
+      maxShardBytes?: number;
+      inline?: boolean;
+      readOnly?: boolean;
+    } = {},
   ) {
     this.shards = new HistoryShards(
       file,
       options.maxShardBytes ?? DEFAULT_HISTORY_SHARD_MAX_BYTES,
+      options.readOnly,
     );
     this.db = this.shards.active().db;
+    this.worker = options.inline
+      ? {
+          request: async <T>(
+            request: Omit<StoreWorkerRequest, "id">,
+          ): Promise<T> => {
+            const shard = this.shards.all.find(
+              (item) => item.file === request.file,
+            );
+            if (!shard) {
+              throw new Error("未知分片。");
+            }
+
+            return handle(
+              { ...request, id: 0 },
+              new WorkerTimings(),
+              shard.db,
+            ) as T;
+          },
+          drain: async () => {},
+          close: async () => {},
+          setTracer: () => {},
+        }
+      : new StoreWorkerQueue();
 
     // 导出历史必须保持只读；正常服务启动仍将无法确认结果的任务标为 interrupted。
-    if (options.interruptActive ?? true) {
+    if (!options.readOnly && (options.interruptActive ?? true)) {
       const now = new Date().toISOString();
       for (const shard of this.shards.all) {
         shard.db
@@ -150,6 +190,17 @@ export class Store {
     }
 
     this.db = db;
+  }
+
+  refresh() {
+    this.shards.refresh();
+  }
+
+  checkpoint() {
+    return this.shards.all.map((shard) => ({
+      sequence: shard.sequence,
+      ...shard.db.prepare("PRAGMA wal_checkpoint(PASSIVE)").get(),
+    }));
   }
 
   list() {
@@ -500,6 +551,20 @@ export class Store {
 
   /** 新捕获优先使用未截断工具材料；旧历史退回事件配对，但 source 必须明确标为 legacy。 */
   replayCase(taskId: string): TaskReplayCase | undefined {
+    if (!this.task(taskId)) {
+      return undefined;
+    }
+
+    const db = this.selectTask(taskId).db;
+    db.exec("BEGIN");
+    try {
+      return this.readReplayCase(taskId);
+    } finally {
+      db.exec("COMMIT");
+    }
+  }
+
+  private readReplayCase(taskId: string): TaskReplayCase | undefined {
     const task = this.task(taskId);
     if (!task) {
       return undefined;
@@ -766,6 +831,31 @@ export class Store {
   }
 
   /** 同一事务提交工具反馈与实际交付的报告；晚完成的报告不在旧预览中，不能误标消费。 */
+  commitCollectedToolResult(
+    taskId: string,
+    ids: string[],
+    deliveredReports: ReturnType<Store["collectSubagents"]>,
+    data: unknown,
+    feedback: unknown,
+    callId: string,
+    replayResult: unknown,
+  ) {
+    let event: Event | undefined;
+    this.commitSubagentCollect(
+      taskId,
+      ids,
+      () => {
+        const sessionId = this.task(taskId)!.sessionId;
+        event = this.event(sessionId, taskId, "tool_result", data);
+        this.finishReplayTool(taskId, callId, replayResult);
+        this.appendContext(sessionId, [feedback]);
+      },
+      deliveredReports,
+    );
+
+    return event!;
+  }
+
   commitSubagentCollect(
     taskId: string,
     ids: string[],
@@ -933,6 +1023,10 @@ export class Store {
   }
 
   event(sessionId: string, taskId: string, type: string, data: unknown): Event {
+    if (!this.transactionActive) {
+      return this.transaction(() => this.event(sessionId, taskId, type, data));
+    }
+
     this.selectSession(sessionId);
     const createdAt = new Date().toISOString();
     const id = this.nextEventId;
@@ -942,6 +1036,7 @@ export class Store {
       )
       .run(id, sessionId, taskId, type, JSON.stringify(data), createdAt);
     this.nextEventId++;
+    appendStatistics(this.db, { id, sessionId, taskId, type, data, createdAt });
 
     this.db
       .prepare("UPDATE sessions SET updatedAt=? WHERE id=?")
@@ -1131,6 +1226,242 @@ export class Store {
           after,
         })
       : [];
+  }
+
+  /** 恢复与两条压缩路径读取完整相关事件，不受 UI 页大小影响，不消除重复 call ID。 */
+  async relevantEventsAsync(sessionId: string): Promise<Event[]> {
+    const shard = this.selectSession(sessionId);
+
+    return this.worker.request<Event[]>({
+      operation: "relevantEvents",
+      file: shard.file,
+      sessionId,
+    });
+  }
+
+  statistics(sessionId: string) {
+    return readStatistics(
+      this.selectSession(sessionId).db,
+      sessionId,
+    ).snapshot();
+  }
+
+  taskPage(sessionId: string, before?: string) {
+    const db = this.selectSession(sessionId).db;
+    const cursor = before
+      ? db
+          .prepare(
+            "SELECT createdAt,orderKey FROM tasks WHERE sessionId=? AND id=?",
+          )
+          .get(sessionId, before)
+      : undefined;
+    if (before && !cursor) {
+      throw new Error("任务游标无效。");
+    }
+
+    const rows = db
+      .prepare(
+        "SELECT * FROM tasks WHERE sessionId=? AND (createdAt,orderKey)<(?,?) ORDER BY createdAt DESC,orderKey DESC LIMIT 101",
+      )
+      .all(
+        sessionId,
+        cursor?.createdAt ?? "\uffff",
+        cursor?.orderKey ?? Number.MAX_SAFE_INTEGER,
+      );
+    const tasks = (rows.slice(0, 100) as unknown as TaskRow[])
+      .map((row) => this.readTask(row))
+      .reverse();
+
+    return { tasks, hasOlder: rows.length > 100, next: tasks[0]?.id };
+  }
+
+  replayDirectory(taskId: string, after = 0) {
+    const db = this.selectTask(taskId).db;
+    db.exec("BEGIN");
+    try {
+      const row = db
+        .prepare("SELECT data FROM task_replays WHERE taskId=?")
+        .get(taskId);
+      const entries = db
+        .prepare(
+          "SELECT seq,kind,itemId,substr(json_extract(data,'$.purpose'),1,120) AS purpose,byteSize,outcomeBytes,outcome IS NOT NULL AS finished FROM replay_entries WHERE taskId=? AND seq>? ORDER BY seq LIMIT 101",
+        )
+        .all(taskId, after);
+
+      return {
+        captured: Boolean(row),
+        metadata: row ? JSON.parse(String(row.data)) : null,
+        entries: entries.slice(0, 100),
+        next: entries.length > 100 ? Number(entries[99]!.seq) : null,
+      };
+    } finally {
+      db.exec("COMMIT");
+    }
+  }
+
+  replayEntry(taskId: string, kind: "model" | "tool", itemId: string) {
+    const db = this.selectTask(taskId).db;
+    db.exec("BEGIN");
+    try {
+      if (kind === "model") {
+        return readReplayExchange(db, taskId, itemId);
+      }
+
+      const row = db
+        .prepare(
+          "SELECT data,outcome FROM replay_entries WHERE taskId=? AND kind='tool' AND itemId=?",
+        )
+        .get(taskId, itemId);
+
+      return row
+        ? {
+            ...JSON.parse(String(row.data)),
+            ...(row.outcome === null ? {} : JSON.parse(String(row.outcome))),
+          }
+        : undefined;
+    } finally {
+      db.exec("COMMIT");
+    }
+  }
+
+  relatedEvents(sessionId: string, taskId: string, callId: string, after = 0) {
+    return this.selectSession(sessionId)
+      .db.prepare(
+        "SELECT id,sessionId,taskId,type,createdAt,byteSize AS bodyBytes FROM events WHERE sessionId=? AND taskId=? AND callId=? AND id>? ORDER BY id LIMIT 100",
+      )
+      .all(sessionId, taskId, callId, after)
+      .map((row) => ({
+        ...row,
+        data: { callId },
+        bodyDeferred: true,
+      })) as unknown as Event[];
+  }
+
+  snapshotPage(
+    sessionId: string,
+    options: {
+      before?: number;
+      after?: number;
+      highWater?: number;
+      limit?: number;
+    } = {},
+  ) {
+    const db = this.selectSession(sessionId).db;
+    db.exec("BEGIN");
+    try {
+      const { events, ...history } = this.historyPage(sessionId, options);
+      const tasks = this.tasks(sessionId);
+      const base = prepareSessionStatistics(
+        this.statistics(sessionId),
+        tasks,
+      )(0);
+      const runningStarts = tasks
+        .filter(
+          (task) =>
+            ["running", "waiting"].includes(task.status) &&
+            task.startedAt !== null,
+        )
+        .map((task) => Date.parse(task.startedAt ?? task.createdAt))
+        .filter(Number.isFinite);
+
+      return {
+        session: this.get(sessionId),
+        events,
+        history,
+        tasks: tasks.slice(-200),
+        statisticsProjection: { base, runningStarts },
+      };
+    } finally {
+      db.exec("COMMIT");
+    }
+  }
+
+  historyPage(
+    sessionId: string,
+    options: {
+      before?: number;
+      after?: number;
+      highWater?: number;
+      limit?: number;
+    },
+  ) {
+    const db = this.selectSession(sessionId).db;
+    const own = !db.isTransaction;
+    if (own) {
+      db.exec("BEGIN");
+    }
+
+    try {
+      const highWater =
+        options.highWater ??
+        Number(
+          db
+            .prepare(
+              "SELECT coalesce(max(id),0) AS id FROM events WHERE sessionId=?",
+            )
+            .get(sessionId)!.id,
+        );
+      const limit = Math.max(1, Math.min(200, options.limit ?? 100));
+      const forward = options.after !== undefined && options.after > 0;
+      const rows = db
+        .prepare(
+          `SELECT id,sessionId,taskId,type,createdAt,byteSize,
+        CASE WHEN byteSize<=32768 THEN data ELSE json_object('name',substr(toolName,1,120),'callId',substr(callId,1,120),'text',substr(json_extract(data,'$.text'),1,512)) END AS data
+        FROM events WHERE sessionId=? AND id<=? AND id>? AND id<? ORDER BY id ${forward ? "ASC" : "DESC"} LIMIT ?`,
+        )
+        .all(
+          sessionId,
+          highWater,
+          options.after ?? 0,
+          options.before ?? Number.MAX_SAFE_INTEGER,
+          limit + 1,
+        );
+      const more = rows.length > limit;
+      const selected = rows.slice(0, limit);
+      if (!forward) {
+        selected.reverse();
+      }
+
+      const events = selected.map(({ byteSize, ...row }) => ({
+        ...row,
+        data: JSON.parse(String(row.data)),
+        ...(Number(byteSize) > 32768
+          ? { bodyDeferred: true, bodyBytes: Number(byteSize) }
+          : {}),
+      })) as unknown as Event[];
+
+      return {
+        events,
+        highWater,
+        hasOlder: !forward && more,
+        hasNewer: forward && more,
+        cursor: forward && more ? events.at(-1)!.id : highWater,
+      };
+    } finally {
+      if (own) {
+        db.exec("COMMIT");
+      }
+    }
+  }
+
+  eventBody(sessionId: string, id: number, offset = 0) {
+    if (!Number.isSafeInteger(offset) || offset < 0) {
+      throw new Error("正文位置无效。");
+    }
+
+    const row = this.selectSession(sessionId)
+      .db.prepare(
+        "SELECT substr(data,?,16384) AS text,length(data) AS total FROM events WHERE sessionId=? AND id=?",
+      )
+      .get(offset + 1, sessionId, id);
+    if (!row) {
+      throw new Error("事件不存在。");
+    }
+
+    return {
+      text: String(row.text),
+      next: offset + 16384 < Number(row.total) ? offset + 16384 : null,
+    };
   }
 
   context(id: string): any[] {

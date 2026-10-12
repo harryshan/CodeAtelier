@@ -24,7 +24,7 @@ import {
 import path from "node:path";
 import { Config } from "../src/config/config.js";
 import { Engine } from "../src/agent/engine.js";
-import { Store } from "../src/sessions/store.js";
+import { AsyncStore } from "../src/sessions/async-store.js";
 import { createLogger } from "../src/logging/logger.js";
 
 const prepareOnly = process.argv.includes("--prepare-only");
@@ -147,9 +147,11 @@ if (prepareOnly) {
 
 const config = new Config(path.join(root, "data"));
 const log = createLogger(config.directory, "info", () => [config.apiKey]);
-let store = new Store(path.join(config.directory, "history.sqlite"));
+let store = await AsyncStore.open(
+  path.join(config.directory, "history.sqlite"),
+);
 let engine = new Engine(store, config, log);
-const session = store.create(workspace, "自举：配置回归修复与中断恢复");
+const session = await store.create(workspace, "自举：配置回归修复与中断恢复");
 let interrupted = false;
 let approvals = 0;
 const allowedFiles = new Set([sourcePath, testPath, docPath]);
@@ -193,7 +195,7 @@ function observe(current: Engine, interrupt: boolean) {
 async function wait() {
   const timer = setTimeout(() => {
     if (engine.active) {
-      engine.cancel(engine.active.task.id);
+      void engine.cancel(engine.active.task.id);
     }
   }, 600000);
   try {
@@ -205,19 +207,19 @@ async function wait() {
 
 try {
   observe(engine, true);
-  const task = engine.start(
+  const task = await engine.start(
     session.id,
     `这是 CodeAtelier 自己源码的隔离验收副本。遵循 AGENTS.md 和文档约定，但本次不提交或推送代码；不需要安装依赖或启动服务。配置更新存在回归：baseUrl 输入 http://localhost:8888/v1/responses/ 后没有规范化为 http://localhost:8888/v1。请先读相关代码和测试并运行测试复现，然后修复，保留全部已有测试，追加构造函数从环境变量读取带 responses 后缀端点并规范化的测试，更新 docs/development.md 的相关说明。仅修改 ${[...allowedFiles].join("、")}，使用 edit_files（单文件修改也传一个 files 条目）。唯一预授权命令只传 command 字段，值必须精确为 ${JSON.stringify(testCommand)}；工作目录和 shell 由执行器内部固定，不要运行其他命令。完成后根据实际测试结果报告。`,
   );
   await wait();
-  const firstStatus = store.task(task.id)?.status;
+  const firstStatus = (await store.task(task.id))?.status;
   await engine.close();
   await store.closeAsync();
-  store = new Store(path.join(config.directory, "history.sqlite"));
+  store = await AsyncStore.open(path.join(config.directory, "history.sqlite"));
   engine = new Engine(store, config, log);
   observe(engine, false);
   if (interrupted && firstStatus === "cancelled") {
-    engine.resume(
+    await engine.resume(
       task.id,
       "验收主动中断已结束，请读取当前文件核实进度，继续完成原任务，不重复已完成修改。",
     );
@@ -293,7 +295,7 @@ try {
   }
 
   await findNewFiles(workspace);
-  const events = store.events(session.id);
+  const events = await store.events(session.id);
   const report = {
     revision,
     model: config.settings.model,
@@ -302,7 +304,7 @@ try {
     firstStatus,
     interrupted,
     approvals,
-    finalStatus: store.tasks(session.id).at(-1)?.status,
+    finalStatus: (await store.tasks(session.id)).at(-1)?.status,
     testsPassed: final.passed,
     originalTestsPassed: independent.passed,
     addedTests:

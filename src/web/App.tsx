@@ -48,7 +48,15 @@ export default function App() {
   const [serverState, setServerState] = useState<
     "running" | "reloading" | "stopping" | "stopped"
   >("running");
-  const { data, refreshSession, connected, loading } = useSessionConnection(
+  const {
+    data,
+    refreshSession,
+    connected,
+    loading,
+    loadOlder,
+    showLatest,
+    browsingHistory,
+  } = useSessionConnection(
     selected,
     serverState === "running",
     setSettings,
@@ -615,6 +623,12 @@ export default function App() {
                 <code>{data?.session.workspace}</code>
                 <span>本地项目</span>
               </div>
+              {data?.history?.hasOlder && (
+                <button onClick={() => void loadOlder()}>查看更早的记录</button>
+              )}
+              {browsingHistory && (
+                <button onClick={showLatest}>返回最新记录</button>
+              )}
               {data && (
                 <Timeline
                   key={data.session.id}

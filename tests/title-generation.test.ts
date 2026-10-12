@@ -79,7 +79,7 @@ it("generates and persists one title from the first prompt with the auxiliary mo
 
   try {
     expect(session).toMatchObject({ title: "新对话", titleState: "pending" });
-    engine.start(session.id, "修复登录失败");
+    await engine.start(session.id, "修复登录失败");
     await engine.active?.done;
 
     expect(store.get(session.id)).toMatchObject({
@@ -91,7 +91,7 @@ it("generates and persists one title from the first prompt with the auxiliary mo
       { model: config.settings.model, purpose: "task" },
     ]);
 
-    engine.start(session.id, "补充回归测试");
+    await engine.start(session.id, "补充回归测试");
     await engine.active?.done;
 
     expect(store.get(session.id)?.title).toBe("修复登录失败");
@@ -138,7 +138,7 @@ it("retries unknown title failures up to three times before completing the codin
   );
 
   try {
-    engine.start(session.id, "检查构建失败");
+    await engine.start(session.id, "检查构建失败");
     await vi.runAllTimersAsync();
     await engine.active?.done;
 
@@ -185,7 +185,7 @@ it("keeps the placeholder title when permanent generation failure does not fail 
   );
 
   try {
-    engine.start(session.id, "检查构建失败");
+    await engine.start(session.id, "检查构建失败");
     await engine.active?.done;
 
     expect(taskCalls).toBe(1);
@@ -229,9 +229,9 @@ it("ends title generation when the first task is cancelled", async () => {
   );
 
   try {
-    const task = engine.start(session.id, "取消中的标题请求");
+    const task = await engine.start(session.id, "取消中的标题请求");
 
-    engine.cancel(task.id);
+    await engine.cancel(task.id);
     await engine.active?.done;
 
     expect(store.get(session.id)).toMatchObject({

@@ -393,7 +393,7 @@ it("continues an engine task after compression and exposes archived history as a
     },
   }));
   try {
-    engine.start(session.id, "continue");
+    await engine.start(session.id, "continue");
     await engine.active?.done;
     expect(
       store.tasks(session.id)[0].status,
@@ -505,7 +505,7 @@ it("retries server context overflow once and separates partial output attempts",
     },
   }));
   try {
-    engine.start(session.id, "continue");
+    await engine.start(session.id, "continue");
     await engine.active?.done;
     expect(calls).toBe(2);
     expect(store.tasks(session.id)[0].status).toBe("failed");

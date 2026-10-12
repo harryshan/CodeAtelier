@@ -173,7 +173,7 @@ it.each([false, true])(
         config.settings.contextChars,
       );
       store.saveContext(session.id, source);
-      const task = engine.start(session.id, "Continue");
+      const task = await engine.start(session.id, "Continue");
       await engine.active!.done;
       expect(models).toEqual([config.settings.model, "small"]);
       expect(chunks.length).toBeGreaterThan(0);

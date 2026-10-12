@@ -92,7 +92,7 @@ it.each(["host", "runtime", "fallback"])(
       .mockResolvedValue(false);
     try {
       for (const prompt of ["Explain the available capabilities", "Continue"]) {
-        const task = engine.start(session.id, prompt);
+        const task = await engine.start(session.id, prompt);
         await engine.active?.done;
         expect(store.task(task.id)?.status).toBe("completed");
         const trace = (await engine.savedTrace(task))!;
@@ -284,7 +284,10 @@ it.each([false, true])(
       .spyOn(engine.approvals, "request")
       .mockResolvedValue(true);
     try {
-      const task = engine.start(session.id, "use the configured MCP fixture");
+      const task = await engine.start(
+        session.id,
+        "use the configured MCP fixture",
+      );
       await engine.active?.done;
       expect(store.task(task.id)?.status).toBe("completed");
       expect(calls).toBe(4);

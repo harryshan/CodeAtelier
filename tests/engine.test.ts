@@ -75,7 +75,7 @@ it("enforces step budget after saving removed-tool errors as tool results", asyn
 
   try {
     fixture.config.settings.maxSteps = 1;
-    fixture.engine.start(fixture.session.id, "list");
+    await fixture.engine.start(fixture.session.id, "list");
     await fixture.engine.active?.done;
 
     expect(calls).toBe(1);
@@ -123,7 +123,7 @@ it("captures model exchanges and complete tool results for a replay case", async
 
   try {
     await writeFile(path.join(fixture.root, "replay-target.txt"), "original\n");
-    fixture.engine.start(fixture.session.id, "read the target");
+    await fixture.engine.start(fixture.session.id, "read the target");
     await fixture.engine.active?.done;
 
     const task = fixture.store.tasks(fixture.session.id)[0];
@@ -207,7 +207,7 @@ it("creates independent files through one unified batch returned in one model re
   });
 
   try {
-    fixture.engine.start(fixture.session.id, "create both files");
+    await fixture.engine.start(fixture.session.id, "create both files");
     await fixture.engine.active?.done;
 
     expect(calls).toBe(2);
@@ -239,7 +239,10 @@ it("includes the built-in web search tool in host task requests", async () => {
   });
 
   try {
-    fixture.engine.start(fixture.session.id, "find current public information");
+    await fixture.engine.start(
+      fixture.session.id,
+      "find current public information",
+    );
     await fixture.engine.active?.done;
 
     expect(fixture.store.tasks(fixture.session.id)[0].status).toBe("completed");
@@ -301,7 +304,7 @@ it("persists a complex-task plan after inspection and before executing its next 
 
   try {
     await writeFile(path.join(fixture.root, "plan-target.txt"), "ready\n");
-    fixture.engine.start(fixture.session.id, "请完成复杂任务");
+    await fixture.engine.start(fixture.session.id, "请完成复杂任务");
     await fixture.engine.active?.done;
 
     const events = fixture.store.events(fixture.session.id);
@@ -356,7 +359,10 @@ it("starts tool duration after command approval instead of when the call is requ
   });
 
   try {
-    const task = fixture.engine.start(fixture.session.id, "run the command");
+    const task = await fixture.engine.start(
+      fixture.session.id,
+      "run the command",
+    );
     await waitForApproval(fixture.engine, task.id);
     expect(fixture.engine.approvals.list()).toHaveLength(1);
 
@@ -484,7 +490,7 @@ it("routes an approval to the configured low-cost model and persists an automati
   );
 
   try {
-    engine.start(session.id, "run a fixed command");
+    await engine.start(session.id, "run a fixed command");
     await engine.active?.done;
 
     expect(approvalCalls).toBe(1);
@@ -544,7 +550,10 @@ it("requests human review instead of retrying with reasoning when the approval m
 
   try {
     fixture.config.settings.auxiliaryModel = "approval-model";
-    const task = fixture.engine.start(fixture.session.id, "run a command");
+    const task = await fixture.engine.start(
+      fixture.session.id,
+      "run a command",
+    );
     await waitForApproval(fixture.engine, task.id);
     expect(fixture.engine.approvals.list()).toHaveLength(1);
 
@@ -619,7 +628,7 @@ it("fails an over-budget context before calling the provider", async () => {
 
   try {
     fixture.config.settings.contextChars = 10000;
-    fixture.engine.start(fixture.session.id, "x".repeat(11000));
+    await fixture.engine.start(fixture.session.id, "x".repeat(11000));
     await fixture.engine.active?.done;
 
     expect(calls).toBe(0);
@@ -645,7 +654,7 @@ it("persists the actual model error in the failed task and user notice", async (
   });
 
   try {
-    fixture.engine.start(fixture.session.id, "run the task");
+    await fixture.engine.start(fixture.session.id, "run the task");
     await fixture.engine.active?.done;
 
     expect(fixture.store.tasks(fixture.session.id)[0]).toMatchObject({
@@ -693,7 +702,7 @@ it("returns invalid tool arguments as model feedback without mutating files", as
   });
 
   try {
-    fixture.engine.start(fixture.session.id, "test");
+    await fixture.engine.start(fixture.session.id, "test");
     await fixture.engine.active?.done;
 
     expect(JSON.parse(feedback).error).toBeTruthy();
@@ -744,7 +753,7 @@ it("loads project guidance and bounds large tool feedback", async () => {
       "Project convention: use meaningful tests.",
     );
     await writeFile(path.join(fixture.root, "long.txt"), "x".repeat(5000));
-    fixture.engine.start(fixture.session.id, "read");
+    await fixture.engine.start(fixture.session.id, "read");
     await fixture.engine.active?.done;
 
     expect(guidance).toContain("Project convention");
@@ -807,9 +816,9 @@ it("requires a fresh read in a later task even when history contains an earlier 
 
   try {
     await writeFile(path.join(fixture.root, "a.txt"), "old");
-    fixture.engine.start(fixture.session.id, "read");
+    await fixture.engine.start(fixture.session.id, "read");
     await fixture.engine.active?.done;
-    fixture.engine.start(fixture.session.id, "edit");
+    await fixture.engine.start(fixture.session.id, "edit");
     await fixture.engine.active?.done;
 
     expect(await readFile(path.join(fixture.root, "a.txt"), "utf8")).toBe(
@@ -866,7 +875,7 @@ it("reads credential-related source without corrupting tool-result JSON", async 
       path.join(fixture.root, "example.ts"),
       'const config = { apiKey: "example-key" };\nconst secret = "known-runtime-secret";\nconst result = 42;\n',
     );
-    fixture.engine.start(fixture.session.id, "read source");
+    await fixture.engine.start(fixture.session.id, "read source");
     await fixture.engine.active?.done;
 
     expect(fixture.store.tasks(fixture.session.id)[0].status).toBe("completed");
@@ -942,7 +951,7 @@ it("persists multi-file progress with the call id and returns one batch result",
       await writeFile(path.join(fixture.root, name), "old");
     }
 
-    fixture.engine.start(fixture.session.id, "edit both files");
+    await fixture.engine.start(fixture.session.id, "edit both files");
     await fixture.engine.active?.done;
     expect(calls).toBe(3);
     expect(result.files.map((file: any) => file.status)).toEqual([
@@ -1070,7 +1079,7 @@ it("creates memory without approval and reads its body only on demand in a new s
   });
 
   try {
-    fixture.engine.start(fixture.session.id, "记住包管理器约束");
+    await fixture.engine.start(fixture.session.id, "记住包管理器约束");
     await fixture.engine.active?.done;
 
     expect(calls).toBe(2);
@@ -1097,7 +1106,7 @@ it("creates memory without approval and reads its body only on demand in a new s
     ).toEqual({ operationCount: 1 });
 
     const next = fixture.store.create(fixture.root, "read memory");
-    const task = fixture.engine.start(next.id, "查阅包管理器记忆");
+    const task = await fixture.engine.start(next.id, "查阅包管理器记忆");
     await fixture.engine.active?.done;
     expect(calls).toBe(4);
     expect(fixture.store.tasks(next.id)[0].status).toBe("completed");
@@ -1152,7 +1161,7 @@ it("executes a scheduled DAG and returns blocked descendants without invoking th
   });
 
   try {
-    fixture.engine.start(fixture.session.id, "exercise the tool graph");
+    await fixture.engine.start(fixture.session.id, "exercise the tool graph");
     await fixture.engine.active?.done;
 
     expect(calls).toBe(2);

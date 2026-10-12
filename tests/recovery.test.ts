@@ -246,14 +246,14 @@ it("resumes after completed file edits without replaying them and keeps original
 
   try {
     const session = store.create(root, "test");
-    const original = engine.start(session.id, "write once");
+    const original = await engine.start(session.id, "write once");
 
     await engine.active?.done;
 
     expect(store.task(original.id)?.status).toBe("failed");
-    const resumed = engine.resume(original.id, "continue verification");
+    const resumed = await engine.resume(original.id, "continue verification");
 
-    expect(() => engine.resume(original.id)).toThrow(
+    await expect(engine.resume(original.id)).rejects.toThrow(
       "只能恢复会话的最后一个任务",
     );
     await engine.active?.done;
@@ -268,7 +268,7 @@ it("resumes after completed file edits without replaying them and keeps original
     expect(
       store.events(session.id).filter((e) => e.type === "tool_start"),
     ).toHaveLength(1);
-    expect(() => engine.resume(original.id)).toThrow("最后一个任务");
+    await expect(engine.resume(original.id)).rejects.toThrow("最后一个任务");
     expect(
       store.events(session.id).find((e) => e.type === "recovery")?.data
         .sourceTaskId,
@@ -341,7 +341,7 @@ it("restores recorded tool results and marks unknown calls after a database rest
 
   try {
     expect(store.task(task.id)?.status).toBe("interrupted");
-    engine.resume(task.id);
+    await engine.resume(task.id);
     await engine.active?.done;
 
     expect(
@@ -418,7 +418,7 @@ it("shutdown and approval cancellation remain recoverable and release the task l
 
   try {
     const session = store.create(await temp(), "approval");
-    const first = engine.start(session.id, "verify");
+    const first = await engine.start(session.id, "verify");
 
     // 有效模型响应可以超过默认的一秒轮询期；就绪后仍检查真实审批与中断终态。
     await waitForApproval(engine, first.id);
@@ -426,11 +426,11 @@ it("shutdown and approval cancellation remain recoverable and release the task l
     await engine.close();
 
     expect(store.task(first.id)?.status).toBe("interrupted");
-    const next = engine.resume(first.id);
+    const next = await engine.resume(first.id);
 
     await waitForApproval(engine, next.id);
     expect(engine.approvals.list()).toHaveLength(1);
-    engine.cancel(next.id);
+    await engine.cancel(next.id);
     await engine.active?.done;
 
     expect(store.task(next.id)?.status).toBe("cancelled");
@@ -481,7 +481,7 @@ it("automatic model retry after a tool result does not repeat the completed edit
 
   try {
     const session = store.create(root, "retry");
-    const task = engine.start(session.id, "write");
+    const task = await engine.start(session.id, "write");
 
     await engine.active?.done;
 

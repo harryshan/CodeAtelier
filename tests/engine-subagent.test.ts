@@ -161,7 +161,7 @@ it("coordinates read-only research and commits collected feedback in the host En
 
       return created;
     });
-    (engine as unknown as { schedule(): void }).schedule();
+    await (engine as unknown as { schedule(): Promise<void> }).schedule();
     await engine.active?.done;
 
     expect(store.task(task.id)?.status).toBe("completed");
@@ -280,7 +280,7 @@ it("keeps a large report unconsumed when the main model only receives a truncate
 
       return created;
     });
-    (engine as unknown as { schedule(): void }).schedule();
+    await (engine as unknown as { schedule(): Promise<void> }).schedule();
     await engine.active?.done;
 
     expect(store.task(task.id)?.status).toBe("completed");

@@ -145,7 +145,7 @@ it("transfers the maximum escaped catalog and rejects oversized text and old Run
   ).toBe(false);
   const hello = {
     type: "runtime_hello",
-    protocolVersion: 14,
+    protocolVersion: 15,
     taskId: "task",
     sessionId: "session",
     executionInstanceId: "instance",

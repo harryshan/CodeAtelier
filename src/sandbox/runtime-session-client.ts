@@ -43,6 +43,10 @@ export class RuntimeSessionClient {
     );
   }
 
+  relevantEventsAsync() {
+    return this.eventsAsync();
+  }
+
   async saveContext(_sessionId: string, input: any[]) {
     await this.peer.request("session_save_context", { input }, this.signal);
   }
@@ -75,6 +79,23 @@ export class RuntimeSessionClient {
     await this.peer.request(
       "session_commit_subagent_collect",
       { ids, input, event },
+      AbortSignal.timeout(10_000),
+    );
+  }
+
+  async commitToolResult(
+    event: {
+      name: string;
+      callId: string;
+      batchId: string;
+      nodeId: string;
+      result: unknown;
+    },
+    feedback: { type: "function_call_output"; call_id: string; output: string },
+  ) {
+    await this.peer.request(
+      "session_commit_tool_result",
+      { event, feedback },
       AbortSignal.timeout(10_000),
     );
   }

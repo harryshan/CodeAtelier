@@ -362,9 +362,11 @@ describe("execution and persistence", () => {
       },
     }));
 
-    engine.start(session.id, "write");
+    await engine.start(session.id, "write");
 
-    expect(() => engine.start(session.id, "second")).toThrow("当前会话已有");
+    await expect(engine.start(session.id, "second")).rejects.toThrow(
+      "当前会话已有",
+    );
     await engine.active!.done;
 
     expect(await readFile(path.join(root, "hello.txt"), "utf8")).toBe("hello");

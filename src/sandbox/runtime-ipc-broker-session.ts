@@ -79,6 +79,13 @@ export interface RuntimeIpcBrokerHandlers {
       { operation: "session_commit_subagent_collect" }
     >["body"],
   ): Promise<void>;
+  commitToolResult?(
+    identity: RuntimeExecutionIdentity,
+    body: Extract<
+      RuntimeIpcRequest,
+      { operation: "session_commit_tool_result" }
+    >["body"],
+  ): Promise<void>;
   traceSpan?(
     event: Extract<
       RuntimeIpcEvent,
@@ -564,6 +571,14 @@ export class RuntimeIpcBrokerSession {
         }
 
         await this.handlers.commitSubagentCollect(this.identity, request.body);
+
+        return { saved: true };
+      case "session_commit_tool_result":
+        if (!this.handlers.commitToolResult) {
+          throw new Error("Broker 未启用工具结果原子保存。");
+        }
+
+        await this.handlers.commitToolResult(this.identity, request.body);
 
         return { saved: true };
       case "session_append_event":

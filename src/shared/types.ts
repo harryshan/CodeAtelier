@@ -69,6 +69,8 @@ export interface SubagentRecord {
 }
 
 export interface Event {
+  bodyDeferred?: boolean;
+  bodyBytes?: number;
   id: number;
   sessionId: string;
   taskId: string;
@@ -121,6 +123,16 @@ export interface Settings {
 }
 
 export interface Snapshot {
+  history?: {
+    highWater: number;
+    cursor: number;
+    hasOlder: boolean;
+    hasNewer: boolean;
+  };
+  statisticsProjection?: {
+    base: import("./session-statistics.js").SessionStatistics;
+    runningStarts: number[];
+  };
   session: Session;
   events: Event[];
   tasks: Task[];

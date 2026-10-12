@@ -127,6 +127,13 @@ export function createRuntimeProbe(
       saveContext: async (_identity, input) => {
         state.context = structuredClone(input);
       },
+      commitToolResult: async (_identity, body) => {
+        state.events.push({
+          type: "tool_result",
+          data: structuredClone(body.event),
+        });
+        state.context.push(structuredClone(body.feedback));
+      },
       readContext: async () => structuredClone(state.context),
       readEvents: async () => [],
       latestContextSnapshot: async () => undefined,

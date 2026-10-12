@@ -59,7 +59,7 @@ import { retryModel } from "../providers/retry.js";
 import { randomBytes, randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import type { Logger } from "pino";
-import { Store } from "../sessions/store.js";
+import type { SessionStore } from "../sessions/async-store.js";
 import { generateConversationTitle } from "../sessions/title-generator.js";
 import { Config } from "../config/config.js";
 import { ApprovalManager } from "../permissions/approval-manager.js";
@@ -174,10 +174,12 @@ export class Engine {
   events = new EventEmitter();
   approvals: ApprovalManager;
   private activeByTaskId = new Map<string, ActiveTask>();
+  private cancellingTasks = new Set<string>();
   private approvalTasks = new WeakMap<ApprovalSubject, Task>();
   private closing = false;
   private readonly mcpTasks = new Map<string, McpTaskClient>();
-  private scheduling = false;
+  private schedulingWork?: Promise<void>;
+  private schedulingRequested = false;
   /** 全部宿主任务共享 Worker 配额；Sandbox Runtime 另须通过 Broker 取得同一全局 lease。 */
   private readonly subagentLimits = new SubagentLimits();
   /** 当前进程仅保留运行中任务构造 trace 所需的状态，任务落盘后立即释放。 */
@@ -195,10 +197,12 @@ export class Engine {
   readonly memories: ProjectMemoryService;
 
   /** 主模型独立审视在途工具；不追加未完成的 function_call_output，也不计为主循环轮次。 */
-  private toolReviewer(task: Task, settings: Settings) {
+  private async toolReviewer(task: Task, settings: Settings) {
     const prompt =
-      (this.store.taskEvent(task.id, "user") as { text?: string } | undefined)
-        ?.text ?? "";
+      (
+        (await this.store.taskEvent(task.id, "user")) as
+          { text?: string } | undefined
+      )?.text ?? "";
 
     return createToolReviewer({
       provider: (subject) => {
@@ -255,10 +259,10 @@ export class Engine {
     settings: Settings,
     subject: ToolReviewSubject,
   ) {
-    const review = this.toolReviewer(task, settings);
-
-    return (status: Parameters<typeof review>[1], signal: AbortSignal) =>
-      review(subject, status, signal);
+    return async (
+      status: Parameters<Awaited<ReturnType<Engine["toolReviewer"]>>>[1],
+      signal: AbortSignal,
+    ) => (await this.toolReviewer(task, settings))(subject, status, signal);
   }
 
   private prepareMcp(
@@ -277,7 +281,12 @@ export class Engine {
         taskId: task.id,
         sessionId: task.sessionId,
         outputChars,
-        reviewTool: this.toolReviewer(task, this.config.settings),
+        reviewTool: async (subject, status, signal) =>
+          (await this.toolReviewer(task, this.config.settings))(
+            subject,
+            status,
+            signal,
+          ),
         log: this.log,
         traces: this.traces,
         approve: (description, approvalSignal) =>
@@ -306,8 +315,11 @@ export class Engine {
     return [...this.activeByTaskId.values()].map(({ task }) => task);
   }
 
-  get hasActiveTasks() {
-    return this.activeByTaskId.size > 0 || this.store.queuedTasks().length > 0;
+  async hasActiveTasks() {
+    return (
+      this.activeByTaskId.size > 0 ||
+      (await this.store.queuedTasks()).length > 0
+    );
   }
 
   /** 下载只读取已经成功落盘的 trace，运行中或写入失败任务不会暴露不完整的内存数据。 */
@@ -343,7 +355,7 @@ export class Engine {
   }
 
   constructor(
-    public store: Store,
+    public store: SessionStore,
     public config: Config,
     private log: Logger,
     private factory?: ModelProviderFactory,
@@ -426,7 +438,7 @@ export class Engine {
       this.activeForSignal(signal) ?? this.activeByTaskId.get(context.taskId);
     const task =
       active?.task.sessionId === context.sessionId ? active.task : undefined;
-    const workspaceRoot = this.store.get(context.sessionId)?.workspace;
+    const workspaceRoot = (await this.store.get(context.sessionId))?.workspace;
     if (task) {
       this.approvalTasks.set(subject, task);
     }
@@ -516,14 +528,12 @@ export class Engine {
       attributes: { after },
     });
     try {
-      const events = await withTraceContext(this.traces, span, () =>
-        this.store.eventsAsync(id, after),
+      const snapshot = await withTraceContext(this.traces, span, () =>
+        this.store.snapshotPage(id, { after }),
       );
 
       return {
-        session: this.store.get(id),
-        events,
-        tasks: this.store.tasks(id),
+        ...snapshot,
         approvals: this.approvals.list(id),
       };
     } catch (error) {
@@ -539,21 +549,13 @@ export class Engine {
     const clean = JSON.parse(
       redactJson(JSON.stringify(data), [this.config.apiKey]),
     );
-    if (this.workerTasks.has(task.id)) {
-      void this.store.eventAsync(task.sessionId, task.id, type, clean).then(
-        (event) => {
-          this.events.emit("event", event);
-          this.events.emit("change", task.sessionId);
-        },
-        (error: Error) => this.persistenceErrors.set(task.id, error),
-      );
-
-      return;
-    }
-
-    const event = this.store.event(task.sessionId, task.id, type, clean);
-    this.events.emit("event", event);
-    this.events.emit("change", task.sessionId);
+    void this.store.eventAsync(task.sessionId, task.id, type, clean).then(
+      (event) => {
+        this.events.emit("event", event);
+        this.events.emit("change", task.sessionId);
+      },
+      (error: Error) => this.persistenceErrors.set(task.id, error),
+    );
   }
 
   private async drainEvents(taskId: string) {
@@ -607,56 +609,7 @@ export class Engine {
   }
 
   start(sessionId: string, prompt: string, options: StartTaskOptions = {}) {
-    if (options.subagentsEnabled && !SUBAGENT_PUBLIC_READY) {
-      throw new Error("subagent 尚未就绪，不能启用本次任务。");
-    }
-
-    if (this.closing) {
-      throw new Error("服务正在关闭，不能启动任务。");
-    }
-
-    const session = this.store.get(sessionId);
-
-    if (!session) {
-      throw new Error("会话不存在");
-    }
-
-    // 同步兼容入口先拒绝冲突，避免 Worker 写事务进行时主线程进入无意义的写锁等待。
-    if (this.store.hasUnfinishedTask(sessionId)) {
-      throw new Error("当前会话已有运行中或排队中的任务，请等待或取消。");
-    }
-
-    // 同一会话的历史上下文只能由一个任务追加。跨会话排队由 workspace 锁和全局上限处理。
-    const task = this.store.transaction(() => {
-      if (this.store.hasUnfinishedTask(sessionId)) {
-        throw new Error("当前会话已有运行中或排队中的任务，请等待或取消。");
-      }
-
-      const created = this.store.createTask(
-        sessionId,
-        options.subagentsEnabled ?? false,
-      );
-      const firstPrompt =
-        session.titleState === "pending" &&
-        !this.store.hasEvent(sessionId, "user");
-
-      this.emit(created, "user", { text: prompt });
-      if (options.recovery) {
-        this.emit(created, "recovery", options.recovery);
-      }
-
-      if (firstPrompt) {
-        this.store.startTitleGeneration(sessionId);
-      }
-
-      return created;
-    });
-
-    this.traceTasks.submitted(task.id, task.sessionId);
-    this.events.emit("change", sessionId);
-    this.schedule();
-
-    return this.store.task(task.id)!;
+    return this.startAsync(sessionId, prompt, options);
   }
 
   async startAsync(
@@ -684,10 +637,10 @@ export class Engine {
 
     this.traceTasks.submitted(task.id, task.sessionId);
     this.events.emit("change", sessionId);
-    this.schedule();
+    await this.schedule();
     await this.store.drain();
 
-    return this.store.task(task.id)!;
+    return (await this.store.task(task.id))!;
   }
 
   /** 找到给定 AbortSignal 所属任务，避免并发审批事件误写入另一个会话。 */
@@ -713,14 +666,25 @@ export class Engine {
   }
 
   /** 在全局上限内领取不与已运行任务共享真实工作区的最早队列项；被工作区锁阻塞的项保持排队。 */
-  private schedule() {
-    if (this.closing || this.scheduling) {
-      return;
-    }
+  private schedule(): Promise<void> {
+    this.schedulingRequested = true;
+    this.schedulingWork ??= (async () => {
+      do {
+        this.schedulingRequested = false;
+        if (!this.closing) {
+          await this.schedulePass();
+        }
+      } while (this.schedulingRequested && !this.closing);
+    })().finally(() => {
+      this.schedulingWork = undefined;
+    });
 
-    this.scheduling = true;
+    return this.schedulingWork;
+  }
+
+  private async schedulePass() {
     try {
-      for (const candidate of this.store.queuedTasks()) {
+      for (const candidate of await this.store.queuedTasks()) {
         this.traceTasks.submitted(candidate.id, candidate.sessionId);
         this.traceTasks.waiting(
           candidate.id,
@@ -738,22 +702,21 @@ export class Engine {
       while (
         this.activeByTaskId.size < this.config.settings.maxConcurrentTasks
       ) {
-        const next = this.store
-          .queuedTasks()
-          .find(
-            (candidate) =>
-              ![...this.activeByTaskId.values()].some(
-                (active) => active.workspace === candidate.workspace,
-              ),
-          );
-        if (!next) {
+        const next = (await this.store.queuedTasks()).find(
+          (candidate) =>
+            !this.cancellingTasks.has(candidate.id) &&
+            ![...this.activeByTaskId.values()].some(
+              (active) => active.workspace === candidate.workspace,
+            ),
+        );
+        if (!next || this.closing) {
           return;
         }
 
-        this.launch(next);
+        await this.launch(next);
       }
     } finally {
-      for (const candidate of this.store.queuedTasks()) {
+      for (const candidate of await this.store.queuedTasks()) {
         this.traceTasks.waiting(
           candidate.id,
           [...this.activeByTaskId.values()].some(
@@ -763,19 +726,27 @@ export class Engine {
             : "capacity",
         );
       }
-
-      this.scheduling = false;
     }
   }
 
   /** 将已领取任务转为 running 后再启动异步循环，确保同工作区的后续任务看见锁。 */
-  private launch(queued: Task & { workspace: string }) {
+  private async launch(queued: Task & { workspace: string }) {
     this.traceTasks.started(queued.id);
-    const user = this.store.taskEvent(queued.id, "user") as
+    const user = (await this.store.taskEvent(queued.id, "user")) as
       { text?: string } | undefined;
+    // Metadata reads yield to cancellation. Recheck before publishing an active task.
+    const current = await this.store.task(queued.id);
+    if (
+      this.cancellingTasks.has(queued.id) ||
+      current?.status !== "queued" ||
+      this.closing
+    ) {
+      return;
+    }
+
     if (!user?.text) {
-      this.store.failTitleGeneration(queued.sessionId);
-      this.store.status(queued.id, "failed", "缺少任务描述，无法执行。");
+      await this.store.failTitleGeneration(queued.sessionId);
+      await this.store.status(queued.id, "failed", "缺少任务描述，无法执行。");
       void this.traceTasks.finish(queued.id, queued.sessionId, "error");
       this.emit(queued, "task_end", { status: "failed" });
       this.events.emit("change", queued.sessionId);
@@ -793,18 +764,18 @@ export class Engine {
     };
     this.activeByTaskId.set(task.id, active);
     const generateTitle =
-      this.store.get(task.sessionId)?.titleState === "generating";
+      (await this.store.get(task.sessionId))?.titleState === "generating";
 
     this.workerTasks.add(task.id);
     active.done = this.store
       .statusAsync(task.id, "running")
-      .then(() =>
+      .then(async () =>
         withTraceContext(
           this.traces,
           this.traces.startTask(task.id, task.sessionId),
-          () =>
+          async () =>
             this.run(
-              this.store.task(task.id)!,
+              (await this.store.task(task.id))!,
               user.text!,
               controller.signal,
               generateTitle,
@@ -836,25 +807,31 @@ export class Engine {
         this.activeByTaskId.delete(task.id);
         this.workerTasks.delete(task.id);
         this.events.emit("change", task.sessionId);
-        this.schedule();
+        void this.schedule().catch((error) =>
+          this.log.error({
+            event: "task.schedule_failed",
+            module: "agent",
+            err: error,
+          }),
+        );
       });
     this.events.emit("change", task.sessionId);
   }
 
-  resume(id: string, instruction = "") {
-    const request = this.recoveryRequest(id, instruction);
+  async resume(id: string, instruction = "") {
+    const request = await this.recoveryRequest(id, instruction);
 
     return this.start(request.sessionId, request.prompt, request.options);
   }
 
   async resumeAsync(id: string, instruction = "") {
-    const request = this.recoveryRequest(id, instruction);
+    const request = await this.recoveryRequest(id, instruction);
 
     return this.startAsync(request.sessionId, request.prompt, request.options);
   }
 
-  private recoveryRequest(id: string, instruction: string) {
-    const task = this.store.task(id);
+  private async recoveryRequest(id: string, instruction: string) {
+    const task = await this.store.task(id);
 
     if (
       !task ||
@@ -863,13 +840,13 @@ export class Engine {
       throw new Error("该任务不可恢复。");
     }
 
-    if (this.store.tasks(task.sessionId).at(-1)?.id !== id) {
+    if ((await this.store.tasks(task.sessionId)).at(-1)?.id !== id) {
       throw new Error("只能恢复会话的最后一个任务；请在当前会话继续提问。");
     }
 
-    const recovery = this.store.taskEvent(id, "recovery") as
+    const recovery = (await this.store.taskEvent(id, "recovery")) as
       { originalPrompt?: string } | undefined;
-    const user = this.store.taskEvent(id, "user") as
+    const user = (await this.store.taskEvent(id, "user")) as
       { text?: string } | undefined;
     const prompt = recovery?.originalPrompt || user?.text;
 
@@ -892,29 +869,19 @@ export class Engine {
   }
 
   cancel(id: string) {
-    const active = this.activeByTaskId.get(id);
-    if (active) {
-      active.controller.abort();
-
-      return;
-    }
-
-    const queued = this.store.task(id);
-    if (queued?.status === "queued") {
-      this.store.failTitleGeneration(queued.sessionId);
-      this.store.status(id, "cancelled", "任务已在队列中取消，可手动恢复。");
-      this.emit(queued, "notice", {
-        text: "任务已在队列中取消，可手动恢复。",
-        status: "cancelled",
-      });
-      this.emit(queued, "task_end", { status: "cancelled" });
-      void this.traceTasks.finish(queued.id, queued.sessionId, "cancelled");
-      this.events.emit("change", queued.sessionId);
-      this.schedule();
-    }
+    return this.cancelAsync(id);
   }
 
   async cancelAsync(id: string) {
+    this.cancellingTasks.add(id);
+    try {
+      await this.cancelTask(id);
+    } finally {
+      this.cancellingTasks.delete(id);
+    }
+  }
+
+  private async cancelTask(id: string) {
     const active = this.activeByTaskId.get(id);
     if (active) {
       active.controller.abort();
@@ -922,7 +889,14 @@ export class Engine {
       return;
     }
 
-    const queued = this.store.task(id);
+    const queued = await this.store.task(id);
+    const launched = this.activeByTaskId.get(id);
+    if (launched) {
+      launched.controller.abort();
+
+      return;
+    }
+
     if (queued?.status !== "queued") {
       return;
     }
@@ -946,13 +920,20 @@ export class Engine {
     this.events.emit("event", end);
     await this.traceTasks.finish(queued.id, queued.sessionId, "cancelled");
     this.events.emit("change", queued.sessionId);
-    this.schedule();
+    void this.schedule().catch((error) =>
+      this.log.error({
+        event: "task.schedule_failed",
+        module: "agent",
+        err: error,
+      }),
+    );
   }
 
   async close() {
     this.closing = true;
     try {
-      for (const queued of this.store.queuedTasks()) {
+      await this.schedulingWork;
+      for (const queued of await this.store.queuedTasks()) {
         const message = "服务关闭，任务中断，可手动恢复。";
         await this.store.titleAsync(
           queued.sessionId,
@@ -1152,8 +1133,9 @@ export class Engine {
           accountGenerationDigest?: string;
         }
       | undefined;
-    const assertSubagentTask = (candidate: RuntimeExecutionIdentity) => {
-      const current = this.store.task(task.id);
+    const runtimeSubagentIds = new Set<string>();
+    const assertSubagentTask = async (candidate: RuntimeExecutionIdentity) => {
+      const current = await this.store.task(task.id);
       if (
         !authorized ||
         candidate !== identity ||
@@ -1291,7 +1273,7 @@ export class Engine {
           traces: this.traces,
           getErrorSecrets: () => [this.config.apiKey],
           subagentStore: async (candidate, request, requestSignal) => {
-            assertSubagentTask(candidate);
+            await assertSubagentTask(candidate);
             switch (request.action) {
               case "plan":
                 await Promise.all(
@@ -1305,17 +1287,21 @@ export class Engine {
                 );
                 requestSignal.throwIfAborted();
 
-                const planned = this.store.planSubagents(
+                const planned = await this.store.planSubagents(
                   task.id,
                   request.subtasks,
                 );
+                for (const child of planned) {
+                  runtimeSubagentIds.add(child.id);
+                }
+
                 this.events.emit("change", task.sessionId);
 
                 return planned;
               case "list":
-                return this.store.subagents(task.id);
+                return await this.store.subagents(task.id);
               case "update": {
-                const updated = this.store.updateSubagent(
+                const updated = await this.store.updateSubagent(
                   task.id,
                   request.subagentId,
                   request.status,
@@ -1328,7 +1314,7 @@ export class Engine {
               }
 
               case "question": {
-                const receipt = this.store.recordSubagentQuestion(
+                const receipt = await this.store.recordSubagentQuestion(
                   task.id,
                   request.subagentId,
                   request.requestId,
@@ -1340,29 +1326,29 @@ export class Engine {
               }
 
               case "request_start":
-                return this.store.startSubagentRequest(
+                return await this.store.startSubagentRequest(
                   task.id,
                   request.subagentId,
                   request.requestId,
                   request.kind,
                 );
               case "request_finish":
-                return this.store.finishSubagentRequest(
+                return await this.store.finishSubagentRequest(
                   task.id,
                   request.subagentId,
                   request.requestId,
                   request.result,
                 );
               case "collect":
-                return this.store.collectSubagents(task.id, request.ids);
+                return await this.store.collectSubagents(task.id, request.ids);
             }
           },
           acquireSubagentLease: async (candidate, id, requestSignal) => {
-            assertSubagentTask(candidate);
+            await assertSubagentTask(candidate);
             if (
-              !this.store
-                .subagents(task.id)
-                .some((child) => child.id === id && child.status === "queued")
+              !(await this.store.subagents(task.id)).some(
+                (child) => child.id === id && child.status === "queued",
+              )
             ) {
               throw new Error("子任务未登记或不在可申请租约的状态。");
             }
@@ -1372,12 +1358,12 @@ export class Engine {
               requestSignal,
             );
             try {
-              assertSubagentTask(candidate);
+              await assertSubagentTask(candidate);
               requestSignal.throwIfAborted();
               if (
-                !this.store
-                  .subagents(task.id)
-                  .some((child) => child.id === id && child.status === "queued")
+                !(await this.store.subagents(task.id)).some(
+                  (child) => child.id === id && child.status === "queued",
+                )
               ) {
                 throw new Error("子任务等待租约期间状态已经变化。");
               }
@@ -1389,17 +1375,21 @@ export class Engine {
             }
           },
           authorizeSubagentModel: async (candidate, id, requestId) => {
-            assertSubagentTask(candidate);
-            const child = this.store
-              .subagents(task.id)
-              .find((entry) => entry.id === id);
-            const request = this.store.subagentRequest(task.id, id, requestId);
+            await assertSubagentTask(candidate);
+            const child = (await this.store.subagents(task.id)).find(
+              (entry) => entry.id === id,
+            );
+            const request = await this.store.subagentRequest(
+              task.id,
+              id,
+              requestId,
+            );
             if (child?.status !== "running" || request?.status !== "started") {
               throw new Error("子模型请求没有对应运行中任务与已登记请求。");
             }
           },
           commitSubagentCollect: async (candidate, body) => {
-            assertSubagentTask(candidate);
+            await assertSubagentTask(candidate);
             const last = body.input.at(-1) as
               { type?: string; call_id?: string; output?: string } | undefined;
             if (
@@ -1411,36 +1401,30 @@ export class Engine {
               throw new Error("子报告反馈未完整进入主模型上下文。");
             }
 
-            const expected = this.store.collectSubagents(task.id, body.ids);
+            const expected = await this.store.collectSubagents(
+              task.id,
+              body.ids,
+            );
             const data = body.event.result as { reports?: unknown };
             if (JSON.stringify(data?.reports) !== JSON.stringify(expected)) {
               throw new Error("子报告回执与当前任务持久化状态不一致。");
             }
 
             const eventData = withRuntimeDuration(body.event);
-            let saved: ReturnType<Store["event"]> | undefined;
-            this.store.commitSubagentCollect(
+            const clean = JSON.parse(
+              redactJson(JSON.stringify(eventData), [this.config.apiKey]),
+            );
+            const saved = await this.store.commitCollectedToolResult(
               task.id,
               body.ids,
-              () => {
-                const clean = JSON.parse(
-                  redactJson(JSON.stringify(eventData), [this.config.apiKey]),
-                );
-                saved = this.store.event(
-                  task.sessionId,
-                  task.id,
-                  "tool_result",
-                  clean,
-                );
-                this.store.appendContext(task.sessionId, [last]);
-              },
               expected,
+              clean,
+              last,
+              body.event.callId,
+              clean.result,
             );
-            if (saved) {
-              await captureToolEvent("tool_result", eventData);
-              this.events.emit("event", saved);
-              this.events.emit("change", task.sessionId);
-            }
+            this.events.emit("event", saved);
+            this.events.emit("change", task.sessionId);
           },
           traceSpan: (event) => {
             if (!this.traces.acceptExternalTime(task.id, event.timestampUs)) {
@@ -1490,10 +1474,7 @@ export class Engine {
               const subagentId = event.attributes.subagentId;
               if (
                 subagentTrace &&
-                (!subagentId ||
-                  !this.store
-                    .subagents(task.id)
-                    .some((child) => child.id === subagentId))
+                (!subagentId || !runtimeSubagentIds.has(subagentId))
               ) {
                 throw new Error("Agent Runtime subagent trace 身份未登记。");
               }
@@ -1653,6 +1634,36 @@ export class Engine {
           appendContext: async (_runtime, items) => {
             await this.store.appendContextAsync(task.sessionId, items, task.id);
           },
+          commitToolResult: async (candidate, body) => {
+            if (
+              !authorized ||
+              candidate !== identity ||
+              body.feedback.call_id !== body.event.callId
+            ) {
+              throw new Error("工具反馈不属于当前执行实例。");
+            }
+
+            await this.drainEvents(task.id);
+            const data = JSON.parse(
+              redactJson(JSON.stringify(withRuntimeDuration(body.event)), [
+                this.config.apiKey,
+              ]),
+            );
+            const feedback = JSON.parse(
+              redactJson(JSON.stringify(body.feedback), [this.config.apiKey]),
+            );
+            const saved = await this.store.persistToolResultAsync(
+              task.sessionId,
+              task.id,
+              data,
+              feedback,
+              body.event.callId,
+              data.result,
+            );
+            this.traces.relations.event(task.id, "tool_result", data);
+            this.events.emit("event", saved);
+            this.events.emit("change", task.sessionId);
+          },
           appendSessionEvent: async (_runtime, type, data) => {
             const eventData =
               type === "tool_result" ? withRuntimeDuration(data) : data;
@@ -1675,7 +1686,7 @@ export class Engine {
             );
           },
           readContext: () => this.store.contextAsync(task.sessionId),
-          readEvents: () => this.store.eventsAsync(task.sessionId),
+          readEvents: () => this.store.relevantEventsAsync(task.sessionId),
           latestContextSnapshot: () =>
             this.store.latestContextSnapshotAsync(task.sessionId),
           readContextSnapshot: (_runtime, snapshotId) =>
@@ -2208,7 +2219,7 @@ export class Engine {
     signal: AbortSignal,
     generateTitle: boolean,
   ) {
-    const session = this.store.get(task.sessionId)!;
+    const session = (await this.store.get(task.sessionId))!;
     const settings = { ...this.config.settings };
     const log = this.log.child({
       module: "agent",
@@ -2381,7 +2392,7 @@ export class Engine {
         taskId: task.id,
         signal,
         settings,
-        reviewTool: this.toolReviewer(task, settings),
+        reviewTool: await this.toolReviewer(task, settings),
         approvals: this.approvals,
         emit,
         sandbox: this.sandbox,
@@ -3015,25 +3026,6 @@ export class Engine {
                 call_id: node.callId,
                 output,
               };
-              const persistResult = () => {
-                const event = this.store.event(
-                  session.id,
-                  task.id,
-                  "tool_result",
-                  eventData,
-                );
-                this.events.emit("event", event);
-                this.events.emit("change", session.id);
-                // 仅供尚未开放的 subagent collect 兼容同步事务。
-                this.store.finishReplayTool(
-                  task.id,
-                  node.callId,
-                  cleanReplay(result),
-                );
-                input.push(feedback);
-                this.store.appendContext(session.id, [feedback]);
-              };
-
               const subagentRequest =
                 node.name === "subagent"
                   ? (node.arguments as { request?: SubagentAction }).request
@@ -3044,12 +3036,19 @@ export class Engine {
                 result?.reports &&
                 completeOutput
               ) {
-                this.store.commitSubagentCollect(
+                await this.drainEvents(task.id);
+                const event = await this.store.commitCollectedToolResult(
                   task.id,
                   subagentRequest.subagentIds,
-                  persistResult,
                   result.reports,
+                  eventData,
+                  feedback,
+                  node.callId,
+                  cleanReplay(result),
                 );
+                input.push(feedback);
+                this.events.emit("event", event);
+                this.events.emit("change", session.id);
               } else {
                 await this.drainEvents(task.id);
                 const event = await this.store.persistToolResultAsync(

@@ -18,6 +18,8 @@ CodeAtelier 是一个运行在本机的个人 AI 编程助手。连接模型服�
 
 需要 **Node.js 24 或 26**、[项目指定版本的 pnpm](package.json)，以及支持流式响应和工具调用的 **Responses API 服务**。项目需要用到的 Git、编译器等工具也应在本机安装。
 
+已有旧版数据库时，先按 [SQLite 完整迁移步骤](docs/database-migration.md#9-已实现的运行与离线操作) 停机备份、转换和验证；当前版本使用 schema v11，不在启动时隐式升级。已激活的数据目录通过 `history-active.json` 定位运行库，备份和搬迁时须一并保留目标目录。安装式 Windows Sandbox 还需更新到匹配的 Runtime IPC v15。
+
 ### 1. 安装依赖
 
 取得源码后，在仓库根目录运行：

@@ -15,13 +15,13 @@ import { viewerFixture } from "../fixtures/replay-viewer.js";
 async function expectTaskReply(page: Page) {
   // 新会话会先捕获 title 调用；通过目录导航到 task，而不是把第一条记录误当主模型。
   await page
-    .getByRole("navigation", { name: "记录目录" })
-    .getByRole("button", { name: /模型调用 #\d+ · task/ })
+    .getByRole("button", { name: /model · task/ })
     .last()
     .click();
-  await expect(page.getByRole("article")).toContainText(
-    "任务完成，已检查工具结果。",
-  );
+  const detail = page.getByRole("region", { name: "选中请求" });
+  await detail.getByText("response", { exact: true }).click();
+  await detail.getByRole("button", { name: "展开材料", exact: true }).click();
+  await expect(detail).toContainText("任务完成，已检查工具结果。");
 }
 
 test("browses saved conversations and tasks from the real database without exporting", async ({
@@ -75,14 +75,10 @@ test("browses saved conversations and tasks from the real database without expor
     await page.reload();
     await expectTaskReply(page);
     await page.getByRole("button", { name: "刷新记录", exact: true }).click();
-    await expect(page.getByRole("status")).toContainText(
-      "已读取当前已保存记录",
-    );
+    await expect(page.getByRole("status")).toContainText("请选择请求目录");
     await page.getByLabel("选择对话", { exact: true }).selectOption(empty.id);
     await expect(page.getByRole("status")).toContainText("这个对话还没有 Task");
-    await expect(page.getByRole("article")).not.toContainText(
-      "任务完成，已检查工具结果。",
-    );
+    await expect(page.getByLabel("选中请求")).toHaveCount(0);
     await page.getByLabel("选择对话", { exact: true }).selectOption(session.id);
     await expectTaskReply(page);
     const second = await (
@@ -135,8 +131,10 @@ test("ignores stale details and clears prior data on a failed read before retry"
   await page.route("**/api/sessions", (route) =>
     route.fulfill({ json: [conversation] }),
   );
-  await page.route("**/api/sessions/session-a/tasks", (route) =>
-    route.fulfill({ json: [task("slow"), task("fast")] }),
+  await page.route("**/api/sessions/session-a/task-page", (route) =>
+    route.fulfill({
+      json: { tasks: [task("slow"), task("fast")], hasOlder: false },
+    }),
   );
   let release!: () => void;
   let arrived!: () => void;
@@ -146,19 +144,33 @@ test("ignores stale details and clears prior data on a failed read before retry"
   const gate = new Promise<void>((resolve) => {
     release = resolve;
   });
-  await page.route("**/tasks/slow/replay", async (route) => {
+  await page.route("**/tasks/slow/replay-directory?after=0", async (route) => {
     arrived();
     await gate;
     await route
-      .fulfill({ json: { ...viewerFixture(), task: task("slow") } })
+      .fulfill({
+        json: {
+          captured: true,
+          metadata: viewerFixture().capture,
+          entries: [],
+          next: null,
+        },
+      })
       .catch(() => {});
   });
   let fail = false;
-  await page.route("**/tasks/fast/replay", (route) =>
+  await page.route("**/tasks/fast/replay-directory?after=0", (route) =>
     route.fulfill(
       fail
         ? { status: 404, json: { error: "记录已不存在" } }
-        : { json: { ...viewerFixture(), task: task("fast") } },
+        : {
+            json: {
+              captured: true,
+              metadata: viewerFixture().capture,
+              entries: [],
+              next: null,
+            },
+          },
     ),
   );
   await page.goto("/?view=replay&session=session-a&task=slow");
@@ -172,7 +184,7 @@ test("ignores stale details and clears prior data on a failed read before retry"
   await expect(
     page.getByRole("alert").filter({ hasText: "记录已不存在" }),
   ).toBeVisible();
-  await expect(page.getByLabel("任务概览")).not.toContainText("任务 fast");
+  await expect(page.getByLabel("任务概览")).toHaveCount(0);
   fail = false;
   await page.getByRole("button", { name: "刷新记录", exact: true }).click();
   await expect(page.getByLabel("任务概览")).toContainText("任务 fast");
@@ -188,5 +200,5 @@ test("shows empty databases and rejects missing conversation deep links", async 
   await expect(
     page.getByRole("alert").filter({ hasText: "所选对话不存在" }),
   ).toBeVisible();
-  await expect(page.getByLabel("任务概览")).toBeEmpty();
+  await expect(page.getByLabel("任务概览")).toHaveCount(0);
 });

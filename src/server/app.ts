@@ -25,7 +25,7 @@ import path from "node:path";
 import { z } from "zod";
 import type { Logger } from "pino";
 import { Config } from "../config/config.js";
-import { Store } from "../sessions/store.js";
+import { AsyncStore } from "../sessions/async-store.js";
 import { Engine } from "../agent/engine.js";
 import { SUBAGENT_PUBLIC_READY } from "../agent/subagent-readiness.js";
 import type { ModelProviderFactory } from "../providers/model-provider.js";
@@ -46,8 +46,11 @@ export async function createApp(
   });
   validatePasswordAccessConfiguration();
 
-  const store = new Store(path.join(config.directory, "history.sqlite"));
+  const store = await AsyncStore.open(
+    path.join(config.directory, "history.sqlite"),
+  );
   const engine = new Engine(store, config, log, providerFactory);
+  store.startMaintenance(log);
   await engine.sandbox.recoverAtStartup();
   let stopping = false;
   let shutdownPromise: Promise<void> | undefined;
@@ -170,7 +173,7 @@ export async function createApp(
     sandbox: engine.sandbox.status,
   }));
   app.put("/api/settings", async (req) => {
-    if (engine.hasActiveTasks) {
+    if (await engine.hasActiveTasks()) {
       throw new Error("请等待运行中或排队中的任务结束后再修改设置。");
     }
 
@@ -181,7 +184,7 @@ export async function createApp(
     return { ...config.publicValue(), sandbox: engine.sandbox.status };
   });
   registerReplayRoutes(app, store, log);
-  app.get("/api/sessions", async () => store.list());
+  app.get("/api/sessions", async () => await store.list());
   app.post("/api/sessions", async (req) => {
     const data = z
       .object({ workspace: z.string().min(1) })
@@ -192,7 +195,7 @@ export async function createApp(
   });
   app.get("/api/sessions/:id/traces", async (req, reply) => {
     const { id } = req.params as { id: string };
-    const session = store.get(id);
+    const session = await store.get(id);
     if (!session) {
       return reply.code(404).send({ error: "会话不存在" });
     }
@@ -201,15 +204,39 @@ export async function createApp(
   });
   app.get("/api/sessions/:id", async (req, reply) => {
     const { id } = req.params as { id: string };
-    const { after } = z
-      .object({ after: z.coerce.number().int().min(0).default(0) })
+    const options = z
+      .object({
+        after: z.coerce.number().int().min(0).default(0),
+        before: z.coerce.number().int().positive().optional(),
+        highWater: z.coerce.number().int().min(0).optional(),
+      })
       .parse(req.query);
 
-    if (!store.get(id)) {
+    if (!(await store.get(id))) {
       return reply.code(404).send({ error: "会话不存在" });
     }
 
-    return engine.snapshot(id, after);
+    if (options.before !== undefined) {
+      return {
+        ...(await store.snapshotPage(id, options)),
+        approvals: engine.approvals.list(id),
+      };
+    }
+
+    return engine.snapshot(id, options.after);
+  });
+  app.get("/api/sessions/:id/event-body/:eventId", async (req, reply) => {
+    const { id, eventId } = z
+      .object({ id: z.string(), eventId: z.coerce.number().int().positive() })
+      .parse(req.params);
+    const { offset } = z
+      .object({ offset: z.coerce.number().int().min(0).default(0) })
+      .parse(req.query);
+    if (!(await store.get(id))) {
+      return reply.code(404).send({ error: "会话不存在" });
+    }
+
+    return store.eventBody(id, eventId, offset);
   });
   app.post("/api/sessions/:id/tasks", async (req, reply) => {
     const { id } = req.params as { id: string };
@@ -242,7 +269,7 @@ export async function createApp(
     return { ok: true };
   });
   app.get("/api/tasks/:id/trace/live", async (req, reply) => {
-    const task = store.task((req.params as { id: string }).id);
+    const task = await store.task((req.params as { id: string }).id);
     if (!task) {
       return reply.code(404).send({ error: "任务不存在" });
     }
@@ -261,7 +288,7 @@ export async function createApp(
   });
   app.get("/api/tasks/:id/trace", async (req, reply) => {
     const id = (req.params as { id: string }).id;
-    const task = store.task(id);
+    const task = await store.task(id);
     if (!task) {
       return reply.code(404).send({ error: "任务不存在" });
     }

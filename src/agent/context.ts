@@ -16,6 +16,7 @@ import type { Event } from "../shared/types.js";
 export interface TaskContextStore {
   contextAsync(sessionId: string): Promise<any[]>;
   eventsAsync(sessionId: string): Promise<Event[]>;
+  relevantEventsAsync?(sessionId: string): Promise<Event[]>;
   appendContext(sessionId: string, items: any[]): void | Promise<void>;
   appendContextAsync?(sessionId: string, items: any[]): Promise<void>;
 }
@@ -56,7 +57,9 @@ export async function prepareTaskContext(
 ): Promise<any[]> {
   const [input, events] = await Promise.all([
     store.contextAsync(sessionId),
-    store.eventsAsync(sessionId),
+    store.relevantEventsAsync
+      ? store.relevantEventsAsync(sessionId)
+      : store.eventsAsync(sessionId),
   ]);
 
   // 崩溃前工具可能已经执行过，只是结果没写全；先找已有记录，不能直接重跑。

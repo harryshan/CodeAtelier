@@ -115,7 +115,7 @@ it("creates isolated sessions and validates missing sessions and bad payloads", 
       payload: { prompt: "investigate", subagentsEnabled: "yes" },
     });
     expect(malformed.statusCode).toBe(400);
-    expect(fixture.store.tasks(id)).toEqual([]);
+    expect(await fixture.store.tasks(id)).toEqual([]);
   } finally {
     await fixture.app.close();
   }
@@ -125,11 +125,11 @@ it("returns only events after the snapshot cursor while keeping current session 
   const fixture = await createFixture();
 
   try {
-    const session = fixture.store.create(await temp());
-    const first = fixture.store.event(session.id, "task-one", "notice", {
+    const session = await fixture.store.create(await temp());
+    const first = await fixture.store.event(session.id, "task-one", "notice", {
       text: "first event",
     });
-    const second = fixture.store.event(session.id, "task-one", "notice", {
+    const second = await fixture.store.event(session.id, "task-one", "notice", {
       text: "second event",
     });
     const response = await fixture.app.inject({
@@ -162,9 +162,12 @@ it("runs different workspaces in parallel while queueing the same workspace", as
 
   try {
     const sharedWorkspace = await temp();
-    const firstSession = fixture.store.create(sharedWorkspace, "first");
-    const sameWorkspaceSession = fixture.store.create(sharedWorkspace, "same");
-    const otherSession = fixture.store.create(await temp(), "other");
+    const firstSession = await fixture.store.create(sharedWorkspace, "first");
+    const sameWorkspaceSession = await fixture.store.create(
+      sharedWorkspace,
+      "same",
+    );
+    const otherSession = await fixture.store.create(await temp(), "other");
     const start = async (sessionId: string, prompt: string) =>
       fixture.app.inject({
         method: "POST",
@@ -177,9 +180,9 @@ it("runs different workspaces in parallel while queueing the same workspace", as
     expect(first.statusCode).toBe(200);
     expect(first.json().subagentsEnabled).toBe(false);
     const firstTaskId = first.json().id;
-    expect(() => fixture.engine.start(firstSession.id, "same session")).toThrow(
-      "当前会话已有",
-    );
+    await expect(
+      fixture.engine.start(firstSession.id, "same session"),
+    ).rejects.toThrow("当前会话已有");
 
     const queued = await start(sameWorkspaceSession.id, "same workspace task");
     expect(queued.statusCode).toBe(200);
@@ -191,7 +194,7 @@ it("runs different workspaces in parallel while queueing the same workspace", as
     const otherTaskId = other.json().id;
     expect(other.json().status).toBe("running");
     expect(fixture.engine.activeTasks).toHaveLength(2);
-    expect(fixture.store.task(queuedTaskId)?.status).toBe("queued");
+    expect((await fixture.store.task(queuedTaskId))?.status).toBe("queued");
 
     expect(
       (
@@ -211,7 +214,7 @@ it("runs different workspaces in parallel while queueing the same workspace", as
       payload: {},
     });
     await expect
-      .poll(() => fixture.store.task(queuedTaskId)?.status)
+      .poll(async () => (await fixture.store.task(queuedTaskId))?.status)
       .toBe("running");
 
     for (const taskId of [queuedTaskId, otherTaskId]) {
@@ -223,7 +226,7 @@ it("runs different workspaces in parallel while queueing the same workspace", as
       });
     }
 
-    await expect.poll(() => fixture.engine.hasActiveTasks).toBe(false);
+    await expect.poll(() => fixture.engine.hasActiveTasks()).toBe(false);
   } finally {
     await fixture.app.close();
   }

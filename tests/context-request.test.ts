@@ -122,7 +122,7 @@ it("keeps duplicate read results intact on retries and later tool rounds", async
   }));
 
   try {
-    engine.start(session.id, "continue");
+    await engine.start(session.id, "continue");
     await engine.active?.done;
 
     expect(store.tasks(session.id)[0].status).toBe("completed");

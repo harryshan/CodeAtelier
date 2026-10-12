@@ -139,7 +139,7 @@ it("moves the Engine agent loop into the launched Runtime process", async () => 
   );
 
   try {
-    const task = engine.start(session.id, "read runtime.txt");
+    const task = await engine.start(session.id, "read runtime.txt");
     await engine.active?.done;
 
     expect(store.task(task.id)?.status).toBe("completed");
@@ -462,14 +462,14 @@ for (const [cleanupProof, stopKind] of [
     );
 
     try {
-      const task = engine.start(session.id, "wait for cancellation");
+      const task = await engine.start(session.id, "wait for cancellation");
       const done = engine.active!.done;
       await entered;
       const cancelledAt = Date.now();
       if (stopKind === "shutdown") {
         await engine.close();
       } else {
-        engine.cancel(task.id);
+        await engine.cancel(task.id);
       }
 
       await done;
@@ -641,7 +641,7 @@ for (const approve of [true, false]) {
     const execute = vi.spyOn(engine.sandbox, "executeCommand");
 
     try {
-      const task = engine.start(session.id, "run external tool");
+      const task = await engine.start(session.id, "run external tool");
       await engine.active?.done;
 
       expect(store.task(task.id)?.status, store.task(task.id)?.error).toBe(
@@ -777,7 +777,7 @@ it("records unknown when Runtime IPC closes before a trusted terminal result", a
   );
 
   try {
-    const task = engine.start(session.id, "disconnect before result");
+    const task = await engine.start(session.id, "disconnect before result");
     await engine.active?.done;
 
     expect(store.task(task.id)?.status).toBe("failed");
@@ -1056,7 +1056,7 @@ it("continues in the host loop only for an explicit pre-start Runtime fallback",
   );
 
   try {
-    const task = engine.start(session.id, "continue safely");
+    const task = await engine.start(session.id, "continue safely");
     await engine.active?.done;
 
     expect(store.task(task.id)?.status).toBe("completed");

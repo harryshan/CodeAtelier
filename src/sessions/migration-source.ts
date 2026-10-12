@@ -10,6 +10,16 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { RecordedModelExchange, RecordedToolCall } from "./replay-case.js";
 
+function replayJson(text: string) {
+  return JSON.parse(text, (_key, value: unknown) => {
+    if (typeof value === "number" && !Number.isFinite(value)) {
+      throw new Error("Replay 含无法无损重编码的非有限数字。");
+    }
+
+    return value;
+  });
+}
+
 export const sourceColumns: Record<string, string[]> = {
   sessions: [
     "id",
@@ -115,7 +125,7 @@ export function sourceReplayHeader(db: DatabaseSync, taskId: string) {
     throw new Error("不支持的源 Replay 版本。");
   }
 
-  const metadata = JSON.parse(String(row.header)) as Record<string, unknown>;
+  const metadata = replayJson(String(row.header)) as Record<string, unknown>;
   delete metadata.storageVersion;
 
   return { metadata, version: row.version === 2 ? 2 : 1 };
@@ -159,7 +169,7 @@ export function* sourceReplayEntries(
         yield {
           kind,
           sourceOrder: ++order,
-          value: JSON.parse(String(entry.value)),
+          value: replayJson(String(entry.value)),
         };
       }
     }
@@ -173,7 +183,7 @@ export function* sourceReplayEntries(
       "SELECT seq,kind,itemId,data FROM replay_entries WHERE taskId=? ORDER BY seq",
     )
     .iterate(taskId)) {
-    const data = JSON.parse(String(row.data));
+    const data = replayJson(String(row.data));
     if (row.kind === "model") {
       const { inputPrefix, inputSuffix, ...rest } = data;
       if (

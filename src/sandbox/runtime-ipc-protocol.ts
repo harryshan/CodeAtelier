@@ -8,7 +8,7 @@
  * 3. runtimeEventSchema 承载模型 delta、取消、Runtime 生命周期以及固定 context/tool/read_file/subagent trace span；微秒时间戳由 Runtime 单调时钟提供，Broker 核验后归档，名称与属性不是任意日志通道。
  * 4. hello schema 绑定协议版本、任务和 instance；其中 Runtime 自报字段只用于一致性核对，不能替代 transport 身份。
  * 5. 子任务计划、问题、检查点和报告不加专属容量阈值；统一的帧大小与背压限制仍由 IPC transport 执行。
- * v14 增加固定 process 阶段及 PID/退出/终止类别白名单，必须携带 callId；不接受命令、输出或清理成功声明。
+ * v15 增加任务绑定的工具结果/反馈原子提交，保留 v14 的固定 process 阶段白名单，不扩大命令权限。
  */
 
 import { z } from "zod";
@@ -20,8 +20,8 @@ import { contextSnapshotSchema } from "../context/types.js";
 import { subtaskSchema } from "../agent/subagent-contracts.js";
 import { gitRequestSchema } from "../tools/registry.js";
 
-// v14 增加固定进程诊断和审批调用 ID；旧 Runtime 须重建并 Repair。
-export const RUNTIME_IPC_PROTOCOL_VERSION = 14;
+// v15 要求 Broker 原子保存工具结果、Replay 终态与上下文；旧 Runtime 须重建并更新安装。
+export const RUNTIME_IPC_PROTOCOL_VERSION = 15;
 export const MAX_RUNTIME_IPC_FRAME_BYTES = 8 * 1024 * 1024;
 
 const identifier = z.string().min(1).max(120);
@@ -450,6 +450,32 @@ export const runtimeRequestSchema = z.discriminatedUnion("operation", [
       operation: z.literal("session_append_event"),
       body: z
         .object({ eventType: runtimeSessionEventTypeSchema, data: z.unknown() })
+        .strict(),
+    })
+    .strict(),
+  z
+    .object({
+      ...requestBase,
+      operation: z.literal("session_commit_tool_result"),
+      body: z
+        .object({
+          event: z
+            .object({
+              name: identifier,
+              callId: identifier,
+              batchId: identifier,
+              nodeId: identifier,
+              result: z.unknown(),
+            })
+            .strict(),
+          feedback: z
+            .object({
+              type: z.literal("function_call_output"),
+              call_id: identifier,
+              output: boundedText,
+            })
+            .strict(),
+        })
         .strict(),
     })
     .strict(),

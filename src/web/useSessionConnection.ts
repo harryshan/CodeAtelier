@@ -29,6 +29,12 @@ export function useSessionConnection(
   const [data, setData] = useState<SessionView>();
   const [connected, setConnected] = useState(true);
   const [loading, setLoading] = useState(false);
+  const [browsingHistory, setBrowsingHistory] = useState(false);
+  const navigation = useRef<
+    { older: () => Promise<void>; latest: () => void } | undefined
+  >(undefined);
+  const loadOlder = useCallback(() => navigation.current?.older(), []);
+  const showLatest = useCallback(() => navigation.current?.latest(), []);
 
   const refreshRef = useRef<
     { sessionId: string; refresh: () => Promise<void> } | undefined
@@ -50,12 +56,52 @@ export function useSessionConnection(
     // 不能在新快照抵达前继续展示旧会话；否则侧栏已切换但主区域看似卡住。
     setData(undefined);
     setLoading(true);
+    setBrowsingHistory(false);
     // 合并连续刷新通知，并在切换会话或关闭服务时取消过期的历史读取。
     let disposed = false;
     const snapshotRequest = new AbortController();
     let refreshInProgress = false;
     let refreshQueued = false;
     const model = new SessionViewModel(selected);
+    let live: SessionView | undefined;
+    let history: SessionView | undefined;
+    let navigating = false;
+    navigation.current = {
+      older: async () => {
+        const current = history ?? live;
+        if (
+          navigating ||
+          !current?.history?.hasOlder ||
+          !current.events.length
+        ) {
+          return;
+        }
+
+        navigating = true;
+        try {
+          const page = await snapshot(selected, snapshotRequest.signal, 0, {
+            before: current.events[0]!.id,
+            highWater: current.history.highWater,
+          });
+          if (!disposed) {
+            history = new SessionViewModel(selected).update(page);
+            setBrowsingHistory(true);
+            setData(history);
+          }
+        } catch (error) {
+          if (!disposed) {
+            setError((error as Error).message);
+          }
+        } finally {
+          navigating = false;
+        }
+      },
+      latest: () => {
+        history = undefined;
+        setBrowsingHistory(false);
+        setData(live);
+      },
+    };
     const refresh = async () => {
       if (refreshInProgress) {
         refreshQueued = true;
@@ -72,7 +118,15 @@ export function useSessionConnection(
         );
         if (!disposed) {
           // 可变索引属于连接回调，不在 render 或 React updater 内修改。
-          setData(model.update(v));
+          live = model.update(v);
+          if (!history) {
+            setData(live);
+          }
+
+          if (v.history?.hasNewer) {
+            refreshQueued = true;
+          }
+
           setLoading(false);
         }
       } catch (e) {
@@ -133,6 +187,7 @@ export function useSessionConnection(
 
     return () => {
       disposed = true;
+      navigation.current = undefined;
       if (refreshRef.current?.refresh === refresh) {
         refreshRef.current = undefined;
       }
@@ -143,5 +198,13 @@ export function useSessionConnection(
     };
   }, [selected, enabled, setSettings, setHasKey, setSandbox, setError]);
 
-  return { data, refreshSession, connected, loading };
+  return {
+    data,
+    refreshSession,
+    connected,
+    loading,
+    loadOlder,
+    showLatest,
+    browsingHistory,
+  };
 }

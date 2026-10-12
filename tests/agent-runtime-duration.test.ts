@@ -113,7 +113,7 @@ it("persists execution duration for failures and zero for invalid or blocked cal
   let savedResults: unknown[] = [];
 
   try {
-    const task = engine.start(session.id, "check tool durations");
+    const task = await engine.start(session.id, "check tool durations");
     await engine.active?.done;
     expect(store.task(task.id)?.status, store.task(task.id)?.error).toBe(
       "completed",

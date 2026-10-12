@@ -89,6 +89,17 @@ export class TimelineProjection {
   private approvals?: Snapshot["approvals"];
 
   append(event: Event) {
+    if (event.bodyDeferred && event.type === "delta") {
+      this.entries.set(event.id, {
+        key: `event:${event.id}`,
+        kind: "event",
+        event,
+      });
+      this.changed = true;
+
+      return;
+    }
+
     const key = streamKey(event);
     if (event.type === "delta") {
       if (this.completedStreams.has(key)) {
@@ -174,6 +185,10 @@ export class TimelineProjection {
   }
 
   private appendOutput(event: Event): boolean {
+    if (event.bodyDeferred && event.type !== "tool_result") {
+      return false;
+    }
+
     const callKey = event.taskId + ":" + event.data.callId;
     const outputType =
       event.type === "tool_start"

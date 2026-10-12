@@ -1,8 +1,8 @@
 # SQLite 存储改造与完整历史迁移
 
-状态：实施中，尚未正式切换。记录日期：2026-10-11；审查与实施授权：2026-10-12。用户决定见 D148，位于 [决策记录](decisions.md)。
+状态：代码及本机真实数据库完整迁移、验证和切换已完成（2026-10-13）。记录日期：2026-10-11；审查与实施授权：2026-10-12。用户决定见 D148，位于 [决策记录](decisions.md)。
 
-本文记录完整实施契约。用户明确不采用 PostgreSQL，并要求旧对话记录也完整迁移；2026-10-12 已追加授权代码与现有数据库迁移，并表示已停止服务。当前开发仍使用合成夹具和冻结副本；完成全部运行期改造、独立校验与整体激活之前不得宣称交付。暂定目标 schema v11、Replay v3，正式迁移前仍须冻结全部结构、配置和阈值。本文不提供尚不存在的迁移命令。
+本文记录完整实施契约和操作步骤。用户明确不采用 PostgreSQL，并要求旧对话记录也完整迁移；2026-10-12 已追加授权代码与现有数据库迁移，并表示已停止服务。目标已冻结为 schema v11、Replay v3、适配器 v2，包含持久统计投影。正式启用状态及 Windows 实测结果见 [验证记录](verification.md)。
 
 ## 1. 已确认要求与交接边界
 
@@ -19,7 +19,7 @@
 
 ## 2. 当前代码基线与风险
 
-以下为仓库代码基线，不是对用户实际数据库内容、大小、损坏或性能的诊断；实施前需重新读取当前代码与源 schema。
+以下为改造前 schema v10 的历史代码基线，用于说明设计动机，不代表当前实现，也不是对用户实际数据库损坏的诊断。当前实现见第 9 节。
 
 - [schema.ts](../src/sessions/schema.ts)：当前 `user_version=10`，主体正文保存在 TEXT JSON 中。
 - [store.ts](../src/sessions/store.ts)：历史、上下文和快照先经主线程 `serializedSize` 查询，再按阈值选择同步读取或 Worker；仍保留同步写入和遍历分片开启事务的入口。
@@ -222,9 +222,11 @@ SQLite 外的 `traces`、项目记忆、设置、配置、日志及既有备份�
 - 离线迁移使用独立 migrationId 的安全阶段日志/trace，记录分片序号、实体数量、字节数与阶段结果，不写 SQL 参数、历史正文、工作区内容或凭据；不把迁移事件追加到历史任务 trace。
 - Windows、Linux、macOS 的结论分别记录；单系统或模拟 Worker 通过不等于三平台迁移验收。
 
-本次仅修改文档，因此不新增运行期 tracing，也不宣称执行了以上测试或真实迁移。
+运行期沿用 Store queue/roundtrip/worker tracing；离线 CLI 使用独立 generation ID、阶段计数和受保护验证报告，不将迁移追加到历史任务 trace。
 
 ## 8. 外部执行者交接清单
+
+以下保留实施门槛清单；每次部署均须重新检查，不能把一次本机通过当成其他目录或平台也已完成。当前交付记录见 verification.md。
 
 - [ ] 重新读取 AGENTS.md、需求、决策与当前代码，确认目标格式和支持的源版本。
 - [ ] 核对并更新存储实现、Engine/恢复、正常与兜底压缩、Runtime IPC、HTTP、前端、Replay 导出全部调用方。
@@ -238,3 +240,30 @@ SQLite 外的 `traces`、项目记忆、设置、配置、日志及既有备份�
 - [ ] 无旧库依赖、无未迁移记录、无未解释差异后才整体启用；保留原件及备份。
 - [ ] 更新 [架构](architecture.md)、[开发说明](development.md)、[测试覆盖](testing.md)、[验证记录](verification.md)、[恢复](recovery.md)、[Replay](replay-cases.md) 及相关 IPC/安装说明。
 - [ ] 汇报实际变更、迁移记录数、校验结果、验证平台、切换状态与剩余限制；不以文档完成代替数据迁移完成。
+
+## 9. 已实现的运行与离线操作
+
+生产 `AsyncStore` 使用一个写 Worker、两个只读 Worker，所有元数据和正文查询均异步；同步 `Store` 仅留作 Worker 内部和测试适配器。读请求等待调用前的写回执；队列限制 1024 项、128 MiB，每 Worker 最多 8 个分片连接、每连接 128 个语句。只读请求执行超过 60 秒终止该读 Worker，释放读事务并返回失败，需重启服务恢复通道；不终止写 Worker、不自动重放请求。关闭先排空请求，再关闭读者，最后关闭写者以完成 WAL 收尾。
+
+历史默认 100 条、最多 200 条，旧页固定高水位；超过 32 KiB 的事件正文按需读取，每段 16,384 个 Unicode 码点。实时缓存超过 1200 条时保留最近 600 条，历史翻页使用独立视图。完整统计在事件事务内更新，迁移逐会话回填并独立核对。恢复与正常/兜底压缩使用完整相关事件查询，保留所有候选及重复 call ID，不套用 UI 页范围。Replay 目录每页 100 项，单次只重建选中请求；完整 Task JSON 是显式导出动作，仍有整任务内存成本。
+
+空间配置为 WAL、`synchronous=FULL`、自动 checkpoint 1000 页；空闲调度每 30 秒尝试 PASSIVE checkpoint，忙时保留 WAL。冻结空间验收阈值：整页空闲比例不超过 5%；16 MiB 以上库的 dbstat 载荷/分配比例至少 70%；合成负载峰值 WAL 不超过 64 MiB。基于旧版本固定 1/2/4 并发基线，性能验收界限为写入 p99 100 ms、浏览 p99 200 ms、事件循环 p99 50 ms、RSS 768 MiB、主库/notice 逻辑字节比 2；这些只适用于该固定本机负载，不是任意用户数据的 SLA。目标整理前预检空间，重置 verified 标记，执行 checkpoint/VACUUM 后必须重新全量验证；绝不删 WAL 或唯一备份来腾空间。
+
+下面是 PowerShell 7 示例，路径均为占位值。服务与所有 SQLite 写入者须保持停止。Windows MSIX 环境须先验证实际物理文件视图；UNC 仅用于冻结/移动文件，SQLite 必须在本地副本上运行。
+
+```powershell
+pwsh -NoProfile -File scripts/freeze-history-windows.ps1 -SourceDirectory 'C:\safe\source' -Destination 'C:\safe\migration\raw' -WritersStopped
+pnpm history:migrate snapshot --source C:\safe\migration\raw --target C:\safe\migration\frozen --writers-stopped
+pnpm history:migrate convert --source C:\safe\migration\frozen\snapshot --target C:\safe\migration\generation --writers-stopped
+pnpm history:migrate metrics --file C:\safe\migration\generation\history.sqlite
+# 仅空间不合格时，对独立目标逐片整理；随后仍须运行 verify。
+pnpm history:migrate compact --file C:\safe\migration\generation\history.sqlite --writers-stopped
+pnpm history:migrate verify --source C:\safe\migration\frozen\snapshot --target C:\safe\migration\generation --writers-stopped
+pnpm history:migrate activate --data-dir C:\safe\source --target C:\safe\migration\generation --writers-stopped
+```
+
+`convert` 可对相同源摘要与 prepared 目标续跑。每个 CLI 操作持有目标旁的 `.operator-lock`；异常进程退出留下锁时，先核实记录 PID 已不存在、没有迁移或服务进程，再人工移走该锁，不自动猜测锁过期。`verify` 核对全部原始字段、顺序、Replay 输入与结果、统计、全局 ID 和空间，生成 `verification.json`。只读 WAL 库可能留下 SHM 索引，SHM 不等于未合并数据；输入非空 WAL 仍拒绝。
+
+激活先建立 `history-migration.json` 启动门禁，把绑定摘要的旧文件移至 `history-before-<generationId>`，再建立同名 `history.sqlite` 阻断目录并发布 `history-active.json`。移动中断后用相同 activate 命令恢复；门禁存在时服务拒绝启动。旧默认路径的程序会打开失败，但这不防止操作者显式绕过默认路径指向新库。新程序只解析活动指针，不回读旧库。业务启动前持久写入 `business-started`，此后禁止迁移工具重新激活或自动回退；该标记保守表示已尝试启动业务，并非业务提交计数。
+
+Windows 原件、raw、冻结快照、目标及报告保持源目录 ACL；POSIX 新目录/清单使用受限模式，不能以 POSIX mode 代替 Windows ACL。原件与所有备份不自动删除。安装式 Runtime 的 IPC 已升至 v15，必须使用匹配 bundle；构建不自动修改受保护安装副本，管理员更新步骤仍见 development.md。

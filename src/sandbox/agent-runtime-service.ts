@@ -872,9 +872,8 @@ class OrderedContextPersistence {
           callId: node.callId,
         });
         try {
-          this.events.emit("tool_result", event);
           await this.events.flush();
-          await this.session.appendContext(this.sessionId, [this.input.at(-1)]);
+          await this.session.commitToolResult(event, this.input.at(-1));
           this.trace.end(span, "ok");
         } catch (error) {
           this.trace.end(span, "error", {

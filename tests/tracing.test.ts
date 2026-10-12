@@ -256,8 +256,8 @@ it("persists each Engine task trace by session and task, then exports it only th
       cookie: "ca_session=" + token,
       "x-codeatelier-token": token,
     };
-    const session = fixture.store.create(workspace, "trace test");
-    const task = fixture.engine.start(session.id, "answer briefly");
+    const session = await fixture.store.create(workspace, "trace test");
+    const task = await fixture.engine.start(session.id, "answer briefly");
 
     await fixture.engine.active?.done;
 

@@ -21,7 +21,7 @@ import { createLogger } from "../logging/logger.js";
 import { redactJson } from "../logging/redact.js";
 import { ResponsesProvider } from "../providers/responses-provider.js";
 import type { ModelProvider } from "../providers/model-provider.js";
-import { Store } from "../sessions/store.js";
+import { AsyncStore } from "../sessions/async-store.js";
 import type { Approval } from "../shared/types.js";
 import { inside } from "../tools/paths.js";
 import { MeteredProvider } from "./metered-provider.js";
@@ -111,8 +111,8 @@ export async function runEvaluation(
   const log =
     dependencies.log ??
     createLogger(dataDir, config.settings.logLevel, () => [config.apiKey]);
-  const store = new Store(path.join(dataDir, "history.sqlite"));
-  const session = store.create(workspace, "Coding evaluation");
+  const store = await AsyncStore.open(path.join(dataDir, "history.sqlite"));
+  const session = await store.create(workspace, "Coding evaluation");
   const startedAt = new Date().toISOString();
   let stopReason: string | undefined;
   let approvalsAllowed = 0;
@@ -170,7 +170,7 @@ export async function runEvaluation(
   const abort = () => {
     stopReason = "cancelled";
     if (engine.active) {
-      engine.cancel(engine.active.task.id);
+      void engine.cancel(engine.active.task.id);
     }
   };
 
@@ -178,17 +178,17 @@ export async function runEvaluation(
 
   try {
     dependencies.signal?.throwIfAborted();
-    const task = engine.start(session.id, options.prompt);
+    const task = await engine.start(session.id, options.prompt);
     dependencies.signal?.addEventListener("abort", abort, { once: true });
     if (!options.unlimited) {
       timer = setTimeout(() => {
         stopReason = "timeout";
-        engine.cancel(task.id);
+        void engine.cancel(task.id);
       }, options.timeoutMs);
     }
 
     await engine.active?.done;
-    const result = store.task(task.id)!;
+    const result = (await store.task(task.id))!;
     const report = {
       schemaVersion: 1,
       agent: "CodeAtelier",
@@ -213,7 +213,7 @@ export async function runEvaluation(
     writeJson(path.join(outputDir, "report.json"), report, config.apiKey);
     writeJson(
       path.join(outputDir, "events.json"),
-      store.events(session.id),
+      await store.events(session.id),
       config.apiKey,
     );
     checkpoint();
