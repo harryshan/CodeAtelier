@@ -223,6 +223,6 @@ export async function runEvaluation(
     clearTimeout(timer);
     dependencies.signal?.removeEventListener("abort", abort);
     await engine.close();
-    store.close();
+    await store.closeAsync();
   }
 }

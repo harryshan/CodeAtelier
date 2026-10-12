@@ -129,7 +129,7 @@ it("summarizes externally changed reads without probing files or projecting hist
     });
     expect(snapshot.source[2]).toEqual(source[2]);
     expect(store.events(session.id)[0].data.result).toEqual(read);
-    store.close();
+    await store.closeAsync();
     closed = true;
     reopened = new Store(db);
     expect(reopened.context(session.id)).toEqual(next);
@@ -143,7 +143,7 @@ it("summarizes externally changed reads without probing files or projecting hist
   } finally {
     reopened?.close();
     if (!closed) {
-      store.close();
+      await store.closeAsync();
     }
   }
 });

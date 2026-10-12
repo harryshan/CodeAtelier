@@ -68,5 +68,5 @@ try {
     );
   }
 } finally {
-  store.close();
+  await store.closeAsync();
 }

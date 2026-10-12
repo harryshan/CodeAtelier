@@ -70,7 +70,7 @@ it("accepts and persists a compaction note beyond the old fixed limit", async ()
     expect(store.latestContextSnapshot(session.id)?.note).toBe(note);
     expect(store.context(session.id)).toEqual(input);
   } finally {
-    store.close();
+    await store.closeAsync();
   }
 });
 
@@ -110,6 +110,6 @@ it("cannot compact another session or attach a foreign parent snapshot", async (
     ).rejects.toThrow("父快照不属于目标会话");
     expect(store.latestContextSnapshot(first.id)).toBeUndefined();
   } finally {
-    store.close();
+    await store.closeAsync();
   }
 });

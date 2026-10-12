@@ -183,7 +183,7 @@ it("coordinates read-only research and commits collected feedback in the host En
     expect(await readFile(source, "utf8")).toBe("export const value = 7;\n");
   } finally {
     await engine.close();
-    store.close();
+    await store.closeAsync();
   }
 });
 
@@ -292,6 +292,6 @@ it("keeps a large report unconsumed when the main model only receives a truncate
     ]);
   } finally {
     await engine.close();
-    store.close();
+    await store.closeAsync();
   }
 });

@@ -124,7 +124,7 @@ console.log(
   }),
 );
 
-store.close();
+await store.closeAsync();
 
 if (result.status !== "completed" || !verified) {
   process.exitCode = 1;

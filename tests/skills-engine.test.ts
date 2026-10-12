@@ -209,7 +209,7 @@ it.each([false, true])(
       expect(approval).not.toHaveBeenCalled();
     } finally {
       await engine.close();
-      store.close();
+      await store.closeAsync();
       homeMock.mockRestore();
     }
   },

@@ -1,18 +1,17 @@
 /**
  * 管理会话历史 SQLite 的容量分片，供 Store 在不改变上层会话 API 的前提下发现、打开和轮换数据库文件。
- * Store 是唯一调用方：它在每个分片上执行同一 schema/migration，并按 session 或 task 查找所属分片；本模块不解析业务 JSON，也不执行会话写入。
+ * Store 是唯一调用方：它只为新文件创建目标 schema，并按 session 或 task 查找所属分片；本模块不解析业务 JSON，也不执行会话写入。
  *
  * 1. 兼容现有的 history.sqlite 作为序号 0 分片，并发现同目录的 history-000001.sqlite 等后续分片。
  * 2. 统计主数据库与 WAL 文件的实际磁盘字节数；创建新会话前，已含会话且达到容量上限的最新分片会轮换到下一个文件。
  * 3. 保持单个会话始终位于其初始分片，避免跨 SQLite 文件的外键、事务和恢复语义变化；因此单个会话的一次不可分割写入仍可能使其所属分片略超阈值。
- * 4. 打开含会话的旧分片时先用 SQLite 一致性快照备份到数据目录 backups；失败则拒绝升级。
+ * 4. 先只读检查整个文件集；旧版本和未验证迁移目标直接拒绝，不能在启动时隐式转换或部分升级。
  * 5. 主线程兼容连接遇到 Worker 短事务时最多等待 1 秒；发现分片失败时关闭已打开连接，正常 close 关闭全部连接。
  *
- * 分片不构成安全隔离，也不跨文件迁移已有会话；版本升级前会备份旧数据，后续新会话才会轮换到新的文件。
+ * 分片不构成安全隔离，也不跨文件迁移已有会话；旧版本必须通过独立离线迁移；后续新会话才会轮换到新的文件。
  */
 
 import { DatabaseSync } from "node:sqlite";
-import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import { SCHEMA_SQL } from "./schema.js";
@@ -100,8 +99,11 @@ export class HistoryShards {
       const row = shard.db
         .prepare("SELECT COALESCE(MAX(id), 0) AS id FROM events")
         .get() as { id: number };
+      const sequence = shard.db
+        .prepare("SELECT seq FROM sqlite_sequence WHERE name='events'")
+        .get();
 
-      return Math.max(maximum, row.id);
+      return Math.max(maximum, row.id, Number(sequence?.seq ?? 0));
     }, 0);
   }
 
@@ -140,6 +142,36 @@ export class HistoryShards {
 
     const opened: HistoryShard[] = [];
     try {
+      for (const shard of discovered) {
+        const source = new DatabaseSync(shard.file, { readOnly: true });
+        try {
+          if (
+            source.prepare("PRAGMA user_version").get()?.user_version !== 11
+          ) {
+            throw new Error("历史数据库需要离线完整迁移；启动未修改源库。");
+          }
+
+          const identity = source
+            .prepare("SELECT state FROM migration_identity WHERE singleton=1")
+            .get();
+          if (identity && identity.state !== "verified") {
+            throw new Error("迁移目标尚未通过完整验证，禁止启动。");
+          }
+
+          // 版本号不能掩盖缺列/部分 DDL；查询准备阶段不执行恢复写入。
+          source.prepare(
+            "SELECT orderKey,subagentsEnabled,startedAt,finishedAt FROM tasks LIMIT 0",
+          );
+          source.prepare("SELECT orderKey FROM context_snapshots LIMIT 0");
+          source.prepare(
+            "SELECT outcome,checkpoint FROM replay_entries LIMIT 0",
+          );
+          source.prepare("SELECT orderKey FROM subagents LIMIT 0");
+        } finally {
+          source.close();
+        }
+      }
+
       for (const shard of discovered.sort(
         (left, right) => left.sequence - right.sequence,
       )) {
@@ -148,7 +180,7 @@ export class HistoryShards {
 
       return opened;
     } catch (error) {
-      // 后续分片备份/迁移失败时不能留下前面分片的活动句柄。
+      // 后续分片验证/打开失败时不能留下前面分片的活动句柄。
       for (const shard of opened) {
         shard.db.close();
       }
@@ -162,32 +194,13 @@ export class HistoryShards {
     // 未迁移的同步兼容事务可能与 Store Worker 的短事务交错；只作有界等待，不重放结果未知的写入。
     const db = new DatabaseSync(file, { timeout: 1000 });
     try {
-      if (existing) {
-        const version = db.prepare("PRAGMA user_version").get() as {
-          user_version: number;
-        };
-        const sessionsTable = db
-          .prepare(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sessions'",
-          )
-          .get();
-        if (
-          version.user_version < 10 &&
-          sessionsTable &&
-          db.prepare("SELECT 1 FROM sessions LIMIT 1").get()
-        ) {
-          const backupDirectory = path.join(path.dirname(file), "backups");
-          mkdirSync(backupDirectory, { recursive: true });
-          const destination = path.join(
-            backupDirectory,
-            `${path.basename(file)}.${new Date().toISOString().replace(/[:.]/g, "-")}.${randomUUID()}.sqlite`,
-          );
-          // VACUUM INTO 包含已提交的 WAL 内容；不能直接复制正在使用的主库文件。
-          db.prepare("VACUUM INTO ?").run(destination);
-        }
+      if (!existing) {
+        db.exec(SCHEMA_SQL);
       }
 
-      db.exec(SCHEMA_SQL);
+      db.exec(
+        "PRAGMA foreign_keys=ON; PRAGMA synchronous=FULL; PRAGMA wal_autocheckpoint=1000",
+      );
 
       return { sequence, file, db };
     } catch (error) {

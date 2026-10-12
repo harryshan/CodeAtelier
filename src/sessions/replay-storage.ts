@@ -1,15 +1,13 @@
 /**
- * 为 Store 与 Store Worker 提供相同的 replay 增量 SQLite 编码。
- * 输入是任务 ID、一次模型/工具开始或结束及已脱敏的材料；输出是在导出时重建的完整 TaskReplayCapture。
+ * 保存目标 v3 Replay，供 Store 后端、离线转换器和请求阅读接口共用。
+ * 输入为脱敏的请求/工具材料及终态；输出为单个请求或完整导出捕获，不执行模型和工具。
  *
- * 1. 新任务只在 task_replays 保存元数据，逐个模型/工具写入 replay_entries。
- * 2. 模型 input 记录相对上一请求的相同前缀与新增尾部；每次写入只影响当前条目。
- * 3. 读取时依写入顺序重建完整请求，旧任务的整条 JSON 原样读取，不在迁移时改写敏感材料。
- *
- * 调用方负责 SQLite 事务及凭据脱敏；本模块不执行工具、模型或网络请求。
+ * 1. 元数据只接受 v3；旧格式解码属于离线迁移，运行期不能回读原库。
+ * 2. 请求使用精确序列化前缀与尾部，每 32 条或累计 16 MiB 增量创建检查点。
+ * 3. 单请求从最近检查点重建；写入也只读取有界尾链，不扫描任务全部模型历史。
+ * 4. 响应、错误和工具结果存入独立 outcome 列；结束操作不重写不可变请求。
+ * 5. 不保存未提交缓存；调用方负责同分片事务，回滚后没有可推进的内存前缀。
  */
-
-import { isDeepStrictEqual } from "node:util";
 import type { DatabaseSync } from "node:sqlite";
 import type {
   RecordedModelExchange,
@@ -18,45 +16,60 @@ import type {
 } from "./replay-case.js";
 import type { TaskStatus } from "../shared/types.js";
 
-type ReplayAction =
+export const REPLAY_STORAGE_VERSION = 3;
+export const REPLAY_CHECKPOINT_INTERVAL = 32;
+export const REPLAY_DELTA_BYTES = 16 * 1024 * 1024;
+
+export type ReplayAction =
   | "create"
   | "modelStart"
   | "modelFinish"
   | "toolStart"
   | "toolFinish"
   | "finish";
-
 type StoredHeader = Omit<TaskReplayCapture, "modelExchanges" | "tools"> & {
-  storageVersion: 2;
+  storageVersion: 3;
 };
-
 type StoredModel = Omit<RecordedModelExchange, "input"> & {
   inputPrefix: number;
   inputSuffix: any[];
 };
-
-type EntryRow = { kind: "model" | "tool"; data: string };
-
-function header(db: DatabaseSync, taskId: string) {
-  const row = db
-    .prepare("SELECT data FROM task_replays WHERE taskId=?")
-    .get(taskId) as { data: string } | undefined;
-
-  return row
-    ? (JSON.parse(row.data) as StoredHeader | TaskReplayCapture)
-    : undefined;
+interface EntryRow {
+  seq: number;
+  kind: "model" | "tool";
+  itemId: string;
+  data: string;
+  outcome: string | null;
+  checkpoint: number;
+  byteSize: number;
 }
 
-function decodeModel(
-  stored: StoredModel,
-  previous: any[],
-): RecordedModelExchange {
-  const { inputPrefix, inputSuffix, ...exchange } = stored;
+function header(db: DatabaseSync, taskId: string): StoredHeader | undefined {
+  const row = db
+    .prepare("SELECT data FROM task_replays WHERE taskId=?")
+    .get(taskId);
+  if (!row) {
+    return undefined;
+  }
+
+  const value = JSON.parse(String(row.data)) as StoredHeader;
+  if (value.storageVersion !== REPLAY_STORAGE_VERSION) {
+    throw new Error("Replay 尚未完成离线迁移，拒绝读取旧格式。");
+  }
+
+  return value;
+}
+
+function decode(row: EntryRow, previous: any[]): RecordedModelExchange {
+  const { inputPrefix, inputSuffix, ...exchange } = JSON.parse(
+    row.data,
+  ) as StoredModel;
   if (
-    !Number.isInteger(inputPrefix) ||
+    !Number.isSafeInteger(inputPrefix) ||
     inputPrefix < 0 ||
     inputPrefix > previous.length ||
-    !Array.isArray(inputSuffix)
+    !Array.isArray(inputSuffix) ||
+    (row.checkpoint === 1 && inputPrefix !== 0)
   ) {
     throw new Error("Replay 模型输入增量已损坏。");
   }
@@ -64,66 +77,89 @@ function decodeModel(
   return {
     ...exchange,
     input: [...previous.slice(0, inputPrefix), ...inputSuffix],
+    ...(row.outcome === null ? {} : JSON.parse(row.outcome)),
   };
 }
 
-function entries(db: DatabaseSync, taskId: string): EntryRow[] {
-  return db
-    .prepare("SELECT kind,data FROM replay_entries WHERE taskId=? ORDER BY seq")
-    .all(taskId) as EntryRow[];
+/** 返回完整候选链，检查点之前的请求不参与随机读取。 */
+function modelChain(db: DatabaseSync, taskId: string, seq: number): EntryRow[] {
+  const checkpoint = db
+    .prepare(
+      "SELECT seq FROM replay_entries WHERE taskId=? AND kind='model' AND checkpoint=1 AND seq<=? ORDER BY seq DESC LIMIT 1",
+    )
+    .get(taskId, seq);
+  if (!checkpoint) {
+    throw new Error("Replay 请求缺少检查点。");
+  }
+
+  const rows = db
+    .prepare(
+      "SELECT * FROM replay_entries WHERE taskId=? AND kind='model' AND seq BETWEEN ? AND ? ORDER BY seq",
+    )
+    .all(taskId, checkpoint.seq!, seq) as unknown as EntryRow[];
+  if (rows.length > REPLAY_CHECKPOINT_INTERVAL) {
+    throw new Error("Replay 增量链超过格式上限。");
+  }
+
+  return rows;
 }
 
-/** 只重建导出时需要的完整结构；历史整条捕获保持向后兼容。 */
-export function readReplayCapture(db: DatabaseSync, taskId: string) {
+export function readReplayExchange(
+  db: DatabaseSync,
+  taskId: string,
+  itemId: string,
+) {
+  const row = db
+    .prepare(
+      "SELECT seq FROM replay_entries WHERE taskId=? AND kind='model' AND itemId=?",
+    )
+    .get(taskId, itemId);
+  if (!row) {
+    return undefined;
+  }
+
+  let exchange: RecordedModelExchange | undefined;
+  for (const entry of modelChain(db, taskId, Number(row.seq))) {
+    exchange = decode(entry, exchange?.input ?? []);
+  }
+
+  return exchange;
+}
+
+export function readReplayCapture(
+  db: DatabaseSync,
+  taskId: string,
+): TaskReplayCapture | undefined {
   const stored = header(db, taskId);
   if (!stored) {
     return undefined;
   }
 
-  if (!("storageVersion" in stored)) {
-    return stored as TaskReplayCapture;
-  }
-
-  const { storageVersion, ...metadata } = stored;
-  if (storageVersion !== 2) {
-    throw new Error("不支持的 Replay 存储版本。");
-  }
-
+  const metadata = { ...stored };
+  Reflect.deleteProperty(metadata, "storageVersion");
   const capture: TaskReplayCapture = {
     ...metadata,
     modelExchanges: [],
     tools: [],
   };
   let previous: any[] = [];
-  for (const row of entries(db, taskId)) {
-    if (row.kind === "model") {
-      const exchange = decodeModel(
-        JSON.parse(row.data) as StoredModel,
-        previous,
-      );
+  for (const row of db
+    .prepare("SELECT * FROM replay_entries WHERE taskId=? ORDER BY seq")
+    .iterate(taskId) as IterableIterator<unknown>) {
+    const entry = row as EntryRow;
+    if (entry.kind === "model") {
+      const exchange = decode(entry, previous);
       capture.modelExchanges.push(exchange);
       previous = exchange.input;
     } else {
-      capture.tools.push(JSON.parse(row.data) as RecordedToolCall);
+      capture.tools.push({
+        ...JSON.parse(entry.data),
+        ...(entry.outcome === null ? {} : JSON.parse(entry.outcome)),
+      });
     }
   }
 
   return capture;
-}
-
-/** 上一请求可从持久化增量恢复，不依赖进程内缓存或 Worker 存活。 */
-function lastInput(db: DatabaseSync, taskId: string) {
-  let previous: any[] = [];
-  const rows = db
-    .prepare(
-      "SELECT data FROM replay_entries WHERE taskId=? AND kind='model' ORDER BY seq",
-    )
-    .all(taskId) as Array<{ data: string }>;
-  for (const row of rows) {
-    previous = decodeModel(JSON.parse(row.data) as StoredModel, previous).input;
-  }
-
-  return previous;
 }
 
 export function writeReplay(
@@ -136,15 +172,18 @@ export function writeReplay(
   if (action === "create") {
     db.prepare("INSERT INTO task_replays(taskId,data) VALUES(?,?)").run(
       taskId,
-      JSON.stringify({ ...(data as object), storageVersion: 2 }),
+      JSON.stringify({
+        ...(data as object),
+        storageVersion: REPLAY_STORAGE_VERSION,
+      }),
     );
 
     return;
   }
 
   const stored = header(db, taskId);
-  if (!stored || !("storageVersion" in stored) || stored.storageVersion !== 2) {
-    throw new Error("Replay 增量捕获不存在或格式不正确。");
+  if (!stored) {
+    throw new Error("Replay 捕获不存在。");
   }
 
   if (action === "finish") {
@@ -162,37 +201,67 @@ export function writeReplay(
 
   if (action === "modelStart") {
     const exchange = data as RecordedModelExchange;
-    const previous = lastInput(db, taskId);
+    const last = db
+      .prepare(
+        "SELECT seq FROM replay_entries WHERE taskId=? AND kind='model' ORDER BY seq DESC LIMIT 1",
+      )
+      .get(taskId);
+    const chain = last ? modelChain(db, taskId, Number(last.seq)) : [];
+    let previous: any[] = [];
+    for (const row of chain) {
+      previous = decode(row, previous).input;
+    }
+
     let prefix = 0;
     while (
       prefix < previous.length &&
       prefix < exchange.input.length &&
-      isDeepStrictEqual(previous[prefix], exchange.input[prefix])
+      JSON.stringify(previous[prefix]) ===
+        JSON.stringify(exchange.input[prefix])
     ) {
       prefix++;
     }
 
-    const { input, ...rest } = exchange;
+    const { input, response, error, ...rest } = exchange;
+    let payload = JSON.stringify({
+      ...rest,
+      inputPrefix: prefix,
+      inputSuffix: input.slice(prefix),
+    });
+    const checkpoint =
+      chain.length === 0 ||
+      chain.length >= REPLAY_CHECKPOINT_INTERVAL ||
+      chain.slice(1).reduce((sum, row) => sum + row.byteSize, 0) +
+        Buffer.byteLength(payload) >
+        REPLAY_DELTA_BYTES;
+    if (checkpoint) {
+      payload = JSON.stringify({ ...rest, inputPrefix: 0, inputSuffix: input });
+    }
+
+    const outcome =
+      response !== undefined || error !== undefined
+        ? JSON.stringify({
+            ...(response === undefined ? {} : { response }),
+            ...(error === undefined ? {} : { error }),
+          })
+        : null;
     db.prepare(
-      "INSERT INTO replay_entries(taskId,kind,itemId,data) VALUES(?,'model',?,?)",
-    ).run(
-      taskId,
-      exchange.id,
-      JSON.stringify({
-        ...rest,
-        inputPrefix: prefix,
-        inputSuffix: input.slice(prefix),
-      } satisfies StoredModel),
-    );
+      "INSERT INTO replay_entries(taskId,kind,itemId,data,outcome,checkpoint) VALUES(?,'model',?,?,?,?)",
+    ).run(taskId, exchange.id, payload, outcome, Number(checkpoint));
 
     return;
   }
 
   if (action === "toolStart") {
-    const tool = data as RecordedToolCall;
+    const { result, ...tool } = data as RecordedToolCall;
     db.prepare(
-      "INSERT INTO replay_entries(taskId,kind,itemId,data) VALUES(?,'tool',?,?)",
-    ).run(taskId, tool.callId, JSON.stringify(tool));
+      "INSERT INTO replay_entries(taskId,kind,itemId,data,outcome) VALUES(?,'tool',?,?,?)",
+    ).run(
+      taskId,
+      tool.callId,
+      JSON.stringify(tool),
+      result === undefined ? null : JSON.stringify({ result }),
+    );
 
     return;
   }
@@ -200,11 +269,10 @@ export function writeReplay(
   const kind = action === "modelFinish" ? "model" : "tool";
   const row = db
     .prepare(
-      "SELECT data FROM replay_entries WHERE taskId=? AND kind=? AND itemId=?",
+      "SELECT outcome FROM replay_entries WHERE taskId=? AND kind=? AND itemId=?",
     )
-    .get(taskId, kind, key) as { data: string } | undefined;
+    .get(taskId, kind, key);
   if (!row) {
-    // 宿主工具反馈也可在没有 replay toolStart 的兼容路径提交；旧整条捕获同样忽略该终态。
     if (kind === "tool") {
       return;
     }
@@ -212,12 +280,14 @@ export function writeReplay(
     throw new Error("Replay 捕获终态缺少对应的开始记录。");
   }
 
-  const entry = JSON.parse(row.data) as StoredModel | RecordedToolCall;
-  const updated =
+  const outcome =
     kind === "model"
-      ? { ...entry, ...(data as object) }
-      : { ...entry, result: data };
+      ? {
+          ...(row.outcome === null ? {} : JSON.parse(String(row.outcome))),
+          ...(data as object),
+        }
+      : { result: data };
   db.prepare(
-    "UPDATE replay_entries SET data=? WHERE taskId=? AND kind=? AND itemId=?",
-  ).run(JSON.stringify(updated), taskId, kind, key);
+    "UPDATE replay_entries SET outcome=? WHERE taskId=? AND kind=? AND itemId=?",
+  ).run(JSON.stringify(outcome), taskId, kind, key);
 }

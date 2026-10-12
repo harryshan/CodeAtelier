@@ -6,23 +6,23 @@
  * 2. 后续分片取锁失败时释放已取得的事务；在保存任务和事件的事务中制造失败，确认整笔事务回滚。
  * 3. 保存排队、运行和终态任务后重启，确认所有未完成任务变为 interrupted。
  * 4. 大于同步阈值的事件和上下文由 Worker 读取，验证结果与同步接口相同且数据库可正常关闭。
- * 5. 增量保存 replay 模型/工具并校验真实存储前缀、Worker 路径、重启与旧整条捕获兼容。
+ * 5. 增量保存 replay 模型/工具并校验真实存储前缀、Worker 路径、重启与旧整条捕获启动拒绝。
  * 6. 以小容量阈值触发新会话分片，确认旧分片的上下文仍可由 Worker 读取，并在重启后发现全部分片。
- * 7. 任务级 subagent 选择写入队列后保持布尔类型；模拟旧表缺列并检查跨分片迁移默认关闭。
+ * 7. 任务级 subagent 选择写入队列后保持布尔类型；检查跨分片重启后布尔选择不变。
  * 8. 子任务计划、检查点、问题与请求回执真实落盘；重启保留已确认问题和未知模型请求，迟到报告不误标消费。
- * 9. 增量上下文跨重启重建；旧分片先备份再迁移，备份失败保持原状。
+ * 9. 增量上下文跨重启重建；旧分片或混合版本启动直接拒绝，原始内容保持不变。
  *
  * 重启要保留已有终态和上下文，不能把其他会话的数据混进来。
  */
 
 import { it, expect } from "vitest";
-import { readdirSync, writeFileSync } from "node:fs";
+import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import path from "node:path";
 import { Store } from "../src/sessions/store.js";
 import { temp } from "./fixtures/helpers.js";
 
-it("releases earlier shard transactions when a later shard is locked", async () => {
+it("commits a session transaction while an unrelated shard is locked", async () => {
   const root = await temp();
   const file = path.join(root, "history.sqlite");
   const store = new Store(file, { maxShardBytes: 1 });
@@ -33,15 +33,34 @@ it("releases earlier shard transactions when a later shard is locked", async () 
 
   try {
     blocker.exec("BEGIN IMMEDIATE");
-    expect(() => store.transaction(() => store.createTask(first.id))).toThrow();
-    expect(firstDb.isTransaction).toBe(false);
-    blocker.exec("ROLLBACK");
-
     const task = store.transaction(() => store.createTask(first.id));
     expect(store.task(task.id)?.status).toBe("queued");
+    expect(firstDb.isTransaction).toBe(false);
+    blocker.exec("ROLLBACK");
   } finally {
     blocker.close();
-    store.close();
+    await store.closeAsync();
+  }
+});
+
+it("rejects a transaction crossing shards and rolls back its first write", async () => {
+  const root = await temp();
+  const store = new Store(path.join(root, "history.sqlite"), {
+    maxShardBytes: 1,
+  });
+  const first = store.create(root);
+  const second = store.create(root);
+  try {
+    expect(() =>
+      store.transaction(() => {
+        store.createTask(first.id);
+        store.createTask(second.id);
+      }),
+    ).toThrow("跨分片");
+    expect(store.tasks(first.id)).toEqual([]);
+    expect(store.tasks(second.id)).toEqual([]);
+  } finally {
+    await store.closeAsync();
   }
 });
 
@@ -89,67 +108,39 @@ it("appends context batches and rolls back event plus feedback together", async 
     expect(store.context(session.id)).toEqual([first, feedback]);
     expect(store.events(session.id)).toEqual([]);
   } finally {
-    store.close();
+    await store.closeAsync();
   }
 });
 
-it("backs up every legacy shard before migrating its context", async () => {
+it("rejects a mixed generation before modifying any shard", async () => {
   const root = await temp();
   const file = path.join(root, "history.sqlite");
-  let store = new Store(file, { maxShardBytes: 1 });
+  const store = new Store(file, { maxShardBytes: 1 });
   const first = store.create(root);
-  const second = store.create(root);
-  store.close();
-
-  for (const [shard, session, text] of [
-    [file, first.id, "old-one"],
-    [path.join(root, "history-000001.sqlite"), second.id, "old-two"],
-  ] as const) {
-    const db = new DatabaseSync(shard);
-    db.prepare("INSERT INTO context(sessionId,items) VALUES(?,?)").run(
-      session,
-      JSON.stringify([{ role: "user", content: text }]),
-    );
-    db.exec("DROP TABLE context_chunks; PRAGMA user_version = 7");
-    db.close();
-  }
-
-  store = new Store(file, { maxShardBytes: 1, interruptActive: false });
-  try {
-    expect(store.context(first.id)).toEqual([
-      { role: "user", content: "old-one" },
-    ]);
-    expect(store.context(second.id)).toEqual([
-      { role: "user", content: "old-two" },
-    ]);
-    store.appendContext(first.id, [{ role: "assistant", content: "new" }]);
-    expect(store.context(first.id)).toHaveLength(2);
-    const backups = readdirSync(path.join(root, "backups"));
-    expect(backups).toHaveLength(2);
-    for (const backup of backups) {
-      const db = new DatabaseSync(path.join(root, "backups", backup));
-      expect(db.prepare("SELECT items FROM context").all()).toHaveLength(1);
-      expect(db.prepare("PRAGMA user_version").get()).toEqual({
-        user_version: 7,
-      });
-      db.close();
-    }
-  } finally {
-    store.close();
-  }
-
-  store = new Store(file, { maxShardBytes: 1, interruptActive: false });
-  expect(store.context(first.id)).toHaveLength(2);
-  expect(readdirSync(path.join(root, "backups"))).toHaveLength(2);
-  store.close();
+  const task = store.createTask(first.id);
+  store.create(root);
+  await store.closeAsync();
+  const secondFile = path.join(root, "history-000001.sqlite");
+  const oldDb = new DatabaseSync(secondFile);
+  oldDb.exec("PRAGMA user_version=10");
+  oldDb.close();
+  const before = readFileSync(file);
+  expect(() => new Store(file)).toThrow("离线完整迁移");
+  expect(readFileSync(file)).toEqual(before);
+  const untouched = new DatabaseSync(file, { readOnly: true });
+  expect(
+    untouched.prepare("SELECT status FROM tasks WHERE id=?").get(task.id)
+      ?.status,
+  ).toBe("queued");
+  untouched.close();
 });
 
-it("refuses migration when the legacy backup cannot be created", async () => {
+it("refuses implicit migration and preserves the legacy context", async () => {
   const root = await temp();
   const file = path.join(root, "history.sqlite");
   const store = new Store(file);
   const session = store.create(root);
-  store.close();
+  await store.closeAsync();
   const db = new DatabaseSync(file);
   db.prepare("INSERT INTO context(sessionId,items) VALUES(?,?)").run(
     session.id,
@@ -195,7 +186,7 @@ it("keeps sessions isolated and supports ordered event cursors", async () => {
         .sort(),
     ).toEqual([primarySession.id, otherSession.id].sort());
   } finally {
-    store.close();
+    await store.closeAsync();
   }
 });
 
@@ -222,7 +213,7 @@ it("rolls back task creation and events together when persistence fails", async 
 
     expect(store.context(session.id)[0].content).toBe("committed");
   } finally {
-    store.close();
+    await store.closeAsync();
   }
 });
 
@@ -334,7 +325,7 @@ it("reads large persisted JSON through a worker without changing its data", asyn
       { role: "user", content },
     ]);
   } finally {
-    store.close();
+    await store.closeAsync();
   }
 });
 
@@ -406,11 +397,11 @@ it("persists captured replay exchanges and exports legacy cases without changing
       tools: [{ callId: "legacy-read", result: { text: "1: source" } }],
     });
 
-    store.close();
+    await store.closeAsync();
     store = new Store(file, { interruptActive: false });
     expect(store.task(legacy.id)?.status).toBe("queued");
   } finally {
-    store.close();
+    await store.closeAsync();
   }
 });
 
@@ -461,15 +452,18 @@ it("stores replay entries incrementally and rebuilds requests after restart", as
 
     const rows = store.db
       .prepare(
-        "SELECT kind,data FROM replay_entries WHERE taskId=? ORDER BY seq",
+        "SELECT kind,data,outcome FROM replay_entries WHERE taskId=? ORDER BY seq",
       )
-      .all(task.id) as Array<{ kind: string; data: string }>;
+      .all(task.id) as Array<{ kind: string; data: string; outcome: string }>;
     expect(rows.map((row) => row.kind)).toEqual(["model", "tool", "model"]);
     expect(JSON.parse(rows[0].data)).toMatchObject({
       inputPrefix: 0,
       inputSuffix: [common, first],
-      response: { text: "ok" },
     });
+    expect(JSON.parse(rows[0].outcome)).toEqual({
+      response: { output: [], text: "ok" },
+    });
+    expect(JSON.parse(rows[0].data)).not.toHaveProperty("response");
     expect(JSON.parse(rows[2].data)).toMatchObject({
       inputPrefix: 1,
       inputSuffix: [changed],
@@ -484,7 +478,7 @@ it("stores replay entries incrementally and rebuilds requests after restart", as
         ),
       ),
     ).toMatchObject({
-      storageVersion: 2,
+      storageVersion: 3,
       settings: metadata.settings,
     });
     expect(store.replayCase(task.id)?.capture?.modelExchanges[1]).toMatchObject(
@@ -537,10 +531,10 @@ it("stores replay entries incrementally and rebuilds requests after restart", as
   }
 });
 
-it("upgrades a v8 replay database without rewriting captured JSON", async () => {
+it("rejects a v8 replay database and preserves every captured byte", async () => {
   const root = await temp();
   const file = path.join(root, "history.sqlite");
-  let store = new Store(file);
+  const store = new Store(file);
   const session = store.create(root);
   const task = store.createTask(session.id);
   const oldCapture = {
@@ -564,28 +558,21 @@ it("upgrades a v8 replay database without rewriting captured JSON", async () => 
   store.db
     .prepare("INSERT INTO task_replays(taskId,data) VALUES(?,?)")
     .run(task.id, JSON.stringify(oldCapture));
-  store.close();
+  await store.closeAsync();
   const oldDb = new DatabaseSync(file);
   oldDb.exec("DROP TABLE replay_entries; PRAGMA user_version = 8");
   oldDb.close();
 
-  store = new Store(file, { interruptActive: false });
-  try {
-    expect(store.replayCase(task.id)?.capture).toEqual(oldCapture);
-    expect(store.replayCase(task.id)?.source).toBe("captured");
-    const backup = readdirSync(path.join(root, "backups"));
-    expect(backup).toHaveLength(1);
-    const db = new DatabaseSync(path.join(root, "backups", backup[0]));
-    expect(db.prepare("PRAGMA user_version").get()).toEqual({
-      user_version: 8,
-    });
-    expect(db.prepare("SELECT data FROM task_replays").get()).toEqual({
-      data: JSON.stringify(oldCapture),
-    });
-    db.close();
-  } finally {
-    store.close();
-  }
+  const original = readFileSync(file);
+  expect(() => new Store(file, { interruptActive: false })).toThrow(
+    "离线完整迁移",
+  );
+  expect(readFileSync(file)).toEqual(original);
+  const preserved = new DatabaseSync(file, { readOnly: true });
+  expect(preserved.prepare("SELECT data FROM task_replays").get()?.data).toBe(
+    JSON.stringify(oldCapture),
+  );
+  preserved.close();
 });
 
 it("restart interrupts active tasks but preserves terminal states and context", async () => {
@@ -611,7 +598,7 @@ it("restart interrupts active tasks but preserves terminal states and context", 
     text: "hello",
   });
   store.saveContext(session.id, [{ role: "user", content: "saved" }]);
-  store.close();
+  await store.closeAsync();
   store = new Store(file);
   try {
     expect(store.tasks(session.id).map((t) => t.status)).toEqual([
@@ -628,11 +615,11 @@ it("restart interrupts active tasks but preserves terminal states and context", 
       data: { text: "hello" },
     });
   } finally {
-    store.close();
+    await store.closeAsync();
   }
 });
 
-it("persists task-level subagent selection and migrates legacy shards without enabling it", async () => {
+it("persists task-level subagent selection across shards and restart", async () => {
   const root = await temp();
   const file = path.join(root, "history.sqlite");
   let store = new Store(file, { maxShardBytes: 1 });
@@ -646,12 +633,7 @@ it("persists task-level subagent selection and migrates legacy shards without en
     store.queuedTasks().find((task) => task.id === selected.id)
       ?.subagentsEnabled,
   ).toBe(true);
-  store.close();
-
-  // CREATE TABLE IF NOT EXISTS 不会为旧分片补列；迁移必须逐文件执行。
-  const oldDb = new DatabaseSync(file);
-  oldDb.exec("ALTER TABLE tasks DROP COLUMN subagentsEnabled");
-  oldDb.close();
+  await store.closeAsync();
 
   store = new Store(file, { maxShardBytes: 1, interruptActive: false });
   try {
@@ -663,7 +645,7 @@ it("persists task-level subagent selection and migrates legacy shards without en
         ?.subagentsEnabled,
     ).toBe(true);
   } finally {
-    store.close();
+    await store.closeAsync();
   }
 });
 
@@ -700,7 +682,7 @@ it("persists subagent plans and checkpoints while keeping interrupted requests u
     store.finishSubagentRequest(task.id, "reviewer", "read-1", {
       path: "src/a.ts",
     });
-    store.close();
+    await store.closeAsync();
 
     store = new Store(file);
     expect(store.subagents(task.id)).toMatchObject([
@@ -721,7 +703,7 @@ it("persists subagent plans and checkpoints while keeping interrupted requests u
       store.planSubagents(task.id, [{ ...plan, id: "next" }]),
     ).toThrow("尚未运行");
   } finally {
-    store.close();
+    await store.closeAsync();
   }
 });
 
@@ -779,7 +761,7 @@ it("persists one bounded subagent question and returns its recorded receipt with
         .events(session.id)
         .filter((event) => event.type === "subagent_question"),
     ).toHaveLength(1);
-    store.close();
+    await store.closeAsync();
 
     store = new Store(file);
     expect(store.subagentRequest(task.id, "reader", "ask-1")).toMatchObject({
@@ -792,7 +774,7 @@ it("persists one bounded subagent question and returns its recorded receipt with
         .filter((event) => event.type === "subagent_question"),
     ).toHaveLength(1);
   } finally {
-    store.close();
+    await store.closeAsync();
   }
 });
 
@@ -840,7 +822,7 @@ it("commits a finished subagent report with main feedback and keeps it readable"
       "另一任务",
     );
   } finally {
-    store.close();
+    await store.closeAsync();
   }
 });
 
@@ -886,7 +868,7 @@ it("leaves subagent reports available until main tool feedback commits atomicall
       store.events(session.id).filter((event) => event.type === "tool_result"),
     ).toEqual([]);
   } finally {
-    store.close();
+    await store.closeAsync();
   }
 });
 
@@ -933,7 +915,7 @@ it("does not consume a report that completed after the delivered preview", async
       { status: "completed", report: "late evidence", consumed: false },
     ]);
   } finally {
-    store.close();
+    await store.closeAsync();
   }
 });
 
@@ -960,7 +942,7 @@ it("rotates new sessions into a later history shard while preserving old worker 
       expect.arrayContaining([first.id, second.id]),
     );
 
-    store.close();
+    await store.closeAsync();
     store = new Store(file, { interruptActive: false, maxShardBytes });
     expect(store.get(first.id)?.title).toBe("first");
     expect(store.get(second.id)?.title).toBe("second");
@@ -968,6 +950,6 @@ it("rotates new sessions into a later history shard while preserving old worker 
       { role: "user", content },
     ]);
   } finally {
-    store.close();
+    await store.closeAsync();
   }
 });

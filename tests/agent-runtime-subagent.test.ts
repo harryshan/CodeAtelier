@@ -377,6 +377,6 @@ it("coordinates subagent Workers inside the Runtime through task-bound Broker IP
   } finally {
     releaseChildGate();
     await engine.close();
-    store.close();
+    await store.closeAsync();
   }
 });

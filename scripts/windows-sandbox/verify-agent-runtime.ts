@@ -886,7 +886,7 @@ async function main() {
     );
   } finally {
     await engine?.close().catch(() => undefined);
-    store.close();
+    await store.closeAsync();
     if (passed) {
       await rm(root, { recursive: true, force: true });
     } else {

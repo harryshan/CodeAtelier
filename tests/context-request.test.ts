@@ -71,7 +71,7 @@ it("measures and sends unchanged history below the compaction threshold", async 
     expect(request.after).toBe(request.before);
     expect(store.latestContextSnapshot(session.id)).toBeUndefined();
   } finally {
-    store.close();
+    await store.closeAsync();
   }
 });
 
@@ -137,6 +137,6 @@ it("keeps duplicate read results intact on retries and later tool rounds", async
     expect(store.latestContextSnapshot(session.id)).toBeUndefined();
   } finally {
     await engine.close();
-    store.close();
+    await store.closeAsync();
   }
 });

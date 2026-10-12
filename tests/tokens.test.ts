@@ -257,7 +257,7 @@ it("uses token measurement through compaction and keeps character archive metada
       encode.mockRestore();
     }
   } finally {
-    store.close();
+    await store.closeAsync();
   }
 });
 
@@ -305,7 +305,7 @@ it("persists service usage and exposes the discovered capacity while sending the
     ).toMatchObject({ input_tokens: 10, output_tokens: 5, purpose: "task" });
   } finally {
     await engine.close();
-    store.close();
+    await store.closeAsync();
   }
 
   const reopened = new Store(file);
@@ -347,7 +347,7 @@ it("metadata failure falls back without blocking the task", async () => {
     ).toEqual([]);
   } finally {
     await engine.close();
-    store.close();
+    await store.closeAsync();
   }
 });
 

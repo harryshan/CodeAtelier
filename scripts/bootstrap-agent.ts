@@ -212,7 +212,7 @@ try {
   await wait();
   const firstStatus = store.task(task.id)?.status;
   await engine.close();
-  store.close();
+  await store.closeAsync();
   store = new Store(path.join(config.directory, "history.sqlite"));
   engine = new Engine(store, config, log);
   observe(engine, false);
@@ -341,5 +341,5 @@ try {
   }
 } finally {
   await engine.close();
-  store.close();
+  await store.closeAsync();
 }

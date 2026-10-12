@@ -6,12 +6,13 @@
  * 2. compact 在本线程 JSON.stringify 压缩前快照和活动上下文，并用与 Store 相同的 BEGIN IMMEDIATE 事务原子写入快照/上下文并清除旧 token 锚点；显式替换也清除，普通追加不清除。
  * 3. replay 与同步 Store 共用增量编码；主线程只接收结构化克隆结果，Worker 不处理权限、模型、文件或用户输入，也不会执行任意 SQL。
  *
- * 每次请求单独打开 SQLite 连接，WAL 允许它与主 Store 的短查询共存。事务失败会回滚，不能撤销已经发生的文件或模型副作用。
+ * 按分片复用最多 8 个连接，每连接缓存最多 128 条语句；串行请求返回时释放事务，关闭回执前关闭连接池。WAL 允许它与主 Store 的短查询共存。事务失败会回滚，不能撤销已经发生的文件或模型副作用。
  * WorkerTimings 包装实际 SQLite/事务和本文件 JSON 阶段，有界回传安全时间记录；不包含 SQL、路径或正文。
  */
 
 import { WorkerTimings, type WorkerTiming } from "./worker-timing.js";
 import { parentPort } from "node:worker_threads";
+import { DatabaseSync } from "node:sqlite";
 import { writeReplay } from "./replay-storage.js";
 
 export interface StoreWorkerRequest {
@@ -23,7 +24,8 @@ export interface StoreWorkerRequest {
     | "latestSnapshot"
     | "snapshot"
     | "compact"
-    | "write";
+    | "write"
+    | "close";
   file: string;
   sessionId: string;
   taskId?: string;
@@ -55,9 +57,41 @@ export interface StoreWorkerResponse {
   droppedTimings?: number;
 }
 
+const connections = new Map<string, DatabaseSync>();
+
 function handle(request: StoreWorkerRequest, timings: WorkerTimings) {
-  const db = timings.database(request.file);
-  db.exec("PRAGMA foreign_keys = ON");
+  if (request.operation === "close") {
+    for (const db of connections.values()) {
+      db.close();
+    }
+
+    connections.clear();
+
+    return;
+  }
+
+  let connection = connections.get(request.file);
+  if (!connection) {
+    if (connections.size >= 8) {
+      const oldest = connections.keys().next().value!;
+      connections.get(oldest)!.close();
+      connections.delete(oldest);
+    }
+
+    connection = timings.measure(
+      "connect",
+      () => new DatabaseSync(request.file, { timeout: 5000 }),
+    );
+    connection.exec(
+      "PRAGMA foreign_keys=ON; PRAGMA synchronous=FULL; PRAGMA wal_autocheckpoint=1000",
+    );
+    connections.set(request.file, connection);
+  } else {
+    connections.delete(request.file);
+    connections.set(request.file, connection);
+  }
+
+  const db = timings.database(request.file, connection);
 
   try {
     if (request.operation === "context") {
@@ -80,7 +114,9 @@ function handle(request: StoreWorkerRequest, timings: WorkerTimings) {
 
     if (request.operation === "events") {
       return db
-        .prepare("SELECT * FROM events WHERE sessionId=? AND id>? ORDER BY id")
+        .prepare(
+          "SELECT id,sessionId,taskId,type,data,createdAt FROM events WHERE sessionId=? AND id>? ORDER BY id",
+        )
         .all(request.sessionId, request.after || 0)
         .map((row: any) => ({ ...row, data: timings.parse(String(row.data)) }));
     }
@@ -88,7 +124,7 @@ function handle(request: StoreWorkerRequest, timings: WorkerTimings) {
     if (request.operation === "latestSnapshot") {
       const row = db
         .prepare(
-          "SELECT data FROM context_snapshots WHERE sessionId=? ORDER BY rowid DESC LIMIT 1",
+          "SELECT data FROM context_snapshots WHERE sessionId=? ORDER BY orderKey DESC LIMIT 1",
         )
         .get(request.sessionId) as { data: string } | undefined;
 
@@ -311,7 +347,10 @@ function handle(request: StoreWorkerRequest, timings: WorkerTimings) {
 
     throw new Error("未知的 Store Worker 操作。");
   } finally {
-    db.close();
+    // 串行处理结束不得泄漏事务到下一条业务；空闲连接只保留句柄和有界语句缓存。
+    if (db.isTransaction) {
+      db.exec("ROLLBACK");
+    }
   }
 }
 

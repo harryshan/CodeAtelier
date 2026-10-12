@@ -275,7 +275,7 @@ it("resumes after completed file edits without replaying them and keeps original
     ).toBe(original.id);
   } finally {
     await engine.close();
-    store.close();
+    await store.closeAsync();
   }
 });
 
@@ -328,7 +328,7 @@ it("restores recorded tool results and marks unknown calls after a database rest
     pid: 4444,
     parentExecutionInstanceId: "parent-runtime",
   });
-  store.close();
+  await store.closeAsync();
   store = new Store(file);
   let inputs: any[] = [];
   const engine = new Engine(store, config, pino({ enabled: false }), () => ({
@@ -385,7 +385,7 @@ it("restores recorded tool results and marks unknown calls after a database rest
     ).toHaveLength(0);
   } finally {
     await engine.close();
-    store.close();
+    await store.closeAsync();
   }
 });
 
@@ -438,7 +438,7 @@ it("shutdown and approval cancellation remain recoverable and release the task l
     expect(engine.active).toBeUndefined();
   } finally {
     await engine.close();
-    store.close();
+    await store.closeAsync();
   }
 });
 
@@ -496,6 +496,6 @@ it("automatic model retry after a tool result does not repeat the completed edit
     expect(await readFile(path.join(root, "once.txt"), "utf8")).toBe("saved");
   } finally {
     await engine.close();
-    store.close();
+    await store.closeAsync();
   }
 });

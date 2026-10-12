@@ -138,6 +138,6 @@ it("reviews only executing commands and resumes the main conversation after stop
   } finally {
     interval.mockRestore();
     await engine.close();
-    store.close();
+    await store.closeAsync();
   }
 }, 30000);

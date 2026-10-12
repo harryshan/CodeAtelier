@@ -289,7 +289,7 @@ it("summarizes tool results directly, persists originals and retains execution s
       expect(excerpts.join("")).toBe(JSON.stringify(source[index]));
     }
 
-    store.close();
+    await store.closeAsync();
     store = new Store(db);
     expect(store.context(session.id)).toEqual(next);
     let offset = 0;
@@ -335,7 +335,7 @@ it("summarizes tool results directly, persists originals and retains execution s
     );
     expect(store.events(session.id)[0].data.result).toEqual(command);
   } finally {
-    store.close();
+    await store.closeAsync();
   }
 });
 

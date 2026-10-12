@@ -52,7 +52,7 @@ it("inherits opt-in without restarting interrupted Workers or retrying unknown m
     { role: "user", content: "research" },
   ]);
   store.startSubagentRequest(original.id, "reader", "model-1", "model");
-  store.close();
+  await store.closeAsync();
 
   await writeFile(source, "export const current = 2;\n");
   store = new Store(database);
@@ -127,6 +127,6 @@ it("inherits opt-in without restarting interrupted Workers or retrying unknown m
     expect(modelCalls).toBe(2);
   } finally {
     await engine.close();
-    store.close();
+    await store.closeAsync();
   }
 });

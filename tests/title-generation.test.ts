@@ -5,7 +5,7 @@
  * 1. 新会话从 pending 占位标题开始；首个任务选择 auxiliaryModel，清理并保存模型返回的标题。
  * 2. 后续任务不会再次调用标题模型，避免用后续 prompt 覆盖首条消息的摘要。
  * 3. 标题模型对未知故障最多额外重试三次；耗尽或首任务取消时保留占位标题并结束标题状态。
- * 4. 用旧版 sessions 表启动 Store，确认迁移保留已有手填标题而不重新生成。
+ * 4. 离线转换旧版 sessions 表后再启动 Store，确认保留已有手填标题而不重新生成。
  *
  * 标题输出和模型调用只用于断言；测试不记录真实 prompt、密钥或外部服务数据。
  */
@@ -17,6 +17,7 @@ import { DatabaseSync } from "node:sqlite";
 import { Engine } from "../src/agent/engine.js";
 import { Config } from "../src/config/config.js";
 import { Store } from "../src/sessions/store.js";
+import { migrateShard, verifyAndSealShard } from "../src/sessions/migration.js";
 import { TITLE_INSTRUCTIONS } from "../src/sessions/title-generator.js";
 import { ModelError } from "../src/providers/model-error.js";
 import { temp } from "./fixtures/helpers.js";
@@ -99,7 +100,7 @@ it("generates and persists one title from the first prompt with the auxiliary mo
     );
   } finally {
     await engine.close();
-    store.close();
+    await store.closeAsync();
   }
 });
 
@@ -150,7 +151,7 @@ it("retries unknown title failures up to three times before completing the codin
   } finally {
     vi.useRealTimers();
     await engine.close();
-    store.close();
+    await store.closeAsync();
   }
 });
 
@@ -195,7 +196,7 @@ it("keeps the placeholder title when permanent generation failure does not fail 
     expect(store.tasks(session.id)[0].status).toBe("completed");
   } finally {
     await engine.close();
-    store.close();
+    await store.closeAsync();
   }
 });
 
@@ -240,7 +241,7 @@ it("ends title generation when the first task is cancelled", async () => {
     expect(store.task(task.id)?.status).toBe("cancelled");
   } finally {
     await engine.close();
-    store.close();
+    await store.closeAsync();
   }
 });
 
@@ -257,17 +258,23 @@ it("marks sessions from the old schema as completed to preserve existing titles"
       createdAt TEXT NOT NULL,
       updatedAt TEXT NOT NULL
     );
+    CREATE TABLE tasks(id TEXT PRIMARY KEY,sessionId TEXT,status TEXT,createdAt TEXT,error TEXT);
+    CREATE TABLE events(id INTEGER PRIMARY KEY,sessionId TEXT,taskId TEXT,type TEXT,data TEXT,createdAt TEXT);
+    PRAGMA user_version=1;
     INSERT INTO sessions VALUES ('old', '保留的历史标题', 'C:/project', '2026-01-01', '2026-01-01');
   `);
   legacy.close();
 
-  const store = new Store(file);
+  const target = path.join(directory, "target.sqlite");
+  await migrateShard(file, target);
+  verifyAndSealShard(file, target);
+  const store = new Store(target);
   try {
     expect(store.get("old")).toMatchObject({
       title: "保留的历史标题",
       titleState: "completed",
     });
   } finally {
-    store.close();
+    await store.closeAsync();
   }
 });

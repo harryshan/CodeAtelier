@@ -3,10 +3,10 @@
  *
  * 1. 固定容量和真实 tokenizer 核对 JSON 重建、仅追加编码、指令增长/缩短，以及模型/工具/前缀失效。
  * 2. SessionTokenCalibration 夹具验证非法或缺失 usage 不污染基线，存储失败/取消有终态且不重试。
- * 3. 临时 SQLite 验证会话隔离、重启、追加保留、替换/压缩清除及失败事务回滚；v9 数据库先备份再迁移。
+ * 3. 临时 SQLite 验证会话隔离、重启、追加保留、替换/压缩清除及失败事务回滚；v9 冻结副本离线转换后再开启目标。
  * 4. 固定 IPC schema 拒绝越界计数、正文扩展和指定其它会话，旧握手不能忽略新增校准功能。
  */
-import { readdir } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { Tiktoken } from "js-tiktoken/lite";
@@ -15,6 +15,7 @@ import { createBudget, measureContext } from "../src/context/token-budget.js";
 import { tokenScope, tokenAnchorSchema } from "../src/context/token-anchor.js";
 import { SessionTokenCalibration } from "../src/context/session-token-calibration.js";
 import { Store } from "../src/sessions/store.js";
+import { migrateShard, verifyAndSealShard } from "../src/sessions/migration.js";
 import type { ContextSnapshot } from "../src/context/types.js";
 import { runtimeIpcMessageSchema } from "../src/sandbox/runtime-ipc-protocol.js";
 import { temp } from "./fixtures/helpers.js";
@@ -346,28 +347,40 @@ it("persists per-session anchors across shards and restart and clears them atomi
   }
 });
 
-it("backs up and upgrades v9 history without inventing an anchor from usage events", async () => {
+it("converts frozen v9 history without inventing an anchor from usage events", async () => {
   const directory = await temp();
-  const database = path.join(directory, "db.sqlite");
-  let store = new Store(database);
-  const session = store.create(directory, "legacy");
-  store.saveContext(session.id, history);
-  await store.closeAsync();
+  const database = path.join(directory, "legacy.sqlite");
   const legacy = new DatabaseSync(database);
-  legacy.exec("DROP TABLE context_token_anchors; PRAGMA user_version = 9");
+  legacy.exec(`
+    CREATE TABLE sessions(id TEXT PRIMARY KEY,title TEXT,workspace TEXT,createdAt TEXT,updatedAt TEXT);
+    CREATE TABLE tasks(id TEXT PRIMARY KEY,sessionId TEXT,status TEXT,createdAt TEXT,error TEXT);
+    CREATE TABLE events(id INTEGER PRIMARY KEY,sessionId TEXT,taskId TEXT,type TEXT,data TEXT,createdAt TEXT);
+    CREATE TABLE context_chunks(sessionId TEXT,position INTEGER,items TEXT,PRIMARY KEY(sessionId,position));
+    INSERT INTO sessions VALUES('s','legacy','/test','same','same');
+    INSERT INTO tasks VALUES('t','s','completed','same',null);
+    INSERT INTO events VALUES(1,'s','t','model_usage','{"input_tokens":1000,"output_tokens":10,"total_tokens":1010}','same');
+    PRAGMA user_version=9;
+  `);
+  legacy
+    .prepare("INSERT INTO context_chunks VALUES('s',0,?)")
+    .run(JSON.stringify(history));
   legacy.close();
-  store = new Store(database);
+  const original = readFileSync(database);
+  const target = path.join(directory, "target.sqlite");
+  await migrateShard(database, target);
+  verifyAndSealShard(database, target);
+  expect(readFileSync(database)).toEqual(original);
+  const store = new Store(target);
   try {
-    expect(store.context(session.id)).toEqual(history);
-    expect(await store.tokenAnchorAsync(session.id)).toBeUndefined();
+    expect(store.context("s")).toEqual(history);
+    expect(await store.tokenAnchorAsync("s")).toBeUndefined();
     expect(store.db.prepare("PRAGMA user_version").get()).toEqual({
-      user_version: 10,
+      user_version: 11,
     });
-    expect(await readdir(path.join(directory, "backups"))).toHaveLength(1);
     store.db
       .prepare("INSERT INTO context_token_anchors VALUES(?,?)")
-      .run(session.id, JSON.stringify({ ...makeAnchor(), version: 0 }));
-    expect(await store.tokenAnchorAsync(session.id)).toBeUndefined();
+      .run("s", JSON.stringify({ ...makeAnchor(), version: 0 }));
+    expect(await store.tokenAnchorAsync("s")).toBeUndefined();
   } finally {
     await store.closeAsync();
   }

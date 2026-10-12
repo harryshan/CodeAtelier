@@ -372,7 +372,7 @@ describe("execution and persistence", () => {
     expect(
       store.context(session.id).some((i) => i.type === "function_call_output"),
     ).toBe(true);
-    store.close();
+    await store.closeAsync();
   });
 });
 

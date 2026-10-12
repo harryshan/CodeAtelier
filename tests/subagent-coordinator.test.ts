@@ -166,7 +166,7 @@ it("runs separate loops in dependency order and persists reports for only one co
     expect(fixture.trace).toContain("subagent.worker:first:completed");
   } finally {
     await fixture.coordinator.close();
-    fixture.store.close();
+    await fixture.store.closeAsync();
   }
 });
 
@@ -198,7 +198,7 @@ it("rejects sensitive scopes before persistence and cancels waiting model work",
     ]);
   } finally {
     await fixture.coordinator.close();
-    fixture.store.close();
+    await fixture.store.closeAsync();
   }
 });
 
@@ -260,7 +260,7 @@ it("joins plans already registering when the parent task closes", async () => {
     releasePlan();
     await coordinator.close();
     await fixture.coordinator.close();
-    fixture.store.close();
+    await fixture.store.closeAsync();
   }
 });
 
@@ -319,7 +319,7 @@ it("does not resume the child model when a read result cannot be persisted", asy
     ).toBe("started");
   } finally {
     await fixture.coordinator.close();
-    fixture.store.close();
+    await fixture.store.closeAsync();
   }
 });
 
@@ -359,7 +359,7 @@ it("stops waiting immediately when the main task is cancelled", async () => {
   } finally {
     await coordinator.close();
     await fixture.coordinator.close();
-    fixture.store.close();
+    await fixture.store.closeAsync();
   }
 });
 
@@ -416,7 +416,7 @@ it("keeps research running beyond the former deadline until explicitly cancelled
   } finally {
     vi.useRealTimers();
     await fixture.coordinator.close();
-    fixture.store.close();
+    await fixture.store.closeAsync();
   }
 });
 
@@ -548,7 +548,7 @@ it("persists a child question and lets only the main coordinator answer it", asy
     releaseQuestion();
     releaseSecond();
     await fixture.coordinator.close();
-    fixture.store.close();
+    await fixture.store.closeAsync();
   }
 });
 
@@ -623,7 +623,7 @@ it("persists questions beyond the former count limit while deduplicating confirm
     );
   } finally {
     await fixture.coordinator.close();
-    fixture.store.close();
+    await fixture.store.closeAsync();
   }
 });
 
@@ -708,6 +708,6 @@ it("delivers more than sixteen long messages at the next child model step", asyn
   } finally {
     releaseModel();
     await fixture.coordinator.close();
-    fixture.store.close();
+    await fixture.store.closeAsync();
   }
 });

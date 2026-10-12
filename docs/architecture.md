@@ -100,7 +100,7 @@ Engine 在任一节点产生副作用前校验整批 DAG，并以稳定拓扑顺
 
 replay 捕获将任务元数据和单条模型/工具记录分开保存，模型 input 按前缀与新增尾部增量编码，导出时重建完整 input/instructions/响应及脱敏工具材料；旧整条 JSON 可读。导出还可从同一哈希的完整 `read_file` 页拼接 `edit_files` 的原始文件；只读到部分行或旧历史则明确拒绝真实文件物化。
 
-会话初始快照读取全量事件，SSE 后续刷新按跨分片仍单调的 event ID 游标只读取新增事件；常规事件、上下文、任务状态、replay 和 HTTP 新建会话/任务通过串行复用的 `store-worker.ts` 提交后再返回，工具结果/反馈保持同一事务。超过 64 KiB 的事件/上下文和历史快照也通过此 Worker 读取，小结果仍由主线程同步读取。同步 Store 兼容入口、服务启动迁移及未开放的 subagent 原子账本暂保留主线程写入；这些事务未进入 Worker 队列，若交错写入同一分片，主线程连接最多等待 SQLite 写锁 1 秒后失败，不自动重试结果未知的写入。启动时将 queued/running/waiting 任务标为 interrupted 并记录结束时间；子任务的未完成状态同样中断，未确认的子模型请求保留 unknown，不自动重放。
+会话初始快照读取全量事件，SSE 后续刷新按跨分片仍单调的 event ID 游标只读取新增事件；常规事件、上下文、任务状态、replay 和 HTTP 新建会话/任务通过串行复用的 `store-worker.ts` 提交后再返回，工具结果/反馈保持同一事务。事件/上下文和历史快照统一通过此 Worker 读取，不再在主线程进行长度聚合预检。Worker 复用最多 8 个连接，每连接最多 128 条 prepared statement；队列限制 1024 项及保守估算的 128 MiB 数据预算，未发送的超预算请求明确拒绝。关闭须等待 `closeAsync()`，连接池释放后才结束线程。同步 Store 兼容入口和未开放的 subagent 原子账本暂保留主线程写入；兼容事务只锁首次选定分片，尝试跨文件写入会整笔回滚。这些事务未进入 Worker 队列，若交错写入同一分片，主线程连接最多等待 SQLite 写锁 1 秒后失败，不自动重试结果未知的写入。启动时将 queued/running/waiting 任务标为 interrupted 并记录结束时间；子任务的未完成状态同样中断，未确认的子模型请求保留 unknown，不自动重放。
 
 可视化位于 `src/replay-viewer`：`projection.ts` 校验 TaskReplayCase v1 并按唯一 call ID 建立模型/工具关联；`browser.ts` 提供可挂载/清理的纯文本 DOM 阅读器。现有 `main.tsx` 在 `/?view=replay` 经共用 AccessGate 惰性加载 `ReplayViewer.tsx`，主页面与阅读器的模块/样式分别加载，Fastify 与 Vite 均沿用根 HTML 入口。默认数据库模式通过现有 `/api/sessions` 和 `server/replay-routes.ts` 的会话 Task 目录、单任务 Replay GET 接口，复用 `Store.tasks/replayCase` 与历史分片；任务归属、cookie/密码/来源和 no-store 在后端校验。目录不携带模型/事件载荷，详情只按选中的 Task 重建；同步重建仍有大任务阻塞/内存成本。URL 仅保存数据源/记录 ID，取消和清理信号禁止旧请求覆盖新选择。本地 JSON 为可选模式，不上传文件；卸载清除搜索计时器并废弃在途读取。旧 `scripts/replay-view.ts` / `html.ts` / `standalone.ts` 保留可选单文件导出，共用同一阅读器，不修改捕获协议。使用说明见 [Replay Case](replay-cases.md#可视化阅读)。
 
@@ -264,7 +264,7 @@ Broker 命令与 Git push 可以使用宿主用户可访问的文件、网络和
 
 父进程等待旧进程释放端口，因而不会并行监听。新进程启动时生成新的本机会话 token，UI 轮询到 token 变化后才完整刷新页面。重载不撤销已修改文件，但不能恢复已经关闭的服务；它也不编译源码，生产模式须先 `pnpm build`。开发时 `tsx watch` 与 Vite HMR 仍分别负责源码自动更新。
 
-模型元数据与实际 usage 由 providers/model-metadata.ts 校验，context/token-budget.ts 计算本地 token 估算和输入预算。`token-anchor.ts` 定义无正文的版本化锚点及内容/配置指纹；`session-token-calibration.ts` 在宿主/Runtime 首次压缩检查前恢复基线，响应保存后更新。Store schema v10 的 `context_token_anchors` 每会话保留一条，经串行 Worker 读写，替换历史或压缩在同一事务清除；IPC v14 的校准字段只传锚点与 scope，不泄露连接配置。`context.usage.restore/save` 记录命中、耗时和终态，不记录指纹。UI 仅展示实报，详见 [model-tokens.md](model-tokens.md)。
+模型元数据与实际 usage 由 providers/model-metadata.ts 校验，context/token-budget.ts 计算本地 token 估算和输入预算。`token-anchor.ts` 定义无正文的版本化锚点及内容/配置指纹；`session-token-calibration.ts` 在宿主/Runtime 首次压缩检查前恢复基线，响应保存后更新。Store schema v11 沿用的 `context_token_anchors` 每会话保留一条，经串行 Worker 读写，替换历史或压缩在同一事务清除；IPC v14 的校准字段只传锚点与 scope，不泄露连接配置。`context.usage.restore/save` 记录命中、耗时和终态，不记录指纹。UI 仅展示实报，详见 [model-tokens.md](model-tokens.md)。
 
 上下文压缩的触发、持久化、失败边界与模块职责见 [context-management.md](context-management.md)。活动上下文可为摘要与最近原文的组合；压缩前完整输入另存快照，不删除事件历史。
 

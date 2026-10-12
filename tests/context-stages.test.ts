@@ -132,7 +132,7 @@ it("summarizes repeated reads directly without first projecting tool outputs", a
     expect(request.after).toBe(request.before);
     expect(contextSize(next, "", [])).toBeLessThan(7200);
   } finally {
-    f.store.close();
+    await f.store.closeAsync();
   }
 });
 
@@ -160,7 +160,7 @@ it("summarizes long read results with middle diagnostics without an archive stag
       JSON.stringify(source[2]),
     );
   } finally {
-    f.store.close();
+    await f.store.closeAsync();
   }
 });
 
@@ -216,7 +216,7 @@ it("expands old archive snapshots before directly summarizing the full read", as
       JSON.stringify(source[2]),
     );
   } finally {
-    f.store.close();
+    await f.store.closeAsync();
   }
 });
 
@@ -266,7 +266,7 @@ it("does not deduplicate different file versions or project unknown, failed, and
       projectReads(failed, "snapshot", f.store.events(f.session.id), "archive"),
     ).toEqual(failed);
   } finally {
-    f.store.close();
+    await f.store.closeAsync();
   }
 });
 
@@ -299,6 +299,6 @@ it("retains prior verified summary text and its source IDs without summarizing i
     );
     expect(f.store.contextSnapshot(f.session.id, prior.id)).toEqual(prior);
   } finally {
-    f.store.close();
+    await f.store.closeAsync();
   }
 });

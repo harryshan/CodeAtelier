@@ -155,7 +155,7 @@ it("persists execution duration for failures and zero for invalid or blocked cal
     expect(Buffer.concat(errors).toString("utf8")).toBe("");
   } finally {
     await engine.close();
-    store.close();
+    await store.closeAsync();
   }
 
   const reopened = new Store(database);

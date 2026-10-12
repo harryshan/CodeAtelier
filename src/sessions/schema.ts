@@ -3,7 +3,9 @@
  *
  * 1. 开启 WAL 和外键检查；sessions 保存会话、工作区及标题生成状态，tasks 保存排队、实际运行、结束时间、任务级 subagent 选择和错误。
  * 2. events 保存工具与对话；context_chunks 按基线与增量保存活动模型协议项，context 只供旧库迁移；context_token_anchors 保存每会话一个无正文的实报校准锚点。
- * 3. context_snapshots 保存压缩前历史；task_replays 保存 replay 元数据及旧格式，replay_entries 增量保存模型/工具；subagent 表保存检查点与请求回执，末尾设置 user_version。
+ * 3. context_snapshots 保存压缩前历史；Replay v3 将不可变请求与终态分离，检查点限制重建距离。
+ * 4. 显式 orderKey 保留任务、快照和子任务顺序；长度和关联字段随正文维护，索引支持分页与恢复。
+ * 5. 本文件仅创建目标 v11；旧数据须离线转换和验证，不能靠执行 DDL 升级已有库。
  *
  * 表结构要与 Store 中的 SQL 一起维护。修改时也要考虑旧数据库如何升级，不能只检查新建数据库。
  */
@@ -30,7 +32,8 @@ export const SCHEMA_SQL = `
     startedAt TEXT,
     finishedAt TEXT,
     error TEXT,
-    subagentsEnabled INTEGER NOT NULL DEFAULT 0 CHECK (subagentsEnabled IN (0, 1))
+    subagentsEnabled INTEGER NOT NULL DEFAULT 0 CHECK (subagentsEnabled IN (0, 1)),
+    orderKey INTEGER NOT NULL DEFAULT 0
   );
 
   CREATE TABLE IF NOT EXISTS events (
@@ -39,7 +42,10 @@ export const SCHEMA_SQL = `
     taskId TEXT NOT NULL,
     type TEXT NOT NULL,
     data TEXT NOT NULL,
-    createdAt TEXT NOT NULL
+    createdAt TEXT NOT NULL,
+    byteSize INTEGER GENERATED ALWAYS AS (length(CAST(data AS BLOB))) STORED,
+    callId TEXT GENERATED ALWAYS AS (coalesce(json_extract(data,'$.toolCallId'),json_extract(data,'$.callId'))) STORED,
+    toolName TEXT GENERATED ALWAYS AS (json_extract(data,'$.name')) STORED
   );
 
   CREATE TABLE IF NOT EXISTS context (
@@ -51,6 +57,7 @@ export const SCHEMA_SQL = `
     sessionId TEXT NOT NULL REFERENCES sessions(id),
     position INTEGER NOT NULL,
     items TEXT NOT NULL,
+    byteSize INTEGER GENERATED ALWAYS AS (length(CAST(items AS BLOB))) STORED,
     PRIMARY KEY(sessionId, position)
   );
 
@@ -60,13 +67,20 @@ export const SCHEMA_SQL = `
   );
 
   CREATE INDEX IF NOT EXISTS events_session ON events(sessionId, id);
+  CREATE INDEX IF NOT EXISTS events_task ON events(taskId, type, id);
+  CREATE INDEX IF NOT EXISTS events_call ON events(sessionId, callId, type, id);
+  CREATE INDEX IF NOT EXISTS tasks_session_order ON tasks(sessionId, createdAt, orderKey);
+  CREATE INDEX IF NOT EXISTS tasks_status_order ON tasks(status, createdAt, orderKey);
 
   CREATE TABLE IF NOT EXISTS context_snapshots (
     id TEXT PRIMARY KEY,
     sessionId TEXT NOT NULL REFERENCES sessions(id),
-    data TEXT NOT NULL
+    data TEXT NOT NULL,
+    orderKey INTEGER NOT NULL DEFAULT 0,
+    byteSize INTEGER GENERATED ALWAYS AS (length(CAST(data AS BLOB))) STORED
   );
   CREATE INDEX IF NOT EXISTS context_snapshots_session ON context_snapshots(sessionId);
+  CREATE INDEX IF NOT EXISTS context_snapshots_order ON context_snapshots(sessionId, orderKey);
 
   CREATE TABLE IF NOT EXISTS task_replays (
     taskId TEXT PRIMARY KEY REFERENCES tasks(id),
@@ -79,9 +93,14 @@ export const SCHEMA_SQL = `
     kind TEXT NOT NULL CHECK (kind IN ('model', 'tool')),
     itemId TEXT NOT NULL,
     data TEXT NOT NULL,
+    outcome TEXT,
+    checkpoint INTEGER NOT NULL DEFAULT 0 CHECK (checkpoint IN (0, 1)),
+    byteSize INTEGER GENERATED ALWAYS AS (length(CAST(data AS BLOB))) STORED,
+    outcomeBytes INTEGER GENERATED ALWAYS AS (coalesce(length(CAST(outcome AS BLOB)),0)) STORED,
     UNIQUE(taskId, kind, itemId)
   );
   CREATE INDEX IF NOT EXISTS replay_entries_task ON replay_entries(taskId, seq);
+  CREATE INDEX IF NOT EXISTS replay_model_checkpoints ON replay_entries(taskId, checkpoint, seq) WHERE kind='model';
 
   CREATE TABLE IF NOT EXISTS subagents (
     taskId TEXT NOT NULL REFERENCES tasks(id),
@@ -92,6 +111,7 @@ export const SCHEMA_SQL = `
     context TEXT NOT NULL DEFAULT '[]',
     consumed INTEGER NOT NULL DEFAULT 0,
     updatedAt TEXT NOT NULL,
+    orderKey INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY(taskId, id)
   );
 
@@ -106,5 +126,28 @@ export const SCHEMA_SQL = `
     FOREIGN KEY(taskId, subagentId) REFERENCES subagents(taskId, id)
   );
 
-  PRAGMA user_version = 10;
+  CREATE INDEX IF NOT EXISTS subagents_order ON subagents(taskId, orderKey);
+
+  CREATE TABLE IF NOT EXISTS migration_progress (
+    stage TEXT PRIMARY KEY,
+    cursor INTEGER NOT NULL,
+    complete INTEGER NOT NULL CHECK (complete IN (0, 1))
+  );
+  CREATE TABLE IF NOT EXISTS migration_identity (
+    singleton INTEGER PRIMARY KEY CHECK (singleton=1),
+    sourceHash TEXT NOT NULL,
+    adapterVersion INTEGER NOT NULL,
+    state TEXT NOT NULL CHECK (state IN ('prepared','converted','verified'))
+  );
+  CREATE TRIGGER IF NOT EXISTS tasks_order AFTER INSERT ON tasks WHEN new.orderKey=0 BEGIN
+    UPDATE tasks SET orderKey=(SELECT coalesce(max(orderKey),0)+1 FROM tasks WHERE sessionId=new.sessionId) WHERE id=new.id;
+  END;
+  CREATE TRIGGER IF NOT EXISTS snapshots_order AFTER INSERT ON context_snapshots WHEN new.orderKey=0 BEGIN
+    UPDATE context_snapshots SET orderKey=(SELECT coalesce(max(orderKey),0)+1 FROM context_snapshots WHERE sessionId=new.sessionId) WHERE id=new.id;
+  END;
+  CREATE TRIGGER IF NOT EXISTS subagents_order AFTER INSERT ON subagents WHEN new.orderKey=0 BEGIN
+    UPDATE subagents SET orderKey=(SELECT coalesce(max(orderKey),0)+1 FROM subagents WHERE taskId=new.taskId) WHERE taskId=new.taskId AND id=new.id;
+  END;
+
+  PRAGMA user_version = 11;
 `;

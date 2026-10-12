@@ -274,9 +274,9 @@ item.done 回退、失败/不完整事件、服务实际错误 message/reason/co
 
 主要测试：store.test.ts、recovery.test.ts、title-generation.test.ts、replay-case.test.ts。
 
-`store.test.ts` 覆盖 Store Worker 串行常规写入、回执后的读写顺序、跨重启持久化和失败批次原子回滚；`tracing.test.ts` 验证独立 Store worker 轨道及无正文泄露。同步兼容入口与未开放 subagent 的迁移仍需另行验证；现有宿主/Runtime subagent 回归覆盖其同步账本与 Worker 事务交错时的执行、检查点及报告收集。`store.test.ts` 用第二个真实 SQLite 连接锁住后续历史分片，验证兼容连接有界等待后失败会释放前面分片，后续事务仍可提交。`shutdown.test.ts` 等待冷启动 Worker 确认命令输出已持久化，再验证 SSE 关闭与中断保存。
+`store.test.ts` 覆盖 Store Worker 串行常规写入、回执后的读写顺序、跨重启持久化和失败批次原子回滚；`tracing.test.ts` 验证独立 Store worker 轨道及无正文泄露。同步兼容入口与未开放 subagent 的迁移仍需另行验证；现有宿主/Runtime subagent 回归覆盖其同步账本与 Worker 事务交错时的执行、检查点及报告收集。`store.test.ts` 用第二个真实 SQLite 连接锁住后续历史分片，验证其他分片仍可正常提交；跨分片事务明确拒绝并回滚第一笔写入。`shutdown.test.ts` 等待冷启动 Worker 确认命令输出已持久化，再验证 SSE 关闭与中断保存。
 
-隔离、事件顺序与游标、增量上下文批次重建与事务回滚、旧分片先备份再迁移以及备份失败保持旧数据、queued/running/waiting 重启中断、实际开始时间、标题状态迁移和恢复，以及大 JSON 的 Worker 读取；按小阈值触发的历史 SQLite 分片、新旧分片聚合、重启发现和旧分片 Worker 读取；任务级 subagent 开关的布尔序列化、旧分片迁移默认关闭及未开放请求明确拒绝（UI 尚未启用）；逐条模型/工具增量捕获、跨重启前缀恢复、未完成请求、旧整条捕获与 legacy 历史标记、局部读取拒绝、哈希一致的分页读取重建和只写入新隔离目录
+隔离、事件顺序与游标、增量上下文批次重建与事务回滚、旧分片及混合版本启动拒绝并保持原始字节、queued/running/waiting 重启中断、实际开始时间、标题状态迁移和恢复，以及大 JSON 的 Worker 读取；按小阈值触发的历史 SQLite 分片、新旧分片聚合、重启发现和旧分片 Worker 读取；任务级 subagent 开关的布尔序列化、旧格式离线转换的默认关闭及未开放请求明确拒绝（UI 尚未启用）；逐条模型/工具增量捕获、跨重启前缀恢复、未完成请求、旧整条捕获与 legacy 历史标记、局部读取拒绝、哈希一致的分页读取重建和只写入新隔离目录
 
 ### 会话统计
 
@@ -602,3 +602,10 @@ tool-schema.test.ts 覆盖根节点、oneOf 禁用、包装解包、历史兼容
 - `tests/sandbox-account-generation.test.ts` 验证首个 provision 安装者失败会拒绝共享 waiter，且 waiter 可由自己的 AbortSignal 取消；`tests/sandbox-https-relay.test.ts` 验证并发首次 start 共用监听 promise，以及任一 tunnel 端关闭会销毁另一端并等待两端终态再移除账本。
 - `tests/sandbox-git-config-graph.test.ts` 用真实临时 Git 配置验证 XDG global 在前、home global 在后的原生覆盖顺序；`tests/recovery.test.ts` 验证 `toolCallId` 与旧 `callId` 兼容，并将 Runtime 内普通工具关联到父 Agent Runtime execution instance；`tests/agent-runtime-engine.test.ts` 验证启动前 fallback 写入 Web 已支持的 `sandbox_fallback` 事件。
 - `tests/sandbox-native-windows-runtime.test.ts` 验证缺少原生 rollback/completion 正向证明时一律归类 `cleanup_unknown`。C++ 构建检查 Supervisor 的失败回滚、Job 分配失败终止、askpass 同步 I/O 取消和 WFP 规则精确核对能够编译；这些不替代固定账户下的故障注入、持久 WFP 替换规则、恶意 askpass client 和崩溃恢复验收。
+
+
+### SQLite 完整迁移实施中的专项覆盖
+
+`database-migration.test.ts` 使用冻结夹具覆盖显式顺序、旧 context 映射、整条 Replay 转换、Unicode/换行及 JSON 键顺序、未完成结果、批次提交后回执丢失的续跑、输入变化拒绝、未知源表和目标顺序篡改。`replay-checkpoints.test.ts` 核对终态不重写请求正文及检查点随机读取；`store-queue.test.ts` 核对字节背压未发送、拒绝后继续使用、连接复用和等待关闭。标题与 token 锚点的旧格式测试改为真实离线转换后读目标，不伪造缺失的锚点。
+
+这些回归及两份真实冻结快照的转换演练仅覆盖当前转换核心。异步元数据接口、读池、分页/统计投影、Runtime 复合写入、压缩完整材料查询、generation 激活和空间治理仍须完成对应产品及故障测试；不能将本节当作完整迁移交付验收。

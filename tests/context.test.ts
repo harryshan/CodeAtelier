@@ -115,7 +115,7 @@ it("compacts history, preserves user corrections and reloads exact archive after
     expect(f.store.events(f.session.id)).toEqual([event]);
     const snapshot = f.store.latestContextSnapshot(f.session.id)!;
     expect(snapshot.source).toEqual(source);
-    f.store.close();
+    await f.store.closeAsync();
     reopened = new Store(f.file);
     expect(reopened.context(f.session.id)).toEqual(next);
     let offset = 0;
@@ -186,7 +186,7 @@ it("keeps unknown operation state across repeated compaction without executing t
       "不可盲目重放",
     );
   } finally {
-    f.store.close();
+    await f.store.closeAsync();
   }
 });
 
@@ -211,7 +211,7 @@ it.each([
       expect(f.store.context(f.session.id)).toEqual(source);
       expect(f.store.latestContextSnapshot(f.session.id)).toBeUndefined();
     } finally {
-      f.store.close();
+      await f.store.closeAsync();
     }
   },
 );
@@ -231,7 +231,7 @@ it("continues below the hard limit after summary failure and does not repeatedly
     expect(await f.manager.prepare(source, "", [])).toBe(source);
     expect(calls).toBe(1);
   } finally {
-    f.store.close();
+    await f.store.closeAsync();
   }
 });
 
@@ -275,7 +275,7 @@ it("falls back to user input, the latest conclusion, and recent complete records
       true,
     );
   } finally {
-    f.store.close();
+    await f.store.closeAsync();
   }
 });
 
@@ -292,7 +292,7 @@ it("rolls back archive creation if replacing active context fails", async () => 
     expect(f.store.context(f.session.id)).toEqual(source);
     expect(f.store.latestContextSnapshot(f.session.id)).toBeUndefined();
   } finally {
-    f.store.close();
+    await f.store.closeAsync();
   }
 });
 
@@ -316,7 +316,7 @@ it("cancels summary work without replacing context or retrying", async () => {
     expect(f.store.context(f.session.id)).toEqual(source);
     expect(f.store.latestContextSnapshot(f.session.id)).toBeUndefined();
   } finally {
-    f.store.close();
+    await f.store.closeAsync();
   }
 });
 
@@ -335,7 +335,7 @@ it("rejects oversized current requirements without calling the summary model", a
     ).rejects.toThrow("上下文");
     expect(calls).toBe(0);
   } finally {
-    f.store.close();
+    await f.store.closeAsync();
   }
 });
 
@@ -409,7 +409,7 @@ it("continues an engine task after compression and exposes archived history as a
     ).toBe(true);
   } finally {
     await engine.close();
-    store.close();
+    await store.closeAsync();
   }
 });
 
@@ -429,7 +429,7 @@ it("rejects tool requests from the summarizer", async () => {
     );
     expect(f.store.latestContextSnapshot(f.session.id)).toBeUndefined();
   } finally {
-    f.store.close();
+    await f.store.closeAsync();
   }
 });
 
@@ -482,7 +482,7 @@ it("summarizes complete history beyond twelve calls and continues compacting in 
     expect(compactedAgain).toContainEqual(history().at(-1));
     expect(contextSize(compactedAgain, "", [])).toBeLessThan(7200);
   } finally {
-    f.store.close();
+    await f.store.closeAsync();
   }
 });
 
@@ -518,7 +518,7 @@ it("retries server context overflow once and separates partial output attempts",
     );
   } finally {
     await engine.close();
-    store.close();
+    await store.closeAsync();
   }
 });
 
@@ -551,7 +551,7 @@ it("does not label an unknown operation as recorded when an older task reused it
       expect.objectContaining({ callId: "reused", status: "unknown" }),
     );
   } finally {
-    f.store.close();
+    await f.store.closeAsync();
   }
 });
 
@@ -585,7 +585,7 @@ it("records exact persisted failures without converting them into success", asyn
     expect(record.status).toBe("recorded");
     expect(JSON.parse(record.result)).toEqual(result);
   } finally {
-    f.store.close();
+    await f.store.closeAsync();
   }
 });
 

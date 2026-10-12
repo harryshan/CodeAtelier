@@ -167,7 +167,7 @@ it("persists complete large checkpoints and results and collects more than four 
         .map((child) => child.report),
     ).toEqual(Array(6).fill(report));
   } finally {
-    store.close();
+    await store.closeAsync();
   }
 });
 
@@ -256,6 +256,6 @@ it("finishes long research beyond the former round, token, question and characte
     ).toHaveLength(20);
   } finally {
     await coordinator.close();
-    store.close();
+    await store.closeAsync();
   }
 });

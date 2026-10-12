@@ -1,11 +1,11 @@
 /**
  * 用 SQLite 保存会话、任务、事件和模型上下文，供 Engine、HTTP 接口和 ContextManager 使用。
  *
- * 1. 构造器发现兼容的 history.sqlite 与后续容量分片，在每个文件初始化数据库并把重启前未完成的任务标为 interrupted；transaction 同步提交，取锁或执行失败时释放本次已开启的事务。
+ * 1. 构造器发现兼容的 history.sqlite 与后续容量分片，只为新文件初始化目标 schema并把重启前未完成的任务标为 interrupted；transaction 同步提交，取锁或执行失败时释放本次已开启的事务。
  * 2. list/get/create 跨分片定位或聚合会话；新会话在最新分片达到容量上限后进入新文件，已有会话始终写回其初始分片。标题状态的领取、完成或失败保证首条 prompt 只生成一次标题。
- * 3. tasks/task/createTask/status 读写任务状态与不可变的 subagent 选择；旧分片逐个迁移，SQLite 的 0/1 在各读取入口转换为布尔值。queuedTasks 和 hasUnfinishedTask 供 Engine 调度跨会话队列，event/events 保存和分页读取事件。
- * 4. subagents/subagent_requests 按任务保存完整计划、检查点、报告与回执，不附加子任务文本配额；replay 元数据和逐条模型/工具增量经 replay-storage 写入，读取时兼容旧整条捕获。
- * 5. 旧 context 行在备份后原样迁入 context_chunks 基线；appendContext 只写新增批次，saveContext/压缩替换基线并原子清除会话 token 锚点，读时按顺序重建；大记录由 store-worker 解析。
+ * 3. tasks/task/createTask/status 读写任务状态与不可变的 subagent 选择；旧分片必须离线迁移，SQLite 的 0/1 在各读取入口转换为布尔值。queuedTasks 和 hasUnfinishedTask 供 Engine 调度跨会话队列，event/events 保存和分页读取事件。
+ * 4. subagents/subagent_requests 按任务保存完整计划、检查点、报告与回执，不附加子任务文本配额；replay 元数据和逐条模型/工具增量经 replay-storage 写入，只读取已经转换的 v3 捕获。
+ * 5. 离线转换器将旧 context 原样迁入 context_chunks 基线；appendContext 只写新增批次，saveContext/压缩替换基线并原子清除会话 token 锚点，读时按顺序重建；大记录由 store-worker 解析。
  * 6. 常规事件/上下文/状态写入和大记录读取由有界串行 Store Worker 队列提交；closeAsync 排空并关闭线程后再关闭分片连接。
  *
  * 事务只能回滚数据库，不能撤销文件修改或命令执行。恢复需要的未知状态和原始记录必须保留。
@@ -45,12 +45,18 @@ import { StoreWorkerQueue } from "./store-worker-queue.js";
 import { readReplayCapture, writeReplay } from "./replay-storage.js";
 import type { StoreWorkerRequest } from "./store-worker.js";
 
-type TaskRow = Omit<Task, "subagentsEnabled"> & { subagentsEnabled: number };
+type TaskRow = Omit<Task, "subagentsEnabled"> & {
+  subagentsEnabled: number;
+  orderKey?: number;
+};
 
 export class Store {
   db: DatabaseSync;
   private readonly shards: HistoryShards;
   private nextEventId: number;
+  private closing?: Promise<void>;
+  private transactionActive = false;
+  private transactionDatabase?: DatabaseSync;
   private readonly worker = new StoreWorkerQueue();
 
   constructor(
@@ -62,9 +68,6 @@ export class Store {
       options.maxShardBytes ?? DEFAULT_HISTORY_SHARD_MAX_BYTES,
     );
     this.db = this.shards.active().db;
-    for (const shard of this.shards.all) {
-      this.migrate(shard.db);
-    }
 
     // 导出历史必须保持只读；正常服务启动仍将无法确认结果的任务标为 interrupted。
     if (options.interruptActive ?? true) {
@@ -100,92 +103,53 @@ export class Store {
     await this.worker.drain();
   }
 
-  /** 将历史会话标为完成，避免升级后用旧消息意外覆盖用户原有标题。 */
-  private migrate(db: DatabaseSync) {
-    const columns = db.prepare("PRAGMA table_info(sessions)").all() as Array<{
-      name: string;
-    }>;
-
-    if (!columns.some((column) => column.name === "titleState")) {
-      db.exec(
-        "ALTER TABLE sessions ADD COLUMN titleState TEXT NOT NULL DEFAULT 'completed'",
-      );
-    }
-
-    const taskColumns = db.prepare("PRAGMA table_info(tasks)").all() as Array<{
-      name: string;
-    }>;
-    if (!taskColumns.some((column) => column.name === "startedAt")) {
-      db.exec("ALTER TABLE tasks ADD COLUMN startedAt TEXT");
-    }
-
-    if (!taskColumns.some((column) => column.name === "finishedAt")) {
-      db.exec("ALTER TABLE tasks ADD COLUMN finishedAt TEXT");
-    }
-
-    if (!taskColumns.some((column) => column.name === "subagentsEnabled")) {
-      db.exec(
-        "ALTER TABLE tasks ADD COLUMN subagentsEnabled INTEGER NOT NULL DEFAULT 0 CHECK (subagentsEnabled IN (0, 1))",
-      );
-    }
-
-    // 直接复制原始 JSON，既不重建历史也不把 UI 事件误当成模型协议项。
-    // INSERT/DELETE 必须同一事务：中断后重启只会看到旧行或新基线。
-    db.exec("BEGIN IMMEDIATE");
-    try {
-      db.exec(
-        "INSERT INTO context_chunks(sessionId,position,items) SELECT sessionId,0,items FROM context WHERE NOT EXISTS (SELECT 1 FROM context_chunks WHERE context_chunks.sessionId=context.sessionId)",
-      );
-      db.exec(
-        "DELETE FROM context WHERE sessionId IN (SELECT sessionId FROM context_chunks)",
-      );
-      db.exec("COMMIT");
-    } catch (error) {
-      db.exec("ROLLBACK");
-      throw error;
-    }
-  }
-
-  /** 回调必须同步完成，不能在事务中等待网络或其他异步操作。 */
+  /** 仅供本线程固定业务组合使用；第一次选择分片时取锁，禁止跨文件或异步回调。 */
   transaction<T>(work: () => T): T {
-    const transactionShards: DatabaseSync[] = [];
+    if (this.transactionActive) {
+      throw new Error("不允许嵌套历史事务。");
+    }
+
+    this.transactionActive = true;
     try {
-      // 后续分片可能正由压缩 Worker 写入；取锁失败也必须释放已取得的事务。
-      for (const shard of this.shards.all) {
-        shard.db.exec("BEGIN IMMEDIATE");
-        transactionShards.push(shard.db);
+      const value = work();
+      if (value && typeof (value as { then?: unknown }).then === "function") {
+        throw new Error("历史事务回调必须同步完成。");
       }
 
-      const value = work();
-      for (const db of transactionShards) {
-        db.exec("COMMIT");
-      }
+      this.transactionDatabase?.exec("COMMIT");
 
       return value;
     } catch (error) {
-      const rollbackErrors: unknown[] = [];
-      for (const db of transactionShards.reverse()) {
-        try {
-          if (db.isTransaction) {
-            db.exec("ROLLBACK");
-          }
-        } catch (rollbackError) {
-          rollbackErrors.push(rollbackError);
+      try {
+        if (this.transactionDatabase?.isTransaction) {
+          this.transactionDatabase.exec("ROLLBACK");
         }
-      }
-
-      if (rollbackErrors.length) {
-        throw new AggregateError(
-          [error, ...rollbackErrors],
-          "历史事务回滚失败。",
-          {
-            cause: error,
-          },
-        );
+      } catch (rollbackError) {
+        throw new AggregateError([error, rollbackError], "历史事务回滚失败。", {
+          cause: error,
+        });
       }
 
       throw error;
+    } finally {
+      this.transactionActive = false;
+      this.transactionDatabase = undefined;
     }
+  }
+
+  private enterShard(db: DatabaseSync) {
+    if (this.transactionActive) {
+      if (this.transactionDatabase && this.transactionDatabase !== db) {
+        throw new Error("不支持跨分片历史事务。");
+      }
+
+      if (!this.transactionDatabase) {
+        db.exec("BEGIN IMMEDIATE");
+        this.transactionDatabase = db;
+      }
+    }
+
+    this.db = db;
   }
 
   list() {
@@ -224,7 +188,7 @@ export class Store {
       throw new Error("会话不存在于历史分片中。");
     }
 
-    this.db = shard.db;
+    this.enterShard(shard.db);
 
     return shard;
   }
@@ -235,7 +199,7 @@ export class Store {
       throw new Error("任务不存在于历史分片中。");
     }
 
-    this.db = shard.db;
+    this.enterShard(shard.db);
 
     return shard;
   }
@@ -247,7 +211,11 @@ export class Store {
     const manualTitle = title?.trim();
     const titleState = manualTitle ? "manual" : "pending";
 
-    this.db = this.shards.forNewSession().db;
+    if (this.transactionActive) {
+      throw new Error("创建会话不能嵌入既有分片事务。");
+    }
+
+    this.enterShard(this.shards.forNewSession().db);
     this.db
       .prepare(
         "INSERT INTO sessions(id,title,workspace,createdAt,updatedAt,titleState) VALUES(?,?,?,?,?,?)",
@@ -395,7 +363,7 @@ export class Store {
 
     return shard.db
       .prepare(
-        "SELECT * FROM tasks WHERE sessionId=? ORDER BY createdAt, rowid",
+        "SELECT * FROM tasks WHERE sessionId=? ORDER BY createdAt, orderKey",
       )
       .all(sessionId)
       .map((row) => this.readTask(row as unknown as TaskRow));
@@ -450,7 +418,9 @@ export class Store {
     }
 
     return shard.db
-      .prepare("SELECT * FROM events WHERE taskId=? ORDER BY id")
+      .prepare(
+        "SELECT id,sessionId,taskId,type,data,createdAt FROM events WHERE taskId=? ORDER BY id",
+      )
       .all(taskId)
       .map((row) => ({
         ...row,
@@ -593,7 +563,11 @@ export class Store {
 
   /** SQLite 布尔值必须在所有读路径转换，否则刷新后 UI 会把数字误当任务选项。 */
   private readTask<T extends TaskRow>(row: T): Task & Omit<T, keyof TaskRow> {
-    return { ...row, subagentsEnabled: row.subagentsEnabled === 1 };
+    const task = { ...row };
+    delete task.orderKey;
+
+    return { ...task, subagentsEnabled: row.subagentsEnabled === 1 } as Task &
+      Omit<T, keyof TaskRow>;
   }
 
   /** 同一会话的上下文不能并发追加；不同会话的任务由 Engine 依据工作区和全局上限调度。 */
@@ -691,7 +665,9 @@ export class Store {
     }
 
     return shard.db
-      .prepare("SELECT * FROM subagents WHERE taskId=? ORDER BY rowid")
+      .prepare(
+        "SELECT taskId,id,status,plan,report,context,consumed,updatedAt FROM subagents WHERE taskId=? ORDER BY orderKey",
+      )
       .all(taskId)
       .map((raw) => {
         const row = raw as {
@@ -1136,25 +1112,25 @@ export class Store {
     }
 
     return shard.db
-      .prepare("SELECT * FROM events WHERE sessionId=? AND id>? ORDER BY id")
+      .prepare(
+        "SELECT id,sessionId,taskId,type,data,createdAt FROM events WHERE sessionId=? AND id>? ORDER BY id",
+      )
       .all(sessionId, after)
       .map((r) => ({ ...r, data: JSON.parse(String(r.data)) })) as Event[];
   }
 
-  /**
-   * 为 HTTP 快照和压缩读取事件；after 仅返回游标之后的新增记录，避免流式刷新反复解析整段历史。
-   * 小结果直接读取以免 Worker 启动延迟，长 JSON 才在线程外解析。
-   */
+  /** 全部事件正文经异步队列读取；不在主线程扫描长度或按载荷大小分叉。 */
   async eventsAsync(sessionId: string, after = 0): Promise<Event[]> {
-    return this.serializedSize("events", sessionId, undefined, after) <
-      64 * 1024
-      ? this.events(sessionId, after)
-      : this.runWorker<Event[]>({
+    const shard = this.sessionShard(sessionId);
+
+    return shard
+      ? this.runWorker<Event[]>({
           operation: "events",
-          file: this.selectSession(sessionId).file,
+          file: shard.file,
           sessionId,
           after,
-        });
+        })
+      : [];
   }
 
   context(id: string): any[] {
@@ -1172,15 +1148,17 @@ export class Store {
     return rows.flatMap((row) => JSON.parse(row.items) as any[]);
   }
 
-  /** 新任务读取活动上下文时在线程外 JSON.parse；空或短上下文直接读取以避免无意义的 Worker 启动。 */
+  /** 完整活动上下文统一在线程外解析；读操作排在已接受写入之后。 */
   async contextAsync(id: string): Promise<any[]> {
-    return this.serializedSize("context", id) < 64 * 1024
-      ? this.context(id)
-      : this.runWorker<any[]>({
+    const shard = this.sessionShard(id);
+
+    return shard
+      ? this.runWorker<any[]>({
           operation: "context",
-          file: this.selectSession(id).file,
+          file: shard.file,
           sessionId: id,
-        });
+        })
+      : [];
   }
 
   /** 仅在显式替换活动历史（例如测试初始化）时建立基线；正常模型/工具反馈使用 appendContext。 */
@@ -1227,7 +1205,7 @@ export class Store {
 
     const row = shard.db
       .prepare(
-        "SELECT data FROM context_snapshots WHERE sessionId=? ORDER BY rowid DESC LIMIT 1",
+        "SELECT data FROM context_snapshots WHERE sessionId=? ORDER BY orderKey DESC LIMIT 1",
       )
       .get(sessionId);
 
@@ -1247,71 +1225,31 @@ export class Store {
     return row ? JSON.parse(String(row.data)) : undefined;
   }
 
-  /** 压缩链路读取父快照时在线程外解析完整原文；不存在或短快照无需启动 Worker。 */
+  /** 父快照按显式插入顺序读取，正文统一在线程外解析。 */
   async latestContextSnapshotAsync(sessionId: string) {
-    return this.serializedSize("latestSnapshot", sessionId) < 64 * 1024
-      ? this.latestContextSnapshot(sessionId)
-      : this.runWorker<ContextSnapshot | undefined>({
+    const shard = this.sessionShard(sessionId);
+
+    return shard
+      ? this.runWorker<ContextSnapshot | undefined>({
           operation: "latestSnapshot",
-          file: this.selectSession(sessionId).file,
+          file: shard.file,
           sessionId,
-        });
+        })
+      : undefined;
   }
 
-  /** 历史回读和连续压缩按会话读取快照；大 source 不在 API 主线程 JSON.parse。 */
+  /** 历史回读按会话校验快照身份，不能读取其他会话的 source。 */
   async contextSnapshotAsync(sessionId: string, id: string) {
-    return this.serializedSize("snapshot", sessionId, id) < 64 * 1024
-      ? this.contextSnapshot(sessionId, id)
-      : this.runWorker<ContextSnapshot | undefined>({
+    const shard = this.sessionShard(sessionId);
+
+    return shard
+      ? this.runWorker<ContextSnapshot | undefined>({
           operation: "snapshot",
-          file: this.selectSession(sessionId).file,
+          file: shard.file,
           sessionId,
           snapshotId: id,
-        });
-  }
-
-  /** 长度聚合只扫描 SQLite 元数据，不读取 JSON 内容；64 KiB 以下的同步解析有界且避免短请求的线程创建开销。 */
-  private serializedSize(
-    source: "events" | "context" | "latestSnapshot" | "snapshot",
-    sessionId: string,
-    snapshotId?: string,
-    after = 0,
-  ) {
-    const shard = this.sessionShard(sessionId);
-    if (!shard) {
-      return 0;
-    }
-
-    if (source === "events") {
-      const row = shard.db
-        .prepare(
-          "SELECT COALESCE(SUM(length(data)), 0) AS size FROM events WHERE sessionId=? AND id>?",
-        )
-        .get(sessionId, after) as { size: number };
-
-      return row.size;
-    }
-
-    if (source === "context") {
-      const row = shard.db
-        .prepare(
-          "SELECT COALESCE(SUM(length(items)),0) AS size FROM context_chunks WHERE sessionId=?",
-        )
-        .get(sessionId) as { size: number };
-
-      return row.size;
-    }
-
-    const row = shard.db
-      .prepare(
-        source === "latestSnapshot"
-          ? "SELECT length(data) AS size FROM context_snapshots WHERE sessionId=? ORDER BY rowid DESC LIMIT 1"
-          : "SELECT length(data) AS size FROM context_snapshots WHERE sessionId=? AND id=?",
-      )
-      .get(...(snapshotId ? [sessionId, snapshotId] : [sessionId])) as
-      { size: number | null } | undefined;
-
-    return row?.size ?? 0;
+        })
+      : undefined;
   }
 
   /** 快照和活动上下文在线程外序列化并在同一事务提交；主线程不会因大 JSON 或磁盘等待失去 API 响应。 */
@@ -1345,13 +1283,19 @@ export class Store {
     return this.worker.request<T>(request);
   }
 
-  async closeAsync() {
-    await this.worker.close();
-    this.shards.close();
+  closeAsync(): Promise<void> {
+    this.closing ??= (async () => {
+      try {
+        await this.worker.close();
+      } finally {
+        this.shards.close();
+      }
+    })();
+
+    return this.closing;
   }
 
   close() {
-    void this.worker.close();
-    this.shards.close();
+    return this.closeAsync();
   }
 }

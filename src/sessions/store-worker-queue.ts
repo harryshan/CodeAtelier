@@ -1,12 +1,13 @@
 /**
  * 串行调度 Store 的 SQLite Worker 请求；Store 是唯一调用方，Worker 独占后台写连接。
- * 1. request 为每项工作分配单调 ID，限制等待队列，并按提交顺序逐条发送；不在失败后重试未知写入。
+ * 1. request 为每项工作分配单调 ID，限制总请求数与保守字节预算，并按提交顺序逐条发送；不在失败后重试未知写入。
  * 2. 消息回执才完成 Promise；Worker 崩溃会拒绝当前和排队请求，阻止继续写入。
- * 3. close 等待已提交请求的结果后释放线程；trace 的排队和执行分别占独立轨道，不记录 SQL 参数。
+ * 3. close 拒绝新请求，等待已接受请求及连接池关闭回执后释放线程；trace 的排队和执行分别占独立轨道，不记录 SQL 参数。
  * Store roundtrip 表示 dispatch 到回执，Store worker 使用 Worker 返回的真实阶段时间；请求 ID 串联队列与事务。
  */
 
 import { Worker } from "node:worker_threads";
+import { transferBytes } from "./transfer-budget.js";
 import { currentTraceContext } from "../tracing/context.js";
 import type { TraceRecorder } from "../tracing/recorder.js";
 import type {
@@ -15,6 +16,7 @@ import type {
 } from "./store-worker.js";
 
 interface Pending {
+  bytes: number;
   request: StoreWorkerRequest;
   resolve: (value: unknown) => void;
   reject: (reason: Error) => void;
@@ -30,8 +32,13 @@ export class StoreWorkerQueue {
   private error?: Error;
   private closing = false;
   private idle: Array<() => void> = [];
+  private closePromise?: Promise<void>;
+  private queuedBytes = 0;
 
-  constructor(private traces?: TraceRecorder) {}
+  constructor(
+    private traces?: TraceRecorder,
+    private readonly limits = { requests: 1024, bytes: 128 * 1024 * 1024 },
+  ) {}
 
   setTracer(traces: TraceRecorder) {
     this.traces = traces;
@@ -42,8 +49,24 @@ export class StoreWorkerQueue {
       return Promise.reject(this.error ?? new Error("Store 已关闭。"));
     }
 
-    if (this.pending.length >= 1024) {
+    if (
+      this.pending.length + Number(Boolean(this.current)) >=
+        this.limits.requests &&
+      request.operation !== "close"
+    ) {
       return Promise.reject(new Error("Store 写入队列已满。"));
+    }
+
+    let bytes = 0;
+    try {
+      bytes = transferBytes(
+        request,
+        request.operation === "close"
+          ? 4096
+          : this.limits.bytes - this.queuedBytes,
+      );
+    } catch (error) {
+      return Promise.reject(error);
     }
 
     const item: StoreWorkerRequest = {
@@ -60,11 +83,13 @@ export class StoreWorkerQueue {
         attributes: { operation: request.operation, requestId: item.id },
       });
       this.pending.push({
+        bytes,
         request: item,
         resolve: (value) => resolve(value as T),
         reject,
         queued,
       });
+      this.queuedBytes += bytes;
       this.dispatch();
     });
   }
@@ -77,14 +102,30 @@ export class StoreWorkerQueue {
     await new Promise<void>((resolve) => this.idle.push(resolve));
   }
 
-  async close() {
-    this.closing = true;
-    await this.drain();
-    if (this.worker) {
-      const worker = this.worker;
-      this.worker = undefined;
-      await worker.terminate();
+  close(): Promise<void> {
+    if (this.closePromise) {
+      return this.closePromise;
     }
+
+    const closed =
+      this.worker && !this.error
+        ? this.request<void>({ operation: "close", file: "", sessionId: "" })
+        : Promise.resolve();
+    this.closing = true;
+    this.closePromise = (async () => {
+      try {
+        await closed;
+        await this.drain();
+      } finally {
+        if (this.worker) {
+          const worker = this.worker;
+          this.worker = undefined;
+          await worker.terminate();
+        }
+      }
+    })();
+
+    return this.closePromise;
   }
 
   private dispatch() {
@@ -150,6 +191,7 @@ export class StoreWorkerQueue {
     }
 
     this.current = undefined;
+    this.queuedBytes -= current.bytes;
     for (const timing of message.timings ?? []) {
       const span = this.traces?.startSpan(current.request.taskId ?? "", {
         name: `store.worker.${timing.phase}`,
@@ -195,6 +237,7 @@ export class StoreWorkerQueue {
     );
     this.current = undefined;
     this.pending.length = 0;
+    this.queuedBytes = 0;
     for (const job of jobs) {
       this.traces?.endSpan(job.queued, "error", { errorName: error.name });
       this.traces?.endSpan(job.running, "error", { errorName: error.name });

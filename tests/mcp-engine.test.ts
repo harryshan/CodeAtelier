@@ -110,7 +110,7 @@ it.each(["host", "runtime", "fallback"])(
       ).toBe(mode === "fallback");
     } finally {
       await engine.close();
-      store.close();
+      await store.closeAsync();
     }
   },
 );
@@ -308,7 +308,7 @@ it.each([false, true])(
       expect(trace).not.toContain("Echo text and inspect fixture notes");
     } finally {
       await engine.close();
-      store.close();
+      await store.closeAsync();
     }
   },
 );
