@@ -6,6 +6,7 @@
  * 2. connect 先 bootstrap 更新凭据、配置和 sandbox 启动初始状态，再建立当前会话的 EventSource；服务建立流时的首个 refresh
  *    是唯一初始快照请求，避免切换时重复下载同一段历史。
  * 3. 收到后续 refresh 或恢复后的 refreshSession 都通过同一游标读取，由 SessionViewModel 增量聚合；连接失败则重试。
+ *    loadOlder 使用初始高水位串行读取旧页并前插到同一视图；失败保留已加载记录，由界面显式重试。
  * 4. 清理时标记 disposed、取消进行中的快照、清除定时器并关闭连接；晚到响应不会覆盖新会话。
  *
  * 重连只恢复状态同步，不重发任务。服务停止后通过 enabled 关闭连接和重试。
@@ -29,12 +30,10 @@ export function useSessionConnection(
   const [data, setData] = useState<SessionView>();
   const [connected, setConnected] = useState(true);
   const [loading, setLoading] = useState(false);
-  const [browsingHistory, setBrowsingHistory] = useState(false);
-  const navigation = useRef<
-    { older: () => Promise<void>; latest: () => void } | undefined
-  >(undefined);
-  const loadOlder = useCallback(() => navigation.current?.older(), []);
-  const showLatest = useCallback(() => navigation.current?.latest(), []);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const [olderError, setOlderError] = useState("");
+  const navigation = useRef<(() => Promise<void>) | undefined>(undefined);
+  const loadOlder = useCallback(() => navigation.current?.(), []);
 
   const refreshRef = useRef<
     { sessionId: string; refresh: () => Promise<void> } | undefined
@@ -56,7 +55,8 @@ export function useSessionConnection(
     // 不能在新快照抵达前继续展示旧会话；否则侧栏已切换但主区域看似卡住。
     setData(undefined);
     setLoading(true);
-    setBrowsingHistory(false);
+    setLoadingOlder(false);
+    setOlderError("");
     // 合并连续刷新通知，并在切换会话或关闭服务时取消过期的历史读取。
     let disposed = false;
     const snapshotRequest = new AbortController();
@@ -64,44 +64,45 @@ export function useSessionConnection(
     let refreshQueued = false;
     const model = new SessionViewModel(selected);
     let live: SessionView | undefined;
-    let history: SessionView | undefined;
+    let historyHighWater: number | undefined;
     let navigating = false;
-    navigation.current = {
-      older: async () => {
-        const current = history ?? live;
-        if (
-          navigating ||
-          !current?.history?.hasOlder ||
-          !current.events.length
-        ) {
-          return;
-        }
+    navigation.current = async () => {
+      const current = live;
+      if (navigating || !current?.history?.hasOlder || !current.events.length) {
+        return;
+      }
 
-        navigating = true;
-        try {
-          const page = await snapshot(selected, snapshotRequest.signal, 0, {
-            before: current.events[0]!.id,
-            highWater: current.history.highWater,
-          });
-          if (!disposed) {
-            history = new SessionViewModel(selected).update(page);
-            setBrowsingHistory(true);
-            setData(history);
+      navigating = true;
+      setLoadingOlder(true);
+      setOlderError("");
+      try {
+        const page = await snapshot(selected, snapshotRequest.signal, 0, {
+          before: current.events[0]!.id,
+          highWater: historyHighWater ?? current.history.highWater,
+        });
+        if (!disposed) {
+          if (
+            page.history?.hasOlder &&
+            !page.events.some((event) => event.id < current.events[0]!.id)
+          ) {
+            throw new Error("历史读取未前进，请重试。");
           }
-        } catch (error) {
-          if (!disposed) {
-            setError((error as Error).message);
-          }
-        } finally {
-          navigating = false;
+
+          live = model.prepend(page);
+          setData(live);
         }
-      },
-      latest: () => {
-        history = undefined;
-        setBrowsingHistory(false);
-        setData(live);
-      },
+      } catch (error) {
+        if (!disposed) {
+          setOlderError((error as Error).message);
+        }
+      } finally {
+        navigating = false;
+        if (!disposed) {
+          setLoadingOlder(false);
+        }
+      }
     };
+
     const refresh = async () => {
       if (refreshInProgress) {
         refreshQueued = true;
@@ -118,10 +119,9 @@ export function useSessionConnection(
         );
         if (!disposed) {
           // 可变索引属于连接回调，不在 render 或 React updater 内修改。
+          historyHighWater ??= v.history?.highWater;
           live = model.update(v);
-          if (!history) {
-            setData(live);
-          }
+          setData(live);
 
           if (v.history?.hasNewer) {
             refreshQueued = true;
@@ -204,7 +204,7 @@ export function useSessionConnection(
     connected,
     loading,
     loadOlder,
-    showLatest,
-    browsingHistory,
+    loadingOlder,
+    olderError,
   };
 }

@@ -7,6 +7,7 @@
  * 3. 显示编辑进度、工具输出及子任务记录；普通/Broker 宿主命令和 Git 共用输出卡片，未匹配的输出仍显示为文本。StreamingMessage 使用通知索引判断尝试是否仍在生成。
  * 4. 已完成任务默认仅保留用户输入和最后一条 agent 输出，将中间过程收纳为可展开区域；未完成、失败、取消和中断任务继续完整显示。
  * 5. useVirtualTimeline 缓存高度前缀和，滚动每帧合并并二分定位；ResizeObserver 批量更新高度，条目 ref 保持稳定。
+ *    初次打开及停留末尾时跟随最新；前插旧页或测量变化按原可见条目锚定，阅读历史时不强制回到底部。
  * 6. 显示仍在接收的文本和待审批按钮，把用户选择发给后端。
  *
  * 失败尝试的半截文本不能拼进重试后的回复。命令有输出不代表成功，退出码和错误信息要保留；
@@ -533,6 +534,10 @@ function useVirtualTimeline(
   const itemElements = useRef(new Map<string, HTMLDivElement>());
   const itemObserver = useRef<ResizeObserver | undefined>(undefined);
   const entryKeys = useMemo(() => entries.map((entry) => entry.key), [entries]);
+  const followingLatest = useRef(true);
+  const previousLayout = useRef<
+    { keys: string[]; offsets: number[] } | undefined
+  >(undefined);
 
   const updateScrollMetrics = useCallback(() => {
     const container = scrollContainerRef.current;
@@ -580,6 +585,9 @@ function useVirtualTimeline(
     updateScrollMetrics();
     let frame: number | undefined;
     const scheduleMetrics = () => {
+      followingLatest.current =
+        container.scrollHeight - container.scrollTop - container.clientHeight <
+        80;
       frame ??= requestAnimationFrame(() => {
         frame = undefined;
         updateScrollMetrics();
@@ -675,6 +683,34 @@ function useVirtualTimeline(
       ),
     [entries, measuredHeights],
   );
+  useLayoutEffect(() => {
+    const container = scrollContainerRef.current;
+    const previous = previousLayout.current;
+    previousLayout.current = { keys: entryKeys, offsets: layout };
+    if (!container) {
+      return;
+    }
+
+    if (followingLatest.current) {
+      container.scrollTop = container.scrollHeight;
+    } else if (previous) {
+      // 用同一条目的前缀偏移差修正前插和异步测量；不能按总高度差把末尾新消息算进去。
+      const index = timelineRange(
+        previous.offsets,
+        container.scrollTop,
+        1,
+        0,
+      ).startIndex;
+      const key = previous.keys[index];
+      const nextIndex = key === undefined ? -1 : entryKeys.indexOf(key);
+      if (nextIndex >= 0) {
+        container.scrollTop += layout[nextIndex] - previous.offsets[index];
+      }
+    }
+
+    updateScrollMetrics();
+  }, [entryKeys, layout, scrollContainerRef, updateScrollMetrics]);
+
   const range = timelineRange(
     layout,
     scrollMetrics.scrollTop,

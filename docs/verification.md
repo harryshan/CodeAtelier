@@ -1,5 +1,14 @@
 # 初版验证记录
 
+## 历史对话连续滚动（2026-10-13，Windows / Node 26.10.0）
+
+- 按 D151 移除历史换页按钮和 1200/600 条缓存裁剪，向上自动前插旧页并保留实时游标、阅读位置与已加载内容；短页补足、失败重试和切换取消覆盖在浏览器回归中。后端分页、虚拟 DOM、正文按需读取及持久统计保持不变，不操作真实库、不重放任务。
+- 新增会话视图回归先在旧实现失败，修后 `session-view` 与 `timeline-virtualization` 合计 **14/14 通过**。类型、ESLint 和 Prettier 全部通过。
+- 完整 `pnpm test:e2e` 包含 server/web、Windows/POSIX Runtime 测试构建，Chromium **46/46 通过**，其中四项为新增连续历史场景；保留既有 Zod 注释及 Web chunk 大小警告。仅验证本机 Windows/Chromium，不推导其他平台实机通过。
+- 原样 `pnpm check` 未全绿：默认并发下 736 通过、1 跳过、3 失败，分别是 Windows process-tree/file-backed 与 shutdown 超时，以及 Node 版本探测失败。`pnpm test --maxWorkers=2` 中这三项均通过，但旧标题迁移夹具在 `migration.openSource` 的源/目标别名判断处偶发失败，合计 738 通过、1 跳过、1 失败；该标题文件单独以一个 Worker 重跑 **5/5 通过**。没有放宽断言、超时或改测试默认并发，也不把分开复跑称为完整 check 通过；迁移别名判断的偶发问题留待独立调查，本次没有修改存储实现。
+- Runtime 中 Node/pnpm 不在 PATH，验证经批准在 Broker 宿主环境运行；使用隔离合成测试数据，没有运行 Evaluation、真实模型或安装/Repair。
+
+
 ## 完整 SQLite 迁移验收（2026-10-13，Windows / Node 24.21.0）
 
 **正式状态：已激活。** generation `d275a4b5-c2a0-4bdb-9f5c-8000ac6e4453` 的活动目录为 `C:\Users\harryshan\CodeAtelier-migration\20261013-final\generation`，这是运行库，不能作为可清理临时副本。默认 AppData 的 `history-active.json` 已正确解析到该目录，包括本次 MSIX 环境的常规路径读取。物理旧入口已变为阻断目录，原件保存在物理数据目录的 `history-before-d275a4b5-c2a0-4bdb-9f5c-8000ac6e4453`；raw、冻结快照及验收副本均保留。激活后原件与目标 SHA256 再次一致，启动门禁已撤销，只读回读 134 会话/405 任务通过，未启动业务或写入 business-started。

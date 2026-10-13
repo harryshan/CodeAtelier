@@ -2,7 +2,7 @@
  * CodeAtelier 的主页面，负责选择会话、提交任务和打开设置等用户操作。
  * 通过 api 请求后端，通过 useSessionConnection 同步会话，再交给 Timeline 和 SettingsPanel 展示。
  *
- * 1. 状态和 effects 管理当前会话、一次性 subagent 勾选、服务端发布门禁、弹窗、加载状态及自动滚动。
+ * 1. 状态和 effects 管理当前会话、一次性 subagent 勾选、服务端发布门禁、弹窗及加载状态；useHistoryScroll 自动加载旧页，Timeline 保持阅读位置。
  * 2. 按服务端返回的工作区路径分组展示会话；项目可独立折叠，展开时默认仅显示最近五个对话，并可按需显示更早记录；手机端以可关闭的抽屉呈现该侧栏。
  * 3. resume、reloadService、stopServer、createProject、createConversation 和 send 处理恢复、受确认的服务重载、关闭服务、连接项目、新建会话和发送消息，并显示操作结果。
  * 4. 服务关闭后显示重启说明；正常页面由侧栏或手机端导航抽屉、项目栏、当前会话实际 Runtime 隔离模式（没有证据时显示启动初始状态，并提示获批宿主命令例外）、可折叠会话统计、会将已完成任务过程默认收纳的时间线或项目连接页、所见即所得 Markdown 任务编辑器组成。
@@ -12,6 +12,7 @@
  */
 
 import { useSessionConnection } from "./useSessionConnection";
+import { useHistoryScroll } from "./useHistoryScroll";
 import { useEffect, useRef, useState } from "react";
 import type { SandboxStatus, Session, Settings } from "../shared/types";
 import { api, bootstrap, sessions } from "./api";
@@ -54,8 +55,8 @@ export default function App() {
     connected,
     loading,
     loadOlder,
-    showLatest,
-    browsingHistory,
+    loadingOlder,
+    olderError,
   } = useSessionConnection(
     selected,
     serverState === "running",
@@ -64,8 +65,8 @@ export default function App() {
     setBootstrapSandbox,
     setError,
   );
-  const bottom = useRef<HTMLDivElement>(null);
   const scrollArea = useRef<HTMLDivElement>(null);
+  useHistoryScroll(scrollArea, data, loadingOlder, olderError, loadOlder);
 
   useEffect(() => {
     bootstrap()
@@ -85,10 +86,6 @@ export default function App() {
   useEffect(() => {
     setSubagentsEnabled(false);
   }, [selected]);
-
-  useEffect(() => {
-    bottom.current?.scrollIntoView({ behavior: "smooth" });
-  }, [data?.events.length, data?.approvals.length]);
 
   // bootstrap 仅表示启动配置，不是任务执行结果。重连时它可能晚于已保存的
   // sandbox_stage 抵达；当前会话有实际证据就必须优先显示，切换期间也不能泄漏旧会话状态。
@@ -545,7 +542,11 @@ export default function App() {
           </div>
         )}
         {data && !loading && <SessionStatistics data={data} />}
-        <div ref={scrollArea} className={s.scrollArea}>
+        <div
+          ref={scrollArea}
+          className={s.scrollArea}
+          style={{ overflowAnchor: "none" }}
+        >
           {addingProject || !selected ? (
             <section className={s.welcome}>
               <div className={s.eyebrow}>IDEAS INTO WORKING CODE</div>
@@ -623,11 +624,23 @@ export default function App() {
                 <code>{data?.session.workspace}</code>
                 <span>本地项目</span>
               </div>
-              {data?.history?.hasOlder && (
-                <button onClick={() => void loadOlder()}>查看更早的记录</button>
-              )}
-              {browsingHistory && (
-                <button onClick={showLatest}>返回最新记录</button>
+              {data?.history && (
+                <div role="status" aria-live="polite">
+                  {olderError ? (
+                    <>
+                      {olderError}
+                      <button onClick={() => void loadOlder()}>
+                        重试加载历史
+                      </button>
+                    </>
+                  ) : loadingOlder ? (
+                    "正在加载更早记录…"
+                  ) : data.history.hasOlder ? (
+                    "向上滚动查看更早记录"
+                  ) : (
+                    "已到对话开头"
+                  )}
+                </div>
               )}
               {data && (
                 <Timeline
@@ -644,7 +657,6 @@ export default function App() {
                   <p>例如：解释项目结构，或修复一个 bug 并补充测试。</p>
                 </div>
               )}
-              <div ref={bottom} />
             </>
           )}
         </div>

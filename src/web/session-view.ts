@@ -2,8 +2,9 @@
  * 由 useSessionConnection 独占的会话展示模型，在 React 渲染以外消费快照增量。
  * 1. SessionView 扩展服务 Snapshot，附带时间线、统计时钟函数和最近 Sandbox 状态。
  * 2. SessionViewModel.update 校验会话、按 ID 去重并排序新增事件，统一处理初始、增量及显式替换。
- * 3. 新事件只交给 TimelineProjection 和 SessionEventStatistics 一次；发布的数据不再原位修改。
- * 4. 无变化的任务、审批和事件保持引用；恢复复用同一连接刷新入口，切换会话新建模型。
+ * 3. prepend 合并旧页并重建有序投影，保留最新任务、审批、统计及实时游标；不裁掉已加载历史。
+ * 4. 新事件只交给 TimelineProjection 和 SessionEventStatistics 一次；发布的数据不再原位修改。
+ * 5. 无变化的任务、审批和事件保持引用；恢复复用同一连接刷新入口，切换会话新建模型。
  * 索引只活在当前连接生命周期，持有历史引用和聚合文本；不推导工具成功或重放任何任务。
  */
 
@@ -40,6 +41,31 @@ export class SessionViewModel {
 
   get cursor() {
     return this.lastId;
+  }
+
+  /** 旧页不能覆盖请求期间到达的新事件、任务状态或 SSE 游标。 */
+  prepend(page: Snapshot): SessionView {
+    if (
+      page.session.id !== this.sessionId ||
+      page.events.some((event) => event.sessionId !== this.sessionId)
+    ) {
+      throw new Error("会话快照不属于当前连接。");
+    }
+
+    if (!this.view) {
+      return this.update(page);
+    }
+
+    return this.update(
+      {
+        ...this.view,
+        events: [...this.view.events, ...page.events],
+        history: this.view.history
+          ? { ...this.view.history, hasOlder: page.history?.hasOlder ?? false }
+          : undefined,
+      },
+      true,
+    );
   }
 
   update(snapshot: Snapshot, replace = false): SessionView {
@@ -92,19 +118,6 @@ export class SessionViewModel {
     const events = added.length
       ? [...(this.view?.events ?? []), ...added]
       : (this.view?.events ?? []);
-    if (snapshot.history && events.length > 1200) {
-      return this.update(
-        {
-          ...snapshot,
-          events: events.slice(-600),
-          history: snapshot.history
-            ? { ...snapshot.history, hasOlder: true }
-            : undefined,
-        },
-        true,
-      );
-    }
-
     if (snapshot.history) {
       this.lastId = snapshot.history.cursor;
     }
@@ -139,9 +152,7 @@ export class SessionViewModel {
       history: snapshot.history
         ? {
             ...snapshot.history,
-            hasOlder:
-              snapshot.history.hasOlder ||
-              Boolean(this.view?.history?.hasOlder),
+            hasOlder: this.view?.history?.hasOlder ?? snapshot.history.hasOlder,
           }
         : undefined,
       session: reuse(this.view?.session, snapshot.session),

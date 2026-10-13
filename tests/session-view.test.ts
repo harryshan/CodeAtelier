@@ -3,7 +3,7 @@
  * 1. snapshot/event 夹具构造有序持久事件及任务状态。
  * 2. 分批、重复推送与全量重建必须得到相同的时间线、工具状态和统计。
  * 3. 已发布视图保持不变；追加期间旧正文不可重读，空增量复用视图。
- * 4. 替换与跨会话数据检查保证恢复和切换不会混合事件。
+ * 4. 替换与跨会话数据检查保证恢复和切换不会混合事件；旧页前插保留实时游标、去重及全部已加载事件。
  * 5. Broker 宿主命令输出按任务/调用归属聚合，覆盖交错输出、终态、旧无 ID 事件和历史重建。
  */
 
@@ -42,6 +42,50 @@ function snapshot(events: Event[]): Snapshot {
     events,
   };
 }
+
+it("prepends history without losing live metadata, cursor or previously loaded events", () => {
+  const model = new SessionViewModel("s");
+  const events = Array.from({ length: 1400 }, (_, index) =>
+    event(index + 1, "user", { text: `message ${index + 1}` }),
+  );
+  const page = (
+    items: Event[],
+    cursor: number,
+    hasOlder: boolean,
+  ): Snapshot => ({
+    ...snapshot(items),
+    history: { cursor, highWater: cursor, hasOlder, hasNewer: false },
+  });
+  model.update(page(events.slice(700), 1400, true));
+  const live = model.update(
+    page([event(1401, "user", { text: "live" })], 1401, false),
+  );
+  const older = page(events.slice(0, 701), 1400, false);
+  older.tasks = [];
+
+  const merged = model.prepend(older);
+  expect(merged.events.map((item) => item.id)).toEqual(
+    Array.from({ length: 1401 }, (_, index) => index + 1),
+  );
+  expect(model.cursor).toBe(1401);
+  expect(merged.tasks).toEqual(live.tasks);
+  expect(merged.history).toEqual({
+    cursor: 1401,
+    highWater: 1401,
+    hasOlder: false,
+    hasNewer: false,
+  });
+  expect(live.events).toHaveLength(701);
+  const next = model.update(
+    page([event(1402, "user", { text: "next" })], 1402, false),
+  );
+  expect(next.events).toHaveLength(1402);
+  expect(next.events[0].id).toBe(1);
+  expect(next.history?.hasOlder).toBe(false);
+  expect(() =>
+    model.prepend({ ...older, session: { ...older.session, id: "other" } }),
+  ).toThrow();
+});
 
 it("matches full reconstruction across batches, retries and duplicate delivery", () => {
   const events = [
