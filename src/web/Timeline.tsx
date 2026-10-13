@@ -6,8 +6,8 @@
  * 2. 读取连接层 timeline-projection 的流式文本、输出和状态视图；渲染期间不聚合历史。MarkdownMessage 缓存相同正文的安全渲染。
  * 3. 显示编辑进度、工具输出及子任务记录；普通/Broker 宿主命令和 Git 共用输出卡片，未匹配的输出仍显示为文本。StreamingMessage 使用通知索引判断尝试是否仍在生成。
  * 4. 已完成任务默认仅保留用户输入和最后一条 agent 输出，将中间过程收纳为可展开区域；未完成、失败、取消和中断任务继续完整显示。
- * 5. useVirtualTimeline 缓存高度前缀和，滚动每帧合并并二分定位；ResizeObserver 批量更新高度，条目 ref 保持稳定。
- *    初次打开及停留末尾时跟随最新；前插旧页或测量变化按原可见条目锚定，阅读历史时不强制回到底部。
+ * 5. useVirtualTimeline 缓存精确高度前缀和，首次挂载在 layout effect 中测量，ResizeObserver 处理后续尺寸变化。
+ *    滚动每帧合并并按时间线自身坐标定位；补偿滚动不改变跟随状态，主动上滚立即退出跟随，回到末尾才恢复。
  * 6. 显示仍在接收的文本和待审批按钮，把用户选择发给后端。
  *
  * 失败尝试的半截文本不能拼进重试后的回复。命令有输出不代表成功，退出码和错误信息要保留；
@@ -527,17 +527,38 @@ function useVirtualTimeline(
   const [scrollMetrics, setScrollMetrics] = useState({
     scrollTop: 0,
     viewportHeight: 800,
+    timelineTop: 0,
   });
   const [measuredHeights, setMeasuredHeights] = useState<Map<string, number>>(
     () => new Map(),
   );
+  const timelineElement = useRef<HTMLDivElement>(null);
   const itemElements = useRef(new Map<string, HTMLDivElement>());
   const itemObserver = useRef<ResizeObserver | undefined>(undefined);
   const entryKeys = useMemo(() => entries.map((entry) => entry.key), [entries]);
   const followingLatest = useRef(true);
-  const previousLayout = useRef<
-    { keys: string[]; offsets: number[] } | undefined
+  const writtenScrollTop = useRef<number | undefined>(undefined);
+  const readingAnchor = useRef<
+    { key: string; viewportOffset: number } | undefined
   >(undefined);
+  const previousLayout = useRef<
+    { keys: string[]; offsets: number[]; top: number } | undefined
+  >(undefined);
+
+  const timelineTop = useCallback(() => {
+    const container = scrollContainerRef.current;
+    const timeline = timelineElement.current;
+    if (!container || !timeline) {
+      return 0;
+    }
+
+    return (
+      timeline.getBoundingClientRect().top -
+      container.getBoundingClientRect().top -
+      container.clientTop +
+      container.scrollTop
+    );
+  }, [scrollContainerRef]);
 
   const updateScrollMetrics = useCallback(() => {
     const container = scrollContainerRef.current;
@@ -547,18 +568,20 @@ function useVirtualTimeline(
 
     const scrollTop = container.scrollTop;
     const viewportHeight = container.clientHeight;
+    const top = timelineTop();
     setScrollMetrics((current) =>
       current.scrollTop === scrollTop &&
-      current.viewportHeight === viewportHeight
+      current.viewportHeight === viewportHeight &&
+      current.timelineTop === top
         ? current
-        : { scrollTop, viewportHeight },
+        : { scrollTop, viewportHeight, timelineTop: top },
     );
-  }, [scrollContainerRef]);
+  }, [scrollContainerRef, timelineTop]);
 
   const recordHeights = useCallback((elements: HTMLDivElement[]) => {
     const updates = elements.map((element) => ({
       key: element.dataset.timelineKey,
-      height: Math.ceil(element.getBoundingClientRect().height),
+      height: element.getBoundingClientRect().height,
     }));
     setMeasuredHeights((current) => {
       let next = current;
@@ -585,16 +608,50 @@ function useVirtualTimeline(
     updateScrollMetrics();
     let frame: number | undefined;
     const scheduleMetrics = () => {
-      followingLatest.current =
-        container.scrollHeight - container.scrollTop - container.clientHeight <
-        80;
       frame ??= requestAnimationFrame(() => {
         frame = undefined;
         updateScrollMetrics();
       });
     };
 
-    container.addEventListener("scroll", scheduleMetrics, { passive: true });
+    const onScroll = () => {
+      // scroll 也会由前插/测量补偿产生，不能把这些事件解释成用户重新选择跟随。
+      if (
+        writtenScrollTop.current === undefined ||
+        Math.abs(container.scrollTop - writtenScrollTop.current) > 1
+      ) {
+        followingLatest.current =
+          container.scrollHeight -
+            container.scrollTop -
+            container.clientHeight <=
+          1;
+        const previous = previousLayout.current;
+        if (previous) {
+          const index = timelineRange(
+            previous.offsets,
+            container.scrollTop - previous.top,
+            1,
+            0,
+          ).startIndex;
+          const key = previous.keys[index];
+          readingAnchor.current =
+            key === undefined
+              ? undefined
+              : {
+                  key,
+                  viewportOffset:
+                    previous.top +
+                    previous.offsets[index] -
+                    container.scrollTop,
+                };
+        }
+      }
+
+      writtenScrollTop.current = undefined;
+      scheduleMetrics();
+    };
+
+    container.addEventListener("scroll", onScroll, { passive: true });
     const containerObserver = new ResizeObserver(scheduleMetrics);
     containerObserver.observe(container);
     const observer = new ResizeObserver((observedEntries) => {
@@ -609,7 +666,7 @@ function useVirtualTimeline(
     }
 
     return () => {
-      container.removeEventListener("scroll", scheduleMetrics);
+      container.removeEventListener("scroll", onScroll);
       if (frame !== undefined) {
         cancelAnimationFrame(frame);
       }
@@ -673,6 +730,12 @@ function useVirtualTimeline(
     [measureCallbacks],
   );
 
+  // 新进入虚拟窗口的条目必须在绘制前测量；仅依靠 ResizeObserver 会先显示
+  // 真实 DOM 加预估占位的一帧，再补偿位置，造成肉眼可见的来回跳动。
+  useLayoutEffect(() => {
+    recordHeights([...itemElements.current.values()]);
+  });
+
   const layout = useMemo(
     () =>
       createTimelineLayout(
@@ -685,40 +748,37 @@ function useVirtualTimeline(
   );
   useLayoutEffect(() => {
     const container = scrollContainerRef.current;
-    const previous = previousLayout.current;
-    previousLayout.current = { keys: entryKeys, offsets: layout };
+    const top = timelineTop();
+    previousLayout.current = { keys: entryKeys, offsets: layout, top };
     if (!container) {
       return;
     }
 
     if (followingLatest.current) {
       container.scrollTop = container.scrollHeight;
-    } else if (previous) {
-      // 用同一条目的前缀偏移差修正前插和异步测量；不能按总高度差把末尾新消息算进去。
-      const index = timelineRange(
-        previous.offsets,
-        container.scrollTop,
-        1,
-        0,
-      ).startIndex;
-      const key = previous.keys[index];
-      const nextIndex = key === undefined ? -1 : entryKeys.indexOf(key);
+    } else if (readingAnchor.current) {
+      // 同一次前插/测量收敛期间保持原锚点，不重新选择刚插入视口上缘的条目。
+      const anchor = readingAnchor.current;
+      const nextIndex = entryKeys.indexOf(anchor.key);
       if (nextIndex >= 0) {
-        container.scrollTop += layout[nextIndex] - previous.offsets[index];
+        container.scrollTop = top + layout[nextIndex] - anchor.viewportOffset;
+      } else {
+        readingAnchor.current = undefined;
       }
     }
 
+    writtenScrollTop.current = container.scrollTop;
     updateScrollMetrics();
-  }, [entryKeys, layout, scrollContainerRef, updateScrollMetrics]);
+  }, [entryKeys, layout, scrollContainerRef, timelineTop, updateScrollMetrics]);
 
   const range = timelineRange(
     layout,
-    scrollMetrics.scrollTop,
+    scrollMetrics.scrollTop - scrollMetrics.timelineTop,
     scrollMetrics.viewportHeight,
     TIMELINE_OVERSCAN_HEIGHT,
   );
 
-  return { measureItem, range };
+  return { measureItem, range, timelineElement };
 }
 
 export const Timeline = memo(function Timeline({
@@ -738,14 +798,14 @@ export const Timeline = memo(function Timeline({
     editBatches,
     entries,
   } = data.timeline;
-  const { measureItem, range } = useVirtualTimeline(
+  const { measureItem, range, timelineElement } = useVirtualTimeline(
     entries,
     scrollContainerRef,
   );
   const visibleEntries = entries.slice(range.startIndex, range.endIndex);
 
   return (
-    <div className={s.timeline}>
+    <div ref={timelineElement} className={s.timeline}>
       {range.beforeHeight > 0 && (
         <div
           aria-hidden="true"
