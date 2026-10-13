@@ -529,6 +529,8 @@ git-tools.test.ts 覆盖 diff 独立输出硬上限，属于普通功能回归�
 
 ### Replay 阅读器（数据库、Web 本地导入与可选离线文件）
 
+- `tests/e2e/replay-categories.spec.ts`：数据库模式默认按轮次，模型/工具关联跳转、类型与异常/未知状态筛选、全文搜索、独立历史事件；105 个 Task 无需手动加载即可选择较早 legacy 记录，缺失模型不补造、既有工具/事件可读。断言不再显示迁移时新增的 Task/请求/input 加载与重复展开材料按钮，数据全部来自合成只读响应。
+
 - `tests/replay-api.test.ts`：真实临时 SQLite 与 HTTP 验证 captured/legacy、单任务归属/隔离、目录无大载荷、未知结果、不执行历史、服务重开后的持久内容、cookie/Origin/404/no-store 与故障通用错误。`tests/access-password.test.ts` 同时覆盖新接口未验证密码时的拒绝。
 - `tests/e2e/replay-database.spec.ts`：真实测试服务写入任务后从 UI 直接读取、选择对话/Task、刷新/URL 恢复及空对话；合成只读响应控制晚到结果、失败清空、重试、空库和无效深链接。测试服务只使用模拟模型，不读取个人数据库。
 

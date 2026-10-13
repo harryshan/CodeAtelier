@@ -58,7 +58,7 @@ pnpm replay:export -- --data-dir C:\CodeAtelierData --task-id TASK_ID --output C
 
 - `GET /api/sessions`：既有对话目录。
 - `GET /api/sessions/:id/tasks`：单会话的 Task 元数据目录，不返回事件和模型大载荷。
-- `GET /api/sessions/:id/tasks/:taskId/replay`：只重建选中任务的完整材料；校验 Task 属于指定会话，缺失或归属不符返回 404，读取异常返回不含原始载荷的通用错误。
+- `GET /api/sessions/:id/tasks/:taskId/replay/export`：只重建选中任务的完整材料；校验 Task 属于指定会话，缺失或归属不符返回 404，读取异常返回不含原始载荷的通用错误。
 
 这些接口复用 Host/Origin、访问密码及 `ca_session` 校验，响应 `Cache-Control: no-store`。数据只发往使用该服务的浏览器，不发送模型；局域网访问同样可读敏感历史，必须使用既有门禁与可信网络边界。
 
@@ -70,7 +70,9 @@ pnpm replay:export -- --data-dir C:\CodeAtelierData --task-id TASK_ID --output C
 
 JSON 可能包含完整源码、提示词、命令与工具输出，必须保护且不能提交 Git 或公开。页面用文本展示，不调用模型、重放工具或运行 Evaluation。数据库阅读器提供显式“导出完整 Task JSON”下载，沿用服务鉴权。
 
-数据库模式使用 Task 分页、每页 100 项请求目录和单条请求重建；一致读事务保留请求/结果关联，大 input 每页渲染 20 个协议项。切换取消 HTTP 请求，后端已开始的读操作受 60 秒期限保护。完整导出仍重建整个 Task，单条请求本身也可能很大，不承诺恒定内存。本地 JSON 模式保留原来的全文搜索和目录阅读器，仍须完整解析文件；上面的离线搜索说明仅适用于该模式。
+数据库与本地 JSON 模式共用原版分类阅读器：默认按轮次查看，模型、工具和历史事件分开筛选，不把整个时间线平铺。选择对话后直接列出全部轻量 Task 元数据，选择 Task 自动读取其完整材料；无需“更早的 Task”“下一页请求”或逐项“展开材料”按钮。保留原版每页 40 条的本地目录导航和长文本渐进显示，它们不发起加载请求。
+
+数据库模式复用现有 `/replay/export` 只读接口，仅将所选 Task 材料读入浏览器，不自动下载文件、不读取全部会话正文。SQLite 迁移、AsyncStore 读 Worker、Replay v3 检查点和后端分页接口保持不变。切换取消 HTTP 请求并忽略晚到响应，读取失败清空旧材料，可用“刷新记录”重试。后端已开始的读操作仍受 60 秒期限保护；完整 Task 的重建、传输和浏览器解析有时间与内存成本，分类及本地分页不消除这一限制。
 
 ### 可选：保留旧单文件导出
 

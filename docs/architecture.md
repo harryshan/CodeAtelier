@@ -102,7 +102,7 @@ replay 捕获将任务元数据和单条模型/工具记录分开保存，模型
 
 生产存储入口为 AsyncStore：一个写 Worker、两个读 Worker，读操作先等待调用前的写回执；元数据和正文都不在 HTTP 主线程执行 SQLite。每队列及总入口限制 1024 项和 128 MiB 请求，每 Worker 复用最多 8 个分片连接、每连接 128 条语句。固定业务 RPC 不接受 SQL 或事务回调；工具结果、Replay 终态、上下文和已收集报告在同分片事务提交后才发布 SSE。Runtime IPC v15 使用 session_commit_tool_result。启动将未完成任务标为 interrupted；只读打开不改状态。读请求超 60 秒终止该读通道，关闭先读后写，未知写入不自动重放。
 
-可视化位于 src/replay-viewer：默认数据库模式通过同源鉴权 API 读取 Task 分页、每页 100 项请求目录和选中单条请求；读 Worker 从 Replay v3 最近检查点重建，完整 Task 仅显式导出。任务归属、cookie/来源、no-store 在后端验证；URL 只保存记录 ID，切换取消 HTTP 请求并丢弃旧材料。DatabaseReplay 与本地 JSON 的旧 DOM 阅读器分开挂载；后者仍解析完整文件，不上传材料。大 input 每页渲染 20 个协议项，单条请求和完整导出仍有自身载荷内存成本。
+可视化位于 src/replay-viewer：ReplayViewer 默认通过同源鉴权 API 读取轻量 Task 目录及选中 Task 的完整材料，复用 `/replay/export` 与 AsyncStore 读 Worker，不回退 SQLite 迁移或 Replay v3。数据库和本地 JSON 共用 browser.ts 分类阅读器，提供按轮次、模型、工具、事件分类、全文搜索、状态筛选及关联跳转；不再挂载简化的 DatabaseReplay 请求列表。原版目录每页 40 条及正文折叠只控制本地展示，不要求手动加载 Task 或请求。任务归属、cookie/来源、no-store 在后端验证；URL 只保存记录 ID，切换取消 HTTP 请求并丢弃旧材料。完整 Task 仍有重建、传输和解析成本；后端分页/单条读取接口保留，浏览器不一次读取整个会话正文。
 
 ### 配置
 
