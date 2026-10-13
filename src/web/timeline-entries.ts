@@ -1,9 +1,9 @@
 /**
- * 为连接层与 Timeline 提供展示条目类型和已完成任务分组，不读取网络或历史正文。
+ * 为连接层与 Timeline 提供展示条目类型和已结束任务分组，不读取网络或历史正文。
  * 1. EditBatch、TimelineEntry 描述编辑聚合和可渲染条目，事件正文只保留引用。
  * 2. taskIdForEntry 统一关联任务；TaskProcessIndex 缓存连续任务段，只为改变的段重建折叠对象。
- * 3. collapseCompletedTaskProcesses 使用末次回复索引收纳过程。
- * 4. 分组保持原事件顺序和稳定 key，用户输入及最终回复始终留在外层。
+ * 3. collapseEndedTaskProcesses 使用末次回复索引收纳所有终态任务的过程。
+ * 4. 分组保持原事件顺序和稳定 key，用户输入及末次完整回复始终留在外层，审批和中断提示不被过程隐藏。
  */
 
 import type { Snapshot, Event } from "../shared/types";
@@ -36,13 +36,13 @@ export function taskIdForEntry(entry: TimelineEntry) {
   return entry.taskId;
 }
 
-/** 缓存连续任务段的折叠结果；只为条目或完成状态改变的段重新分组。 */
+/** 缓存连续任务段的折叠结果；只为条目或终态标记改变的段重新分组。 */
 export class TaskProcessIndex {
   private segments = new Map<
     string,
     {
       entries: TimelineEntry[];
-      completed: boolean;
+      ended: boolean;
       lastAssistant?: number;
       result: TimelineEntry[];
     }
@@ -53,9 +53,13 @@ export class TaskProcessIndex {
     latest: Map<string, number>,
     tasks: Snapshot["tasks"],
   ) {
-    const completed = new Set(
+    const ended = new Set(
       tasks
-        .filter((task) => task.status === "completed")
+        .filter((task) =>
+          ["completed", "failed", "cancelled", "interrupted"].includes(
+            task.status,
+          ),
+        )
         .map((task) => task.id),
     );
     const next: typeof this.segments = new Map();
@@ -72,7 +76,7 @@ export class TaskProcessIndex {
       let segment = this.segments.get(key);
       if (
         !segment ||
-        segment.completed !== completed.has(taskId) ||
+        segment.ended !== ended.has(taskId) ||
         segment.lastAssistant !== latest.get(taskId) ||
         segment.entries.length !== end - start ||
         segment.entries.some((entry, index) => entry !== entries[start + index])
@@ -80,9 +84,9 @@ export class TaskProcessIndex {
         const group = entries.slice(start, end);
         segment = {
           entries: group,
-          completed: completed.has(taskId),
+          ended: ended.has(taskId),
           lastAssistant: latest.get(taskId),
-          result: collapseCompletedTaskProcesses(group, latest, completed),
+          result: collapseEndedTaskProcesses(group, latest, ended),
         };
       }
 
@@ -100,10 +104,10 @@ export class TaskProcessIndex {
   }
 }
 
-export function collapseCompletedTaskProcesses(
+export function collapseEndedTaskProcesses(
   entries: TimelineEntry[],
   latestAssistantEventByTask: Map<string, number>,
-  completedTaskIds: Set<string>,
+  endedTaskIds: Set<string>,
 ) {
   const collapsed: TimelineEntry[] = [];
   let processEntries: TimelineEntry[] = [];
@@ -126,14 +130,17 @@ export function collapseCompletedTaskProcesses(
 
   for (const entry of entries) {
     const taskId = taskIdForEntry(entry);
-    const isCompletedTask = completedTaskIds.has(taskId);
+    const isEndedTask = endedTaskIds.has(taskId);
     const isUserInput = entry.kind === "event" && entry.event.type === "user";
     const isFinalOutput =
       entry.kind === "event" &&
       entry.event.type === "assistant" &&
       latestAssistantEventByTask.get(taskId) === entry.event.id;
 
-    if (!isCompletedTask || isUserInput || isFinalOutput) {
+    // 中断提示与审批控件不是执行过程；折叠不能使其消失或不可操作。
+    const isStandaloneControl =
+      entry.kind === "interrupted" || entry.kind === "approval";
+    if (!isEndedTask || isUserInput || isFinalOutput || isStandaloneControl) {
       flushProcess();
       collapsed.push(entry);
       continue;

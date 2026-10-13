@@ -4,7 +4,8 @@
  * 2. 分批、重复推送与全量重建必须得到相同的时间线、工具状态和统计。
  * 3. 已发布视图保持不变；追加期间旧正文不可重读，空增量复用视图。
  * 4. 替换与跨会话数据检查保证恢复和切换不会混合事件；旧页前插保留实时游标、去重及全部已加载事件。
- * 5. Broker 宿主命令输出按任务/调用归属聚合，覆盖交错输出、终态、旧无 ID 事件和历史重建。
+ * 5. 终态任务统一折叠过程，活动任务保持展开，状态独立更新及历史重建保持一致且不丢中断提示。
+ * 6. Broker 宿主命令输出按任务/调用归属聚合，覆盖交错输出、终态、旧无 ID 事件和历史重建。
  */
 
 import { expect, it } from "vitest";
@@ -278,6 +279,51 @@ it("reconciles legacy usage when explicit requests arrive and keeps clock work i
   const last = model.update(finished);
   expect(last.statistics(Date.parse(date) + 100000).totalRunMs).toBe(4000);
 });
+
+it.each(["completed", "failed", "cancelled", "interrupted"] as const)(
+  "collapses %s processes on status-only updates and history reload",
+  (status) => {
+    const model = new SessionViewModel("s");
+    const events = [
+      event(1, "user", { text: "request" }),
+      event(2, "notice", { text: "process detail" }),
+      event(3, "assistant", { text: "last complete reply" }),
+    ];
+    const active = model.update(snapshot(events));
+    expect(
+      active.timeline.entries.some((entry) => entry.kind === "process"),
+    ).toBe(false);
+
+    const ended = snapshot([]);
+    ended.tasks[0].status = status;
+    const folded = model.update(ended);
+    expect(folded.timeline.entries.map((entry) => entry.kind)).toEqual([
+      "event",
+      "process",
+      "event",
+      ...(status === "interrupted" ? ["interrupted"] : []),
+    ]);
+    expect(folded.timeline.entries[1]).toMatchObject({
+      entries: [{ kind: "event", event: events[1] }],
+    });
+    expect(folded.events).toEqual(events);
+    const historical = new SessionViewModel("s").update({ ...ended, events });
+    expect(historical.timeline.entries).toEqual(folded.timeline.entries);
+
+    for (const activeStatus of ["queued", "running", "waiting"] as const) {
+      const next = snapshot([]);
+      next.tasks[0].status = activeStatus;
+      const unfolded = model.update(next);
+      expect(unfolded.timeline.entries.map((entry) => entry.kind)).toEqual([
+        "event",
+        "event",
+        "event",
+      ]);
+    }
+
+    expect(folded.timeline.entries[1].kind).toBe("process");
+  },
+);
 
 it("preserves legacy output, batch wildcard precedence, completed groups and immutable cards", () => {
   const model = new SessionViewModel("s");

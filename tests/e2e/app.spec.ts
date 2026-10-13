@@ -11,7 +11,7 @@
  * 7. 检查当前会话统计默认收起，展开后使用已保存事件显示 token、LLM、工具成功率、运行时间和已结束任务的 Perfetto 下载入口。
  * 8. 验证用户和 agent 消息的 Markdown 标题、链接、代码围栏、表格和任务列表渲染，并拒绝原始 HTML。
  * 9. 检查任务输入框以所见即所得方式将 Markdown 输入规则原地转换为富文本，并将生成的 Markdown 发送给任务。
- * 10. 已完成任务默认仅显示输入和最后一轮输出；中间工具、通知和重试文本收纳为可展开过程，未完成任务仍完整显示。
+ * 10. 已结束任务默认折叠中间工具、通知和重试文本，输入、末次完整回复及恢复提示保留；活动任务仍完整显示。
  * 11. 累积较长时间线后检查滚动窗口外只保留高度占位，滚动到另一端才创建对应消息节点。
  * 12. 在手机视口检查完整侧栏由菜单按钮打开，并可通过会话选择、遮罩或 Escape 关闭。
  * 13. subagent 未开放时不显示复选框；模拟就绪仅验表单负载，历史任务的子问题纯文本及进度可从持久事件重建。
@@ -218,6 +218,7 @@ test("rebuilds saved subagent selection and progress after refreshing a historic
   await page.reload();
   await project.getByRole("button", { name: "新对话", exact: true }).click();
   await expect(page.getByText("已启用只读子代理")).toBeVisible();
+  await expandTaskProcess(page);
   await expect(
     page
       .getByRole("status")
@@ -242,6 +243,7 @@ test("rebuilds saved subagent selection and progress after refreshing a historic
   await page.reload();
   await project.getByRole("button", { name: "新对话", exact: true }).click();
   await expect(page.getByText("已启用只读子代理")).toBeVisible();
+  await expandTaskProcess(page);
   await expect(
     page.getByRole("status").filter({ hasText: "只读子任务 review：已完成" }),
   ).toBeVisible();

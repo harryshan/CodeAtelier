@@ -1,5 +1,13 @@
 # 初版验证记录
 
+## 非正常结束任务默认折叠过程（2026-10-13，Windows / Node 26.10.0）
+
+- 按 D075 追加要求，将 failed/cancelled/interrupted 与 completed 一并纳入过程折叠；用户输入、末次完整回复、中断提示及审批控件留在外层，App 原有恢复入口不变。queued/running/waiting 仍完整展示；仅任务状态更新也会使分组缓存失效。无完整回复时不伪造结论，残留流式文本可展开查看，历史数据不改写。
+- 新增单测在旧实现下三个异常终态用例均失败；修复后 `session-view.test.ts` **14/14 通过**。新增三项 `terminal-task-process.spec.ts` 与既有 App 回归合计 **28/28 通过**，覆盖有/无完整回复、折叠后展开、刷新重新折叠、中断提示和恢复入口。
+- TypeScript、ESLint、Prettier 通过。完整 `pnpm test:e2e` 已运行；合并命令输出被截断，另核实本轮 13:36:24 写入的 `test-results/.last-run.json` 为 passed、failedTests 为空。验证为 Windows/Chromium 与合成历史，不推导其他平台实机通过。
+- 默认 `pnpm check` 单测 **736 通过、1 跳过、7 失败**，涉及未修改的 tracing-followup、Node 版本探测、auxiliary-model、permissions、agent-runtime-tools、shutdown 和 engine 测试（主要为高并发下超时，tracing 另有资源清理错误）；随后全套 `pnpm test --maxWorkers=2` **108 文件、743 通过、1 跳过**。没有放宽断言/超时或修改默认并发，不称原样 check 全绿。
+- Runtime 无 Node/pnpm PATH，验证经批准在 Broker 宿主执行；无真实模型、个人历史库操作或 Evaluation。
+
 ## 历史时间线滚动跳动修复（2026-10-13，Windows / Node 26.10.0）
 
 - 用户反馈连续滚动时跳动。新增浏览器回归在修复前复现两类问题：不等高消息滚动后原可见条目逐帧位移最大 15.375px；底部向上 40px 后仍跟随新消息，原消息移动 137px。此前仅验证可见性的回归不能证明滚动稳定。
