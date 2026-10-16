@@ -341,6 +341,8 @@ pnpm sandbox:recover
 
 `sandbox:native:build` 只在 `dist/native/windows-x64` 生成启用 CFG/ASLR/DEP 的 fence manager 与 supervisor/bootstrap，`sandbox:runtime:build` 以 Node 24 为兼容基线生成支持 Node 24/26 的 Runtime、两个 Worker ESM bundle 和严格 manifest，两者都不修改机器。
 
-安装脚本固定使用 `CodeAtelierSandbox`、DPAPI 保护的随机密码、`%ProgramData%\CodeAtelier\Sandbox\installation.state` 受限 v4 状态文件、七个安装副本的 SHA-256 和 42871/42872 回环端口；只接受实际报告稳定版 `v24.*.*` 或 `v26.*.*` 的非 reparse Node executable，同名非产品账户会安全拒绝。
+安装脚本默认使用 `CodeAtelierSandbox`、DPAPI 保护的随机密码、`%ProgramData%\CodeAtelier\Sandbox\installation.state` 受限 v5 状态文件、六个安装副本的 SHA-256 和 42871/42872 回环端口；只接受实际报告稳定版 `v24.*.*` 或 `v26.*.*` 的非 reparse Node executable，同名非产品账户会安全拒绝。
 
-恢复脚本只删除已记录 SID 且产品描述匹配的账户、固定 WFP GUID 对象、欢迎屏幕值和受控 ProgramData 子目录，不扫描或重置整机防火墙。v1 state 仅为卸载/恢复兼容而可读，不能通过当前启动 self-check，须用 Repair 升级。
+恢复脚本只删除已记录 SID 且产品描述匹配的账户、固定 WFP GUID 对象、欢迎屏幕值和受控 ProgramData 子目录，不扫描或重置整机防火墙。v1 state 可供维护读取，不能通过当前启动 self-check，须用 Repair 升级。
+
+常规 Repair 保留既有账户 SID、原安装用户的 DPAPI 凭据和默认 relay 端口，先用旧 Supervisor 完成进程终止与 journal 撤销，再更新组件、generation、WFP 和登录权。失败保留账户/state 供排查与重试，不调用卸载回滚；不保证安装文件原子更新。须先停止服务，由原安装用户在管理员终端显式执行。只有显式 Uninstall/recover 仍删除账户；此改变不修复工作区已有失效 ACL，也不扩大现存子对象继承的验证保证。见 D154 与 [维护指南](windows-sandbox-guide.md#维护故障处理与卸载)。

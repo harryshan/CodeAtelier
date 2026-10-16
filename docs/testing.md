@@ -395,6 +395,8 @@ Sandbox 徽标浏览器回归以合成历史阶段验证：bootstrap 的待确�
 
 ### Sandbox 产品回归
 
+`windows-sandbox-repair.test.ts` 在 Windows 上通过真实 PowerShell 7 AST 执行安装器函数与 Mode 分流，以临时 state 和账户/ACL/WFP 替身覆盖：Repair 保留 SID/凭据、旧版 state 升级、relay 端口保留/显式覆盖、身份与缺失状态拒绝、源产物预检失败、进程终止/journal/文件复制/WFP/自检失败后的账户与 state 保留，以及失败后重试。另验证首次 Install 仍创建账户并只回滚新建账户。用例先在旧实现复现 SID 变化；不创建真实账户，不操作真实安装或工作区权限，非 Windows 跳过。真实管理员 Repair 前后 SID、原生清理和 WFP 验收仍需按维护指南手动执行。
+
 产品实现新增无管理员副作用的 Sandbox 单元覆盖：AccessManifest 对工作区、显式读写根、逐实例 HOME/TEMP 和 Git 配置文件固定卷/file ID 并拒绝链接/模式冲突；Runtime 在 manifest 前创建私有目录，确保它与工作区一样经过 ACL/capability/journal，而不是依赖 ProgramData 父目录写权。
 
 Git 配置图按两个 global 入口递归解析 `include` 与适用的 `gitdir/gitdir/i includeIf`，对循环、未知条件、链接和资源上限安全拒绝；

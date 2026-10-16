@@ -1,6 +1,6 @@
 # CodeAtelier 需求说明
 
-状态：初版功能边界已确认，进入实现与验证阶段。最后更新：2026-10-16。
+状态：初版功能边界已确认，进入实现与验证阶段。最后更新：2026-10-17。
 
 本文区分用户已确认的要求与尚待讨论的建议。候选内容不能直接作为实施授权。
 
@@ -122,6 +122,7 @@ Windows 专用用户 Sandbox 已通过用户实际使用验证：2026-10-03 用�
 - **文件与并发**：AccessManifest 投影工作区、显式读写根和运行依赖；实例 token 包含 root capability 与 `Everyone` restricting SID。已有 ACL 允许 Everyone 写入的对象可能绕过 root capability，因此不承诺完整写入隔离。多个实例共用账户，读取根会形成并集，存在 peer 干扰风险；不同对话不是 OS 安全边界，也不承诺纯读取 allowlist。
 - **审批与网络**：已有权限内的工具免审批；越界命令用 `run_with_permissions` 提交命令和理由，经三级审批后由 Broker 宿主进程执行，不额外限制文件根、网络目标或宿主可用凭据。push 独占工具批次，Broker 从真实仓库读取 upstream/URL/OID/ref，逐次审批后以宿主用户权限执行。Capability Runner 和 Push Runner 代码保留但暂不启用；专用账户 WFP 不临时放宽。
 - **失败处理**：只有 Runtime 启动前且可证明完整回滚时才自动回退宿主，并明确提示任务未受 Sandbox 保护。Broker 宿主命令和 push 是明确获批的执行位置，不是 fallback。已启动命令或 push 结果未知时不重放；Sandbox 实例清理未知时隔离并排空账户 generation。
+- **安装维护**：常规 Repair 保留已验证账户的 SID 与原 DPAPI 凭据，清理活动进程/journal 后更新组件；失败保留账户和恢复 state，不自动删除重建。显式 Uninstall/recover 仍删除账户，已有工作区失效 ACL 不自动修复（D154）。
 - **验收边界**：日常功能可用性已有用户实际使用确认；原生构建、协议与 harness 或日常使用反馈，都不能代替未明确覆盖的错误 IPC、复杂 ACL、网络、真实 push 和异常恢复专项证据。工作区直接写入，包含 `.git` 和 `.env`，不提供副作用回滚。
 
 完整权限、失败条件与 W0--W6 验收要求以 [Windows Sandbox 架构](windows-integrity-sandbox.md) 为准；安装和操作见 [使用指南](windows-sandbox-guide.md)。

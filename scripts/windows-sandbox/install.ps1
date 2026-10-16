@@ -10,15 +10,18 @@ WFP fence, copies the native binaries plus a fixed Node 24 or 26/Agent Runtime b
 into protected ProgramData directories, and writes a versioned state file with
 a restrictive ACL and hashes for every executable Runtime artifact.
 
-Install/Repair are transactional at the script level: a failure invokes the
-same narrow recovery routine and reports any residual objects. Verify is read
-only. Uninstall removes only the fixed WFP provider/sublayer, the account whose
-SID matches recorded state, the welcome-screen registry value, and the state
+Install rolls back a newly created account on failure. Repair keeps the existing
+account SID and DPAPI credential, drains processes/grants before replacing files,
+and retains state on failure for a later retry; it is not an atomic rollback of
+all installed artifacts. Verify is read only. Uninstall removes only the fixed
+WFP provider/sublayer, the account whose SID matches recorded state, the welcome-screen registry value, and the state
 directory. No operation scans or deletes unrelated users, filters, or folders.
 
 1. Source and v4 manifest helpers validate entry/compaction/subagent files, hashes and the Node 24 baseline; v5 installed state no longer includes a read Worker.
 2. Assert-RuntimeNodeVersion accepts Node 24/26 for both source selection and installed verification.
-3. Account, credential, ACL and WFP helpers implement the selected maintenance mode and rollback.
+3. Read-RepairState validates recorded account/installer identity and relay settings before any repair writes.
+4. Install-Sandbox shares artifact installation between fresh Install and in-place Repair; only fresh Install creates an account or rolls it back.
+5. The Mode switch dispatches maintenance; explicit Uninstall/recover remain destructive account removal operations.
 #>
 
 [CmdletBinding()]
@@ -35,6 +38,8 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$RelayPortV4ExplicitlySet = $PSBoundParameters.ContainsKey("RelayPortV4")
+$RelayPortV6ExplicitlySet = $PSBoundParameters.ContainsKey("RelayPortV6")
 $RepositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 $BuildNetworkManager = Join-Path $RepositoryRoot "dist\native\windows-x64\codeatelier-sandbox-network.exe"
 $BuildSupervisor = Join-Path $RepositoryRoot "dist\native\windows-x64\codeatelier-sandbox-supervisor.exe"
@@ -396,7 +401,38 @@ function Remove-Installation {
     Write-Host "SANDBOX_INSTALL_REMOVE PASS"
 }
 
+function Read-RepairState {
+    param($Account)
+
+    $State = Read-InstallationState
+    if (
+        $null -eq $Account -or
+        $State.accountName -ne $AccountName -or
+        $State.accountSid -ne $Account.SID.Value -or
+        $Account.Description -ne $AccountDescription
+    ) {
+        throw "Repair 拒绝身份缺失或不匹配的账户；不会删除或重新创建账户。"
+    }
+    if (
+        $State.installedBySid -ne [Security.Principal.WindowsIdentity]::GetCurrent().User.Value -or
+        -not $State.protectedPassword -or
+        -not $State.generationId
+    ) {
+        throw "Repair 需要原安装用户、已保存的凭据和 generation；请保留 installation state 排查，不会自动重建账户。"
+    }
+    if ($State.version -ne "1") {
+        foreach ($Port in @($State.relayPortV4, $State.relayPortV6)) {
+            if ($Port -notmatch '^\d{4,5}$' -or [int]$Port -lt 1024 -or [int]$Port -gt 65535) {
+                throw "Repair 拒绝无效的已安装 relay 端口。"
+            }
+        }
+    }
+    return $State
+}
+
 function Install-Sandbox {
+    param([switch]$Repair)
+
     Assert-Administrator
     if ($AccountName -notmatch '^[A-Za-z0-9_.-]{1,64}$') {
         throw "Sandbox 账户名只允许 1～64 个 ASCII 字母、数字、点、下划线或连字符。"
@@ -411,14 +447,41 @@ function Install-Sandbox {
     if ($null -ne $Existing -and $Existing.Description -ne $AccountDescription) {
         throw "同名本地账户已存在且不属于 CodeAtelier，安装已安全停止。"
     }
-    if ($null -ne $Existing -or (Test-Path -LiteralPath $StatePath)) {
+    $PreviousState = $null
+    if ($Repair) {
+        $PreviousState = Read-RepairState -Account $Existing
+        if ($PreviousState.version -ne "1") {
+            if (-not $RelayPortV4ExplicitlySet) {
+                $RelayPortV4 = [int]$PreviousState.relayPortV4
+            }
+            if (-not $RelayPortV6ExplicitlySet) {
+                $RelayPortV6 = [int]$PreviousState.relayPortV6
+            }
+        }
+    }
+    elseif ($null -ne $Existing -or (Test-Path -LiteralPath $StatePath)) {
         throw "检测到已有或不完整安装；请先运行 Repair 或恢复脚本。"
     }
 
-    $Password = New-RandomPassword
-    $SecurePassword = ConvertTo-SecureString $Password -AsPlainText -Force
+    $Password = $null
+    $SecurePassword = $null
+    $CreatedAccount = $false
     try {
-        $Account = New-LocalUser -Name $AccountName -Password $SecurePassword -AccountNeverExpires -PasswordNeverExpires -UserMayNotChangePassword -Description $AccountDescription
+        if ($Repair) {
+            Write-Host "SANDBOX_REPAIR START account=preserved"
+            # 旧 Supervisor 在清理前验证原安装用户、SID 和 DPAPI 凭据；失败不得覆盖 state 或遗留 journal。
+            Invoke-Supervisor -Arguments @("--terminate-account-processes", $StatePath, $NetworkManager)
+            Invoke-Supervisor -Arguments @("--revoke-journal", $StatePath, $NetworkManager)
+            $Account = $Existing
+            $ProtectedPassword = $PreviousState.protectedPassword
+        }
+        else {
+            $Password = New-RandomPassword
+            $SecurePassword = ConvertTo-SecureString $Password -AsPlainText -Force
+            $Account = New-LocalUser -Name $AccountName -Password $SecurePassword -AccountNeverExpires -PasswordNeverExpires -UserMayNotChangePassword -Description $AccountDescription
+            $CreatedAccount = $true
+            $ProtectedPassword = Protect-Password -Password $Password
+        }
         Add-LocalGroupMember -SID "S-1-5-32-545" -Member $Account -ErrorAction SilentlyContinue
         Set-WelcomeAccountHidden
 
@@ -453,7 +516,7 @@ function Install-Sandbox {
             generationId = [guid]::NewGuid().ToString("D")
             relayPortV4 = [string]$RelayPortV4
             relayPortV6 = [string]$RelayPortV6
-            protectedPassword = Protect-Password -Password $Password
+            protectedPassword = $ProtectedPassword
             installedBySid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
             installedAt = [DateTimeOffset]::UtcNow.ToString("O")
             supervisorSha256 = Get-LowerSha256 -Path $Supervisor
@@ -471,14 +534,25 @@ function Install-Sandbox {
         Invoke-NetworkManager -Arguments @("--wfp-persistent-install", $AccountName, [string]$RelayPortV4, [string]$RelayPortV6)
         Invoke-Supervisor -Arguments @("--install-account-rights", $StatePath, $NetworkManager)
         Test-Installation
-        Write-Host "SANDBOX_INSTALL PASS version=5"
+        if ($Repair) {
+            Write-Host "SANDBOX_REPAIR PASS version=5 account=preserved"
+        }
+        else {
+            Write-Host "SANDBOX_INSTALL PASS version=5"
+        }
     }
     catch {
-        try {
-            Remove-Installation
+        if ($Repair) {
+            # 不能借失败清理删除旧账户，否则工作区 owner/ACE 又会指向失效 SID。
+            Write-Warning "SANDBOX_REPAIR FAILED：已保留账户和 installation state；安装文件可能部分更新，请修正原因后重试 Repair 并运行 Verify。"
         }
-        catch {
-            Write-Warning "自动回滚未能证明完整：$($_.Exception.Message)"
+        elseif ($CreatedAccount) {
+            try {
+                Remove-Installation
+            }
+            catch {
+                Write-Warning "自动回滚未能证明完整：$($_.Exception.Message)"
+            }
         }
         throw
     }
@@ -490,10 +564,7 @@ function Install-Sandbox {
 
 switch ($Mode) {
     "Install" { Install-Sandbox }
-    "Repair" {
-        Remove-Installation
-        Install-Sandbox
-    }
+    "Repair" { Install-Sandbox -Repair }
     "Verify" { Test-Installation }
     "Uninstall" { Remove-Installation }
 }

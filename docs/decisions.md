@@ -1119,6 +1119,15 @@
 - 边界：确认的是用户当前 Windows 环境下的日常功能可用性，不推导错误身份、复杂 ACL、强制终止、异常恢复、真实远端兼容性等全部专项矩阵通过。Everyone restricting SID、同账户共享风险、Broker 宿主权限及 macOS/Linux 不加载该后端等限制不变。
 - 影响：只更新状态、使用说明和证据记录；默认关闭与安装/Repair 流程不变，不自动安装或开放 subagent。subagent 仍按自身发布门禁及专项证据单独评估。本次不改变运行时、权限、配置或 tracing，无新增运行事件。
 
+## D154：Windows Sandbox 常规 Repair 保留账户 SID
+
+- 日期：2026-10-17。
+- 状态：用户明确要求优先修复 Repair 删除并重建账户的问题。
+- 决定：`sandbox:repair` 原地更新已安装组件，保留已验证的本地账户、SID 和原 DPAPI 凭据；默认保留 relay 端口，显式参数可覆盖，成功写入新 generation 和组件摘要。替代旧的先 Uninstall 再 Install 流程。
+- 顺序与失败：先验证源产物、账户名/SID/产品描述、原安装用户及 state，再由旧 Supervisor 验证凭据、终止账户进程并撤销 journal，之后才更新文件/状态、WFP 和登录权并自检。身份、凭据或清理失败不得猜测账户或自动重建；更新中途失败保留账户与恢复 state，明确报告可能部分更新，修正原因后重试。不承诺跨文件原子回滚。
+- 维护边界：先停止服务，再由原安装用户打开管理员终端执行；缺失或损坏安装信息须单独排查。显式 Uninstall/recover 仍删除账户，再 Install 会获得新 SID。此次不自动执行真实 Repair，不修复工作区已有失效 owner/ACE，也不解决 Supervisor 对现存子对象的 ACL 传播验证缺口。
+- 观测与验证：这是服务停止后的独立 PowerShell 维护入口，不进入 `src/tracing` 的任务生命周期；使用固定 `SANDBOX_REPAIR START/PASS/FAILED` 及原生阶段输出，不记录凭据。真实 PowerShell AST 离线回归验证账户/持久 state 和故障顺序，账户/ACL/WFP 均为替身，不等同管理员安装态验收。
+
 ## D153：以 settings.json 为中心重设计设置系统
 
 - 日期：2026-10-16。

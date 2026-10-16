@@ -106,7 +106,21 @@ Sandbox **不会**创建 worktree、暂存副本或自动回滚：可写操作�
 | 正常卸载                             | 在**管理员 PowerShell** 执行 `pnpm sandbox:uninstall` | 先停止所有任务；卸载必须确认没有活动 lease。                                                                      |
 | 正常卸载无法证明完整清理时的受控恢复 | 在**管理员 PowerShell** 执行 `pnpm sandbox:recover`   | 只清理安装 state 中记录的产品账户、固定 WFP 对象、欢迎屏幕值和受控 ProgramData 子目录；不会扫描或重置整机防火墙。 |
 
-更新原生 Supervisor、WFP manager 或 Runtime bundle 后，应重新生成对应构建产物，并在管理员终端运行安装/验证流程，使受保护的安装副本与其 SHA-256 状态保持一致。出现 fallback、`unknown`、`orphaned`、安装校验失败或无法清理时，不要手动删除账户/WFP/ACL 来“强行修复”；保留诊断现场，先停止任务并使用 `sandbox:verify` 或 `sandbox:recover` 对账。
+更新原生 Supervisor、WFP manager 或 Runtime bundle 后，应重新生成对应构建产物，**先停止 CodeAtelier 服务**，再由原安装用户打开管理员 PowerShell 7，执行：
+
+```powershell
+$sidBefore = (Get-LocalUser -Name CodeAtelierSandbox).SID.Value
+pnpm sandbox:repair
+if ($LASTEXITCODE -ne 0) { throw "Sandbox Repair 失败，请保留现场排查。" }
+pnpm sandbox:verify
+if ($LASTEXITCODE -ne 0) { throw "Sandbox Verify 失败，请勿启动 Sandbox 任务。" }
+$sidAfter = (Get-LocalUser -Name CodeAtelierSandbox).SID.Value
+if ($sidAfter -ne $sidBefore) { throw "Sandbox 账户 SID 意外变化。" }
+```
+
+Repair 原地更新组件，保留账户 SID 和原 DPAPI 凭据，默认保留已有 relay 端口。它先校验身份，再使用旧 Supervisor 终止账户进程并撤销 journal，之后才更新组件、新 generation、WFP 和登录权。缺失/不匹配的账户、state 或原安装用户会被拒绝，不自动创建替代账户。
+
+Repair 失败时保留账户和 state，安装文件可能已部分更新；先排查失败阶段，修正原因后重试 Repair/Verify。出现 fallback、`unknown`、`orphaned` 或无法清理时，保留诊断现场，不要手动删除账户/WFP/ACL。**`sandbox:recover` 是受控卸载，会删除账户**，仅在明确需要清理安装时使用；之后重新 Install 会产生新 SID。此次保留 SID 的修复不会自动修复工作区中已经失效的 owner/ACE，现存子对象的 ACL 传播问题仍须单独处理。
 
 Sandbox 生命周期日志位于平台数据目录的 `logs/sandbox.log`，常规应用日志和会话历史仍分别保存。
 

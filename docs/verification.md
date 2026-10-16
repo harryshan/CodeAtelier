@@ -1,5 +1,13 @@
 # 初版验证记录
 
+## Windows Sandbox Repair 保留账户 SID（2026-10-17，Windows / Node 26.10.0）
+
+- 按 D154 将 Repair 的卸载再安装改为原地维护：保留已验证账户 SID、DPAPI 凭据和默认 relay 端口，先用旧 Supervisor 终止账户进程/撤销 journal，再更新组件与新 generation。失败保留账户/state，不删除重建，不承诺安装文件原子回滚。
+- 新增真实 PowerShell AST 离线夹具，先在旧实现复现 SID 变化及失败清理删除账户；修改后 20 项覆盖成功、旧版升级、身份/状态/端口拒绝、各阶段失败、失败后重试、显式端口和首次安装回滚。账户、ACL、WFP、原生进程均为替身，只有临时 state 使用真实文件读写。
+- `pnpm check` 的 TypeScript、ESLint、Prettier 通过；默认并发单测 795 通过、1 跳过、6 失败：permissions、settings-runtime、settings-store 超时，以及 Node 版本探测和两项 Repair PowerShell 子进程失败；原样 check 未全绿。没有放宽断言或超时、没有改变默认并发；随后完整 `pnpm test -- --maxWorkers=4`：114 文件、801 通过、1 跳过，上述失败项全部通过。
+- `pnpm build:test` 通过，包括 server/Web 和 Windows/POSIX Runtime 测试构建；保留既有 Zod 注释与 Web chunk 大小警告。本次没有 UI/HTTP/SSE 行为变化，未运行浏览器 e2e 或 Evaluation。
+- 未执行真实管理员 Repair/Verify、重启服务或修改工作区 ACL；当前 SID 与文件所有权保持原样。固定账户维护前后 SID、真实清理/WFP 仍须按维护指南实机复核。已有失效 owner/ACE 与 Supervisor 子对象 ACL 传播验证缺口不属于本次修复。
+
 ## 设置模态框与主页面主题统一（2026-10-16，Windows / Chromium）
 
 - 按用户追加要求，将全屏浅色设置层改为主页面上的居中原生 dialog；共用深色主题变量、字体与控件，背景遮罩/交互隔离、表单独立滚动和固定保存栏，保留分类草稿与保存契约。不改变后端配置、生效语义或 tracing 生命周期。

@@ -337,6 +337,8 @@ Windows 原生安装命令是显式维护入口，不属于服务启动或默认
 
 安装器校验 v4 build manifest 后，把 supervisor/WFP manager、Node 24 或 26、Agent Runtime entry 和 compaction、subagent 两种 Worker 复制到受保护的 ProgramData 目录，并在 v5 state 记录安装副本摘要；旧安装须重新构建 native/runtime 后由用户显式运行 `pnpm sandbox:repair`（转交 `install.ps1 -Mode Repair`），TypeScript 启动前与 native self-check 均拒绝旧状态或不匹配的摘要。安装器还配置专用账户的网络、batch、service 和远程交互拒绝登录权；服务不得自行提权或自动安装。
 
+Repair 前先停止服务，并由原安装用户打开管理员终端。Repair 保留账户 SID 与原 DPAPI 凭据，默认保留已有 relay 端口；验证身份并用旧 Supervisor 完成进程终止/journal 撤销后，才更新安装副本、新 generation、WFP 和登录权。失败保留账户与 state，文件可能部分更新，须修正原因后重试 Repair/Verify；不得把 `sandbox:recover` 当作无损更新，它与 Uninstall 一样删除账户。缺失/不匹配的账户或 state 不自动重建，工作区已有失效 owner/ACE 需单独修复。详见 [维护指南](windows-sandbox-guide.md#维护故障处理与卸载) 和 D154。
+
 macOS/Linux 调用这些命令只输出 `SKIP`，不启动 PowerShell 或任何 Windows 原生代码；它们的 Sandbox 由 `pnpm sandbox:posix:build` 及设置页的 Sandbox 开关、保存后重启单独启用，步骤和额外授权根配置见 [POSIX 指南](posix-sandbox.md)；macOS 尚未实机验证。Windows 上启用开关后若启动前自检失败，仍按既有安全回滚条件提示并回退宿主；已通过日常使用验证不改变该失败处理契约。
 
 ## 常见问题
