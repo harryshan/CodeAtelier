@@ -1,7 +1,7 @@
 /**
  * 验证 App 的连续历史浏览，使用分页 HTTP/SSE 合成夹具，不访问模型或个人历史。
  * 1. installHistory 提供三页消息及可控旧页故障，保留真实 EventSource 重连路径。
- * 2. 向上滚动自动前插，检查阅读锚点、首尾可达、有限 DOM 和实时消息不抢滚动。
+ * 2. 向上滚动自动前插，检查阅读锚点、首尾可达、有限 DOM 和实时消息不抢滚动；到达开头不留提示或空状态栏。
  * 3. 失败后保留当前记录，显式重试恢复；在途请求切换会话不混入旧结果，短页自动补足。
  */
 import { expect, test, type Page } from "@playwright/test";
@@ -109,13 +109,16 @@ test("fills a short viewport automatically until the beginning is reached", asyn
   page,
 }) => {
   const state = await installHistory(page, 3, 1);
-  await expect(page.getByText("已到对话开头", { exact: true })).toBeVisible();
   for (const id of [1, 2, 3]) {
     await expect(
       page.getByText(`历史消息 ${id}`, { exact: true }),
     ).toBeVisible();
   }
 
+  await expect(page.getByText("已到对话开头", { exact: true })).toHaveCount(0);
+  await expect(
+    page.locator('[class*="scrollArea"]').getByRole("status"),
+  ).toHaveCount(0);
   expect(state.before).toEqual([3, 2]);
 });
 

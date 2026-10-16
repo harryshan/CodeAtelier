@@ -631,24 +631,23 @@ export default function App() {
                 <code>{data?.session.workspace}</code>
                 <span>本地项目</span>
               </div>
-              {data?.history && (
-                <div role="status" aria-live="polite">
-                  {olderError ? (
-                    <>
-                      {olderError}
-                      <button onClick={() => void loadOlder()}>
-                        重试加载历史
-                      </button>
-                    </>
-                  ) : loadingOlder ? (
-                    "正在加载更早记录…"
-                  ) : data.history.hasOlder ? (
-                    "向上滚动查看更早记录"
-                  ) : (
-                    "已到对话开头"
-                  )}
-                </div>
-              )}
+              {data?.history &&
+                (olderError || loadingOlder || data.history.hasOlder) && (
+                  <div role="status" aria-live="polite">
+                    {olderError ? (
+                      <>
+                        {olderError}
+                        <button onClick={() => void loadOlder()}>
+                          重试加载历史
+                        </button>
+                      </>
+                    ) : loadingOlder ? (
+                      "正在加载更早记录…"
+                    ) : (
+                      "向上滚动查看更早记录"
+                    )}
+                  </div>
+                )}
               {data && (
                 <Timeline
                   key={data.session.id}
