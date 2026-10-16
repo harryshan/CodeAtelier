@@ -23,12 +23,12 @@ export type ModelProviderFactory = (
   purpose: ModelPurpose,
 ) => ModelProvider;
 
-/** 单次请求的可选覆盖；none 只用于关闭审批分类时的思考，不是公开设置项。 */
+/** 单次请求的可选覆盖；审批固定使用 none，不修改用户保存的主/辅助思考等级。 */
 export interface ModelRunOptions {
   /** 仅在本地观测流事件到达，不传递事件正文，不进入供应商请求。 */
   onStreamEvent?: () => void;
   maxOutputTokens?: number;
-  reasoningEffort?: Settings["reasoningEffort"] | "none";
+  reasoningEffort?: Settings["reasoningEffort"];
 }
 
 /** 调用方只依赖这个接口，不需要知道具体服务商。 */

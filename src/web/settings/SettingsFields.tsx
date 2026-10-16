@@ -162,6 +162,7 @@ export function ModelFields({
             })
           }
         >
+          <option value="none">关闭</option>
           <option value="low">低</option>
           <option value="medium">中</option>
           <option value="high">高</option>

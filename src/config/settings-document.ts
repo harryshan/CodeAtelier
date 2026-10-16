@@ -38,7 +38,7 @@ const endpoint = z
       .replace(/\/(responses|chat\/completions|messages)\/?$/, "")
       .replace(/\/$/, ""),
   );
-const effort = z.enum(["low", "medium", "high"]);
+const effort = z.enum(["none", "low", "medium", "high"]);
 const model = z
   .object({
     protocol: modelProtocolSchema.default("responses"),

@@ -503,7 +503,8 @@ test("settings preserve category drafts and save versioned preferences without e
   );
   await page
     .getByLabel("主模型思考等级", { exact: true })
-    .selectOption("medium");
+    .selectOption({ label: "关闭" });
+  await page.getByLabel("辅助模型思考等级").selectOption({ label: "关闭" });
   await page
     .getByLabel("主模型密钥 ·", { exact: false })
     .selectOption("replace");
@@ -518,19 +519,22 @@ test("settings preserve category drafts and save versioned preferences without e
 
   const saved = await response.text();
   expect(saved).not.toContain("ui-test-secret");
-  expect(JSON.parse(saved).settings.reasoningEffort).toBe("medium");
+  expect(JSON.parse(saved).settings.reasoningEffort).toBe("none");
+  expect(JSON.parse(saved).settings.auxiliaryReasoningEffort).toBe("none");
   expect(JSON.parse(saved).settings.maxContextTokens).toBe(240000);
   expect(JSON.parse(saved).settings.commandTimeoutMs).toBe(0);
   expect(JSON.parse(saved).settings.auxiliaryModel).toBe("test-low-cost-model");
   await page.reload();
   await page.getByRole("button", { name: "模型与设置" }).click();
   await expect(page.getByLabel("主模型思考等级", { exact: true })).toHaveValue(
-    "medium",
+    "none",
   );
+  await expect(page.getByLabel("辅助模型思考等级")).toHaveValue("none");
   await expect(page.getByLabel("辅助模型名称")).toHaveValue(
     "test-low-cost-model",
   );
   await page.getByLabel("主模型思考等级", { exact: true }).selectOption("high");
+  await page.getByLabel("辅助模型思考等级").selectOption("low");
   await page.getByRole("button", { name: "任务与上下文", exact: true }).click();
   await expect(page.getByLabel("上下文 token 上限")).toHaveValue("240000");
   await page.screenshot({ path: "test-results/settings.png", fullPage: true });

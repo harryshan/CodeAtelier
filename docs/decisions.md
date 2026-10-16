@@ -230,7 +230,8 @@
 
 - 日期：2026-09-12
 - 状态：用户明确要求实现
-- 决定：后端配置和 Web UI 提供 low、medium、high，默认 high；每次 Responses 请求显式发送 reasoning.effort。
+- 决定：后端配置和 Web UI 提供 none（关闭）、low、medium、high，主模型默认 high；每次 Responses 请求显式发送 reasoning.effort。
+- 追加要求：用户要求思考等级增加“关闭”。主/辅助配置均保存为 none，保留原默认值和下一任务生效规则；不以省略参数代替关闭，不扩大其它协议能力。沿用既有设置日志、配置 revision 及模型请求 trace 生命周期，无新增执行阶段或独立 span。
 - 影响：旧配置自动补默认值，支持环境默认值和 UI 持久化；主任务及摘要共用设置，不静默降级。
 
 ## D029：持续维护文件职责与结构注释

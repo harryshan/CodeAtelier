@@ -300,7 +300,7 @@ it("classifies empty completion as retryable and explicit output limit as perman
   }
 });
 
-it.each([undefined, "low", "medium", "high"] as const)(
+it.each([undefined, "none", "low", "medium", "high"] as const)(
   "forwards effort %s, output cap, web search tool, parallel tool preference and parses model metadata",
   async (reasoningEffort) => {
     let requestedLimit: unknown;

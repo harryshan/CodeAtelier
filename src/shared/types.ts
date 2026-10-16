@@ -110,9 +110,9 @@ export interface Settings {
   auxiliaryBaseUrl?: string;
   baseUrl: string;
   model: string;
-  reasoningEffort?: "low" | "medium" | "high";
+  reasoningEffort?: "none" | "low" | "medium" | "high";
   auxiliaryModel?: string;
-  auxiliaryReasoningEffort?: "low" | "medium" | "high";
+  auxiliaryReasoningEffort?: "none" | "low" | "medium" | "high";
   maxSteps: number;
   maxConcurrentTasks: number;
   commandTimeoutMs: number;

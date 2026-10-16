@@ -3,13 +3,19 @@
  * 1. 新安装默认值、保存重开和私有权限，验证密钥、MCP 参数和密码材料不回传。
  * 2. 同 revision 并发更新、外部漂移、坏文件和写失败必须保留已发布状态。
  * 3. 连接变更确认、辅助密钥隔离、旧配置显式迁移及密码校验覆盖安全边界。
+ * 4. 主/辅助关闭思考在保存重开及运行时投影后保留 none，非法等级不改变配置。
  * Windows 使用实际 DACL 写读路径；测试只接触 helpers 创建的可清理临时目录。
  */
 import { it, expect } from "vitest";
 import { readFile, writeFile, mkdir, readdir, rm } from "node:fs/promises";
 import path from "node:path";
 import { SettingsStore } from "../src/config/settings-store.js";
-import { defaultDocument } from "../src/config/settings-document.js";
+import {
+  defaultDocument,
+  runtimeSettings,
+} from "../src/config/settings-document.js";
+import { settingsSchema } from "../src/config/settings.js";
+import { auxiliarySettings } from "../src/config/auxiliary-model.js";
 import { verifyPassword } from "../src/config/password.js";
 import { temp } from "./fixtures/helpers.js";
 
@@ -66,6 +72,53 @@ it("saves private settings, hides credentials and reopens without environment co
   ).toBe(false);
   expect(store.view().pendingRestart).toContain("server");
   expect(reopened.view().pendingRestart).toEqual([]);
+});
+
+it("persists disabled reasoning for main and auxiliary models without changing defaults", async () => {
+  const directory = await temp();
+  const store = new SettingsStore(directory);
+  expect(store.document.models.main.reasoningEffort).toBe("high");
+  expect(store.document.models.auxiliary.reasoningEffort).toBe("low");
+
+  await store.update({
+    expectedRevision: store.view().revision,
+    changes: {
+      models: {
+        main: {
+          model: "main-fixture",
+          baseUrl: "https://model.example/v1",
+          reasoningEffort: "none",
+        },
+        auxiliary: {
+          enabled: true,
+          model: "aux-fixture",
+          reasoningEffort: "none",
+        },
+      },
+    },
+  });
+
+  const reopened = new SettingsStore(directory);
+  expect(reopened.view().configuration.models.main.reasoningEffort).toBe(
+    "none",
+  );
+  expect(reopened.view().configuration.models.auxiliary.reasoningEffort).toBe(
+    "none",
+  );
+  const settings = settingsSchema.parse(runtimeSettings(reopened.document));
+  expect(settings.reasoningEffort).toBe("none");
+  expect(auxiliarySettings(settings).reasoningEffort).toBe("none");
+
+  const before = reopened.view();
+  for (const model of ["main", "auxiliary"]) {
+    await expect(
+      reopened.update({
+        expectedRevision: before.revision,
+        changes: { models: { [model]: { reasoningEffort: "invalid" } } },
+      }),
+    ).rejects.toThrow("格式无效");
+    expect(reopened.view()).toEqual(before);
+  }
 });
 
 it("serializes concurrent saves and rejects stale revision and external drift", async () => {

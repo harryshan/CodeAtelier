@@ -35,8 +35,10 @@ export const connectionSettingsSchema = z.object({
 });
 
 export const persistedSettingsSchema = z.object({
-  reasoningEffort: z.enum(["low", "medium", "high"]).default("high"),
-  auxiliaryReasoningEffort: z.enum(["low", "medium", "high"]).default("low"),
+  reasoningEffort: z.enum(["none", "low", "medium", "high"]).default("high"),
+  auxiliaryReasoningEffort: z
+    .enum(["none", "low", "medium", "high"])
+    .default("low"),
   maxSteps: z.number().int().min(1).max(100),
   // 全局硬上限避免并行模型和子进程耗尽本机或服务端资源。
   maxConcurrentTasks: z.number().int().min(1).max(4).default(2),
