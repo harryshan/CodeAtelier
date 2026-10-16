@@ -30,14 +30,9 @@ pnpm install --frozen-lockfile
 
 ### 2. 配置模型
 
-复制 [`.env.example`](.env.example) 为 `.env`，填入服务地址、完整模型名和密钥。已有 `.env` 时直接编辑，不要覆盖。以下均为占位值：
+不再需要 `.env`。首次启动后打开 **模型与设置 → 模型连接**，填写服务地址、完整模型名和密钥；未配置时仍可进入设置和查看历史，但不能启动任务。
 
-```dotenv
-CODEATELIER_API_PROTOCOL=responses
-CODEATELIER_BASE_URL=https://api.example.com/v1
-CODEATELIER_MODEL=YOUR_MODEL_ID
-CODEATELIER_API_KEY=YOUR_API_KEY
-```
+配置统一保存在宿主数据目录的 `settings.json`。模型密钥和 MCP 凭据保存在私有 JSON 中（**不是加密保险库**），访问密码仅保存加盐验证材料。旧版本用户请先阅读 [迁移与生效规则](docs/settings-system.md#8-当前实现与操作)，不要直接覆盖旧配置。
 
 协议可选 `responses`（默认）、`chat-completions`、`messages`；主/辅助模型可独立连接。新增两种协议首批支持文字和本地工具，暂不提供思考参数或内置搜索，也不代表所有兼容服务已验证。示例和限制见 [模型协议](docs/model-protocols.md)，其他偏好见 [配置说明](docs/development.md#配置)。
 
@@ -56,11 +51,11 @@ pnpm start
 
 > 修复这个错误，补上回归测试，完成后告诉我改了哪些文件、测试是否通过。
 
-在 **模型与设置** 中可以调整运行偏好；API 地址和模型名需修改 `.env`，然后重启或重载服务。
+设置页可随时保存模型、任务、Sandbox、MCP、访问及诊断配置。运行中的任务保持原配置；模型和密钥用于下一任务。监听、密码门禁和 Sandbox 等显示“待重启”，不会自动打断任务。自定义数据目录使用 `pnpm start --data-dir "你的数据目录"`。
 
 ## Sandbox 与平台状态
 
-Sandbox 在各平台均**默认关闭**；未启用时，工具在宿主环境执行。启用前请按对应指南准备依赖，再设置 `CODEATELIER_SANDBOX_ENABLED=true` 并重启服务。
+Sandbox 在各平台均**默认关闭**；未启用时，工具在宿主环境执行。启用前请按对应指南准备依赖，再在设置页启用 Sandbox、保存并重启服务。
 
 ### Windows Sandbox
 

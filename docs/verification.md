@@ -1,5 +1,14 @@
 # 初版验证记录
 
+## 统一设置系统（2026-10-16，Windows / Node 26.10.0）
+
+- D153 实现版本化 `settings.json`、严格局部 PATCH/revision、安全公开视图、Windows 私有 ACL/POSIX 私有文件写入、scrypt 密码材料和显式旧配置迁移。主/辅助密钥与 MCP 固定到实际启动任务，运行期间可保存；日志/并发立即、模型等下一任务、服务/Sandbox 等重启生效。
+- 产品启动、开发 Vite、手动探针/smoke 不再加载 dotenv；自定义目录使用 `--data-dir`。新安装可进入设置，旧无版本文件要求显式迁移。完整七分类设置页覆盖凭据操作、草稿、校验、冲突、重读、待重启和安全导出；旧 UI 移除，`.env.example` 仅保留无配置项的退役说明（当前 Git 模板校验不支持已删除路径）。
+- 已修正部分更新中 schema 默认值重置省略字段、运行中标题测试缺失初始模型夹具、思考等级控件可访问名称及辅助继承连接更换时旧 key 复用问题。新增覆盖自定义字段保留、写锁冲突、坏文件不覆盖、候选与原件保留、任务快照、门禁待重启和安全错误投影。
+- `pnpm check` 的 TypeScript、ESLint、Prettier 通过；默认高并发单测 **778 通过、1 跳过、3 超时失败**（settings-store、settings-runtime、settings-migration 的 Windows 原生 ACL 路径）。未改变超时、断言或默认 worker 数；随后全套 `pnpm test --maxWorkers=2` **113 文件、781 通过、1 跳过**，上述三项均通过。原样 check 不记为全绿。
+- 完整 `pnpm test:e2e` **58/58 通过**，包含 Web/服务端及 Windows/POSIX Runtime 测试构建。保留既有 Zod 注释和 Web chunk 大小警告。浏览器使用 Chromium 与临时私有配置，模型全部为模拟服务。
+- 验证经批准在 Broker 宿主运行；没有运行 Evaluation、真实模型探针、真实配置迁移或当前服务重启，没有删除真实 `.env`，也未执行 Sandbox 系统安装/Repair。macOS/Linux 私有文件与 UI 链路本轮未实机验收；私有 JSON 不是加密保险库。字段全文搜索、自动安装检测与逐字段可视化冲突合并不在本次交付中，操作与剩余边界见 settings-system.md。
+
 ## 第一批多协议模型支持（2026-10-16，Windows / Node 26.10.0）
 
 - 按 D152 保留 Responses 默认行为，新增 Chat Completions / Anthropic Messages 的文字流与本地工具适配；主/辅助连接和密钥独立选择，覆盖 Engine、标题、摘要、审批、长工具复查及 Broker 模型代理。新增协议不发送思考参数或声明原生搜索，未知容量沿用字符预算。Runtime IPC v16 下发搜索能力，不传连接凭据。

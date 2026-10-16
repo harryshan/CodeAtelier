@@ -19,6 +19,7 @@ import {
   validatePasswordAccessConfiguration,
 } from "./local-security.js";
 import { registerSessionEvents } from "./session-events.js";
+import { registerSettingsRoutes } from "./settings-routes.js";
 import { registerReplayRoutes } from "./replay-routes.js";
 import { existsSync } from "node:fs";
 import path from "node:path";
@@ -44,7 +45,14 @@ export async function createApp(
     logController: new LogController({ disableRequestLogging: true }),
     bodyLimit: 1048576,
   });
-  validatePasswordAccessConfiguration();
+  const access = config.server
+    ? {
+        enabled: config.server.passwordEnabled,
+        password: "",
+        passwordHash: config.server.passwordHash,
+      }
+    : undefined;
+  validatePasswordAccessConfiguration(access);
 
   const store = await AsyncStore.open(
     path.join(config.directory, "history.sqlite"),
@@ -69,7 +77,7 @@ export async function createApp(
     return shutdownPromise;
   };
 
-  const token = registerLocalSecurity(app, allowNetworkAccess);
+  const token = registerLocalSecurity(app, allowNetworkAccess, access);
 
   app.addHook("preHandler", async (req, reply) => {
     if (
@@ -168,21 +176,7 @@ export async function createApp(
       active: engine.activeTasks,
     };
   });
-  app.get("/api/settings", async () => ({
-    ...config.publicValue(),
-    sandbox: engine.sandbox.status,
-  }));
-  app.put("/api/settings", async (req) => {
-    if (await engine.hasActiveTasks()) {
-      throw new Error("请等待运行中或排队中的任务结束后再修改设置。");
-    }
-
-    config.update(req.body);
-    log.level = config.settings.logLevel;
-    engine.sandboxLog.level = config.settings.logLevel;
-
-    return { ...config.publicValue(), sandbox: engine.sandbox.status };
-  });
+  registerSettingsRoutes(app, config, engine);
   registerReplayRoutes(app, store, log);
   app.get("/api/sessions", async () => await store.list());
   app.post("/api/sessions", async (req) => {

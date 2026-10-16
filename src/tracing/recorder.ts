@@ -6,7 +6,7 @@
  * 1. 本进程单调时钟和已认证 Runtime 报时映射到微秒时间轴；业务生命周期用进程内独立 ID 的异步 b/e 配对，允许交叉结束，未结束片段由任务终态收口。
  * 2. startSpan/endSpan/instant 接收受控 JSON 属性：普通字符串限长；tool parameters 允许有界结构但递归遮盖凭据字段，避免密钥进入本机 trace。
  * 3. link 保存跨轨道因果关系；exportTask 保留逻辑轨道和父 span 属性，通过异步 n 事件及 bind_id 将 flow 绑定到正确生命周期；同刻事件按开始/端点/结束的约束排序。
- * 4. recorder 只保存运行中任务构造完整 JSON 所需的短暂状态；Engine 成功或失败写入 TraceArchive 后立即 discardTask，不保留完成 trace 缓存。
+ * 4. configureTask 在实际领取时固定容量和配置 revision；recorder 只保存运行中任务构造完整 JSON 所需的短暂状态；Engine 成功或失败写入 TraceArchive 后立即 discardTask，不保留完成 trace 缓存。
  *
  * 此记录器不参与任务恢复，也不改变工具或模型的执行顺序。记录故障必须不影响 agent 主流程。
  * 每任务按记录数/估算字节预算截断并报告 droppedRecords，超额句柄仍可结束；参数有结构/字符上限，counter 导出 C。
@@ -47,6 +47,7 @@ type TraceRecord = {
   rootSpanId: string;
   retainedBytes: number;
   droppedRecords: number;
+  limits: { maxRecords: number; maxBytes: number };
 };
 
 /**
@@ -189,12 +190,27 @@ export class TraceRecorder {
     return this.traces.has(taskId);
   }
 
+  configureTask(
+    taskId: string,
+    limits: { maxRecords: number; maxBytes: number },
+    revision: string,
+  ) {
+    const record = this.traces.get(taskId);
+    if (record) {
+      record.limits = { ...limits };
+      const root = record.spans.get(record.rootSpanId);
+      if (root) {
+        root.attributes = { ...root.attributes, configRevision: revision };
+      }
+    }
+  }
+
   private retain(record: TraceRecord, bytes: number, newRecord = true) {
     if (
-      record.retainedBytes + bytes > this.limits.maxBytes ||
+      record.retainedBytes + bytes > record.limits.maxBytes ||
       (newRecord &&
         record.spans.size + record.instants.length + record.links.length >=
-          this.limits.maxRecords)
+          record.limits.maxRecords)
     ) {
       record.droppedRecords++;
 
@@ -254,6 +270,7 @@ export class TraceRecorder {
       rootSpanId: root.id,
       retainedBytes: 512,
       droppedRecords: 0,
+      limits: { ...this.limits },
     });
 
     return root;
@@ -603,8 +620,8 @@ export class TraceRecorder {
         sessionId: record.sessionId,
         retainedBytesEstimate: record.retainedBytes,
         droppedRecords: record.droppedRecords,
-        maxRecords: this.limits.maxRecords,
-        maxRetainedBytes: this.limits.maxBytes,
+        maxRecords: record.limits.maxRecords,
+        maxRetainedBytes: record.limits.maxBytes,
         exportDurationMs: performance.now() - exportStarted,
         format: "CodeAtelier Perfetto Trace Event JSON v2",
       },

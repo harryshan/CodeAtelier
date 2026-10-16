@@ -4,13 +4,13 @@ CodeAtelier 作为 MCP **客户端**，由本机后端连接本地 stdio 进程�
 
 ## 配置
 
-默认读取平台数据目录中的 `mcp.json`，文件不存在表示未配置服务。也可以在 `.env` 中设置 `CODEATELIER_MCP_CONFIG` 为配置文件的**绝对路径**。修改后重启或重载后端；不会自动导入任务工作区里的同名文件，也没有 UI 配置编辑器。
+在设置页的“MCP 服务”添加、编辑或删除服务，保存到私有 `settings.json` 的 `mcp.servers`。下一任务使用新目录和凭据，已有任务保持旧快照；保存不启动进程、不连接服务。旧 `mcp.json`/`CODEATELIER_MCP_CONFIG` 只用于显式迁移，不自动导入工作区文件。
 
-平台目录见 [开发配置](development.md#数据与日志)。配置格式如下；地址、路径和凭据均是占位值，使用前替换：
+平台目录见 [开发配置](development.md#数据与日志)。以下示例对应 `settings.json` 中 `mcp` 子对象，不是完整设置文件；地址、路径和凭据均是占位值，使用前替换：
 
 ```json
 {
-  "mcpServers": {
+  "servers": {
     "local": {
       "description": "查询本地项目资料，按关键词搜索开发文档。",
       "transport": "stdio",
@@ -39,7 +39,7 @@ CodeAtelier 作为 MCP **客户端**，由本机后端连接本地 stdio 进程�
 - `timeoutMs` 默认 60000，范围 100～300000；仅覆盖连接初始化/握手，不再截断已开始的操作。操作无固定总时限，每五分钟把最新 progress 交主模型决定继续或中断；无 progress 不自动认定卡死，见 [长工具运行](long-running-tools.md)。
 - 配置为 UTF-8 JSON（兼容 Windows BOM），最多 1 MiB。显式配置路径缺失、格式损坏、未知字段或不合法 URL 会阻止后端启动，不悄悄忽略。
 
-配置文件可包含凭据，请存放在宿主用户私有目录，不提交到仓库。原始 `mcpServers` 不进入浏览器配置或 Runtime 启动设置；只有名称、transport、脱敏用途摘要进入主模型指令和 Runtime 的 `mcpText`，地址、命令、环境和认证头不随目录传递。摘要会进入模型请求与本地 Replay Case，不进入日志或 Perfetto；名称和描述不要包含凭据或不宜发送给模型的信息。工具结果会经脱敏后进入本地历史和当前模型上下文，因此“本机访问”**不表示结果只留在本机**。
+配置文件可包含凭据，请存放在宿主用户私有目录，不提交到仓库。浏览器只接收服务的安全投影（已有 args、env、headers 和含 query 的 URL 不回显），Runtime 不接收原始配置；只有名称、transport、脱敏用途摘要进入主模型指令和 Runtime 的 `mcpText`，地址、命令、环境和认证头不随目录传递。摘要会进入模型请求与本地 Replay Case，不进入日志或 Perfetto；名称和描述不要包含凭据或不宜发送给模型的信息。工具结果会经脱敏后进入本地历史和当前模型上下文，因此“本机访问”**不表示结果只留在本机**。
 
 ## 在对话中使用
 
@@ -94,23 +94,7 @@ MCP 凭据值及常见认证字段在结果和错误进入模型、历史前遮�
 
 ## 离线试用与验证
 
-在仓库根目录，已安装依赖后可用 Windows PowerShell 建立演示配置（只运行本仓库夹具，不安装或下载第三方 MCP 服务）：
-
-```powershell
-New-Item -ItemType Directory -Force .local | Out-Null
-@{
-  mcpServers = @{
-    demo = @{
-      description = "回显文本、读取演示 note 资源和 greet 模板，用于离线 MCP 联调。"
-      transport = "stdio"
-      command = (Get-Command node).Source
-      args = @((Resolve-Path tests/fixtures/mcp-server.ts).Path)
-    }
-  }
-} | ConvertTo-Json -Depth 6 | Set-Content -Encoding utf8 .local/mcp.demo.json
-$env:CODEATELIER_MCP_CONFIG = (Resolve-Path .local/mcp.demo.json).Path
-pnpm dev
-```
+在设置页添加别名 `demo`，transport 选 `stdio`，command 填写本机 Node 的绝对路径，args 填写 JSON 数组 `["仓库绝对路径/tests/fixtures/mcp-server.ts"]`，用途填写“回显文本、读取演示 note 资源和 greet 模板”。路径必须换成实际值；保存后无需重启。只运行本仓库夹具，不安装或下载第三方服务。
 
 后端模型连接仍须按 README 配置。新建对话后要求调用 demo 的 echo，并按提示审批。演示服务只提供 echo/fail/slow、note 资源和 greet 模板；请勿用于生产。
 

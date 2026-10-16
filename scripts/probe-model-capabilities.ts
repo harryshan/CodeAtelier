@@ -13,28 +13,24 @@ import pino from "pino";
 import OpenAI from "openai";
 import { ResponsesProvider } from "../src/providers/responses-provider.js";
 import { createBudget } from "../src/context/token-budget.js";
-import { settingsSchema } from "../src/config/settings.js";
+import { startupConfig } from "../src/config/startup.js";
 
 const log = pino({ base: { module: "model-probe" } });
-const key = process.env.CODEATELIER_API_KEY;
+const config = startupConfig();
+const key = config.modelKey();
+if (config.settings.protocol !== "responses") {
+  throw new Error("该手动探针仅支持 Responses 主模型。");
+}
+
 if (!key) {
-  log.error(
-    { event: "probe.missing_key" },
-    "请通过本地环境设置 CODEATELIER_API_KEY。",
-  );
+  log.error({ event: "probe.missing_key" }, "请先在设置页配置主模型密钥。");
   process.exitCode = 1;
 } else {
-  const settings = settingsSchema.parse({
-    baseUrl: process.env.CODEATELIER_BASE_URL,
-    model: process.env.CODEATELIER_MODEL,
-    maxSteps: 1,
-    commandTimeoutMs: 1000,
+  const settings = {
+    ...config.settings,
     requestTimeoutMs: 45000,
     idleTimeoutMs: 15000,
-    contextChars: 180000,
-    outputChars: 1000,
-    logLevel: "info",
-  });
+  };
   const provider = new ResponsesProvider(settings, key);
   const signal = AbortSignal.timeout(60000);
   const input = [{ role: "user", content: "Reply only OK." }];

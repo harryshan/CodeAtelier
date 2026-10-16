@@ -4,29 +4,24 @@ CodeAtelier 支持 `responses`（默认）、`chat-completions` 和 `messages`�
 
 ## 配置
 
-在本地 `.env` 选择协议，编辑后重启或重载服务。下面均为占位值，替换为服务实际提供的 Base URL、模型和密钥。Base URL 应包含服务要求的版本路径（通常 `/v1`），不要包含具体调用端点；配置兼容去除末尾 `/responses`、`/chat/completions` 或 `/messages`。
+在设置页的“模型连接”选择协议并保存，下一任务生效。下面是 `settings.json` 中 `models.main` 的非秘密字段示意；密钥通过 UI 替换控件提交，不要把示例当作完整配置文件。值均为占位，须替换为实际服务信息。Base URL 应包含服务要求的版本路径（通常 `/v1`），不要包含具体调用端点；配置兼容去除末尾 `/responses`、`/chat/completions` 或 `/messages`。
 
-```dotenv
-CODEATELIER_API_PROTOCOL=chat-completions
-CODEATELIER_BASE_URL=https://api.example.com/v1
-CODEATELIER_MODEL=YOUR_MODEL_ID
-CODEATELIER_API_KEY=YOUR_API_KEY
+```json
+{
+  "protocol": "chat-completions",
+  "baseUrl": "https://api.example.com/v1",
+  "model": "YOUR_MODEL_ID",
+  "reasoningEffort": "high"
+}
 ```
 
 使用 Messages 时，将协议改为 `messages`，地址、模型和密钥也换成对应服务值。适配器发送 `x-api-key` 和 `anthropic-version: 2023-06-01`；不使用 Bearer。Chat Completions 与 Responses 使用 Bearer。
 
-辅助连接可以独立设置：
+辅助连接可在同页启用，关闭“继承主模型连接”后选择独立协议、地址、模型并填写辅助密钥。保存配置不会自动连接或产生模型费用。
 
-```dotenv
-CODEATELIER_AUXILIARY_MODEL=YOUR_AUXILIARY_MODEL_ID
-CODEATELIER_AUXILIARY_API_PROTOCOL=messages
-CODEATELIER_AUXILIARY_BASE_URL=https://auxiliary.example.com/v1
-CODEATELIER_AUXILIARY_API_KEY=YOUR_AUXILIARY_API_KEY
-```
-
-- 不配置辅助协议/地址时，继承主连接。只有同端点、同协议且未显式设置辅助密钥时才共用主密钥；跨端点或协议缺少独立密钥会明确失败，不能把主密钥发给另一个服务。
+- 启用继承时，使用主连接。只有同端点、同协议且未显式设置辅助密钥时才共用主密钥；跨端点或协议缺少独立密钥会明确失败，不能把主密钥发给另一个服务。
 - 辅助模型为空时，标题、摘要沿用主模型；审批保留人工确认，不使用主模型替代。辅助调用失败仍沿用既有降级/恢复规则。
-- 连接配置不写 `settings.json`，UI 只读展示。UI 输入的临时 key 只覆盖主密钥；辅助独立密钥由环境提供。主/辅助密钥均用于日志、会话事件和 Replay 脱敏，不发送到浏览器或 Sandbox Runtime。
+- 连接及密钥保存在私有 `settings.json`，UI 不回显已有 key，支持保留/替换/删除；改变端点或协议需重新输入或明确删除原密钥。主/辅助密钥均用于日志、会话事件和 Replay 脱敏，不发送到浏览器或 Sandbox Runtime。
 - 启动命令不变：`pnpm build`，然后 `pnpm start`。安装式 Windows Sandbox 需同步更新 Runtime IPC v16；按 Windows 使用指南执行重建/Repair，本功能不会自动操作系统安装。
 
 ## 当前能力

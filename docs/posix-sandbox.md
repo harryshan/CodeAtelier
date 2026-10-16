@@ -11,10 +11,10 @@
 ```sh
 pnpm install --frozen-lockfile
 pnpm build
-CODEATELIER_SANDBOX_ENABLED=true pnpm start
+pnpm start
 ```
 
-也可在本地 `.env` 设置 `CODEATELIER_SANDBOX_ENABLED=true` 后重启服务。开发模式首次运行及 Runtime/Worker 源码变化后，先执行 `pnpm sandbox:posix:build`，再运行 `pnpm dev`。普通 `pnpm build` 和 `pnpm build:test` 都构建固定 POSIX bundle，但不会启动 MXC 或运行手动探针。构建产物为 `dist/runtime/posix`，不依赖 Windows 安装器。
+启动后在设置页“Sandbox 与权限”启用开关，保存并重启服务。开发模式首次运行及 Runtime/Worker 源码变化后，先执行 `pnpm sandbox:posix:build`，再运行 `pnpm dev`。普通 `pnpm build` 和 `pnpm build:test` 都构建固定 POSIX bundle，但不会启动 MXC 或运行手动探针。构建产物为 `dist/runtime/posix`，不依赖 Windows 安装器。
 
 关闭开关才明确选择宿主执行。Linux/macOS 启用后自检、SDK、bundle 或启动失败均停止该次任务；**没有 Windows 的启动前宿主 fallback**。检查任务实际状态，不能把“已请求 Sandbox”当成“已生效”。
 
@@ -28,13 +28,7 @@ CODEATELIER_SANDBOX_ENABLED=true pnpm start
 - 可写目录里的既有硬链接、文件系统 UNIX socket、可变符号链接及同宿主用户进程仍需按平台理解；断网不等于阻止 AF_UNIX。Linux `deniedPaths` 的空 tmpfs 遮蔽不代表影子目录不可写。macOS 不具有 Linux namespace 的相同语义，不能继承其隔离结论。
 - 固定 bundle、依赖及 Node 安装目录必须可信且不由被测项目维护。此版本不承诺抵御恶意同 UID 宿主程序、完整任务间隔离、磁盘/CPU 配额或全部平台安全矩阵。
 
-POSIX 可选额外根从宿主启动环境的 JSON 数组读取，必须为已存在的绝对路径；非法值拒绝，不从模型参数或工作区配置取得。这些设置只影响 POSIX 后端。以下是路径示例，先替换为实际存在、非敏感的目录：
-
-```sh
-export CODEATELIER_SANDBOX_READ_ROOTS='["/opt/example-toolchain"]'
-export CODEATELIER_SANDBOX_WRITE_ROOTS='["/home/example/build-cache"]'
-CODEATELIER_SANDBOX_ENABLED=true pnpm start
-```
+POSIX 可选额外根在设置页逐行填写，保存到 `sandbox.readRoots/writeRoots` 并重启后应用；必须为已存在的绝对路径，实际授权前由启动器核验。非法值拒绝，不从模型参数或工作区配置取得。示例只读根 `/opt/example-toolchain`、可写根 `/home/example/build-cache`，须替换为本机真实非敏感目录。这些设置只影响 POSIX 后端。
 
 普通文件工具仍有自己的路径校验；额外 OS 根不自动扩大文件工具契约。需要越界操作时使用既有 Broker 审批，不绕过失败命令重新执行。
 

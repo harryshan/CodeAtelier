@@ -9,10 +9,11 @@
   },
   "scripts": {
     "dev": "tsx watch src/server/main.ts",
-    "dev:web": "vite",
+    "dev:web": "tsx scripts/dev-web.ts",
     "build": "tsc -p tsconfig.server.json && vite build && tsx scripts/windows-sandbox/build-runtime.ts && tsx scripts/build-posix-runtime.ts",
     "build:test": "tsx scripts/test-runner.ts build",
-    "start": "node --env-file-if-exists=.env dist/server/server/launcher.js",
+    "start": "node dist/server/server/launcher.js",
+    "settings:migrate": "tsx scripts/migrate-settings.ts",
     "typecheck": "tsc --noEmit",
     "test": "tsx scripts/test-runner.ts unit",
     "test:coverage": "tsx scripts/test-runner.ts unit --coverage",

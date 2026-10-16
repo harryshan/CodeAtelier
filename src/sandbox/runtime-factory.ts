@@ -6,7 +6,7 @@
  * 1. 开关关闭时返回 undefined，确保 V1 宿主命令路径不创建任何 Sandbox 后端。
  * 2. Windows 注册专用账户原生 Runtime；只有安装 state、二进制摘要、账户凭据和 WFP 均自检通过才执行。
  * 3. Linux/macOS 注册 MXC 私有流启动器，SDK 只在实际任务时动态加载；其他平台不注册后端。
- * 4. 额外授权根仅从宿主环境 JSON 数组读取；非法/相对路径拒绝，数据目录由 Engine 的 Config 传入。
+ * 4. 额外授权根从 Config 固定的启动投影读取（旧调用方可提供环境）；非法/相对路径拒绝，不热改活动实例。
  */
 
 import type { Logger } from "pino";
@@ -17,8 +17,8 @@ import path from "node:path";
 import { dataDirectory } from "../config/data-directory.js";
 import { MxcSandboxRuntime } from "./mxc-runtime.js";
 
-function configuredRoots(name: string) {
-  const raw = process.env[name];
+function configuredRoots(name: string, environment: NodeJS.ProcessEnv) {
+  const raw = environment[name];
   if (!raw) {
     return [];
   }
@@ -45,13 +45,14 @@ export function createSandboxRuntime(
   log?: Logger,
   traces?: TraceRecorder,
   brokerDataDirectory = dataDirectory(),
+  environment: NodeJS.ProcessEnv = process.env,
 ): SandboxRuntime | undefined {
   if (!configuration.enabled) {
     return undefined;
   }
 
   if (platform === "win32") {
-    return new NativeWindowsSandboxRuntime(process.env, undefined, log, traces);
+    return new NativeWindowsSandboxRuntime(environment, undefined, log, traces);
   }
 
   if (platform === "linux" || platform === "darwin") {
@@ -60,8 +61,11 @@ export function createSandboxRuntime(
       dataDirectory: brokerDataDirectory,
       log,
       traces,
-      readRoots: configuredRoots("CODEATELIER_SANDBOX_READ_ROOTS"),
-      writeRoots: configuredRoots("CODEATELIER_SANDBOX_WRITE_ROOTS"),
+      readRoots: configuredRoots("CODEATELIER_SANDBOX_READ_ROOTS", environment),
+      writeRoots: configuredRoots(
+        "CODEATELIER_SANDBOX_WRITE_ROOTS",
+        environment,
+      ),
     });
   }
 

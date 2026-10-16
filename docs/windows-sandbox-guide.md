@@ -68,11 +68,7 @@ Sandbox **不会**创建 worktree、暂存副本或自动回滚：可写操作�
 
 ### 启用、运行与状态判断
 
-1. 在本地、被 Git 忽略的 `.env` 中设置启动期配置，然后重新启动或重载服务。该开关不能在 Web UI 中动态切换：
-
-   ```dotenv
-   CODEATELIER_SANDBOX_ENABLED=true
-   ```
+1. 在设置页“Sandbox 与权限”启用 Sandbox，确认风险并保存，然后重启或重载服务。开关保存到 `settings.json` 的 `sandbox.enabled`，保存不会立即改变当前 Runtime，也不会自动安装系统组件。
 
 2. 正常构建和启动应用：
 
@@ -114,10 +110,6 @@ Sandbox **不会**创建 worktree、暂存副本或自动回滚：可写操作�
 
 Sandbox 生命周期日志位于平台数据目录的 `logs/sandbox.log`，常规应用日志和会话历史仍分别保存。
 
-若要关闭 Sandbox，将 `.env` 改回以下值并重启或重载服务；若还要移除机器级安装对象，再按上表执行卸载：
-
-```dotenv
-CODEATELIER_SANDBOX_ENABLED=false
-```
+若要关闭 Sandbox，在设置页关闭开关、保存并重启或重载服务；若还要移除机器级安装对象，再按上表执行卸载。
 
 初版仍以应用层审批为主；产品的 `git` 工具继续限制为安全 action、当前分支已校验 upstream，并禁止强推、任意 remote/branch、重置或创建 PR。

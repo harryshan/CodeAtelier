@@ -2,13 +2,12 @@
  * 用 Zod 校验后端设置，Config 在启动和更新配置时都会使用这里的规则。
  * 校验后的设置通过共享的 Settings 类型传递给其他模块。
  *
- * 1. connectionSettingsSchema 校验只从环境读取的主/辅助协议、API 地址和模型标识。
- * 2. persistedSettingsSchema 描述 settings.json 可保存的偏好：思考等级、任务并发及其他执行限制和日志级别。
- * 3. settingsSchema 将两类字段合成为运行时 Settings，供 Engine 和浏览器的只读连接信息使用。
+ * 1. connectionSettingsSchema 校验旧环境迁移的主/辅助协议、API 地址和模型标识。
+ * 2. persistedSettingsSchema 保留旧偏好校验，同时为 v1 文档复用执行限制范围。
+ * 3. settingsSchema 将字段合成为运行时 Settings；版本化磁盘/API schema 位于 settings-document.ts。
  *
- * 增加字段时要同步 Settings、配置读写和设置界面。通过校验只表示配置格式合法，
- * 服务是否支持对应能力还需要向服务查询。连接字段不得加入 persistedSettingsSchema，
- * 否则会重新引入 .env 与 settings.json 的来源冲突。
+ * 新产品启动只读取版本化文件；此处旧结构用于兼容迁移与已有运行时调用方。
+ * 通过校验仅表示格式合法，不证明服务支持对应能力。
  */
 
 import { z } from "zod";

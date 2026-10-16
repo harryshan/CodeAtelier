@@ -288,9 +288,9 @@ Responses 主任务请求包含 OpenAI 内置 `web_search`，Chat Completions / 
 
 ### 模型设置
 
-主要测试：config.test.ts。
+主要测试：settings-store.test.ts、settings-runtime.test.ts、settings-migration.test.ts、config.test.ts（旧迁移兼容）、e2e/app.spec.ts、e2e/model-protocols.spec.ts。
 
-连接只来自环境、settings.json 仅保存偏好、备用字符上限新默认值及既有自定义值保留、端点规范化、连接改动拒绝、参数边界、失败更新保持原状态、密钥内存存储、损坏配置不覆盖
+版本化文件独立于旧环境、空配置引导、公开视图无凭据、秘密保留/替换/删除、局部 PATCH 不重置省略值、revision/磁盘漂移/写入锁冲突、坏文件不覆盖、私有备份、端点变更不复用密钥、运行中标题/模型快照隔离、门禁重启生效、离线候选/明确激活与重复拒绝。浏览器覆盖分组草稿、验证/保存/刷新、协议能力与可访问标签；启动/关闭夹具使用私有临时文件。
 
 ### 日志
 
@@ -481,14 +481,14 @@ git-tools.test.ts 覆盖 diff 独立输出硬上限，属于普通功能回归�
 
 镜像刷新手动回归 `scripts/swebench/test_refresh.py` 覆盖新运行包上传与文件校验、镜像结果记录、base_commit 不匹配时不提交镜像且清理容器。本次按 Evaluation 约定仅静态检查，未执行该套件。
 
-- 连接配置：缺少地址/模型时即使有旧 settings.json 也启动报错；API 地址和模型标识只从环境读取并规范化端点，settings.json 只保存偏好且拒绝竞争来源；单元与浏览器测试使用独立模拟配置，并回归验证测试进程只可见固定测试连接且 API key 为空。
+- 连接配置：旧来源限制保留为迁移兼容回归；产品 v1 启动无需预设连接，未配置时任务被阻止。新设置回归使用私有临时文件和模拟密钥；不访问真实模型或真实配置。
 
 ### 辅助模型
 
 - `tests/auxiliary-model.test.ts`：旧配置兼容、主模型继承、环境辅助模型来源、可保存推理强度、模型改动拒绝、非法输入拒绝；生产 Engine 路由、辅助模型独立预算、完整摘要来源、摘要失败保留历史。使用模拟模型，不访问真实服务。
 - `tests/title-generation.test.ts`：首条 prompt 选择辅助模型、输入分隔和输出清理、未知标题模型故障最多额外重试 3 次、永久失败不阻断主任务、取消结束标题状态，以及旧 SQLite 标题迁移。
 - `tests/model-approval.test.ts`：审批请求把后端会话工作区根目录与不可信的工具名、待审批内容分字段发送给无工具、单次关闭思考（不修改辅助等级）、256 token 的低成本模型；`tests/engine.test.ts` 验证审批专属请求路由，`tests/provider.test.ts` 验证真实 Responses 请求为 `reasoning.effort: "none"` 且其它请求保留配置等级；严格 JSON 输出分别自动通过、保留人工点击或直接拒绝并返回理由；分类策略措辞及其真实模型效果不以子串匹配单测证明；Engine 的宿主及 Runtime 请求均携带真实工作区根目录；分类器缺失时不自动放行。
-- `tests/e2e/app.spec.ts`：只读展示环境连接、保存思考偏好并在刷新后回显，且不暴露密钥；首条 prompt 完成后在侧栏显示并在刷新后保留自动标题。
+- `tests/e2e/app.spec.ts`：编辑版本化连接和偏好、切换分类保留草稿、保存后刷新回显，且不暴露已有密钥；首条 prompt 完成后在侧栏显示并在刷新后保留自动标题。
 
 评测包装器的辅助模型路由与主模型共用累计用量和调用上限；本次仅静态检查评测改动，未运行 Evaluation。
 

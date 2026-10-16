@@ -493,25 +493,27 @@ test("groups Git output and its final status in one persistent card", async ({
   ).toHaveCount(1);
 });
 
-test("settings show the environment connection and save preferences without exposing key", async ({
+test("settings preserve category drafts and save versioned preferences without exposing keys", async ({
   page,
 }) => {
   await page.goto("/");
   await page.getByRole("button", { name: "模型与设置" }).click();
-  await expect(page.getByLabel("连接配置")).toContainText("test-model");
-  await expect(page.getByLabel("命令超时（秒）")).toHaveCount(0);
-  await expect(page.getByText(/工具运行不设时限，每 5/)).toBeVisible();
-  await expect(page.getByLabel("思考等级")).toHaveValue("high");
-  await expect(page.getByLabel("上下文窗口上限（token）")).toHaveValue(
-    "300000",
+  await expect(page.getByLabel("主模型名称", { exact: true })).toHaveValue(
+    "test-model",
   );
-  await page.getByLabel("上下文窗口上限（token）").fill("240000");
-  await page.getByLabel("思考等级").selectOption("medium");
-  await page.getByLabel("辅助模型推理强度").selectOption("low");
-  await page.getByLabel("API key", { exact: true }).fill("ui-test-secret");
-  await page.getByRole("button", { name: "保存设置" }).click();
-
-  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await page
+    .getByLabel("主模型思考等级", { exact: true })
+    .selectOption("medium");
+  await page
+    .getByLabel("主模型密钥 ·", { exact: false })
+    .selectOption("replace");
+  await page.getByLabel("主模型密钥新值").fill("ui-test-secret");
+  await page.getByRole("button", { name: "任务与上下文", exact: true }).click();
+  await expect(page.getByLabel("命令超时（秒）")).toHaveCount(0);
+  await page.getByLabel("上下文 token 上限").fill("240000");
+  await page.getByRole("button", { name: "保存更改", exact: true }).click();
+  await expect(page.getByRole("status")).toContainText("已保存");
+  await expect(page.getByRole("dialog")).toBeVisible();
   const response = await page.request.get("/api/settings");
 
   const saved = await response.text();
@@ -522,17 +524,20 @@ test("settings show the environment connection and save preferences without expo
   expect(JSON.parse(saved).settings.auxiliaryModel).toBe("test-low-cost-model");
   await page.reload();
   await page.getByRole("button", { name: "模型与设置" }).click();
-  await expect(page.getByLabel("思考等级")).toHaveValue("medium");
-  await expect(page.getByLabel("上下文窗口上限（token）")).toHaveValue(
-    "240000",
+  await expect(page.getByLabel("主模型思考等级", { exact: true })).toHaveValue(
+    "medium",
   );
-  await page.screenshot({ path: "test-results/settings.png", fullPage: true });
-  await expect(page.getByLabel("连接配置")).toContainText(
+  await expect(page.getByLabel("辅助模型名称")).toHaveValue(
     "test-low-cost-model",
   );
-  await page.getByLabel("思考等级").selectOption("high");
-  await page.getByLabel("上下文窗口上限（token）").fill("300000");
-  await page.getByRole("button", { name: "保存设置" }).click();
+  await page.getByLabel("主模型思考等级", { exact: true }).selectOption("high");
+  await page.getByRole("button", { name: "任务与上下文", exact: true }).click();
+  await expect(page.getByLabel("上下文 token 上限")).toHaveValue("240000");
+  await page.screenshot({ path: "test-results/settings.png", fullPage: true });
+  await page.getByLabel("上下文 token 上限").fill("300000");
+  await page.getByRole("button", { name: "保存更改", exact: true }).click();
+  await expect(page.getByRole("status")).toContainText("已保存");
+  await page.getByRole("button", { name: "关闭设置", exact: true }).click();
   await expect(page.getByRole("dialog")).toHaveCount(0);
 });
 

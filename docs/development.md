@@ -15,29 +15,27 @@ Node.js 24 或 26，pnpm 版本由 package.json 的 packageManager 固定。提�
 | pnpm typecheck / lint / test                                          | 类型、静态规则、核心测试；test 只使用白名单测试环境                       |
 | pnpm check                                                            | 类型、lint、核心测试、测试模式构建                                        |
 | pnpm test:e2e                                                         | 先进行不读取 dotenv 的测试模式构建，再启动独立模拟服务验证浏览器交互      |
-| node --env-file=.env --import tsx scripts/probe-model-capabilities.ts | 检查模型窗口、计数接口及真实 usage（少量模型调用）                        |
-| node --env-file=.env --import tsx scripts/probe-responses.ts          | 使用环境变量密钥测试真实服务工具往返                                      |
-| node --env-file=.env --import tsx scripts/smoke-agent.ts              | 在 .local 下创建隔离项目，真实模型修复并运行测试                          |
+| pnpm exec tsx scripts/probe-model-capabilities.ts | 检查模型窗口、计数接口及真实 usage（少量模型调用）                        |
+| pnpm exec tsx scripts/probe-responses.ts          | 读取私有设置测试真实 Responses 工具往返                                      |
+| pnpm exec tsx scripts/smoke-agent.ts              | 在 .local 下创建隔离项目，真实模型修复并运行测试                          |
 
-脚本只接受环境变量密钥，不内置真实凭据；真实验证会消耗配置服务的模型额度。smoke-agent 只自动批准它自己创建的示例项目内固定 node --test 命令。
+手动探针/smoke 从平台数据目录或 `--data-dir` 指定的 settings.json 读取连接，不内置凭据、不加载 dotenv；真实验证会消耗配置服务的模型额度。smoke-agent 只自动批准它自己创建的示例项目内固定 node --test 命令。
 
 ## 配置
 
-后端启动时读取本地 `.env`。API 地址、主模型和可选辅助模型的唯一来源是 `.env` 或进程环境；无论是否已有 `settings.json`，都必须提供 API 地址和主模型，否则启动明确报错。设置界面只读显示连接字段，修改 `.env` 后须重启或重载服务。访问密码门禁也只在服务启动时读取环境变量，修改后同样须重启或重载。推荐通过 Web UI 为当前进程输入密钥，或使用环境变量；本地 `.env` 仅供开发使用，不提交 Git。
+产品启动、Vite 与手动探针不再加载 `.env`。配置来自内置默认值及宿主数据目录的版本化 `settings.json`；使用设置页编辑，不提交该文件。模型/MCP 凭据按私有文件保护，但不是加密保险库。旧环境变量不覆盖文件；旧配置必须显式迁移，步骤见 [设置系统](settings-system.md#8-当前实现与操作)。
 
-| 环境变量                         | 默认 / 用途                                                                         |
-| -------------------------------- | ----------------------------------------------------------------------------------- |
-| CODEATELIER_BASE_URL             | 无默认值；在 .env 填写实际 API Base URL                                             |
-| CODEATELIER_MODEL                | 无默认值；在 .env 填写服务公布的完整模型标识                                        |
-| CODEATELIER_REASONING_EFFORT     | high；可选 low、medium、high                                                        |
-| CODEATELIER_API_KEY              | 无默认值                                                                            |
-| CODEATELIER_DATA_DIR             | 平台用户数据目录                                                                    |
-| CODEATELIER_PORT                 | 4142                                                                                |
-| CODEATELIER_LISTEN_ADDRESS       | `127.0.0.1`；可选 `::1`、`0.0.0.0`（开放 IPv4 局域网）或 `::`（开放 IPv6 局域网）   |
-| CODEATELIER_WEB_PASSWORD_ENABLED | false（未设置或空值）；显式值只能为 `true` 或 `false`，启用 Web UI 单一访问密码门禁 |
-| CODEATELIER_WEB_PASSWORD         | 无默认值；开关为 `true` 时必须为非空密码，不写入设置、浏览器配置或日志              |
-| CODEATELIER_LOG_LEVEL            | info                                                                                |
-| CODEATELIER_SANDBOX_ENABLED      | false；只接受明确的 `true` 或 `false`；启动后不可动态切换                           |
+| 分组 | 默认 / 生效 |
+| --- | --- |
+| models | 主/辅助协议、地址、模型、密钥、思考等级；下一任务 |
+| execution / context | 并发默认 2（1～4）立即调度，其余下一任务 |
+| sandbox | 默认关闭；开关、根目录、安装位置重启生效 |
+| mcp.servers | 默认空；下一任务，不因保存建立连接 |
+| server | `127.0.0.1:4142`、门禁默认关闭；重启生效 |
+| logging | info；宿主立即生效 |
+| tracing | 任务容量下一任务；检查点/归档保留重启生效 |
+
+自定义位置示例：`pnpm start --data-dir "G:/CodeAtelierData"`；开发两个终端使用同一参数：`pnpm dev --data-dir "G:/CodeAtelierData"` 和 `pnpm dev:web --data-dir "G:/CodeAtelierData"`。路径按本机实际情况替换。没有设置文件时可进入引导，损坏文件不会被重置为无密码服务。
 
 ### Skill 目录
 
@@ -45,21 +43,21 @@ Node.js 24 或 26，pnpm 版本由 package.json 的 packageManager 固定。提�
 
 ### MCP 配置
 
-可选 `CODEATELIER_MCP_CONFIG` 指向后端 MCP JSON 配置的绝对路径，缺省使用平台数据目录的 mcp.json；文件缺失默认不启用任何服务。支持本地 stdio 和远程 Streamable HTTP，由本机后端连接，凭据不发送给模型服务商或 Runtime。可为各服务填写 `description`（去除首尾空白后 1～1024 字符）；每主任务主动提供已启用服务的名称、transport 与脱敏用途，缺失描述为 null，不自动连接服务。配置格式、可执行离线示例、审批与已知限制见 [MCP 指南](mcp.md)。修改配置后重启；不自动读取工作区 MCP 配置，不在 UI 展示密钥。
+MCP 在设置页管理并保存到 `mcp.servers`；旧 `mcp.json` 仅由显式迁移器读取。支持本地 stdio 和远程 Streamable HTTP，由本机后端连接，凭据不发送给模型服务商或 Runtime。可为各服务填写 `description`（去除首尾空白后 1～1024 字符）；每主任务主动提供已启用服务的名称、transport 与脱敏用途，缺失描述为 null，不自动连接服务。配置格式、可执行离线示例、审批与已知限制见 [MCP 指南](mcp.md)。修改后从下一任务生效；不自动读取工作区 MCP 配置，不在 UI 回显凭据值。
 
 ### 多协议模型
 
-`CODEATELIER_API_PROTOCOL` 可选 `responses`（默认）、`chat-completions`、`messages`。主任务、标题、摘要、审批和 Broker 模型代理共用协议工厂；辅助连接可用 `CODEATELIER_AUXILIARY_API_PROTOCOL`、`CODEATELIER_AUXILIARY_BASE_URL`、`CODEATELIER_AUXILIARY_API_KEY` 独立配置。跨端点或协议不继承主密钥。完整示例与限制见 [模型协议](model-protocols.md)。
+`models.main.protocol` 可选 `responses`（默认）、`chat-completions`、`messages`。主任务、标题、摘要、审批和 Broker 模型代理共用协议工厂；辅助连接在设置页独立配置，或显式继承主连接。跨端点或协议不继承主密钥。完整示例与限制见 [模型协议](model-protocols.md)。
 
 新增两种协议首批仅提供文字流、本地函数调用与 usage；不发送思考参数、不声明内置搜索。UI 显示所选协议并禁用不适用的思考选项。不自动改写旧历史或猜测模型容量；不能安全转换的不透明历史会明确拒绝。Runtime IPC v16，安装式 Sandbox 须重建并 Repair。
 
 ### 配置来源与优先级
 
-`settings.json` 只保存非连接偏好：主/辅助模型的思考等级、任务限制（包括 `maxConcurrentTasks`）和日志级别；通过 UI 修改。已保存偏好优先于同名环境默认值。API 地址、主/辅助模型标识绝不写入该文件；旧版本留下的同名字段会在读取时忽略，并在下一次保存偏好时移除。密钥始终来自环境或当前进程内存，不写 `settings.json`。存在运行中或排队任务时禁止修改配置。
+版本化文件是唯一产品配置来源。PATCH 带 revision，只修改提交的字段；陈旧标签页、磁盘漂移或写入锁冲突返回 409，不自动覆盖。运行/排队期间允许保存；已启动任务保持不可变配置和凭据快照，排队任务实际启动时取新配置。旧 PUT 更新契约退役。手工编辑后通过“重新读取配置”校验并应用，不监听半写文件。
 
 ### Windows Sandbox 配置与启动
 
-`CODEATELIER_SANDBOX_ENABLED` 在 Windows 启用专用账户原生后端；默认关闭；macOS/Linux 使用独立的可选 [MXC 后端](posix-sandbox.md)，不是 Windows 专用账户机制。Windows Sandbox 已由用户持续使用并确认功能正常，按实际使用验证通过记录（D130），可用于日常开发。关闭时 `run_command` 完全沿用原有宿主 shell、审批、取消和恢复路径。启用后，缺少后端、工作区 preflight 或 Runtime 自检在命令启动前失败会产生 `host-process-fallback` 时间线警告，并以原宿主 shell 自动继续；同一任务后续命令保持宿主模式。
+设置页的 Sandbox 开关（`sandbox.enabled`）在 Windows 启用专用账户原生后端；默认关闭；macOS/Linux 使用独立的可选 [MXC 后端](posix-sandbox.md)，不是 Windows 专用账户机制。Windows Sandbox 已由用户持续使用并确认功能正常，按实际使用验证通过记录（D130），可用于日常开发。关闭时 `run_command` 完全沿用原有宿主 shell、审批、取消和恢复路径。启用后，缺少后端、工作区 preflight 或 Runtime 自检在命令启动前失败会产生 `host-process-fallback` 时间线警告，并以原宿主 shell 自动继续；同一任务后续命令保持宿主模式。
 
 Runtime 执行开始后的错误标为 `unknown`，绝不自动重放；ACL/Job 清理失败即使同时收到取消也优先记为 unknown/orphaned，冻结 account generation，调用原生账户进程终止和 ACL journal 对账。服务监听前主动执行同一恢复路径，以清理上次进程崩溃遗留；恢复失败会记录安全错误并使后续 Sandbox self-check fallback，不阻止宿主服务启动。
 
@@ -91,7 +89,7 @@ Abort 只表示 Broker 不再等待，不等于 Runtime 已终止；取消仍必
 
 ### Web 访问密码
 
-访问门禁在服务启动时读取 `CODEATELIER_WEB_PASSWORD_ENABLED` 与 `CODEATELIER_WEB_PASSWORD`：默认关闭；设为 `true` 时密码不能为空，否则服务拒绝启动。启用后，浏览器必须先在门禁页提交正确密码，服务才会发放仅本进程有效的 HttpOnly、SameSite=Strict cookie，并允许读取 bootstrap、会话、SSE 及其他 API；密码不会发送到前端构建环境、持久化设置或日志。
+访问门禁从启动设置读取 `server.passwordEnabled/passwordHash`，默认关闭；启用必须已有有效验证材料。UI 提交的新密码经 scrypt 加盐派生后只保存验证材料。保存后需重启，现有服务的门禁不立即改变；登录成功发放仅本进程有效的 HttpOnly、SameSite=Strict cookie。密码和验证材料不进入公开设置、构建环境或日志。
 
 关闭或重启服务会轮换该 cookie，需再次验证。它是单一共享密码，不提供账户、用户身份、角色、找回密码、限流或公网安全保证。
 
@@ -99,13 +97,13 @@ Abort 只表示 Broker 不再等待，不等于 Runtime 已终止；取消仍必
 
 ### 模型思考等级与限制
 
-思考等级在“模型与设置”中选择，保存为 `reasoningEffort`；主任务 Responses 请求显式发送 `reasoning.effort`。未配置辅助模型时标题和上下文摘要沿用主模型设置。默认 high，旧配置缺少字段时采用环境默认值或 high。例如 `.env` 中设置 `CODEATELIER_REASONING_EFFORT=high`；已保存偏好优先，保存后用于后续调用。
+思考等级在“模型与设置”中选择，保存为 `reasoningEffort`；主任务 Responses 请求显式发送 `reasoning.effort`。未配置辅助模型时标题和上下文摘要沿用主模型设置。默认 high，通过 `models.main.reasoningEffort` 保存，下一任务生效。
 
-辅助模型标识由 `CODEATELIER_AUXILIARY_MODEL` 决定，其推理强度 `auxiliaryReasoningEffort` 可按同一规则保存，供标题和上下文摘要使用。自动审批仍选用辅助模型，但仅在该次 Responses 请求覆盖为 `reasoning.effort: "none"`，不修改已保存的辅助等级；服务或模型不支持 `none` 时降级到人工确认，不用原思考等级重试，也不以主模型替代未配置的辅助模型。其它模型请求不支持所选等级时按现有错误流程报告，不静默降级。
+辅助模型标识在设置页的辅助模型卡片配置，其推理强度 `auxiliaryReasoningEffort` 可按同一规则保存，供标题和上下文摘要使用。自动审批仍选用辅助模型，但仅在该次 Responses 请求覆盖为 `reasoning.effort: "none"`，不修改已保存的辅助等级；服务或模型不支持 `none` 时降级到人工确认，不用原思考等级重试，也不以主模型替代未配置的辅助模型。其它模型请求不支持所选等级时按现有错误流程报告，不静默降级。
 
 默认限制：每任务 100 次主循环模型调用、工具操作无固定总运行期限（每五分钟由主模型检查最新状态）、模型请求总计 300 秒、流空闲 60 秒、备用上下文 1000000 字符、单工具输出 32000 字符；全局 `maxConcurrentTasks` 默认 2，允许 1～4。这是可配置字符预算，不是精确 token 计量。发现服务容量和支持的 tokenizer 后改用 token 预算，contextChars 仅备用；已保存的自定义值继续生效，缺失时使用新默认值。maxOutputTokens 默认 16384。
 
-输入预算扣除输出与安全余量后，达到 80% 时尝试压缩；完整输入不超过实际预算的 60% 且比压缩前更小才提交，不另设 10% 收益门槛。失败保留原历史，超过硬上限且保底整理仍失败则停止。实测值和用量展示见 [model-tokens.md](model-tokens.md)。详见 [上下文管理](context-management.md)。高级字段可在没有运行中或排队任务时编辑 settings.json 或通过设置 API 更新。
+输入预算扣除输出与安全余量后，达到 80% 时尝试压缩；完整输入不超过实际预算的 60% 且比压缩前更小才提交，不另设 10% 收益门槛。失败保留原历史，超过硬上限且保底整理仍失败则停止。实测值和用量展示见 [model-tokens.md](model-tokens.md)。详见 [上下文管理](context-management.md)。高级字段可随时通过设置页/API 保存；运行中任务继续使用原快照。
 
 ## 数据与日志
 
@@ -339,7 +337,7 @@ Windows 原生安装命令是显式维护入口，不属于服务启动或默认
 
 安装器校验 v4 build manifest 后，把 supervisor/WFP manager、Node 24 或 26、Agent Runtime entry 和 compaction、subagent 两种 Worker 复制到受保护的 ProgramData 目录，并在 v5 state 记录安装副本摘要；旧安装须重新构建 native/runtime 后由用户显式运行 `pnpm sandbox:repair`（转交 `install.ps1 -Mode Repair`），TypeScript 启动前与 native self-check 均拒绝旧状态或不匹配的摘要。安装器还配置专用账户的网络、batch、service 和远程交互拒绝登录权；服务不得自行提权或自动安装。
 
-macOS/Linux 调用这些命令只输出 `SKIP`，不启动 PowerShell 或任何 Windows 原生代码；它们的 Sandbox 由 `pnpm sandbox:posix:build` 及 `CODEATELIER_SANDBOX_ENABLED=true` 单独启用，步骤和额外授权根配置见 [POSIX 指南](posix-sandbox.md)；macOS 尚未实机验证。Windows 上启用开关后若启动前自检失败，仍按既有安全回滚条件提示并回退宿主；已通过日常使用验证不改变该失败处理契约。
+macOS/Linux 调用这些命令只输出 `SKIP`，不启动 PowerShell 或任何 Windows 原生代码；它们的 Sandbox 由 `pnpm sandbox:posix:build` 及设置页的 Sandbox 开关、保存后重启单独启用，步骤和额外授权根配置见 [POSIX 指南](posix-sandbox.md)；macOS 尚未实机验证。Windows 上启用开关后若启动前自检失败，仍按既有安全回滚条件提示并回退宿主；已通过日常使用验证不改变该失败处理契约。
 
 ## 常见问题
 
@@ -350,12 +348,12 @@ macOS/Linux 调用这些命令只输出 `SKIP`，不启动 PowerShell 或任何 
 - 文件已变化：重新读取后再编辑；不要关闭并发修改检测。
 - 刷新后需要重新认证：服务重启会轮换本机会话 token，刷新页面。
 - 任务中断：在会话底部点击“恢复任务”，可先填写恢复说明。密钥或模型配置错误先到设置修正，超时可调整模型请求/空闲超时。模型自动重试记录 model.retry（含步骤、尝试次数、错误分类、HTTP 状态、等待时间）；耗尽后保留失败状态。详见 [恢复机制](recovery.md)。
-- 数据目录不可写：先检查该目录所有权和 ACL，或使用 CODEATELIER_DATA_DIR 指定可写目录；不要扩大系统目录权限。
-- 端口占用：用 CODEATELIER_PORT 指定其他端口；开发 Vite 代理会自动读取同一个环境变量。
-- IPv6 回环：设置 CODEATELIER_LISTEN_ADDRESS=::1 后使用 `http://[::1]:端口` 访问；开发 Vite 代理会自动使用相同地址。
-- 局域网访问：设置 `CODEATELIER_LISTEN_ADDRESS=0.0.0.0` 或 `::` 后，后端和 `pnpm dev:web` 都在相应通配地址监听；用运行服务电脑的局域网 IP 和对应端口访问，不要在浏览器中使用 `0.0.0.0` 或 `::`。
+- 数据目录不可写：先检查该目录所有权和 ACL，或使用 `--data-dir` 指定可写目录；不要扩大系统目录权限。
+- 端口占用：在设置页修改 `server.port` 并重启；开发 Vite 启动读取相同文件。
+- IPv6 回环：设置 `server.listenAddress` 为 `::1` 并重启 后使用 `http://[::1]:端口` 访问；开发 Vite 代理会自动使用相同地址。
+- 局域网访问：设置 `server.listenAddress` 为 `0.0.0.0` 或 `::` 并重启后，后端和 `pnpm dev:web` 都在相应通配地址监听；用运行服务电脑的局域网 IP 和对应端口访问，不要在浏览器中使用 `0.0.0.0` 或 `::`。
 
-  默认任何可达设备都可操作 agent；可设置 `CODEATELIER_WEB_PASSWORD_ENABLED=true` 和非空 `CODEATELIER_WEB_PASSWORD` 要求先通过单一密码门禁，但这不替代受信任网络、防火墙或公网入站限制。
+  默认任何可达设备都可操作 agent；可在设置页启用访问门禁、填写密码并重启 要求先通过单一密码门禁，但这不替代受信任网络、防火墙或公网入站限制。
 
 ## 贡献流程
 
@@ -393,20 +391,15 @@ Web 侧栏的“关闭服务”需确认。`POST /api/server/shutdown` 接受 `{
 
 ## 自举开发验证
 
-`pnpm exec tsx scripts/bootstrap-agent.ts --prepare-only` 只准备隔离源码副本并复现缺陷；移除该参数后使用环境变量密钥执行真实模型任务。数据发送范围、审批限制和证据判定见 [bootstrap.md](bootstrap.md)。
+`pnpm exec tsx scripts/bootstrap-agent.ts --prepare-only` 只准备隔离源码副本并复现缺陷；移除该参数后读取私有设置执行真实模型任务，可传 `--data-dir`；只由用户手动运行。数据发送范围、审批限制和证据判定见 [bootstrap.md](bootstrap.md)。
 
 结构化事件和工具结果先解析 JSON，对字段值脱敏后重新序列化；不直接用正则替换 JSON 转义文本。Pino 内部记录同样先按字段脱敏，再格式化为纯文本日志；格式化后的诊断文字继续通过统一脱敏函数处理。
 
 ## 可选低成本辅助模型
 
-设置界面只读显示“辅助模型（低成本，可选）”，并可保存“辅助模型推理强度”。模型 ID 必须在本地 `.env` 设置（示例为占位值，须替换为服务实际提供的 ID）：
+设置页支持启用辅助模型、填写完整模型 ID、选择继承或独立连接、管理独立密钥和思考等级。无需编辑 `.env`。
 
-```dotenv
-CODEATELIER_AUXILIARY_MODEL=your-low-cost-model-id
-CODEATELIER_AUXILIARY_REASONING_EFFORT=low
-```
-
-辅助模型默认继承主模型协议、API 地址与密钥，也可按上述多协议配置独立连接；跨端点或协议必须提供辅助密钥。默认不指定辅助模型；空值时标题和摘要沿用主模型及其思考等级，而审批保留人工确认。模型标识只能修改 `.env` 并重启或重载服务；已保存的推理强度优先于环境默认值。推理强度可选 low/medium/high，指定辅助模型时默认 low；程序不推断价格或自动选择模型。
+辅助模型默认继承主模型协议、API 地址与密钥，也可按上述多协议配置独立连接；跨端点或协议必须提供辅助密钥。默认不指定辅助模型；空值时标题和摘要沿用主模型及其思考等级，而审批保留人工确认。保存后从下一任务生效，不打断当前标题、摘要或审批。推理强度可选 low/medium/high，指定辅助模型时默认 low；程序不推断价格或自动选择模型。
 
 上下文摘要和首条用户 prompt 的标题生成均使用 `auxiliarySettings`：创建会话后先显示“新对话”，Engine 对首条消息发起无工具、64 token 上限的标题请求，成功后通过 SSE 更新侧栏；失败保留占位标题而不阻断编码任务，取消会中止任务。
 

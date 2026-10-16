@@ -18,12 +18,13 @@ import {
 } from "node:fs/promises";
 import path from "node:path";
 import pino from "pino";
-import { Config } from "../src/config/config.js";
+import { startupConfig } from "../src/config/startup.js";
 import { AsyncStore } from "../src/sessions/async-store.js";
 import { Engine } from "../src/agent/engine.js";
 
-if (!process.env.CODEATELIER_API_KEY) {
-  throw new Error("Set CODEATELIER_API_KEY");
+const sourceConfig = startupConfig();
+if (!sourceConfig.modelKey()) {
+  throw new Error("请先在设置页配置主模型密钥。");
 }
 
 await mkdir(".local", { recursive: true });
@@ -44,7 +45,10 @@ await writeFile(
   "import {test} from 'node:test';\nimport assert from 'node:assert/strict';\nimport {add} from './math.mjs';\ntest('positive addition',()=>assert.equal(add(2,3),5));\n",
 );
 
-const config = new Config(path.join(root, "data"));
+// 仅复用内存配置，运行产物放进临时目录，不复制或修改真实凭据文件。
+const config = sourceConfig;
+config.directory = path.join(root, "data");
+await mkdir(config.directory);
 
 config.settings.maxSteps = 12;
 

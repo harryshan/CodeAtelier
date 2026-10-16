@@ -4,7 +4,7 @@
  * 再在旧进程释放端口后启动同一份构建产物，浏览器随后可重新连接。
  *
  * 1. workerPath 根据当前是 TypeScript 开发执行还是编译产物，定位同目录的 main.ts 或 main.js。
- * 2. startWorker 保留当前工作目录、环境、Node 启动参数和标准输出，fork 一个可通过 IPC 通信的后端子进程。
+ * 2. startWorker 保留工作目录、系统环境、Node 参数和 --data-dir，fork 可通过 IPC 通信的后端；不加载 dotenv。
  * 3. 子进程仅能以固定 server.reload 事件要求替换；它正常退出时父进程退出，重载退出时父进程才创建下一代子进程。
  * 4. SIGINT 与 SIGTERM 转发给当前子进程，防止父进程在子进程尚未保存中断状态时提前离开。
  *
@@ -35,7 +35,7 @@ function isReloadRequest(message: unknown) {
 }
 
 function startWorker() {
-  const child = fork(workerPath, [], {
+  const child = fork(workerPath, process.argv.slice(2), {
     cwd: process.cwd(),
     env: process.env,
     execArgv: process.execArgv,

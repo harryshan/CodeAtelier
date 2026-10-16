@@ -34,21 +34,14 @@ CodeAtelier 在任务提交后建立有界 trace，按任务保存为 Perfetto T
 
 提交后写初始检查点，之后默认每 30 秒最多一份原子覆盖，路径为 `trace-checkpoints/<sessionId>/<taskId>.json`。检查点显式标记 partial 和 checkpointAt；服务异常结束最多丢失上次成功检查点之后的记录，强杀/磁盘失败不保证有检查点。终态先等待在途检查点，再保存 `traces/<sessionId>/<taskId>.json`，成功才删除检查点，最后释放内存。检查点不用于任务恢复。归档自身序列化及磁盘耗时写 `tracing.archive_written` DEBUG 日志；它发生在导出之后，不伪造写入自身文件的完整 span。
 
-| 环境变量 | 默认 | 允许范围 |
+| settings.json 字段 | 默认 | 允许范围 |
 | --- | --- | --- |
-| `CODEATELIER_TRACE_MAX_RECORDS` | 100000 | 100～1000000 |
-| `CODEATELIER_TRACE_MAX_BYTES` | 33554432 | 65536～268435456 |
-| `CODEATELIER_TRACE_CHECKPOINT_MS` | 30000 | 5000～3600000 |
-| `CODEATELIER_TRACE_RETENTION_DAYS` | 0 | 0～3650，0 禁用自动删除 |
+| `tracing.maxRecords` | 100000 | 100～1000000 |
+| `tracing.maxBytes` | 33554432 | 65536～268435456 |
+| `tracing.checkpointMs` | 30000 | 5000～3600000 |
+| `tracing.retentionDays` | 0 | 0～3650，0 禁用自动删除 |
 
-例如在 `.env` 中配置以下非凭据值，重启后生效：
-
-```dotenv
-CODEATELIER_TRACE_MAX_RECORDS=100000
-CODEATELIER_TRACE_MAX_BYTES=33554432
-CODEATELIER_TRACE_CHECKPOINT_MS=30000
-CODEATELIER_TRACE_RETENTION_DAYS=0
-```
+在“日志与诊断”编辑。任务容量在下一任务生效，排队 trace 在实际启动时使用对应配置 revision；检查点和保留期需要重启。缩短保留期须确认删除影响；不自动重启或删除当前归档。设置 API 自身使用服务日志记录关联 ID、耗时及成功/失败，不记录配置值。
 
 保留期大于 0 时，成功终态归档后按 mtime 清理 traces 和 trace-checkpoints 中过期的普通 JSON 文件；跳过符号链接和临时文件。默认不删除旧文件，不转换或重新脱敏旧归档。清理失败只警告，不影响产品任务。
 

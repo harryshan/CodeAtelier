@@ -22,17 +22,20 @@ import {
   readdir,
 } from "node:fs/promises";
 import path from "node:path";
-import { Config } from "../src/config/config.js";
+import { startupConfig } from "../src/config/startup.js";
 import { Engine } from "../src/agent/engine.js";
 import { AsyncStore } from "../src/sessions/async-store.js";
 import { createLogger } from "../src/logging/logger.js";
 
 const prepareOnly = process.argv.includes("--prepare-only");
 
-if (!prepareOnly && !process.env.CODEATELIER_API_KEY) {
-  throw new Error(
-    "Set CODEATELIER_API_KEY before running this opt-in live evaluation",
-  );
+const sourceConfig = prepareOnly
+  ? undefined
+  : startupConfig(
+      process.argv.slice(2).filter((argument) => argument !== "--prepare-only"),
+    );
+if (!prepareOnly && !sourceConfig?.modelKey()) {
+  throw new Error("手动真实模型验证前请在设置页配置主模型密钥。");
 }
 
 const repository = process.cwd();
@@ -145,7 +148,10 @@ if (prepareOnly) {
   process.exit(0);
 }
 
-const config = new Config(path.join(root, "data"));
+// 只复用内存连接，不复制或改写真实设置；所有验证产物保存在临时目录。
+const config = sourceConfig!;
+config.directory = path.join(root, "data");
+await mkdir(config.directory);
 const log = createLogger(config.directory, "info", () => [config.apiKey]);
 let store = await AsyncStore.open(
   path.join(config.directory, "history.sqlite"),

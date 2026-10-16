@@ -1,6 +1,6 @@
 /**
  * 在业务路由执行前检查请求来源、可选访问密码和本机会话凭据，防止未验证设备或其他网站借本机/受信任局域网服务发起操作。
- * createApp 按实际监听范围调用 registerLocalSecurity；本模块自行从启动环境读取访问门禁配置，并生成 bootstrap 使用的令牌。
+ * createApp 按实际监听范围调用 registerLocalSecurity；本模块接收启动期门禁快照（旧调用方兼容环境），并生成 bootstrap 使用的令牌。
  *
  * 1. passwordAccess 严格解析开关和密码；启用时缺少密码会阻止服务启动，避免误以为页面受保护。
  * 2. 生成随机令牌；比较函数先核对长度，再用 timingSafeEqual 比较访问 cookie、本机 cookie 或提交的密码。
@@ -14,10 +14,12 @@
 import type { HttpServer } from "./http-server.js";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
+import { verifyPassword } from "../config/password.js";
 
 type PasswordAccess = {
   enabled: boolean;
   password: string;
+  passwordHash?: string;
 };
 
 function passwordAccess(): PasswordAccess {
@@ -40,8 +42,12 @@ function passwordAccess(): PasswordAccess {
 }
 
 /** 在创建 SQLite 等后续资源前校验门禁环境，避免启动失败留下未关闭句柄。 */
-export function validatePasswordAccessConfiguration(): void {
-  passwordAccess();
+export function validatePasswordAccessConfiguration(
+  access = passwordAccess(),
+): void {
+  if (access.enabled && !access.password && !access.passwordHash) {
+    throw new Error("访问门禁缺少密码验证材料，拒绝启动。");
+  }
 }
 
 function cookieValue(header: string | undefined, name: string): string {
@@ -66,8 +72,8 @@ function hostname(host: string): string | undefined {
 export function registerLocalSecurity(
   app: HttpServer,
   allowNetworkAccess = false,
+  access: PasswordAccess = passwordAccess(),
 ): string {
-  const access = passwordAccess();
   const accessToken = access.enabled ? randomBytes(32).toString("hex") : "";
   const token = randomBytes(32).toString("hex");
   const compare = (value: string) => {
@@ -84,7 +90,11 @@ export function registerLocalSecurity(
     return a.length === b.length && timingSafeEqual(a, b);
   };
 
-  const comparePassword = (value: string) => {
+  const comparePassword = async (value: string) => {
+    if (access.passwordHash) {
+      return verifyPassword(value, access.passwordHash);
+    }
+
     const a = Buffer.from(value);
     const b = Buffer.from(access.password);
 
@@ -108,7 +118,7 @@ export function registerLocalSecurity(
       return reply.code(409).send({ error: "访问密码验证未启用。" });
     }
 
-    if (!comparePassword(password)) {
+    if (!(await comparePassword(password))) {
       app.log.warn({ event: "access.password_rejected", module: "server" });
 
       return reply.code(401).send({ error: "密码不正确。" });

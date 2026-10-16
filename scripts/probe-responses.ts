@@ -1,6 +1,6 @@
 /**
  * 手动检查真实 Responses 服务能否完成“请求工具、返回结果、继续回复”的流式交互。
- * 直接使用 SDK，端点、模型和密钥从本地环境读取。
+ * 直接使用 SDK，端点、模型和密钥从 --data-dir 指定的私有 settings.json 读取，不加载 dotenv。
  *
  * 1. 创建不自动重试的客户端，只声明 echo_probe 诊断工具。
  * 2. 第一轮收集文本、工具调用和事件类型。
@@ -11,19 +11,19 @@
  */
 
 import OpenAI from "openai";
+import { startupConfig } from "../src/config/startup.js";
 
-const key = process.env.CODEATELIER_API_KEY;
+const config = startupConfig();
+const key = config.modelKey();
 
 if (!key) {
-  throw new Error("Set CODEATELIER_API_KEY locally.");
+  throw new Error("请先在设置页配置主模型密钥。");
 }
 
-const baseURL = process.env.CODEATELIER_BASE_URL;
-const model = process.env.CODEATELIER_MODEL;
-if (!baseURL || !model) {
-  throw new Error(
-    "Set CODEATELIER_BASE_URL and CODEATELIER_MODEL in .env or the environment.",
-  );
+const baseURL = config.settings.baseUrl;
+const model = config.settings.model;
+if (!baseURL || !model || config.settings.protocol !== "responses") {
+  throw new Error("该手动探针要求已配置的 Responses 主模型。");
 }
 
 const client = new OpenAI({

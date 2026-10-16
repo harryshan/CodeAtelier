@@ -219,12 +219,23 @@ function listeningUrls(output: string) {
 it("the production launcher replaces the backend after authenticated reload and exits after shutdown", async () => {
   const directory = await temp();
   const port = await availablePort();
+  const config = new Config(directory, { legacy: false });
+  await config.updateDocument({
+    expectedRevision: (await config.editorValue()).revision,
+    changes: { server: { port } },
+  });
   const scope = currentTestResources();
   let output = "";
   const execution = scope.track(() =>
     executeProcess(
       process.execPath,
-      ["--import", "tsx", path.resolve("src/server/launcher.ts")],
+      [
+        "--import",
+        "tsx",
+        path.resolve("src/server/launcher.ts"),
+        "--data-dir",
+        directory,
+      ],
       process.cwd(),
       scope.signal,
       0,
@@ -234,7 +245,7 @@ it("the production launcher replaces the backend after authenticated reload and 
       },
       {
         CODEATELIER_DATA_DIR: directory,
-        CODEATELIER_PORT: String(port),
+        CODEATELIER_PORT: "1", // 遗留环境不能覆盖 settings.json 的端口。
         CODEATELIER_API_KEY: "",
       },
     ),

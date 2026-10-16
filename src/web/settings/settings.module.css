@@ -1,0 +1,203 @@
+/**
+ * 设置页独立布局：顶部状态、分类导航、可滚动表单与固定保存栏。
+ * 1. page/layout 在桌面占满视口，内容不挤入旧设置弹窗。
+ * 2. 字段保留原生焦点与 disabled 状态，秘密/错误文案使用高对比区域。
+ * 3. 窄屏将导航改为可横向滚动区，页脚允许换行，不横向撑开表单。
+ */
+.page {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: #f8fafc;
+  color: #172033;
+  display: flex;
+  flex-direction: column;
+  font:
+    14px/1.6 system-ui,
+    sans-serif;
+}
+.page header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 28px;
+  border-bottom: 1px solid #d6dfe9;
+  background: white;
+}
+.page header h1 {
+  margin: 0;
+  font-size: 24px;
+}
+.page header p {
+  margin: 0;
+  max-width: 75vw;
+  overflow-wrap: anywhere;
+  color: #526179;
+}
+.layout {
+  display: grid;
+  grid-template-columns: 230px minmax(0, 1fr);
+  min-height: 0;
+  flex: 1;
+}
+.page nav {
+  padding: 20px;
+  background: #eef2f7;
+  overflow: auto;
+}
+.page nav button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  margin: 8px 0;
+}
+.page button {
+  border: 1px solid #b7c5d6;
+  border-radius: 7px;
+  background: white;
+  padding: 8px 12px;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+}
+.page button[aria-current="page"],
+.page button[type="submit"] {
+  background: #174da0;
+  color: white;
+  border-color: #174da0;
+}
+.page button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.page :focus-visible {
+  outline: 3px solid #4489e8;
+  outline-offset: 2px;
+}
+.content {
+  overflow: auto;
+  padding: 24px 36px 130px;
+}
+.fields {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  max-width: 960px;
+}
+.fields section,
+.fields fieldset {
+  background: white;
+  border: 1px solid #d6dfe9;
+  border-radius: 10px;
+  padding: 22px;
+  margin: 16px 0;
+}
+.page label {
+  display: block;
+  margin: 15px 0;
+  font-weight: 600;
+}
+.page input:not([type="checkbox"]),
+.page select,
+.page textarea {
+  display: block;
+  width: 100%;
+  max-width: 640px;
+  box-sizing: border-box;
+  border: 1px solid #a7b8cc;
+  border-radius: 6px;
+  background: white;
+  color: #172033;
+  padding: 9px 12px;
+  font: inherit;
+  margin-top: 5px;
+}
+.page input:disabled,
+.page select:disabled {
+  background: #e8edf3;
+}
+.page input[type="checkbox"] {
+  margin-right: 9px;
+}
+.page textarea {
+  min-height: 85px;
+  resize: vertical;
+}
+.page small {
+  color: #526179;
+  font-size: 12px;
+  font-weight: normal;
+}
+.page p {
+  overflow-wrap: anywhere;
+}
+.page li button {
+  margin-left: 10px;
+}
+.page footer {
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  left: 230px;
+  background: white;
+  border-top: 1px solid #d6dfe9;
+  padding: 14px 24px;
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.page footer span {
+  margin-right: auto;
+}
+.error,
+.notice {
+  border-radius: 8px;
+  padding: 12px 16px;
+  max-width: 960px;
+}
+.error {
+  background: #fff0ef;
+  color: #9c2118;
+  border: 1px solid #e6afa9;
+}
+.notice {
+  background: #eaf2ff;
+  color: #174878;
+  border: 1px solid #b8d0ec;
+}
+@media (max-width: 720px) {
+  .page header {
+    padding: 10px 16px;
+  }
+  .layout {
+    display: flex;
+    flex-direction: column;
+  }
+  .page nav {
+    padding: 8px 12px;
+    flex-shrink: 0;
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+  .page nav label {
+    min-width: 145px;
+    margin: 0;
+  }
+  .page nav button {
+    width: auto;
+    white-space: nowrap;
+  }
+  .content {
+    padding: 12px 16px 190px;
+  }
+  .page footer {
+    left: 0;
+    padding: 10px;
+  }
+  .fields section {
+    padding: 14px;
+  }
+}

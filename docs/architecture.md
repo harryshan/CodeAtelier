@@ -94,7 +94,7 @@ Chat Completions / Messages 首批不发送思考参数、不声明原生搜索�
 
 ### HTTP 访问校验
 
-`src/server/local-security.ts` 在业务 API 前校验 Host、Origin、可选的环境访问密码与本机会话 token；密码门禁启用后，只有状态/登录路由可在未验证时访问，登录成功写入服务进程有效的 HttpOnly cookie。
+`src/server/local-security.ts` 在业务 API 前校验 Host、Origin、启动快照中的可选密码验证材料与本机会话 token；密码门禁启用后，只有状态/登录路由可在未验证时访问，登录成功写入服务进程有效的 HttpOnly cookie。
 
 ### 会话存储与 Replay Case
 
@@ -110,7 +110,11 @@ replay 捕获将任务元数据和单条模型/工具记录分开保存，模型
 
 ### 配置
 
-`src/config` 将 .env/进程环境中的只读连接配置与 settings.json 中的非连接偏好合成为运行时设置，另管理内存密钥和平台数据目录；`src/sandbox/config.ts` 同时只在启动时严格读取 Sandbox 开关，避免它被浏览器设置或旧持久化偏好改变。访问门禁配置由 server/local-security.ts 在服务启动时单独读取，避免将密码纳入浏览器可见配置。
+`startup.ts` 只接受 `--data-dir` 和版本化文件；`settings-document.ts` 定义严格磁盘/PATCH schema 与安全公开投影，`settings-store.ts` 管理 revision、串行写入、锁、磁盘漂移和重启差异，`private-settings-file.ts` 负责私有临时文件与替换。`password.ts` 生成/核验 scrypt 验证材料；`legacy-settings.ts` 和 `migrate-settings.ts` 仅供显式旧配置迁移及兼容夹具。
+
+Config 固定启动期 server/Sandbox/trace 维护配置，动态发布模型/MCP/执行偏好。Engine 在实际启动任务时取得不可变快照，主/辅助调用、标题、审批、摘要、长工具复查及 Runtime Broker 代理共用它；保留旧 key 的脱敏能力。任务 trace 关联配置 revision 和任务级容量。无任务的设置操作记录安全服务日志，不伪造任务 span。
+
+`settings-routes.ts` 提供 GET/PATCH、validate/reload/export 与旧 PUT 退役响应；`web/settings` 提供分类编辑页、秘密操作、草稿/冲突、待重启和引导。launcher/main/dev-web 共享启动入口，Vite 禁用 dotenv。具体权限、迁移与生效规则见 [设置系统](settings-system.md)。
 
 ### Windows Sandbox
 
@@ -256,11 +260,11 @@ Broker 命令与 Git push 可以使用宿主用户可访问的文件、网络和
 
 ## HTTP 访问边界
 
-服务默认监听 `127.0.0.1`，可通过 `CODEATELIER_LISTEN_ADDRESS` 切换至 `::1`；显式设为 `0.0.0.0` 或 `::` 时开放对应局域网接口。开发 Vite 服务读取同一环境变量，并将 API 代理固定连接到相应回环地址。
+服务默认监听 `127.0.0.1`，可通过 `server.listenAddress` 切换至 `::1`；显式设为 `0.0.0.0` 或 `::` 时开放对应局域网接口。开发 Vite 启动器读取同一 settings.json，并将 API 代理固定连接到相应回环地址。
 
 默认回环模式拒绝非本机 Host；局域网模式接受 LAN Host，同时继续校验同源 Origin、HttpOnly/SameSite=Strict cookie 与写请求 token，不开放任意来源 CORS。
 
-设置 `CODEATELIER_WEB_PASSWORD_ENABLED=true` 时，服务启动还要求非空 `CODEATELIER_WEB_PASSWORD`，未验证访问仅可读取门禁状态或提交密码；匹配后写入独立的 HttpOnly/SameSite=Strict `ca_access` cookie，其他 API（包括 bootstrap 和 SSE）才可使用。
+设置 `server.passwordEnabled=true` 时，服务启动还要求有效的 `passwordHash`，未验证访问仅可读取门禁状态或提交密码；匹配后写入独立的 HttpOnly/SameSite=Strict `ca_access` cookie，其他 API（包括 bootstrap 和 SSE）才可使用。
 
 该单一密码没有账户、角色、限流或公网安全语义，cookie/token 仍分别只承担门禁状态、本机会话和跨站请求防护；局域网模式仍仅适用于受信任网络，防火墙必须阻止公网入站访问。启动时重新生成访问与本机会话令牌。设置接口不返回 API key；浏览器提交密钥后不持久化它。
 
@@ -286,7 +290,7 @@ Broker 命令与 Git push 可以使用宿主用户可访问的文件、网络和
 
 ## 辅助模型配置与摘要路由
 
-`Config` 在启动时只从 `.env` 或进程环境读取 API 地址、主模型和辅助模型标识；这些部署连接字段不进入 `settings.json`，设置 API 也拒绝其改动。`settings.json` 仅保存思考等级、执行限制和日志级别，保存后会覆盖同名环境默认值；浏览器仅只读展示连接信息。
+`Config` 从版本化 `settings.json` 读取主/辅助连接、密钥与偏好；浏览器可编辑非秘密连接信息并显式替换/删除密钥，不回显已有值。配置可在任务期间保存，但每个任务的主/辅助模型和密钥始终使用同一启动快照。
 
 `config/auxiliary-model.ts` 的 `auxiliarySettings` 为辅助调用创建独立配置副本；Engine 保持主任务提供商不变，并通过 ContextManager 的惰性 `summaryModel` 回调为摘要提供独立模型及预算。首条 prompt 的标题生成也使用该选择函数、无工具请求和 64 token 输出上限；空辅助配置沿用主模型。
 

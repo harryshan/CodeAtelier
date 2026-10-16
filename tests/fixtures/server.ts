@@ -19,13 +19,20 @@ import { Config } from "../../src/config/config.js";
 import { createApp } from "../../src/server/app.js";
 import { TITLE_INSTRUCTIONS } from "../../src/sessions/title-generator.js";
 
-process.env.CODEATELIER_AUXILIARY_MODEL = "test-low-cost-model";
-
 const config = new Config(
   await realpath(await mkdtemp(path.join(tmpdir(), "codeatelier-ui-"))),
+  { legacy: false },
 );
-
-config.apiKey = "test-key";
+await config.updateDocument({
+  expectedRevision: (await config.editorValue()).revision,
+  changes: {
+    models: {
+      main: { baseUrl: "http://127.0.0.1:9999/v1", model: "test-model" },
+      auxiliary: { enabled: true, model: "test-low-cost-model" },
+    },
+  },
+  secretChanges: { mainKey: "test-key" },
+});
 
 const { app, engine } = await createApp(
   config,

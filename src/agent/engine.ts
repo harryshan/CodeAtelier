@@ -180,6 +180,25 @@ export class Engine {
   private approvalTasks = new WeakMap<ApprovalSubject, Task>();
   private closing = false;
   private readonly mcpTasks = new Map<string, McpTaskClient>();
+  /** 领取任务时固定连接/凭据；标题、审批、摘要、复查和 Runtime 代理禁止回读全局连接。 */
+  private readonly taskConfigs = new Map<
+    string,
+    ReturnType<Config["taskSnapshot"]>
+  >();
+
+  private taskConfig(taskId: string) {
+    const snapshot = this.taskConfigs.get(taskId);
+    if (!snapshot) {
+      throw new Error("任务配置快照缺失，拒绝使用全局连接替代。");
+    }
+
+    return snapshot;
+  }
+
+  settingsChanged() {
+    return this.schedule();
+  }
+
   private schedulingWork?: Promise<void>;
   private schedulingRequested = false;
   /** 全部宿主任务共享 Worker 配额；Sandbox Runtime 另须通过 Broker 取得同一全局 lease。 */
@@ -211,7 +230,7 @@ export class Engine {
         // 只在真正检查时创建 provider；普通短工具不能引入额外模型初始化。
         const provider =
           this.factory?.(settings, "task") ??
-          createModelProvider(settings, this.config.modelKey());
+          createModelProvider(settings, this.taskConfig(task.id).modelKey());
 
         return tracedModelProvider(
           this.replayProvider(task, provider, () => ({
@@ -278,13 +297,13 @@ export class Engine {
     let client = this.mcpTasks.get(task.id);
     if (!client) {
       client = new McpTaskClient({
-        servers: this.config.mcpServers,
+        servers: this.taskConfig(task.id).mcpServers,
         workspace,
         taskId: task.id,
         sessionId: task.sessionId,
         outputChars,
         reviewTool: async (subject, status, signal) =>
-          (await this.toolReviewer(task, this.config.settings))(
+          (await this.toolReviewer(task, this.taskConfig(task.id).settings))(
             subject,
             status,
             signal,
@@ -402,6 +421,7 @@ export class Engine {
         this.sandboxLog,
         this.traces,
         config.directory,
+        config.startupEnvironment,
       ),
       this.sandboxLog,
       this.traces,
@@ -445,14 +465,14 @@ export class Engine {
       this.approvalTasks.set(subject, task);
     }
 
-    if (!workspaceRoot) {
+    if (!workspaceRoot || !task) {
       return {
         decision: "human review",
         reason: "无法确认会话工作区，需要人工确认。",
       };
     }
 
-    const settings = { ...this.config.settings };
+    const settings = this.taskConfig(task.id).settings;
     if (!settings.auxiliaryModel?.trim()) {
       return {
         decision: "human review",
@@ -463,7 +483,7 @@ export class Engine {
     const selected = auxiliarySettings(settings);
     const provider =
       this.factory?.(selected, "approval") ??
-      createModelProvider(selected, this.config.modelKey(true));
+      createModelProvider(selected, this.taskConfig(task.id).modelKey(true));
 
     try {
       if (task) {
@@ -629,6 +649,14 @@ export class Engine {
       throw new Error("服务正在关闭，不能启动任务。");
     }
 
+    if (
+      !this.config.settings.baseUrl ||
+      !this.config.settings.model ||
+      (!this.factory && !this.config.modelKey())
+    ) {
+      throw new Error("请先在设置中完成主模型连接与密钥配置。");
+    }
+
     const { task, events } = await this.store.startTaskAsync(
       sessionId,
       prompt,
@@ -766,6 +794,9 @@ export class Engine {
       controller,
       done: Promise.resolve(),
     };
+    const snapshot = this.config.taskSnapshot();
+    this.taskConfigs.set(task.id, snapshot);
+    this.traces.configureTask(task.id, snapshot.tracing, snapshot.revision);
     this.activeByTaskId.set(task.id, active);
     const generateTitle =
       (await this.store.get(task.sessionId))?.titleState === "generating";
@@ -808,6 +839,7 @@ export class Engine {
           await this.traceTasks.finish(task.id, task.sessionId, "error");
         }
 
+        this.taskConfigs.delete(task.id);
         this.activeByTaskId.delete(task.id);
         this.workerTasks.delete(task.id);
         this.events.emit("change", task.sessionId);
@@ -990,7 +1022,7 @@ export class Engine {
     const selected = auxiliarySettings(settings);
     const provider =
       this.factory?.(selected, "auxiliary") ??
-      createModelProvider(selected, this.config.modelKey(true));
+      createModelProvider(selected, this.taskConfig(task.id).modelKey(true));
 
     try {
       const title = await retryModel(
@@ -1258,7 +1290,7 @@ export class Engine {
               ) ??
               createModelProvider(
                 selected,
-                this.config.modelKey(purpose === "compaction"),
+                this.taskConfig(task.id).modelKey(purpose === "compaction"),
               );
 
             return {
@@ -1772,7 +1804,9 @@ export class Engine {
             },
             memoryText: memory.bundle?.text,
             skillsText: skills.instructions(),
-            mcpText: mcpCatalogInstructions(this.config.mcpServers),
+            mcpText: mcpCatalogInstructions(
+              this.taskConfig(task.id).mcpServers,
+            ),
             tokenCalibration: {
               scope: tokenScope(settings),
               anchor: await this.store.tokenAnchorAsync(
@@ -2234,7 +2268,7 @@ export class Engine {
     generateTitle: boolean,
   ) {
     const session = (await this.store.get(task.sessionId))!;
-    const settings = { ...this.config.settings };
+    const settings = this.taskConfig(task.id).settings;
     const log = this.log.child({
       module: "agent",
       sessionId: session.id,
@@ -2504,7 +2538,7 @@ export class Engine {
       const instructions = [
         baseInstructions,
         skills.instructions(),
-        mcpCatalogInstructions(this.config.mcpServers),
+        mcpCatalogInstructions(this.taskConfig(task.id).mcpServers),
         memory.bundle?.text,
         task.subagentsEnabled
           ? "This task opted into read-only subagents. After inspecting the relevant code, use the subagent tool only for bounded independent research. You alone plan all edits, re-read current files, verify any subagent evidence and write the final answer. Never delegate file writes or permission upgrades."
@@ -2515,7 +2549,7 @@ export class Engine {
 
       const provider =
         this.factory?.(settings, "task") ||
-        createModelProvider(settings, this.config.modelKey());
+        createModelProvider(settings, this.taskConfig(task.id).modelKey());
 
       if (task.subagentsEnabled) {
         const subagentSpans = new Map<string, TraceSpan | undefined>();
@@ -2725,7 +2759,10 @@ export class Engine {
               const selected = auxiliarySettings(settings);
               const auxiliary =
                 this.factory?.(selected, "auxiliary") ??
-                createModelProvider(selected, this.config.modelKey(true));
+                createModelProvider(
+                  selected,
+                  this.taskConfig(task.id).modelKey(true),
+                );
               let metadata: ModelCapabilities | undefined;
               try {
                 metadata = await this.traces.measure(

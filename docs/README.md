@@ -8,7 +8,7 @@
 
 | 文档                                                 | 内容                                         |
 | ---------------------------------------------------- | -------------------------------------------- |
-| [开发、配置与排错](development.md)                   | 环境变量、数据目录、工具权限、日志与服务操作 |
+| [开发、配置与排错](development.md)                   | 设置文件、数据目录、工具权限、日志与服务操作 |
 | [Windows Sandbox 使用指南](windows-sandbox-guide.md) | 已验证可用的 Windows Sandbox：安装、启用、维护与卸载   |
 | [任务恢复](recovery.md)                              | 失败、取消、重启中断和未知执行结果           |
 | [模型容量与 token](model-tokens.md)                  | 输入预算、服务 usage 与界面统计              |
@@ -35,7 +35,7 @@
 
 ## 专题与未完成边界
 
-- [设置系统重设计](settings-system.md)：settings.json 单一来源、动态生效、完整配置 UI 和移除 env 的迁移方案；尚未实现。
+- [设置系统重设计](settings-system.md)：settings.json 单一来源、分级生效、分类设置 UI、凭据边界及旧 env 的手动迁移。
 
 - [SQLite 存储改造与完整历史迁移](database-migration.md)：待实施交接设计；保留 SQLite、全部旧记录离线转换、全量验证与切换/回退，不代表迁移已执行。
 

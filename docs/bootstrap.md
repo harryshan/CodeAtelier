@@ -8,8 +8,8 @@
 # 无需密钥，不调用模型：创建副本并复现注入缺陷
 pnpm exec tsx scripts/bootstrap-agent.ts --prepare-only
 
-# 已配置 CODEATELIER_API_KEY 后，执行真实模型验收
-node --env-file=.env --import tsx scripts/bootstrap-agent.ts
+# 已在设置页配置主模型后，手动执行真实模型验收；可追加 --data-dir
+pnpm exec tsx scripts/bootstrap-agent.ts
 ```
 
 脚本从当前 HEAD 复制跟踪文件，不复制真实 .env、历史、日志或 Git 元数据。结果保留在 .local/bootstrap-*/，不自动合并回主工作区。node_modules 链接到本机依赖，测试与工具仍具有进程权限；副本不是操作系统沙箱。只适用于可信的本项目源码。
