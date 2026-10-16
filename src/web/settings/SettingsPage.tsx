@@ -1,9 +1,9 @@
 /**
- * 完整设置页面，由 App 打开；类别切换保留草稿，保存使用 revision 局部差异而非旧全量对象。
+ * 主页面上的设置模态框，由 App 打开；类别切换保留草稿，保存使用 revision 局部差异而非旧全量对象。
  * 1. changesBetween/applyChanges 只处理公开值，支持多标签冲突后保留用户改动并显示受影响分类。
  * 2. SettingsPage 加载、安全退出、保存/校验、显式重读、脱敏导出和受监督重启各自独立。
  * 3. 分类内容交给 ModelFields/McpSettings，密钥草稿只在内存，成功保存或退出即清除。
- * 4. 固定导航/页脚、标签关联、错误焦点、Tab 焦点限制和窄屏样式确保设置不遮蔽保存状态。
+ * 4. 原生 dialog 隔离背景，退出恢复焦点/滚动；导航、独立表单滚动和固定保存栏适配窄屏，Esc 沿用草稿确认。
  */
 import { useEffect, useRef, useState } from "react";
 import type { Settings } from "../../shared/types";
@@ -84,7 +84,7 @@ export function SettingsPage({
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [epoch, setEpoch] = useState(0);
-  const panel = useRef<HTMLDivElement>(null);
+  const panel = useRef<HTMLDialogElement>(null);
   const alert = useRef<HTMLParagraphElement>(null);
   const changes =
     view && draft
@@ -101,7 +101,12 @@ export function SettingsPage({
   useEffect(() => {
     const controller = new AbortController();
     const previous = document.activeElement as HTMLElement | null;
-    panel.current?.querySelector<HTMLButtonElement>("button")?.focus();
+    const dialog = panel.current;
+    const previousOverflow = document.body.style.overflow;
+    // 原生模态状态隔离背景，避免仅靠遮罩或 Tab 循环仍能操作主页面。
+    dialog?.showModal();
+    document.body.style.overflow = "hidden";
+    dialog?.querySelector<HTMLButtonElement>("button")?.focus();
     void api<Response>("/settings", undefined, "GET", false, controller.signal)
       .then((value) => {
         setView(value.editor);
@@ -115,7 +120,9 @@ export function SettingsPage({
 
     return () => {
       controller.abort();
-      previous?.focus();
+      dialog?.close();
+      document.body.style.overflow = previousOverflow;
+      previous?.focus({ preventScroll: true });
     };
   }, []);
 
@@ -262,18 +269,16 @@ export function SettingsPage({
   };
 
   return (
-    <div
+    <dialog
       className={s.page}
-      role="dialog"
       aria-modal="true"
       aria-label="CodeAtelier 设置"
       ref={panel}
+      onCancel={(event) => {
+        event.preventDefault();
+        close();
+      }}
       onKeyDown={(event) => {
-        if (event.key === "Escape") {
-          event.preventDefault();
-          close();
-        }
-
         if (event.key === "Tab") {
           const nodes = [
             ...(panel.current?.querySelectorAll<HTMLElement>(
@@ -282,7 +287,11 @@ export function SettingsPage({
           ].filter((node) => node.offsetParent !== null);
           const first = nodes[0];
           const last = nodes.at(-1);
-          if (event.shiftKey && document.activeElement === first) {
+          if (
+            event.shiftKey &&
+            (document.activeElement === first ||
+              !nodes.includes(document.activeElement as HTMLElement))
+          ) {
             event.preventDefault();
             last?.focus();
           }
@@ -297,7 +306,7 @@ export function SettingsPage({
       <header>
         <div>
           <small>CODEATELIER</small>
-          <h1>设置</h1>
+          <h2>设置</h2>
           <p>{view?.path ?? "正在读取配置…"}</p>
         </div>
         <button
@@ -341,257 +350,263 @@ export function SettingsPage({
             void save();
           }}
         >
-          {error && (
-            <p role="alert" tabIndex={-1} ref={alert} className={s.error}>
-              {error}
-            </p>
-          )}
-          {notice && (
-            <p role="status" className={s.notice}>
-              {notice}
-            </p>
-          )}
-          {view?.migrationRequired && (
-            <p className={s.notice}>
-              当前使用旧配置。首次保存会要求确认迁移；原 .env 不会被删除。私有
-              JSON 包含明文模型/MCP 凭据，不是加密保险库。
-            </p>
-          )}
-          {!!view?.pendingRestart.length && (
-            <p className={s.notice}>
-              已保存，待重启：{view.pendingRestart.join("、")}
-              。不会自动取消任务或重启。
-            </p>
-          )}
-          {draft && (
-            <fieldset disabled={busy} className={s.fields}>
-              <div hidden={category !== "models"}>
-                <h2>模型连接</h2>
-                {(["main", "auxiliary"] as const).map((which) => (
-                  <ModelFields
-                    key={`${which}-${epoch}`}
-                    value={draft.models[which]}
-                    label={which === "main" ? "主模型" : "辅助模型"}
-                    mainProtocol={draft.models.main.protocol}
-                    keyValue={
-                      secrets[which === "main" ? "mainKey" : "auxiliaryKey"]
-                    }
-                    onKeyChange={(value) =>
-                      setSecrets({
-                        ...secrets,
-                        [which === "main" ? "mainKey" : "auxiliaryKey"]: value,
-                      })
-                    }
-                    onChange={(patch) =>
-                      changeGroup("models", {
-                        [which]: { ...draft.models[which], ...patch },
-                      })
-                    }
-                  />
-                ))}
-              </div>
-              <div hidden={category !== "execution"}>
-                <h2>任务与上下文</h2>
-                <p>
-                  排队任务在实际开始时采用最新配置。降低并发不取消当前任务；同工作区始终串行。工具执行没有固定总时限。
-                </p>
-                <NumericFields
-                  value={draft.execution}
-                  onChange={(patch) => changeGroup("execution", patch)}
-                />
-                <h3>上下文预算 · 下一任务生效</h3>
-                <NumericFields
-                  value={draft.context}
-                  onChange={(patch) => changeGroup("context", patch)}
-                />
-              </div>
-              <div hidden={category !== "sandbox"}>
-                <h2>Sandbox 与权限 · 重启生效</h2>
-                <p>
-                  这里是请求配置，不代表已安装或已隔离。保存不会安装组件或提升权限；实际执行状态仍见对话页面。macOS
-                  尚未实机验证。
-                </p>
-                <label>
-                  <input
-                    type="checkbox"
-                    checked={draft.sandbox.enabled}
-                    onChange={(e) =>
-                      changeGroup("sandbox", { enabled: e.target.checked })
-                    }
-                  />
-                  请求启用 Sandbox
-                </label>
-                {(["readRoots", "writeRoots"] as const).map((key) => (
-                  <label key={key}>
-                    {key === "readRoots"
-                      ? "POSIX 额外只读根"
-                      : "POSIX 额外可写根"}
-                    （每行一个绝对路径）
-                    <textarea
-                      value={draft.sandbox[key].join("\n")}
-                      onChange={(e) =>
-                        changeGroup("sandbox", {
-                          [key]: e.target.value.split("\n"),
+          <div className={s.scrollArea}>
+            {error && (
+              <p role="alert" tabIndex={-1} ref={alert} className={s.error}>
+                {error}
+              </p>
+            )}
+            {notice && (
+              <p role="status" className={s.notice}>
+                {notice}
+              </p>
+            )}
+            {view?.migrationRequired && (
+              <p className={s.notice}>
+                当前使用旧配置。首次保存会要求确认迁移；原 .env 不会被删除。私有
+                JSON 包含明文模型/MCP 凭据，不是加密保险库。
+              </p>
+            )}
+            {!!view?.pendingRestart.length && (
+              <p className={s.notice}>
+                已保存，待重启：{view.pendingRestart.join("、")}
+                。不会自动取消任务或重启。
+              </p>
+            )}
+            {draft && (
+              <fieldset disabled={busy} className={s.fields}>
+                <div hidden={category !== "models"}>
+                  <h2>模型连接</h2>
+                  {(["main", "auxiliary"] as const).map((which) => (
+                    <ModelFields
+                      key={`${which}-${epoch}`}
+                      value={draft.models[which]}
+                      label={which === "main" ? "主模型" : "辅助模型"}
+                      mainProtocol={draft.models.main.protocol}
+                      keyValue={
+                        secrets[which === "main" ? "mainKey" : "auxiliaryKey"]
+                      }
+                      onKeyChange={(value) =>
+                        setSecrets({
+                          ...secrets,
+                          [which === "main" ? "mainKey" : "auxiliaryKey"]:
+                            value,
+                        })
+                      }
+                      onChange={(patch) =>
+                        changeGroup("models", {
+                          [which]: { ...draft.models[which], ...patch },
                         })
                       }
                     />
+                  ))}
+                </div>
+                <div hidden={category !== "execution"}>
+                  <h2>任务与上下文</h2>
+                  <p>
+                    排队任务在实际开始时采用最新配置。降低并发不取消当前任务；同工作区始终串行。工具执行没有固定总时限。
+                  </p>
+                  <NumericFields
+                    value={draft.execution}
+                    onChange={(patch) => changeGroup("execution", patch)}
+                  />
+                  <h3>上下文预算 · 下一任务生效</h3>
+                  <NumericFields
+                    value={draft.context}
+                    onChange={(patch) => changeGroup("context", patch)}
+                  />
+                </div>
+                <div hidden={category !== "sandbox"}>
+                  <h2>Sandbox 与权限 · 重启生效</h2>
+                  <p>
+                    这里是请求配置，不代表已安装或已隔离。保存不会安装组件或提升权限；实际执行状态仍见对话页面。macOS
+                    尚未实机验证。
+                  </p>
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={draft.sandbox.enabled}
+                      onChange={(e) =>
+                        changeGroup("sandbox", { enabled: e.target.checked })
+                      }
+                    />
+                    请求启用 Sandbox
                   </label>
-                ))}
-                <label>
-                  Windows 原生安装根（空为默认）
-                  <input
-                    value={draft.sandbox.nativeRoot}
-                    onChange={(e) =>
-                      changeGroup("sandbox", { nativeRoot: e.target.value })
-                    }
+                  {(["readRoots", "writeRoots"] as const).map((key) => (
+                    <label key={key}>
+                      {key === "readRoots"
+                        ? "POSIX 额外只读根"
+                        : "POSIX 额外可写根"}
+                      （每行一个绝对路径）
+                      <textarea
+                        value={draft.sandbox[key].join("\n")}
+                        onChange={(e) =>
+                          changeGroup("sandbox", {
+                            [key]: e.target.value.split("\n"),
+                          })
+                        }
+                      />
+                    </label>
+                  ))}
+                  <label>
+                    Windows 原生安装根（空为默认）
+                    <input
+                      value={draft.sandbox.nativeRoot}
+                      onChange={(e) =>
+                        changeGroup("sandbox", { nativeRoot: e.target.value })
+                      }
+                    />
+                  </label>
+                  <label>
+                    Windows 安装状态路径（空为默认）
+                    <input
+                      value={draft.sandbox.statePath}
+                      onChange={(e) =>
+                        changeGroup("sandbox", { statePath: e.target.value })
+                      }
+                    />
+                  </label>
+                </div>
+                <div hidden={category !== "mcp"}>
+                  <McpSettings
+                    key={epoch}
+                    servers={draft.mcp.servers}
+                    changes={mcpChanges}
+                    onChange={setMcpChanges}
                   />
-                </label>
-                <label>
-                  Windows 安装状态路径（空为默认）
-                  <input
-                    value={draft.sandbox.statePath}
-                    onChange={(e) =>
-                      changeGroup("sandbox", { statePath: e.target.value })
-                    }
+                </div>
+                <div hidden={category !== "server"}>
+                  <h2>服务与访问 · 重启生效</h2>
+                  <p>
+                    仅供本机和受信任局域网使用。密码不提供 HTTP
+                    传输加密；重启会中断活动任务并要求重新登录。
+                  </p>
+                  <label>
+                    监听地址
+                    <select
+                      value={draft.server.listenAddress}
+                      onChange={(e) =>
+                        changeGroup("server", { listenAddress: e.target.value })
+                      }
+                    >
+                      {["127.0.0.1", "::1", "0.0.0.0", "::"].map((address) => (
+                        <option key={address}>{address}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <NumericFields
+                    value={{ port: draft.server.port }}
+                    onChange={(patch) => changeGroup("server", patch)}
                   />
-                </label>
-              </div>
-              <div hidden={category !== "mcp"}>
-                <McpSettings
-                  key={epoch}
-                  servers={draft.mcp.servers}
-                  changes={mcpChanges}
-                  onChange={setMcpChanges}
-                />
-              </div>
-              <div hidden={category !== "server"}>
-                <h2>服务与访问 · 重启生效</h2>
-                <p>
-                  仅供本机和受信任局域网使用。密码不提供 HTTP
-                  传输加密；重启会中断活动任务并要求重新登录。
-                </p>
-                <label>
-                  监听地址
-                  <select
-                    value={draft.server.listenAddress}
-                    onChange={(e) =>
-                      changeGroup("server", { listenAddress: e.target.value })
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={draft.server.passwordEnabled}
+                      onChange={(e) =>
+                        changeGroup("server", {
+                          passwordEnabled: e.target.checked,
+                        })
+                      }
+                    />
+                    启用访问密码
+                  </label>
+                  <SecretField
+                    key={epoch}
+                    label="访问密码"
+                    configured={draft.server.hasPassword}
+                    value={secrets.password}
+                    onChange={(value) =>
+                      setSecrets({ ...secrets, password: value })
                     }
-                  >
-                    {["127.0.0.1", "::1", "0.0.0.0", "::"].map((address) => (
-                      <option key={address}>{address}</option>
-                    ))}
-                  </select>
-                </label>
-                <NumericFields
-                  value={{ port: draft.server.port }}
-                  onChange={(patch) => changeGroup("server", patch)}
-                />
-                <label>
-                  <input
-                    type="checkbox"
-                    checked={draft.server.passwordEnabled}
-                    onChange={(e) =>
-                      changeGroup("server", {
-                        passwordEnabled: e.target.checked,
-                      })
-                    }
+                    allowDelete={false}
                   />
-                  启用访问密码
-                </label>
-                <SecretField
-                  key={epoch}
-                  label="访问密码"
-                  configured={draft.server.hasPassword}
-                  value={secrets.password}
-                  onChange={(value) =>
-                    setSecrets({ ...secrets, password: value })
-                  }
-                  allowDelete={false}
-                />
-              </div>
-              <div hidden={category !== "logging"}>
-                <h2>日志与诊断</h2>
-                <label>
-                  宿主日志级别 · 立即生效
-                  <select
-                    value={draft.logging.level}
-                    onChange={(e) =>
-                      changeGroup("logging", { level: e.target.value })
-                    }
-                  >
-                    {["trace", "debug", "info", "warn", "error"].map(
-                      (level) => (
-                        <option key={level}>{level}</option>
-                      ),
-                    )}
-                  </select>
-                </label>
-                <p>
-                  现有 Runtime 保留启动时级别。trace
-                  容量下一任务生效；检查点和归档保留策略重启生效。
-                </p>
-                <NumericFields
-                  value={draft.tracing}
-                  onChange={(patch) => changeGroup("tracing", patch)}
-                />
-              </div>
-              <div hidden={category !== "data"}>
-                <h2>配置与数据</h2>
-                <p>
-                  配置版本：{draft.schemaVersion}；revision：{view?.revision}
-                </p>
-                <p>
-                  数据目录通过启动参数 --data-dir
-                  指定，不在运行中搬迁历史数据库。Skill
-                  仍从项目/宿主预设目录发现。
-                </p>
-                <button type="button" onClick={() => void refresh(true)}>
-                  重新读取磁盘配置
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    const url = URL.createObjectURL(
-                      new Blob([JSON.stringify(view?.configuration, null, 2)], {
-                        type: "application/json",
-                      }),
-                    );
-                    const link = document.createElement("a");
-                    link.href = url;
-                    link.download = "codeatelier-settings-redacted.json";
-                    link.click();
-                    URL.revokeObjectURL(url);
-                  }}
-                >
-                  导出脱敏配置（非备份）
-                </button>
-                <button
-                  type="button"
-                  onClick={async () => {
-                    if (
-                      !window.confirm(
-                        `重启将中断运行任务；新端口为 ${view?.configuration.server.port}。未保存的草稿不会生效。确认？`,
-                      )
-                    ) {
-                      return;
-                    }
-
-                    try {
-                      await api("/server/reload", { confirm: true });
-                      setNotice(
-                        "已请求重启；请使用保存的地址和端口重新打开服务。",
+                </div>
+                <div hidden={category !== "logging"}>
+                  <h2>日志与诊断</h2>
+                  <label>
+                    宿主日志级别 · 立即生效
+                    <select
+                      value={draft.logging.level}
+                      onChange={(e) =>
+                        changeGroup("logging", { level: e.target.value })
+                      }
+                    >
+                      {["trace", "debug", "info", "warn", "error"].map(
+                        (level) => (
+                          <option key={level}>{level}</option>
+                        ),
+                      )}
+                    </select>
+                  </label>
+                  <p>
+                    现有 Runtime 保留启动时级别。trace
+                    容量下一任务生效；检查点和归档保留策略重启生效。
+                  </p>
+                  <NumericFields
+                    value={draft.tracing}
+                    onChange={(patch) => changeGroup("tracing", patch)}
+                  />
+                </div>
+                <div hidden={category !== "data"}>
+                  <h2>配置与数据</h2>
+                  <p>
+                    配置版本：{draft.schemaVersion}；revision：{view?.revision}
+                  </p>
+                  <p>
+                    数据目录通过启动参数 --data-dir
+                    指定，不在运行中搬迁历史数据库。Skill
+                    仍从项目/宿主预设目录发现。
+                  </p>
+                  <button type="button" onClick={() => void refresh(true)}>
+                    重新读取磁盘配置
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const url = URL.createObjectURL(
+                        new Blob(
+                          [JSON.stringify(view?.configuration, null, 2)],
+                          {
+                            type: "application/json",
+                          },
+                        ),
                       );
-                    } catch (reason) {
-                      setError((reason as Error).message);
-                    }
-                  }}
-                >
-                  重启服务
-                </button>
-              </div>
-            </fieldset>
-          )}
+                      const link = document.createElement("a");
+                      link.href = url;
+                      link.download = "codeatelier-settings-redacted.json";
+                      link.click();
+                      URL.revokeObjectURL(url);
+                    }}
+                  >
+                    导出脱敏配置（非备份）
+                  </button>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      if (
+                        !window.confirm(
+                          `重启将中断运行任务；新端口为 ${view?.configuration.server.port}。未保存的草稿不会生效。确认？`,
+                        )
+                      ) {
+                        return;
+                      }
+
+                      try {
+                        await api("/server/reload", { confirm: true });
+                        setNotice(
+                          "已请求重启；请使用保存的地址和端口重新打开服务。",
+                        );
+                      } catch (reason) {
+                        setError((reason as Error).message);
+                      }
+                    }}
+                  >
+                    重启服务
+                  </button>
+                </div>
+              </fieldset>
+            )}
+          </div>
           <footer>
             <span>{dirty ? "有未保存更改" : "无未保存更改"}</span>
             <button
@@ -628,6 +643,6 @@ export function SettingsPage({
           </footer>
         </form>
       </div>
-    </div>
+    </dialog>
   );
 }

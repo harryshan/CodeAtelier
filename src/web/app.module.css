@@ -1,7 +1,7 @@
 /**
  * 主页面、时间线和弹窗共用的 CSS Module，由各 React 组件引用。
  *
- * 1. 开头设置颜色、字体和基础控件样式，再定义双栏布局、侧栏和标题区。
+ * 1. 开头定义主页面/设置模态框共用主题变量、字体和基础控件样式，再定义双栏布局、侧栏和标题区。
  * 2. 项目分组与侧栏、欢迎页、实际 sandbox 状态、会话统计及 Perfetto 下载链接、带子任务徽标的 Markdown 对话消息、工具结果、diff 和通知。
  * 3. 审批按钮、所见即所得 Markdown 输入区、按服务端门禁显示的子代理勾选、弹窗和字段网格对应页面操作。
  * 4. 末尾通过媒体查询调整窄屏间距和排列；手机端把完整侧栏改为带遮罩的导航抽屉，避免隐藏项目和会话操作。
@@ -9,13 +9,27 @@
  * 修改类名时要同步 TSX 引用。按钮是否禁用由组件状态控制，不能只改成看起来不可用的样式。
  */
 
+:global(:root) {
+  --ca-text: #e0e4e8;
+  --ca-muted: #829ca6;
+  --ca-surface: #1c282e;
+  --ca-panel: #181f22;
+  --ca-border: #425861;
+  --ca-divider: #2b3539;
+  --ca-input: #11191c;
+  --ca-input-border: #37464b;
+  --ca-input-text: #e7eeec;
+  --ca-accent: #8de0c3;
+  --ca-backdrop: #060c10bf;
+}
+
 :global(*) {
   box-sizing: border-box;
 }
 :global(body) {
   margin: 0;
   font-family: Inter, "Segoe UI", "Microsoft YaHei", sans-serif;
-  color: #e0e4e8;
+  color: var(--ca-text);
   background: #121619;
   font-size: 14px;
 }
@@ -43,16 +57,16 @@
 }
 :global(button:focus-visible),
 :global(a:focus-visible) {
-  outline: 2px solid #8de0c3;
+  outline: 2px solid var(--ca-accent);
   outline-offset: 3px;
 }
 :global(input),
 :global(textarea),
 :global(select) {
   width: 100%;
-  color: #e7eeec;
-  background: #11191c;
-  border: 1px solid #37464b;
+  color: var(--ca-input-text);
+  background: var(--ca-input);
+  border: 1px solid var(--ca-input-border);
   border-radius: 7px;
   padding: 12px;
   outline: none;
@@ -60,7 +74,7 @@
 :global(input:focus),
 :global(textarea:focus),
 :global(select:focus) {
-  border-color: #8de0c3;
+  border-color: var(--ca-accent);
 }
 :global(pre),
 :global(code) {
@@ -1062,7 +1076,7 @@
 .overlay {
   position: fixed;
   inset: 0;
-  background: #060c10bf;
+  background: var(--ca-backdrop);
   backdrop-filter: blur(6px);
   display: flex;
   justify-content: center;
@@ -1074,8 +1088,8 @@
   width: 550px;
   max-height: 90vh;
   overflow: auto;
-  background: #1c282e;
-  border: 1px solid #425861;
+  background: var(--ca-surface);
+  border: 1px solid var(--ca-border);
   border-radius: 14px;
   padding: 28px;
   box-shadow: 0 30px 90px #0009;

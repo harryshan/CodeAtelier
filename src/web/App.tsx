@@ -7,7 +7,7 @@
  * 3. resume、reloadService、stopServer、createProject、createConversation 和 send 处理恢复、受确认的服务重载、关闭服务、连接项目、新建会话和发送消息，并显示操作结果。
  * 4. 服务关闭后显示重启说明；正常页面由侧栏或手机端导航抽屉、项目栏、当前会话实际 Runtime 隔离模式（没有证据时显示启动初始状态，并提示获批宿主命令例外）、可折叠会话统计、会将已完成任务过程默认收纳的时间线或项目连接页、所见即所得 Markdown 任务编辑器组成。
  * 5. 侧栏另开同源对话阅读器；SettingsPage 接管版本化编辑和初始引导，保存更新主页面状态，不中断活动任务。
- * 6. 末尾渲染设置页及重载/关闭确认框；未完成模型配置时阻止提交并引导设置，项目连接不使用弹窗。
+ * 6. 末尾渲染与主页面同主题的设置模态框及重载/关闭确认框；未完成模型配置时阻止提交并引导设置，项目连接不使用弹窗。
  *
  * 关闭请求失败时不能断言服务已经关闭。切换会话和断线重连都只更新显示，不能重新提交任务。
  */
@@ -461,12 +461,13 @@ export default function App() {
             <span className={s.version}>v0.1</span>
           </div>
           <button
+            aria-haspopup="dialog"
             onClick={() => {
               setMobileSidebarOpen(false);
               setShowSettings(true);
             }}
           >
-            ⚙ 模型与设置 <span>↗</span>
+            ⚙ 模型与设置 <span aria-hidden="true">›</span>
           </button>
         </div>
       </aside>
@@ -539,7 +540,12 @@ export default function App() {
         {!hasKey && settings && (
           <div className={s.keyBanner}>
             配置模型密钥后，即可开始编码任务。
-            <button onClick={() => setShowSettings(true)}>打开设置 →</button>
+            <button
+              aria-haspopup="dialog"
+              onClick={() => setShowSettings(true)}
+            >
+              打开设置 →
+            </button>
           </div>
         )}
         {data && !loading && <SessionStatistics data={data} />}

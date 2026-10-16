@@ -1,5 +1,13 @@
 # 初版验证记录
 
+## 设置模态框与主页面主题统一（2026-10-16，Windows / Chromium）
+
+- 按用户追加要求，将全屏浅色设置层改为主页面上的居中原生 dialog；共用深色主题变量、字体与控件，背景遮罩/交互隔离、表单独立滚动和固定保存栏，保留分类草稿与保存契约。不改变后端配置、生效语义或 tracing 生命周期。
+- 新增 settings-modal.spec.ts：先复现桌面设置占满视口（左边距为 0），修改后覆盖居中留白、原生模态状态、控件主题一致、背景不能获得焦点、Tab 循环、Esc 关闭/草稿确认及焦点恢复；390×740 窄屏覆盖边界与保存栏可见性。
+- `pnpm check` 的类型、ESLint、Prettier 通过；默认并发单测 777 通过、1 跳过、4 项超时（permissions、settings-migration、settings-runtime、settings-store），原样 check 未全绿，未调整超时或断言。随后 `pnpm test --maxWorkers=2`：113 文件通过，781 通过、1 跳过。
+- 完整 `pnpm test:e2e`：60/60 通过，含服务/Web 和 Windows/POSIX Runtime 测试构建；保留既有 Zod 注释与 Web chunk 大小警告。日志为 `.local/settings-modal-{check,unit,e2e}.log`。
+- 使用隔离配置及模拟模型；没有修改用户设置、运行 Evaluation 或重启当前服务。不推导其它浏览器及操作系统已经验证。
+
 ## 统一设置系统（2026-10-16，Windows / Node 26.10.0）
 
 - D153 实现版本化 `settings.json`、严格局部 PATCH/revision、安全公开视图、Windows 私有 ACL/POSIX 私有文件写入、scrypt 密码材料和显式旧配置迁移。主/辅助密钥与 MCP 固定到实际启动任务，运行期间可保存；日志/并发立即、模型等下一任务、服务/Sandbox 等重启生效。
