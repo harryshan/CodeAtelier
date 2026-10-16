@@ -4,7 +4,7 @@
  *
  * 1. labels、textResult 和 toolDuration 处理工具名称、结果及耗时；旧记录缺少耗时时明确提示，不根据事件间隔猜测。
  * 2. 读取连接层 timeline-projection 的流式文本、输出和状态视图；渲染期间不聚合历史。MarkdownMessage 缓存相同正文的安全渲染。
- * 3. 显示编辑进度、工具输出及子任务记录；普通/Broker 宿主命令和 Git 共用输出卡片，未匹配的输出仍显示为文本。StreamingMessage 使用通知索引判断尝试是否仍在生成。
+ * 3. 显示编辑进度、工具输出及子任务记录；普通/Broker 宿主命令和旧 Git 记录共用输出卡片，未匹配的输出仍显示为文本。StreamingMessage 使用通知索引判断尝试是否仍在生成。
  * 4. 已结束任务（含失败、取消和中断）默认折叠中间过程，用户输入、末次完整回复与中断提示保留在外层；排队、运行和等待审批的任务继续完整显示。
  * 5. useVirtualTimeline 缓存精确高度前缀和，首次挂载在 layout effect 中测量，ResizeObserver 处理后续尺寸变化。
  *    滚动每帧合并并按时间线自身坐标定位；补偿滚动不改变跟随状态，主动上滚立即退出跟随，回到末尾才恢复。
@@ -52,7 +52,7 @@ const labels: Record<string, string> = {
   write_file: "写入文件（旧记录）",
   run_command: "执行命令",
   run_with_permissions: "执行命令（宿主权限）",
-  git: "Git 操作",
+  git: "Git 操作（旧记录）",
   subagent: "只读子代理协调",
   // 保留旧会话事件的中文标签；旧调用只展示，不会被新版 ToolRunner 执行。
   git_status: "Git 状态（旧记录）",

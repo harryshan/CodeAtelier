@@ -1,5 +1,14 @@
 # 初版验证记录
 
+## Git CLI 替代专用工具（D155，2026-10-17，Windows / Node 26.10.0）
+
+- 已移除模型 Git 声明、参数 schema、GitToolRunner/敏感模板检查、Broker Git handler 与专属 IPC，Git CLI 复用普通命令及显式获批宿主命令。无关键词转发、Git 专属目标校验或 push 独占批次。IPC 升至 v17，旧 operation/握手拒绝；历史输出、嵌套结果及恢复读取仍保留，不重新执行。
+- 临时仓库与本地 bare remote 回归覆盖 status/diff/add/commit/log/show/branch/push、非零退出、审批拒绝后索引不变、callId 输出；Broker 夹具覆盖普通审批、成功写入和取消副作用归因，DAG 只使用显式依赖。旧入口拒绝、IPC 及 session-view/runtime-session-client 历史兼容均纳入全量单测。
+- 最终 `pnpm check` 的 TypeScript、ESLint、Prettier 通过；默认高并发单测 **793 通过、1 跳过、7 失败**：git-cli、permissions、settings-migration、settings-runtime、settings-store 超时，以及两项 Repair PowerShell 子进程失败。**原样 check 未全绿**，没有提高超时、放宽断言或修改默认 worker 数。新增 CLI 用例减少重复 shell 启动后仍在默认并发下超时；测试负载治理另行处理。
+- 同一最终代码的完整 `pnpm test --maxWorkers=2`：**114 文件通过，800 通过、1 跳过**，上述失败项全部通过；Git CLI 两项合计约 2.6 秒。日志为 `.local/git-cli-unit-low.log` 和 `.local/git-cli-check-final.log`，不提交日志。
+- 完整 `pnpm test:e2e`：**60/60 通过**，包括普通 Git CLI 审批、输出/退出码同卡、刷新回读，以及服务/Web、Windows/POSIX Runtime 测试构建；保留既有 Zod 注释与 Web chunk 大小警告。日志为 `.local/git-cli-e2e.log`。
+- 验证经批准在 Broker 宿主运行，使用模拟模型与隔离测试数据。本轮未运行 Evaluation、真实远程推送、管理员安装/Repair 或当前服务重启；未实机复验 Windows restricted token/NUL/所有权兼容性及 Linux/macOS CLI。安装式 Windows Runtime 使用前须显式重建并 Repair 至 IPC v17，不能把宿主 Git 回归或构建成功当作安装态通过。
+
 ## Windows Sandbox Repair 保留账户 SID（2026-10-17，Windows / Node 26.10.0）
 
 - 按 D154 将 Repair 的卸载再安装改为原地维护：保留已验证账户 SID、DPAPI 凭据和默认 relay 端口，先用旧 Supervisor 终止账户进程/撤销 journal，再更新组件与新 generation。失败保留账户/state，不删除重建，不承诺安装文件原子回滚。

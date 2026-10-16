@@ -22,7 +22,7 @@ Windows `process-tree.test.ts` 用真实 Node 父子进程和继承的输出句�
 ## 共享执行逻辑回归
 
 - `model-loop.test.ts`：响应先保存再执行工具、轮次推进、普通重试上限、超限恢复的任务级次数及 attempt 连续编号、保存/工具失败不重放、取消与无效图/正常工具耗尽轮次的区分。
-- `model-tool-batch.test.ts`：两种执行模式的节点解析与依赖一致、Runtime push 独占而宿主维持原规则、退出码及多文件 failed/unknown 阻断 DAG 后继。
+- `model-tool-batch.test.ts`：两种执行模式的节点解析与依赖一致、Git CLI 不额外独占批次且保留显式依赖、退出码及多文件 failed/unknown 阻断 DAG 后继。
 - `execute-runner.test.ts`：保留但暂停使用的 Push Runner 与 Capability Runner 的实例标识、进程元数据、事件/账本一致、非零退出、启动前后失败、取消、unknown 优先级、命令构造失败和拒绝 host fallback；不能视作现行产品路径验收。
 - `engine.test.ts`、`agent-runtime-service.test.ts`、`agent-runtime-engine.test.ts` 继续验证生产组装、真实 Node 子进程、工具结果回传、审批和取消记录；Engine 回归还核对已验证的 Runtime PID 在 `running` 与 `completed` execution instance 中一致。这些测试不替代专用账户提升环境验收。
 
@@ -134,16 +134,16 @@ Windows `process-tree.test.ts` 用真实 Node 父子进程和继承的输出句�
 - `pnpm sandbox:native:build` 的原生回归核对产品受限 token 的 execution/root capability 与 Everyone restricting SID、Runtime bootstrap 句柄帧、进程 PID 绑定、仅复制查询权限及畸形帧拒绝；显式 `codeatelier-sandbox-state-parser-test.exe --handle-transfer-probe` 还以真实子进程验证私有管道读帧和跨进程句柄复制。这些都不代替固定账户下的 BCrypt/PowerShell、Job 与 Runtime pipe 联合身份验收。
 - 原生 `codeatelier-sandbox-state-parser-test.exe --runtime-descriptor-probe` 可输出固定启动描述符二进制首帧，供 Node 解码器跨语言核对；`runtime-startup-protocol.test.ts` 验证真实本机管道的成功握手，以及无效首帧后入口关闭 socket 并退出。安装态首帧和 IPC 双向代理仍须用显式产品验收验证。
 - `pnpm sandbox:native:build` 还以五秒上限运行原生 `--runtime-duplex-probe`：在真实本机 Named Pipe 上覆盖预连接与待决连接两种顺序，并在 server 读取下一帧时向 client 写入 Broker 回复；它曾在同步 pipe 上超时，overlapped I/O 修复后通过。该探针不覆盖固定账户 ACL、Job 或完整任务协议。
-- `pnpm sandbox:runtime:verify` 是安装完成后由用户显式运行的 Windows 产品链路验收：它使用模拟模型，经默认 Engine/SandboxBroker/native Supervisor 在专用账户 Agent Runtime 内创建工作区文件，再在同一批次独立执行 Broker 宿主 Git status 和 Runtime 普通命令，使一条路径的失败不遮蔽另一条的结果，并核对专用账户子进程、输出与 clean release；随后以仅供此手动验收的内部已标记任务调用受保护的 subagent Worker，核对受限工具、读取、报告收集和 tracing，公开 HTTP 门禁仍保持关闭。`process.test.ts` 覆盖 file-backed 输出回传、取消和持久化失败时的进程停止与临时文件清理；这些本地测试不代替安装态 restricted token 验收。
-- `agent-runtime-engine.test.ts` 与 `runtime-ipc.test.ts` 核对 Broker Git status/add/commit 的宿主执行归因、原有 action-specific 结果形状和受限 IPC schema；`sandbox-native-windows-runtime.test.ts` 核对 Runtime 不再投影宿主 global/include 配置。
-- `sandbox-git-config-graph.test.ts` 保留旧 Runner 路径的只读 Git global 投影回归；当前产品 Git 已由 Broker 宿主执行，该测试不是现行产品路径验收。
-- `git-tools.test.ts` 核对仓库探测失败时工具结果保留有界 Git 错误，避免安装态验收只剩泛化失败信息。
+- `pnpm sandbox:runtime:verify` 是安装完成后由用户显式运行的 Windows 产品链路验收：它使用模拟模型，经默认 Engine/SandboxBroker/native Supervisor 在专用账户 Agent Runtime 内创建工作区文件，再在同一批次独立执行经通用审批的 Broker Git CLI status 和 Runtime 普通命令，使一条路径的失败不遮蔽另一条的结果，并核对专用账户子进程、输出与 clean release；随后以仅供此手动验收的内部已标记任务调用受保护的 subagent Worker，核对受限工具、读取、报告收集和 tracing，公开 HTTP 门禁仍保持关闭。`process.test.ts` 覆盖 file-backed 输出回传、取消和持久化失败时的进程停止与临时文件清理；这些本地测试不代替安装态 restricted token 验收。
+- `agent-runtime-engine.test.ts` 与 `runtime-ipc.test.ts` 核对 Git CLI status/add/commit 的通用 Broker 审批、平面结果及 host-process 归因，并拒绝旧 Git operation/v16 握手；`sandbox-native-windows-runtime.test.ts` 核对 Runtime 不再投影宿主 global/include 配置。
+- `sandbox-git-config-graph.test.ts` 保留旧 Runner 路径的只读 Git global 投影回归；当前 CLI 使用通用命令路径，该测试不是现行产品路径验收。
+- `git-cli.test.ts` 在隔离配置的临时仓库中覆盖状态、差异、提交、日志、分支、本地 bare remote 推送、非零退出和审批拒绝；不触及真实远程。旧 git-tools.test.ts 随专用执行器移除。
 
   `tests/runtime-startup-protocol.test.ts` 另以原生 `StringFromGUID2` 的 `{GUID}` 后缀启动真实本机 pipe，验证 Node 入口能连接并完成模拟任务；普通协议测试同时保留不带花括号的合法名称及远程、畸形名称拒绝。该测试不代替专用账户的身份与 ACL 验收。
 
   随后由低成本模型夹具自动批准一次 `run_with_permissions`，让 Broker 宿主命令写入 sibling 目录，核对独立 `broker-command/host-process` 记录、结果回传和 Sandbox lease 清理。此阶段不验证 Capability Runner 的外部 ACL 或 HTTPS relay。
 
-  下一阶段初始化一次性 Git 仓库，验证 Broker 宿主 Git push 对本机不可用端口的失败结果、审批和归因；最后验证主动取消。该命令不属于 `test`/`check`，不会访问模型服务、外部网络、真实 remote 或凭据；只有在真实安装环境运行并输出 PASS 才构成对应平台证据。
+  下一阶段初始化一次性 Git 仓库，验证 Git CLI push 经通用 Broker 命令审批后对本机不可用端口的失败结果与归因；最后验证主动取消。该命令不属于 `test`/`check`，不会访问模型服务、外部网络、真实 remote 或凭据；只有在真实安装环境运行并输出 PASS 才构成对应平台证据。
 
 - 真实模型 smoke 测试独立运行，需要本地提供密钥；不作为日常离线测试前提。不对用户项目进行测试性写入。
 
@@ -184,13 +184,13 @@ create:true 嵌套创建、已有目标及最后一次预检之后出现目标�
 
 主要测试：permissions.test.ts、model-approval.test.ts、core.test.ts。
 
-单次/会话授权、低成本模型三级分流、失效或无模型时保守人工确认、跨会话隔离、内容变化后重新审批、取消、敏感文件/AGENTS.md、直接 Git 与提权限制
+单次/会话授权、低成本模型三级分流、失效或无模型时保守人工确认、跨会话隔离、内容变化后重新审批、取消、敏感文件/AGENTS.md、Git CLI 沿用通用命令审批与提权限制
 
-### Git 工具
+### Git CLI（D155）
 
-主要测试：git-tools.test.ts、paths.test.ts、tool-schema.test.ts、e2e/app.spec.ts。
+主要测试：git-cli.test.ts、tool-schema.test.ts、model-tool-batch.test.ts、agent-runtime-tools.test.ts、agent-runtime-engine.test.ts、runtime-ipc.test.ts、e2e/app.spec.ts。
 
-单一 action 契约、固定 status/diff/log/show/branch 参数、add/提交/推送自动执行、worktree/upstream/revision/敏感目录校验；运行时 dotenv 拒绝、受控 dotenv 模板的占位凭据校验与输出保护、暂存失败不提交、禁止额外选项，以及流式输出与退出状态的卡片聚合
+Git CLI 走通用命令：临时仓库状态/差异/add/commit/log/show/branch、本地 bare remote push、非零退出、拒绝后索引不变、输出 callId、Broker 宿主审批/归因、成功写入与启动后取消的副作用标记。宿主/Runtime 均不声明或执行旧 Git 工具，旧 IPC operation 与握手拒绝；CLI 不独占批次。浏览器验证普通命令审批、输出/退出码同卡及刷新回读。session-view/tool-projection/runtime-session-client 回归保留历史 Git 输出与嵌套结果读取、上下文恢复，不允许重新执行。Windows restricted token、真实 remote/凭据/helper 和跨平台 CLI 兼容须另行验证。
 
 ### 命令执行
 
@@ -403,7 +403,7 @@ Git 配置图按两个 global 入口递归解析 `include` 与适用的 `gitdir/
 
 account generation 状态机验证 1～4 个不同工作区并发、同工作区串行、共享 grant 引用计数、epoch 防重放和整代 quarantine；
 
-当前 Git action 通过 Broker 以宿主用户权限执行，由 Agent Runtime tools/engine 及 IPC 回归覆盖；旧 ToolRunner→Sandbox Runtime 路由夹具已于 2026-10-10 审计移除，不再作为现行执行边界证据；
+当前 Git CLI 走通用命令权限，由 Git CLI、Agent Runtime tools/engine 及 IPC 回归覆盖；旧 ToolRunner→Sandbox Runtime 路由夹具已于 2026-10-10 审计移除，不再作为现行执行边界证据；
 
 CONNECT relay 夹具验证 proxy token、精确 host、私网 DNS、IPv4/IPv6 公网分类和 lease 撤销，其中 IPv6 只接受普通全球单播并拒绝 Teredo、6to4、NAT64、文档和本地前缀。
 
@@ -425,7 +425,7 @@ clean close 后执行 native revoke、commit 和私有目录清理；
 
 started 后 close 返回 orphaned、Broker 未取得可信 Runtime 终态（即使 native shutdown clean）或 generation 摘要不一致时写入 `unknown`、quarantine 并调用整代排空。
 
-`agent-runtime-engine.test.ts` 另证明 Engine 只捕获 `AgentRuntimeFallbackError` 继续宿主 loop，并把 execution instance 记为 `host-process`/`sandboxApplied=false`，同时发出供 Web 徽标使用的实际 `sandbox_stage`；已启动 Broker Git push 即使取消，也保留 `sideEffectsPossible=true`。
+`agent-runtime-engine.test.ts` 另证明 Engine 只捕获 `AgentRuntimeFallbackError` 继续宿主 loop，并把 execution instance 记为 `host-process`/`sandboxApplied=false`，同时发出供 Web 徽标使用的实际 `sandbox_stage`；已启动的获批 Broker Git CLI push 即使取消，也保留 `sideEffectsPossible=true`。
 
 C++ 任务 pipe 的 PID、创建时间、Job、账户、restricted SID、固定映像检查及字节代理目前由 MSVC `/W4` 构建覆盖；安装后可用 `pnpm sandbox:runtime:verify` 验证真实完成、取消和 clean release，错误客户端及恢复故障注入仍需提升环境矩阵。
 
@@ -471,7 +471,7 @@ context-stages.test.ts 覆盖长记录中间材料的全文连续送出、默认
 
 context-request.test.ts 覆盖低于阈值时重复读取结果原样发送、原始输入计量、瞬态重试和新工具轮次保持完整历史。context-stages.test.ts 覆盖达到阈值后默认直接摘要全文以及旧投影数据的兼容回读。context.test.ts 额外覆盖常规摘要在超预算失败时的保底视图：完整快照保留，活动输入保留用户原文与最新结论，并移除超长中间工具输出。
 
-git-tools.test.ts 覆盖 diff 独立输出硬上限，属于普通功能回归，不启动 Evaluation；不再用 core.test.ts 的提示词子串匹配证明模型会避免全量 diff。
+D155 移除了专用 Git diff 上限；CLI 输出沿用 process/core 的通用限长、截断与错误回归。不运行 Evaluation，也不以提示词子串证明模型会避免全量 diff。
 
 评测报告手动回归 `scripts/swebench/test_report.py` 覆盖缺失数据不当作零或失败、官方回归测试失败、补丁头排除、缺失工具结果、非零测试退出、不可解析的脱敏命令参数和分位数样本口径。该套件不进入默认 test/check。另覆盖 list_files 数组形式的工具结果；2026-09-12 用户授权三题评测期间，报告回归 6 项通过。
 
@@ -501,7 +501,7 @@ git-tools.test.ts 覆盖 diff 独立输出硬上限，属于普通功能回归�
 
 ## 严格工具契约
 
-- tests/tool-schema.test.ts 检查所有生产工具的 strict 对象声明：属性均列入 required，禁止额外属性；新调用的根节点包含严格的 `execution`（唯一 ID 与依赖列表）及 `arguments` 信封；单一 `git` 工具的每个 discriminated action 仅接受对应字段，diff 必须显式传 staged、paths 和 contextLines。
+- tests/tool-schema.test.ts 检查所有生产工具的 strict 对象声明：属性均列入 required，禁止额外属性；新调用的根节点包含严格的 `execution`（唯一 ID 与依赖列表）及 `arguments` 信封；宿主/Runtime 工具列表均不含旧 `git`，新调用无论扁平、request 包装或调度信封均拒绝。
 
   此回归防止工具 schema 导致整轮模型请求被拒绝，不连接真实服务。
 
@@ -542,31 +542,25 @@ git-tools.test.ts 覆盖 diff 独立输出硬上限，属于普通功能回归�
 - `tests/e2e/replay-viewer.spec.ts`：分别通过现有 HTTP 服务的 `/?view=replay&source=file` 和可选 `file://` 入口检查模型/工具往返、折叠载荷、搜索/状态筛选、分页、本地 JSON 导入、坏文件保留原视图与恶意 HTML 仅作文本；文件导入/浏览不产生网络请求。另覆盖主侧栏另开阅读器、返回主页面、刷新需重新选择且不写 localStorage，以及访问验证失败时不挂载阅读器。使用合成记录，不读取个人历史或运行 Evaluation。
 - `tests/e2e/access-password.spec.ts`：主页面与 `/?view=replay` 共用密码门禁，错误密码不进入、正确密码后才显示对应页面；API 的真实 cookie/来源保护继续由 `tests/access-password.test.ts` 覆盖。
 
-### Git 模型参数兼容性
+### Git 工具退役与命令兼容
 
-模型侧 `git` 参数采用 `{ "request": { "action": "status" } }`，其他 action 的字段也放在 request 内。根节点为严格 object，request 使用嵌套 anyOf；避免服务拒绝根级 oneOf。执行前严格验证各 action 字段，再解包交给原 Git 执行器；历史扁平参数继续受原校验约束。
-
-tool-schema.test.ts 覆盖根节点、oneOf 禁用、包装解包、历史兼容和额外/非法字段拒绝。
-
-### Agent Runtime 阻塞等待 Broker Git push
-
-- `tests/model-tool-batch.test.ts` 用宿主与 Runtime 共享的工具图校验在执行任何节点前拒绝含 push 和其它调用的 Runtime 批次，同时单独 push 可形成有效图。
-- `tests/agent-runtime-tools.test.ts` 用真实临时 Git worktree 完成 upstream/OID 查询，随后验证 Runtime 只调用结构化 push adapter、同步取得结果，且不嵌套逐工具 SandboxBroker；Broker 已实时持久化的输出不会被 Runtime 在最终响应后重复发射。
-- `tests/runtime-ipc.test.ts` 验证 `git_push` 只携带当前 `toolCallId`、返回值受固定 schema 校验；请求级取消继续只中止对应 handler。
-- `tests/agent-runtime-tools.test.ts` 验证 Runtime 不再预检 Git 配置而将调用 ID 交给 Broker；`tests/agent-runtime-engine.test.ts` 验证 Broker 宿主 Git 预检、审批与已启动 push 取消的非 Sandbox 归因。
+- `tests/tool-schema.test.ts` / `agent-runtime-tools.test.ts` 验证旧 Git 请求在开始执行前拒绝，不触发宿主 adapter 或输出。
+- `tests/runtime-ipc.test.ts` 验证 v17 拒绝 git_execute/git_push 与旧握手；Git CLI 通过通用两阶段 capability 授权，拒绝重用授权，取消只中止对应 handler。
+- `tests/model-tool-batch.test.ts` 验证两个命令工具中的 push 文本与独立节点可共存且保留显式依赖，不引入关键词特殊调度。
+- `tests/agent-runtime-engine.test.ts` 验证获批宿主 Git CLI 的真实状态/写入结果与启动后取消，记录 broker-command 而非旧 broker-git kind。
 - `tests/agent-runtime-engine.test.ts` 使用真实 Node 子进程验证取消时先收到 `runtime_complete`，随后 clean 关闭；即使 Runtime 已回报终态，只要原生清理返回 orphaned，任务也记为失败、执行实例保留 unknown。安装态脚本最终核对取消后无 unknown 和活动 generation lease。
 - `tests/sandbox-account-generation.test.ts` 与 `tests/sandbox.test.ts` 保留旧 Push Runner 的机制测试，但不证明当前产品 push 的网络或凭据隔离。真实 remote、凭据、hook/helper 和取消清理仍须手动验收。
 
 ### 通用命令工具不按 Git 关键词过滤（D137、D140）
 
 - `tests/permissions.test.ts` 与 `tests/agent-runtime-tools.test.ts` 覆盖直接 `git --version`、管道中的 Git 以及仅输出 `git status` 文本；断言实际退出码和输出，不创建提交或访问远端。
-- 宿主命令仍经过审批，拒绝时不创建执行实例；Runtime 命令沿用原执行边界且不请求审批。提权拒绝与专用 Git 的 Broker 分流继续覆盖。
+- 宿主命令仍经过审批，拒绝时不创建执行实例；Runtime 命令沿用原执行边界且不请求审批。提权拒绝与通用 Broker 命令审批继续覆盖。
 - `tests/agent-runtime-tools.test.ts` 对 `run_with_permissions` 覆盖直接 Git、管道、普通输出文本与搜索参数；通过 adapter 夹具验证完整命令/理由/callId、结果和 prepare → start → execute 顺序。Broker 审批拒绝、宿主直接调用及 Runtime 缺少 adapter 时均不得进入执行阶段；不以 mock 结果声称真实 Git 已执行。
 - 测试验证 ToolRunner 分流与本机 shell，不代替固定账户安装态或跨平台验收。
 
 ### Agent Runtime 经审批的 Broker 宿主命令
 
-- `tests/agent-runtime-tools.test.ts` 验证普通 Runtime `run_command` 不请求审批；`run_with_permissions` 只把严格命令、理由和当前 `toolCallId` 交给 adapter。`tests/agent-runtime-service.test.ts` 验证该请求保留普通 DAG 并行语义；Git push 独占由共享工具图测试覆盖。
+- `tests/agent-runtime-tools.test.ts` 验证普通 Runtime `run_command` 不请求审批；`run_with_permissions` 只把严格命令、理由和当前 `toolCallId` 交给 adapter。`tests/agent-runtime-service.test.ts` 验证该请求保留普通 DAG 并行语义；Git CLI 不独占批次，由共享工具图测试覆盖。
 - `tests/agent-runtime-engine.test.ts` 通过真实 Runtime 子进程验证低成本模型审批后，Broker 宿主命令可写入工作区外标记，且独立记为 `broker-command/host-process`，不会调用 Sandbox runner；stdout/stderr 的 `capability_output` 在工具结果前持久化且携带对应 callId，拒绝时无命令输出；命令和理由不进入任务 trace。
 - `tests/session-view.test.ts` 验证宿主命令与普通命令交错输出不串卡片、实时视图不可变、失败/取消结果关联、旧无 ID 输出及未匹配输出可见、仅最终结果与全量历史重建。`tests/e2e/broker-command-output.spec.ts` 用合成会话和增量刷新验证真实 UI 的 stdout/stderr 卡片、成功/非零退出/截断/取消、最终 output 兜底与刷新重建；输出按纯文本显示，不重复渲染结果。这些浏览器夹具不执行真实宿主命令，不代替固定账户安装态验收。
 - `tests/runtime-ipc.test.ts` 与 `tests/tool-schema.test.ts` 验证命令/理由的有界 schema 与调用关联，并拒绝旧权限字段或其它额外参数。

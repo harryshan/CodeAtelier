@@ -3,12 +3,12 @@
  * 本脚本由用户显式执行，不属于 pnpm test/check，也不调用真实模型、外部网络、真实凭据或管理员安装操作。
  *
  * 1. 在仓库 .local 下建立一次性工作区和 Broker 数据库，并强制启用 Windows Sandbox 产品组装。
- * 2. 内存模型驱动固定 Agent Runtime 创建标记文件，再在同一工具批次独立执行 Broker 宿主 Git status 与 Runtime 普通命令，使单一路径失败不遮蔽另一条诊断，并核对专用账户输出回传。
+ * 2. 内存模型驱动固定 Agent Runtime 创建标记文件，再在同一工具批次独立执行经通用审批的 Broker Git CLI status 与 Runtime 普通命令，使单一路径失败不遮蔽另一条诊断，并核对专用账户输出回传。
  * 3. 以内部已标记任务让安装态独立 Worker 只读该文件，核对规划、模型 IPC、报告原子收集、tracing 和退出后的租约。
  * 4. 请求 Broker 宿主命令，经低成本模型审批后写入 sibling 标记，核对 host-process 归因和结果回传；Capability Runner 暂停使用。
- * 5. 初始化一次性 Git 仓库，把 HTTPS remote 指向不可用的回环端口；验证 Broker 宿主 Git 预检、审批、失败结果回传和 Runtime clean lease release，全程不连接公网。
+ * 5. 初始化一次性 Git 仓库，把 HTTPS remote 指向不可用的回环端口；验证 Git CLI 经通用 Broker 命令审批、失败结果回传和 Runtime clean lease release，全程不连接公网。
  * 6. 再让模型请求保持进行中并主动取消任务，核对 Job 终止、cancelled 归因和 generation lease 清空。
- * 7. Agent Runtime 必须在专用账户，获批宿主命令及全部 Git action 必须明确标为 host-process；不得有 fallback/unknown。失败现场保留供人工对账。
+ * 7. Agent Runtime 必须在专用账户，获批宿主命令（含 Git CLI）必须明确标为 host-process；不得有 fallback/unknown。失败现场保留供人工对账。
  */
 
 import { execFile } from "node:child_process";
@@ -88,7 +88,7 @@ function assertBrokerGitPush(store: Store, sessionId: string) {
   const events = store.events(sessionId);
   const executions = executionEvents(store, sessionId);
   const pushStates = executions
-    .filter((event) => event.kind === "broker-git-push")
+    .filter((event) => event.kind === "broker-command")
     .map((event) => event.state);
   if (
     !pushStates.includes("running") ||
@@ -96,13 +96,13 @@ function assertBrokerGitPush(store: Store, sessionId: string) {
     pushStates.includes("unknown") ||
     executions.some(
       (event) =>
-        event.kind === "broker-git-push" &&
+        event.kind === "broker-command" &&
         event.toolCallId !== "runtime-blocked-push",
     ) ||
     executions.some((event) => event.kind === "push-runner") ||
     !executions.some(
       (event) =>
-        event.kind === "broker-git-push" &&
+        event.kind === "broker-command" &&
         event.mode === "host-process" &&
         event.sandboxApplied === false,
     ) ||
@@ -115,7 +115,8 @@ function assertBrokerGitPush(store: Store, sessionId: string) {
     !events.some(
       (event) =>
         event.type === "approval_assessed" &&
-        (event.data as Record<string, unknown>).tool === "git_push" &&
+        (event.data as Record<string, unknown>).tool ===
+          "run_with_permissions" &&
         (event.data as Record<string, unknown>).decision === "approve",
     ) ||
     events.some(
@@ -249,10 +250,14 @@ function runtimeCommandProvider(): ModelProvider {
             {
               type: "function_call",
               call_id: "runtime-local-git-status",
-              name: "git",
+              name: "run_with_permissions",
               arguments: JSON.stringify({
                 execution: { id: "local-git-status", dependsOn: [] },
-                arguments: { request: { action: "status" } },
+                arguments: {
+                  command: "git status --short --branch",
+                  reason:
+                    "安装态 Windows Runtime Git 有已知兼容性限制，使用宿主 Git 检查临时仓库。",
+                },
               }),
             },
             {
@@ -314,7 +319,7 @@ function assertRuntimeCommand(store: Store, sessionId: string) {
   const brokerGit = events.some(
     (event) =>
       event.type === "execution_instance" &&
-      (event.data as Record<string, unknown>).kind === "broker-git" &&
+      (event.data as Record<string, unknown>).kind === "broker-command" &&
       (event.data as Record<string, unknown>).toolCallId ===
         "runtime-local-git-status" &&
       (event.data as Record<string, unknown>).mode === "host-process" &&
@@ -569,8 +574,13 @@ function blockedPushProvider(): ModelProvider {
             {
               type: "function_call",
               call_id: "runtime-blocked-push",
-              name: "git",
-              arguments: JSON.stringify({ request: { action: "push" } }),
+              name: "run_with_permissions",
+              arguments: JSON.stringify({
+                command:
+                  "git -c core.hooksPath=disabled-hooks -c credential.helper= -c http.proxy= push origin HEAD",
+                reason:
+                  "验证临时仓库到不可用回环端口的失败回传，需要宿主网络；不使用真实凭据。",
+              }),
             },
           ],
         };

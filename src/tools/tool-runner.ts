@@ -4,7 +4,7 @@
  *
  * 1. ignored 列出遍历时跳过的目录；ToolContext 定义依赖，readHashes 记住本任务读过的文件版本；forCall 共享该状态但隔离事件关联，不持有读取线程或需关闭的读取资源。
  * 2. currentFileHash 仅探测安全工作区文件的字节哈希，不更新读取凭证；access 解析路径并申请必要的权限；entries 限量遍历，commandGrant 为可复用命令计算指纹。
- * 3. execute 先通过 parseToolArguments 校验参数并解开 Git 的 request 包装（兼容历史扁平调用）。统一的精确编辑和显式新建文件均分流给共享读取哈希的 FileEditor，已有文件成功编辑后会作废对应哈希；Runtime 的全部 Git action 交给 Broker 宿主执行，push 额外预检审批，越界命令经 run_with_permissions adapter 审批后也在宿主执行。
+ * 3. execute 先通过 parseToolArguments 校验当前工具参数。统一的精确编辑和显式新建文件均分流给共享读取哈希的 FileEditor，已有文件成功编辑后会作废对应哈希；Git CLI 与其他命令共用执行路径，越界命令经 run_with_permissions adapter 审批后在宿主执行。
  *    run_command 与 run_with_permissions 均不按 Git 关键词过滤；后者仍先完成 Broker 审批准备，再通知执行开始并消费授权。
  *    Skill 通过 skillExecute 读取 Broker 固定目录，不在 Runtime 扫描宿主文件或执行脚本。
  *    MCP 先经 prepareMcp 在 Broker 审批，再取得执行槽消费单次授权；ToolRunner 从不读取 MCP 配置或创建连接。
@@ -30,10 +30,8 @@ import type { Approval } from "../shared/types.js";
 import { resolveTarget, regularFile, sensitive, inside } from "./paths.js";
 import type { ReviewTool, ToolReview } from "./long-tool-monitor.js";
 import { executeProcess, executeProcessFileBacked } from "./process.js";
-import { commandShell, resolveExecutablePath } from "./command-shell.js";
+import { commandShell } from "./command-shell.js";
 import { FileEditor } from "./file-editor.js";
-import { GitToolRunner, type GitRequest } from "./git.js";
-import type { GitProcessResult, GitToolResult } from "./git.js";
 import {
   processReadFile,
   type ReadFileTrace,
@@ -95,17 +93,6 @@ export interface ToolContext {
     signal: AbortSignal,
     toolCallId?: string,
   ) => Promise<() => Promise<McpResult>>;
-  /** Runtime 只提交一次 push 请求；Broker 完成 Git 预检、审批和宿主执行。 */
-  gitPush?: (
-    signal: AbortSignal,
-    toolCallId?: string,
-  ) => Promise<GitProcessResult>;
-  /** Agent Runtime 的全部 Git action 通过已认证 IPC 交给 Broker 宿主执行。 */
-  gitExecute?: (
-    request: GitRequest,
-    signal: AbortSignal,
-    toolCallId?: string,
-  ) => Promise<GitToolResult>;
   /** Runtime 只提交命令和理由；Broker 审批后返回取得执行槽才可消费的一次性宿主执行授权。 */
   prepareRunWithPermissions?: (
     request: CapabilityCommandRequest,
@@ -131,7 +118,6 @@ interface ToolRunnerState {
 export class ToolRunner {
   private readHashes: Map<string, string>;
   private review?: ToolReview;
-  private git: GitToolRunner;
   private editor: FileEditor;
   private sandbox: SandboxBroker;
 
@@ -143,67 +129,6 @@ export class ToolRunner {
   ) {
     this.readHashes = state.readHashes;
     this.sandbox = ctx.sandbox ?? new SandboxBroker(sandboxConfiguration());
-    this.git = new GitToolRunner(
-      ctx,
-      (args, cwd, signal, timeoutMs, outputLimit, onOutput) =>
-        this.executeProcessWithSandbox({
-          command: this.resolveExecutable("git"),
-          args,
-          cwd,
-          signal,
-          timeoutMs,
-          outputLimit,
-          onOutput,
-          environment: {
-            GIT_TERMINAL_PROMPT: "0",
-            GIT_PAGER: "cat",
-            PAGER: "cat",
-            GIT_EDITOR: "true",
-          },
-        }).then((result) => ({
-          output: result.output,
-          exitCode: result.exitCode,
-          truncated: result.truncated,
-        })),
-      async (spec, args, cwd, signal, timeoutMs, outputLimit, onOutput) => {
-        if (this.sandbox.statusFor(this.ctx.taskId).requested) {
-          const allowed = await this.ctx.approvals.request(
-            {
-              sessionId: this.ctx.sessionId,
-              taskId: this.ctx.taskId,
-              tool: "git_push",
-              description: `允许单次 HTTPS push 到 ${spec.host}，目标 ${spec.refspec}，当前对象 ${spec.objectId.slice(0, 12)}。该主机可接收仓库内容，Git 配置、hook 及其子进程会在本次网络窗口内运行。`,
-            },
-            signal,
-          );
-          if (!allowed) {
-            throw new Error("Sandbox Git push 审批未通过。 ");
-          }
-        }
-
-        return this.executeProcessWithSandbox({
-          command: this.resolveExecutable("git"),
-          args,
-          cwd,
-          signal,
-          timeoutMs,
-          outputLimit,
-          onOutput,
-          executionKind: "push-runner",
-          networkHost: spec.host,
-          environment: {
-            GIT_TERMINAL_PROMPT: "0",
-            GIT_PAGER: "cat",
-            PAGER: "cat",
-            GIT_EDITOR: "true",
-          },
-        }).then((result) => ({
-          output: result.output,
-          exitCode: result.exitCode,
-          truncated: result.truncated,
-        }));
-      },
-    );
     this.editor = new FileEditor({
       root: ctx.root,
       signal: ctx.signal,
@@ -220,8 +145,6 @@ export class ToolRunner {
   forCall(callId: string) {
     const parentSkillExecute = this.ctx.skillExecute;
     const parentPrepareMcp = this.ctx.prepareMcp;
-    const parentGitPush = this.ctx.gitPush;
-    const parentGitExecute = this.ctx.gitExecute;
     const parentPrepareRunWithPermissions = this.ctx.prepareRunWithPermissions;
 
     return new ToolRunner(
@@ -234,12 +157,6 @@ export class ToolRunner {
           : undefined,
         prepareMcp: parentPrepareMcp
           ? (request, signal) => parentPrepareMcp(request, signal, callId)
-          : undefined,
-        gitPush: parentGitPush
-          ? (signal) => parentGitPush(signal, callId)
-          : undefined,
-        gitExecute: parentGitExecute
-          ? (request, signal) => parentGitExecute(request, signal, callId)
           : undefined,
         prepareRunWithPermissions: parentPrepareRunWithPermissions
           ? (request, signal) =>
@@ -288,12 +205,7 @@ export class ToolRunner {
     return "sandbox-runtime";
   }
 
-  /** Windows 原生 Runtime 不能依赖宿主 PATH 搜索；只把 Broker 已解析的真实程序路径交给 supervisor。 */
-  private resolveExecutable(command: string) {
-    return resolveExecutablePath(command);
-  }
-
-  /** run_command 与 Git 共享同一 executionInstance、fallback、取消、恢复、日志和 trace 生命周期。 */
+  /** run_command（含 Git CLI）共享同一 executionInstance、fallback、取消、恢复、日志和 trace 生命周期。 */
   private async executeProcessWithSandbox(input: {
     command: string;
     args: string[];
@@ -684,26 +596,6 @@ export class ToolRunner {
 
     if (name === "edit_files") {
       return this.editor.editMany(args.files, startExecution);
-    }
-
-    if (name === "git") {
-      if (this.ctx.executionBoundary === "agent-runtime") {
-        if (!this.ctx.gitExecute) {
-          throw new Error("Agent Runtime 未连接 Broker Git adapter。");
-        }
-
-        await startExecution();
-
-        return this.ctx.gitExecute(args, this.ctx.signal);
-      }
-
-      if (args.action === "push" && this.ctx.gitPush) {
-        await startExecution();
-
-        return this.ctx.gitPush(this.ctx.signal);
-      }
-
-      return this.git.execute(args, startExecution);
     }
 
     if (name === "run_with_permissions") {

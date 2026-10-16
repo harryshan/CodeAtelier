@@ -8,7 +8,7 @@
  * 4. 取消/服务关闭等待 Runtime 写回可信终态后才关闭 transport；关闭保存 interrupted，用户取消保存 cancelled，无法证明清理时仍保持 unknown/failed。
  * 5. run_with_permissions 经低成本模型审批后由 Broker 宿主进程执行，单独记录 host-process，而不创建 Capability Runner；结构化 trace 不含宿主命令参数（避免 Windows JSON 转义导致假阴性）；stdout/stderr 在结果前按调用 ID 持久化，拒绝时无输出。
  * 6. Runtime IPC 在可信终态前断开时，Engine 以 unknown 关闭 launcher 并持久化可能副作用。
- * 7. Broker 宿主 Git 处理普通 action 的结果形状和写入归因；push 先做固定预检、审批，已启动后取消仍记录可能的远端副作用。
+ * 7. Git CLI 经通用 Broker 命令审批执行，status/add/commit 使用平面结果和 broker-command 归因；push 命令启动后取消仍记录可能副作用，不自动重放。
  * 8. launcher 证明 Runtime 尚未启动且 provision 已回滚时，Engine 明确记录 host fallback 并继续宿主 loop。
  */
 
@@ -809,7 +809,7 @@ it("records unknown when Runtime IPC closes before a trusted terminal result", a
   }
 });
 
-it("keeps a cancelled Broker Git push out of the Sandbox Runner", async () => {
+it("keeps a cancelled Git CLI push on the reviewed Broker command path", async () => {
   const root = await temp();
   await runFile("git", ["init", "-b", "main"], { cwd: root });
   await runFile("git", ["config", "user.name", "Broker Test"], { cwd: root });
@@ -862,7 +862,7 @@ it("keeps a cancelled Broker Git push out of the Sandbox Runner", async () => {
     if (
       approved &&
       type === "execution_instance" &&
-      data.kind === "broker-git-push" &&
+      data.kind === "broker-command" &&
       data.state === "running"
     ) {
       controller.abort(new Error("cancel push"));
@@ -871,22 +871,26 @@ it("keeps a cancelled Broker Git push out of the Sandbox Runner", async () => {
 
   try {
     await expect(
-      (engine as any).executeBrokerGit(
-        task,
-        root,
-        { action: "push" },
-        "push-call",
-        controller.signal,
-        config.settings,
-        emit,
-      ),
+      (engine as any)
+        .prepareRuntimeCapabilityCommand(
+          task,
+          root,
+          { command: "git push origin HEAD", reason: "验证获批宿主命令取消。" },
+          "push-call",
+          controller.signal,
+          config.settings,
+          emit,
+        )
+        .then((execute: (signal: AbortSignal) => Promise<unknown>) =>
+          execute(controller.signal),
+        ),
     ).rejects.toThrow("任务已取消");
 
     expect(execute).not.toHaveBeenCalled();
     expect(events).toContainEqual({
       type: "execution_instance",
       data: expect.objectContaining({
-        kind: "broker-git-push",
+        kind: "broker-command",
         mode: "host-process",
         state: "cancelled",
         sideEffectsPossible: true,
@@ -898,7 +902,7 @@ it("keeps a cancelled Broker Git push out of the Sandbox Runner", async () => {
   }
 });
 
-it("runs ordinary Runtime Git through the Broker host process", async () => {
+it("runs Git CLI status through reviewed Broker commands", async () => {
   const root = await temp();
   await runFile("git", ["init", "-b", "main"], { cwd: root });
   const config = new Config(await temp());
@@ -913,16 +917,26 @@ it("runs ordinary Runtime Git through the Broker host process", async () => {
   }));
   const events: Array<{ type: string; data: any }> = [];
   const sandboxCommand = vi.spyOn(engine.sandbox, "executeCommand");
+  const approval = vi
+    .spyOn(engine.approvals, "request")
+    .mockResolvedValue(true);
 
   try {
-    const result = await (engine as any).executeBrokerGit(
+    const signal = new AbortController().signal;
+    const execute = await (engine as any).prepareRuntimeCapabilityCommand(
       task,
       root,
-      { action: "status" },
+      { command: "git status --short --branch", reason: "读取宿主仓库状态。" },
       "status-call",
-      new AbortController().signal,
+      signal,
       config.settings,
       (type: string, data: any) => events.push({ type, data }),
+    );
+    expect(events).toEqual([]);
+    const result = await execute(signal);
+    expect(approval).toHaveBeenCalledWith(
+      expect.objectContaining({ tool: "run_with_permissions" }),
+      signal,
     );
     expect(result).toMatchObject({ exitCode: 0 });
     expect(result.output).toContain("main");
@@ -931,7 +945,7 @@ it("runs ordinary Runtime Git through the Broker host process", async () => {
       type: "execution_instance",
       data: expect.objectContaining({
         toolCallId: "status-call",
-        kind: "broker-git",
+        kind: "broker-command",
         mode: "host-process",
         state: "completed",
         sandboxApplied: false,
@@ -944,7 +958,7 @@ it("runs ordinary Runtime Git through the Broker host process", async () => {
   }
 });
 
-it("preserves Broker Git add and commit results and write attribution", async () => {
+it("preserves Git CLI writes and attributes them to reviewed Broker commands", async () => {
   const root = await temp();
   await runFile("git", ["init", "-b", "main"], { cwd: root });
   await runFile("git", ["config", "user.name", "Sandbox Test"], { cwd: root });
@@ -963,45 +977,44 @@ it("preserves Broker Git add and commit results and write attribution", async ()
     },
   }));
   const events: Array<{ type: string; data: any }> = [];
+  const approval = vi
+    .spyOn(engine.approvals, "request")
+    .mockResolvedValue(true);
 
   try {
-    const executeGit = (request: unknown, callId: string) =>
-      (engine as any).executeBrokerGit(
+    const signal = new AbortController().signal;
+    const executeGit = async (command: string, callId: string) => {
+      const execute = await (engine as any).prepareRuntimeCapabilityCommand(
         task,
         root,
-        request,
+        { command, reason: "验证临时仓库的宿主 Git CLI。" },
         callId,
-        new AbortController().signal,
+        signal,
         config.settings,
         (type: string, data: any) => events.push({ type, data }),
       );
-    const added = await executeGit(
-      { action: "add", paths: ["change.txt"] },
-      "add-call",
-    );
-    expect(added).toMatchObject({
-      paths: ["change.txt"],
-      add: { exitCode: 0 },
-    });
+
+      return execute(signal);
+    };
+
+    const added = await executeGit("git add -- change.txt", "add-call");
+    expect(added).toMatchObject({ exitCode: 0 });
     const committed = await executeGit(
-      {
-        action: "commit",
-        message: "Record reviewed change",
-        paths: ["change.txt"],
-      },
+      'git -c commit.gpgSign=false -c core.hooksPath=disabled-hooks commit -m "Record reviewed change"',
       "commit-call",
     );
-    expect(committed).toMatchObject({
-      paths: ["change.txt"],
-      stage: { exitCode: 0 },
-      commit: { exitCode: 0 },
+    expect(committed).toMatchObject({ exitCode: 0 });
+    const log = await runFile("git", ["log", "-1", "--format=%s"], {
+      cwd: root,
     });
+    expect(log.stdout.trim()).toBe("Record reviewed change");
+    expect(approval).toHaveBeenCalledTimes(2);
     for (const callId of ["add-call", "commit-call"]) {
       expect(events).toContainEqual({
         type: "execution_instance",
         data: expect.objectContaining({
           toolCallId: callId,
-          kind: "broker-git",
+          kind: "broker-command",
           mode: "host-process",
           state: "completed",
           sideEffectsPossible: true,

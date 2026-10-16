@@ -5,7 +5,7 @@
  * 3. 已发布视图保持不变；追加期间旧正文不可重读，空增量复用视图。
  * 4. 替换与跨会话数据检查保证恢复和切换不会混合事件；旧页前插保留实时游标、去重及全部已加载事件。
  * 5. 终态任务统一折叠过程，活动任务保持展开，状态独立更新及历史重建保持一致且不丢中断提示。
- * 6. Broker 宿主命令输出按任务/调用归属聚合，覆盖交错输出、终态、旧无 ID 事件和历史重建。
+ * 6. Broker 宿主命令输出按任务/调用归属聚合，覆盖交错输出、终态、旧无 ID 事件和历史重建；退役 Git 记录继续聚合且不丢嵌套结果。
  */
 
 import { expect, it } from "vitest";
@@ -171,6 +171,37 @@ it("associates interleaved Broker command output and results with their calls", 
   );
   expect(finished.timeline.entries).toHaveLength(3);
   expect(live.timeline.outputEvents.cards.get(2)?.result).toBeUndefined();
+  expect(new SessionViewModel("s").update(snapshot(events)).timeline).toEqual(
+    finished.timeline,
+  );
+});
+
+it("reads retired Git output and nested commit results without an execution interface", () => {
+  const result = {
+    paths: ["change.txt"],
+    stage: { exitCode: 0 },
+    commit: { output: "saved commit\n", exitCode: 0 },
+  };
+  const events = [
+    event(1, "tool_start", {
+      name: "git",
+      callId: "old-git",
+      arguments: { request: { action: "commit" } },
+    }),
+    event(2, "git_output", { callId: "old-git", text: "saved commit\n" }),
+    event(3, "tool_result", { name: "git", callId: "old-git", result }),
+  ];
+  const model = new SessionViewModel("s");
+  const first = model.update(snapshot(events.slice(0, 2)));
+  const finished = model.update(snapshot(events.slice(2)));
+
+  expect(first.timeline.outputEvents.cards.get(1)?.output).toBe(
+    "saved commit\n",
+  );
+  expect(finished.timeline.outputEvents.cards.get(1)).toEqual({
+    output: "saved commit\n",
+    result: events[2],
+  });
   expect(new SessionViewModel("s").update(snapshot(events)).timeline).toEqual(
     finished.timeline,
   );

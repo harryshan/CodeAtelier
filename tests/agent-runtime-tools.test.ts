@@ -1,10 +1,10 @@
 /**
  * 验证 ToolRunner 位于 Agent Runtime 时直接在既有 restricted token/Job 中创建工具进程，且不再嵌套调用逐工具 SandboxBroker。
- * 这里只验证 TypeScript 分流，不替代 Windows token/Job 或 Broker 宿主 Git 夹具。
+ * 这里只验证 TypeScript 分流，不替代 Windows token/Job 或安装态 Git CLI 兼容性验证。
  *
  * 1. 普通 run_command 在既有 Runtime 权限内不再审批，不过滤 Git 命令或普通文本，使用本进程 shell 并发布 sandboxed_tool_process PID。
  * 2. 扩展权限调用不按 Git 关键词过滤，先由 adapter 审批准备，取得执行槽后才消费结果；夹具验证命令/理由/callId 原样传递、返回值与阶段顺序，拒绝或缺少 Runtime 身份/adapter 时不执行。
- *    Git push 在 Runtime 内不运行 Git 预检，只把调用 ID 交给 Broker。
+ *    旧 Git 工具入口拒绝执行，不自动转译成命令或转交 Broker。
  * 3. 注入的旧 SandboxBroker 若被调用会使测试失败，防止迁移后继续每条命令启动 supervisor。
  */
 
@@ -190,49 +190,30 @@ it.each(["host-process", "missing-adapter"])(
   },
 );
 
-it("routes every Git action to Broker without spawning a Runtime Git process", async () => {
-  const root = await temp();
-  const config = new Config(await temp());
-  const executeCommand = vi.fn(() => {
-    throw new Error("不应嵌套调用 SandboxBroker");
-  });
-  const gitExecute = vi.fn(async () => ({
-    output: "push-complete",
-    exitCode: 0,
-    truncated: false,
-  }));
-  const events: Array<{ type: string; data: any }> = [];
-  const runner = createTestRunner({
-    root,
-    sessionId: "session-1",
-    taskId: "task-1",
-    signal: new AbortController().signal,
-    settings: config.settings,
-    approvals: { request: async () => true },
-    sandbox: { executeCommand } as never,
-    executionBoundary: "agent-runtime",
-    gitExecute,
-    emit: (type, data) => events.push({ type, data }),
-  });
+it.each(["broker-host", "agent-runtime"] as const)(
+  "rejects the retired Git tool before starting in %s",
+  async (executionBoundary) => {
+    const config = new Config(await temp());
+    const start = vi.fn(async () => {});
+    const emit = vi.fn();
+    const prepareRunWithPermissions = vi.fn();
+    const runner = createTestRunner({
+      root: await temp(),
+      sessionId: "session-1",
+      taskId: "task-1",
+      signal: new AbortController().signal,
+      settings: config.settings,
+      approvals: { request: async () => true },
+      executionBoundary,
+      prepareRunWithPermissions,
+      emit,
+    });
 
-  await expect(
-    runner.forCall("push-call").execute("git", { request: { action: "push" } }),
-  ).resolves.toMatchObject({ output: "push-complete", exitCode: 0 });
-  await expect(
-    runner
-      .forCall("status-call")
-      .execute("git", { request: { action: "status" } }),
-  ).resolves.toMatchObject({ exitCode: 0 });
-  expect(gitExecute).toHaveBeenCalledWith(
-    { action: "push" },
-    expect.any(AbortSignal),
-    "push-call",
-  );
-  expect(gitExecute).toHaveBeenCalledWith(
-    { action: "status" },
-    expect.any(AbortSignal),
-    "status-call",
-  );
-  expect(executeCommand).not.toHaveBeenCalled();
-  expect(events.filter((event) => event.type === "git_output")).toEqual([]);
-});
+    await expect(
+      runner.execute("git", { request: { action: "push" } }, start),
+    ).rejects.toThrow("未知工具");
+    expect(start).not.toHaveBeenCalled();
+    expect(prepareRunWithPermissions).not.toHaveBeenCalled();
+    expect(emit).not.toHaveBeenCalled();
+  },
+);

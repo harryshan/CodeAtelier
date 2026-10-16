@@ -3,7 +3,7 @@
  * Engine 和 AgentRuntimeService 调用本模块；这里只解析数据，不执行工具或持久化事件。
  *
  * 1. ModelToolCall 描述计划所需的模型字段，buildModelToolGraph 复用工具及历史读取参数校验，按任务开关验证 subagent 协调调用，再交给 createToolGraph 验证依赖。
- * 2. exclusivePush 仅由 Runtime 入口启用，保留 Git push 审批与执行必须独占批次的规则，不改变宿主路径。
+ * 2. Git CLI 与其他命令一样只按显式 DAG 依赖调度，不识别命令文本或提供 push 专属独占。
  * 3. toolSucceeded 同时检查工具错误、平面及 Git 写入嵌套退出码和多文件 failed/unknown，供 DAG、日志和 tracing 使用同一结论。
  */
 
@@ -26,7 +26,7 @@ export interface ModelToolCall {
 
 export function buildModelToolGraph(
   calls: ModelToolCall[],
-  options: { exclusivePush: boolean; subagentsEnabled?: boolean },
+  options: { subagentsEnabled?: boolean } = {},
 ) {
   const nodes = calls.map((call, ordinal) => {
     const raw = JSON.parse(call.arguments);
@@ -50,17 +50,6 @@ export function buildModelToolGraph(
       ordinal,
     };
   });
-  if (options.exclusivePush) {
-    const containsPush = nodes.some(
-      (node) =>
-        node.name === "git" &&
-        ((node.arguments as any).action === "push" ||
-          (node.arguments as any).request?.action === "push"),
-    );
-    if (containsPush && nodes.length !== 1) {
-      throw new Error("Git push 必须是当前工具批次的唯一调用。");
-    }
-  }
 
   return createToolGraph(nodes);
 }

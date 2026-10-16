@@ -24,7 +24,7 @@ pnpm start
 - 工作区直接可写，包括 `.git`、`.env`；不提供回滚。Node 安装前缀和显式只读根可读，MXC 自身还提供系统运行基线，不能宣称工作区外完全不可见。
 - 不继承宿主环境，PATH 只包含固定 Node 路径和系统命令目录。模型、Store、审批、项目记忆等留在 Broker。
 - 使用真实路径检查，拒绝授权根与 Broker 数据或实例私有根交叉，以及可写根覆盖固定 Node。Broker 数据不应位于工作区、额外授权根或 Node 安装前缀中。不要把整个 HOME、`/tmp` 或 `/` 授权给 Runtime。
-- 默认请求双向断网和宿主 loopback 禁止，不提供 Runtime 直接联网的 allow-host 配置。Git/MCP 和审批通过的 `run_with_permissions` 仍在 Broker 宿主执行，使用宿主文件、网络和凭据，**不受 Sandbox 限制**。
+- 默认请求双向断网和宿主 loopback 禁止，不提供 Runtime 直接联网的 allow-host 配置。Git CLI 使用普通命令路径，需宿主能力时显式申请 `run_with_permissions`，不隐式转发。MCP 和获批宿主命令使用宿主文件、网络和凭据，**不受 Sandbox 限制**。专用 Git operation 已在 IPC v17 移除，POSIX Runtime 随应用重建；本轮未实机复验 Linux/macOS CLI。
 - 可写目录里的既有硬链接、文件系统 UNIX socket、可变符号链接及同宿主用户进程仍需按平台理解；断网不等于阻止 AF_UNIX。Linux `deniedPaths` 的空 tmpfs 遮蔽不代表影子目录不可写。macOS 不具有 Linux namespace 的相同语义，不能继承其隔离结论。
 - 固定 bundle、依赖及 Node 安装目录必须可信且不由被测项目维护。此版本不承诺抵御恶意同 UID 宿主程序、完整任务间隔离、磁盘/CPU 配额或全部平台安全矩阵。
 

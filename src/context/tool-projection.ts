@@ -3,7 +3,7 @@
  * ContextManager 在文件归档后调用 projectToolResults，再统一验收收益、保存完整快照。
  *
  * 1. shrinkResult 对旧会话的 search 记录只去掉命中正文；list_files 留首尾目录条目，
- *    run_command 和只读 Git 输出留诊断摘录，旧写入结果只缩短 diff。它们均不属于当前工具定义。
+ *    run_command 和旧只读 Git 输出留诊断摘录，旧写入结果只缩短 diff；除 run_command 外这些入口均已退役，不因归档而重新执行。
  * 2. shrinkDiff 仅改字符串 diff；批次 files 的路径、状态、错误以及未知字段原样保留。
  * 3. projectToolResults 核对持久化来源、跳过未知格式/已有投影，用指纹标记被省略字段。
  *

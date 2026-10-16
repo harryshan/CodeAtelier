@@ -503,7 +503,7 @@ export default function App() {
               className={s.sandboxBadge}
               title={
                 sandbox?.mode === "sandboxed"
-                  ? "Agent Runtime 使用专用账户；已有 Everyone 可写 ACL 可能允许它写入实例根以外的对象。Git 工具及获批的 run_with_permissions 命令由 Broker 以宿主用户权限执行，Git push 还需逐次审批。"
+                  ? "Agent Runtime 使用专用账户；已有 Everyone 可写 ACL 可能允许它写入实例根以外的对象。Git CLI 与其他命令使用相同权限规则；获批的 run_with_permissions 命令由 Broker 以宿主用户权限执行，不受 Sandbox 附加文件、网络或凭据限制。"
                   : sandbox?.reason
               }
               aria-label={`Runtime 隔离状态：${sandbox?.mode ?? "unknown"}`}

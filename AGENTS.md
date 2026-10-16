@@ -6,12 +6,12 @@
 
 - 项目正式名称为 **CodeAtelier**，保持此拼写与大小写。
 - 创建用户自己的 coding agent，主要实现语言为 **TypeScript**。
-- 使用 GitHub 管理项目，开发本项目时生成合理、有意义的 Git commit；产品提供单一、参数受限的 `git` 工具，agent 可主动自动执行允许的 Git 操作，具体范围见 docs/requirements.md 与 docs/development.md。
+- 使用 GitHub 管理项目，开发本项目时生成合理、有意义的 Git commit；产品已移除专用 `git` 工具，Git CLI 通过通用命令工具按现有权限执行（D155），具体范围见 docs/requirements.md 与 docs/development.md。
 - 不使用现代 agent 框架，核心能力尽量从零实现。
 - 保持清晰的目录、模块与代码文件结构。
 - 保持完善且与开发同步更新的文档。
 - **初版功能边界已确认**，以 docs/requirements.md 第 2、5 节为范围与验收依据；用户已授权开始实现；当前按 Node.js 24/26、React/Vite、Fastify、SQLite、Pino 技术方案开发。
-- 第一版使用 Web UI 作为用户交互界面，支持 Windows、macOS 和 Linux，优先完成读代码、修改与验证闭环。Windows Sandbox 使用单一专用低权限本地账户、per-instance restricted token/Job/capability、显式文件 ACL 与按账户 SID 的 WFP；全部 Git 工具 action 在 Broker 中以宿主用户权限执行，push 仍逐次审批。Sandbox 模式沿用 1～4 个不同工作区并发和同工作区串行。
+- 第一版使用 Web UI 作为用户交互界面，支持 Windows、macOS 和 Linux，优先完成读代码、修改与验证闭环。Windows Sandbox 使用单一专用低权限本地账户、per-instance restricted token/Job/capability、显式文件 ACL 与按账户 SID 的 WFP；Git CLI 与普通命令同路；需要宿主文件、网络或凭据时显式使用获批的 `run_with_permissions`，不隐式转发。Sandbox 模式沿用 1～4 个不同工作区并发和同工作区串行。
 
   Windows 专用账户 Runtime 已接入 C++ Supervisor launcher、任务专属 Named Pipe 字节代理和 PID/创建时间/Job/token/capability/映像联合检查。2026-10-03 用户确认持续使用一段时间功能正常，Windows Sandbox 按实际使用验证通过、可用于日常开发记录，不再笼统描述为尚不可用的预览。默认关闭及显式安装规则不变；该结论不扩展为跨平台实现、完整安全矩阵通过或 subagent 已开放。来源与专项证据边界见 docs/verification.md、D130。
 
@@ -31,15 +31,15 @@
 
 ### Windows Sandbox 开发边界
 
-Windows 专用用户 Runtime、独立 C++ supervisor 与 Broker 是当前 Windows Sandbox 架构：一次性提升安装创建 `CodeAtelierSandbox` 账户及按其 SID 的持久 WFP fence；每次任务向该账户投影工作区和显式 read/write roots，并用 `WRITE_RESTRICTED` token、根 capability、Job、desktop 与 IPC 限制目标写入和能力。Git 工具已经移到 Broker；旧 Git config graph、relay 与 Runner 代码保留但不作为现行产品边界。
+Windows 专用用户 Runtime、独立 C++ supervisor 与 Broker 是当前 Windows Sandbox 架构：一次性提升安装创建 `CodeAtelierSandbox` 账户及按其 SID 的持久 WFP fence；每次任务向该账户投影工作区和显式 read/write roots，并用 `WRITE_RESTRICTED` token、根 capability、Job、desktop 与 IPC 限制目标写入和能力。专用 Git 工具及其 IPC 已移除；旧 Git config graph、relay 与 Runner 代码保留但不作为现行产品边界。
 
 Sandbox 沿用 1～4 个不同工作区并发、同工作区串行；同账户实例会形成活动授权根的读取并集，不提供任务间 OS 级读取、进程或对象隔离。受限 token 的 restricting SID 包含 `Everyone` 以兼容 Windows 系统组件；已有 ACL 授予 Everyone 写入的对象可绕过本实例 root capability，因此不能保证实例之间或实例之外的完整文件写入隔离。不同对话不是彼此的安全边界；同账户 peer 也可能终止、注入或检查其它 Runtime。
 
-专用账户不继承宿主用户私有权限，`Everyone`/`Authenticated Users` 等既有 ACL 也可能允许额外读取，不能宣称纯读取 allowlist。工作区内不额外保护 `.git`/`.env`；所有 Git 工具 action 由 Broker 执行，Runtime 不启动 Git 子进程。
+专用账户不继承宿主用户私有权限，`Everyone`/`Authenticated Users` 等既有 ACL 也可能允许额外读取，不能宣称纯读取 allowlist。工作区内不额外保护 `.git`/`.env`；Runtime 可按普通命令启动 Git CLI，但 Windows 安装态兼容性尚未重新验证；已有 NUL/所有权限制不能用宿主测试掩盖。
 
 Agent Runtime 已有权限内的工具不再审批；越界命令通过 `run_with_permissions` 提交完整命令和理由，由 Broker 沿用低成本模型的 `approve | human review | reject` 审批。审批通过后由 Broker 以宿主进程用户权限执行，不施加额外文件根或网络 host 限制；结果必须明确标为 `broker-command`/`host-process`，不能称为受 Sandbox 保护。Capability Runner 代码保留但暂不用于产品路径。
 
-普通 Runtime 默认无直接命令网络；获批 Broker 宿主命令使用宿主网络与凭据权限，不受专用账户 WFP fence 约束。全部 Git 工具 action 经认证 IPC 交给 Broker；普通 action 按既有固定参数契约执行并记录为 `broker-git/host-process`，push 仍由 Broker 预检并逐次审批，记录为 `broker-git-push/host-process`。两者均不受 Sandbox 文件、网络或凭据限制。Push Runner 代码保留但暂停使用。Push 必须独占工具批次；Broker 宿主命令只阻塞自己的 DAG 节点，无依赖节点可并行。
+普通 Runtime 默认无直接命令网络；获批 Broker 宿主命令使用宿主网络与凭据权限，不受专用账户 WFP fence 约束。Git CLI 不另做 action、路径、revision、upstream/OID/ref 或敏感模板校验，不自动禁用 hooks、签名或 helper；push 没有专属审批或独占批次，按通用命令权限及显式 DAG 依赖执行。同仓库写操作应串行并先核对状态及推送目标；未知结果禁止盲目重放。获批宿主 Git 命令记为 `broker-command/host-process`。旧 Git execution kind 仅供历史兼容；Push Runner 代码保留但暂停使用。
 
 启动前自检或尚未创建 Runtime 的 provision 失败时，在明确提示“本任务未受 Sandbox 保护”、记录原因并将 executionInstance 标为 `host-process` 后自动回退宿主执行；独立 Runner 不允许宿主 fallback。命令已经启动、结果未知或清理无法证明完成时不得自动重放，仍须隔离账户 generation、停止新 Sandbox 任务并排空活动实例。
 
@@ -95,7 +95,7 @@ Agent Runtime 已有权限内的工具不再审批；越界命令通过 `run_wit
 - 不提交密钥、访问令牌、真实 `.env`、含敏感信息的会话或日志。
 - 不覆盖或撤销用户已有改动，不擅自改写已共享的历史。
 - 用户已授权通过已登录的 GitHub CLI 新建私有仓库 `harryshan/CodeAtelier`，初始化当前目录并提交、上传当前文件；初始分支使用 `main`。
-- 文档修改围绕完整目的组织，不为凑提交拆分。产品单一 Git 工具不改变本项目开发时的提交和推送工作流；后续分支、PR 与发布流程仍待确定。
+- 文档修改围绕完整目的组织，不为凑提交拆分。产品改用 Git CLI 不改变本项目开发时的提交和推送工作流；开发 agent 仍遵守其所在应用实际提供的工具和权限规则；后续分支、PR 与发布流程仍待确定。
 
 ## 文档与验证
 

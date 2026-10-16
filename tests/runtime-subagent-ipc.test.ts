@@ -52,11 +52,6 @@ it("rejects forged subagent requests and retains leases until the instance is cl
     gateway,
     {
       requestApproval: async () => ({ approved: false }),
-      executeGitPush: async () => ({
-        output: "",
-        exitCode: 1,
-        truncated: false,
-      }),
       prepareCapabilityCommand: async () => async () => {
         throw new Error("not available");
       },

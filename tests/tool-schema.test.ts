@@ -5,7 +5,7 @@
  * 1. 检查根节点为 object、禁止 oneOf，再递归遍历工具定义及数组项，核对 strict 对象的属性均为必填且禁止额外属性。
  * 2. 检查每个新调用的 execution/arguments 调度信封，及唯一 edit_files 工具的 create 分支、带版本和行范围的已有文件补丁、可见空白读取和 run_command 的单一 command 字符串。
  * 3. 检查 memory_apply 仅接受逐条版本参数、create 无版本条件并仅允许单独按 ID 读取，不注册额外读取工具。
- * 4. 检查 run_with_permissions 只请求命令和理由、不伪装成受限根/host 授权；再检查单一 git 工具及内置网页搜索契约。
+ * 4. 检查 run_with_permissions 只请求命令和理由、不伪装成受限根/host 授权；验证旧 git 工具不再声明或接受执行，保留内置网页搜索契约。
  */
 
 import { expect, it } from "vitest";
@@ -292,42 +292,35 @@ it("accepts only one direct command string for run_command", () => {
   ).toBe(false);
 });
 
-it("declares strict action-specific parameters for the single git tool", () => {
-  expect(schemas.git.safeParse({ action: "diff" }).success).toBe(false);
-  expect(schemas.git.safeParse({ action: "status" }).success).toBe(true);
+it("does not expose or execute the retired Git tool in either mode", () => {
+  expect(definitions.some((tool) => tool.name === "git")).toBe(false);
+  expect(runtimeDefinitions.some((tool) => tool.name === "git")).toBe(false);
+
+  for (const request of [{ action: "status" }, { action: "push" }]) {
+    expect(() => parseToolArguments("git", request)).toThrow("未知工具");
+    expect(() => parseToolArguments("git", { request })).toThrow("未知工具");
+    expect(() =>
+      parseScheduledToolArguments(
+        "git",
+        {
+          execution: { id: "old-git", dependsOn: [] },
+          arguments: { request },
+        },
+        "fallback",
+      ),
+    ).toThrow("未知工具");
+  }
+
+  expect(schemas.run_command.parse({ command: "git status --short" })).toEqual({
+    command: "git status --short",
+  });
   expect(
-    schemas.git.safeParse({ action: "status", staged: false }).success,
-  ).toBe(false);
-  expect(
-    schemas.git.parse({
-      action: "diff",
-      staged: false,
-      paths: [],
-      contextLines: 0,
+    schemas.run_with_permissions.parse({
+      command: "git push origin HEAD",
+      reason: "需要宿主网络和凭据。",
     }),
-  ).toEqual({ action: "diff", staged: false, paths: [], contextLines: 0 });
-  expect(
-    schemas.git.safeParse({ action: "show", revision: "HEAD", paths: [] })
-      .success,
-  ).toBe(false);
-});
-
-it("normalizes wrapped Git actions while rejecting extra or invalid fields", () => {
-  for (const request of [
-    { action: "status" },
-    { action: "diff", staged: false, paths: [], contextLines: 0 },
-    { action: "commit", message: "fix", paths: ["src/app.ts"] },
-  ]) {
-    expect(parseToolArguments("git", { request })).toEqual(request);
-    expect(parseToolArguments("git", request)).toEqual(request);
-  }
-
-  for (const raw of [
-    { request: { action: "push", force: true } },
-    { request: { action: "status" }, force: true },
-    { request: { action: "commit", message: "fix", paths: [] } },
-    { request: { action: "reset" } },
-  ]) {
-    expect(() => parseToolArguments("git", raw)).toThrow();
-  }
+  ).toEqual({
+    command: "git push origin HEAD",
+    reason: "需要宿主网络和凭据。",
+  });
 });

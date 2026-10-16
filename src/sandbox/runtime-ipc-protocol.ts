@@ -3,12 +3,12 @@
  * Sandbox Supervisor/Windows transport 必须先把连接绑定到已验证的 PID、Job、token、generation、nonce 和 lease，
  * 然后才能把已认证字节流交给 RuntimeIpcPeer；测试用 stdio 只验证 framing 和跨进程路由，不构成 W3 证据。
  *
- * 1. runtimeRequestSchema 限定模型、审批、session adapter、任务绑定子状态/问题/租约、受限 Git action、Skill 名称查询/加载、MCP 两阶段请求与一次性 Broker 命令授权；start_task 携带全量有效记忆目录、Skill/MCP 公开摘要及无正文的 token 校准锚点而非连接凭据，Git push 旧入口只含调用 ID，不能扩展 Runtime 权限。
+ * 1. runtimeRequestSchema 限定模型、审批、session adapter、任务绑定子状态/问题/租约、Skill 名称查询/加载、MCP 两阶段请求与一次性 Broker 命令授权；start_task 携带全量有效记忆目录、Skill/MCP 公开摘要及无正文的 token 校准锚点而非连接凭据；Git CLI 只能通过通用命令路径执行，旧 Git IPC 请求不再接受。
  * 2. runtimeResponseSchema 关联原 requestId；错误只返回受限 code/message 与模型重试元数据，避免泄露宿主异常对象。
  * 3. runtimeEventSchema 承载模型 delta、取消、Runtime 生命周期以及固定 context/tool/read_file/subagent trace span；微秒时间戳由 Runtime 单调时钟提供，Broker 核验后归档，名称与属性不是任意日志通道。
  * 4. hello schema 绑定协议版本、任务和 instance；其中 Runtime 自报字段只用于一致性核对，不能替代 transport 身份。
  * 5. 子任务计划、问题、检查点和报告不加专属容量阈值；统一的帧大小与背压限制仍由 IPC transport 执行。
- * v16 增加 Broker 下发的网页搜索能力标志；保留工具结果原子提交与 process 阶段白名单，不传模型凭据或扩大权限。
+ * v17 移除 Git 专用请求；保留网页搜索能力标志、工具结果原子提交与 process 阶段白名单，不传模型凭据或扩大权限。
  */
 
 import { z } from "zod";
@@ -18,10 +18,9 @@ import { mcpActionSchema } from "../mcp/contracts.js";
 import { capabilityCommandRequestSchema } from "./capability-request.js";
 import { contextSnapshotSchema } from "../context/types.js";
 import { subtaskSchema } from "../agent/subagent-contracts.js";
-import { gitRequestSchema } from "../tools/registry.js";
 
-// v16 避免旧 Runtime 向不支持的协议发送 web_search；旧 Runtime 须重建并更新安装。
-export const RUNTIME_IPC_PROTOCOL_VERSION = 16;
+// v17 拒绝仍暴露 Git 专用工具的旧 Runtime；须重建并更新安装，不能静默降级协议。
+export const RUNTIME_IPC_PROTOCOL_VERSION = 17;
 export const MAX_RUNTIME_IPC_FRAME_BYTES = 8 * 1024 * 1024;
 
 const identifier = z.string().min(1).max(120);
@@ -106,60 +105,6 @@ const requestBase = {
   type: z.literal("request"),
   requestId: identifier,
 };
-
-/** 保留旧独立 Push Runner 的 PushSpec 校验形状；当前 IPC 不再接受 Runtime 自报 spec。 */
-export const runtimeGitPushSpecSchema = z
-  .object({
-    remote: z
-      .string()
-      .min(1)
-      .max(200)
-      .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/),
-    remoteUrl: z.string().url().max(32_767),
-    host: z.string().min(1).max(253),
-    refspec: z
-      .string()
-      .min(1)
-      .max(1_024)
-      .regex(/^HEAD:refs\/heads\/[A-Za-z0-9][A-Za-z0-9._/-]*$/)
-      .refine(
-        (value) =>
-          !value.includes("..") &&
-          !value.includes("//") &&
-          !value.endsWith("/"),
-      ),
-    objectId: z.string().regex(/^[a-f0-9]{40,64}$/i),
-  })
-  .strict();
-
-export const runtimeGitPushResultSchema = z
-  .object({
-    output: z.string().max(2_000_000),
-    exitCode: z.number().int().nullable(),
-    truncated: z.boolean(),
-  })
-  .strict();
-
-const runtimeGitPathsSchema = z.array(z.string().min(1).max(1024)).max(100);
-
-/** Broker Git 必须保留工具原有的 action-specific 结果形状和有界文本。 */
-export const runtimeGitResultSchema = z.union([
-  runtimeGitPushResultSchema,
-  runtimeGitPushResultSchema.extend({
-    staged: z.boolean(),
-    paths: runtimeGitPathsSchema,
-  }),
-  z
-    .object({ paths: runtimeGitPathsSchema, add: runtimeGitPushResultSchema })
-    .strict(),
-  z
-    .object({
-      paths: runtimeGitPathsSchema,
-      stage: runtimeGitPushResultSchema,
-      commit: runtimeGitPushResultSchema.nullable(),
-    })
-    .strict(),
-]);
 
 export const runtimeTaskSettingsSchema = z
   .object({
@@ -351,25 +296,6 @@ export const runtimeRequestSchema = z.discriminatedUnion("operation", [
       body: z
         .object({ toolCallId: identifier, authorizationId: identifier })
         .strict(),
-    })
-    .strict(),
-  z
-    .object({
-      ...requestBase,
-      operation: z.literal("git_execute"),
-      body: z
-        .object({
-          toolCallId: identifier,
-          request: gitRequestSchema.shape.request,
-        })
-        .strict(),
-    })
-    .strict(),
-  z
-    .object({
-      ...requestBase,
-      operation: z.literal("git_push"),
-      body: z.object({ toolCallId: identifier }).strict(),
     })
     .strict(),
   z

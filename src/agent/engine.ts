@@ -9,7 +9,7 @@
  * 4. createModelProvider 按主/辅助协议和对应密钥创建客户端；搜索定义与指令按协议能力裁剪。
  *    首条 prompt 先用辅助模型生成标题；run 再读取历史和项目规则，准备工具及上下文预算；首次压缩检查前恢复会话 token 锚点，响应保存后更新锚点，Runtime 经 Broker 共用持久化。
  * 5. model-loop 共用轮次、重试和停止控制，model-tool-batch 共用计划与成功判断；Engine 保留宿主事务、replay 与 tracing。为压缩提供 ToolRunner 的安全文件哈希探测；每轮记录上下文准备和请求计量、模型重试、实际模型请求和响应处理，再记录服务实报用量。完整响应保存后校验工具 DAG，节点先完成准备/审批，实际执行才取得有界 worker 槽。
- * 6. Windows/MXC Runtime 通过共同 launcher/IPC 接入；实例 mode 与 pidKind 保留平台真实归因。Sandbox Runtime 已有能力内工具免审批；全部 Git action 与 run_with_permissions 的获批命令均交给 Broker 宿主进程，push 额外预检和逐次审批，并分别留下未隔离的执行记录。一次性两阶段 IPC 授权把命令审批等待留在执行队列外；Push/Capability Runner 代码暂存但不走产品路径。
+ * 6. Windows/MXC Runtime 通过共同 launcher/IPC 接入；实例 mode 与 pidKind 保留平台真实归因。Sandbox Runtime 已有能力内工具免审批；run_with_permissions 的获批命令交给 Broker 宿主进程并留下未隔离的执行记录，Git CLI 使用相同命令路径。一次性两阶段 IPC 授权把命令审批等待留在执行队列外；Push/Capability Runner 代码暂存但不走产品路径。
  *    项目记忆每任务提供当前项目全部有效条目的 ID/摘要，宿主/Runtime/fallback 共用无查询参数的目录读取，正文按需获取。
  *    Skill 每任务在 Broker 扫描预设目录，模型先看到摘要、工具按需加载正文；宿主/Runtime/fallback 共用该目录且不授权脚本。
  *    MCP 在首次模型请求前提供已启用服务的公开用途摘要，不提前连接；任务级本机连接池由宿主/Runtime 共用审批后单次执行入口，收尾关闭，摘要、参数和正文不进入 trace。
@@ -113,14 +113,8 @@ import {
   type RuntimeExecutionIdentity,
 } from "../sandbox/runtime-capability-core.js";
 import { RuntimeIpcBrokerSession } from "../sandbox/runtime-ipc-broker-session.js";
-import { commandShell, resolveExecutablePath } from "../tools/command-shell.js";
+import { commandShell } from "../tools/command-shell.js";
 import { executeProcess } from "../tools/process.js";
-import {
-  GitToolRunner,
-  type GitProcessResult,
-  type GitRequest,
-  type GitToolResult,
-} from "../tools/git.js";
 import type {
   CapabilityCommandRequest,
   CapabilityCommandResult,
@@ -133,15 +127,6 @@ import type {
 
 // 标题请求没有工具或文件副作用；服务未提供可分类原因时，允许比主任务多一次诊断性重试。
 const titleRetryOptions = { retries: 3, retryUnknownErrors: true };
-
-/** 旧 push 专用入口仍需平面结果；普通 Git 的 add/commit 可返回嵌套结果。 */
-function requireGitProcessResult(result: GitToolResult): GitProcessResult {
-  if (!("output" in result)) {
-    throw new Error("Broker Git push 返回了非 push 结果。");
-  }
-
-  return result;
-}
 
 class AgentRuntimeCleanupUnknownError extends Error {
   readonly code = "SANDBOX_RUNTIME_CLEANUP_UNKNOWN";
@@ -1549,7 +1534,6 @@ export class Engine {
                         nodeId: tool!.nodeId,
                         // Broker 宿主工具在 Runtime 的片段只表示等待，不冒充受限进程中的执行。
                         execution:
-                          tool!.name === "git" ||
                           tool!.name === "run_with_permissions" ||
                           tool!.name === "mcp" ||
                           tool!.name === "skill"
@@ -1615,26 +1599,6 @@ export class Engine {
               toolCallId,
               requestSignal,
               settings.outputChars,
-            ),
-          executeGitPush: (_runtime, toolCallId, requestSignal) =>
-            this.executeBrokerGit(
-              task,
-              workspace,
-              { action: "push" },
-              toolCallId,
-              requestSignal,
-              settings,
-              emit,
-            ).then(requireGitProcessResult),
-          executeGit: (_runtime, request, toolCallId, requestSignal) =>
-            this.executeBrokerGit(
-              task,
-              workspace,
-              request,
-              toolCallId,
-              requestSignal,
-              settings,
-              emit,
             ),
           prepareCapabilityCommand: (
             _runtime,
@@ -1947,179 +1911,6 @@ export class Engine {
     }
   }
 
-  /** Runtime 只提交受限 Git action；Broker 在宿主执行，push 另做逐次审批。 */
-  private async executeBrokerGit(
-    task: Task,
-    workspace: string,
-    request: GitRequest,
-    toolCallId: string,
-    signal: AbortSignal,
-    settings: Settings,
-    emit: (type: string, data: any) => void,
-  ): Promise<GitToolResult> {
-    const executionInstanceId = randomUUID();
-    const createdAt = new Date().toISOString();
-    const gitExecutable = resolveExecutablePath("git");
-    const environment = {
-      GIT_TERMINAL_PROMPT: "0",
-      GIT_PAGER: "cat",
-      PAGER: "cat",
-      GIT_EDITOR: "true",
-    };
-    let pid: number | undefined;
-    let writeStarted = false;
-    const isWrite = ["add", "commit", "push"].includes(request.action);
-    const publish = (
-      state: ExecutionInstanceState,
-      sideEffectsPossible = false,
-    ) => {
-      const record: ExecutionInstanceRecord = {
-        executionInstanceId,
-        toolCallId,
-        kind: request.action === "push" ? "broker-git-push" : "broker-git",
-        mode: "host-process",
-        state,
-        createdAt,
-        updatedAt: new Date().toISOString(),
-        sandboxRequested: false,
-        sandboxApplied: false,
-        pid,
-        pidKind: pid === undefined ? undefined : "host-process",
-        sideEffectsPossible,
-      };
-      emit("execution_instance", record);
-      this.sandbox.recordExecutionInstance(record);
-    };
-
-    const processStarted = (startedPid: number, isWriteProcess: boolean) => {
-      pid = startedPid;
-      writeStarted ||= isWriteProcess;
-      publish("running");
-    };
-
-    publish("created");
-    const span = this.traces.startSpan(task.id, {
-      name: request.action === "push" ? "broker.git_push" : "broker.git",
-      category: "tool",
-      track: "Broker host Git",
-      attributes: { executionInstanceId, toolCallId, mode: "host-process" },
-    });
-
-    try {
-      const git = new GitToolRunner(
-        {
-          root: workspace,
-          sessionId: task.sessionId,
-          taskId: task.id,
-          signal,
-          settings,
-          emit,
-        },
-        (args, cwd, runSignal, timeoutMs, outputLimit, onOutput) =>
-          executeProcess(
-            gitExecutable,
-            args,
-            cwd,
-            runSignal,
-            timeoutMs,
-            outputLimit,
-            onOutput,
-            environment,
-            (startedPid) =>
-              processStarted(
-                startedPid,
-                isWrite && (args[0] === "add" || args.includes("commit")),
-              ),
-            undefined,
-            undefined,
-            this.processReviewer(task, settings, {
-              name: "git",
-              arguments: request,
-              callId: toolCallId,
-            }),
-          ),
-        async (
-          spec,
-          args,
-          cwd,
-          pushSignal,
-          timeoutMs,
-          outputLimit,
-          onOutput,
-        ) => {
-          const remoteUrl = new URL(spec.remoteUrl);
-          if (
-            remoteUrl.protocol !== "https:" ||
-            remoteUrl.hostname.toLocaleLowerCase() !==
-              spec.host.toLocaleLowerCase() ||
-            remoteUrl.username ||
-            remoteUrl.password
-          ) {
-            throw new Error("PushSpec 的 HTTPS remote 与获准 host 不一致。");
-          }
-
-          const allowed = await this.approvals.request(
-            {
-              sessionId: task.sessionId,
-              taskId: task.id,
-              tool: "git_push",
-              description: `允许单次 HTTPS push 到预检解析的 ${spec.remoteUrl}，目标 ${spec.refspec}，当前对象 ${spec.objectId.slice(0, 12)}。Git push 将以 Broker 宿主用户权限运行，不受 Sandbox 网络、文件或凭据限制；Git 配置、hook、helper 及其子进程也在宿主权限下运行。`,
-            },
-            pushSignal,
-          );
-          if (!allowed) {
-            throw new Error("Broker Git push 审批未通过。");
-          }
-
-          emit("notice", {
-            text: "本次 Git push 已获批准，将由 Broker 以宿主用户权限执行，不受 Sandbox 文件或网络限制。",
-          });
-          const pushArgs = [...args];
-          // 使用预检时解析的 URL，避免审批等待期间 remote 名称被改指到另一个目标。
-          pushArgs[2] = spec.remoteUrl;
-
-          return executeProcess(
-            gitExecutable,
-            pushArgs,
-            cwd,
-            pushSignal,
-            timeoutMs,
-            outputLimit,
-            onOutput,
-            environment,
-            (startedPid) => processStarted(startedPid, true),
-            undefined,
-            undefined,
-            this.processReviewer(task, settings, {
-              name: "git",
-              arguments: request,
-              callId: toolCallId,
-            }),
-          );
-        },
-      );
-      const result: GitToolResult = await git.execute(request);
-      const processResult: GitProcessResult =
-        "add" in result
-          ? result.add
-          : "stage" in result
-            ? (result.commit ?? result.stage)
-            : result;
-      const succeeded = processResult.exitCode === 0;
-      publish(succeeded ? "completed" : "failed", writeStarted);
-      this.traces.endSpan(span, succeeded ? "ok" : "error");
-
-      return result;
-    } catch (error) {
-      publish(
-        signal.aborted ? "cancelled" : writeStarted ? "unknown" : "failed",
-        writeStarted,
-      );
-      this.traces.endSpan(span, signal.aborted ? "cancelled" : "error");
-      throw error;
-    }
-  }
-
   /** Broker 先审查完整命令，再交给 Tool worker 槽中的一次性宿主执行闭包。 */
   private async prepareRuntimeCapabilityCommand(
     task: Task,
@@ -2194,7 +1985,8 @@ export class Engine {
     let pid: number | undefined;
     const publish = (
       state: ExecutionInstanceState,
-      sideEffectsPossible = false,
+      // 通用命令无法从退出码证明无写入；一旦启动，成功也可能已有副作用。
+      sideEffectsPossible = pid !== undefined,
     ) => {
       const record: ExecutionInstanceRecord = {
         executionInstanceId,
@@ -2244,10 +2036,7 @@ export class Engine {
           callId: toolCallId,
         }),
       );
-      publish(
-        result.exitCode === 0 ? "completed" : "failed",
-        result.exitCode !== 0,
-      );
+      publish(result.exitCode === 0 ? "completed" : "failed");
       this.traces.endSpan(span, result.exitCode === 0 ? "ok" : "error");
 
       return { executionInstanceId, ...result };
@@ -2464,18 +2253,6 @@ export class Engine {
 
           return () => execute(requestSignal);
         },
-        gitPush: this.config.sandbox.enabled
-          ? (pushSignal, toolCallId) =>
-              this.executeBrokerGit(
-                task,
-                session.workspace,
-                { action: "push" },
-                toolCallId ?? "unknown-git-call",
-                pushSignal,
-                settings,
-                emit,
-              ).then(requireGitProcessResult)
-          : undefined,
         memory: this.memories,
         onSandboxStage: (stage, status, executionInstanceId) => {
           this.traces.instant(
@@ -3155,7 +2932,6 @@ export class Engine {
 
           try {
             graph = buildModelToolGraph(calls, {
-              exclusivePush: false,
               subagentsEnabled: task.subagentsEnabled,
             });
           } catch (error: any) {

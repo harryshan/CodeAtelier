@@ -466,7 +466,7 @@ test("groups streamed command output and its final status in one persistent card
   ).toHaveCount(1);
 });
 
-test("groups Git output and its final status in one persistent card", async ({
+test("reviews Git CLI and groups its output and status in one persistent command card", async ({
   page,
 }) => {
   const workspace = await realpath(process.cwd());
@@ -476,11 +476,13 @@ test("groups Git output and its final status in one persistent card", async ({
   await page.getByLabel("任务描述").fill("查看 Git 输出");
   await page.getByRole("button", { name: "开始执行" }).click();
 
+  await expect(page.getByText("允许这次操作？")).toBeVisible();
+  await page.getByRole("button", { name: "允许一次" }).click();
   await expect(page.getByText("任务完成，已检查工具结果。")).toBeVisible();
   await expandTaskProcess(page);
   const gitCard = page
     .locator("details details")
-    .filter({ hasText: "Git 操作 status" });
+    .filter({ hasText: "git status --short --branch" });
 
   await expect(gitCard).toHaveCount(1);
   await expect(gitCard.getByText("退出码：0")).toBeVisible();
@@ -489,7 +491,9 @@ test("groups Git output and its final status in one persistent card", async ({
 
   await expandTaskProcess(page);
   await expect(
-    page.locator("details details").filter({ hasText: "Git 操作 status" }),
+    page
+      .locator("details details")
+      .filter({ hasText: "git status --short --branch" }),
   ).toHaveCount(1);
 });
 

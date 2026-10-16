@@ -1120,6 +1120,17 @@
 - 边界：确认的是用户当前 Windows 环境下的日常功能可用性，不推导错误身份、复杂 ACL、强制终止、异常恢复、真实远端兼容性等全部专项矩阵通过。Everyone restricting SID、同账户共享风险、Broker 宿主权限及 macOS/Linux 不加载该后端等限制不变。
 - 影响：只更新状态、使用说明和证据记录；默认关闭与安装/Repair 流程不变，不自动安装或开放 subagent。subagent 仍按自身发布门禁及专项证据单独评估。本次不改变运行时、权限、配置或 tracing，无新增运行事件。
 
+## D155：移除专用 Git 工具，统一使用 CLI
+
+- 日期：2026-10-17（本机日期）。
+- 状态：用户询问能否仅用 CLI 替代 Git 工具，在说明差异后明确要求实施。
+- 决定：移除模型声明、参数解析、GitToolRunner、Broker Git handlers 和 `git_execute` / `git_push` IPC；不检测 Git 关键词、不做隐式宿主转发。Git CLI 复用 `run_command` / `run_with_permissions`，减少重复执行和权限路径。
+- 权限变化：宿主普通命令仍审批；Runtime 已有权限内执行免审批，越界命令经现有 Broker 三级审批使用宿主权限。删除 Git 专属 action、仓库根/路径/敏感模板/revision/upstream/OID/ref 校验，不自动禁用 hooks、签名、helper、外部 diff 或 Git 交互，也不保留 push 专属审批与批次独占。替代 R24、D019/D020 及 D105/D120/D121、D137/D140 中“继续优先专用 Git 工具”的相应部分，不改写旧验证事实。
+- 调度与恢复：模型应使用非交互、限量 CLI，写前查状态、按需暂存、推送前核对目标，以显式 DAG 依赖串行化同仓库操作。旧 Git 记录仅供显示、压缩和恢复读取，不重新执行或自动转换；未知命令副作用不盲目重放。
+- 兼容：Runtime IPC 升至 v17，旧握手和旧 Git operation 拒绝；Windows 安装 bundle 需显式重建/Repair，POSIX bundle 随应用重建。本次不自动重启或更新系统安装，不迁移历史库。Windows 安装态 Git CLI 的 NUL/所有权兼容问题不宣称已修复，必要时显式申请 Broker 宿主命令。
+- 观测：使用普通工具/进程和 `broker.command` span、command_output/capability_output、callId 与实际 execution mode；无新的 Git trace 分支。Broker 命令一旦启动即保守记录可能已有副作用，成功退出也不证明无写入。旧 broker-git/broker-git-push kind 与 git_output 只保留历史读取，不写新执行记录。
+- 验证边界：临时仓库和本地 bare remote、旧入口拒绝、审批/取消、IPC、DAG、历史投影与浏览器命令卡片回归；不运行 Evaluation、不作真实远程推送或跨平台安装态保证。实际结果见 verification.md。
+
 ## D154：Windows Sandbox 常规 Repair 保留账户 SID
 
 - 日期：2026-10-17。

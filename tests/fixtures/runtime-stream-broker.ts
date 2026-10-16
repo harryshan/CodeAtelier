@@ -118,7 +118,6 @@ export function createRuntimeProbe(
     gateway,
     {
       requestApproval: async () => ({ approved: false }),
-      executeGitPush: deny,
       prepareCapabilityCommand: deny,
       applyMemory: deny,
       appendSessionEvent: async (_identity, type, data) => {

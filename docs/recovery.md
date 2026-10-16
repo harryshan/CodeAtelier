@@ -20,7 +20,7 @@ schema v11 的生产恢复、正常与兜底压缩读取完整相关事件（工
 
 专用用户 Sandbox 已接入同一产品语义：取消只终止目标 execution instance，不回滚已经发生的工作区或 Git 副作用，也不影响其它健康并发任务；确认终止和本实例 lease 清理记为 `cancelled`，无法确认进程、代理或 ACL 清理记为 `unknown`/`orphaned`。
 
-记录统一使用 `executionInstanceId`，包含 `mode: windows-sandbox-user | host-process | unknown`、可空 `pid`、`createdAt/updatedAt`、`sideEffectsPossible` 与禁止重放语义；当前 Sandbox 产品路径以 `kind: agent-runtime | broker-command | broker-git-push` 区分进程边界，Broker 宿主命令和 push 以 `host-process` 模式和 `toolCallId` 关联原工具。保留的 `capability-runner`、`push-runner` kind 暂不由产品调用；常驻 Runtime 内普通工具进程用 `parentExecutionInstanceId` 关联父 Runtime。
+记录统一使用 `executionInstanceId`，包含 `mode: windows-sandbox-user | host-process | unknown`、可空 `pid`、`createdAt/updatedAt`、`sideEffectsPossible` 与禁止重放语义；当前 Sandbox 产品路径以 `kind: agent-runtime | broker-command` 区分进程边界，Broker 宿主命令（含 Git CLI）以 `host-process` 和 `toolCallId` 关联原工具；启动后即保守标记可能已有副作用，成功退出也不代表无写入。旧 broker-git/broker-git-push、git_output 和工具结果仍可恢复读取，不能执行或自动转译旧 Git 请求（D155）。保留的 `capability-runner`、`push-runner` kind 暂不由产品调用；常驻 Runtime 内普通工具进程用 `parentExecutionInstanceId` 关联父 Runtime。
 
 正常 Broker 宿主命令和 push 的结果返回仍在同步等待的原 Agent Runtime，但恢复不能把这些进程当作 Agent Runtime。Sandbox 实例进入 orphaned 时冻结新 Sandbox 任务并排空该 account generation 的其它活动实例，对账完成前不得启动替代任务；宿主命令或 push 未知结果也不得自动重放，须核对可能副作用。非 Sandbox 进程不伪造专用账户字段。
 

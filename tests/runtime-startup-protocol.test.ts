@@ -170,11 +170,6 @@ it.skipIf(process.platform !== "win32")(
       gateway,
       {
         requestApproval: async () => ({ approved: true }),
-        executeGitPush: async () => ({
-          output: "",
-          exitCode: 0,
-          truncated: false,
-        }),
         prepareCapabilityCommand: async () => async () => ({
           executionInstanceId: "capability-test",
           output: "",

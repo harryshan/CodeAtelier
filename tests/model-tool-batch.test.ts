@@ -1,7 +1,7 @@
 /**
  * 验证模型工具计划与结果判定的共享规则，不执行命令或访问磁盘。
  *
- * 1. 用真实参数 schema 构造宿主/Runtime 工具图，确认节点与依赖一致且 push 独占仅适用于 Runtime。
+ * 1. 用真实参数 schema 构造宿主/Runtime 工具图，确认节点与依赖一致，Git CLI 不增加隐式独占或调度分支。
  * 2. 验证 subagent 调用只在本任务开启后通过结构化图解析，宿主与 Runtime 共用同一拒绝规则。
  * 3. 用真实 DAG 调度器和失败结果验证失败/unknown 文件、平面及 Git 写入嵌套非零退出会阻断后继，而成功结果允许继续。
  */
@@ -26,11 +26,9 @@ function call(id: string, dependsOn: string[] = []) {
 
 it("builds the same ordered dependency graph in both execution modes", () => {
   const calls = [call("first"), call("second", ["first"])];
-  const host = buildModelToolGraph(calls, { exclusivePush: false });
-  const runtime = buildModelToolGraph(calls, { exclusivePush: true });
+  const graph = buildModelToolGraph(calls);
 
-  expect(host).toEqual(runtime);
-  expect(host.nodes[1]).toEqual({
+  expect(graph.nodes[1]).toEqual({
     callId: "second-call",
     nodeId: "second",
     name: "read_file",
@@ -45,26 +43,33 @@ it("builds the same ordered dependency graph in both execution modes", () => {
   });
 });
 
-it("preserves host batches while requiring an exclusive Runtime push", () => {
-  const push = {
-    call_id: "push",
-    name: "git",
-    arguments: JSON.stringify({
-      execution: { id: "push", dependsOn: [] },
-      arguments: { request: { action: "push" } },
-    }),
-  };
+it.each(["run_command", "run_with_permissions"])(
+  "schedules Git CLI through %s using only explicit dependencies",
+  (name) => {
+    const push = {
+      call_id: "push",
+      name,
+      arguments: JSON.stringify({
+        execution: { id: "push", dependsOn: ["read"] },
+        arguments: {
+          command: "git push origin HEAD",
+          ...(name === "run_with_permissions"
+            ? { reason: "需要宿主凭据。" }
+            : {}),
+        },
+      }),
+    };
+    const graph = buildModelToolGraph([
+      call("read"),
+      push,
+      call("independent"),
+    ]);
 
-  expect(
-    buildModelToolGraph([push], { exclusivePush: true }).nodes,
-  ).toHaveLength(1);
-  expect(
-    buildModelToolGraph([push, call("read")], { exclusivePush: false }).nodes,
-  ).toHaveLength(2);
-  expect(() =>
-    buildModelToolGraph([push, call("read")], { exclusivePush: true }),
-  ).toThrow("Git push 必须是当前工具批次的唯一调用");
-});
+    expect(graph.nodes).toHaveLength(3);
+    expect(graph.nodes[1]).toMatchObject({ name, dependsOn: ["read"] });
+    expect(graph.nodes[2].dependsOn).toEqual([]);
+  },
+);
 
 it("does not parse subagent calls for unselected tasks in either execution mode", () => {
   const coordination = {
@@ -90,24 +95,14 @@ it("does not parse subagent calls for unselected tasks in either execution mode"
     }),
   };
 
-  expect(() =>
-    buildModelToolGraph([coordination], { exclusivePush: false }),
-  ).toThrow("未开启 subagent");
-  expect(() =>
-    buildModelToolGraph([coordination], { exclusivePush: true }),
-  ).toThrow("未开启 subagent");
-  for (const exclusivePush of [true, false]) {
-    expect(
-      buildModelToolGraph([coordination], {
-        exclusivePush,
-        subagentsEnabled: true,
-      }).nodes[0],
-    ).toMatchObject({
-      name: "subagent",
-      nodeId: "plan",
-      arguments: { request: { action: "plan" } },
-    });
-  }
+  expect(() => buildModelToolGraph([coordination])).toThrow("未开启 subagent");
+  expect(
+    buildModelToolGraph([coordination], { subagentsEnabled: true }).nodes[0],
+  ).toMatchObject({
+    name: "subagent",
+    nodeId: "plan",
+    arguments: { request: { action: "plan" } },
+  });
 
   expect(() =>
     buildModelToolGraph(
@@ -126,7 +121,7 @@ it("does not parse subagent calls for unselected tasks in either execution mode"
           }),
         },
       ],
-      { exclusivePush: false, subagentsEnabled: true },
+      { subagentsEnabled: true },
     ),
   ).toThrow();
 });
@@ -147,10 +142,10 @@ it.each([
 ] as const)(
   "propagates result %j through DAG dependencies",
   async (result, succeeded) => {
-    const graph = buildModelToolGraph(
-      [call("first"), call("second", ["first"])],
-      { exclusivePush: false },
-    );
+    const graph = buildModelToolGraph([
+      call("first"),
+      call("second", ["first"]),
+    ]);
     const visited: string[] = [];
 
     await executeToolGraph(graph, {

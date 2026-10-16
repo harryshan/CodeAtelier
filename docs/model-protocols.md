@@ -22,7 +22,7 @@ CodeAtelier 支持 `responses`（默认）、`chat-completions` 和 `messages`�
 - 启用继承时，使用主连接。只有同端点、同协议且未显式设置辅助密钥时才共用主密钥；跨端点或协议缺少独立密钥会明确失败，不能把主密钥发给另一个服务。
 - 辅助模型为空时，标题、摘要沿用主模型；审批保留人工确认，不使用主模型替代。辅助调用失败仍沿用既有降级/恢复规则。
 - 连接及密钥保存在私有 `settings.json`，UI 不回显已有 key，支持保留/替换/删除；改变端点或协议需重新输入或明确删除原密钥。主/辅助密钥均用于日志、会话事件和 Replay 脱敏，不发送到浏览器或 Sandbox Runtime。
-- 启动命令不变：`pnpm build`，然后 `pnpm start`。安装式 Windows Sandbox 需同步更新 Runtime IPC v16；按 Windows 使用指南执行重建/Repair，本功能不会自动操作系统安装。
+- 启动命令不变：`pnpm build`，然后 `pnpm start`。安装式 Windows Sandbox 需同步更新 Runtime IPC v17；按 Windows 使用指南执行重建/Repair，本功能不会自动操作系统安装。
 
 ## 当前能力
 

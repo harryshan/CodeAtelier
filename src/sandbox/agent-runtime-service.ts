@@ -1,16 +1,16 @@
 /**
  * 在常驻 Agent Runtime 进程内运行模型/工具循环；Broker Host 只通过 Runtime IPC 提供模型、session、审批和项目记忆能力。
- * 本服务不打开宿主 SQLite、不读取模型 endpoint/key，也不创建第二层 SandboxBroker；普通命令子进程继承 Runtime 的 token/Job，全部 Git 工具 action 和 MCP 连接/操作经认证 IPC 交给 Broker。
+ * 本服务不打开宿主 SQLite、不读取模型 endpoint/key，也不创建第二层 SandboxBroker；普通命令子进程继承 Runtime 的 token/Job，扩展权限命令和 MCP 连接/操作经认证 IPC 交给 Broker；Git CLI 使用相同命令路径。
  *
  *    Skill 目录摘要由 Broker 提供，按需正文通过名称查询，不读取专用账户 home 或投影宿主技能根；MCP 仅接收公开服务用途摘要，不接收连接配置。
  * 1. start 接受 Broker 绑定任务的安全设置，恢复 session 上下文并在工作区生成指令和文件工具。
  * 2. SessionTokenCalibration 在首次检查前恢复 Broker 提供的实报锚点，响应保存后经 IPC 保存新锚点；ContextManager 在 Runtime 内计量/压缩，快照读写经 RuntimeSessionClient 回到 Broker。
- * 3. model-loop 共用轮次、有界重试和上下文超限恢复，model-tool-batch 共用工具计划与结果判定；每轮模型调用经 RuntimeModelProvider 代理；工具 DAG 先并行准备已就绪节点，取得有界 worker 槽后执行文件编辑、命令或请求 Broker Git。
+ * 3. model-loop 共用轮次、有界重试和上下文超限恢复，model-tool-batch 共用工具计划与结果判定；每轮模型调用经 RuntimeModelProvider 代理；工具 DAG 先并行准备已就绪节点，取得有界 worker 槽后执行文件编辑、普通命令或已获批准的 Broker 命令。
  *    Runtime 普通命令按调用注入独立 tool_review 主模型代理，不设总运行时限；复查只返回等待/停止，usage 与决定经常规事件持久化。
  * 4. UI/session 事件按连接排队；无效 DAG 回传修正，实际取得执行槽的工具和 read_file 内部阶段带单调时间戳上报，由 Broker 统一组装并归档；工具结果增量保存，未知副作用不重放。
  * 5. 已选任务在 Runtime 内运行独立只读 Worker，子状态、问题回执、模型/租约及固定无正文的 trace 经任务绑定 IPC；收尾确认线程退出后再由 Broker 清理。
  *
- * Git push 必须独占当前工具批次；全部 Git action 由 Broker 宿主执行，push 额外做预检和逐次审批。越界命令先经 IPC 审批取得一次性授权，获得 worker 槽后由 Broker 启动，因而可与无依赖的普通工具正确并行。context/tool/model tracing 经固定 schema 回到 Broker。
+ * Git 没有专属调度或隐式转发。越界命令先经 IPC 审批取得一次性授权，获得 worker 槽后由 Broker 启动，因而可与无依赖的普通工具正确并行。context/tool/model tracing 经固定 schema 回到 Broker。
  * 工具异步上下文安装固定进程 observer，取消/终止/直子退出经白名单 IPC 回传；持久化阶段携带 callId。
  */
 
@@ -54,8 +54,6 @@ import { RuntimeSessionClient } from "./runtime-session-client.js";
 import {
   RuntimeApprovalClient,
   RuntimeCapabilityClient,
-  RuntimeGitPushClient,
-  RuntimeGitClient,
   RuntimeMemoryClient,
   RuntimeMcpClient,
   RuntimeSkillClient,
@@ -227,8 +225,6 @@ export class AgentRuntimeService {
         tokenizer: budget.tokenizer,
       });
       const toolSettings = runtimeToolSettings(input.settings);
-      const gitPush = new RuntimeGitPushClient(this.peer);
-      const gitClient = new RuntimeGitClient(this.peer);
       const capability = new RuntimeCapabilityClient(this.peer);
       const mcp = new RuntimeMcpClient(this.peer);
       const skills = new RuntimeSkillClient(this.peer);
@@ -264,20 +260,6 @@ export class AgentRuntimeService {
           }
 
           return mcp.prepare(request, toolCallId, requestSignal);
-        },
-        gitPush: (pushSignal, toolCallId) => {
-          if (!toolCallId) {
-            throw new Error("Broker Git push 请求缺少工具调用标识。");
-          }
-
-          return gitPush.execute(toolCallId, pushSignal);
-        },
-        gitExecute: (request, gitSignal, toolCallId) => {
-          if (!toolCallId) {
-            throw new Error("Broker Git 请求缺少工具调用标识。");
-          }
-
-          return gitClient.execute(request, toolCallId, gitSignal);
         },
         prepareRunWithPermissions: (request, requestSignal, toolCallId) => {
           if (!toolCallId) {
@@ -441,7 +423,6 @@ export class AgentRuntimeService {
           let graph;
           try {
             graph = buildModelToolGraph(calls, {
-              exclusivePush: true,
               subagentsEnabled: input.settings.subagentsEnabled ?? false,
             });
           } catch (error) {

@@ -5,7 +5,7 @@
  * 1. Broker 先返回一次可重试错误，再返回无效 DAG；Runtime 有界重试并把无副作用错误保存给下一轮修正。
  * 2. Broker 随后返回 read_file function_call，Agent Runtime 在自己的进程内执行 ToolRunner；最终模型轮次观察到文件结果。
  * 3. 记忆目录包含全部十条 ID/版本/摘要；任务中修改另一条仍可读未变条目；目录按文件顺序进入每轮模型指令；Runtime 通过现有 memory_apply IPC 在 Broker 按需读取正文，不直接访问宿主数据目录。
- * 4. 扩展权限请求保留普通 DAG 并行语义；push 独占由共享工具图测试覆盖。
+ * 4. 扩展权限请求保留普通 DAG 并行语义；Git CLI 同样按显式依赖调度。
  * 5. Runtime 主动报告 completed，Broker 收到后关闭通道并确认子进程干净退出。
  */
 
@@ -45,9 +45,7 @@ it("allows a capability command beside an independent tool", () => {
     }),
   };
 
-  expect(
-    buildModelToolGraph([capability, read], { exclusivePush: true }).nodes,
-  ).toHaveLength(2);
+  expect(buildModelToolGraph([capability, read]).nodes).toHaveLength(2);
 });
 
 it("runs the model and tool loop in an independent Agent Runtime process", async () => {
@@ -250,11 +248,6 @@ it("runs the model and tool loop in an independent Agent Runtime process", async
     gateway,
     {
       requestApproval: async () => ({ approved: true }),
-      executeGitPush: async () => ({
-        output: "",
-        exitCode: 0,
-        truncated: false,
-      }),
       prepareCapabilityCommand: async () => async () => ({
         executionInstanceId: "capability-test",
         output: "",

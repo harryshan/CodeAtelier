@@ -20,14 +20,13 @@ Browser / Web UI
 Broker Host（可信宿主边界）
   ├─ 策略、审批、AccessManifest、SandboxProcessRecord、执行账本与 tracing
   ├─ 审批后的 run_with_permissions：宿主命令进程，不附加 Sandbox 文件或网络限制
-  ├─ 全部 Git 工具 action：宿主执行，push 另做预检与逐次审批
   ├─ C++ supervisor、专用账户租约与 Job 生命周期
   ├─ 参数受限的 model / storage / network / external adapters
   └─ 经认证、固定 schema 的 IPC
        ↕
 Sandbox Process（单一 CodeAtelierSandbox 账户；每实例独立 lease/capability/Job）
   ├─ Agent Runtime：常驻 Node.js agent loop、工具计划、文件工具与普通命令；无直接网络
-  ├─ Git / run_with_permissions：经认证 IPC 请求 Broker，不在 Sandbox 内执行
+  ├─ run_with_permissions：经认证 IPC 审批并请求 Broker（可执行 Git CLI）
   ├─ 账户既有读取权 + 工作区、显式 read/write roots；不投影宿主 Git config/include 图
   └─ WRITE_RESTRICTED 根 capability、产品依赖与私有临时目录；不继承宿主 profile/凭据
 ```
@@ -36,7 +35,7 @@ Windows 启用时的产品调用链现为 `Broker Engine → SandboxBroker launc
 
 `run_with_permissions` 由 Runtime 通过认证 IPC 请求 Broker 审批；获准后 Broker 以宿主用户权限执行完整命令，单独记录 `broker-command/host-process`。该命令不在专用账户、Job、ACL 或 WFP 边界内。Capability Runner 实现保留但暂停使用。
 
-全部 Git 工具 action 都是宿主执行分支：`Agent Runtime → Runtime IPC 固定 action/toolCallId → Broker 宿主 Git`；其中 push 还经过 Broker 预检和逐次审批，并独占工具批次。原 Agent Runtime 保持存活，但不取得宿主网络或凭据能力；Push Runner 代码保留且暂停使用。
+Git CLI 复用普通命令或显式获批宿主命令路径，不提供 Git action、自动转发、目标校验或 push 独占批次（D155）。Runtime 等待宿主命令时仍存活且可调度无依赖节点，不取得宿主网络或凭据能力；Push Runner 保留且暂停使用。
 
 安装版 Runtime 的 argv 只携带 Supervisor 生成的本机任务 pipe 名，identity/nonce 由有界首帧交付；产品 build 生成以 Node 24 为兼容基线、支持 Node 24/26 的单文件 Runtime 与独立 compaction、subagent Worker bundle（read_file 直接在读取后计算），安装器把选定的 Node 24 或 26 和 bundle 固定到受保护目录，TypeScript/native self-check 复核 v5 state 中的 SHA-256。
 
@@ -62,11 +61,11 @@ Responses 主任务请求显式声明 `parallel_tool_calls: true`，并附加 Op
 
 Engine 在任一节点产生副作用前校验整批 DAG，并以稳定拓扑顺序、最多 4 个并发节点调度。自建服务需同时收集 output_item.done；completed.output 有内容时优先使用，不能只依赖 completed。
 
-Chat Completions / Messages 首批不发送思考参数、不声明原生搜索；未知容量沿用字符预算，usage 保留缺失状态。主模型协议加入 token 校准指纹，Replay 设置记录协议，tracing 的 llm.request 透传协议枚举与首流事件。Runtime IPC v16 下发无凭据的 webSearchEnabled，工具列表与指令保持一致，模型连接仍仅在 Broker。
+Chat Completions / Messages 首批不发送思考参数、不声明原生搜索；未知容量沿用字符预算，usage 保留缺失状态。主模型协议加入 token 校准指纹，Replay 设置记录协议，tracing 的 llm.request 透传协议枚举与首流事件。Runtime IPC v17 保留无凭据的 webSearchEnabled，同时移除 Git 专用 operation，旧安装须重建/Repair，工具列表与指令保持一致，模型连接仍仅在 Broker。
 
 ### 工具与文件编辑
 
-`src/tools` 定义 Zod 参数及对应 JSON Schema，提供读取、统一文件编辑、命令和单一受限 `git` 工具；`registry.ts` 还独立声明无本地执行器的 Responses `web_search`。`search-commands.ts` 在每次任务建立指令前检测 PATH 和 Windows 系统位置可用的常见搜索程序，按估计性能排序后只向模型给出命令名与内容/文件名用途。
+`src/tools` 定义 Zod 参数及对应 JSON Schema，提供读取、统一文件编辑和命令工具；Git CLI 复用命令，不另设执行器；`registry.ts` 还独立声明无本地执行器的 Responses `web_search`。`search-commands.ts` 在每次任务建立指令前检测 PATH 和 Windows 系统位置可用的常见搜索程序，按估计性能排序后只向模型给出命令名与内容/文件名用途。
 
 模型以 `run_command` 执行目录浏览及首选的已检测工具，尽量把多个关键词合入一次多模式搜索；`run_command` 只公开一条命令文本，`command-shell.ts` 在执行器内部选择平台 shell。模型先由命令浏览/搜索定位，`read_file` 再按行读取；单次硬上限为 500 行，并返回分页/截断状态。
 
@@ -120,7 +119,7 @@ Config 固定启动期 server/Sandbox/trace 维护配置，动态发布模型/MC
 
 Sandbox 以 Broker Host 为宿主可信边界。一次性提升安装创建单一 `CodeAtelierSandbox` 本地账户，并按其 SID 安装持久 WFP 默认拒绝规则；安装用户仅取得产品 WFP 对象的只读权限，普通启动自检按固定 key 核对规则，管理员校验仍枚举完整规则集。安装器还仅对该专用账户的 LSA 对象授予安装用户 `ACCOUNT_VIEW`，使普通启动自检能够逐项核对四项拒绝登录权；不扩大 LSA policy 的访问权限。独立 C++ supervisor 为每个 execution instance 创建该账户的 `WRITE_RESTRICTED` token、根 capability、私有 desktop、最小环境和 Job。实例使用当前 Windows 会话内由系统命名的非交互式 window station，按账户及实例 SID 限制访问；同一宿主登录会话的并发实例可共享该 station，但仍使用不同 desktop，不向交互式 `WinSta0` 添加账户权限。
 
-Broker 先建立不可变 AccessManifest，supervisor 再以原对象 handle 和卷/file ID 复核工作区、显式 read/write roots、产品依赖和精确 Git config/include 图并投影最小 ACL；持久 journal 使最终 revoke 或重启恢复可在同卷 rename 后按 file ID 重开原对象。
+Broker 先建立不可变 AccessManifest，supervisor 再以原对象 handle 和卷/file ID 复核工作区、显式 read/write roots、产品依赖和原生协议要求的空只读 Git global 文件并投影最小 ACL；持久 journal 使最终 revoke 或重启恢复可在同卷 rename 后按 file ID 重开原对象。
 
 当前产品已把常驻 AgentRuntimeService、C++ Supervisor launcher、身份绑定 Named Pipe、model/session/approval/memory adapter、ACL journal 和 generation drain 接到同一生命周期；relay、Push Runner 和 Capability Runner 的实现保留但不再由产品工具触发。
 
@@ -128,7 +127,7 @@ Sandbox 沿用 1～4 个不同工作区并发和同工作区串行；账户 SID 
 
 共享账户 ACE 使用 provision 等待与 prepare/native revoke/commit 两阶段 grant table；任一实例 ACL、Job、代理或账户状态无法对账时隔离 account generation，原生终止整代账户进程并按持久 journal 撤销 ACL。
 
-Agent Runtime 已有权限内的普通命令在 Runtime 内执行且免审批；全部 Git 工具 action 在 Broker 以宿主用户权限执行，push 另做预检和逐次审批。`run_with_permissions` 经审批后也在 Broker 以宿主权限执行；这些宿主进程的文件、网络和凭据不受 Sandbox 附加限制。只有 Agent Runtime 启动前可证明完整回滚时才保留宿主 loop fallback。
+Agent Runtime 已有权限内的普通命令在 Runtime 内执行且免审批；Git CLI 同样按通用命令权限执行，无专用 IPC 分支。`run_with_permissions` 经审批后也在 Broker 以宿主权限执行；这些宿主进程的文件、网络和凭据不受 Sandbox 附加限制。只有 Agent Runtime 启动前可证明完整回滚时才保留宿主 loop fallback。
 
 完整边界与验收状态见 [windows-integrity-sandbox.md](windows-integrity-sandbox.md)。
 
@@ -165,10 +164,9 @@ Broker 通过 `SandboxRuntime.launchTask` 路由，不进入 Windows ACL/generat
 | 模块                                                                                             | 职责                                                                                                                                                                                                                                       |
 | ------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | tools/registry.ts / tool-graph.ts                                                                | 工具参数和 DAG 调度信封、模型可见定义；调用图的结构校验、稳定拓扑调度、并发上限和失败后继阻断；`edit_files` 以 create 区分新建与已有文件编辑                                                                                               |
-| tools/tool-runner.ts                                                                             | ToolRunner：校验、审批、读取与普通命令执行，并将统一文件编辑和单一专用 `git` 工具分流                                                                                                                                                      |
+| tools/tool-runner.ts                                                                             | ToolRunner：校验、审批、读取与普通命令执行，并委托统一文件编辑；Git CLI 沿用命令路径                                                                                                                                                      |
 | tools/file-editor.ts                                                                             | FileEditor：逐文件预检、create 存在性/读取版本复核、失败汇总、独立文件继续写入和进度，复用 ToolRunner 的权限与读取哈希                                                                                                                     |
 | tools/edit-plan.ts                                                                               | 基于原始快照的行号/文本定位、重叠校验与纯文本转换                                                                                                                                                                                          |
-| tools/git.ts                                                                                     | GitToolRunner：按 action 分流固定 Git 参数，复核 worktree、路径/revision/upstream 并自动执行                                                                                                                                               |
 | tools/paths.ts / command-shell.ts / process.ts                                                   | 路径边界、内部 shell 选择与进程生命周期                                                                                                                                                                                                    |
 | providers/model-provider.ts                                                                      | 与具体服务无关的模型接口和结果契约                                                                                                                                                                                                         |
 | providers/responses-provider.ts                                                                  | ResponsesProvider：Responses 协议实现                                                                                                                                                                                                      |
@@ -198,7 +196,7 @@ Engine、Store 及其上下文/schema 辅助模块、共享数据契约、测试
 4. 主任务加载本地上下文与根 AGENTS.md，模型请求包含当前指令、上下文与工具定义，并请求服务允许多个独立工具调用；复杂任务要求模型先通过只读工具读取相关代码和文件并获得足够当前信息，再在用户可见文本中自行给出“计划摘要”，随后在同轮或后续轮次调用工具执行，实质调整前更新摘要；接收文本及完整输出项。
 5. 自研循环先解析每项的 `execution` 信封，并在任一节点执行前拒绝重复 ID、未知依赖或环；旧历史格式作为无依赖调用兼容。通过校验后，Engine 以稳定拓扑顺序准备所有已满足前置条件的节点；参数检查、低成本模型判断和人工审批不占用最多 4 个 `Tool worker` 执行槽，审批通过并完成执行前复核后才排队取得槽位。
 
-   宿主模式中原本需要审批的调用继续由低成本模型给出自动通过、人工确认或拒绝；Sandbox Agent Runtime 已有权限内的工具直接执行，push、`run_with_permissions` 越界命令以及有连接/调用的 MCP 操作进入 Broker 审批。
+   宿主模式中原本需要审批的调用继续由低成本模型给出自动通过、人工确认或拒绝；Sandbox Agent Runtime 已有权限内的工具直接执行，`run_with_permissions` 越界命令（含 Git CLI）以及有连接/调用的 MCP 操作进入 Broker 审批。
 
    `run_with_permissions` 通过两阶段 Runtime IPC 先取得当前连接与 toolCallId 绑定的一次性 authorizationId，Runtime 获得执行槽后才消费授权，由 Broker 启动宿主命令。前置失败时所有后继不执行而返回 `dependency_failed`，独立节点继续；每个完成或阻断的节点立即保存 `function_call_output`。
 
@@ -220,9 +218,9 @@ Engine、Store 及其上下文/schema 辅助模块、共享数据契约、测试
 
 `src/agent/model-loop.ts` 统一 Engine 与 AgentRuntimeService 的轮次推进、普通模型重试、任务内至多一次上下文超限恢复、连续 attempt 编号，以及响应保存后再执行工具的顺序。入口分别提供上下文准备、模型调用、响应保存和工具批次执行；宿主继续使用 Store 事务与 replay，Runtime 继续使用有序 IPC 事件和上下文保存队列。保存或工具失败不会进入模型重试，权限检查与进程边界不移动。
 
-`src/tools/model-tool-batch.ts` 共用 function_call 参数解析、DAG 节点构造和工具成功判定。Runtime 显式启用 push 独占批次检查，宿主保持既有规则。循环返回正常完成、普通批次耗尽轮次或无效图耗尽轮次：保留现存兼容差异，宿主对后两种结果均报步数上限；Runtime 在最后一轮无效图反馈后沿用自然完成，普通工具批次耗尽轮次仍报错。统一这项终态差异须另行作为行为修复处理。
+`src/tools/model-tool-batch.ts` 共用 function_call 参数解析、DAG 节点构造和工具成功判定。宿主与 Runtime 共用普通 DAG 规则；Git CLI 没有额外独占校验。循环返回正常完成、普通批次耗尽轮次或无效图耗尽轮次：保留现存兼容差异，宿主对后两种结果均报步数上限；Runtime 在最后一轮无效图反馈后沿用自然完成，普通工具批次耗尽轮次仍报错。统一这项终态差异须另行作为行为修复处理。
 
-`src/sandbox/execute-runner.ts` 保留暂停使用的 Push Runner 与 Capability Runner 实现。当前 `run_with_permissions` 和全部 Git 工具 action 在 Broker 内使用宿主进程执行器，分别记录 `broker-command`/`broker-git`/`broker-git-push` execution instance 及对应 `broker.command`/`broker.git`/`broker.git_push` span。取消或结果未知不自动重放；trace 只保存关联 ID、耗时和状态，不写命令正文。
+`src/sandbox/execute-runner.ts` 保留暂停使用的 Push Runner 与 Capability Runner 实现。当前 `run_with_permissions`（含 Git CLI）在 Broker 使用宿主执行器，记录 `broker-command` instance 与 `broker.command` span；普通 Git CLI 复用 tool/command span。旧 Git kind 和输出仅供历史读取，不再生成专用执行记录。取消或结果未知不自动重放；trace 只保存关联 ID、耗时和状态，不写命令正文。
 
 ## 历史与恢复
 
@@ -234,19 +232,19 @@ Engine、Store 及其上下文/schema 辅助模块、共享数据契约、测试
 
 UI 历史包含消息、工具调用、受限工具结果和修改 diff。Timeline 通过 MarkdownMessage 将用户和 agent 文本渲染为 GitHub Flavored Markdown，支持标题、列表、表格、任务列表、链接和代码围栏；不加载原始 HTML，因此会话中不可信的模型或用户文本不能注入页面 DOM。
 
-`run_command`、`git` 等有流式输出的工具，将开始、输出与退出状态按调用 ID 聚合为同一可展开卡片；长内容带截断提示，历史不是无限容量的终端录制。
+`run_command`、`run_with_permissions` 及旧 `git` 历史记录，将开始、输出与退出状态按调用 ID 聚合为同一可展开卡片；长内容带截断提示，历史不是无限容量的终端录制。
 
 ## 文件和命令边界
 
 文件操作解析真实路径，考虑符号链接与 Windows junction；工作区外或敏感路径询问用户。`edit_files` 的 create:true 只能新建不存在的路径，预检、审批等待后和写入前都会复核，拒绝覆盖期间出现的文件；它可创建父目录。create:false 的现存文件须先读取，精确修改时比对内容哈希，拒绝外部并发修改。临时文件写入后重命名，并保留已有文件的原模式。
 
-`run_command` 的模型参数只有 `{ command }`，执行器固定在会话工作区运行。Windows 内部按 `pwsh`、`powershell`、`cmd.exe` 的优先级检测真实可执行文件；macOS/Linux 使用已验证的 `/bin/sh`。执行器追加固定非交互参数，模型不提供或探测 shell。`run_command` 不再执行 Git 关键词过滤（D137），宿主审批与 Runtime 原有执行边界不变；模型提示及工具说明保持原样，仍优先通过 `git.ts` 的单一 action 子集操作仓库。
+`run_command` 的模型参数只有 `{ command }`，执行器固定在会话工作区运行。Windows 内部按 `pwsh`、`powershell`、`cmd.exe` 的优先级检测真实可执行文件；macOS/Linux 使用已验证的 `/bin/sh`。执行器追加固定非交互参数，模型不提供或探测 shell。`run_command` 不再执行 Git 关键词过滤（D137），宿主审批与 Runtime 原有执行边界不变；模型明确使用 Git CLI，不检测 Git 关键词或自动转发。
 
-Sandbox 关闭或 Windows 启动前 fallback 仍沿用宿主审批和会话授权，模型只接收宿主工具定义与提示，不会看见 `run_with_permissions` 或 Sandbox 专属说明；对应平台的 Sandbox Agent Runtime 已实际启动后才接收该工具。已有权限的文件工具和普通命令免审批，Git 工具在 Broker 宿主执行且 push 逐次审批。
+Sandbox 关闭或 Windows 启动前 fallback 仍沿用宿主审批和会话授权，模型只接收宿主工具定义与提示，不会看见 `run_with_permissions` 或 Sandbox 专属说明；对应平台的 Sandbox Agent Runtime 已实际启动后才接收该工具。已有权限的文件工具和普通命令（含 Git CLI）免审批；越界命令仍须显式申请。
 
 若 Runtime 中的命令需要额外能力，模型必须改用 `run_with_permissions`，提交完整命令和理由；Broker 重新审批后以宿主用户身份启动进程，不再通过 Capability Runner 的文件根或 HTTPS host 限制。结果单独标为 `broker-command/host-process`，不能算作 Sandbox 内执行。
 
-Broker 命令与 Git push 可以使用宿主用户可访问的文件、网络和凭据；审批必须按此完整权限审查。专用 `git` 工具的 push 仍固定 upstream/OID/ref 参数并逐次审批。`run_command`（D137）与 `run_with_permissions`（D140）均不再提供 Git 关键词静态阻断；后者仍经 Broker 宿主审批，批准后作为通用宿主命令执行，不自动转交 Git action。因此专用 Git 工具的参数校验与 push 专属调度不能视为所有 shell 命令的强制边界。
+Broker 命令可以使用宿主用户可访问的文件、网络和凭据，审批按此完整权限审查。D155 移除专用 Git 工具：不再有 action/路径/revision/敏感模板/upstream/OID/ref 校验、hook/签名禁用或 push 专属调度。模型工作流指导不等于硬边界。旧 Git 记录保持可读，但任何新 Git 工具或专用 IPC 请求都拒绝。
 
 按账户 SID 的持久 WFP fence 始终只允许固定 Broker relay/proxy 端口；host 边界不限制上传内容、URL path 或命令将哪些可读数据发送出去。supervisor 记录 process handle、PID 和创建时间，以 Job 管理后代。
 
@@ -284,7 +282,7 @@ Broker 命令与 Git push 可以使用宿主用户可访问的文件、网络和
 
 `src/evaluation/` 保留生产 Engine/Store 的无界面入口、预算、审批和执行记录。`scripts/swebench/dataset.py` 校验固定子集并仅生成 issue 提示词；`predict.py` 在官方任务镜像中运行 agent 并提取补丁；`grade.py` 在独立干净环境调用官方评分器；`prepare.py` 打包白名单运行文件。详见 [swebench.md](swebench.md)。
 
-工具结果先持久化到活动上下文，随后在下一次模型请求前重新计量并在超预算时压缩或进入保底视图，避免把超长工具数据直接附加给模型。未触发压缩时，Engine 发送相同的完整历史，估算与 usage 校准也使用这份实际输入。Git `diff` 另有 12000 字符硬输出上限，避免全量补丁绕过通用工具输出配置而占满上下文。
+工具结果先持久化到活动上下文，随后在下一次模型请求前重新计量并在超预算时压缩或进入保底视图，避免把超长工具数据直接附加给模型。未触发压缩时，Engine 发送相同的完整历史，估算与 usage 校准也使用这份实际输入。Git CLI 使用通用命令输出上限，不再有专用 diff 的 12000 字符硬上限；模型仍应按需限定路径与差异上下文。
 
 最终报告由 scripts/swebench/report.py 从运行和官方评分产物聚合；predict.py/grade.py 仅在用户手动运行结束时调用。报告可单独离线重建，分开正确性、效率、过程和数据完整性；不引入模型评分或额外评测运行。
 

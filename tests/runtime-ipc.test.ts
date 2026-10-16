@@ -3,7 +3,7 @@
  * 内存流用例覆盖协议错误，独立 Node fixture 覆盖 model request/delta/response 跨进程，但不冒充 Windows Named Pipe 身份验收。
  *
  * 1. 双向 PassThrough peer 完成请求并拒绝未知响应、畸形 JSON 和超限半帧。
- * 2. RuntimeGitPushClient 只发送调用 ID；RuntimeGitClient 发送受限 action 并保留 add/commit/diff 结果形状；RuntimeCapabilityClient 先准备审批、再用连接内一次性授权执行，且授权不可重放。
+ * 2. 旧 Git 请求与 v16 握手均拒绝；RuntimeCapabilityClient（含 Git CLI） 先准备审批、再用连接内一次性授权执行，且授权不可重放。
  * 3. AbortSignal 发送 request_cancel，中止远端同 requestId handler；竞态迟到响应不会破坏后续请求。
  * 4. Runtime trace 与 session event 只接受固定类型；子消息/取消 span 不携带正文，Runtime 不能伪造 Broker execution/sandbox/终态事件。
  * 5. 子进程经继承 stdio 请求模型，Broker test adapter 流式回传 delta 和最终结果，进程正常退出。
@@ -21,11 +21,7 @@ import { RuntimeIpcBrokerSession } from "../src/sandbox/runtime-ipc-broker-sessi
 import { RuntimeBrokerGateway } from "../src/sandbox/runtime-capability-core.js";
 import { TraceRecorder } from "../src/tracing/recorder.js";
 import { connectAgentRuntime } from "../src/sandbox/agent-runtime-connection.js";
-import {
-  RuntimeCapabilityClient,
-  RuntimeGitPushClient,
-  RuntimeGitClient,
-} from "../src/sandbox/runtime-tool-adapters.js";
+import { RuntimeCapabilityClient } from "../src/sandbox/runtime-tool-adapters.js";
 import { runtimeIpcMessageSchema } from "../src/sandbox/runtime-ipc-protocol.js";
 
 function peers() {
@@ -51,140 +47,41 @@ it("routes a bounded request and response", async () => {
   expect(result).toEqual({ operation: "session_read_context" });
 });
 
-it("sends only the push tool call ID to the broker", async () => {
-  const leftToRight = new PassThrough();
-  const rightToLeft = new PassThrough();
-  let received: unknown;
-  const right = new RuntimeIpcPeer({
-    input: leftToRight,
-    output: rightToLeft,
-    handleRequest: async (request) => {
-      received = request;
-
-      return { output: "pushed", exitCode: 0, truncated: false };
-    },
-  });
-  const left = new RuntimeIpcPeer({ input: rightToLeft, output: leftToRight });
-  await expect(
-    new RuntimeGitPushClient(left).execute(
-      "push-call",
-      new AbortController().signal,
-    ),
-  ).resolves.toEqual({ output: "pushed", exitCode: 0, truncated: false });
-  expect(received).toMatchObject({
-    operation: "git_push",
-    body: { toolCallId: "push-call" },
-  });
-  right.end();
-  left.end();
-});
-
-it("sends only a validated Git action and task call ID to Broker", async () => {
-  const leftToRight = new PassThrough();
-  const rightToLeft = new PassThrough();
-  let received: unknown;
-  const right = new RuntimeIpcPeer({
-    input: leftToRight,
-    output: rightToLeft,
-    handleRequest: async (request) => {
-      received = request;
-
-      return { output: "branch", exitCode: 0, truncated: false };
-    },
-  });
-  const left = new RuntimeIpcPeer({ input: rightToLeft, output: leftToRight });
-  await expect(
-    new RuntimeGitClient(left).execute(
-      { action: "status" },
-      "status-call",
-      new AbortController().signal,
-    ),
-  ).resolves.toMatchObject({ output: "branch", exitCode: 0 });
-  expect(received).toMatchObject({
-    operation: "git_execute",
-    body: { toolCallId: "status-call", request: { action: "status" } },
-  });
-  await expect(
-    left.request(
-      "git_execute",
-      {
-        toolCallId: "bad-call",
-        request: { action: "status", args: ["--exec"] },
-      },
-      new AbortController().signal,
-    ),
-  ).rejects.toBeInstanceOf(RuntimeIpcError);
-  right.end();
-  left.end();
-});
-
-it("keeps action-specific Broker Git results across IPC", async () => {
-  const leftToRight = new PassThrough();
-  const rightToLeft = new PassThrough();
-  const processResult = { output: "ok", exitCode: 0, truncated: false };
-  const right = new RuntimeIpcPeer({
-    input: leftToRight,
-    output: rightToLeft,
-    handleRequest: async (request) => {
-      if (request.operation !== "git_execute") {
-        throw new Error("unexpected operation");
-      }
-
-      switch (request.body.request.action) {
-        case "add":
-          return { paths: ["change.txt"], add: processResult };
-        case "commit":
-          return {
-            paths: ["change.txt"],
-            stage: processResult,
-            commit: processResult,
-          };
-        case "diff":
-          return { ...processResult, staged: false, paths: ["change.txt"] };
-        default:
-          throw new Error("unexpected action");
-      }
-    },
-  });
-  const left = new RuntimeIpcPeer({ input: rightToLeft, output: leftToRight });
-  const client = new RuntimeGitClient(left);
-  const signal = new AbortController().signal;
-
-  try {
-    await expect(
-      client.execute({ action: "add", paths: ["change.txt"] }, "add", signal),
-    ).resolves.toEqual({ paths: ["change.txt"], add: processResult });
-    await expect(
-      client.execute(
-        { action: "commit", paths: ["change.txt"], message: "Record change" },
-        "commit",
-        signal,
-      ),
-    ).resolves.toEqual({
-      paths: ["change.txt"],
-      stage: processResult,
-      commit: processResult,
-    });
-    await expect(
-      client.execute(
-        {
-          action: "diff",
-          staged: false,
-          paths: ["change.txt"],
-          contextLines: 3,
+it.each(["git_execute", "git_push"])(
+  "rejects retired %s requests before dispatch",
+  (operation) => {
+    expect(
+      runtimeIpcMessageSchema.safeParse({
+        type: "request",
+        requestId: "old-git",
+        operation,
+        body: {
+          toolCallId: "old-call",
+          ...(operation === "git_execute"
+            ? { request: { action: "status" } }
+            : {}),
         },
-        "diff",
-        signal,
-      ),
-    ).resolves.toEqual({
-      ...processResult,
-      staged: false,
-      paths: ["change.txt"],
-    });
-  } finally {
-    right.end();
-    left.end();
-  }
+      }).success,
+    ).toBe(false);
+  },
+);
+
+it("rejects the pre-removal Runtime protocol", () => {
+  const hello = {
+    type: "runtime_hello",
+    taskId: "task",
+    sessionId: "session",
+    executionInstanceId: "runtime",
+    nonce: "n".repeat(32),
+  };
+  expect(
+    runtimeIpcMessageSchema.safeParse({ ...hello, protocolVersion: 16 })
+      .success,
+  ).toBe(false);
+  expect(
+    runtimeIpcMessageSchema.safeParse({ ...hello, protocolVersion: 17 })
+      .success,
+  ).toBe(true);
 });
 
 it("sends a bounded capability command with its reason and tool call", async () => {
@@ -209,8 +106,8 @@ it("sends a bounded capability command with its reason and tool call", async () 
   });
   const left = new RuntimeIpcPeer({ input: rightToLeft, output: leftToRight });
   const request = {
-    command: "node external-task.js",
-    reason: "需要 Broker 宿主权限处理工作区外的对象。",
+    command: "git push origin HEAD",
+    reason: "需要宿主网络及凭据；本测试仅验证 IPC，不执行命令。",
   };
 
   await expect(
@@ -270,11 +167,6 @@ it("keeps an approved capability command inactive until its one-time authorizati
     gateway,
     {
       requestApproval: async () => ({ approved: true }),
-      executeGitPush: async () => ({
-        output: "",
-        exitCode: 0,
-        truncated: false,
-      }),
       prepareCapabilityCommand: async () => async () => {
         executions++;
 
@@ -561,11 +453,6 @@ it("rejects an instance or nonce mismatch before serving requests", async () => 
     gateway,
     {
       requestApproval: async () => ({ approved: true }),
-      executeGitPush: async () => ({
-        output: "",
-        exitCode: 0,
-        truncated: false,
-      }),
       prepareCapabilityCommand: async () => async () => ({
         executionInstanceId: "capability-test",
         output: "",
@@ -621,11 +508,6 @@ it("closes a broker session when any event arrives before runtime hello", async 
     gateway,
     {
       requestApproval: async () => ({ approved: true }),
-      executeGitPush: async () => ({
-        output: "",
-        exitCode: 0,
-        truncated: false,
-      }),
       prepareCapabilityCommand: async () => async () => ({
         executionInstanceId: "capability-test",
         output: "",
@@ -718,11 +600,6 @@ it("proxies a model request across a real child process", async () => {
     gateway,
     {
       requestApproval: async () => ({ approved: true }),
-      executeGitPush: async () => ({
-        output: "",
-        exitCode: 0,
-        truncated: false,
-      }),
       prepareCapabilityCommand: async () => async () => ({
         executionInstanceId: "capability-test",
         output: "",

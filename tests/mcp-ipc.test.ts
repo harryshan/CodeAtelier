@@ -42,11 +42,6 @@ it("binds MCP authorizations to one authenticated connection and tool call", asy
     gateway,
     {
       requestApproval: async () => ({ approved: true }),
-      executeGitPush: async () => ({
-        output: "",
-        exitCode: 0,
-        truncated: false,
-      }),
       prepareCapabilityCommand: async () => {
         throw new Error("unused");
       },
