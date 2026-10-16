@@ -2,7 +2,7 @@
  * CodeAtelier 的主页面，负责选择会话、提交任务和打开设置等用户操作。
  * 通过 api 请求后端，通过 useSessionConnection 同步会话，再交给 Timeline 和分类 SettingsPage 展示。
  *
- * 1. 状态和 effects 管理当前会话、一次性 subagent 勾选、服务端发布门禁、弹窗及加载状态；useHistoryScroll 自动加载旧页，Timeline 保持阅读位置。
+ * 1. 状态和 effects 管理当前会话、一次性 subagent 勾选、服务端发布门禁、弹窗及加载状态；useHistoryScroll 自动加载旧页，Timeline 保持阅读位置；历史加载使用低强调状态行，读取失败独立警告并允许重试。
  * 2. 按服务端返回的工作区路径分组展示会话；项目可独立折叠，展开时默认仅显示最近五个对话，并可按需显示更早记录；手机端以可关闭的抽屉呈现该侧栏。
  * 3. resume、reloadService、stopServer、createProject、createConversation 和 send 处理恢复、受确认的服务重载、关闭服务、连接项目、新建会话和发送消息，并显示操作结果。
  * 4. 服务关闭后显示重启说明；正常页面由侧栏或手机端导航抽屉、项目栏、当前会话实际 Runtime 隔离模式（没有证据时显示启动初始状态，并提示获批宿主命令例外）、可折叠会话统计、会将已完成任务过程默认收纳的时间线或项目连接页、所见即所得 Markdown 任务编辑器组成。
@@ -633,10 +633,13 @@ export default function App() {
               </div>
               {data?.history &&
                 (olderError || loadingOlder || data.history.hasOlder) && (
-                  <div role="status" aria-live="polite">
+                  <div
+                    className={olderError ? s.historyError : s.historyStatus}
+                    role={olderError ? "alert" : "status"}
+                  >
                     {olderError ? (
                       <>
-                        {olderError}
+                        <span>{olderError}</span>
                         <button onClick={() => void loadOlder()}>
                           重试加载历史
                         </button>

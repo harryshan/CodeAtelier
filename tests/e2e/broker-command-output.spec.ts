@@ -173,7 +173,7 @@ for (const scenario of cases) {
     await expect(card.getByText(duration, { exact: true })).toBeVisible();
     await expect(page.getByText(duration, { exact: true })).toHaveCount(2);
     const readResult = page.locator("summary").filter({
-      hasText: /^✓ 工具结果/,
+      hasText: /^工具结果 · 读取文件/,
     });
     await expect(readResult).toHaveCount(1);
     await expect(readResult.getByText(duration, { exact: true })).toBeVisible();

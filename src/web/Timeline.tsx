@@ -2,9 +2,9 @@
  * 将 Snapshot 中的历史事件和待审批操作显示为对话时间线，并通过 api 提交审批决定。
  * 请求失败时交给传入的错误回调处理。
  *
- * 1. labels、textResult 和 toolDuration 处理工具名称、结果及耗时；旧记录缺少耗时时明确提示，不根据事件间隔猜测。
+ * 1. timeline-presentation 提供中文名称和保守结果摘要，textResult 和 toolDuration 保留原文及耗时；旧记录缺少耗时时明确提示，不根据事件间隔猜测。
  * 2. 读取连接层 timeline-projection 的流式文本、输出和状态视图；渲染期间不聚合历史。MarkdownMessage 缓存相同正文的安全渲染。
- * 3. 工具卡片保留参数、结果与耗时，不另列调用关联记录；大正文由 EventBody 按需读取。显示编辑进度、工具输出及子任务记录；普通/Broker 宿主命令和旧 Git 记录共用输出卡片，未匹配的输出仍显示为文本。StreamingMessage 使用通知索引判断尝试是否仍在生成。
+ * 3. 工具卡片保留参数、结果与耗时，不另列调用关联记录；大正文由 EventBody 按需读取。显示编辑进度、工具输出及子任务记录；普通/Broker 宿主命令和旧 Git 记录共用输出卡片，未匹配的输出使用独立原文卡片并明确状态未知。StreamingMessage 使用通知索引判断尝试是否仍在生成。
  * 4. 已结束任务（含失败、取消和中断）默认折叠中间过程，用户输入、末次完整回复与中断提示保留在外层；排队、运行和等待审批的任务继续完整显示。
  * 5. useVirtualTimeline 缓存精确高度前缀和，首次挂载在 layout effect 中测量，ResizeObserver 处理后续尺寸变化。
  *    滚动每帧合并并按时间线自身坐标定位；补偿滚动不改变跟随状态，主动上滚立即退出跟随，回到末尾才恢复。
@@ -38,27 +38,7 @@ import {
 } from "./timeline-projection";
 import type { SessionView } from "./session-view";
 import { createTimelineLayout, timelineRange } from "./timeline-virtualization";
-
-const labels: Record<string, string> = {
-  // 已移除的 list_files 工具仅用于展示旧会话记录。
-  list_files: "浏览目录（旧记录）",
-  read_file: "读取文件",
-  // 已移除的 search 工具仅用于展示旧会话记录。
-  search: "搜索代码（旧记录）",
-  // 旧会话的 edit_file/write_file 仅用于历史展示；新版模型契约只公开 edit_files。
-  edit_file: "精确修改（旧记录）",
-  edit_files: "新建或精确修改文件",
-  write_file: "写入文件（旧记录）",
-  run_command: "执行命令",
-  run_with_permissions: "执行命令（宿主权限）",
-  git: "Git 操作（旧记录）",
-  subagent: "只读子代理协调",
-  // 保留旧会话事件的中文标签；旧调用只展示，不会被新版 ToolRunner 执行。
-  git_status: "Git 状态（旧记录）",
-  git_diff: "Git 差异（旧记录）",
-  git_commit: "Git 提交（旧记录）",
-  git_push: "Git 推送（旧记录）",
-};
+import { eventLabel, resultSummary, toolLabel } from "./timeline-presentation";
 
 function textResult(event: Event) {
   return typeof event.data.result === "string"
@@ -112,7 +92,7 @@ function ToolOutputCard({
     <details open className={s.outputCard}>
       <summary>
         <span className={`${s.toolDot} ${s[`toolDot${toolStatus.tone}`]}`} />
-        {labels[start.data.name] || start.data.name} <code>{target}</code>
+        {toolLabel(start.data.name)} <code>{target}</code>
         <span className={s.outputStatus}>{status}</span>
       </summary>
       {output && <pre className={s.outputText}>{output}</pre>}
@@ -260,7 +240,8 @@ const TimelineEvent = memo(
             <span
               className={`${s.toolDot} ${s[`toolDot${toolStatus.tone}`]}`}
             />
-            {labels[event.data.name] || event.data.name}
+            {toolLabel(event.data.name)}
+            <code className={s.recordIdentifier}>{event.data.name}</code>
             <code>
               {event.data.args?.path ||
                 event.data.args?.command ||
@@ -278,8 +259,13 @@ const TimelineEvent = memo(
       return (
         <details className={s.toolResult}>
           <summary>
-            {event.data.result?.error ? "⚠ 操作未完成" : "✓ 工具结果"}
+            {event.data.result?.error ? "⚠ 操作未完成" : "工具结果"}
+            {" · "}
+            {toolLabel(event.data.name)}
             <span>{toolDuration(event.data.durationMs)}</span>
+            <small className={s.resultSummary}>
+              {resultSummary(event.data.name, event.data.result)}
+            </small>
           </summary>
           <pre>{textResult(event)}</pre>
         </details>
@@ -339,7 +325,20 @@ const TimelineEvent = memo(
       event.type === "capability_output" ||
       event.type === "git_output"
     ) {
-      return <pre className={s.toolResult}>{event.data.text}</pre>;
+      const title =
+        event.type === "git_output"
+          ? `未关联的 ${eventLabel(event.type)}`
+          : `未关联的${eventLabel(event.type)}`;
+
+      return (
+        <section className={s.recordCard} aria-label={title}>
+          <header className={s.recordHeader}>
+            <strong>{title}</strong>
+            <small>执行状态未知</small>
+          </header>
+          <pre className={s.rawRecordText}>{event.data.text}</pre>
+        </section>
+      );
     }
 
     if (event.type === "context_budget") {

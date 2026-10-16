@@ -2,7 +2,7 @@
  * 验证 App 的连续历史浏览，使用分页 HTTP/SSE 合成夹具，不访问模型或个人历史。
  * 1. installHistory 提供三页消息及可控旧页故障，保留真实 EventSource 重连路径。
  * 2. 向上滚动自动前插，检查阅读锚点、首尾可达、有限 DOM 和实时消息不抢滚动；到达开头不留提示或空状态栏。
- * 3. 失败后保留当前记录，显式重试恢复；在途请求切换会话不混入旧结果，短页自动补足。
+ * 3. 加载提示低强调显示，失败使用独立警告并保留当前记录和重试；在途请求切换会话不混入旧结果，短页自动补足。
  */
 import { expect, test, type Page } from "@playwright/test";
 import type { Event, Snapshot } from "../../src/shared/types.js";
@@ -137,6 +137,9 @@ test("ignores an old page that finishes after switching conversations", async ({
   await expect(
     page.getByText("正在加载更早记录…", { exact: true }),
   ).toBeVisible();
+  await expect(
+    page.locator('[class*="scrollArea"]').getByRole("status"),
+  ).toHaveCSS("font-size", "12px");
   await page.getByRole("button", { name: "另一段对话", exact: true }).click();
   release();
   await expect(
@@ -196,6 +199,8 @@ test("keeps loaded messages on failure and retries without a pagination button",
   });
   const retry = page.getByRole("button", { name: "重试加载历史" });
   await expect(retry).toBeVisible();
+  await expect(area.getByRole("alert")).toContainText("历史读取暂时失败");
+  await expect(area.getByRole("alert")).toHaveCSS("border-left-width", "3px");
   await expect(page.getByText("历史消息 201", { exact: true })).toBeVisible();
   const requests = state.before.length;
   await page.getByLabel("任务描述").fill("加载失败仍可编辑");

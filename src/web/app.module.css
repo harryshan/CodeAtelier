@@ -2,7 +2,7 @@
  * 主页面、时间线和弹窗共用的 CSS Module，由各 React 组件引用。
  *
  * 1. 开头定义主页面/设置模态框共用主题变量、字体和基础控件样式，再定义双栏布局、侧栏和标题区。
- * 2. 项目分组与侧栏、欢迎页、实际 sandbox 状态、会话统计及 Perfetto 下载链接、带子任务徽标的 Markdown 对话消息、工具结果、diff 和通知。
+ * 2. 项目分组与侧栏、欢迎页、实际 sandbox 状态、会话统计及 Perfetto 下载链接、带子任务徽标的 Markdown 对话消息、工具结果、diff 和通知；历史状态行与原文卡片统一技术记录样式，窄屏换行、正文限高滚动。
  * 3. 审批按钮、所见即所得 Markdown 输入区、按服务端门禁显示的子代理勾选、弹窗和字段网格对应页面操作。
  * 4. 末尾通过媒体查询调整窄屏间距和排列；手机端把完整侧栏改为带遮罩的导航抽屉，避免隐藏项目和会话操作。
  *
@@ -845,6 +845,98 @@
   width: auto;
   margin: 0 0.45em 0 0;
   accent-color: #8de0c3;
+}
+.historyStatus,
+.historyError {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  padding: 10px 14px;
+  margin: 8px 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--ca-muted);
+  overflow-wrap: anywhere;
+}
+.historyError {
+  justify-content: flex-start;
+  border-left: 3px solid #d1b780;
+  border-radius: 4px;
+  background: #302e26;
+  color: #d6c6a8;
+}
+.historyError button,
+.recordActions button,
+.recordError button {
+  flex-shrink: 0;
+  font-size: 12px;
+}
+.recordCard {
+  min-width: 0;
+  margin: 8px 0;
+  border: 1px solid #304048;
+  border-radius: 7px;
+  background: #182329;
+  overflow: hidden;
+}
+.recordHeader {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  padding: 11px 13px;
+  color: #b0c5ce;
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.recordHeader small,
+.recordIdentifier {
+  color: var(--ca-muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.recordActions,
+.recordError {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 13px;
+  color: var(--ca-muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.recordError {
+  color: #e4afb0;
+  border-top: 1px solid #614343;
+}
+.recordMessage {
+  margin: 0;
+  padding: 12px 13px;
+  color: var(--ca-muted);
+  font-size: 12px;
+}
+.recordCard .rawRecordText {
+  margin: 0;
+  padding: 12px 13px;
+  max-height: 300px;
+  overflow: auto;
+  white-space: pre;
+  color: #91a7af;
+  font-size: 12px;
+  line-height: 1.6;
+  border-top: 1px solid #283840;
+}
+.resultSummary {
+  display: block;
+  margin-top: 6px;
+  color: var(--ca-muted);
+  font-size: 11px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
 }
 .tool,
 .outputCard,
