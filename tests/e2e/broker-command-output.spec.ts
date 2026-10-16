@@ -3,6 +3,7 @@
  * 1. 合成持久化 Snapshot 和增量 SSE 刷新，先提供执行中 stdout/stderr，再提供工具终态。
  * 2. 各用例检查同一卡片中的实时输出、退出码/截断/错误，以及刷新后的历史重建；命令卡片和普通工具结果均检查耗时、零值与旧记录缺失提示。
  * 3. 无流式事件的旧结果使用最终 output 兜底；内容只作文本，不执行输出中的 HTML。
+ * 4. 普通工具参数与结果可展开，命令及普通卡片均不再挂载关联记录入口、列表或分页按钮；刷新后保持一致。
  * 路由只替换测试会话接口，沿用测试服务的 bootstrap 与实际 UI，不提供 Sandbox 验收证明。
  */
 
@@ -177,6 +178,26 @@ for (const scenario of cases) {
     await expect(readResult).toHaveCount(1);
     await expect(readResult.getByText(duration, { exact: true })).toBeVisible();
 
+    const readStart = page.locator("details").filter({
+      has: page.locator("summary code", { hasText: "example.txt" }),
+    });
+    await readStart.locator("summary").click();
+    await expect(readStart.locator("pre")).toContainText(
+      '"path": "example.txt"',
+    );
+    await readResult.click();
+    await expect(
+      page.getByText('"text": "file content"', { exact: false }),
+    ).toBeVisible();
+    const relatedRecordButtons = page.getByRole("button", {
+      name: /查看此调用的全部关联记录|收起调用记录|关联记录首页|下一页关联记录/,
+      includeHidden: true,
+    });
+    await expect(relatedRecordButtons).toHaveCount(0);
+    await expect(
+      page.getByText("按任务和调用 ID 列出候选记录；重复 ID 的记录均保留。"),
+    ).toHaveCount(0);
+
     await page.reload();
     await page
       .getByRole("button", { name: session.title, exact: true })
@@ -188,5 +209,6 @@ for (const scenario of cases) {
     await expect(page.getByText(duration, { exact: true })).toHaveCount(2);
     await expect(readResult).toHaveCount(1);
     await expect(readResult.getByText(duration, { exact: true })).toBeVisible();
+    await expect(relatedRecordButtons).toHaveCount(0);
   });
 }
