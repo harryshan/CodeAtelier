@@ -45,6 +45,10 @@ Agent Runtime 已有权限内的工具不再审批；越界命令通过 `run_wit
 
 取消结果以 executionInstance kind 写入 session。首版不依赖 AppContainer、自研 WFP callout driver、实验性的 `CreateProcessInSandbox`/Bound File System 或 Chromium Target hook。这些未采用机制不得描述为已实现。Windows Sandbox 的日常可用性已获用户确认，但不因此扩大既有权限保证或跨平台能力声明；专项故障与安全矩阵仍按实际证据记录。
 
+## 设置系统重设计（D153，尚未实现）
+
+2026-10-16 用户要求将大部分配置迁入 `settings.json`，支持随时配置并完整重设 UI，最终移除 `.env`。这替代“连接永远只从环境读取”的目标约束；当前实现仍沿用旧配置方式，不能提前删除真实 `.env` 或宣称已支持热更新。设计、凭据存储建议、生效时机与迁移验收见 [设置系统重设计](docs/settings-system.md)。真实配置迁移、服务重启和密钥落盘不因设计文档而自动执行。
+
 ## 需求的权威来源
 
 - `docs/requirements.md`：已确认的初版功能边界与验收标准。

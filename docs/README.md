@@ -35,6 +35,8 @@
 
 ## 专题与未完成边界
 
+- [设置系统重设计](settings-system.md)：settings.json 单一来源、动态生效、完整配置 UI 和移除 env 的迁移方案；尚未实现。
+
 - [SQLite 存储改造与完整历史迁移](database-migration.md)：待实施交接设计；保留 SQLite、全部旧记录离线转换、全量验证与切换/回退，不代表迁移已执行。
 
 - [上下文管理](context-management.md)：已实现的会话压缩、历史回读与保留规则。
