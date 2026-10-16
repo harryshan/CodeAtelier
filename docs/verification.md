@@ -1,5 +1,14 @@
 # 初版验证记录
 
+## 第一批多协议模型支持（2026-10-16，Windows / Node 26.10.0）
+
+- 按 D152 保留 Responses 默认行为，新增 Chat Completions / Anthropic Messages 的文字流与本地工具适配；主/辅助连接和密钥独立选择，覆盖 Engine、标题、摘要、审批、长工具复查及 Broker 模型代理。新增协议不发送思考参数或声明原生搜索，未知容量沿用字符预算。Runtime IPC v16 下发搜索能力，不传连接凭据。
+- 本机 HTTP/SSE 夹具覆盖多工具往返、UTF-8 分片、usage、HTTP 分类/脱敏、取消、总时限/空闲时限、断流/截断/非法调用；生产 Engine 完成文件创建、持久化和续聊，并核对归档 trace 的协议、首事件和 request ID。独立 Node Runtime 验证三协议搜索能力；辅助标题验证独立 Messages 地址与密钥。
+- 新增边界回归先复现 Messages 的最终 usage 缺失、非法缓存计数、异常初始内容/参数被丢弃和交错文字/工具顺序被重排，修复后全部通过。旧握手测试同步到 v16；浏览器测试修正实际标签定位，没有弱化能力断言。
+- TypeScript、ESLint、Prettier 全部通过。原样 `pnpm check` 单测 **767 通过、1 跳过、2 失败**：未修改的 agent-runtime-tools 命令夹具超时、Windows Node 版本探测失败；没有修改默认并发、超时或断言。随后全套 `pnpm test --maxWorkers=2` **110 文件、769 通过、1 跳过**，包括上述两项。原样 check 不记为全绿。
+- 完整 `pnpm test:e2e` **58/58 通过**，包含服务端/Web、Windows 与 POSIX Runtime 测试构建；保留既有 Zod 注释与 Web chunk 大小警告。最终证据保存在忽略目录 `.local/model-protocol-unit.log`、`.local/model-protocol-e2e.log`，不提交日志。
+- 验证因 Runtime 无 Node/pnpm PATH，经批准在 Broker 宿主执行。仅使用本机模拟服务与隔离测试数据，不代表真实提供商、跨平台实机或固定账户安装态验收；没有运行 Evaluation、操作真实历史库或更新系统安装。安装式 Windows Sandbox 使用前需按指南重建并 Repair 至 IPC v16。任意跨协议旧历史转换不作保证，不能安全转换时明确拒绝。
+
 ## 非正常结束任务默认折叠过程（2026-10-13，Windows / Node 26.10.0）
 
 - 按 D075 追加要求，将 failed/cancelled/interrupted 与 completed 一并纳入过程折叠；用户输入、末次完整回复、中断提示及审批控件留在外层，App 原有恢复入口不变。queued/running/waiting 仍完整展示；仅任务状态更新也会使分组缓存失效。无完整回复时不伪造结论，残留流式文本可展开查看，历史数据不改写。

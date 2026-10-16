@@ -2,7 +2,7 @@
  * 验证 Engine 在显式注入已认证 AgentRuntimeLauncher 后，把完整 agent loop 切换到独立 Runtime 进程。
  * 测试 launcher 只用 stdio 和环境变量传递测试身份，不提供 Windows token/Job/ACL 证明，不是产品 Sandbox 验收。
  *
- * 1. Engine 生成 instance/nonce，launcher 启动真实 Node 子进程并返回 IPC 流。
+ * 1. Engine 生成 instance/nonce，launcher 启动真实 Node 子进程并返回 IPC 流；三协议分别验证网页搜索能力下发。
  * 2. 子进程并行运行五次 read_file，验证 Broker 按已验证 PID/最多四个可复用槽重建实际执行与内部阶段、附参数和任务结束清理 trace；会话耗时与对应执行片段一致，固定白名单细分 trace 不包含文件内容。
  * 3. Engine 等待 Runtime 终态与 clean 退出，再把任务和带有已验证进程身份的 execution instance 记为 completed。
  * 4. 取消/服务关闭等待 Runtime 写回可信终态后才关闭 transport；关闭保存 interrupted，用户取消保存 cancelled，无法证明清理时仍保持 unknown/failed。
@@ -34,340 +34,348 @@ import { temp } from "./fixtures/helpers.js";
 
 const runFile = promisify(execFile);
 
-it("moves the Engine agent loop into the launched Runtime process", async () => {
-  const root = await temp();
-  await writeFile(path.join(root, "runtime.txt"), "from-runtime\n");
-  const config = new Config(await temp());
-  config.sandbox.enabled = true;
-  config.sandbox.initialStatus = {
-    enabled: true,
-    requested: true,
-    applied: false,
-    mode: "unknown",
-    platform: process.platform,
-    level: null,
-  };
-  const store = new Store(path.join(config.directory, "db"));
-  const session = store.create(root, "runtime test");
-  const errors: Buffer[] = [];
-  let closeCalls = 0;
-  const launcher: AgentRuntimeLauncher = {
-    async launch(input) {
-      const child = spawn(
-        process.execPath,
-        [
-          "--import",
-          "tsx",
-          path.resolve("tests/fixtures/agent-runtime-service-child.ts"),
-        ],
-        {
-          cwd: process.cwd(),
-          stdio: ["pipe", "pipe", "pipe"],
-          env: {
-            ...process.env,
-            CODEATELIER_TEST_RUNTIME_DESCRIPTOR: JSON.stringify({
-              identity: input.identity,
-              nonce: input.nonce,
-            }),
+it.each(["responses", "chat-completions", "messages"] as const)(
+  "moves the Engine agent loop into Runtime with %s capabilities",
+  async (protocol) => {
+    const root = await temp();
+    await writeFile(path.join(root, "runtime.txt"), "from-runtime\n");
+    const config = new Config(await temp());
+    config.settings.protocol = protocol;
+    config.sandbox.enabled = true;
+    config.sandbox.initialStatus = {
+      enabled: true,
+      requested: true,
+      applied: false,
+      mode: "unknown",
+      platform: process.platform,
+      level: null,
+    };
+    const store = new Store(path.join(config.directory, "db"));
+    const session = store.create(root, "runtime test");
+    const errors: Buffer[] = [];
+    let closeCalls = 0;
+    const launcher: AgentRuntimeLauncher = {
+      async launch(input) {
+        const child = spawn(
+          process.execPath,
+          [
+            "--import",
+            "tsx",
+            path.resolve("tests/fixtures/agent-runtime-service-child.ts"),
+          ],
+          {
+            cwd: process.cwd(),
+            stdio: ["pipe", "pipe", "pipe"],
+            env: {
+              ...process.env,
+              CODEATELIER_TEST_RUNTIME_DESCRIPTOR: JSON.stringify({
+                identity: input.identity,
+                nonce: input.nonce,
+              }),
+            },
           },
-        },
-      );
-      child.stderr.on("data", (chunk: Buffer) => errors.push(chunk));
-      let closed: Promise<"clean" | "orphaned"> | undefined;
-      const launched: LaunchedAgentRuntime = {
-        input: child.stdout,
-        output: child.stdin,
-        pid: child.pid!,
-        close: async () => {
-          closeCalls += 1;
-          closed ??= new Promise((resolve) => {
-            child.once("exit", (code) =>
-              resolve(code === 0 ? "clean" : "orphaned"),
-            );
-            child.stdin.end();
-          });
+        );
+        child.stderr.on("data", (chunk: Buffer) => errors.push(chunk));
+        let closed: Promise<"clean" | "orphaned"> | undefined;
+        const launched: LaunchedAgentRuntime = {
+          input: child.stdout,
+          output: child.stdin,
+          pid: child.pid!,
+          close: async () => {
+            closeCalls += 1;
+            closed ??= new Promise((resolve) => {
+              child.once("exit", (code) =>
+                resolve(code === 0 ? "clean" : "orphaned"),
+              );
+              child.stdin.end();
+            });
 
-          return closed;
-        },
-      };
-
-      return launched;
-    },
-  };
-  let modelCalls = 0;
-  const provider: ModelProvider = {
-    async getCapabilities() {
-      return {
-        limits: {
-          max_context_window_tokens: 32_000,
-          max_output_tokens: 1_024,
-        },
-      };
-    },
-    async run(input, _instructions, tools) {
-      modelCalls += 1;
-      expect(tools).toContainEqual({ type: "web_search" });
-      expect(tools.map((tool: any) => tool.name)).toContain(
-        "run_with_permissions",
-      );
-      if (modelCalls === 1) {
-        return {
-          text: "",
-          output: Array.from({ length: 5 }, (_, index) => ({
-            type: "function_call" as const,
-            call_id: index === 0 ? "runtime-read" : `runtime-read-${index + 1}`,
-            name: "read_file",
-            arguments: JSON.stringify({
-              execution: { id: `read-${index + 1}`, dependsOn: [] },
-              arguments: { path: "runtime.txt", startLine: 1, endLine: 10 },
-            }),
-          })),
+            return closed;
+          },
         };
+
+        return launched;
+      },
+    };
+    let modelCalls = 0;
+    const provider: ModelProvider = {
+      async getCapabilities() {
+        return {
+          limits: {
+            max_context_window_tokens: 32_000,
+            max_output_tokens: 1_024,
+          },
+        };
+      },
+      async run(input, _instructions, tools) {
+        modelCalls += 1;
+        expect(tools.some((tool) => tool.type === "web_search")).toBe(
+          protocol === "responses",
+        );
+        expect(tools.map((tool: any) => tool.name)).toContain(
+          "run_with_permissions",
+        );
+        if (modelCalls === 1) {
+          return {
+            text: "",
+            output: Array.from({ length: 5 }, (_, index) => ({
+              type: "function_call" as const,
+              call_id:
+                index === 0 ? "runtime-read" : `runtime-read-${index + 1}`,
+              name: "read_file",
+              arguments: JSON.stringify({
+                execution: { id: `read-${index + 1}`, dependsOn: [] },
+                arguments: { path: "runtime.txt", startLine: 1, endLine: 10 },
+              }),
+            })),
+          };
+        }
+
+        expect(JSON.stringify(input)).toContain("from-runtime");
+
+        return { text: "done", output: [] };
+      },
+    };
+    const engine = new Engine(
+      store,
+      config,
+      pino({ enabled: false }),
+      () => provider,
+      launcher,
+    );
+
+    try {
+      const task = await engine.start(session.id, "read runtime.txt");
+      await engine.active?.done;
+
+      expect(store.task(task.id)?.status).toBe("completed");
+      expect(modelCalls).toBe(2);
+      const chunks = store.db
+        .prepare(
+          "SELECT items FROM context_chunks WHERE sessionId=? ORDER BY position",
+        )
+        .all(session.id) as Array<{ items: string }>;
+      expect(chunks.map((chunk) => JSON.parse(chunk.items).length)).toEqual([
+        1, 5, 1, 1, 1, 1, 1,
+      ]);
+      expect(chunks.map((chunk) => JSON.parse(chunk.items)[0]?.type)).toEqual([
+        undefined,
+        "function_call",
+        ...Array(5).fill("function_call_output"),
+      ]);
+      expect(closeCalls).toBe(1);
+      expect(Buffer.concat(errors).toString("utf8")).toBe("");
+      const capturedTools = store.replayCase(task.id)?.capture?.tools;
+      expect(capturedTools).toHaveLength(5);
+      expect(capturedTools).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            callId: "runtime-read",
+            name: "read_file",
+            result: expect.objectContaining({
+              text: expect.stringContaining("from-runtime"),
+            }),
+          }),
+        ]),
+      );
+      const trace = JSON.parse((await engine.savedTrace(task))!);
+
+      expect(
+        trace.traceEvents.some((event: any) => event.name === "tool.read_file"),
+      ).toBe(true);
+      for (const name of [
+        "read_file.stat",
+        "read_file.bytes",
+        "read_file.compute",
+      ]) {
+        const stage = trace.traceEvents.find(
+          (event: any) =>
+            event.name === name &&
+            event.ph === "b" &&
+            event.args?.callId === "runtime-read",
+        );
+        expect(stage?.args).toMatchObject({
+          callId: "runtime-read",
+          status: "ok",
+        });
+        expect(JSON.stringify(stage)).not.toContain("from-runtime");
       }
 
-      expect(JSON.stringify(input)).toContain("from-runtime");
-
-      return { text: "done", output: [] };
-    },
-  };
-  const engine = new Engine(
-    store,
-    config,
-    pino({ enabled: false }),
-    () => provider,
-    launcher,
-  );
-
-  try {
-    const task = await engine.start(session.id, "read runtime.txt");
-    await engine.active?.done;
-
-    expect(store.task(task.id)?.status).toBe("completed");
-    expect(modelCalls).toBe(2);
-    const chunks = store.db
-      .prepare(
-        "SELECT items FROM context_chunks WHERE sessionId=? ORDER BY position",
-      )
-      .all(session.id) as Array<{ items: string }>;
-    expect(chunks.map((chunk) => JSON.parse(chunk.items).length)).toEqual([
-      1, 5, 1, 1, 1, 1, 1,
-    ]);
-    expect(chunks.map((chunk) => JSON.parse(chunk.items)[0]?.type)).toEqual([
-      undefined,
-      "function_call",
-      ...Array(5).fill("function_call_output"),
-    ]);
-    expect(closeCalls).toBe(1);
-    expect(Buffer.concat(errors).toString("utf8")).toBe("");
-    const capturedTools = store.replayCase(task.id)?.capture?.tools;
-    expect(capturedTools).toHaveLength(5);
-    expect(capturedTools).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          callId: "runtime-read",
-          name: "read_file",
-          result: expect.objectContaining({
-            text: expect.stringContaining("from-runtime"),
-          }),
-        }),
-      ]),
-    );
-    const trace = JSON.parse((await engine.savedTrace(task))!);
-
-    expect(
-      trace.traceEvents.some((event: any) => event.name === "tool.read_file"),
-    ).toBe(true);
-    for (const name of [
-      "read_file.stat",
-      "read_file.bytes",
-      "read_file.compute",
-    ]) {
-      const stage = trace.traceEvents.find(
+      const toolSpan = trace.traceEvents.find(
         (event: any) =>
-          event.name === name &&
+          event.name === "tool.read_file" &&
           event.ph === "b" &&
-          event.args?.callId === "runtime-read",
+          event.args.callId === "runtime-read",
       );
-      expect(stage?.args).toMatchObject({
-        callId: "runtime-read",
-        status: "ok",
-      });
-      expect(JSON.stringify(stage)).not.toContain("from-runtime");
-    }
-
-    const toolSpan = trace.traceEvents.find(
-      (event: any) =>
-        event.name === "tool.read_file" &&
-        event.ph === "b" &&
-        event.args.callId === "runtime-read",
-    );
-    const toolEnd = trace.traceEvents.find(
-      (event: any) =>
-        event.name === "tool.read_file" &&
-        event.ph === "e" &&
-        event.id2.local === toolSpan.id2.local &&
-        event.tid === toolSpan.tid &&
-        event.ts >= toolSpan.ts,
-    );
-    expect(toolSpan.args.parameters).toMatchObject({
-      path: "runtime.txt",
-      startLine: 1,
-      endLine: 10,
-    });
-    expect(toolSpan.pid).toBeGreaterThan(0);
-    expect(toolSpan.pid).not.toBe(process.pid);
-    expect(toolEnd.pid).toBe(toolSpan.pid);
-    expect(toolEnd.ts).toBeGreaterThanOrEqual(toolSpan.ts);
-    expect(
-      trace.traceEvents.find(
-        (event: any) => event.name === "context.prepare" && event.ph === "b",
-      ).pid,
-    ).toBe(toolSpan.pid);
-    expect(
-      trace.traceEvents.find(
-        (event: any) => event.name === "llm.request" && event.ph === "b",
-      ).pid,
-    ).toBe(process.pid);
-    const runtimeTracks = trace.traceEvents.filter(
-      (event: any) =>
-        event.name === "thread_name" &&
-        event.pid === toolSpan.pid &&
-        event.args.name.startsWith("Agent Runtime read_file"),
-    );
-    expect(runtimeTracks).toHaveLength(0);
-    const runtimeStages = trace.traceEvents.filter(
-      (event: any) =>
-        event.name.startsWith("read_file.") &&
-        event.args?.callId === "runtime-read" &&
-        event.ph === "b",
-    );
-    expect(
-      runtimeStages.every(
+      const toolEnd = trace.traceEvents.find(
         (event: any) =>
-          event.tid === toolSpan.tid &&
-          event.pid === toolSpan.pid &&
-          event.ts >= toolSpan.ts &&
-          event.ts <= toolEnd.ts,
-      ),
-    ).toBe(true);
-    expect(runtimeStages.length).toBeGreaterThan(0);
-    const toolStarts = trace.traceEvents.filter(
-      (event: any) => event.name === "tool.read_file" && event.ph === "b",
-    );
-    const results = store
-      .events(session.id)
-      .filter((event) => event.type === "tool_result");
-    expect(results).toHaveLength(5);
-    for (const start of toolStarts) {
-      const end = trace.traceEvents.find(
-        (event: any) =>
-          event.name === start.name &&
+          event.name === "tool.read_file" &&
           event.ph === "e" &&
-          event.id2.local === start.id2.local &&
-          event.tid === start.tid &&
-          event.ts >= start.ts,
+          event.id2.local === toolSpan.id2.local &&
+          event.tid === toolSpan.tid &&
+          event.ts >= toolSpan.ts,
       );
-      const result = results.find(
-        (event) => event.data.callId === start.args.callId,
-      );
-      expect(result?.data.durationMs).toBe(
-        Math.round((end.ts - start.ts) / 1000),
-      );
-    }
-
-    const toolLanes = new Set(toolStarts.map((event: any) => event.tid));
-    for (const flowName of [
-      "llm_to_tool",
-      "tool_to_result",
-      "result_to_model",
-    ]) {
+      expect(toolSpan.args.parameters).toMatchObject({
+        path: "runtime.txt",
+        startLine: 1,
+        endLine: 10,
+      });
+      expect(toolSpan.pid).toBeGreaterThan(0);
+      expect(toolSpan.pid).not.toBe(process.pid);
+      expect(toolEnd.pid).toBe(toolSpan.pid);
+      expect(toolEnd.ts).toBeGreaterThanOrEqual(toolSpan.ts);
       expect(
-        trace.traceEvents.filter(
+        trace.traceEvents.find(
+          (event: any) => event.name === "context.prepare" && event.ph === "b",
+        ).pid,
+      ).toBe(toolSpan.pid);
+      expect(
+        trace.traceEvents.find(
+          (event: any) => event.name === "llm.request" && event.ph === "b",
+        ).pid,
+      ).toBe(process.pid);
+      const runtimeTracks = trace.traceEvents.filter(
+        (event: any) =>
+          event.name === "thread_name" &&
+          event.pid === toolSpan.pid &&
+          event.args.name.startsWith("Agent Runtime read_file"),
+      );
+      expect(runtimeTracks).toHaveLength(0);
+      const runtimeStages = trace.traceEvents.filter(
+        (event: any) =>
+          event.name.startsWith("read_file.") &&
+          event.args?.callId === "runtime-read" &&
+          event.ph === "b",
+      );
+      expect(
+        runtimeStages.every(
           (event: any) =>
-            event.ph === "n" &&
-            event.flow_out &&
-            event.args.flowName === flowName,
+            event.tid === toolSpan.tid &&
+            event.pid === toolSpan.pid &&
+            event.ts >= toolSpan.ts &&
+            event.ts <= toolEnd.ts,
         ),
-      ).toHaveLength(5);
-    }
+      ).toBe(true);
+      expect(runtimeStages.length).toBeGreaterThan(0);
+      const toolStarts = trace.traceEvents.filter(
+        (event: any) => event.name === "tool.read_file" && event.ph === "b",
+      );
+      const results = store
+        .events(session.id)
+        .filter((event) => event.type === "tool_result");
+      expect(results).toHaveLength(5);
+      for (const start of toolStarts) {
+        const end = trace.traceEvents.find(
+          (event: any) =>
+            event.name === start.name &&
+            event.ph === "e" &&
+            event.id2.local === start.id2.local &&
+            event.tid === start.tid &&
+            event.ts >= start.ts,
+        );
+        const result = results.find(
+          (event) => event.data.callId === start.args.callId,
+        );
+        expect(result?.data.durationMs).toBe(
+          Math.round((end.ts - start.ts) / 1000),
+        );
+      }
 
-    expect(toolStarts).toHaveLength(5);
-    expect(toolLanes.size).toBeLessThan(5);
-    expect(toolLanes.size).toBeLessThanOrEqual(4);
-    expect(toolStarts.every((event: any) => event.pid === toolSpan.pid)).toBe(
-      true,
-    );
-    const shutdown = trace.traceEvents.filter(
-      (event: any) => event.name === "read_file.pool.close",
-    );
-    expect(shutdown).toHaveLength(0);
-    expect(trace.traceEvents.map((event: any) => event.name)).not.toContain(
-      "read_file.access",
-    );
-    expect(trace.traceEvents.map((event: any) => event.name)).not.toContain(
-      "read_file.worker.compute",
-    );
+      const toolLanes = new Set(toolStarts.map((event: any) => event.tid));
+      for (const flowName of [
+        "llm_to_tool",
+        "tool_to_result",
+        "result_to_model",
+      ]) {
+        expect(
+          trace.traceEvents.filter(
+            (event: any) =>
+              event.ph === "n" &&
+              event.flow_out &&
+              event.args.flowName === flowName,
+          ),
+        ).toHaveLength(5);
+      }
 
-    for (const name of [
-      "ipc.handler",
-      "ipc.request",
-      "sandbox.handshake",
-      "context.prepare",
-      "context.prepare.measure_request_view",
-      "context.request",
-      "context.request.measure_input",
-      "tool.result_persist",
-    ]) {
+      expect(toolStarts).toHaveLength(5);
+      expect(toolLanes.size).toBeLessThan(5);
+      expect(toolLanes.size).toBeLessThanOrEqual(4);
+      expect(toolStarts.every((event: any) => event.pid === toolSpan.pid)).toBe(
+        true,
+      );
+      const shutdown = trace.traceEvents.filter(
+        (event: any) => event.name === "read_file.pool.close",
+      );
+      expect(shutdown).toHaveLength(0);
+      expect(trace.traceEvents.map((event: any) => event.name)).not.toContain(
+        "read_file.access",
+      );
+      expect(trace.traceEvents.map((event: any) => event.name)).not.toContain(
+        "read_file.worker.compute",
+      );
+
+      for (const name of [
+        "ipc.handler",
+        "ipc.request",
+        "sandbox.handshake",
+        "context.prepare",
+        "context.prepare.measure_request_view",
+        "context.request",
+        "context.request.measure_input",
+        "tool.result_persist",
+      ]) {
+        expect(
+          trace.traceEvents.some(
+            (event: any) => event.name === name && event.ph === "b",
+          ),
+        ).toBe(true);
+        expect(
+          trace.traceEvents.some(
+            (event: any) => event.name === name && event.ph === "e",
+          ),
+        ).toBe(true);
+      }
+
       expect(
         trace.traceEvents.some(
-          (event: any) => event.name === name && event.ph === "b",
+          (event: any) => event.args?.name === "Agent Runtime tool 1",
         ),
       ).toBe(true);
       expect(
         trace.traceEvents.some(
-          (event: any) => event.name === name && event.ph === "e",
+          (event: any) => event.args?.name === "Agent Runtime",
         ),
       ).toBe(true);
+      const runtimeEvents = store
+        .events(session.id)
+        .filter((event) => event.type === "execution_instance")
+        .map((event) => event.data as Record<string, unknown>);
+      const runningRuntime = runtimeEvents.find(
+        (event) => event.kind === "agent-runtime" && event.state === "running",
+      );
+      const completedRuntime = runtimeEvents.find(
+        (event) =>
+          event.kind === "agent-runtime" && event.state === "completed",
+      );
+      expect(runningRuntime?.pid).toBeGreaterThan(0);
+      expect(completedRuntime).toMatchObject({
+        executionInstanceId: runningRuntime?.executionInstanceId,
+        mode:
+          process.platform === "linux"
+            ? "linux-bubblewrap"
+            : process.platform === "darwin"
+              ? "macos-seatbelt"
+              : "windows-sandbox-user",
+        sandboxApplied: true,
+        pid: runningRuntime?.pid,
+        pidKind: "runtime",
+      });
+    } finally {
+      await engine.close();
+      await store.closeAsync();
     }
-
-    expect(
-      trace.traceEvents.some(
-        (event: any) => event.args?.name === "Agent Runtime tool 1",
-      ),
-    ).toBe(true);
-    expect(
-      trace.traceEvents.some(
-        (event: any) => event.args?.name === "Agent Runtime",
-      ),
-    ).toBe(true);
-    const runtimeEvents = store
-      .events(session.id)
-      .filter((event) => event.type === "execution_instance")
-      .map((event) => event.data as Record<string, unknown>);
-    const runningRuntime = runtimeEvents.find(
-      (event) => event.kind === "agent-runtime" && event.state === "running",
-    );
-    const completedRuntime = runtimeEvents.find(
-      (event) => event.kind === "agent-runtime" && event.state === "completed",
-    );
-    expect(runningRuntime?.pid).toBeGreaterThan(0);
-    expect(completedRuntime).toMatchObject({
-      executionInstanceId: runningRuntime?.executionInstanceId,
-      mode:
-        process.platform === "linux"
-          ? "linux-bubblewrap"
-          : process.platform === "darwin"
-            ? "macos-seatbelt"
-            : "windows-sandbox-user",
-      sandboxApplied: true,
-      pid: runningRuntime?.pid,
-      pidKind: "runtime",
-    });
-  } finally {
-    await engine.close();
-    await store.closeAsync();
-  }
-});
+  },
+);
 
 for (const [cleanupProof, stopKind] of [
   ["clean", "cancel"],

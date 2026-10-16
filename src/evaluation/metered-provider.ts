@@ -3,7 +3,7 @@
  * 它包装 ModelProvider，主任务、摘要和重试共用同一份计量状态。
  *
  * 1. EvaluationUsage 分开记录已知和未知用量；timings 保存首次文本和整次调用耗时。
- * 2. forProvider 给辅助模型创建共享计量的包装；能力查询仍转发给对应模型。
+ * 2. protocol/getCapabilities 转发对应模型元数据；forProvider 给辅助模型创建共享计量且保留协议的包装。
  * 3. run/runWithProvider 在有限模式下发请求前检查预算；无限模式继续计量但不以缺失 usage 停止，
  *    先将本次调用记为用量未知并保存检查点，
  *    收到合法 usage 后再更新为已知用量。
@@ -61,6 +61,10 @@ export class MeteredProvider implements ModelProvider {
     private checkpoint: () => void,
   ) {}
 
+  get protocol() {
+    return this.provider.protocol;
+  }
+
   getCapabilities(signal: AbortSignal) {
     return (
       this.provider.getCapabilities?.(signal) ?? Promise.resolve(undefined)
@@ -70,6 +74,7 @@ export class MeteredProvider implements ModelProvider {
   /** 辅助模型沿用同一份计数，和主任务共用总预算及未知用量记录。 */
   forProvider(provider: ModelProvider): ModelProvider {
     return {
+      protocol: provider.protocol,
       getCapabilities: (signal) =>
         provider.getCapabilities?.(signal) ?? Promise.resolve(undefined),
       run: (...args) => this.runWithProvider(provider, ...args),

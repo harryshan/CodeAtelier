@@ -226,7 +226,9 @@ Windows native runtime/relay 测试在非 Windows 整组跳过。stdio harness�
 
 ### 模型协议与重试
 
-主要测试：provider.test.ts、recovery.test.ts。
+主要测试：provider.test.ts、model-protocols.test.ts、model-protocol-edges.test.ts、config.test.ts、agent-runtime-engine.test.ts、recovery.test.ts；UI：e2e/model-protocols.spec.ts。
+
+新增 Chat Completions / Messages 本机 HTTP/SSE 真实传输回归：UTF-8 分片、多函数与结果往返、usage/缓存口径、缺失完成、截断、损坏参数、重复 ID、HTTP 分类与脱敏、取消和两类时限。生产 Engine 无注入工厂完成文件编辑/持久化/续聊，核对 trace 协议、首流事件与关联 ID；独立 Runtime 校验三协议搜索能力。边界回归覆盖最终 usage 缺失、非法缓存计数、异常初始内容/参数、交错文字/工具块顺序，以及独立辅助 Messages 标题路由。配置覆盖默认 Responses、独立辅助连接和密钥不跨连接继承；UI 检查只读协议和不适用思考选项禁用。真实提供商、跨平台 OS 隔离和任意历史跨协议转换不在此证据范围。
 
 item.done 回退、失败/不完整事件、服务实际错误 message/reason/code 的脱敏保留、断流、超时、重试次数、HTTP 分类、取消退避、并行工具调用请求参数
 
@@ -248,7 +250,7 @@ item.done 回退、失败/不完整事件、服务实际错误 message/reason/co
 
 错误诊断另由 runtime-ipc-errors.test.ts 覆盖：跨 IPC 保留模型超时、HTTP 原因、重试元数据和底层 cause；凭据脱敏、消息限长、未知异常不序列化正文、无效请求定位字段。provider.test.ts 使用本机流服务区分总超时和空闲超时，并检查提示包含实际配置时限。
 
-主任务请求包含 OpenAI 内置 `web_search`，宿主与 Agent Runtime 路径一致；Responses URL 引用只接受 HTTP(S)、按 URL 去重并转为可点击 Markdown 来源；内置工具不注册为本地函数或 DAG 节点
+Responses 主任务请求包含 OpenAI 内置 `web_search`，Chat Completions / Messages 不声明；宿主与 Agent Runtime 路径一致；Responses URL 引用只接受 HTTP(S)、按 URL 去重并转为可点击 Markdown 来源；内置工具不注册为本地函数或 DAG 节点
 
 ### agent 循环、任务调度与工具 DAG
 

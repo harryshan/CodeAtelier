@@ -2,7 +2,7 @@
  * 检查 Config 将连接配置与可持久化偏好分离后的来源、保存和密钥处理。
  * 用临时目录和模拟环境变量测试，直接读取 settings.json 核对实际保存内容。
  *
- * 1. 验证 API 地址、主/辅助模型始终来自环境，保存偏好不会覆盖它们。
+ * 1. 验证 API 协议、地址、主/辅助模型始终来自环境；跨连接不继承密钥，保存偏好不会覆盖它们。
  * 2. 验证 UI 更新拒绝连接字段改动，只原子保存思考等级和执行限制。
  * 3. 区分不传密钥与清空密钥，检查损坏文件、旧 settings.json 迁移和缺失环境配置。
  *
@@ -17,6 +17,59 @@ import { dataDirectory } from "../src/config/data-directory.js";
 import { temp } from "./fixtures/helpers.js";
 
 afterEach(() => vi.unstubAllEnvs());
+
+it("selects protocols from environment without persisting connections or leaking auxiliary keys", async () => {
+  vi.stubEnv("CODEATELIER_API_PROTOCOL", "chat-completions");
+  vi.stubEnv(
+    "CODEATELIER_BASE_URL",
+    "https://primary.example.test/v1/chat/completions/",
+  );
+  vi.stubEnv("CODEATELIER_AUXILIARY_MODEL", "small");
+  vi.stubEnv("CODEATELIER_AUXILIARY_API_PROTOCOL", "messages");
+  vi.stubEnv(
+    "CODEATELIER_AUXILIARY_BASE_URL",
+    "https://auxiliary.example.test/v1/messages",
+  );
+  vi.stubEnv("CODEATELIER_API_KEY", "primary-secret");
+  vi.stubEnv("CODEATELIER_AUXILIARY_API_KEY", undefined);
+  const root = await temp();
+  const config = new Config(root);
+  expect(config.settings.protocol).toBe("chat-completions");
+  expect(config.settings.auxiliaryBaseUrl).toBe(
+    "https://auxiliary.example.test/v1",
+  );
+  expect(config.modelKey()).toBe("primary-secret");
+  expect(config.modelKey(true)).toBe("");
+  expect(() =>
+    config.update({ settings: { ...config.settings, protocol: "messages" } }),
+  ).toThrow();
+  config.update({ settings: config.settings });
+  const saved = await readFile(path.join(root, "settings.json"), "utf8");
+  expect(saved).not.toContain("protocol");
+  expect(saved).not.toContain("example.test");
+
+  vi.stubEnv("CODEATELIER_AUXILIARY_API_KEY", "auxiliary-secret");
+  const reopened = new Config(root);
+  expect(reopened.modelKey(true)).toBe("auxiliary-secret");
+  expect(reopened.errorSecrets()).toContain("auxiliary-secret");
+  expect(JSON.stringify(reopened.publicValue())).not.toContain(
+    "auxiliary-secret",
+  );
+});
+
+it("keeps the Responses default and inherits a key only for the same auxiliary connection", async () => {
+  vi.stubEnv("CODEATELIER_API_PROTOCOL", undefined);
+  vi.stubEnv("CODEATELIER_AUXILIARY_API_PROTOCOL", undefined);
+  vi.stubEnv("CODEATELIER_AUXILIARY_BASE_URL", undefined);
+  vi.stubEnv("CODEATELIER_AUXILIARY_API_KEY", undefined);
+  vi.stubEnv("CODEATELIER_AUXILIARY_MODEL", "small");
+  vi.stubEnv("CODEATELIER_API_KEY", "shared-secret");
+  const config = new Config(await temp());
+  expect(config.settings.protocol).toBe("responses");
+  expect(config.modelKey(true)).toBe("shared-secret");
+  vi.stubEnv("CODEATELIER_API_PROTOCOL", "unknown-protocol");
+  expect(() => new Config(config.directory)).toThrow();
+});
 
 it("uses the explicit data directory and keeps the environment model authoritative", async () => {
   const root = await temp();

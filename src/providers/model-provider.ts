@@ -1,6 +1,7 @@
 /**
  * 定义 Engine 和 ContextManager 调用模型时使用的接口。
- * ResponsesProvider、测试用的模拟模型和评测计量包装都实现这个接口。
+ * Responses、Chat Completions、Messages、模拟模型和评测计量包装都实现这个接口。
+ * 公共文字/函数记录见 conversation.ts；any[] 边界兼容旧 Responses 原始扩展，不允许新适配器静默丢弃未知条目。
  *
  * 1. ModelResult 返回完整协议记录 output、展示文本 text 和可选的实际 usage。
  * 2. ModelProvider.run 接收历史、指令、工具、取消信号和文本回调；getCapabilities 可选提供容量查询。
@@ -38,6 +39,7 @@ export interface ModelResult {
 }
 
 export interface ModelProvider {
+  readonly protocol?: import("./protocol.js").ModelProtocol;
   getCapabilities?(signal: AbortSignal): Promise<ModelCapabilities | undefined>;
   run(
     input: any[],

@@ -105,6 +105,9 @@ export interface SandboxStatus {
 }
 
 export interface Settings {
+  protocol?: import("../providers/protocol.js").ModelProtocol;
+  auxiliaryProtocol?: import("../providers/protocol.js").ModelProtocol;
+  auxiliaryBaseUrl?: string;
   baseUrl: string;
   model: string;
   reasoningEffort?: "low" | "medium" | "high";

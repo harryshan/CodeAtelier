@@ -4,7 +4,7 @@
  *
  * 1. approveEvaluationCommand 检查命令审批请求；writeJson 脱敏后通过临时文件保存记录。
  * 2. runEvaluation 检查工作区和输出目录互不包含，并新建 data 目录，避免带入上次任务状态。
- * 3. 创建 Config、Store、MeteredProvider 和 Engine，接好审批及取消回调。
+ * 3. 创建 Config、Store、MeteredProvider 和 Engine；按主/辅助协议工厂选连接、密钥，接好审批及取消回调。
  * 4. 有限模式设置任务定时器；无限模式只由完成、错误或人工取消结束，均导出状态、用量、耗时和审批次数。
  *
  * 只有显式满足 Docker 条件才启用自动命令审批，这项检查本身不提供操作系统隔离。
@@ -19,7 +19,7 @@ import { Engine } from "../agent/engine.js";
 import { Config } from "../config/config.js";
 import { createLogger } from "../logging/logger.js";
 import { redactJson } from "../logging/redact.js";
-import { ResponsesProvider } from "../providers/responses-provider.js";
+import { createModelProvider } from "../providers/create-provider.js";
 import type { ModelProvider } from "../providers/model-provider.js";
 import { AsyncStore } from "../sessions/async-store.js";
 import type { Approval } from "../shared/types.js";
@@ -57,10 +57,10 @@ export function approveEvaluationCommand(
   }
 }
 
-function writeJson(file: string, value: unknown, key: string) {
+function writeJson(file: string, value: unknown, secrets: string[]) {
   writeFileSync(
     file + ".tmp",
-    redactJson(JSON.stringify(value, null, 2), [key]),
+    redactJson(JSON.stringify(value, null, 2), secrets),
     {
       mode: 0o600,
     },
@@ -110,7 +110,9 @@ export async function runEvaluation(
 
   const log =
     dependencies.log ??
-    createLogger(dataDir, config.settings.logLevel, () => [config.apiKey]);
+    createLogger(dataDir, config.settings.logLevel, () =>
+      config.errorSecrets(),
+    );
   const store = await AsyncStore.open(path.join(dataDir, "history.sqlite"));
   const session = await store.create(workspace, "Coding evaluation");
   const startedAt = new Date().toISOString();
@@ -118,12 +120,16 @@ export async function runEvaluation(
   let approvalsAllowed = 0;
   let approvalsDenied = 0;
   const checkpoint = () => {
-    writeJson(path.join(outputDir, "usage.json"), meter.usage, config.apiKey);
+    writeJson(
+      path.join(outputDir, "usage.json"),
+      meter.usage,
+      config.errorSecrets(),
+    );
   };
 
   const meter = new MeteredProvider(
     dependencies.provider ??
-      new ResponsesProvider(config.settings, config.apiKey),
+      createModelProvider(config.settings, config.modelKey()),
     options,
     checkpoint,
   );
@@ -135,7 +141,7 @@ export async function runEvaluation(
       purpose === "auxiliary" || purpose === "approval"
         ? meter.forProvider(
             dependencies.provider ??
-              new ResponsesProvider(selected, config.apiKey),
+              createModelProvider(selected, config.modelKey(true)),
           )
         : meter,
     undefined,
@@ -210,11 +216,15 @@ export async function runEvaluation(
       usage: meter.usage,
       modelTimings: meter.timings,
     };
-    writeJson(path.join(outputDir, "report.json"), report, config.apiKey);
+    writeJson(
+      path.join(outputDir, "report.json"),
+      report,
+      config.errorSecrets(),
+    );
     writeJson(
       path.join(outputDir, "events.json"),
       await store.events(session.id),
-      config.apiKey,
+      config.errorSecrets(),
     );
     checkpoint();
 

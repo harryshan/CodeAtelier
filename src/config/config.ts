@@ -4,9 +4,10 @@
  *
  * 1. 构造器准备数据目录，只从环境读取连接配置，再读取 settings.json 中的可持久化偏好。
  *    同时读取仅后端持有的 mcp.json；MCP 配置不进入 publicValue 或 Runtime 设置。
- * 2. normalizeBaseUrl 去掉端点末尾的 responses 和斜杠；模型 ID 保持环境变量的原样。
+ * 2. normalizeBaseUrl 去掉端点末尾的 responses、chat/completions、messages 和斜杠；模型 ID 保持环境变量的原样。
  * 3. update 拒绝修改连接字段，只原子保存偏好；浏览器输入的密钥仅覆盖本次进程。
- * 4. publicValue 返回运行时设置、密钥状态和启动期 sandbox 模式，浏览器据此显示实际命令边界。
+ * 4. modelKey 按用途选择密钥，跨端点/协议不继承；errorSecrets 提供全体模型密钥用于脱敏。
+ * 5. publicValue 返回运行时设置、密钥状态和启动期 sandbox 模式，浏览器据此显示实际命令边界。
  *
  * API 地址、主/辅助模型、环境密钥和 sandbox 开关的基线只来自 .env 或进程环境，避免与 settings.json 竞争。
  * 密钥不写进 settings.json。已保存的配置损坏时应报错，不能悄悄用默认值覆盖。
@@ -37,13 +38,16 @@ type ConnectionSettings = z.infer<typeof connectionSettingsSchema>;
 type PersistedSettings = z.infer<typeof persistedSettingsSchema>;
 
 function normalizeBaseUrl(baseUrl: string) {
-  return baseUrl.replace(/\/responses\/?$/, "").replace(/\/$/, "");
+  return baseUrl
+    .replace(/\/(responses|chat\/completions|messages)\/?$/, "")
+    .replace(/\/$/, "");
 }
 
 export class Config {
   settings: z.infer<typeof settingsSchema>;
   private connection: ConnectionSettings;
   apiKey = process.env.CODEATELIER_API_KEY || "";
+  private auxiliaryApiKey = process.env.CODEATELIER_AUXILIARY_API_KEY;
   readonly sandbox: SandboxConfiguration;
   readonly mcpServers: McpServers;
   readonly tracing = traceConfiguration();
@@ -74,12 +78,22 @@ export class Config {
     }
 
     const connection = connectionSettingsSchema.parse({
+      protocol: process.env.CODEATELIER_API_PROTOCOL || "responses",
+      auxiliaryProtocol:
+        process.env.CODEATELIER_AUXILIARY_API_PROTOCOL || undefined,
+      auxiliaryBaseUrl: process.env.CODEATELIER_AUXILIARY_BASE_URL || undefined,
       baseUrl: process.env.CODEATELIER_BASE_URL,
       model: process.env.CODEATELIER_MODEL,
       auxiliaryModel: process.env.CODEATELIER_AUXILIARY_MODEL || "",
     });
 
-    return { ...connection, baseUrl: normalizeBaseUrl(connection.baseUrl) };
+    return {
+      ...connection,
+      baseUrl: normalizeBaseUrl(connection.baseUrl),
+      auxiliaryBaseUrl: connection.auxiliaryBaseUrl
+        ? normalizeBaseUrl(connection.auxiliaryBaseUrl)
+        : undefined,
+    };
   }
 
   private savedPreferences(saved: unknown): PersistedSettings {
@@ -106,12 +120,20 @@ export class Config {
 
   private assertConnectionUnchanged(settings: z.infer<typeof settingsSchema>) {
     const requested = {
+      protocol: settings.protocol,
+      auxiliaryProtocol: settings.auxiliaryProtocol,
+      auxiliaryBaseUrl: settings.auxiliaryBaseUrl
+        ? normalizeBaseUrl(settings.auxiliaryBaseUrl)
+        : undefined,
       baseUrl: normalizeBaseUrl(settings.baseUrl),
       model: settings.model,
       auxiliaryModel: settings.auxiliaryModel,
     };
 
     if (
+      requested.protocol !== this.connection.protocol ||
+      requested.auxiliaryProtocol !== this.connection.auxiliaryProtocol ||
+      requested.auxiliaryBaseUrl !== this.connection.auxiliaryBaseUrl ||
       requested.baseUrl !== this.connection.baseUrl ||
       requested.model !== this.connection.model ||
       requested.auxiliaryModel !== this.connection.auxiliaryModel
@@ -144,6 +166,30 @@ export class Config {
     if (parsed.apiKey !== undefined) {
       this.apiKey = parsed.apiKey;
     }
+  }
+
+  /** 不把主密钥隐式发送给不同的辅助端点或协议；缺少专用密钥时由 Provider 明确拒绝。 */
+  modelKey(auxiliary = false): string {
+    if (!auxiliary || !this.settings.auxiliaryModel) {
+      return this.apiKey;
+    }
+
+    if (this.auxiliaryApiKey !== undefined) {
+      return this.auxiliaryApiKey;
+    }
+
+    const sameEndpoint =
+      !this.settings.auxiliaryBaseUrl ||
+      this.settings.auxiliaryBaseUrl === this.settings.baseUrl;
+    const sameProtocol =
+      !this.settings.auxiliaryProtocol ||
+      this.settings.auxiliaryProtocol === this.settings.protocol;
+
+    return sameEndpoint && sameProtocol ? this.apiKey : "";
+  }
+
+  errorSecrets(): string[] {
+    return [this.apiKey, this.auxiliaryApiKey ?? ""];
   }
 
   publicValue() {

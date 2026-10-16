@@ -36,12 +36,14 @@ export function tokenScope(settings: {
   baseUrl: string;
   model: string;
   reasoningEffort?: string;
+  protocol?: string;
 }): string {
   return tokenDigest(
     JSON.stringify([
       settings.baseUrl,
       settings.model,
       settings.reasoningEffort ?? "high",
+      settings.protocol ?? "responses",
     ]),
   );
 }

@@ -124,7 +124,12 @@ export class AgentRuntimeService {
         input.prompt,
       );
       const instructions = [
-        await createInstructions(input.workspace, undefined, true),
+        await createInstructions(
+          input.workspace,
+          undefined,
+          true,
+          input.settings.webSearchEnabled ?? true,
+        ),
         input.memoryText,
         input.skillsText,
         input.mcpText,
@@ -285,10 +290,10 @@ export class AgentRuntimeService {
         parentExecutionInstanceId: this.identity.executionInstanceId,
         emit: (type, data) => events.emit(type, data),
       });
-      // 内置网页搜索在 Broker 代理的 Responses 请求中完成，不会伪装为 Runtime 本地工具调用。
+      // 只声明 Broker 确认可用的原生搜索；新协议不能误收到 Responses 内置工具。
       const tools = [
         ...runtimeDefinitions,
-        webSearchTool,
+        ...(input.settings.webSearchEnabled !== false ? [webSearchTool] : []),
         historyDefinition,
         ...(input.settings.subagentsEnabled ? [subagentToolDefinition] : []),
       ];

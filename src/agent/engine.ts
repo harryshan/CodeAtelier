@@ -6,7 +6,8 @@
  * 1. 构造器接好审批通知；手动评测可仅对宿主模型循环覆盖步数阈值，snapshot 读取会话状态，emit 脱敏并保存事件。
  * 2. start 原子保存用户消息和任务级 subagent 选择为 queued；多 agent 尚未就绪时拒绝开启。调度器在全局并发上限内启动不同工作区的任务，并对相同真实工作区保持互斥。
  * 3. resume 继续最后一个可恢复任务；cancel 处理用户取消，close 处理服务关闭。
- * 4. 首条 prompt 先用辅助模型生成标题；run 再读取历史和项目规则，准备工具及上下文预算；首次压缩检查前恢复会话 token 锚点，响应保存后更新锚点，Runtime 经 Broker 共用持久化。
+ * 4. createModelProvider 按主/辅助协议和对应密钥创建客户端；搜索定义与指令按协议能力裁剪。
+ *    首条 prompt 先用辅助模型生成标题；run 再读取历史和项目规则，准备工具及上下文预算；首次压缩检查前恢复会话 token 锚点，响应保存后更新锚点，Runtime 经 Broker 共用持久化。
  * 5. model-loop 共用轮次、重试和停止控制，model-tool-batch 共用计划与成功判断；Engine 保留宿主事务、replay 与 tracing。为压缩提供 ToolRunner 的安全文件哈希探测；每轮记录上下文准备和请求计量、模型重试、实际模型请求和响应处理，再记录服务实报用量。完整响应保存后校验工具 DAG，节点先完成准备/审批，实际执行才取得有界 worker 槽。
  * 6. Windows/MXC Runtime 通过共同 launcher/IPC 接入；实例 mode 与 pidKind 保留平台真实归因。Sandbox Runtime 已有能力内工具免审批；全部 Git action 与 run_with_permissions 的获批命令均交给 Broker 宿主进程，push 额外预检和逐次审批，并分别留下未隔离的执行记录。一次性两阶段 IPC 授权把命令审批等待留在执行队列外；Push/Capability Runner 代码暂存但不走产品路径。
  *    项目记忆每任务提供当前项目全部有效条目的 ID/摘要，宿主/Runtime/fallback 共用无查询参数的目录读取，正文按需获取。
@@ -68,7 +69,8 @@ import {
   type ApprovalAssessment,
   type ApprovalSubject,
 } from "../permissions/model-approval.js";
-import { ResponsesProvider } from "../providers/responses-provider.js";
+import { createModelProvider } from "../providers/create-provider.js";
+import { protocolFeatures } from "../providers/protocol.js";
 import {
   type ModelProvider,
   type ModelProviderFactory,
@@ -209,7 +211,7 @@ export class Engine {
         // 只在真正检查时创建 provider；普通短工具不能引入额外模型初始化。
         const provider =
           this.factory?.(settings, "task") ??
-          new ResponsesProvider(settings, this.config.apiKey);
+          createModelProvider(settings, this.config.modelKey());
 
         return tracedModelProvider(
           this.replayProvider(task, provider, () => ({
@@ -225,7 +227,7 @@ export class Engine {
         );
       },
       prompt,
-      secrets: [this.config.apiKey],
+      secrets: this.config.errorSecrets(),
       emit: (type, data) => {
         this.emit(task, type, data);
         this.log.info({
@@ -390,7 +392,7 @@ export class Engine {
     this.sandboxLog = createSandboxLogger(
       config.directory,
       config.settings.logLevel,
-      () => [config.apiKey],
+      () => config.errorSecrets(),
     );
     this.sandbox = new SandboxBroker(
       config.sandbox,
@@ -461,7 +463,7 @@ export class Engine {
     const selected = auxiliarySettings(settings);
     const provider =
       this.factory?.(selected, "approval") ??
-      new ResponsesProvider(selected, this.config.apiKey);
+      createModelProvider(selected, this.config.modelKey(true));
 
     try {
       if (task) {
@@ -547,7 +549,7 @@ export class Engine {
   private emit(task: Task, type: string, data: any) {
     this.traces.relations.event(task.id, type, data);
     const clean = JSON.parse(
-      redactJson(JSON.stringify(data), [this.config.apiKey]),
+      redactJson(JSON.stringify(data), this.config.errorSecrets()),
     );
     void this.store.eventAsync(task.sessionId, task.id, type, clean).then(
       (event) => {
@@ -585,7 +587,9 @@ export class Engine {
     details: () => Pick<RecordedModelExchange, "purpose" | "step" | "attempt">,
   ) {
     const clean = <T>(value: T) =>
-      JSON.parse(redactJson(JSON.stringify(value), [this.config.apiKey])) as T;
+      JSON.parse(
+        redactJson(JSON.stringify(value), this.config.errorSecrets()),
+      ) as T;
 
     return captureModelProvider(
       provider,
@@ -986,7 +990,7 @@ export class Engine {
     const selected = auxiliarySettings(settings);
     const provider =
       this.factory?.(selected, "auxiliary") ??
-      new ResponsesProvider(selected, this.config.apiKey);
+      createModelProvider(selected, this.config.modelKey(true));
 
     try {
       const title = await retryModel(
@@ -1229,7 +1233,7 @@ export class Engine {
       const gateway = new RuntimeBrokerGateway(
         {
           authorize: (candidate) => authorized && candidate === identity,
-          getErrorSecrets: () => [this.config.apiKey],
+          getErrorSecrets: () => this.config.errorSecrets(),
           executionMode: launched.mode ?? requestedMode,
           approveCommand: async (_runtime, request, requestSignal) => ({
             approved: await this.approvals.request(
@@ -1251,7 +1255,11 @@ export class Engine {
               this.factory?.(
                 selected,
                 purpose === "compaction" ? "auxiliary" : "task",
-              ) ?? new ResponsesProvider(selected, this.config.apiKey);
+              ) ??
+              createModelProvider(
+                selected,
+                this.config.modelKey(purpose === "compaction"),
+              );
 
             return {
               model: selected.model,
@@ -1271,7 +1279,7 @@ export class Engine {
         gateway,
         {
           traces: this.traces,
-          getErrorSecrets: () => [this.config.apiKey],
+          getErrorSecrets: () => this.config.errorSecrets(),
           subagentStore: async (candidate, request, requestSignal) => {
             await assertSubagentTask(candidate);
             switch (request.action) {
@@ -1412,7 +1420,7 @@ export class Engine {
 
             const eventData = withRuntimeDuration(body.event);
             const clean = JSON.parse(
-              redactJson(JSON.stringify(eventData), [this.config.apiKey]),
+              redactJson(JSON.stringify(eventData), this.config.errorSecrets()),
             );
             const saved = await this.store.commitCollectedToolResult(
               task.id,
@@ -1524,9 +1532,10 @@ export class Engine {
                           tool!.name === "subagent"
                             ? undefined
                             : JSON.parse(
-                                redactJson(JSON.stringify(tool!.args), [
-                                  this.config.apiKey,
-                                ]),
+                                redactJson(
+                                  JSON.stringify(tool!.args),
+                                  this.config.errorSecrets(),
+                                ),
                               ),
                       }
                     : event.attributes,
@@ -1645,12 +1654,16 @@ export class Engine {
 
             await this.drainEvents(task.id);
             const data = JSON.parse(
-              redactJson(JSON.stringify(withRuntimeDuration(body.event)), [
-                this.config.apiKey,
-              ]),
+              redactJson(
+                JSON.stringify(withRuntimeDuration(body.event)),
+                this.config.errorSecrets(),
+              ),
             );
             const feedback = JSON.parse(
-              redactJson(JSON.stringify(body.feedback), [this.config.apiKey]),
+              redactJson(
+                JSON.stringify(body.feedback),
+                this.config.errorSecrets(),
+              ),
             );
             const saved = await this.store.persistToolResultAsync(
               task.sessionId,
@@ -1748,6 +1761,7 @@ export class Engine {
             prompt,
             settings: {
               model: settings.model,
+              webSearchEnabled: protocolFeatures(settings.protocol).webSearch,
               maxSteps: settings.maxSteps,
               commandTimeoutMs: settings.commandTimeoutMs,
               maxOutputTokens: settings.maxOutputTokens,
@@ -2239,7 +2253,9 @@ export class Engine {
     let replayCaptureSpan: TraceSpan | undefined;
     let subagents: SubagentCoordinator | undefined;
     const cleanReplay = <T>(value: T) =>
-      JSON.parse(redactJson(JSON.stringify(value), [this.config.apiKey])) as T;
+      JSON.parse(
+        redactJson(JSON.stringify(value), this.config.errorSecrets()),
+      ) as T;
     const flush = () => {
       if (buffer) {
         emit("delta", { text: buffer, step, attempt });
@@ -2461,7 +2477,12 @@ export class Engine {
         },
       });
       // Runtime 启动前 fallback 已回到宿主权限模型；不能沿用仅 Runtime 可执行的提示或工具。
-      const baseInstructions = await createInstructions(session.workspace);
+      const baseInstructions = await createInstructions(
+        session.workspace,
+        undefined,
+        false,
+        protocolFeatures(settings.protocol).webSearch,
+      );
       const memorySpan = this.traces.startSpan(task.id, {
         name: "memory.retrieve",
         category: "memory",
@@ -2494,7 +2515,7 @@ export class Engine {
 
       const provider =
         this.factory?.(settings, "task") ||
-        new ResponsesProvider(settings, this.config.apiKey);
+        createModelProvider(settings, this.config.modelKey());
 
       if (task.subagentsEnabled) {
         const subagentSpans = new Map<string, TraceSpan | undefined>();
@@ -2590,7 +2611,9 @@ export class Engine {
       // web_search 由 Responses 服务在单次模型请求内完成；仅本地 function_call 才进入后续 DAG。
       const tools = [
         ...definitions,
-        webSearchTool,
+        ...(protocolFeatures(settings.protocol).webSearch
+          ? [webSearchTool]
+          : []),
         historyDefinition,
         ...(task.subagentsEnabled ? [subagentToolDefinition] : []),
       ];
@@ -2702,7 +2725,7 @@ export class Engine {
               const selected = auxiliarySettings(settings);
               const auxiliary =
                 this.factory?.(selected, "auxiliary") ??
-                new ResponsesProvider(selected, this.config.apiKey);
+                createModelProvider(selected, this.config.modelKey(true));
               let metadata: ModelCapabilities | undefined;
               try {
                 metadata = await this.traces.measure(
@@ -2761,7 +2784,7 @@ export class Engine {
             }
           : undefined,
         signal,
-        clean: (text) => redactJson(text, [this.config.apiKey]),
+        clean: (text) => redactJson(text, this.config.errorSecrets()),
         notice: (text) => emit("notice", { text }),
         trace: contextTrace,
         report: (event, data) => {
@@ -2917,7 +2940,7 @@ export class Engine {
             code: error.code,
             status: error.status,
             requestId: error.requestId
-              ? redactText(error.requestId, [this.config.apiKey])
+              ? redactText(error.requestId, this.config.errorSecrets())
               : undefined,
             err: error,
           });
@@ -2994,7 +3017,7 @@ export class Engine {
               });
             }
 
-            output = redactJson(output, [this.config.apiKey]);
+            output = redactJson(output, this.config.errorSecrets());
             const durationMs =
               executionStartedAt === undefined
                 ? 0
@@ -3102,7 +3125,10 @@ export class Engine {
             this.traces.endSpan(planningSpan, "error", {
               errorName: error instanceof Error ? error.name : typeof error,
             });
-            const message = redactText(error.message, [this.config.apiKey]);
+            const message = redactText(
+              error.message,
+              this.config.errorSecrets(),
+            );
             // 图不可验证时整批没有副作用；每个原生调用都得到结果，模型可在下一轮修正计划。
             for (const [ordinal, call] of calls.entries()) {
               const node: ToolGraphNode = {
@@ -3187,7 +3213,10 @@ export class Engine {
 
           const traceToolParameters = (arguments_: unknown) =>
             JSON.parse(
-              redactJson(JSON.stringify(arguments_), [this.config.apiKey]),
+              redactJson(
+                JSON.stringify(arguments_),
+                this.config.errorSecrets(),
+              ),
             );
 
           const batchSpan = this.traces.startSpan(task.id, {
@@ -3334,7 +3363,10 @@ export class Engine {
                       }
 
                       result = {
-                        error: redactText(error.message, [this.config.apiKey]),
+                        error: redactText(
+                          error.message,
+                          this.config.errorSecrets(),
+                        ),
                       };
                       log.warn({
                         event: "tool.failed",
@@ -3446,9 +3478,10 @@ export class Engine {
             ? status === "interrupted"
               ? "服务关闭，任务中断，可手动恢复。"
               : "任务已取消，可手动恢复。"
-            : redactText(String(error?.message || "任务失败").slice(0, 2000), [
-                this.config.apiKey,
-              ]);
+            : redactText(
+                String(error?.message || "任务失败").slice(0, 2000),
+                this.config.errorSecrets(),
+              );
       emit("notice", { text: failure, status });
       log[status === "failed" ? "error" : "info"]({
         event: "task." + status,

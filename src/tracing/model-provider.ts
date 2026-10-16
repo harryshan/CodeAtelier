@@ -4,7 +4,7 @@
  * 仅把请求/响应的长度、数量、usage、错误类别及首个文本分块时间交给 TraceRecorder。
  *
  * 1. ModelTraceScope 固定任务、用途、模型和可选 step/attempt，作为单次调用的关联字段。
- * 2. tracedModelProvider 计量 capabilities，并在 run 前创建可由当前上下文阶段动态指定父 span 的 llm.request；第一个 delta 生成 instant，完成或失败结束 span。
+ * 2. tracedModelProvider 透传协议枚举并计量 capabilities，并在 run 前创建可由当前上下文阶段动态指定父 span 的 llm.request；第一个 delta 生成 instant，完成或失败结束 span。
  * 3. Sandbox Runtime 经 Broker 请求模型时可附 execution mode/instance/kind、subagentId 与 brokered 标记，仍复用相同安全计量。
  * 4. 仅附带安全的请求参数（含思考等级），不记录 input、instructions、tools、输出文本、服务错误消息或 API key 的原文；LLM span 标记 Main thread 逻辑归属并以异步生命周期导出，不表示 CPU 占用，高保真 replay 独立保存。
  * 请求采用独立 requestId，首流事件/首文本共享 ID 与轨道；按 call_id 建立工具来源，不序列化完整输入计量。
@@ -38,6 +38,7 @@ export function tracedModelProvider(
   scope: ModelTraceScope,
 ): ModelProvider {
   return {
+    protocol: provider.protocol,
     getCapabilities: provider.getCapabilities
       ? (signal) =>
           recorder.measure(
@@ -72,6 +73,7 @@ export function tracedModelProvider(
           callId: scope.callId,
           subagentId: scope.subagentId,
           model: scope.model,
+          protocol: provider.protocol,
           step: scope.step,
           attempt: scope.attempt,
           inputItems: input.length,

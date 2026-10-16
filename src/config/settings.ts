@@ -2,7 +2,7 @@
  * 用 Zod 校验后端设置，Config 在启动和更新配置时都会使用这里的规则。
  * 校验后的设置通过共享的 Settings 类型传递给其他模块。
  *
- * 1. connectionSettingsSchema 校验只从环境读取的 API 地址、主模型和辅助模型标识。
+ * 1. connectionSettingsSchema 校验只从环境读取的主/辅助协议、API 地址和模型标识。
  * 2. persistedSettingsSchema 描述 settings.json 可保存的偏好：思考等级、任务并发及其他执行限制和日志级别。
  * 3. settingsSchema 将两类字段合成为运行时 Settings，供 Engine 和浏览器的只读连接信息使用。
  *
@@ -13,7 +13,20 @@
 
 import { z } from "zod";
 
+export const modelProtocolSchema = z.enum([
+  "responses",
+  "chat-completions",
+  "messages",
+]);
+
 export const connectionSettingsSchema = z.object({
+  protocol: modelProtocolSchema.default("responses"),
+  auxiliaryProtocol: modelProtocolSchema.optional(),
+  auxiliaryBaseUrl: z
+    .string()
+    .url()
+    .refine((v) => ["http:", "https:"].includes(new URL(v).protocol))
+    .optional(),
   baseUrl: z
     .string()
     .url()

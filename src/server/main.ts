@@ -27,9 +27,9 @@ try {
 
 const config = new Config();
 
-const log = createLogger(config.directory, config.settings.logLevel, () => [
-  config.apiKey,
-]);
+const log = createLogger(config.directory, config.settings.logLevel, () =>
+  config.errorSecrets(),
+);
 
 const requestReload = () => {
   if (!process.send || !process.connected) {

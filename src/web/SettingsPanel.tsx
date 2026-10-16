@@ -1,15 +1,16 @@
 /**
- * App 打开的设置表单，用于修改模型连接、思考等级和执行限制。
+ * App 打开的设置表单，只读展示模型连接并修改适用的思考等级和执行限制。
  * 接收当前配置及保存、关闭回调，通过后端 API 保存修改。
  *
  * 1. 复制当前偏好作为表单初值，另存用户新输入的临时密钥；后端不会返回原密钥，任务并发上限在没有活动或排队任务时可调整。
- * 2. 连接地址和模型只读展示，用户修改 .env 并重启或重载服务后才会更新。
+ * 2. 主/辅助协议、连接地址和模型只读展示；按已实现协议能力禁用思考选项并说明搜索限制，用户修改 .env 并重启或重载服务后才会更新。
  * 3. 提交时组装 settings 和可选的 apiKey，等待保存并显示错误；表单其余部分为思考等级和执行参数。
  *
  * “已有密钥”只表示后端已配置。配置是否合法、任务运行中能否修改，最终由后端检查。
  */
 
 import { useState } from "react";
+import { protocolFeatures } from "../providers/protocol";
 import type { Settings } from "../shared/types";
 import { api } from "./api";
 import s from "./app.module.css";
@@ -74,9 +75,12 @@ export function SettingsPanel({
           <section aria-label="连接配置">
             <h3>连接配置</h3>
             <p className={s.muted}>
-              API 地址和模型只从本地 <code>.env</code>
+              API 协议、地址和模型只从本地 <code>.env</code>
               （或进程环境）读取；为避免来源冲突，不能在此保存。
               修改后请重启或重载服务。
+            </p>
+            <p>
+              主模型协议：<code>{settings.protocol ?? "responses"}</code>
             </p>
             <p>
               API Base URL：<code>{settings.baseUrl}</code>
@@ -88,10 +92,25 @@ export function SettingsPanel({
               辅助模型：
               <code>{settings.auxiliaryModel || "未配置"}</code>
             </p>
+            <p>
+              辅助模型协议：
+              <code>
+                {settings.auxiliaryProtocol ?? settings.protocol ?? "responses"}
+              </code>
+            </p>
+            <p>
+              辅助 API Base URL：
+              <code>{settings.auxiliaryBaseUrl ?? settings.baseUrl}</code>
+            </p>
+            <p className={s.muted}>
+              Chat Completions / Messages
+              首批支持文字和本地工具调用，暂不发送思考参数，也不提供内置网页搜索。协议兼容不等于所有服务或模型均已验证。
+            </p>
           </section>
           <label>
             思考等级
             <select
+              disabled={!protocolFeatures(settings.protocol).reasoningEffort}
               value={value.reasoningEffort ?? "high"}
               onChange={(e) =>
                 setValue({
@@ -109,6 +128,11 @@ export function SettingsPanel({
           <label>
             辅助模型推理强度
             <select
+              disabled={
+                !protocolFeatures(
+                  settings.auxiliaryProtocol ?? settings.protocol,
+                ).reasoningEffort
+              }
               value={value.auxiliaryReasoningEffort ?? "low"}
               onChange={(e) =>
                 setValue({
@@ -124,8 +148,9 @@ export function SettingsPanel({
             </select>
           </label>
           <p className={s.muted}>
-            辅助模型共用 API
-            地址和密钥，用于上下文摘要、会话标题和工具审批分流。未在 .env
+            辅助模型用于上下文摘要、会话标题和工具审批分流。默认继承主连接；可在
+            .env 独立配置协议、地址和密钥。跨端点或协议必须提供辅助密钥。未在
+            .env
             配置时，标题和摘要沿用主模型；为避免审批使用主模型，审批将保留人工确认。
           </p>
           <label>

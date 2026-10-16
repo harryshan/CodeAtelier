@@ -76,6 +76,8 @@ function appendWebSearchCitations(text: string, output: any[]) {
 }
 
 export class ResponsesProvider implements ModelProvider {
+  readonly protocol = "responses" as const;
+
   constructor(
     private settings: Settings,
     private key: string,

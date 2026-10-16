@@ -54,11 +54,15 @@ Windows 启用时的产品调用链现为 `Broker Engine → SandboxBroker launc
 
 ### 模型协议
 
-`src/providers` 将 Responses 输出映射为输出项和文本。主任务请求显式声明 `parallel_tool_calls: true`，并附加 OpenAI 内置 `{ type: "web_search" }`，让支持它的服务在模型请求内查询公开网页；它不是本地函数调用或 DAG 节点。
+`src/providers/create-provider.ts` 按主/辅助连接选择 Responses、Chat Completions 或 Messages；Engine 所有用途、Broker 模型代理与手动评测入口共用工厂。`conversation.ts` 定义公共文字、函数与结果契约，沿用历史字段名，不迁移旧库；新增适配器不能丢弃未知协议内容。`stream-json.ts` 负责后两者的有界 SSE、认证、取消/时限和错误处理，完成判定分别由适配器检查。能力与配置见 [模型协议](model-protocols.md)。
 
-`ResponsesProvider` 从 `output_text.annotations` 提取合法 HTTP(S) `url_citation`，去重后追加为可点击 Markdown 来源。工具函数仍要求每项带 `execution.id` 与 `execution.dependsOn`；依赖只能引用同一 Responses 响应内的节点，不能跨轮引用历史 ID。
+Responses 主任务请求显式声明 `parallel_tool_calls: true`，并附加 OpenAI 内置 `{ type: "web_search" }`，让支持它的服务在模型请求内查询公开网页；它不是本地函数调用或 DAG 节点。
+
+`ResponsesProvider` 从 `output_text.annotations` 提取合法 HTTP(S) `url_citation`，去重后追加为可点击 Markdown 来源。工具函数仍要求每项带 `execution.id` 与 `execution.dependsOn`；依赖只能引用同一模型响应内的节点，不能跨轮引用历史 ID。
 
 Engine 在任一节点产生副作用前校验整批 DAG，并以稳定拓扑顺序、最多 4 个并发节点调度。自建服务需同时收集 output_item.done；completed.output 有内容时优先使用，不能只依赖 completed。
+
+Chat Completions / Messages 首批不发送思考参数、不声明原生搜索；未知容量沿用字符预算，usage 保留缺失状态。主模型协议加入 token 校准指纹，Replay 设置记录协议，tracing 的 llm.request 透传协议枚举与首流事件。Runtime IPC v16 下发无凭据的 webSearchEnabled，工具列表与指令保持一致，模型连接仍仅在 Broker。
 
 ### 工具与文件编辑
 

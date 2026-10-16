@@ -8,7 +8,7 @@
  * 3. runtimeEventSchema 承载模型 delta、取消、Runtime 生命周期以及固定 context/tool/read_file/subagent trace span；微秒时间戳由 Runtime 单调时钟提供，Broker 核验后归档，名称与属性不是任意日志通道。
  * 4. hello schema 绑定协议版本、任务和 instance；其中 Runtime 自报字段只用于一致性核对，不能替代 transport 身份。
  * 5. 子任务计划、问题、检查点和报告不加专属容量阈值；统一的帧大小与背压限制仍由 IPC transport 执行。
- * v15 增加任务绑定的工具结果/反馈原子提交，保留 v14 的固定 process 阶段白名单，不扩大命令权限。
+ * v16 增加 Broker 下发的网页搜索能力标志；保留工具结果原子提交与 process 阶段白名单，不传模型凭据或扩大权限。
  */
 
 import { z } from "zod";
@@ -20,8 +20,8 @@ import { contextSnapshotSchema } from "../context/types.js";
 import { subtaskSchema } from "../agent/subagent-contracts.js";
 import { gitRequestSchema } from "../tools/registry.js";
 
-// v15 要求 Broker 原子保存工具结果、Replay 终态与上下文；旧 Runtime 须重建并更新安装。
-export const RUNTIME_IPC_PROTOCOL_VERSION = 15;
+// v16 避免旧 Runtime 向不支持的协议发送 web_search；旧 Runtime 须重建并更新安装。
+export const RUNTIME_IPC_PROTOCOL_VERSION = 16;
 export const MAX_RUNTIME_IPC_FRAME_BYTES = 8 * 1024 * 1024;
 
 const identifier = z.string().min(1).max(120);
@@ -164,6 +164,7 @@ export const runtimeGitResultSchema = z.union([
 export const runtimeTaskSettingsSchema = z
   .object({
     model: identifier,
+    webSearchEnabled: z.boolean().optional(),
     maxSteps: z.number().int().min(1).max(1_000),
     commandTimeoutMs: z
       .number()

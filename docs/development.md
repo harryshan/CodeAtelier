@@ -47,6 +47,12 @@ Node.js 24 或 26，pnpm 版本由 package.json 的 packageManager 固定。提�
 
 可选 `CODEATELIER_MCP_CONFIG` 指向后端 MCP JSON 配置的绝对路径，缺省使用平台数据目录的 mcp.json；文件缺失默认不启用任何服务。支持本地 stdio 和远程 Streamable HTTP，由本机后端连接，凭据不发送给模型服务商或 Runtime。可为各服务填写 `description`（去除首尾空白后 1～1024 字符）；每主任务主动提供已启用服务的名称、transport 与脱敏用途，缺失描述为 null，不自动连接服务。配置格式、可执行离线示例、审批与已知限制见 [MCP 指南](mcp.md)。修改配置后重启；不自动读取工作区 MCP 配置，不在 UI 展示密钥。
 
+### 多协议模型
+
+`CODEATELIER_API_PROTOCOL` 可选 `responses`（默认）、`chat-completions`、`messages`。主任务、标题、摘要、审批和 Broker 模型代理共用协议工厂；辅助连接可用 `CODEATELIER_AUXILIARY_API_PROTOCOL`、`CODEATELIER_AUXILIARY_BASE_URL`、`CODEATELIER_AUXILIARY_API_KEY` 独立配置。跨端点或协议不继承主密钥。完整示例与限制见 [模型协议](model-protocols.md)。
+
+新增两种协议首批仅提供文字流、本地函数调用与 usage；不发送思考参数、不声明内置搜索。UI 显示所选协议并禁用不适用的思考选项。不自动改写旧历史或猜测模型容量；不能安全转换的不透明历史会明确拒绝。Runtime IPC v16，安装式 Sandbox 须重建并 Repair。
+
 ### 配置来源与优先级
 
 `settings.json` 只保存非连接偏好：主/辅助模型的思考等级、任务限制（包括 `maxConcurrentTasks`）和日志级别；通过 UI 修改。已保存偏好优先于同名环境默认值。API 地址、主/辅助模型标识绝不写入该文件；旧版本留下的同名字段会在读取时忽略，并在下一次保存偏好时移除。密钥始终来自环境或当前进程内存，不写 `settings.json`。存在运行中或排队任务时禁止修改配置。
@@ -125,7 +131,7 @@ tracing 默认启用：每个实际开始的任务在当前服务进程内生成
 
 这些槽位表示并发操作而不是 Node 物理线程，人工审批耗时不会显示为 worker 占用。`read_file` 的路径授权与解析发生在执行槽取得之前，包含在 tool.prepare 中；取得槽位后，文件检查（`read_file.stat`）、异步字节读取（`read_file.bytes`）和读完后直接计算（`read_file.compute`）阶段在调用对应的 `Tool worker`（Agent Runtime 路径为可复用的 `Agent Runtime tool 1`～`4`）逻辑槽位中记录，并通过 `parentSpanId` 关联 `tool.read_file`。这些工具轨道是逻辑并发槽，不是物理线程。哈希与行扫描直接在工具所在进程的执行线程计算，`computeMs` 表示同步计算的墙钟耗时；不再有读取 Worker 启动、排队、消息传输或池关闭。计算前后检查取消，正在进行的同步扫描不支持中途抢占。
 
-阶段仅附 callId、有界字节数及计时，不保存路径或内容；Runtime IPC v15 的 trace span 必须携带单调时间戳（旧版本拒绝握手），固定白名单上报这些阶段及取得执行槽后的工具执行边界；Broker 校验任务时间窗、以已验证 Runtime PID 分组、按槽号分配复用轨道、从已保存的 tool_start 提取参数，统一导出落盘。Runtime 的 `Agent Runtime` 主轨道展示上下文；`tool_start` 到取得执行槽之间是排队/准备时间，不冒充实际执行；尚未开放的 subagent `await` 在槽位之前等待，不把事后取得槽位误记为工具执行。获批 Broker 命令仍在 Broker 的宿主执行轨道记录，Runtime 工具片段表示等待其结果，不能称为在 Sandbox 内执行命令。普通实际 tool span 的 `args.parameters` 保存传给执行器的完整结构化参数（run_with_permissions、Skill、MCP、项目记忆和 subagent 不记录正文参数），递归遮盖 API key、access/refresh/session token、client secret、private/secret key、password、authorization、cookie 等凭据字段（包括非字符串值）；文本同时处理带引号的赋值、长命令选项、认证头及已知密钥；因此 trace 文件可能含命令、路径和编辑文本，必须按敏感本机诊断数据保护，不能上传或提交。
+阶段仅附 callId、有界字节数及计时，不保存路径或内容；Runtime IPC v16 的 trace span 必须携带单调时间戳（旧版本拒绝握手），固定白名单上报这些阶段及取得执行槽后的工具执行边界；Broker 校验任务时间窗、以已验证 Runtime PID 分组、按槽号分配复用轨道、从已保存的 tool_start 提取参数，统一导出落盘。Runtime 的 `Agent Runtime` 主轨道展示上下文；`tool_start` 到取得执行槽之间是排队/准备时间，不冒充实际执行；尚未开放的 subagent `await` 在槽位之前等待，不把事后取得槽位误记为工具执行。获批 Broker 命令仍在 Broker 的宿主执行轨道记录，Runtime 工具片段表示等待其结果，不能称为在 Sandbox 内执行命令。普通实际 tool span 的 `args.parameters` 保存传给执行器的完整结构化参数（run_with_permissions、Skill、MCP、项目记忆和 subagent 不记录正文参数），递归遮盖 API key、access/refresh/session token、client secret、private/secret key、password、authorization、cookie 等凭据字段（包括非字符串值）；文本同时处理带引号的赋值、长命令选项、认证头及已知密钥；因此 trace 文件可能含命令、路径和编辑文本，必须按敏感本机诊断数据保护，不能上传或提交。
 
 导出格式 v2 统一使用进程内唯一 `id2.local` 的异步 `b/e`，不再用同步 `B/E` 栈或 `X` 表达可交叉生命周期；普通同刻区间先结束再开始，零时长区间先开始再结束。Perfetto 按进程和操作名称分组、复用异步展示轨道，原逻辑槽位保留于 `tid`/`args.logicalTrack`，父关系保留于 `args.parentSpanId`，不承诺按槽位嵌套显示，也不表示 CPU 占用。模型到工具的 flow 使用同名同分类的异步 `n` 端点和整数 `bind_id`，关系名在 `args.flowName`，支持跨进程及一对多连接。旧归档保持原样，不重写。
 
@@ -171,7 +177,7 @@ Replay Case 已独立实现脱敏、存储与手动导出，见 [任务 Replay C
 
 ### 工具批次与依赖
 
-模型可在一次 Responses 请求中返回多个工具调用（包含读取、写入、命令和 Git），每项统一使用 `{ execution: { id, dependsOn }, arguments: { ...工具原参数 } }`。
+模型可在一次完整响应中返回多个工具调用（包含读取、写入、命令和 Git），每项统一使用 `{ execution: { id, dependsOn }, arguments: { ...工具原参数 } }`。
 
 `id` 在该响应中唯一；`dependsOn` 只可引用**本轮响应内**其他工具调用的 `execution.id`，不能引用上轮或更早响应的 node ID、`execution.id` 或工具调用 ID；历史结果不是本轮 DAG 节点。它只列出必须成功完成的前置 ID，不能用前置工具结果填充本调用参数。Engine 在任一节点执行前校验整批 DAG 的 ID、引用和环，以模型返回顺序作为同层稳定次序，最多并发执行 4 个前置条件满足的节点。
 
@@ -400,7 +406,7 @@ CODEATELIER_AUXILIARY_MODEL=your-low-cost-model-id
 CODEATELIER_AUXILIARY_REASONING_EFFORT=low
 ```
 
-辅助模型共用主模型的 API 地址与密钥，默认不指定模型；空值时标题和摘要沿用主模型及其思考等级，而审批保留人工确认。模型标识只能修改 `.env` 并重启或重载服务；已保存的推理强度优先于环境默认值。推理强度可选 low/medium/high，指定辅助模型时默认 low；程序不推断价格或自动选择模型。
+辅助模型默认继承主模型协议、API 地址与密钥，也可按上述多协议配置独立连接；跨端点或协议必须提供辅助密钥。默认不指定辅助模型；空值时标题和摘要沿用主模型及其思考等级，而审批保留人工确认。模型标识只能修改 `.env` 并重启或重载服务；已保存的推理强度优先于环境默认值。推理强度可选 low/medium/high，指定辅助模型时默认 low；程序不推断价格或自动选择模型。
 
 上下文摘要和首条用户 prompt 的标题生成均使用 `auxiliarySettings`：创建会话后先显示“新对话”，Engine 对首条消息发起无工具、64 token 上限的标题请求，成功后通过 SSE 更新侧栏；失败保留占位标题而不阻断编码任务，取消会中止任务。
 

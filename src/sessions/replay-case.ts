@@ -6,7 +6,7 @@
  *
  * 1. TaskReplayCapture/TaskReplayCase 描述捕获版本、模型交换、工具调用和任务历史；旧会话可形成 legacy
  *    case，但不会被标为 transcript 可重放。
- * 2. captureModelProvider 在调用模型前持久化请求，并在成功或失败后补齐结果，进程中断会留下明确的未完成项。
+ * 2. captureModelProvider 透传协议元数据；replaySettings 保存主/辅助协议但不保存连接密钥。在调用模型前持久化请求，并在成功或失败后补齐结果，进程中断会留下明确的未完成项。
  * 3. RecordedModelProvider 为测试提供严格的请求匹配和确定性响应；它只重放模型响应，不执行工具副作用。
  * 4. analyzeReplayWorkspace 从 read_file 的完整、哈希一致读取版本拼接文件；materializeReplayWorkspace 只向
  *    不存在的新目录写入这些材料，缺失、局部读取、冲突或路径不安全时拒绝物化。
@@ -38,6 +38,8 @@ export const REPLAY_CASE_VERSION = 1;
 type ReplaySettings = Pick<
   Settings,
   | "model"
+  | "protocol"
+  | "auxiliaryProtocol"
   | "reasoningEffort"
   | "auxiliaryModel"
   | "auxiliaryReasoningEffort"
@@ -133,6 +135,7 @@ export function captureModelProvider(
   details: () => Pick<RecordedModelExchange, "purpose" | "step" | "attempt">,
 ): ModelProvider {
   return {
+    protocol: provider.protocol,
     getCapabilities: provider.getCapabilities?.bind(provider),
     async run(input, instructions, tools, signal, onDelta, options) {
       const id = randomUUID();
@@ -488,6 +491,8 @@ export async function writeReplayCase(file: string, caseFile: TaskReplayCase) {
 export function replaySettings(settings: Settings): ReplaySettings {
   const {
     model,
+    protocol,
+    auxiliaryProtocol,
     reasoningEffort,
     auxiliaryModel,
     auxiliaryReasoningEffort,
@@ -503,6 +508,8 @@ export function replaySettings(settings: Settings): ReplaySettings {
 
   return {
     model,
+    protocol,
+    auxiliaryProtocol,
     reasoningEffort,
     auxiliaryModel,
     auxiliaryReasoningEffort,

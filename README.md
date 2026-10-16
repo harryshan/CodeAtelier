@@ -16,9 +16,9 @@ CodeAtelier 是一个运行在本机的个人 AI 编程助手。连接模型服�
 
 ## 快速开始
 
-需要 **Node.js 24 或 26**、[项目指定版本的 pnpm](package.json)，以及支持流式响应和工具调用的 **Responses API 服务**。项目需要用到的 Git、编译器等工具也应在本机安装。
+需要 **Node.js 24 或 26**、[项目指定版本的 pnpm](package.json)，以及支持流式响应和工具调用的 **Responses、Chat Completions 或 Anthropic Messages API 服务**。项目需要用到的 Git、编译器等工具也应在本机安装。
 
-已有旧版数据库时，先按 [SQLite 完整迁移步骤](docs/database-migration.md#9-已实现的运行与离线操作) 停机备份、转换和验证；当前版本使用 schema v11，不在启动时隐式升级。已激活的数据目录通过 `history-active.json` 定位运行库，备份和搬迁时须一并保留目标目录。安装式 Windows Sandbox 还需更新到匹配的 Runtime IPC v15。
+已有旧版数据库时，先按 [SQLite 完整迁移步骤](docs/database-migration.md#9-已实现的运行与离线操作) 停机备份、转换和验证；当前版本使用 schema v11，不在启动时隐式升级。已激活的数据目录通过 `history-active.json` 定位运行库，备份和搬迁时须一并保留目标目录。安装式 Windows Sandbox 还需更新到匹配的 Runtime IPC v16。
 
 ### 1. 安装依赖
 
@@ -33,12 +33,13 @@ pnpm install --frozen-lockfile
 复制 [`.env.example`](.env.example) 为 `.env`，填入服务地址、完整模型名和密钥。已有 `.env` 时直接编辑，不要覆盖。以下均为占位值：
 
 ```dotenv
+CODEATELIER_API_PROTOCOL=responses
 CODEATELIER_BASE_URL=https://api.example.com/v1
 CODEATELIER_MODEL=YOUR_MODEL_ID
 CODEATELIER_API_KEY=YOUR_API_KEY
 ```
 
-需要的是 Responses API，并非所有“OpenAI 兼容”服务都支持。辅助模型、思考等级等可选设置见 [配置说明](docs/development.md#配置)。
+协议可选 `responses`（默认）、`chat-completions`、`messages`；主/辅助模型可独立连接。新增两种协议首批支持文字和本地工具，暂不提供思考参数或内置搜索，也不代表所有兼容服务已验证。示例和限制见 [模型协议](docs/model-protocols.md)，其他偏好见 [配置说明](docs/development.md#配置)。
 
 ### 3. 启动并开始对话
 
