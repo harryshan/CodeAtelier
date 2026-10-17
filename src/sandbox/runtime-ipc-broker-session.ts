@@ -5,7 +5,7 @@
  * 1. model_capabilities/model_run 委托 RuntimeBrokerGateway，使模型 endpoint/key 永远留在 Broker Host。
  * 2. model_run 把 provider delta 作为关联原 requestId 的事件回传，再返回完整 ModelResult。
  *    token 锚点启动时只传计数/指纹，保存只作用于认证会话，不接受 sessionId 或模型连接配置。
- * 3. approval、扩展权限命令（含 Git CLI）、任务绑定子状态/问题/租约及 session 只调用显式 handlers；子模型严格比对三个只读工具与 ask_main，拒绝写工具。
+ * 3. approval、扩展权限命令（含 Git CLI）、任务绑定子状态/问题/租约及 session 只调用显式 handlers；子模型按 Broker 启动快照严格比对只读函数与可选内置 web_search，拒绝写工具及额外搜索参数。
  *    skill_execute 仅按名称访问本任务后端目录，Runtime 不可提供宿主路径；启动时只传 Skill 与 MCP 公开目录摘要，不传连接配置。
  * 4. MCP 与越界命令先审批并保存在当前认证连接的一次性表中，Runtime 获得执行槽后才消费 authorizationId；
  *    不再提供 Git 专用入口；请求取消只中止对应操作，不结束健康的 Agent Runtime。
@@ -26,7 +26,7 @@ import type {
 } from "./runtime-ipc-protocol.js";
 import { RUNTIME_IPC_PROTOCOL_VERSION } from "./runtime-ipc-protocol.js";
 import type { RuntimeSubagentStoreRequest } from "./runtime-ipc-protocol.js";
-import { subagentToolDefinitions } from "../agent/subagent-question-contract.js";
+import { subagentModelTools } from "../agent/subagent-question-contract.js";
 import type { RuntimeTaskSettings } from "./runtime-ipc-protocol.js";
 import type {
   CapabilityCommandRequest,
@@ -143,6 +143,7 @@ export interface RuntimeIpcBrokerHandlers {
 export class RuntimeIpcBrokerSession {
   readonly peer: RuntimeIpcPeer;
   private authenticated = false;
+  private subagentWebSearchEnabled = false;
   private ready: Promise<void>;
   private resolveReady!: () => void;
   private rejectReady!: (error: Error) => void;
@@ -313,6 +314,9 @@ export class RuntimeIpcBrokerSession {
       await ready();
     }
 
+    // 只使用 Broker 传出的任务配置，不让 Runtime 的模型请求自行开启内置搜索。
+    this.subagentWebSearchEnabled = input.settings.webSearchEnabled !== false;
+
     return this.peer.request("start_task", input, signal);
   }
 
@@ -370,7 +374,9 @@ export class RuntimeIpcBrokerSession {
               (lease) => lease.subagentId === id,
             ) ||
             JSON.stringify(request.body.tools) !==
-              JSON.stringify(subagentToolDefinitions) ||
+              JSON.stringify(
+                subagentModelTools(this.subagentWebSearchEnabled),
+              ) ||
             !this.handlers.authorizeSubagentModel
           ) {
             throw new Error(

@@ -2,7 +2,7 @@
  * 用双向内存 IPC 和 Broker session 验证已认证子模型路由、工具白名单及租约账本。
  *
  * 1. 在握手后的同一 task/instance 下验证无租约、冒用主任务身份及写工具声明均在模型调用前拒绝。
- * 2. 已登记子请求与租约才能代理三个只读文件工具及 ask_main；重复释放、断连清理不得提前借出额度。
+ * 2. 已登记子请求与租约才能代理只读函数及 Broker 启动配置允许的内置搜索；拒绝额外参数和伪造函数，重复释放、断连清理不得提前借出额度。
  * 3. 校验长问题可传输，空问题与任意写入仍拒绝；本夹具不证明 Windows transport/OS 身份。
  */
 
@@ -14,220 +14,268 @@ import { RuntimeBrokerGateway } from "../src/sandbox/runtime-capability-core.js"
 import { RuntimeIpcBrokerSession } from "../src/sandbox/runtime-ipc-broker-session.js";
 import { TraceRecorder } from "../src/tracing/recorder.js";
 
-it("rejects forged subagent requests and retains leases until the instance is cleaned", async () => {
-  const runtimeToBroker = new PassThrough();
-  const brokerToRuntime = new PassThrough();
-  const identity = {
-    sessionId: "session-1",
-    taskId: "task-1",
-    executionInstanceId: "runtime-1",
-    kind: "agent-runtime" as const,
-  };
-  const nonce = "0123456789abcdef0123456789abcdef";
-  let modelCalls = 0;
-  let releases = 0;
-  let questions = 0;
-  const started = new Set<string>();
-  const gateway = new RuntimeBrokerGateway(
-    {
-      authorize: (candidate) => candidate === identity,
-      approveCommand: async () => ({ approved: false }),
-      modelProvider: () => ({
-        model: "mock-model",
-        provider: {
-          async run() {
-            modelCalls++;
+it.each([false, true])(
+  "validates subagent search capability %s and retains leases until cleanup",
+  async (webSearchEnabled) => {
+    const runtimeToBroker = new PassThrough();
+    const brokerToRuntime = new PassThrough();
+    const identity = {
+      sessionId: "session-1",
+      taskId: "task-1",
+      executionInstanceId: "runtime-1",
+      kind: "agent-runtime" as const,
+    };
+    const nonce = "0123456789abcdef0123456789abcdef";
+    let modelCalls = 0;
+    let releases = 0;
+    let questions = 0;
+    const started = new Set<string>();
+    const gateway = new RuntimeBrokerGateway(
+      {
+        authorize: (candidate) => candidate === identity,
+        approveCommand: async () => ({ approved: false }),
+        modelProvider: () => ({
+          model: "mock-model",
+          provider: {
+            async run(_input, _instructions, tools) {
+              expect(tools).toEqual(modelBody.tools);
+              modelCalls++;
 
-            return { output: [], text: "read-only result" };
+              return { output: [], text: "read-only result" };
+            },
+          },
+        }),
+      },
+      new TraceRecorder(),
+    );
+    const broker = new RuntimeIpcBrokerSession(
+      { input: runtimeToBroker, output: brokerToRuntime },
+      identity,
+      nonce,
+      gateway,
+      {
+        requestApproval: async () => ({ approved: false }),
+        prepareCapabilityCommand: async () => async () => {
+          throw new Error("not available");
+        },
+        applyMemory: async () => {
+          throw new Error("not available");
+        },
+        appendSessionEvent: async () => undefined,
+        saveContext: async () => undefined,
+        readContext: async () => [],
+        readEvents: async () => [],
+        latestContextSnapshot: async () => undefined,
+        readContextSnapshot: async () => undefined,
+        compactContext: async () => undefined,
+        runtimeCompleted: async () => undefined,
+        subagentStore: async (candidate, request) => {
+          expect(candidate).toBe(identity);
+          if (request.action === "request_start") {
+            started.add(request.requestId);
+          }
+
+          if (request.action === "question") {
+            questions++;
+          }
+
+          return { saved: true };
+        },
+        authorizeSubagentModel: async (candidate, id, requestId) => {
+          if (
+            candidate !== identity ||
+            id !== "review" ||
+            !started.has(requestId)
+          ) {
+            throw new Error("not registered");
+          }
+        },
+        acquireSubagentLease: async (candidate, id) => {
+          if (candidate !== identity || id !== "review") {
+            throw new Error("not registered");
+          }
+
+          return () => {
+            releases++;
+          };
+        },
+      },
+    );
+    const peer = await connectAgentRuntime(
+      { input: brokerToRuntime, output: runtimeToBroker },
+      identity,
+      nonce,
+      AbortSignal.timeout(2_000),
+    );
+    const signal = AbortSignal.timeout(2_000);
+    const modelBody = {
+      purpose: "subagent",
+      subagentId: "review",
+      subagentRequestId: "model-1",
+      input: [],
+      instructions: "read only",
+      tools: [
+        ...subagentToolDefinitions,
+        ...(webSearchEnabled ? [{ type: "web_search" }] : []),
+      ],
+    };
+
+    const rejectedByBroker = async (
+      request: Promise<unknown>,
+      reason = /model_run.*(授权|not registered|身份)/,
+    ) => {
+      await expect(request).rejects.toMatchObject({
+        code: "RUNTIME_REQUEST_FAILED",
+        message: expect.stringMatching(reason),
+      });
+    };
+
+    try {
+      peer.setRequestHandler(async (request) => {
+        expect(request.operation).toBe("start_task");
+
+        return { accepted: true };
+      });
+      peer.event({ type: "event", event: "runtime_state", state: "ready" });
+      await broker.startTask(
+        {
+          workspace: "C:\\workspace",
+          prompt: "inspect",
+          settings: {
+            model: "test",
+            maxSteps: 1,
+            commandTimeoutMs: 1_000,
+            contextChars: 10_000,
+            outputChars: 1_000,
+            webSearchEnabled,
           },
         },
-      }),
-    },
-    new TraceRecorder(),
-  );
-  const broker = new RuntimeIpcBrokerSession(
-    { input: runtimeToBroker, output: brokerToRuntime },
-    identity,
-    nonce,
-    gateway,
-    {
-      requestApproval: async () => ({ approved: false }),
-      prepareCapabilityCommand: async () => async () => {
-        throw new Error("not available");
-      },
-      applyMemory: async () => {
-        throw new Error("not available");
-      },
-      appendSessionEvent: async () => undefined,
-      saveContext: async () => undefined,
-      readContext: async () => [],
-      readEvents: async () => [],
-      latestContextSnapshot: async () => undefined,
-      readContextSnapshot: async () => undefined,
-      compactContext: async () => undefined,
-      runtimeCompleted: async () => undefined,
-      subagentStore: async (candidate, request) => {
-        expect(candidate).toBe(identity);
-        if (request.action === "request_start") {
-          started.add(request.requestId);
-        }
-
-        if (request.action === "question") {
-          questions++;
-        }
-
-        return { saved: true };
-      },
-      authorizeSubagentModel: async (candidate, id, requestId) => {
-        if (
-          candidate !== identity ||
-          id !== "review" ||
-          !started.has(requestId)
-        ) {
-          throw new Error("not registered");
-        }
-      },
-      acquireSubagentLease: async (candidate, id) => {
-        if (candidate !== identity || id !== "review") {
-          throw new Error("not registered");
-        }
-
-        return () => {
-          releases++;
-        };
-      },
-    },
-  );
-  const peer = await connectAgentRuntime(
-    { input: brokerToRuntime, output: runtimeToBroker },
-    identity,
-    nonce,
-    AbortSignal.timeout(2_000),
-  );
-  const signal = AbortSignal.timeout(2_000);
-  const modelBody = {
-    purpose: "subagent",
-    subagentId: "review",
-    subagentRequestId: "model-1",
-    input: [],
-    instructions: "read only",
-    tools: subagentToolDefinitions,
-  };
-
-  const rejectedByBroker = async (
-    request: Promise<unknown>,
-    reason = /model_run.*(授权|not registered|身份)/,
-  ) => {
-    await expect(request).rejects.toMatchObject({
-      code: "RUNTIME_REQUEST_FAILED",
-      message: expect.stringMatching(reason),
-    });
-  };
-
-  try {
-    await rejectedByBroker(peer.request("model_run", modelBody, signal));
-    const lease = (await peer.request(
-      "subagent_lease_acquire",
-      { subagentId: "review" },
-      signal,
-    )) as { leaseId: string };
-    await rejectedByBroker(
-      peer.request(
-        "model_run",
-        { ...modelBody, tools: [{ type: "function", name: "edit_files" }] },
         signal,
-      ),
-    );
-    await rejectedByBroker(
-      peer.request(
-        "model_run",
-        { ...modelBody, subagentRequestId: "other" },
+      );
+      await rejectedByBroker(peer.request("model_run", modelBody, signal));
+      const lease = (await peer.request(
+        "subagent_lease_acquire",
+        { subagentId: "review" },
         signal,
-      ),
-    );
-    await rejectedByBroker(
-      peer.request("model_run", { ...modelBody, purpose: "task" }, signal),
-    );
-    await expect(
-      peer.request(
-        "subagent_store",
-        { action: "edit_files", path: "data.txt" },
-        signal,
-      ),
-    ).rejects.toMatchObject({
-      code: "SANDBOX_RUNTIME_IPC",
-      message: expect.stringMatching(/subagent_store.*body/),
-    });
-    await expect(
-      peer.request(
+      )) as { leaseId: string };
+      await rejectedByBroker(
+        peer.request(
+          "model_run",
+          { ...modelBody, tools: [{ type: "function", name: "edit_files" }] },
+          signal,
+        ),
+      );
+      await rejectedByBroker(
+        peer.request(
+          "model_run",
+          { ...modelBody, subagentRequestId: "other" },
+          signal,
+        ),
+      );
+      await rejectedByBroker(
+        peer.request("model_run", { ...modelBody, purpose: "task" }, signal),
+      );
+      await expect(
+        peer.request(
+          "subagent_store",
+          { action: "edit_files", path: "data.txt" },
+          signal,
+        ),
+      ).rejects.toMatchObject({
+        code: "SANDBOX_RUNTIME_IPC",
+        message: expect.stringMatching(/subagent_store.*body/),
+      });
+      await expect(
+        peer.request(
+          "subagent_store",
+          {
+            action: "question",
+            subagentId: "review",
+            requestId: "empty",
+            question: " ",
+          },
+          signal,
+        ),
+      ).rejects.toMatchObject({ code: "SANDBOX_RUNTIME_IPC" });
+      expect(questions).toBe(0);
+      await expect(
+        peer.request(
+          "subagent_store",
+          {
+            action: "question",
+            subagentId: "review",
+            requestId: "q-1",
+            question: "Which file?".repeat(200),
+          },
+          signal,
+        ),
+      ).resolves.toMatchObject({ saved: true });
+      expect(questions).toBe(1);
+      expect(modelCalls).toBe(0);
+      expect(releases).toBe(0);
+
+      await peer.request(
         "subagent_store",
         {
-          action: "question",
+          action: "request_start",
           subagentId: "review",
-          requestId: "empty",
-          question: " ",
+          requestId: "model-1",
+          kind: "model",
         },
         signal,
-      ),
-    ).rejects.toMatchObject({ code: "SANDBOX_RUNTIME_IPC" });
-    expect(questions).toBe(0);
-    await expect(
-      peer.request(
-        "subagent_store",
-        {
-          action: "question",
-          subagentId: "review",
-          requestId: "q-1",
-          question: "Which file?".repeat(200),
-        },
-        signal,
-      ),
-    ).resolves.toMatchObject({ saved: true });
-    expect(questions).toBe(1);
-    expect(modelCalls).toBe(0);
-    expect(releases).toBe(0);
+      );
+      for (const forged of [
+        { type: "function", name: "web_search" },
+        { type: "web_search", search_context_size: "high" },
+        { type: "web_search_preview" },
+        ...(!webSearchEnabled ? [{ type: "web_search" }] : []),
+      ]) {
+        await rejectedByBroker(
+          peer.request(
+            "model_run",
+            {
+              ...modelBody,
+              tools: [...subagentToolDefinitions, forged],
+            },
+            signal,
+          ),
+        );
+      }
 
-    await peer.request(
-      "subagent_store",
-      {
-        action: "request_start",
-        subagentId: "review",
-        requestId: "model-1",
-        kind: "model",
-      },
-      signal,
-    );
-    await expect(
-      peer.request("model_run", modelBody, signal),
-    ).resolves.toMatchObject({ text: "read-only result" });
-    expect(modelCalls).toBe(1);
-    await peer.request(
-      "subagent_lease_release",
-      { leaseId: lease.leaseId },
-      signal,
-    );
-    await rejectedByBroker(
-      peer.request(
+      expect(modelCalls).toBe(0);
+
+      await expect(
+        peer.request("model_run", modelBody, signal),
+      ).resolves.toMatchObject({ text: "read-only result" });
+      expect(modelCalls).toBe(1);
+      await peer.request(
         "subagent_lease_release",
         { leaseId: lease.leaseId },
         signal,
-      ),
-      /subagent_lease_release.*租约无效或已释放/,
-    );
-    await peer.request(
-      "subagent_lease_acquire",
-      { subagentId: "review" },
-      signal,
-    );
-    expect(releases).toBe(1);
-    peer.end();
-    broker.peer.end();
-    expect(releases).toBe(1);
-    broker.releaseSubagentLeases();
-    expect(releases).toBe(2);
-  } finally {
-    peer.end();
-    broker.peer.end();
-    broker.releaseSubagentLeases();
-  }
-});
+      );
+      await rejectedByBroker(
+        peer.request(
+          "subagent_lease_release",
+          { leaseId: lease.leaseId },
+          signal,
+        ),
+        /subagent_lease_release.*租约无效或已释放/,
+      );
+      await peer.request(
+        "subagent_lease_acquire",
+        { subagentId: "review" },
+        signal,
+      );
+      expect(releases).toBe(1);
+      peer.end();
+      broker.peer.end();
+      expect(releases).toBe(1);
+      broker.releaseSubagentLeases();
+      expect(releases).toBe(2);
+    } finally {
+      peer.end();
+      broker.peer.end();
+      broker.releaseSubagentLeases();
+    }
+  },
+);

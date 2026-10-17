@@ -2,7 +2,7 @@
  * 用真实 Node Worker thread 和假父进程 RPC 驱动 subagent 独立 loop，不访问真实模型或文件。
  *
  * 1. 检查带版本与任务归属的模型/只读文件工具、向主协调器提问、历史检查点与最终报告均按递增序号交互。
- * 2. 模型试图调用写入工具时必须返回拒绝结果；父进程身份错误会使子循环失败，取消中断等待父进程的 RPC。
+ * 2. 模型试图调用写入工具或把 web_search 伪装成本地函数时必须返回拒绝结果；父进程身份错误会使子循环失败，取消中断等待父进程的 RPC。
  *
  * 此测试仅证明 Worker loop 和消息协议，实际路径校验由 subagent-readonly.test.ts 验证。
  */
@@ -63,6 +63,18 @@ async function exercise(tool: string) {
       let result: unknown;
       if (message.operation === "model") {
         modelCalls++;
+        if (modelCalls === 2 && ["edit_files", "web_search"].includes(tool)) {
+          const input = (
+            message.payload as {
+              input: Array<{ type: string; output?: string }>;
+            }
+          ).input;
+          const feedback = input.find(
+            (item) => item.type === "function_call_output",
+          );
+          expect(JSON.parse(feedback?.output ?? "{}")).toHaveProperty("error");
+        }
+
         result =
           modelCalls === 1
             ? {
@@ -227,15 +239,18 @@ it("rejects a parent response addressed to another task before accepting its mod
   }
 });
 
-it("reports a denied write request to the model without issuing a parent read", async () => {
-  const result = await exercise("edit_files");
-  expect(result.output.status).toBe("completed");
-  expect(result.readCalls).toBe(0);
-  expect(result.operations).toEqual([
-    "model",
-    "checkpoint",
-    "checkpoint",
-    "model",
-    "checkpoint",
-  ]);
-});
+it.each(["edit_files", "web_search"])(
+  "rejects local function %s without issuing a parent read",
+  async (tool) => {
+    const result = await exercise(tool);
+    expect(result.output.status).toBe("completed");
+    expect(result.readCalls).toBe(0);
+    expect(result.operations).toEqual([
+      "model",
+      "checkpoint",
+      "checkpoint",
+      "model",
+      "checkpoint",
+    ]);
+  },
+);

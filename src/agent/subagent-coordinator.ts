@@ -2,7 +2,7 @@
  * 在主 agent 所在进程协调同任务只读 subagent，供宿主 Engine 与 Sandbox AgentRuntime 共用。
  *
  * 1. execute 校验分工/等待/回复/收集/取消；子问题先持久化再唤醒主代理，不让子任务直接访问另一 Worker，消息 trace 只含安全 ID。
- * 2. runChild 等待依赖、获取全局租约，驱动独立 Worker loop，不附加子任务时长或累计 token 阈值；逐方向核对消息归属/序号，模型与读取经父进程验证并先落盘。
+ * 2. runChild 等待依赖、获取全局租约，驱动独立 Worker loop，不附加子任务时长或累计 token 阈值；逐方向核对消息归属/序号，模型与读取经父进程验证并先落盘，模型工具按可信任务搜索能力重建，不采用 Worker 自报声明。
  * 3. stop/close 通知所有未完成子任务，并在退出或强制终止得到确认后归还租约；等待响应主任务取消，消息不设次数阈值。
  * 4. Broker/Store 检查点或请求结果持久化失败时终止 Worker，不能将未知的只读结果当成普通工具失败后继续模型轮次。
  *
@@ -18,7 +18,7 @@ import type {
 import type { ModelUsage } from "../providers/model-metadata.js";
 import type { SubagentRecord, SubagentStatus } from "../shared/types.js";
 import { SubagentReadOnly } from "../tools/subagent-readonly.js";
-import { subagentToolDefinitions } from "./subagent-question-contract.js";
+import { subagentModelTools } from "./subagent-question-contract.js";
 import {
   subagentActionSchema,
   type SubtaskPlan,
@@ -103,6 +103,7 @@ interface CoordinatorOptions {
   workspace: string;
   storage: SubagentStorage;
   provider: ModelProvider;
+  webSearchEnabled?: boolean;
   limits: {
     acquire(
       taskId: string,
@@ -778,7 +779,7 @@ export class SubagentCoordinator {
         const result: ModelResult = await selectedProvider.run(
           model.input,
           model.instructions,
-          subagentToolDefinitions,
+          subagentModelTools(this.options.webSearchEnabled === true),
           entry.controller.signal,
           () => {},
         );

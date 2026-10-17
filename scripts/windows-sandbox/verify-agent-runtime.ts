@@ -4,7 +4,7 @@
  *
  * 1. 在仓库 .local 下建立一次性工作区和 Broker 数据库，并强制启用 Windows Sandbox 产品组装。
  * 2. 内存模型驱动固定 Agent Runtime 创建标记文件，再在同一工具批次独立执行经通用审批的 Broker Git CLI status 与 Runtime 普通命令，使单一路径失败不遮蔽另一条诊断，并核对专用账户输出回传。
- * 3. 以内部已标记任务让安装态独立 Worker 只读该文件，核对规划、模型 IPC、报告原子收集、tracing 和退出后的租约。
+ * 3. 以内部已标记任务让安装态独立 Worker 只读该文件，核对规划、模型 IPC 的只读函数/内置搜索声明、报告原子收集、tracing 和退出后的租约；不执行真实搜索。
  * 4. 请求 Broker 宿主命令，经低成本模型审批后写入 sibling 标记，核对 host-process 归因和结果回传；Capability Runner 暂停使用。
  * 5. 初始化一次性 Git 仓库，把 HTTPS remote 指向不可用的回环端口；验证 Git CLI 经通用 Broker 命令审批、失败结果回传和 Runtime clean lease release，全程不连接公网。
  * 6. 再让模型请求保持进行中并主动取消任务，核对 Job 终止、cancelled 归因和 generation lease 清空。
@@ -361,8 +361,12 @@ function subagentProvider() {
       if (instructions.includes("read-only research subagent")) {
         childCalls++;
         if (
-          tools.map((tool) => tool.name).join(",") !==
-          "read_file,list_entries,search_text,ask_main"
+          tools
+            .filter((tool) => tool.type === "function")
+            .map((tool) => tool.name)
+            .join(",") !== "read_file,list_entries,search_text,ask_main" ||
+          JSON.stringify(tools.filter((tool) => tool.type !== "function")) !==
+            JSON.stringify([{ type: "web_search" }])
         ) {
           fail("installed subagent received a write-capable tool definition");
         }

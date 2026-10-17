@@ -1,8 +1,8 @@
 /*
- * 用生产 Engine、真实 SQLite 与 Worker 和模拟 Responses 模型验证可选 subagent 的宿主执行路径。
+ * 用生产 Engine、真实 SQLite 与 Worker 和模拟三协议模型验证可选 subagent 的宿主执行路径。
  *
  * 1. 独立于 UI/HTTP 回归，经内部排队记录分别启动 explorer/reviewer；主模型按 plan/await/collect 协调，reviewer 初始上下文必须包含明确变更材料。
- * 2. 子 Worker 仅看到三个文件只读工具及向主协调器提问的无写入通道；报告消费与主反馈共同持久化。
+ * 2. 两角色在三协议下仅看到只读函数与 Responses 专属内置搜索；搜索记录、带来源报告及主反馈共同持久化。
  * 3. 超过主任务工具输出预算的报告保留未消费状态，以便恢复后重新读取；原代码文件不得被子任务改写。
  *
  * 此用例不验证 Sandbox/Runtime IPC、实际用户开关或 OS 级只读身份。
@@ -24,14 +24,34 @@ const scheduled = (id: string, request: unknown) =>
     arguments: { request },
   });
 
-it.each(["explorer", "reviewer"] as const)(
-  "coordinates %s and commits collected feedback in the host Engine",
-  async (role) => {
+it.each(
+  (["responses", "chat-completions", "messages"] as const).flatMap((protocol) =>
+    (["explorer", "reviewer"] as const).map((role) => ({ protocol, role })),
+  ),
+)(
+  "coordinates $role with $protocol and commits collected feedback in the host Engine",
+  async ({ role, protocol }) => {
     const root = await temp();
     await mkdir(path.join(root, "src"));
     const source = path.join(root, "src", "sample.ts");
     await writeFile(source, "export const value = 7;\n");
     const config = new Config(await temp());
+    config.settings.protocol = protocol;
+    const report =
+      protocol === "responses"
+        ? "sample.ts:1 value is 7; [source](https://example.com/reference)"
+        : "sample.ts:1 value is 7";
+    const searchOutput =
+      protocol === "responses"
+        ? [
+            {
+              type: "web_search_call",
+              id: "search-1",
+              status: "completed",
+              action: { type: "search", query: "reference" },
+            },
+          ]
+        : [];
     const store = new Store(path.join(config.directory, "history.sqlite"));
     const session = store.create(root, "test");
     let mainCalls = 0;
@@ -40,12 +60,14 @@ it.each(["explorer", "reviewer"] as const)(
       async run(input, instructions, tools) {
         if (instructions.includes("read-only research subagent")) {
           childCalls++;
-          expect(tools.map((tool) => tool.name)).toEqual([
-            "read_file",
-            "list_entries",
-            "search_text",
-            "ask_main",
-          ]);
+          expect(
+            tools
+              .filter((tool) => tool.type === "function")
+              .map((tool) => tool.name),
+          ).toEqual(["read_file", "list_entries", "search_text", "ask_main"]);
+          expect(tools.filter((tool) => tool.type !== "function")).toEqual(
+            protocol === "responses" ? [{ type: "web_search" }] : [],
+          );
           if (childCalls === 1) {
             expect(input).toHaveLength(1);
             if (role === "reviewer") {
@@ -56,6 +78,7 @@ it.each(["explorer", "reviewer"] as const)(
 
             return {
               output: [
+                ...searchOutput,
                 {
                   type: "function_call",
                   call_id: "read",
@@ -78,7 +101,11 @@ it.each(["explorer", "reviewer"] as const)(
             input.some((item) => item.type === "function_call_output"),
           ).toBe(true);
 
-          return { output: [], text: "sample.ts:1 value is 7" };
+          for (const item of searchOutput) {
+            expect(input).toContainEqual(item);
+          }
+
+          return { output: [], text: report };
         }
 
         mainCalls++;
@@ -155,7 +182,7 @@ it.each(["explorer", "reviewer"] as const)(
             (item) =>
               item.type === "function_call_output" &&
               item.call_id === "collect" &&
-              item.output.includes("sample.ts:1 value is 7"),
+              item.output.includes(report),
           ),
         ).toBe(true);
 
@@ -169,7 +196,7 @@ it.each(["explorer", "reviewer"] as const)(
       () => model,
     );
     try {
-      // 内部夹具测试已落盘的任务；正式 API 仍明确拒绝 true，未提前开放未完成的 Sandbox 路径。
+      // 内部夹具直接创建已落盘任务；UI/API 开关另有集成测试。
       const task = store.transaction(() => {
         const created = store.createTask(session.id, true);
         store.event(session.id, created.id, "user", { text: "inspect source" });
@@ -185,7 +212,7 @@ it.each(["explorer", "reviewer"] as const)(
           id: "review",
           status: "completed",
           consumed: true,
-          report: "sample.ts:1 value is 7",
+          report,
         },
       ]);
       expect(
@@ -193,6 +220,10 @@ it.each(["explorer", "reviewer"] as const)(
           .events(session.id)
           .some((event) => event.type === "subagent_collect"),
       ).toBe(true);
+      for (const item of searchOutput) {
+        expect(store.subagents(task.id)[0]?.context).toContainEqual(item);
+      }
+
       expect(mainCalls).toBe(4);
       expect(childCalls).toBe(2);
       expect(await readFile(source, "utf8")).toBe("export const value = 7;\n");

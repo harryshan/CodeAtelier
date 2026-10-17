@@ -3,7 +3,8 @@
  *
  * 1. 从 workerData 读取主任务绑定的 taskId、角色、目标和范围，核对父消息的版本/归属/序号，再由 subagent-prompts 构造内置角色的干净上下文与强制只读指令。
  * 2. 使用共用 runModelLoop 驱动不设轮数阈值的研究、模型重试、响应检查点；通过 parentPort 请求模型，
- *    模型密钥/网络只留在父进程，不直接导入文件系统或命令执行器。
+ *    父协调器按可信任务能力声明本地函数与可选服务端搜索，Worker 不自报工具集合；模型密钥/网络只留在父进程。
+ *    原生搜索记录随模型响应保存，不作为本地函数执行，不直接导入文件系统或命令执行器。
  * 3. 仅开放三个文件只读工具及向主协调器发问；每次受限请求先等父进程回执和检查点持久化，再继续模型轮次并发送终态。
  *
  * Worker 身份不是安全边界。恶意依赖仍可直接使用 Node API；本模块只约束模型可调用的工具。
@@ -13,10 +14,7 @@ import { parentPort, workerData } from "node:worker_threads";
 import { runModelLoop } from "./model-loop.js";
 import { createSubagentContext } from "./subagent-prompts.js";
 import { parseSubagentReadCall } from "./subagent-read-contract.js";
-import {
-  parseAskMainCall,
-  subagentToolDefinitions,
-} from "./subagent-question-contract.js";
+import { parseAskMainCall } from "./subagent-question-contract.js";
 import type { ModelResult } from "../providers/model-provider.js";
 import { SUBAGENT_WORKER_PROTOCOL_VERSION } from "./subagent-worker-protocol.js";
 import type {
@@ -153,7 +151,6 @@ async function run() {
         attempt,
         input,
         instructions,
-        tools: subagentToolDefinitions,
       })) as ModelResult,
     onRetry: () => {},
     prepareOverflow: async () => {

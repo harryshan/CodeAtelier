@@ -1,5 +1,13 @@
 # 初版验证记录
 
+## subagent 内置网页搜索（D159，2026-10-17，Windows / Node 26.10.0）
+
+- explorer/reviewer 在 Responses 下获得模型服务内置 `web_search`，Chat Completions / Messages 保持四个本地只读函数。宿主和 Runtime 共用声明，Broker 按自身启动快照精确比对白名单，不接受 Worker 自报工具、同名本地搜索函数、额外参数或其它内置工具；未新增 shell、写入或网络权限。
+- 宿主两角色/三协议与 Runtime 三协议回归通过；搜索记录和 URL 引用跨模型/Worker/IPC 后保留于检查点、报告和主反馈，查询与来源不进 trace。既有 Responses 引用解析、只读路径、取消和未知结果恢复测试继续通过。
+- 最终 `pnpm check` 全部通过：TypeScript、ESLint、Prettier、**117 个测试文件，852 通过、1 跳过**，以及 server/Web、Windows/POSIX Runtime 测试构建。较早检查发现并修正新 IPC 夹具的 contextChars 下限与四处空行；未修改产品校验、默认并发、测试时限或弱化断言。
+- 完整 `pnpm test:e2e` **68/68 通过**；此后仅补充测试与文档，产品源码未改变。构建保留既有 Zod 注释和 Web chunk 大小警告。
+- 经批准使用 Broker 宿主开发工具链；日志 `.local/subagent-web-search-{focused,check-final,e2e}.log` 不提交。不运行 Evaluation，不调用真实模型，不修改真实配置、不重启当前服务或更新安装；安装式 Runtime 仍需按正常构建/Repair 更新。模拟模型、stdio harness 和 bundle 构建不等于真实搜索服务、固定账户安装态或跨平台实机验收。
+
 ## subagent 任务级 UI 开关（D158，2026-10-17，Windows / Node 26.10.0）
 
 - 按用户要求开放输入框下方默认关闭的“启用 subagent（只读）”及 HTTP 启用路径；入口开放不等于 Sandbox 专项验收通过。选择仅本次任务生效，成功提交复位、失败保留；活动任务显示保存值并锁定，人工恢复沿用原选择，不改权限或安装副本。
