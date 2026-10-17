@@ -300,9 +300,11 @@ Responses 主任务请求包含 OpenAI 内置 `web_search`，Chat Completions / 
 
 ### Perfetto tracing
 
-主要测试：tracing-followup.test.ts、tracing-lifecycle.test.ts、tracing.test.ts、tracing-regressions.test.ts、redact.test.ts、read-file-content.test.ts、agent-runtime-engine.test.ts、runtime-ipc.test.ts、tool-graph.test.ts、e2e/app.spec.ts。
+主要测试：tracing-simple-view.test.ts、tracing-followup.test.ts、tracing-lifecycle.test.ts、tracing.test.ts、tracing-regressions.test.ts、redact.test.ts、read-file-content.test.ts、agent-runtime-engine.test.ts、runtime-ipc.test.ts、tool-graph.test.ts、e2e/app.spec.ts。
 
 宿主与真实 Runtime 子进程的 `read_file` 检查/异步字节读取/直接同步计算阶段及结果字节数与计算耗时，二进制失败与读后取消的阶段配对，不再输出读取 Worker 或池关闭事件；`context.prepare`/`context.request` 及计量子阶段、Runtime `tool.result_persist`、独立模型与响应处理、工具计划/持久化及 instant/flow 事件导出；Runtime trace IPC 只接受固定阶段、工具槽位、单调微秒时间戳和有界数值属性，Broker 校验时间窗、以已验证 Runtime PID 分组、对五次 read_file 复用最多四条槽位轨道，参数在 Broker 侧从 tool_start 脱敏附加；任意名称/文本字段关闭通道；独立 ID 的异步 b/e 配对、Task 生命周期、同刻边界排序、n/bind_id flow 端点、可复用工具轨道、实际 tool 的完整结构化参数及递归凭据脱敏、按 session/task 独立持久化、终态后释放内存、认证下载、仅显示真实文件的统计框入口、关联元数据与普通长属性限长
+
+`tracing-simple-view.test.ts` 验证单一英文下载：分类与正常内部细节降噪、短等待过滤、失败/取消/unknown 不隐藏、工具参数不进入属性、跨工具名称轨道复用、交叉/零时长/跨进程原时序、旧 X/B/E 和缺失结束兼容、partial/丢弃计数保留。`tracing.test.ts` 继续从真实落盘文件验证底层采集，并单独断言 API 简洁输出；live 回归覆盖 unknown 与 no-store；浏览器从原有唯一入口实际下载并解析内容。简洁展示不能替代或弱化底层采集回归。
 
 `tracing-regressions.test.ts` 用固定时间覆盖 Main thread/Store queue/Broker 并发交叉区间、零时长及取消收口、跨进程 flow 的同名/同分类/ID 绑定；Engine 故障注入覆盖终态写库失败仍归档并释放内存、导出或归档抛错不改变已完成结果。`redact.test.ts` 覆盖凭据别名、带空格/转义的赋值和命令选项、Basic/Bearer/Cookie 头、非字符串敏感字段、重复脱敏稳定性，以及普通路径和 token 计数保留。测试用 `fixtures/trace-slices.ts` 按进程及 ID 还原区间再断言耗时，不依赖事件名称寻找同名结束。真实 Perfetto importer 的离线合成数据验证见 [验证记录](verification.md)，不是浏览器 UI 或全平台验收。
 

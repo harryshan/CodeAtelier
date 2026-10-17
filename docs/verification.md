@@ -1,5 +1,14 @@
 # 初版验证记录
 
+## 英文简洁 trace 下载（D156，2026-10-17，Windows / Node 26.10.0）
+
+- 终态和 live 下载统一经 `tracing/simple-view.ts` 整理：英文分类、串行复用/并行分行、主流程保留、正常底层细节隐藏；失败/取消/unknown、真实时间及进程归属保留。没有详细版切换，原始归档不改写，下载排除工具参数。
+- 先在真实 API 回归中复现旧下载缺少简洁投影，再验证 tracing 定向 **33/33 通过**；新用例覆盖分类、短等待、异常、交叉/零时长/跨进程、旧 X/B/E、缺失结束、源不变与参数排除。底层细节仍从真实归档断言，没有削弱采集回归。
+- `pnpm check` 的 TypeScript、ESLint、Prettier 通过；默认并发全量测试 **808 通过、1 跳过、1 失败**，唯一失败为既有 Git CLI 实进程夹具的 15 秒超时。原样 check 未全绿，没有增加超时或修改默认并发；随后完整 `pnpm test --maxWorkers=2` **116 文件、809 通过、1 跳过**，该夹具通过。
+- 完整 `pnpm test:e2e` **67/67 通过**，包括原有唯一 trace 入口的真实浏览器下载与 JSON 内容校验；服务/Web 和 Windows/POSIX Runtime 测试构建通过，保留既有 Zod 注释和 Web chunk 大小警告。
+- 使用已有本地 Perfetto importer 离线导入纯合成投影，工具轨道复用为 Tools～Tools 4，交叉片段独立、深度均为 0，保留 20/30 微秒的源时长及两个 PID；error 级 importer stats 无非零项。这验证导入结构，不等于人工检查 Perfetto 网页视觉效果。
+- 测试经批准在 Broker 宿主运行，记录位于 `.local/tracing-simple-{check,unit,e2e}.log`；不提交日志或合成 trace。不运行 Evaluation，不修改真实配置、归档或安装，不重启当前产品服务；本次不改 IPC，不需要因展示变化 Repair。其它操作系统和真实模型性能未实机复验。
+
 ## Git CLI 替代专用工具（D155，2026-10-17，Windows / Node 26.10.0）
 
 - 已移除模型 Git 声明、参数 schema、GitToolRunner/敏感模板检查、Broker Git handler 与专属 IPC，Git CLI 复用普通命令及显式获批宿主命令。无关键词转发、Git 专属目标校验或 push 独占批次。IPC 升至 v17，旧 operation/握手拒绝；历史输出、嵌套结果及恢复读取仍保留，不重新执行。

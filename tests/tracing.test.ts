@@ -1,7 +1,7 @@
 /**
  * 验证 Perfetto tracing 的可导出时间线、敏感原文边界、会话/任务级持久化和真实 HTTP 下载接口。
  * 第一组直接驱动 TraceRecorder，检查独立 ID 的异步生命周期、跨进程逻辑轨道、单调时间、instant/flow 及递归脱敏参数导出；
- * 第二组通过生产 createApp、Engine 和模拟模型完成并发工具任务，确认 read_file 工具内读取/同步计算阶段且不再有读取线程池关闭片段、context 预算计量、响应/计划/持久化阶段、独立 Store worker 与工具轨道及任务根 span 写入后即释放内存，并可经受保护 API 下载。
+ * 第二组通过生产 createApp、Engine 和模拟模型完成并发工具任务，确认 read_file 工具内读取/同步计算阶段且不再有读取线程池关闭片段、context 预算计量、响应/计划/持久化阶段、独立 Store worker 与工具轨道及任务根 span 写入后即释放内存，并经受保护 API 下载唯一的英文简洁投影；底层细节继续断言实际归档，避免简化展示削弱采集回归。
  *
  * 测试不连接真实模型服务，也不写入用户工作区；它只检查导出的可观察结构和临时数据目录，不依赖具体微秒耗时。
  */
@@ -289,9 +289,31 @@ it("persists each Engine task trace by session and task, then exports it only th
     });
 
     expect(response.statusCode).toBe(200);
-    const slices = traceSlices(response.json().traceEvents);
-    expect(response.headers["content-disposition"]).toContain(task.id);
+    expect(response.json().metadata.view).toBe("simple");
     expect(response.json().traceEvents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: "Task", ph: "X" }),
+        expect.objectContaining({ name: "Model request", ph: "X" }),
+        expect.objectContaining({ name: "Read file", ph: "X" }),
+      ]),
+    );
+    const downloaded = response.json();
+    expect(
+      downloaded.traceEvents.every((event: { ph: string }) =>
+        ["M", "X"].includes(event.ph),
+      ),
+    ).toBe(true);
+    expect(JSON.stringify(downloaded)).not.toContain("trace-target.txt");
+    expect(downloaded.metadata.hiddenSpans).toBeGreaterThan(0);
+    expect(
+      downloaded.traceEvents.filter(
+        (event: { name: string }) => event.name === "Read file",
+      ),
+    ).toHaveLength(5);
+    // 用户下载不再铺开底层细节；采集/归档能力仍从真实落盘文件验证。
+    const slices = traceSlices(archivedTrace.traceEvents);
+    expect(response.headers["content-disposition"]).toContain(task.id);
+    expect(archivedTrace.traceEvents).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ name: "task.run", ph: "b" }),
         expect.objectContaining({ name: "context.prepare", ph: "b" }),
@@ -314,46 +336,37 @@ it("persists each Engine task trace by session and task, then exports it only th
         }),
       ]),
     );
-    const storeTrack = response
-      .json()
-      .traceEvents.find(
-        (event: { name: string; ph: string; args: { name?: string } }) =>
-          event.name === "thread_name" &&
-          event.ph === "M" &&
-          event.args.name === "Store worker",
-      );
+    const storeTrack = archivedTrace.traceEvents.find(
+      (event: { name: string; ph: string; args: { name?: string } }) =>
+        event.name === "thread_name" &&
+        event.ph === "M" &&
+        event.args.name === "Store worker",
+    );
     expect(storeTrack).toBeDefined();
-    const storeSlices = response
-      .json()
-      .traceEvents.filter(
-        (event: { tid: number; ph: string }) =>
-          event.tid === storeTrack.tid && event.ph === "b",
-      );
+    const storeSlices = archivedTrace.traceEvents.filter(
+      (event: { tid: number; ph: string }) =>
+        event.tid === storeTrack.tid && event.ph === "b",
+    );
     expect(storeSlices.map((event: { name: string }) => event.name)).toContain(
       "store.worker.execute",
     );
     expect(JSON.stringify(storeSlices)).not.toContain("answer briefly");
 
-    const toolTracks = response
-      .json()
-      .traceEvents.filter(
-        (event: { name: string; ph: string; args: { name?: string } }) =>
-          event.name === "thread_name" &&
-          event.ph === "M" &&
-          event.args.name?.startsWith("Tool worker "),
-      );
+    const toolTracks = archivedTrace.traceEvents.filter(
+      (event: { name: string; ph: string; args: { name?: string } }) =>
+        event.name === "thread_name" &&
+        event.ph === "M" &&
+        event.args.name?.startsWith("Tool worker "),
+    );
     expect(toolTracks).toHaveLength(4);
-    const mainThreadTrack = response
-      .json()
-      .traceEvents.find(
-        (event: { name: string; ph: string; args: { name?: string } }) =>
-          event.name === "thread_name" &&
-          event.ph === "M" &&
-          event.args.name === "Main thread",
-      );
-    const mainThreadNames = response
-      .json()
-      .traceEvents.filter(
+    const mainThreadTrack = archivedTrace.traceEvents.find(
+      (event: { name: string; ph: string; args: { name?: string } }) =>
+        event.name === "thread_name" &&
+        event.ph === "M" &&
+        event.args.name === "Main thread",
+    );
+    const mainThreadNames = archivedTrace.traceEvents
+      .filter(
         (event: { tid: number; ph: string }) =>
           event.tid === mainThreadTrack.tid && event.ph === "b",
       )
@@ -370,13 +383,11 @@ it("persists each Engine task trace by session and task, then exports it only th
         "tool.result_persist",
       ]),
     );
-    const mainThreadSlices = response
-      .json()
-      .traceEvents.filter(
-        (event: { tid: number; ph: string }) =>
-          event.tid === mainThreadTrack.tid &&
-          (event.ph === "b" || event.ph === "e"),
-      );
+    const mainThreadSlices = archivedTrace.traceEvents.filter(
+      (event: { tid: number; ph: string }) =>
+        event.tid === mainThreadTrack.tid &&
+        (event.ph === "b" || event.ph === "e"),
+    );
     const sliceIndex = (name: string, phase: "b" | "e") =>
       mainThreadSlices.findIndex(
         (event: { name: string; ph: string }) =>
@@ -403,12 +414,10 @@ it("persists each Engine task trace by session and task, then exports it only th
     expect(requestEnd).toBeGreaterThan(requestBegin);
     expect(modelBegin).toBeGreaterThan(requestEnd);
 
-    const requestMeasure = response
-      .json()
-      .traceEvents.find(
-        (event: { name: string; ph: string }) =>
-          event.name === "context.request.measure_input" && event.ph === "b",
-      );
+    const requestMeasure = archivedTrace.traceEvents.find(
+      (event: { name: string; ph: string }) =>
+        event.name === "context.request.measure_input" && event.ph === "b",
+    );
     expect(requestMeasure.args).toMatchObject({
       inputItems: expect.any(Number),
     });
@@ -467,16 +476,14 @@ it("persists each Engine task trace by session and task, then exports it only th
       ),
     ).toBe(true);
     expect(
-      response.json().traceEvents.map((event: { name: string }) => event.name),
+      archivedTrace.traceEvents.map((event: { name: string }) => event.name),
     ).not.toContain("read_file.access");
     expect(
-      response.json().traceEvents.map((event: { name: string }) => event.name),
+      archivedTrace.traceEvents.map((event: { name: string }) => event.name),
     ).not.toContain("read_file.worker.compute");
-    const shutdown = response
-      .json()
-      .traceEvents.filter(
-        (event: { name: string }) => event.name === "read_file.pool.close",
-      );
+    const shutdown = archivedTrace.traceEvents.filter(
+      (event: { name: string }) => event.name === "read_file.pool.close",
+    );
     expect(shutdown).toHaveLength(0);
     const allTools = slices.filter(
       (event: { name: string; ph: string }) =>

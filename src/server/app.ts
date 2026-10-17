@@ -9,7 +9,8 @@
  * 5. preClose 中断任务并结束 SSE，onClose 关闭数据库。
  *
  * 关闭时要先确认任务已经中断，再结束服务。页面从保存的会话快照读取状态，任务循环由 Engine 执行。
- * trace/live 在相同鉴权下返回 partial 内存快照或持久检查点，no-store；完整下载接口仍只读取终态归档。
+ * trace/live 在相同鉴权下返回 partial 内存快照或持久检查点，no-store；终态下载只读归档。
+ * 两个入口统一经 simple-view 输出英文简洁时间线，不提供详细切换、不重写原始诊断文件。
  */
 
 import Fastify, { LogController } from "fastify";
@@ -31,6 +32,7 @@ import { Engine } from "../agent/engine.js";
 import { SUBAGENT_PUBLIC_READY } from "../agent/subagent-readiness.js";
 import type { ModelProviderFactory } from "../providers/model-provider.js";
 import { workspacePath } from "../tools/paths.js";
+import { simplifyTrace } from "../tracing/simple-view.js";
 
 export async function createApp(
   config: Config,
@@ -278,7 +280,7 @@ export async function createApp(
     return reply
       .header("Cache-Control", "no-store")
       .type("application/json")
-      .send(trace);
+      .send(simplifyTrace(trace));
   });
   app.get("/api/tasks/:id/trace", async (req, reply) => {
     const id = (req.params as { id: string }).id;
@@ -297,7 +299,7 @@ export async function createApp(
       `attachment; filename="codeatelier-${id}.json"`,
     );
 
-    return reply.type("application/json").send(trace);
+    return reply.type("application/json").send(simplifyTrace(trace));
   });
   app.post("/api/approvals/:id", async (req) => {
     const { decision } = z

@@ -8,7 +8,7 @@
  * 4. 检查压缩通知、原始历史及模型用量在刷新后仍能显示。
  * 5. 验证多文件编辑的成功/失败状态、错误、diff 和刷新后的历史；命令和 Git 的流式输出、结果与历史重载聚合在同一卡片。
  * 6. 通过页面内项目目录连接首个项目，再从项目标题右侧加号新建对话并检查历史隔离、折叠与最近记录限制。
- * 7. 检查当前会话统计默认收起，展开后使用已保存事件显示 token、LLM、工具成功率、运行时间和已结束任务的 Perfetto 下载入口。
+ * 7. 检查当前会话统计默认收起，展开后使用已保存事件显示 token、LLM、工具成功率、运行时间和已结束任务的唯一 Perfetto 下载入口及英文简洁时间线。
  * 8. 验证用户和 agent 消息的 Markdown 标题、链接、代码围栏、表格和任务列表渲染，并拒绝原始 HTML。
  * 9. 检查任务输入框以所见即所得方式将 Markdown 输入规则原地转换为富文本，并将生成的 Markdown 发送给任务。
  * 10. 已结束任务默认折叠中间工具、通知和重试文本，输入、末次完整回复及恢复提示保留；活动任务仍完整显示。
@@ -392,6 +392,25 @@ test("keeps current session statistics collapsed until expanded and projects per
   await expect(
     page.getByRole("link", { name: /下载任务 .* 的 Perfetto trace/ }),
   ).toHaveAttribute("href", /\/api\/tasks\/.*\/trace/);
+  const downloadPromise = page.waitForEvent("download");
+  await page
+    .getByRole("link", { name: /下载任务 .* 的 Perfetto trace/ })
+    .click();
+  const download = await downloadPromise;
+  const trace = JSON.parse(await readFile((await download.path())!, "utf8"));
+  expect(trace.metadata.view).toBe("simple");
+  expect(trace.traceEvents).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ name: "Task", ph: "X" }),
+      expect.objectContaining({ name: "Model request", ph: "X" }),
+      expect.objectContaining({ name: "Edit files", ph: "X" }),
+    ]),
+  );
+  expect(
+    trace.traceEvents.every((event: { ph: string }) =>
+      ["M", "X"].includes(event.ph),
+    ),
+  ).toBe(true);
 });
 
 test("command approval survives refresh and can be denied or cancelled", async ({

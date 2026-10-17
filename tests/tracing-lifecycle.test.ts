@@ -277,7 +277,17 @@ it("requires authentication for partial live trace and distinguishes it from com
     expect(response.json().metadata).toMatchObject({
       partial: true,
       taskId: task.id,
+      view: "simple",
     });
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect(response.json().traceEvents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          ph: "X",
+          args: expect.objectContaining({ status: "unknown" }),
+        }),
+      ]),
+    );
     release();
     await fixture.engine.active?.done;
     expect(
