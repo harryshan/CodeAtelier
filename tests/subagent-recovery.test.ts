@@ -41,7 +41,7 @@ it("inherits opt-in without restarting interrupted Workers or retrying unknown m
   store.planSubagents(original.id, [
     {
       id: "reader",
-      role: "researcher",
+      role: "explorer",
       objective: "inspect evidence",
       scope: ["src"],
       dependsOn: [],

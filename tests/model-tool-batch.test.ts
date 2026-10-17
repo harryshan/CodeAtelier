@@ -84,6 +84,7 @@ it("does not parse subagent calls for unselected tasks in either execution mode"
             {
               id: "review",
               role: "reviewer",
+              changes: "src/example.ts: baseline value = 1; current value = 2",
               objective: "inspect",
               scope: ["src"],
               dependsOn: [],

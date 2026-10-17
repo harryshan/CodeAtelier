@@ -1,5 +1,13 @@
 # 初版验证记录
 
+## 内置 explorer/reviewer subagent（D157，2026-10-17，Windows / Node 26.10.0）
+
+- 新计划限定 explorer/reviewer，reviewer 必须携带 changes；角色上下文只由显式分工字段构建，不自动继承主历史、记忆或同伴报告。两角色共用既有只读权限、活动 Worker 调度及 tracing，不开放 UI/API 门禁。
+- 新增真实 Worker/SQLite 回归：两个 explorer、两个 reviewer、混合角色同时到达模型屏障；各自范围读取成功、跨范围读取拒绝、父历史与依赖报告不自动进入模型请求、报告可收集且 trace 不含正文。主工具与 Runtime IPC 均拒绝未知角色和缺失审查材料。宿主 Engine 按两角色参数化，Runtime harness 核对 reviewer 材料端到端投递。
+- `pnpm check` 的 TypeScript、ESLint、Prettier 通过；默认并发单测 **813 通过、1 跳过、2 失败**：Git CLI 15 秒超时和 Repair PowerShell 10 秒子进程失败，原样 check 未全绿。较早一次全量运行另有 settings-migration 超时；没有放宽断言/时限或修改默认并发。
+- 完整 `pnpm test --maxWorkers=1`：**117 文件、815 通过、1 跳过**，上述失败项均通过；完整 `pnpm test:e2e`：**67/67 通过**，同时完成 server/Web 和 Windows/POSIX Runtime 测试构建。保留已有 Zod 注释及 Web chunk 大小警告。
+- 验证经批准在 Broker 宿主执行（Runtime PATH 无 pnpm，Git 有专用账户所有权限制）；日志为 `.local/subagent-roles-{check,serial,e2e}.log`，不提交。未运行 Evaluation、真实模型、管理员安装/Repair 或当前服务重启；模拟模型不证明实际筛选/审查质量，构建和 stdio harness 不等于安装态或跨平台实机验收。安装副本需随常规构建/Repair 更新，原发布门禁仍关闭。
+
 ## 英文简洁 trace 下载（D156，2026-10-17，Windows / Node 26.10.0）
 
 - 终态和 live 下载统一经 `tracing/simple-view.ts` 整理：英文分类、串行复用/并行分行、主流程保留、正常底层细节隐藏；失败/取消/unknown、真实时间及进程归属保留。没有详细版切换，原始归档不改写，下载排除工具参数。

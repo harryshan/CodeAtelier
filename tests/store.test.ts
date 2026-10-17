@@ -658,7 +658,7 @@ it("persists subagent plans and checkpoints while keeping interrupted requests u
   store.status(task.id, "running");
   const plan = {
     id: "reviewer",
-    role: "审查者",
+    role: "explorer" as const,
     objective: "找调用方",
     scope: ["src"],
     dependsOn: [],
@@ -717,7 +717,7 @@ it("persists one bounded subagent question and returns its recorded receipt with
   store.planSubagents(task.id, [
     {
       id: "reader",
-      role: "researcher",
+      role: "explorer",
       objective: "inspect",
       scope: ["."],
       dependsOn: [],
@@ -788,7 +788,7 @@ it("commits a finished subagent report with main feedback and keeps it readable"
     store.planSubagents(task.id, [
       {
         id: "check",
-        role: "reviewer",
+        role: "explorer",
         objective: "read",
         scope: ["."],
         dependsOn: [],
@@ -837,7 +837,7 @@ it("leaves subagent reports available until main tool feedback commits atomicall
     store.planSubagents(task.id, [
       {
         id: "check",
-        role: "reviewer",
+        role: "explorer",
         objective: "read",
         scope: ["."],
         dependsOn: [],
@@ -883,7 +883,7 @@ it("does not consume a report that completed after the delivered preview", async
     store.planSubagents(task.id, [
       {
         id: "late",
-        role: "reviewer",
+        role: "explorer",
         objective: "inspect",
         scope: ["."],
         dependsOn: [],

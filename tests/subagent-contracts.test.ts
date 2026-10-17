@@ -15,7 +15,7 @@ import {
 
 const task = (id: string, dependsOn: string[] = []) => ({
   id,
-  role: "研究者",
+  role: "explorer" as const,
   objective: "调查入口",
   scope: ["src"],
   dependsOn,

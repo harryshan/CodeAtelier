@@ -24,7 +24,7 @@ import { temp } from "./fixtures/helpers.js";
 
 const plan = (id: string, dependsOn: string[] = []) => ({
   id,
-  role: "researcher",
+  role: "explorer" as const,
   objective: `inspect code as ${id}`,
   scope: ["src"],
   dependsOn,

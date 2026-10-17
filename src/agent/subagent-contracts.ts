@@ -1,7 +1,7 @@
 /*
  * 定义主 agent 分工工具和任务内子任务计划的纯契约，供宿主、Runtime 与 Worker 消息分派共用。
  *
- * 1. subagentActionSchema 验证主角色的 plan/message/await/collect/cancel、已保存问题的 replyTo 和非空文本。
+ * 1. subtaskSchema 限定 explorer/reviewer 两种角色，reviewer 必须携带变更材料；subagentActionSchema 验证协调动作、replyTo 和非空文本。
  * 2. validateSubagentPlan 在任何 Worker 启动前检查 ID 唯一性与依赖图；路径的规范化
  *    与实际读取权限由协调器在工作区上下文中另外校验。
  * 3. subagentToolDefinition 带工具 DAG 的 execution 信封，只供已启用任务按条件追加；它本身不是写入权限或执行器。
@@ -14,16 +14,29 @@ import { scheduledParameters } from "../tools/registry.js";
 
 const identifier = z.string().regex(/^[A-Za-z][A-Za-z0-9_-]{0,63}$/);
 
-export const subtaskSchema = z
+const subtaskBaseSchema = z
   .object({
     id: identifier,
-    role: z.string().trim().min(1),
     objective: z.string().trim().min(1),
     scope: z.array(z.string().min(1)).min(1),
     dependsOn: z.array(identifier),
     deliverable: z.string().trim().min(1),
   })
   .strict();
+
+export const subtaskSchema = z.discriminatedUnion("role", [
+  subtaskBaseSchema.extend({ role: z.literal("explorer") }),
+  subtaskBaseSchema.extend({
+    role: z.literal("reviewer"),
+    changes: z
+      .string()
+      .trim()
+      .min(1)
+      .describe(
+        "Scoped diff or before/after change material with file paths and baseline/version. Supply evidence, not the main agent's conversation or conclusions.",
+      ),
+  }),
+]);
 
 export const subagentActionSchema = z
   .object({
@@ -122,7 +135,7 @@ export const subagentToolDefinition = {
   type: "function" as const,
   name: "subagent",
   description:
-    "Coordinate read-only subagents in this task. Children can send questions; await may return them early. Only the main agent can answer through message with replyTo, or plan, collect or cancel. All edits and verification stay with the main agent.",
+    "Coordinate built-in read-only subagents: explorer gathers and filters relevant information with evidence; reviewer independently reviews your changes in a fresh context. Supply reviewer changes as a scoped diff or before/after material, with paths and baseline/version. Both roles support multiple instances with separate IDs and scopes, running concurrently within shared Worker limits; use dependencies only when necessary. No parent conversation or peer reports are inherited. Children can ask questions; await may return early. Answer using message with replyTo; collect reports and verify evidence yourself. All edits and command-based verification stay with the main agent.",
   parameters: z.toJSONSchema(scheduledParameters(subagentActionSchema)),
   strict: true,
 };

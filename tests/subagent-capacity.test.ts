@@ -26,7 +26,7 @@ import { temp } from "./fixtures/helpers.js";
 
 const plan = (id: string) => ({
   id,
-  role: "researcher".repeat(20),
+  role: "explorer" as const,
   objective: "investigate".repeat(200),
   scope: ["."],
   dependsOn: [] as string[],
@@ -131,7 +131,6 @@ it("persists complete large checkpoints and results and collects more than four 
     store.status(task.id, "running");
     const subtasks = Array.from({ length: 6 }, (_, index) => ({
       ...plan(`child${index}`),
-      role: "reader",
       objective: "inspect",
       deliverable: "report",
     }));

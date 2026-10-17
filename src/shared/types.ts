@@ -56,7 +56,9 @@ export interface SubagentRecord {
   status: SubagentStatus;
   plan: {
     id: string;
+    // 历史自由文本角色保持可读；新计划由 subtaskSchema 限定内置角色。
     role: string;
+    changes?: string;
     objective: string;
     scope: string[];
     dependsOn: string[];

@@ -2,7 +2,7 @@
 
 状态：D111 已授权实施，分阶段开发中，尚未作为可用功能开放。本文针对用户提出的可选 subagent；当前单 agent 能力、同真实工作区串行规则及 Windows Sandbox 的验收限制仍以 [需求](requirements.md)、[架构](architecture.md) 和 [决策记录](decisions.md) 为准。
 
-Windows Sandbox 的日常功能已于 2026-10-03 获用户实际使用验证确认（D130）；该确认不等于 subagent 已对外开放，也不替代子任务取消、恢复和失败路径的专项就绪评估。本次仅更新文档，公开门禁保持不变。
+Windows Sandbox 的日常功能已于 2026-10-03 获用户实际使用验证确认（D130）；该确认不等于 subagent 已对外开放，也不替代子任务取消、恢复和失败路径的专项就绪评估。2026-10-17 按 D157 接入内置角色与审查材料，公开门禁保持不变。
 
 ## 目标和不可混淆的边界
 
@@ -14,7 +14,30 @@ Windows Sandbox 的日常功能已于 2026-10-03 获用户实际使用验证确�
 
 在对话框下方的发送按钮旁增加 `启用 subagent` checkbox，默认不勾选；选择只对**此次新任务**生效，发送后随任务一并保存为不可变 `subagentsEnabled`，排队后也不能改变。发送时把 `{ prompt, subagentsEnabled }` 交给 `/api/sessions/:id/tasks`；旧客户端缺省为 `false`。**契约/迁移阶段不得提前展示可勾选入口**：只有宿主和已启用的 Sandbox 路径均具备完整子任务闭环及恢复/取消后，才开放 checkbox；在功能未就绪的服务上请求 `true` 必须明确拒绝，不能静默当成单 agent。当前任务运行时只显示已保存的实际开关，不在任务中途切换；取消和人工恢复沿用原任务配置，恢复时不可意外开启。UI 不把未发送的选择当作任务实际状态。历史页显示任务是否启用、多 agent 计划和各 subagent 状态。
 
-开关开启不意味着一定创建 subagent：主 agent 在完成必要的初步调查后，决定是否有可独立、只读的分任务；没有则按单 agent 路径继续，并记录 `skipped` 原因。提示词仅说明选择和能力，计划结构、角色非空、任务归属和工具权限由服务端校验，不对研究内容或累计分工数量设置额外阈值。
+开关开启不意味着一定创建 subagent：主 agent 在完成必要的初步调查后，决定是否有可独立、只读的分任务；没有则按单 agent 路径继续，并记录 `skipped` 原因。提示词仅说明选择和能力，计划结构、内置角色枚举、任务归属和工具权限由服务端校验，不对研究内容或累计分工数量设置额外阈值。
+
+### 1.1 两种内置角色（D157）
+
+- **explorer**：帮助主 agent 获取范围内的信息，筛选、去重、归纳后交回相关结论、文件/行号/可用版本证据和未决问题，而非转交全部原始搜索结果。
+- **reviewer**：以新的独立上下文审查主 agent 所做的修改。计划必须提供 `changes`：限定范围的 diff 或前后变更材料，附路径与基线/版本；需求和审查目标放在 `objective`。不自动复制主对话、推理、项目记忆、依赖报告或其他子任务上下文。子任务自行读取当前文件核实问题，按严重性报告可操作发现、触发条件、影响、证据和覆盖限制；没有发现也需明确说明，不能声称已经证明正确。
+- 两种角色均可多开；同角色、混合角色均按独立 ID 和 scope 调度，不按角色设单例。同任务最多两个、服务全局最多四个活动 Worker，超出排队，不限制累计实例数。`dependsOn` 仅控制启动顺序，不自动转发上游报告。
+- 主 agent 在审查前完成对应范围的修改，审查期间可处理其他独立范围；同范围改变后需重新审查。当前不是文件系统快照或写锁，不保证外部修改不可发生。缺失/过期/不完整变更材料应标明限制并澄清，不允许 reviewer 自行执行 Git 或 shell。
+- 干净上下文是**不自动继承历史**，不是对任意文本的语义净化：主 agent 仍能通过 `objective`、`changes`、`message` 显式提供材料，应只提供需求与事实，不灌输原推理或既有审查结论。筛选和审查质量由模型完成，契约不保证真实模型一定发现缺陷。
+- 新计划只接受这两个内置角色；历史自由文本角色仍按原记录展示，不改写旧账本、不恢复旧 Worker。两角色沿用相同只读工具与持久化/取消/tracing，不新增命令、写入或审批权限。
+
+reviewer 计划示例（与 explorer 一样放入 `subtasks`）：
+
+```json
+{
+  "id": "review_api",
+  "role": "reviewer",
+  "objective": "审查参数校验修改是否符合需求并检查回归风险",
+  "scope": ["src/server", "tests"],
+  "dependsOn": [],
+  "deliverable": "按严重性列出有证据的问题、位置和验证限制",
+  "changes": "src/server/validate.ts，基线版本 <hash> 到当前版本 <hash>：\n- return value > 0;\n+ return value >= 0;"
+}
+```
 
 ## 2. Loop、线程与资源配额
 
@@ -41,7 +64,7 @@ Windows Sandbox 的日常功能已于 2026-10-03 获用户实际使用验证确�
   "subtasks": [
     {
       "id": "investigate_api",
-      "role": "梳理接口和调用方",
+      "role": "explorer",
       "objective": "给出受影响的入口与证据",
       "scope": ["src/server"],
       "dependsOn": [],
@@ -51,7 +74,7 @@ Windows Sandbox 的日常功能已于 2026-10-03 获用户实际使用验证确�
 }
 ```
 
-服务端在创建 Worker **之前**校验 ID 唯一、依赖无环、范围是工作区内现存非敏感目录、角色/文本非空以及当前任务状态；无效计划返回可修正错误而非部分启动。只允许主 agent 通过 `plan / message / await / collect / cancel` 请求协调器；subagent 不能再创建 subagent。每个 subagent 的输入包含任务目标、限定范围及必要的已核实事实，不复制完整主对话、密钥或其它 subagent 原始上下文；报告作为**不可信资料**回传，主 agent 复核文件版本和证据后自行确定是否修改。
+服务端在创建 Worker **之前**校验 ID 唯一、依赖无环、范围是工作区内现存非敏感目录、角色为 explorer/reviewer、文本非空（reviewer 另需 changes）以及当前任务状态；无效计划返回可修正错误而非部分启动。只允许主 agent 通过 `plan / message / await / collect / cancel` 请求协调器；subagent 不能再创建 subagent。每个 subagent 的输入包含任务目标、限定范围及必要的已核实事实，不复制完整主对话、密钥或其它 subagent 原始上下文；报告作为**不可信资料**回传，主 agent 复核文件版本和证据后自行确定是否修改。
 
 `postMessage` 用于相同 execution instance 内的**主协调器 ↔ Worker** 通信，不建立任意 Worker 对 Worker 的直连；所谓互相通信是经协调器转发有类型的 `question / reply / progress / report`，避免环状等待、越界广播与绕过审计。所有消息使用版本化判别联合、`taskId/subagentId/messageId/parentId`与 schema 校验；共享传输帧大小、背压与取消仍生效，不按子任务字符阈值截断正文；对同一活动实例的重复 `messageId` 返回已持久化回执；未确认的远程模型请求保留未知状态，不凭消息去重推断服务端从未执行，过期任务或被取消的消息丢弃。当前 Worker 仅能提出三种只读文件请求或 `ask_main` 非空问题，由可信协调器落盘确认；主代理的 `await` 返回指定子任务的全部待答问题并可提前返回，只有主代理的 `message(replyTo)` 能答复原提问者。Worker 不同步等待回复、不能直连或向其它子任务广播。协调器统一完成权限和数据投递，不传递宿主对象、执行器引用、密钥或可用的 Broker IPC 句柄。Broker 模型调用仍通过经认证的 Runtime IPC adapter，新增子 agent 关联字段须逐层绑定 `taskId` 与 execution instance，不信任 Worker 自报身份。
 
@@ -99,7 +122,7 @@ Windows Sandbox 的日常功能已于 2026-10-03 获用户实际使用验证确�
 
 ### 7.2 只读工具和文件边界
 
-`src/agent/subagent-worker.ts` 独立构造子 prompt：说明只调查/分析、不能写文件、不能要求主协调器代执行隐含命令或绕过用户权限、报告需列出证据文件及其版本；项目 AGENTS.md 等仓库内容仍视作资料，不能扩大工具权限。`src/tools/subagent-readonly.ts` 的正向白名单只接受 `read_file`、`list_entries`、`search_text`；二者新增的读取工具必须直接使用 Node 文件枚举/内容扫描，**不能**以 `run_command`、Git、外部可执行文件或插件包装“只读”搜索。路径按既有 `resolveTarget` 等检查规范化后落在当前任务授权读取范围内，拒绝越界、敏感位置和不安全链接，文件读取保留与主 agent 相同的 2 MiB 文件大小及每次 500 行上限，超出行范围返回分页信息；不再附加 32,000 字符截断。搜索取消专属的单文件/累计字节、扫描文件数、目录深度及每目录条目限制，并返回完整匹配行；搜索和列目录的结果数量由调用方 maxMatches/maxEntries 指定，不另设 100 条硬上限，搜索词也不另限 120 字符。路径范围、敏感位置和链接校验继续生效；Sandbox 模式同时接受原有 AccessManifest/OS 限制，宿主模式沿用已有安全路径语义。首次增量不提供 `web_search`、Git、外部根或 memory，确有需要再单独设计权限/回归。
+`src/agent/subagent-worker.ts` 通过 `subagent-prompts.ts` 按内置角色独立构造子 prompt：说明只调查/分析、不能写文件、不能要求主协调器代执行隐含命令或绕过用户权限、报告需列出证据文件及其版本；项目 AGENTS.md 等仓库内容仍视作资料，不能扩大工具权限。`src/tools/subagent-readonly.ts` 的正向白名单只接受 `read_file`、`list_entries`、`search_text`；二者新增的读取工具必须直接使用 Node 文件枚举/内容扫描，**不能**以 `run_command`、Git、外部可执行文件或插件包装“只读”搜索。路径按既有 `resolveTarget` 等检查规范化后落在当前任务授权读取范围内，拒绝越界、敏感位置和不安全链接，文件读取保留与主 agent 相同的 2 MiB 文件大小及每次 500 行上限，超出行范围返回分页信息；不再附加 32,000 字符截断。搜索取消专属的单文件/累计字节、扫描文件数、目录深度及每目录条目限制，并返回完整匹配行；搜索和列目录的结果数量由调用方 maxMatches/maxEntries 指定，不另设 100 条硬上限，搜索词也不另限 120 字符。路径范围、敏感位置和链接校验继续生效；Sandbox 模式同时接受原有 AccessManifest/OS 限制，宿主模式沿用已有安全路径语义。首次增量不提供 `web_search`、Git、外部根或 memory，确有需要再单独设计权限/回归。
 
 工具声明只对 Worker 的模型请求可见；协调器收到 `tool.request` 时再次核对角色、名称、参数 schema、路径、范围与任务有效性，然后执行受限读取并保存调用状态和完整结果。子 Worker 从不加载 `ToolRunner` 的写入 adapter；即便模型构造 `edit_files`、`run_command`、`git`、`memory_apply`、`run_with_permissions` 或 `subagent` 调用，也在**调用执行之前**拒绝，既不要求主 agent 代行，也不触发审批。主 agent 收集报告后再自行 `read_file`，获取当前内容哈希；直接使用报告中的旧哈希编辑应被现有版本校验拒绝。这是工具/受信任代码层面的限制，不是 OS 级线程隔离。
 

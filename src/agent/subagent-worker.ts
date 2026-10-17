@@ -1,7 +1,7 @@
 /*
  * 在独立 Node Worker thread 中运行只读 subagent 模型循环，供主任务协调器按需启动。
  *
- * 1. 从 workerData 读取主任务绑定的 taskId、角色、目标和范围，核对父消息的版本/归属/序号，再构造独立历史与强制只读指令。
+ * 1. 从 workerData 读取主任务绑定的 taskId、角色、目标和范围，核对父消息的版本/归属/序号，再由 subagent-prompts 构造内置角色的干净上下文与强制只读指令。
  * 2. 使用共用 runModelLoop 驱动不设轮数阈值的研究、模型重试、响应检查点；通过 parentPort 请求模型，
  *    模型密钥/网络只留在父进程，不直接导入文件系统或命令执行器。
  * 3. 仅开放三个文件只读工具及向主协调器发问；每次受限请求先等父进程回执和检查点持久化，再继续模型轮次并发送终态。
@@ -11,6 +11,7 @@
 
 import { parentPort, workerData } from "node:worker_threads";
 import { runModelLoop } from "./model-loop.js";
+import { createSubagentContext } from "./subagent-prompts.js";
 import { parseSubagentReadCall } from "./subagent-read-contract.js";
 import {
   parseAskMainCall,
@@ -133,14 +134,7 @@ function ask(operation: SubagentWorkerRequest["operation"], payload: unknown) {
 }
 
 async function run() {
-  const input: unknown[] = [
-    {
-      role: "user",
-      content: `Role: ${task.role}\nObjective: ${task.objective}\nScope: ${task.scope.join(", ")}\nDeliverable: ${task.deliverable}`,
-    },
-  ];
-  const instructions =
-    "You are a read-only research subagent. You cannot write files, run commands, use Git or call other agents. Report findings, paths and evidence to the main agent; request any edits through your final report. You may use ask_main only to clarify task scope or priorities, never to request commands, edits or permissions. It never waits for an answer or contacts peers directly. Only call the provided tools. Never assume previous file contents are current.";
+  const { input, instructions } = createSubagentContext(task);
   let finalReport = "";
   await runModelLoop({
     maxSteps: null,

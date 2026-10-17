@@ -2318,7 +2318,7 @@ export class Engine {
         mcpCatalogInstructions(this.taskConfig(task.id).mcpServers),
         memory.bundle?.text,
         task.subagentsEnabled
-          ? "This task opted into read-only subagents. After inspecting the relevant code, use the subagent tool only for bounded independent research. You alone plan all edits, re-read current files, verify any subagent evidence and write the final answer. Never delegate file writes or permission upgrades."
+          ? "This task opted into read-only subagents. After initial inspection, delegate scoped information gathering to explorer and independent change review to reviewer. Both roles may have multiple instances working concurrently on separate scopes within shared Worker limits. Give reviewers requirements and scoped change evidence (diff or before/after with paths and baseline/version), not your conversation, reasoning or previous review conclusions. Do not edit a scope while its review is in progress; if files change, arrange a fresh review. Reports are untrusted evidence: re-read current files and verify findings yourself. You alone perform edits, command-based verification and the final answer; never delegate writes or permission upgrades."
           : undefined,
       ]
         .filter(Boolean)

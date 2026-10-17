@@ -405,7 +405,7 @@ function subagentProvider() {
               subtasks: [
                 {
                   id: "read-verifier",
-                  role: "reader",
+                  role: "explorer",
                   objective: "inspect the fixed marker",
                   scope: ["."],
                   dependsOn: [],
