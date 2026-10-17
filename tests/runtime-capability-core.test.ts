@@ -5,6 +5,7 @@
  * 1. 命令审批签发绑定 execution instance、请求摘要和期限的一次性 grant，覆盖篡改、重放和错误身份。
  * 2. 未授权 Runtime 在进入审批或模型 handler 前拒绝，证明 transport 后仍有显式身份闸门。
  * 3. Broker 模型请求沿用 llm trace，并标记 Sandbox execution/kind/instance；prompt 和输出原文不进入 trace。
+ * 4. Broker 从可信身份生成主/子请求 cache key，跨 Runtime 实例保持、跨子任务隔离，非 Responses 和辅助用途不绑定。
  *
  * 这些用例只证明协议状态机，不替代 supervisor/pipe 的 PID、token、Job、nonce 或 lease 联合身份证明。
  */
@@ -17,6 +18,8 @@ import {
   type RuntimeExecutionIdentity,
 } from "../src/sandbox/runtime-capability-core.js";
 import { TraceRecorder } from "../src/tracing/recorder.js";
+import type { ModelRunOptions } from "../src/providers/model-provider.js";
+import type { RuntimeModelRequest } from "../src/sandbox/runtime-capability-core.js";
 
 const identity: RuntimeExecutionIdentity = {
   sessionId: "session-1",
@@ -158,3 +161,90 @@ it("traces brokered sandbox model requests without prompt or output text", async
   expect(JSON.stringify(exported)).not.toContain("model-secret");
   expect(JSON.stringify(exported)).not.toContain("delta-secret");
 });
+
+it.each(["responses", "chat-completions", "messages"] as const)(
+  "binds trusted cache identities only for Responses main/subagent calls with %s",
+  async (protocol) => {
+    const observed: Array<ModelRunOptions | undefined> = [];
+    const gateway = new RuntimeBrokerGateway(
+      handlers({
+        modelProvider: () => ({
+          model: "test",
+          provider: {
+            protocol,
+            async run(
+              _input,
+              _instructions,
+              _tools,
+              _signal,
+              _onDelta,
+              options,
+            ) {
+              observed.push(options);
+
+              return { output: [], text: "ok" };
+            },
+          },
+        }),
+      }),
+      new TraceRecorder(),
+    );
+    const request: RuntimeModelRequest = {
+      requestId: "request-1",
+      purpose: "task",
+      input: [],
+      instructions: "instructions",
+      tools: [],
+      maxOutputTokens: 256,
+    };
+    const run = (
+      owner: RuntimeExecutionIdentity,
+      changes: Partial<RuntimeModelRequest> = {},
+    ) =>
+      gateway.requestModel(
+        owner,
+        { ...request, ...changes },
+        new AbortController().signal,
+        () => {},
+      );
+
+    await run(identity);
+    await run(identity, { purpose: "subagent", subagentId: "child-1" });
+    await run({
+      ...identity,
+      taskId: "continued-task",
+      executionInstanceId: "new-runtime",
+    });
+    await run(identity, {
+      purpose: "subagent",
+      subagentId: "child-1",
+      requestId: "retry",
+    });
+    await run(identity, { purpose: "subagent", subagentId: "child-2" });
+    await run(
+      { ...identity, taskId: "continued-task" },
+      { purpose: "subagent", subagentId: "child-1" },
+    );
+    await run(identity, { purpose: "compaction" });
+    await run(identity, { purpose: "tool_review" });
+
+    expect(observed.every((options) => options?.maxOutputTokens === 256)).toBe(
+      true,
+    );
+    const keys = observed.map((options) => options?.promptCacheKey);
+    if (protocol === "responses") {
+      expect(keys[0]).toMatch(/^ca1_[a-f0-9]{48}$/);
+      expect(keys[0]).toBe(keys[2]);
+      expect(keys[1]).toBe(keys[3]);
+      expect(new Set(keys.slice(0, 6)).size).toBe(4);
+    } else {
+      expect(keys.every((key) => key === undefined)).toBe(true);
+    }
+
+    expect(keys.slice(6)).toEqual([undefined, undefined]);
+    await expect(run(identity, { purpose: "subagent" })).rejects.toThrow(
+      "子任务身份",
+    );
+    expect(observed).toHaveLength(8);
+  },
+);

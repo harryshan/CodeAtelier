@@ -5,7 +5,7 @@
  *
  * 1. ModelResult 返回完整协议记录 output、展示文本 text 和可选的实际 usage。
  * 2. ModelProvider.run 接收历史、指令、工具、取消信号和文本回调；getCapabilities 可选提供容量查询。
- * 3. 请求选项可限制本次输出，也可只为审批请求覆盖思考等级而不修改持久配置。
+ * 3. 请求选项可限制输出、覆盖审批思考等级或携带 Responses 的稳定 prompt cache key，不修改持久配置。
  *
  * 流式回调只负责展示。调用方必须等完整结果返回后再执行工具；历史保存也由调用方负责。
  * onStreamEvent 是无正文的本地流事件观察回调，供 tracing 区分首流事件与首文本；不属于服务请求参数。
@@ -29,6 +29,8 @@ export interface ModelRunOptions {
   onStreamEvent?: () => void;
   maxOutputTokens?: number;
   reasoningEffort?: Settings["reasoningEffort"];
+  /** Responses 缓存分组提示；由宿主/Broker 绑定，不提供缓存或权限隔离保证。 */
+  promptCacheKey?: string;
 }
 
 /** 调用方只依赖这个接口，不需要知道具体服务商。 */

@@ -5,7 +5,7 @@
  * 1. completed.output 为空时，从 item.done 收集完整工具调用。
  * 2. 检查文本流、缺失完成事件，以及 failed、incomplete 和 error 的错误分类与服务实际错误信息；挂起流验证总超时/空闲超时及配置时限提示。
  * 3. completed.output 有内容时应优先使用，最终消息正文也优先于暂存文本。
- * 4. 检查网页搜索 URL 引用转为可点击 Markdown 来源，以及输出上限、配置/单次覆盖的思考等级、内置网页搜索和并行工具调用偏好是否正确发出。
+ * 4. 检查网页搜索 URL 引用转为可点击 Markdown 来源，以及输出上限、思考等级、prompt cache key 的发送/省略、内置搜索和并行工具调用偏好。
  *
  * 只收到部分流不能算成功，必须等 completed。
  */
@@ -307,6 +307,7 @@ it.each([undefined, "none", "low", "medium", "high"] as const)(
     let requestedReasoning: unknown;
     let requestedParallelToolCalls: unknown;
     let requestedTools: unknown;
+    let requestedCacheKey: unknown;
     const server = createServer(async (req, res) => {
       if (req.url === "/v1/models") {
         res.setHeader("content-type", "application/json");
@@ -340,6 +341,7 @@ it.each([undefined, "none", "low", "medium", "high"] as const)(
       requestedReasoning = request.reasoning;
       requestedParallelToolCalls = request.parallel_tool_calls;
       requestedTools = request.tools;
+      requestedCacheKey = request.prompt_cache_key;
       res.writeHead(200, { "content-type": "text/event-stream" });
       res.end(
         "data: " +
@@ -386,9 +388,10 @@ it.each([undefined, "none", "low", "medium", "high"] as const)(
         [{ type: "web_search" }],
         new AbortController().signal,
         () => {},
-        { maxOutputTokens: 16384 },
+        { maxOutputTokens: 16384, promptCacheKey: "stable-test-cache-key" },
       );
       expect(requestedLimit).toBe(16384);
+      expect(requestedCacheKey).toBe("stable-test-cache-key");
       expect(requestedReasoning).toEqual({ effort: reasoningEffort ?? "high" });
       expect(requestedParallelToolCalls).toBe(true);
       expect(requestedTools).toContainEqual({ type: "web_search" });
@@ -398,6 +401,7 @@ it.each([undefined, "none", "low", "medium", "high"] as const)(
         reasoningEffort: "none",
       });
       expect(requestedReasoning).toEqual({ effort: "none" });
+      expect(requestedCacheKey).toBeUndefined();
       expect(requestedLimit).toBe(256);
       expect(requestedTools).toEqual([]);
       expect(result.usage).toEqual({

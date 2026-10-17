@@ -4,7 +4,7 @@
  *
  * 1. readSlices 按 ID 还原 v2 异步区间，也兼容旧 X 和 B/E；缺少结束只保留 unknown 零时长，不猜耗时。
  * 2. describeSlice 只选择主流程和明显等待，隐藏 SQL、IPC、采样及正常内部步骤；异常始终保留。
- * 3. simpleArguments 只带少量定位字段，排除工具参数与正文；标签采用固定英文名称。
+ * 3. simpleArguments 只带定位字段、缓存 key 指纹和实报缓存 tokens，排除 key 原文、工具参数与正文；标签采用固定英文名称。
  * 4. simplifyTrace 按真实进程和类别复用逻辑行，重叠区间分行，输出 X 事件与稳定排序元数据。
  *
  * 逻辑行不是物理线程，区间仍是墙钟时间，不代表 CPU 占用；不相加、不改写时间戳来制造嵌套。
@@ -248,12 +248,15 @@ function simpleArguments(slice: Slice) {
     "spanId",
     "callId",
     "requestId",
+    "subagentId",
+    "promptCacheKeyHash",
     "step",
     "attempt",
     "purpose",
     "model",
     "protocol",
     "inputTokens",
+    "cachedInputTokens",
     "outputTokens",
     "reason",
     "executionMode",

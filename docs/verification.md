@@ -1,5 +1,13 @@
 # 初版验证记录
 
+## Responses prompt cache key（D160，2026-10-18，Windows / Node 26.10.0）
+
+- 主任务按会话、subagent 按会话/任务/子任务派生稳定 key，Responses 实际 HTTP 请求携带参数；宿主、启动前 fallback 与 Broker 共用绑定规则。未扩展 Runtime IPC，未增加设置或缓存命中保证；其他协议和辅助用途不绑定。
+- 新增回归先复现未发送参数及宿主主/子 key 缺失，再验证绑定稳定性、隔离、错误/取消、非 Responses 路径、HTTP 省略、宿主续聊及 Replay、Broker 跨实例和真实 Runtime 子进程路径。tracing 回归核对 key 指纹、cached input tokens 和缺失 usage 不补零，简洁投影不泄漏 key 原文。
+- 最终静态检查（TypeScript、ESLint、Prettier）通过。两次默认并发 `pnpm check` 各有一个失败：第一次为 Runtime subagent Responses 用例终态不符，单独重跑三协议全部通过；补充错误诊断后第二次该用例通过，但 shutdown/SSE 清理用例及其 hook 超时。原样 check 未全绿，未放宽断言/超时或修改默认并发，不能仅凭重跑给首次失败确定归因。
+- 完整 `pnpm test --maxWorkers=2`：**118 文件、862 通过、1 跳过**；完整 `pnpm test:e2e` **68/68 通过**，同时完成 server/Web、Windows/POSIX Runtime 测试构建，保留既有 Zod 注释及 Web chunk 大小警告。
+- 离线日志位于 `.local/cache-investigation/`，不提交；未运行 Evaluation、未调用真实模型、未操作真实配置/历史/安装或重启当前服务。后端需更新并重启生效，本功能不要求单独 Repair；真实服务是否采用 key、缓存改善及其他系统实机表现未验证。
+
 ## subagent 内置网页搜索（D159，2026-10-17，Windows / Node 26.10.0）
 
 - explorer/reviewer 在 Responses 下获得模型服务内置 `web_search`，Chat Completions / Messages 保持四个本地只读函数。宿主和 Runtime 共用声明，Broker 按自身启动快照精确比对白名单，不接受 Worker 自报工具、同名本地搜索函数、额外参数或其它内置工具；未新增 shell、写入或网络权限。

@@ -41,6 +41,16 @@ Chat Completions 请求使用 `max_completion_tokens` 和 `stream_options.includ
 
 无原生搜索时，不向模型声明 `web_search`；模型可以在既有权限内使用已配置的 MCP 或公开 URL 获取方式，不凭空产生搜索结果或引用。
 
+## Responses prompt cache key
+
+Responses 的主任务及 explorer/reviewer 请求自动发送 `prompt_cache_key`，无需设置项。主任务使用会话 ID 派生的稳定 key，跨轮次、重试、续聊及主任务恢复保持一致；每个 subagent 使用会话 ID、任务 ID 和子任务 ID 派生独立 key。恢复后重新规划的子任务属于新任务，使用新的分组。key 为版本化身份元组的 SHA-256 派生值，不包含原始 ID、工作区、提示词或凭据。
+
+宿主及启动前 fallback 在 Engine 绑定，Sandbox 在 Broker 按认证身份绑定；现有 IPC 已提供所需身份，此功能不改变 IPC 版本、不要求单独 Repair。重新构建并重启后端后生效，不热更新当前进程。Chat Completions、Messages，以及标题、压缩、审批和长工具复查不添加该参数。
+
+key 只是提供给服务的缓存分组提示，不保证命中、不固定上游实例，也不是安全隔离或 `previous_response_id`。服务不支持参数时按正常失败路径报告，不静默删除参数重发。未增加缓存保留期；实际缓存改善需在真实服务上比较，不能从模拟测试推出。
+
+Replay 保存实际请求选项；`llm.request` 和简洁 trace 保留 `promptCacheKeyHash`、`cachedInputTokens` 及 `subagentId`，只记录 key 指纹，不记录 key 原文。缺失缓存 usage 保持未知，不补零。
+
 ## 历史与执行边界
 
 内部公共契约位于 `src/providers/conversation.ts`，覆盖文字、函数调用和结果；保留历史的 `function_call` / `function_call_output` 字段名，不依赖某一家 SDK 的类型。`ModelProvider` 的 legacy 数组边界仍允许现有 Responses 原始扩展，避免数据库迁移。

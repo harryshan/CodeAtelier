@@ -21,6 +21,8 @@ Windows `process-tree.test.ts` 用真实 Node 父子进程和继承的输出句�
 
 ## 共享执行逻辑回归
 
+- Responses prompt cache key（D160）：`prompt-cache.test.ts` 覆盖分组稳定性、交叉调用、子任务/会话隔离、错误/取消与非 Responses 原行为、trace 指纹及缺失 usage；`provider.test.ts` 通过本机 HTTP/SSE 验证实际发送/省略；`engine-subagent.test.ts` 验证宿主主/子任务、Replay 和续聊；`runtime-capability-core.test.ts` 验证 Broker 可信身份、实例变化和辅助用途排除；`agent-runtime-subagent.test.ts` 验证真实 Runtime 子进程跨 IPC 后实际收到的 key 和 Replay。测试不验证真实服务命中改善。
+
 - `model-loop.test.ts`：响应先保存再执行工具、轮次推进、普通重试上限、超限恢复的任务级次数及 attempt 连续编号、保存/工具失败不重放、取消与无效图/正常工具耗尽轮次的区分。
 - `model-tool-batch.test.ts`：两种执行模式的节点解析与依赖一致、Git CLI 不额外独占批次且保留显式依赖、退出码及多文件 failed/unknown 阻断 DAG 后继。
 - `execute-runner.test.ts`：保留但暂停使用的 Push Runner 与 Capability Runner 的实例标识、进程元数据、事件/账本一致、非零退出、启动前后失败、取消、unknown 优先级、命令构造失败和拒绝 host fallback；不能视作现行产品路径验收。

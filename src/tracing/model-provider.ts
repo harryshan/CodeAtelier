@@ -6,11 +6,11 @@
  * 1. ModelTraceScope 固定任务、用途、模型和可选 step/attempt，作为单次调用的关联字段。
  * 2. tracedModelProvider 透传协议枚举并计量 capabilities，并在 run 前创建可由当前上下文阶段动态指定父 span 的 llm.request；第一个 delta 生成 instant，完成或失败结束 span。
  * 3. Sandbox Runtime 经 Broker 请求模型时可附 execution mode/instance/kind、subagentId 与 brokered 标记，仍复用相同安全计量。
- * 4. 仅附带安全的请求参数（含思考等级），不记录 input、instructions、tools、输出文本、服务错误消息或 API key 的原文；LLM span 标记 Main thread 逻辑归属并以异步生命周期导出，不表示 CPU 占用，高保真 replay 独立保存。
+ * 4. 仅附带安全的请求参数、缓存 key 的 SHA-256 指纹和实报 cached input tokens，不记录 key、input、instructions、tools、输出文本、服务错误消息或 API key 原文；异步 span 不表示 CPU 占用，高保真 replay 独立保存。
  * 请求采用独立 requestId，首流事件/首文本共享 ID 与轨道；按 call_id 建立工具来源，不序列化完整输入计量。
  */
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import type { ModelProvider } from "../providers/model-provider.js";
 import { TraceRecorder } from "./recorder.js";
@@ -81,6 +81,9 @@ export function tracedModelProvider(
           toolCount: tools.length,
           maxOutputTokens: options?.maxOutputTokens,
           reasoningEffort: options?.reasoningEffort,
+          promptCacheKeyHash: options?.promptCacheKey
+            ? createHash("sha256").update(options.promptCacheKey).digest("hex")
+            : undefined,
           executionMode: scope.executionMode,
           executionInstanceId: scope.executionInstanceId,
           runtimeKind: scope.runtimeKind,
@@ -134,6 +137,7 @@ export function tracedModelProvider(
           outputItems: result.output.length,
           outputChars: result.text.length,
           inputTokens: result.usage?.input_tokens,
+          cachedInputTokens: result.usage?.input_tokens_details?.cached_tokens,
           outputTokens: result.usage?.output_tokens,
           totalTokens: result.usage?.total_tokens,
           lastEventToCompleteMs:

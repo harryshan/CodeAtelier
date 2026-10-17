@@ -4,6 +4,7 @@
  * 1. 独立于 UI/HTTP 回归，内部创建带开关的任务，通过注入的 stdio launcher 运行真实 Runtime loop。
  * 2. 主 loop 规划/等待/回复/收集，reviewer 独立上下文收到变更材料，在三协议下只见文件读取工具、ask_main 与 Responses 专属内置搜索，并跨 IPC 读取超过旧上下文阈值的证据，Broker 按任务身份登记并分配全局租约。
  * 3. 核对原生搜索记录/引用跨 IPC 保留、状态落盘后通知 SSE 刷新、报告/主反馈同分片、线程清理和源码未变；查询/来源不进 trace，stdio 夹具不是专用账户验收。
+ * 4. 核对 Broker 最终提供给模型的 Responses 主/子 cache key 独立且稳定，并随 Replay 保存；其他协议不生成 key。
  */
 
 import { spawn } from "node:child_process";
@@ -94,6 +95,8 @@ it.each(["responses", "chat-completions", "messages"] as const)(
     };
     let mainCalls = 0;
     let childCalls = 0;
+    const mainKeys: Array<string | undefined> = [];
+    const childKeys: Array<string | undefined> = [];
     let releaseChildGate!: () => void;
     const childGate = new Promise<void>((resolve) => {
       releaseChildGate = resolve;
@@ -140,6 +143,7 @@ it.each(["responses", "chat-completions", "messages"] as const)(
           ]
         : [];
     const provider: ModelProvider = {
+      protocol,
       async getCapabilities() {
         return {
           limits: {
@@ -148,8 +152,9 @@ it.each(["responses", "chat-completions", "messages"] as const)(
           },
         };
       },
-      async run(input, instructions, tools) {
+      async run(input, instructions, tools, _signal, _onDelta, options) {
         if (instructions.includes("read-only research subagent")) {
+          childKeys.push(options?.promptCacheKey);
           childCalls++;
           expect(
             tools
@@ -239,6 +244,7 @@ it.each(["responses", "chat-completions", "messages"] as const)(
         }
 
         mainCalls++;
+        mainKeys.push(options?.promptCacheKey);
         expect(tools.some((tool) => tool.name === "subagent")).toBe(true);
         if (mainCalls === 1) {
           return {
@@ -402,7 +408,9 @@ it.each(["responses", "chat-completions", "messages"] as const)(
       await (engine as unknown as { schedule(): Promise<void> }).schedule();
       await engine.active?.done;
 
-      expect(store.task(task.id)?.status).toBe("completed");
+      expect(store.task(task.id)?.status, store.task(task.id)?.error).toBe(
+        "completed",
+      );
       expect(store.subagents(task.id)).toMatchObject([
         {
           id: "review",
@@ -427,6 +435,26 @@ it.each(["responses", "chat-completions", "messages"] as const)(
 
       expect(mainCalls).toBe(6);
       expect(childCalls).toBe(4);
+      if (protocol === "responses") {
+        expect(mainKeys[0]).toMatch(/^ca1_[a-f0-9]{48}$/);
+        expect(childKeys[0]).toMatch(/^ca1_[a-f0-9]{48}$/);
+        expect(childKeys[0]).not.toBe(mainKeys[0]);
+      } else {
+        expect(mainKeys[0]).toBeUndefined();
+        expect(childKeys[0]).toBeUndefined();
+      }
+
+      expect(new Set(mainKeys).size).toBe(1);
+      expect(new Set(childKeys).size).toBe(1);
+      const exchanges =
+        store.replayCase(task.id)?.capture?.modelExchanges ?? [];
+      expect(exchanges).toHaveLength(10);
+      for (const exchange of exchanges) {
+        expect(exchange.options?.promptCacheKey).toBe(
+          exchange.purpose === "subagent" ? childKeys[0] : mainKeys[0],
+        );
+      }
+
       expect(
         store
           .events(session.id)

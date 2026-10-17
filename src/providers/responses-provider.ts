@@ -4,7 +4,7 @@
  *
  * 1. getCapabilities 查询模型列表，按完整模型 ID 查找并校验容量信息。
  * 2. run 检查密钥，创建关闭 SDK 重试的客户端，并接上取消、总超时和空闲超时。
- * 3. 请求带上配置思考等级（审批可单次覆盖为 none）、并行工具调用偏好、流式选项和可选输出上限；文本 delta 交给界面，item.done 暂存完整输出项。
+ * 3. 请求带上配置思考等级、并行工具调用、流式选项、可选输出上限及 prompt cache key；不自行生成 key 或回退重发。文本 delta 交给界面，item.done 暂存完整输出项。
  * 4. 收到 completed 后才返回结果。优先使用 completed.output，服务未填时按索引收集 item.done；网页搜索的 URL 引用会转为安全可点击的 Markdown 来源。
  * 5. 将流错误和连接异常转成 ModelError，最后清理计时器和监听。
  *
@@ -173,6 +173,9 @@ export class ResponsesProvider implements ModelProvider {
           parallel_tool_calls: true,
           stream: true,
           store: false,
+          ...(options?.promptCacheKey
+            ? { prompt_cache_key: options.promptCacheKey }
+            : {}),
           ...(options?.maxOutputTokens
             ? { max_output_tokens: options.maxOutputTokens }
             : {}),

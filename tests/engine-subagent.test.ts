@@ -4,6 +4,7 @@
  * 1. 独立于 UI/HTTP 回归，经内部排队记录分别启动 explorer/reviewer；主模型按 plan/await/collect 协调，reviewer 初始上下文必须包含明确变更材料。
  * 2. 两角色在三协议下仅看到只读函数与 Responses 专属内置搜索；搜索记录、带来源报告及主反馈共同持久化。
  * 3. 超过主任务工具输出预算的报告保留未消费状态，以便恢复后重新读取；原代码文件不得被子任务改写。
+ * 4. 主任务与子任务的 Responses 缓存 key 各自稳定且不同，其他协议不生成；主任务续聊仍沿用会话 key。
  *
  * 此用例不验证 Sandbox/Runtime IPC、实际用户开关或 OS 级只读身份。
  */
@@ -56,9 +57,13 @@ it.each(
     const session = store.create(root, "test");
     let mainCalls = 0;
     let childCalls = 0;
+    const mainKeys: Array<string | undefined> = [];
+    const childKeys: Array<string | undefined> = [];
     const model: ModelProvider = {
-      async run(input, instructions, tools) {
+      protocol,
+      async run(input, instructions, tools, _signal, _onDelta, options) {
         if (instructions.includes("read-only research subagent")) {
+          childKeys.push(options?.promptCacheKey);
           childCalls++;
           expect(
             tools
@@ -109,6 +114,7 @@ it.each(
         }
 
         mainCalls++;
+        mainKeys.push(options?.promptCacheKey);
         expect(tools.some((tool) => tool.name === "subagent")).toBe(true);
         if (mainCalls === 1) {
           return {
@@ -226,6 +232,35 @@ it.each(
 
       expect(mainCalls).toBe(4);
       expect(childCalls).toBe(2);
+      if (protocol === "responses") {
+        expect(mainKeys[0]).toMatch(/^ca1_[a-f0-9]{48}$/);
+        expect(childKeys[0]).toMatch(/^ca1_[a-f0-9]{48}$/);
+        expect(childKeys[0]).not.toBe(mainKeys[0]);
+      } else {
+        expect(mainKeys[0]).toBeUndefined();
+        expect(childKeys[0]).toBeUndefined();
+      }
+
+      expect(new Set(mainKeys).size).toBe(1);
+      expect(new Set(childKeys).size).toBe(1);
+      const exchanges =
+        store.replayCase(task.id)?.capture?.modelExchanges ?? [];
+      expect(
+        exchanges.filter((exchange) => exchange.purpose === "subagent"),
+      ).toHaveLength(2);
+      for (const exchange of exchanges) {
+        expect(exchange.options?.promptCacheKey).toBe(
+          exchange.purpose === "subagent" ? childKeys[0] : mainKeys[0],
+        );
+      }
+
+      const continued = await engine.start(session.id, "continue", {
+        subagentsEnabled: true,
+      });
+      await engine.active?.done;
+      expect(store.task(continued.id)?.status).toBe("completed");
+      expect(mainKeys).toHaveLength(5);
+      expect(new Set(mainKeys).size).toBe(1);
       expect(await readFile(source, "utf8")).toBe("export const value = 7;\n");
     } finally {
       await engine.close();

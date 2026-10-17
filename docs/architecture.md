@@ -55,6 +55,8 @@ Git CLI 复用普通命令或显式获批宿主命令路径，不提供 Git acti
 
 `src/providers/create-provider.ts` 按主/辅助连接选择 Responses、Chat Completions 或 Messages；Engine 所有用途、Broker 模型代理与手动评测入口共用工厂。`conversation.ts` 定义公共文字、函数与结果契约，沿用历史字段名，不迁移旧库；新增适配器不能丢弃未知协议内容。`stream-json.ts` 负责后两者的有界 SSE、认证、取消/时限和错误处理，完成判定分别由适配器检查。能力与配置见 [模型协议](model-protocols.md)。
 
+`providers/prompt-cache.ts` 在 Engine 或 Broker 中为 Responses 主/子请求绑定稳定的 `prompt_cache_key`：主任务使用会话身份，子任务使用会话/任务/子任务身份，派生值不含原始身份。包装顺序为缓存绑定 → tracing → Replay → 协议适配器，确保观测和捕获对应实际选项；宿主 subagent 同样进入模型 tracing/Replay。Broker 复用已验证身份，不新增 IPC 字段或 Runtime 自报 key；其他协议和辅助用途不绑定，详见 D160。
+
 Responses 请求显式声明 `parallel_tool_calls: true`；主任务与 explorer/reviewer 子模型均按任务协议能力附加内置 `{ type: "web_search" }`，让支持它的服务在模型请求内查询公开网页；它不是本地函数调用或 DAG 节点。子模型工具由协调器统一构造，Runtime/Broker 使用同一白名单，Broker 以自己传出的启动配置校验搜索能力（D159），不扩大本地只读函数或 Sandbox 网络权限。
 
 `ResponsesProvider` 从 `output_text.annotations` 提取合法 HTTP(S) `url_citation`，去重后追加为可点击 Markdown 来源。工具函数仍要求每项带 `execution.id` 与 `execution.dependsOn`；依赖只能引用同一模型响应内的节点，不能跨轮引用历史 ID。
