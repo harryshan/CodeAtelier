@@ -3,7 +3,7 @@
  * createFixture 使用 createApp、临时数据库和可取消的等待模型。
  *
  * 1. 测试夹具通过 bootstrap 获取合法 Cookie 和 token。
- * 2. 检查不同会话的数据隔离，以及资源不存在、subagent 未就绪与请求体非法时的状态码。
+ * 2. 检查不同会话的数据隔离，以及资源不存在、subagent 任务级选择、工具可见性与请求体非法时的状态码。
  * 3. 检查不同工作区可并行、同工作区排队、全局上限与设置互斥，再检查取消与人工恢复。
  * 4. 用伪造 token 和异常 Origin 检查写请求被拒绝。
  *
@@ -18,8 +18,15 @@ import { temp } from "./fixtures/helpers.js";
 
 async function createFixture() {
   const config = new Config(await temp());
+  const toolSets: string[][] = [];
   const fixture = await createApp(config, pino({ enabled: false }), () => ({
-    async run(_input, _instructions, _tools, signal) {
+    async run(_input, _instructions, tools, signal) {
+      // 标题请求必须先完成，才能观察主任务真实收到的工具集合。
+      if (!tools.length) {
+        return { output: [], text: "test session" };
+      }
+
+      toolSets.push(tools.map((tool) => tool.name));
       await new Promise<void>((_resolve, reject) => {
         signal.addEventListener("abort", () => reject(signal.reason), {
           once: true,
@@ -41,6 +48,7 @@ async function createFixture() {
   return {
     ...fixture,
     config,
+    toolSets,
     headers: {
       host: "127.0.0.1",
       cookie: "ca_session=" + token,
@@ -57,7 +65,7 @@ it("creates isolated sessions and validates missing sessions and bad payloads", 
       url: "/api/bootstrap",
       headers: fixture.headers,
     });
-    expect(bootstrap.json().subagentsAvailable).toBe(false);
+    expect(bootstrap.json().subagentsAvailable).toBe(true);
 
     const created = await fixture.app.inject({
       method: "POST",
@@ -99,15 +107,6 @@ it("creates isolated sessions and validates missing sessions and bad payloads", 
         })
       ).statusCode,
     ).toBe(400);
-    const enabled = await fixture.app.inject({
-      method: "POST",
-      url: `/api/sessions/${id}/tasks`,
-      headers: fixture.headers,
-      payload: { prompt: "investigate", subagentsEnabled: true },
-    });
-    expect(enabled.statusCode).toBe(409);
-    expect(enabled.json().error).toContain("尚未就绪");
-
     const malformed = await fixture.app.inject({
       method: "POST",
       url: `/api/sessions/${id}/tasks`,
@@ -120,6 +119,50 @@ it("creates isolated sessions and validates missing sessions and bad payloads", 
     await fixture.app.close();
   }
 });
+
+it.each([undefined, false, true])(
+  "persists opt-in %s and exposes coordination only to enabled tasks",
+  async (subagentsEnabled) => {
+    const fixture = await createFixture();
+
+    try {
+      const session = await fixture.store.create(await temp());
+      const response = await fixture.app.inject({
+        method: "POST",
+        url: `/api/sessions/${session.id}/tasks`,
+        headers: fixture.headers,
+        payload: {
+          prompt: "inspect",
+          ...(subagentsEnabled === undefined ? {} : { subagentsEnabled }),
+        },
+      });
+      expect(response.statusCode).toBe(200);
+      const enabled = subagentsEnabled ?? false;
+      expect(response.json().subagentsEnabled).toBe(enabled);
+      await expect
+        .poll(() =>
+          fixture.toolSets.find((tools) => tools.includes("read_file")),
+        )
+        .toBeDefined();
+      expect(
+        fixture.toolSets.find((tools) => tools.includes("read_file")),
+      ).toEqual(
+        enabled
+          ? expect.arrayContaining(["subagent"])
+          : expect.not.arrayContaining(["subagent"]),
+      );
+      const snapshot = await fixture.app.inject({
+        url: `/api/sessions/${session.id}`,
+        headers: fixture.headers,
+      });
+      expect(snapshot.json().tasks).toMatchObject([
+        { id: response.json().id, subagentsEnabled: enabled },
+      ]);
+    } finally {
+      await fixture.app.close();
+    }
+  },
+);
 
 it("returns only events after the snapshot cursor while keeping current session state", async () => {
   const fixture = await createFixture();

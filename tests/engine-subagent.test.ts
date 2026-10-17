@@ -1,7 +1,7 @@
 /*
  * 用生产 Engine、真实 SQLite 与 Worker 和模拟 Responses 模型验证可选 subagent 的宿主执行路径。
  *
- * 1. 在 UI/API 开关尚未开放时，经内部排队记录分别启动 explorer/reviewer；主模型按 plan/await/collect 协调，reviewer 初始上下文必须包含明确变更材料。
+ * 1. 独立于 UI/HTTP 回归，经内部排队记录分别启动 explorer/reviewer；主模型按 plan/await/collect 协调，reviewer 初始上下文必须包含明确变更材料。
  * 2. 子 Worker 仅看到三个文件只读工具及向主协调器提问的无写入通道；报告消费与主反馈共同持久化。
  * 3. 超过主任务工具输出预算的报告保留未消费状态，以便恢复后重新读取；原代码文件不得被子任务改写。
  *

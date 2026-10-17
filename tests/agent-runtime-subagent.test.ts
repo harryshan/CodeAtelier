@@ -1,7 +1,7 @@
 /*
  * 使用真实子进程 Runtime、双向 IPC、宿主 Engine/SQLite 和模拟模型验证可选子任务的第二执行路径。
  *
- * 1. 在对外功能门禁仍关闭时，内部创建带开关的任务，通过注入的 stdio launcher 运行真实 Runtime loop。
+ * 1. 独立于 UI/HTTP 回归，内部创建带开关的任务，通过注入的 stdio launcher 运行真实 Runtime loop。
  * 2. 主 loop 规划/等待/回复/收集，reviewer 独立上下文收到变更材料，只见三个文件读取工具与 ask_main，并跨 IPC 读取超过旧上下文阈值的证据，Broker 按任务身份登记并分配全局租约。
  * 3. 核对计划/状态落盘后及时通知 SSE 刷新、报告/主反馈同分片、线程清理、tracing 和源码未变；stdio 夹具不是专用账户验收。
  */

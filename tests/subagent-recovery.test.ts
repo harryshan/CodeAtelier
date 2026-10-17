@@ -1,26 +1,22 @@
 /*
- * 使用真实 SQLite 重启和模拟模型检查人工恢复只读子任务；发布门禁在本测试文件中单独模拟验收通过。
+ * 使用真实 SQLite 重启和模拟模型检查人工恢复只读子任务；直接使用已开放的任务入口，不模拟发布门禁。
  *
  * 1. 保存已启动但未确认的子模型请求，重启后核对任务/请求分别变为 interrupted/unknown。
  * 2. 恢复继承来源任务的启用选择并重新读取工作区当前文件，旧 Worker 不被自动重建或重放。
  * 3. 旧检查点与未知状态仍可从历史查询，新任务的子任务账本从空开始，主模型自行决定是否重规划。
  *
- * Mock 仅解除 Engine.start 的发布门禁，不模拟 Windows Sandbox 或真实模型执行。
+ * 模型为确定性替身，本测试不证明 Windows Sandbox 安装态或真实模型执行质量。
  */
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import pino from "pino";
-import { expect, it, vi } from "vitest";
+import { expect, it } from "vitest";
 import { Engine } from "../src/agent/engine.js";
 import { Config } from "../src/config/config.js";
 import type { ModelProvider } from "../src/providers/model-provider.js";
 import { Store } from "../src/sessions/store.js";
 import { temp } from "./fixtures/helpers.js";
-
-vi.mock("../src/agent/subagent-readiness.js", () => ({
-  SUBAGENT_PUBLIC_READY: true,
-}));
 
 it("inherits opt-in without restarting interrupted Workers or retrying unknown model requests", async () => {
   const workspace = await temp();

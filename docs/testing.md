@@ -134,7 +134,7 @@ Windows `process-tree.test.ts` 用真实 Node 父子进程和继承的输出句�
 - `pnpm sandbox:native:build` 的原生回归核对产品受限 token 的 execution/root capability 与 Everyone restricting SID、Runtime bootstrap 句柄帧、进程 PID 绑定、仅复制查询权限及畸形帧拒绝；显式 `codeatelier-sandbox-state-parser-test.exe --handle-transfer-probe` 还以真实子进程验证私有管道读帧和跨进程句柄复制。这些都不代替固定账户下的 BCrypt/PowerShell、Job 与 Runtime pipe 联合身份验收。
 - 原生 `codeatelier-sandbox-state-parser-test.exe --runtime-descriptor-probe` 可输出固定启动描述符二进制首帧，供 Node 解码器跨语言核对；`runtime-startup-protocol.test.ts` 验证真实本机管道的成功握手，以及无效首帧后入口关闭 socket 并退出。安装态首帧和 IPC 双向代理仍须用显式产品验收验证。
 - `pnpm sandbox:native:build` 还以五秒上限运行原生 `--runtime-duplex-probe`：在真实本机 Named Pipe 上覆盖预连接与待决连接两种顺序，并在 server 读取下一帧时向 client 写入 Broker 回复；它曾在同步 pipe 上超时，overlapped I/O 修复后通过。该探针不覆盖固定账户 ACL、Job 或完整任务协议。
-- `pnpm sandbox:runtime:verify` 是安装完成后由用户显式运行的 Windows 产品链路验收：它使用模拟模型，经默认 Engine/SandboxBroker/native Supervisor 在专用账户 Agent Runtime 内创建工作区文件，再在同一批次独立执行经通用审批的 Broker Git CLI status 和 Runtime 普通命令，使一条路径的失败不遮蔽另一条的结果，并核对专用账户子进程、输出与 clean release；随后以仅供此手动验收的内部已标记任务调用受保护的 subagent Worker，核对受限工具、读取、报告收集和 tracing，公开 HTTP 门禁仍保持关闭。`process.test.ts` 覆盖 file-backed 输出回传、取消和持久化失败时的进程停止与临时文件清理；这些本地测试不代替安装态 restricted token 验收。
+- `pnpm sandbox:runtime:verify` 是安装完成后由用户显式运行的 Windows 产品链路验收：它使用模拟模型，经默认 Engine/SandboxBroker/native Supervisor 在专用账户 Agent Runtime 内创建工作区文件，再在同一批次独立执行经通用审批的 Broker Git CLI status 和 Runtime 普通命令，使一条路径的失败不遮蔽另一条的结果，并核对专用账户子进程、输出与 clean release；随后以仅供此手动验收的内部已标记任务调用受保护的 subagent Worker，核对受限工具、读取、报告收集和 tracing，公开 HTTP 现按 D158 提供默认关闭的任务级选项；手动验收仍独立记录安装态证据。`process.test.ts` 覆盖 file-backed 输出回传、取消和持久化失败时的进程停止与临时文件清理；这些本地测试不代替安装态 restricted token 验收。
 - `agent-runtime-engine.test.ts` 与 `runtime-ipc.test.ts` 核对 Git CLI status/add/commit 的通用 Broker 审批、平面结果及 host-process 归因，并拒绝旧 Git operation/v16 握手；`sandbox-native-windows-runtime.test.ts` 核对 Runtime 不再投影宿主 global/include 配置。
 - `sandbox-git-config-graph.test.ts` 保留旧 Runner 路径的只读 Git global 投影回归；当前 CLI 使用通用命令路径，该测试不是现行产品路径验收。
 - `git-cli.test.ts` 在隔离配置的临时仓库中覆盖状态、差异、提交、日志、分支、本地 bare remote 推送、非零退出和审批拒绝；不触及真实远程。旧 git-tools.test.ts 随专用执行器移除。
@@ -258,7 +258,7 @@ Responses 主任务请求包含 OpenAI 内置 `web_search`，Chat Completions / 
 
 模拟模型返回计划摘要时，先前读取结果、摘要持久化与后续工具执行的事件顺序（不声称模型必然遵循计划指引）、工具往返、同轮 DAG 的稳定拓扑并发、审批准备与执行槽分离、单槽下独立节点越过审批等待、并发上限、重复/未知/环拒绝、失败后继阻断与反馈；跨会话不同工作目录并行、同目录排队、同会话互斥、取消/关闭队列、步骤/上下文预算、参数错误反馈、根规则、输出预算、跨任务重新读取、不重放副作用、工具耗时排除审批等待
 
-### 可选 subagent（内部双执行路径，尚未开放）
+### 可选 subagent（任务级试用入口与双执行路径）
 
 文件读取回归覆盖超过 32,000 字符的完整长行、与主工具共有的 500 行分页及 2 MiB 文件大小限制；搜索覆盖超过 4 MiB 的文件、超过 240 字符的匹配行和 120 字符的搜索词、调用方请求超过 100 条结果、超过 300 个目录条目/200 个文件及超过 6 层的目录。取消与只读权限检查继续有效，不以移除资源阈值扩大授权范围。
 
@@ -266,7 +266,7 @@ Responses 主任务请求包含 OpenAI 内置 `web_search`，Chat Completions / 
 
 主要测试：subagent-roles.test.ts、subagent-capacity.test.ts、subagent-contracts.test.ts、subagent-limits.test.ts、subagent-readonly.test.ts、subagent-worker.test.ts、subagent-coordinator.test.ts、subagent-recovery.test.ts、model-tool-batch.test.ts、engine-subagent.test.ts、agent-runtime-subagent.test.ts、runtime-subagent-ipc.test.ts、sandbox-native-windows-runtime.test.ts、store.test.ts、session-statistics.test.ts、server.test.ts、tests/e2e/app.spec.ts。
 
-已覆盖分工 action 严格校验、计划 DAG 与超过旧数量阈值的批次、单任务与跨 Runtime 的 Broker 全局 Worker lease、排队和取消；真实 SQLite 子计划、检查点、重复请求拒绝、重启中断与未知模型请求，以及与主工具反馈同分片提交的报告消费。晚完成、反馈截断或持久化失败不能误标已消费；子 Worker 只可用受限读取，读回执落盘失败立即停止，不继续模型轮次，主任务取消中断等待；超过旧 120 秒、12 轮、32,000 累计 token、100,000 输入字符、8 个问题和 16 条消息后仍能完成或明确取消，保留实报用量与完整内容；schema/SQLite 覆盖超过四个计划/报告、2,000 项检查点、32,000 字符报告和 2,000,000 字符检查点/请求结果；`ask_main` 长问题、错误拒绝、已确认回执重试幂等、任务归属、主代理 `await` 提前返回、`message(replyTo)` 唯一答复，以及真实 Runtime IPC 和刷新后 HTML 安全历史均有回归；Worker 双向消息核对版本、任务/子任务归属和单调序号，跨任务父回执不能成为有效模型结果；question/message/cancel 只写固定名与登记子 ID 的 trace，不放问题正文、消息或报告。宿主 Engine 与真实 Node Runtime 子进程的内部已标记任务均完成计划/等待/收集的模拟模型闭环；Broker IPC 拒绝未经登记的子模型、冒用主模型身份、写工具声明和重复 lease 释放，断连后留存租约直到实例确认清理。Worker 与主线程共用进程/身份，不抵御恶意代码直接使用 Node API；stdio 测试、bundle/MSVC 构建不等于固定账户提升环境或跨平台验收。Bootstrap、Engine 与 HTTP 共用默认 false 的发布门禁；Playwright 伪造 bootstrap true 只可检查 checkbox 与一次性请求，后端 409 拒绝启用且草稿不丢失。历史任务标记及子计划/状态/收集由持久化 Snapshot 重建、刷新后仍可见；Host/Runtime 在状态落盘后通知 SSE。真实 SQLite 重启后的子模型未知请求保留，人工恢复继承启用选择并重新读取文件而不自动重建旧 Worker。真实发布仍待固定账户下子线程启动/取消、恢复及故障矩阵验收；上述手动命令未在无安装环境运行。
+已覆盖分工 action 严格校验、计划 DAG 与超过旧数量阈值的批次、单任务与跨 Runtime 的 Broker 全局 Worker lease、排队和取消；真实 SQLite 子计划、检查点、重复请求拒绝、重启中断与未知模型请求，以及与主工具反馈同分片提交的报告消费。晚完成、反馈截断或持久化失败不能误标已消费；子 Worker 只可用受限读取，读回执落盘失败立即停止，不继续模型轮次，主任务取消中断等待；超过旧 120 秒、12 轮、32,000 累计 token、100,000 输入字符、8 个问题和 16 条消息后仍能完成或明确取消，保留实报用量与完整内容；schema/SQLite 覆盖超过四个计划/报告、2,000 项检查点、32,000 字符报告和 2,000,000 字符检查点/请求结果；`ask_main` 长问题、错误拒绝、已确认回执重试幂等、任务归属、主代理 `await` 提前返回、`message(replyTo)` 唯一答复，以及真实 Runtime IPC 和刷新后 HTML 安全历史均有回归；Worker 双向消息核对版本、任务/子任务归属和单调序号，跨任务父回执不能成为有效模型结果；question/message/cancel 只写固定名与登记子 ID 的 trace，不放问题正文、消息或报告。宿主 Engine 与真实 Node Runtime 子进程的内部已标记任务均完成计划/等待/收集的模拟模型闭环；Broker IPC 拒绝未经登记的子模型、冒用主模型身份、写工具声明和重复 lease 释放，断连后留存租约直到实例确认清理。Worker 与主线程共用进程/身份，不抵御恶意代码直接使用 Node API；stdio 测试、bundle/MSVC 构建不等于固定账户提升环境或跨平台验收。Bootstrap、Engine 与 HTTP 共用已开放的入口能力标志，任务默认仍 false；HTTP 回归检查缺省/false/true 的持久化与真实模型工具可见性。Playwright 经真实后端/Worker 验证一次性勾选、报告收集、刷新不重发、下一任务默认关闭；模拟一次拒绝以验证草稿保留，活动任务刷新仍锁定选择，取消后恢复不受新草稿影响。另保留旧服务报告不可用时隐藏入口的兼容回归。历史任务标记及子计划/状态/收集由持久化 Snapshot 重建、刷新后仍可见；Host/Runtime 在状态落盘后通知 SSE。真实 SQLite 重启后的子模型未知请求保留，人工恢复继承启用选择并重新读取文件而不自动重建旧 Worker。D158 已开放试用入口，但固定账户下子线程启动/取消、恢复及故障矩阵仍待专项验收；上述手动命令未在无安装环境运行。
 
 ### 项目记忆
 
@@ -278,9 +278,9 @@ Responses 主任务请求包含 OpenAI 内置 `web_search`，Chat Completions / 
 
 主要测试：store.test.ts、recovery.test.ts、title-generation.test.ts、replay-case.test.ts。
 
-`store.test.ts` 覆盖 Store Worker 串行常规写入、回执后的读写顺序、跨重启持久化和失败批次原子回滚；`tracing.test.ts` 验证独立 Store worker 轨道及无正文泄露。同步兼容入口与未开放 subagent 的迁移仍需另行验证；现有宿主/Runtime subagent 回归覆盖其同步账本与 Worker 事务交错时的执行、检查点及报告收集。`store.test.ts` 用第二个真实 SQLite 连接锁住后续历史分片，验证其他分片仍可正常提交；跨分片事务明确拒绝并回滚第一笔写入。`shutdown.test.ts` 等待冷启动 Worker 确认命令输出已持久化，再验证 SSE 关闭与中断保存。
+`store.test.ts` 覆盖 Store Worker 串行常规写入、回执后的读写顺序、跨重启持久化和失败批次原子回滚；`tracing.test.ts` 验证独立 Store worker 轨道及无正文泄露。同步兼容入口与 subagent 的迁移仍需另行验证；现有宿主/Runtime subagent 回归覆盖其同步账本与 Worker 事务交错时的执行、检查点及报告收集。`store.test.ts` 用第二个真实 SQLite 连接锁住后续历史分片，验证其他分片仍可正常提交；跨分片事务明确拒绝并回滚第一笔写入。`shutdown.test.ts` 等待冷启动 Worker 确认命令输出已持久化，再验证 SSE 关闭与中断保存。
 
-隔离、事件顺序与游标、增量上下文批次重建与事务回滚、旧分片及混合版本启动拒绝并保持原始字节、queued/running/waiting 重启中断、实际开始时间、标题状态迁移和恢复，以及大 JSON 的 Worker 读取；按小阈值触发的历史 SQLite 分片、新旧分片聚合、重启发现和旧分片 Worker 读取；任务级 subagent 开关的布尔序列化、旧格式离线转换的默认关闭及未开放请求明确拒绝（UI 尚未启用）；逐条模型/工具增量捕获、跨重启前缀恢复、未完成请求、旧整条捕获与 legacy 历史标记、局部读取拒绝、哈希一致的分页读取重建和只写入新隔离目录
+隔离、事件顺序与游标、增量上下文批次重建与事务回滚、旧分片及混合版本启动拒绝并保持原始字节、queued/running/waiting 重启中断、实际开始时间、标题状态迁移和恢复，以及大 JSON 的 Worker 读取；按小阈值触发的历史 SQLite 分片、新旧分片聚合、重启发现和旧分片 Worker 读取；任务级 subagent 开关的布尔序列化、旧格式离线转换的默认关闭及非法开关拒绝（UI 按 D158 开放）；逐条模型/工具增量捕获、跨重启前缀恢复、未完成请求、旧整条捕获与 legacy 历史标记、局部读取拒绝、哈希一致的分页读取重建和只写入新隔离目录
 
 ### 会话统计
 

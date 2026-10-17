@@ -1,5 +1,13 @@
 # 初版验证记录
 
+## subagent 任务级 UI 开关（D158，2026-10-17，Windows / Node 26.10.0）
+
+- 按用户要求开放输入框下方默认关闭的“启用 subagent（只读）”及 HTTP 启用路径；入口开放不等于 Sandbox 专项验收通过。选择仅本次任务生效，成功提交复位、失败保留；活动任务显示保存值并锁定，人工恢复沿用原选择，不改权限或安装副本。
+- HTTP 回归验证缺省/false/true 的保存值及主模型真实收到的协调工具集合；恢复测试移除门禁 mock。浏览器通过真实 HTTP/Engine/Worker 完成 explorer 规划、等待、收集报告；覆盖拒绝后草稿保留、成功后复位、刷新不重发、下一任务关闭、活动状态刷新锁定、取消后恢复，以及旧服务报告不可用时隐藏入口。
+- 最终 `pnpm check` 的 TypeScript、ESLint、Prettier 通过；默认并发单测 **816 通过、1 跳过、2 失败**，为已有 Git CLI 与 settings-migration 的 15 秒超时。原样 check 未全绿，未放宽断言/超时或修改默认并发。
+- 完整 `pnpm test --maxWorkers=1` **117 文件、818 通过、1 跳过**，上述失败项均通过；完整 `pnpm test:e2e` **68/68 通过**，server/Web 与 Windows/POSIX Runtime 测试构建通过。保留既有 Zod 注释及 Web chunk 大小警告。
+- 测试经批准由 Broker 宿主工具链执行，日志为 `.local/subagent-ui-{check-final,serial,e2e}.log`，不提交；真实模型质量、安装态子任务及其他系统未在本次实机复验。不运行 Evaluation、不更改真实配置、不安装/Repair 或重启当前服务。
+
 ## 内置 explorer/reviewer subagent（D157，2026-10-17，Windows / Node 26.10.0）
 
 - 新计划限定 explorer/reviewer，reviewer 必须携带 changes；角色上下文只由显式分工字段构建，不自动继承主历史、记忆或同伴报告。两角色共用既有只读权限、活动 Worker 调度及 tracing，不开放 UI/API 门禁。

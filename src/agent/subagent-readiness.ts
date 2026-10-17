@@ -1,11 +1,11 @@
 /*
  * 可选 subagent 对外发布门禁，由任务路由、Engine 和 bootstrap 共同使用。
  *
- * 1. 只有双执行路径、持久化/取消/恢复以及专用账户提升环境验收全部完成后才允许改为 true。
- * 2. 默认关闭时，即使浏览器伪造 bootstrap 或直接调用 API，服务端仍拒绝启用子任务。
- * 3. 内部标记任务的 Store/Worker/Runtime harness 不依赖该门禁，可继续独立验证实现。
+ * 1. D158 按用户要求开放任务级试用入口；true 表示 UI/API 可选择，不表示全部平台验收通过。
+ * 2. 每个新任务仍默认关闭，启用值随任务保存；关闭发布门禁时 HTTP/Engine 继续拒绝 true。
+ * 3. bootstrap 使用相同常量决定是否展示复选框；取消与恢复沿用保存值，不读取当前草稿。
  *
- * 不提供环境变量或请求参数绕过；构建成功及 stdio harness 不构成真实 Sandbox 验收。
+ * 入口开放不改变只读工具、Sandbox 权限或安装版本检查；构建/harness 不构成真实安装态验收。
  */
 
-export const SUBAGENT_PUBLIC_READY = false;
+export const SUBAGENT_PUBLIC_READY = true;

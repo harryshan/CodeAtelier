@@ -3,7 +3,7 @@
  * 配置保存在临时目录，模型使用固定响应，不连接外部服务。
  *
  * 1. 模拟模型提供固定容量，按用途、提示和步骤返回标题、工具调用、文本或断流错误。
- * 2. 长历史用例生成足以触发压缩的内容，摘要请求返回符合格式要求的模拟摘要。
+ * 2. 长历史用例生成压缩材料与模拟摘要；subagent 用例经真实 Worker 规划、等待、收集固定报告，不绕过任务入口。
  * 3. 统一文件新建/编辑、命令（含 Git CLI 状态请求）交给真实 ToolRunner 并经过通用审批；普通回复分段输出并带固定 usage。
  * 4. 启动测试端口，收到 SIGTERM 后关闭引擎和应用。
  *
@@ -72,6 +72,10 @@ const { app, engine } = await createApp(
           };
         }
 
+        if (tools.some((item) => item.name === "ask_main")) {
+          return { output: [], text: "子代理已返回筛选后的信息。" };
+        }
+
         step++;
         const lastUser =
           [...input].reverse().find((i) => i.role === "user")?.content || "";
@@ -80,12 +84,65 @@ const { app, engine } = await createApp(
             {
               type: "function_call",
               name,
-              arguments: JSON.stringify(args),
+              arguments: JSON.stringify(
+                name === "subagent"
+                  ? {
+                      execution: { id: `subagent-${step}`, dependsOn: [] },
+                      arguments: args,
+                    }
+                  : args,
+              ),
               call_id: "call-" + step,
             },
           ],
           text: "",
         });
+
+        if (lastUser === "验证 subagent 开关") {
+          if (!tools.some((item) => item.name === "subagent")) {
+            throw new Error("任务未提供 subagent 工具。");
+          }
+
+          if (step === 1) {
+            return tool("subagent", {
+              request: {
+                action: "plan",
+                subtasks: [
+                  {
+                    id: "explore",
+                    role: "explorer",
+                    objective: "获取测试信息",
+                    scope: ["."],
+                    dependsOn: [],
+                    deliverable: "筛选后的信息",
+                  },
+                ],
+              },
+            });
+          }
+
+          if (step === 2) {
+            return tool("subagent", {
+              request: {
+                action: "await",
+                subagentIds: ["explore"],
+                timeoutMs: 30000,
+              },
+            });
+          }
+
+          if (step === 3) {
+            return tool("subagent", {
+              request: { action: "collect", subagentIds: ["explore"] },
+            });
+          }
+
+          if (!JSON.stringify(input).includes("子代理已返回筛选后的信息。")) {
+            throw new Error("子报告尚未交付主模型。");
+          }
+
+          return { output: [], text: "已收集 explorer 报告。" };
+        }
 
         if (step === 1 && lastUser === "准备上下文压缩") {
           return {

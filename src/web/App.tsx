@@ -2,7 +2,7 @@
  * CodeAtelier 的主页面，负责选择会话、提交任务和打开设置等用户操作。
  * 通过 api 请求后端，通过 useSessionConnection 同步会话，再交给 Timeline 和分类 SettingsPage 展示。
  *
- * 1. 状态和 effects 管理当前会话、一次性 subagent 勾选、服务端发布门禁、弹窗及加载状态；useHistoryScroll 自动加载旧页，Timeline 保持阅读位置；历史加载使用低强调状态行，读取失败独立警告并允许重试。
+ * 1. 状态和 effects 管理当前会话、默认关闭的一次性 subagent 勾选、服务端能力标志、弹窗及加载状态；useHistoryScroll 自动加载旧页，Timeline 保持阅读位置；历史加载使用低强调状态行，读取失败独立警告并允许重试。
  * 2. 按服务端返回的工作区路径分组展示会话；项目可独立折叠，展开时默认仅显示最近五个对话，并可按需显示更早记录；手机端以可关闭的抽屉呈现该侧栏。
  * 3. resume、reloadService、stopServer、createProject、createConversation 和 send 处理恢复、受确认的服务重载、关闭服务、连接项目、新建会话和发送消息，并显示操作结果。
  * 4. 服务关闭后显示重启说明；正常页面由侧栏或手机端导航抽屉、项目栏、当前会话实际 Runtime 隔离模式（没有证据时显示启动初始状态，并提示获批宿主命令例外）、可折叠会话统计、会将已完成任务过程默认收纳的时间线或项目连接页、所见即所得 Markdown 任务编辑器组成。
@@ -701,9 +701,13 @@ export default function App() {
               />
               <div className={s.composerActions}>
                 {subagentsAvailable && (
-                  <label className={s.subagentChoice}>
+                  <label
+                    className={s.subagentChoice}
+                    title="允许主 agent 使用多个 explorer/reviewer，可能增加模型用量；不授予子代理写入权限。"
+                  >
                     <input
                       type="checkbox"
+                      aria-describedby="subagent-help"
                       checked={
                         active ? active.subagentsEnabled : subagentsEnabled
                       }
@@ -712,7 +716,7 @@ export default function App() {
                         setSubagentsEnabled(event.target.checked)
                       }
                     />
-                    启用只读子代理
+                    启用 subagent（只读）
                   </label>
                 )}
                 <span>↵ 发送 · Shift + ↵ 换行</span>
@@ -738,6 +742,11 @@ export default function App() {
                 )}
               </div>
             </div>
+            {subagentsAvailable && (
+              <p id="subagent-help">
+                试用 · 仅本次任务 · explorer 筛选信息 · reviewer 独立审查修改
+              </p>
+            )}
             <p>普通文件修改自动执行 · 命令运行前由你确认</p>
           </footer>
         )}

@@ -1,8 +1,8 @@
 # 多 agent 协作设计草案
 
-状态：D111 已授权实施，分阶段开发中，尚未作为可用功能开放。本文针对用户提出的可选 subagent；当前单 agent 能力、同真实工作区串行规则及 Windows Sandbox 的验收限制仍以 [需求](requirements.md)、[架构](architecture.md) 和 [决策记录](decisions.md) 为准。
+状态：D111 授权实施；2026-10-17 按 D158 开放默认关闭的任务级 UI/API 试用入口。安装态及跨平台专项验收尚未全部完成，不以入口开放推导验收通过。本文针对用户提出的可选 subagent；当前单 agent 能力、同真实工作区串行规则及 Windows Sandbox 的验收限制仍以 [需求](requirements.md)、[架构](architecture.md) 和 [决策记录](decisions.md) 为准。
 
-Windows Sandbox 的日常功能已于 2026-10-03 获用户实际使用验证确认（D130）；该确认不等于 subagent 已对外开放，也不替代子任务取消、恢复和失败路径的专项就绪评估。2026-10-17 按 D157 接入内置角色与审查材料，公开门禁保持不变。
+Windows Sandbox 的日常功能已于 2026-10-03 获用户实际使用验证确认（D130）；该确认不等于 subagent 已对外开放，也不替代子任务取消、恢复和失败路径的专项就绪评估。2026-10-17 按 D157 接入内置角色与审查材料，随后用户按 D158 要求开放 UI 选项，调整此前暂不开放入口的决定；不会自动修改 Sandbox 安装或权限。
 
 ## 目标和不可混淆的边界
 
@@ -12,7 +12,7 @@ Windows Sandbox 的日常功能已于 2026-10-03 获用户实际使用验证确�
 
 ## 1. 入口和任务级设置
 
-在对话框下方的发送按钮旁增加 `启用 subagent` checkbox，默认不勾选；选择只对**此次新任务**生效，发送后随任务一并保存为不可变 `subagentsEnabled`，排队后也不能改变。发送时把 `{ prompt, subagentsEnabled }` 交给 `/api/sessions/:id/tasks`；旧客户端缺省为 `false`。**契约/迁移阶段不得提前展示可勾选入口**：只有宿主和已启用的 Sandbox 路径均具备完整子任务闭环及恢复/取消后，才开放 checkbox；在功能未就绪的服务上请求 `true` 必须明确拒绝，不能静默当成单 agent。当前任务运行时只显示已保存的实际开关，不在任务中途切换；取消和人工恢复沿用原任务配置，恢复时不可意外开启。UI 不把未发送的选择当作任务实际状态。历史页显示任务是否启用、多 agent 计划和各 subagent 状态。
+在对话框下方的发送按钮旁增加 `启用 subagent（只读）` checkbox，默认不勾选；选择只对**此次新任务**生效，发送后随任务一并保存为不可变 `subagentsEnabled`，排队后也不能改变。发送时把 `{ prompt, subagentsEnabled }` 交给 `/api/sessions/:id/tasks`；旧客户端缺省为 `false`。D158 已开放入口，UI 标明试用、仅本次任务及两角色用途；成功提交后复位，失败保留草稿，切换会话不继承勾选。bootstrap、HTTP 与 Engine 使用一致的能力标志；旧服务报告不可用时隐藏入口，请求 `true` 明确拒绝，不能静默降为单 agent。当前任务运行时只显示已保存的实际开关，不在任务中途切换；取消和人工恢复沿用原任务配置，恢复时不可意外开启。UI 不把未发送的选择当作任务实际状态。历史页显示任务是否启用、多 agent 计划和各 subagent 状态。
 
 开关开启不意味着一定创建 subagent：主 agent 在完成必要的初步调查后，决定是否有可独立、只读的分任务；没有则按单 agent 路径继续，并记录 `skipped` 原因。提示词仅说明选择和能力，计划结构、内置角色枚举、任务归属和工具权限由服务端校验，不对研究内容或累计分工数量设置额外阈值。
 
@@ -100,9 +100,9 @@ reviewer 计划示例（与 explorer 一样放入 `subtasks`）：
 
 ## 7. 具体代码落点与接入顺序
 
-以下描述目标落点；任务开关迁移、内部 Store/Worker、宿主协调和 Runtime→Broker 的任务绑定 IPC/lease/bundle 已接入且通过独立进程 harness；前端勾选与历史进度已预置但默认发布门禁仍为 false；固定账户提升环境及恢复/故障矩阵仍待完成，不能按本节目标推断现有功能已经可用：
+以下描述目标落点；任务开关迁移、内部 Store/Worker、宿主协调和 Runtime→Broker 的任务绑定 IPC/lease/bundle 已接入且通过独立进程 harness；D158 已开放默认不勾选的前端选项和 HTTP 路径；固定账户提升环境及恢复/故障矩阵仍待专项验证，不能按入口开放推断全平台安装态验收通过：
 
-- **UI/API**：`src/server/app.ts` 的任务 POST 用 Zod `subagentsEnabled: z.boolean().default(false)`，拒绝非布尔值；功能未就绪时显式拒绝 `true`。`src/web/App.tsx` 的 `send` 与输入框下方 `composerActions` 已预置默认 `false` 的 checkbox，但 bootstrap 返回未就绪时完全隐藏，伪造客户端仍会被 Engine/HTTP 拒绝；恢复按钮只提交 instruction，不读取当前 checkbox。更新 `src/shared/types.ts` 的 Task 和 `src/web/Timeline.tsx`，展示实际保存的选择与进度。
+- **UI/API**：`src/server/app.ts` 的任务 POST 用 Zod `subagentsEnabled: z.boolean().default(false)`，拒绝非布尔值；当前接受显式 `true`，入口能力关闭时仍明确拒绝。`src/web/App.tsx` 的 `send` 与输入框下方 `composerActions` 提供默认 `false` 的 checkbox，bootstrap 报告不可用时隐藏；恢复按钮只提交 instruction，不读取当前 checkbox。更新 `src/shared/types.ts` 的 Task 和 `src/web/Timeline.tsx`，展示实际保存的选择与进度。
 - **任务创建与恢复**：在 `src/agent/engine.ts` 的 `start`、`resume`、`run` 和 `runInAgentRuntime` 接入开关。将新增开关及原有 recovery 一并收束到具名 `StartTaskOptions`（而非两个易错的位置参数），迁移已有 `start(sessionId, prompt, recovery?)` 调用方；创建任务和用户事件在同一事务保存选项。`resume` 从来源任务读取开关创建**新任务**，不依据 UI 当前表单状态或重启旧 Worker。主 loop 仅在功能就绪且任务开关为真时提供协调工具。
 - **存储/流式展示**：更新 `src/sessions/schema.ts`、`store.ts` 和 `src/server/session-events.ts`。`tasks.subagentsEnabled INTEGER NOT NULL DEFAULT 0`，逐分片 migration 兼容旧历史；子任务状态以 `(taskId, subagentId)` 唯一标识，同会话内保存完整检查点及请求 ID。进度和报告通过现有 `events` 全局游标进入快照/SSE，界面从持久化事件还原。主会话的 `collect` 工具结果与子报告消费状态需在宿主 Store 的同分片事务中提交；Runtime 经 Broker 提供固定的原子 adapter，不允许仅先写“已消费”再异步保存主模型输出。
 - **两条执行路径**：宿主 `Engine.run` 与 Sandbox `AgentRuntimeService.run` 都构造同一个任务级 `SubagentCoordinator`；前者用本地 Store/Provider adapter，后者经 RuntimeModelProvider 和有序 session IPC adapter。全局子任务 lease 与已登记子任务验证由服务进程的 Engine/Broker 掌握，Runtime 只持有本任务受限 adapter，Broker 不承载子 loop 或代做工作区工具。必须共用工具层协议与校验，不能只在宿主实现。
@@ -134,14 +134,14 @@ reviewer 计划示例（与 explorer 一样放入 `subtasks`）：
 
 ### 7.4 Tracing、Sandbox 与实现验收切片
 
-`src/tracing/recorder.ts` 在主 task 根下建立逻辑 `Subagent <id>` 轨道；`plan/spawn/model/tool.read/message/report/cancel/join` 分别覆盖开始、结束、耗时和状态，并按 `taskId/sessionId/executionInstanceId/subagentId/messageId` 关联。跨 Worker 事件由协调器记录收发时间或映射时钟，Broker trace 只接收协议规定的固定名称、数字用量和受限错误类别；子 prompt、搜索结果、报告、源码和密钥不能进入 trace。Runtime→Broker 使用 IPC v14（旧安装需重建/Repair）；model purpose、trace 名称与事件属性和 session 事件白名单须同步扩展，并为子身份登记、全局 lease、模型请求与原子 `collect` 回执提供**固定而有界**的 IPC 操作；单帧大小、回压、取消和协议版本不匹配均安全失败。新增 Worker 文件时同步 Windows 构建 manifest、原生安装/状态摘要、自检与故障回退/清理测试；旧安装不兼容时提示更新；仅在现有启动前自检/清理能证明回退安全时标记 `host-process` 后继续完整子功能，不能把宿主 fallback 冒充 Sandbox 下多 agent 可用。当前子轨已有 worker/model/tool.read 以及显式 question/message/cancel 的独立固定安全 span；plan/await/collect 的结果仍由主工具 span 关联，不把预览报告放入 trace。固定账户端到端验收前只称 harness 可用；`pnpm sandbox:runtime:verify` 已添加对已安装 Worker 的显式产品链路验收步骤（发布门禁仍关闭），只有用户在真实安装环境运行才形成平台证据。
+`src/tracing/recorder.ts` 在主 task 根下建立逻辑 `Subagent <id>` 轨道；`plan/spawn/model/tool.read/message/report/cancel/join` 分别覆盖开始、结束、耗时和状态，并按 `taskId/sessionId/executionInstanceId/subagentId/messageId` 关联。跨 Worker 事件由协调器记录收发时间或映射时钟，Broker trace 只接收协议规定的固定名称、数字用量和受限错误类别；子 prompt、搜索结果、报告、源码和密钥不能进入 trace。Runtime→Broker 使用 IPC v14（旧安装需重建/Repair）；model purpose、trace 名称与事件属性和 session 事件白名单须同步扩展，并为子身份登记、全局 lease、模型请求与原子 `collect` 回执提供**固定而有界**的 IPC 操作；单帧大小、回压、取消和协议版本不匹配均安全失败。新增 Worker 文件时同步 Windows 构建 manifest、原生安装/状态摘要、自检与故障回退/清理测试；旧安装不兼容时提示更新；仅在现有启动前自检/清理能证明回退安全时标记 `host-process` 后继续完整子功能，不能把宿主 fallback 冒充 Sandbox 下多 agent 可用。当前子轨已有 worker/model/tool.read 以及显式 question/message/cancel 的独立固定安全 span；plan/await/collect 的结果仍由主工具 span 关联，不把预览报告放入 trace。固定账户端到端验收前只称 harness 可用；`pnpm sandbox:runtime:verify` 已添加对已安装 Worker 的显式产品链路验收步骤（与 D158 的入口开放分开验收），只有用户在真实安装环境运行才形成平台证据。
 
-实施按以下**可独立验收的增量**推进（每增量同步文件导读、架构、覆盖清单和对应测试），前四项均不向用户显示可用 checkbox，也不接受来自 HTTP 的 `subagentsEnabled:true`；已有内部测试通过直接保存已标记任务验证未开放的宿主路径：
+以下是原分阶段实施顺序（每增量同步文件导读、架构、覆盖清单和测试）。原前四阶段不开放 checkbox/HTTP true；D158 现已开放试用入口，保留已有内部标记任务测试，并增加真实 HTTP/浏览器回归，不据此跳过安装态验收：
 
 1. **内部契约与存储**：Zod 默认 `false`、旧数据库逐分片迁移、子状态/检查点与模型请求账本、主任务恢复继承；旧客户端与原单 agent 行为不变，服务未就绪时请求 `true` 明确拒绝。覆盖多分片、持久化失败及未知结果。
 2. **主代理与全局配额**：按任务工具定义、图解析和两条 loop 的协调工具分派，Broker 子身份登记与跨进程 lease；用假 Worker/Provider 验证大计划、无效计划零启动、同工作区锁、公平排队、取消与重复消息。
 3. **真实子 loop 与只读工具**：独立 Worker、模型代理、受限 list/search/read、强制逐轮检查点与主任务全部终态收尾；宿主和 Runtime IPC harness 验证并发、版本变化、崩溃、超时及注入写入工具被拒（只证明工具层，不证明 OS 隔离）。
 4. **一致性与 Sandbox 集成**：`collect` 与主会话工具结果原子落盘、重启后报告可重读、未知模型请求不盲重试、tracing、协议版本和固定事件、Windows 安装 bundle/摘要/清理验收。固定账户提升环境和跨平台验证各记真实证据，不能把 harness 或静态通过描述为已完成。
-5. **最后开放 UI**：仅在上述路径可用时展示 checkbox 与历史进度；验证勾选但主 agent 合理跳过分工、单 agent 对照、刷新、排队、取消、人工恢复和实际创建/收集报告。涉及 UI/HTTP/SSE 运行 `pnpm test:e2e`；每个实现增量提交前运行 `pnpm check`。Evaluation 仅在用户明确要求时手动运行。
+5. **UI 试用入口（D158 已开放）**：展示默认关闭的 checkbox 与历史进度，明确区分入口开放和平台验收；验证勾选但主 agent 合理跳过分工、单 agent 对照、刷新、排队、取消、人工恢复和实际创建/收集报告。涉及 UI/HTTP/SSE 运行 `pnpm test:e2e`；每个实现增量提交前运行 `pnpm check`。Evaluation 仅在用户明确要求时手动运行。
 
-**已确认而非未决的取舍**：本方案不以恶意 Worker 线程、依赖代码或直接 Node API 为威胁模型；要获得对此类行为的 OS 级不可写承诺属于未来的独立进程/身份方案。D111 已授权实施可选多 agent，但未完成或未验收的增量不改变现有单 agent 能力声明。
+**已确认而非未决的取舍**：本方案不以恶意 Worker 线程、依赖代码或直接 Node API 为威胁模型；要获得对此类行为的 OS 级不可写承诺属于未来的独立进程/身份方案。D158 允许显式开启只读 subagent；未完成或未验收的增量仍不扩大平台安全及质量保证。

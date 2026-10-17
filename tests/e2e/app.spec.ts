@@ -14,7 +14,7 @@
  * 10. 已结束任务默认折叠中间工具、通知和重试文本，输入、末次完整回复及恢复提示保留；活动任务仍完整显示。
  * 11. 累积较长时间线后检查滚动窗口外只保留高度占位，滚动到另一端才创建对应消息节点。
  * 12. 在手机视口检查完整侧栏由菜单按钮打开，并可通过会话选择、遮罩或 Escape 关闭。
- * 13. subagent 未开放时不显示复选框；模拟就绪仅验表单负载，历史任务的子问题纯文本及进度可从持久事件重建。
+ * 13. subagent 默认关闭、单次勾选与失败保留；真实 HTTP/Worker 收集报告，活动任务刷新后开关锁定，历史进度可重建；旧服务不可用时隐藏入口。
  *
  * 页面刷新或重连不能重新提交任务。这里不调用真实模型。
  */
@@ -84,54 +84,132 @@ test("create a session, edit a file, inspect diff and reload history", async ({
   expect(errors).toEqual([]);
 });
 
-test("keeps the subagent option hidden until the server passes its release gate", async ({
+test("hides the subagent option when the server reports it unavailable", async ({
   page,
 }) => {
   const workspace = await realpath(
     await mkdtemp(path.join(tmpdir(), "codeatelier-subagent-gate-")),
   );
+  await page.route("**/api/bootstrap", async (route) => {
+    const response = await route.fetch();
+    await route.fulfill({
+      response,
+      json: { ...(await response.json()), subagentsAvailable: false },
+    });
+  });
   await page.goto("/");
   await createInitialConversation(page, workspace);
   await expect(
-    page.getByRole("checkbox", { name: "启用只读子代理" }),
+    page.getByRole("checkbox", { name: "启用 subagent（只读）" }),
   ).toHaveCount(0);
 });
 
-test("prepares a one-task opt-in without letting a spoofed bootstrap bypass the backend gate", async ({
+test("opts into real subagents for one task and retains the draft after a rejected submission", async ({
   page,
 }) => {
   const workspace = await realpath(
     await mkdtemp(path.join(tmpdir(), "codeatelier-subagent-form-")),
   );
-  await page.route("**/api/bootstrap", async (route) => {
-    const response = await route.fetch();
-    const body = await response.json();
-    await route.fulfill({
-      response,
-      json: { ...body, subagentsAvailable: true },
-    });
-  });
   await page.goto("/");
   await createInitialConversation(page, workspace);
-  const checkbox = page.getByRole("checkbox", { name: "启用只读子代理" });
-  await expect(checkbox).not.toBeChecked();
-  await checkbox.check();
-  let submitted: unknown;
-  await page.route("**/api/sessions/*/tasks", async (route) => {
-    submitted = route.request().postDataJSON();
-    await route.continue();
+  const checkbox = page.getByRole("checkbox", {
+    name: "启用 subagent（只读）",
   });
+  await expect(checkbox).not.toBeChecked();
+  await expect(page.getByText(/explorer 筛选信息/)).toBeVisible();
+  await checkbox.check();
+  const submitted: unknown[] = [];
+  await page.route("**/api/sessions/*/tasks", async (route) => {
+    submitted.push(route.request().postDataJSON());
+    if (submitted.length === 1) {
+      await route.fulfill({
+        status: 409,
+        json: { error: "提交被拒绝（测试）" },
+      });
+    } else {
+      await route.continue();
+    }
+  });
+  await page.getByLabel("任务描述").fill("验证 subagent 开关");
+  await page.getByRole("button", { name: "开始执行" }).click();
+  await expect(page.getByRole("alert")).toContainText("提交被拒绝");
+  await expect(checkbox).toBeChecked();
+  await expect(page.getByLabel("任务描述")).toContainText("验证 subagent 开关");
+
+  const accepted = page.waitForResponse(
+    (response) =>
+      response.url().endsWith("/tasks") &&
+      response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "开始执行" }).click();
+  const taskResponse = await accepted;
+  const task = await taskResponse.json();
+  expect(taskResponse.status()).toBe(200);
+  expect(task.subagentsEnabled).toBe(true);
+  await expect(
+    page.getByText("已收集 explorer 报告。", { exact: true }),
+  ).toBeVisible();
+  await expect(checkbox).not.toBeChecked();
+  await page.reload();
+  await page
+    .getByRole("button", { name: "验证 subagent 开关", exact: true })
+    .click();
+  await expect(
+    page.getByText("已收集 explorer 报告。", { exact: true }),
+  ).toBeVisible();
+  await expect(checkbox).not.toBeChecked();
+  expect(submitted).toHaveLength(2);
+  const snapshot = await page.request.get(`/api/sessions/${task.sessionId}`);
+  expect((await snapshot.json()).tasks).toMatchObject([
+    { id: task.id, subagentsEnabled: true },
+  ]);
+
   await page.getByLabel("任务描述").fill("分析代码");
   await page.getByRole("button", { name: "开始执行" }).click();
-  await expect(page.getByRole("alert")).toContainText("subagent 尚未就绪");
-  expect(submitted).toEqual({ prompt: "分析代码", subagentsEnabled: true });
-  await expect(checkbox).toBeChecked();
-  await expect(page.getByLabel("任务描述")).toContainText("分析代码");
-  await checkbox.uncheck();
-  await page.getByRole("button", { name: "开始执行" }).click();
   await expect(page.getByText("任务完成，已检查工具结果。")).toBeVisible();
-  expect(submitted).toEqual({ prompt: "分析代码", subagentsEnabled: false });
+  expect(submitted).toEqual([
+    { prompt: "验证 subagent 开关", subagentsEnabled: true },
+    { prompt: "验证 subagent 开关", subagentsEnabled: true },
+    { prompt: "分析代码", subagentsEnabled: false },
+  ]);
+});
+
+test("locks the saved subagent choice across refresh and ignores draft changes when resuming", async ({
+  page,
+}) => {
+  const workspace = await realpath(
+    await mkdtemp(path.join(tmpdir(), "codeatelier-subagent-active-")),
+  );
+  await page.goto("/");
+  await createInitialConversation(page, workspace);
+  const checkbox = page.getByRole("checkbox", {
+    name: "启用 subagent（只读）",
+  });
+  await checkbox.check();
+  await page.getByLabel("任务描述").fill("运行命令");
+  await page.getByRole("button", { name: "开始执行" }).click();
+  await expect(page.getByRole("button", { name: "允许一次" })).toBeVisible();
+  await expect(checkbox).toBeChecked();
+  await expect(checkbox).toBeDisabled();
+  await page.reload();
+  await page.getByRole("button", { name: "运行命令", exact: true }).click();
+  await expect(checkbox).toBeChecked();
+  await expect(checkbox).toBeDisabled();
+  await page.getByRole("button", { name: "停止任务" }).click();
+  await expect(page.getByRole("button", { name: "恢复任务" })).toBeVisible();
   await expect(checkbox).not.toBeChecked();
+  const resumed = page.waitForResponse(
+    (response) =>
+      response.url().endsWith("/resume") &&
+      response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "恢复任务" }).click();
+  expect((await (await resumed).json()).subagentsEnabled).toBe(true);
+  await expect(page.getByRole("button", { name: "允许一次" })).toBeVisible();
+  await expect(checkbox).toBeChecked();
+  await expect(checkbox).toBeDisabled();
+  await page.getByRole("button", { name: "停止任务" }).click();
+  await expect(page.getByRole("button", { name: "恢复任务" })).toBeVisible();
 });
 
 test("rebuilds saved subagent selection and progress after refreshing a historical conversation", async ({
