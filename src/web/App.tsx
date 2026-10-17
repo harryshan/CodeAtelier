@@ -707,7 +707,6 @@ export default function App() {
                   >
                     <input
                       type="checkbox"
-                      aria-describedby="subagent-help"
                       checked={
                         active ? active.subagentsEnabled : subagentsEnabled
                       }
@@ -742,12 +741,6 @@ export default function App() {
                 )}
               </div>
             </div>
-            {subagentsAvailable && (
-              <p id="subagent-help">
-                试用 · 仅本次任务 · explorer 筛选信息 · reviewer 独立审查修改
-              </p>
-            )}
-            <p>普通文件修改自动执行 · 命令运行前由你确认</p>
           </footer>
         )}
       </main>

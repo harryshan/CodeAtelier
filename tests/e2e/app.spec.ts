@@ -14,7 +14,7 @@
  * 10. 已结束任务默认折叠中间工具、通知和重试文本，输入、末次完整回复及恢复提示保留；活动任务仍完整显示。
  * 11. 累积较长时间线后检查滚动窗口外只保留高度占位，滚动到另一端才创建对应消息节点。
  * 12. 在手机视口检查完整侧栏由菜单按钮打开，并可通过会话选择、遮罩或 Escape 关闭。
- * 13. subagent 默认关闭、单次勾选与失败保留；真实 HTTP/Worker 收集报告，活动任务刷新后开关锁定，历史进度可重建；旧服务不可用时隐藏入口。
+ * 13. 输入框底部不显示冗余说明；subagent 默认关闭、单次勾选与失败保留；真实 HTTP/Worker 收集报告，活动任务刷新后开关锁定，历史进度可重建；旧服务不可用时隐藏入口。
  *
  * 页面刷新或重连不能重新提交任务。这里不调用真实模型。
  */
@@ -116,7 +116,11 @@ test("opts into real subagents for one task and retains the draft after a reject
     name: "启用 subagent（只读）",
   });
   await expect(checkbox).not.toBeChecked();
-  await expect(page.getByText(/explorer 筛选信息/)).toBeVisible();
+  await expect(page.locator("footer > p")).toHaveCount(0);
+  await expect(checkbox).not.toHaveAttribute(
+    "aria-describedby",
+    "subagent-help",
+  );
   await checkbox.check();
   const submitted: unknown[] = [];
   await page.route("**/api/sessions/*/tasks", async (route) => {
