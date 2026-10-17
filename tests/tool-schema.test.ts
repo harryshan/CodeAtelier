@@ -1,6 +1,6 @@
 /**
- * 检查 registry 发给模型的函数契约，防止单个非法工具使整轮请求被拒绝。
- * 使用生产 definitions 和 schemas，不调用模型服务，也不执行文件或 Git 操作。
+ * 检查宿主、Runtime、按任务追加及子 Worker 发给模型的函数契约，防止单个非法工具使整轮请求被拒绝。
+ * 使用生产 definitions、subagent/history 定义和 schemas，不调用模型服务，也不执行文件或 Git 操作。
  *
  * 1. 检查根节点为 object、禁止 oneOf，再递归遍历工具定义及数组项，核对 strict 对象的属性均为必填且禁止额外属性。
  * 2. 检查每个新调用的 execution/arguments 调度信封，及唯一 edit_files 工具的 create 分支、带版本和行范围的已有文件补丁、可见空白读取和 run_command 的单一 command 字符串。
@@ -9,6 +9,9 @@
  */
 
 import { expect, it } from "vitest";
+import { subagentToolDefinition } from "../src/agent/subagent-contracts.js";
+import { subagentToolDefinitions } from "../src/agent/subagent-question-contract.js";
+import { historyDefinition } from "../src/context/history.js";
 import {
   definitions,
   runtimeDefinitions,
@@ -18,39 +21,43 @@ import {
   parseToolArguments,
 } from "../src/tools/registry.js";
 
-it("declares every property as required for strict function tools", () => {
-  for (const definition of definitions) {
-    const parameters = definition.parameters;
+it.each([
+  ...definitions,
+  ...runtimeDefinitions,
+  historyDefinition,
+  subagentToolDefinition,
+  ...subagentToolDefinitions,
+])("declares a compatible strict schema for $name", (definition) => {
+  const parameters = definition.parameters;
 
-    expect(definition.strict).toBe(true);
-    expect(parameters.type, definition.name).toBe("object");
-    expect(parameters).not.toHaveProperty("oneOf");
-    expect(parameters).not.toHaveProperty("anyOf");
-    const check = (schema: any) => {
-      if (!schema || typeof schema !== "object") {
-        return;
+  expect(definition.strict).toBe(true);
+  expect(parameters.type, definition.name).toBe("object");
+  expect(parameters).not.toHaveProperty("oneOf");
+  expect(parameters).not.toHaveProperty("anyOf");
+  const check = (schema: any) => {
+    if (!schema || typeof schema !== "object") {
+      return;
+    }
+
+    expect(schema).not.toHaveProperty("oneOf");
+
+    if (schema.type === "object") {
+      expect(schema.additionalProperties, definition.name).toBe(false);
+      expect([...(schema.required ?? [])].sort(), definition.name).toEqual(
+        Object.keys(schema.properties ?? {}).sort(),
+      );
+    }
+
+    for (const value of Object.values(schema)) {
+      if (Array.isArray(value)) {
+        value.forEach(check);
+      } else if (value && typeof value === "object") {
+        check(value);
       }
+    }
+  };
 
-      expect(schema).not.toHaveProperty("oneOf");
-
-      if (schema.type === "object") {
-        expect(schema.additionalProperties, definition.name).toBe(false);
-        expect([...(schema.required ?? [])].sort(), definition.name).toEqual(
-          Object.keys(schema.properties ?? {}).sort(),
-        );
-      }
-
-      for (const value of Object.values(schema)) {
-        if (Array.isArray(value)) {
-          value.forEach(check);
-        } else if (value && typeof value === "object") {
-          check(value);
-        }
-      }
-    };
-
-    check(parameters);
-  }
+  check(parameters);
 });
 
 it("requires a strict DAG execution envelope for new model calls", () => {

@@ -509,9 +509,9 @@ D155 移除了专用 Git diff 上限；CLI 输出沿用 process/core 的通用�
 
 ## 严格工具契约
 
-- tests/tool-schema.test.ts 检查所有生产工具的 strict 对象声明：属性均列入 required，禁止额外属性；新调用的根节点包含严格的 `execution`（唯一 ID 与依赖列表）及 `arguments` 信封；宿主/Runtime 工具列表均不含旧 `git`，新调用无论扁平、request 包装或调度信封均拒绝。
+- tests/tool-schema.test.ts 检查宿主、Runtime、按任务追加的 subagent/历史读取及子 Worker 工具的 strict 对象声明：递归禁止 `oneOf`，属性均列入 required，禁止额外属性；新调用的根节点包含严格的 `execution`（唯一 ID 与依赖列表）及 `arguments` 信封；宿主/Runtime 工具列表均不含旧 `git`，新调用无论扁平、request 包装或调度信封均拒绝。
 
-  此回归防止工具 schema 导致整轮模型请求被拒绝，不连接真实服务。
+  此回归防止工具 schema 导致整轮模型请求被拒绝，不连接真实服务。`subagent-contracts.test.ts` 覆盖 `replyTo` 的 null/历史省略/合法 ID 与非法 ID；`subagent-coordinator.test.ts` 经真实 Worker 验证无关联消息能进入下一轮模型输入且不消费待答问题，之后仍可按正确 ID 回复。角色互斥与 reviewer 必须携带审查材料继续由 `subagent-roles.test.ts` 覆盖。
 
 - tests/tool-graph.test.ts 验证独立根节点的拓扑并发与汇聚、失败节点对子孙的阻断，以及重复 ID、未知依赖和环在任何执行回调前拒绝；engine.test.ts 覆盖模型信封解析、阻断结果回传和批次事件持久化。
 

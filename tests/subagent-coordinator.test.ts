@@ -4,7 +4,7 @@
  * 1. 逆序声明有依赖的两个计划，验证计划/状态持久化后通知页面刷新、有限租约、读取、等待及只收集一次报告。
  * 2. 敏感/越界范围拒绝时不创建任务；取消等待模型的 Worker 后归还资源并标记终态。
  * 3. 主任务关闭时与尚在登记计划的请求竞态，不能遗漏晚登记的 Worker。
- * 4. 超过旧时长/问题/消息阈值仍继续研究，主任务取消仍立刻停止；累计 token 与长轮次由 subagent-capacity.test.ts 统一覆盖。延迟模型先确认 Worker 就绪，再验证子问题唤醒一秒 await；主代理核验归属后才可带关联 ID 回复。
+ * 4. 超过旧时长/问题/消息阈值仍继续研究，主任务取消仍立刻停止；累计 token 与长轮次由 subagent-capacity.test.ts 统一覆盖。延迟模型先确认 Worker 就绪，再验证子问题唤醒一秒 await；无关联消息不会消费待答问题，主代理核验归属后才可带关联 ID 回复。
  *
  * 模拟 ModelProvider 是协议桩，不能作为真实 Windows 专用账户 Sandbox 验收证据。
  */
@@ -478,6 +478,9 @@ it("persists a child question and lets only the main coordinator answer it", asy
       }
 
       expect(JSON.stringify(input)).toContain("Main reply to question");
+      expect(JSON.stringify(input)).toContain(
+        "Keep investigating independently",
+      );
 
       return { text: "src/example.ts:1", output: [] };
     },
@@ -512,6 +515,14 @@ it("persists a child question and lets only the main coordinator answer it", asy
 
     const questionId = waiting.questions[0].id;
     expect(fixture.notifications).toContain("subagent_question");
+    await expect(
+      fixture.coordinator.execute({
+        action: "message",
+        subagentId: "reader",
+        replyTo: null,
+        text: "Keep investigating independently",
+      }),
+    ).resolves.toMatchObject({ accepted: true });
     await expect(
       fixture.coordinator.execute({
         action: "message",

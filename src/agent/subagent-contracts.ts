@@ -2,6 +2,7 @@
  * 定义主 agent 分工工具和任务内子任务计划的纯契约，供宿主、Runtime 与 Worker 消息分派共用。
  *
  * 1. subtaskSchema 限定 explorer/reviewer 两种角色，reviewer 必须携带变更材料；subagentActionSchema 验证协调动作、replyTo 和非空文本。
+ *    使用字面量互斥的普通联合生成模型支持的 anyOf；replyTo 无关联时为 null，旧调用省略时也归一化为 null。
  * 2. validateSubagentPlan 在任何 Worker 启动前检查 ID 唯一性与依赖图；路径的规范化
  *    与实际读取权限由协调器在工作区上下文中另外校验。
  * 3. subagentToolDefinition 带工具 DAG 的 execution 信封，只供已启用任务按条件追加；它本身不是写入权限或执行器。
@@ -24,7 +25,8 @@ const subtaskBaseSchema = z
   })
   .strict();
 
-export const subtaskSchema = z.discriminatedUnion("role", [
+// 两分支的 role 字面量互斥；普通 union 保留校验语义，避免生成 strict 模型不接受的 oneOf。
+export const subtaskSchema = z.union([
   subtaskBaseSchema.extend({ role: z.literal("explorer") }),
   subtaskBaseSchema.extend({
     role: z.literal("reviewer"),
@@ -40,7 +42,7 @@ export const subtaskSchema = z.discriminatedUnion("role", [
 
 export const subagentActionSchema = z
   .object({
-    request: z.discriminatedUnion("action", [
+    request: z.union([
       z
         .object({
           action: z.literal("plan"),
@@ -57,7 +59,8 @@ export const subagentActionSchema = z
             .int()
             .positive()
             .max(Number.MAX_SAFE_INTEGER)
-            .optional(),
+            .nullable()
+            .default(null),
         })
         .strict(),
       z
@@ -81,7 +84,8 @@ export const subagentActionSchema = z
   .strict();
 
 export type SubtaskPlan = z.infer<typeof subtaskSchema>;
-export type SubagentAction = z.infer<typeof subagentActionSchema>["request"];
+// 协调器接受输入类型以兼容历史省略 replyTo 的调用，执行前仍经过 schema 归一化。
+export type SubagentAction = z.input<typeof subagentActionSchema>["request"];
 
 export function validateSubagentPlan(
   subtasks: SubtaskPlan[],
@@ -135,7 +139,7 @@ export const subagentToolDefinition = {
   type: "function" as const,
   name: "subagent",
   description:
-    "Coordinate built-in read-only subagents: explorer gathers and filters relevant information with evidence; reviewer independently reviews your changes in a fresh context. Supply reviewer changes as a scoped diff or before/after material, with paths and baseline/version. Both roles support multiple instances with separate IDs and scopes, running concurrently within shared Worker limits; use dependencies only when necessary. No parent conversation or peer reports are inherited. Children can ask questions; await may return early. Answer using message with replyTo; collect reports and verify evidence yourself. All edits and command-based verification stay with the main agent.",
+    "Coordinate built-in read-only subagents: explorer gathers and filters relevant information with evidence; reviewer independently reviews your changes in a fresh context. Supply reviewer changes as a scoped diff or before/after material, with paths and baseline/version. Both roles support multiple instances with separate IDs and scopes, running concurrently within shared Worker limits; use dependencies only when necessary. No parent conversation or peer reports are inherited. Children can ask questions; await may return early. Answer using message with replyTo set to the question ID; use null for an unlinked message. Collect reports and verify evidence yourself. All edits and command-based verification stay with the main agent.",
   parameters: z.toJSONSchema(scheduledParameters(subagentActionSchema)),
   strict: true,
 };

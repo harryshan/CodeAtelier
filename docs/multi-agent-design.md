@@ -112,7 +112,9 @@ reviewer 计划示例（与 explorer 一样放入 `subtasks`）：
 
 ### 7.1 主从接口与线程通信
 
-主 agent 的结构化分工通过新增的**主角色专用**函数工具 `subagent` 发起，不解析普通回答中的 JSON。`src/agent/subagent-contracts.ts` 维护 Zod 判别联合、ID 与非空字段校验；模型可请求 `plan`（提交第 3 节的 subtasks）、`message`、`await`、`collect`、`cancel`。当前 `src/tools/registry.ts` 会自动暴露 schemas 中的工具，而 `src/tools/model-tool-batch.ts` 只解析已登记工具：实现时须同时改造**按任务条件生成的模型定义、图构建的可用工具校验，以及 Engine/Runtime 的显式执行分派**。通用 ToolRunner 不得接管 `subagent`；未开启时定义不可见，伪造调用即使通过解析也须在执行入口拒绝。`plan` 只返回已登记/跳过的 ID；后续模型轮次才能使用结果，不能在同一 DAG 批次猜测未知 ID。`await` 设超时/取消并且不占执行槽，但仍占本工具批次的活动节点，整个批次会等待它；限制同批等待数量，禁止相互等待，避免阻塞主 agent 的后续轮次。
+模型工具声明使用嵌套 `anyOf` 而非 `oneOf`；宿主与 Runtime 共用同一份 `subagentToolDefinition`。strict 对象的所有属性均为必填：`message.replyTo` 无问题关联时显式传 `null`，有回复关联时传正安全整数；本地解析继续兼容旧调用省略该字段，协调器转成 Worker 原有的可省略字段后发送，不消费待答问题。两个角色仍严格互斥，reviewer 的 `changes` 不能省略。此修复仅调整纯契约及空值适配，沿用既有 model/tool/subagent.message 的开始、结束、失败/取消、耗时和关联 ID，不新增运行阶段或 trace 正文属性。
+
+主 agent 的结构化分工通过新增的**主角色专用**函数工具 `subagent` 发起，不解析普通回答中的 JSON。`src/agent/subagent-contracts.ts` 维护以互斥 action/role 字面量区分的 Zod 普通联合、ID 与非空字段校验；模型可请求 `plan`（提交第 3 节的 subtasks）、`message`、`await`、`collect`、`cancel`。当前 `src/tools/registry.ts` 会自动暴露 schemas 中的工具，而 `src/tools/model-tool-batch.ts` 只解析已登记工具：实现时须同时改造**按任务条件生成的模型定义、图构建的可用工具校验，以及 Engine/Runtime 的显式执行分派**。通用 ToolRunner 不得接管 `subagent`；未开启时定义不可见，伪造调用即使通过解析也须在执行入口拒绝。`plan` 只返回已登记/跳过的 ID；后续模型轮次才能使用结果，不能在同一 DAG 批次猜测未知 ID。`await` 设超时/取消并且不占执行槽，但仍占本工具批次的活动节点，整个批次会等待它；限制同批等待数量，禁止相互等待，避免阻塞主 agent 的后续轮次。
 
 `src/agent/subagent-coordinator.ts` 持有 taskId、execution instance、配置快照、每个 Worker 句柄、任务内限流器与持久化 adapter；`src/agent/subagent-worker.ts` 只被提供子会话上下文、独立 `runModelLoop` 状态与 `parentPort`，不能通过协议获取主工具或项目密钥。为 Worker 显式设置最小 `env`，避免默认继承父进程环境中的敏感配置；这减少意外传递，但同进程线程仍不是可抵御恶意代码的秘密隔离边界，不声称 Worker 绝对无法读取 API key。`subagentId` 由计划校验/协调器分配，不接收 Worker 自报权限。Worker 来源按 tsx 开发、普通 JS 构建和 Sandbox 安装 bundle 分流；启动前须取得 Broker/Engine 全局 lease，任务内同时至多 2 个活动子任务、全局同时至多 4 个，不限制累计创建数，跨任务公平排队。同工作区仍是**一个主任务**占锁；子任务不能创建下一层 Worker。
 

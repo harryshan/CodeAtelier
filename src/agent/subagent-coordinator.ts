@@ -236,8 +236,10 @@ export class SubagentCoordinator {
         return { delivered: false, status: found.status };
       }
 
-      if (request.replyTo !== undefined) {
-        const question = this.pendingQuestions.get(request.replyTo);
+      // 模型 strict 契约用 null 表达无关联消息，Worker 协议保持原有可省略字段。
+      const replyTo = request.replyTo ?? undefined;
+      if (replyTo !== undefined) {
+        const question = this.pendingQuestions.get(replyTo);
         if (question?.subagentId !== found.id) {
           throw new Error("回复不属于当前子任务或已经答复。");
         }
@@ -250,10 +252,10 @@ export class SubagentCoordinator {
           ...this.envelope(found.id, active),
           kind: "message",
           text: request.text,
-          replyTo: request.replyTo,
+          replyTo,
         } satisfies SubagentParentMessage);
-        if (request.replyTo !== undefined) {
-          this.pendingQuestions.delete(request.replyTo);
+        if (replyTo !== undefined) {
+          this.pendingQuestions.delete(replyTo);
         }
 
         this.options.trace?.(
