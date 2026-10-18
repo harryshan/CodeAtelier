@@ -3,9 +3,9 @@
  * 输入为已脱敏的 JSON 文本，输出为 Perfetto JSON；不写文件、不修改采集器或任务状态。
  *
  * 1. readSlices 按 ID 还原 v2 异步区间，也兼容旧 X 和 B/E；缺少结束只保留 unknown 零时长，不猜耗时。
- * 2. describeSlice 只选择主流程和明显等待，隐藏 SQL、IPC、采样及正常内部步骤；异常始终保留。
+ * 2. describeSlice 明确选择主流程、Sandbox 主要阶段和明显等待，隐藏数据库/调度/读取内部步骤；异常始终保留。
  * 3. simpleArguments 只带定位字段、缓存 key 指纹和实报缓存 tokens，排除 key 原文、工具参数与正文；标签采用固定英文名称。
- * 4. simplifyTrace 按真实进程和类别复用逻辑行，重叠区间分行，输出 X 事件与稳定排序元数据。
+ * 4. simplifyTrace 按真实进程复用 Task/Model/Work/Issues 行；工具、环境和辅助工作共用 Work，仅重叠时分行。
  *
  * 逻辑行不是物理线程，区间仍是墙钟时间，不代表 CPU 占用；不相加、不改写时间戳来制造嵌套。
  * 原始归档及 droppedRecords/partial 等事实保留，下载不会提供额外的详细版入口。
@@ -25,48 +25,97 @@ interface Event {
 }
 
 type Slice = Event & { dur: number; args: Record<string, unknown> };
-const groups = [
-  "Task",
-  "Model",
-  "Tools",
-  "Waiting",
-  "Context",
-  "Storage",
-  "Runtime",
-  "Issues",
-] as const;
+const groups = ["Task", "Model", "Work", "Issues"] as const;
 type Group = (typeof groups)[number];
-type Description = { group: Group; label: string };
+type Description = {
+  group: Group;
+  label: string;
+  detail?: boolean;
+  hidden?: boolean;
+};
 const MIN_DETAIL_US = 10_000;
 
 const stages: Record<string, Description> = {
   "task.run": { group: "Task", label: "Task" },
-  "task.queue": { group: "Waiting", label: "Task queue" },
+  "task.queue": { group: "Work", label: "Task queue", detail: true },
   "llm.request": { group: "Model", label: "Model request" },
-  "llm.capabilities": { group: "Model", label: "Model capabilities" },
-  "llm.retry_delay": { group: "Waiting", label: "Retry delay" },
-  "approval.classify": { group: "Waiting", label: "Approval check" },
-  "approval.human_wait": { group: "Waiting", label: "User approval" },
-  "tool.dependency_wait": { group: "Waiting", label: "Tool dependencies" },
-  "tool.slot_wait": { group: "Waiting", label: "Tool slot" },
-  "mcp.queue": { group: "Waiting", label: "MCP queue" },
-  "context.prepare": { group: "Context", label: "Prepare context" },
-  "context.request": { group: "Context", label: "Build request" },
-  "context.compaction": { group: "Context", label: "Compact context" },
-  "tool.result_persist": { group: "Storage", label: "Save tool results" },
-  "broker.command": { group: "Tools", label: "Host command" },
-  "tool.read_file": { group: "Tools", label: "Read file" },
-  "tool.edit_files": { group: "Tools", label: "Edit files" },
-  "tool.run_command": { group: "Tools", label: "Run command" },
+  "llm.capabilities": {
+    group: "Model",
+    label: "Model capabilities",
+    detail: true,
+  },
+  "llm.retry_delay": { group: "Work", label: "Retry delay", detail: true },
+  "approval.classify": { group: "Work", label: "Approval check", detail: true },
+  "approval.human_wait": {
+    group: "Work",
+    label: "User approval",
+    detail: true,
+  },
+  "tool.dependency_wait": {
+    group: "Work",
+    label: "Tool dependencies",
+    hidden: true,
+  },
+  "tool.slot_wait": { group: "Work", label: "Tool slot", hidden: true },
+  "mcp.queue": { group: "Work", label: "MCP queue", detail: true },
+  "context.prepare": { group: "Work", label: "Prepare context", detail: true },
+  "context.request": { group: "Work", label: "Build request", detail: true },
+  "context.compaction": { group: "Work", label: "Compact context" },
+  "tool.result_persist": {
+    group: "Work",
+    label: "Save tool results",
+    detail: true,
+  },
+  "broker.command": { group: "Work", label: "Host command" },
+  "tool.read_file": { group: "Work", label: "Read file" },
+  "tool.edit_files": { group: "Work", label: "Edit files" },
+  "tool.run_command": { group: "Work", label: "Run command" },
   "tool.run_with_permissions": {
-    group: "Tools",
+    group: "Work",
     label: "Wait for host command",
   },
-  "tool.memory_apply": { group: "Tools", label: "Project memory" },
-  "tool.read_context_history": { group: "Tools", label: "Read history" },
-  "tool.skill": { group: "Tools", label: "Skill" },
-  "tool.mcp": { group: "Tools", label: "MCP" },
-  "tool.subagent": { group: "Tools", label: "Subagent" },
+  "tool.memory_apply": { group: "Work", label: "Project memory" },
+  "tool.read_context_history": { group: "Work", label: "Read history" },
+  "tool.skill": { group: "Work", label: "Skill" },
+  "tool.mcp": { group: "Work", label: "MCP" },
+  "tool.subagent": { group: "Work", label: "Subagent" },
+  "sandbox.self_check": { group: "Work", label: "Sandbox check", detail: true },
+  "sandbox.prepare_access": {
+    group: "Work",
+    label: "Sandbox access",
+    detail: true,
+  },
+  "sandbox.shared_provision": {
+    group: "Work",
+    label: "Sandbox provisioning",
+    detail: true,
+  },
+  "sandbox.native_launch": {
+    group: "Work",
+    label: "Sandbox launch",
+    detail: true,
+  },
+  "sandbox.handshake": {
+    group: "Work",
+    label: "Sandbox handshake",
+    detail: true,
+  },
+  "sandbox.cleanup": { group: "Work", label: "Sandbox cleanup", detail: true },
+  "sandbox.mxc.preflight": {
+    group: "Work",
+    label: "Sandbox check",
+    detail: true,
+  },
+  "sandbox.mxc.launch": {
+    group: "Work",
+    label: "Sandbox launch",
+    detail: true,
+  },
+  "sandbox.mxc.cleanup": {
+    group: "Work",
+    label: "Sandbox cleanup",
+    detail: true,
+  },
 };
 
 const modelLabels: Record<string, string> = {
@@ -209,31 +258,22 @@ function describeSlice(slice: Slice): Description | undefined {
       group: "Model",
       label: modelLabels[String(slice.args.purpose)] ?? "Model request",
     };
-  } else if (slice.name.startsWith("sandbox.")) {
-    description = { group: "Runtime", label: readableOperation(slice.name) };
-  } else if (
-    slice.name.startsWith("store.") &&
-    !slice.name.startsWith("store.worker.") &&
-    slice.name !== "store.queue"
-  ) {
-    description = { group: "Storage", label: "Database operation" };
   }
 
   if (isIssue(slice.args.status)) {
     return {
-      group: description?.group ?? "Issues",
+      group:
+        description?.group ??
+        (slice.name.startsWith("sandbox.") ? "Work" : "Issues"),
       label: `${description?.label ?? readableOperation(slice.name)} [${slice.args.status}]`,
     };
   }
 
-  // 不以持续时间隐藏主模型、真实工具或上下文；仅对零碎等待、数据库往返和环境阶段降噪。
+  // 只展示明确列出的正常阶段，避免 Sandbox/数据库内层包络和逐调用调度等待膨胀行数。
+  // 异常先返回；实际工具、模型请求及上下文压缩不受辅助步骤的耗时阈值影响。
   if (
-    description &&
-    (description.group === "Waiting" ||
-      description.group === "Runtime" ||
-      description.label === "Database operation" ||
-      slice.name === "llm.capabilities") &&
-    slice.dur < MIN_DETAIL_US
+    description?.hidden ||
+    (description?.detail && slice.dur < MIN_DETAIL_US)
   ) {
     return undefined;
   }

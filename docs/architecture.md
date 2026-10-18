@@ -155,7 +155,7 @@ Broker 通过 `SandboxRuntime.launchTask` 路由，不进入 Windows ACL/generat
 
 高保真 replay payload 独立保存在 Store 的 `task_replays` 元数据与 `replay_entries` 增量记录中，不混入 Perfetto；模型/工具 replay 只用于隔离测试，文件物化还必须验证完整读取版本。任务尝试保存终态后 TraceArchive 以临时文件后 rename 的方式保存 `traces/<sessionId>/<taskId>.json`，然后立即释放内存记录，所以同一会话各任务不覆盖且没有完成 trace 缓存。终态写库失败也走 finally 尝试归档失败 trace，并保留原始失败语义；导出/归档异常只警告，内存与任务级 Sandbox 状态始终释放，不触发工具重放。已有归档不重写。
 
-`GET /api/tasks/:id/trace` 在本机 cookie 保护下读取归档，和 `/trace/live` 一样，经 `tracing/simple-view.ts` 输出唯一的英文简洁投影（D156）：按 Task/Model/Tools/Waiting/Context/Storage/Runtime/Issues 分组，以互不重叠的可复用逻辑行承载 X 区间，不移动时间或合并不同进程。正常内部细节、采样和连线不进入下载；异常保留，参数缩为定位字段。没有详细版开关，原始采集和归档不变，旧文件在读取时兼容。`GET /api/sessions/:id/traces` 只列出实际存在的文件，统计框仍只有一个下载入口。用法见 [性能时间线](tracing.md)。
+`GET /api/tasks/:id/trace` 在本机 cookie 保护下读取归档，和 `/trace/live` 一样，经 `tracing/simple-view.ts` 输出唯一的英文简洁投影（D156）：按 Task/Model/Work/Issues 分组，工具、Sandbox、重要等待、上下文与结果保存共用 Work，以互不重叠的可复用逻辑行承载 X 区间，不移动时间或合并不同进程。正常内部细节、采样和连线不进入下载；异常保留，参数缩为定位字段。没有详细版开关，原始采集和归档不变，旧文件在读取时兼容。`GET /api/sessions/:id/traces` 只列出实际存在的文件，统计框仍只有一个下载入口。用法见 [性能时间线](tracing.md)。
 
 ### 诊断日志
 

@@ -3,8 +3,9 @@
  * 只用合成事件和真实采集器，不读取用户归档、不调用模型、不改变时钟或磁盘。
  *
  * 1. span/archive 生成固定时间的异步片段，验证分类、降噪、异常保留和参数排除。
- * 2. 交叉/并行/零时长验证真实时间及进程归属，串行操作复用轨道而非逐调用建行。
- * 3. 旧 X、B/E 与未知结束验证兼容及不伪造终态；采集器集成验证实际产物可转换且不变更源。
+ * 2. 跨子系统串行工作共用 Work；Sandbox/调度/读取内部细节省略，异常及 10 ms 边界单独验证。
+ * 3. 交叉/包含/并行/零时长验证真实时间及进程归属，串行操作复用轨道而非逐调用建行。
+ * 4. 旧 X、B/E 与未知结束验证兼容及不伪造终态；采集器集成验证实际产物可转换且不变更源。
  */
 
 import { expect, it } from "vitest";
@@ -69,8 +70,6 @@ it("keeps meaningful English phases, removes routine internals and never exports
     "Model request",
     "Generate title",
     "Read file",
-    "Prepare context",
-    "Save tool results",
     "Sandbox handshake",
     "User approval",
   ]);
@@ -81,8 +80,8 @@ it("keeps meaningful English phases, removes routine internals and never exports
     view: "simple",
     partial: true,
     droppedRecords: 4,
-    displayedSpans: 8,
-    hiddenSpans: 4,
+    displayedSpans: 6,
+    hiddenSpans: 6,
   });
   expect(JSON.stringify(result)).not.toContain("private");
   expect(
@@ -159,6 +158,143 @@ it("reuses lanes across tool names and separates crossing intervals without movi
       }
     }
   }
+});
+
+it("shares one Work lane across serial sandbox, tools, waits, context and persistence", () => {
+  const operations = [
+    "sandbox.native_launch",
+    "tool.read_file",
+    "tool.edit_files",
+    "tool.run_command",
+    "approval.human_wait",
+    "context.prepare",
+    "context.compaction",
+    "tool.result_persist",
+    "sandbox.cleanup",
+  ];
+  const result = simplifyTrace(
+    archive(
+      operations.flatMap((name, index) =>
+        span(name, index * 20_000, (index + 1) * 20_000),
+      ),
+    ),
+  );
+  const slices = result.traceEvents.filter((event) => event.ph === "X");
+  const tracks = result.traceEvents.filter(
+    (event) => event.name === "thread_name",
+  );
+
+  expect(tracks).toEqual([expect.objectContaining({ args: { name: "Work" } })]);
+  expect(slices).toHaveLength(operations.length);
+  expect(new Set(slices.map((event) => event.tid)).size).toBe(1);
+  expect(slices.map((event) => event.cat)).toEqual(
+    operations.map(() => "Work"),
+  );
+  expect(slices.map((event) => event.ts)).toEqual(
+    operations.map((_, index) => index * 20_000),
+  );
+});
+
+it("omits routine sandbox, scheduling, database and read internals even when slow", () => {
+  const result = simplifyTrace(
+    archive([
+      ...span("sandbox.native_launch", 0, 100_000),
+      ...span("sandbox.internal_setup", 0, 100_000),
+      ...span("sandbox.cleanup", 100_000, 200_000),
+      ...span("sandbox.revoke_access", 110_000, 190_000),
+      ...span("sandbox.account_generation.drain", 120_000, 180_000),
+      ...span("tool.read_file", 200_000, 300_000),
+      ...span("read_file.bytes", 210_000, 290_000),
+      ...span("tool.dependency_wait", 200_000, 300_000),
+      ...span("tool.slot_wait", 200_000, 300_000),
+      ...span("store.save", 200_000, 300_000),
+    ]),
+  );
+  const slices = result.traceEvents.filter((event) => event.ph === "X");
+
+  expect(
+    slices.map((event) => (event.args as { operation: string }).operation),
+  ).toEqual(["sandbox.native_launch", "sandbox.cleanup", "tool.read_file"]);
+  expect(
+    result.traceEvents.filter((event) => event.name === "thread_name"),
+  ).toHaveLength(1);
+  expect(result.metadata).toMatchObject({ displayedSpans: 3, hiddenSpans: 7 });
+});
+
+it.each(["error", "cancelled", "unknown"])(
+  "retains suppressed internal stages with %s outcomes",
+  (status) => {
+    const operations = [
+      "sandbox.revoke_access",
+      "tool.dependency_wait",
+      "read_file.bytes",
+      "store.save",
+    ];
+    const result = simplifyTrace(
+      archive(
+        operations.flatMap((name, index) =>
+          span(name, index, index, { status }),
+        ),
+      ),
+    );
+    const slices = result.traceEvents.filter((event) => event.ph === "X");
+
+    expect(slices).toHaveLength(operations.length);
+    expect(
+      slices.every((event) => String(event.name).endsWith(`[${status}]`)),
+    ).toBe(true);
+    expect(result.metadata.hiddenSpans).toBe(0);
+  },
+);
+
+it("filters short supporting work at 10 ms but keeps real tools and context compaction", () => {
+  const operations = [
+    "context.prepare",
+    "context.request",
+    "tool.result_persist",
+    "sandbox.mxc.preflight",
+    "sandbox.mxc.launch",
+    "sandbox.mxc.cleanup",
+  ];
+  const result = simplifyTrace(
+    archive([
+      ...operations.flatMap((name) => [
+        ...span(name, 0, 9_999, {}, 1, `${name}-short`),
+        ...span(name, 10_000, 20_000, {}, 1, `${name}-long`),
+      ]),
+      ...span("tool.read_file", 30_000, 30_001),
+      ...span("context.compaction", 30_001, 30_002),
+    ]),
+  );
+  const slices = result.traceEvents.filter((event) => event.ph === "X");
+
+  expect(slices.map((event) => event.ts)).toEqual([
+    ...operations.map(() => 10_000),
+    30_000,
+    30_001,
+  ]);
+  expect(result.metadata.hiddenSpans).toBe(operations.length);
+});
+
+it("preserves contained and identical concurrent reads instead of collapsing independent calls", () => {
+  const result = simplifyTrace(
+    archive([
+      ...span("tool.read_file", 0, 100, { callId: "outer" }, 1, "outer"),
+      ...span("tool.read_file", 10, 90, { callId: "inner" }, 1, "inner"),
+      ...span("tool.read_file", 10, 90, { callId: "peer" }, 1, "peer"),
+    ]),
+  );
+  const slices = result.traceEvents.filter((event) => event.ph === "X");
+
+  expect(slices.map((event) => [event.ts, event.dur])).toEqual([
+    [0, 100],
+    [10, 80],
+    [10, 80],
+  ]);
+  expect(new Set(slices.map((event) => event.tid)).size).toBe(3);
+  expect(
+    slices.map((event) => (event.args as { callId: string }).callId),
+  ).toEqual(["outer", "inner", "peer"]);
 });
 
 it("reads old complete and synchronous events and marks unmatched starts unknown", () => {
