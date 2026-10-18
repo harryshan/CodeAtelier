@@ -43,12 +43,13 @@ reviewer 计划示例（与 explorer 一样放入 `subtasks`）：
 
 - 主 agent 沿用所在 execution instance 的现有 loop；每个活动 subagent 有**独立模型会话、上下文、AbortSignal 和状态机**，运行在该 execution instance 内专门创建的 Node.js `Worker` 中。Sandbox 启用时该进程是专用账户 Agent Runtime，而不是 Broker；启动前回退宿主后也须在 UI 和会话中保留 `host-process` 事实。Broker 不替 Runtime 执行 subagent loop。
 - 不复用“主任务的四个 Worker”。现有 `DEFAULT_TOOL_CONCURRENCY = 4` 是**单轮工具 DAG 的执行槽位**，不是四条 agent 线程；`read_file` 按 D147 在异步读取后直接计算，不再有读取线程池。subagent loop 是持续的异步对话，为每个活动 subagent 分配独立 Worker；完成或取消后释放（未来有性能证据才讨论复用独立的 subagent 池）。模型请求属于 I/O，并不会仅因使用 Worker 加速；线程隔离用于独立 loop 生命周期与故障归属，而不是吞吐保证。
-- 活动并发保持**每任务同时 2 个、全局同时 4 个 Worker**，不限制累计创建数量。按 D129 移除子任务独立运行时长、轮数、累计 token、输入字符与输出 token 覆盖；子 loop 由正常答复、错误或取消结束，用量继续记录。主任务收尾保留 5 秒强制清理宽限，确认退出后才归还租约。并发值不是配置项；全局子模型请求和读取队列的更细配额仍待独立验收。宿主 Engine 可直接调用服务进程的全局资源调度器；每个 Windows Sandbox Runtime 是不同进程，须通过任务绑定的 Broker IPC 申请/释放全局 Worker 与模型请求 lease，不能把各 Runtime 的进程内计数误当全局限额。按任务公平排队；主任务正常结束或取消时，确认 Worker 退出后回收 lease；Runtime 断连或 Broker 关闭时先停止分配，待原 execution instance 清理完成或明确标记未知后再对账，不能提前把仍可能运行的 Worker 额度转借其它任务。现有全局 1～4 个主任务上限仍由 Engine 管理；四个 DAG 槽位仍归每个主任务工具批次使用，subagent 不得借此突破审批或任务超时。
+- 活动并发保持**每任务同时 2 个、全局同时 4 个 Worker**，不限制累计创建数量。按 D129 移除子任务独立运行时长、轮数、累计 token、输入字符与子任务固定输出 token 覆盖；子 loop 由正常答复、错误或取消结束，用量继续记录。主任务收尾保留 5 秒强制清理宽限，确认退出后才归还租约。并发值不是配置项；全局子模型请求和读取队列的更细配额仍待独立验收。宿主 Engine 可直接调用服务进程的全局资源调度器；每个 Windows Sandbox Runtime 是不同进程，须通过任务绑定的 Broker IPC 申请/释放全局 Worker 与模型请求 lease，不能把各 Runtime 的进程内计数误当全局限额。按任务公平排队；主任务正常结束或取消时，确认 Worker 退出后回收 lease；Runtime 断连或 Broker 关闭时先停止分配，待原 execution instance 清理完成或明确标记未知后再对账，不能提前把仍可能运行的 Worker 额度转借其它任务。现有全局 1～4 个主任务上限仍由 Engine 管理；四个 DAG 槽位仍归每个主任务工具批次使用，subagent 不得借此突破审批或任务超时。
 
 ### 2.1 已移除的专属阈值与保留边界
 
 - 提问/消息：取消 8 次/16 条次数限制、1,000/2,000 字符限制和每次 await 只交付四个问题的截取。
 - 研究运行：取消 12 轮、120 秒、累计 32,000 token、每次模型输出强制 2,048 token、100,000 字符输入限制。
+- 通用输出设置（2026-10-18）：explorer/reviewer 每轮继承当前任务快照的 `maxOutputTokens`，宿主与 Runtime 一致；token 模式复用主任务有效输出预留，字符备用模式取配置值与已知服务最大输出的较小值，元数据缺失则仍传配置值。不是子任务专属配额，不限制累计 token，也不为子上下文增加自动压缩。运行中更改设置不会改写已开始任务的快照。
 - 上下文/报告：取消检查点 2,000 项、报告 32,000 字符、存储上下文与请求结果 2,000,000 字符限制；保留完整正文，不以更大常量替代。
 - 分工契约：取消 role/objective/deliverable 的 80/1,000/500 字符、scope 路径 1,024 字符与八个范围、累计/单批四个子任务及依赖/等待/收集 ID 数量上限；仍要求非空、合法 ID 和无环依赖。
 - 保留基础机制：只读权限、两个/四个活动 Worker 调度、共享文件读取 2 MiB/500 行分页、调用方指定的搜索/枚举结果数量、await 单次 100～30,000 ms、取消与清理、IPC 8 MiB 帧和背压、通用模型配置与服务真实容量、主任务工具结果/上下文预算、错误摘要限长。

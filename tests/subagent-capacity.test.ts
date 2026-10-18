@@ -3,7 +3,7 @@
  *
  * 1. 工具与 Runtime IPC 契约接受超过旧阈值的计划、问题和检查点，仍拒绝空问题和非法字段。
  * 2. 真实 SQLite 保存长上下文、完整报告和请求结果，并能一次收集超过四份报告。
- * 3. 真实 Worker/协调器完成超过十二轮的长问题调查，保留完整报告、用量和全部待答问题。
+ * 3. 真实 Worker/协调器完成超过十二轮的长问题调查，每轮遵循传入的输出设置而非旧固定配额，保留完整报告、用量和全部待答问题。
  *
  * 所有文件位于临时工作区，模型使用本地桩；不运行 Evaluation 或真实模型，也不证明安装态 Sandbox 验收。
  */
@@ -185,6 +185,7 @@ it("finishes long research beyond the former round, token, question and characte
     workspace: root,
     storage: store,
     limits: new SubagentLimits(),
+    maxOutputTokens: 16_384,
     signal: new AbortController().signal,
     onUsage: (_id, usage) => {
       tokens += usage.total_tokens;
@@ -192,7 +193,7 @@ it("finishes long research beyond the former round, token, question and characte
     provider: {
       async run(input, _instructions, _tools, _signal, _delta, options) {
         calls++;
-        expect(options?.maxOutputTokens).toBeUndefined();
+        expect(options?.maxOutputTokens).toBe(16_384);
         const usage = {
           input_tokens: 30_000,
           output_tokens: 10_000,

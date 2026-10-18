@@ -2,7 +2,7 @@
  * 用生产 Engine、真实 SQLite 与 Worker 和模拟三协议模型验证可选 subagent 的宿主执行路径。
  *
  * 1. 独立于 UI/HTTP 回归，经内部排队记录分别启动 explorer/reviewer；主模型按 plan/await/collect 协调，reviewer 初始上下文必须包含明确变更材料。
- * 2. 两角色在三协议下仅看到只读函数与 Responses 专属内置搜索；搜索记录、带来源报告及主反馈共同持久化。
+ * 2. 两角色在三协议下仅看到只读函数与 Responses 专属内置搜索；每轮继承输出设置并受已知容量约束，搜索记录、带来源报告及主反馈共同持久化。
  * 3. 超过主任务工具输出预算的报告保留未消费状态，以便恢复后重新读取；原代码文件不得被子任务改写。
  * 4. 主任务与子任务的 Responses 缓存 key 各自稳定且不同，其他协议不生成；主任务续聊仍沿用会话 key；Replay 保留子身份、请求 ID，并能读到子工具的参数/结果。
  *
@@ -38,6 +38,8 @@ it.each(
     await writeFile(source, "export const value = 7;\n");
     const config = new Config(await temp());
     config.settings.protocol = protocol;
+    config.settings.maxOutputTokens = 4_096;
+    const expectedOutputTokens = role === "reviewer" ? 3_072 : 4_096;
     const report =
       protocol === "responses"
         ? "sample.ts:1 value is 7; [source](https://example.com/reference)"
@@ -61,9 +63,21 @@ it.each(
     const childKeys: Array<string | undefined> = [];
     const model: ModelProvider = {
       protocol,
+      async getCapabilities() {
+        return role === "reviewer"
+          ? {
+              limits: {
+                max_context_window_tokens: 64_000,
+                max_output_tokens: 3_072,
+              },
+              tokenizer: "o200k_base",
+            }
+          : undefined;
+      },
       async run(input, instructions, tools, _signal, _onDelta, options) {
         if (instructions.includes("read-only research subagent")) {
           childKeys.push(options?.promptCacheKey);
+          expect(options?.maxOutputTokens).toBe(expectedOutputTokens);
           childCalls++;
           expect(
             tools
@@ -274,6 +288,10 @@ it.each(
         exchanges.filter((exchange) => exchange.purpose === "subagent"),
       ).toHaveLength(2);
       for (const exchange of exchanges) {
+        if (exchange.purpose === "subagent") {
+          expect(exchange.options?.maxOutputTokens).toBe(expectedOutputTokens);
+        }
+
         expect(exchange.options?.promptCacheKey).toBe(
           exchange.purpose === "subagent" ? childKeys[0] : mainKeys[0],
         );

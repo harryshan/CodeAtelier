@@ -8,7 +8,7 @@
  * 3. model-loop 共用轮次、有界重试和上下文超限恢复，model-tool-batch 共用工具计划与结果判定；每轮模型调用经 RuntimeModelProvider 代理；工具 DAG 先并行准备已就绪节点，取得有界 worker 槽后执行文件编辑、普通命令或已获批准的 Broker 命令。
  *    Runtime 普通命令按调用注入独立 tool_review 主模型代理，不设总运行时限；复查只返回等待/停止，usage 与决定经常规事件持久化。
  * 4. UI/session 事件按连接排队；无效 DAG 回传修正，实际取得执行槽的工具和 read_file 内部阶段带单调时间戳上报，由 Broker 统一组装并归档；工具结果增量保存，未知副作用不重放。
- * 5. 已选任务在 Runtime 内运行独立只读 Worker，按 Broker 下发能力向子模型追加内置搜索，子状态、问题回执、模型/租约及固定无正文的 trace 经任务绑定 IPC；收尾确认线程退出后再由 Broker 清理。
+ * 5. 已选任务在 Runtime 内运行独立只读 Worker，按 Broker 下发能力向子模型追加内置搜索并继承任务输出设置及已知容量约束，子状态、问题回执、模型/租约及固定无正文的 trace 经任务绑定 IPC；收尾确认线程退出后再由 Broker 清理。
  *
  * Git 没有专属调度或隐式转发。越界命令先经 IPC 审批取得一次性授权，获得 worker 槽后由 Broker 启动，因而可与无依赖的普通工具正确并行。context/tool/model tracing 经固定 schema 回到 Broker。
  * 工具异步上下文安装固定进程 observer，取消/终止/直子退出经白名单 IPC 回传；持久化阶段携带 callId。
@@ -137,6 +137,14 @@ export class AgentRuntimeService {
       ]
         .filter(Boolean)
         .join("\n\n");
+      const capabilities = await provider.getCapabilities(signal);
+      const budget = createBudget(
+        capabilities,
+        input.settings.contextChars,
+        input.settings.maxOutputTokens,
+        input.settings.maxContextTokens ?? 300_000,
+      );
+
       if (input.settings.subagentsEnabled) {
         const adapter = new RuntimeSubagentClient(
           this.peer,
@@ -150,6 +158,13 @@ export class AgentRuntimeService {
           storage: adapter,
           provider,
           webSearchEnabled: input.settings.webSearchEnabled !== false,
+          // 与宿主一致，缺少 tokenizer 时仍显式传递任务输出上限。
+          maxOutputTokens:
+            budget.outputTokens ??
+            Math.min(
+              input.settings.maxOutputTokens ?? 16_384,
+              capabilities?.limits.max_output_tokens ?? Infinity,
+            ),
           providerFor: (subagentId, requestId) =>
             new RuntimeModelProvider(this.peer, "subagent", {
               id: subagentId,
@@ -207,13 +222,6 @@ export class AgentRuntimeService {
         });
       }
 
-      const capabilities = await provider.getCapabilities(signal);
-      const budget = createBudget(
-        capabilities,
-        input.settings.contextChars,
-        input.settings.maxOutputTokens,
-        input.settings.maxContextTokens ?? 300_000,
-      );
       events.emit("context_budget", {
         model: input.settings.model,
         unit: budget.unit,

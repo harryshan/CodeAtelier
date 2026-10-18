@@ -5,6 +5,7 @@
  * 2. 主 loop 规划/等待/回复/收集，reviewer 独立上下文收到变更材料，在三协议下只见文件读取工具、ask_main 与 Responses 专属内置搜索，并跨 IPC 读取超过旧上下文阈值的证据，Broker 按任务身份登记并分配全局租约。
  * 3. 核对原生搜索记录/引用跨 IPC 保留、状态落盘后通知 SSE 刷新、报告/主反馈同分片、线程清理和源码未变；查询/来源不进 trace，stdio 夹具不是专用账户验收。
  * 4. 核对 Broker 最终提供给模型的 Responses 主/子 cache key 独立且稳定，并随 Replay 保存；其他协议不生成 key；Replay 子身份/请求 ID 与读取、提问回执跨 IPC 保持可关联。
+ * 5. 子模型每轮跨 IPC 继承最大输出设置：较小配置优先、已知服务容量收紧、缺失元数据仍传配置值，Replay 保留实际选项。
  */
 
 import { spawn } from "node:child_process";
@@ -35,6 +36,9 @@ it.each(["responses", "chat-completions", "messages"] as const)(
     await writeFile(source, evidence);
     const config = new Config(await temp());
     config.settings.protocol = protocol;
+    config.settings.maxOutputTokens = protocol === "responses" ? 1_024 : 4_096;
+    const expectedOutputTokens =
+      protocol === "chat-completions" ? 3_072 : config.settings.maxOutputTokens;
     config.sandbox.enabled = true;
     config.sandbox.initialStatus = {
       enabled: true,
@@ -145,16 +149,19 @@ it.each(["responses", "chat-completions", "messages"] as const)(
     const provider: ModelProvider = {
       protocol,
       async getCapabilities() {
-        return {
-          limits: {
-            max_context_window_tokens: 64_000,
-            max_output_tokens: 2_048,
-          },
-        };
+        return protocol === "messages"
+          ? undefined
+          : {
+              limits: {
+                max_context_window_tokens: 64_000,
+                max_output_tokens: 3_072,
+              },
+            };
       },
       async run(input, instructions, tools, _signal, _onDelta, options) {
         if (instructions.includes("read-only research subagent")) {
           childKeys.push(options?.promptCacheKey);
+          expect(options?.maxOutputTokens).toBe(expectedOutputTokens);
           childCalls++;
           expect(
             tools
@@ -473,6 +480,10 @@ it.each(["responses", "chat-completions", "messages"] as const)(
         store.replayCase(task.id)?.capture?.modelExchanges ?? [];
       expect(exchanges).toHaveLength(10);
       for (const exchange of exchanges) {
+        if (exchange.purpose === "subagent") {
+          expect(exchange.options?.maxOutputTokens).toBe(expectedOutputTokens);
+        }
+
         expect(exchange.options?.promptCacheKey).toBe(
           exchange.purpose === "subagent" ? childKeys[0] : mainKeys[0],
         );
