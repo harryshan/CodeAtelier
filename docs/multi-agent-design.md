@@ -92,6 +92,8 @@ reviewer 计划示例（与 explorer 一样放入 `subtasks`）：
 
 任务保存开关、计划（经校验）、subagent 状态、只读工具调用摘要/结果、报告与消费状态；每轮模型响应必须在继续子 loop 或执行工具前保存完整子上下文检查点，每次只读工具结果也须先落盘再发起下一轮。对模型请求先保存稳定 ID 与 `started`，确认结果后才标记 `completed`；结果未知时不得盲目重发。服务重启和断连将运行中的子任务标为 `interrupted`，不能凭线程消失声称成功；人工恢复先检查已保存结果与报告，只对确认尚未启动、纯只读且经当前文件重新校验的工作重新规划。结果未知时提示主 agent/用户人工判断，遵守原任务不自动重放副作用的规则。主任务失败、取消或关闭必须向全部子任务传播取消；正常完成则按有界等待后取消未结束子任务；子任务个别失败不隐式取消主任务，由主 agent 判断降级或失败。子任务不单独限制执行时间与累计 token，用量汇总到主任务但保留逐个归属。
 
+子 Worker 的失败/取消终态携带最后已获持久化确认的检查点，不再以空数组覆盖此前调用和结果。新模型捕获保留 `subagentId/subagentRequestId`；阅读器从原始模型材料及子检查点补全统一函数调用视图，覆盖读取、提问与校验失败，不改写旧库或把未知结果补成成功。旧材料的恢复范围见 [Replay 阅读器](replay-cases.md#子任务与缺失工具账本的阅读)。
+
 ## 6. Tracing、日志与验证门槛
 
 在 `src/tracing` 的任务根下增加 `subagent.plan / spawn / queue / model / tool.read / message / report / cancel / join` span 和跨轨 flow；记录 `taskId/sessionId/executionInstanceId/subagentId/messageId`、状态、耗时、模型轮次、token 和受限错误类别。不同 Worker 使用各自逻辑轨道/实际 thread ID；跨线程单调时钟映射并校验时间基准，终态按已落盘结果归档。Sandbox Runtime→Broker 固定 trace 事件名称与属性 schema 必须同步扩展和验证，不能把自由文本、提示词、源码、报告、密钥或工具输出作为 Perfetto 属性。日志用相同关联 ID 和脱敏摘要；会话历史可保存完整报告，但遵从历史数据保护规则。

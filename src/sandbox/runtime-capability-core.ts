@@ -5,7 +5,7 @@
  *
  * 1. requestCommandApproval 校验固定请求形状，调用宿主审批适配器，并签发绑定 execution instance、请求摘要和期限的一次性 grant。
  * 2. consumeCommandGrant 在 Runtime 真正执行前消费 grant；错误实例、过期、篡改和重放都会拒绝，未来 supervisor 可直接复用。
- * 3. requestModel 从宿主选择 ModelProvider，以可信会话/任务及已授权子任务身份绑定 Responses cache key，再进入 tracing/Replay；不接受 Runtime 自报 key，Runtime 永远拿不到 API 地址或密钥。
+ * 3. requestModel 从宿主选择 ModelProvider，以可信会话/任务及已授权子任务身份绑定 Responses cache key，并向 Replay 提供已验证的子任务/请求身份，再进入 tracing/Replay；不接受 Runtime 自报 key，Runtime 永远拿不到 API 地址或密钥。
  * 4. authorize 回调用真实 pipe/process/Job/token 联合证明连接；日志和 trace 只记录数量、决策、kind 和关联 ID，不记录命令、路径、prompt 或输出。
  *
  * Windows 产品已由 native Supervisor 在调用本模块前完成 Named Pipe 客户端联合身份核验；本模块仍只负责
@@ -79,6 +79,7 @@ export interface RuntimeBrokerHandlers {
   modelProvider(
     identity: RuntimeExecutionIdentity,
     purpose: RuntimeModelRequest["purpose"],
+    request?: Pick<RuntimeModelRequest, "subagentId" | "subagentRequestId">,
   ): { provider: ModelProvider; model: string };
 }
 
@@ -287,7 +288,10 @@ export class RuntimeBrokerGateway {
   ): Promise<ModelResult> {
     this.assertAuthorized(identity);
     signal.throwIfAborted();
-    const selected = this.handlers.modelProvider(identity, request.purpose);
+    const selected = this.handlers.modelProvider(identity, request.purpose, {
+      subagentId: request.subagentId,
+      subagentRequestId: request.subagentRequestId,
+    });
     this.log?.info({
       event: "broker.model_request_started",
       module: "sandbox",

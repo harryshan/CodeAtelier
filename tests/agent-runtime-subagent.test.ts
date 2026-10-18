@@ -4,7 +4,7 @@
  * 1. 独立于 UI/HTTP 回归，内部创建带开关的任务，通过注入的 stdio launcher 运行真实 Runtime loop。
  * 2. 主 loop 规划/等待/回复/收集，reviewer 独立上下文收到变更材料，在三协议下只见文件读取工具、ask_main 与 Responses 专属内置搜索，并跨 IPC 读取超过旧上下文阈值的证据，Broker 按任务身份登记并分配全局租约。
  * 3. 核对原生搜索记录/引用跨 IPC 保留、状态落盘后通知 SSE 刷新、报告/主反馈同分片、线程清理和源码未变；查询/来源不进 trace，stdio 夹具不是专用账户验收。
- * 4. 核对 Broker 最终提供给模型的 Responses 主/子 cache key 独立且稳定，并随 Replay 保存；其他协议不生成 key。
+ * 4. 核对 Broker 最终提供给模型的 Responses 主/子 cache key 独立且稳定，并随 Replay 保存；其他协议不生成 key；Replay 子身份/请求 ID 与读取、提问回执跨 IPC 保持可关联。
  */
 
 import { spawn } from "node:child_process";
@@ -433,6 +433,29 @@ it.each(["responses", "chat-completions", "messages"] as const)(
         expect(store.subagents(task.id)[0]?.context).toContainEqual(item);
       }
 
+      const replay = store.replayCase(task.id)!;
+      const childTools = replay.tools.filter(
+        (tool) => tool.subagentId === "review",
+      );
+      expect(childTools.map((tool) => tool.name)).toEqual([
+        "read_file",
+        "ask_main",
+        "read_file",
+      ]);
+      expect(
+        childTools.every(
+          (tool) => tool.result !== undefined && tool.modelExchangeId,
+        ),
+      ).toBe(true);
+      expect(childTools[1].result).toMatchObject({ queued: true });
+      expect(
+        replay.capture?.modelExchanges
+          .filter((exchange) => exchange.purpose === "subagent")
+          .every(
+            (exchange) =>
+              exchange.subagentId === "review" && exchange.subagentRequestId,
+          ),
+      ).toBe(true);
       expect(mainCalls).toBe(6);
       expect(childCalls).toBe(4);
       if (protocol === "responses") {

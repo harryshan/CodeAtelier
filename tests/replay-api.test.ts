@@ -2,7 +2,7 @@
  * 数据库阅读器 HTTP 回归，使用真实 Fastify/Store 与临时 SQLite，不连接模型或个人数据库。
  * 1. fixture 创建真实会话凭据；captured/legacy 任务通过 Store 写入合成事件和模型/工具记录。
  * 2. 验证目录不携带大载荷、详情只属于指定任务、在途结果保持未知，读取不改变任务状态。
- * 3. 检查缺失/跨会话 ID、cookie、Origin、no-store 与读取故障的安全错误，再验证重开服务后的记录。
+ * 3. 检查缺失/跨会话 ID、cookie、Origin、no-store 与读取故障的安全错误，再验证重开服务后从旧子任务检查点补全工具且不改写原始捕获。
  * 与 access-password.test.ts 的真实密码门禁互补；清理关闭 Worker 与数据库，不运行 Evaluation。
  */
 
@@ -111,6 +111,89 @@ it("reads captured and legacy tasks without mixing records or executing them", a
     expect((await store.task(legacy.id))?.status).toBe("queued");
   } finally {
     await app.close();
+  }
+});
+
+it("exports legacy subagent checkpoint calls after restart without rewriting raw capture", async () => {
+  const original = await fixture();
+  const session = await original.store.create(await temp());
+  const task = await original.store.createTask(session.id, true);
+  const request = {
+    type: "function_call",
+    call_id: "child-call",
+    name: "ask_main",
+    arguments: '{"question":"where?"}',
+  };
+  const context = [
+    request,
+    {
+      type: "function_call_output",
+      call_id: "child-call",
+      output: '{"id":17,"queued":true}',
+    },
+  ];
+  try {
+    await original.store.status(task.id, "running");
+    await original.store.planSubagents(task.id, [
+      {
+        id: "child",
+        role: "explorer",
+        objective: "inspect",
+        scope: ["."],
+        dependsOn: [],
+        deliverable: "report",
+      },
+    ]);
+    await original.store.updateSubagent(
+      task.id,
+      "child",
+      "cancelled",
+      context,
+      "cancelled after question",
+    );
+    await original.store.startReplayCapture(task, {
+      schemaVersion: 1,
+      capturedAt: task.createdAt,
+      platform: "test",
+      settings: replaySettings(original.config.settings),
+    });
+    await original.store.startReplayModelExchange(task.id, {
+      id: "old-child-model",
+      purpose: "subagent",
+      input: [],
+      instructions: "",
+      tools: [],
+    });
+    await original.store.finishReplayModelExchange(task.id, "old-child-model", {
+      response: { text: "", output: [request] },
+    });
+    await original.store.status(task.id, "cancelled");
+  } finally {
+    await original.app.close();
+  }
+
+  const reopened = await fixture(original.config);
+  try {
+    const response = await reopened.app.inject({
+      url: `/api/sessions/${session.id}/tasks/${task.id}/replay/export`,
+      headers: reopened.headers,
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().tools).toMatchObject([
+      {
+        name: "ask_main",
+        subagentId: "child",
+        modelExchangeId: "old-child-model",
+        result: { id: 17, queued: true },
+      },
+    ]);
+    expect(response.json().capture.tools).toEqual([]);
+    expect((await reopened.store.subagents(task.id))[0].context).toEqual(
+      context,
+    );
+    expect(reopened.engine.activeTasks).toEqual([]);
+  } finally {
+    await reopened.app.close();
   }
 });
 

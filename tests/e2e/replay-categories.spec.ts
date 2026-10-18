@@ -2,11 +2,95 @@
  * 数据库阅读器分类界面的浏览器回归，由 Playwright 在隔离测试服务上运行。
  * 1. 使用 viewerFixture 和超过一页的 Task 元数据模拟只读 API，不读取个人历史。
  * 2. 验证默认按轮次、模型/工具关联跳转、分类搜索及异常/未知状态，不把事件混进默认目录。
- * 3. 直接选择较早的 legacy Task，验证已有工具/事件仍可读且没有新增的加载按钮。
+ * 3. 子任务同 call ID 的记录按身份关联，补全数量、来源、结果、搜索及跳转保持一致。
+ * 4. 直接选择较早的 legacy Task，验证已有工具/事件仍可读且没有新增的加载按钮。
  * 请求均为合成读取；不启动模型、重放工具或执行 Evaluation。
  */
 import { expect, test } from "@playwright/test";
 import { viewerFixture } from "../fixtures/replay-viewer.js";
+
+test("shows recovered child calls with their identity, source, feedback and model link", async ({
+  page,
+}) => {
+  const data = viewerFixture();
+  data.tools = [];
+  data.capture!.modelExchanges = [];
+  for (const id of ["explorer", "reviewer"]) {
+    const request = {
+      type: "function_call",
+      call_id: "same-id",
+      name: "read_file",
+      arguments: JSON.stringify({ path: `src/${id}.ts` }),
+    };
+    data.capture!.modelExchanges.push(
+      {
+        id,
+        purpose: "subagent",
+        subagentId: id,
+        input: [],
+        instructions: "",
+        tools: [],
+        response: { text: "", output: [request] },
+      },
+      {
+        id: `${id}-next`,
+        purpose: "subagent",
+        subagentId: id,
+        input: [
+          request,
+          {
+            type: "function_call_output",
+            call_id: "same-id",
+            output: JSON.stringify({ text: `${id} evidence` }),
+          },
+        ],
+        instructions: "",
+        tools: [],
+        response: { text: "done", output: [] },
+      },
+    );
+  }
+
+  await page.route("**/api/sessions", (route) =>
+    route.fulfill({
+      json: [
+        { id: "child-session", title: "child records", workspace: "example" },
+      ],
+    }),
+  );
+  await page.route("**/api/sessions/child-session/tasks", (route) =>
+    route.fulfill({
+      json: [
+        {
+          id: "child-task",
+          sessionId: "child-session",
+          status: "completed",
+          subagentsEnabled: true,
+        },
+      ],
+    }),
+  );
+  await page.route("**/tasks/child-task/replay/export", (route) =>
+    route.fulfill({ json: data }),
+  );
+  await page.goto("/?view=replay&session=child-session&task=child-task");
+  const detail = page.getByRole("article", { name: "记录详情" });
+  await expect(page.getByLabel("任务概览")).toContainText("工具调用 2");
+  await detail
+    .getByRole("button", { name: /工具 #1 · read_file · explorer/ })
+    .click();
+  await expect(detail).toContainText("所属 subagent：explorer");
+  await expect(detail).toContainText("记录来源：模型输出");
+  await expect(detail).toContainText("explorer evidence");
+  await expect(detail).not.toContainText("reviewer evidence");
+  await detail.getByRole("button", { name: "返回所属模型调用" }).click();
+  await expect(
+    detail.getByRole("heading", { name: /模型调用 #1 · subagent · explorer/ }),
+  ).toBeVisible();
+  await page.getByLabel("记录类型", { exact: true }).selectOption("tool");
+  await page.getByLabel("搜索记录").fill("reviewer");
+  await expect(detail).toContainText("reviewer evidence");
+});
 
 test("restores categorized database reading without manual loading controls", async ({
   page,

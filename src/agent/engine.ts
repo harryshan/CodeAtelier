@@ -6,7 +6,7 @@
  * 1. 构造器接好审批通知；手动评测可仅对宿主模型循环覆盖步数阈值，snapshot 读取会话状态，emit 脱敏并保存事件。
  * 2. start 原子保存用户消息和任务级 subagent 选择为 queued；多 agent 尚未就绪时拒绝开启。调度器在全局并发上限内启动不同工作区的任务，并对相同真实工作区保持互斥。
  * 3. resume 继续最后一个可恢复任务；cancel 处理用户取消，close 处理服务关闭。
- * 4. createModelProvider 按主/辅助协议和密钥创建客户端；主/子任务按协议裁剪搜索，Responses 由宿主/Broker 绑定稳定 cache key 后进入 tracing/Replay。
+ * 4. createModelProvider 按主/辅助协议和密钥创建客户端；主/子任务按协议裁剪搜索，Responses 由宿主/Broker 绑定稳定 cache key 后进入 tracing/Replay；子模型捕获同时保存可信 subagentId/subagentRequestId。
  *    首条 prompt 先用辅助模型生成标题；run 再读取历史和项目规则，准备工具及上下文预算；首次压缩检查前恢复会话 token 锚点，响应保存后更新锚点，Runtime 经 Broker 共用持久化。
  * 5. model-loop 共用轮次、重试和停止控制，model-tool-batch 共用计划与成功判断；Engine 保留宿主事务、replay 与 tracing。为压缩提供 ToolRunner 的安全文件哈希探测；每轮记录上下文准备和请求计量、模型重试、实际模型请求和响应处理，再记录服务实报用量。完整响应保存后校验工具 DAG，节点先完成准备/审批，实际执行才取得有界 worker 槽。
  * 6. Windows/MXC Runtime 通过共同 launcher/IPC 接入；实例 mode 与 pidKind 保留平台真实归因。Sandbox Runtime 已有能力内工具免审批；run_with_permissions 的获批命令交给 Broker 宿主进程并留下未隔离的执行记录，Git CLI 使用相同命令路径。一次性两阶段 IPC 授权把命令审批等待留在执行队列外；Push/Capability Runner 代码暂存但不走产品路径。
@@ -590,7 +590,10 @@ export class Engine {
   private replayProvider(
     task: Task,
     provider: ModelProvider,
-    details: () => Pick<RecordedModelExchange, "purpose" | "step" | "attempt">,
+    details: () => Pick<
+      RecordedModelExchange,
+      "purpose" | "step" | "attempt" | "subagentId" | "subagentRequestId"
+    >,
   ) {
     const clean = <T>(value: T) =>
       JSON.parse(
@@ -1264,7 +1267,7 @@ export class Engine {
               requestSignal,
             ),
           }),
-          modelProvider: (_runtime, purpose) => {
+          modelProvider: (_runtime, purpose, request) => {
             const selected =
               purpose === "compaction" && settings.auxiliaryModel
                 ? auxiliarySettings(settings)
@@ -1283,6 +1286,12 @@ export class Engine {
               model: selected.model,
               provider: this.replayProvider(task, provider, () => ({
                 purpose,
+                ...(purpose === "subagent"
+                  ? {
+                      subagentId: request?.subagentId,
+                      subagentRequestId: request?.subagentRequestId,
+                    }
+                  : {}),
               })),
             };
           },
@@ -2336,11 +2345,13 @@ export class Engine {
           workspace: session.workspace,
           storage: this.store,
           provider,
-          providerFor: (subagentId) =>
+          providerFor: (subagentId, subagentRequestId) =>
             withPromptCacheKey(
               tracedModelProvider(
                 this.replayProvider(task, provider, () => ({
                   purpose: "subagent",
+                  subagentId,
+                  subagentRequestId,
                 })),
                 this.traces,
                 {

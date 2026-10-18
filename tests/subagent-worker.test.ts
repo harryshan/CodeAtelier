@@ -2,7 +2,7 @@
  * 用真实 Node Worker thread 和假父进程 RPC 驱动 subagent 独立 loop，不访问真实模型或文件。
  *
  * 1. 检查带版本与任务归属的模型/只读文件工具、向主协调器提问、历史检查点与最终报告均按递增序号交互。
- * 2. 模型试图调用写入工具或把 web_search 伪装成本地函数时必须返回拒绝结果；父进程身份错误会使子循环失败，取消中断等待父进程的 RPC。
+ * 2. 模型试图调用写入工具或把 web_search 伪装成本地函数时必须返回拒绝结果；父进程身份错误会使子循环失败，取消中断等待父进程的 RPC，并保留取消前已确认的完整工具检查点。
  *
  * 此测试仅证明 Worker loop 和消息协议，实际路径校验由 subagent-readonly.test.ts 验证。
  */
@@ -19,7 +19,7 @@ function source() {
   return new URL("../src/agent/subagent-worker.ts", import.meta.url);
 }
 
-async function exercise(tool: string) {
+async function exercise(tool: string, stopAfterRead = false) {
   const worker = new Worker(source(), {
     execArgv: ["--import", "tsx"],
     workerData: {
@@ -63,6 +63,18 @@ async function exercise(tool: string) {
       let result: unknown;
       if (message.operation === "model") {
         modelCalls++;
+        if (modelCalls === 2 && stopAfterRead) {
+          worker.postMessage({
+            version: SUBAGENT_WORKER_PROTOCOL_VERSION,
+            taskId: "test-task",
+            subagentId: "review",
+            sequence: ++parentSequence,
+            kind: "stop",
+          } satisfies SubagentParentMessage);
+
+          return;
+        }
+
         if (modelCalls === 2 && ["edit_files", "web_search"].includes(tool)) {
           const input = (
             message.payload as {
@@ -148,6 +160,16 @@ it("runs its own model loop and only asks parent for read-only tools", async () 
   ]);
   expect(result.readCalls).toBe(1);
   expect(result.childSequences).toEqual([1, 2, 3, 4, 5, 6, 7]);
+});
+
+it("retains acknowledged calls and results when a later model request is cancelled", async () => {
+  const result = await exercise("read_file", true);
+  expect(result.output.status).toBe("cancelled");
+  expect(result.output.context).toContainEqual({
+    type: "function_call_output",
+    call_id: "call-a",
+    output: JSON.stringify({ text: "1: found" }),
+  });
 });
 
 it("posts a question only to its coordinator without requesting a file or command", async () => {

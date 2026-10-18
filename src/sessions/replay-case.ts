@@ -5,7 +5,7 @@
  * transcript 和（仅在完整读取版本足够时）全新的隔离工作区，绝不在原工作区执行或写入。
  *
  * 1. TaskReplayCapture/TaskReplayCase 描述捕获版本、模型交换、工具调用和任务历史；旧会话可形成 legacy
- *    case，但不会被标为 transcript 可重放。
+ *    case，但不会被标为 transcript 可重放；交换可带子任务/请求身份，阅读用工具可带模型归属及补全来源。
  * 2. captureModelProvider 透传协议元数据；replaySettings 保存主/辅助协议但不保存连接密钥。在调用模型前持久化请求，并在成功或失败后补齐结果，进程中断会留下明确的未完成项。
  * 3. RecordedModelProvider 为测试提供严格的请求匹配和确定性响应；它只重放模型响应，不执行工具副作用。
  * 4. analyzeReplayWorkspace 从 read_file 的完整、哈希一致读取版本拼接文件；materializeReplayWorkspace 只向
@@ -65,6 +65,8 @@ export interface RecordedModelExchange {
     | "tool_review";
   step?: number;
   attempt?: number;
+  subagentId?: string;
+  subagentRequestId?: string;
   input: any[];
   instructions: string;
   tools: any[];
@@ -81,6 +83,9 @@ export interface RecordedToolCall {
   dependsOn: string[];
   batchId: string;
   result?: unknown;
+  subagentId?: string;
+  modelExchangeId?: string;
+  recordSource?: "model-output" | "subagent-checkpoint";
 }
 
 export interface TaskReplayCapture {
@@ -132,7 +137,10 @@ function errorRecord(error: unknown): RecordedModelExchange["error"] {
 export function captureModelProvider(
   provider: ModelProvider,
   sink: ReplayCaptureSink,
-  details: () => Pick<RecordedModelExchange, "purpose" | "step" | "attempt">,
+  details: () => Pick<
+    RecordedModelExchange,
+    "purpose" | "step" | "attempt" | "subagentId" | "subagentRequestId"
+  >,
 ): ModelProvider {
   return {
     protocol: provider.protocol,

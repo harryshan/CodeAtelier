@@ -545,6 +545,8 @@ D155 移除了专用 Git diff 上限；CLI 输出沿用 process/core 的通用�
 
 ### Replay 阅读器（数据库、Web 本地导入与可选离线文件）
 
+- `replay-subagent-tools.test.ts` 覆盖子任务读取/提问/非法参数、同 call ID 身份隔离、冲突和缺失结果、旧检查点补全及重复投影、不复用当前响应之前的旧回执，原生搜索不冒充本地函数。`subagent-worker.test.ts` 验证后续模型请求取消仍保留已确认工具检查点；`engine-subagent.test.ts` 与 `agent-runtime-subagent.test.ts` 验证宿主/真实 Runtime 子进程三协议的子身份、模型请求 ID 与工具结果。`replay-api.test.ts` 验证服务重开后只读补全旧子任务记录且不改写原捕获；分类 E2E 验证子身份、来源、数量、结果、搜索与关联跳转。
+
 - `tests/e2e/replay-categories.spec.ts`：数据库模式默认按轮次，模型/工具关联跳转、类型与异常/未知状态筛选、全文搜索、独立历史事件；105 个 Task 无需手动加载即可选择较早 legacy 记录，缺失模型不补造、既有工具/事件可读。断言不再显示迁移时新增的 Task/请求/input 加载与重复展开材料按钮，数据全部来自合成只读响应。
 
 - `tests/replay-api.test.ts`：真实临时 SQLite 与 HTTP 验证 captured/legacy、单任务归属/隔离、目录无大载荷、未知结果、不执行历史、服务重开后的持久内容、cookie/Origin/404/no-store 与故障通用错误。`tests/access-password.test.ts` 同时覆盖新接口未验证密码时的拒绝。

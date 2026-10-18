@@ -4,7 +4,7 @@
  * 1. 构造器发现兼容的 history.sqlite 与后续容量分片，只为新文件初始化目标 schema并把重启前未完成的任务标为 interrupted；transaction 同步提交，取锁或执行失败时释放本次已开启的事务。
  * 2. list/get/create 跨分片定位或聚合会话；新会话在最新分片达到容量上限后进入新文件，已有会话始终写回其初始分片。标题状态的领取、完成或失败保证首条 prompt 只生成一次标题。
  * 3. tasks/task/createTask/status 读写任务状态与不可变的 subagent 选择；旧分片必须离线迁移，SQLite 的 0/1 在各读取入口转换为布尔值。queuedTasks 和 hasUnfinishedTask 供 Engine 调度跨会话队列，event/events 保存和分页读取事件。
- * 4. subagents/subagent_requests 按任务保存完整计划、检查点、报告与回执，不附加子任务文本配额；replay 元数据和逐条模型/工具增量经 replay-storage 写入，只读取已经转换的 v3 捕获。
+ * 4. subagents/subagent_requests 按任务保存完整计划、检查点、报告与回执，不附加子任务文本配额；replay 元数据和逐条模型/工具增量经 replay-storage 写入，只读取已经转换的 v3 捕获；replayCase 从模型材料及子检查点补全阅读用 tools，不重写原始 capture.tools 或历史库。
  * 5. 离线转换器将旧 context 原样迁入 context_chunks 基线；appendContext 只写新增批次，saveContext/压缩替换基线并原子清除会话 token 锚点，读时按顺序重建；大记录由 store-worker 解析。
  * 6. inline 模式在所属 Worker 内完成固定操作；测试适配器可使用独立队列。统计随事件提交，分页延迟正文，Replay 多查询使用同一读事务；closeAsync 排空并释放连接。
  *
@@ -45,6 +45,7 @@ import { handle } from "./store-operations.js";
 import { WorkerTimings } from "./worker-timing.js";
 import { appendStatistics, readStatistics } from "./statistics-projection.js";
 import { prepareSessionStatistics } from "../shared/session-statistics.js";
+import { completeReplayTools } from "../shared/replay-tool-records.js";
 import { StoreWorkerQueue } from "./store-worker-queue.js";
 import {
   readReplayCapture,
@@ -621,7 +622,11 @@ export class Store {
       session,
       task,
       capture,
-      tools,
+      tools: completeReplayTools(
+        capture?.modelExchanges ?? [],
+        tools,
+        this.subagents(taskId),
+      ),
       events,
     };
   }

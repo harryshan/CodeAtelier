@@ -5,7 +5,7 @@
  * 2. 使用共用 runModelLoop 驱动不设轮数阈值的研究、模型重试、响应检查点；通过 parentPort 请求模型，
  *    父协调器按可信任务能力声明本地函数与可选服务端搜索，Worker 不自报工具集合；模型密钥/网络只留在父进程。
  *    原生搜索记录随模型响应保存，不作为本地函数执行，不直接导入文件系统或命令执行器。
- * 3. 仅开放三个文件只读工具及向主协调器发问；每次受限请求先等父进程回执和检查点持久化，再继续模型轮次并发送终态。
+ * 3. 仅开放三个文件只读工具及向主协调器发问；每次受限请求先等父进程回执和检查点持久化，再继续模型轮次并发送终态；失败/取消保留最后已确认检查点，未确认的内存结果不能覆盖它。
  *
  * Worker 身份不是安全边界。恶意依赖仍可直接使用 Node API；本模块只约束模型可调用的工具。
  */
@@ -41,6 +41,7 @@ let nextSequence = 0;
 let lastParentSequence = 0;
 let invalidParentMessage = false;
 const notes: string[] = [];
+let acknowledgedContext: unknown[] = [];
 const pending = new Map<
   number,
   {
@@ -131,6 +132,12 @@ function ask(operation: SubagentWorkerRequest["operation"], payload: unknown) {
   });
 }
 
+async function checkpoint(input: unknown[]) {
+  await ask("checkpoint", { status: "running", context: input });
+  // 终态失败/取消只能保留已确认材料，不能用空数组擦掉之前的工具往返。
+  acknowledgedContext = [...input];
+}
+
 async function run() {
   const { input, instructions } = createSubagentContext(task);
   let finalReport = "";
@@ -142,7 +149,7 @@ async function run() {
         input.push(
           ...notes.splice(0).map((content) => ({ role: "user", content })),
         );
-        await ask("checkpoint", { status: "running", context: input });
+        await checkpoint(input);
       }
     },
     request: async (attempt) =>
@@ -162,7 +169,7 @@ async function run() {
         finalReport = response.text;
       }
 
-      await ask("checkpoint", { status: "running", context: input });
+      await checkpoint(input);
     },
     executeTools: async (calls) => {
       for (const call of calls) {
@@ -199,7 +206,7 @@ async function run() {
           call_id: call.call_id,
           output: JSON.stringify(result),
         });
-        await ask("checkpoint", { status: "running", context: input });
+        await checkpoint(input);
       }
 
       return "executed";
@@ -235,7 +242,7 @@ void run()
         error instanceof Error
           ? error.message.slice(0, 250)
           : "subagent 执行失败。",
-      context: [],
+      context: acknowledgedContext,
     } satisfies SubagentWorkerMessage);
   })
   .finally(() => {

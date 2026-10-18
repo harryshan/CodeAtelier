@@ -4,7 +4,7 @@
  * 1. 独立于 UI/HTTP 回归，经内部排队记录分别启动 explorer/reviewer；主模型按 plan/await/collect 协调，reviewer 初始上下文必须包含明确变更材料。
  * 2. 两角色在三协议下仅看到只读函数与 Responses 专属内置搜索；搜索记录、带来源报告及主反馈共同持久化。
  * 3. 超过主任务工具输出预算的报告保留未消费状态，以便恢复后重新读取；原代码文件不得被子任务改写。
- * 4. 主任务与子任务的 Responses 缓存 key 各自稳定且不同，其他协议不生成；主任务续聊仍沿用会话 key。
+ * 4. 主任务与子任务的 Responses 缓存 key 各自稳定且不同，其他协议不生成；主任务续聊仍沿用会话 key；Replay 保留子身份、请求 ID，并能读到子工具的参数/结果。
  *
  * 此用例不验证 Sandbox/Runtime IPC、实际用户开关或 OS 级只读身份。
  */
@@ -230,6 +230,31 @@ it.each(
         expect(store.subagents(task.id)[0]?.context).toContainEqual(item);
       }
 
+      const replay = store.replayCase(task.id)!;
+      expect(replay.tools).toContainEqual(
+        expect.objectContaining({
+          callId: "read",
+          name: "read_file",
+          subagentId: "review",
+          result: expect.objectContaining({
+            text: expect.stringContaining("value = 7"),
+          }),
+        }),
+      );
+      expect(
+        replay.capture?.modelExchanges.filter(
+          (exchange) => exchange.purpose === "subagent",
+        ),
+      ).toEqual([
+        expect.objectContaining({
+          subagentId: "review",
+          subagentRequestId: expect.any(String),
+        }),
+        expect.objectContaining({
+          subagentId: "review",
+          subagentRequestId: expect.any(String),
+        }),
+      ]);
       expect(mainCalls).toBe(4);
       expect(childCalls).toBe(2);
       if (protocol === "responses") {

@@ -4,7 +4,7 @@
  *
  * 1. element/textPanel/panel 创建安全 DOM；大文本分段追加，折叠载荷第一次展开才序列化。
  * 2. mountViewer 建立文件入口、统计、筛选、分页目录和单条详情，避免全量展开大型历史。
- * 3. showEntry 展示模型请求/响应、关联工具、参数结果和原始事件，保留缺失结果与字段。
+ * 3. showEntry 展示模型请求/响应、关联工具、参数结果、子身份/补全来源和原始事件，保留缺失结果与字段；统计使用补全后的工具条目。
  * 4. load/import 先完整校验再替换状态；失败保留上次有效文件，文件切换用 generation 防止异步覆盖。
  * 5. 返回 load/clear/dispose 控制器供 Web 数据源更新；清理取消计时器、废弃在途文件读取并移除 DOM。
  * Web 入口可隐藏文件选择器，数据库请求由 React 页面处理；本模块始终不进行网络访问。
@@ -221,6 +221,19 @@ export function mountViewer(
       }
     } else if (entry.tool) {
       const tool = entry.tool;
+      if (tool.subagentId) {
+        detail.append(element("p", `所属 subagent：${tool.subagentId}`));
+      }
+
+      if (tool.recordSource) {
+        detail.append(
+          element(
+            "p",
+            `记录来源：${tool.recordSource === "model-output" ? "模型输出" : "子任务检查点"}；调用记录不等于已执行，结果以保存的回执为准。`,
+          ),
+        );
+      }
+
       if (entry.modelKey) {
         detail.append(button("返回所属模型调用", () => jump(entry.modelKey!)));
       }
@@ -313,13 +326,13 @@ export function mountViewer(
       element("p", `工作区：${data.session.workspace}`),
       element(
         "p",
-        `模型请求 ${models.length} · 工具调用 ${data.tools.length} · 历史事件 ${data.events.length} · 异常记录 ${entries.filter((entry) => entry.status === "error").length} · 未知结果 ${entries.filter((entry) => entry.status === "unknown").length}`,
+        `模型请求 ${models.length} · 工具调用 ${entries.filter((entry) => entry.kind === "tool").length} · 历史事件 ${data.events.length} · 异常记录 ${entries.filter((entry) => entry.status === "error").length} · 未知结果 ${entries.filter((entry) => entry.status === "unknown").length}`,
       ),
     );
     overview.append(
       element(
         "p",
-        "编号是捕获顺序，step/attempt 为原始值；关联仅依据唯一 call_id。已记录不代表成功，缺失用量/时间不记为零。",
+        "编号是捕获顺序，step/attempt 为原始值；关联依据子任务身份、完整调用及唯一模型来源。已记录不代表成功，缺失用量/时间不记为零。",
       ),
     );
     if (!models.length) {
