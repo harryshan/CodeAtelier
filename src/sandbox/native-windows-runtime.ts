@@ -4,7 +4,7 @@
  *
  * 1. installationPaths 解析 ProgramData 下受保护的产品副本或显式测试覆盖，不从工作区或模型输入选择可执行文件。
  * 2. selfCheck 严格读取受限 state 元数据、复核 supervisor/network 与固定 Node 24 或 26/Runtime bundle SHA-256，并在首次接单前排空旧账户进程和 ACL journal。
- * 3. prepareAccess 在 manifest 前创建逐实例 HOME/TEMP 与协议所需的空 Git global 投影，不再投影宿主 Git 配置图；私有目录也经过原对象 ACL/capability/journal，encodeRequest 再发送固定执行帧。
+ * 3. prepareAccess 在 manifest 前创建逐实例 HOME/TEMP 与仅信任当前仓库的 Git global 投影，不再投影宿主 Git 配置图；私有目录也经过原对象 ACL/capability/journal，encodeRequest 再发送固定执行帧。
  * 4. execute 启动单实例 supervisor，stdout 作为工具输出流，stderr 只解析 runtime PID/创建时间、完成和固定错误类别。
  * 5. runtime started 控制帧确认共享账户 ACE 已安装；并发 lease 在该确认前不会假定 grant 可用。
  * 6. 产品执行 timeoutMs=0 编码为 INFINITE，不创建 JS 总期限计时器；有限探测仍保留期限。逐工具进程取消、有限 JS 超时或管道失败时关闭继承 stdin 并等待退出；常驻 Agent Runtime 已启动后先让 Broker 经 IPC 取消并等待终态，close 才关闭 stdin。清理证明缺失优先于原错误或取消结果，绝不宿主重放。
@@ -32,6 +32,7 @@ import type { LaunchedAgentRuntime } from "./agent-runtime-launcher.js";
 import type { RuntimeExecutionIdentity } from "./runtime-capability-core.js";
 import { SandboxHttpsRelay, type IssuedRelayLease } from "./https-relay.js";
 import type { TraceRecorder } from "../tracing/recorder.js";
+import { workspaceGitConfig } from "./git-workspace-trust.js";
 
 const REQUEST_MAGIC = 0x42534143;
 const REQUEST_VERSION = 2;
@@ -463,7 +464,7 @@ export class NativeWindowsSandboxRuntime implements SandboxRuntime {
     const aggregate = path.join(directory, "global.gitconfig");
     try {
       privateDirectory = await mkdtemp(path.join(instancesRoot, "lease-"));
-      await writeFile(aggregate, "", {
+      await writeFile(aggregate, await workspaceGitConfig(command.cwd), {
         encoding: "utf8",
         flag: "wx",
       });

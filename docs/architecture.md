@@ -121,7 +121,7 @@ Config 固定启动期 server/Sandbox/trace 维护配置，动态发布模型/MC
 
 Sandbox 以 Broker Host 为宿主可信边界。一次性提升安装创建单一 `CodeAtelierSandbox` 本地账户，并按其 SID 安装持久 WFP 默认拒绝规则；安装用户仅取得产品 WFP 对象的只读权限，普通启动自检按固定 key 核对规则，管理员校验仍枚举完整规则集。安装器还仅对该专用账户的 LSA 对象授予安装用户 `ACCOUNT_VIEW`，使普通启动自检能够逐项核对四项拒绝登录权；不扩大 LSA policy 的访问权限。独立 C++ supervisor 为每个 execution instance 创建该账户的 `WRITE_RESTRICTED` token、根 capability、私有 desktop、最小环境和 Job。实例使用当前 Windows 会话内由系统命名的非交互式 window station，按账户及实例 SID 限制访问；同一宿主登录会话的并发实例可共享该 station，但仍使用不同 desktop，不向交互式 `WinSta0` 添加账户权限。
 
-Broker 先建立不可变 AccessManifest，supervisor 再以原对象 handle 和卷/file ID 复核工作区、显式 read/write roots、产品依赖和原生协议要求的空只读 Git global 文件并投影最小 ACL；持久 journal 使最终 revoke 或重启恢复可在同卷 rename 后按 file ID 重开原对象。
+Broker 先建立不可变 AccessManifest，supervisor 再以原对象 handle 和卷/file ID 复核工作区、显式 read/write roots、产品依赖和原生协议要求的实例只读 Git global 文件（由 `git-workspace-trust.ts` 生成当前仓库的 `safe.directory`，非仓库为空）并投影最小 ACL；持久 journal 使最终 revoke 或重启恢复可在同卷 rename 后按 file ID 重开原对象。
 
 当前产品已把常驻 AgentRuntimeService、C++ Supervisor launcher、身份绑定 Named Pipe、model/session/approval/memory adapter、ACL journal 和 generation drain 接到同一生命周期；relay、Push Runner 和 Capability Runner 的实现保留但不再由产品工具触发。
 

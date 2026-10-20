@@ -4,7 +4,7 @@
  *
  * 1. 二进制帧固定 magic/version、UTF-8 字符串、超时和 argv，拒绝相对路径及超限字段。
  * 2. selfCheck 只有 state 中原生二进制、Node 24 或 26、entry/三种 Worker 摘要、启动恢复排空与原生自检全部成功时才报告 sandbox level。
- * 3. prepareAccess 在 manifest 之前同时创建只读 Git 投影和逐实例可写 HOME/TEMP，cleanup 删除两者。
+ * 3. prepareAccess 在 manifest 之前同时创建仅信任当前仓库的只读 Git 投影和逐实例可写 HOME/TEMP，cleanup 删除两者。
  * 4. state 缺失、摘要篡改和原生拒绝都在 Runtime 启动前失败，允许 Broker 安全选择宿主 fallback。
  * 5. Agent Runtime 启动帧只携带 Broker 身份、nonce 和已安装 Node 路径，不允许选择 Runtime kind 或任意 entry argv；固定阶段诊断只提取白名单枚举。
  */
@@ -300,56 +300,69 @@ describe.skipIf(process.platform !== "win32")(
       ).rejects.toThrow("摘要");
     });
 
-    it("projects the private HOME/TEMP as a writable manifest root", async () => {
-      const root = await temp();
-      const hostConfig = path.join(root, ".gitconfig");
-      await writeFile(hostConfig, "[user]\n\tname = private-host-name\n");
-      const readable = await temp();
-      const writable = await temp();
-      const runtime = new NativeWindowsSandboxRuntime({
-        CODEATELIER_SANDBOX_STATE_PATH: path.join(root, "installation.state"),
-        CODEATELIER_SANDBOX_NATIVE_ROOT: path.join(root, "native"),
-        USERPROFILE: root,
-      });
-      const prepared = await runtime.prepareAccess(
-        {
-          sessionId: "session-1",
-          taskId: "task-1",
-          executionInstanceId: "instance-1",
-          kind: "capability-runner",
-          readOnlyRoots: [readable],
-          readWriteRoots: [writable],
-          command: "C:\\Windows\\System32\\cmd.exe",
-          args: [],
-          cwd: root,
-          signal: new AbortController().signal,
-          timeoutMs: 1000,
-          outputLimit: 1000,
-          onOutput: () => {},
-          onProcessStarted: () => {},
-        },
-        workspace(root),
-      );
+    it.each([false, true])(
+      "projects private HOME/TEMP and repository trust (repo=%s)",
+      async (repository) => {
+        const root = await temp();
+        if (repository) {
+          await mkdir(path.join(root, ".git"));
+        }
 
-      expect(prepared.privateDirectory).toBe(prepared.readWriteRoots[0]);
-      expect(prepared.gitConfigFiles).toEqual([prepared.gitGlobalConfigPath]);
-      expect(prepared.gitConfigFiles).not.toContain(hostConfig);
-      await expect(
-        readFile(prepared.gitGlobalConfigPath!, "utf8"),
-      ).resolves.toBe("");
-      expect(prepared.readOnlyRoots).toEqual(
-        expect.arrayContaining([expect.any(String), readable]),
-      );
-      expect(prepared.readWriteRoots).toEqual(
-        expect.arrayContaining([prepared.privateDirectory, writable]),
-      );
-      await expect(access(prepared.privateDirectory!)).resolves.toBeUndefined();
+        const hostConfig = path.join(root, ".gitconfig");
+        await writeFile(hostConfig, "[user]\n\tname = private-host-name\n");
+        const readable = await temp();
+        const writable = await temp();
+        const runtime = new NativeWindowsSandboxRuntime({
+          CODEATELIER_SANDBOX_STATE_PATH: path.join(root, "installation.state"),
+          CODEATELIER_SANDBOX_NATIVE_ROOT: path.join(root, "native"),
+          USERPROFILE: root,
+        });
+        const prepared = await runtime.prepareAccess(
+          {
+            sessionId: "session-1",
+            taskId: "task-1",
+            executionInstanceId: "instance-1",
+            kind: "capability-runner",
+            readOnlyRoots: [readable],
+            readWriteRoots: [writable],
+            command: "C:\\Windows\\System32\\cmd.exe",
+            args: [],
+            cwd: root,
+            signal: new AbortController().signal,
+            timeoutMs: 1000,
+            outputLimit: 1000,
+            onOutput: () => {},
+            onProcessStarted: () => {},
+          },
+          workspace(root),
+        );
 
-      const privateDirectory = prepared.privateDirectory!;
-      const projectionDirectory = prepared.readOnlyRoots[0]!;
-      await prepared.cleanup();
-      await expect(access(privateDirectory)).rejects.toThrow();
-      await expect(access(projectionDirectory)).rejects.toThrow();
-    });
+        expect(prepared.privateDirectory).toBe(prepared.readWriteRoots[0]);
+        expect(prepared.gitConfigFiles).toEqual([prepared.gitGlobalConfigPath]);
+        expect(prepared.gitConfigFiles).not.toContain(hostConfig);
+        await expect(
+          readFile(prepared.gitGlobalConfigPath!, "utf8"),
+        ).resolves.toBe(
+          repository
+            ? `[safe]\n\tdirectory = "${root.replaceAll("\\", "/")}"\n`
+            : "",
+        );
+        expect(prepared.readOnlyRoots).toEqual(
+          expect.arrayContaining([expect.any(String), readable]),
+        );
+        expect(prepared.readWriteRoots).toEqual(
+          expect.arrayContaining([prepared.privateDirectory, writable]),
+        );
+        await expect(
+          access(prepared.privateDirectory!),
+        ).resolves.toBeUndefined();
+
+        const privateDirectory = prepared.privateDirectory!;
+        const projectionDirectory = prepared.readOnlyRoots[0]!;
+        await prepared.cleanup();
+        await expect(access(privateDirectory)).rejects.toThrow();
+        await expect(access(projectionDirectory)).rejects.toThrow();
+      },
+    );
   },
 );

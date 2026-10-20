@@ -197,6 +197,8 @@ create:true 嵌套创建、已有目标及最后一次预检之后出现目标�
 
 Git CLI 走通用命令：临时仓库状态/差异/add/commit/log/show/branch、本地 bare remote push、非零退出、拒绝后索引不变、输出 callId、Broker 宿主审批/归因、成功写入与启动后取消的副作用标记。宿主/Runtime 均不声明或执行旧 Git 工具，旧 IPC operation 与握手拒绝；CLI 不独占批次。浏览器验证普通命令审批、输出/退出码同卡及刷新回读。session-view/tool-projection/runtime-session-client 回归保留历史 Git 输出与嵌套结果读取、上下文恢复，不允许重新执行。Windows restricted token、真实 remote/凭据/helper 和跨平台 CLI 兼容须另行验证。
 
+`sandbox-git-workspace-trust.test.ts` 验证实例 Git 配置的仓库/worktree/裸库识别、非仓库不信任、Git 字符串转义及真实 Git 所有权拒绝与恢复；`sandbox-native-windows-runtime.test.ts`、`mxc-runtime.test.ts` 检查启动时配置落盘、宿主配置不投影与实例清理。普通进程测试不替代 Windows restricted-token 或 Linux/macOS 安装态验收。
+
 ### 命令执行
 
 主要测试：process.test.ts、process-tree.test.ts、core.test.ts、permissions.test.ts、tool-schema.test.ts。

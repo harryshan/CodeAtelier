@@ -263,6 +263,7 @@ export class MxcSandboxRuntime implements SandboxRuntime {
       const files = await prepareMxcFiles(
         prepared.bundle,
         this.journalDirectory,
+        prepared.workspace,
       );
       let launching = false;
       let handle: MxcHandle | undefined;

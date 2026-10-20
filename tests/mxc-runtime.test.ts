@@ -1,7 +1,7 @@
 /**
  * 离线验证 MXC 产品启动器的策略、启动首帧、文件快照、持久标记及失败关闭。
  * 1. 假 SDK 只提供可控流和退出结果，不启动原生后端；测试真实 Broker/MxcSandboxRuntime 与临时文件系统。
- * 2. 正常路径验证授权根、无宿主环境、实例 mode/PID kind、nonce 只经首帧和幂等释放。
+ * 2. 正常路径验证实例专用 Git 信任、授权根、无宿主环境、实例 mode/PID kind、nonce 只经首帧和幂等释放。
  * 3. 损坏 bundle、危险根、残留标记、SDK/清理失败、迟到 handle 和取消覆盖不重放与隔离。
  * 4. Mac 仅检查生成策略，不把假 SDK 或普通单测当 macOS 实机证据；Linux 原生验证另有手动入口。
  */
@@ -135,62 +135,82 @@ function handle() {
   };
 }
 
-it("launches private IPC with fixed policy, snapshots, honest attribution and idempotent cleanup", async () => {
-  const f = await fixture();
-  const child = await f.broker.launch(f.input);
-  const request = f.requests[0]!;
-  expect(request).toMatchObject({
-    containment: { type: "bubblewrap" },
-    timeoutMs: 0,
-    inheritDefaultEnvironment: false,
-    network: {
-      egress: { default: "deny" },
-      ingress: { default: "deny", hostLoopback: "deny" },
-    },
-  });
-  expect(request.command).not.toContain(f.input.nonce);
-  expect(Object.keys(request.environment!).sort()).toEqual([
-    "HOME",
-    "LANG",
-    "PATH",
-    "TEMP",
-    "TMP",
-    "TMPDIR",
-  ]);
-  const frame = f.handles[0]!.standardInput.read() as Buffer;
-  expect(JSON.parse(frame.subarray(4).toString())).toMatchObject({
-    nonce: f.input.nonce,
-    identity: f.input.identity,
-  });
-  expect(child).toMatchObject({
-    mode: "linux-bubblewrap",
-    pidKind: "runtime-launcher",
-    pid: 12345,
-  });
-  expect(
-    f.broker.statusFor(
-      f.input.identity.taskId,
-      f.input.identity.executionInstanceId,
-    ),
-  ).toMatchObject({ mode: "sandboxed", platform: "linux", applied: true });
-  expect(await readdir(f.journal)).toHaveLength(1);
-  expect(
-    await readFile(
-      path.join(request.filesystem!.readonlyPaths![0]!, "agent-runtime.mjs"),
-      "utf8",
-    ),
-  ).toBe("fixture agent-runtime.mjs");
-  expect(
-    await Promise.all([child.close("completed"), child.close("completed")]),
-  ).toEqual(["clean", "clean"]);
-  expect(f.handles[0]!.kill).toHaveBeenCalledTimes(1);
-  expect(await readdir(f.journal)).toEqual([]);
-  const trace = JSON.stringify(f.traces.exportTask(f.input.identity.taskId));
-  expect(trace).toContain("sandbox.mxc.launch");
-  expect(trace).toContain("sandbox.mxc.cleanup");
-  expect(trace).not.toContain(f.input.nonce);
-  expect(trace).not.toContain(f.workspace.replaceAll("\\", "\\\\"));
-});
+it.each([false, true])(
+  "launches private IPC with scoped Git trust (repo=%s), policy and cleanup",
+  async (repository) => {
+    const f = await fixture();
+    if (repository) {
+      await writeFile(
+        path.join(f.workspace, ".git"),
+        "gitdir: ../worktree-metadata\n",
+      );
+    }
+
+    const child = await f.broker.launch(f.input);
+    const request = f.requests[0]!;
+    expect(
+      await readFile(
+        path.join(request.environment!.HOME!, ".gitconfig"),
+        "utf8",
+      ),
+    ).toBe(
+      repository
+        ? `[safe]\n\tdirectory = "${f.workspace.replaceAll("\\", "/")}"\n`
+        : "",
+    );
+    expect(request).toMatchObject({
+      containment: { type: "bubblewrap" },
+      timeoutMs: 0,
+      inheritDefaultEnvironment: false,
+      network: {
+        egress: { default: "deny" },
+        ingress: { default: "deny", hostLoopback: "deny" },
+      },
+    });
+    expect(request.command).not.toContain(f.input.nonce);
+    expect(Object.keys(request.environment!).sort()).toEqual([
+      "HOME",
+      "LANG",
+      "PATH",
+      "TEMP",
+      "TMP",
+      "TMPDIR",
+    ]);
+    const frame = f.handles[0]!.standardInput.read() as Buffer;
+    expect(JSON.parse(frame.subarray(4).toString())).toMatchObject({
+      nonce: f.input.nonce,
+      identity: f.input.identity,
+    });
+    expect(child).toMatchObject({
+      mode: "linux-bubblewrap",
+      pidKind: "runtime-launcher",
+      pid: 12345,
+    });
+    expect(
+      f.broker.statusFor(
+        f.input.identity.taskId,
+        f.input.identity.executionInstanceId,
+      ),
+    ).toMatchObject({ mode: "sandboxed", platform: "linux", applied: true });
+    expect(await readdir(f.journal)).toHaveLength(1);
+    expect(
+      await readFile(
+        path.join(request.filesystem!.readonlyPaths![0]!, "agent-runtime.mjs"),
+        "utf8",
+      ),
+    ).toBe("fixture agent-runtime.mjs");
+    expect(
+      await Promise.all([child.close("completed"), child.close("completed")]),
+    ).toEqual(["clean", "clean"]);
+    expect(f.handles[0]!.kill).toHaveBeenCalledTimes(1);
+    expect(await readdir(f.journal)).toEqual([]);
+    const trace = JSON.stringify(f.traces.exportTask(f.input.identity.taskId));
+    expect(trace).toContain("sandbox.mxc.launch");
+    expect(trace).toContain("sandbox.mxc.cleanup");
+    expect(trace).not.toContain(f.input.nonce);
+    expect(trace).not.toContain(f.workspace.replaceAll("\\", "\\\\"));
+  },
+);
 
 it("generates restrictive Seatbelt settings without exercising macOS", () => {
   const request = createMxcRequest({

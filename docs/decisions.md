@@ -1130,6 +1130,14 @@
 - 边界：确认的是用户当前 Windows 环境下的日常功能可用性，不推导错误身份、复杂 ACL、强制终止、异常恢复、真实远端兼容性等全部专项矩阵通过。Everyone restricting SID、同账户共享风险、Broker 宿主权限及 macOS/Linux 不加载该后端等限制不变。
 - 影响：只更新状态、使用说明和证据记录；默认关闭与安装/Repair 流程不变，不自动安装或开放 subagent。subagent 仍按自身发布门禁及专项证据单独评估。本次不改变运行时、权限、配置或 tracing，无新增运行事件。
 
+## D161：Sandbox 启动时信任当前工作目录仓库
+
+- 状态：用户要求在 Sandbox 启动时为 Git 仓库配置 trust folder，解决运行账户与目录 owner 不同的问题。
+- 决定：在 Broker 启动准备阶段生成实例级 global `safe.directory`，仅信任当前工作目录的真实路径；识别 `.git` 目录、gitfile/worktree 与裸库布局，非仓库不添加。Windows 复用只读配置投影，POSIX 使用私有 HOME 配置；不修改宿主/共享账户永久配置，不使用通配符，不遍历父仓库，不读取宿主 Git 配置。
+- 边界：不增加 ACL、网络、凭据权限，不恢复 Git 专用工具或隐式宿主转发；仓库配置和 hooks 仍需作为可信项目处理。所有权修复不推导 NUL 或跨平台安装态全面通过。
+- 生命周期与观测：检测/写入失败沿用原启动失败及清理规则；配置随实例删除，并发实例不共享写入。复用 Windows prepare_access 与 MXC launch 的既有 task/instance 关联、耗时、失败/取消日志和 span，不增加记录路径或配置正文的新 trace。
+- 部署：仅 Broker TypeScript 变更，无 IPC 或原生组件变更；更新后端后的新任务生效，不自动重启服务或 Repair。
+
 ## D155：移除专用 Git 工具，统一使用 CLI
 
 - 日期：2026-10-17（本机日期）。

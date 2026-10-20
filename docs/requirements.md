@@ -123,6 +123,7 @@
 Windows 专用用户 Sandbox 已通过用户实际使用验证：2026-10-03 用户确认持续使用一段时间功能正常，按可用于日常开发记录（D130）。默认关闭，需要显式安装和启用。macOS/Linux 不加载该 Windows 后端；默认宿主模式，显式启用时选择独立的 [MXC 后端](posix-sandbox.md)。此确认不等于逐项完成所有安全/故障矩阵；subagent 入口由后续 D158 单独开放，不以该确认代替专项验收。
 
 - **执行位置**：常驻 Agent Runtime 在专用账户、restricted token 和 Job 中运行。Broker 保留模型密钥、会话存储和审批；Git CLI 使用普通命令路径；只有显式获批的 `run_with_permissions` 命令由 Broker 执行并记为未受 Sandbox 保护，无 Git 专用 IPC 或隐式转发。
+- **Git 仓库信任**：用户要求 Sandbox 启动时为工作目录仓库加入 trust folder（D161）。Windows/MXC 启动准备生成实例级 `safe.directory`，只信任当前仓库真实路径，不修改宿主永久配置或信任全部目录；详见 [开发说明](development.md#git-cli-权限d155)。
 - **文件与并发**：AccessManifest 投影工作区、显式读写根和运行依赖；实例 token 包含 root capability 与 `Everyone` restricting SID。已有 ACL 允许 Everyone 写入的对象可能绕过 root capability，因此不承诺完整写入隔离。多个实例共用账户，读取根会形成并集，存在 peer 干扰风险；不同对话不是 OS 安全边界，也不承诺纯读取 allowlist。
 - **审批与网络**：已有权限内的工具免审批；越界命令用 `run_with_permissions` 提交命令和理由，经三级审批后由 Broker 宿主进程执行，不额外限制文件根、网络目标或宿主可用凭据。Git push 同样按命令权限及显式 DAG 依赖处理，不再固定预检 upstream/URL/OID/ref 或独占批次。Capability Runner 和 Push Runner 代码保留但暂不启用；专用账户 WFP 不临时放宽。
 - **失败处理**：只有 Runtime 启动前且可证明完整回滚时才自动回退宿主，并明确提示任务未受 Sandbox 保护。Broker 宿主命令和 push 是明确获批的执行位置，不是 fallback。已启动命令或 push 结果未知时不重放；Sandbox 实例清理未知时隔离并排空账户 generation。

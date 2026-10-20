@@ -1,5 +1,13 @@
 # 初版验证记录
 
+## Sandbox 当前仓库信任（D161，Windows / Node 26.10.0）
+
+- 启动准备为当前仓库生成实例级 `safe.directory`，Windows 写入既有只读投影，MXC 写入私有 HOME；不改宿主永久配置、不扩张 ACL/网络权限，无 IPC 或原生组件变更。
+- 新增启动器回归先确认原实现缺少信任配置；修复后定向三个文件 **23/23 通过**，包括普通仓库/gitfile/裸库布局、非仓库与父仓库不信任，以及真实 Git 通过 `GIT_TEST_ASSUME_DIFFERENT_OWNER` 模拟所有权拒绝、加入实例配置后恢复、其它仓库仍拒绝。该模拟不是实际跨账户 restricted-token 验收。
+- `pnpm check` 的 TypeScript、ESLint、Prettier 通过；默认并发测试 **897 通过、1 跳过、7 失败**（既有 Git CLI、permissions、settings 的超时及 Repair PowerShell 子进程失败），原样 check 未全绿。未放宽断言、时限或修改默认并发。
+- 完整 `pnpm test --maxWorkers=2` **123 文件、904 通过、1 跳过**；单独 `pnpm build:test` 通过 server/Web 与 Windows/POSIX Runtime bundle 构建，保留既有依赖注释和 chunk 大小警告。日志在 `.local/sandbox-git-trust-*.log`，不提交。
+- 验证通过获批 Broker 宿主工具链执行，Runtime PATH 无 pnpm。未运行 Evaluation、UI e2e（无 UI/HTTP 变更）、管理员安装/Repair 或服务重启；Windows 安装态及 Linux/macOS 实机兼容未复验，不能推导 NUL 等其它 Git 问题已解决。更新后端后的新任务生效，本改动不要求单独 Repair。
+
 ## Responses prompt cache key（D160，2026-10-18，Windows / Node 26.10.0）
 
 - 主任务按会话、subagent 按会话/任务/子任务派生稳定 key，Responses 实际 HTTP 请求携带参数；宿主、启动前 fallback 与 Broker 共用绑定规则。未扩展 Runtime IPC，未增加设置或缓存命中保证；其他协议和辅助用途不绑定。
