@@ -4,11 +4,13 @@
  * 1. 声明固定的测试连接值；Vitest 父进程环境由 test-runner.ts 白名单隔离。
  * 2. include 只收集 tests 下的 .test.ts。
  * 3. coverage 由 test:coverage 显式启用，统计全部可测试的产品源码并生成 text、HTML 与 LCOV 报告。
- * 4. testTimeout 为文件、进程和服务相关的异步测试设置上限。
+ * 4. Windows 的文件级 worker 最多四个，避免各文件内的 PowerShell、SQLite/Runtime Worker 叠加超额并发；CLI 可显式覆盖以加压。
+ * 5. testTimeout 保持异步测试原有上限，不以重试或加大时限掩盖失败。
  *
  * 浏览器测试交给 Playwright；Evaluation 使用独立配置，不能加入这里的匹配范围。
  */
 
+import { availableParallelism } from "node:os";
 import { defineConfig } from "vitest/config";
 
 export default defineConfig({
@@ -21,6 +23,9 @@ export default defineConfig({
       CODEATELIER_AUXILIARY_REASONING_EFFORT: "",
     },
     include: ["tests/**/*.test.ts"],
+    ...(process.platform === "win32"
+      ? { maxWorkers: Math.min(4, availableParallelism()) }
+      : {}),
     coverage: {
       provider: "v8",
       all: true,

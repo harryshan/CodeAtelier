@@ -9,7 +9,8 @@
  * 5. run_with_permissions 经低成本模型审批后由 Broker 宿主进程执行，单独记录 host-process，而不创建 Capability Runner；结构化 trace 不含宿主命令参数（避免 Windows JSON 转义导致假阴性）；stdout/stderr 在结果前按调用 ID 持久化，拒绝时无输出。
  * 6. Runtime IPC 在可信终态前断开时，Engine 以 unknown 关闭 launcher 并持久化可能副作用。
  * 7. Git CLI 经通用 Broker 命令审批执行，status/add/commit 使用平面结果和 broker-command 归因；push 命令启动后取消仍记录可能副作用，不自动重放。
- * 8. launcher 证明 Runtime 尚未启动且 provision 已回滚时，Engine 明确记录 host fallback 并继续宿主 loop。
+ * 8. stdio launcher 从 spawn 起记录 close，提前退出不会使关闭永久挂起；强制清理不报 clean。
+ * 9. launcher 证明 Runtime 尚未启动且 provision 已回滚时，Engine 明确记录 host fallback 并继续宿主 loop。
  */
 
 import { execFile, spawn } from "node:child_process";
@@ -31,6 +32,7 @@ import type {
 } from "../src/sandbox/agent-runtime-launcher.js";
 import { AgentRuntimeFallbackError } from "../src/sandbox/agent-runtime-launcher.js";
 import { temp } from "./fixtures/helpers.js";
+import { createRuntimeChildClose } from "./fixtures/runtime-child-close.js";
 
 const runFile = promisify(execFile);
 
@@ -76,21 +78,15 @@ it.each(["responses", "chat-completions", "messages"] as const)(
           },
         );
         child.stderr.on("data", (chunk: Buffer) => errors.push(chunk));
-        let closed: Promise<"clean" | "orphaned"> | undefined;
+        const closeChild = createRuntimeChildClose(child);
         const launched: LaunchedAgentRuntime = {
           input: child.stdout,
           output: child.stdin,
           pid: child.pid!,
           close: async () => {
             closeCalls += 1;
-            closed ??= new Promise((resolve) => {
-              child.once("exit", (code) =>
-                resolve(code === 0 ? "clean" : "orphaned"),
-              );
-              child.stdin.end();
-            });
 
-            return closed;
+            return closeChild();
           },
         };
 
@@ -411,6 +407,8 @@ for (const [cleanupProof, stopKind] of [
             },
           },
         );
+        const closeChild = createRuntimeChildClose(child);
+        child.stderr.resume();
         let output = "";
         child.stdout.on("data", (chunk: Buffer) => {
           output = (output + chunk.toString("utf8")).slice(-16_384);
@@ -424,12 +422,9 @@ for (const [cleanupProof, stopKind] of [
           output: child.stdin,
           pid: child.pid!,
           close: async () => {
-            child.stdin.end();
-            const exitCode = await new Promise<number | null>((resolve) =>
-              child.once("exit", resolve),
-            );
+            const cleanup = await closeChild();
 
-            return exitCode === 0 && runtimeCompleted
+            return cleanup === "clean" && runtimeCompleted
               ? cleanupProof
               : "orphaned";
           },
@@ -570,13 +565,7 @@ for (const approve of [true, false]) {
           input: child.stdout,
           output: child.stdin,
           pid: child.pid!,
-          close: async () =>
-            new Promise<"clean" | "orphaned">((resolve) => {
-              child.once("exit", (code) =>
-                resolve(code === 0 ? "clean" : "orphaned"),
-              );
-              child.stdin.end();
-            }),
+          close: createRuntimeChildClose(child),
         };
       },
     };

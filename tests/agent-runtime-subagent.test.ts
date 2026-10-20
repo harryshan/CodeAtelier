@@ -5,7 +5,8 @@
  * 2. 主 loop 规划/等待/回复/收集，reviewer 独立上下文收到变更材料，在三协议下只见文件读取工具、ask_main 与 Responses 专属内置搜索，并跨 IPC 读取超过旧上下文阈值的证据，Broker 按任务身份登记并分配全局租约。
  * 3. 核对原生搜索记录/引用跨 IPC 保留、状态落盘后通知 SSE 刷新、报告/主反馈同分片、线程清理和源码未变；查询/来源不进 trace，stdio 夹具不是专用账户验收。
  * 4. 核对 Broker 最终提供给模型的 Responses 主/子 cache key 独立且稳定，并随 Replay 保存；其他协议不生成 key；Replay 子身份/请求 ID 与读取、提问回执跨 IPC 保持可关联。
- * 5. 子模型每轮跨 IPC 继承最大输出设置：较小配置优先、已知服务容量收紧、缺失元数据仍传配置值，Replay 保留实际选项。
+ * 5. Engine/Store 由测试作用域托管；子进程从 spawn 起保存关闭结果，超时收尾不依赖正文 finally。
+ * 6. 子模型每轮跨 IPC 继承最大输出设置：较小配置优先、已知服务容量收紧、缺失元数据仍传配置值，Replay 保留实际选项。
  */
 
 import { spawn } from "node:child_process";
@@ -14,11 +15,15 @@ import path from "node:path";
 import pino from "pino";
 import { expect, it } from "vitest";
 import { Config } from "../src/config/config.js";
-import { Engine } from "../src/agent/engine.js";
+import {
+  TestEngine as Engine,
+  TestStore as Store,
+} from "./fixtures/managed-runtime.js";
+import { createRuntimeChildClose } from "./fixtures/runtime-child-close.js";
 import type { ModelProvider } from "../src/providers/model-provider.js";
 import type { AgentRuntimeLauncher } from "../src/sandbox/agent-runtime-launcher.js";
-import { Store } from "../src/sessions/store.js";
 import { temp } from "./fixtures/helpers.js";
+import { currentTestResources } from "./fixtures/test-resources.js";
 
 const request = (nodeId: string, action: unknown) =>
   JSON.stringify({
@@ -78,22 +83,7 @@ it.each(["responses", "chat-completions", "messages"] as const)(
           input: child.stdout,
           output: child.stdin,
           pid: child.pid!,
-          close: async () => {
-            const exit = new Promise<"clean" | "orphaned">((resolve) => {
-              if (child.exitCode !== null) {
-                resolve(child.exitCode === 0 ? "clean" : "orphaned");
-
-                return;
-              }
-
-              child.once("exit", (code) =>
-                resolve(code === 0 ? "clean" : "orphaned"),
-              );
-            });
-            child.stdin.end();
-
-            return exit;
-          },
+          close: createRuntimeChildClose(child),
         };
       },
     };
@@ -104,6 +94,10 @@ it.each(["responses", "chat-completions", "messages"] as const)(
     let releaseChildGate!: () => void;
     const childGate = new Promise<void>((resolve) => {
       releaseChildGate = resolve;
+    });
+    // Hook 取消先释放模拟模型，避免 Engine.close 等待一个只能由正文解开的门闩。
+    currentTestResources().signal.addEventListener("abort", releaseChildGate, {
+      once: true,
     });
     const sourceUrl = "https://example.com/runtime-search-evidence";
     const searchQuery = "runtime-search-query-sentinel";

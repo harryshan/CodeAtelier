@@ -2,13 +2,15 @@
  * 版本化设置的生产集成回归：临时目录、模拟模型与真实鉴权/Engine 调度，不访问真实配置。
  * 1. 新安装与 v1 重开不采用旧环境覆盖；任务快照固定密钥、MCP 和预算。
  * 2. 任务运行中 PATCH 保存成功，旧任务标题/主请求不串配置，下一任务与调度取新值。
- * 3. revision 冲突、非法输入脱敏、门禁待重启及密码验证覆盖 HTTP 边界。
+ * 3. HTTP 实例初始化和关闭登记到测试作用域，测试提前中断也在删除目录前关闭服务。
+ * 4. revision 冲突、非法输入脱敏、门禁待重启及密码验证覆盖 HTTP 边界。
  */
 import { it, expect, vi, afterEach } from "vitest";
 import pino from "pino";
 import { Config } from "../src/config/config.js";
-import { createApp } from "../src/server/app.js";
+import { createTestApp as createApp } from "./fixtures/managed-runtime.js";
 import { temp } from "./fixtures/helpers.js";
+import { currentTestResources } from "./fixtures/test-resources.js";
 
 async function configured() {
   const config = new Config(await temp(), { legacy: false });
@@ -66,6 +68,10 @@ it("saves during title generation without mixing task settings and rejects stale
   let release!: () => void;
   const waiting = new Promise<void>((resolve) => {
     release = resolve;
+  });
+  // 超时后的作用域清理也必须解开模拟模型，不能只靠正文 finally。
+  currentTestResources().signal.addEventListener("abort", release, {
+    once: true,
   });
   const fixture = await createApp(
     config,

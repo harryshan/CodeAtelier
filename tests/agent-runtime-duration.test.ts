@@ -3,7 +3,7 @@
  * 1. 测试 launcher 使用真实 Node Runtime 子进程和 stdio IPC，数据库与模型夹具留在 Broker。
  * 2. 模型先返回无效图，再触发二进制读取失败及依赖阻断，检查执行与未执行结果的耗时区别。
  * 3. 将结果与导出的执行 trace 比较，再重开 Store 验证耗时不是仅在内存或 UI 中补齐。
- * 临时目录和子进程在 finally 中清理；不重放工具，不改变审批或 Sandbox 权限。
+ * Engine/Store 由测试作用域托管，子进程从启动起记录 stdio close；不重放工具，不改变审批或 Sandbox 权限。
  */
 
 import { spawn } from "node:child_process";
@@ -11,11 +11,14 @@ import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import pino from "pino";
 import { expect, it } from "vitest";
-import { Engine } from "../src/agent/engine.js";
+import {
+  TestEngine as Engine,
+  TestStore as Store,
+} from "./fixtures/managed-runtime.js";
+import { createRuntimeChildClose } from "./fixtures/runtime-child-close.js";
 import { Config } from "../src/config/config.js";
 import type { ModelProvider } from "../src/providers/model-provider.js";
 import type { AgentRuntimeLauncher } from "../src/sandbox/agent-runtime-launcher.js";
-import { Store } from "../src/sessions/store.js";
 import { temp } from "./fixtures/helpers.js";
 
 it("persists execution duration for failures and zero for invalid or blocked calls", async () => {
@@ -49,21 +52,12 @@ it("persists execution duration for failures and zero for invalid or blocked cal
         },
       );
       child.stderr.on("data", (chunk: Buffer) => errors.push(chunk));
-      const exited = new Promise<"clean" | "orphaned">((resolve) => {
-        child.once("exit", (code) =>
-          resolve(code === 0 ? "clean" : "orphaned"),
-        );
-      });
 
       return {
         input: child.stdout,
         output: child.stdin,
         pid: child.pid!,
-        close: async () => {
-          child.stdin.end();
-
-          return exited;
-        },
+        close: createRuntimeChildClose(child),
       };
     },
   };

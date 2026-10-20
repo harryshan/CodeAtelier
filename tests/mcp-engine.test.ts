@@ -3,7 +3,7 @@
  * 真实 Node Runtime 和 MCP stdio 夹具仅验证应用层连接，不证明 Windows 账户/Named Pipe 的安装态隔离。
  *
  * 1. 无调用用例覆盖宿主/Runtime/启动前 fallback 的首次任务与续聊，目录展示不触发审批或 MCP 启动。
- * 2. runtimeLauncher 使用测试 stdio 身份夹具；close 等待子进程退出，不替代产品 transport。
+ * 2. runtimeLauncher 使用测试 stdio 身份夹具；从启动起记录 stdio close，Engine/Store 接入测试作用域，不替代产品 transport。
  * 3. 两种模式在首次模型请求即看到公开目录，再用同一脚本化模型完成发现、调用和失败后继阻断；审批由测试显式批准，不调用真实模型。
  *    断言历史/replay 保留宿主执行归因、结果送回模型且凭据不泄露，MCP 摘要、内容和参数不进入 Perfetto。
  */
@@ -12,9 +12,12 @@ import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import pino from "pino";
 import { expect, it, vi } from "vitest";
-import { Engine } from "../src/agent/engine.js";
+import {
+  TestEngine as Engine,
+  TestStore as Store,
+} from "./fixtures/managed-runtime.js";
+import { createRuntimeChildClose } from "./fixtures/runtime-child-close.js";
 import { Config } from "../src/config/config.js";
-import { Store } from "../src/sessions/store.js";
 import type { ModelProvider } from "../src/providers/model-provider.js";
 import {
   AgentRuntimeFallbackError,
@@ -138,25 +141,12 @@ function runtimeLauncher(): AgentRuntimeLauncher {
         },
       );
       child.stderr.resume();
-      const exited = new Promise<"clean" | "orphaned">((resolve) => {
-        child.once("exit", (code) =>
-          resolve(code === 0 ? "clean" : "orphaned"),
-        );
-      });
 
       return {
         input: child.stdout,
         output: child.stdin,
         pid: child.pid!,
-        close: async () => {
-          child.stdin.end();
-          const timer = setTimeout(() => child.kill(), 5000);
-          try {
-            return await exited;
-          } finally {
-            clearTimeout(timer);
-          }
-        },
+        close: createRuntimeChildClose(child),
       };
     },
   };

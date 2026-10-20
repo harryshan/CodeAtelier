@@ -2,7 +2,7 @@
  * 验证同一会话的新任务在第一次压缩检查前恢复实报输入基线，而不是重新以完整 JSON 估算触发摘要。
  * 使用临时数据库、真实 tokenizer、脚本化模型及 Node stdio Runtime，不请求真实服务或安装专用账户。
  *
- * 1. runtimeLauncher 提供独立进程夹具，等待退出后释放管道；只验证应用层 IPC，不证明 OS 隔离。
+ * 1. runtimeLauncher 提供独立进程夹具，从启动起记录 stdio close，Engine/Store 接入测试作用域；只验证应用层 IPC，不证明 OS 隔离。
  * 2. 宿主、Runtime、启动前 fallback 用相同历史完成三轮输入，第二轮收紧预算并改变项目指令。
  * 3. 第二轮无 usage，第三轮重建 Engine/Store 模拟重启；检查历史保留且未调用摘要模型。
  */
@@ -11,10 +11,13 @@ import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import pino from "pino";
 import { expect, it } from "vitest";
-import { Engine } from "../src/agent/engine.js";
+import {
+  TestEngine as Engine,
+  TestStore as Store,
+} from "./fixtures/managed-runtime.js";
+import { createRuntimeChildClose } from "./fixtures/runtime-child-close.js";
 import { Config } from "../src/config/config.js";
 import type { ModelProvider } from "../src/providers/model-provider.js";
-import { Store } from "../src/sessions/store.js";
 import {
   AgentRuntimeFallbackError,
   type AgentRuntimeLauncher,
@@ -43,25 +46,12 @@ function runtimeLauncher(): AgentRuntimeLauncher {
         },
       );
       child.stderr.resume();
-      const exited = new Promise<"clean" | "orphaned">((resolve) => {
-        child.once("exit", (code) =>
-          resolve(code === 0 ? "clean" : "orphaned"),
-        );
-      });
 
       return {
         input: child.stdout,
         output: child.stdin,
         pid: child.pid!,
-        close: async () => {
-          child.stdin.end();
-          const timer = setTimeout(() => child.kill(), 5000);
-          try {
-            return await exited;
-          } finally {
-            clearTimeout(timer);
-          }
-        },
+        close: createRuntimeChildClose(child),
       };
     },
   };

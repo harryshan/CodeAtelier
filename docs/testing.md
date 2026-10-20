@@ -11,13 +11,23 @@
 5. 提交前运行 `pnpm check`（类型、lint、格式、单元/集成回归、构建）。UI、API、SSE 变更额外运行 `pnpm test:e2e`。
 6. 新增行为同步维护下表与验证记录；说明平台跳过、外部依赖和未验证范围。CI 暂时仅手动触发；触发后在 Windows、macOS、Linux 分别使用 Node 24/26 跑核心检查，在 Linux 的两个 Node 版本下跑 Chromium UI 验收。
 
+### Windows 测试并发与失败诊断
+
+Windows 默认最多四个测试文件 worker（低于四个逻辑处理器时按可用数量），仍并行执行，不改变文件内生产 Worker/IPC/并发任务的覆盖。`pnpm test`、`test:watch`、`test:coverage` 和 `check` 共用此策略；Linux/macOS 保留 Vitest 默认值。十五秒单用例期限、已有进程安全期限和断言保持不变，不启用自动重试，不排除测试。
+
+原因是测试文件内还会启动 PowerShell、Node、SQLite 与 subagent Worker，文件 worker 不能直接按逻辑 CPU 数展开。本机 24 逻辑处理器默认 23 worker 的原代码基线为 897 通过、7 失败、1 跳过，累计测试耗时约 585 秒；相同全套四 worker 对照为 904 通过、1 跳过，累计约 167 秒。并发上限治理资源过量，不证明每种历史失败都是同一原因，也不代替生命周期修复。
+
+需要显式加压时使用 `pnpm test --maxWorkers=8` 或 `pnpm test --maxWorkers=23`，这些命令覆盖默认上限，失败应单独报告，不能靠重跑拼出全绿。历史章节中的“默认并发未改/仍失败”保留当时事实，不代表当前配置。
+
 ### 异步夹具就绪与清理
 
 取消、恢复与关闭用例先等待可观察的就绪事件，再施加被测操作：`helpers.waitForApproval` 按任务 ID 监听审批状态并在提前终止时报告失败；subagent 提问用例先等待真实 Worker 进入模型请求，再保留一秒 `await` 的问题唤醒断言。MCP 操作超时用例先验证握手成功，再使用原三/五秒操作期限；取消用例等待服务器写入请求已到达的临时标记，而非固定睡眠后取消。显式模型/握手延迟覆盖冷启动超过旧一秒/三秒假设的情况。
 
-Windows `process-tree.test.ts` 用真实 Node 父子进程和继承的输出句柄隔离进程树清理机制，避免 PowerShell 冷启动掺入取消期限；实际 shell 仍由 `core`、`shutdown` 等集成用例覆盖。对启动和取消分别设置八秒安全期限，收到后代 PID 后开始取消计时；仍要求延迟真实 `taskkill /T /F` 停止后代并释放输出目录，安全清理一旦触发就失败。测试收尾等待自己创建的 taskkill 延迟代理退出。默认测试文件并发数和十五秒单用例期限保持不变。
+Windows `process-tree.test.ts` 用真实 Node 父子进程和继承的输出句柄隔离进程树清理机制，避免 PowerShell 冷启动掺入取消期限；实际 shell 仍由 `core`、`shutdown` 等集成用例覆盖。对启动和取消分别设置八秒安全期限，收到后代 PID 后开始取消计时；仍要求延迟真实 `taskkill /T /F` 停止后代并释放输出目录，安全清理一旦触发就失败。测试收尾等待自己创建的 taskkill 延迟代理退出。十五秒单用例期限保持不变；Windows 文件并发上限见上节。
 
 `mcp.test.ts` 另有不回复握手且保持存活的真实 Node 子进程回归：初始化超时返回时必须已确认 PID 退出，后续调用禁止重连，trace 能导出本连接清理的实际耗时和终态。该用例覆盖 SDK 初始化失败后的异步关闭与后端重复关闭竞争，不能用目录删除重试掩盖进程未清理。
+
+Runtime stdio 集成夹具共用 `runtime-child-close.ts`：spawn 后立即监听 error/exit/close，提前退出的结果不会丢失；正常关闭等到 stdio close，不能仅凭 exit 删除目录。不响应 EOF 的测试 Node 在五秒后终止，再用两秒确认期限；强制结束返回 orphaned，缺少 close 确认抛错。此 helper 不证明后代进程树清理。`runtime-child-close.test.ts` 用受控事件覆盖这些顺序，不启动嵌套测试。settings HTTP、宿主/Runtime subagent、MCP、Skill、耗时与 token 续聊回归均接入托管 Engine/Store/HTTP 作用域，清理不再只依赖正文 finally。这些是测试基础设施修改，无产品运行时或 tracing 行为变更。
 
 ## 共享执行逻辑回归
 

@@ -1,6 +1,6 @@
 /**
  * 验证自动 Skill 目录贯穿 Engine、ToolRunner、Runtime IPC、模型上下文和任务历史。
- * 1. launcher 创建正式服务代码的 Node stdio harness，等待退出；不伪称固定账户安装态 Sandbox 验收。
+ * 1. launcher 创建正式服务代码的 Node stdio harness，从启动起记录 stdio close，Engine/Store 接入测试作用域；不伪称固定账户安装态 Sandbox 验收。
  * 2. 每个用例隔离 workspace、宿主 home 和 Store，以脚本模型观察摘要先行、按需正文及失败 DAG 后继。
  * 3. 在第二任务改变文件，验证无需服务重启即可刷新；断言历史/replay 保存结果、trace 不含正文和元信息。
  * 所有模型、审批均离线，未调用真实 API、执行 Skill 脚本或运行 Evaluation。
@@ -11,9 +11,12 @@ import os from "node:os";
 import path from "node:path";
 import pino from "pino";
 import { expect, it, vi } from "vitest";
-import { Engine } from "../src/agent/engine.js";
+import {
+  TestEngine as Engine,
+  TestStore as Store,
+} from "./fixtures/managed-runtime.js";
+import { createRuntimeChildClose } from "./fixtures/runtime-child-close.js";
 import { Config } from "../src/config/config.js";
-import { Store } from "../src/sessions/store.js";
 import type { ModelProvider } from "../src/providers/model-provider.js";
 import type { AgentRuntimeLauncher } from "../src/sandbox/agent-runtime-launcher.js";
 import { temp } from "./fixtures/helpers.js";
@@ -41,25 +44,12 @@ function launcher(): AgentRuntimeLauncher {
         },
       );
       child.stderr.resume();
-      const exited = new Promise<"clean" | "orphaned">((resolve) => {
-        child.once("exit", (code) =>
-          resolve(code === 0 ? "clean" : "orphaned"),
-        );
-      });
 
       return {
         input: child.stdout,
         output: child.stdin,
         pid: child.pid!,
-        close: async () => {
-          child.stdin.end();
-          const timer = setTimeout(() => child.kill(), 5000);
-          try {
-            return await exited;
-          } finally {
-            clearTimeout(timer);
-          }
-        },
+        close: createRuntimeChildClose(child),
       };
     },
   };

@@ -6,6 +6,7 @@
  * 3. 超过主任务工具输出预算的报告保留未消费状态，以便恢复后重新读取；原代码文件不得被子任务改写。
  * 4. 主任务与子任务的 Responses 缓存 key 各自稳定且不同，其他协议不生成；主任务续聊仍沿用会话 key；Replay 保留子身份、请求 ID，并能读到子工具的参数/结果。
  *
+ * Engine/Store 接入测试作用域，超时也先取消任务并排空数据库，再删临时目录。
  * 此用例不验证 Sandbox/Runtime IPC、实际用户开关或 OS 级只读身份。
  */
 
@@ -13,8 +14,10 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import pino from "pino";
 import { expect, it } from "vitest";
-import { Engine } from "../src/agent/engine.js";
-import { Store } from "../src/sessions/store.js";
+import {
+  TestEngine as Engine,
+  TestStore as Store,
+} from "./fixtures/managed-runtime.js";
 import { Config } from "../src/config/config.js";
 import type { ModelProvider } from "../src/providers/model-provider.js";
 import { temp } from "./fixtures/helpers.js";

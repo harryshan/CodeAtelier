@@ -1,5 +1,16 @@
 # 初版验证记录
 
+## Windows 测试超时与过量并发治理（2026-10-21，Node 26.10.0）
+
+- 用户要求修到一次完整运行通过，以代码/夹具修复为主；本轮没有提高已有测试、hook、PowerShell 或进程树安全期限，没有删除测试、弱化行为断言或启用失败重试。
+- 原代码基线：本机 24 逻辑处理器，Vitest 默认最多 23 文件 worker，完整 `pnpm test` **897 通过、7 失败、1 跳过**，耗时 41.20 秒、累计测试 584.99 秒。失败为 Git CLI、permissions、settings-migration/runtime/store 的 15 秒期限，以及 Repair 的两项 10 秒 PowerShell 期限。
+- 原代码全套对照 `pnpm test --maxWorkers=4`：**123 文件、904 通过、1 跳过**，耗时 56.59 秒、累计测试 167.22 秒。文件内额外的 PowerShell、Node、SQLite/Runtime/subagent Worker 放大并发负载；不能把所有历史失败推定为同一根因。Windows 默认文件 worker 上限改为 `min(4, availableParallelism())`，CLI 仍可覆盖，Linux/macOS 默认值不变。
+- 修复独立确认的夹具关闭竞态：先把旧延后监听 exit 的逻辑放入共享 helper，三项受控事件回归全部失败；随后改为 spawn 后立即登记、保存提前退出结果、等待 stdio close、共享幂等关闭，并为不响应 EOF 的测试 Node 提供有界终止/确认。强制终止不返回 clean，缺失确认抛错。最终八项轻量回归覆盖异常和期限边界，不启动嵌套 Vitest。
+- Runtime Engine/subagent、MCP、Skill、耗时与 token 续聊使用统一关闭 helper；相关 Engine/Store 与 settings HTTP 改用已有托管作用域，取消先释放模拟模型 gate，再等待资源关闭、删除目录。生产源码与运行时 tracing 未改，不把测试 Node 的直接终止描述为产品进程树隔离。
+- 修复后原样 **`pnpm check` 完整通过**：TypeScript、ESLint、Prettier，**124 文件、912 通过、1 个原有平台跳过**，测试阶段 56.49 秒；server/Web、Windows/POSIX Runtime 构建均通过。首次检查在四处 lint 空行处停止，修正后从头完整执行；不是分项重跑拼接成功。
+- 显式双倍并发 **`pnpm test --maxWorkers=8` 全套通过**：124 文件、912 通过、1 跳过，35.84 秒。完整 **`pnpm test:e2e` 69/69 通过**，3.9 分钟，未分片或重试。构建保留已有 Zod 注释与 Web chunk 大小警告。
+- 独立只读审查未发现阻塞问题。日志在忽略目录 `.local/test-stability-{baseline,control,regression-before,targeted,check,stress8,e2e}.log`。Runtime 缺少 node/pnpm，以上通过获批 Broker 宿主工具链执行，不能作为安装态 Sandbox 或 Linux/macOS 验收；不承诺任意外部负载/任意 worker 数永不超时。未执行 Evaluation、真实模型、账户安装/Repair、真实配置迁移或当前服务重启。
+
 ## Sandbox 当前仓库信任（D161，Windows / Node 26.10.0）
 
 - 启动准备为当前仓库生成实例级 `safe.directory`，Windows 写入既有只读投影，MXC 写入私有 HOME；不改宿主永久配置、不扩张 ACL/网络权限，无 IPC 或原生组件变更。
