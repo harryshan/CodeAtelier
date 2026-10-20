@@ -5,6 +5,7 @@
  * 3. publish 复制展示索引并按任务状态收纳过程；仅复制引用，不重新读取历史正文。
  *    没有事件或任务/审批变化时直接复用上次视图。旧视图的 Map、Set 和记录不再修改。
  * 4. 流式条目移动到最后 delta 的位置；完整回复移除对应尝试，失败尝试仍可查看。
+ * 5. 子任务状态按主任务/子 ID 原位更新，重复检查点不追加提示；审批用量保留在原始事件和统计，不单独展示卡片。
  * 本类仅有会话内存副作用，不发起工具、审批或网络请求。
  */
 
@@ -73,6 +74,7 @@ function streamKey(event: Event) {
 export class TimelineProjection {
   private entries = new Map<number, TimelineEntry>();
   private streams = new Map<string, { id: number; text: string }>();
+  private subagentStates = new Map<string, { id: number; status: string }>();
   private completedStreams = new Set<string>();
   private interruptedStreams = new Set<string>();
   private cards = new Map<number, ToolOutputCardState>();
@@ -131,6 +133,15 @@ export class TimelineProjection {
       return;
     }
 
+    // 只调整展示；SessionViewModel 仍保存完整事件并独立累计所有用途的用量。
+    if (event.type === "model_usage" && event.data?.purpose === "approval") {
+      return;
+    }
+
+    if (this.appendSubagentState(event)) {
+      return;
+    }
+
     if (!visibleTypes.has(event.type)) {
       return;
     }
@@ -182,6 +193,32 @@ export class TimelineProjection {
       kind: "event",
       event,
     });
+  }
+
+  private appendSubagentState(event: Event): boolean {
+    if (
+      event.type !== "subagent_state" ||
+      event.bodyDeferred ||
+      typeof event.data?.id !== "string" ||
+      typeof event.data?.status !== "string"
+    ) {
+      return false;
+    }
+
+    const key = JSON.stringify([event.taskId, event.data.id]);
+    const previous = this.subagentStates.get(key);
+    if (previous?.status === event.data.status) {
+      return true;
+    }
+
+    // 保留首次出现的位置与 React key，避免每次检查点落盘都新增行或重新播报。
+    // 用新条目替换，不修改已经发布给 React 的历史视图。
+    const id = previous?.id ?? event.id;
+    this.subagentStates.set(key, { id, status: event.data.status });
+    this.entries.set(id, { key: `event:${id}`, kind: "event", event });
+    this.changed = true;
+
+    return true;
   }
 
   private appendOutput(event: Event): boolean {

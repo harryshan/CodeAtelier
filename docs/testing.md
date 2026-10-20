@@ -279,6 +279,8 @@ Responses 主任务请求包含 OpenAI 内置 `web_search`，Chat Completions / 
 
 ### 可选 subagent（任务级试用入口与双执行路径）
 
+前端通知降噪：`session-view.test.ts` 覆盖同一子任务重复检查点不新增条目、状态原位替换至各终态、不同子任务/主任务隔离、旧视图不可变、刷新与旧页前插重建；审批模型用量不显示额外卡片，但完整历史与精确 token 统计保留，通过/人工确认/拒绝结论和其它用途用量继续显示。`e2e/app.spec.ts` 验证历史中连续“调查中”仅呈现一条最终状态、提问/收集仍可见、审批结论不伴随用量卡片；既有真实审批刷新、拒绝和取消回归继续覆盖操作入口。
+
 最大输出 token：`engine-subagent.test.ts` 覆盖两角色/三协议每轮遵循任务配置、无元数据时仍发送上限及 token 模式按服务容量收紧；`agent-runtime-subagent.test.ts` 验证配置小于容量、字符模式按已知容量收紧、无元数据三种情况跨真实 Runtime IPC 到达模型，双方 Replay 均保存实际选项。`subagent-capacity.test.ts` 验证 21 轮研究持续使用传入的 16,384 上限，不恢复旧 2,048 固定配额或累计 token 限制。
 
 D159 搜索覆盖：`engine-subagent.test.ts` 参数化两角色/三协议，确认只有 Responses 追加精确内置 `web_search`，原生搜索记录可进入后续模型上下文及持久化，带 URL 的报告进入主反馈；`agent-runtime-subagent.test.ts` 覆盖三协议经真实 Runtime 子进程的同一声明分流，并核对搜索记录、引用注解和带 URL 报告跨 IPC 到下一轮输入、子上下文及主反馈，查询和来源不进入 trace；`runtime-subagent-ipc.test.ts` 按 Broker 启动配置校验白名单，拒绝禁用时搜索、同名函数、额外参数、其它内置工具与既有身份/租约伪造。`subagent-worker.test.ts` 保持本地伪造搜索拒绝，Responses 引用提取/协议错误仍由 provider 回归覆盖。安装态验收脚本同步声明断言但不自动运行；这些确定性测试不证明真实服务搜索质量或 OS 隔离。

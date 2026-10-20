@@ -5,7 +5,8 @@
  * 3. 已发布视图保持不变；追加期间旧正文不可重读，空增量复用视图。
  * 4. 替换与跨会话数据检查保证恢复和切换不会混合事件；旧页前插保留实时游标、去重及全部已加载事件。
  * 5. 终态任务统一折叠过程，活动任务保持展开，状态独立更新及历史重建保持一致且不丢中断提示。
- * 6. Broker 宿主命令输出按任务/调用归属聚合，覆盖交错输出、终态、旧无 ID 事件和历史重建；退役 Git 记录继续聚合且不丢嵌套结果。
+ * 6. 子任务状态原位更新且按主任务隔离；审批用量只退出时间线，不从历史或统计移除。
+ * 7. Broker 宿主命令输出按任务/调用归属聚合，覆盖交错输出、终态、旧无 ID 事件和历史重建；退役 Git 记录继续聚合且不丢嵌套结果。
  */
 
 import { expect, it } from "vitest";
@@ -43,6 +44,83 @@ function snapshot(events: Event[]): Snapshot {
     events,
   };
 }
+
+it.each(["completed", "failed", "cancelled", "interrupted"])(
+  "coalesces subagent checkpoints through %s without changing published views or history",
+  (status) => {
+    const model = new SessionViewModel("s");
+    const events = [
+      event(1, "subagent_state", { id: "reader", status: "running" }),
+      event(2, "notice", { text: "keep this notice" }),
+      event(3, "subagent_state", { id: "reader", status: "running" }),
+      event(4, "subagent_state", { id: "reviewer", status: "running" }),
+      {
+        ...event(5, "subagent_state", { id: "reader", status: "failed" }),
+        taskId: "other",
+      },
+      event(6, "subagent_state", { id: "reader", status }),
+    ];
+    const running = model.update(snapshot(events.slice(0, 2)));
+    const repeated = model.update(snapshot([events[2]]));
+    expect(repeated.timeline.entries).toEqual(running.timeline.entries);
+
+    const finished = model.update(snapshot(events.slice(3)));
+    expect(finished.timeline.entries).toHaveLength(4);
+    expect(finished.timeline.entries[0]).toMatchObject({
+      key: running.timeline.entries[0].key,
+      event: events[5],
+    });
+    expect(finished.timeline.entries[1]).toMatchObject({ event: events[1] });
+    expect(finished.timeline.entries[2]).toMatchObject({ event: events[3] });
+    expect(finished.timeline.entries[3]).toMatchObject({ event: events[4] });
+    expect(running.timeline.entries[0]).toMatchObject({ event: events[0] });
+    expect(finished.events).toEqual(events);
+    expect(new SessionViewModel("s").update(snapshot(events)).timeline).toEqual(
+      finished.timeline,
+    );
+
+    const paged = new SessionViewModel("s");
+    paged.update(snapshot(events.slice(3)));
+    expect(paged.prepend(snapshot(events.slice(0, 3))).timeline).toEqual(
+      finished.timeline,
+    );
+  },
+);
+
+it("keeps approval decisions but omits their usage cards without dropping accounting", () => {
+  const events = [
+    event(1, "model_usage", {
+      purpose: "approval",
+      input_tokens: 20,
+      output_tokens: 5,
+      total_tokens: 25,
+    }),
+    event(2, "approval_assessed", { decision: "approve", reason: "safe" }),
+    event(3, "approval_assessed", {
+      decision: "human review",
+      reason: "confirm",
+    }),
+    event(4, "approval_assessed", { decision: "reject", reason: "unsafe" }),
+    event(5, "model_usage", {
+      purpose: "task",
+      input_tokens: 30,
+      output_tokens: 10,
+      total_tokens: 40,
+    }),
+  ];
+  const view = new SessionViewModel("s").update(snapshot(events));
+  expect(
+    view.timeline.entries.map(
+      (entry) => entry.kind === "event" && entry.event.id,
+    ),
+  ).toEqual([2, 3, 4, 5]);
+  expect(view.events).toEqual(events);
+  expect(view.statistics(1000)).toMatchObject({
+    inputTokens: 50,
+    outputTokens: 15,
+    totalTokens: 65,
+  });
+});
 
 it("prepends history without losing live metadata, cursor or previously loaded events", () => {
   const model = new SessionViewModel("s");

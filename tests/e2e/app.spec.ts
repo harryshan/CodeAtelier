@@ -14,7 +14,7 @@
  * 10. 已结束任务默认折叠中间工具、通知和重试文本，输入、末次完整回复及恢复提示保留；活动任务仍完整显示。
  * 11. 累积较长时间线后检查滚动窗口外只保留高度占位，滚动到另一端才创建对应消息节点。
  * 12. 在手机视口检查完整侧栏由菜单按钮打开，并可通过会话选择、遮罩或 Escape 关闭。
- * 13. 输入框底部不显示冗余说明；subagent 默认关闭、单次勾选与失败保留；真实 HTTP/Worker 收集报告，活动任务刷新后开关锁定，历史进度可重建；旧服务不可用时隐藏入口。
+ * 13. 输入框底部不显示冗余说明；subagent 默认关闭、单次勾选与失败保留；真实 HTTP/Worker 收集报告，活动任务刷新后开关锁定，历史进度可重建且重复检查点不刷屏，审批只展示结论而非额外用量卡片；旧服务不可用时隐藏入口。
  *
  * 页面刷新或重连不能重新提交任务。这里不调用真实模型。
  */
@@ -293,6 +293,36 @@ test("rebuilds saved subagent selection and progress after refreshing a historic
         createdAt,
       },
     ];
+    body.events = [
+      ...body.events.slice(0, 2),
+      ...Array.from({ length: 12 }, () => ({
+        sessionId,
+        taskId,
+        createdAt,
+        type: "subagent_state",
+        data: { id: "review", status: "running" },
+      })),
+      ...body.events.slice(2),
+      {
+        sessionId,
+        taskId,
+        createdAt,
+        type: "model_usage",
+        data: {
+          purpose: "approval",
+          input_tokens: 20,
+          output_tokens: 5,
+          total_tokens: 25,
+        },
+      },
+      {
+        sessionId,
+        taskId,
+        createdAt,
+        type: "approval_assessed",
+        data: { decision: "approve", reason: "测试审批理由" },
+      },
+    ].map((event, index) => ({ ...event, id: index + 1 }));
     await route.fulfill({ response, json: body });
   });
 
@@ -315,6 +345,18 @@ test("rebuilds saved subagent selection and progress after refreshing a historic
     }),
   ).toBeVisible();
   await expect(page.locator("img[onerror]")).toHaveCount(0);
+  await expect(
+    page.getByRole("status").filter({ hasText: "只读子任务 review：" }),
+  ).toHaveCount(1);
+  await expect(
+    page.getByText("只读子任务 review：调查中", { exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByText("模型用量（服务实报）：", { exact: false }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("status").filter({ hasText: "测试审批理由" }),
+  ).toHaveCount(1);
   await expect(
     page.getByRole("status").filter({ hasText: "已收集子任务报告：review" }),
   ).toBeVisible();
