@@ -220,7 +220,11 @@ Engine、Store 及其上下文/schema 辅助模块、共享数据契约、测试
 
 `src/agent/model-loop.ts` 统一 Engine 与 AgentRuntimeService 的轮次推进、普通模型重试、任务内至多一次上下文超限恢复、连续 attempt 编号，以及响应保存后再执行工具的顺序。入口分别提供上下文准备、模型调用、响应保存和工具批次执行；宿主继续使用 Store 事务与 replay，Runtime 继续使用有序 IPC 事件和上下文保存队列。保存或工具失败不会进入模型重试，权限检查与进程边界不移动。
 
-`src/tools/model-tool-batch.ts` 共用 function_call 参数解析、DAG 节点构造和工具成功判定。宿主与 Runtime 共用普通 DAG 规则；Git CLI 没有额外独占校验。循环返回正常完成、普通批次耗尽轮次或无效图耗尽轮次：保留现存兼容差异，宿主对后两种结果均报步数上限；Runtime 在最后一轮无效图反馈后沿用自然完成，普通工具批次耗尽轮次仍报错。统一这项终态差异须另行作为行为修复处理。
+`src/agent/model-response.ts` 共用完整响应的接收顺序：基于请求视图校准、记录 usage、追加内存上下文、等待正文和锚点保存，最后发布非空回复。调用方保留原有取消检查、流式 flush、事件排空与 tracing；写入失败不重试，也不回滚已追加的内存历史。
+
+`src/tools/dispatch-model-tool.ts` 共用 subagent、历史读取和普通工具的节点分派。subagent await 在等待后才取得执行槽；环境回调保留宿主开始计时、Runtime 只取槽的既有区别。普通工具继续由 ToolRunner 在审批完成后请求槽位；分派层不捕获错误、不持有凭据、不移动权限边界。既有入口和工具适配器继续记录开始/结束、失败/取消、耗时与关联 ID；共享编排不新增重复 span 或敏感 trace 属性。
+
+`src/tools/model-tool-batch.ts` 共用 function_call 参数解析、DAG 节点构造、模型反馈 JSON 截断和工具成功判定。截断仍按原始 JSON 字符数，脱敏、报告消费条件和 Store/IPC 提交方式保留在各自入口。宿主与 Runtime 共用普通 DAG 规则；Git CLI 没有额外独占校验。循环返回正常完成、普通批次耗尽轮次或无效图耗尽轮次：保留现存兼容差异，宿主对后两种结果均报步数上限；Runtime 在最后一轮无效图反馈后沿用自然完成，普通工具批次耗尽轮次仍报错。统一这项终态差异须另行作为行为修复处理。
 
 `src/sandbox/execute-runner.ts` 保留暂停使用的 Push Runner 与 Capability Runner 实现。当前 `run_with_permissions`（含 Git CLI）在 Broker 使用宿主执行器，记录 `broker-command` instance 与 `broker.command` span；普通 Git CLI 复用 tool/command span。旧 Git kind 和输出仅供历史读取，不再生成专用执行记录。取消或结果未知不自动重放；trace 只保存关联 ID、耗时和状态，不写命令正文。
 

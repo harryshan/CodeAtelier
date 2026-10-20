@@ -4,7 +4,8 @@
  *
  * 1. ModelToolCall 描述计划所需的模型字段，buildModelToolGraph 复用工具及历史读取参数校验，按任务开关验证 subagent 协调调用，再交给 createToolGraph 验证依赖。
  * 2. Git CLI 与其他命令一样只按显式 DAG 依赖调度，不识别命令文本或提供 push 专属独占。
- * 3. toolSucceeded 同时检查工具错误、平面及 Git 写入嵌套退出码和多文件 failed/unknown，供 DAG、日志和 tracing 使用同一结论。
+ * 3. serializeToolOutput 按原始 JSON 字符数截断模型反馈；只处理序列化，脱敏及报告消费判定仍留在入口。
+ * 4. toolSucceeded 同时检查工具错误、平面及 Git 写入嵌套退出码和多文件 failed/unknown，供 DAG、日志和 tracing 使用同一结论。
  */
 
 import {
@@ -52,6 +53,19 @@ export function buildModelToolGraph(
   });
 
   return createToolGraph(nodes);
+}
+
+export function serializeToolOutput(result: unknown, outputChars: number) {
+  const serialized = JSON.stringify(result);
+  const complete = serialized.length <= outputChars;
+  const output = complete
+    ? serialized
+    : JSON.stringify({
+        truncated: true,
+        text: serialized.slice(0, outputChars),
+      });
+
+  return { output, complete };
 }
 
 export function toolSucceeded(result: any) {

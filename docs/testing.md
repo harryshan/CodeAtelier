@@ -24,6 +24,9 @@ Windows `process-tree.test.ts` 用真实 Node 父子进程和继承的输出句�
 - Responses prompt cache key（D160）：`prompt-cache.test.ts` 覆盖分组稳定性、交叉调用、子任务/会话隔离、错误/取消与非 Responses 原行为、trace 指纹及缺失 usage；`provider.test.ts` 通过本机 HTTP/SSE 验证实际发送/省略；`engine-subagent.test.ts` 验证宿主主/子任务、Replay 和续聊；`runtime-capability-core.test.ts` 验证 Broker 可信身份、实例变化和辅助用途排除；`agent-runtime-subagent.test.ts` 验证真实 Runtime 子进程跨 IPC 后实际收到的 key 和 Replay。测试不验证真实服务命中改善。
 
 - `model-loop.test.ts`：响应先保存再执行工具、轮次推进、普通重试上限、超限恢复的任务级次数及 attempt 连续编号、保存/工具失败不重放、取消与无效图/正常工具耗尽轮次的区分。
+- `model-response.test.ts`：请求视图校准在输出追加前、正文和锚点保存顺序、缺失 usage/空回复、持久化失败停止且不重试。
+- `dispatch-model-tool.test.ts`：subagent 开关与结构化操作校验、await 等待期间不占槽、等待失败不取槽、历史读取先取槽、普通工具审批阶段不预占槽、read_file trace 传递、错误原样传播。
+- `tool-output.test.ts`：JSON 截断的精确字符边界、原始结果不修改、序列化失败保持抛出。
 - `model-tool-batch.test.ts`：两种执行模式的节点解析与依赖一致、Git CLI 不额外独占批次且保留显式依赖、退出码及多文件 failed/unknown 阻断 DAG 后继。
 - `execute-runner.test.ts`：保留但暂停使用的 Push Runner 与 Capability Runner 的实例标识、进程元数据、事件/账本一致、非零退出、启动前后失败、取消、unknown 优先级、命令构造失败和拒绝 host fallback；不能视作现行产品路径验收。
 - `engine.test.ts`、`agent-runtime-service.test.ts`、`agent-runtime-engine.test.ts` 继续验证生产组装、真实 Node 子进程、工具结果回传、审批和取消记录；Engine 回归还核对已验证的 Runtime PID 在 `running` 与 `completed` execution instance 中一致。这些测试不替代专用账户提升环境验收。

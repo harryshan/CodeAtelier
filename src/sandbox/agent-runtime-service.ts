@@ -5,7 +5,7 @@
  *    Skill 目录摘要由 Broker 提供，按需正文通过名称查询，不读取专用账户 home 或投影宿主技能根；MCP 仅接收公开服务用途摘要，不接收连接配置。
  * 1. start 接受 Broker 绑定任务的安全设置，恢复 session 上下文并在工作区生成指令和文件工具。
  * 2. SessionTokenCalibration 在首次检查前恢复 Broker 提供的实报锚点，响应保存后经 IPC 保存新锚点；ContextManager 在 Runtime 内计量/压缩，快照读写经 RuntimeSessionClient 回到 Broker。
- * 3. model-loop 共用轮次、有界重试和上下文超限恢复，model-tool-batch 共用工具计划与结果判定；每轮模型调用经 RuntimeModelProvider 代理；工具 DAG 先并行准备已就绪节点，取得有界 worker 槽后执行文件编辑、普通命令或已获批准的 Broker 命令。
+ * 3. model-loop 共用轮次、有界重试和上下文超限恢复，model-response 共用响应接收顺序，dispatch-model-tool 共用节点分派，model-tool-batch 共用工具计划、结果截断与判定；每轮模型调用经 RuntimeModelProvider 代理；工具 DAG 先并行准备已就绪节点，取得有界 worker 槽后执行文件编辑、普通命令或已获批准的 Broker 命令。
  *    Runtime 普通命令按调用注入独立 tool_review 主模型代理，不设总运行时限；复查只返回等待/停止，usage 与决定经常规事件持久化。
  * 4. UI/session 事件按连接排队；无效 DAG 回传修正，实际取得执行槽的工具和 read_file 内部阶段带单调时间戳上报，由 Broker 统一组装并归档；工具结果增量保存，未知副作用不重放。
  * 5. 已选任务在 Runtime 内运行独立只读 Worker，按 Broker 下发能力向子模型追加内置搜索并继承任务输出设置及已知容量约束，子状态、问题回执、模型/租约及固定无正文的 trace 经任务绑定 IPC；收尾确认线程退出后再由 Broker 清理。
@@ -46,8 +46,11 @@ import type {
 import type { RuntimeExecutionIdentity } from "./runtime-capability-core.js";
 import { RuntimeModelProvider } from "./runtime-model-provider.js";
 import { runModelLoop } from "../agent/model-loop.js";
+import { acceptModelResponse } from "../agent/model-response.js";
+import { dispatchModelTool } from "../tools/dispatch-model-tool.js";
 import {
   buildModelToolGraph,
+  serializeToolOutput,
   toolSucceeded,
 } from "../tools/model-tool-batch.js";
 import { RuntimeSessionClient } from "./runtime-session-client.js";
@@ -404,27 +407,24 @@ export class AgentRuntimeService {
           );
         },
         acceptResponse: async (response) => {
-          const anchor = calibration.observe(
-            response.usage?.input_tokens,
+          await acceptModelResponse(response, {
+            input: currentInput,
             requestInput,
             instructions,
             tools,
-          );
-          if (response.usage) {
-            events.emit("model_usage", {
-              ...response.usage,
-              purpose: "task",
-              step,
-              attempt,
-            });
-          }
-
-          currentInput.push(...response.output);
-          await session.appendContext(this.identity.sessionId, response.output);
-          await calibration.save(anchor);
-          if (response.text) {
-            events.emit("assistant", { text: response.text, step, attempt });
-          }
+            calibration,
+            recordUsage: (usage) =>
+              events.emit("model_usage", {
+                ...usage,
+                purpose: "task",
+                step,
+                attempt,
+              }),
+            appendContext: (output) =>
+              session.appendContext(this.identity.sessionId, output),
+            emitAssistant: (text) =>
+              events.emit("assistant", { text, step, attempt }),
+          });
         },
         complete: () => events.flush(),
         executeTools: async (calls) => {
@@ -523,60 +523,36 @@ export class AgentRuntimeService {
 
                     const readFileSpans = new Map<ReadFileTraceStage, string>();
                     try {
-                      if (node.name === "subagent") {
-                        if (!input.settings.subagentsEnabled || !subagents) {
-                          throw new Error("当前任务未开启 subagent。");
-                        }
-
-                        const action = (
-                          node.arguments as { request?: SubagentAction }
-                        ).request;
-                        if (!action) {
-                          throw new Error("subagent 缺少结构化操作。");
-                        }
-
-                        if (action.action !== "await") {
-                          await startExecution();
-                        }
-
-                        result = await subagents.execute(action);
-                        if (action.action === "await") {
-                          // await 的实际等待发生在取得执行槽之前，不能事后记录成工具执行耗时。
-                          await acquireExecutionSlot();
-                        }
-                      } else if (node.name === historyDefinition.name) {
-                        await startExecution();
-                        result = await readContextHistoryAsync(
-                          session,
-                          this.identity.sessionId,
-                          node.arguments,
-                          input.settings.outputChars,
-                        );
-                      } else {
-                        result = await runner.forCall(node.callId).execute(
-                          node.name,
-                          node.arguments,
-                          async () => {
-                            await startExecution();
-                          },
-                          node.name === "read_file"
-                            ? (stage, state, details) => {
-                                if (state === "started") {
-                                  readFileSpans.set(
-                                    stage,
-                                    trace.startToolStage(stage, node.callId),
-                                  );
-                                } else {
-                                  const handle = readFileSpans.get(stage);
-                                  if (handle) {
-                                    trace.endToolStage(handle, state, details);
-                                    readFileSpans.delete(stage);
-                                  }
-                                }
-                              }
-                            : undefined,
-                        );
-                      }
+                      result = await dispatchModelTool(node, {
+                        subagentsEnabled:
+                          input.settings.subagentsEnabled ?? false,
+                        subagents,
+                        runner,
+                        startExecution,
+                        // await 等待后仅取得槽，不把等待事后记录为工具执行耗时。
+                        afterSubagentWait: acquireExecutionSlot,
+                        readHistory: (arguments_) =>
+                          readContextHistoryAsync(
+                            session,
+                            this.identity.sessionId,
+                            arguments_,
+                            input.settings.outputChars,
+                          ),
+                        traceReadFile: (stage, state, details) => {
+                          if (state === "started") {
+                            readFileSpans.set(
+                              stage,
+                              trace.startToolStage(stage, node.callId),
+                            );
+                          } else {
+                            const handle = readFileSpans.get(stage);
+                            if (handle) {
+                              trace.endToolStage(handle, state, details);
+                              readFileSpans.delete(stage);
+                            }
+                          }
+                        },
+                      });
                     } catch (error) {
                       signal.throwIfAborted();
                       result = {
@@ -822,13 +798,7 @@ class OrderedContextPersistence {
 
   save(node: ToolGraphNode, result: unknown) {
     this.pending = this.pending.then(async () => {
-      let output = JSON.stringify(result);
-      if (output.length > this.outputChars) {
-        output = JSON.stringify({
-          truncated: true,
-          text: output.slice(0, this.outputChars),
-        });
-      }
+      const { output } = serializeToolOutput(result, this.outputChars);
 
       const event = {
         name: node.name,

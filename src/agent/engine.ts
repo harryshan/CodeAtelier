@@ -8,7 +8,7 @@
  * 3. resume 继续最后一个可恢复任务；cancel 处理用户取消，close 处理服务关闭。
  * 4. createModelProvider 按主/辅助协议和密钥创建客户端；主/子任务按协议裁剪搜索，Responses 由宿主/Broker 绑定稳定 cache key 后进入 tracing/Replay；子模型继承任务输出上限和已知容量约束，捕获同时保存可信 subagentId/subagentRequestId。
  *    首条 prompt 先用辅助模型生成标题；run 再读取历史和项目规则，准备工具及上下文预算；首次压缩检查前恢复会话 token 锚点，响应保存后更新锚点，Runtime 经 Broker 共用持久化。
- * 5. model-loop 共用轮次、重试和停止控制，model-tool-batch 共用计划与成功判断；Engine 保留宿主事务、replay 与 tracing。为压缩提供 ToolRunner 的安全文件哈希探测；每轮记录上下文准备和请求计量、模型重试、实际模型请求和响应处理，再记录服务实报用量。完整响应保存后校验工具 DAG，节点先完成准备/审批，实际执行才取得有界 worker 槽。
+ * 5. model-loop 共用轮次、重试和停止控制，model-response 共用响应接收顺序，dispatch-model-tool 共用节点分派，model-tool-batch 共用计划、结果截断与成功判断；Engine 保留宿主事务、replay 与 tracing。为压缩提供 ToolRunner 的安全文件哈希探测；每轮记录上下文准备和请求计量、模型重试、实际模型请求和响应处理，再记录服务实报用量。完整响应保存后校验工具 DAG，节点先完成准备/审批，实际执行才取得有界 worker 槽。
  * 6. Windows/MXC Runtime 通过共同 launcher/IPC 接入；实例 mode 与 pidKind 保留平台真实归因。Sandbox Runtime 已有能力内工具免审批；run_with_permissions 的获批命令交给 Broker 宿主进程并留下未隔离的执行记录，Git CLI 使用相同命令路径。一次性两阶段 IPC 授权把命令审批等待留在执行队列外；Push/Capability Runner 代码暂存但不走产品路径。
  *    项目记忆每任务提供当前项目全部有效条目的 ID/摘要，宿主/Runtime/fallback 共用无查询参数的目录读取，正文按需获取。
  *    Skill 每任务在 Broker 扫描预设目录，模型先看到摘要、工具按需加载正文；宿主/Runtime/fallback 共用该目录且不授权脚本。
@@ -52,8 +52,11 @@ import {
 } from "./subagent-contracts.js";
 import { createInstructions } from "./instructions.js";
 import { runModelLoop } from "./model-loop.js";
+import { acceptModelResponse } from "./model-response.js";
+import { dispatchModelTool } from "../tools/dispatch-model-tool.js";
 import {
   buildModelToolGraph,
+  serializeToolOutput,
   toolSucceeded,
 } from "../tools/model-tool-batch.js";
 import { retryModel } from "../providers/retry.js";
@@ -2816,26 +2819,18 @@ export class Engine {
           try {
             flush();
             signal.throwIfAborted();
-            const anchor = calibration.observe(
-              response.usage?.input_tokens,
+            await acceptModelResponse(response, {
+              input,
               requestInput,
               instructions,
               tools,
-            );
-            if (response.usage) {
-              recordUsage(response.usage, "task");
-            }
-
-            input.push(...response.output);
-            await this.store.appendContextAsync(
-              session.id,
-              response.output,
-              task.id,
-            );
-            await calibration.save(anchor);
-            if (response.text) {
-              emit("assistant", { text: response.text, step, attempt });
-            }
+              calibration,
+              recordUsage: (usage) => recordUsage(usage, "task"),
+              appendContext: (output) =>
+                this.store.appendContextAsync(session.id, output, task.id),
+              emitAssistant: (text) =>
+                emit("assistant", { text, step, attempt }),
+            });
 
             await this.drainEvents(task.id);
             this.traces.endSpan(responseSpan, "ok", {
@@ -2862,17 +2857,15 @@ export class Engine {
             result: any,
             executionStartedAt?: number,
           ) => {
-            let output = JSON.stringify(result);
-            const completeOutput = output.length <= settings.outputChars;
-
-            if (!completeOutput) {
-              output = JSON.stringify({
-                truncated: true,
-                text: output.slice(0, settings.outputChars),
-              });
-            }
-
-            output = redactJson(output, this.config.errorSecrets());
+            const serialized = serializeToolOutput(
+              result,
+              settings.outputChars,
+            );
+            const completeOutput = serialized.complete;
+            const output = redactJson(
+              serialized.output,
+              this.config.errorSecrets(),
+            );
             const durationMs =
               executionStartedAt === undefined
                 ? 0
@@ -3171,46 +3164,21 @@ export class Engine {
                     };
 
                     try {
-                      if (node.name === "subagent") {
-                        if (!task.subagentsEnabled || !subagents) {
-                          throw new Error("当前任务未开启 subagent。");
-                        }
-
-                        const action = (
-                          node.arguments as { request?: SubagentAction }
-                        ).request;
-                        if (!action) {
-                          throw new Error("subagent 缺少结构化操作。");
-                        }
-
-                        if (action.action !== "await") {
-                          await startExecution();
-                        }
-
-                        result = await subagents.execute(action);
-                        if (action.action === "await") {
-                          await startExecution();
-                        }
-                      } else if (node.name === historyDefinition.name) {
-                        await startExecution();
-                        result = await readContextHistoryAsync(
-                          this.store,
-                          session.id,
-                          node.arguments,
-                          settings.outputChars,
-                        );
-                      } else {
-                        result = await runner
-                          .forCall(node.callId)
-                          .execute(
-                            node.name,
-                            node.arguments,
-                            startExecution,
-                            node.name === "read_file"
-                              ? traceReadFile
-                              : undefined,
-                          );
-                      }
+                      result = await dispatchModelTool(node, {
+                        subagentsEnabled: task.subagentsEnabled,
+                        subagents,
+                        runner,
+                        startExecution,
+                        afterSubagentWait: startExecution,
+                        readHistory: (arguments_) =>
+                          readContextHistoryAsync(
+                            this.store,
+                            session.id,
+                            arguments_,
+                            settings.outputChars,
+                          ),
+                        traceReadFile,
+                      });
                     } catch (error: any) {
                       if (signal.aborted) {
                         throw error;
