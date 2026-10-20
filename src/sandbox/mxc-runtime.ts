@@ -264,6 +264,7 @@ export class MxcSandboxRuntime implements SandboxRuntime {
         prepared.bundle,
         this.journalDirectory,
         prepared.workspace,
+        input.signal,
       );
       let launching = false;
       let handle: MxcHandle | undefined;

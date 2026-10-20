@@ -2,7 +2,7 @@
  * 为 Windows/MXC 启动准备生成实例专用的 Git global 配置，不执行 Git 或读取宿主配置。
  * 1. metadata 只将缺失路径视为非仓库；权限/I/O 错误交由启动器的失败与清理路径处理。
  * 2. workspaceGitConfig 检测工作目录自身的 .git（目录或 worktree gitfile），以及裸库布局。
- * 3. 只写规范化真实工作目录的 safe.directory，正确转义 Git 配置字符串，不信任父目录或通配符。
+ * 3. 只写规范化真实工作目录的 safe.directory，不信任父目录或通配符；quoteGitConfigValue 同时供身份序列化转义配置字符串。
  * 返回配置文本，由调用方独占写入逐实例文件并随实例清理；无共享配置写入或新增文件访问授权。
  */
 
@@ -43,12 +43,16 @@ export async function workspaceGitConfig(workspace: string): Promise<string> {
     directory += "/.";
   }
 
-  const escaped = directory
+  return `[safe]\n\tdirectory = ${quoteGitConfigValue(directory)}\n`;
+}
+
+export function quoteGitConfigValue(value: string) {
+  const escaped = value
     .replaceAll("\\", "\\\\")
     .replaceAll('"', '\\"')
     .replaceAll("\n", "\\n")
     .replaceAll("\t", "\\t")
     .replaceAll("\b", "\\b");
 
-  return `[safe]\n\tdirectory = "${escaped}"\n`;
+  return `"${escaped}"`;
 }

@@ -1,5 +1,13 @@
 # 初版验证记录
 
+## Sandbox 宿主提交身份继承（D161 追加，Windows / Node 26.10.0）
+
+- Windows/MXC 的实例配置继承宿主当前工作目录生效的 user.name/email，不复制认证/签名配置或密钥；原 safe.directory 规则不变。身份不写日志/trace，读取归入启动准备 span。
+- 新增 5 项真实 Git 回归，覆盖 includeIf/local/linked worktree、身份缺失/空值/非仓库、配置注入转义、继承环境污染、缺少 Git、预先取消、坏配置和输出超限错误脱敏；以实例配置实际 commit 核对 author/committer。Windows/MXC 启动器检查身份内容及正常清理。
+- 原样 `pnpm check` 完整通过：TypeScript、ESLint、Prettier，**125 文件、917 通过、1 个原有跳过**，测试阶段 55.77 秒；server/Web、Windows/POSIX Runtime 构建均通过，保留既有 Zod 注释和 Web chunk 大小警告。日志 `.local/git-identity-check.log` 不提交。
+- 独立只读审查无阻塞。尚未专项覆盖 Git 运行中取消/超时后的实例清理；PATH 的文件系统等待不受子进程 5 秒时限约束，信任前提及快照语义见 D161 追加。
+- 验证由获批 Broker 宿主工具链执行，不等同专用账户/跨平台安装态验收；本轮没有 UI/HTTP 变更，未运行 e2e、Evaluation、真实联网认证、安装/Repair 或服务重启。更新后端后的新任务生效，不为此单独 Repair。
+
 ## Windows 测试超时与过量并发治理（2026-10-21，Node 26.10.0）
 
 - 用户要求修到一次完整运行通过，以代码/夹具修复为主；本轮没有提高已有测试、hook、PowerShell 或进程树安全期限，没有删除测试、弱化行为断言或启用失败重试。

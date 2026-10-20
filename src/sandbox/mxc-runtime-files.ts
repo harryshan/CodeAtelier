@@ -1,7 +1,7 @@
 /**
  * 准备 MXC Runtime 的只读代码快照、私有可写目录与 Broker 持久启动标记。
  * 1. 固定三个 bundle 文件及 SHA-256 manifest，拒绝任意 manifest 路径、符号链接与损坏产物。
- * 2. prepareMxcFiles 在系统临时目录建立独立实例；代码不放在获准工作区或 HOME 下；私有 HOME 中的 Git global 配置仅信任本次工作目录仓库。
+ * 2. prepareMxcFiles 在系统临时目录建立独立实例；代码不放在获准工作区或 HOME 下；私有 HOME 中的 Git global 配置仅信任本次工作目录仓库并继承宿主 name/email，不复制认证配置。
  * 3. 启动标记只在 Broker 数据目录中保存，进程确认退出后 cleanup 才删除；崩溃残留由 Runtime fail-closed 处理。
  * 不按旧 PID 杀进程，不自动删除未知实例，不把摘要当成第三方代码签名。构建目录属于可信应用安装。
  */
@@ -19,7 +19,7 @@ import {
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { workspaceGitConfig } from "./git-workspace-trust.js";
+import { sandboxGitConfig } from "./sandbox-git-config.js";
 
 export const MXC_RUNTIME_FILES = [
   "agent-runtime.mjs",
@@ -76,6 +76,7 @@ export async function prepareMxcFiles(
   bundle: Map<string, Buffer>,
   journalDirectory: string,
   workspace: string,
+  signal?: AbortSignal,
 ) {
   await mkdir(journalDirectory, { recursive: true, mode: 0o700 });
   const root = await realpath(
@@ -92,7 +93,7 @@ export async function prepareMxcFiles(
 
     await writeFile(
       path.join(home, ".gitconfig"),
-      await workspaceGitConfig(workspace),
+      await sandboxGitConfig(workspace, { signal }),
       {
         flag: "wx",
         mode: 0o600,

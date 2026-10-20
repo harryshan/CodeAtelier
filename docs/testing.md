@@ -203,6 +203,8 @@ create:true 嵌套创建、已有目标及最后一次预检之后出现目标�
 
 ### Git CLI（D155）
 
+`sandbox-git-identity.test.ts` 使用隔离配置和真实 Git 验证 includeIf/local/worktree 身份、非仓库/空/缺失字段、配置字符串注入防护、环境污染隔离、缺少 Git、取消、坏配置和超大输出错误脱敏，以及投影身份下实际 commit 的 author/committer；只复制姓名/邮箱、不改变宿主文件。Windows/MXC 启动器另验证实例配置包含身份且随实例清理。
+
 主要测试：git-cli.test.ts、tool-schema.test.ts、model-tool-batch.test.ts、agent-runtime-tools.test.ts、agent-runtime-engine.test.ts、runtime-ipc.test.ts、e2e/app.spec.ts。
 
 Git CLI 走通用命令：临时仓库状态/差异/add/commit/log/show/branch、本地 bare remote push、非零退出、拒绝后索引不变、输出 callId、Broker 宿主审批/归因、成功写入与启动后取消的副作用标记。宿主/Runtime 均不声明或执行旧 Git 工具，旧 IPC operation 与握手拒绝；CLI 不独占批次。浏览器验证普通命令审批、输出/退出码同卡及刷新回读。session-view/tool-projection/runtime-session-client 回归保留历史 Git 输出与嵌套结果读取、上下文恢复，不允许重新执行。Windows restricted token、真实 remote/凭据/helper 和跨平台 CLI 兼容须另行验证。

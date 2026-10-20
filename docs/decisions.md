@@ -1133,10 +1133,19 @@
 ## D161：Sandbox 启动时信任当前工作目录仓库
 
 - 状态：用户要求在 Sandbox 启动时为 Git 仓库配置 trust folder，解决运行账户与目录 owner 不同的问题。
-- 决定：在 Broker 启动准备阶段生成实例级 global `safe.directory`，仅信任当前工作目录的真实路径；识别 `.git` 目录、gitfile/worktree 与裸库布局，非仓库不添加。Windows 复用只读配置投影，POSIX 使用私有 HOME 配置；不修改宿主/共享账户永久配置，不使用通配符，不遍历父仓库，不读取宿主 Git 配置。
+- 决定：在 Broker 启动准备阶段生成实例级 global `safe.directory`，仅信任当前工作目录的真实路径；识别 `.git` 目录、gitfile/worktree 与裸库布局，非仓库不添加。Windows 复用只读配置投影，POSIX 使用私有 HOME 配置；不修改宿主/共享账户永久配置，不使用通配符，不遍历父仓库；最初不读取宿主 Git 配置，后续身份继承按下段白名单扩展。
 - 边界：不增加 ACL、网络、凭据权限，不恢复 Git 专用工具或隐式宿主转发；仓库配置和 hooks 仍需作为可信项目处理。所有权修复不推导 NUL 或跨平台安装态全面通过。
 - 生命周期与观测：检测/写入失败沿用原启动失败及清理规则；配置随实例删除，并发实例不共享写入。复用 Windows prepare_access 与 MXC launch 的既有 task/instance 关联、耗时、失败/取消日志和 span，不增加记录路径或配置正文的新 trace。
 - 部署：仅 Broker TypeScript 变更，无 IPC 或原生组件变更；更新后端后的新任务生效，不自动重启服务或 Repair。
+
+### D161 追加：继承宿主提交身份，认证仍留在 Broker
+
+- 用户接受分工：Sandbox 的本地提交使用宿主姓名/邮箱；fetch/pull/push 认证继续由获批的宿主命令处理，不实现 credential 代理或复制凭据。
+- 启动准备由宿主 Git 在工作目录查询生效的 `user.name`、`user.email`，包括 include/includeIf、local/worktree；结果作为实例启动快照写入 global 配置。之后工作区 local/worktree 仍可覆盖它；删除 local 值则回落启动快照，下次任务重新读取。非仓库也继承身份，缺少字段不推断默认值。
+- 只传递这两个字段，不复制 include 路径、credential/helper、HTTP 认证、SSH/GPG 密钥、user.signingKey 或签名设置；不改宿主/共享账户永久配置，不新增 ACL/网络权限。
+- 固定 argv、绝对 PATH Git executable、无 shell；保留宿主配置文件入口，去除其它 GIT 仓库定位/命令覆盖/trace 环境。单键查询 5 秒、64 KiB、支持取消；Git 未安装或键不存在跳过，配置错误/超限/其它执行错误沿原启动失败与清理规则，错误不携带 stdout/stderr/cause。
+- 前提是宿主 PATH 与 Git 安装可信；绝对 PATH 查找不是可执行文件安全认证。5 秒限制针对单次 Git 子进程，不覆盖 PATH stat/access 等文件系统等待；name/email 顺序读取不是配置并发变更下的原子快照。
+- 复用 prepare_access/launch 的开始/结束、耗时、关联 ID 及失败/取消 trace；不记录姓名/邮箱。仅 Broker 变更，不要求单独 Repair，更新后端后的新任务生效。
 
 ## D155：移除专用 Git 工具，统一使用 CLI
 

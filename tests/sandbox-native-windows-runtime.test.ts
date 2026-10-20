@@ -4,7 +4,7 @@
  *
  * 1. 二进制帧固定 magic/version、UTF-8 字符串、超时和 argv，拒绝相对路径及超限字段。
  * 2. selfCheck 只有 state 中原生二进制、Node 24 或 26、entry/三种 Worker 摘要、启动恢复排空与原生自检全部成功时才报告 sandbox level。
- * 3. prepareAccess 在 manifest 之前同时创建仅信任当前仓库的只读 Git 投影和逐实例可写 HOME/TEMP，cleanup 删除两者。
+ * 3. prepareAccess 在 manifest 之前同时创建仅信任当前仓库的只读 Git 投影（仅继承宿主 name/email）和逐实例可写 HOME/TEMP，cleanup 删除两者。
  * 4. state 缺失、摘要篡改和原生拒绝都在 Runtime 启动前失败，允许 Broker 安全选择宿主 fallback。
  * 5. Agent Runtime 启动帧只携带 Broker 身份、nonce 和已安装 Node 路径，不允许选择 Runtime kind 或任意 entry argv；固定阶段诊断只提取白名单枚举。
  */
@@ -313,6 +313,9 @@ describe.skipIf(process.platform !== "win32")(
         const readable = await temp();
         const writable = await temp();
         const runtime = new NativeWindowsSandboxRuntime({
+          ...process.env,
+          GIT_CONFIG_GLOBAL: hostConfig,
+          GIT_CONFIG_NOSYSTEM: "1",
           CODEATELIER_SANDBOX_STATE_PATH: path.join(root, "installation.state"),
           CODEATELIER_SANDBOX_NATIVE_ROOT: path.join(root, "native"),
           USERPROFILE: root,
@@ -343,9 +346,9 @@ describe.skipIf(process.platform !== "win32")(
         await expect(
           readFile(prepared.gitGlobalConfigPath!, "utf8"),
         ).resolves.toBe(
-          repository
+          (repository
             ? `[safe]\n\tdirectory = "${root.replaceAll("\\", "/")}"\n`
-            : "",
+            : "") + '[user]\n\tname = "private-host-name"\n',
         );
         expect(prepared.readOnlyRoots).toEqual(
           expect.arrayContaining([expect.any(String), readable]),

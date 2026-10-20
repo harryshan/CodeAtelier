@@ -14,7 +14,7 @@
 
 - Runtime 及其普通命令子进程在专用低权限本地账户 `CodeAtelierSandbox`、restricted token 和 Job 中运行；模型 API key、会话数据库、审批策略均保留在宿主 **Broker Host**。
 - 每个实例使用非交互式 window station 内的私有 desktop；同一宿主登录会话的并发实例可共用 station，因此它不构成不同任务间的安全隔离。
-- Broker 按任务生成 AccessManifest，只投影当前工作区、显式授权的读写根、运行时依赖及一个实例专用的只读 Git global 配置文件（启动时若工作目录是仓库，仅加入该真实路径的 `safe.directory`，解决账户与 owner 不同的所有权拒绝；非仓库为空）；不再向 Runtime 投影宿主 Git global/include 文件。实例 token 同时包含 root capability 和 `Everyone` restricting SID，后者会使已有 Everyone 可写 ACL 成为额外写入路径。
+- Broker 按任务生成 AccessManifest，只投影当前工作区、显式授权的读写根、运行时依赖及一个实例专用的只读 Git global 配置文件（启动时若工作目录是仓库，仅加入该真实路径的 `safe.directory`，解决账户与 owner 不同的所有权拒绝；非仓库不添加信任项，另在启动时继承宿主 user.name/email，认证凭据与签名密钥不复制）；不再向 Runtime 投影宿主 Git global/include 文件。实例 token 同时包含 root capability 和 `Everyone` restricting SID，后者会使已有 Everyone 可写 ACL 成为额外写入路径。
 - 按专用账户 SID 安装的持久 WFP 规则默认阻止直接网络。普通 Runtime 没有命令网络；模型请求只能经 Broker。越界命令须用 `run_with_permissions` 提交完整命令和理由，经三级审批后由 Broker 以宿主用户权限执行。该命令不受 Sandbox 额外文件根或网络 host 限制。
 - Git CLI 和普通命令相同：Runtime 内执行不自动转发；需宿主文件、网络或凭据时显式用 `run_with_permissions`。旧 action/路径/revision/upstream/OID/ref 校验与 hook/签名禁用不再存在，命令按实际身份读取配置、执行 helper/hook。WFP 不会因 Git 临时放宽。
 - Runtime 内普通命令的输出先写入实例私有 TEMP，再按固定间隔回传；单次临时输出达到 64 MiB 会终止该命令并报错。临时文件在命令结束后删除，Broker 宿主命令不使用这一传输路径；Git CLI 随所选命令路径处理。

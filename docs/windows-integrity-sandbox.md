@@ -145,7 +145,7 @@ runner 为 restricted token 设置显式 default DACL，仅向共享账户 SID �
 
 - `readWriteRoots`：当前工作区、用户明确添加的可写目录、实例私有临时目录。
 - `readOnlyRoots`：用户明确添加的源码/工具目录、产品固定 Runtime/工具依赖；这是新增授权清单，不代表专用账户没有其他既有只读 ACL。
-- `gitConfigFiles`：逐租约 global config 文件，仅含当前仓库的 `safe.directory`（非仓库为空）；宿主实际 global/include 图不再投影给 Runtime。
+- `gitConfigFiles`：逐租约 global config 文件，含当前仓库的 `safe.directory` 和宿主 user.name/email 白名单值（非仓库无信任项）；宿主实际 global/include 图不再投影给 Runtime。
 - 每项包含规范路径、访问模式、卷标识、`FILE_ID_128`、重解析状态、原始 DACL 摘要和本次 ACE delta。
 
 Broker 先以不跟随重解析点的方式规范化对象并记录卷/file ID，supervisor 在安装 ACE 前重新打开、复核并在实例期保留原对象 handle。每个活动根都为专用账户 SID 添加共享的 normal-side 读写候选 ACE；可写根另外获得该实例独有的 root capability SID ACE，restricted token 放入本实例 execution/root SID 和 Everyone。
@@ -164,7 +164,7 @@ UI 必须同时显示显式 read roots 和“机器既有 ACL 可能额外允许
 
 Git CLI 使用 `run_command` 或显式获批的 `run_with_permissions`，不自动路由到 Broker。旧 action、工作区根/路径/revision/敏感模板/upstream/OID/ref 校验已移除；hooks、helper、签名、外部 diff 和交互行为由 CLI/配置决定，不自动禁用。push 无专属调度。Windows 安装态直接 Git 的 NUL/所有权兼容性未重新验证，必要时应明确申请宿主执行，不能从宿主单测推导受限账户可运行。
 
-Agent Runtime 不再获得宿主 global/include 配置图的 ACL 投影。原生启动协议仍要求一个 `GIT_CONFIG_GLOBAL` 路径，因此 Broker 为每个租约创建只读文件，置于 Runtime 不可写的投影目录。按 D161，启动准备识别工作目录自身的 `.git` 目录/gitfile 或裸库布局，将真实路径写入 `safe.directory`；非仓库为空，不自动信任父仓库或子仓库，不使用通配符，也不修改宿主/共享账户永久配置。该所有权例外不扩大 ACL 或网络权限，配置随实例清理。Runtime 的 `HOME`、`USERPROFILE` 和 `XDG_CONFIG_HOME` 仍指向私有目录。旧精确配置图解析器、Push Runner、CONNECT relay 和 askpass 代码保留作历史实现，不是现行 Git CLI 的安全保证；相关设计见 D096、D102 与 D119–D121。
+Agent Runtime 不再获得宿主 global/include 配置图的 ACL 投影。原生启动协议仍要求一个 `GIT_CONFIG_GLOBAL` 路径，因此 Broker 为每个租约创建只读文件，置于 Runtime 不可写的投影目录。按 D161，启动准备识别工作目录自身的 `.git` 目录/gitfile 或裸库布局，将真实路径写入 `safe.directory`；非仓库不添加信任项，不自动信任父仓库或子仓库，不使用通配符，也不修改宿主/共享账户永久配置。宿主 Git 同时为当前工作目录解析 user.name/email，作为启动快照写入该文件；不复制 include、认证或签名配置，Runtime 不获得宿主凭据。该所有权例外及身份继承不扩大 ACL 或网络权限，配置随实例清理。Runtime 的 `HOME`、`USERPROFILE` 和 `XDG_CONFIG_HOME` 仍指向私有目录。旧精确配置图解析器、Push Runner、CONNECT relay 和 askpass 代码保留作历史实现，不是现行 Git CLI 的安全保证；相关设计见 D096、D102 与 D119–D121。
 
 ## 5. 进程、IPC 与 Broker 能力
 

@@ -193,7 +193,7 @@ Sandbox 工具结果的 `durationMs` 由 Broker 使用已校验的 Runtime `tool
 
 Windows 专用账户 Agent Runtime 的普通命令使用实例私有 TEMP 中的独占临时文件承接 stdout/stderr，每 100 ms 读取并按原输出上限推送，进程结束后删除。这样避免 Node/libuv 在 restricted token 下创建默认 stdio 命名管道时可能同步卡住，导致取消与超时器均无法运行；临时输出文件达到 64 MiB 时终止该命令进程树并返回明确错误。Broker 宿主命令仍使用原有管道，Git CLI 随所选命令路径处理。此传输变更沿用原工具的开始/结束、耗时、失败/取消和关联 ID trace；原生 stderr 只保留固定阶段名与 shell 类别，不记录命令、路径或输出。
 
-专用账户与宿主工作区所有者不同；Windows restricted token 下 Git 曾因 NUL 设备访问失败，直接 CLI 的安装态兼容性尚未重验。启动准备现按 D161 在实例配置中加入当前仓库的 safe.directory，不放宽 ACL。需要宿主权限时显式用 `run_with_permissions`。Agent Runtime 不投影宿主 Git global/include 图，原生协议要求的只读 global 文件仅包含当前仓库信任（非仓库为空）；旧解析器仅供暂停的 Runner 保留。CLI 错误、退出码与输出按通用命令上限返回，不再有 Git 专用 512 字符诊断或 diff 12000 字符上限。
+专用账户与宿主工作区所有者不同；Windows restricted token 下 Git 曾因 NUL 设备访问失败，直接 CLI 的安装态兼容性尚未重验。启动准备现按 D161 在实例配置中加入当前仓库的 safe.directory，不放宽 ACL。需要宿主权限时显式用 `run_with_permissions`。Agent Runtime 不投影宿主 Git global/include 图，原生协议要求的只读 global 文件包含当前仓库信任及继承的宿主 name/email；旧解析器仅供暂停的 Runner 保留。CLI 错误、退出码与输出按通用命令上限返回，不再有 Git 专用 512 字符诊断或 diff 12000 字符上限。
 
 ### 网页检索与网页正文
 
@@ -324,7 +324,9 @@ Web UI 将 `run_with_permissions` 显示为“执行命令（宿主权限）”�
 
 工作区内部不保护 `.git`、`.env` 或其他子路径。Git CLI 随 `run_command` 或获批的 `run_with_permissions` 决定执行位置，没有 Git 特有审批或路径保护。
 
-Broker Git 正常加载宿主用户可见的 system、global/include、local 和 worktree 配置。Agent Runtime 不再取得宿主 global/include 图的精确只读 ACL；原生协议的 `GIT_CONFIG_GLOBAL` 指向逐租约只读配置。启动准备检测工作目录自身的 `.git` 目录/gitfile（含 worktree），或裸库的 HEAD/objects/config 布局，将工作目录真实路径写入 `safe.directory`；非仓库为空。POSIX 在实例私有 HOME 的 `.gitconfig` 中采用同样规则。配置随实例清理，不修改宿主或共享账户的永久配置，不使用 `*`，不自动信任父仓库或子仓库。启动后新建仓库需下一任务重新检测。
+Broker Git 正常加载宿主用户可见的 system、global/include、local 和 worktree 配置。Agent Runtime 不再取得宿主 global/include 图的精确只读 ACL；原生协议的 `GIT_CONFIG_GLOBAL` 指向逐租约只读配置。启动准备检测工作目录自身的 `.git` 目录/gitfile（含 worktree），或裸库的 HEAD/objects/config 布局，将工作目录真实路径写入 `safe.directory`；非仓库不添加信任项。POSIX 在实例私有 HOME 的 `.gitconfig` 中采用同样规则。配置随实例清理，不修改宿主或共享账户的永久配置，不使用 `*`，不自动信任父仓库或子仓库。启动后新建仓库需下一任务重新检测。
+
+启动准备还由宿主 Git 解析当前工作目录下生效的 `user.name`、`user.email`（含 include/includeIf、local/worktree），仅把两项值写入实例配置，不复制认证/helper/include/签名配置或密钥。非仓库也继承身份，缺失字段不制造默认值；这是启动快照，之后 local/worktree 仍可覆盖，删除 local 则回落快照，下次任务刷新。只读探测清除继承的 Git 仓库定位、命令覆盖和 trace 环境；缺少 Git 时不阻塞任务，配置错误/超限/5 秒查询超时走启动失败路径，支持取消且不记录身份内容。Git 的 author/committer 环境变量和提交签名不在继承范围；联网认证仍使用获批的 Broker 命令。
 
 Windows 投影配置文件及父目录都不能由 Runtime 替换；Sandbox 的 `HOME`/`USERPROFILE`/`XDG_CONFIG_HOME` 仍指向逐租约私有可写目录，不授予整个宿主 profile。Broker Git 的 helper、证书或签名程序使用宿主用户权限。自动信任仅解除当前仓库的 Git 所有权检查，不授予额外 ACL、凭据或网络权限，也不保证 NUL 等其它安装态兼容问题已解决；只应选择可信项目。本变更位于 Broker 启动准备，无 IPC/原生组件变更；更新后端后对新任务生效，不需为此单独 Repair，已运行任务不回写。
 

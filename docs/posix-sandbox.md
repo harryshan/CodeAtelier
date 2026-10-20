@@ -21,7 +21,7 @@ pnpm start
 ## 文件、环境与网络
 
 - 每个任务具有独立私有 HOME/tmp、只读 Runtime/两个 Worker 代码快照（read_file 读取后直接计算）。固定 manifest 的三个文件和摘要在复制前核对；构建目录是可信应用安装内容，摘要不是第三方签名。
-- 启动准备在私有 HOME 的 `.gitconfig` 写入当前工作目录仓库的 `safe.directory`，与 Windows 共用检测和转义逻辑（D161）；非仓库为空，不修改宿主全局配置，不信任全部目录，配置随实例清理。此接入尚未在 Linux/macOS 实机复验。
+- 启动准备在私有 HOME 的 `.gitconfig` 写入当前工作目录仓库的 `safe.directory`，与 Windows 共用检测和转义逻辑（D161）；另继承宿主 Git 对当前工作目录解析的 user.name/email，非仓库不添加信任项但仍携带身份。不复制认证、签名和 include 配置，不修改宿主全局配置，不信任全部目录，配置随实例清理。此接入尚未在 Linux/macOS 实机复验。
 - 工作区直接可写，包括 `.git`、`.env`；不提供回滚。Node 安装前缀和显式只读根可读，MXC 自身还提供系统运行基线，不能宣称工作区外完全不可见。
 - 不继承宿主环境，PATH 只包含固定 Node 路径和系统命令目录。模型、Store、审批、项目记忆等留在 Broker。
 - 使用真实路径检查，拒绝授权根与 Broker 数据或实例私有根交叉，以及可写根覆盖固定 Node。Broker 数据不应位于工作区、额外授权根或 Node 安装前缀中。不要把整个 HOME、`/tmp` 或 `/` 授权给 Runtime。

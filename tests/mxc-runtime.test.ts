@@ -1,7 +1,7 @@
 /**
  * 离线验证 MXC 产品启动器的策略、启动首帧、文件快照、持久标记及失败关闭。
  * 1. 假 SDK 只提供可控流和退出结果，不启动原生后端；测试真实 Broker/MxcSandboxRuntime 与临时文件系统。
- * 2. 正常路径验证实例专用 Git 信任、授权根、无宿主环境、实例 mode/PID kind、nonce 只经首帧和幂等释放。
+ * 2. 正常路径用固定宿主身份验证实例 Git 信任/身份、授权根、无宿主环境、实例 mode/PID kind、nonce 只经首帧和幂等释放。
  * 3. 损坏 bundle、危险根、残留标记、SDK/清理失败、迟到 handle 和取消覆盖不重放与隔离。
  * 4. Mac 仅检查生成策略，不把假 SDK 或普通单测当 macOS 实机证据；Linux 原生验证另有手动入口。
  */
@@ -22,6 +22,13 @@ import { sandboxConfiguration } from "../src/sandbox/config.js";
 import { temp } from "./fixtures/helpers.js";
 import type { ContainerRequest } from "@microsoft/mxc-sdk/v1";
 import { TraceRecorder } from "../src/tracing/recorder.js";
+
+vi.mock("../src/sandbox/host-git-identity.js", () => ({
+  readHostGitIdentity: async () => ({
+    name: "Fixture Author",
+    email: "fixture@example.invalid",
+  }),
+}));
 
 const roots = new Set<string>();
 afterEach(async () => {
@@ -154,9 +161,10 @@ it.each([false, true])(
         "utf8",
       ),
     ).toBe(
-      repository
+      (repository
         ? `[safe]\n\tdirectory = "${f.workspace.replaceAll("\\", "/")}"\n`
-        : "",
+        : "") +
+        '[user]\n\tname = "Fixture Author"\n\temail = "fixture@example.invalid"\n',
     );
     expect(request).toMatchObject({
       containment: { type: "bubblewrap" },
