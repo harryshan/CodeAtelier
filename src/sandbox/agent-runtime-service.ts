@@ -320,11 +320,8 @@ export class AgentRuntimeService {
           const metadata = await compactionProvider
             .getCapabilities(signal)
             .catch(() => {
-              // Broker 已记录能力查询失败；ContextManager 会拒绝缺少 tokenizer 的摘要，取消仍立即传播。
+              // Broker 已记录能力查询失败；ContextManager 统一提示字符备用，取消仍立即传播。
               signal.throwIfAborted();
-              events.emit("notice", {
-                text: "摘要模型容量查询失败，摘要请求不可用。",
-              });
 
               return undefined;
             });

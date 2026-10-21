@@ -8,7 +8,7 @@
  * 3. compact 读取快照链和事件，由 Worker 准备摘要分块；只有启用旧投影阶段才在主线程探测文件哈希，
  *    主线程独立获取摘要请求的服务容量预算，不沿用主任务的手动窗口；负责可取消的摘要请求和原子提交。
  * 4. 压缩成功后清空旧锚点并等待主模型新实报，request/prepare 不立即全量计量新视图；observeUsage 只由主请求成功接收路径调用。
- * 5. 摘要分块必须使用 tokenizer；提交只校验序列化缩减，不再验证 60% token 目标。原文快照、执行账本和恢复契约不变。
+ * 5. 摘要分块优先使用 tokenizer，仅能力不可用时采用备用字符预算并提示；提交只校验序列化缩减，不再验证 60% token 目标。原文快照、执行账本和恢复契约不变。
  *
  * 摘要不能授予权限。取消会终止 Worker；数据库提交成功后即使界面通知失败也不能退回旧输入。
  */
@@ -377,9 +377,8 @@ export class ContextManager {
           summaryBudget?.measurement ?? this.measurement();
         if (summaryMeasurement.unit !== "tokens") {
           options.notice(
-            "摘要模型容量或 tokenizer 不可用，不能使用字符估算发送摘要请求。",
+            "摘要模型容量或 tokenizer 不可用，使用备用字符预算分块；字符估算不保证符合模型实际容量。",
           );
-          throw new Error("摘要需要服务容量和受支持的 tokenizer。");
         }
 
         const chunks = await worker.request<

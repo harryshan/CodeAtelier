@@ -6,7 +6,7 @@
  * 1. prepare 固定按近期 10% 轮次安全切分，不计量候选，恢复祖先快照正文并建立执行账本；
  *    仅在开启旧投影阶段时建立投影索引并返回文件哈希候选。
  * 2. transform 默认直接准备 LLM 摘要；文件内开关可恢复一级读取投影与二级工具投影用于对比。
- * 3. chunks 按摘要模型预算分块；网络模型调用仍由主线程负责，以保留取消和重试语义。
+ * 3. chunks 按摘要模型预算分块，优先 tokenizer、能力不可用时接受调用方的字符备用预算；网络模型调用仍由主线程负责，以保留取消和重试语义。
  * 4. fallback 保留用户原话、最新结论与完整近期批次；finalize 组合常规压缩结果和快照。
  *    两条路径只检查序列化体积确实减少，不执行 token 容量验收；服务负责最终容量判断。
  *
@@ -219,10 +219,6 @@ function transform(request: {
 function chunks(request: { measurement: ContextMeasurement; limit: number }) {
   if (!state?.retained) {
     throw new Error("压缩 Worker 尚未准备摘要分块。");
-  }
-
-  if (request.measurement.unit !== "tokens") {
-    throw new Error("摘要分块必须使用受支持的 tokenizer，不能回退字符估算。");
   }
 
   const retained = new Set(state.retained);

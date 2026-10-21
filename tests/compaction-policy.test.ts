@@ -4,7 +4,7 @@
  *
  * 1. 摘要响应覆盖长 JSON、多结论、多来源，以及仍必须拒绝的结构和来源错误。
  * 2. 保底用例验证普通/强制整理均保留完整用户要求和固定近期轮次，不再进行 60% 容量筛选。
- * 3. Worker 用例验证大于主任务预算的结果仍可按体积缩减提交、无收益必须拒绝；摘要分块拒绝字符计量。
+ * 3. Worker 用例验证大于主任务预算的结果仍可按体积缩减提交、无收益必须拒绝；摘要分块支持调用方选择的字符备用预算。
  * 所有 Worker 均在 finally 中终止；不写会话数据库、不执行工具、不请求模型服务。
  */
 
@@ -188,13 +188,18 @@ it.each([
         signal,
       );
       expect(transformed.requiresSummary).toBe(true);
-      await expect(
-        worker.request(
-          "chunks",
-          { measurement: { unit: "characters" }, limit: 10000 },
-          signal,
-        ),
-      ).rejects.toThrow("tokenizer");
+      const chunks = await worker.request<{ content: string }[][]>(
+        "chunks",
+        { measurement: { unit: "characters" }, limit: 10000 },
+        signal,
+      );
+      expect(chunks.length).toBeGreaterThan(0);
+      expect(
+        chunks
+          .flatMap((chunk) => JSON.parse(chunk[0].content))
+          .map((record) => record.excerpt)
+          .join(""),
+      ).toBe(JSON.stringify(input[1]));
       const result = worker.request<{
         input: unknown[];
         snapshot: ContextSnapshot;
