@@ -6,6 +6,7 @@
  *    没有事件或任务/审批变化时直接复用上次视图。旧视图的 Map、Set 和记录不再修改。
  * 4. 流式条目移动到最后 delta 的位置；完整回复移除对应尝试，失败尝试仍可查看。
  * 5. 子任务状态按主任务/子 ID 原位更新，重复检查点不追加提示；审批用量保留在原始事件和统计，不单独展示卡片。
+ * 6. 审批和中断提示锚定所属任务末尾；未加载旧任务不产生孤立提示，最新无事件任务仍保留中断说明。
  * 本类仅有会话内存副作用，不发起工具、审批或网络请求。
  */
 
@@ -13,6 +14,8 @@ import type { Event, Snapshot } from "../shared/types";
 import { ToolStatusIndex, type ToolDisplayStatus } from "./tool-status";
 import {
   TaskProcessIndex,
+  anchorTaskControls,
+  taskIdForEntry,
   type EditBatch,
   type TimelineEntry,
 } from "./timeline-entries";
@@ -285,16 +288,20 @@ export class TimelineProjection {
     }
 
     const entries = [...this.entries.values()];
-    entries.push(
-      ...approvals.map((approval): TimelineEntry => ({
-        key: `approval:${approval.id}`,
-        kind: "approval",
-        approval,
-      })),
-    );
+    const loadedTasks = new Set(entries.map(taskIdForEntry));
+    const controls: TimelineEntry[] = approvals.map((approval) => ({
+      key: `approval:${approval.id}`,
+      kind: "approval",
+      approval,
+    }));
     for (const task of tasks) {
-      if (task.status === "interrupted") {
-        entries.push({
+      // 快照包含未加载旧页的任务元数据；不能把这些历史提示提前放到当前页底部。
+      // 最新任务可能尚无可见事件，仍须说明中断；待审批操作也不得因缺少锚点丢失。
+      if (
+        task.status === "interrupted" &&
+        (loadedTasks.has(task.id) || task.id === tasks.at(-1)?.id)
+      ) {
+        controls.push({
           key: `interrupted:${task.id}`,
           kind: "interrupted",
           taskId: task.id,
@@ -308,7 +315,11 @@ export class TimelineProjection {
     }
 
     this.view = {
-      entries: this.processes.project(entries, this.latestAssistant, tasks),
+      entries: this.processes.project(
+        anchorTaskControls(entries, controls),
+        this.latestAssistant,
+        tasks,
+      ),
       outputEvents: { cards: new Map(this.cards) },
       editBatches: new Map(this.editBatches),
       toolStatuses,

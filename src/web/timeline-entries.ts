@@ -4,6 +4,7 @@
  * 2. taskIdForEntry 统一关联任务；TaskProcessIndex 缓存连续任务段，只为改变的段重建折叠对象。
  * 3. collapseEndedTaskProcesses 使用末次回复索引收纳所有终态任务的过程。
  * 4. 分组保持原事件顺序和稳定 key，用户输入及末次完整回复始终留在外层，审批和中断提示不被过程隐藏。
+ * 5. anchorTaskControls 将合成控件插入所属任务最后一项之后；无锚点的必要控件保留在末尾，不重排原事件。
  */
 
 import type { Snapshot, Event } from "../shared/types";
@@ -34,6 +35,41 @@ export function taskIdForEntry(entry: TimelineEntry) {
   }
 
   return entry.taskId;
+}
+
+/** 先按任务定位最后条目，再线性合并控件，避免历史提示随续聊漂移到会话末尾。 */
+export function anchorTaskControls(
+  entries: TimelineEntry[],
+  controls: TimelineEntry[],
+): TimelineEntry[] {
+  const lastKeys = new Map<string, string>();
+  for (const entry of entries) {
+    lastKeys.set(taskIdForEntry(entry), entry.key);
+  }
+
+  const anchored = new Map<string, TimelineEntry[]>();
+  const unanchored: TimelineEntry[] = [];
+  for (const control of controls) {
+    const key = lastKeys.get(taskIdForEntry(control));
+    if (key === undefined) {
+      unanchored.push(control);
+      continue;
+    }
+
+    const group = anchored.get(key) ?? [];
+    group.push(control);
+    anchored.set(key, group);
+  }
+
+  const result: TimelineEntry[] = [];
+  for (const entry of entries) {
+    result.push(entry);
+    for (const control of anchored.get(entry.key) ?? []) {
+      result.push(control);
+    }
+  }
+
+  return result.concat(unanchored);
 }
 
 /** 缓存连续任务段的折叠结果；只为条目或终态标记改变的段重新分组。 */

@@ -877,7 +877,7 @@ export const Timeline = memo(function Timeline({
           )}
           {entry.kind === "interrupted" && (
             <div className={s.notice}>
-              上次任务因服务重启而中断。可继续提问；不会自动重放命令。
+              此任务因服务重启而中断。可继续提问；不会自动重放命令。
             </div>
           )}
         </div>

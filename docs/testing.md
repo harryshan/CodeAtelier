@@ -361,6 +361,8 @@ D159 搜索覆盖：`engine-subagent.test.ts` 参数化两角色/三协议，确
 
 ### Web UI
 
+`timeline-task-controls.test.ts` 覆盖中断提示和审批卡片锚定所属任务末尾，多次中断后续聊、刷新、仅状态更新和旧页前插保持位置；尚未加载的旧任务不提前显示孤立中断提示，最新无事件任务与无锚点待审批仍保留必要入口。`terminal-task-process.spec.ts` 同时验证浏览器续聊及刷新后旧提示位于后续任务之前，输入框不再显示旧任务恢复按钮。
+
 主要测试：e2e/app.spec.ts、e2e/access-password.spec.ts、e2e/web-history.spec.ts、e2e/continuous-history.spec.ts、e2e/timeline-scroll.spec.ts、e2e/terminal-task-process.spec.ts、e2e/sandbox-badge.spec.ts、session-view.test.ts、timeline-virtualization.test.ts。
 
 访问密码开启时先显示门禁、错误密码不进入主页面且正确密码后加载主页面；
