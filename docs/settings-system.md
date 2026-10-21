@@ -113,6 +113,8 @@ UI 始终允许编辑、校验和保存；后端标明每项的生效时机：
 4. 日志级别和并发立即调整；模型/key、请求和上下文限制、MCP、trace 容量下一任务生效；监听/门禁、Sandbox、trace 检查点和保留期需要重启。排队任务实际开始时取最新版本，不重新配置已有任务。
 5. 密钥、MCP args/env/headers 保存在私有 JSON，**不是加密保险库**。Windows 文件 ACL 仅授予当前宿主用户及 SYSTEM；POSIX 使用私有文件权限。访问密码只保存 scrypt 加盐验证材料。API、导出、日志和 trace 不回显秘密。
 
+Windows ACL 检查使用系统 Windows PowerShell，并在该子进程内将 `PSModulePath` 限定为自身 `$PSHOME/Modules`，避免从 PowerShell 7 启动时误加载不兼容的同名安全模块。此处理不修改宿主终端环境，也不放宽 ACL 或自动修复现有配置文件的权限；检查失败仍拒绝加载。它只修正启动前私有文件 I/O 的模块解析，沿用设置操作日志与固定安全错误，不新增任务执行阶段或 Perfetto 载荷。
+
 主模型与辅助模型的思考等级均可选择“关闭 / 低 / 中 / 高”。例如，在“模型连接”中将“主模型思考等级”选为“关闭”并保存，下一任务会使用 `models.main.reasoningEffort: "none"`；辅助模型对应 `models.auxiliary.reasoningEffort`。Responses 显式发送 `reasoning.effort: "none"`，不是省略参数交由服务端默认；具体模型须支持该值，不自动降级。主模型默认仍为 high、辅助仍为 low。Chat Completions / Messages 仍禁用此控件且不发送思考参数。
 
 ### 旧配置离线迁移

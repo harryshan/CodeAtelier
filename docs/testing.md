@@ -317,6 +317,8 @@ D159 搜索覆盖：`engine-subagent.test.ts` 参数化两角色/三协议，确
 
 主要测试：settings-store.test.ts、settings-runtime.test.ts、settings-migration.test.ts、config.test.ts（旧迁移兼容）、e2e/app.spec.ts、e2e/model-protocols.spec.ts、e2e/settings-modal.spec.ts。
 
+`private-settings-file.test.ts` 在 Windows 临时目录中注入不兼容的同名 PowerShell 安全模块，验证合法私有文件仍能通过只读检查、保存并重读，而普通继承 ACL 文件仍被拒绝且内容不变。使用真实 Windows PowerShell 和文件权限，不触碰用户配置；非 Windows 跳过。
+
 版本化文件独立于旧环境、空配置引导、公开视图无凭据、秘密保留/替换/删除、局部 PATCH 不重置省略值、revision/磁盘漂移/写入锁冲突、坏文件不覆盖、私有备份、端点变更不复用密钥、运行中标题/模型快照隔离、门禁重启生效、离线候选/明确激活与重复拒绝。主/辅助思考关闭覆盖 none 保存重开、运行时投影、非法等级拒绝及默认值不变；provider.test.ts 用本地 HTTP 服务检查配置 none 显式发到 Responses。浏览器覆盖分组草稿、验证/保存/刷新（含主/辅助“关闭”）、协议能力与可访问标签；设置模态框另覆盖桌面居中留白与共用主题、背景焦点隔离、Tab 循环、Esc/未保存确认、关闭焦点恢复以及窄屏边界/保存栏可见性；启动/关闭夹具使用私有临时文件。
 
 ### 日志

@@ -1,7 +1,7 @@
 /**
  * SettingsStore 的私有文件 I/O：只操作宿主显式数据目录，不读工作区配置。
  * 1. readSettingsText 拒绝链接、非普通文件和超大文件；verifyPrivateSettings 单独核验私有权限。
- * 2. protectWindowsFile 在写入任何秘密前设置并验证当前用户/SYSTEM 专用 DACL。
+ * 2. protectWindowsFile 固定使用 Windows PowerShell 自带模块，在写入任何秘密前设置并验证当前用户/SYSTEM 专用 DACL。
  * 3. writePrivateSettings 限制大小，用独占临时文件、flush、发布前校验与 rename 写入完整内容。
  * 4. SettingsFileConflict 保留上层并发冲突类型，其他写失败仅返回固定安全消息；此模块不发布内存状态。
  * Windows 不以 chmod 代替 ACL；同宿主用户仍有读写权，文件不是加密保险库。
@@ -44,6 +44,9 @@ export function readSettingsText(file: string): string | null {
 function protectWindowsFile(file: string, verifyOnly: boolean) {
   const script = `
 $ErrorActionPreference = 'Stop'
+# PowerShell 7 启动的 Node 会继承其模块路径，5.1 自动加载同名安全模块时会失败。
+# 仅在此 ACL 子进程使用自身系统模块，不修改终端或产品命令的环境。
+$env:PSModulePath = Join-Path $PSHOME 'Modules'
 $p = $env:CODEATELIER_PRIVATE_SETTINGS_FILE
 $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
 $system = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-18')
