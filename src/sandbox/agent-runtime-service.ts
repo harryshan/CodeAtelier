@@ -4,7 +4,7 @@
  *
  *    Skill 目录摘要由 Broker 提供，按需正文通过名称查询，不读取专用账户 home 或投影宿主技能根；MCP 仅接收公开服务用途摘要，不接收连接配置。
  * 1. start 接受 Broker 绑定任务的安全设置，恢复 session 上下文并在工作区生成指令和文件工具。
- * 2. SessionTokenCalibration 在首次检查前恢复 Broker 提供的实报锚点，响应保存后经 IPC 保存新锚点；ContextManager 在 Runtime 内计量/压缩，快照读写经 RuntimeSessionClient 回到 Broker。
+ * 2. SessionTokenCalibration 在首次检查前恢复 Broker 提供的实报锚点，响应保存后经 IPC 保存新锚点；ContextManager 在 Runtime 内计量/压缩，快照读写经 RuntimeSessionClient 回到 Broker。摘要容量另向 Broker 的 compaction provider 查询，不使用主任务的手动窗口。
  * 3. model-loop 共用轮次、有界重试和上下文超限恢复，model-response 共用响应接收顺序，dispatch-model-tool 共用节点分派，model-tool-batch 共用工具计划、结果截断与判定；每轮模型调用经 RuntimeModelProvider 代理；工具 DAG 先并行准备已就绪节点，取得有界 worker 槽后执行文件编辑、普通命令或已获批准的 Broker 命令。
  *    Runtime 普通命令按调用注入独立 tool_review 主模型代理，不设总运行时限；复查只返回等待/停止，usage 与决定经常规事件持久化。
  * 4. UI/session 事件按连接排队；无效 DAG 回传修正，实际取得执行槽的工具和 read_file 内部阶段带单调时间戳上报，由 Broker 统一组装并归档；工具结果增量保存，未知副作用不重放。
@@ -316,6 +316,26 @@ export class AgentRuntimeService {
         unit: budget.unit,
         maxOutputTokens: budget.outputTokens,
         provider: compactionProvider,
+        summaryBudget: async () => {
+          const metadata = await compactionProvider
+            .getCapabilities(signal)
+            .catch(() => {
+              // Broker 已记录能力查询失败；取消不得退化为字符模式继续发送请求。
+              signal.throwIfAborted();
+              events.emit("notice", {
+                text: "摘要模型容量查询失败，使用备用字符预算。",
+              });
+
+              return undefined;
+            });
+          signal.throwIfAborted();
+
+          return createBudget(
+            metadata,
+            input.settings.contextChars,
+            input.settings.maxOutputTokens,
+          );
+        },
         signal,
         clean: (text) => text,
         notice: (text) => events.emit("notice", { text }),

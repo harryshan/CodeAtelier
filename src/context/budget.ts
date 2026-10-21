@@ -4,7 +4,9 @@
  *
  * 1. contextSize 计算 instructions、tools 和 input 序列化后的总字符数。
  * 2. safeCuts 跟踪尚未配齐结果的工具调用，只返回可以安全切开历史的位置。
- * 3. chooseCut 优先保留小于预算四分之一的近期历史；没有这样的切点时取最后一个安全位置。
+ * 3. roundStarts 按完整工具往返和用户边界重建轮次，合并连续用户消息并排除历史摘要。
+ * 4. chooseCut 保留最后 10% 轮次（向上取整，至少一轮）；必留材料超出 60% 时逐轮减少。
+ *    历史没有请求 ID 边界，无法区分的连续模型记录保守合并；末尾待响应用户输入算当前轮。
  *
  * 返回 undefined 表示不能安全切分。是否值得压缩、怎样保留用户原文，由 ContextManager 决定。
  */
@@ -44,15 +46,64 @@ export function safeCuts(input: any[]): number[] {
   return [...new Set(cuts)];
 }
 
+/** 重建当前活动历史的轮次；旧摘要不是新的模型请求，不能放大保留轮数。 */
+export function roundStarts(input: any[], notes = new Set<string>()): number[] {
+  const boundaries = [0, ...safeCuts(input), input.length];
+  const starts: number[] = [];
+  let pendingStart: number | undefined;
+
+  for (let index = 0; index < boundaries.length - 1; index++) {
+    const start = boundaries[index]!;
+    const end = boundaries[index + 1]!;
+    const items = input
+      .slice(start, end)
+      .filter(
+        (item) => !(item.role === "assistant" && notes.has(item.content)),
+      );
+    if (items.length === 0) {
+      continue;
+    }
+
+    pendingStart ??= start;
+    if (items.some((item) => item.role !== "user")) {
+      starts.push(pendingStart);
+      pendingStart = undefined;
+    }
+  }
+
+  // 未发送的新用户要求属于下一轮；连续追加的用户消息不各算一轮。
+  if (pendingStart !== undefined) {
+    starts.push(pendingStart);
+  }
+
+  return starts;
+}
+
 export function chooseCut(
   input: any[],
   limit: number,
   measure = contextSize,
+  instructions = "",
+  tools: any[] = [],
+  notes = new Set<string>(),
 ): number | undefined {
-  const cuts = safeCuts(input);
+  const starts = roundStarts(input, notes);
+  const keep = Math.max(1, Math.ceil(starts.length * 0.1));
+  const candidates = starts.slice(-keep).filter((cut) => cut > 0);
 
-  return (
-    cuts.find((cut) => measure(input.slice(cut), "", []) <= limit * 0.25) ??
-    cuts.at(-1)
-  );
+  // 轮次决定优先切点；计量只负责容量验收，不能为凑预算拆开最后一轮。
+  return candidates.find((cut) => {
+    const retained = input
+      .slice(0, cut)
+      .filter(
+        (item) =>
+          item.role === "user" ||
+          (item.role === "assistant" && notes.has(item.content)),
+      );
+
+    return (
+      measure([...retained, ...input.slice(cut)], instructions, tools) <
+      limit * 0.6
+    );
+  });
 }

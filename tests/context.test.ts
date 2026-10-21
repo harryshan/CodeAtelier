@@ -226,7 +226,7 @@ it("continues below the hard limit after summary failure and does not repeatedly
   });
   try {
     const source = history();
-    source[1].content = "x".repeat(10000);
+    source[1].content = "x".repeat(11000);
     expect(await f.manager.prepare(source, "", [])).toBe(source);
     expect(await f.manager.prepare(source, "", [])).toBe(source);
     expect(calls).toBe(1);
@@ -348,10 +348,14 @@ it("continues an engine task after compression and exposes archived history as a
   const tools = [...definitions, historyDefinition];
   const overhead = contextSize([], instructions, tools);
   config.settings.contextChars = Math.ceil((overhead + 3000) / 0.6);
-  expect(
-    contextSize(history().slice(0, 2), instructions, tools),
-  ).toBeGreaterThan(config.settings.contextChars * 0.8);
-  store.saveContext(session.id, history().slice(0, 2));
+  const source = history().slice(0, 2);
+  source[1].content += "old code ".repeat(
+    Math.ceil((config.settings.contextChars * 0.2) / 9),
+  );
+  expect(contextSize(source, instructions, tools)).toBeGreaterThan(
+    config.settings.contextChars * 0.9,
+  );
+  store.saveContext(session.id, source);
   let turns = 0;
   const engine = new Engine(store, config, pino({ enabled: false }), () => ({
     async run(input, instructions, tools, signal, delta) {

@@ -4,9 +4,9 @@
  * 将历史扫描、投影、账本、分块和计量转交给专用 Worker，避免阻塞 HTTP/SSE。
  *
  * 1. Options 接收预算、存储、摘要模型、文件探测、通知和可选 tracing 依赖；request 计量原始请求。
- * 2. prepare 在阈值前直接返回，达到阈值后启动 Worker；常规压缩失败且已达硬上限时改用受限保底视图。
+ * 2. prepare 在 90% 阈值前直接返回，达到阈值后启动 Worker；常规压缩失败且已达硬上限时改用受限保底视图。
  * 3. compact 读取快照链和事件，由 Worker 准备摘要分块；只有启用旧投影阶段才在主线程探测文件哈希，
- *    主线程仍负责可取消的摘要模型请求和原子 SQLite 提交。
+ *    主线程独立获取摘要请求的服务容量预算，不沿用主任务的手动窗口；负责可取消的摘要请求和原子提交。
  * 4. 压缩成功后重置任务内计量缓存，再由下一请求计量新视图；摘要与保底视图保留原文快照、执行账本和恢复契约。
  *
  * 摘要不能授予权限。取消会终止 Worker；数据库提交成功后即使界面通知失败也不能退回旧输入。
@@ -69,6 +69,7 @@ interface Options {
   onModelRequest?: () => void;
   onUsage?: (usage: ModelUsage) => void;
   provider: ModelProvider;
+  summaryBudget?: () => Promise<ContextBudget>;
   summaryModel?: () => Promise<{
     provider: ModelProvider;
     model: string;
@@ -168,7 +169,7 @@ export class ContextManager {
       () => this.measure(input, instructions, tools),
       (amount) => ({ amount }),
     );
-    if (!force && before < options.limit * 0.8) {
+    if (!force && before < options.limit * 0.9) {
       return input;
     }
 
@@ -356,6 +357,8 @@ export class ContextManager {
       if (transformed.requiresSummary) {
         // 旧快照可能保存投影；摘要仍须读取还原后的完整原文。
         const auxiliary = await options.summaryModel?.();
+        const summaryBudget =
+          auxiliary?.budget ?? (await options.summaryBudget?.());
         options.signal.throwIfAborted();
         summaryModel = auxiliary?.model;
         const chunks = await worker.request<
@@ -363,8 +366,8 @@ export class ContextManager {
         >(
           "chunks",
           {
-            measurement: auxiliary?.budget.measurement ?? this.measurement(),
-            limit: auxiliary?.budget.limit ?? options.limit,
+            measurement: summaryBudget?.measurement ?? this.measurement(),
+            limit: summaryBudget?.limit ?? options.limit,
           },
           options.signal,
         );
@@ -381,8 +384,8 @@ export class ContextManager {
               },
               options.onModelRequest,
               options.onUsage,
-              auxiliary
-                ? auxiliary.budget.outputTokens
+              summaryBudget
+                ? summaryBudget.outputTokens
                 : options.maxOutputTokens,
             ),
           );
