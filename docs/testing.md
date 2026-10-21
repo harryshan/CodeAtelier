@@ -603,7 +603,13 @@ D155 移除了专用 Git diff 上限；CLI 输出沿用 process/core 的通用�
 - `tests/agent-runtime-engine.test.ts` 通过真实 Runtime 子进程验证低成本模型审批后，Broker 宿主命令可写入工作区外标记，且独立记为 `broker-command/host-process`，不会调用 Sandbox runner；stdout/stderr 的 `capability_output` 在工具结果前持久化且携带对应 callId，拒绝时无命令输出；命令和理由不进入任务 trace。
 - `tests/session-view.test.ts` 验证宿主命令与普通命令交错输出不串卡片、实时视图不可变、失败/取消结果关联、旧无 ID 输出及未匹配输出可见、仅最终结果与全量历史重建。`tests/e2e/broker-command-output.spec.ts` 用合成会话和增量刷新验证真实 UI 的 stdout/stderr 卡片、成功/非零退出/截断/取消、最终 output 兜底与刷新重建；输出按纯文本显示，不重复渲染结果。这些浏览器夹具不执行真实宿主命令，不代替固定账户安装态验收。
 - `tests/runtime-ipc.test.ts` 与 `tests/tool-schema.test.ts` 验证命令/理由的有界 schema 与调用关联，并拒绝旧权限字段或其它额外参数。
-- `tests/sandbox-native-windows-runtime.test.ts` 核对 v3 帧的完整字段、根标志和边界；原生 parser 回归验证 v3 往返及旧 v2 拒绝，不再含代理/凭据字段。root capability、Runtime pipe/Job/token 回归保留。
+- `tests/sandbox-native-windows-runtime.test.ts` 核对 v4 帧的完整字段、根标志、持久 SID 和边界；原生 parser 回归验证 v4 往返及旧版本拒绝，不再含代理/凭据字段。root capability、Runtime pipe/Job/token 回归保留。
+
+### 持久 Windows 根 capability（D163）
+
+- `tests/root-capability-store.test.ts`：逐根独立、跨进程并发首次发布与重启复用、对象替换、损坏/错配记录拒绝、只读/临时根排除、链接目录与数据目录重叠拒绝、取消和 SID 边界。临时数据使用真实私有文件 ACL。
+- 原生回归：本次多个可写根 SID 均进入 token；临时目录中两个不同 execution token 在正常账户/实例撤销之间复用长期根 SID，原地追加同一文件成功，另一根 SID 拒绝；v2 journal 兼容继续验证。
+- 不修改真实工作区 ACL，不操作已安装账户/Repair；宿主派生 token 不能替代固定账户、真实旧文件和异常重启验收。Evaluation 不自动运行。
 
 ### 上下文默认摘要与旧投影兼容
 

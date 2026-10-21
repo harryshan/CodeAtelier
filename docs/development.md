@@ -343,7 +343,7 @@ Windows 投影配置文件及父目录都不能由 Runtime 替换；Sandbox 的 
 
 持久 WFP fence 只约束专用账户 Runtime，不约束 Broker 宿主命令。新命令沿用 `agent-runtime | broker-command` 归因，旧 `broker-git | broker-git-push | push-runner | capability-runner` kind 仅供历史读取；保留 cancelled/unknown/orphaned、部分输出与禁止重放语义。Broker 命令启动后即记录 `sideEffectsPossible=true`，正常完成也不证明没有副作用。
 
-D162 将原生命令请求帧升至 v3（不再有四个代理/凭据字段），旧 v2 帧不能执行；更新后端时须同步重建 native/runtime 并显式 Repair，不能仅替换 TypeScript。安装 state/WFP 端口契约仍保留，但产品不再监听旧 HTTPS CONNECT relay。此处不自动迁移、安装或重启。
+D162 删除四个代理/凭据字段；D163 进一步将原生命令帧升至 v4，携带逐根持久 SID，旧 v2/v3 帧不能执行。持久映射位于应用数据目录，长期根 ACE 不随任务撤销，见 [持久根 capability](windows-root-capabilities.md)；更新后端时须同步重建 native/runtime 并显式 Repair，不能仅替换 TypeScript。安装 state/WFP 端口契约仍保留，但产品不再监听旧 HTTPS CONNECT relay。此处不自动迁移、安装或重启。
 
 Windows 原生安装命令是显式维护入口，不属于服务启动或默认测试：先在普通终端运行 `pnpm sandbox:native:build` 与 `pnpm sandbox:runtime:build`；若当前 `PATH` 中的 `node` 不是 v24 或 v26，通过 `CODEATELIER_SANDBOX_RUNTIME_NODE` 指定可信 Node 24 或 26 executable。
 

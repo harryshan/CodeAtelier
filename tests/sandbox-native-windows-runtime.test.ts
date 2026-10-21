@@ -2,7 +2,7 @@
  * 验证 Windows 专用账户 Runtime 的无副作用协议编码和安装自检分流；非 Windows 整组跳过。
  * 测试使用临时伪二进制与注入的 self-check executor，不创建账户、ACL、Job、Named Pipe 或 WFP 规则。
  *
- * 1. 二进制帧固定 magic/version、UTF-8 字符串、超时和 argv，拒绝相对路径及超限字段。
+ * 1. v4 二进制帧固定 magic/version、UTF-8 字符串、逐根 capability、超时和 argv，拒绝相对路径及超限字段。
  * 2. selfCheck 只有 state 中原生二进制、Node 24 或 26、entry/三种 Worker 摘要、启动恢复排空与原生自检全部成功时才报告 sandbox level。
  * 3. prepareAccess 在 manifest 之前同时创建仅信任当前仓库的只读 Git 投影（仅继承宿主 name/email）和逐实例可写 HOME/TEMP，cleanup 删除两者。
  * 4. state 缺失、摘要篡改和原生拒绝都在 Runtime 启动前失败，允许 Broker 安全选择宿主 fallback。
@@ -89,6 +89,7 @@ describe.skipIf(process.platform !== "win32")(
         args: ["/d", "/c", "echo ok"],
         privateDirectory: "C:\\private",
         timeoutMs: 1000,
+        rootCapabilities: new Map([["a".repeat(64), "S-1-5-21-11-22-33-44"]]),
         access: {
           leaseEpoch: 1,
           gitGlobalConfigPath: "C:\\gitconfig",
@@ -112,7 +113,7 @@ describe.skipIf(process.platform !== "win32")(
       });
 
       expect(frame.readUInt32LE(0)).toBe(0x42534143);
-      expect(frame.readUInt32LE(4)).toBe(3);
+      expect(frame.readUInt32LE(4)).toBe(4);
       expect(frame.includes(Buffer.from("instance-1"))).toBe(true);
       expect(frame.includes(Buffer.from("echo ok"))).toBe(true);
       let offset = 8;
@@ -148,6 +149,7 @@ describe.skipIf(process.platform !== "win32")(
       expect(readString()).toBe("1");
       expect(readString()).toBe("2");
       expect(readString()).toBe("a".repeat(64));
+      expect(readString()).toBe("S-1-5-21-11-22-33-44");
       expect(offset).toBe(frame.length);
       expect(() =>
         encodeNativeSandboxRequest({

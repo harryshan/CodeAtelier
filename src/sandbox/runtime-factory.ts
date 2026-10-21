@@ -4,7 +4,7 @@
  * 平台 Runtime 在每次任务启动前完成；Windows 保留原 fallback，MXC 后端失败关闭。
  *
  * 1. 开关关闭时返回 undefined，确保 V1 宿主命令路径不创建任何 Sandbox 后端。
- * 2. Windows 注册专用账户原生 Runtime；只有安装 state、二进制摘要、账户凭据和 WFP 均自检通过才执行。
+ * 2. Windows 注册专用账户原生 Runtime，并传递宿主数据目录以持久化授权根 SID；只有安装 state、二进制摘要、账户凭据和 WFP 均自检通过才执行。
  * 3. Linux/macOS 注册 MXC 私有流启动器，SDK 只在实际任务时动态加载；其他平台不注册后端。
  * 4. 额外授权根从 Config 固定的启动投影读取（旧调用方可提供环境）；非法/相对路径拒绝，不热改活动实例。
  */
@@ -52,7 +52,13 @@ export function createSandboxRuntime(
   }
 
   if (platform === "win32") {
-    return new NativeWindowsSandboxRuntime(environment, undefined, log, traces);
+    return new NativeWindowsSandboxRuntime(
+      environment,
+      undefined,
+      log,
+      traces,
+      brokerDataDirectory,
+    );
   }
 
   if (platform === "linux" || platform === "darwin") {

@@ -1,5 +1,14 @@
 # 初版验证记录
 
+## 持久授权根 capability（D163，Windows / Node 24.19.0）
+
+- 每个长期可写根注册独立 SID 于应用数据目录；跨任务/重启复用，临时目录和 execution 身份仍隔离。v4 原生帧传递逐根身份，Runtime 客户端联合核验增加持久 SID，正常/失败清理保留长期根 ACE；旧 ACL journal/revoke v2 不变。
+- 12 项 registry 测试覆盖真实跨进程并发创建与进程重启读取、不同根、对象替换、损坏/错根记录、只读/私有根排除、数据目录重叠、链接目录、取消和 SID 格式边界。
+- 原生回归使用独占临时目录与宿主派生 token：不同 execution token 在账户租约撤销后复用同一根 SID 原地追加同一文件，另一根 SID 返回拒绝；多个根均入 token，v4 帧与旧 v2/v3 拒绝、非法 SID/只读根 SID 拒绝、固定 v2 journal 兼容通过。
+- 完整 `pnpm check` 通过：TypeScript、ESLint、Prettier，**126 文件、908 通过、1 个原有跳过**，以及 Web/server、Windows/POSIX Runtime 测试构建。首次全套暴露两项 Supervisor 故障夹具缺少 DEBUG logger 的失败，补齐替身并使用独立临时数据目录后从头完整通过，未降低原清理断言。
+- `scripts/windows-sandbox/build-native.ps1` 通过：`SANDBOX_NATIVE_REGRESSION PASS`、`SANDBOX_RUNTIME_DUPLEX_PROBE PASS`、`SANDBOX_NATIVE_BUILD PASS`。保留既有前端 chunk 和依赖注释警告。
+- 以上均由获批 Broker 宿主工具链执行；未运行 Evaluation、E2E（无 UI/HTTP 行为变更）、安装/Repair、真实旧 ACL 迁移或当前服务重启。不把跨进程和宿主派生 token 测试描述为真实电脑重启或固定账户安装态验收。部署和剩余边界见 [持久根 capability](windows-root-capabilities.md)。
+
 ## 移除独立 Runner 与旧网络代理（D162，Windows）
 
 - 删除 Push/Capability Runner 执行器、HTTPS relay、askpass/宿主凭据读取分支、无生产调用方的旧 Git 配置图解析器及专属正向测试；保留 Runtime/root capability/ACL/WFP/认证 IPC、Broker 宿主命令和历史执行记录。
@@ -144,7 +153,6 @@
 - 原样 `pnpm check` 未全绿：默认并发下 736 通过、1 跳过、3 失败，分别是 Windows process-tree/file-backed 与 shutdown 超时，以及 Node 版本探测失败。`pnpm test --maxWorkers=2` 中这三项均通过，但旧标题迁移夹具在 `migration.openSource` 的源/目标别名判断处偶发失败，合计 738 通过、1 跳过、1 失败；该标题文件单独以一个 Worker 重跑 **5/5 通过**。没有放宽断言、超时或改测试默认并发，也不把分开复跑称为完整 check 通过；迁移别名判断的偶发问题留待独立调查，本次没有修改存储实现。
 - Runtime 中 Node/pnpm 不在 PATH，验证经批准在 Broker 宿主环境运行；使用隔离合成测试数据，没有运行 Evaluation、真实模型或安装/Repair。
 
-
 ## 完整 SQLite 迁移验收（2026-10-13，Windows / Node 24.21.0）
 
 **正式状态：已激活。** generation `d275a4b5-c2a0-4bdb-9f5c-8000ac6e4453` 的活动目录为 `C:\Users\harryshan\CodeAtelier-migration\20261013-final\generation`，这是运行库，不能作为可清理临时副本。默认 AppData 的 `history-active.json` 已正确解析到该目录，包括本次 MSIX 环境的常规路径读取。物理旧入口已变为阻断目录，原件保存在物理数据目录的 `history-before-d275a4b5-c2a0-4bdb-9f5c-8000ac6e4453`；raw、冻结快照及验收副本均保留。激活后原件与目标 SHA256 再次一致，启动门禁已撤销，只读回读 134 会话/405 任务通过，未启动业务或写入 business-started。
@@ -155,10 +163,10 @@
 
 正式备份/快照及目标位于用户目录 `CodeAtelier-migration/20261013-final`，原件和报告沿用源 DACL。全量独立核对通过：134 sessions、405 tasks、252617 events、2585 context_chunks、135 snapshots、17 anchors、12983 Replay model/tool entries；subagents/subagent_requests 为 0。逐条原始字段、顺序、序列化、请求重建、业务引用、统计投影、全局 ID 和 SQLite integrity 均通过；没有未转换记录或未解释差异。
 
-| 分片 | 新主库字节 | 空闲页 | dbstat 载荷比例 | WAL 字节 |
-| --- | ---: | ---: | ---: | ---: |
-| history.sqlite | 881127424 | 0 | 97.926% | 0 |
-| history-000001.sqlite | 800948224 | 0 | 97.107% | 0 |
+| 分片                  | 新主库字节 | 空闲页 | dbstat 载荷比例 | WAL 字节 |
+| --------------------- | ---------: | -----: | --------------: | -------: |
+| history.sqlite        |  881127424 |      0 |         97.926% |        0 |
+| history-000001.sqlite |  800948224 |      0 |         97.107% |        0 |
 
 原主库合计 2559488000 字节，新主库合计 1682075648 字节，减少约 34.28%。新库符合既定空间阈值，无需额外 VACUUM。减少包含重建与 Replay 编码变化，不能全部称为“碎片回收”；raw、冻结快照、旧代及验收副本保留占用另计，不因此减少总备份空间，也不承诺后续永久零碎片。
 
@@ -167,10 +175,10 @@
 固定合成存储负载（每任务 512 条 16 KiB notice，交错上下文、Replay、快照和浏览）对比改造前 16062f1：
 
 | 并发 | 旧写入 p99 ms | 新写入 p99 ms | 旧浏览 p99 ms | 新浏览 p99 ms | 新峰值 WAL MiB | 新峰值 RSS MiB |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| 1 | 2.98 | 4.71 | 28.75 | 5.99 | 4.00 | 231.4 |
-| 2 | 10.29 | 8.50 | 46.23 | 20.10 | 4.20 | 226.0 |
-| 4 | 18.41 | 14.59 | 95.26 | 23.99 | 4.40 | 333.5 |
+| ---- | ------------: | ------------: | ------------: | ------------: | -------------: | -------------: |
+| 1    |          2.98 |          4.71 |         28.75 |          5.99 |           4.00 |          231.4 |
+| 2    |         10.29 |          8.50 |         46.23 |         20.10 |           4.20 |          226.0 |
+| 4    |         18.41 |         14.59 |         95.26 |         23.99 |           4.40 |          333.5 |
 
 新版事件循环 p99 均低于 12 ms，关闭后 WAL 为 0，空间和固定负载性能界限均通过。旧浏览读取完整事件，新浏览读取产品分页；这不是等载荷 SQL 微基准，不能泛化提速倍数。报告保存在本机 `.local/storage-measure-baseline-v2/report.json`、`.local/storage-measure-target-final/report.json`，不执行 Evaluation。
 
@@ -185,7 +193,6 @@
 - 官方 Perfetto Trace Processor **v58.2-add693d8b** 离线导入纯合成文件：**21 slices、7 flows、2 counters、0 importer error**。SQL 核对模型→工具 2 条、成功依赖 1 条、工具→持久化 2 条、持久化→模型 2 条，源/目标名称匹配；不是 UI 渲染或真实模型性能验收。CLI SHA-256 与上一轮相同：adfa6bad3d72be3ba9b83fa2b17b69fa13b3ab1cad0f42e52b86188bd5f0f997。
 - 冻结版本 pnpm test:e2e：完整 server/web/Windows 与 POSIX Runtime 测试构建通过，Chromium **42/42 通过**（2.2 分钟）；保留既有 Zod 注释和 Web chunk 构建警告。最终 TypeScript、ESLint、Prettier 复核与文档本地链接检查通过。
 - 没有运行 Evaluation、真实模型、固定账户安装/Repair 或 Linux/macOS 实机验收。Browser 渲染埋点、全部同步 SQLite 路径的逐语句计时、子进程资源归因不属于本次实现/证据。全部原始日志与合成输入位于忽略目录 .local/trace-*.log 和 .local/trace-validation/；不提交原始 trace、用户数据或既有 .pnpm-store/。
-
 
 ## trace 异步导出、凭据脱敏与异常收尾（2026-10-12）
 
@@ -827,9 +834,9 @@
 空间指标由 Node 24.21.0 内嵌 SQLite 3.53.4 的 `dbstat` 只读取得。Python 3.11 所带 SQLite 未提供 dbstat，没有用其缺失结果代替零值。
 
 | 分片 | 冻结源主库字节 | 源空闲页 | 演练目标主库字节 | 目标空闲页 | 目标 dbstat 页内 unused 字节 |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| 0 | 1,592,946,688 | 40,340 | 874,160,128 | 0 | 14,285,188 |
-| 1 | 966,541,312 | 33 | 790,245,376 | 0 | 17,548,304 |
+| ---- | -------------: | -------: | ---------------: | ---------: | ---------------------------: |
+| 0    |  1,592,946,688 |   40,340 |      874,160,128 |          0 |                   14,285,188 |
+| 1    |    966,541,312 |       33 |      790,245,376 |          0 |                   17,548,304 |
 
 页大小均为 4,096 字节。上述仅比较主库，备份与工作副本保留占用不计入目标缩减；零 freelist 不表示零页内空洞，也不保证长期不再产生碎片。尚未冻结正式空间增长基线或维护阈值，不将这些观测事后当作完整验收阈值。
 

@@ -1,7 +1,7 @@
 /**
  * 用内存管道模拟 Supervisor，验证宿主持久化回调和管道故障不会逃出事件监听器。
  * 通过 NativeWindowsSandboxRuntime.execute 和 launchAgentRuntime 的真实编码与收尾路径执行，不启动账户或原生程序。
- * 1. 为每个场景创建独立子进程替身，注入 PID、stdout 或 stdin 故障。
+ * 1. 为每个场景创建独立子进程替身与临时 Broker 数据目录，注入 PID、stdout 或 stdin 故障；不访问默认产品数据目录。
  * 2. 故障必须关闭控制输入并等待 close；有清理证明时返回原错误，没有证明时保持 cleanup_unknown，Supervisor 诊断只能记录白名单阶段与数字码。
  * 3. finally 关闭全部内存流并恢复替身，避免测试留下计时器或调用记录。
  */
@@ -12,6 +12,7 @@ import path from "node:path";
 import type { Logger } from "pino";
 import { afterEach, expect, it, vi } from "vitest";
 import { NativeWindowsSandboxRuntime } from "../src/sandbox/native-windows-runtime.js";
+import { temp } from "./fixtures/helpers.js";
 
 vi.mock("node:child_process", async (importOriginal) => ({
   ...(await importOriginal<typeof import("node:child_process")>()),
@@ -34,12 +35,15 @@ it.each(["runtime-launcher", "runtime"] as const)(
     const failure = new Error("startup persistence failed");
     const warnings: Record<string, unknown>[] = [];
     const log = {
+      debug: vi.fn(),
       warn: (details: Record<string, unknown>) => warnings.push(details),
     } as unknown as Logger;
     const runtime = new NativeWindowsSandboxRuntime(
       { ProgramData: root },
       undefined,
       log,
+      undefined,
+      await temp(),
     );
     const pending = runtime.launchAgentRuntime(
       {
@@ -149,7 +153,13 @@ it.each([
     vi.mocked(childProcess.spawn).mockReturnValue(child as never);
     const failure = new Error("persistence or pipe failure");
     const root = path.resolve(".");
-    const runtime = new NativeWindowsSandboxRuntime({});
+    const runtime = new NativeWindowsSandboxRuntime(
+      {},
+      undefined,
+      undefined,
+      undefined,
+      await temp(),
+    );
     const pending = runtime.execute(
       {
         sessionId: "session",

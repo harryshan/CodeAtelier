@@ -15,8 +15,9 @@
  * 9. 显式 --runtime-descriptor-probe 输出真实原生首帧，供跨语言回归核对 Node 解码器；不启动 Supervisor。
  * 10. 显式 --runtime-duplex-probe 在真实 Named Pipe 上让读取方等待第二帧时写入 Broker 回复，证明两个方向不会相互阻塞；以独立测试进程执行并设超时。
  * 11. 显式 --window-station-probe 在真实 Windows 会话中用不同账户替身 SID 创建并关闭两个非交互式 station/desktop 句柄，验证已有 station 补装第二个账户 ACE、实例授权、原 station 恢复，以及带完整 station/desktop 名称的 USER32 子进程启动；默认 native build 不运行此 OS 探针。
- * 12. 通过真实 ProductRequest 编解码核对 v3 命令/根布局，拒绝旧 v2 帧；不启动进程或发放权限。
- * 13. 删除临时夹具，以退出码报告回归结果。
+ * 12. 通过真实 ProductRequest 编解码核对 v4 命令/根/SID 布局，拒绝旧 v2/v3 帧、系统主体 SID 及只读根携带 SID；不启动进程或发放权限。
+ * 13. 在临时目录安装真实 ACL，两个不同 execution token 复用同根 SID 原地追加；另一根 SID 拒绝，账户撤销保留持久根 ACE。
+ * 14. 删除临时夹具，以退出码报告回归结果；这些宿主用户派生 token 不等同固定 Sandbox 账户安装态验收。
  */
 
 #define CODEATELIER_INSTALLATION_STATE_TEST
@@ -66,7 +67,7 @@ bool TestProductRequest(const std::filesystem::path& fixture) {
   input.git_global_config = L"C:\\gitconfig";
   input.lease_epoch = 7;
   input.roots.push_back({5, L"C:\\workspace", L"1", L"2",
-                         std::wstring(64, L'a')});
+                         std::wstring(64, L'a'), L"S-1-5-21-11-22-33-44"});
   LARGE_INTEGER start{};
   if (!WriteProductRequest(file.get(), input) ||
       !SetFilePointerEx(file.get(), start, nullptr, FILE_BEGIN)) {
@@ -85,19 +86,38 @@ bool TestProductRequest(const std::filesystem::path& fixture) {
       output.roots[0].flags != 5 ||
       output.roots[0].path != input.roots[0].path ||
       output.roots[0].device_id != L"1" || output.roots[0].file_id != L"2" ||
-      output.roots[0].identity_digest != input.roots[0].identity_digest) {
+      output.roots[0].identity_digest != input.roots[0].identity_digest ||
+      output.roots[0].capability_sid != input.roots[0].capability_sid) {
     return false;
   }
   LARGE_INTEGER version_offset{};
   version_offset.QuadPart = sizeof(uint32_t);
-  const uint32_t legacy_version = 2;
-  if (!SetFilePointerEx(file.get(), version_offset, nullptr, FILE_BEGIN) ||
-      !WriteExact(file.get(), &legacy_version, sizeof(legacy_version)) ||
-      !SetFilePointerEx(file.get(), start, nullptr, FILE_BEGIN)) {
-    return false;
+  for (uint32_t legacy_version : {2u, 3u}) {
+    ProductRequest rejected;
+    if (!SetFilePointerEx(file.get(), version_offset, nullptr, FILE_BEGIN) ||
+        !WriteExact(file.get(), &legacy_version, sizeof(legacy_version)) ||
+        !SetFilePointerEx(file.get(), start, nullptr, FILE_BEGIN) ||
+        ReadProductRequest(file.get(), &rejected)) {
+      return false;
+    }
   }
+  for (const std::wstring& invalid_sid : {L"", L"S-1-1-0", L"S-1-5-18"}) {
+    input.roots[0].capability_sid = invalid_sid;
+    ProductRequest rejected;
+    if (!SetFilePointerEx(file.get(), start, nullptr, FILE_BEGIN) ||
+        !WriteProductRequest(file.get(), input) ||
+        !SetFilePointerEx(file.get(), start, nullptr, FILE_BEGIN) ||
+        ReadProductRequest(file.get(), &rejected)) {
+      return false;
+    }
+  }
+  input.roots[0].flags = 4;  // 只读根不能把历史持久 SID 带入新 token。
+  input.roots[0].capability_sid = L"S-1-5-21-11-22-33-44";
   ProductRequest rejected;
-  return !ReadProductRequest(file.get(), &rejected);
+  return SetFilePointerEx(file.get(), start, nullptr, FILE_BEGIN) &&
+         WriteProductRequest(file.get(), input) &&
+         SetFilePointerEx(file.get(), start, nullptr, FILE_BEGIN) &&
+         !ReadProductRequest(file.get(), &rejected);
 }
 
 bool TestInstallerAccountAcl() {
@@ -210,9 +230,19 @@ bool TestProductTokenRestrictingSids() {
     return false;
   }
 
+  SidPointer first_root = CreateCapabilitySid();
+  SidPointer second_root = CreateCapabilitySid();
+  if (!first_root || !second_root) {
+    return false;
+  }
+  std::vector<ProductRoot> roots = {
+      {1, L"C:\\first", L"1", L"2", std::wstring(64, L'a'),
+       SidToString(first_root.get())},
+      {1, L"C:\\second", L"1", L"3", std::wstring(64, L'b'),
+       SidToString(second_root.get())}};
   UniqueHandle token;
   if (!CreateProductRestrictedPrimaryToken(execution.get(), capability.get(),
-                                            &token)) {
+                                           &token, roots)) {
     std::wcerr << L"PRODUCT_TOKEN_PROBE stage=create win32=" << GetLastError()
                << L"\n";
     return false;
@@ -222,7 +252,102 @@ bool TestProductTokenRestrictingSids() {
                           execution.get()) &&
          TokenContainsSid(token.get(), TokenRestrictedSids,
                           capability.get()) &&
-         TokenContainsSid(token.get(), TokenRestrictedSids, everyone.data());
+         TokenContainsSid(token.get(), TokenRestrictedSids, everyone.data()) &&
+         TokenContainsSid(token.get(), TokenRestrictedSids, first_root.get()) &&
+         TokenContainsSid(token.get(), TokenRestrictedSids, second_root.get());
+}
+
+// 真实 ACL 夹具只触碰独占新建的临时目录，不修改现有项目或安装权限。
+bool TestPersistentRootAccess(const std::filesystem::path& fixture) {
+  const std::filesystem::path directory = fixture.wstring() + L".roots";
+  if (!std::filesystem::create_directory(directory)) {
+    return false;
+  }
+
+  auto run = [&]() {
+    PSECURITY_DESCRIPTOR descriptor = nullptr;
+    const std::wstring sddl = L"D:P(A;OICI;FA;;;" + CurrentUserSidString() + L")";
+    if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            sddl.c_str(), SDDL_REVISION_1, &descriptor, nullptr)) {
+      return false;
+    }
+    LocalPointer owned(descriptor);
+    PACL acl = nullptr;
+    BOOL present = FALSE;
+    BOOL defaulted = FALSE;
+    if (!GetSecurityDescriptorDacl(descriptor, &present, &acl, &defaulted) ||
+        !present || SetNamedSecurityInfoW(
+            const_cast<LPWSTR>(directory.c_str()), SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+            nullptr, nullptr, acl, nullptr) != ERROR_SUCCESS) {
+      return false;
+    }
+
+    SidPointer account = CreateCapabilitySid();
+    SidPointer root = CreateCapabilitySid();
+    SidPointer other_root = CreateCapabilitySid();
+    if (!account || !root || !other_root) {
+      return false;
+    }
+    const std::filesystem::path file = directory / L"append.log";
+    for (int round = 0; round < 2; ++round) {
+      ObjectGrant grant;
+      if (!grant.Install(directory.wstring(), false, true, true, account.get(),
+                         root.get(), L"", L"", true)) {
+        return false;
+      }
+      SidPointer execution = CreateCapabilitySid();
+      SidPointer temporary = CreateCapabilitySid();
+      UniqueHandle token;
+      std::vector<ProductRoot> roots = {
+          {1, directory.wstring(), L"1", L"2", std::wstring(64, L'a'),
+           SidToString(root.get())}};
+      if (!execution || !temporary ||
+          !CreateProductRestrictedPrimaryToken(
+              execution.get(), temporary.get(), &token, roots) ||
+          !ImpersonateLoggedOnUser(token.get())) {
+        return false;
+      }
+
+      UniqueHandle output(CreateFileW(
+          file.c_str(), FILE_APPEND_DATA, 7, nullptr, OPEN_ALWAYS,
+          FILE_ATTRIBUTE_NORMAL, nullptr));
+      DWORD written = 0;
+      const bool appended =
+          output && WriteFile(output.get(), "x", 1, &written, nullptr) &&
+          written == 1;
+      const bool reverted = RevertToSelf() != FALSE;
+      if (!appended || !reverted || !grant.RevokeInstance() || !grant.RevokeAll()) {
+        return false;
+      }
+    }
+    SidPointer execution = CreateCapabilitySid();
+    SidPointer temporary = CreateCapabilitySid();
+    UniqueHandle token;
+    std::vector<ProductRoot> other_roots = {
+        {1, L"C:\\other", L"1", L"3", std::wstring(64, L'b'),
+         SidToString(other_root.get())}};
+    if (!CreateProductRestrictedPrimaryToken(execution.get(), temporary.get(),
+                                             &token, other_roots) ||
+        !ImpersonateLoggedOnUser(token.get())) {
+      return false;
+    }
+
+    UniqueHandle denied(CreateFileW(
+        file.c_str(), FILE_APPEND_DATA, 7, nullptr, OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL, nullptr));
+    const DWORD error = GetLastError();
+    const bool reverted = RevertToSelf() != FALSE;
+    return reverted && !denied && error == ERROR_ACCESS_DENIED &&
+           std::filesystem::file_size(file) == 2;
+  };
+  const bool passed = run();
+  std::error_code error;
+  std::filesystem::remove_all(directory, error);
+  if (!passed || error) {
+    std::wcerr << L"PERSISTENT_ROOT_ACCESS FAIL\n";
+  }
+  return passed && !error;
 }
 
 bool TestRuntimeHandleAttestation() {
@@ -662,7 +787,8 @@ int wmain(int argc, wchar_t* argv[]) {
           TestGrantJournalFlags(fixture, 2, false, true);
   valid = valid && TestProductRequest(fixture) &&
           TestInstallerAccountAcl() && TestRuntimePipeSecurity() &&
-          TestProductTokenRestrictingSids() && TestRuntimeHandleAttestation();
+          TestProductTokenRestrictingSids() && TestRuntimeHandleAttestation() &&
+          TestPersistentRootAccess(fixture);
   std::error_code remove_error;
   std::filesystem::remove(fixture, remove_error);
   if (!valid || remove_error) {

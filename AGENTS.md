@@ -11,7 +11,7 @@
 - 保持清晰的目录、模块与代码文件结构。
 - 保持完善且与开发同步更新的文档。
 - **初版功能边界已确认**，以 docs/requirements.md 第 2、5 节为范围与验收依据；用户已授权开始实现；当前按 Node.js 24/26、React/Vite、Fastify、SQLite、Pino 技术方案开发。
-- 第一版使用 Web UI 作为用户交互界面，支持 Windows、macOS 和 Linux，优先完成读代码、修改与验证闭环。Windows Sandbox 使用单一专用低权限本地账户、per-instance restricted token/Job/capability、显式文件 ACL 与按账户 SID 的 WFP；Git CLI 与普通命令同路；需要宿主文件、网络或凭据时显式使用获批的 `run_with_permissions`，不隐式转发。Sandbox 模式沿用 1～4 个不同工作区并发和同工作区串行。
+- 第一版使用 Web UI 作为用户交互界面，支持 Windows、macOS 和 Linux，优先完成读代码、修改与验证闭环。Windows Sandbox 使用单一专用低权限本地账户、per-instance restricted token/Job/execution identity 与逐授权根持久 capability（D163）、显式文件 ACL 与按账户 SID 的 WFP；Git CLI 与普通命令同路；需要宿主文件、网络或凭据时显式使用获批的 `run_with_permissions`，不隐式转发。Sandbox 模式沿用 1～4 个不同工作区并发和同工作区串行。
 
   Windows 专用账户 Runtime 已接入 C++ Supervisor launcher、任务专属 Named Pipe 字节代理和 PID/创建时间/Job/token/capability/映像联合检查。2026-10-03 用户确认持续使用一段时间功能正常，Windows Sandbox 按实际使用验证通过、可用于日常开发记录，不再笼统描述为尚不可用的预览。默认关闭及显式安装规则不变；该结论不扩展为跨平台实现、完整安全矩阵通过或 subagent 已开放。来源与专项证据边界见 docs/verification.md、D130。
 
@@ -32,7 +32,7 @@
 
 ### Windows Sandbox 开发边界
 
-Windows 专用用户 Runtime、独立 C++ supervisor 与 Broker 是当前 Windows Sandbox 架构：一次性提升安装创建 `CodeAtelierSandbox` 账户及按其 SID 的持久 WFP fence；每次任务向该账户投影工作区和显式 read/write roots，并用 `WRITE_RESTRICTED` token、根 capability、Job、desktop 与 IPC 限制目标写入和能力。专用 Git 工具及其 IPC 已移除；独立 Push/Capability Runner、旧 Git config graph、HTTPS relay 与 askpass 已移除（D162）；root capability SID 与 Runtime capability IPC 仍是现行基础设施。
+Windows 专用用户 Runtime、独立 C++ supervisor 与 Broker 是当前 Windows Sandbox 架构：一次性提升安装创建 `CodeAtelierSandbox` 账户及按其 SID 的持久 WFP fence；每次任务向该账户投影工作区和显式 read/write roots，并用 `WRITE_RESTRICTED` token、根 capability、Job、desktop 与 IPC 限制目标写入和能力。专用 Git 工具及其 IPC 已移除；独立 Push/Capability Runner、旧 Git config graph、HTTPS relay 与 askpass 已移除（D162）；root capability SID 与 Runtime capability IPC 仍是现行基础设施。D163 将长期可写根 SID 保存在应用数据目录，按真实根身份跨任务/重启复用；execution/临时目录身份仍逐实例生成。长期根 ACE 不随任务撤销，账户租约/临时 ACE 清理不变；原生请求 v4、旧 ACL journal v2，升级须显式 Repair。详见 docs/windows-root-capabilities.md；不自动修复遗留 ACL。
 
 Sandbox 沿用 1～4 个不同工作区并发、同工作区串行；同账户实例会形成活动授权根的读取并集，不提供任务间 OS 级读取、进程或对象隔离。受限 token 的 restricting SID 包含 `Everyone` 以兼容 Windows 系统组件；已有 ACL 授予 Everyone 写入的对象可绕过本实例 root capability，因此不能保证实例之间或实例之外的完整文件写入隔离。不同对话不是彼此的安全边界；同账户 peer 也可能终止、注入或检查其它 Runtime。
 

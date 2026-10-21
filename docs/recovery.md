@@ -28,6 +28,8 @@ schema v11 的生产恢复、正常与兜底压缩读取完整相关事件（工
 
 generation lease/grant、Job 和 ACL journal 的在线 drain 与启动恢复已经接线；固定账户提升环境下的强制终止、进程崩溃、损坏 journal 和重启后复证仍未完成。完整身份和进程边界见 [windows-integrity-sandbox.md](windows-integrity-sandbox.md)。
 
+D163 的长期可写根 SID 从应用数据目录重载，不随服务重启、恢复任务或安装 generation 更换；持久根 ACE 保留，实例清理只覆盖临时 capability、账户租约和进程。旧 ACL journal/revoke v2 兼容不变，不把注册记录当作活动租约。坏记录拒绝加载，不静默换 SID；丢失记录、搬迁数据目录和完整撤权须按 [持久根 capability](windows-root-capabilities.md) 维护，不自动修复旧 ACL。
+
 ## 各中断阶段
 
 | 阶段                                     | 恢复行为                                                                                                                           |

@@ -37,18 +37,18 @@ Windows Runtime 使用安装程序预先创建的单一低权限本地账户 `Co
 目标能力：
 
 - 不继承宿主交互用户的 profile、凭据和仅授予该用户的文件权限；AccessManifest 再向专用账户增加工作区、显式只读根、私有目录和产品 Runtime 依赖的访问权。宿主 Git 配置图不再投影给 Runtime。它不是纯读取 allowlist：`Everyone`、`Authenticated Users`、机器级安装目录或其他既有 DACL 仍可能允许读取，必须在 UI 中明确。
-- 写访问同时经过专用账户 DACL 与 `WRITE_RESTRICTED` token 的 restricting SID 检查；每个实例拥有独立 execution/root capability，token 另含 `Everyone` 以兼容系统组件。Windows 可能为同一账户的多次显式凭据启动复用 logon SID，故只记录它用于诊断/兼容，绝不作为文件写入 capability。预期写入位置是工作区、显式可写根和实例临时目录，但已有 Everyone 可写 ACL 可能提供额外写入位置。
+- 写访问同时经过专用账户 DACL 与 `WRITE_RESTRICTED` token 的 restricting SID 检查；每个实例拥有独立 execution/临时 capability，长期文件 capability 则按真实授权根持久化（D163），token 另含 `Everyone` 以兼容系统组件。Windows 可能为同一账户的多次显式凭据启动复用 logon SID，故只记录它用于诊断/兼容，绝不作为文件写入 capability。预期写入位置是工作区、显式可写根和实例临时目录，但已有 Everyone 可写 ACL 可能提供额外写入位置。
 
 - 工作区内部不额外保护 `.git`、`.env` 或其他子路径；命令可以修改、删除或泄露工作区内的可访问内容，取消不回滚。
 - 机器级 WFP 规则按专用账户 SID 阻止直接出站，仍保留安装契约中的固定回环端口许可，但产品不再监听旧 HTTPS relay。模型经认证 IPC 由 Broker 请求；获批宿主命令使用宿主网络，不向 Runtime 授予代理凭据。
 - Git CLI 不另设 action、路径或推送目标校验；配置、hook/helper 按实际命令身份执行。获批宿主命令可读取宿主 system、global/include、local 和 worktree 配置，这些不可信配置及子进程拥有宿主权限。
 - Broker IPC 必须验证 execution instance；旧代理和凭据管道已删除，账户 SID 只是机器级隔离身份，不单独授权任务能力。
 
-Sandbox 模式沿用现有全局并发设置：不同真实工作区最多同时运行 1～4 个任务，同一真实工作区仍严格串行。每个 Sandbox execution instance 使用独立 capability SID、Job、private desktop、临时目录和 IPC nonce。Git CLI 按通用 DAG 依赖调度；同仓库写操作应显式串行，无依赖节点可并行。获批宿主命令不暂停其它工作区任务。
+Sandbox 模式沿用现有全局并发设置：不同真实工作区最多同时运行 1～4 个任务，同一真实工作区仍严格串行。每个 Sandbox execution instance 使用独立 execution/临时 capability SID、Job、private desktop、临时目录和 IPC nonce。Git CLI 按通用 DAG 依赖调度；同仓库写操作应显式串行，无依赖节点可并行。获批宿主命令不暂停其它工作区任务。
 
 本文仍只使用一个本地账户，不设计账户池，也不因 Sandbox 启用而把全部对话全局串行。
 
-单账户并发不提供任务间 OS 安全隔离。为了让该账户访问每个活动工作区，所有同账户 Runtime 都可能通过账户 SID 读取其它并发任务当前投影的工作区和 read roots；同账户 peer 还可能打开、终止、注入、调试或检查其它 Runtime/Job/desktop/命名对象。`WRITE_RESTRICTED` 的每实例 capability SID 不能覆盖已有 Everyone 可写 ACL，因此也不承诺完整实例间文件写入隔离。
+单账户并发不提供任务间 OS 安全隔离。为了让该账户访问每个活动工作区，所有同账户 Runtime 都可能通过账户 SID 读取其它并发任务当前投影的工作区和 read roots；同账户 peer 还可能打开、终止、注入、调试或检查其它 Runtime/Job/desktop/命名对象。`WRITE_RESTRICTED` 的文件 capability SID 不能覆盖已有 Everyone 可写 ACL，因此也不承诺完整实例间文件写入隔离。
 
 Broker/session API 仍按任务路由以维持正常产品行为，但不宣称抵抗恶意 peer 冒用或干扰另一个任务；需要该保证时必须改用账户池、AppContainer 或 VM profile。
 
@@ -119,7 +119,7 @@ Broker 为单一账户维护一个 account generation 和最多 1～4 个活动 
 
 supervisor 以 `CreateProcessWithLogonW` 且不使用 `LOGON_WITH_PROFILE` 启动固定 runner；每次启动记录实际 logon SID/LUID，但不要求唯一，也不以其授权。
 
-runner 再从专用账户 token 创建 `WRITE_RESTRICTED` primary token：移除非必要 privilege/group，并加入本实例独立 execution SID、本次可写根 capability SID 与 `Everyone` 兼容 SID；不加入 logon SID。此兼容选择会使已有 Everyone 写入 ACE 绕过 root capability。
+runner 再从专用账户 token 创建 `WRITE_RESTRICTED` primary token：移除非必要 privilege/group，并加入本实例独立 execution SID、本次授权的逐根持久 capability SID、实例临时 capability 与 `Everyone` 兼容 SID；不加入 logon SID。此兼容选择会使已有 Everyone 写入 ACE 绕过 root capability。
 
 目标以 suspended 状态创建，绑定本实例 Job、desktop 和 mitigation 后才恢复执行；不能证明 token SID 集合与 AccessManifest 一致时终止启动。
 
@@ -133,7 +133,7 @@ runner 为 restricted token 设置显式 default DACL，仅向共享账户 SID �
 
 所有后代必须留在 `KILL_ON_JOB_CLOSE` Job。计划任务、BITS、服务、COM、父进程伪装和现存宿主进程代写必须作为逃逸夹具验证。即使后代逃离 Job，只要仍使用专用账户 SID，持久 WFP 仍应阻止其直接外网；这不免除进程和文件逃逸修复。
 
-每个实例 lease 释放前必须完成其 Job 终止、capability ACE 撤销和对象对账。账户 SID 的共享 normal-side ACE 由以对象身份为键的引用计数 grant table 管理；它提供读写候选权限，`WRITE_RESTRICTED` 检查可由本实例 root capability 或已有 Everyone 写入 ACE 满足。
+每个实例 lease 释放前必须完成其 Job 终止、临时 capability ACE 撤销和对象对账；D163 长期根 capability ACE/注册记录跨任务保留，不属于实例撤销集合。账户 SID 的共享 normal-side ACE 由以对象身份为键的引用计数 grant table 管理；它提供读写候选权限，`WRITE_RESTRICTED` 检查可由本实例 root capability 或已有 Everyone 写入 ACE 满足。
 
 同一对象被不同实例分别声明为 read/write 根时仍共享一个账户 grant，只有最后一个对象引用释放时才撤销；不得因一个任务结束而破坏另一活动任务。任一步骤无法证明完成则账户 generation 进入 `orphaned/quarantined`：停止接受新任务，终止并对账该账户下全部活动实例，直到修复或重新安装；绝不只释放故障 workspace 后继续复用账户。
 
@@ -148,11 +148,11 @@ runner 为 restricted token 设置显式 default DACL，仅向共享账户 SID �
 - `gitConfigFiles`：逐租约 global config 文件，含当前仓库的 `safe.directory` 和宿主 user.name/email 白名单值（非仓库无信任项）；宿主实际 global/include 图不再投影给 Runtime。
 - 每项包含规范路径、访问模式、卷标识、`FILE_ID_128`、重解析状态、原始 DACL 摘要和本次 ACE delta。
 
-Broker 先以不跟随重解析点的方式规范化对象并记录卷/file ID，supervisor 在安装 ACE 前重新打开、复核并在实例期保留原对象 handle。每个活动根都为专用账户 SID 添加共享的 normal-side 读写候选 ACE；可写根另外获得该实例独有的 root capability SID ACE，restricted token 放入本实例 execution/root SID 和 Everyone。
+Broker 先以不跟随重解析点的方式规范化对象并记录卷/file ID，supervisor 在安装 ACE 前重新打开、复核并在实例期保留原对象 handle。每个活动根都为专用账户 SID 添加共享的 normal-side 读写候选 ACE；长期可写根另外获得应用数据目录注册的独立持久 root capability SID ACE，实例临时根仍使用临时 SID；restricted token 只放入本次授权根 SID、本实例 execution/临时 SID 和 Everyone。注册记录、对象替换、备份、撤权及升级细则见 [持久根 capability](windows-root-capabilities.md)。
 
 账户 SID 的普通访问检查因此形成所有活动 manifest 的可读并集；写访问的 `WRITE_RESTRICTED` 检查可由 root capability 或已有 Everyone 写入 ACE 满足。没有对应 root capability 的只读实例或另一实例，也可能写入已有 Everyone 写入 ACE 的根。当前实现不对整个有效 DACL 进行 Everyone 写入预检，不能把显式根列表称为完整写入 allowlist。
 
-根 ACE 带经过验证的 object/container 继承标志；预检枚举拒绝或显式处理关闭继承、deny ACE 与不能被继承覆盖的现存子对象，不能只改根后假设整棵树可用。不改 owner，不替换整体 DACL。撤销先核对原路径；同卷 rename/move 后通过 journal 中的卷/file ID 和 `OpenFileById` 重开原对象，路径替换或删除重建的新对象不误改。
+根 ACE 带 object/container 继承标志，但当前未逐个核验现存子对象的继承/撤销结果；关闭继承、deny ACE、宿主缺少子对象 WRITE_DAC 等情况仍可能阻断写入。D163 稳定 SID 避免正常换实例反复轮换身份，不自动修复这些旧 ACL，也不保证整棵树可用。不改 owner，不替换整体 DACL。撤销先核对原路径；同卷 rename/move 后通过 journal 中的卷/file ID 和 `OpenFileById` 重开原对象，路径替换或删除重建的新对象不误改。
 
 无法定位、撤销或复证时锁定相关工作区并隔离整个账户 generation。
 
@@ -198,7 +198,7 @@ IPC 通过只证明 Broker 能拒绝未授权 capability；它不构成直接网
 
 现行路径（D155）：普通 Agent Runtime 无直接命令网络；联网 Git CLI 应显式申请 `run_with_permissions`，Broker 按通用三级审批审查命令和理由，不再预检 upstream/URL/OID/ref。获批命令使用宿主配置、hook/helper、凭据与网络，不受专用账户 WFP/ACL/Job 或旧 relay/askpass 限制；记为 broker-command。Runtime 等待结果但仍可执行独立节点；取消或启动后结果未知不得自动重放。
 
-D162 已删除旧 Runner/relay/askpass。安装 state 和 WFP 的固定回环端口契约暂不迁移，但产品不再监听 HTTPS CONNECT relay；保留端口不是业务代理认证保证。原生命令帧 v3 删除四个代理/凭据字段并拒绝 v2 执行请求；ACL revoke 和持久 grant journal 单独保持 v2，以保留旧日志的清理兼容；Windows 更新须显式重建 native/runtime 后 Repair，不自动操作现有安装。
+D162 已删除旧 Runner/relay/askpass。安装 state 和 WFP 的固定回环端口契约暂不迁移，但产品不再监听 HTTPS CONNECT relay；保留端口不是业务代理认证保证。D163 原生命令帧 v4 在删除代理/凭据字段的基础上增加逐根持久 SID，并拒绝 v2/v3 执行请求；ACL revoke 和持久 grant journal 单独保持 v2，以保留旧日志的清理兼容；Windows 更新须显式重建 native/runtime 后 Repair，不自动操作现有安装。
 
 以下仅保存旧 Push Runner/relay 的历史目标设计，不对应现存实现，也不构成现行 push 的隔离承诺。
 

@@ -4,11 +4,11 @@
  * supervisor 使用 DPAPI state、工作区 ACL、Job 和私有 Named Pipe 启动同一二进制的 bootstrap 模式，并代理 Agent Runtime IPC。
  *
  * 1. 提升安装时仅对专用 LSA 账户对象授予安装者读取拒绝登录权的权限；self-check 核对 state 所属宿主 SID、专用账户 SID/密码、拒绝登录权、WFP 持久规则，以及受保护 Node 24 或 26/Agent Runtime entry 和 compaction/subagent Worker bundle 摘要。当前启动要求 v5 state，旧状态仅供显式维护读取。
- * 2. execute 生成 execution/root capability SID；共享账户的目录 ACE 与可写 root capability 均包含 DELETE_CHILD，以替换未继承新 ACE 的既有文件；restricted token 另含 Everyone 以兼容系统组件，故已有 Everyone 可写对象不受根 capability 完整约束。
+ * 2. execute 生成 execution/临时对象 capability SID；长期可写根采用 Broker 数据目录持久化的各自 SID；共享账户的目录 ACE 与可写 root capability 均包含 DELETE_CHILD，以替换未继承新 ACE 的既有文件；restricted token 另含 Everyone 以兼容系统组件，故已有 Everyone 可写对象不受根 capability 完整约束。
  * 3. CreateProcessWithLogonW 以固定 bootstrap 入口启动专用账户进程，先分配 KILL_ON_JOB_CLOSE Job 再恢复。
  * 4. 在确认不是 WinSta0 后给系统命名的非交互式 station 补齐专用账户及实例 SID，再创建私有 desktop；bootstrap 经账户管道取得命令，创建 WRITE_RESTRICTED token，常驻 Runtime 则经仅额外授权本实例 execution SID 的专属 pipe 连接 Broker。
- * 5. 产品运行使用 INFINITE，不附累计 CPU 时限；有限探测保留期限。Broker stdin 关闭、有限超时或异常会终止 Job；正常/异常退出撤销本实例 capability ACE，共享账户 ACE 仅由 Broker 最后引用的两阶段 release 撤销；安装恢复从持久 journal 验证原文件身份后撤销账户 ACE，清理不确定返回专用错误码。
- * 6. 二进制请求 v3 已移除独立 Runner 的代理与凭据字段，不读取宿主 Git 凭据、不提供 askpass；获批宿主命令由 Broker 执行。
+ * 5. 产品运行使用 INFINITE，不附累计 CPU 时限；有限探测保留期限。Broker stdin 关闭、有限超时或异常会终止 Job；正常/异常退出只撤销临时根 capability ACE，长期根 ACE 保留以供后续实例复用；共享账户 ACE 仅由 Broker 最后引用的两阶段 release 撤销；安装恢复从持久 journal 验证原文件身份后撤销账户 ACE，清理不确定返回专用错误码。
+ * 6. 二进制请求 v4 逐根携带持久 capability SID；不接受 v2/v3 执行帧，ACL journal 仍保持 v2，不读取宿主 Git 凭据、不提供 askpass；获批宿主命令由 Broker 执行。
  * 7. Agent Runtime 模式只启动受保护 Node/entry；bootstrap 通过已核对客户端 PID 的私有 pipe 交付进程/token 句柄值，Supervisor 限权复制查询句柄，联合核对 Runtime pipe 客户端身份后发送启动首帧并代理原始 Broker 字节流；初始 CWD 使用私有目录。
  * 8. stdout 只承载工具输出或 Agent Runtime IPC；stderr 只输出有界控制记录及每方向首帧阶段，不记录命令、路径、SID、密码或工具内容。
  *
@@ -45,7 +45,7 @@ extern "C" NTSTATUS NTAPI LsaSetSecurityObject(
 namespace {
 
 constexpr uint32_t kRequestMagic = 0x42534143;
-constexpr uint32_t kRequestVersion = 3;
+constexpr uint32_t kRequestVersion = 4;
 // 撤销帧与持久 ACL journal 布局未变，必须继续读取旧安装遗留的 v2 授权记录。
 constexpr uint32_t kAccessRootsVersion = 2;
 constexpr uint32_t kRuntimeAttestationMagic = 0x48524143;
@@ -66,6 +66,7 @@ struct ProductRoot {
   std::wstring device_id;
   std::wstring file_id;
   std::wstring identity_digest;
+  std::wstring capability_sid;
 };
 
 struct ProductRequest {
@@ -307,6 +308,28 @@ bool WriteFramedString(HANDLE handle, const std::wstring& value) {
          (size == 0 || WriteExact(handle, utf8.data(), size));
 }
 
+// 只接受本产品随机 capability 的 SID 形状，拒绝 Everyone/SYSTEM 等通用主体。
+bool ParseRootCapability(const std::wstring& text, std::vector<BYTE>* bytes) {
+  PSID raw = nullptr;
+  if (!ConvertStringSidToSidW(text.c_str(), &raw)) {
+    return false;
+  }
+  LocalPointer owned(raw);
+  SID_IDENTIFIER_AUTHORITY authority = SECURITY_NT_AUTHORITY;
+  if (!IsValidSid(raw) || *GetSidSubAuthorityCount(raw) != 5 ||
+      memcmp(GetSidIdentifierAuthority(raw), &authority, sizeof(authority)) != 0 ||
+      *GetSidSubAuthority(raw, 0) != 21 || SidToString(raw) != text) {
+    return false;
+  }
+  for (DWORD index = 1; index < 5; ++index) {
+    if (*GetSidSubAuthority(raw, index) == 0) {
+      return false;
+    }
+  }
+  bytes->resize(GetLengthSid(raw));
+  return CopySid(static_cast<DWORD>(bytes->size()), bytes->data(), raw);
+}
+
 bool ReadProductRequest(HANDLE handle, ProductRequest* request) {
   uint32_t magic = 0;
   uint32_t version = 0;
@@ -346,9 +369,17 @@ bool ReadProductRequest(HANDLE handle, ProductRequest* request) {
         (root.flags & ~7u) != 0 || !ReadFramedString(handle, &root.path) ||
         !ReadFramedString(handle, &root.device_id) ||
         !ReadFramedString(handle, &root.file_id) ||
-        !ReadFramedString(handle, &root.identity_digest) || root.path.empty() ||
+        !ReadFramedString(handle, &root.identity_digest) ||
+        !ReadFramedString(handle, &root.capability_sid) || root.path.empty() ||
         root.device_id.empty() || root.file_id.empty() ||
         root.identity_digest.size() != 64) {
+      return false;
+    }
+    const bool persistent = (root.flags & 1u) != 0 &&
+        _wcsicmp(root.path.c_str(), request->private_directory.c_str()) != 0;
+    std::vector<BYTE> parsed_sid;
+    if ((persistent && !ParseRootCapability(root.capability_sid, &parsed_sid)) ||
+        (!persistent && !root.capability_sid.empty())) {
       return false;
     }
     request->roots.push_back(std::move(root));
@@ -389,7 +420,8 @@ bool WriteProductRequest(HANDLE handle, const ProductRequest& request) {
         !WriteFramedString(handle, root.path) ||
         !WriteFramedString(handle, root.device_id) ||
         !WriteFramedString(handle, root.file_id) ||
-        !WriteFramedString(handle, root.identity_digest)) {
+        !WriteFramedString(handle, root.identity_digest) ||
+        !WriteFramedString(handle, root.capability_sid)) {
       return false;
     }
   }
@@ -979,7 +1011,8 @@ class ObjectGrant {
   bool Install(const std::wstring& object_path, bool expect_file,
                bool writable, bool install_account, PSID account_sid,
                PSID capability_sid, const std::wstring& expected_device = L"",
-               const std::wstring& expected_file = L"") {
+               const std::wstring& expected_file = L"",
+               bool persistent_capability = false) {
     handle_.reset(CreateFileW(
         object_path.c_str(), READ_CONTROL | WRITE_DAC,
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
@@ -1028,7 +1061,8 @@ class ObjectGrant {
 
     bool has_account = HasExplicitSid(old_acl, account_sid);
     if ((install_account && has_account) || (!install_account && !has_account) ||
-        (writable && HasExplicitSid(old_acl, capability_sid))) {
+        (writable && !persistent_capability &&
+         HasExplicitSid(old_acl, capability_sid))) {
       return false;
     }
 
@@ -1077,7 +1111,8 @@ class ObjectGrant {
     }
     account_sid_.resize(GetLengthSid(account_sid));
     remove_account_ = install_account;
-    remove_capability_ = writable;
+    // 持久身份对应的 ACE 不随任务撤销；恢复 journal 仍只负责账户租约。
+    remove_capability_ = writable && !persistent_capability;
     if (writable) {
       capability_sid_.resize(GetLengthSid(capability_sid));
     }
@@ -1853,6 +1888,7 @@ bool TokenContainsSid(HANDLE token, TOKEN_INFORMATION_CLASS information_class,
 bool VerifyAgentRuntimeClient(HANDLE pipe, HANDLE process, HANDLE token,
                               HANDLE job, PSID account_sid,
                               PSID execution_sid, PSID capability_sid,
+                              const std::vector<ProductRoot>& roots,
                               const std::wstring& expected_image,
                               DWORD* process_id,
                               ULONGLONG* creation_time_100ns) {
@@ -1900,6 +1936,17 @@ bool VerifyAgentRuntimeClient(HANDLE pipe, HANDLE process, HANDLE token,
     return reject(L"sids");
   }
 
+  for (const ProductRoot& root : roots) {
+    if (root.capability_sid.empty()) {
+      continue;
+    }
+    std::vector<BYTE> sid;
+    if (!ParseRootCapability(root.capability_sid, &sid) ||
+        !TokenContainsSid(token, TokenRestrictedSids, sid.data())) {
+      return reject(L"sids");
+    }
+  }
+
   std::vector<wchar_t> image(32768);
   DWORD image_size = static_cast<DWORD>(image.size());
   if (!QueryFullProcessImageNameW(process, 0, image.data(), &image_size)) {
@@ -1927,7 +1974,8 @@ bool VerifyAgentRuntimeClient(HANDLE pipe, HANDLE process, HANDLE token,
 // capability 限制，故不能将实例间写入隔离作为此 token 的完整保证。
 bool CreateProductRestrictedPrimaryToken(PSID execution_sid,
                                          PSID capability_sid,
-                                         UniqueHandle* restricted_token) {
+                                         UniqueHandle* restricted_token,
+                                         const std::vector<ProductRoot>& roots) {
   HANDLE raw_current = nullptr;
   if (!OpenProcessToken(GetCurrentProcess(),
                         TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY | TOKEN_QUERY |
@@ -1955,10 +2003,24 @@ bool CreateProductRestrictedPrimaryToken(PSID execution_sid,
     return false;
   }
 
-  std::array<SID_AND_ATTRIBUTES, 3> restricting_sids{};
+  std::vector<std::vector<BYTE>> root_sids;
+  for (const ProductRoot& root : roots) {
+    if (root.capability_sid.empty()) {
+      continue;
+    }
+    std::vector<BYTE> sid;
+    if ((root.flags & 1u) == 0 || !ParseRootCapability(root.capability_sid, &sid)) {
+      return false;
+    }
+    root_sids.push_back(std::move(sid));
+  }
+  std::vector<SID_AND_ATTRIBUTES> restricting_sids(3 + root_sids.size());
   restricting_sids[0].Sid = execution_sid;
   restricting_sids[1].Sid = capability_sid;
   restricting_sids[2].Sid = everyone_sid.data();
+  for (size_t index = 0; index < root_sids.size(); ++index) {
+    restricting_sids[index + 3].Sid = root_sids[index].data();
+  }
   HANDLE raw_restricted = nullptr;
   if (!CreateRestrictedToken(current_token.get(), kRestrictedTokenFlags, 0,
                              nullptr, 0, nullptr,
@@ -2040,7 +2102,8 @@ int RunProductBootstrap(const std::wstring& pipe_name,
                                  0) == 0;
   UniqueHandle restricted_token;
   if (!CreateProductRestrictedPrimaryToken(
-          execution_sid.get(), capability_sid.get(), &restricted_token)) {
+          execution_sid.get(), capability_sid.get(), &restricted_token,
+          request.roots)) {
     return 25;
   }
   std::wstring command_line =
@@ -2200,7 +2263,7 @@ bool RunAgentRuntimeProxy(HANDLE runtime_pipe, HANDLE bootstrap_pipe,
   if (!VerifyAgentRuntimeClient(runtime_pipe, runtime_process.get(),
                                 runtime_token.get(), job, account_sid,
                                 execution_sid, capability_sid,
-                                state.runtime_node_path,
+                                request.roots, state.runtime_node_path,
                                 &runtime_pid, &creation_time_100ns)) {
     std::wcerr << L"CODEATELIER_RUNTIME_PROXY_FAILED stage=identity\n";
     return false;
@@ -2383,9 +2446,14 @@ int RunProductSupervisor(const std::wstring& state_path,
     if (install_account) {
       journaled_roots.push_back(root);
     }
-    if (!grant.Install(root.path, expect_file, writable, install_account,
-                       account_sid.data(), capability_sid.get(),
-                       root.device_id, root.file_id)) {
+    std::vector<BYTE> persistent_sid;
+    const bool persistent = !root.capability_sid.empty();
+    if ((persistent &&
+         !ParseRootCapability(root.capability_sid, &persistent_sid)) ||
+        !grant.Install(
+            root.path, expect_file, writable, install_account, account_sid.data(),
+            persistent ? persistent_sid.data() : capability_sid.get(),
+            root.device_id, root.file_id, persistent)) {
       manifest_valid = false;
       break;
     }

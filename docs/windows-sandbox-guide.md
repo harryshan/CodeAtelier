@@ -106,7 +106,7 @@ Sandbox **不会**创建 worktree、暂存副本或自动回滚：可写操作�
 | 正常卸载                             | 在**管理员 PowerShell** 执行 `pnpm sandbox:uninstall` | 先停止所有任务；卸载必须确认没有活动 lease。                                                                      |
 | 正常卸载无法证明完整清理时的受控恢复 | 在**管理员 PowerShell** 执行 `pnpm sandbox:recover`   | 只清理安装 state 中记录的产品账户、固定 WFP 对象、欢迎屏幕值和受控 ProgramData 子目录；不会扫描或重置整机防火墙。 |
 
-D162 将原生执行请求帧升级为 **v3** 并拒绝旧 v2 执行帧；ACL 撤销帧及持久 grant journal 独立保持 v2，以便读取旧清理记录。该变更不改变 Runtime IPC v17，但不能只更新 TypeScript 或 Runtime bundle：必须同步执行 `pnpm sandbox:native:build` 和 `pnpm sandbox:runtime:build`，再按下列步骤停止服务并 Repair。安装 state/WFP 的固定端口契约暂保留，产品不再监听旧 HTTPS CONNECT relay；保留端口不是业务代理认证保证。
+D163 在 D162 基础上将原生执行请求帧升级为 **v4**，逐根携带持久 capability SID，并拒绝旧 v2/v3 执行帧；ACL 撤销帧及持久 grant journal 独立保持 v2，以便读取旧清理记录。该变更不改变 Runtime IPC v17，但不能只更新 TypeScript 或 Runtime bundle：必须同步执行 `pnpm sandbox:native:build` 和 `pnpm sandbox:runtime:build`，再按下列步骤停止服务并 Repair。安装 state/WFP 的固定端口契约暂保留，产品不再监听旧 HTTPS CONNECT relay；保留端口不是业务代理认证保证。
 
 更新原生 Supervisor、WFP manager 或 Runtime bundle 后，应重新生成对应构建产物，**先停止 CodeAtelier 服务**，再由原安装用户打开管理员 PowerShell 7，执行：
 
@@ -123,6 +123,8 @@ if ($sidAfter -ne $sidBefore) { throw "Sandbox 账户 SID 意外变化。" }
 Repair 原地更新组件，保留账户 SID 和原 DPAPI 凭据，默认保留已有 relay 端口。它先校验身份，再使用旧 Supervisor 终止账户进程并撤销 journal，之后才更新组件、新 generation、WFP 和登录权。缺失/不匹配的账户、state 或原安装用户会被拒绝，不自动创建替代账户。
 
 Repair 失败时保留账户和 state，安装文件可能已部分更新；先排查失败阶段，修正原因后重试 Repair/Verify。出现 fallback、`unknown`、`orphaned` 或无法清理时，保留诊断现场，不要手动删除账户/WFP/ACL。**`sandbox:recover` 是受控卸载，会删除账户**，仅在明确需要清理安装时使用；之后重新 Install 会产生新 SID。此次保留 SID 的修复不会自动修复工作区中已经失效的 owner/ACE，现存子对象的 ACL 传播问题仍须单独处理。
+
+长期可写根的 SID 保存在应用数据目录 `sandbox-root-capabilities/<对象摘要>.json`，新任务和服务重启复用；实例 execution/IPC 和临时目录仍独立。正常结束只撤销临时授权及账户租约，不删除长期根 ACE。备份/迁移数据目录时须保留注册记录；不要把删除 JSON 当成撤权。新机制不自动修复旧 ACL，详见 [持久根 capability](windows-root-capabilities.md)。
 
 Sandbox 生命周期日志位于平台数据目录的 `logs/sandbox.log`，常规应用日志和会话历史仍分别保存。
 

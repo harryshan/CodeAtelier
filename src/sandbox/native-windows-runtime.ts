@@ -9,10 +9,11 @@
  * 5. runtime started 控制帧确认共享账户 ACE 已安装；并发 lease 在该确认前不会假定 grant 可用。
  * 6. 产品执行 timeoutMs=0 编码为 INFINITE，不创建 JS 总期限计时器；有限探测仍保留期限。逐工具进程取消、有限 JS 超时或管道失败时关闭继承 stdin 并等待退出；常驻 Agent Runtime 已启动后先让 Broker 经 IPC 取消并等待终态，close 才关闭 stdin。清理证明缺失优先于原错误或取消结果，绝不宿主重放。
  * 7. drainGeneration 终止该账户全部进程并按持久 journal 撤销 ACL，供在线 quarantine 与重启恢复共用。
- * 8. 临时 HOME/TEMP 只在原生确认撤销后删除；启动失败仅记录白名单 station、Runtime pipe/身份阶段、入口固定阶段和数字错误码，日志与错误不包含命令、路径、SID、端口、密码或工具输出。
- * 9. Runtime 普通命令只向 stderr 输出固定阶段标记；启动后异常日志提取最后阶段，供区分 shell 选择、进程启动和进程关闭停滞，不记录命令内容。
+ * 8. rootCapabilities 在宿主数据目录读取/原子创建逐根 SID；只向当前可写根发放，实例私有根仍用临时 SID；trace 不记录 SID/路径。
+ * 9. 临时 HOME/TEMP 只在原生确认撤销后删除；启动失败仅记录白名单 station、Runtime pipe/身份阶段、入口固定阶段和数字错误码，日志与错误不包含命令、路径、SID、端口、密码或工具输出。
+ * 10. Runtime 普通命令只向 stderr 输出固定阶段标记；启动后异常日志提取最后阶段，供区分 shell 选择、进程启动和进程关闭停滞，不记录命令内容。
  *
- * 该实现启动常驻 Agent Runtime；独立 Push/Capability Runner 与 HTTPS relay 已移除。二进制请求 v3 不再携带代理或凭据字段，旧安装须显式更新。常驻 Runtime 承载完整 agent loop、文件工具和普通命令，Git CLI 使用通用命令路径，不提供专用 Git IPC 或隐式宿主转发。
+ * 该实现启动常驻 Agent Runtime；独立 Push/Capability Runner 与 HTTPS relay 已移除。二进制请求 v4 携带逐根持久 capability SID，不携带代理或凭据字段，旧安装须显式更新。常驻 Runtime 承载完整 agent loop、文件工具和普通命令，Git CLI 使用通用命令路径，不提供专用 Git IPC 或隐式宿主转发。
  */
 
 import { createHash } from "node:crypto";
@@ -32,9 +33,14 @@ import type { LaunchedAgentRuntime } from "./agent-runtime-launcher.js";
 import type { RuntimeExecutionIdentity } from "./runtime-capability-core.js";
 import type { TraceRecorder } from "../tracing/recorder.js";
 import { sandboxGitConfig } from "./sandbox-git-config.js";
+import { dataDirectory } from "../config/data-directory.js";
+import {
+  resolveRootCapabilities,
+  validRootCapabilitySid,
+} from "./root-capability-store.js";
 
 const REQUEST_MAGIC = 0x42534143;
-const REQUEST_VERSION = 3;
+const REQUEST_VERSION = 4;
 // 撤销帧与原生持久 ACL journal 保持 v2，不跟随执行请求布局升级。
 const ACCESS_ROOTS_VERSION = 2;
 const CLEANUP_FAILURE_EXIT_CODE = 70;
@@ -284,6 +290,7 @@ export function encodeNativeSandboxRequest(input: {
   privateDirectory: string;
   timeoutMs: number;
   access?: SandboxNativeAccess;
+  rootCapabilities?: ReadonlyMap<string, string>;
 }) {
   if (
     !input.executionInstanceId ||
@@ -348,6 +355,14 @@ export function encodeNativeSandboxRequest(input: {
     leaseEpoch,
     rootCount,
     ...roots.flatMap((root) => {
+      const capability =
+        root.flags === 1
+          ? (input.rootCapabilities?.get(root.objectIdentityDigest) ?? "")
+          : "";
+      if (capability && !validRootCapabilitySid(capability)) {
+        throw new NativeWindowsSandboxError("授权根 capability SID 无效。");
+      }
+
       const flags = Buffer.allocUnsafe(4);
       flags.writeUInt32LE(
         root.flags | (installIdentities.has(root.objectIdentityDigest) ? 4 : 0),
@@ -359,6 +374,7 @@ export function encodeNativeSandboxRequest(input: {
         framedString(root.deviceId),
         framedString(root.fileId),
         framedString(root.objectIdentityDigest),
+        framedString(capability),
       ];
     }),
   ]);
@@ -370,6 +386,7 @@ export function encodeNativeAgentRuntimeRequest(input: {
   cwd: string;
   runtimeNode: string;
   access: SandboxNativeAccess;
+  rootCapabilities?: ReadonlyMap<string, string>;
 }) {
   const identifiers = [
     input.identity.sessionId,
@@ -395,6 +412,7 @@ export function encodeNativeAgentRuntimeRequest(input: {
     privateDirectory: input.access.privateDirectory,
     timeoutMs: 0,
     access: input.access,
+    rootCapabilities: input.rootCapabilities,
   });
 }
 
@@ -432,9 +450,55 @@ export class NativeWindowsSandboxRuntime implements SandboxRuntime {
     private runSelfCheck = executeProcess,
     private log?: Logger,
     private traces?: TraceRecorder,
+    private brokerDataDirectory = dataDirectory(),
   ) {
     this.environment = environment;
     this.paths = installationPaths(environment);
+  }
+
+  private rootCapabilities(
+    command: SandboxCommand,
+    access: SandboxNativeAccess,
+  ) {
+    const startedAt = performance.now();
+    const span = this.traces?.startSpan(command.taskId, {
+      name: "sandbox.root_capabilities.resolve",
+      category: "sandbox",
+      track: "Sandbox runtime",
+      attributes: { executionInstanceId: command.executionInstanceId },
+    });
+    try {
+      const capabilities = resolveRootCapabilities(
+        this.brokerDataDirectory,
+        access,
+        command.signal,
+      );
+      this.log?.debug({
+        event: "sandbox.root_capabilities.resolved",
+        module: "sandbox",
+        taskId: command.taskId,
+        executionInstanceId: command.executionInstanceId,
+        count: capabilities.size,
+        durationMs: Math.round(performance.now() - startedAt),
+      });
+      if (span) {
+        this.traces?.endSpan(span, "ok");
+      }
+
+      return capabilities;
+    } catch {
+      if (span) {
+        this.traces?.endSpan(
+          span,
+          command.signal.aborted ? "cancelled" : "error",
+        );
+      }
+
+      command.signal.throwIfAborted();
+      throw new NativeWindowsSandboxError(
+        "授权根 capability 记录无法安全加载；保留记录，拒绝更换 SID。",
+      );
+    }
   }
 
   async prepareAccess(command: SandboxCommand, _workspace: SandboxWorkspace) {
@@ -606,6 +670,9 @@ export class NativeWindowsSandboxRuntime implements SandboxRuntime {
       privateDirectory,
       timeoutMs: command.timeoutMs,
       access,
+      rootCapabilities: access
+        ? this.rootCapabilities(command, access)
+        : undefined,
     });
 
     return this.spawnSupervisor(command, frame);
@@ -643,6 +710,7 @@ export class NativeWindowsSandboxRuntime implements SandboxRuntime {
       cwd: command.cwd,
       runtimeNode: this.paths.runtimeNode,
       access,
+      rootCapabilities: this.rootCapabilities(command, access),
     });
     const child = spawn(
       this.paths.supervisor,
