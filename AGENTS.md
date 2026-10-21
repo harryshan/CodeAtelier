@@ -1,6 +1,6 @@
 # CodeAtelier Agent 工作约定
 
-本文件适用于整个仓库。任何参与本项目的 coding agent 开始工作前必须先阅读本文件，再阅读 `docs/requirements.md`；涉及设计或范围变化时也须阅读 `docs/decisions.md`。
+本文件适用于整个仓库。开始工作前阅读本文件与 `docs/requirements.md`；本任务已完整注入的当前文件视为已阅读，无须重复调用工具。修改子目录文件前读取适用且尚未提供的嵌套 `AGENTS.md`；内容变化、注入不完整或需要编辑规则文件本身时重新读取。涉及设计或范围变化时也须阅读 `docs/decisions.md`。
 
 ## 项目定位与当前阶段
 

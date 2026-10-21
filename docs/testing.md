@@ -177,6 +177,12 @@ Runtime stdio 集成夹具共用 `runtime-child-close.ts`：spawn 后立即监�
 
 只公开当前工具契约，拒绝无执行器的工具名；跨平台检测常见命令并按估计性能排序，将目录浏览/可用列表注入模型指令
 
+### 项目规则注入
+
+主要测试：instructions.test.ts、engine.test.ts。
+
+验证宿主与 Runtime 共用指令生成器注入根 `AGENTS.md` 的来源路径、完整正文和加载状态；下一次调用读取修改后的规则，空文件仍标为完整加载，缺失、超限及目录不误标为成功。不用提示词子串断言证明模型一定避免重复读取；实际模型行为仍需使用观察。注入不代替 `read_file` 的编辑凭证，原有跨任务新鲜读取检查继续保留。
+
 ### 文件读取
 
 主要测试：files.test.ts、core.test.ts、read-file-content.test.ts。
