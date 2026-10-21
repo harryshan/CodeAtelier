@@ -486,7 +486,6 @@ export class AgentRuntimeService {
           });
           const persistence = new OrderedContextPersistence(
             session,
-            this.identity.sessionId,
             currentInput,
             input.settings.outputChars,
             events,
@@ -788,7 +787,6 @@ class OrderedContextPersistence {
 
   constructor(
     private session: RuntimeSessionClient,
-    private sessionId: string,
     private input: any[],
     private outputChars: number,
     private events: OrderedRuntimeEvents,

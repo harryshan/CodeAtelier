@@ -170,10 +170,6 @@ export class ToolRunner {
     );
   }
 
-  private hash(value: string | Buffer) {
-    return createHash("sha256").update(value).digest("hex");
-  }
-
   private executionMode(status: SandboxStatus): ExecutionInstanceMode {
     if (
       status.mode === "non-isolated" ||

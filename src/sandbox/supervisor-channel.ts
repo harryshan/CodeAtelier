@@ -33,7 +33,7 @@ export class JsonLineSupervisorChannel implements SupervisorControlChannel {
   private ignoredResponses = new Set<string>();
 
   constructor(
-    private input: Readable,
+    input: Readable,
     private output: Writable,
     private maxFrameBytes = DEFAULT_SUPERVISOR_FRAME_BYTES,
   ) {
