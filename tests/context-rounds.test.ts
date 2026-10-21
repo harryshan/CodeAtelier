@@ -1,12 +1,13 @@
 /**
  * 验证压缩轮次策略和 90% 触发点，不连接模型服务。
  * 1. rounds 生成包含 reasoning、并行调用及完整结果的历史，检查 10% 向上取整与至少一轮。
- * 2. 容量检查只缩减完整轮次，用户原文/历史摘要和固定开销仍计入预算。
- * 3. 真实 ContextManager/Worker 使用内存存储，验证阈值前不调用摘要、阈值处提交 60% 内的视图。
+ * 2. 改变内容体积不会改变轮数切点，不调用候选 tokenizer。
+ * 3. 真实 ContextManager/Worker 使用内存存储，验证 90% 触发、压缩后等待新实报，不立即重算新视图。
  */
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { chooseCut, contextSize, roundStarts } from "../src/context/budget.js";
 import { ContextManager } from "../src/context/context-manager.js";
+import { summaryBudget } from "./fixtures/summary-budget.js";
 
 function rounds(count: number): any[] {
   return Array.from({ length: count }, (_, index) => [
@@ -34,23 +35,20 @@ it.each([
   [11, 45],
   [21, 90],
 ])("retains rounded-up ten percent of %i rounds", (count, cut) => {
-  expect(chooseCut(rounds(count), 100000)).toBe(cut);
+  expect(chooseCut(rounds(count))).toBe(cut);
 });
 
 it("never splits the only round, including pending parallel calls", () => {
-  expect(chooseCut(rounds(1), 100000)).toBeUndefined();
+  expect(chooseCut(rounds(1))).toBeUndefined();
   expect(roundStarts(rounds(1).slice(0, 4))).toEqual([0]);
 });
 
-it("reduces whole rounds for capacity but never drops the final round", () => {
+it("keeps the same two rounds regardless of their size", () => {
   const source = rounds(11);
-  source[49].output = "x".repeat(5000);
-  expect(chooseCut(source, 5000)).toBe(50);
-  source[54].output = "x".repeat(5000);
-  expect(chooseCut(source, 5000)).toBeUndefined();
-  expect(
-    chooseCut(rounds(11), 5000, contextSize, "x".repeat(3000)),
-  ).toBeUndefined();
+  expect(chooseCut(source)).toBe(45);
+  source[49].output = "x".repeat(500000);
+  source[54].output = "x".repeat(500000);
+  expect(chooseCut(source)).toBe(45);
 });
 
 it("merges consecutive user input and excludes archived summaries from the round count", () => {
@@ -64,11 +62,9 @@ it("merges consecutive user input and excludes archived summaries from the round
   ];
   const notes = new Set(["old summary"]);
   expect(roundStarts(source, notes)).toEqual([1, 8]);
-  expect(chooseCut(source, 10000, contextSize, "", [], notes)).toBe(8);
+  expect(chooseCut(source, notes)).toBe(8);
   source[0].content = "x".repeat(7000);
-  expect(
-    chooseCut(source, 10000, contextSize, "", [], new Set([source[0].content])),
-  ).toBeUndefined();
+  expect(chooseCut(source, new Set([source[0].content]))).toBe(8);
 });
 
 it.each([0.899, 0.9])(
@@ -81,6 +77,7 @@ it.each([0.899, 0.9])(
       { role: "assistant", content: "history ".repeat(1500) },
       { role: "user", content: "continue" },
     ];
+    const measure = vi.fn(() => 20000 * ratio);
     const manager = new ContextManager({
       store: {
         latestContextSnapshotAsync: async () => undefined,
@@ -93,7 +90,8 @@ it.each([0.899, 0.9])(
       sessionId: "session",
       model: "fixture",
       limit: 20000,
-      measure: () => 20000 * ratio,
+      measure,
+      summaryBudget,
       provider: {
         async run() {
           calls++;
@@ -122,7 +120,28 @@ it.each([0.899, 0.9])(
     } else {
       expect(calls).toBeGreaterThan(0);
       expect(result).toEqual(committed);
-      expect(contextSize(result, "", [])).toBeLessThanOrEqual(12000);
+      expect(contextSize(result, "", [])).toBeLessThan(
+        contextSize(source, "", []),
+      );
+      expect(measure).toHaveBeenCalledTimes(1);
+      expect(manager.request(result, "", []).after).toBeUndefined();
+      manager.observeUsage(undefined);
+      expect(await manager.prepare(result, "", [])).toBe(result);
+      expect(measure).toHaveBeenCalledTimes(1);
+      manager.observeUsage({
+        input_tokens: -1,
+        output_tokens: 0,
+        total_tokens: 0,
+      });
+      expect(manager.request(result, "", []).after).toBeUndefined();
+      measure.mockReturnValue(100);
+      manager.observeUsage({
+        input_tokens: 100,
+        output_tokens: 0,
+        total_tokens: 100,
+      });
+      expect(await manager.prepare(result, "", [])).toBe(result);
+      expect(measure).toHaveBeenCalledTimes(2);
       expect(result.filter((item) => item.role === "user")).toEqual(
         source.filter((item) => item.role === "user"),
       );

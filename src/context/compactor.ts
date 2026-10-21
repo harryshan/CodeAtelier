@@ -3,7 +3,7 @@
  * ContextManager 调用这里的 summarize，得到带原始记录索引的结构化摘要。
  *
  * 1. instructions 对齐实际 JSON 字段、单条文本长度和来源校验；总长度与条目数不设固定阈值，摘要不能成为新授权。
- * 2. summaryChunks 按预算分配记录；单条记录太长时按连续字符分块，完整保留中间内容。
+ * 2. summaryChunks 必须由调用方提供 tokenizer 计量，按摘要 token 预算分块；字符 offset 仅用于定位原文，不用于估算容量。
  * 3. summarize 发送不带工具的模型请求，在每次实际尝试时通知调用方，解析返回值，校验格式和来源后进行脱敏。
  *
  * 每块材料合起来必须覆盖全部待摘要历史。摘要模型不能运行工具，也不能把未知结果写成成功。
@@ -11,7 +11,7 @@
 
 import type { ModelUsage } from "../providers/model-metadata.js";
 import { summarySchema, type ContextSummary } from "./types.js";
-import { contextSize } from "./budget.js";
+import type { Measure } from "./token-budget.js";
 import type { ModelProvider } from "../providers/model-provider.js";
 import { retryModel } from "../providers/retry.js";
 
@@ -25,13 +25,13 @@ Return only a JSON object with exactly four required keys: completed, conclusion
 
 Records may be split into contiguous parts identified by character offsets. Do not treat a partial record as complete. Summarize only what the supplied parts support.
 
-Write concise, nonredundant entries while preserving information needed to resume safely. There is no fixed count limit for entries or sources and no fixed total character limit. The combined context will be required to fit within 60% of the task's input budget and must become smaller. Do not add extra JSON fields, Markdown fences, commentary outside the JSON, or tool calls.`;
+Write concise, nonredundant entries while preserving information needed to resume safely. There is no fixed count limit for entries or sources and no fixed total character limit. The combined context must become smaller; preserve necessary facts without repeating the original records. Do not add extra JSON fields, Markdown fences, commentary outside the JSON, or tool calls.`;
 
 /** 分块保留完整记录，offset 按序列化后的字符位置计算，不丢掉中间内容。 */
 export function summaryChunks(
   source: any[],
   limit: number,
-  measure = contextSize,
+  measure: Measure,
   excluded = new Set<number>(),
 ): { role: string; content: string }[][] {
   type RecordPart = {

@@ -7,7 +7,8 @@
  * 2. prepare 在 90% 阈值前直接返回，达到阈值后启动 Worker；常规压缩失败且已达硬上限时改用受限保底视图。
  * 3. compact 读取快照链和事件，由 Worker 准备摘要分块；只有启用旧投影阶段才在主线程探测文件哈希，
  *    主线程独立获取摘要请求的服务容量预算，不沿用主任务的手动窗口；负责可取消的摘要请求和原子提交。
- * 4. 压缩成功后重置任务内计量缓存，再由下一请求计量新视图；摘要与保底视图保留原文快照、执行账本和恢复契约。
+ * 4. 压缩成功后清空旧锚点并等待主模型新实报，request/prepare 不立即全量计量新视图；observeUsage 只由主请求成功接收路径调用。
+ * 5. 摘要分块必须使用 tokenizer；提交只校验序列化缩减，不再验证 60% token 目标。原文快照、执行账本和恢复契约不变。
  *
  * 摘要不能授予权限。取消会终止 Worker；数据库提交成功后即使界面通知失败也不能退回旧输入。
  */
@@ -108,6 +109,7 @@ interface FinalizedCompaction {
 export class ContextManager {
   private calls = 0;
   private disabled = false;
+  private awaitingUsage = false;
 
   constructor(private options: Options) {}
 
@@ -135,8 +137,23 @@ export class ContextManager {
     }
   }
 
-  /** 计量实际发送的完整历史；请求前不改写工具结果。 */
+  /** 只有合法主请求实报才能结束压缩后的等待；摘要、累计用量和缺失 usage 都不能代替。 */
+  observeUsage(usage: ModelUsage | undefined) {
+    if (
+      usage &&
+      Number.isSafeInteger(usage.input_tokens) &&
+      usage.input_tokens >= 0
+    ) {
+      this.awaitingUsage = false;
+    }
+  }
+
+  /** 复用主请求实报+增量计量；压缩后等待新实报，不把未知输入大小写成零。 */
   request(input: any[], instructions: string, tools: any[]) {
+    if (this.awaitingUsage) {
+      return { input, before: undefined, after: undefined };
+    }
+
     const measure = this.options.measure ?? contextSize;
     const amount = this.traceSync(
       "context.request.measure_input",
@@ -163,13 +180,19 @@ export class ContextManager {
   ): Promise<any[]> {
     const options = this.options;
     options.signal.throwIfAborted();
-    const before = this.traceSync(
-      "context.prepare.measure_request_view",
-      { force, inputItems: input.length, toolCount: tools.length },
-      () => this.measure(input, instructions, tools),
-      (amount) => ({ amount }),
-    );
-    if (!force && before < options.limit * 0.9) {
+    if (this.awaitingUsage && !force) {
+      return input;
+    }
+
+    const before = this.awaitingUsage
+      ? undefined
+      : this.traceSync(
+          "context.prepare.measure_request_view",
+          { force, inputItems: input.length, toolCount: tools.length },
+          () => this.measure(input, instructions, tools),
+          (amount) => ({ amount }),
+        );
+    if (!force && before !== undefined && before < options.limit * 0.9) {
       return input;
     }
 
@@ -178,7 +201,7 @@ export class ContextManager {
       options.notice("正在整理上下文，已保存的历史对话不会删除。");
       options.report("context.compaction_started", { beforeAmount: before });
       try {
-        compacted = await this.compact(input, instructions, tools, before);
+        compacted = await this.compact(input, instructions, tools);
       } catch {
         options.signal.throwIfAborted();
         this.disabled = true;
@@ -192,17 +215,17 @@ export class ContextManager {
 
     // 新上下文已经提交，通知失败也不能退回旧输入；让外层停止任务。
     if (compacted) {
-      return this.completeCompaction(compacted, before);
+      return this.completeCompaction(compacted);
     }
 
-    if (before > options.limit || force) {
+    if ((before !== undefined && before > options.limit) || force) {
       options.notice("上下文超过预算，正在保留用户输入、任务结论和近期记录。");
       options.report("context.compaction_started", {
         beforeAmount: before,
         fallback: true,
       });
       try {
-        compacted = await this.fallback(input, instructions, tools, before);
+        compacted = await this.fallback(input, instructions, tools);
       } catch {
         options.signal.throwIfAborted();
         options.report("context.compaction_failed", {
@@ -215,14 +238,15 @@ export class ContextManager {
         );
       }
 
-      return this.completeCompaction(compacted, before);
+      return this.completeCompaction(compacted);
     }
 
     return input;
   }
 
-  private completeCompaction(compacted: Compaction, before: number) {
+  private completeCompaction(compacted: Compaction) {
     // 压缩事务已提交，旧输入前缀不再有效；即使通知失败也必须清空缓存。
+    this.awaitingUsage = true;
     this.options.resetMeasurement?.();
     const snapshot = compacted.snapshot;
     const stage =
@@ -234,11 +258,12 @@ export class ContextManager {
             ? "保底上下文裁剪"
             : "LLM 结构化摘要";
     this.options.notice(
-      `上下文已整理：${before} → ${snapshot.budget?.after ?? snapshot.afterChars} ${this.options.unit === "tokens" ? "token（估算）" : "字符"}；${stage}，历史记录仍可查看。`,
+      `上下文已整理：序列化体积 ${snapshot.beforeChars} → ${snapshot.afterChars} 字符（非 token 估算）；${stage}，等待主模型实报容量，历史记录仍可查看。`,
     );
     this.options.report("context.compaction_completed", {
-      beforeAmount: before,
-      afterAmount: snapshot.budget?.after ?? snapshot.afterChars,
+      beforeAmount: snapshot.beforeChars,
+      afterAmount: snapshot.afterChars,
+      unit: "characters",
       snapshotId: snapshot.id,
       calls: this.calls,
       stage: snapshot.stage,
@@ -252,7 +277,6 @@ export class ContextManager {
     input: any[],
     instructions: string,
     tools: any[],
-    beforeAmount: number,
   ): Promise<Compaction> {
     const options = this.options;
     const [previous, events] = await Promise.all([
@@ -274,12 +298,8 @@ export class ContextManager {
           input,
           events,
           previous,
-          limit: options.limit,
-          unit: options.unit ?? "characters",
-          measurement: this.measurement(),
           instructions,
           tools,
-          beforeAmount,
         },
         options.signal,
       );
@@ -300,7 +320,6 @@ export class ContextManager {
     input: any[],
     instructions: string,
     tools: any[],
-    beforeAmount: number,
   ): Promise<Compaction | undefined> {
     const options = this.options;
     const [previous, events] = await Promise.all([
@@ -320,10 +339,6 @@ export class ContextManager {
           input,
           events,
           snapshots,
-          measurement: this.measurement(),
-          limit: options.limit,
-          instructions,
-          tools,
         },
         options.signal,
       );
@@ -341,9 +356,6 @@ export class ContextManager {
         {
           snapshotId: id,
           hashes: [...currentHashes],
-          measurement: this.measurement(),
-          limit: options.limit,
-          beforeAmount,
           instructions,
           tools,
           trustedNotes: prepared.trustedNotes,
@@ -361,12 +373,21 @@ export class ContextManager {
           auxiliary?.budget ?? (await options.summaryBudget?.());
         options.signal.throwIfAborted();
         summaryModel = auxiliary?.model;
+        const summaryMeasurement =
+          summaryBudget?.measurement ?? this.measurement();
+        if (summaryMeasurement.unit !== "tokens") {
+          options.notice(
+            "摘要模型容量或 tokenizer 不可用，不能使用字符估算发送摘要请求。",
+          );
+          throw new Error("摘要需要服务容量和受支持的 tokenizer。");
+        }
+
         const chunks = await worker.request<
           { role: string; content: string }[][]
         >(
           "chunks",
           {
-            measurement: summaryBudget?.measurement ?? this.measurement(),
+            measurement: summaryMeasurement,
             limit: summaryBudget?.limit ?? options.limit,
           },
           options.signal,
@@ -409,10 +430,6 @@ export class ContextManager {
           sessionId: options.sessionId,
           parentId: previous?.id ?? null,
           model: summaryModel ?? options.model,
-          beforeAmount,
-          limit: options.limit,
-          unit: options.unit ?? "characters",
-          measurement: this.measurement(),
           instructions,
           tools,
           note,

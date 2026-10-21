@@ -2454,6 +2454,10 @@ export class Engine {
         usage: ModelUsage,
         purpose: "task" | "compaction",
       ) => {
+        if (purpose === "task") {
+          context.observeUsage(usage);
+        }
+
         this.recordModelUsage(task, usage, purpose, {
           step,
           attempt: purpose === "task" ? attempt : undefined,

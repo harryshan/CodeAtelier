@@ -20,19 +20,33 @@ import { Store } from "../src/sessions/store.js";
 import { temp } from "./fixtures/helpers.js";
 import { projectReads } from "../src/context/read-projection.js";
 import { contextSize } from "../src/context/budget.js";
+import {
+  summaryBudget,
+  summaryCapabilities,
+} from "./fixtures/summary-budget.js";
+import { createBudget } from "../src/context/token-budget.js";
 
 it("sends every character of long records to the summarizer, including middle failures", () => {
   const source = [
     {
       role: "assistant",
-      content: "a".repeat(9000) + "CRITICAL middle failure" + "b".repeat(9000),
+      content:
+        "a ".repeat(4500) + "CRITICAL middle failure" + "b ".repeat(4500),
     },
   ];
   let measurements = 0;
-  const records = summaryChunks(source, 12000, (...args) => {
+  const budget = createBudget(
+    {
+      ...summaryCapabilities,
+      limits: { max_context_window_tokens: 8192, max_output_tokens: 1000 },
+    },
+    0,
+    1000,
+  );
+  const records = summaryChunks(source, budget.limit, (...args) => {
     measurements++;
 
-    return contextSize(...args);
+    return budget.measure(...args);
   }).flatMap((chunk) => JSON.parse(chunk[0].content));
   expect(records.map((record) => record.excerpt).join("")).toBe(
     JSON.stringify(source[0]),
@@ -50,6 +64,7 @@ async function setup() {
     sessionId: session.id,
     model: "test",
     limit: 12000,
+    summaryBudget,
     signal: new AbortController().signal,
     clean: (text) => text,
     notice: () => {},
@@ -107,10 +122,10 @@ it("summarizes repeated reads directly without first projecting tool outputs", a
   try {
     const source = [
       { role: "user", content: "task" },
-      ...f.read("a", "x".repeat(3000)),
-      ...f.read("b", "x".repeat(3000)),
-      ...f.read("c", "x".repeat(3000)),
-      ...f.read("d", "x".repeat(3000)),
+      ...f.read("a", "x ".repeat(1500)),
+      ...f.read("b", "x ".repeat(1500)),
+      ...f.read("c", "x ".repeat(1500)),
+      ...f.read("d", "x ".repeat(1500)),
       { role: "user", content: "next" },
     ];
     const next = await f.manager.prepare(source, "", []);
@@ -140,7 +155,7 @@ it("summarizes long read results with middle diagnostics without an archive stag
   const f = await setup();
   try {
     const full =
-      "a".repeat(8000) + "\nFAILURE migration pending\n" + "b".repeat(8000);
+      "a ".repeat(4000) + "\nFAILURE migration pending\n" + "b ".repeat(4000);
     const source = [
       { role: "user", content: "keep interface" },
       ...f.read("a", full),
@@ -169,7 +184,10 @@ it("expands old archive snapshots before directly summarizing the full read", as
   try {
     const source = [
       { role: "user", content: "keep the old read" },
-      ...f.read("old", "a".repeat(9000) + "MIDDLE FAILURE" + "b".repeat(9000)),
+      ...f.read(
+        "old",
+        "a ".repeat(4500) + "MIDDLE FAILURE" + "b ".repeat(4500),
+      ),
       { role: "user", content: "next" },
     ];
     const id = "legacy-archive";
@@ -204,7 +222,7 @@ it("expands old archive snapshots before directly summarizing the full read", as
 
     const input = [
       ...projected,
-      { role: "assistant", content: "z".repeat(14000) },
+      { role: "assistant", content: "z ".repeat(7000) },
       { role: "user", content: "again" },
     ];
     await f.manager.prepare(input, "", []);
@@ -276,7 +294,7 @@ it("retains prior verified summary text and its source IDs without summarizing i
     const first = await f.manager.prepare(
       [
         { role: "user", content: "task" },
-        { role: "assistant", content: "x".repeat(16000) },
+        { role: "assistant", content: "x ".repeat(8000) },
         { role: "user", content: "next" },
       ],
       "",
@@ -284,10 +302,15 @@ it("retains prior verified summary text and its source IDs without summarizing i
     );
     const prior = f.store.latestContextSnapshot(f.session.id)!;
     const firstCalls = f.requests.length;
+    f.manager.observeUsage({
+      input_tokens: 1000,
+      output_tokens: 0,
+      total_tokens: 1000,
+    });
     const second = await f.manager.prepare(
       [
         ...first,
-        { role: "assistant", content: "y".repeat(15000) },
+        { role: "assistant", content: "y ".repeat(7500) },
         { role: "user", content: "again" },
       ],
       "",

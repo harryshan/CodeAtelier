@@ -28,6 +28,10 @@ import { definitions } from "../src/tools/registry.js";
 import { Config } from "../src/config/config.js";
 import type { ModelProvider } from "../src/providers/model-provider.js";
 import { temp } from "./fixtures/helpers.js";
+import {
+  summaryBudget,
+  summaryCapabilities,
+} from "./fixtures/summary-budget.js";
 
 const summary = {
   completed: [],
@@ -72,6 +76,7 @@ async function fixture(provider = summarizer, limit = 12000) {
     model: "test",
     limit,
     provider,
+    summaryBudget,
     signal: controller.signal,
     clean: (text) => text,
     notice: (text) => notices.push(text),
@@ -167,15 +172,20 @@ it("keeps unknown operation state across repeated compaction without executing t
         call_id: "unknown",
         output: "执行结果未知",
       },
-      { role: "assistant", content: "x".repeat(15000) },
+      { role: "assistant", content: "x ".repeat(7500) },
       { role: "user", content: "continue" },
     ];
     const first = await f.manager.prepare(source, "", []);
     const next = [
       ...first,
-      { role: "assistant", content: "y".repeat(15000) },
+      { role: "assistant", content: "y ".repeat(7500) },
       { role: "user", content: "again" },
     ];
+    f.manager.observeUsage({
+      input_tokens: 1000,
+      output_tokens: 0,
+      total_tokens: 1000,
+    });
     await f.manager.prepare(next, "", []);
     const snapshot = f.store.latestContextSnapshot(f.session.id)!;
     expect(snapshot.parentId).not.toBeNull();
@@ -226,7 +236,7 @@ it("continues below the hard limit after summary failure and does not repeatedly
   });
   try {
     const source = history();
-    source[1].content = "x".repeat(11000);
+    source[1].content = "x ".repeat(5500);
     expect(await f.manager.prepare(source, "", [])).toBe(source);
     expect(await f.manager.prepare(source, "", [])).toBe(source);
     expect(calls).toBe(1);
@@ -255,7 +265,7 @@ it("falls back to user input, the latest conclusion, and recent complete records
       {
         type: "function_call_output",
         call_id: "large-output",
-        output: JSON.stringify({ output: "x".repeat(18000), exitCode: 0 }),
+        output: JSON.stringify({ output: "x ".repeat(9000), exitCode: 0 }),
       },
       { role: "assistant", content: "任务结论：修改已完成，仍需运行测试。" },
     ];
@@ -269,7 +279,7 @@ it("falls back to user input, the latest conclusion, and recent complete records
     expect(snapshot.source).toEqual(source);
     expect(next).toContainEqual(source[0]);
     expect(next).toContainEqual(source.at(-1));
-    expect(JSON.stringify(next)).not.toContain("x".repeat(1000));
+    expect(JSON.stringify(next)).not.toContain("x ".repeat(500));
     expect(contextSize(next, "", [])).toBeLessThan(12000);
     expect(f.notices.some((notice) => notice.includes("保底上下文裁剪"))).toBe(
       true,
@@ -357,45 +367,57 @@ it("continues an engine task after compression and exposes archived history as a
   );
   store.saveContext(session.id, source);
   let turns = 0;
-  const engine = new Engine(store, config, pino({ enabled: false }), () => ({
-    async run(input, instructions, tools, signal, delta) {
-      if (!tools.length) {
-        return summarizer.run(input, instructions, tools, signal, delta);
-      }
+  config.settings.auxiliaryModel = "summary-fixture";
+  const engine = new Engine(
+    store,
+    config,
+    pino({ enabled: false }),
+    (_settings, purpose) => ({
+      getCapabilities: async () =>
+        purpose === "auxiliary" ? summaryCapabilities : undefined,
+      async run(input, instructions, tools, signal, delta) {
+        if (!tools.length) {
+          return summarizer.run(input, instructions, tools, signal, delta);
+        }
 
-      expect(tools.some((tool) => tool.name === "read_context_history")).toBe(
-        true,
-      );
-      if (turns++ === 0) {
-        const snapshot = store.latestContextSnapshot(session.id)!;
-        expect(snapshot).toBeDefined();
+        expect(tools.some((tool) => tool.name === "read_context_history")).toBe(
+          true,
+        );
+        if (turns++ === 0) {
+          const snapshot = store.latestContextSnapshot(session.id)!;
+          expect(snapshot).toBeDefined();
+
+          return {
+            output: [
+              {
+                type: "function_call",
+                name: "read_context_history",
+                call_id: "archive",
+                arguments: JSON.stringify({
+                  snapshotId: snapshot.id,
+                  index: 1,
+                  offset: 0,
+                }),
+              },
+            ],
+            text: "",
+          };
+        }
+
+        expect(
+          JSON.parse(
+            input.findLast((item) => item.type === "function_call_output")
+              .output,
+          ).text,
+        ).toContain("old code");
 
         return {
-          output: [
-            {
-              type: "function_call",
-              name: "read_context_history",
-              call_id: "archive",
-              arguments: JSON.stringify({
-                snapshotId: snapshot.id,
-                index: 1,
-                offset: 0,
-              }),
-            },
-          ],
-          text: "",
+          output: [{ role: "assistant", content: "done" }],
+          text: "done",
         };
-      }
-
-      expect(
-        JSON.parse(
-          input.findLast((item) => item.type === "function_call_output").output,
-        ).text,
-      ).toContain("old code");
-
-      return { output: [{ role: "assistant", content: "done" }], text: "done" };
-    },
-  }));
+      },
+    }),
+  );
   try {
     await engine.start(session.id, "continue");
     await engine.active?.done;
@@ -457,7 +479,7 @@ it("summarizes complete history beyond twelve calls and continues compacting in 
       { role: "user", content: "task" },
       ...Array.from({ length: 100 }, () => ({
         role: "assistant",
-        content: "x".repeat(3000),
+        content: "x ".repeat(1500),
       })),
       { role: "user", content: "continue" },
     ];
@@ -473,18 +495,25 @@ it("summarizes complete history beyond twelve calls and continues compacting in 
     expect(f.store.latestContextSnapshot(f.session.id)?.source).toEqual(source);
     expect(next).toContainEqual(source[0]);
     expect(next).toContainEqual(source.at(-1));
-    expect(contextSize(next, "", [])).toBeLessThan(12000);
+    expect(contextSize(next, "", [])).toBeLessThan(contextSize(source, "", []));
 
     const firstCalls = calls;
     excerpts.clear();
     const continued = [...next, ...history()];
     f.store.saveContext(f.session.id, continued);
+    f.manager.observeUsage({
+      input_tokens: 1000,
+      output_tokens: 0,
+      total_tokens: 1000,
+    });
     const compactedAgain = await f.manager.prepare(continued, "", []);
 
     expect(calls).toBeGreaterThan(firstCalls);
     expect(f.store.latestContextSnapshot(f.session.id)?.stage).toBe("summary");
     expect(compactedAgain).toContainEqual(history().at(-1));
-    expect(contextSize(compactedAgain, "", [])).toBeLessThan(7200);
+    expect(contextSize(compactedAgain, "", [])).toBeLessThan(
+      contextSize(continued, "", []),
+    );
   } finally {
     await f.store.closeAsync();
   }
@@ -496,18 +525,26 @@ it("retries server context overflow once and separates partial output attempts",
   const session = store.create(await temp(), "overflow");
   store.saveContext(session.id, history().slice(0, 2));
   let calls = 0;
-  const engine = new Engine(store, config, pino({ enabled: false }), () => ({
-    async run(input, instructions, tools, signal, delta) {
-      if (!tools.length) {
-        return summarizer.run(input, instructions, tools, signal, delta);
-      }
+  config.settings.auxiliaryModel = "summary-fixture";
+  const engine = new Engine(
+    store,
+    config,
+    pino({ enabled: false }),
+    (_settings, purpose) => ({
+      getCapabilities: async () =>
+        purpose === "auxiliary" ? summaryCapabilities : undefined,
+      async run(input, instructions, tools, signal, delta) {
+        if (!tools.length) {
+          return summarizer.run(input, instructions, tools, signal, delta);
+        }
 
-      calls++;
-      delta(calls === 1 ? "failed partial" : "second partial");
+        calls++;
+        delta(calls === 1 ? "failed partial" : "second partial");
 
-      throw new ModelError("too large", false, "context_length_exceeded");
-    },
-  }));
+        throw new ModelError("too large", false, "context_length_exceeded");
+      },
+    }),
+  );
   try {
     await engine.start(session.id, "continue");
     await engine.active?.done;
@@ -547,7 +584,7 @@ it("does not label an unknown operation as recorded when an older task reused it
         call_id: "reused",
         output: "执行结果未知",
       },
-      { role: "assistant", content: "x".repeat(15000) },
+      { role: "assistant", content: "x ".repeat(7500) },
       { role: "user", content: "continue" },
     ];
     await f.manager.prepare(source, "", []);
@@ -581,7 +618,7 @@ it("records exact persisted failures without converting them into success", asyn
         call_id: "verified",
         output: JSON.stringify(result),
       },
-      { role: "assistant", content: "x".repeat(15000) },
+      { role: "assistant", content: "x ".repeat(7500) },
       { role: "user", content: "continue" },
     ];
     await f.manager.prepare(source, "", []);

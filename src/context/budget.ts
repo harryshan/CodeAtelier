@@ -1,11 +1,11 @@
 /**
  * 帮助 ContextManager 找到适合压缩的旧历史，同时保持工具调用和结果成对出现。
- * 默认按字符数估算大小，也接受调用方提供的 token 计量函数。
+ * 切点只由轮次决定；contextSize 仅计算序列化体积，不把字符数当作摘要 token 估算。
  *
  * 1. contextSize 计算 instructions、tools 和 input 序列化后的总字符数。
  * 2. safeCuts 跟踪尚未配齐结果的工具调用，只返回可以安全切开历史的位置。
  * 3. roundStarts 按完整工具往返和用户边界重建轮次，合并连续用户消息并排除历史摘要。
- * 4. chooseCut 保留最后 10% 轮次（向上取整，至少一轮）；必留材料超出 60% 时逐轮减少。
+ * 4. chooseCut 固定保留最后 10% 轮次（向上取整，至少一轮），不计量候选、不按大小减少轮数。
  *    历史没有请求 ID 边界，无法区分的连续模型记录保守合并；末尾待响应用户输入算当前轮。
  *
  * 返回 undefined 表示不能安全切分。是否值得压缩、怎样保留用户原文，由 ContextManager 决定。
@@ -81,29 +81,11 @@ export function roundStarts(input: any[], notes = new Set<string>()): number[] {
 
 export function chooseCut(
   input: any[],
-  limit: number,
-  measure = contextSize,
-  instructions = "",
-  tools: any[] = [],
   notes = new Set<string>(),
 ): number | undefined {
   const starts = roundStarts(input, notes);
   const keep = Math.max(1, Math.ceil(starts.length * 0.1));
-  const candidates = starts.slice(-keep).filter((cut) => cut > 0);
+  const cut = starts.at(-keep);
 
-  // 轮次决定优先切点；计量只负责容量验收，不能为凑预算拆开最后一轮。
-  return candidates.find((cut) => {
-    const retained = input
-      .slice(0, cut)
-      .filter(
-        (item) =>
-          item.role === "user" ||
-          (item.role === "assistant" && notes.has(item.content)),
-      );
-
-    return (
-      measure([...retained, ...input.slice(cut)], instructions, tools) <
-      limit * 0.6
-    );
-  });
+  return cut !== undefined && cut > 0 ? cut : undefined;
 }

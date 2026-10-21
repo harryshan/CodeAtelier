@@ -15,6 +15,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileFixture, temp } from "./fixtures/helpers.js";
 import { ContextManager } from "../src/context/context-manager.js";
+import { summaryBudget } from "./fixtures/summary-budget.js";
 import {
   currentReadHashes,
   projectReads,
@@ -54,7 +55,7 @@ function event(result: any, id = "read"): any {
 it("summarizes externally changed reads without probing files or projecting history", async () => {
   const f = await fileFixture();
   const file = path.join(f.root, "a.ts");
-  const original = "x".repeat(16000) + "\nunchanged";
+  const original = "x ".repeat(8000) + "\nunchanged";
   await writeFile(file, original);
   const read = await f.runner.execute("read_file", {
     path: "a.ts",
@@ -63,7 +64,7 @@ it("summarizes externally changed reads without probing files or projecting hist
   });
   expect(read.contentHash).toBe(hash(original));
   expect(read.text).not.toContain("unchanged");
-  await writeFile(file, "x".repeat(16000) + "\nexternal change");
+  await writeFile(file, "x ".repeat(8000) + "\nexternal change");
 
   const db = path.join(await temp(), "history.db");
   const store = new Store(db);
@@ -91,6 +92,7 @@ it("summarizes externally changed reads without probing files or projecting hist
     model: "test",
     limit: 12000,
     provider: { run: model },
+    summaryBudget,
     signal: f.controller.signal,
     currentFileHash: probe,
     clean: (text: string) => text,

@@ -5,9 +5,9 @@
  * 1. ContextBudget 提供统一的大小计量、输入上限和输出预留，可选支持实际用量校准。
  * 2. createBudget 检查本地是否支持 o200k_base，再用用户窗口覆盖服务报告的窗口和输入容量，结合安全余量计算预算。
  * 3. token 计量将固定请求部分与各历史项分别编码；任务级缓存复用稳定前缀，只编码新增项。
- * 4. observeUsage 将完整请求锚定到最新实报输入，后续仅估算追加项；重写历史或压缩后清除基线。
+ * 4. observeUsage 将请求锚定到最新实报输入；缓存缺失时只记录内容指纹与固定开销，不为已实报历史重新分词，后续仅估算追加项。
  * 5. snapshotUsage/restoreAnchor 跨任务保存并校验实报锚点与旧前缀计量；指令增长单独估算，缩短不扣减旧实报。
- * 6. measureContext 为 Worker 的新候选上下文提供纯本地计量，不将旧请求的实报值套在改写后的内容上。
+ * 6. measureContext 为摘要分块提供纯本地计量；切点和压缩结果不再调用 tokenizer。
  *
  * 累计用量不是当前上下文大小。源码中的特殊 token 字面量按普通文本处理，不能让编码器误当控制标记。
  */
@@ -285,6 +285,29 @@ export function createBudget(
     observeUsage: (actualInput, input, instructions, tools) => {
       if (!Number.isSafeInteger(actualInput) || actualInput < 0) {
         return;
+      }
+
+      // 服务已经计量过这份输入。压缩后没有缓存时直接建立实报锚点，
+      // 不重新编码所有历史项；raw 是校准的相对基线，未计量的前缀由 usageOffset 覆盖。
+      const toolsJson = JSON.stringify(tools);
+      if (
+        !cache ||
+        cache.input !== input ||
+        cache.instructions !== instructions ||
+        cache.toolsJson !== toolsJson
+      ) {
+        const fixedTokens = tokenCount(
+          JSON.stringify({ input: [], instructions, tools }),
+        );
+        cache = {
+          input,
+          instructions,
+          toolsJson,
+          items: [...input],
+          raw: fixedTokens,
+          fixedTokens,
+          prefix: tokenPrefixHash(input, input.length),
+        };
       }
 
       usageOffset = actualInput - rawMeasure(input, instructions, tools);

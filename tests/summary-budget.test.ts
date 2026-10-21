@@ -2,7 +2,7 @@
  * 检查宿主和独立 Node Runtime 的摘要请求不受主上下文手动窗口约束。
  * 1. launcher 仅提供应用层 stdio IPC，不声明 Windows 安装态隔离验证。
  * 2. 以有/无辅助模型两种配置压缩超过主预算的历史，服务容量足以一次摘要。
- * 3. 检查实际摘要输入、输出预留、完整原文与最终主预算验收，以及容量查询失败的字符回退；模型完全模拟，无网络访问。
+ * 3. 检查摘要输入按 tokenizer 计量、输出预留及完整原文；容量查询失败不得发送字符估算摘要。模型完全模拟，无网络访问。
  */
 import { spawn } from "node:child_process";
 import path from "node:path";
@@ -57,7 +57,9 @@ it.each([
   [true, true, false],
   [false, true, true],
   [true, true, true],
-])(
+  [false, true, "unsupported"],
+  [true, true, "unsupported"],
+] as const)(
   "uses service summary capacity with runtime=%s auxiliary=%s metadataFailure=%s",
   async (runtime, auxiliary, metadataFailure) => {
     const config = new Config(await temp());
@@ -90,6 +92,10 @@ it.each([
         const provider: ModelProvider = {
           getCapabilities: async () => {
             if (metadataFailure && settings.model === "summary-model") {
+              if (metadataFailure === "unsupported") {
+                return { ...capabilities, tokenizer: "unsupported-tokenizer" };
+              }
+
               throw new Error("metadata unavailable");
             }
 
@@ -101,18 +107,13 @@ it.each([
               expect(settings.model).toBe(
                 auxiliary ? "summary-model" : config.settings.model,
               );
-              const service = createBudget(
-                metadataFailure ? undefined : capabilities,
-                1000000,
-                1000,
-              );
+              expect(metadataFailure).toBe(false);
+              const service = createBudget(capabilities, 0, 1000);
               const manual = createBudget(capabilities, 1000000, 1000, 50000);
               const amount = service.measure(input, instructions, tools);
               expect(amount).toBeGreaterThan(manual.limit * 0.7);
               expect(amount).toBeLessThanOrEqual(service.limit * 0.7);
-              expect(options?.maxOutputTokens).toBe(
-                metadataFailure ? undefined : 1000,
-              );
+              expect(options?.maxOutputTokens).toBe(1000);
               expect(
                 JSON.parse(input[0].content).some(
                   (record: any) =>
@@ -133,10 +134,7 @@ it.each([
             }
 
             mainCalls++;
-            const budget = createBudget(capabilities, 1000000, 1000, 50000);
-            expect(
-              budget.measure(input, instructions, tools),
-            ).toBeLessThanOrEqual(budget.limit * 0.6);
+            expect(input.some((item) => item.content === history)).toBe(false);
 
             return { output: [], text: "Done" };
           },
@@ -149,6 +147,19 @@ it.each([
     try {
       const task = await engine.start(session.id, "Continue");
       await engine.active?.done;
+      if (metadataFailure) {
+        expect(store.task(task.id)?.status).toBe("failed");
+        expect(summaries).toBe(0);
+        expect(mainCalls).toBe(0);
+        expect(store.latestContextSnapshot(session.id)).toBeUndefined();
+        expect(store.context(session.id)).toContainEqual({
+          role: "assistant",
+          content: history,
+        });
+
+        return;
+      }
+
       expect(store.task(task.id)?.status).toBe("completed");
       expect(summaries).toBe(1);
       expect(mainCalls).toBe(1);

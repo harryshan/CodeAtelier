@@ -320,10 +320,10 @@ export class AgentRuntimeService {
           const metadata = await compactionProvider
             .getCapabilities(signal)
             .catch(() => {
-              // Broker 已记录能力查询失败；取消不得退化为字符模式继续发送请求。
+              // Broker 已记录能力查询失败；ContextManager 会拒绝缺少 tokenizer 的摘要，取消仍立即传播。
               signal.throwIfAborted();
               events.emit("notice", {
-                text: "摘要模型容量查询失败，使用备用字符预算。",
+                text: "摘要模型容量查询失败，摘要请求不可用。",
               });
 
               return undefined;
@@ -433,13 +433,15 @@ export class AgentRuntimeService {
             instructions,
             tools,
             calibration,
-            recordUsage: (usage) =>
+            recordUsage: (usage) => {
+              context.observeUsage(usage);
               events.emit("model_usage", {
                 ...usage,
                 purpose: "task",
                 step,
                 attempt,
-              }),
+              });
+            },
             appendContext: (output) =>
               session.appendContext(this.identity.sessionId, output),
             emitAssistant: (text) =>

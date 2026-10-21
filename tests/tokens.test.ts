@@ -182,7 +182,7 @@ it("validates usage, retains numeric details, and drops arbitrary attribution", 
   ).toBe(false);
 });
 
-it("uses token measurement through compaction and keeps character archive metadata accurate", async () => {
+it("uses real usage to trigger compaction and waits for a new anchor without re-encoding the compacted history", async () => {
   const store = new Store(path.join(await temp(), "db"));
   const session = store.create(await temp(), "token context");
   const budget = createBudget(
@@ -239,20 +239,36 @@ it("uses token measurement through compaction and keeps character archive metada
     const next = await manager.prepare(source, "rules", []);
     expect(reset).toHaveBeenCalledTimes(1);
     const snapshot = store.latestContextSnapshot(session.id)!;
-    expect(snapshot.budget?.unit).toBe("tokens");
-    expect(snapshot.budget!.before).toBe(9000);
-    expect(snapshot.budget!.after).toBeLessThanOrEqual(budget.limit * 0.6);
-    expect(snapshot.beforeChars).toBeGreaterThan(snapshot.budget!.before);
+    expect(snapshot.budget).toBeUndefined();
+    expect(snapshot.afterChars).toBeLessThan(snapshot.beforeChars);
+    expect(snapshot.beforeChars).toBeGreaterThan(9000);
     expect(next.at(-1)).toEqual(source.at(-1));
     expect(observedOutput).toBe(budget.outputTokens);
 
     const encode = vi.spyOn(Tiktoken.prototype, "encode");
     try {
-      expect(budget.measure(next, "rules", [])).toBe(snapshot.budget!.after);
-      const freshCalls = encode.mock.calls.length;
-      expect(freshCalls).toBeGreaterThan(0);
-      expect(budget.measure(next, "rules", [])).toBe(snapshot.budget!.after);
-      expect(encode).toHaveBeenCalledTimes(freshCalls);
+      expect(manager.request(next, "rules", []).after).toBeUndefined();
+      expect(await manager.prepare(next, "rules", [])).toBe(next);
+      expect(encode).not.toHaveBeenCalled();
+      budget.observeUsage!(700, next, "rules", []);
+      expect(encode).toHaveBeenCalledTimes(1); // 只编码固定指令/工具，不重新编码历史项。
+      const anchor = budget.snapshotUsage!(
+        "0".repeat(64),
+        700,
+        next,
+        "rules",
+        [],
+      );
+      expect(anchor?.actualInputTokens).toBe(700);
+      expect(encode).toHaveBeenCalledTimes(1);
+      manager.observeUsage({
+        input_tokens: 700,
+        output_tokens: 0,
+        total_tokens: 700,
+      });
+      next.push({ role: "assistant", content: "new output" });
+      expect(manager.request(next, "rules", []).after).toBeGreaterThan(700);
+      expect(encode).toHaveBeenCalledTimes(2);
     } finally {
       encode.mockRestore();
     }

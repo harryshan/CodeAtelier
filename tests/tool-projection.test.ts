@@ -17,6 +17,7 @@ import { ContextManager } from "../src/context/context-manager.js";
 import { Store } from "../src/sessions/store.js";
 import { readContextHistory } from "../src/context/history.js";
 import { temp } from "./fixtures/helpers.js";
+import { summaryBudget } from "./fixtures/summary-budget.js";
 
 function pair(name: string, result: any, args: any = {}, id = name) {
   return [
@@ -49,9 +50,9 @@ function project(name: string, result: any, args: any = {}) {
 
 const longOutput = [
   "start",
-  "a".repeat(8000),
+  "a ".repeat(4000),
   "ERROR middle failure",
-  "b".repeat(8000),
+  "b ".repeat(4000),
   "end",
 ].join(String.fromCharCode(10));
 
@@ -231,6 +232,7 @@ it("summarizes tool results directly, persists originals and retains execution s
     limit: 12000,
     signal: new AbortController().signal,
     provider: { run },
+    summaryBudget,
     clean: (text: string) => text,
     notice: () => {},
     report: () => {},
@@ -314,7 +316,7 @@ it("summarizes tool results directly, persists originals and retains execution s
     await new ContextManager({ ...options, store }).prepare(
       [
         ...next,
-        { role: "assistant", content: "z".repeat(18000) },
+        { role: "assistant", content: "z ".repeat(9000) },
         { role: "user", content: "again" },
       ],
       "",
