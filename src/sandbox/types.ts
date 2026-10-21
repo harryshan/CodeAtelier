@@ -6,7 +6,7 @@
  * 1. SandboxMode 和 SandboxStatus 区分关闭时的宿主执行、已验证隔离、明确宿主 fallback 和未知状态。
  * 2. SandboxConfiguration 是只读环境开关结果，不属于可持久化的 settings.json 偏好。
  * 3. SandboxWorkspace 描述真实工作区根与直接受保护路径；Runtime 必须以文件系统边界落实它，不能只信任命令文本。
- * 4. SandboxCommand 与 SandboxRuntime 划定 Broker 可交给平台后端的固定命令请求；capability-runner 只能增加 Broker 已审核并可由 AccessManifest/relay 强制落实的根和 host。
+ * 4. SandboxCommand 与 SandboxRuntime 只接受 Agent Runtime 的命令请求；独立 Push/Capability Runner 已移除。
  * 5. onAccessProvisioned 只确认原生 ACL 已安装且 Runtime 已启动，供共享 grant 的等待者解除阻塞。
  * 6. drainGeneration 是 unknown/orphaned 后的整代账户排空入口，必须终止账户进程并按持久 journal 对账。
  * 7. launchTask 是 POSIX 私有实例入口；launchAgentRuntime 是 Windows 共享账户入口，只接受 Broker 已完成 manifest/lease provision 的固定 Runtime 身份和 nonce，不接受模型可选 executable。
@@ -69,6 +69,7 @@ export type ExecutionProcessKind =
 export interface ExecutionInstanceRecord {
   executionInstanceId: string;
   toolCallId?: string;
+  /** 旧 Runner/Git kind 仅用于历史记录回读，不允许作为新启动请求。 */
   kind?:
     | "agent-runtime"
     | "push-runner"
@@ -100,12 +101,9 @@ export interface SandboxCommand {
   taskId: string;
   executionInstanceId: string;
   toolCallId?: string;
-  kind?: "agent-runtime" | "push-runner" | "capability-runner";
-  networkHost?: string;
+  kind?: "agent-runtime";
   readOnlyRoots?: string[];
   readWriteRoots?: string[];
-  /** capability 审批时固定的对象身份；执行清单必须仍包含这些完全相同的根。 */
-  reviewedAccessManifest?: import("./supervisor-protocol.js").AccessManifest;
   command: string;
   args: string[];
   cwd: string;
@@ -127,10 +125,6 @@ export interface SandboxNativeAccess {
   installObjectIdentityDigests: string[];
   privateDirectory?: string;
   gitGlobalConfigPath?: string;
-  proxyUrl?: string;
-  proxyToken?: string;
-  proxyHost?: string;
-  proxyCredentialMode?: "askpass" | "environment";
 }
 
 export interface SandboxPreparedAccess {

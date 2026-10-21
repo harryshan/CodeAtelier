@@ -7,7 +7,7 @@
  *    mcp 仅公开服务别名和操作，由本机后端连接；远端参数用 argumentsJson 传递，凭据不进入模型契约。
  * 2. parseToolArguments 只校验当前工具；已移除的 Git 工具请求明确拒绝，历史记录的阅读不依赖此执行契约。
  * 3. scheduledParameters 为新模型调用增加 execution（节点 ID 和依赖）信封；parseScheduledToolArguments 解开并严格校验它。
- * 4. descriptions 向模型说明宿主可用函数工具的用途、限制和 DAG 参数约定；runtimeDescriptions 仅补充实际 Windows Agent Runtime 可用的 capability runner 规则。
+ * 4. descriptions 向模型说明宿主可用函数工具的用途、限制和 DAG 参数约定；runtimeDescriptions 仅补充实际 Sandbox Agent Runtime 可用的认证 IPC、审批和 Broker 宿主命令规则。
  * 5. definitions 与 runtimeDefinitions 分别生成宿主和 Runtime 可见的函数工具声明，防止 host-process 或启动前 fallback 看见不可执行的扩展权限工具；webSearchTool 单独声明由模型服务执行的内置网页搜索。
  *
  * 本地函数工具没有执行逻辑时，还要在 ToolRunner 中补上实现和权限检查。内置网页搜索没有本地执行器、审批或 DAG 节点，其网络行为由配置的 Responses 服务负责。

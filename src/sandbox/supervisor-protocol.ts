@@ -1,6 +1,6 @@
 /**
  * 定义 Broker 与 Windows C++ supervisor 之间的固定、严格控制协议。
- * Broker 先规范化 AccessManifest，supervisor 只创建固定类型的 Agent Runtime 或 Push Runner；
+ * Broker 先规范化 AccessManifest，supervisor 只创建固定类型的 Agent Runtime；
  * Runtime 自身不得连接这条控制通道。
  *
  * 1. requestSchema 只允许 self_check、launch_runtime、terminate_runtime 和 shutdown，所有对象 strict 校验。
@@ -59,7 +59,7 @@ export const supervisorRequestSchema = z.discriminatedUnion("operation", [
       ...requestBase,
       operation: z.literal("launch_runtime"),
       executionInstanceId: identifier,
-      runtimeKind: z.enum(["agent-runtime", "push-runner"]),
+      runtimeKind: z.literal("agent-runtime"),
       sessionId: identifier,
       taskId: identifier,
       leaseEpoch: z.number().int().positive(),
@@ -204,7 +204,7 @@ export class SupervisorProtocolClient {
   launchRuntime(
     input: {
       executionInstanceId: string;
-      runtimeKind: "agent-runtime" | "push-runner";
+      runtimeKind: "agent-runtime";
       sessionId: string;
       taskId: string;
       leaseEpoch: number;

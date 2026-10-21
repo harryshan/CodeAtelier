@@ -32,17 +32,17 @@
 
 ### Windows Sandbox 开发边界
 
-Windows 专用用户 Runtime、独立 C++ supervisor 与 Broker 是当前 Windows Sandbox 架构：一次性提升安装创建 `CodeAtelierSandbox` 账户及按其 SID 的持久 WFP fence；每次任务向该账户投影工作区和显式 read/write roots，并用 `WRITE_RESTRICTED` token、根 capability、Job、desktop 与 IPC 限制目标写入和能力。专用 Git 工具及其 IPC 已移除；旧 Git config graph、relay 与 Runner 代码保留但不作为现行产品边界。
+Windows 专用用户 Runtime、独立 C++ supervisor 与 Broker 是当前 Windows Sandbox 架构：一次性提升安装创建 `CodeAtelierSandbox` 账户及按其 SID 的持久 WFP fence；每次任务向该账户投影工作区和显式 read/write roots，并用 `WRITE_RESTRICTED` token、根 capability、Job、desktop 与 IPC 限制目标写入和能力。专用 Git 工具及其 IPC 已移除；独立 Push/Capability Runner、旧 Git config graph、HTTPS relay 与 askpass 已移除（D162）；root capability SID 与 Runtime capability IPC 仍是现行基础设施。
 
 Sandbox 沿用 1～4 个不同工作区并发、同工作区串行；同账户实例会形成活动授权根的读取并集，不提供任务间 OS 级读取、进程或对象隔离。受限 token 的 restricting SID 包含 `Everyone` 以兼容 Windows 系统组件；已有 ACL 授予 Everyone 写入的对象可绕过本实例 root capability，因此不能保证实例之间或实例之外的完整文件写入隔离。不同对话不是彼此的安全边界；同账户 peer 也可能终止、注入或检查其它 Runtime。
 
 专用账户不继承宿主用户私有权限，`Everyone`/`Authenticated Users` 等既有 ACL 也可能允许额外读取，不能宣称纯读取 allowlist。工作区内不额外保护 `.git`/`.env`；Runtime 可按普通命令启动 Git CLI，但 Windows 安装态兼容性尚未重新验证；已有 NUL/所有权限制不能用宿主测试掩盖。
 
-Agent Runtime 已有权限内的工具不再审批；越界命令通过 `run_with_permissions` 提交完整命令和理由，由 Broker 沿用低成本模型的 `approve | human review | reject` 审批。审批通过后由 Broker 以宿主进程用户权限执行，不施加额外文件根或网络 host 限制；结果必须明确标为 `broker-command`/`host-process`，不能称为受 Sandbox 保护。Capability Runner 代码保留但暂不用于产品路径。
+Agent Runtime 已有权限内的工具不再审批；越界命令通过 `run_with_permissions` 提交完整命令和理由，由 Broker 沿用低成本模型的 `approve | human review | reject` 审批。审批通过后由 Broker 以宿主进程用户权限执行，不施加额外文件根或网络 host 限制；结果必须明确标为 `broker-command`/`host-process`，不能称为受 Sandbox 保护。不再存在独立 Capability Runner 执行路径。
 
-普通 Runtime 默认无直接命令网络；获批 Broker 宿主命令使用宿主网络与凭据权限，不受专用账户 WFP fence 约束。Git CLI 不另做 action、路径、revision、upstream/OID/ref 或敏感模板校验，不自动禁用 hooks、签名或 helper；push 没有专属审批或独占批次，按通用命令权限及显式 DAG 依赖执行。同仓库写操作应串行并先核对状态及推送目标；未知结果禁止盲目重放。获批宿主 Git 命令记为 `broker-command/host-process`。旧 Git execution kind 仅供历史兼容；Push Runner 代码保留但暂停使用。
+普通 Runtime 默认无直接命令网络；获批 Broker 宿主命令使用宿主网络与凭据权限，不受专用账户 WFP fence 约束。Git CLI 不另做 action、路径、revision、upstream/OID/ref 或敏感模板校验，不自动禁用 hooks、签名或 helper；push 没有专属审批或独占批次，按通用命令权限及显式 DAG 依赖执行。同仓库写操作应串行并先核对状态及推送目标；未知结果禁止盲目重放。获批宿主 Git 命令记为 `broker-command/host-process`。旧 Git 和 Runner execution kind 仅供历史读取，不允许新启动。
 
-启动前自检或尚未创建 Runtime 的 provision 失败时，在明确提示“本任务未受 Sandbox 保护”、记录原因并将 executionInstance 标为 `host-process` 后自动回退宿主执行；独立 Runner 不允许宿主 fallback。命令已经启动、结果未知或清理无法证明完成时不得自动重放，仍须隔离账户 generation、停止新 Sandbox 任务并排空活动实例。
+启动前自检或尚未创建 Runtime 的 provision 失败时，在明确提示“本任务未受 Sandbox 保护”、记录原因并将 executionInstance 标为 `host-process` 后自动回退宿主执行；旧 Runner 请求在分流前拒绝，不允许转为宿主 fallback。命令已经启动、结果未知或清理无法证明完成时不得自动重放，仍须隔离账户 generation、停止新 Sandbox 任务并排空活动实例。
 
 取消结果以 executionInstance kind 写入 session。首版不依赖 AppContainer、自研 WFP callout driver、实验性的 `CreateProcessInSandbox`/Bound File System 或 Chromium Target hook。这些未采用机制不得描述为已实现。Windows Sandbox 的日常可用性已获用户确认，但不因此扩大既有权限保证或跨平台能力声明；专项故障与安全矩阵仍按实际证据记录。
 

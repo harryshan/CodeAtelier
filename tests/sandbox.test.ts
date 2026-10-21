@@ -7,8 +7,8 @@
  * 2. Broker 关闭时调用传入的既有宿主执行器，并记录可审计但不含命令内容的生命周期阶段。
  * 3. S1 WorkspaceView 以真实临时目录验证整个工作区（含 .git/.env）可访问，同时拒绝链接逃逸。
  * 4. 启用而没有 runtime 或自检失败时明确回退宿主，同一任务保持 fallback；runtime 执行已开始后的失败不重放。
- * 5. 共享 grant acquire 不越过进行中的 native revoke；审批时对象身份变化会在 Runner provision 前拒绝。
- * 6. 同任务 Agent Runtime 可在阻塞期间重叠一个独立 Push Runner，且 Runner 启动失败不回退宿主 Git。
+ * 5. 共享 grant acquire 不越过进行中的 native revoke。
+ * 6. 旧 Runner 在活动 Agent Runtime 旁也必须拒绝，不触发新 provision、启动或宿主 fallback。
  * 7. 测试 runtime 必须声明并接收工作区保护契约；Windows 注册专用账户，Linux/macOS 请求 MXC 后端。
  *
  * 用例不启动真实 shell、不访问网络或用户项目。它证明策略、请求形状与安全失败，
@@ -16,7 +16,7 @@
  */
 
 import { afterEach, expect, it, vi } from "vitest";
-import { mkdir, rename, symlink } from "node:fs/promises";
+import { mkdir, symlink } from "node:fs/promises";
 import path from "node:path";
 import { Config } from "../src/config/config.js";
 import { SandboxBroker } from "../src/sandbox/broker.js";
@@ -29,7 +29,6 @@ import {
 } from "../src/sandbox/native-windows-runtime.js";
 import { WorkspaceView } from "../src/sandbox/workspace-view.js";
 import { commandShell } from "../src/tools/command-shell.js";
-import { buildAccessManifest } from "../src/sandbox/access-manifest.js";
 import type {
   SandboxCommand,
   SandboxRuntime,
@@ -238,24 +237,6 @@ it("falls back to host execution when no runtime is available", async () => {
     "collecting",
     "completed",
   ]);
-});
-
-it("never falls back a push runner to host Git", async () => {
-  const broker = new SandboxBroker(
-    sandboxConfiguration({ CODEATELIER_SANDBOX_ENABLED: "true" }, "win32"),
-  );
-  const executeHost = vi.fn(async () => ({
-    output: "must not run",
-    exitCode: 0,
-    truncated: false,
-  }));
-
-  await expect(
-    broker.executeCommand(command(), executeHost, () => {}, {
-      allowHostFallback: false,
-    }),
-  ).rejects.toThrow("Broker 未以宿主身份执行命令");
-  expect(executeHost).not.toHaveBeenCalled();
 });
 
 it("keeps one task on host fallback after self-check fails", async () => {
@@ -592,58 +573,6 @@ it("does not acquire a shared grant while its last native revoke is pending", as
   expect(executeAccess[1].installObjectIdentityDigests).toHaveLength(2);
 });
 
-it("rejects a capability root replaced after approval", async () => {
-  const workspace = await temp();
-  const external = await temp();
-  const reviewed = await buildAccessManifest({
-    workspaceRoot: workspace,
-    readOnlyRoots: [external],
-  });
-  const moved = `${external}-moved`;
-  const execute = vi.fn();
-  const runtime: SandboxRuntime = {
-    selfCheck: vi.fn(async () => ({
-      level: "windows-sandbox-user-v1:test",
-      workspaceProtection: "direct-path" as const,
-      accountGenerationDigest: "8".repeat(64),
-    })),
-    prepareAccess: vi.fn(async () => {
-      await rename(external, moved);
-      await mkdir(external);
-
-      return {
-        readOnlyRoots: [external],
-        readWriteRoots: [],
-        gitConfigFiles: [],
-        cleanup: vi.fn(async () => {}),
-      };
-    }),
-    execute,
-    revokeAccess: vi.fn(async () => {}),
-    drainGeneration: vi.fn(async () => {}),
-  };
-  const broker = new SandboxBroker(
-    sandboxConfiguration({ CODEATELIER_SANDBOX_ENABLED: "true" }, "win32"),
-    runtime,
-  );
-
-  await expect(
-    broker.executeCommand(
-      {
-        ...command(),
-        cwd: workspace,
-        kind: "capability-runner",
-        readOnlyRoots: [external],
-        reviewedAccessManifest: reviewed,
-      },
-      vi.fn(),
-      () => {},
-      { allowHostFallback: false },
-    ),
-  ).rejects.toThrow("启动前检查失败");
-  expect(execute).not.toHaveBeenCalled();
-});
-
 it("waits for the first native ACL provision before starting a shared-root lease", async () => {
   const firstRoot = await temp();
   const secondRoot = await temp();
@@ -713,163 +642,85 @@ it("waits for the first native ACL provision before starting a shared-root lease
   await Promise.all([first, second]);
 });
 
-it("runs one push runner beside its blocked agent runtime without host fallback", async () => {
-  const root = await temp();
-  let finishRuntime!: () => void;
-  const runtimeBlocked = new Promise<void>((resolve) => {
-    finishRuntime = resolve;
-  });
-  const execute = vi.fn(async (runtimeCommand: SandboxCommand) => {
-    runtimeCommand.onAccessProvisioned?.();
-    if (runtimeCommand.kind === "agent-runtime") {
-      await runtimeBlocked;
-    }
-
-    return {
-      output: runtimeCommand.kind ?? "unknown",
-      exitCode: 0,
-      truncated: false,
-    };
-  });
-  const runtime: SandboxRuntime = {
-    selfCheck: vi.fn(async () => ({
-      level: "windows-sandbox-user-v1:test",
-      workspaceProtection: "direct-path" as const,
-      accountGenerationDigest: "d".repeat(64),
-    })),
-    prepareAccess: vi.fn(async () => ({
-      readOnlyRoots: [],
-      readWriteRoots: [],
-      gitConfigFiles: [],
-      cleanup: vi.fn(async () => {}),
-    })),
-    execute,
-    revokeAccess: vi.fn(async () => {}),
-    drainGeneration: vi.fn(async () => {}),
-  };
-  const broker = new SandboxBroker(
-    sandboxConfiguration({ CODEATELIER_SANDBOX_ENABLED: "true" }, "win32"),
-    runtime,
-  );
-  const agentRuntime = broker.executeCommand(
-    {
-      ...command(),
-      cwd: root,
-      kind: "agent-runtime",
-      executionInstanceId: "runtime-a",
-    },
-    vi.fn(),
-    () => {},
-  );
-  await vi.waitFor(() => expect(execute).toHaveBeenCalledTimes(1));
-  const executeHost = vi.fn();
-  const push = await broker.executeCommand(
-    {
-      ...command(),
-      cwd: root,
-      kind: "push-runner",
-      executionInstanceId: "push-a",
-      toolCallId: "push-call",
-      networkHost: "example.test",
-    },
-    executeHost,
-    () => {},
-    { allowHostFallback: false },
-  );
-
-  expect(push.result.output).toBe("push-runner");
-  expect(executeHost).not.toHaveBeenCalled();
-  expect(broker.accountGenerationSnapshot()?.activeInstances).toEqual([
-    expect.objectContaining({ executionInstanceId: "runtime-a" }),
-  ]);
-  finishRuntime();
-  await agentRuntime;
-  expect(broker.accountGenerationSnapshot()?.activeInstanceCount).toBe(0);
-});
-
-it("projects reviewed roots into one capability runner beside its agent runtime", async () => {
-  const root = await temp();
-  const readable = await temp();
-  const writable = await temp();
-  let finishRuntime!: () => void;
-  const runtimeBlocked = new Promise<void>((resolve) => {
-    finishRuntime = resolve;
-  });
-  const execute = vi.fn(
-    async (runtimeCommand: SandboxCommand, _workspace, access) => {
+it.each(["push-runner", "capability-runner"])(
+  "rejects %s beside an active Agent Runtime",
+  async (kind) => {
+    const root = await temp();
+    let finishRuntime!: () => void;
+    const runtimeBlocked = new Promise<void>((resolve) => {
+      finishRuntime = resolve;
+    });
+    const execute = vi.fn(async (runtimeCommand: SandboxCommand) => {
       runtimeCommand.onAccessProvisioned?.();
       if (runtimeCommand.kind === "agent-runtime") {
         await runtimeBlocked;
       }
 
-      if (runtimeCommand.kind === "capability-runner") {
-        expect(access?.manifest.readRoots).toEqual([
-          expect.objectContaining({ path: readable }),
-        ]);
-        expect(access?.manifest.writeRoots).toEqual(
-          expect.arrayContaining([
-            expect.objectContaining({ path: root }),
-            expect.objectContaining({ path: writable }),
-          ]),
-        );
-      }
+      return {
+        output: runtimeCommand.kind ?? "unknown",
+        exitCode: 0,
+        truncated: false,
+      };
+    });
+    const runtime: SandboxRuntime = {
+      selfCheck: vi.fn(async () => ({
+        level: "windows-sandbox-user-v1:test",
+        workspaceProtection: "direct-path" as const,
+        accountGenerationDigest: "d".repeat(64),
+      })),
+      prepareAccess: vi.fn(async () => ({
+        readOnlyRoots: [],
+        readWriteRoots: [],
+        gitConfigFiles: [],
+        cleanup: vi.fn(async () => {}),
+      })),
+      execute,
+      revokeAccess: vi.fn(async () => {}),
+      drainGeneration: vi.fn(async () => {}),
+    };
+    const broker = new SandboxBroker(
+      sandboxConfiguration({ CODEATELIER_SANDBOX_ENABLED: "true" }, "win32"),
+      runtime,
+    );
+    const agentRuntime = broker.executeCommand(
+      {
+        ...command(),
+        cwd: root,
+        kind: "agent-runtime",
+        executionInstanceId: "runtime-a",
+      },
+      vi.fn(),
+      () => {},
+    );
+    await vi.waitFor(() => expect(execute).toHaveBeenCalledTimes(1));
+    const executeHost = vi.fn();
+    try {
+      await expect(
+        broker.executeCommand(
+          {
+            ...command(),
+            cwd: root,
+            kind,
+            executionInstanceId: "retired",
+          } as unknown as SandboxCommand,
+          executeHost,
+          () => {},
+        ),
+      ).rejects.toThrow("不再支持独立 Runner");
+      expect(execute).toHaveBeenCalledTimes(1);
+      expect(runtime.prepareAccess).toHaveBeenCalledTimes(1);
+      expect(executeHost).not.toHaveBeenCalled();
+      expect(broker.accountGenerationSnapshot()?.activeInstances).toEqual([
+        expect.objectContaining({ executionInstanceId: "runtime-a" }),
+      ]);
+    } finally {
+      finishRuntime();
+      await agentRuntime;
+    }
 
-      return { output: "capability", exitCode: 0, truncated: false };
-    },
-  );
-  const runtime: SandboxRuntime = {
-    selfCheck: vi.fn(async () => ({
-      level: "windows-sandbox-user-v1:test",
-      workspaceProtection: "direct-path" as const,
-      accountGenerationDigest: "e".repeat(64),
-    })),
-    prepareAccess: vi.fn(async (runtimeCommand) => ({
-      readOnlyRoots: runtimeCommand.readOnlyRoots ?? [],
-      readWriteRoots: runtimeCommand.readWriteRoots ?? [],
-      gitConfigFiles: [],
-      cleanup: vi.fn(async () => {}),
-    })),
-    execute,
-    revokeAccess: vi.fn(async () => {}),
-    drainGeneration: vi.fn(async () => {}),
-  };
-  const broker = new SandboxBroker(
-    sandboxConfiguration({ CODEATELIER_SANDBOX_ENABLED: "true" }, "win32"),
-    runtime,
-  );
-  const agentRuntime = broker.executeCommand(
-    {
-      ...command(),
-      cwd: root,
-      kind: "agent-runtime",
-      executionInstanceId: "runtime-capability",
-    },
-    vi.fn(),
-    () => {},
-  );
-  await vi.waitFor(() => expect(execute).toHaveBeenCalledTimes(1));
-  const executeHost = vi.fn();
-  const capability = await broker.executeCommand(
-    {
-      ...command(),
-      cwd: root,
-      kind: "capability-runner",
-      executionInstanceId: "capability-a",
-      toolCallId: "capability-call",
-      readOnlyRoots: [readable],
-      readWriteRoots: [writable],
-    },
-    executeHost,
-    () => {},
-    { allowHostFallback: false },
-  );
-
-  expect(capability.result.output).toBe("capability");
-  expect(executeHost).not.toHaveBeenCalled();
-  finishRuntime();
-  await agentRuntime;
-  expect(broker.accountGenerationSnapshot()?.activeInstanceCount).toBe(0);
-});
+    expect(broker.accountGenerationSnapshot()?.activeInstanceCount).toBe(0);
+  },
+);
 
 it("dispatches only to a runtime that passed self-check", async () => {
   const runtime: SandboxRuntime = {

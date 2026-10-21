@@ -9,7 +9,8 @@
  * 4. runtime.execute 开始后的异常绝不自动重放到宿主；unknown/orphaned 会冻结 generation 并调用原生整代排空。
  * 5. 共享 ACL acquire 与 prepare/native revoke/commit 共用串行队列；provision waiter 可取消，安装者失败会拒绝全部等待者。
  * 6. MXC launchTask 使用私有实例生命周期，不进入 Windows ACL/generation 分支；启用后失败关闭，禁止逐命令旁路。
- * 7. 独立 Sandbox logger 只接收类别、阶段、关联 ID、耗时和结果，不记录命令、路径、SID、端口或输出。
+ * 7. 旧 Runner kind 在策略分流前拒绝，不得触发宿主 fallback 或发放新租约。
+ * 8. 独立 Sandbox logger 只接收类别、阶段、关联 ID、耗时和结果，不记录命令、路径、SID、端口或输出。
  *
  * WorkspaceView 仍是历史 WSL2 Runtime 的契约；目标 Windows Runtime 将以 AccessManifest 取代它。fallback
  * 只保证功能继续，不具备 Sandbox 的文件、进程和网络隔离能力。
@@ -291,40 +292,6 @@ export class SandboxBroker implements AgentRuntimeLauncher {
       return await operation();
     } finally {
       finish();
-    }
-  }
-
-  private verifyReviewedManifest(
-    reviewed: AccessManifest | undefined,
-    current: AccessManifest,
-  ) {
-    if (!reviewed) {
-      return;
-    }
-
-    const rootsByPath = (roots: AccessManifest["readRoots"]) =>
-      new Map(
-        roots.map((root) => [
-          root.path.toLocaleLowerCase(),
-          root.objectIdentityDigest,
-        ]),
-      );
-    const currentReadRoots = rootsByPath(current.readRoots);
-    const currentWriteRoots = rootsByPath(current.writeRoots);
-    const unchanged = [
-      [reviewed.readRoots, currentReadRoots] as const,
-      [reviewed.writeRoots, currentWriteRoots] as const,
-    ].every(([reviewedRoots, currentRoots]) =>
-      reviewedRoots.every(
-        (root) =>
-          currentRoots.get(root.path.toLocaleLowerCase()) ===
-          root.objectIdentityDigest,
-      ),
-    );
-    if (!unchanged || reviewed.workspaceRootId !== current.workspaceRootId) {
-      throw new Error(
-        "扩展权限对象在审批后发生变化；必须基于当前对象重新审批。",
-      );
     }
   }
 
@@ -800,17 +767,17 @@ export class SandboxBroker implements AgentRuntimeLauncher {
       truncated: boolean;
     }>,
     onStage: (stage: SandboxStage, status: SandboxStatus) => void,
-    options: { allowHostFallback?: boolean } = {},
   ) {
+    if (command.kind !== undefined && command.kind !== "agent-runtime") {
+      throw new SandboxUnavailableError("不再支持独立 Runner。");
+    }
+
     if (this.configuration.enabled && this.runtime?.launchTask) {
       throw new SandboxUnavailableError(
         "MXC 命令只能在常驻 Runtime 内执行，禁止逐命令宿主旁路。",
       );
     }
 
-    const runnerLabel =
-      command.kind === "capability-runner" ? "扩展权限 Runner" : "Push Runner";
-    const deniedHostExecution = `${runnerLabel} 要求已启用 Sandbox；Broker 未以宿主身份执行命令。`;
     const initialStatus = this.statusFor(
       command.taskId,
       command.executionInstanceId,
@@ -828,10 +795,6 @@ export class SandboxBroker implements AgentRuntimeLauncher {
     });
 
     if (!this.configuration.enabled) {
-      if (options.allowHostFallback === false) {
-        throw new SandboxUnavailableError(deniedHostExecution);
-      }
-
       this.record("executing", onStage, initialStatus);
       const result = await executeHost();
       this.record("collecting", onStage, initialStatus);
@@ -842,12 +805,6 @@ export class SandboxBroker implements AgentRuntimeLauncher {
 
     const priorFallback = this.fallbackTasks.get(command.taskId);
     if (priorFallback) {
-      if (options.allowHostFallback === false) {
-        throw new SandboxUnavailableError(
-          `本任务已经进入宿主 fallback，不能从 Agent Runtime 执行 ${runnerLabel}。`,
-        );
-      }
-
       this.executionStatuses.set(command.executionInstanceId, priorFallback);
       this.record("executing", onStage, priorFallback);
       const result = await executeHost();
@@ -866,12 +823,6 @@ export class SandboxBroker implements AgentRuntimeLauncher {
         throw error;
       }
 
-      if (options.allowHostFallback === false) {
-        throw new SandboxUnavailableError(
-          `${runnerLabel} 工作区检查失败；Broker 未以宿主身份执行命令。`,
-        );
-      }
-
       return this.executeFallback(
         command,
         "workspace_preflight",
@@ -882,12 +833,6 @@ export class SandboxBroker implements AgentRuntimeLauncher {
 
     this.record("provisioning", onStage, initialStatus);
     if (!this.runtime) {
-      if (options.allowHostFallback === false) {
-        throw new SandboxUnavailableError(
-          `${runnerLabel} 后端不可用；Broker 未以宿主身份执行命令。`,
-        );
-      }
-
       return this.executeFallback(
         command,
         "runtime_missing",
@@ -922,7 +867,6 @@ export class SandboxBroker implements AgentRuntimeLauncher {
         readWriteRoots: prepared?.readWriteRoots,
         gitConfigFiles: prepared?.gitConfigFiles,
       });
-      this.verifyReviewedManifest(command.reviewedAccessManifest, manifest);
       command.signal.throwIfAborted();
       const generationDigest = checked.accountGenerationDigest;
       if (generationDigest) {
@@ -985,12 +929,6 @@ export class SandboxBroker implements AgentRuntimeLauncher {
         executionInstanceId: command.executionInstanceId,
         ...this.errorMetadata(error),
       });
-
-      if (options.allowHostFallback === false) {
-        throw new SandboxUnavailableError(
-          `${runnerLabel} 启动前检查失败；Broker 未以宿主身份执行命令。`,
-        );
-      }
 
       return this.executeFallback(
         command,

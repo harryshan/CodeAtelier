@@ -6,17 +6,17 @@ Node.js 24 或 26，pnpm 版本由 package.json 的 packageManager 固定。提�
 
 `engines.node` 只包含 24.x 和 26.x。TypeScript 的 Node 类型及 Runtime bundle 的 `target`/manifest `nodeMajor` 继续使用 Node 24 兼容基线；在 Node 26 上构建的同一 bundle 仍面向这两个版本。使用 nvm 切换后，先运行 `node --version` 和 `pnpm exec node --version`，再执行 `pnpm check`、`pnpm test:e2e` 与 `pnpm build`。Windows 安装器接受固定的 Node 24 或 26 executable；更换已安装 Runtime 的 Node 版本仍须显式 Repair，宿主 Node 切换不会自动替换受保护副本。
 
-| 命令                                                                  | 用途                                                                      |
-| --------------------------------------------------------------------- | ------------------------------------------------------------------------- |
-| pnpm dev                                                              | 后端源码监听，默认 `127.0.0.1:4142`；tsx watch 在源码更新后重启后端       |
-| pnpm dev:web                                                          | Vite 前端，默认 `127.0.0.1:5173`；读取相同监听地址并通过 HMR 更新前端模块 |
-| pnpm build                                                            | 编译后端和前端                                                            |
-| pnpm start                                                            | 运行构建后的本机服务；由监督进程支持 UI 确认后的后端重载                  |
-| pnpm typecheck / lint / test                                          | 类型、静态规则、核心测试；test 只使用白名单测试环境                       |
-| pnpm check                                                            | 类型、lint、核心测试、测试模式构建                                        |
-| pnpm test:e2e                                                         | 先进行不读取 dotenv 的测试模式构建，再启动独立模拟服务验证浏览器交互      |
+| 命令                                              | 用途                                                                      |
+| ------------------------------------------------- | ------------------------------------------------------------------------- |
+| pnpm dev                                          | 后端源码监听，默认 `127.0.0.1:4142`；tsx watch 在源码更新后重启后端       |
+| pnpm dev:web                                      | Vite 前端，默认 `127.0.0.1:5173`；读取相同监听地址并通过 HMR 更新前端模块 |
+| pnpm build                                        | 编译后端和前端                                                            |
+| pnpm start                                        | 运行构建后的本机服务；由监督进程支持 UI 确认后的后端重载                  |
+| pnpm typecheck / lint / test                      | 类型、静态规则、核心测试；test 只使用白名单测试环境                       |
+| pnpm check                                        | 类型、lint、核心测试、测试模式构建                                        |
+| pnpm test:e2e                                     | 先进行不读取 dotenv 的测试模式构建，再启动独立模拟服务验证浏览器交互      |
 | pnpm exec tsx scripts/probe-model-capabilities.ts | 检查模型窗口、计数接口及真实 usage（少量模型调用）                        |
-| pnpm exec tsx scripts/probe-responses.ts          | 读取私有设置测试真实 Responses 工具往返                                      |
+| pnpm exec tsx scripts/probe-responses.ts          | 读取私有设置测试真实 Responses 工具往返                                   |
 | pnpm exec tsx scripts/smoke-agent.ts              | 在 .local 下创建隔离项目，真实模型修复并运行测试                          |
 
 手动探针/smoke 从平台数据目录或 `--data-dir` 指定的 settings.json 读取连接，不内置凭据、不加载 dotenv；真实验证会消耗配置服务的模型额度。smoke-agent 只自动批准它自己创建的示例项目内固定 node --test 命令。
@@ -25,15 +25,15 @@ Node.js 24 或 26，pnpm 版本由 package.json 的 packageManager 固定。提�
 
 产品启动、Vite 与手动探针不再加载 `.env`。配置来自内置默认值及宿主数据目录的版本化 `settings.json`；使用设置页编辑，不提交该文件。模型/MCP 凭据按私有文件保护，但不是加密保险库。旧环境变量不覆盖文件；旧配置必须显式迁移，步骤见 [设置系统](settings-system.md#8-当前实现与操作)。
 
-| 分组 | 默认 / 生效 |
-| --- | --- |
-| models | 主/辅助协议、地址、模型、密钥、思考等级；下一任务 |
-| execution / context | 并发默认 2（1～4）立即调度，其余下一任务 |
-| sandbox | 默认关闭；开关、根目录、安装位置重启生效 |
-| mcp.servers | 默认空；下一任务，不因保存建立连接 |
-| server | `127.0.0.1:4142`、门禁默认关闭；重启生效 |
-| logging | info；宿主立即生效 |
-| tracing | 任务容量下一任务；检查点/归档保留重启生效 |
+| 分组                | 默认 / 生效                                       |
+| ------------------- | ------------------------------------------------- |
+| models              | 主/辅助协议、地址、模型、密钥、思考等级；下一任务 |
+| execution / context | 并发默认 2（1～4）立即调度，其余下一任务          |
+| sandbox             | 默认关闭；开关、根目录、安装位置重启生效          |
+| mcp.servers         | 默认空；下一任务，不因保存建立连接                |
+| server              | `127.0.0.1:4142`、门禁默认关闭；重启生效          |
+| logging             | info；宿主立即生效                                |
+| tracing             | 任务容量下一任务；检查点/归档保留重启生效         |
 
 自定义位置示例：`pnpm start --data-dir "G:/CodeAtelierData"`；开发两个终端使用同一参数：`pnpm dev --data-dir "G:/CodeAtelierData"` 和 `pnpm dev:web --data-dir "G:/CodeAtelierData"`。路径按本机实际情况替换。没有设置文件时可进入引导，损坏文件不会被重置为无密码服务。
 
@@ -69,7 +69,7 @@ Runtime IPC 失败在会话中显示具体 operation、requestId、错误码和�
 
 Windows 且 Sandbox 开启时，`createApp` 默认注入 `SandboxBroker` 作为 `AgentRuntimeLauncher`：Engine 通过 C++ Sandbox Supervisor 启动每任务一个常驻 Agent Runtime，模型、session、审批和 memory 经任务专属 Runtime IPC 返回 Broker；禁用或 Windows 可证明启动前完整回滚的 fallback 才由 Broker Host 运行 loop。Linux/macOS 启用时经 MXC 私有 stdio 启动同一 Runtime 服务，失败关闭而不 fallback。
 
-独立 Push Runner 和 Capability Runner 代码保留但暂不用于产品路径；获批 `run_with_permissions` 命令（可含 Git CLI）在 Broker 宿主用户权限下运行，记为 broker-command；没有专用 Git action 执行路径。安装态链路与用户日常使用验证已通过；错误身份、崩溃/强制取消/恢复等专项矩阵仍需具体证据，不把日常可用性确认等同于 W0--W6 全项通过。
+独立 Push Runner 和 Capability Runner 已移除（D162）；获批 `run_with_permissions` 命令（可含 Git CLI）在 Broker 宿主用户权限下运行，记为 broker-command；没有专用 Git action 执行路径。安装态链路与用户日常使用验证已通过；错误身份、崩溃/强制取消/恢复等专项矩阵仍需具体证据，不把日常可用性确认等同于 W0--W6 全项通过。
 
 严格术语、目标完成判据与分层验收见 [Windows 专用用户 Sandbox Runtime 与 Broker 架构](windows-integrity-sandbox.md#0-术语进程和完成条件)。
 
@@ -193,7 +193,7 @@ Sandbox 工具结果的 `durationMs` 由 Broker 使用已校验的 Runtime `tool
 
 Windows 专用账户 Agent Runtime 的普通命令使用实例私有 TEMP 中的独占临时文件承接 stdout/stderr，每 100 ms 读取并按原输出上限推送，进程结束后删除。这样避免 Node/libuv 在 restricted token 下创建默认 stdio 命名管道时可能同步卡住，导致取消与超时器均无法运行；临时输出文件达到 64 MiB 时终止该命令进程树并返回明确错误。Broker 宿主命令仍使用原有管道，Git CLI 随所选命令路径处理。此传输变更沿用原工具的开始/结束、耗时、失败/取消和关联 ID trace；原生 stderr 只保留固定阶段名与 shell 类别，不记录命令、路径或输出。
 
-专用账户与宿主工作区所有者不同；Windows restricted token 下 Git 曾因 NUL 设备访问失败，直接 CLI 的安装态兼容性尚未重验。启动准备现按 D161 在实例配置中加入当前仓库的 safe.directory，不放宽 ACL。需要宿主权限时显式用 `run_with_permissions`。Agent Runtime 不投影宿主 Git global/include 图，原生协议要求的只读 global 文件包含当前仓库信任及继承的宿主 name/email；旧解析器仅供暂停的 Runner 保留。CLI 错误、退出码与输出按通用命令上限返回，不再有 Git 专用 512 字符诊断或 diff 12000 字符上限。
+专用账户与宿主工作区所有者不同；Windows restricted token 下 Git 曾因 NUL 设备访问失败，直接 CLI 的安装态兼容性尚未重验。启动准备现按 D161 在实例配置中加入当前仓库的 safe.directory，不放宽 ACL。需要宿主权限时显式用 `run_with_permissions`。Agent Runtime 不投影宿主 Git global/include 图，原生协议要求的只读 global 文件包含当前仓库信任及继承的宿主 name/email；无产品引用的旧配置图解析器随 Runner 一并删除，当前身份读取与仓库信任实现不变。CLI 错误、退出码与输出按通用命令上限返回，不再有 Git 专用 512 字符诊断或 diff 12000 字符上限。
 
 ### 网页检索与网页正文
 
@@ -295,13 +295,22 @@ Python、YAML、TOML、Makefile、Make 片段和 Markdown 默认是空白敏感�
 模型调用示例（路径和消息为示例值，需按实际变更选择）：
 
 ```json
-{"execution":{"id":"status","dependsOn":[]},"arguments":{"command":"git status --short --branch"}}
+{
+  "execution": { "id": "status", "dependsOn": [] },
+  "arguments": { "command": "git status --short --branch" }
+}
 ```
 
 同一响应中已知且有序的暂存/提交可分别用 `git add -- src/example.ts`、`git commit -m "Describe change"`，后者 dependsOn 前者；不要跨响应引用旧 ID。Sandbox 中申请宿主执行的参数示例：
 
 ```json
-{"execution":{"id":"push","dependsOn":[]},"arguments":{"command":"git push origin HEAD","reason":"已核对推送目标，需要宿主网络与凭据。"}}
+{
+  "execution": { "id": "push", "dependsOn": [] },
+  "arguments": {
+    "command": "git push origin HEAD",
+    "reason": "已核对推送目标，需要宿主网络与凭据。"
+  }
+}
 ```
 
 该示例用于 `run_with_permissions`，仍须 Broker 审批；`origin`/`HEAD` 不代表产品已校验或推荐的真实目标。
@@ -316,7 +325,7 @@ Python、YAML、TOML、Makefile、Make 片段和 Markdown 默认是空白敏感�
 
 Broker 不信任 Runtime 自报审批，把完整命令、理由和“将使用宿主用户权限”的说明交给现有低成本模型三级审批；自动通过或人工批准后返回只绑定当前认证连接与 `toolCallId` 的一次性 authorizationId。Runtime 获得 Tool worker 执行槽后才消费授权，Broker 随即启动宿主进程；拒绝时不启动。取消、断连或重复消费都使授权失效，授权本身不授予 Runtime 新权限。
 
-获批命令由 Broker 以当前宿主用户权限执行，不附加 Sandbox 文件根、网络 host、WFP 或 Job 限制；可访问该用户的文件、网络和凭据。它单独记录为 `broker-command/host-process`，不能标成 Sandbox 内命令。Capability Runner、其权限 schema 和原生路径保留，但当前工具不触发它。
+获批命令由 Broker 以当前宿主用户权限执行，不附加 Sandbox 文件根、网络 host、WFP 或 Job 限制；可访问该用户的文件、网络和凭据。它单独记录为 `broker-command/host-process`，不能标成 Sandbox 内命令。旧 Capability Runner、其权限 schema、代理/凭据原生分支已删除。`runtime-capability-core.ts` 与 `capabilityCommandRequestSchema` 是现行 IPC/宿主命令契约，不是旧 Runner。
 
 Web UI 将 `run_with_permissions` 显示为“执行命令（宿主权限）”：stdout/stderr 实时合并到同一输出卡片，结束后保留退出码、截断或错误提示，刷新后从历史重建。Broker 的 `capability_output` 事件带有 `callId`，避免并行命令串流；旧无 ID 记录沿用最近同类卡片的兼容归属，无法可靠还原旧并行命令的输出归属。无流式事件时使用最终结果的 output，未匹配的输出仍单独显示。此展示沿用既有输出限长、脱敏与 `broker.command` 生命周期 trace，不向 Perfetto 属性写入输出正文，也不提供交互式 stdin。
 
@@ -332,7 +341,9 @@ Windows 投影配置文件及父目录都不能由 Runtime 替换；Sandbox 的 
 
 普通 Agent Runtime 无直接命令网络；需要联网的 Git 命令经显式 `run_with_permissions` 审批，在 Broker 运行。审批审查完整命令、理由及宿主权限，不自动预检 Git 目标。等待该命令时无依赖节点可并行，Runtime 不获得宿主凭据或新增网络权限。
 
-持久 WFP fence 只约束专用账户 Runtime，不约束 Broker 宿主命令。新命令沿用 `agent-runtime | broker-command` 归因，旧 `broker-git | broker-git-push` kind 仅供历史读取；保留 cancelled/unknown/orphaned、部分输出与禁止重放语义。Broker 命令启动后即记录 `sideEffectsPossible=true`，正常完成也不证明没有副作用。
+持久 WFP fence 只约束专用账户 Runtime，不约束 Broker 宿主命令。新命令沿用 `agent-runtime | broker-command` 归因，旧 `broker-git | broker-git-push | push-runner | capability-runner` kind 仅供历史读取；保留 cancelled/unknown/orphaned、部分输出与禁止重放语义。Broker 命令启动后即记录 `sideEffectsPossible=true`，正常完成也不证明没有副作用。
+
+D162 将原生命令请求帧升至 v3（不再有四个代理/凭据字段），旧 v2 帧不能执行；更新后端时须同步重建 native/runtime 并显式 Repair，不能仅替换 TypeScript。安装 state/WFP 端口契约仍保留，但产品不再监听旧 HTTPS CONNECT relay。此处不自动迁移、安装或重启。
 
 Windows 原生安装命令是显式维护入口，不属于服务启动或默认测试：先在普通终端运行 `pnpm sandbox:native:build` 与 `pnpm sandbox:runtime:build`；若当前 `PATH` 中的 `node` 不是 v24 或 v26，通过 `CODEATELIER_SANDBOX_RUNTIME_NODE` 指定可信 Node 24 或 26 executable。
 
@@ -366,7 +377,7 @@ macOS/Linux 调用这些命令只输出 `SKIP`，不启动 PowerShell 或任何 
 
 `tsconfig.json` 的 `noUnusedLocals`、`noUnusedParameters` 随 `pnpm typecheck` / `pnpm check` 检查未使用的局部声明、参数和私有成员；该检查不判断导出模块是否可达，清理模块仍须核对产品入口、脚本、测试、动态加载和历史兼容用途。
 
-旧的、未被工厂注册且无调用方的 `wsl-inspect-runtime.ts` 已删除；Windows 使用专用账户 Runtime，Linux/macOS 使用 MXC。历史 `legacy-wsl2-inspect` 执行类型及已有验证记录仍保留；暂停使用但明确保留的 Capability/Push Runner 不属于本次清理。此次仅移除不可达实现和未使用状态，不增加执行路径或改变现行 tracing 生命周期。
+旧的、未被工厂注册且无调用方的 `wsl-inspect-runtime.ts` 已删除；Windows 使用专用账户 Runtime，Linux/macOS 使用 MXC。历史 `legacy-wsl2-inspect` 执行类型及已有验证记录仍保留。用户随后明确要求移除停用的 Capability/Push Runner，已按 D162 删除入口、专属网络/凭据实现和孤立配置图解析器；不增加新执行路径，保留现行 Runtime/Broker 的 tracing 生命周期。
 
 CI 暂时仅允许在 GitHub Actions 页面手动触发，不随 push 或 pull request 自动运行。触发后使用 GitHub 托管的 Windows、Linux、macOS runner 执行 pnpm check，Linux Chromium 执行 UI 验收。
 

@@ -211,16 +211,8 @@ export class ToolRunner {
     outputLimit: number;
     onOutput: (text: string) => void;
     environment?: NodeJS.ProcessEnv;
-    executionKind?: "agent-runtime" | "push-runner";
-    networkHost?: string;
   }) {
     if (this.ctx.executionBoundary === "agent-runtime") {
-      if (input.executionKind === "push-runner") {
-        throw new Error(
-          "Agent Runtime 不能直接创建 Push Runner；必须经结构化 Runtime IPC 请求 Broker。",
-        );
-      }
-
       process.stderr.write(
         "CODEATELIER_AGENT_RUNTIME_STAGE command_spawn_begin\n",
       );
@@ -277,7 +269,7 @@ export class ToolRunner {
     );
     let record: ExecutionInstanceRecord = {
       executionInstanceId,
-      kind: input.executionKind ?? "agent-runtime",
+      kind: "agent-runtime",
       mode: this.executionMode(initialStatus),
       state: "created",
       createdAt,
@@ -325,8 +317,7 @@ export class ToolRunner {
           sessionId: this.ctx.sessionId,
           taskId: this.ctx.taskId,
           executionInstanceId,
-          kind: input.executionKind ?? "agent-runtime",
-          networkHost: input.networkHost,
+          kind: "agent-runtime",
           ...input,
           onProcessStarted: processStarted,
         },

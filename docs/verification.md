@@ -1,5 +1,14 @@
 # 初版验证记录
 
+## 移除独立 Runner 与旧网络代理（D162，Windows）
+
+- 删除 Push/Capability Runner 执行器、HTTPS relay、askpass/宿主凭据读取分支、无生产调用方的旧 Git 配置图解析器及专属正向测试；保留 Runtime/root capability/ACL/WFP/认证 IPC、Broker 宿主命令和历史执行记录。
+- 新回归覆盖旧 Runner 在禁用/缺失后端与活动 Runtime 场景均拒绝、不 fallback、不新增 lease；普通 Runtime、共享授权与历史 unknown 回读由原有回归继续覆盖。
+- 独立审查发现执行版本与持久 ACL journal 共用常量的兼容风险；将 journal 夹具固定为旧 v2 后，原生回归确实失败。随后分离执行帧 v3 和 ACL revoke/journal v2，原生回归通过，v2 执行请求仍拒绝。复审未发现本轮新增阻塞问题；真实安装态 ACL 恢复未在本轮执行。
+- 最终完整 `pnpm check` 通过：TypeScript、ESLint、Prettier，**124 文件、893 通过、1 跳过**，以及 Web/server、Windows/POSIX Runtime 测试构建。保留依赖注释与前端 chunk 大小警告。
+- `scripts/windows-sandbox/build-native.ps1` 通过：`SANDBOX_NATIVE_REGRESSION PASS`、`SANDBOX_RUNTIME_DUPLEX_PROBE PASS`、`SANDBOX_NATIVE_BUILD PASS`。仅生成工作区构建产物，未更新 ProgramData 安装副本。
+- 检查使用获批 Broker 宿主工具链，不等于 Windows 安装态或 Linux/macOS 实机验收。本轮未改 UI/HTTP 行为，未运行 E2E；未运行 Evaluation、真实网络凭据测试、安装/Repair、数据库迁移或服务重启。部署须停止服务、同步重建 native/runtime，再由原安装用户显式 Repair/Verify，见 [Windows 使用指南](windows-sandbox-guide.md)。
+
 ## Sandbox 宿主提交身份继承（D161 追加，Windows / Node 26.10.0）
 
 - Windows/MXC 的实例配置继承宿主当前工作目录生效的 user.name/email，不复制认证/签名配置或密钥；原 safe.directory 规则不变。身份不写日志/trace，读取归入启动准备 span。

@@ -4,7 +4,7 @@
 >
 > **已通过用户实际使用验证，可用于日常开发。** 2026-10-03 用户确认 Windows Sandbox 持续使用一段时间功能正常；结合此前本机固定账户安装态产品链路的通过记录，不再将该功能标为尚不可用的预览。该结论针对用户当前 Windows 环境的日常使用，不代表所有安全/故障专项或其他平台均已验证，详见 [验证记录](verification.md)。
 >
-> 当前实现包括专用账户、C++ Supervisor、Agent Runtime、AccessManifest、ACL/WFP 和认证 IPC。Capability Runner 与 Push Runner 代码保留但暂停使用；Git CLI 使用通用命令路径，获批 `run_with_permissions` 命令由 Broker 以宿主权限运行；不再有 Git 专用执行入口或 push 独占批次（D155）。继续只用于可信项目，保留重要文件的备份；默认关闭和安装维护流程不变。
+> 当前实现包括专用账户、C++ Supervisor、Agent Runtime、AccessManifest、ACL/WFP 和认证 IPC。独立 Capability/Push Runner、HTTPS relay 与 askpass 已移除（D162），旧 kind 仅供历史读取；Git CLI 使用通用命令路径，获批 `run_with_permissions` 命令由 Broker 以宿主权限运行；不再有 Git 专用执行入口或 push 独占批次（D155）。继续只用于可信项目，保留重要文件的备份；默认关闭和安装维护流程不变。
 >
 > 完整架构、分层验收状态和已知限制见 [Windows 专用用户 Sandbox Runtime 与 Broker 架构](windows-integrity-sandbox.md)。
 
@@ -84,7 +84,7 @@ Sandbox **不会**创建 worktree、暂存副本或自动回滚：可写操作�
    | `sandboxed`             | 专用用户 Runtime 已成功启动并承载该任务；获批 Broker 宿主命令仍是例外。                                                             | 仍遵守本节的工作区、同账户 peer 和权限限制；查看每条命令的执行实例。                      |
    | `host-process-fallback` | Runtime 启动前的 preflight/provision/self-check 失败，但系统已证明没有 Sandbox 操作启动且临时授权已回滚；任务自动改用宿主权限执行。 | 把它当作未隔离任务；检查警告、`sandbox.log` 和安装状态。                                  |
    | `non-isolated`          | Sandbox 开关关闭，或平台不是 Windows。                                                                                              | 命令按原有宿主审批与权限路径运行。                                                        |
-   | `unknown` / `orphaned`  | Runtime、Runner 或清理结果无法证明；副作用可能已发生。                                                                              | 不要自动重试或恢复同一副作用。先核对当前文件/Git 状态，并处理安装或账户 generation 问题。 |
+   | `unknown` / `orphaned`  | Runtime、命令或清理结果无法证明；副作用可能已发生。                                                                                 | 不要自动重试或恢复同一副作用。先核对当前文件/Git 状态，并处理安装或账户 generation 问题。 |
 
 启动前失败只会在能够证明目标操作**尚未开始**时自动 fallback。若 Runtime 已启动而结果未知，系统不会在宿主模式重放该操作；它会记录 `unknown`/`orphaned`、隔离该账户 generation 并停止新的 Sandbox 实例，直至完成对账。Broker 宿主命令或 Git push 结果未知时也禁止自动重放，须单独核对其副作用。
 
@@ -101,10 +101,12 @@ Sandbox **不会**创建 worktree、暂存副本或自动回滚：可写操作�
 | 场景                                 | 命令与执行位置                                        | 说明                                                                                                              |
 | ------------------------------------ | ----------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
 | 检查已安装组件、账户和 WFP 状态      | 在**管理员 PowerShell** 执行 `pnpm sandbox:verify`    | 不替代 `sandbox:runtime:verify` 的产品链路验收。                                                                  |
-| 更新已安装组件                       | 在**管理员 PowerShell** 执行 `pnpm sandbox:repair`    | 先重建对应产物；等价于 `install.ps1 -Mode Repair`，不会自动触发 UAC。                                              |
+| 更新已安装组件                       | 在**管理员 PowerShell** 执行 `pnpm sandbox:repair`    | 先重建对应产物；等价于 `install.ps1 -Mode Repair`，不会自动触发 UAC。                                             |
 | 安装后的产品链路检查                 | 在普通终端执行 `pnpm sandbox:runtime:verify`          | 不访问公网或真实凭据。                                                                                            |
 | 正常卸载                             | 在**管理员 PowerShell** 执行 `pnpm sandbox:uninstall` | 先停止所有任务；卸载必须确认没有活动 lease。                                                                      |
 | 正常卸载无法证明完整清理时的受控恢复 | 在**管理员 PowerShell** 执行 `pnpm sandbox:recover`   | 只清理安装 state 中记录的产品账户、固定 WFP 对象、欢迎屏幕值和受控 ProgramData 子目录；不会扫描或重置整机防火墙。 |
+
+D162 将原生执行请求帧升级为 **v3** 并拒绝旧 v2 执行帧；ACL 撤销帧及持久 grant journal 独立保持 v2，以便读取旧清理记录。该变更不改变 Runtime IPC v17，但不能只更新 TypeScript 或 Runtime bundle：必须同步执行 `pnpm sandbox:native:build` 和 `pnpm sandbox:runtime:build`，再按下列步骤停止服务并 Repair。安装 state/WFP 的固定端口契约暂保留，产品不再监听旧 HTTPS CONNECT relay；保留端口不是业务代理认证保证。
 
 更新原生 Supervisor、WFP manager 或 Runtime bundle 后，应重新生成对应构建产物，**先停止 CodeAtelier 服务**，再由原安装用户打开管理员 PowerShell 7，执行：
 

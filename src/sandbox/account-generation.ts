@@ -1,11 +1,11 @@
 /**
  * 管理单一 Windows Sandbox 账户 generation 的并发实例租约与共享 ACL grant 引用。
- * SandboxBroker 在原生 provision 前取得 lease，在 Job、代理与 ACL 全部清理后释放；恢复代码读取快照判断能否继续复用账户。
+ * SandboxBroker 在原生 provision 前取得 lease，在 Job 与 ACL 全部清理后释放；恢复代码读取快照判断能否继续复用账户。
  *
- * 1. acquire 强制 1～4 个不同任务工作区并发、同一规范工作区串行；同任务可在 Agent Runtime 阻塞期间重叠一个 Push Runner 或 capability runner，并为每个实例分配单调 lease epoch。
+ * 1. acquire 强制 1～4 个不同任务工作区并发、同一规范工作区串行；不再允许独立 Runner 或同任务嵌套实例，并为每个实例分配单调 lease epoch。
  * 2. 共享账户 ACE 按对象身份计数，不按各实例的 read/write 用途拆分；acquire 先完整预检再提交引用，首个引用进入 provisioning，后继 lease 必须等待原生安装完成。
  * 3. release 使用 prepare/commit 两阶段协议；原生撤销失败前不删除 lease 或 grant，防止 orphan 从账本消失。
- * 4. quarantine 在未知进程、ACL、代理或凭据状态下冻结 generation，并返回所有仍需终止和对账的实例。
+ * 4. quarantine 在未知进程、ACL 或身份状态下冻结 generation，并返回所有仍需终止和对账的实例。
  * 5. snapshot 只暴露摘要和计数，可写入 session/log/trace；不包含原始路径、SID、命令或凭据。
  *
  * 本模块不执行进程或 ACL 操作。调用方只有在原生层证明 release 返回的清理全部成功后，才能把 lease 视为 clean。
@@ -18,7 +18,7 @@ export type AccountGenerationState = "healthy" | "draining" | "quarantined";
 
 export interface SandboxInstanceLease {
   executionInstanceId: string;
-  kind: "agent-runtime" | "push-runner" | "capability-runner";
+  kind: "agent-runtime";
   taskId: string;
   workspaceRootId: string;
   manifestDigest: string;
@@ -149,10 +149,14 @@ export class AccountGenerationRegistry {
 
   acquire(input: {
     executionInstanceId: string;
-    kind: "agent-runtime" | "push-runner" | "capability-runner";
+    kind: "agent-runtime";
     taskId: string;
     accessManifest: AccessManifest;
   }) {
+    if (input.kind !== "agent-runtime") {
+      throw new AccountGenerationError("不再支持独立 Runner。");
+    }
+
     if (this.state !== "healthy") {
       throw new AccountGenerationError("generation 已停止发放新租约。");
     }
@@ -162,26 +166,15 @@ export class AccountGenerationRegistry {
     }
 
     const active = [...this.active.values()];
-    const sameTask = active.filter((lease) => lease.taskId === input.taskId);
-    const nestedCapabilityRunner =
-      input.kind !== "agent-runtime" &&
-      sameTask.some(
-        (lease) =>
-          lease.kind === "agent-runtime" &&
-          lease.workspaceRootId === input.accessManifest.workspaceRootId,
-      ) &&
-      !sameTask.some((lease) => lease.kind !== "agent-runtime");
-    const activeTasks = new Set(active.map((lease) => lease.taskId));
+    if (active.some((lease) => lease.taskId === input.taskId)) {
+      throw new AccountGenerationError("同一任务已有活动 Sandbox 实例。");
+    }
 
-    if (
-      !nestedCapabilityRunner &&
-      activeTasks.size >= this.maximumConcurrentInstances
-    ) {
+    if (active.length >= this.maximumConcurrentInstances) {
       throw new AccountGenerationError("已达到 Sandbox 并发上限。");
     }
 
     if (
-      !nestedCapabilityRunner &&
       active.some(
         (lease) =>
           lease.workspaceRootId === input.accessManifest.workspaceRootId,

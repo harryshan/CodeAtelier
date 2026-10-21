@@ -38,30 +38,30 @@ Runtime stdio 集成夹具共用 `runtime-child-close.ts`：spawn 后立即监�
 - `dispatch-model-tool.test.ts`：subagent 开关与结构化操作校验、await 等待期间不占槽、等待失败不取槽、历史读取先取槽、普通工具审批阶段不预占槽、read_file trace 传递、错误原样传播。
 - `tool-output.test.ts`：JSON 截断的精确字符边界、原始结果不修改、序列化失败保持抛出。
 - `model-tool-batch.test.ts`：两种执行模式的节点解析与依赖一致、Git CLI 不额外独占批次且保留显式依赖、退出码及多文件 failed/unknown 阻断 DAG 后继。
-- `execute-runner.test.ts`：保留但暂停使用的 Push Runner 与 Capability Runner 的实例标识、进程元数据、事件/账本一致、非零退出、启动前后失败、取消、unknown 优先级、命令构造失败和拒绝 host fallback；不能视作现行产品路径验收。
+- `retired-runners.test.ts`：D162 移除 Runner 后，关闭/缺失后端时旧 kind 拒绝且不 fallback，账户租约和 Supervisor schema 拒绝旧 kind；普通 Agent Runtime 请求仍合法。
 - `engine.test.ts`、`agent-runtime-service.test.ts`、`agent-runtime-engine.test.ts` 继续验证生产组装、真实 Node 子进程、工具结果回传、审批和取消记录；Engine 回归还核对已验证的 Runtime PID 在 `running` 与 `completed` execution instance 中一致。这些测试不替代专用账户提升环境验收。
 
 ## 测试审计（2026-09-30）
 
 按默认 Vitest、独立 Playwright、手动 Evaluation（TS 与 Python）和 Windows 原生探针的入口清点测试；扫描断言、跳过条件、历史功能引用和相似用例后，对删除候选逐项核对实际实现及替代覆盖。移除了八项重复或不属于现行后端的用例：基础文件替换、配置密钥落盘、会话重启、重复的旧连接迁移、单文件缺失/歧义目标、两文件部分成功预检、重复的 push 独占图测试及未注册的 WSL inspect 启动形状测试。将重启后事件回读、错误详情与单独 push 合法性补到保留用例。修正手动 Evaluation 的旧工具参数与已移除的 list_files 夹具；**未执行 Evaluation**，不能把静态核对当成该套件通过。
 
-保留有独立安全或兼容价值的旧投影、旧 Runner、历史数据迁移、平台条件跳过以及运行中/已完成任务分别覆盖的长时间线 UI 测试。历史 WSL 代码仍在仓库，但 Runtime 工厂只选择 Windows 专用账户后端；单测、原生构建和 Chromium 测试均不替代安装态验收。审计不以用例数量或单纯调用 spy 作为删除理由。
+保留有独立安全或兼容价值的旧上下文投影、历史数据迁移、平台条件跳过以及运行中/已完成任务分别覆盖的长时间线 UI 测试。不可达 WSL Runtime 已删除；工厂按平台选择 Windows 专用账户或 POSIX MXC 后端；单测、原生构建和 Chromium 测试均不替代安装态验收。审计不以用例数量或单纯调用 spy 作为删除理由。
 
 ## 测试审计（2026-10-10）
 
 本轮清点 93 个默认 Vitest 文件、7 个 Playwright 文件、1 个手动 Evaluation TS 文件、3 个 Python 测试文件及 1 个原生 C++ 测试入口。全量扫描测试声明、断言、生产模块依赖、跳过条件与重复主题，再对删除候选核对实现和保留覆盖。没有永久 `skip/todo/only`；平台条件跳过不视为过时。Evaluation 与原生探针仅静态审查，不因审计自动执行。
 
-| 精简项 | 理由及保留覆盖 |
-| --- | --- |
+| 精简项                                                                      | 理由及保留覆盖                                                                                                                                                                                                 |
+| --------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `core` 的 DAG 指引、`files` 的搜索指引、`model-approval` 的两项分类文案测试 | 仅锁定提示词子串，不能证明模型遵循策略。保留 DAG 实际调度、读取分页/版本、审批请求组装和三级分流。同步移除 `core`、`engine`、`tool-schema` 中同类措辞断言；保留动态项目规则、环境目录、host/Runtime 指引分流。 |
-| `git-tools` 的旧 Sandbox Git 路由 | 夹具强行走 D121 之前的路径；当前 Broker 路由由 `agent-runtime-tools`、`agent-runtime-engine`、`runtime-ipc` 覆盖。旧 Runner 独立隔离测试按 D120 仍保留。 |
-| `git-tools` 的重复 action schema | 统一留在 `tool-schema`，将缺少 diff 必填字段的断言移入该处；非法 action、空提交路径和额外字段仍被拒绝。 |
-| `files` 的退役工具注册检查 | `tool-schema` 已覆盖工具注册及解析拒绝；`files` 仍覆盖 ToolRunner 对未知工具/非法参数的无副作用拒绝。 |
-| `config` 的重复端点/模型透传 | 连接规范化与偏好落盘用例已经核对相同后缀处理、模型原样传递与重开结果。 |
-| `multi-file-edit` 的重复行范围/重叠失败夹具 | 集中到完整匹配失败用例，保留不完整行范围及无范围重叠场景和磁盘不变断言。 |
-| `subagent-coordinator` 的两轮累计 token 越限用例 | `subagent-capacity` 已通过真实 Worker 验证 21 轮、840,000 token、完整报告及精确调用次数；读取、请求持久化仍由协调器闭环覆盖。 |
-| `session-view` 的 3,000/12,000 同路径规模样本 | 保留 50,000 事件和禁止重读旧正文断言；不同输入状态、小历史、浏览器重连及虚拟滚动测试不删。 |
-| `windows-sandbox-scripts` 的 package.json 字符串快照 | 只锁定脚本拼写；保留 run.ts 全部 action 的真实入口分流、固定参数、退出码及平台行为测试。 |
+| `git-tools` 的旧 Sandbox Git 路由                                           | 夹具强行走 D121 之前的路径；当前 Broker 路由由 `agent-runtime-tools`、`agent-runtime-engine`、`runtime-ipc` 覆盖。旧 Runner 正向测试随后按 D162 删除，改为旧入口拒绝回归。                                     |
+| `git-tools` 的重复 action schema                                            | 统一留在 `tool-schema`，将缺少 diff 必填字段的断言移入该处；非法 action、空提交路径和额外字段仍被拒绝。                                                                                                        |
+| `files` 的退役工具注册检查                                                  | `tool-schema` 已覆盖工具注册及解析拒绝；`files` 仍覆盖 ToolRunner 对未知工具/非法参数的无副作用拒绝。                                                                                                          |
+| `config` 的重复端点/模型透传                                                | 连接规范化与偏好落盘用例已经核对相同后缀处理、模型原样传递与重开结果。                                                                                                                                         |
+| `multi-file-edit` 的重复行范围/重叠失败夹具                                 | 集中到完整匹配失败用例，保留不完整行范围及无范围重叠场景和磁盘不变断言。                                                                                                                                       |
+| `subagent-coordinator` 的两轮累计 token 越限用例                            | `subagent-capacity` 已通过真实 Worker 验证 21 轮、840,000 token、完整报告及精确调用次数；读取、请求持久化仍由协调器闭环覆盖。                                                                                  |
+| `session-view` 的 3,000/12,000 同路径规模样本                               | 保留 50,000 事件和禁止重读旧正文断言；不同输入状态、小历史、浏览器重连及虚拟滚动测试不删。                                                                                                                     |
+| `windows-sandbox-scripts` 的 package.json 字符串快照                        | 只锁定脚本拼写；保留 run.ts 全部 action 的真实入口分流、固定参数、退出码及平台行为测试。                                                                                                                       |
 
 不改产品实现、测试收集范围、默认并发配置、超时或断言容错；不以失败、测试耗时、mock 数量或文件年代作为删除理由。保留有独立层次价值的 HTTP/IPC/Worker/E2E、历史 SQLite/JSONL/投影兼容、安全拒绝及取消清理测试。
 
@@ -151,7 +151,7 @@ Runtime stdio 集成夹具共用 `runtime-child-close.ts`：spawn 后立即监�
 - `pnpm sandbox:native:build` 还以五秒上限运行原生 `--runtime-duplex-probe`：在真实本机 Named Pipe 上覆盖预连接与待决连接两种顺序，并在 server 读取下一帧时向 client 写入 Broker 回复；它曾在同步 pipe 上超时，overlapped I/O 修复后通过。该探针不覆盖固定账户 ACL、Job 或完整任务协议。
 - `pnpm sandbox:runtime:verify` 是安装完成后由用户显式运行的 Windows 产品链路验收：它使用模拟模型，经默认 Engine/SandboxBroker/native Supervisor 在专用账户 Agent Runtime 内创建工作区文件，再在同一批次独立执行经通用审批的 Broker Git CLI status 和 Runtime 普通命令，使一条路径的失败不遮蔽另一条的结果，并核对专用账户子进程、输出与 clean release；随后以仅供此手动验收的内部已标记任务调用受保护的 subagent Worker，核对受限工具、读取、报告收集和 tracing，公开 HTTP 现按 D158 提供默认关闭的任务级选项；手动验收仍独立记录安装态证据。`process.test.ts` 覆盖 file-backed 输出回传、取消和持久化失败时的进程停止与临时文件清理；这些本地测试不代替安装态 restricted token 验收。
 - `agent-runtime-engine.test.ts` 与 `runtime-ipc.test.ts` 核对 Git CLI status/add/commit 的通用 Broker 审批、平面结果及 host-process 归因，并拒绝旧 Git operation/v16 握手；`sandbox-native-windows-runtime.test.ts` 核对 Runtime 不再投影宿主 global/include 配置。
-- `sandbox-git-config-graph.test.ts` 保留旧 Runner 路径的只读 Git global 投影回归；当前 CLI 使用通用命令路径，该测试不是现行产品路径验收。
+- 旧 `sandbox-git-config-graph.test.ts` 随孤立解析器删除；现行实例配置、仓库信任和宿主姓名/邮箱继承由 `sandbox-native-windows-runtime`、`sandbox-git-workspace-trust`、`sandbox-git-identity` 覆盖。
 - `git-cli.test.ts` 在隔离配置的临时仓库中覆盖状态、差异、提交、日志、分支、本地 bare remote 推送、非零退出和审批拒绝；不触及真实远程。旧 git-tools.test.ts 随专用执行器移除。
 
   `tests/runtime-startup-protocol.test.ts` 另以原生 `StringFromGUID2` 的 `{GUID}` 后缀启动真实本机 pipe，验证 Node 入口能连接并完成模拟任务；普通协议测试同时保留不带花括号的合法名称及远程、畸形名称拒绝。该测试不代替专用账户的身份与 ACL 验收。
@@ -228,7 +228,7 @@ Git CLI 走通用命令：临时仓库状态/差异/add/commit/log/show/branch�
 主要测试按边界组织：
 
 - 执行和账本：sandbox.test.ts、sandbox-native-windows-runtime.test.ts、process.test.ts、engine.test.ts、recovery.test.ts。
-- 网络与协议：sandbox-https-relay.test.ts、runtime-capability-core.test.ts、runtime-ipc.test.ts、runtime-session-client.test.ts、runtime-startup-protocol.test.ts、supervisor-protocol.test.ts。
+- 网络与协议：retired-runners.test.ts、runtime-capability-core.test.ts、runtime-ipc.test.ts、runtime-session-client.test.ts、runtime-startup-protocol.test.ts、supervisor-protocol.test.ts。
 - Agent Runtime：agent-runtime-tools.test.ts、agent-runtime-service.test.ts、agent-runtime-engine.test.ts。
 - 配置与诊断：logging.test.ts、config.test.ts、tracing.test.ts。
 - 手动组件探针：`experiments/windows-sandbox-user-demo`、`windows-restricted-token-demo`、`windows-network-ipc-demo`、`windows-git-config-demo` 中的 `run-demo.ps1`。路径后缀均相对于 `experiments/`。
@@ -239,9 +239,9 @@ Git CLI 走通用命令：临时仓库状态/差异/add/commit/log/show/branch�
 - 执行开始后不重放；executionInstance、PID/创建时间、中断状态、独立日志及恢复提示。
 - strict 协议操作与响应关联、有界 framing、instance/nonce 握手、model/session/approval adapter 和 Supervisor 首帧。
 - 独立 Node 子进程中的 agent loop、工具 DAG 和 Engine launcher 分流。
-- `sandbox-supervisor-failures.test.ts` 用内存管道验证 Runner/Agent Runtime 启动与输出回调故障、stdin 错误，以及清理证明缺失优先于原始错误；不启动原生账户。
+- `sandbox-supervisor-failures.test.ts` 用内存管道验证普通命令/Agent Runtime 启动与输出回调故障、stdin 错误，以及清理证明缺失优先于原始错误；不启动原生账户。
 
-Windows native runtime/relay 测试在非 Windows 整组跳过。stdio harness、首帧 parser 和组件探针不能证明产品 Windows transport 身份；完整能力须按 [W0--W6 分层门槛](windows-integrity-sandbox.md#9-实施与验收) 验收。
+Windows native runtime 测试在非 Windows 整组跳过。stdio harness、首帧 parser 和组件探针不能证明产品 Windows transport 身份；完整能力须按 [W0--W6 分层门槛](windows-integrity-sandbox.md#9-实施与验收) 验收。
 
 ### 模型协议与重试
 
@@ -417,7 +417,7 @@ Sandbox 徽标浏览器回归以合成历史阶段验证：bootstrap 的待确�
 
   这些自动回归仍不验证专用账户、Named Pipe client PID、token/capability、Job 或 generation，因此不能单独计入 W3/W4 完成。
 
-- 原生产品构建直接编译 `native/windows-sandbox/network-fence-implementation.cpp` 并定义 `CODEATELIER_PRODUCT_WFP_ONLY`；同时编译并运行真实 Supervisor 的版本 4 relay 端口解析回归、LSA 账户 DACL 进程内回归、Runtime/Bootstrap pipe 实例 SID DACL 差异，以及二进制授权 journal 标志回归。journal 模式只接受带安装账户标志且不同时声明文件与写入的 4/5/6，普通撤销模式仍只接受 0/2。提升安装后须分别在管理员终端执行 `pnpm sandbox:verify` 的完整 WFP 枚举，在普通终端执行 `pnpm sandbox:runtime:verify`，核对对象级 WFP/LSA 读取、Runtime 承载、Runner 与取消无 fallback/unknown；两种身份不能互相代替。构建后手工冒烟确认实验参数 `--ipc` 以退出码 2 被拒。实验 demo 通过薄包装编译同一实现但不定义该宏，避免产品源从 experiment 目录反向依赖。
+- 原生产品构建直接编译 `native/windows-sandbox/network-fence-implementation.cpp` 并定义 `CODEATELIER_PRODUCT_WFP_ONLY`；同时编译并运行真实 Supervisor 的版本 4 relay 端口解析回归、LSA 账户 DACL 进程内回归、Runtime/Bootstrap pipe 实例 SID DACL 差异，以及二进制授权 journal 标志回归。journal 模式只接受带安装账户标志且不同时声明文件与写入的 4/5/6，普通撤销模式仍只接受 0/2。提升安装后须分别在管理员终端执行 `pnpm sandbox:verify` 的完整 WFP 枚举，在普通终端执行 `pnpm sandbox:runtime:verify`，核对对象级 WFP/LSA 读取、Runtime 承载、Broker 宿主命令归因与取消无 fallback/unknown；两种身份不能互相代替。构建后手工冒烟确认实验参数 `--ipc` 以退出码 2 被拒。实验 demo 通过薄包装编译同一实现但不定义该宏，避免产品源从 experiment 目录反向依赖。
 - 非交互式 window station/desktop 的真实 OS 探针需在普通用户 Windows 会话中手动运行 `dist\native\windows-x64\codeatelier-sandbox-state-parser-test.exe --window-station-probe`。它短暂创建并关闭两个 desktop，以不同账户替身 SID 核对已有共享 station 补装第二个账户 ACE、不同实例 SID、宿主原 station 恢复，以及在完整 station/desktop 路径上的 USER32 子进程启动；不创建专用账户，不替代安装后跨账户的 Runtime 验收。默认 native build 不执行此 OS 探针，以免外层受限环境影响纯构建回归。
 
 ### Sandbox 证据边界
@@ -440,7 +440,7 @@ account generation 状态机验证 1～4 个不同工作区并发、同工作区
 
 当前 Git CLI 走通用命令权限，由 Git CLI、Agent Runtime tools/engine 及 IPC 回归覆盖；旧 ToolRunner→Sandbox Runtime 路由夹具已于 2026-10-10 审计移除，不再作为现行执行边界证据；
 
-CONNECT relay 夹具验证 proxy token、精确 host、私网 DNS、IPv4/IPv6 公网分类和 lease 撤销，其中 IPv6 只接受普通全球单播并拒绝 Teredo、6to4、NAT64、文档和本地前缀。
+CONNECT relay 及其专属夹具已按 D162 删除；历史验证结论保留在 verification.md，不能作为现行命令网络保证。
 
 原生构建脚本已在本机 MSVC x64 下生成 WFP manager 与 supervisor，后者含逐对象 ACL/journal、同卷 rename 后按 file ID 重开原对象的 revoke 回退、收紧的 WRITE_RESTRICTED token、private desktop、Job、账户拒绝登录权、专用账户环境块与同 Job askpass pipe；PowerShell build/install/recover 均通过语法解析。
 
@@ -586,7 +586,7 @@ D155 移除了专用 Git diff 上限；CLI 输出沿用 process/core 的通用�
 - `tests/model-tool-batch.test.ts` 验证两个命令工具中的 push 文本与独立节点可共存且保留显式依赖，不引入关键词特殊调度。
 - `tests/agent-runtime-engine.test.ts` 验证获批宿主 Git CLI 的真实状态/写入结果与启动后取消，记录 broker-command 而非旧 broker-git kind。
 - `tests/agent-runtime-engine.test.ts` 使用真实 Node 子进程验证取消时先收到 `runtime_complete`，随后 clean 关闭；即使 Runtime 已回报终态，只要原生清理返回 orphaned，任务也记为失败、执行实例保留 unknown。安装态脚本最终核对取消后无 unknown 和活动 generation lease。
-- `tests/sandbox-account-generation.test.ts` 与 `tests/sandbox.test.ts` 保留旧 Push Runner 的机制测试，但不证明当前产品 push 的网络或凭据隔离。真实 remote、凭据、hook/helper 和取消清理仍须手动验收。
+- `tests/sandbox-account-generation.test.ts` 与 `tests/sandbox.test.ts` 验证活动 Runtime 旁的旧 Runner 请求被拒绝、租约不变，不发放嵌套执行权限。真实 remote、凭据、hook/helper 和取消清理仍须手动验收。
 
 ### 通用命令工具不按 Git 关键词过滤（D137、D140）
 
@@ -601,7 +601,7 @@ D155 移除了专用 Git diff 上限；CLI 输出沿用 process/core 的通用�
 - `tests/agent-runtime-engine.test.ts` 通过真实 Runtime 子进程验证低成本模型审批后，Broker 宿主命令可写入工作区外标记，且独立记为 `broker-command/host-process`，不会调用 Sandbox runner；stdout/stderr 的 `capability_output` 在工具结果前持久化且携带对应 callId，拒绝时无命令输出；命令和理由不进入任务 trace。
 - `tests/session-view.test.ts` 验证宿主命令与普通命令交错输出不串卡片、实时视图不可变、失败/取消结果关联、旧无 ID 输出及未匹配输出可见、仅最终结果与全量历史重建。`tests/e2e/broker-command-output.spec.ts` 用合成会话和增量刷新验证真实 UI 的 stdout/stderr 卡片、成功/非零退出/截断/取消、最终 output 兜底与刷新重建；输出按纯文本显示，不重复渲染结果。这些浏览器夹具不执行真实宿主命令，不代替固定账户安装态验收。
 - `tests/runtime-ipc.test.ts` 与 `tests/tool-schema.test.ts` 验证命令/理由的有界 schema 与调用关联，并拒绝旧权限字段或其它额外参数。
-- `tests/sandbox.test.ts` 和原生构建仍覆盖保留的 Capability/Push Runner 代码，但它们当前不由产品工具触发；其中 ACL、代理及限制断言不能证明现行 Broker 宿主命令或 Git push 的权限边界。
+- `tests/sandbox-native-windows-runtime.test.ts` 核对 v3 帧的完整字段、根标志和边界；原生 parser 回归验证 v3 往返及旧 v2 拒绝，不再含代理/凭据字段。root capability、Runtime pipe/Job/token 回归保留。
 
 ### 上下文默认摘要与旧投影兼容
 
@@ -635,11 +635,10 @@ D155 移除了专用 Git diff 上限；CLI 输出沿用 process/core 的通用�
 ## Sandbox 审查回归
 
 - `tests/sandbox-session-boundary.test.ts` 以两个真实 SQLite 会话验证 `session_compact` 的严格快照 schema、认证 session 绑定和父快照归属；跨会话写入不会改变任一会话。
-- `tests/sandbox.test.ts` 交错最后引用的 native revoke 与新 acquire，确认新 lease 等撤销完成后重装共享 ACE；同时验证 capability 审批后根对象被删除重建时，Runner 在 provision 前拒绝执行。
-- `tests/sandbox-account-generation.test.ts` 验证首个 provision 安装者失败会拒绝共享 waiter，且 waiter 可由自己的 AbortSignal 取消；`tests/sandbox-https-relay.test.ts` 验证并发首次 start 共用监听 promise，以及任一 tunnel 端关闭会销毁另一端并等待两端终态再移除账本。
-- `tests/sandbox-git-config-graph.test.ts` 用真实临时 Git 配置验证 XDG global 在前、home global 在后的原生覆盖顺序；`tests/recovery.test.ts` 验证 `toolCallId` 与旧 `callId` 兼容，并将 Runtime 内普通工具关联到父 Agent Runtime execution instance；`tests/agent-runtime-engine.test.ts` 验证启动前 fallback 写入 Web 已支持的 `sandbox_fallback` 事件。
-- `tests/sandbox-native-windows-runtime.test.ts` 验证缺少原生 rollback/completion 正向证明时一律归类 `cleanup_unknown`。C++ 构建检查 Supervisor 的失败回滚、Job 分配失败终止、askpass 同步 I/O 取消和 WFP 规则精确核对能够编译；这些不替代固定账户下的故障注入、持久 WFP 替换规则、恶意 askpass client 和崩溃恢复验收。
-
+- `tests/sandbox.test.ts` 交错最后引用的 native revoke 与新 acquire，确认新 lease 等撤销完成后重装共享 ACE；已移除的 Runner 审批根专属用例由旧请求整体拒绝回归取代。
+- `tests/sandbox-account-generation.test.ts` 验证首个 provision 安装者失败会拒绝共享 waiter，且 waiter 可由自己的 AbortSignal 取消；并验证同任务嵌套实例不发放租约。
+- `tests/recovery.test.ts` 验证 `toolCallId` 与旧 `callId` 兼容，并将 Runtime 内普通工具关联到父 Agent Runtime execution instance；`tests/agent-runtime-engine.test.ts` 验证启动前 fallback 写入 Web 已支持的 `sandbox_fallback` 事件。
+- `tests/sandbox-native-windows-runtime.test.ts` 验证缺少原生 rollback/completion 正向证明时一律归类 `cleanup_unknown`。C++ 构建检查 Supervisor 的失败回滚、Job 分配失败终止和 WFP 规则精确核对能够编译；这些不替代固定账户下的故障注入、持久 WFP 替换规则和崩溃恢复验收。
 
 ### SQLite 完整迁移实施中的专项覆盖
 

@@ -91,10 +91,7 @@ describe.skipIf(process.platform !== "win32")(
         timeoutMs: 1000,
         access: {
           leaseEpoch: 1,
-          proxyCredentialMode: "environment",
-          proxyUrl: "http://127.0.0.1:42871",
-          proxyHost: "example.test",
-          proxyToken: "short-lived-token",
+          gitGlobalConfigPath: "C:\\gitconfig",
           installObjectIdentityDigests: ["a".repeat(64)],
           manifest: {
             manifestDigest: "b".repeat(64),
@@ -115,10 +112,43 @@ describe.skipIf(process.platform !== "win32")(
       });
 
       expect(frame.readUInt32LE(0)).toBe(0x42534143);
-      expect(frame.readUInt32LE(4)).toBe(2);
+      expect(frame.readUInt32LE(4)).toBe(3);
       expect(frame.includes(Buffer.from("instance-1"))).toBe(true);
       expect(frame.includes(Buffer.from("echo ok"))).toBe(true);
-      expect(frame.includes(Buffer.from("environment"))).toBe(true);
+      let offset = 8;
+      const readString = () => {
+        const length = frame.readUInt32LE(offset);
+        offset += 4;
+        const value = frame.toString("utf8", offset, offset + length);
+        offset += length;
+
+        return value;
+      };
+
+      for (let index = 0; index < 4; index++) {
+        readString();
+      }
+
+      offset += 4;
+      const argumentCount = frame.readUInt32LE(offset);
+      offset += 4;
+      for (let index = 0; index < argumentCount; index++) {
+        readString();
+      }
+
+      expect(readString()).toBe("b".repeat(64));
+      expect(readString()).toBe("C:\\gitconfig");
+      expect(frame.readUInt32LE(offset)).toBe(1); // lease epoch
+      offset += 4;
+      expect(frame.readUInt32LE(offset)).toBe(1); // root count
+      offset += 4;
+      expect(frame.readUInt32LE(offset)).toBe(5); // write + install
+      offset += 4;
+      expect(readString()).toBe("C:\\workspace");
+      expect(readString()).toBe("1");
+      expect(readString()).toBe("2");
+      expect(readString()).toBe("a".repeat(64));
+      expect(offset).toBe(frame.length);
       expect(() =>
         encodeNativeSandboxRequest({
           executionInstanceId: "instance-1",
@@ -192,7 +222,7 @@ describe.skipIf(process.platform !== "win32")(
             sessionId: "session-1",
             taskId: "task-1",
             executionInstanceId: "instance-1",
-            kind: "push-runner",
+            kind: "push-runner" as never,
           },
           nonce: "bad",
           cwd: "C:\\workspace",
@@ -325,7 +355,7 @@ describe.skipIf(process.platform !== "win32")(
             sessionId: "session-1",
             taskId: "task-1",
             executionInstanceId: "instance-1",
-            kind: "capability-runner",
+            kind: "agent-runtime",
             readOnlyRoots: [readable],
             readWriteRoots: [writable],
             command: "C:\\Windows\\System32\\cmd.exe",

@@ -1130,6 +1130,16 @@
 - 边界：确认的是用户当前 Windows 环境下的日常功能可用性，不推导错误身份、复杂 ACL、强制终止、异常恢复、真实远端兼容性等全部专项矩阵通过。Everyone restricting SID、同账户共享风险、Broker 宿主权限及 macOS/Linux 不加载该后端等限制不变。
 - 影响：只更新状态、使用说明和证据记录；默认关闭与安装/Repair 流程不变，不自动安装或开放 subagent。subagent 仍按自身发布门禁及专项证据单独评估。本次不改变运行时、权限、配置或 tracing，无新增运行事件。
 
+## D162：移除停用的 Push Runner 与 Capability Runner
+
+- 日期：2026-10-21（本机日期）。
+- 状态：用户在死代码清理中了解两个 Runner 的用途后明确要求“都移除吧”。替代 D119/D120 等决定中保留旧 Runner 实现的部分，不改写旧设计或验证事实。
+- 决定：删除独立执行入口、HTTPS CONNECT relay、旧扩权根/host schema、同任务嵌套租约豁免、原生 askpass/宿主凭据读取和代理注入，以及无产品调用方的旧 Git global/include 配置图解析器。移除对应专属正向测试，改为旧请求拒绝回归。
+- 保留边界：现行 Agent Runtime、root capability SID、ACL/WFP、Job、认证 IPC、审批与模型 capability 核心，以及 Broker `run_with_permissions` 宿主命令路径不变。持久化的旧 Runner kind 仅供历史读取、显示和未知副作用恢复，不迁移真实历史库、不自动重放。
+- 协议与部署：TypeScript 与 C++（含 bootstrap）同步采用原生请求 v3，删除四个代理/凭据字段；旧 v2 执行帧拒绝；ACL revoke 帧和持久 grant journal 布局未变，单独保持 v2，避免升级后旧授权记录无法清理。Runtime IPC 版本不变。现有 Windows 安装须用户停止服务后显式重建 native/runtime 并 Repair；本次不自动安装、Repair 或重启。安装 state/WFP 的既有端口契约暂不迁移，也不启动旧 HTTPS relay；不能把保留端口描述为已认证的业务代理。
+- 观测：删去无执行对象的 Runner/proxy lease trace；现行工具、Broker command、Runtime/租约/ACL/Job 的开始、结束、失败、取消、耗时与关联 ID 继续复用原有 tracing。旧 kind 在策略分流或租约创建前拒绝，不产生虚假的执行 span。
+- 验证：覆盖关闭/缺失后端及活动 Runtime 时拒绝旧请求、租约账本不变、v3 完整字段与 v2 拒绝、普通 Runtime 与历史恢复。原生构建及离线探针不等于安装态或跨平台验收；Evaluation 不自动运行。
+
 ## D161：Sandbox 启动时信任当前工作目录仓库
 
 - 状态：用户要求在 Sandbox 启动时为 Git 仓库配置 trust folder，解决运行账户与目录 owner 不同的问题。

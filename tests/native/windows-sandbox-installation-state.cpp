@@ -6,7 +6,7 @@
  *
  * 1. 写入包含两个非默认 relay 端口的 v5 安装状态夹具，不提供已移除的读取 Worker 摘要。
  * 2. 调用 ReadInstallationState，核对端口与版本，并拒绝无效端口。
- * 3. 用真实二进制 journal 帧验证恢复入口接受已安装授权的合法标志，普通撤销入口仍拒绝这些标志。
+ * 3. 用固定 v2 二进制 journal 帧验证升级后仍接受已安装授权的合法标志，普通撤销入口仍拒绝这些标志；不能随执行请求版本一起漂移。
  * 4. 在进程内 ACL 上验证新增的安装者读取 ACE 不丢弃既有 ACE，也不授予写入。
  * 5. 核对 bootstrap pipe 不授予实例 SID，Agent Runtime 专属 pipe 才授予本实例 restricting SID，避免 WRITE_RESTRICTED 客户端无法连接；真实受限 token 连接仍由安装后产品验收证明。
  * 6. 从产品 token 构造函数创建真实受限 token，核对 execution/root capability 和 Everyone 均在 restricting SID 列表。
@@ -15,7 +15,8 @@
  * 9. 显式 --runtime-descriptor-probe 输出真实原生首帧，供跨语言回归核对 Node 解码器；不启动 Supervisor。
  * 10. 显式 --runtime-duplex-probe 在真实 Named Pipe 上让读取方等待第二帧时写入 Broker 回复，证明两个方向不会相互阻塞；以独立测试进程执行并设超时。
  * 11. 显式 --window-station-probe 在真实 Windows 会话中用不同账户替身 SID 创建并关闭两个非交互式 station/desktop 句柄，验证已有 station 补装第二个账户 ACE、实例授权、原 station 恢复，以及带完整 station/desktop 名称的 USER32 子进程启动；默认 native build 不运行此 OS 探针。
- * 12. 删除临时夹具，以退出码报告回归结果。
+ * 12. 通过真实 ProductRequest 编解码核对 v3 命令/根布局，拒绝旧 v2 帧；不启动进程或发放权限。
+ * 13. 删除临时夹具，以退出码报告回归结果。
  */
 
 #define CODEATELIER_INSTALLATION_STATE_TEST
@@ -45,6 +46,58 @@ bool WriteFixture(const std::filesystem::path& path, uint16_t port_v4,
          << L"runtimeWorkerSha256=" << digest << L"\n"
          << L"runtimeSubagentWorkerSha256=" << digest << L"\n";
   return output.good();
+}
+
+bool TestProductRequest(const std::filesystem::path& fixture) {
+  UniqueHandle file(CreateFileW(fixture.c_str(), GENERIC_READ | GENERIC_WRITE,
+                                0, nullptr, CREATE_ALWAYS,
+                                FILE_ATTRIBUTE_TEMPORARY, nullptr));
+  if (!file) {
+    return false;
+  }
+  ProductRequest input;
+  input.execution_instance_id = L"instance-1";
+  input.working_directory = L"C:\\workspace";
+  input.executable = L"C:\\runtime\\node.exe";
+  input.private_directory = L"C:\\private";
+  input.arguments = {L"session", L"task", std::wstring(64, L'c')};
+  input.timeout_ms = INFINITE;
+  input.manifest_digest = std::wstring(64, L'b');
+  input.git_global_config = L"C:\\gitconfig";
+  input.lease_epoch = 7;
+  input.roots.push_back({5, L"C:\\workspace", L"1", L"2",
+                         std::wstring(64, L'a')});
+  LARGE_INTEGER start{};
+  if (!WriteProductRequest(file.get(), input) ||
+      !SetFilePointerEx(file.get(), start, nullptr, FILE_BEGIN)) {
+    return false;
+  }
+  ProductRequest output;
+  if (!ReadProductRequest(file.get(), &output) ||
+      output.execution_instance_id != input.execution_instance_id ||
+      output.working_directory != input.working_directory ||
+      output.executable != input.executable ||
+      output.private_directory != input.private_directory ||
+      output.arguments != input.arguments || output.timeout_ms != INFINITE ||
+      output.manifest_digest != input.manifest_digest ||
+      output.git_global_config != input.git_global_config ||
+      output.lease_epoch != 7 || output.roots.size() != 1 ||
+      output.roots[0].flags != 5 ||
+      output.roots[0].path != input.roots[0].path ||
+      output.roots[0].device_id != L"1" || output.roots[0].file_id != L"2" ||
+      output.roots[0].identity_digest != input.roots[0].identity_digest) {
+    return false;
+  }
+  LARGE_INTEGER version_offset{};
+  version_offset.QuadPart = sizeof(uint32_t);
+  const uint32_t legacy_version = 2;
+  if (!SetFilePointerEx(file.get(), version_offset, nullptr, FILE_BEGIN) ||
+      !WriteExact(file.get(), &legacy_version, sizeof(legacy_version)) ||
+      !SetFilePointerEx(file.get(), start, nullptr, FILE_BEGIN)) {
+    return false;
+  }
+  ProductRequest rejected;
+  return !ReadProductRequest(file.get(), &rejected);
 }
 
 bool TestInstallerAccountAcl() {
@@ -413,10 +466,11 @@ bool TestGrantJournalFlags(const std::filesystem::path& path, uint32_t flags,
                                   CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL,
                                   nullptr));
   uint32_t count = 1;
+  const uint32_t persisted_version = 2;
   if (!output || !WriteExact(output.get(), &kRequestMagic,
                              sizeof(kRequestMagic)) ||
-      !WriteExact(output.get(), &kRequestVersion,
-                  sizeof(kRequestVersion)) ||
+      !WriteExact(output.get(), &persisted_version,
+                  sizeof(persisted_version)) ||
       !WriteExact(output.get(), &count, sizeof(count)) ||
       !WriteExact(output.get(), &flags, sizeof(flags)) ||
       !WriteFramedString(output.get(), L"C:\\fixture") ||
@@ -606,7 +660,8 @@ int wmain(int argc, wchar_t* argv[]) {
           TestGrantJournalFlags(fixture, 6, true, false) &&
           TestGrantJournalFlags(fixture, 7, false, false) &&
           TestGrantJournalFlags(fixture, 2, false, true);
-  valid = valid && TestInstallerAccountAcl() && TestRuntimePipeSecurity() &&
+  valid = valid && TestProductRequest(fixture) &&
+          TestInstallerAccountAcl() && TestRuntimePipeSecurity() &&
           TestProductTokenRestrictingSids() && TestRuntimeHandleAttestation();
   std::error_code remove_error;
   std::filesystem::remove(fixture, remove_error);

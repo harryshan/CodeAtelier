@@ -8,11 +8,11 @@
  * 4. execute 启动单实例 supervisor，stdout 作为工具输出流，stderr 只解析 runtime PID/创建时间、完成和固定错误类别。
  * 5. runtime started 控制帧确认共享账户 ACE 已安装；并发 lease 在该确认前不会假定 grant 可用。
  * 6. 产品执行 timeoutMs=0 编码为 INFINITE，不创建 JS 总期限计时器；有限探测仍保留期限。逐工具进程取消、有限 JS 超时或管道失败时关闭继承 stdin 并等待退出；常驻 Agent Runtime 已启动后先让 Broker 经 IPC 取消并等待终态，close 才关闭 stdin。清理证明缺失优先于原错误或取消结果，绝不宿主重放。
- * 7. drainGeneration 关闭 relay、终止该账户全部进程并按持久 journal 撤销 ACL，供在线 quarantine 与重启恢复共用。
+ * 7. drainGeneration 终止该账户全部进程并按持久 journal 撤销 ACL，供在线 quarantine 与重启恢复共用。
  * 8. 临时 HOME/TEMP 只在原生确认撤销后删除；启动失败仅记录白名单 station、Runtime pipe/身份阶段、入口固定阶段和数字错误码，日志与错误不包含命令、路径、SID、端口、密码或工具输出。
  * 9. Runtime 普通命令只向 stderr 输出固定阶段标记；启动后异常日志提取最后阶段，供区分 shell 选择、进程启动和进程关闭停滞，不记录命令内容。
  *
- * 该实现启动常驻 Agent Runtime，并保留独立 Push/Capability Runner 的原生入口；两个 Runner 当前不在产品路径。常驻 Runtime 承载完整 agent loop、文件工具和普通命令，Git CLI 使用通用命令路径，不提供专用 Git IPC 或隐式宿主转发。
+ * 该实现启动常驻 Agent Runtime；独立 Push/Capability Runner 与 HTTPS relay 已移除。二进制请求 v3 不再携带代理或凭据字段，旧安装须显式更新。常驻 Runtime 承载完整 agent loop、文件工具和普通命令，Git CLI 使用通用命令路径，不提供专用 Git IPC 或隐式宿主转发。
  */
 
 import { createHash } from "node:crypto";
@@ -30,12 +30,13 @@ import type {
 } from "./types.js";
 import type { LaunchedAgentRuntime } from "./agent-runtime-launcher.js";
 import type { RuntimeExecutionIdentity } from "./runtime-capability-core.js";
-import { SandboxHttpsRelay, type IssuedRelayLease } from "./https-relay.js";
 import type { TraceRecorder } from "../tracing/recorder.js";
 import { sandboxGitConfig } from "./sandbox-git-config.js";
 
 const REQUEST_MAGIC = 0x42534143;
-const REQUEST_VERSION = 2;
+const REQUEST_VERSION = 3;
+// 撤销帧与原生持久 ACL journal 保持 v2，不跟随执行请求布局升级。
+const ACCESS_ROOTS_VERSION = 2;
 const CLEANUP_FAILURE_EXIT_CODE = 70;
 const SELF_CHECK_FAILURE_EXIT_CODE = 71;
 const PROTOCOL_FAILURE_EXIT_CODE = 72;
@@ -344,12 +345,6 @@ export function encodeNativeSandboxRequest(input: {
     ...input.args.map(framedString),
     framedString(manifestDigest),
     framedString(input.access?.gitGlobalConfigPath ?? ""),
-    framedString(input.access?.proxyUrl ?? ""),
-    framedString(input.access?.proxyHost ?? ""),
-    framedString(input.access?.proxyToken ?? ""),
-    framedString(
-      input.access?.proxyCredentialMode === "environment" ? "environment" : "",
-    ),
     leaseEpoch,
     rootCount,
     ...roots.flatMap((root) => {
@@ -406,7 +401,7 @@ export function encodeNativeAgentRuntimeRequest(input: {
 function encodeNativeAccessRevocation(roots: SandboxRevokeRoot[]) {
   const header = Buffer.allocUnsafe(12);
   header.writeUInt32LE(REQUEST_MAGIC, 0);
-  header.writeUInt32LE(REQUEST_VERSION, 4);
+  header.writeUInt32LE(ACCESS_ROOTS_VERSION, 4);
   header.writeUInt32LE(roots.length, 8);
 
   return Buffer.concat([
@@ -430,7 +425,6 @@ export class NativeWindowsSandboxRuntime implements SandboxRuntime {
   private paths: InstallationPaths;
   private environment: NodeJS.ProcessEnv;
   private metadata?: InstallationMetadata;
-  private relay?: SandboxHttpsRelay;
   private startupRecovery?: Promise<void>;
 
   constructor(
@@ -593,74 +587,15 @@ export class NativeWindowsSandboxRuntime implements SandboxRuntime {
     access?: SandboxNativeAccess,
   ) {
     void _workspace;
+    if (command.kind !== undefined && command.kind !== "agent-runtime") {
+      throw new NativeWindowsSandboxError("不再支持独立 Runner。");
+    }
+
     const privateDirectory = access?.privateDirectory;
     if (!privateDirectory || !path.isAbsolute(privateDirectory)) {
       throw new NativeWindowsSandboxError(
         "执行请求缺少已授权的私有 HOME/TEMP。",
       );
-    }
-
-    let relayLease: IssuedRelayLease | undefined;
-    let runnerSpan: ReturnType<TraceRecorder["startSpan"]> | undefined;
-    const networkRunner =
-      command.kind === "push-runner" ||
-      (command.kind === "capability-runner" && command.networkHost);
-    if (networkRunner) {
-      if (!command.networkHost || !access || !this.metadata) {
-        throw new NativeWindowsSandboxError(
-          "网络 Runner 缺少已确认的 HTTPS 目标。",
-        );
-      }
-
-      this.relay ??= new SandboxHttpsRelay(this.metadata.relayPortV4, this.log);
-      await this.relay.start();
-      this.traces?.instant(
-        command.taskId,
-        "broker.relay_attest",
-        "sandbox",
-        "Sandbox broker",
-        {
-          executionInstanceId: command.executionInstanceId,
-          toolCallId: command.toolCallId,
-        },
-      );
-      relayLease = this.relay.issueLease(
-        command.networkHost,
-        command.timeoutMs,
-      );
-      access = {
-        ...access,
-        proxyUrl: relayLease.proxyUrl,
-        proxyHost: command.networkHost,
-        proxyToken: relayLease.token,
-        proxyCredentialMode:
-          command.kind === "capability-runner" ? "environment" : "askpass",
-      };
-      this.traces?.instant(
-        command.taskId,
-        "sandbox.proxy_lease.issued",
-        "sandbox",
-        "Sandbox broker",
-        {
-          executionInstanceId: command.executionInstanceId,
-          toolCallId: command.toolCallId,
-        },
-      );
-      runnerSpan = this.traces?.startSpan(command.taskId, {
-        name:
-          command.kind === "capability-runner"
-            ? "sandbox.capability_runner"
-            : "sandbox.push_runner",
-        category: "sandbox",
-        track: "Sandbox runtime",
-        attributes: {
-          executionInstanceId: command.executionInstanceId,
-          toolCallId: command.toolCallId,
-          readRootCount: command.readOnlyRoots?.length ?? 0,
-          writeRootCount: command.readWriteRoots?.length ?? 0,
-          network: Boolean(command.networkHost),
-        },
-      });
     }
 
     const frame = encodeNativeSandboxRequest({
@@ -673,36 +608,7 @@ export class NativeWindowsSandboxRuntime implements SandboxRuntime {
       access,
     });
 
-    try {
-      const result = await this.spawnSupervisor(command, frame);
-      if (runnerSpan) {
-        this.traces?.endSpan(runnerSpan, "ok", { exitCode: result.exitCode });
-        runnerSpan = undefined;
-      }
-
-      return result;
-    } catch (error) {
-      if (runnerSpan) {
-        this.traces?.endSpan(
-          runnerSpan,
-          command.signal.aborted ? "cancelled" : "error",
-        );
-        runnerSpan = undefined;
-      }
-
-      throw error;
-    } finally {
-      if (relayLease) {
-        this.relay?.revoke(relayLease);
-        this.traces?.instant(
-          command.taskId,
-          "sandbox.proxy_lease.revoked",
-          "sandbox",
-          "Sandbox broker",
-          { executionInstanceId: command.executionInstanceId },
-        );
-      }
-    }
+    return this.spawnSupervisor(command, frame);
   }
 
   /**
@@ -1019,8 +925,6 @@ export class NativeWindowsSandboxRuntime implements SandboxRuntime {
           },
         })
       : undefined;
-    await this.relay?.close();
-    this.relay = undefined;
     const operations = [
       {
         argument: "--terminate-account-processes",
@@ -1073,11 +977,6 @@ export class NativeWindowsSandboxRuntime implements SandboxRuntime {
       protectedPaths: [],
       protection: "direct-path",
     });
-  }
-
-  async shutdown() {
-    await this.relay?.close();
-    this.relay = undefined;
   }
 
   private spawnSupervisor(command: SandboxCommand, frame: Buffer) {

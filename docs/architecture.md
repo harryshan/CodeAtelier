@@ -33,9 +33,9 @@ Sandbox Process（单一 CodeAtelierSandbox 账户；每实例独立 lease/capab
 
 Windows 启用时的产品调用链现为 `Broker Engine → SandboxBroker launcher → C++ Sandbox Supervisor → Agent Runtime → 工具子进程`，模型、session、审批和记忆通过 Runtime IPC adapter 回到 Broker。
 
-`run_with_permissions` 由 Runtime 通过认证 IPC 请求 Broker 审批；获准后 Broker 以宿主用户权限执行完整命令，单独记录 `broker-command/host-process`。该命令不在专用账户、Job、ACL 或 WFP 边界内。Capability Runner 实现保留但暂停使用。
+`run_with_permissions` 由 Runtime 通过认证 IPC 请求 Broker 审批；获准后 Broker 以宿主用户权限执行完整命令，单独记录 `broker-command/host-process`。该命令不在专用账户、Job、ACL 或 WFP 边界内。独立 Capability Runner 实现已删除（D162）。
 
-Git CLI 复用普通命令或显式获批宿主命令路径，不提供 Git action、自动转发、目标校验或 push 独占批次（D155）。Runtime 等待宿主命令时仍存活且可调度无依赖节点，不取得宿主网络或凭据能力；Push Runner 保留且暂停使用。
+Git CLI 复用普通命令或显式获批宿主命令路径，不提供 Git action、自动转发、目标校验或 push 独占批次（D155）。Runtime 等待宿主命令时仍存活且可调度无依赖节点，不取得宿主网络或凭据能力；独立 Push Runner 已删除。
 
 安装版 Runtime 的 argv 只携带 Supervisor 生成的本机任务 pipe 名，identity/nonce 由有界首帧交付；产品 build 生成以 Node 24 为兼容基线、支持 Node 24/26 的单文件 Runtime 与独立 compaction、subagent Worker bundle（read_file 直接在读取后计算），安装器把选定的 Node 24 或 26 和 bundle 固定到受保护目录，TypeScript/native self-check 复核 v5 state 中的 SHA-256。
 
@@ -123,11 +123,11 @@ Sandbox 以 Broker Host 为宿主可信边界。一次性提升安装创建单�
 
 Broker 先建立不可变 AccessManifest，supervisor 再以原对象 handle 和卷/file ID 复核工作区、显式 read/write roots、产品依赖和原生协议要求的实例只读 Git global 文件（由 `sandbox-git-config.ts` 组合 `git-workspace-trust.ts` 的当前仓库信任和 `host-git-identity.ts` 白名单读取的宿主 name/email；非仓库不添加信任项，认证留在宿主）并投影最小 ACL；持久 journal 使最终 revoke 或重启恢复可在同卷 rename 后按 file ID 重开原对象。
 
-当前产品已把常驻 AgentRuntimeService、C++ Supervisor launcher、身份绑定 Named Pipe、model/session/approval/memory adapter、ACL journal 和 generation drain 接到同一生命周期；relay、Push Runner 和 Capability Runner 的实现保留但不再由产品工具触发。
+当前产品已把常驻 AgentRuntimeService、C++ Supervisor launcher、身份绑定 Named Pipe、model/session/approval/memory adapter、ACL journal 和 generation drain 接到同一生命周期；旧 HTTPS relay、Push Runner 和 Capability Runner 实现已移除；通用 Runtime capability IPC 与 root capability 保留。
 
 Sandbox 沿用 1～4 个不同工作区并发和同工作区串行；账户 SID 使所有并发实例可能读取活动 manifest 的授权根，同账户 peer 也可能终止、注入或检查其它 Runtime。不同对话不是彼此的 OS 安全边界。Runtime token 为系统组件兼容加入 `Everyone` restricting SID；已有 Everyone 可写 ACL 可绕过实例 root capability，故不承诺完整文件写入隔离。专用账户不继承宿主用户私有权限，但既有公共/机器 ACL 仍可能允许额外读取。
 
-共享账户 ACE 使用 provision 等待与 prepare/native revoke/commit 两阶段 grant table；任一实例 ACL、Job、代理或账户状态无法对账时隔离 account generation，原生终止整代账户进程并按持久 journal 撤销 ACL。
+共享账户 ACE 使用 provision 等待与 prepare/native revoke/commit 两阶段 grant table；任一实例 ACL、Job 或账户状态无法对账时隔离 account generation，原生终止整代账户进程并按持久 journal 撤销 ACL。
 
 Agent Runtime 已有权限内的普通命令在 Runtime 内执行且免审批；Git CLI 同样按通用命令权限执行，无专用 IPC 分支。`run_with_permissions` 经审批后也在 Broker 以宿主权限执行；这些宿主进程的文件、网络和凭据不受 Sandbox 附加限制。只有 Agent Runtime 启动前可证明完整回滚时才保留宿主 loop fallback。
 
@@ -163,30 +163,30 @@ Broker 通过 `SandboxRuntime.launchTask` 路由，不进入 Windows ACL/generat
 
 ## 文件职责与定位
 
-| 模块                                                                                             | 职责                                                                                                                                                                                                                                       |
-| ------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| tools/registry.ts / tool-graph.ts                                                                | 工具参数和 DAG 调度信封、模型可见定义；调用图的结构校验、稳定拓扑调度、并发上限和失败后继阻断；`edit_files` 以 create 区分新建与已有文件编辑                                                                                               |
-| tools/tool-runner.ts                                                                             | ToolRunner：校验、审批、读取与普通命令执行，并委托统一文件编辑；Git CLI 沿用命令路径                                                                                                                                                      |
-| tools/file-editor.ts                                                                             | FileEditor：逐文件预检、create 存在性/读取版本复核、失败汇总、独立文件继续写入和进度，复用 ToolRunner 的权限与读取哈希                                                                                                                     |
-| tools/edit-plan.ts                                                                               | 基于原始快照的行号/文本定位、重叠校验与纯文本转换                                                                                                                                                                                          |
-| tools/paths.ts / command-shell.ts / process.ts                                                   | 路径边界、内部 shell 选择与进程生命周期                                                                                                                                                                                                    |
-| providers/model-provider.ts                                                                      | 与具体服务无关的模型接口和结果契约                                                                                                                                                                                                         |
-| providers/responses-provider.ts                                                                  | ResponsesProvider：Responses 协议实现                                                                                                                                                                                                      |
-| providers/model-error.ts / retry.ts                                                              | 错误分类与有界重试策略                                                                                                                                                                                                                     |
-| config/settings.ts / config.ts / data-directory.ts                                               | 连接/偏好参数 schema、仅保存偏好的配置加载、内存密钥与平台数据目录                                                                                                                                                                         |
-| tracing/recorder.ts / archive.ts / model-provider.ts / relations.ts / task-monitor.ts                                             | 任务 span、模型安全摘要、Sandbox execution/instance/kind、跨轨道 flow、Trace Event JSON 导出，以及按会话/任务安全落盘；模型包装器保持 Provider 契约与取消语义                                                                              |
-| sandbox/broker.ts / runtime-capability-core.ts                                                   | Sandbox 优先/宿主 fallback 分流；命令 executionInstance/PID/创建时间账本；Runtime→Broker 的一次性命令审批 grant 与宿主模型代理 capability core                                                                                             |
+| 模块                                                                                             | 职责                                                                                                                                                                                                                                              |
+| ------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| tools/registry.ts / tool-graph.ts                                                                | 工具参数和 DAG 调度信封、模型可见定义；调用图的结构校验、稳定拓扑调度、并发上限和失败后继阻断；`edit_files` 以 create 区分新建与已有文件编辑                                                                                                      |
+| tools/tool-runner.ts                                                                             | ToolRunner：校验、审批、读取与普通命令执行，并委托统一文件编辑；Git CLI 沿用命令路径                                                                                                                                                              |
+| tools/file-editor.ts                                                                             | FileEditor：逐文件预检、create 存在性/读取版本复核、失败汇总、独立文件继续写入和进度，复用 ToolRunner 的权限与读取哈希                                                                                                                            |
+| tools/edit-plan.ts                                                                               | 基于原始快照的行号/文本定位、重叠校验与纯文本转换                                                                                                                                                                                                 |
+| tools/paths.ts / command-shell.ts / process.ts                                                   | 路径边界、内部 shell 选择与进程生命周期                                                                                                                                                                                                           |
+| providers/model-provider.ts                                                                      | 与具体服务无关的模型接口和结果契约                                                                                                                                                                                                                |
+| providers/responses-provider.ts                                                                  | ResponsesProvider：Responses 协议实现                                                                                                                                                                                                             |
+| providers/model-error.ts / retry.ts                                                              | 错误分类与有界重试策略                                                                                                                                                                                                                            |
+| config/settings.ts / config.ts / data-directory.ts                                               | 连接/偏好参数 schema、仅保存偏好的配置加载、内存密钥与平台数据目录                                                                                                                                                                                |
+| tracing/recorder.ts / archive.ts / model-provider.ts / relations.ts / task-monitor.ts            | 任务 span、模型安全摘要、Sandbox execution/instance/kind、跨轨道 flow、Trace Event JSON 导出，以及按会话/任务安全落盘；模型包装器保持 Provider 契约与取消语义                                                                                     |
+| sandbox/broker.ts / runtime-capability-core.ts                                                   | Sandbox 优先/宿主 fallback 分流；命令 executionInstance/PID/创建时间账本；Runtime→Broker 的一次性命令审批 grant 与宿主模型代理 capability core                                                                                                    |
 | sandbox/runtime-ipc-\*.ts / agent-runtime-\*.ts / runtime-model-provider.ts                      | 有界双向 framing、instance/nonce 握手、Broker model/session/approval/memory adapter、Runtime 侧完整 agent loop 及 Engine launcher 分流；Windows Supervisor launcher 与联合身份 transport 已接入，独立 harness、安装态链路与用户日常使用验证已通过 |
-| sandbox/native-windows-runtime.ts / C++ supervisor                                               | 受保护安装副本自检、有界二进制执行帧、专用账户/restricted token/ACL/Job/desktop、取消与恢复 journal；安装态链路与用户日常使用验证已通过，旧 Git relay/askpass 不用于当前产品路径                                                                                      |
-| sandbox/supervisor-protocol.ts / supervisor-channel.ts                                           | 更高层 Broker→Supervisor strict typed operation 与私有 handle framing；不暴露任意 SID/ACL/handle。当前产品 launcher 使用更窄的固定原生帧启动 Agent Runtime/Runner；模型、session、审批和 trace 则走已认证 Runtime IPC，不经过该控制协议    |
-| logging/logger.ts / redact.ts                                                                    | 日志创建、错误详情序列化、格式化输出与轮转、纯文本脱敏                                                                                                                                                                                     |
-| permissions/approval-manager.ts                                                                  | ApprovalManager：授权等待与取消                                                                                                                                                                                                            |
-| server/app.ts                                                                                    | 服务组装、业务路由与关闭顺序                                                                                                                                                                                                               |
-| server/local-security.ts / session-events.ts                                                     | 环境访问密码、来源与本机会话防护；SSE 连接管理与清理                                                                                                                                                                                       |
-| server/http-server.ts                                                                            | 保留 Pino 日志类型的 HTTP 服务类型                                                                                                                                                                                                         |
-| web/App.tsx / MarkdownTaskEditor.tsx / useSessionConnection.ts / SessionStatistics.tsx           | 页面交互与布局、任务输入框的所见即所得 Markdown 编辑和 Markdown 序列化、开发服务完整页面重载、当前会话右上角的折叠统计，以及快照和 SSE 重连生命周期；切换会话时先清除旧快照并显示本地历史加载提示                                          |
-| web/Timeline.tsx / MarkdownMessage.tsx / EventBody.tsx / timeline-presentation.ts                                                           | 消费连接层展示视图、虚拟列表布局和缓存渲染；消息使用安全 GFM，技术记录共用中文标签与保守摘要，延迟正文按需分段、未关联输出独立卡片；日志/JSON 保留纯文本，原始 HTML 不进入 DOM                                                                                                                       |
-| web/session-view.ts / timeline-projection.ts / timeline-entries.ts / session-event-statistics.ts | 连接层的增量会话视图、工具与流式索引、连续任务段缓存和事件统计；首次全量重建，后续仅聚合新增正文                                                                                                                                           |
+| sandbox/native-windows-runtime.ts / C++ supervisor                                               | 受保护安装副本自检、有界二进制执行帧、专用账户/restricted token/ACL/Job/desktop、取消与恢复 journal；安装态链路与用户日常使用验证已通过，原生请求 v3 已移除旧 Git relay/askpass 字段及执行分支                                                    |
+| sandbox/supervisor-protocol.ts / supervisor-channel.ts                                           | 更高层 Broker→Supervisor strict typed operation 与私有 handle framing；不暴露任意 SID/ACL/handle。当前产品 launcher 使用更窄的固定原生帧启动 Agent Runtime 及普通命令；模型、session、审批和 trace 则走已认证 Runtime IPC，不经过该控制协议       |
+| logging/logger.ts / redact.ts                                                                    | 日志创建、错误详情序列化、格式化输出与轮转、纯文本脱敏                                                                                                                                                                                            |
+| permissions/approval-manager.ts                                                                  | ApprovalManager：授权等待与取消                                                                                                                                                                                                                   |
+| server/app.ts                                                                                    | 服务组装、业务路由与关闭顺序                                                                                                                                                                                                                      |
+| server/local-security.ts / session-events.ts                                                     | 环境访问密码、来源与本机会话防护；SSE 连接管理与清理                                                                                                                                                                                              |
+| server/http-server.ts                                                                            | 保留 Pino 日志类型的 HTTP 服务类型                                                                                                                                                                                                                |
+| web/App.tsx / MarkdownTaskEditor.tsx / useSessionConnection.ts / SessionStatistics.tsx           | 页面交互与布局、任务输入框的所见即所得 Markdown 编辑和 Markdown 序列化、开发服务完整页面重载、当前会话右上角的折叠统计，以及快照和 SSE 重连生命周期；切换会话时先清除旧快照并显示本地历史加载提示                                                 |
+| web/Timeline.tsx / MarkdownMessage.tsx / EventBody.tsx / timeline-presentation.ts                | 消费连接层展示视图、虚拟列表布局和缓存渲染；消息使用安全 GFM，技术记录共用中文标签与保守摘要，延迟正文按需分段、未关联输出独立卡片；日志/JSON 保留纯文本，原始 HTML 不进入 DOM                                                                    |
+| web/session-view.ts / timeline-projection.ts / timeline-entries.ts / session-event-statistics.ts | 连接层的增量会话视图、工具与流式索引、连续任务段缓存和事件统计；首次全量重建，后续仅聚合新增正文                                                                                                                                                  |
 
 Engine、Store 及其上下文/schema 辅助模块、共享数据契约、测试和开发脚本继续按各自职责组织，不为每个小函数增加文件。
 
@@ -226,7 +226,7 @@ Engine、Store 及其上下文/schema 辅助模块、共享数据契约、测试
 
 `src/tools/model-tool-batch.ts` 共用 function_call 参数解析、DAG 节点构造、模型反馈 JSON 截断和工具成功判定。截断仍按原始 JSON 字符数，脱敏、报告消费条件和 Store/IPC 提交方式保留在各自入口。宿主与 Runtime 共用普通 DAG 规则；Git CLI 没有额外独占校验。循环返回正常完成、普通批次耗尽轮次或无效图耗尽轮次：保留现存兼容差异，宿主对后两种结果均报步数上限；Runtime 在最后一轮无效图反馈后沿用自然完成，普通工具批次耗尽轮次仍报错。统一这项终态差异须另行作为行为修复处理。
 
-`src/sandbox/execute-runner.ts` 保留暂停使用的 Push Runner 与 Capability Runner 实现。当前 `run_with_permissions`（含 Git CLI）在 Broker 使用宿主执行器，记录 `broker-command` instance 与 `broker.command` span；普通 Git CLI 复用 tool/command span。旧 Git kind 和输出仅供历史读取，不再生成专用执行记录。取消或结果未知不自动重放；trace 只保存关联 ID、耗时和状态，不写命令正文。
+D162 删除 `execute-runner.ts`、HTTPS relay 和旧配置图解析器；Broker、generation 与 Supervisor 活跃请求只接受 Agent Runtime kind，旧 Runner 请求在 fallback/provision 前拒绝。当前 `run_with_permissions`（含 Git CLI）在 Broker 使用宿主执行器，记录 `broker-command` instance 与 `broker.command` span；普通 Git CLI 复用 tool/command span。旧 Git/Runner kind 和输出仅供历史读取，不再生成专用执行记录。取消或结果未知不自动重放；trace 只保存关联 ID、耗时和状态，不写命令正文。
 
 ## 历史与恢复
 
@@ -252,9 +252,9 @@ Sandbox 关闭或 Windows 启动前 fallback 仍沿用宿主审批和会话授�
 
 Broker 命令可以使用宿主用户可访问的文件、网络和凭据，审批按此完整权限审查。D155 移除专用 Git 工具：不再有 action/路径/revision/敏感模板/upstream/OID/ref 校验、hook/签名禁用或 push 专属调度。模型工作流指导不等于硬边界。旧 Git 记录保持可读，但任何新 Git 工具或专用 IPC 请求都拒绝。
 
-按账户 SID 的持久 WFP fence 始终只允许固定 Broker relay/proxy 端口；host 边界不限制上传内容、URL path 或命令将哪些可读数据发送出去。supervisor 记录 process handle、PID 和创建时间，以 Job 管理后代。
+按账户 SID 的持久 WFP fence 仍沿用固定回环端口许可；安装 state/WFP 契约本次不迁移，但产品已不再监听旧 HTTPS relay，也不签发 host-bound 网络凭据。保留端口不能作为已认证业务代理的保证；获批 Broker 命令使用宿主网络。supervisor 记录 process handle、PID 和创建时间，以 Job 管理后代。
 
-安装器、产品 ACL/WFP、恢复 journal、独立 sandbox.log 与 tracing 已实现；固定账户安装态链路及用户日常使用验证已通过。真实 remote push 和复杂 ACL/崩溃等专项仍按具体证据记录，不由日常使用结论推定通过。暂停使用的 Capability/Push Runner 与 relay 不作为当前产品验收项。后续边界见 [windows-integrity-sandbox.md](windows-integrity-sandbox.md)。
+安装器、产品 ACL/WFP、恢复 journal、独立 sandbox.log 与 tracing 已实现；固定账户安装态链路及用户日常使用验证已通过。真实 remote push 和复杂 ACL/崩溃等专项仍按具体证据记录，不由日常使用结论推定通过。已移除的 Capability/Push Runner 与 relay 不作为当前产品验收项；原生请求 v3 需同步显式重建/Repair。后续边界见 [windows-integrity-sandbox.md](windows-integrity-sandbox.md)。
 
 ## 补丁编辑的准确性边界
 

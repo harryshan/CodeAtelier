@@ -27,7 +27,7 @@ export interface ModelTraceScope {
   parentSpanId?: string | (() => string | undefined);
   executionMode?: import("../sandbox/types.js").ExecutionInstanceMode;
   executionInstanceId?: string;
-  runtimeKind?: "agent-runtime" | "push-runner";
+  runtimeKind?: "agent-runtime";
   brokered?: boolean;
 }
 

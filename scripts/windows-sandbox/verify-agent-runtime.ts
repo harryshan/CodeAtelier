@@ -5,7 +5,7 @@
  * 1. 在仓库 .local 下建立一次性工作区和 Broker 数据库，并强制启用 Windows Sandbox 产品组装。
  * 2. 内存模型驱动固定 Agent Runtime 创建标记文件，再在同一工具批次独立执行经通用审批的 Broker Git CLI status 与 Runtime 普通命令，使单一路径失败不遮蔽另一条诊断，并核对专用账户输出回传。
  * 3. 以内部已标记任务让安装态独立 Worker 只读该文件，核对规划、模型 IPC 的只读函数/内置搜索声明、报告原子收集、tracing 和退出后的租约；不执行真实搜索。
- * 4. 请求 Broker 宿主命令，经低成本模型审批后写入 sibling 标记，核对 host-process 归因和结果回传；Capability Runner 暂停使用。
+ * 4. 请求 Broker 宿主命令，经低成本模型审批后写入 sibling 标记，核对 host-process 归因和结果回传；独立 Capability Runner 已移除。
  * 5. 初始化一次性 Git 仓库，把 HTTPS remote 指向不可用的回环端口；验证 Git CLI 经通用 Broker 命令审批、失败结果回传和 Runtime clean lease release，全程不连接公网。
  * 6. 再让模型请求保持进行中并主动取消任务，核对 Job 终止、cancelled 归因和 generation lease 清空。
  * 7. Agent Runtime 必须在专用账户，获批宿主命令（含 Git CLI）必须明确标为 host-process；不得有 fallback/unknown。失败现场保留供人工对账。
@@ -490,7 +490,7 @@ function approvalProvider(): ModelProvider {
       return {
         text: JSON.stringify({
           decision: "approve",
-          reason: "固定安装态 Broker 宿主命令与 Push Runner 验证。",
+          reason: "固定安装态 Broker 宿主命令及 Git CLI 验证。",
         }),
         output: [],
       };

@@ -36,7 +36,7 @@ export interface RuntimeExecutionIdentity {
   sessionId: string;
   taskId: string;
   executionInstanceId: string;
-  kind: "agent-runtime" | "push-runner";
+  kind: "agent-runtime";
 }
 
 export interface RuntimeCommandApprovalRequest {

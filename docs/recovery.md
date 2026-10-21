@@ -18,15 +18,15 @@ schema v11 的生产恢复、正常与兜底压缩读取完整相关事件（工
 
 当前 `run_command` 已将命令级 execution instance ID、实际模式、PID/类型与 completed/cancelled/unknown 追加到 session。若进程已启动但工具结果未落盘，下次模型请求会收到该实例的安全摘要和 `replayAllowed:false`；不携带命令、路径或输出原文。
 
-专用用户 Sandbox 已接入同一产品语义：取消只终止目标 execution instance，不回滚已经发生的工作区或 Git 副作用，也不影响其它健康并发任务；确认终止和本实例 lease 清理记为 `cancelled`，无法确认进程、代理或 ACL 清理记为 `unknown`/`orphaned`。
+专用用户 Sandbox 已接入同一产品语义：取消只终止目标 execution instance，不回滚已经发生的工作区或 Git 副作用，也不影响其它健康并发任务；确认终止和本实例 lease 清理记为 `cancelled`，无法确认进程或 ACL 清理记为 `unknown`/`orphaned`。
 
-记录统一使用 `executionInstanceId`，包含 `mode: windows-sandbox-user | host-process | unknown`、可空 `pid`、`createdAt/updatedAt`、`sideEffectsPossible` 与禁止重放语义；当前 Sandbox 产品路径以 `kind: agent-runtime | broker-command` 区分进程边界，Broker 宿主命令（含 Git CLI）以 `host-process` 和 `toolCallId` 关联原工具；启动后即保守标记可能已有副作用，成功退出也不代表无写入。旧 broker-git/broker-git-push、git_output 和工具结果仍可恢复读取，不能执行或自动转译旧 Git 请求（D155）。保留的 `capability-runner`、`push-runner` kind 暂不由产品调用；常驻 Runtime 内普通工具进程用 `parentExecutionInstanceId` 关联父 Runtime。
+记录统一使用 `executionInstanceId`，包含 `mode: windows-sandbox-user | host-process | unknown`、可空 `pid`、`createdAt/updatedAt`、`sideEffectsPossible` 与禁止重放语义；当前 Sandbox 产品路径以 `kind: agent-runtime | broker-command` 区分进程边界，Broker 宿主命令（含 Git CLI）以 `host-process` 和 `toolCallId` 关联原工具；启动后即保守标记可能已有副作用，成功退出也不代表无写入。旧 broker-git/broker-git-push、git_output 和工具结果仍可恢复读取，不能执行或自动转译旧 Git 请求（D155）。`capability-runner`、`push-runner` 实现已移除（D162），kind 只保留历史读取；旧请求不允许启动或 fallback；常驻 Runtime 内普通工具进程用 `parentExecutionInstanceId` 关联父 Runtime。
 
 正常 Broker 宿主命令和 push 的结果返回仍在同步等待的原 Agent Runtime，但恢复不能把这些进程当作 Agent Runtime。Sandbox 实例进入 orphaned 时冻结新 Sandbox 任务并排空该 account generation 的其它活动实例，对账完成前不得启动替代任务；宿主命令或 push 未知结果也不得自动重放，须核对可能副作用。非 Sandbox 进程不伪造专用账户字段。
 
 用户取消运行中的 Agent Runtime 时，Broker 先通过认证 IPC 发送取消，等待 Runtime 的 `runtime_complete` 报告及 `stopping` 事件，再关闭原生 transport 并核对进程、Job 和 ACL。已取消的 `start_task` 请求按协议不会再回复，不能把它当作唯一终态。若限时内缺少可信终态或原生清理证明，执行实例保持 `unknown`、账户 generation 隔离，任务报告失败供人工对账；不能用用户取消覆盖未知结果。
 
-generation lease/grant、Job、代理和 ACL journal 的在线 drain 与启动恢复已经接线；固定账户提升环境下的强制终止、进程崩溃、损坏 journal 和重启后复证仍未完成。完整身份和进程边界见 [windows-integrity-sandbox.md](windows-integrity-sandbox.md)。
+generation lease/grant、Job 和 ACL journal 的在线 drain 与启动恢复已经接线；固定账户提升环境下的强制终止、进程崩溃、损坏 journal 和重启后复证仍未完成。完整身份和进程边界见 [windows-integrity-sandbox.md](windows-integrity-sandbox.md)。
 
 ## 各中断阶段
 

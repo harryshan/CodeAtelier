@@ -2,7 +2,7 @@
  * 验证单账户 Windows Sandbox 的 generation、并发 lease 与共享 ACL grant 引用状态机。
  * 测试只操作内存账本，不创建账户、进程、ACL 或 WFP 规则。
  *
- * 1. 不同工作区在上限内可并发，同一工作区与超限请求拒绝；同任务阻塞的 Runtime 可重叠一个 Push Runner。
+ * 1. 不同工作区在上限内可并发，同一工作区与超限请求拒绝；同任务嵌套 Runner 被拒绝，且不改变现有租约。
  * 2. 相同对象跨 manifest、跨 read/write 用途只安装一次账户 ACE；后继 lease 等待首个原生 provision 完成。
  * 3. release 在原生撤销成功前保留 lease/grant，commit 后才减少引用并在最后一个 lease 撤销。
  * 4. 首个安装者失败会拒绝共享 waiter；等待可由任务 AbortSignal 取消，调用方随后可回滚自己的 lease。
@@ -181,42 +181,37 @@ it("serializes the same workspace even when capacity remains", () => {
   ).toThrow("同一工作区");
 });
 
-it("allows one push runner beside its blocked agent runtime", async () => {
-  const registry = new AccountGenerationRegistry(digest("a"), 1);
-  const accessManifest = manifest("workspace-a", "b");
-  const runtime = registry.acquire({
-    executionInstanceId: "runtime-a",
-    kind: "agent-runtime",
-    taskId: "task-a",
-    accessManifest,
-  });
-  registry.markProvisioned("runtime-a", runtime.lease.epoch);
-  const push = registry.acquire({
-    executionInstanceId: "push-a",
-    kind: "push-runner",
-    taskId: "task-a",
-    accessManifest,
-  });
-
-  await expect(push.waitForSharedProvision()).resolves.toBeUndefined();
-  expect(push.install).toHaveLength(0);
-  expect(registry.snapshot().activeInstanceCount).toBe(2);
-  expect(() =>
-    registry.acquire({
-      executionInstanceId: "push-b",
-      kind: "push-runner",
+it.each(["agent-runtime", "push-runner", "capability-runner"])(
+  "rejects a nested %s lease without changing grants",
+  (kind) => {
+    const registry = new AccountGenerationRegistry(digest("a"), 1);
+    const accessManifest = manifest("workspace-a", "b");
+    const runtime = registry.acquire({
+      executionInstanceId: "runtime-a",
+      kind: "agent-runtime",
       taskId: "task-a",
       accessManifest,
-    }),
-  ).toThrow("并发上限");
-});
+    });
+    registry.markProvisioned("runtime-a", runtime.lease.epoch);
+    const before = registry.snapshot();
+    expect(() =>
+      registry.acquire({
+        executionInstanceId: "nested",
+        kind,
+        taskId: "task-a",
+        accessManifest,
+      } as Parameters<typeof registry.acquire>[0]),
+    ).toThrow(kind === "agent-runtime" ? "同一任务" : "不再支持独立 Runner");
+    expect(registry.snapshot()).toEqual(before);
+  },
+);
 
 it("rejects stale release and quarantines inconsistent grant state", () => {
   const registry = new AccountGenerationRegistry(digest("a"), 2);
   const accessManifest = manifest("workspace-a", "b");
   const acquired = registry.acquire({
     executionInstanceId: "instance-a",
-    kind: "push-runner",
+    kind: "agent-runtime",
     taskId: "task-a",
     accessManifest,
   });

@@ -8,7 +8,7 @@
  * 3. CreateProcessWithLogonW 以固定 bootstrap 入口启动专用账户进程，先分配 KILL_ON_JOB_CLOSE Job 再恢复。
  * 4. 在确认不是 WinSta0 后给系统命名的非交互式 station 补齐专用账户及实例 SID，再创建私有 desktop；bootstrap 经账户管道取得命令，创建 WRITE_RESTRICTED token，常驻 Runtime 则经仅额外授权本实例 execution SID 的专属 pipe 连接 Broker。
  * 5. 产品运行使用 INFINITE，不附累计 CPU 时限；有限探测保留期限。Broker stdin 关闭、有限超时或异常会终止 Job；正常/异常退出撤销本实例 capability ACE，共享账户 ACE 仅由 Broker 最后引用的两阶段 release 撤销；安装恢复从持久 journal 验证原文件身份后撤销账户 ACE，清理不确定返回专用错误码。
- * 6. 保留的 Push Runner 从宿主 Credential Manager 读取绑定 host 的 HTTPS 凭据，经同 Job askpass pipe 交付；Capability Runner 只持有短期 proxy token。两条 Runner 路径当前暂停，产品 Git 和获批宿主命令交给 Broker。
+ * 6. 二进制请求 v3 已移除独立 Runner 的代理与凭据字段，不读取宿主 Git 凭据、不提供 askpass；获批宿主命令由 Broker 执行。
  * 7. Agent Runtime 模式只启动受保护 Node/entry；bootstrap 通过已核对客户端 PID 的私有 pipe 交付进程/token 句柄值，Supervisor 限权复制查询句柄，联合核对 Runtime pipe 客户端身份后发送启动首帧并代理原始 Broker 字节流；初始 CWD 使用私有目录。
  * 8. stdout 只承载工具输出或 Agent Runtime IPC；stderr 只输出有界控制记录及每方向首帧阶段，不记录命令、路径、SID、密码或工具内容。
  *
@@ -22,7 +22,6 @@
 
 #include <wincrypt.h>
 #include <TlHelp32.h>
-#include <wincred.h>
 #include <ntsecapi.h>
 #include <userenv.h>
 
@@ -46,7 +45,9 @@ extern "C" NTSTATUS NTAPI LsaSetSecurityObject(
 namespace {
 
 constexpr uint32_t kRequestMagic = 0x42534143;
-constexpr uint32_t kRequestVersion = 2;
+constexpr uint32_t kRequestVersion = 3;
+// 撤销帧与持久 ACL journal 布局未变，必须继续读取旧安装遗留的 v2 授权记录。
+constexpr uint32_t kAccessRootsVersion = 2;
 constexpr uint32_t kRuntimeAttestationMagic = 0x48524143;
 constexpr DWORD kCleanupFailureExitCode = 70;
 constexpr DWORD kSelfCheckFailureExitCode = 71;
@@ -76,10 +77,6 @@ struct ProductRequest {
   DWORD timeout_ms = 0;
   std::wstring manifest_digest;
   std::wstring git_global_config;
-  std::wstring proxy_url;
-  std::wstring proxy_host;
-  std::wstring proxy_token;
-  std::wstring askpass_pipe;
   DWORD lease_epoch = 0;
   std::vector<ProductRoot> roots;
 };
@@ -337,10 +334,6 @@ bool ReadProductRequest(HANDLE handle, ProductRequest* request) {
   uint32_t root_count = 0;
   if (!ReadFramedString(handle, &request->manifest_digest) ||
       !ReadFramedString(handle, &request->git_global_config) ||
-      !ReadFramedString(handle, &request->proxy_url) ||
-      !ReadFramedString(handle, &request->proxy_host) ||
-      !ReadFramedString(handle, &request->proxy_token) ||
-      !ReadFramedString(handle, &request->askpass_pipe) ||
       !ReadExact(handle, &request->lease_epoch, sizeof(request->lease_epoch)) ||
       !ReadExact(handle, &root_count, sizeof(root_count)) ||
       root_count > kMaximumRoots) {
@@ -364,13 +357,7 @@ bool ReadProductRequest(HANDLE handle, ProductRequest* request) {
          !request->working_directory.empty() && !request->executable.empty() &&
          !request->private_directory.empty() && request->timeout_ms > 0 &&
          !request->manifest_digest.empty() && request->lease_epoch > 0 &&
-         !request->git_global_config.empty() && !request->roots.empty() &&
-         (request->proxy_url.empty()
-              ? request->proxy_host.empty() && request->proxy_token.empty() &&
-                    request->askpass_pipe.empty()
-              : (!request->proxy_host.empty() &&
-                 (!request->proxy_token.empty() ||
-                  !request->askpass_pipe.empty())));
+         !request->git_global_config.empty() && !request->roots.empty();
 }
 
 bool WriteProductRequest(HANDLE handle, const ProductRequest& request) {
@@ -393,10 +380,6 @@ bool WriteProductRequest(HANDLE handle, const ProductRequest& request) {
   uint32_t root_count = static_cast<uint32_t>(request.roots.size());
   if (!WriteFramedString(handle, request.manifest_digest) ||
       !WriteFramedString(handle, request.git_global_config) ||
-      !WriteFramedString(handle, request.proxy_url) ||
-      !WriteFramedString(handle, request.proxy_host) ||
-      !WriteFramedString(handle, request.proxy_token) ||
-      !WriteFramedString(handle, request.askpass_pipe) ||
       !WriteExact(handle, &request.lease_epoch, sizeof(request.lease_epoch)) ||
       !WriteExact(handle, &root_count, sizeof(root_count))) {
     return false;
@@ -421,7 +404,7 @@ bool ReadRevokeRoots(HANDLE handle, std::vector<ProductRoot>* roots,
   if (!ReadExact(handle, &magic, sizeof(magic)) ||
       !ReadExact(handle, &version, sizeof(version)) ||
       !ReadExact(handle, &root_count, sizeof(root_count)) ||
-      magic != kRequestMagic || version != kRequestVersion || root_count == 0 ||
+      magic != kRequestMagic || version != kAccessRootsVersion || root_count == 0 ||
       root_count > kMaximumRoots) {
     return false;
   }
@@ -477,8 +460,8 @@ bool WriteGrantJournal(const std::wstring& state_path,
   }
   uint32_t root_count = 1;
   return WriteExact(journal.get(), &kRequestMagic, sizeof(kRequestMagic)) &&
-         WriteExact(journal.get(), &kRequestVersion,
-                    sizeof(kRequestVersion)) &&
+         WriteExact(journal.get(), &kAccessRootsVersion,
+                    sizeof(kAccessRootsVersion)) &&
          WriteExact(journal.get(), &root_count, sizeof(root_count)) &&
          WriteExact(journal.get(), &root.flags, sizeof(root.flags)) &&
          WriteFramedString(journal.get(), root.path) &&
@@ -1752,11 +1735,7 @@ std::wstring BuildCommandLine(const std::wstring& executable,
 }
 
 bool SetPrivateEnvironment(const std::wstring& private_directory,
-                           const std::wstring& git_global_config,
-                           const std::wstring& proxy_url,
-                           const std::wstring& proxy_host,
-                           const std::wstring& proxy_token,
-                           const std::wstring& askpass_pipe) {
+                           const std::wstring& git_global_config) {
   std::array<const wchar_t*, 5> names = {L"HOME", L"USERPROFILE",
                                           L"XDG_CONFIG_HOME", L"TEMP",
                                           L"TMP"};
@@ -1799,109 +1778,14 @@ bool SetPrivateEnvironment(const std::wstring& private_directory,
                                git_global_config.c_str())) {
     return false;
   }
-  if (!proxy_url.empty()) {
-    if (proxy_url.rfind(L"http://127.0.0.1:", 0) != 0 ||
-        (proxy_token.empty() == askpass_pipe.empty())) {
-      return false;
-    }
-    std::wstring authenticated_proxy = proxy_token.empty()
-                                           ? L"http://codeatelier@" +
-                                                 proxy_url.substr(7)
-                                           : L"http://codeatelier:" +
-                                                 proxy_token + L"@" +
-                                                 proxy_url.substr(7);
-    if (!SetEnvironmentVariableW(L"HTTPS_PROXY", authenticated_proxy.c_str()) ||
-        !SetEnvironmentVariableW(L"https_proxy", authenticated_proxy.c_str()) ||
-        !SetEnvironmentVariableW(L"HTTP_PROXY", authenticated_proxy.c_str()) ||
-        !SetEnvironmentVariableW(L"http_proxy", authenticated_proxy.c_str()) ||
-        !SetEnvironmentVariableW(L"CODEATELIER_PUSH_HOST",
-                                 proxy_host.c_str())) {
-      return false;
-    }
-    if (!askpass_pipe.empty()) {
-      std::wstring executable = CurrentExecutablePath();
-      if (!SetEnvironmentVariableW(L"GIT_ASKPASS", executable.c_str()) ||
-          !SetEnvironmentVariableW(L"GIT_ASKPASS_REQUIRE", L"force") ||
-          !SetEnvironmentVariableW(L"CODEATELIER_ASKPASS_PIPE",
-                                   askpass_pipe.c_str())) {
-        return false;
-      }
-    } else {
-      SetEnvironmentVariableW(L"GIT_ASKPASS", nullptr);
-      SetEnvironmentVariableW(L"GIT_ASKPASS_REQUIRE", nullptr);
-      SetEnvironmentVariableW(L"CODEATELIER_ASKPASS_PIPE", nullptr);
-    }
-  } else {
-    SetEnvironmentVariableW(L"HTTPS_PROXY", nullptr);
-    SetEnvironmentVariableW(L"https_proxy", nullptr);
-    SetEnvironmentVariableW(L"CODEATELIER_ASKPASS_PIPE", nullptr);
-    SetEnvironmentVariableW(L"CODEATELIER_PUSH_HOST", nullptr);
-  }
+  // 不向 Runtime 传递代理授权或凭据；也清除旧安装可能遗留的 askpass 环境。
+  SetEnvironmentVariableW(L"HTTPS_PROXY", nullptr);
+  SetEnvironmentVariableW(L"https_proxy", nullptr);
+  SetEnvironmentVariableW(L"GIT_ASKPASS", nullptr);
+  SetEnvironmentVariableW(L"GIT_ASKPASS_REQUIRE", nullptr);
+  SetEnvironmentVariableW(L"CODEATELIER_ASKPASS_PIPE", nullptr);
+  SetEnvironmentVariableW(L"CODEATELIER_PUSH_HOST", nullptr);
   return true;
-}
-
-struct HostCredential {
-  std::wstring username;
-  std::wstring password;
-};
-
-std::wstring CredentialSecret(const CREDENTIALW& credential) {
-  if (credential.CredentialBlob == nullptr ||
-      credential.CredentialBlobSize == 0) {
-    return L"";
-  }
-  bool likely_utf16 =
-      credential.CredentialBlobSize % sizeof(wchar_t) == 0;
-  if (likely_utf16) {
-    size_t zero_high_bytes = 0;
-    for (DWORD index = 1; index < credential.CredentialBlobSize; index += 2) {
-      zero_high_bytes += credential.CredentialBlob[index] == 0 ? 1 : 0;
-    }
-    likely_utf16 = zero_high_bytes * 4 >= credential.CredentialBlobSize;
-  }
-  if (likely_utf16) {
-    size_t character_count =
-        credential.CredentialBlobSize / sizeof(wchar_t);
-    const wchar_t* characters =
-        reinterpret_cast<const wchar_t*>(credential.CredentialBlob);
-    while (character_count > 0 && characters[character_count - 1] == L'\0') {
-      character_count -= 1;
-    }
-    return std::wstring(characters, characters + character_count);
-  }
-  std::string utf8(
-      reinterpret_cast<const char*>(credential.CredentialBlob),
-      credential.CredentialBlobSize);
-  return Utf8ToWide(utf8);
-}
-
-bool LoadHostCredential(const std::wstring& host, HostCredential* output) {
-  std::array<std::wstring, 3> targets = {
-      L"git:https://" + host, L"git:https://" + host + L"/",
-      L"LegacyGeneric:target=git:https://" + host};
-  for (const std::wstring& target : targets) {
-    PCREDENTIALW credential = nullptr;
-    if (!CredReadW(target.c_str(), CRED_TYPE_GENERIC, 0, &credential)) {
-      continue;
-    }
-    std::wstring secret = CredentialSecret(*credential);
-    std::wstring username =
-        credential->UserName == nullptr ? L"" : credential->UserName;
-    CredFree(credential);
-    if (!secret.empty()) {
-      output->username = username.empty() ? L"oauth2" : username;
-      output->password = std::move(secret);
-      return true;
-    }
-  }
-  return false;
-}
-
-bool ProcessBelongsToJob(DWORD process_id, HANDLE job) {
-  UniqueHandle process(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE,
-                                   process_id));
-  BOOL belongs = FALSE;
-  return process && IsProcessInJob(process.get(), job, &belongs) && belongs;
 }
 
 bool ValidRuntimeAttestation(const RuntimeHandleAttestation& frame) {
@@ -2038,100 +1922,6 @@ bool VerifyAgentRuntimeClient(HANDLE pipe, HANDLE process, HANDLE token,
   return true;
 }
 
-void ServeAskpass(const std::wstring& pipe_name,
-                  SECURITY_ATTRIBUTES* security, HANDLE job,
-                  const std::wstring& token,
-                  const std::shared_ptr<HostCredential>& host_credential,
-                  const std::shared_ptr<std::atomic_bool>& stop,
-                  const std::shared_ptr<std::atomic_bool>& ready) {
-  while (!stop->load()) {
-    UniqueHandle pipe(CreateNamedPipeW(
-        pipe_name.c_str(), PIPE_ACCESS_DUPLEX,
-        PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT |
-            PIPE_REJECT_REMOTE_CLIENTS,
-        1, 4096, 4096, 5000, security));
-    if (!pipe) {
-      return;
-    }
-    ready->store(true);
-    if (!ConnectNamedPipe(pipe.get(), nullptr) &&
-        GetLastError() != ERROR_PIPE_CONNECTED) {
-      return;
-    }
-    if (stop->load()) {
-      return;
-    }
-    ULONG client_pid = 0;
-    BYTE request_kind = 0;
-    if (GetNamedPipeClientProcessId(pipe.get(), &client_pid) &&
-        ProcessBelongsToJob(client_pid, job) &&
-        ReadExact(pipe.get(), &request_kind, sizeof(request_kind))) {
-      if (request_kind == 'U') {
-        WriteFramedString(pipe.get(), L"codeatelier");
-      } else if (request_kind == 'P') {
-        WriteFramedString(pipe.get(), token);
-      } else if (request_kind == 'u' && !host_credential->username.empty()) {
-        WriteFramedString(pipe.get(), host_credential->username);
-      } else if (request_kind == 'p' && !host_credential->password.empty()) {
-        WriteFramedString(pipe.get(), host_credential->password);
-      }
-    }
-    FlushFileBuffers(pipe.get());
-    DisconnectNamedPipe(pipe.get());
-  }
-}
-
-void StopAskpass(const std::wstring& pipe_name,
-                 const std::shared_ptr<std::atomic_bool>& stop,
-                 std::thread* thread) {
-  if (!thread->joinable()) {
-    return;
-  }
-  stop->store(true);
-  // 唤醒尚未连接的 ConnectNamedPipe；CancelSynchronousIo 同时打断已经连接但
-  // 不发送完整请求或不读取响应的客户端所造成的 ReadFile/FlushFileBuffers 阻塞。
-  CancelSynchronousIo(thread->native_handle());
-  UniqueHandle wake(CreateFileW(pipe_name.c_str(), GENERIC_READ | GENERIC_WRITE,
-                                0, nullptr, OPEN_EXISTING, 0, nullptr));
-  CancelSynchronousIo(thread->native_handle());
-  thread->join();
-}
-
-int RunAskpass(const std::wstring& prompt) {
-  wchar_t pipe_name[512]{};
-  DWORD length = GetEnvironmentVariableW(L"CODEATELIER_ASKPASS_PIPE", pipe_name,
-                                         static_cast<DWORD>(std::size(pipe_name)));
-  std::wstring lowered = prompt;
-  std::transform(lowered.begin(), lowered.end(), lowered.begin(), towlower);
-  wchar_t host[512]{};
-  DWORD host_length = GetEnvironmentVariableW(
-      L"CODEATELIER_PUSH_HOST", host, static_cast<DWORD>(std::size(host)));
-  bool proxy_prompt = lowered.find(L"127.0.0.1") != std::wstring::npos ||
-                      lowered.find(L"proxy") != std::wstring::npos;
-  bool host_prompt = host_length > 0 && host_length < std::size(host) &&
-                     lowered.find(L"https://" + std::wstring(host)) !=
-                         std::wstring::npos;
-  if (length == 0 || length >= std::size(pipe_name) ||
-      (!proxy_prompt && !host_prompt) || !WaitNamedPipeW(pipe_name, 10000)) {
-    return 1;
-  }
-  UniqueHandle pipe(CreateFileW(pipe_name, GENERIC_READ | GENERIC_WRITE, 0,
-                                nullptr, OPEN_EXISTING, 0, nullptr));
-  if (!pipe) {
-    return 1;
-  }
-  bool username_prompt = lowered.find(L"username") != std::wstring::npos;
-  BYTE kind = proxy_prompt ? (username_prompt ? 'U' : 'P')
-                           : (username_prompt ? 'u' : 'p');
-  std::wstring response;
-  if (!WriteExact(pipe.get(), &kind, sizeof(kind)) ||
-      !ReadFramedString(pipe.get(), &response) || response.empty()) {
-    return 1;
-  }
-  std::wcout << response << L"\n";
-  return 0;
-}
-
 // WRITE_RESTRICTED 仅在写访问时检查 restricting SID。Everyone 使依赖系统公共
 // ACL 的 BCrypt 等组件能够初始化；已向 Everyone 开放写入的对象不再受 root
 // capability 限制，故不能将实例间写入隔离作为此 token 的完整保证。
@@ -2241,14 +2031,9 @@ int RunProductBootstrap(const std::wstring& pipe_name,
   ProductRequest request;
   if (!ReadProductRequest(pipe.get(), &request) ||
       !SetPrivateEnvironment(request.private_directory,
-                             request.git_global_config, request.proxy_url,
-                             request.proxy_host, request.proxy_token,
-                             request.askpass_pipe)) {
+                             request.git_global_config)) {
     return 24;
   }
-  SecureZeroMemory(request.proxy_token.data(),
-                   request.proxy_token.size() * sizeof(wchar_t));
-  request.proxy_token.clear();
   const bool agent_runtime =
       request.arguments.size() == 2 &&
       request.arguments[1].rfind(L"\\\\.\\pipe\\CodeAtelier.AgentRuntime.",
@@ -2545,9 +2330,7 @@ int RunProductSupervisor(const std::wstring& state_path,
         request.arguments.size() != 3 || request.arguments[0].empty() ||
         request.arguments[0].size() > 120 || request.arguments[1].empty() ||
         request.arguments[1].size() > 120 ||
-        !IsDigest(request.arguments[2]) || !request.proxy_url.empty() ||
-        !request.proxy_host.empty() || !request.proxy_token.empty() ||
-        !request.askpass_pipe.empty()) {
+        !IsDigest(request.arguments[2])) {
       SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
       std::wcerr << L"CODEATELIER_SUPERVISOR_ERROR category=protocol\n";
       return kProtocolFailureExitCode;
@@ -2705,50 +2488,6 @@ int RunProductSupervisor(const std::wstring& state_path,
     return fail_launch(kSelfCheckFailureExitCode);
   }
 
-  auto askpass_stop = std::make_shared<std::atomic_bool>(false);
-  auto askpass_ready = std::make_shared<std::atomic_bool>(false);
-  auto host_credential = std::make_shared<HostCredential>();
-  std::thread askpass_thread;
-  const bool environment_proxy = request.askpass_pipe == L"environment";
-  if (!request.askpass_pipe.empty() && !environment_proxy) {
-    SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
-    return fail_launch(kProtocolFailureExitCode);
-  }
-  request.askpass_pipe.clear();
-  if (!request.proxy_url.empty()) {
-    if (!environment_proxy) {
-      LoadHostCredential(request.proxy_host, host_credential.get());
-      request.askpass_pipe = MakeProductPipeName();
-      if (request.askpass_pipe.empty()) {
-        SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
-        return fail_launch(kSelfCheckFailureExitCode);
-      }
-      askpass_thread = std::thread(
-          ServeAskpass, request.askpass_pipe, &pipe_security, job.get(),
-          request.proxy_token, host_credential, askpass_stop, askpass_ready);
-      auto ready_deadline =
-          std::chrono::steady_clock::now() + std::chrono::seconds(5);
-      while (!askpass_ready->load() &&
-             std::chrono::steady_clock::now() < ready_deadline) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-      }
-      if (!askpass_ready->load()) {
-        StopAskpass(request.askpass_pipe, askpass_stop, &askpass_thread);
-        SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
-        return fail_launch(kSelfCheckFailureExitCode);
-      }
-      SecureZeroMemory(request.proxy_token.data(),
-                       request.proxy_token.size() * sizeof(wchar_t));
-      request.proxy_token.clear();
-    }
-  }
-  auto stop_askpass = [&]() {
-    StopAskpass(request.askpass_pipe, askpass_stop, &askpass_thread);
-    SecureZeroMemory(host_credential->password.data(),
-                     host_credential->password.size() * sizeof(wchar_t));
-    host_credential->password.clear();
-  };
-
   std::wstring executable = CurrentExecutablePath();
   std::vector<std::wstring> bootstrap_arguments = {
       L"--bootstrap", pipe_name, SidToString(execution_sid.get()),
@@ -2770,7 +2509,6 @@ int RunProductSupervisor(const std::wstring& state_path,
   UniqueEnvironment sandbox_environment;
   if (!BuildSandboxEnvironment(state.account_name, password,
                                &sandbox_environment)) {
-    stop_askpass();
     SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
     return fail_launch(kSelfCheckFailureExitCode);
   }
@@ -2784,7 +2522,6 @@ int RunProductSupervisor(const std::wstring& state_path,
   SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
   password.clear();
   if (!created) {
-    stop_askpass();
     std::wcerr << L"CODEATELIER_SUPERVISOR_ERROR category=launch win32="
                << launch_error << L"\n";
     return fail_launch(kSelfCheckFailureExitCode);
@@ -2810,7 +2547,6 @@ int RunProductSupervisor(const std::wstring& state_path,
                           : TerminateProcess(bootstrap_process.get(),
                                              kSelfCheckFailureExitCode) != FALSE;
     DWORD stopped = WaitForSingleObject(bootstrap_process.get(), 5000);
-    stop_askpass();
     if (!terminated || stopped != WAIT_OBJECT_0) {
       std::wcerr << L"CODEATELIER_SUPERVISOR_ERROR category=cleanup\n";
       return kCleanupFailureExitCode;
@@ -2828,12 +2564,10 @@ int RunProductSupervisor(const std::wstring& state_path,
     if (!proxy_clean) {
       TerminateJobObject(job.get(), kProtocolFailureExitCode);
       if (WaitForSingleObject(bootstrap_process.get(), 5000) != WAIT_OBJECT_0) {
-        stop_askpass();
         std::wcerr << L"CODEATELIER_SUPERVISOR_ERROR category=cleanup\n";
         return kCleanupFailureExitCode;
       }
     }
-    stop_askpass();
     bool grants_clean = proxy_result.started ? revoke_instance()
                                                : revoke_failed_launch();
     if (!grants_clean) {
@@ -2872,14 +2606,12 @@ int RunProductSupervisor(const std::wstring& state_path,
   if (wait != WAIT_OBJECT_0) {
     TerminateJobObject(job.get(), 31);
     if (WaitForSingleObject(bootstrap_process.get(), 5000) != WAIT_OBJECT_0) {
-      stop_askpass();
       std::wcerr << L"CODEATELIER_SUPERVISOR_ERROR category=cleanup\n";
       return kCleanupFailureExitCode;
     }
   }
   DWORD exit_code = 1;
   GetExitCodeProcess(bootstrap_process.get(), &exit_code);
-  stop_askpass();
   bool clean = revoke_instance();
   if (!clean) {
     std::wcerr << L"CODEATELIER_SUPERVISOR_ERROR category=cleanup\n";
@@ -3079,13 +2811,6 @@ int RunAccountRights(const std::wstring& state_path,
 
 #ifndef CODEATELIER_INSTALLATION_STATE_TEST
 int wmain(int argc, wchar_t* argv[]) {
-  if (argc == 2) {
-    wchar_t pipe_name[2]{};
-    if (GetEnvironmentVariableW(L"CODEATELIER_ASKPASS_PIPE", pipe_name,
-                                static_cast<DWORD>(std::size(pipe_name))) > 0) {
-      return RunAskpass(argv[1]);
-    }
-  }
   if (argc == 4 && std::wstring(argv[1]) == L"--self-check") {
     return RunProductSelfCheck(argv[2], argv[3]);
   }
