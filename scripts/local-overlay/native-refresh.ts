@@ -1,7 +1,7 @@
 /**
  * 已完成来源发布的私有视图恢复证明，供原生批次导出与 Publisher 的恢复回调使用。
  * 1. nativeCheckpoint 仅在冻结租约内记录所选 B/O 映射、修改代次及私有文件版本，不遍历来源。
- * 2. nativeRefreshRequest 校验 v5 来源/控制目录；已有完全匹配的原生收据优先幂等返回。
+ * 2. nativeRefreshRequest 校验 v6 来源/控制目录；已有完全匹配的原生收据优先幂等返回。
  * 3. 未执行的确认必须保有检查点且私有状态逐项未变，才绑定当前冻结标识；后来修改一律保留。
  * 4. 本模块只读取 SQLite/有界私有普通文件；不写来源、不执行确认、不恢复 dirty 卷或解除未知发布锁。
  * 调用方持有 OverlayManager.withFrozen 租约并核对来源 complete；外层负责日志、取消与恢复 tracing。
@@ -45,7 +45,7 @@ async function openFrozen(source: Source, directory: string) {
   try {
     const meta = db.prepare("SELECT version,source,clean FROM meta").get();
     if (
-      meta?.version !== 5 ||
+      meta?.version !== 6 ||
       meta.clean !== 0 ||
       typeof meta.source !== "string"
     ) {

@@ -264,7 +264,7 @@ async function verify() {
     platform: process.platform,
     release: os.release(),
     node: process.version,
-    backend: "self-developed native WinFsp Local v5",
+    backend: "self-developed native WinFsp Local v6",
     processRestart:
       "publish and recovery use separate Node processes with clean unmount",
     beforeAck:

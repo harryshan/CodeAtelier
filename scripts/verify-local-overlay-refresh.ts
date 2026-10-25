@@ -353,7 +353,7 @@ try {
     platform: process.platform,
     release: os.release(),
     node: process.version,
-    backend: "self-developed native WinFsp Local overlay v5",
+    backend: "self-developed native WinFsp Local overlay v6",
     twoViewsAfterAcknowledgement: ["30", "30"],
     nextTurnSource: "120",
     retainedArtifact: "preserved; stale historical dependency rejected",

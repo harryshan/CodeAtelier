@@ -8,6 +8,7 @@
 //    check-reads 仅在冻结后复核读依赖并返回无正文收据，路径有效性保存在私有数据库。
 //    acknowledge 以有界 hex 路径参数确认已发布选择；收据只含批次 ID/代次，下一轮重新挂载。
 //    collect 显式回收无引用私有内容；只在冻结期执行，收据返回数量/逻辑字节，不包含对象名。
+//    next-epoch 绑定请求/旧代次/冻结标识，只开始新的观察周期；失败/取消不触发发布。
 // 7. publish-replace/cleanup 保留供独立原生验证使用，保留权限并返回无正文确认；不启动挂载。
 // 8. publish-session 串行执行全部来源写入并持执行排他；inspect-publication 仅持排他核对旧 generation。
 // 不安装驱动、不创建分区、不托管网络服务；UNC 由 WinFsp 本机 MUP provider 提供。
@@ -122,6 +123,20 @@ int wmain(int argc, wchar_t** argv) {
               << (localMode ? ",\"mode\":\"local\"" : "") << "}\n" << std::flush;
     std::string command;
     while (std::getline(std::cin, command)) {
+      if (command.rfind("next-epoch ", 0) == 0 && store.localMode && !filesystem) {
+        std::istringstream input(command.substr(11));
+        std::string id;
+        std::string seal;
+        std::string extra;
+        sqlite3_int64 epoch = -1;
+        if (command.size() > 256 || !(input >> id >> epoch >> seal) || (input >> extra)) {
+          throw Error{STATUS_INVALID_PARAMETER};
+        }
+        auto next = store.nextEpoch(wide(id), epoch, wide(seal));
+        std::cout << "{\"version\":1,\"state\":\"epoch-advanced\",\"mode\":\"local\",\"requestId\":\""
+                  << id << "\",\"seal\":\"" << seal << "\",\"epoch\":" << next << "}\n" << std::flush;
+        continue;
+      }
       if (command == "collect" && store.localMode && !filesystem) {
         auto collection = store.collect();
         std::cout << "{\"version\":1,\"state\":\"collected\",\"mode\":\"local\",\"nodes\":" << collection.nodes

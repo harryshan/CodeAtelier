@@ -7,7 +7,7 @@
 // 5. 可选 GitLower 按目录事务导入不可变树，read 直接返回 blob，只有写入才物化对象。
 // 6. Local 模式独立格式和保留名称校验避免旧私有 gitfile 路径混入无仓库视图。
 //    changes.cpp 保存按需读版本和不可变基线；内容/命名空间修改在副作用前调用 capture。
-//    Local v5 按观察代次保留未发布修改的依赖；旧实验格式不自动迁移。
+//    Local v6 按观察代次和对象来源保留跨轮依赖；旧实验格式不自动迁移。
 #include "store.hpp"
 
 #include <objbase.h>
@@ -349,7 +349,7 @@ Store::Store(const fs::path& sourcePath, const fs::path& directory, const fs::pa
       require(SUCCEEDED(CoCreateGuid(&guid)));
       serial = guid.Data1 ? guid.Data1 : 1;
       Query(*this, "INSERT INTO meta VALUES(?,?,?,?,0)")
-          .number(1, localMode ? 5 : 2)
+          .number(1, localMode ? 6 : 2)
           .text(2, source.wstring())
           .text(3, sourceIdentity)
           .number(4, serial)
@@ -365,6 +365,9 @@ Store::Store(const fs::path& sourcePath, const fs::path& directory, const fs::pa
       }
       if (localMode) {
         sql("CREATE TABLE local_state(epoch INTEGER,seal TEXT); INSERT INTO local_state VALUES(0,'');"
+            "CREATE TABLE epoch_transitions(id TEXT PRIMARY KEY,epoch INTEGER,seal TEXT);"
+            "CREATE TABLE epoch_links(epoch INTEGER,dependency INTEGER,PRIMARY KEY(epoch,dependency));"
+            "CREATE TABLE object_epochs(object TEXT,epoch INTEGER,PRIMARY KEY(object,epoch));"
             "CREATE TABLE acknowledgements(id TEXT PRIMARY KEY,epoch INTEGER,selection TEXT,seal TEXT);"
             "CREATE TABLE change_epochs(path TEXT,epoch INTEGER,PRIMARY KEY(path,epoch));"
             "CREATE TABLE observations(path TEXT,name TEXT,stamp TEXT,epoch INTEGER,PRIMARY KEY(epoch,path));"
@@ -373,7 +376,7 @@ Store::Store(const fs::path& sourcePath, const fs::path& directory, const fs::pa
       }
     } else {
       Query meta(*this, "SELECT version,source,identity,serial,clean FROM meta");
-      if (!meta.step() || meta.number(0) != (localMode ? 5 : 2) || meta.number(4) != 1 ||
+      if (!meta.step() || meta.number(0) != (localMode ? 6 : 2) || meta.number(4) != 1 ||
           fold(meta.text(1)) != fold(source.wstring()) || meta.text(2) != sourceIdentity) {
         throw Error{STATUS_FILE_INVALID};
       }
@@ -848,6 +851,7 @@ NodePtr Store::create(const std::wstring& path, DWORD attributes, PSECURITY_DESC
     promote(result);
   }
   link(directory->id, name, result->id);
+  trackObject(result);
   transaction.commit();
   return result;
 }
@@ -913,6 +917,7 @@ void Store::promote(const NodePtr& value) {
     throw;
   }
   value->content = std::move(output);
+  trackObject(value);
 }
 
 HANDLE Store::content(const NodePtr& value, bool write) {
@@ -926,6 +931,7 @@ HANDLE Store::content(const NodePtr& value, bool write) {
       capture(name(value));
     }
     promote(value);
+    trackObject(value);
   }
   if (value->content.value == INVALID_HANDLE_VALUE) {
     if (value->object.empty()) {
@@ -1020,6 +1026,7 @@ void Store::rename(const std::wstring& from, const std::wstring& to, bool replac
   capture(to, 2);
   if (!value->directory() && value->reparse.empty()) {
     promote(value);
+    trackObject(value);
   }
   if (!value->reparse.empty()) {
     internalReparse(value->reparse.data(), value->reparse.size(), workspace / to.substr(1),

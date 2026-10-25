@@ -1,0 +1,19 @@
+{
+  "timestamp": "2026-10-25T18:30:58.820Z",
+  "platform": "win32",
+  "release": "10.0.26200",
+  "node": "v26.10.0",
+  "backend": "self-developed WinFsp Local overlay v6",
+  "failedCommandExit": 7,
+  "cancelledCommandDrained": true,
+  "failureAndCancellationPublished": false,
+  "freshReadAndIndependentPublication": "passed; source updates visible after a new epoch",
+  "retainedPrivateDependencies": "two-hop private derivation rejected before and after collection",
+  "replay": "committed transition idempotent across remount; unapplied stale seal rejected",
+  "finalEpoch": 5,
+  "transitions": 3,
+  "limitations": [
+    "Host lifecycle PoC; product/Sandbox task integration pending",
+    "No v5 migration, unclean restore, complete shell/LLM dependency isolation or conflict recomputation"
+  ]
+}

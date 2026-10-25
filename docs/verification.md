@@ -1,5 +1,13 @@
 # 初版验证记录
 
+## Local 失败/取消续轮与私有读依赖（D170，2026-10-26）
+
+- 先增加回归复现导出忽略跨轮传递依赖（`.local/local-overlay-epoch-before.log`，应拒绝但返回批次）。Local v6 新增对象来源代次、私有读依赖边和幂等 next-epoch 收据；导出展开有界闭包，缺对象记录、旧格式、非法边和超限拒绝。v5 私有卷缺少历史信息，不自动迁移；旧 D168 v2/worktree 路径保持原边界。
+- 原生构建通过（`.local/local-overlay-epoch-build.log`，仅既有 SDK 对齐 warning）；协议/导出/恢复针对性 56 项通过（`.local/local-overlay-epoch-unit.log`）。真实续轮脚本 `.local/local-overlay-epochs-DFTTuc/report.json` 通过：失败退出码 7、取消进程确认排空、来源未被失败轮次发布、私有 rename 和两跳依赖保留、无关新修改仍可发布；已执行推进跨重挂载幂等，未执行旧 seal 拒绝。[摘要](local-overlay-epochs-results.json)。
+- v6 复验：内容回收 `.local/local-overlay-collection-6GKEWf/report.json`、双视图刷新 `.local/local-overlay-refresh-bj3t0E/report.json`、跨进程完成态恢复 `.local/local-overlay-recovery-oejsJ7/report.json`、原生捕获/替换/删除/重命名 `.local/local-overlay-capture-amIkLp/report.json` 均通过。旧报告保留其原格式与历史结论，不改写为 v6 实测。
+- 续轮仅建立新观察周期，不清空旧修改或依赖、不重放任务。尚未覆盖产品/Sandbox 自动续轮、异常私有卷、冲突重新计算或所有命令/模型历史依赖；不声明完整事务隔离。没有安装/Repair、真实服务重启或 Evaluation。
+- 完整 `pnpm check` 通过：141 个测试文件、1093 passed / 1 existing skipped，类型/lint/格式、Web 与 Windows/POSIX Runtime 构建通过（`.local/local-overlay-epoch-check.log`）。只读进程核对无残留 helper；没有 UI/HTTP/SSE 变化，不运行 e2e。
+
 ## Local 私有内容回收（D170，2026-10-26）
 
 - 冻结期显式 collect：先 FULL 事务释放无 namespace 引用的 inode，保留 entries 父链、全部基线/冻结结果，再按句柄清理 GUID 普通单链接孤立内容。创建不回收、不遍历来源；不删观察、收据或发布 journal。30 秒未确认拒绝后续控制操作，未知回收不改变来源 complete。

@@ -2,6 +2,8 @@
 
 所有功能开发均须配套合理的单元/回归测试，测试和文档属于功能交付的一部分。不要等全部开发结束后才首次运行测试。
 
+Local 失败/取消续轮（D170）：`overlay-manager.test.ts` 覆盖 next-epoch 收据绑定与冻结控制互斥；`local-overlay-native-batch.test.ts` 覆盖私有内容跨轮依赖闭包、缺失对象代次、旧格式拒绝、自环/向前边及有界链。`pnpm overlay:verify-epochs` 以真实失败命令和取消排空验证新读取周期、私有修改保留、跨重挂载幂等、旧 seal 拒绝，以及重命名后的私有结果连续派生仍继承过期依赖；独立新修改可发布。新格式 v6 不自动迁移 v5，不宣称产品/Sandbox 任务生命周期已接入。
+
 Local 私有内容回收（D170）：`overlay-manager.test.ts` 验证冻结回调回收的完整收据、并发控制请求拒绝、损坏/丢失收据及过期回调。`pnpm overlay:verify-collection` 手动使用真实 WinFsp，覆盖连续发布后 B/O 回收、未确认检查点保留、确认已完成但回执丢失后的恢复、旧收据不删新修改、未选产物/目录移动/读依赖保留，以及只读对象重试、硬链接/junction/未知文件不删除。不进默认 check/Evaluation，不宣称数据库/journal 全部回收或产品自动清理已接入。
 
 Local 残留锁恢复（D170）：`local-overlay-residual-lock.test.ts` 覆盖未开始/complete 解锁、新锁保留、旧/host claim、journal 已存在或检查中出现、版本变化、取消以及缺失/已开始的原生写入证明。`pnpm overlay:verify-residual` 以真实发布子进程在原生 ready 后或 close 前退出，验证两种残留锁、删除 journal 不能抹掉原生写入证据、来源后续修改与 journal 保留、新批次继续。不运行默认 Evaluation，不宣称缺失执行记录或异常私有卷可恢复。

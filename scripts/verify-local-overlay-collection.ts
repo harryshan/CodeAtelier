@@ -313,7 +313,7 @@ try {
     platform: process.platform,
     release: os.release(),
     node: process.version,
-    backend: "self-developed WinFsp Local overlay v5",
+    backend: "self-developed WinFsp Local overlay v6",
     creation,
     rounds,
     recovery:

@@ -6,6 +6,7 @@
 // 5. sealChanges 仅在 dispatcher 已销毁后运行；导出已捕获路径的结果引用，不枚举整个视图。
 // 6. checkReads 在冻结期间复核观察版本，逐路径保存有效性，供宿主筛除已选择编辑后检查其余依赖。
 // 7. epoch 与 change_epochs 将旧修改和新一轮的读依赖区分；确认不清空未发布修改所依赖的观察。
+//    v6 私有内容读取交给 observePrivate 建立代次依赖边，不把旧结果冒充无依赖的新读取。
 // 所有入口由 Store mutex 串行化；文件先 flush 后引用，失败不修改 lower，孤立对象留待受控清理。
 // 版本戳不是密码学摘要，也不提供跨文件快照；确认由 acknowledgement.cpp 处理，不支持任意目录发布。
 #include "store.hpp"
@@ -83,7 +84,14 @@ static std::wstring copyBaseline(Store& store, HANDLE source) {
 
 std::wstring Store::observeRead(const NodePtr& value, HANDLE handle,
                                 const std::wstring& expected) {
-  if (!localMode || !value->object.empty() || value->origin.empty()) {
+  if (!localMode) {
+    return L"";
+  }
+  if (!value->object.empty()) {
+    observePrivate(value);
+    return L"";
+  }
+  if (value->origin.empty()) {
     return L"";
   }
   auto stamp = version(handle);

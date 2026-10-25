@@ -8,6 +8,7 @@
 // 7. observeRead/capture 在实际访问路径上记录版本和不可变原文；不在启动时扫描来源。
 // 8. acknowledge 在冻结租约内按批次幂等释放已发布路径，并切换观察代次；旧修改依赖保留。
 // 9. collect 只在冻结后回收无引用私有内容，保留基线/结果及 namespace 父链，不访问来源。
+// 10. v6 trackObject/observePrivate 保存跨轮私有读依赖；nextEpoch 只推进观察代次，不发布或丢弃修改。
 // 遮蔽来源的 .git 命名空间；Git PoC 从对象库取内容，不打开来源工作文件。
 // 来源文件打开禁止重解析与写访问，控制目录不暴露于挂载。
 #pragma once
@@ -162,6 +163,9 @@ class Store {
   Collection collect();
   void checkReads(const std::vector<sqlite3_int64>& epochs = {});
   sqlite3_int64 epoch();
+  void trackObject(const NodePtr& node);
+  void observePrivate(const NodePtr& node);
+  sqlite3_int64 nextEpoch(const std::wstring& id, sqlite3_int64 expectedEpoch, const std::wstring& seal);
   sqlite3_int64 acknowledge(const std::wstring& id, sqlite3_int64 expectedEpoch, const std::wstring& seal,
                             const std::vector<std::wstring>& paths);
 

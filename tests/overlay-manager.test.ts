@@ -9,6 +9,7 @@
  * 7. 发布确认须等待匹配批次与代次的收据，错误收据及租约丢失均拒绝。
  * 8. 冻结取消/关闭先中止回调并等待排空；不在回调仍运行时释放 helper 或报告关闭成功。
  * 9. 显式回收等待完整计数收据，排斥并发控制请求，作用域过期和损坏/丢失收据拒绝。
+ * 10. 新观察周期绑定请求/旧代次/seal；不接受另一请求的收据，且与其它冻结控制请求互斥。
  * 原生文件、Git 和受限 token 语义由手动 verify-winfsp-overlay 独立验证。
  */
 import { EventEmitter } from "node:events";
@@ -171,6 +172,46 @@ it("waits for frozen receipt and retains the helper until export finishes", asyn
   expect(f.helper.stdin.writableEnded).toBe(true);
   await f.manager.close();
 });
+
+it.each([true, false])(
+  "binds the epoch transition receipt and excludes concurrent controls: %s",
+  async (matching) => {
+    const f = await localFixture();
+    const request = { requestId: randomUUID(), seal: randomUUID(), epoch: 3 };
+    const pending = f.manager.withFrozen(
+      f.id,
+      async (verify, _acknowledge, _signal, collect, nextEpoch) => {
+        const advancing = nextEpoch(request);
+        await expect(collect()).rejects.toThrow("unavailable");
+        await expect(verify()).rejects.toThrow("unavailable");
+        await expect(nextEpoch(request)).rejects.toThrow("unavailable");
+        expect(f.helper.stdin.read()?.toString()).toBe(
+          `next-epoch ${request.requestId} 3 ${request.seal}\n`,
+        );
+        f.helper.stdout.write(
+          JSON.stringify({
+            version: 1,
+            mode: "local",
+            state: "epoch-advanced",
+            ...request,
+            requestId: matching ? request.requestId : randomUUID(),
+            epoch: 4,
+          }) + "\n",
+        );
+        await advancing;
+
+        return "advanced";
+      },
+    );
+    const result = matching
+      ? expect(pending).resolves.toBe("advanced")
+      : expect(pending).rejects.toThrow();
+    f.helper.stdin.read();
+    f.helper.stdout.write('{"version":1,"state":"frozen","mode":"local"}\n');
+    await result;
+    await f.manager.close();
+  },
+);
 
 it("does not return export results when the helper lease is lost", async () => {
   const f = await localFixture();

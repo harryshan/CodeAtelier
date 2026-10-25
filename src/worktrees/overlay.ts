@@ -11,6 +11,7 @@
  * 8. 冻结回调接收租约失效/取消信号；关闭先中止并等待回调排空，再幂等卸载，不用竞速伪造完成。
  *    导出回调可复核原生读版本；协议只回执状态，不通过 stdout 传文件内容或路径。
  * 9. 冻结回调可显式 collect 无引用内容；独立于发布确认，仅记录计数，不改变来源或恢复收据。
+ * 10. nextEpoch 按请求/旧代次/seal 等待幂等收据，只开启新观察周期；不发布或删除失败轮次修改。
  */
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
@@ -113,6 +114,7 @@ interface Mount {
   freeze?: () => void;
   readsChecked?: () => void;
   collected?: (result: OverlayCollection) => void;
+  epochAdvanced?: OverlayEpochTransition & { resolve: () => void };
   frozenScope?: { controller: AbortController; drained: Promise<void> };
   shutdown?: Promise<void>;
   acknowledgement?: {
@@ -131,6 +133,13 @@ const acknowledgementSchema = z.object({
   paths: z.array(z.string().min(2).max(4096)).min(1).max(100),
 });
 export type OverlayAcknowledgement = z.infer<typeof acknowledgementSchema>;
+
+const epochTransitionSchema = z.object({
+  requestId: z.uuid(),
+  seal: z.uuid(),
+  epoch: z.number().int().min(0).max(999_999_999),
+});
+export type OverlayEpochTransition = z.infer<typeof epochTransitionSchema>;
 
 /** Validate before source publication too: a known oversized refresh request
  * must not be discovered only after the source has already been changed. */
@@ -181,7 +190,9 @@ export class OverlayManager {
     });
     const started = performance.now();
     let outcome: "ok" | "error" | "cancelled" | "unknown" =
-      action === "local_acknowledge" || action === "local_collect"
+      action === "local_acknowledge" ||
+      action === "local_collect" ||
+      action === "local_next_epoch"
         ? "unknown"
         : "error";
     this.log.info({
@@ -433,9 +444,11 @@ export class OverlayManager {
                     "frozen",
                     "reads-checked",
                     "acknowledged",
+                    "epoch-advanced",
                   ]),
                   mode: z.literal("local").optional(),
                   batchId: z.uuid().optional(),
+                  requestId: z.uuid().optional(),
                   seal: z.uuid().optional(),
                   epoch: z.number().int().optional(),
                 })
@@ -453,6 +466,20 @@ export class OverlayManager {
                 }
 
                 resolveReady();
+              } else if (message.state === "epoch-advanced") {
+                const pending = mount.epochAdvanced;
+                if (
+                  !local ||
+                  !pending ||
+                  message.mode !== "local" ||
+                  message.requestId !== pending.requestId ||
+                  message.seal !== pending.seal ||
+                  message.epoch !== pending.epoch + 1
+                ) {
+                  throw new Error("Unexpected epoch transition receipt.");
+                }
+
+                pending.resolve();
               } else if (message.state === "acknowledged") {
                 const pending = mount.acknowledgement;
                 if (
@@ -556,6 +583,7 @@ export class OverlayManager {
             .max(100)
             .parse(epochs);
     if (
+      mount.epochAdvanced ||
       mount.collected ||
       mount.readsChecked ||
       mount.acknowledgement ||
@@ -596,6 +624,7 @@ export class OverlayManager {
   ) {
     const request = validateOverlayAcknowledgement(input);
     if (
+      mount.epochAdvanced ||
       mount.collected ||
       mount.readsChecked ||
       mount.acknowledgement ||
@@ -642,6 +671,7 @@ export class OverlayManager {
 
   private async collectFrozen(id: string, mount: Mount) {
     if (
+      mount.epochAdvanced ||
       mount.collected ||
       mount.readsChecked ||
       mount.acknowledgement ||
@@ -695,6 +725,55 @@ export class OverlayManager {
     });
   }
 
+  private async advanceFrozenEpoch(
+    id: string,
+    mount: Mount,
+    input: OverlayEpochTransition,
+  ) {
+    const request = epochTransitionSchema.parse(input);
+    if (
+      mount.epochAdvanced ||
+      mount.collected ||
+      mount.readsChecked ||
+      mount.acknowledgement ||
+      mount.failed ||
+      mount.stopping ||
+      mount.closed
+    ) {
+      throw new Error("Frozen epoch transition unavailable.");
+    }
+
+    await this.observe(id, "local_next_epoch", async () => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          new Promise<void>((resolve, reject) => {
+            mount.epochAdvanced = { ...request, resolve };
+            timer = setTimeout(() => {
+              mount.failed = true;
+              mount.frozenScope?.controller.abort(
+                new Error("Epoch transition timed out."),
+              );
+              reject(new Error("Epoch transition timed out."));
+            }, 30_000);
+            mount.process.stdin.write(
+              `next-epoch ${request.requestId} ${request.epoch} ${request.seal}\n`,
+            );
+          }),
+          mount.exit.then(() => {
+            throw new Error("Overlay lease was lost during epoch transition.");
+          }),
+        ]);
+        if (mount.failed || mount.closed || mount.stopping) {
+          throw new Error("Epoch transition was not confirmed.");
+        }
+      } finally {
+        clearTimeout(timer);
+        mount.epochAdvanced = undefined;
+      }
+    });
+  }
+
   /** Caller drains its task processes first. Export runs only after the native
    * volume disappears, while the helper still excludes other store owners. */
   async withFrozen<T>(
@@ -704,6 +783,7 @@ export class OverlayManager {
       acknowledge: (request: OverlayAcknowledgement) => Promise<void>,
       signal: AbortSignal,
       collect: () => Promise<OverlayCollection>,
+      nextEpoch: (request: OverlayEpochTransition) => Promise<void>,
     ) => Promise<T>,
     signal?: AbortSignal,
   ): Promise<T> {
@@ -786,6 +866,10 @@ export class OverlayManager {
               controller.signal.throwIfAborted();
 
               return this.collectFrozen(id, mount);
+            },
+            async (request) => {
+              controller.signal.throwIfAborted();
+              await this.advanceFrozenEpoch(id, mount, request);
             },
           );
           controller.signal.throwIfAborted();

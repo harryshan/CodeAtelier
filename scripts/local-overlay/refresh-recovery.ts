@@ -4,7 +4,7 @@
  * 2. 原生收据或私有检查点产生安全确认请求；先记录恢复 intent，再等待 helper 确认后落盘。
  * 3. 重复已确认恢复直接返回；丢失回执仍保留 pending 和原始/历次请求，下一次不能猜测成功。
  * 4. 恢复 trace 独立保存，记录 ID/状态/耗时而不记录路径、正文或文件版本摘要。
- * 限制为干净 Local v5 视图；unknown/applying、dirty 卷、过大/损坏日志和后来私有修改均拒绝。
+ * 限制为干净 Local v6 视图；unknown/applying、dirty 卷、过大/损坏日志和后来私有修改均拒绝。
  */
 import path from "node:path";
 import { randomUUID } from "node:crypto";

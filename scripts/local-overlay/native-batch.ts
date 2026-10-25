@@ -1,10 +1,11 @@
 /**
  * 将已冻结的 Local WinFsp 结果转换为发布 PoC 的明确路径批次。
- * 1. 调用方必须位于 OverlayManager.withFrozen 回调内；校验 v5 来源与私有表，不挂载或自行获取租约。
+ * 1. 调用方必须位于 OverlayManager.withFrozen 回调内；校验 v6 来源与私有表，不挂载或自行获取租约。
  * 2. 仅查询选择的路径，读取不可变 B 和封存 O；普通文件有界读取，拒绝目录、重解析和显式属性变更。
  * 3. 对其它已读路径先取宿主内容版本，再经仍持租约的 helper 复核原生观察戳；拒绝失效依赖。
  * 4. 按所选修改的历史代次及当前代次检查依赖，返回 Batch 与绑定的确认请求；不自行发布或确认。
  * 5. 对真正变化的选定路径保存私有检查点，供 complete 后的刷新恢复；额外复核仅限这些文件。
+ * 6. 展开路径/对象代次与跨轮私有读依赖闭包；缺记录、向前/自环边和超限均拒绝，不清空旧依赖。
  * 沿用 PoC 的 100 个文件/读依赖/关联代次和内容大小限制，不将全部 upper 当源码。
  * 日志与 trace 由外层冻结/发布生命周期提供，不输出路径、内容或安全描述符。
  */
@@ -86,7 +87,7 @@ export async function nativeBatch(
   try {
     const meta = db.prepare("SELECT version,source,clean FROM meta").get();
     if (
-      meta?.version !== 5 ||
+      meta?.version !== 6 ||
       meta.clean !== 0 ||
       typeof meta.source !== "string"
     ) {
@@ -150,6 +151,19 @@ export async function nativeBatch(
         epochs.add(z.number().int().min(0).max(epoch).parse(association.epoch));
       }
 
+      if (row.resultKind === 1) {
+        const origins = db
+          .prepare("SELECT epoch FROM object_epochs WHERE object=? LIMIT 101")
+          .all(row.resultObject);
+        if (!origins.length) {
+          throw new PublishError("NATIVE_OBJECT_EPOCH_MISSING");
+        }
+
+        for (const origin of origins) {
+          epochs.add(z.number().int().min(0).max(epoch).parse(origin.epoch));
+        }
+      }
+
       if (epochs.size > 100) {
         throw new PublishError("READ_LIMIT");
       }
@@ -182,6 +196,30 @@ export async function nativeBatch(
         },
         ours,
       });
+    }
+
+    // A read of private O can depend on older source observations even when the
+    // newly selected file itself was first edited in the current epoch.
+    for (const current of epochs) {
+      const dependencies = db
+        .prepare("SELECT dependency FROM epoch_links WHERE epoch=? LIMIT 101")
+        .all(current);
+      for (const row of dependencies) {
+        const dependency = z
+          .number()
+          .int()
+          .min(0)
+          .max(epoch)
+          .parse(row.dependency);
+        if (dependency >= current) {
+          throw new PublishError("NATIVE_EPOCH_LINK_INVALID");
+        }
+
+        epochs.add(dependency);
+        if (epochs.size > 100) {
+          throw new PublishError("READ_LIMIT");
+        }
+      }
     }
 
     const observations = db
