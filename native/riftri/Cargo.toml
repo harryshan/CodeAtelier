@@ -1,0 +1,16 @@
+# 可选宿主 CoW helper；build-riftri.ts 将校验过的上游源码放在固定忽略目录。
+# 不链接 agent Runtime，不使用 Riftri 的 immutable-base/挂载/清理生命周期。
+[package]
+name = "codeatelier-riftri"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+
+[dependencies]
+riftri-storage = { path = "../../.local/riftri-native/riftri-0.6.5/crates/riftri-storage" }
+serde_json = "1"
+sha1 = "0.10"
+sha2 = "0.10"
+
+[profile.release]
+strip = true

@@ -2,6 +2,8 @@
 
 日期：2026-10-25。状态：WSL/XFS 原生 reflink PoC 完成；不代表产品已接入。
 
+后续 D166 已采用不同于本报告原版 CLI 的产品接入：直接复用原 checkout 的单文件 CoW，不建立 immutable base，普通 Git 为 fallback。当前实现及验证分别见 [Worktree 指南](worktrees.md) 和 [验证记录](verification.md)；下文保留原 PoC 的测量与限制。
+
 ## 授权与范围
 
 用户要求验证 Riftri + 原生 CoW，不创建 Windows 分区，允许必要时在 WSL 实验。

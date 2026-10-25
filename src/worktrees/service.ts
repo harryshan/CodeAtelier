@@ -1,7 +1,7 @@
 /**
  * 管理显式创建的 Git worktree，并为 Engine/API 提供持久绑定与验证。
  * 输入是用户选择的仓库根、提交基线和请求 UUID；输出是实际 checkout 与来源项目元数据。
- * 1. inspect 只读获取仓库身份和可选分支；create 串行写入 preparing/ready 清单后调用固定 Git add。
+ * 1. inspect 只读获取仓库身份和可选分支；create 选择 Riftri 原生克隆或 Git fallback，串行持久化 preparing/ready 清单。
  * 2. 创建使用文件排他锁与 UUID 去重；未知结果保留现场，不删除、不重新 checkout；bind 按 workspace 找回已写历史。
  * 3. describe 装饰历史而不依赖目录存在；validate 在任务 admission/执行/Sandbox 启动前验证目录、gitfile 和共享元数据。
  * 4. projectWorkspace 只映射项目记忆，文件工具和调度仍使用实际路径；close 取消管理进程并排空队列。
@@ -25,7 +25,13 @@ import { z } from "zod";
 import type { Session, WorktreeInfo } from "../shared/types.js";
 import { TraceRecorder } from "../tracing/recorder.js";
 import { TraceArchive } from "../tracing/archive.js";
-import { addWorktree, directoryIdentity, git, samePath } from "./git.js";
+import { directoryIdentity, git, samePath } from "./git.js";
+import {
+  checkoutSchema,
+  createCheckout,
+  nativeHelperPath,
+  selectCheckout,
+} from "./riftri.js";
 
 const recordSchema = z.object({
   version: z.literal(1),
@@ -38,6 +44,7 @@ const recordSchema = z.object({
   state: z.enum(["preparing", "ready", "failed"]),
   workspaceIdentity: z.string().optional(),
   adminDirectory: z.string().optional(),
+  checkout: checkoutSchema.optional(),
 });
 type Record = z.infer<typeof recordSchema>;
 
@@ -63,6 +70,7 @@ export class WorktreeService {
   constructor(
     directory: string,
     private readonly log: Logger,
+    private readonly helperPath = nativeHelperPath(),
   ) {
     const absolute = path.resolve(directory);
     this.root = path.join(
@@ -168,6 +176,9 @@ export class WorktreeService {
         baseRef: record.baseRef,
         baseCommit: record.baseCommit,
         state: record.state,
+        backend: record.checkout?.backend ?? "git",
+        fallbackReason: record.checkout?.fallbackReason,
+        clonedFiles: record.checkout?.clonedFiles,
       };
 
       return { ...session, worktree };
@@ -262,6 +273,7 @@ export class WorktreeService {
   private async prepareCheckout(
     input: { id: string; workspace: string; baseRef: string },
     workspace: string,
+    operationId: string,
   ) {
     const repository = await this.inspect(input.workspace);
     await this.assertPrivateDataDisjoint(repository.commonDirectory);
@@ -283,6 +295,12 @@ export class WorktreeService {
       ],
       this.controller.signal,
     );
+    const selection = await selectCheckout(
+      repository.projectWorkspace,
+      this.root,
+      this.controller.signal,
+      this.helperPath,
+    );
     const record: Record = {
       version: 1,
       id: input.id,
@@ -292,15 +310,34 @@ export class WorktreeService {
       commonDirectory: repository.commonDirectory,
       commonIdentity: await directoryIdentity(repository.commonDirectory),
       state: "preparing",
+      checkout: selection,
     };
     await this.save(record);
+    const span = this.traces.startSpan(operationId, {
+      name: "worktree.checkout",
+      category: "worktree",
+      track: "Worktree management",
+      attributes: {
+        backend: selection.backend,
+        fallbackReason: selection.fallbackReason ?? "none",
+      },
+    });
+    let outcome: "ok" | "error" | "cancelled" = "error";
     try {
-      await addWorktree(
+      record.checkout = await createCheckout(
         repository.projectWorkspace,
         workspace,
         baseCommit,
+        selection,
         this.controller.signal,
+        this.helperPath,
       );
+      this.log.info({
+        module: "worktree",
+        event: "worktree.checkout_finished",
+        worktreeId: input.id,
+        ...record.checkout,
+      });
       record.workspaceIdentity = await directoryIdentity(workspace);
       record.adminDirectory = await realpath(
         await git(
@@ -312,10 +349,16 @@ export class WorktreeService {
       record.state = "ready";
       await this.save(record);
       await this.validate(workspace);
+      outcome = "ok";
     } catch (error) {
       record.state = "failed";
       await this.save(record).catch(() => {});
       throw error;
+    } finally {
+      this.traces.endSpan(
+        span,
+        this.controller.signal.aborted ? "cancelled" : outcome,
+      );
     }
   }
 
@@ -373,13 +416,24 @@ export class WorktreeService {
 
         await this.validate(workspace);
       } else {
-        await this.prepareCheckout(input, workspace);
+        await this.prepareCheckout(input, workspace, operationId);
       }
 
       // Match Local session creation: the scheduler key must use filesystem spelling on Windows.
       const session = await this.describe(
         await bind(await realpath(workspace)),
       );
+      const checkoutSpan = this.traces.startSpan(operationId, {
+        name: "worktree.backend",
+        category: "worktree",
+        track: "Worktree management",
+        attributes: {
+          backend: session.worktree?.backend ?? "git",
+          fallbackReason: session.worktree?.fallbackReason ?? "none",
+          clonedFiles: session.worktree?.clonedFiles ?? 0,
+        },
+      });
+      this.traces.endSpan(checkoutSpan, "ok");
       outcome = "ok";
 
       return session;

@@ -649,7 +649,7 @@ export default function App() {
                 <span
                   title={
                     data?.session.worktree
-                      ? `来源：${data.session.worktree.projectWorkspace ?? "清单不可用"}；创建基线：${data.session.worktree.baseRef ?? "未知"} (${data.session.worktree.baseCommit?.slice(0, 12) ?? ""})`
+                      ? `来源：${data.session.worktree.projectWorkspace ?? "清单不可用"}；创建基线：${data.session.worktree.baseRef ?? "未知"} (${data.session.worktree.baseCommit?.slice(0, 12) ?? ""})；存储：${data.session.worktree.backend ?? "git"}`
                       : undefined
                   }
                 >

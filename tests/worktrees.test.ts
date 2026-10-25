@@ -134,6 +134,33 @@ it("retains a successful checkout when session persistence fails and binds it on
   );
 });
 
+it("continues pre-Riftri manifests without recreating the checkout or requiring a helper", async () => {
+  const f = await fixture();
+  const session = await f.service.create(f.input, f.bind);
+  const manifest = path.join(f.directory, "worktrees", `${f.input.id}.json`);
+  const record = JSON.parse(await readFile(manifest, "utf8"));
+  delete record.checkout;
+  await writeFile(manifest, JSON.stringify(record));
+  await writeFile(
+    path.join(session.workspace, "tracked.txt"),
+    "preserved legacy edit\n",
+  );
+  await f.service.close();
+  const restarted = new WorktreeService(
+    f.directory,
+    log,
+    path.join(f.root, "missing-helper"),
+  );
+  currentTestResources().defer(() => restarted.close());
+
+  const restored = await restarted.create(f.input, f.bind);
+  expect(restored.id).toBe(session.id);
+  expect(restored.worktree?.backend).toBe("git");
+  expect(
+    await readFile(path.join(session.workspace, "tracked.txt"), "utf8"),
+  ).toBe("preserved legacy edit\n");
+});
+
 it("rejects missing or replaced directories while keeping history readable", async () => {
   const f = await fixture();
   const session = await f.service.create(f.input, f.bind);

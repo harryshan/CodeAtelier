@@ -6,6 +6,8 @@ CodeAtelier 是一个运行在本机的个人 AI 编程助手。连接模型服�
 
 Git 项目可以通过侧栏 `⑂` 显式创建 Worktree 对话，选择起始提交并在独立目录工作；原有 `＋` 仍直接使用项目目录。对话与目录持久绑定，项目记忆共享，不自动复制未提交文件或清理目录。使用方式、Sandbox 和恢复边界见 [Worktree 指南](docs/worktrees.md)。
 
+Worktree 可选使用 Riftri 原生 CoW 直接复用原 checkout，不建立额外 base；不可用时使用普通 Git。Linux/macOS helper 需显式构建，Windows 当前走普通 Git，操作入口与生命周期一致。
+
 ## 项目亮点
 
 - **Windows Sandbox**：让 agent 和普通命令在专用低权限账户下运行，限制文件访问与直接联网，减少对日常系统账户的依赖。已通过持续实际使用验证，可用于日常开发。

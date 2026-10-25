@@ -1,5 +1,14 @@
 # 初版验证记录
 
+## Riftri 直接来源 CoW（D166，2026-10-25）
+
+- 采用 Riftri v0.6.5 storage 源码与窄单文件 API，不调用创建 immutable base 的上游 CLI。正式构建脚本在 WSL 使用固定源码 SHA-256 与 Cargo.lock 成功构建；本次工具链为独立目录中的 Rust 1.93.1，Linux Node 24.19.0。构建过程的 Cargo 镜像配置仅在实验目录，不进入产品或修改系统安装。
+- 真实产品 `WorktreeService` 在 WSL/XFS 创建两个 detached checkout，各复用 5 个文件。32 MiB `large.bin` 与原 checkout 都映射到物理块 `2303808..2369343`，flags `0x2001`；没有额外 Riftri base，也没有来源 `.git/riftri` 状态目录。
+- 分别写入两副本前 4 KiB 后，块范围成为 `5013512..5013519` 和 `2369408..2369415`；其余 `2303816..2369343` 保持共享，来源哈希不变。卸载/重挂载后，独立 Node 进程在 helper 缺失时仍验证 worktree 身份、后端记录和写入哈希成功。
+- 手动真实 Git 覆盖 dirty/staged/untracked/ignored、选定旧 commit、HEAD 移动后的请求去重、源权限保持/目标执行位、CRLF、smudge/clean、符号链接、gitlink、含空格/换行/tab 的文件名、非 UTF-8 路径退回 Git、独立修改/index、共享 Git 根/项目映射、helper 缺失、创建失败与关闭取消不重放。普通 WSL/ext4 使用同一 fixture 实测 `backend=git`、`fallbackReason=unsupported-volume`，另覆盖 SHA-256 仓库的普通 fallback。
+- 原生验证入口为 `scripts/verify-riftri.ts`；本机证据在 `.local/riftri-integration/` 的 `wsl-verify.log`、`wsl-result.json`、`extents.json`、`extents-after-write.json`、`remount.log` 和 `wsl-ext4*.log`。仅复用之前的普通文件 XFS 镜像，最终已卸载；未创建 Windows 分区。
+- Windows / Node 24.19.0：`pnpm check` 通过，131 个测试文件、962 passed / 1 existing skipped；包括 17 项 Worktree 生命周期与 10 项 Riftri adapter 用例。`pnpm test:e2e` 71 passed。真实 Sandbox 安装态、macOS APFS、Windows ReFS/ACL、断电以及巨型仓库性能没有在本轮验收。不运行 Evaluation，不重启当前服务。仍没有自动回写/清理/handoff。
+
 ## 显式 Git worktree 对话（D165，2026-10-25，Windows / Node 24.19.0）
 
 - 创建与恢复使用真实临时 Git 仓库；16 项 worktree 回归覆盖 detached 基线、独立文件/index、重试去重、会话写入失败后的重新绑定、重启、目录/Git 指针丢失或替换、未知创建不重放、共享记忆、HTTP 元数据、跨目录并发/同目录串行和恢复。

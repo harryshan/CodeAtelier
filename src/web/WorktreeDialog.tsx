@@ -92,6 +92,10 @@ export function WorktreeDialog({
         <p>
           从已提交的版本创建独立目录。原目录的未提交改动、依赖和忽略文件不会复制。
         </p>
+        <p>
+          可用时直接复用原目录的原生 CoW 文件，否则使用普通 Git
+          worktree；不创建额外基础副本。
+        </p>
         <form
           onSubmit={(event) => {
             event.preventDefault();

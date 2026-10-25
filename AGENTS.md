@@ -46,6 +46,10 @@ Agent Runtime 已有权限内的工具不再审批；越界命令通过 `run_wit
 
 取消结果以 executionInstance kind 写入 session。首版不依赖 AppContainer、自研 WFP callout driver、实验性的 `CreateProcessInSandbox`/Bound File System 或 Chromium Target hook。这些未采用机制不得描述为已实现。Windows Sandbox 的日常可用性已获用户确认，但不因此扩大既有权限保证或跨平台能力声明；专项故障与安全矩阵仍按实际证据记录。
 
+### Worktree 原生 CoW（D166）
+
+2026-10-25 用户要求接入 Riftri，普通 Git worktree 作为 fallback，功能边界不变；进一步明确直接使用原 Git checkout，不另建完整 base。使用固定 Riftri storage 的窄单文件 API 和可选宿主 helper，克隆结果按目标 commit blob 校验，其余由 Git 补齐。来源文件权限不改变，不复制 dirty/untracked/ignored 或来源 index。Linux/macOS 原生接口与 Windows 普通 Git fallback 的验证边界见 docs/worktrees.md；WSL 用于 Linux 验证，不创建 Windows 分区，不由 Windows 服务隐式跨 WSL。创建后的未知/失败结果保留现场，不重新创建；不增加自动回写、清理或新的 Sandbox 授权根。
+
 ## 设置系统（D153）
 
 2026-10-16 用户要求将大部分配置迁入 `settings.json`，支持随时配置并完整重设 UI，最终移除 `.env`。产品已接入版本化文件、分类设置页与显式迁移器，不再加载 dotenv；数据目录由 `--data-dir` 指定或使用平台默认值。运行任务持有配置/密钥/MCP 快照；宿主日志和并发立即生效，模型等下一任务生效，服务/Sandbox 等重启生效。模型/MCP 凭据保存于私有 JSON（不是加密保险库），密码仅存派生验证材料。实现、迁移和验证边界见 [设置系统](docs/settings-system.md)。不自动迁移真实配置、删除旧 `.env` 或重启当前服务；实际部署迁移仍由用户明确操作。

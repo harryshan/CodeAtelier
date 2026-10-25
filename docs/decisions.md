@@ -2,6 +2,15 @@
 
 只记录已确认的方向；候选技术选择保留在需求说明中。后续修改需记录替代关系，避免历史决定被误当成当前要求。
 
+## D166：直接复用来源 checkout 的 Riftri 原生 CoW
+
+- 日期：2026-10-25
+- 状态：用户要求接入 Riftri、普通 worktree 作为 fallback、功能边界不变，并明确禁止另建完整 base，使用 WSL 验证。
+- 决定：复用固定 Riftri v0.6.5 的原生存储代码，通过可选宿主 helper 直接克隆来源 checkout 中的普通受控文件。逐个校验克隆文件的 Git blob 哈希；只保留与选定 commit 完全一致的内容，其余交给 Git 从该 commit checkout。不复制来源 index、未跟踪/ignored 文件，不改变来源文件权限，不创建 Riftri immutable base。
+- 回退：helper 未安装、平台/文件系统不支持或 checkout 转换规则不能保守等价时使用普通 Git worktree。原生克隆只发生在新建、尚未绑定会话的目录；部分文件无法克隆时由 Git 补齐。取消、未知结果、磁盘/权限或 Git 失败保留失败现场，不重新创建或回退原项目。已存在的工作区永不重新选择后端。
+- 实现边界：上游 CLI 不支持可变原目录作为 base，因此使用小型存储 API 扩展和原生 helper，不冒称直接调用原版 CLI。初期启用 Linux reflink/macOS clonefile 接口；Windows 继续普通 Git，ReFS/ACL 优化另行验收。可选构建不安装全局工具、不创建文件系统、不挂载 OverlayFS。WSL 只用于 Linux 验证，不由 Windows 产品隐式跨系统操作路径。
+- 联动：沿用 D165 的 detached HEAD、路径、持久清单、调度/记忆/恢复及 Sandbox Git 公共根；不增加自动回写、清理、handoff 或可写 subagent。记录后端、fallback 原因及克隆文件数，沿用创建 trace 的开始/终态/取消/耗时和 ID，不记录文件内容或路径。
+
 ## D165：显式 Git worktree 对话
 
 - 日期：2026-10-25

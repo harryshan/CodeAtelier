@@ -32,6 +32,7 @@ Runtime stdio 集成夹具共用 `runtime-child-close.ts`：spawn 后立即监�
 ## 共享执行逻辑回归
 
 - Worktree（D165）：`worktrees.test.ts` 使用真实临时 Git 检查 committed 基线、独立文件/index、并发请求去重、会话落盘失败后找回、重启、清单/目录/Git 指针失效拒绝、未知创建不重放、共享记忆、HTTP 快照、跨 checkout 并行/同目录排队与恢复。`sandbox-agent-runtime-launcher.test.ts` 和 `mxc-runtime.test.ts` 检查共享 Git 根进入 manifest/MXC policy 且不授予来源 checkout；使用假后端，不构成安装态验收。`e2e/worktrees.spec.ts` 检查真实页面创建、项目分组、文件修改只落到 checkout 和历史刷新。
+- Riftri（D166）：`riftri.test.ts` 检查可选 helper 缺失、取消、创建收据和失败不重放；`scripts/verify-riftri.ts` 手动使用真实产品 Service/临时 Git，覆盖直接来源克隆、脏/staged/ignored、过滤器/换行/权限/符号链接、独立写入/index、重启、fallback、失败与取消。不自动挂载或创建文件系统，物理共享需另用 fiemap 核对；不属于 Evaluation。
 
 - Responses prompt cache key（D160）：`prompt-cache.test.ts` 覆盖分组稳定性、交叉调用、子任务/会话隔离、错误/取消与非 Responses 原行为、trace 指纹及缺失 usage；`provider.test.ts` 通过本机 HTTP/SSE 验证实际发送/省略；`engine-subagent.test.ts` 验证宿主主/子任务、Replay 和续聊；`runtime-capability-core.test.ts` 验证 Broker 可信身份、实例变化和辅助用途排除；`agent-runtime-subagent.test.ts` 验证真实 Runtime 子进程跨 IPC 后实际收到的 key 和 Replay。测试不验证真实服务命中改善。
 
