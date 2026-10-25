@@ -3,7 +3,7 @@
 // 2. ready 收据只含协议版本/状态；路径由调用方决定，不输出文件内容或安全描述符。
 // 3. stdin EOF/stop 停止 dispatcher、删除卷，再标记干净退出；数据和 worktree 登记保留。
 // 4. 显式 create-git/restore-git PoC 参数固定 Git/tree；metrics 不包含路径/OID/内容。
-// 5. create-local/restore-local 选择无 Git 视图并回执策略；metrics 证明创建期 lower 访问成本。
+// 5. create-local/restore-local 选择无 Git 视图并回执策略；metrics 提供 lower 访问及元数据导入提交计数。
 // 6. freeze 销毁 Local dispatcher 后封存路径结果；helper 保留控制目录独占租约直到 stop。
 //    check-reads 仅在冻结后复核读依赖并返回无正文收据，路径有效性保存在私有数据库。
 //    acknowledge 以有界 hex 路径参数确认已发布选择；收据只含批次 ID/代次，下一轮重新挂载。
@@ -184,6 +184,7 @@ int wmain(int argc, wchar_t** argv) {
                 << ",\"infoReads\":" << metrics.infoReads << ",\"blobReads\":" << metrics.blobReads
                 << ",\"blobBytes\":" << metrics.blobBytes << ",\"lowerOpens\":" << store.lowerOpens
                 << ",\"lowerEnumerations\":" << store.lowerEnumerations
+                << ",\"lowerImportCommits\":" << store.lowerImportCommits
                 << ",\"objectMicros\":" << metrics.objectMicros
                 << ",\"sqlPrepareMicros\":" << queryMetrics.prepareMicros
                 << ",\"sqlReadMicros\":" << queryMetrics.readMicros

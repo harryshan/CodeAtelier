@@ -1,6 +1,6 @@
 // Windows overlay 对象/事务接口，供 WinFsp callbacks 与原生解析测试使用。
 // 1. Win32 RAII、错误及 SQLite 查询封装统一资源与失败处理；Git PoC 复用固定 SQL 的空闲语句。
-// 2. Store 按需导入 lower 元数据，持久化命名空间、删除标记、ACL 和虚拟 inode。
+// 2. Store 按需导入 lower 元数据，持久化命名空间、删除标记、ACL 和虚拟 inode；Local 枚举按目录提交并计数。
 // 3. copy-up 先 flush 私有对象再发布引用；文件 rename 固化内容，目录 rename 保留 live lower。
 // 4. security/reparse 接口维护虚拟卷权限和内部链接；finish 仅在状态可信时标记干净卸载。
 // 5. 显式 Git PoC lower 按 tree/blob 提供内容，read 不物化文件；生产 live lower 保持原样。
@@ -128,6 +128,7 @@ class Store {
   std::map<std::string, sqlite3_stmt*> statements;
   UINT64 lowerOpens = 0;
   UINT64 lowerEnumerations = 0;
+  UINT64 lowerImportCommits = 0;
 
   Store(const fs::path& source, const fs::path& root, const fs::path& workspace, bool create,
         const fs::path& gitExecutable = {}, const fs::path& gitDirectory = {},
@@ -137,7 +138,7 @@ class Store {
   NodePtr node(sqlite3_int64 id);
   NodePtr lookup(const std::wstring& path);
   std::wstring name(const NodePtr& node);
-  NodePtr child(const NodePtr& parent, const std::wstring& name);
+  NodePtr child(const NodePtr& parent, const std::wstring& name, bool batchedImport = false);
   std::vector<Entry> list(const NodePtr& parent);
   NodePtr create(const std::wstring& path, DWORD attributes, PSECURITY_DESCRIPTOR security);
   void rename(const std::wstring& from, const std::wstring& to, bool replace);
@@ -174,7 +175,8 @@ class Store {
   std::set<sqlite3_int64> importedTrees;
   bool gitIncompatible = false;
   void importGitDirectory(const NodePtr& parent);
-  NodePtr import(const NodePtr& parent, const std::wstring& name, const std::wstring& origin);
+  NodePtr import(const NodePtr& parent, const std::wstring& name, const std::wstring& origin,
+                 bool batchedImport);
   std::pair<NodePtr, std::wstring> parent(const std::wstring& path);
   NodePtr insert(Node value);
   void link(sqlite3_int64 parent, const std::wstring& name, sqlite3_int64 id, bool touch = true);

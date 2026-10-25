@@ -1,5 +1,14 @@
 # 初版验证记录
 
+## Local 大目录成本与目录导入事务（D170，2026-10-26）
+
+- 手动 `pnpm overlay:verify-scale` 在独占普通 NTFS 目录比较空目录、一万/十万文件；每规模三次原生挂载和生产 LocalOverlayService + AsyncStore 创建。真实挂载初始 lower 打开/枚举均为零，内容/基线对象为空；十万文件优化后生产创建 72.49～79.33 ms，原生挂载 50.72～60.95 ms，控制文件分配 233472 B（228 KiB）。计量排除夹具准备及测量进程，不包含 HTTP/Runtime 启动和 NTFS MFT/目录索引/日志，也不声称清空 OS 缓存。
+- 旧实现完整十万文件首次遍历 172.90 s、第二次 59.91 s；元数据逐文件提交。先添加原生提交计数，并用 `--count=1000` 复现每目录提交上界失败（`.local/local-scale-batch-before.log`）。仅 Local 改为一次目录枚举共享事务，独立 lookup 仍单独提交，保留 FULL、ACL/路径检查、格式和污染保护。新十万文件首次 87.33 s、第二次 26.85 s，101000 个文件/目录的导入分成 1001 次提交；SQL exec 累计由 76.29 s 降为 1.29 s。首次仍有 735024 次 lower 打开/3012 次枚举，后续路径/ACL 与重复枚举成本没有消失；一组同机前后数据不能证明通用加速比例。
+- 首次遍历只建立命名空间元数据，控制文件分配 67788800 B（约 64.65 MiB），内容/基线仍为零；读取 32 个文件仍不复制内容。双私有层同文件分别保留 A/B，来源不变。64 MiB 文件单字节写入约 145 ms，新增约 128 MiB 原文/私有内容，是完整文件 copy-up。原始报告 `.local/local-overlay-scale-vDkGzH/report.json`、`.local/local-overlay-scale-GuBqgG/report.json`，去来源路径摘要见 [大目录成本报告](local-overlay-scale-results.json)。
+- 原生 `-VerifyImport -VerifyReparse` 通过（`.local/local-scale-native-tests.log`）：实际 Store/SQLite 验证一次目录提交、持久 inode、新 lower 文件可见、独立 lookup，以及第二个 node 插入时故障导致整批 rollback、poison、拒绝 clean 与拒绝 restore。链接解析原回归也通过。首次构建误选只有源码头文件的 SDK 目录，链接找不到 lib；改用已存在的完整 extracted/DYNAMIC 后构建通过，无安装变化。
+- 真实 WinFsp `overlay:verify-policy/capture/refresh/epochs` 均通过，日志为 `.local/local-scale-{policy,capture,refresh,epochs}.log`；刷新/代次脚本的预期故障保留 error 收据，不算成功卸载。没有 Sandbox Runtime/真实模型/Evaluation，也未重启实际服务或执行 Repair。此结果不证明 v18 安装发布链路、真实大型工程构建或 POSIX；完整目标仍在进行。
+- 最终 `pnpm check` 通过：148 个测试文件、1168 passed / 1 existing skipped，类型/lint/格式及构建通过（`.local/local-scale-check.log`）；原生构建保留既有 SDK 对齐和成员遮蔽警告。最终脚本的 `--count=1000` 真实挂载烟测通过（`.local/local-scale-final-smoke.log`），所有自身挂载正常关闭，只读进程检查没有 overlay helper 残留。本轮未改 UI/HTTP/SSE，不重复浏览器验收。
+
 ## 隔离 Local 公开创建与历史状态（D170，2026-10-26）
 
 - 新增显式“隔离 Local”创建表单和 `localOverlay:{id}` 请求，不改变默认 Riftri 或 Worktree。非 Git 来源、稳定请求重试、来源项目分组和实际执行目录分别保留；列表/快照/历史分页返回独立元数据，区分私有、选定、发布完成、拒绝和保留，失效清单仍能查看历史。公开创建/启动/恢复均检查 Windows 与 Sandbox 配置；能力摘要不代表 WinFsp/Runtime 安装健康。

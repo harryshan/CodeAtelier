@@ -1,0 +1,953 @@
+{
+  "description": "Local live overlay synthetic NTFS benchmark; directory import batching",
+  "timestamp": "2026-10-25T21:14:43.11Z",
+  "platform": "win32",
+  "release": "10.0.26200",
+  "node": "v26.10.0",
+  "sourceFiles": 100000,
+  "sourceFileBytes": 256,
+  "evidence": [
+    ".local/local-overlay-scale-vDkGzH/report.json",
+    ".local/local-overlay-scale-GuBqgG/report.json",
+    ".local/local-scale-batch-before.log"
+  ],
+  "before": {
+    "creates": [
+      {
+        "files": 0,
+        "sample": 0,
+        "nativeMs": 136.7484000000004,
+        "productMs": 3301.2314000000006,
+        "metrics": {
+          "version": 1,
+          "state": "metrics",
+          "treeReads": 0,
+          "infoReads": 0,
+          "blobReads": 0,
+          "blobBytes": 0,
+          "lowerOpens": 0,
+          "lowerEnumerations": 0,
+          "objectMicros": 0,
+          "sqlPrepareMicros": 31,
+          "sqlReadMicros": 3,
+          "sqlWriteMicros": 1730,
+          "sqlExecMicros": 28485,
+          "sqlReads": 1,
+          "sqlWrites": 3,
+          "accessCleanups": 0
+        },
+        "mountedDisk": {
+          "files": 4,
+          "logicalBytes": 185216,
+          "allocatedBytes": 233472
+        },
+        "stoppedDisk": {
+          "files": 2,
+          "logicalBytes": 86016,
+          "allocatedBytes": 86016
+        }
+      },
+      {
+        "files": 0,
+        "sample": 1,
+        "nativeMs": 56.86169999999947,
+        "productMs": 84.40159999999923,
+        "metrics": {
+          "version": 1,
+          "state": "metrics",
+          "treeReads": 0,
+          "infoReads": 0,
+          "blobReads": 0,
+          "blobBytes": 0,
+          "lowerOpens": 0,
+          "lowerEnumerations": 0,
+          "objectMicros": 0,
+          "sqlPrepareMicros": 38,
+          "sqlReadMicros": 4,
+          "sqlWriteMicros": 1548,
+          "sqlExecMicros": 13827,
+          "sqlReads": 1,
+          "sqlWrites": 3,
+          "accessCleanups": 0
+        },
+        "mountedDisk": {
+          "files": 4,
+          "logicalBytes": 185216,
+          "allocatedBytes": 233472
+        },
+        "stoppedDisk": {
+          "files": 2,
+          "logicalBytes": 86016,
+          "allocatedBytes": 86016
+        }
+      },
+      {
+        "files": 0,
+        "sample": 2,
+        "nativeMs": 61.34699999999975,
+        "productMs": 74.8078000000005,
+        "metrics": {
+          "version": 1,
+          "state": "metrics",
+          "treeReads": 0,
+          "infoReads": 0,
+          "blobReads": 0,
+          "blobBytes": 0,
+          "lowerOpens": 0,
+          "lowerEnumerations": 0,
+          "objectMicros": 0,
+          "sqlPrepareMicros": 44,
+          "sqlReadMicros": 4,
+          "sqlWriteMicros": 2387,
+          "sqlExecMicros": 16637,
+          "sqlReads": 1,
+          "sqlWrites": 3,
+          "accessCleanups": 0
+        },
+        "mountedDisk": {
+          "files": 4,
+          "logicalBytes": 185216,
+          "allocatedBytes": 233472
+        },
+        "stoppedDisk": {
+          "files": 2,
+          "logicalBytes": 86016,
+          "allocatedBytes": 86016
+        }
+      },
+      {
+        "files": 10000,
+        "sample": 0,
+        "nativeMs": 50.598799999999756,
+        "productMs": 73.84179999999833,
+        "metrics": {
+          "version": 1,
+          "state": "metrics",
+          "treeReads": 0,
+          "infoReads": 0,
+          "blobReads": 0,
+          "blobBytes": 0,
+          "lowerOpens": 0,
+          "lowerEnumerations": 0,
+          "objectMicros": 0,
+          "sqlPrepareMicros": 52,
+          "sqlReadMicros": 3,
+          "sqlWriteMicros": 1582,
+          "sqlExecMicros": 12614,
+          "sqlReads": 1,
+          "sqlWrites": 3,
+          "accessCleanups": 0
+        },
+        "mountedDisk": {
+          "files": 4,
+          "logicalBytes": 185216,
+          "allocatedBytes": 299008
+        },
+        "stoppedDisk": {
+          "files": 2,
+          "logicalBytes": 86016,
+          "allocatedBytes": 86016
+        }
+      },
+      {
+        "files": 10000,
+        "sample": 1,
+        "nativeMs": 52.674699999999575,
+        "productMs": 81.8044000000009,
+        "metrics": {
+          "version": 1,
+          "state": "metrics",
+          "treeReads": 0,
+          "infoReads": 0,
+          "blobReads": 0,
+          "blobBytes": 0,
+          "lowerOpens": 0,
+          "lowerEnumerations": 0,
+          "objectMicros": 0,
+          "sqlPrepareMicros": 29,
+          "sqlReadMicros": 3,
+          "sqlWriteMicros": 1799,
+          "sqlExecMicros": 12335,
+          "sqlReads": 1,
+          "sqlWrites": 3,
+          "accessCleanups": 0
+        },
+        "mountedDisk": {
+          "files": 4,
+          "logicalBytes": 185216,
+          "allocatedBytes": 299008
+        },
+        "stoppedDisk": {
+          "files": 2,
+          "logicalBytes": 86016,
+          "allocatedBytes": 86016
+        }
+      },
+      {
+        "files": 10000,
+        "sample": 2,
+        "nativeMs": 54.03189999999813,
+        "productMs": 83.78820000000269,
+        "metrics": {
+          "version": 1,
+          "state": "metrics",
+          "treeReads": 0,
+          "infoReads": 0,
+          "blobReads": 0,
+          "blobBytes": 0,
+          "lowerOpens": 0,
+          "lowerEnumerations": 0,
+          "objectMicros": 0,
+          "sqlPrepareMicros": 29,
+          "sqlReadMicros": 4,
+          "sqlWriteMicros": 1860,
+          "sqlExecMicros": 11748,
+          "sqlReads": 1,
+          "sqlWrites": 3,
+          "accessCleanups": 0
+        },
+        "mountedDisk": {
+          "files": 4,
+          "logicalBytes": 185216,
+          "allocatedBytes": 188416
+        },
+        "stoppedDisk": {
+          "files": 2,
+          "logicalBytes": 86016,
+          "allocatedBytes": 86016
+        }
+      },
+      {
+        "files": 100000,
+        "sample": 0,
+        "nativeMs": 53.87960000000021,
+        "productMs": 72.5601999999999,
+        "metrics": {
+          "version": 1,
+          "state": "metrics",
+          "treeReads": 0,
+          "infoReads": 0,
+          "blobReads": 0,
+          "blobBytes": 0,
+          "lowerOpens": 0,
+          "lowerEnumerations": 0,
+          "objectMicros": 0,
+          "sqlPrepareMicros": 33,
+          "sqlReadMicros": 4,
+          "sqlWriteMicros": 1688,
+          "sqlExecMicros": 12012,
+          "sqlReads": 1,
+          "sqlWrites": 3,
+          "accessCleanups": 0
+        },
+        "mountedDisk": {
+          "files": 4,
+          "logicalBytes": 185216,
+          "allocatedBytes": 299008
+        },
+        "stoppedDisk": {
+          "files": 2,
+          "logicalBytes": 86016,
+          "allocatedBytes": 86016
+        }
+      },
+      {
+        "files": 100000,
+        "sample": 1,
+        "nativeMs": 48.25040000000081,
+        "productMs": 78.39909999999873,
+        "metrics": {
+          "version": 1,
+          "state": "metrics",
+          "treeReads": 0,
+          "infoReads": 0,
+          "blobReads": 0,
+          "blobBytes": 0,
+          "lowerOpens": 0,
+          "lowerEnumerations": 0,
+          "objectMicros": 0,
+          "sqlPrepareMicros": 28,
+          "sqlReadMicros": 3,
+          "sqlWriteMicros": 1760,
+          "sqlExecMicros": 11302,
+          "sqlReads": 1,
+          "sqlWrites": 3,
+          "accessCleanups": 0
+        },
+        "mountedDisk": {
+          "files": 4,
+          "logicalBytes": 185216,
+          "allocatedBytes": 299008
+        },
+        "stoppedDisk": {
+          "files": 2,
+          "logicalBytes": 86016,
+          "allocatedBytes": 86016
+        }
+      },
+      {
+        "files": 100000,
+        "sample": 2,
+        "nativeMs": 56.08689999999842,
+        "productMs": 87.89010000000053,
+        "metrics": {
+          "version": 1,
+          "state": "metrics",
+          "treeReads": 0,
+          "infoReads": 0,
+          "blobReads": 0,
+          "blobBytes": 0,
+          "lowerOpens": 0,
+          "lowerEnumerations": 0,
+          "objectMicros": 0,
+          "sqlPrepareMicros": 29,
+          "sqlReadMicros": 3,
+          "sqlWriteMicros": 1577,
+          "sqlExecMicros": 12810,
+          "sqlReads": 1,
+          "sqlWrites": 3,
+          "accessCleanups": 0
+        },
+        "mountedDisk": {
+          "files": 4,
+          "logicalBytes": 185216,
+          "allocatedBytes": 233472
+        },
+        "stoppedDisk": {
+          "files": 2,
+          "logicalBytes": 86016,
+          "allocatedBytes": 86016
+        }
+      }
+    ],
+    "access": {
+      "sourceWalk": {
+        "ms": 96.74910000000091,
+        "value": 100000
+      },
+      "firstWalk": {
+        "ms": 172897.72770000002,
+        "value": 100000
+      },
+      "firstMetrics": {
+        "version": 1,
+        "state": "metrics",
+        "treeReads": 0,
+        "infoReads": 0,
+        "blobReads": 0,
+        "blobBytes": 0,
+        "lowerOpens": 735024,
+        "lowerEnumerations": 3012,
+        "objectMicros": 0,
+        "sqlPrepareMicros": 5218369,
+        "sqlReadMicros": 1644081,
+        "sqlWriteMicros": 1607052,
+        "sqlExecMicros": 76288117,
+        "sqlReads": 1474015,
+        "sqlWrites": 304004,
+        "accessCleanups": 1001
+      },
+      "firstDisk": {
+        "total": {
+          "files": 4,
+          "logicalBytes": 68693664,
+          "allocatedBytes": 68734976
+        },
+        "objects": {
+          "files": 0,
+          "logicalBytes": 0,
+          "allocatedBytes": 0
+        },
+        "baselines": {
+          "files": 0,
+          "logicalBytes": 0,
+          "allocatedBytes": 0
+        }
+      },
+      "secondWalk": {
+        "ms": 59913.86560000002,
+        "value": 100000
+      },
+      "read32Ms": 85.96630000000005,
+      "afterReads": {
+        "total": {
+          "files": 4,
+          "logicalBytes": 68710048,
+          "allocatedBytes": 68751360
+        },
+        "objects": {
+          "files": 0,
+          "logicalBytes": 0,
+          "allocatedBytes": 0
+        },
+        "baselines": {
+          "files": 0,
+          "logicalBytes": 0,
+          "allocatedBytes": 0
+        }
+      },
+      "finalMetrics": {
+        "version": 1,
+        "state": "metrics",
+        "treeReads": 0,
+        "infoReads": 0,
+        "blobReads": 0,
+        "blobBytes": 0,
+        "lowerOpens": 1470208,
+        "lowerEnumerations": 6024,
+        "objectMicros": 0,
+        "sqlPrepareMicros": 8458134,
+        "sqlReadMicros": 3137264,
+        "sqlWriteMicros": 2444247,
+        "sqlExecMicros": 76288117,
+        "sqlReads": 3049605,
+        "sqlWrites": 305101,
+        "accessCleanups": 2034
+      }
+    },
+    "largeWrite": {
+      "sourceBytes": 67108864,
+      "changedBytes": 1,
+      "ms": 138.55829999997513,
+      "before": {
+        "total": {
+          "files": 6,
+          "logicalBytes": 68710313,
+          "allocatedBytes": 68751632
+        },
+        "objects": {
+          "files": 1,
+          "logicalBytes": 9,
+          "allocatedBytes": 16
+        },
+        "baselines": {
+          "files": 1,
+          "logicalBytes": 256,
+          "allocatedBytes": 256
+        }
+      },
+      "after": {
+        "total": {
+          "files": 8,
+          "logicalBytes": 202928041,
+          "allocatedBytes": 202969360
+        },
+        "objects": {
+          "files": 2,
+          "logicalBytes": 67108873,
+          "allocatedBytes": 67108880
+        },
+        "baselines": {
+          "files": 2,
+          "logicalBytes": 67109120,
+          "allocatedBytes": 67109120
+        }
+      }
+    }
+  },
+  "after": {
+    "creates": [
+      {
+        "files": 0,
+        "sample": 0,
+        "nativeMs": 145.15240000000085,
+        "productMs": 98.07150000000001,
+        "metrics": {
+          "version": 1,
+          "state": "metrics",
+          "treeReads": 0,
+          "infoReads": 0,
+          "blobReads": 0,
+          "blobBytes": 0,
+          "lowerOpens": 0,
+          "lowerEnumerations": 0,
+          "lowerImportCommits": 0,
+          "objectMicros": 0,
+          "sqlPrepareMicros": 30,
+          "sqlReadMicros": 4,
+          "sqlWriteMicros": 1622,
+          "sqlExecMicros": 36919,
+          "sqlReads": 1,
+          "sqlWrites": 3,
+          "accessCleanups": 0
+        },
+        "mountedDisk": {
+          "files": 4,
+          "logicalBytes": 185216,
+          "allocatedBytes": 233472
+        },
+        "stoppedDisk": {
+          "files": 2,
+          "logicalBytes": 86016,
+          "allocatedBytes": 86016
+        }
+      },
+      {
+        "files": 0,
+        "sample": 1,
+        "nativeMs": 67.61210000000028,
+        "productMs": 75.98999999999978,
+        "metrics": {
+          "version": 1,
+          "state": "metrics",
+          "treeReads": 0,
+          "infoReads": 0,
+          "blobReads": 0,
+          "blobBytes": 0,
+          "lowerOpens": 0,
+          "lowerEnumerations": 0,
+          "lowerImportCommits": 0,
+          "objectMicros": 0,
+          "sqlPrepareMicros": 34,
+          "sqlReadMicros": 4,
+          "sqlWriteMicros": 2362,
+          "sqlExecMicros": 15537,
+          "sqlReads": 1,
+          "sqlWrites": 3,
+          "accessCleanups": 0
+        },
+        "mountedDisk": {
+          "files": 4,
+          "logicalBytes": 185216,
+          "allocatedBytes": 233472
+        },
+        "stoppedDisk": {
+          "files": 2,
+          "logicalBytes": 86016,
+          "allocatedBytes": 86016
+        }
+      },
+      {
+        "files": 0,
+        "sample": 2,
+        "nativeMs": 54.01540000000023,
+        "productMs": 72.64919999999984,
+        "metrics": {
+          "version": 1,
+          "state": "metrics",
+          "treeReads": 0,
+          "infoReads": 0,
+          "blobReads": 0,
+          "blobBytes": 0,
+          "lowerOpens": 0,
+          "lowerEnumerations": 0,
+          "lowerImportCommits": 0,
+          "objectMicros": 0,
+          "sqlPrepareMicros": 35,
+          "sqlReadMicros": 4,
+          "sqlWriteMicros": 1835,
+          "sqlExecMicros": 15471,
+          "sqlReads": 1,
+          "sqlWrites": 3,
+          "accessCleanups": 0
+        },
+        "mountedDisk": {
+          "files": 4,
+          "logicalBytes": 185216,
+          "allocatedBytes": 233472
+        },
+        "stoppedDisk": {
+          "files": 2,
+          "logicalBytes": 86016,
+          "allocatedBytes": 86016
+        }
+      },
+      {
+        "files": 10000,
+        "sample": 0,
+        "nativeMs": 54.6849000000002,
+        "productMs": 74.67540000000008,
+        "metrics": {
+          "version": 1,
+          "state": "metrics",
+          "treeReads": 0,
+          "infoReads": 0,
+          "blobReads": 0,
+          "blobBytes": 0,
+          "lowerOpens": 0,
+          "lowerEnumerations": 0,
+          "lowerImportCommits": 0,
+          "objectMicros": 0,
+          "sqlPrepareMicros": 29,
+          "sqlReadMicros": 3,
+          "sqlWriteMicros": 1657,
+          "sqlExecMicros": 14830,
+          "sqlReads": 1,
+          "sqlWrites": 3,
+          "accessCleanups": 0
+        },
+        "mountedDisk": {
+          "files": 4,
+          "logicalBytes": 185216,
+          "allocatedBytes": 233472
+        },
+        "stoppedDisk": {
+          "files": 2,
+          "logicalBytes": 86016,
+          "allocatedBytes": 86016
+        }
+      },
+      {
+        "files": 10000,
+        "sample": 1,
+        "nativeMs": 55.53930000000037,
+        "productMs": 88.09369999999944,
+        "metrics": {
+          "version": 1,
+          "state": "metrics",
+          "treeReads": 0,
+          "infoReads": 0,
+          "blobReads": 0,
+          "blobBytes": 0,
+          "lowerOpens": 0,
+          "lowerEnumerations": 0,
+          "lowerImportCommits": 0,
+          "objectMicros": 0,
+          "sqlPrepareMicros": 28,
+          "sqlReadMicros": 3,
+          "sqlWriteMicros": 1661,
+          "sqlExecMicros": 17145,
+          "sqlReads": 1,
+          "sqlWrites": 3,
+          "accessCleanups": 0
+        },
+        "mountedDisk": {
+          "files": 4,
+          "logicalBytes": 185216,
+          "allocatedBytes": 233472
+        },
+        "stoppedDisk": {
+          "files": 2,
+          "logicalBytes": 86016,
+          "allocatedBytes": 86016
+        }
+      },
+      {
+        "files": 10000,
+        "sample": 2,
+        "nativeMs": 52.26100000000042,
+        "productMs": 71.64199999999983,
+        "metrics": {
+          "version": 1,
+          "state": "metrics",
+          "treeReads": 0,
+          "infoReads": 0,
+          "blobReads": 0,
+          "blobBytes": 0,
+          "lowerOpens": 0,
+          "lowerEnumerations": 0,
+          "lowerImportCommits": 0,
+          "objectMicros": 0,
+          "sqlPrepareMicros": 38,
+          "sqlReadMicros": 6,
+          "sqlWriteMicros": 1677,
+          "sqlExecMicros": 11716,
+          "sqlReads": 1,
+          "sqlWrites": 3,
+          "accessCleanups": 0
+        },
+        "mountedDisk": {
+          "files": 4,
+          "logicalBytes": 185216,
+          "allocatedBytes": 233472
+        },
+        "stoppedDisk": {
+          "files": 2,
+          "logicalBytes": 86016,
+          "allocatedBytes": 86016
+        }
+      },
+      {
+        "files": 100000,
+        "sample": 0,
+        "nativeMs": 50.72479999999996,
+        "productMs": 79.32880000000114,
+        "metrics": {
+          "version": 1,
+          "state": "metrics",
+          "treeReads": 0,
+          "infoReads": 0,
+          "blobReads": 0,
+          "blobBytes": 0,
+          "lowerOpens": 0,
+          "lowerEnumerations": 0,
+          "lowerImportCommits": 0,
+          "objectMicros": 0,
+          "sqlPrepareMicros": 31,
+          "sqlReadMicros": 3,
+          "sqlWriteMicros": 1737,
+          "sqlExecMicros": 11639,
+          "sqlReads": 1,
+          "sqlWrites": 3,
+          "accessCleanups": 0
+        },
+        "mountedDisk": {
+          "files": 4,
+          "logicalBytes": 185216,
+          "allocatedBytes": 233472
+        },
+        "stoppedDisk": {
+          "files": 2,
+          "logicalBytes": 86016,
+          "allocatedBytes": 86016
+        }
+      },
+      {
+        "files": 100000,
+        "sample": 1,
+        "nativeMs": 53.71090000000186,
+        "productMs": 72.49399999999878,
+        "metrics": {
+          "version": 1,
+          "state": "metrics",
+          "treeReads": 0,
+          "infoReads": 0,
+          "blobReads": 0,
+          "blobBytes": 0,
+          "lowerOpens": 0,
+          "lowerEnumerations": 0,
+          "lowerImportCommits": 0,
+          "objectMicros": 0,
+          "sqlPrepareMicros": 34,
+          "sqlReadMicros": 3,
+          "sqlWriteMicros": 1587,
+          "sqlExecMicros": 12420,
+          "sqlReads": 1,
+          "sqlWrites": 3,
+          "accessCleanups": 0
+        },
+        "mountedDisk": {
+          "files": 4,
+          "logicalBytes": 185216,
+          "allocatedBytes": 233472
+        },
+        "stoppedDisk": {
+          "files": 2,
+          "logicalBytes": 86016,
+          "allocatedBytes": 86016
+        }
+      },
+      {
+        "files": 100000,
+        "sample": 2,
+        "nativeMs": 60.950700000001234,
+        "productMs": 73.42289999999775,
+        "metrics": {
+          "version": 1,
+          "state": "metrics",
+          "treeReads": 0,
+          "infoReads": 0,
+          "blobReads": 0,
+          "blobBytes": 0,
+          "lowerOpens": 0,
+          "lowerEnumerations": 0,
+          "lowerImportCommits": 0,
+          "objectMicros": 0,
+          "sqlPrepareMicros": 33,
+          "sqlReadMicros": 5,
+          "sqlWriteMicros": 3369,
+          "sqlExecMicros": 17846,
+          "sqlReads": 1,
+          "sqlWrites": 3,
+          "accessCleanups": 0
+        },
+        "mountedDisk": {
+          "files": 4,
+          "logicalBytes": 185216,
+          "allocatedBytes": 233472
+        },
+        "stoppedDisk": {
+          "files": 2,
+          "logicalBytes": 86016,
+          "allocatedBytes": 86016
+        }
+      }
+    ],
+    "access": {
+      "sourceWalk": {
+        "ms": 104.36479999999938,
+        "value": 100000
+      },
+      "firstWalk": {
+        "ms": 87328.607,
+        "value": 100000
+      },
+      "firstMetrics": {
+        "version": 1,
+        "state": "metrics",
+        "treeReads": 0,
+        "infoReads": 0,
+        "blobReads": 0,
+        "blobBytes": 0,
+        "lowerOpens": 735024,
+        "lowerEnumerations": 3012,
+        "lowerImportCommits": 1001,
+        "objectMicros": 0,
+        "sqlPrepareMicros": 4434353,
+        "sqlReadMicros": 869034,
+        "sqlWriteMicros": 1485322,
+        "sqlExecMicros": 1290352,
+        "sqlReads": 1474015,
+        "sqlWrites": 304004,
+        "accessCleanups": 1001
+      },
+      "firstDisk": {
+        "total": {
+          "files": 4,
+          "logicalBytes": 67756112,
+          "allocatedBytes": 67788800
+        },
+        "objects": {
+          "files": 0,
+          "logicalBytes": 0,
+          "allocatedBytes": 0
+        },
+        "baselines": {
+          "files": 0,
+          "logicalBytes": 0,
+          "allocatedBytes": 0
+        }
+      },
+      "secondWalk": {
+        "ms": 26851.19710000002,
+        "value": 100000
+      },
+      "read32Ms": 67.84819999997853,
+      "afterReads": {
+        "total": {
+          "files": 4,
+          "logicalBytes": 68784208,
+          "allocatedBytes": 68816896
+        },
+        "objects": {
+          "files": 0,
+          "logicalBytes": 0,
+          "allocatedBytes": 0
+        },
+        "baselines": {
+          "files": 0,
+          "logicalBytes": 0,
+          "allocatedBytes": 0
+        }
+      },
+      "finalMetrics": {
+        "version": 1,
+        "state": "metrics",
+        "treeReads": 0,
+        "infoReads": 0,
+        "blobReads": 0,
+        "blobBytes": 0,
+        "lowerOpens": 1470208,
+        "lowerEnumerations": 6024,
+        "lowerImportCommits": 1001,
+        "objectMicros": 0,
+        "sqlPrepareMicros": 7150463,
+        "sqlReadMicros": 1830442,
+        "sqlWriteMicros": 2305564,
+        "sqlExecMicros": 1324445,
+        "sqlReads": 3049605,
+        "sqlWrites": 305101,
+        "accessCleanups": 2034
+      }
+    },
+    "peerWrites": {
+      "a": {
+        "total": {
+          "files": 6,
+          "logicalBytes": 68784473,
+          "allocatedBytes": 68817168
+        },
+        "objects": {
+          "files": 1,
+          "logicalBytes": 9,
+          "allocatedBytes": 16
+        },
+        "baselines": {
+          "files": 1,
+          "logicalBytes": 256,
+          "allocatedBytes": 256
+        }
+      },
+      "b": {
+        "total": {
+          "files": 6,
+          "logicalBytes": 276121,
+          "allocatedBytes": 299280
+        },
+        "objects": {
+          "files": 1,
+          "logicalBytes": 9,
+          "allocatedBytes": 16
+        },
+        "baselines": {
+          "files": 1,
+          "logicalBytes": 256,
+          "allocatedBytes": 256
+        }
+      }
+    },
+    "largeWrite": {
+      "sourceBytes": 67108864,
+      "changedBytes": 1,
+      "ms": 144.6435000000056,
+      "before": {
+        "total": {
+          "files": 6,
+          "logicalBytes": 68784473,
+          "allocatedBytes": 68817168
+        },
+        "objects": {
+          "files": 1,
+          "logicalBytes": 9,
+          "allocatedBytes": 16
+        },
+        "baselines": {
+          "files": 1,
+          "logicalBytes": 256,
+          "allocatedBytes": 256
+        }
+      },
+      "after": {
+        "total": {
+          "files": 8,
+          "logicalBytes": 203002201,
+          "allocatedBytes": 203034896
+        },
+        "objects": {
+          "files": 2,
+          "logicalBytes": 67108873,
+          "allocatedBytes": 67108880
+        },
+        "baselines": {
+          "files": 2,
+          "logicalBytes": 67109120,
+          "allocatedBytes": 67109120
+        }
+      }
+    },
+    "stoppedAccess": {
+      "total": {
+        "files": 6,
+        "logicalBytes": 198746377,
+        "allocatedBytes": 198746384
+      },
+      "objects": {
+        "files": 2,
+        "logicalBytes": 67108873,
+        "allocatedBytes": 67108880
+      },
+      "baselines": {
+        "files": 2,
+        "logicalBytes": 67109120,
+        "allocatedBytes": 67109120
+      }
+    }
+  },
+  "limitations": [
+    "Synthetic local NTFS tree; no cold-cache, real build, Git or OS Sandbox claim",
+    "Allocation excludes NTFS MFT/directory/journal overhead; source preparation and measurement are excluded from operation timings",
+    "lowerOpens excludes the constant source-root identity/security handle",
+    "Service timing includes real Store binding and clean unmount, but not HTTP or Runtime startup",
+    "Read-only enumeration can persist namespace metadata; file-level copy-up copies complete content and baseline"
+  ]
+}

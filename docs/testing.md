@@ -1,5 +1,7 @@
 # 测试约定与功能覆盖
 
+Local 大目录成本与按目录导入（D170）：手动 `pnpm overlay:verify-scale`（可用 `--count=1000` 缩小夹具）记录原生/生产 Service 创建、lower 打开/枚举、首次/再次遍历、有限读取、双私有层以及 64 MiB 文件的单字节 copy-up；通过真实 AllocationSize 区分内容、基线及元数据。断言目录导入提交数不随文件数线性增长，先在旧实现复现失败。`build-winfsp-overlay.ps1 -Sdk <SDK目录> -VerifyImport` 使用真实 Store/SQLite 验证一目录一次提交、持久 inode、来源新文件可见、独立 lookup 提交，以及第二次插入故障导致整批回滚/拒绝 clean/拒绝恢复；不挂载、不修改安装态。以上均非默认 check/Evaluation；manager 单元回归兼容旧收据和新的可选导入计数。
+
 Local 公开创建与状态（D170）：`local-overlay-http.test.ts` 使用真实 Fastify/Engine/Store 和替身挂载，覆盖鉴权/CSRF、平台及 Sandbox 门禁、非 Git 来源、固定 UUID 重试、模式互斥、列表/快照/历史分页、坏清单历史可读，以及关闭 Sandbox 后已有会话启动/恢复拒绝。`local-overlay-service.test.ts` 先复现请求隔离后错误转宿主和错误执行归因，再验证不调用宿主模型、不发 fallback 事件并保留私有修改。`e2e/local-overlay.spec.ts` 用受控 HTTP/SSE 数据验证创建重试、来源分组、重载后状态、私有/已发布/拒绝/保留区分和失效提交禁用；截图检查布局。这些测试不替代 WinFsp 或安装态 Sandbox 验证。
 
 Local 模型选择工具（D170）：`local-overlay-tool.test.ts` 验证默认工具表不暴露专属能力、有界严格参数及同批竞争选择拒绝。`local-overlay-service.test.ts` 通过真实 stdio Runtime 子进程和生产 Engine 验证模型选择、撤销、普通会话伪造调用拒绝及 trace 不含命令/路径；挂载边界仍为测试替身，不证明 WinFsp/OS Sandbox。IPC 回归额外验证认证不等于启用发布能力，旧 v17 拒绝。真实安装脚本 `overlay:verify-sandbox --commands` 改用模型工具，不再从脚本直接调用 Engine 绑定命令。

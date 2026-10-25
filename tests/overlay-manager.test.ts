@@ -549,6 +549,7 @@ it("reads complete Git PoC metrics without treating them as a stop receipt", asy
     sqlReads: 3,
     sqlWrites: 2,
     accessCleanups: 1,
+    lowerImportCommits: 2,
   };
   const next = f.manager.metrics(f.id);
   f.helper.stdout.write(JSON.stringify(profiled) + "\n");

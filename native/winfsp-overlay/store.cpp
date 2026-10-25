@@ -2,6 +2,7 @@
 // 1. UTF/句柄/Query 和 Transaction 管理 Win32/数据库操作；累计计量拆分 SQL 与对象读取耗时。
 //    Git PoC 每种固定 SQL 缓存一个空闲 statement，嵌套查询独立借用；关闭连接前全部释放。
 // 2. 构造函数验证来源身份和持久格式，按需导入对象并合并目录；lower .git 永远遮蔽。
+//    Local 的目录枚举在同一事务导入新条目；独立 lookup 仍逐项提交，失败回滚污染保护不变。
 // 3. create/promote/rename/remove 持久化私有状态；旧对象保留，崩溃不猜测或回写 lower。
 // 4. security 用 Windows 继承算法合成 DACL，SetSecurity 只保存描述符，不改来源 ACL。
 // 5. 可选 GitLower 按目录事务导入不可变树，read 直接返回 blob，只有写入才物化对象。
@@ -572,7 +573,8 @@ void Store::link(sqlite3_int64 parent, const std::wstring& name, sqlite3_int64 i
   }
 }
 
-NodePtr Store::import(const NodePtr& parent, const std::wstring& name, const std::wstring& origin) {
+NodePtr Store::import(const NodePtr& parent, const std::wstring& name, const std::wstring& origin,
+                      bool batchedImport) {
   auto handle = openLower(origin);
   Node value;
   value.parent = parent->id;
@@ -587,14 +589,25 @@ NodePtr Store::import(const NodePtr& parent, const std::wstring& name, const std
         reinterpret_cast<REPARSE_DATA_BUFFER*>(value.reparse.data())->ReparseTag;
   }
   value.security = descriptor(handle.value);
-  Transaction transaction(*this);
+  std::unique_ptr<Transaction> transaction;
+  if (batchedImport) {
+    // Only list() owns this batch. Never silently skip persistence outside a transaction.
+    if (sqlite3_get_autocommit(db)) {
+      throw Error{STATUS_INVALID_DEVICE_STATE};
+    }
+  } else {
+    transaction = std::make_unique<Transaction>(*this);
+  }
   auto result = insert(std::move(value));
   link(parent->id, name, result->id, false);
-  transaction.commit();
+  if (transaction) {
+    transaction->commit();
+    ++lowerImportCommits;
+  }
   return result;
 }
 
-NodePtr Store::child(const NodePtr& parent, const std::wstring& name) {
+NodePtr Store::child(const NodePtr& parent, const std::wstring& name, bool batchedImport) {
   validName(name);
   // Check before the private namespace too: Local never exposes a gitfile.
   if (localMode && fold(name) == L".GIT") {
@@ -636,7 +649,7 @@ NodePtr Store::child(const NodePtr& parent, const std::wstring& name) {
     return node(imported.number(0));
   }
   auto origin = parent->origin == L"\\" ? L"\\" + name : parent->origin + L"\\" + name;
-  return import(parent, name, origin);
+  return import(parent, name, origin, batchedImport);
 }
 
 NodePtr Store::lookup(const std::wstring& path) {
@@ -774,6 +787,13 @@ std::vector<Entry> Store::list(const NodePtr& parent) {
       }
     }
     if (handle.value != INVALID_HANDLE_VALUE) {
+      // Preserve FULL durability, ACL and source validation. Batching only avoids
+      // one flush per new directory entry; it is not a snapshot of the live source.
+      std::unique_ptr<Transaction> transaction;
+      const auto changesBefore = sqlite3_total_changes(db);
+      if (localMode) {
+        transaction = std::make_unique<Transaction>(*this);
+      }
       alignas(8) BYTE buffer[65536];
       bool first = true;
       for (;;) {
@@ -792,7 +812,7 @@ std::vector<Entry> Store::list(const NodePtr& parent) {
           if (name != L"." && name != L".." &&
               !((localMode || parent->id == 1) && fold(name) == L".GIT")) {
             try {
-              child(parent, name);
+              child(parent, name, localMode);
             } catch (const Error& error) {
               if (!missing(error.status)) {
                 throw;
@@ -804,6 +824,12 @@ std::vector<Entry> Store::list(const NodePtr& parent) {
           }
           entry = reinterpret_cast<FILE_ID_BOTH_DIR_INFO*>(reinterpret_cast<BYTE*>(entry) +
                                                            entry->NextEntryOffset);
+        }
+      }
+      if (transaction) {
+        transaction->commit();
+        if (sqlite3_total_changes(db) != changesBefore) {
+          ++lowerImportCommits;
         }
       }
     }
