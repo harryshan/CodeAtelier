@@ -1,8 +1,9 @@
-// Local overlay 发布 PoC 的 Windows 原生替换，供主入口的 publish-* 短命令使用。
+// Local overlay 发布 PoC 的 Windows 文件副作用，供发布会话及保留的独立验证短命令使用。
 // 1. checkedPath/pinParents 拒绝设备、管理目录与重解析路径，持有祖先句柄防止普通路径替换。
 // 2. file/hash/security 对普通单链接有界文件校验 SHA-256 与 owner/group/DACL；不读取 SACL。
 // 3. publishReplace 给同目录候选应用原安全描述符，以 ReplaceFileW 保留原文备份并复核新结果。
 // 4. publishCleanup 在完整发布已确认后，按身份/内容打开自己的备份并用句柄删除。
+// 5. publishCreate 不覆盖同名文件；publishDelete 核对内容后按已打开句柄删除。
 // 所有 hash 使用系统 BCrypt；不写文件正文到日志，不申请额外权限，不吞掉元数据合并失败。
 // ReplaceFileW 可能部分失败，调用方必须先保存 intent 并将无成功收据视为未知；不宣称外部 rename CAS。
 #include "publish.hpp"
@@ -295,6 +296,44 @@ void publishCleanup(const std::wstring& backupName, const std::wstring& expected
   }
   FILE_DISPOSITION_INFO disposition{TRUE};
   require(SetFileInformationByHandle(handle.value, FileDispositionInfo, &disposition,
+                                     sizeof(disposition)));
+}
+void publishCreate(const std::wstring& targetName, const std::wstring& temporaryName,
+                   const std::wstring& afterHash) {
+  stage = 1;
+  requireHash(afterHash);
+  auto target = checkedPath(targetName);
+  auto temporary = checkedPath(temporaryName);
+  if (fold(target.parent_path().wstring()) != fold(temporary.parent_path().wstring()) ||
+      fold(temporary.filename().wstring()).rfind(L".CODEATELIER-PUBLISH-", 0) != 0 ||
+      fold(target.filename().wstring()).rfind(L".CODEATELIER-PUBLISH-", 0) == 0) {
+    throw Error{STATUS_INVALID_PARAMETER};
+  }
+  auto parents = pinParents(target);
+  auto candidate = file(temporary, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE);
+  if (hash(candidate.value) != afterHash) {
+    throw Error{STATUS_FILE_INVALID};
+  }
+  auto expected = identity(candidate.value);
+  // No REPLACE_EXISTING: a competing creation must never be overwritten.
+  require(MoveFileExW(extended(temporary).c_str(), extended(target).c_str(), MOVEFILE_WRITE_THROUGH));
+  auto result = file(target, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE);
+  if (identity(result.value) != expected || hash(result.value) != afterHash) {
+    throw Error{STATUS_FILE_INVALID};
+  }
+}
+
+void publishDelete(const std::wstring& targetName, const std::wstring& beforeHash) {
+  stage = 1;
+  requireHash(beforeHash);
+  auto target = checkedPath(targetName);
+  auto parents = pinParents(target);
+  auto original = file(target, GENERIC_READ | DELETE, FILE_SHARE_READ);
+  if (hash(original.value) != beforeHash) {
+    throw Error{STATUS_FILE_INVALID};
+  }
+  FILE_DISPOSITION_INFO disposition{TRUE};
+  require(SetFileInformationByHandle(original.value, FileDispositionInfo, &disposition,
                                      sizeof(disposition)));
 }
 }  // namespace overlay

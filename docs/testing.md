@@ -2,6 +2,8 @@
 
 所有功能开发均须配套合理的单元/回归测试，测试和文档属于功能交付的一部分。不要等全部开发结束后才首次运行测试。
 
+Local 执行租约与未知恢复（D170）：`local-overlay-publication-lease.test.ts` 覆盖单请求/收据绑定、退出等待、原生拒绝后排空、异常输出/退出及正常关闭不误报取消；`local-overlay-unknown-recovery.test.ts` 覆盖旧日志拒绝、审核版本失效、明确接受当前现场、决定后解锁失败重试、新锁保留和 aborted 残留锁。原生排他不靠 mock 声称通过：`pnpm overlay:verify-lease` 手动验证实际进程/句柄、首写后进程退出和恢复后新批次继续。`overlay:verify-drain` 增加终止发布 helper 的候选树排空。均不触发 Evaluation 或修改真实项目。
+
 Local 完成态恢复（D170）：`local-overlay-refresh-recovery.test.ts` 使用真实磁盘/SQLite，覆盖完成来源不重放、冻结标识重绑、原确认及恢复回执丢失、后来私有修改/同字节重写拒绝、旧日志证明缺失、日志归属/版本和 unknown 锁保留。`pnpm overlay:verify-recovery` 手动使用真实 WinFsp 与独立 Node 发布/恢复进程，验证干净卸载重启后来源及私有后续修改保留、未选产物和幂等确认。该脚本不进入默认 check/Evaluation，不代表 dirty 卷、未知发布或 Sandbox 产品恢复通过。
 
 ## 开发流程

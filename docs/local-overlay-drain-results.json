@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-10-25T16:30:32.624Z",
+  "timestamp": "2026-10-25T17:23:51.835Z",
   "platform": "win32",
   "release": "10.0.26200",
   "node": "v26.10.0",
@@ -19,6 +19,14 @@
       "validationTreeExited": true,
       "secondFileUntouched": true,
       "helperExit": "injected; not cleanly restorable"
+    },
+    {
+      "phase": "execution",
+      "journal": "aborted",
+      "callbackDrained": true,
+      "validationTreeExited": true,
+      "secondFileUntouched": true,
+      "helperExit": "publication helper killed; view cleanly stopped; execution lock retained"
     }
   ],
   "limitations": [

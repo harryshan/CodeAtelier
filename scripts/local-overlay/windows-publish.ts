@@ -1,5 +1,5 @@
 /**
- * 宿主 Publisher 调用固定 WinFsp helper 的 Windows 发布短命令。
+ * 独立原生验证脚本调用固定 WinFsp helper 的 Windows 发布短命令；Publisher 已使用 PublicationLease。
  * 1. windowsReplace 传已核对的路径及前后 SHA-256，要求退出成功和有界结构化收据同时成立。
  * 2. windowsCleanup 仅传完整发布收据记录的备份身份和原文哈希，原生按句柄核对后删除。
  * 3. 超时、非零退出或协议缺失一律不推断副作用缺席；由 Publisher 保留 intent/备份与锁。

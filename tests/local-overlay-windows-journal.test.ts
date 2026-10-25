@@ -4,6 +4,7 @@
  * 2. 验证完整提交后才清理、清理冲突不降格为 aborted，以及写后错误保留 unknown 和锁。
  * 3. 原生拒绝不回退 rename；文件原文保持，副作用未知时保留候选等待核查。
  * 4. 视图刷新只在来源 complete 后执行；刷新失败不重做来源，保留可核对的 pending 请求。
+ * 5. PublicationLease 替身承载原生动作和关闭失败；真实排他、进程身份由 verify-lease 验证。
  * 不依赖已构建 helper 或系统驱动；nativeWindows 平台门禁保持真实，非 Windows 跳过这些接线测试。
  */
 import {
@@ -26,11 +27,23 @@ import { Publisher } from "../scripts/local-overlay/publisher.js";
 const native = vi.hoisted(() => ({
   windowsReplace: vi.fn(),
   windowsCleanup: vi.fn(),
+  close: vi.fn(),
 }));
-vi.mock("../scripts/local-overlay/windows-publish.js", () => native);
+vi.mock("../scripts/local-overlay/publication-lease.js", () => ({
+  PublicationLease: {
+    start: async () => ({
+      generation: randomUUID(),
+      signal: new AbortController().signal,
+      replace: native.windowsReplace,
+      cleanup: native.windowsCleanup,
+      close: native.close,
+    }),
+  },
+}));
 const windows = it.runIf(process.platform === "win32");
 
 beforeEach(() => {
+  native.close.mockReset().mockResolvedValue(undefined);
   native.windowsReplace
     .mockReset()
     .mockImplementation(async (target: string, temporary: string) => {
@@ -43,6 +56,31 @@ beforeEach(() => {
     .mockReset()
     .mockImplementation(async (backup: string) => unlink(backup));
 });
+
+windows(
+  "keeps complete source and its coordination lock if execution close is unconfirmed",
+  async () => {
+    const f = await fixture();
+    native.close.mockRejectedValueOnce(new Error("Close unconfirmed"));
+    await expect(
+      f.publisher.publish(f.batch, {
+        nativeWindows: true,
+        validate: async () => {},
+      }),
+    ).rejects.toThrow("Close unconfirmed");
+    expect((await f.publisher.inspect(f.batch)).state).toBe("complete");
+    expect(await readFile(path.join(f.source, "file.txt"), "utf8")).toBe(
+      "new\n",
+    );
+    await expect(
+      f.publisher.publish(f.batch, {
+        nativeWindows: true,
+        validate: async () => {},
+        lockTimeoutMs: 10,
+      }),
+    ).rejects.toThrow("LOCK_BUSY_OR_RECOVERY_REQUIRED");
+  },
+);
 
 async function fixture() {
   const directory = await temp();

@@ -1,5 +1,14 @@
 # 初版验证记录
 
+## Local 原生执行租约与未知现场恢复（D170，2026-10-26）
+
+- 新增持独占句柄的单进程发布会话，记录宿主/helper 的 PID、创建时间、generation 和显式 finish。替换、新建、删除、备份清理串行执行；检查模式不能写来源，仅能按哈希/句柄释放固定协调锁。正常关闭不触发失败取消，失败/未知状态不伪造 finish。
+- 原生构建通过（`.local/local-overlay-lease-build.log`，只有既有 SDK 对齐 warning）。`overlay:verify-lease` 通过（`.local/local-overlay-lease-qUMj1k/report.json`）：活跃 helper、宿主仍活跃、孤儿 helper 和错误 generation 均拒绝；首写后宿主直接退出，第二文件未写、原备份和锁保留。陈旧审核拒绝；重新审核后明确接受当前现场，不重放/回滚，新的批次可继续，旧决定重试不删除新锁。[摘要](local-overlay-lease-results.json)。
+- 发布接线复验通过：刷新 `.local/local-overlay-refresh-sMNJKZ/report.json`、完成态恢复 `.local/local-overlay-recovery-NDzDT5/report.json`、原生 ACL/拒绝路径 `.local/local-overlay-publish-QsT8nm/report.json`。故障排空脚本先因旧 signal 对象身份断言失败，改为验证组合信号的实际取消，并增加发布 helper 强杀场景；最终 `.local/local-overlay-drain-6Pnus3/report.json` 通过，真实候选父子进程退出、来源未改，执行未确认的锁保留。
+- 这是宿主 Windows/NTFS 夹具，不代表产品自动恢复或 Sandbox 生命周期通过。缺少执行证明的旧日志不迁移；孤立未建 journal 的租约、dirty 私有卷、POSIX 与产品审核入口仍待处理。没有安装/Repair、真实服务重启或 Evaluation。
+- 首次完整检查有两项旧测试失败：`local-overlay-windows-journal` 仍替换旧短命令适配器，注入未进入新的发布会话。已更新替身并保留原断言；增加 complete 后执行关闭未确认仍保留锁的用例，针对性 9 项通过。首次证据保留于 `.local/local-overlay-lease-check-before-adapter.log`，不把它当最终通过结果。
+- 最终 `pnpm check` 全部通过：140 个测试文件、1073 passed / 1 existing skipped，类型/lint/格式及 Web/Windows/POSIX Runtime 构建通过（`.local/local-overlay-lease-check.log`）。最终执行租约验证报告已刷新为 `.local/local-overlay-lease-qUMj1k/report.json`；只读进程检查无遗留 overlay helper。没有 UI/HTTP/SSE 变更，不运行 e2e/Evaluation。
+
 ## Local 完成态视图恢复（D170，2026-10-26）
 
 - 为显式所选 B/O 保存控制目录身份、映射、关联代次和物理文件版本检查点；创建时不增加来源扫描。完成来源的恢复只操作确认与私有日志；unknown/applying 和已有未知锁不接管。

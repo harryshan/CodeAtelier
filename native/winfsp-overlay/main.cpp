@@ -7,13 +7,15 @@
 // 6. freeze 销毁 Local dispatcher 后封存路径结果；helper 保留控制目录独占租约直到 stop。
 //    check-reads 仅在冻结后复核读依赖并返回无正文收据，路径有效性保存在私有数据库。
 //    acknowledge 以有界 hex 路径参数确认已发布选择；收据只含批次 ID/代次，下一轮重新挂载。
-// 7. publish-replace/cleanup 是宿主发布器的短命令，保留权限并返回无正文确认；不启动挂载。
+// 7. publish-replace/cleanup 保留供独立原生验证使用，保留权限并返回无正文确认；不启动挂载。
+// 8. publish-session 串行执行全部来源写入并持执行排他；inspect-publication 仅持排他核对旧 generation。
 // 不安装驱动、不创建分区、不托管网络服务；UNC 由 WinFsp 本机 MUP provider 提供。
 #include <iostream>
 #include <sstream>
 
 #include "git-lower.hpp"
 #include "publish.hpp"
+#include "publication-lease.hpp"
 #include "store.hpp"
 
 static void acknowledge(overlay::Store& store, const std::string& command) {
@@ -52,6 +54,10 @@ int wmain(int argc, wchar_t** argv) {
   using namespace overlay;
   try {
     checked(FspLoad(nullptr));
+    if (argc == 5 && (std::wstring(argv[1]) == L"publish-session" || std::wstring(argv[1]) == L"inspect-publication")) {
+      publicationSession(argv[2], argv[3], std::stoul(argv[4]), std::wstring(argv[1]) == L"inspect-publication");
+      return 0;
+    }
     if (argc == 6 && std::wstring(argv[1]) == L"publish-replace") {
       auto backup = publishReplace(argv[2], argv[3], argv[4], argv[5]);
       std::cout << "{\"version\":1,\"state\":\"published\",\"backupIdentity\":\""

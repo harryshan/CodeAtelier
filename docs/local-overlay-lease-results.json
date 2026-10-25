@@ -1,0 +1,18 @@
+{
+  "timestamp": "2026-10-25T17:31:06.416Z",
+  "platform": "win32",
+  "release": "10.0.26200",
+  "node": "v26.10.0",
+  "operations": "create/replace/cleanup/delete confirmed in one native session",
+  "exclusion": "live helper, live owner after helper kill and wrong generation rejected",
+  "orphan": "dead owner with live helper rejected; both exited permits inspection",
+  "interruptedPublisher": "first write intent preserved; second source untouched; backup and coordination lock retained",
+  "inspection": "cannot write source; original generation preserved",
+  "explicitResolution": "stale review rejected; current source accepted without replay/rollback; original backup retained",
+  "resumedPublication": "fresh batch succeeds; repeat resolution does not remove a new owner's lock",
+  "limitations": [
+    "Explicit accept-current PoC; no product review UI or automatic unknown resolution",
+    "No dirty overlay restore or external-writer CAS",
+    "Host-only NTFS fixture, not Sandbox product publication"
+  ]
+}

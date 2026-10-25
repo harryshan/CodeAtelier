@@ -4,6 +4,7 @@
  * 2. validation 例在独立候选视图运行真实 Node 父子进程，失去原视图租约后等待进程树 close，再结束发布。
  * 3. applying 例在首文件替换后终止原视图 helper，检查第二文件未写、unknown/备份/锁保留且拒绝重放。
  * 4. 所有异常挂载必须已退出但不得假装干净恢复；报告仅包含有界结果，不输出命令、路径或正文到 trace。
+ * 5. execution 例终止发布 helper，组合信号同样排空候选树；视图干净关闭，但执行租约未知仍保留来源锁。
  * 复用生产 executeProcess 的取消/树清理机制；宿主验证不代替 Sandbox 自动发布生命周期验收。
  * 仅用已安装 WinFsp/helper，不安装驱动、不重启服务、不运行 Evaluation。
  */
@@ -60,7 +61,7 @@ async function waitForAbort(signal: AbortSignal) {
   }
 }
 
-async function scenario(mode: "validation" | "applying") {
+async function scenario(mode: "validation" | "applying" | "execution") {
   const directory = path.join(root, mode);
   const source = path.join(directory, "source");
   await mkdir(source, { recursive: true });
@@ -76,7 +77,7 @@ async function scenario(mode: "validation" | "applying") {
   const publisher = new Publisher(path.join(directory, "publisher"), log);
   let batch: Batch | undefined;
   let callbackDrained = false;
-  let processDrained = mode !== "validation";
+  let processDrained = mode === "applying";
   let parentPid = 0;
   let childPid = 0;
   let faultInjected = false;
@@ -115,8 +116,9 @@ async function scenario(mode: "validation" | "applying") {
               acknowledge,
             },
             validate: async (files, validationSignal) => {
-              assert.equal(validationSignal, signal);
-              if (mode !== "validation") {
+              assert.ok(validationSignal);
+              assert.equal(validationSignal.aborted, false);
+              if (mode === "applying") {
                 return;
               }
 
@@ -133,7 +135,7 @@ async function scenario(mode: "validation" | "applying") {
                   path.join(directory, "validator"),
                   validationWorkspace,
                   true,
-                  signal,
+                  validationSignal,
                   { kind: "local" },
                 );
                 for (const [file, content] of files) {
@@ -158,7 +160,7 @@ async function scenario(mode: "validation" | "applying") {
                   process.execPath,
                   ["-e", parent, child, marker],
                   validationWorkspace,
-                  signal,
+                  validationSignal,
                   20_000,
                   8192,
                   (chunk) => {
@@ -181,9 +183,19 @@ async function scenario(mode: "validation" | "applying") {
                       throw new Error("Validation exited before barrier");
                     }),
                   ]);
-                  await killFixtureHelper(control);
+                  if (mode === "execution") {
+                    const [key] = await readdir(publisher.directory);
+                    await killFixtureHelper(
+                      path.join(publisher.directory, key!, "execution.lease"),
+                    );
+                  } else {
+                    await killFixtureHelper(control);
+                  }
+
                   faultInjected = true;
                   await running;
+                  assert.equal(validationSignal.aborted, true);
+                  assert.equal(signal.aborted, mode !== "execution");
                 } finally {
                   // executeProcess settles only after close; even a failed fault
                   // injection must await its bounded command before unmounting.
@@ -218,10 +230,10 @@ async function scenario(mode: "validation" | "applying") {
     assert.equal(processDrained, true);
     assert.ok(batch);
     const observed = await publisher.inspect(batch);
-    assert.equal(observed.state, mode === "validation" ? "aborted" : "unknown");
+    assert.equal(observed.state, mode === "applying" ? "unknown" : "aborted");
     assert.equal(
       await readFile(path.join(source, "a.txt"), "utf8"),
-      mode === "validation" ? "original\n" : "private\n",
+      mode === "applying" ? "private\n" : "original\n",
     );
     assert.equal(
       await readFile(path.join(source, "b.txt"), "utf8"),
@@ -251,7 +263,7 @@ async function scenario(mode: "validation" | "applying") {
         (await readdir(path.join(publisher.directory, keys[0]!))).includes(
           "publish.lock",
         ),
-        false,
+        mode === "execution",
       );
     }
 
@@ -261,10 +273,13 @@ async function scenario(mode: "validation" | "applying") {
       callbackDrained,
       validationTreeExited: processDrained,
       secondFileUntouched: true,
-      helperExit: "injected; not cleanly restorable",
+      helperExit:
+        mode === "execution"
+          ? "publication helper killed; view cleanly stopped; execution lock retained"
+          : "injected; not cleanly restorable",
     };
   } finally {
-    if (faultInjected) {
+    if (faultInjected && mode !== "execution") {
       await assert.rejects(manager.close());
     } else {
       await manager.close();
@@ -273,7 +288,7 @@ async function scenario(mode: "validation" | "applying") {
 }
 
 const results = [];
-for (const mode of ["validation", "applying"] as const) {
+for (const mode of ["validation", "applying", "execution"] as const) {
   results.push(await scenario(mode));
 }
 

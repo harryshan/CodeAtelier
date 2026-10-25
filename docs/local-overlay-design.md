@@ -103,11 +103,23 @@ Publisher 在候选验证和逐文件写入边界检查信号，并传给验证�
 
 恢复按来源状态分流。complete/refresh pending 可进入不写来源的恢复：仍需来源协调锁、干净冻结视图和完整 journal。若原生已有完全匹配的确认收据，只重获该收据；否则逐一核对发布前保存的私有检查点，包括控制目录身份、基线/结果映射、相关观察代次及 B/O 对象的内容与文件版本。全部未变才生成绑定当前冻结标识的新确认请求；任何后来修改、缺失证明、格式不兼容或异常私有卷均保留 pending，不丢弃内容。原请求及恢复请求分别留存，收到确认后才更新完成状态，重复恢复不写来源。
 
-unknown/applying 不走这条路径，也不因为当前内容等于候选就解锁。当前 JSON 协调锁不能独立证明旧进程及其在途原生写入全部退出，未知发布需要另外建立可验证的执行排他与人工核对协议；该要求不因完成态恢复通过而取消。所有恢复先读取，不修改真实用户数据；本轮只用新建实验夹具验证。
+unknown/applying 不走这条路径，也不因为当前内容等于候选就解锁。JSON 协调锁不能独立证明旧进程及其在途原生写入全部退出；下节的原生执行排他与明确现场接受协议单独处理未知发布。恢复验证只使用新建实验夹具，不修改真实用户数据。
 
 `Publisher.recoverRefresh` 已实现上述协议。`nativeBatch` 只为明确选择的修改补充私有检查点，额外读取/校验这些 B/O 文件，不遍历来源或在创建时计算 hash。日志读取限制类型/大小、验证批次归属并复核读取前后身份；恢复写入前检查日志摘要。原生格式仍为 v5；旧日志没有检查点时只接受已经存在的原生确认收据，不能生成未执行确认的新证明。恢复 trace 使用 `local_overlay.recover_refresh`，不记录路径、正文或版本摘要。
 
 `pnpm overlay:verify-recovery` 在独占夹具中由独立 Node 进程发布、干净卸载退出，再由新进程读取日志并恢复。确认前中断后允许未变 B/O 绑定新 seal，外部后来修改的来源保持不变且在刷新视图可见；原确认/恢复确认丢失回执后，幂等重试保留后来私有修改。未执行确认且私有状态变化时拒绝清理，未选产物始终保留。结果见 [恢复报告](local-overlay-recovery-results.json)。这是干净退出的持久恢复，不是宿主/helper 强杀、断电、未知来源解锁、Sandbox 自动发布或产品入口验收。
+
+### 未知发布执行排他与明确现场接受 PoC
+
+Windows 原生发布使用单个 `PublicationLease` helper 持有来源协调目录内的独占句柄，串行处理替换、新建、删除和备份清理；Publisher 不再为这些动作启动短命令。私有 `execution.lease` 记录宿主/helper 的 PID 与创建时间、generation 及显式结束状态。EOF/强杀不写成正常结束。检查必须取得独占句柄、核对 generation 并证明旧 helper 已终止；未显式 finish 的 active 记录还要求旧宿主已终止。权限不足、损坏记录、身份不明均保留阻塞。显式 finish 表示原生执行排空，不等于批次成功；未知来源协调锁仍保留。租约失败的信号和冻结视图信号组合后交给候选验证，任一失败都必须排空候选进程。
+
+`Publisher.reviewUnknown` 在检查租约内返回逐文件 B/O/T、记录状态和绑定 journal/锁/现场版本的审核 token，不写来源。`acceptUnknown` 明确接受当前现场，重新取排他并核对 token 后先保存 `reconciled` 决定，再由仍持排他的 native helper 按哈希和文件句柄删除固定 `publish.lock`，避免宿主 check/unlink 竞争。原批次永不重放，不补齐未发布文件、不回滚已发布文件、不确认/删除私有编辑或备份。已落盘决定而解锁失败可重试；重复已完成决定不会删除新所有者的锁。`reconciled` 不等于 complete，不能调用完成态视图确认。支持有证明的 applying/unknown，以及执行排空失败留下锁的 aborted；缺少证明的旧记录拒绝迁移。
+
+`pnpm overlay:verify-lease` 真实验证了活跃 helper、helper 已死但宿主仍活跃、宿主已死但 helper 仍活跃、双方退出、错误 generation、首文件发布后宿主直接退出，以及陈旧审核拒绝和接受当前现场后新批次继续。来源只保留已经发生的修改与外部后续修改，旧备份保留。结果见 [执行租约与未知恢复报告](local-overlay-lease-results.json)。`overlay:verify-drain` 额外覆盖发布 helper 被终止时，组合信号排空真实候选进程树；视图可干净关闭，但无法证明执行 finish 时仍保留锁。
+
+边界：这是 Windows/NTFS 宿主 PoC，不排斥非 CodeAtelier 外部写者，不声称多文件原子性或断电证明。宿主仍活跃但 helper 被强杀时保守拒绝接管；journal 建立前失败留下的孤立租约、异常私有卷恢复、产品审核入口、POSIX、对象回收及完整任务生命周期仍待接入。每个来源只新增常量大小执行记录，不扫描来源。trace 增加 `local_overlay.execution_lease` 和 `local_overlay.unknown_review/unknown_accept`，不含路径、正文、token 或版本摘要。
+
+句柄与进程终止判定依据 Windows 官方 [CreateFile 共享语义](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew)、[进程时间](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocesstimes) 和 [等待函数](https://learn.microsoft.com/en-us/windows/win32/sync/wait-functions)。
 
 ### 完整发布流程与后续产品接入
 

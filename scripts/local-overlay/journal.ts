@@ -1,8 +1,9 @@
 /**
- * 发布日志的有界读取与结构校验，供 Publisher 的观察和完成态刷新恢复使用。
+ * 发布日志的有界读取与结构校验，供 Publisher 的观察、完成态刷新和未知现场接受使用。
  * 1. loadJournal 拒绝链接/非文件/过大日志，并返回原始摘要作为后续私有写入的版本前提。
  * 2. parseJournal 校验批次、逐文件正文编码/状态与确认请求的路径归属，不相信反序列化类型断言。
  * 3. saveJournal 在来源协调锁内复核日志摘要，再沿用 durableJson 保存；不改来源文件。
+ * 4. execution 绑定原生租约 generation/锁摘要；reconciled 必须保存明确接受当前现场的逐文件版本。
  * 字段保留兼容现有实验日志；没有检查点的旧日志不能凭空生成刷新证明。外部写者不受应用锁约束。
  */
 import { lstat, open } from "node:fs/promises";
@@ -25,8 +26,15 @@ export interface Entry {
 }
 export interface Journal {
   version?: 1;
+  execution?: { version: 1; generation: string; lockDigest?: string };
   batch: Batch;
-  state: "prepared" | "applying" | "complete" | "aborted" | "unknown";
+  state:
+    "prepared" | "applying" | "complete" | "aborted" | "unknown" | "reconciled";
+  resolution?: {
+    action: "accept-current";
+    token: string;
+    files: { path: string; version: string }[];
+  };
   entries: Entry[];
   refresh?: {
     request: OverlayAcknowledgement;
@@ -51,8 +59,35 @@ const content = z
 const acknowledgement = z.unknown().transform(validateOverlayAcknowledgement);
 const schema = z.object({
   version: z.literal(1).optional(),
+  execution: z
+    .object({
+      version: z.literal(1),
+      generation: z.uuid(),
+      lockDigest: z
+        .string()
+        .regex(/^[a-f0-9]{64}$/)
+        .optional(),
+    })
+    .optional(),
   batch: z.unknown().transform(validateBatch),
-  state: z.enum(["prepared", "applying", "complete", "aborted", "unknown"]),
+  state: z.enum([
+    "prepared",
+    "applying",
+    "complete",
+    "aborted",
+    "unknown",
+    "reconciled",
+  ]),
+  resolution: z
+    .object({
+      action: z.literal("accept-current"),
+      token: z.string().regex(/^[a-f0-9]{64}$/),
+      files: z
+        .array(z.object({ path: z.string(), version: z.string() }))
+        .min(1)
+        .max(100),
+    })
+    .optional(),
   entries: z
     .array(
       z.object({
@@ -96,6 +131,15 @@ const schema = z.object({
 export function parseJournal(value: unknown): Journal {
   const journal = schema.parse(value);
   const paths = journal.batch.changes.map((change) => change.path);
+  if (
+    journal.state === "reconciled" &&
+    (!journal.resolution ||
+      JSON.stringify(journal.resolution.files.map((file) => file.path)) !==
+        JSON.stringify(paths))
+  ) {
+    throw new PublishError("JOURNAL_RESOLUTION_INVALID");
+  }
+
   if (
     JSON.stringify(paths) !==
     JSON.stringify(journal.entries.map((entry) => entry.path))

@@ -9,6 +9,8 @@
  * 7. 可选 refresh 在来源 complete 后确认私有视图；失败保留 pending 收据，不重写来源完成状态。
  * 8. signal 传给候选验证，写前和逐文件复核取消；在途原生替换等待结果，不以取消推断没有副作用。
  * 9. recoverRefresh 只恢复 complete 批次的视图确认；重读日志/私有版本，不重放来源写入或接管未知锁。
+ * 10. Windows 来源写入在单个 PublicationLease 中串行执行，finally 等待显式结束后才允许释放协调锁。
+ * 11. reviewUnknown/acceptUnknown 以执行排他核对并明确接受当前现场，不重放/回滚；保留原批次与私有内容。
  * 仅普通单链接文件/已存在父目录；新建使用不覆盖的 link，旧对照模式不保证 Windows ACL 保真。
  * 不提供外部写入 CAS、多文件原子提交、断电证明或生产服务集成；故障钩子仅供实验。
  */
@@ -30,7 +32,7 @@ import {
 } from "./files.js";
 import { equal, mergeContent, PublishError } from "./merge.js";
 import { validateBatch, type Batch } from "./session.js";
-import { windowsReplace, windowsCleanup } from "./windows-publish.js";
+import { PublicationLease } from "./publication-lease.js";
 import {
   validateOverlayAcknowledgement,
   type OverlayAcknowledgement,
@@ -38,6 +40,11 @@ import {
 import { loadJournal, type Entry, type Journal } from "./journal.js";
 import { checkpointSchema, type NativeCheckpoint } from "./native-refresh.js";
 import { recoverCompletedRefresh } from "./refresh-recovery.js";
+import {
+  unknownRecovery,
+  type UnknownReview,
+  type UnknownAccepted,
+} from "./unknown-recovery.js";
 
 export interface PublishOptions {
   validate: (
@@ -193,7 +200,12 @@ export class Publisher {
     }
   }
 
-  private async apply(journal: Journal, file: string, options: PublishOptions) {
+  private async apply(
+    journal: Journal,
+    file: string,
+    options: PublishOptions,
+    lease?: PublicationLease,
+  ) {
     for (const [index, entry] of journal.entries.entries()) {
       options.signal?.throwIfAborted();
       const before = await snapshot(journal.batch.source, entry.path);
@@ -248,10 +260,14 @@ export class Publisher {
       options.signal?.throwIfAborted();
       if (temporary) {
         if (before.content === null) {
-          await link(temporary, target);
-          await unlink(temporary);
-        } else if (options.nativeWindows) {
-          entry.backup!.identity = await windowsReplace(
+          if (lease) {
+            await lease.create(target, temporary, digest(content!));
+          } else {
+            await link(temporary, target);
+            await unlink(temporary);
+          }
+        } else if (lease) {
+          entry.backup!.identity = await lease.replace(
             target,
             temporary,
             digest(bytes(before)!),
@@ -260,6 +276,8 @@ export class Publisher {
         } else {
           await rename(temporary, target);
         }
+      } else if (lease) {
+        await lease.delete(target, digest(bytes(before)!));
       } else {
         await unlink(target);
       }
@@ -270,7 +288,11 @@ export class Publisher {
     }
   }
 
-  private async cleanupBackups(journal: Journal, file: string) {
+  private async cleanupBackups(
+    journal: Journal,
+    file: string,
+    lease: PublicationLease,
+  ) {
     let pending = 0;
     for (const entry of journal.entries) {
       if (!entry.backup?.identity) {
@@ -278,7 +300,7 @@ export class Publisher {
       }
 
       try {
-        await windowsCleanup(
+        await lease.cleanup(
           path.join(journal.batch.source.root, entry.backup.path),
           entry.backup.identity,
           digest(bytes(entry.before)!),
@@ -342,6 +364,7 @@ export class Publisher {
     const output = path.join(locations.directory, batch.id);
     this.traces.startTask(task, batch.id);
     let release: (() => Promise<void>) | undefined;
+    let lease: PublicationLease | undefined;
     let journal: Journal | undefined;
     let applying = false;
     let outcome: TraceStatus = "error";
@@ -386,11 +409,33 @@ export class Publisher {
       release = await step("queue", () =>
         this.acquire(locations.lock, options),
       );
+      if (options.nativeWindows) {
+        lease = await step("execution_lease", () =>
+          PublicationLease.start(
+            path.join(locations.directory, "execution.lease"),
+          ),
+        );
+        options = {
+          ...options,
+          signal: options.signal
+            ? AbortSignal.any([options.signal, lease.signal])
+            : lease.signal,
+        };
+      }
+
       // One sealed batch has one attempt. Retrying requires explicit fresh reads,
       // a new batch ID, and independent inspection of any previous unknown state.
       await mkdir(output);
       outputCreated = true;
       journal = await step("prepare", () => this.prepare(batch));
+      if (lease) {
+        journal.execution = {
+          version: 1,
+          generation: lease.generation,
+          lockDigest: digest(await readFile(locations.lock)),
+        };
+      }
+
       if (options.refresh) {
         journal.refresh = {
           request: structuredClone(options.refresh.request),
@@ -416,15 +461,19 @@ export class Publisher {
       await durableJson(path.join(output, "journal.json"), journal);
       applying = true;
       await step("apply", () =>
-        this.apply(journal!, path.join(output, "journal.json"), options),
+        this.apply(journal!, path.join(output, "journal.json"), options, lease),
       );
       journal.state = "complete";
       await durableJson(path.join(output, "journal.json"), journal);
       applying = false;
       outcome = "ok";
-      const cleanupPending = options.nativeWindows
+      const cleanupPending = lease
         ? await step("cleanup", () =>
-            this.cleanupBackups(journal!, path.join(output, "journal.json")),
+            this.cleanupBackups(
+              journal!,
+              path.join(output, "journal.json"),
+              lease!,
+            ),
           )
         : 0;
       let refreshPending = false;
@@ -467,6 +516,7 @@ export class Publisher {
       throw error;
     } finally {
       try {
+        await lease?.close();
         if (!applying) {
           await release?.();
         }
@@ -545,5 +595,49 @@ export class Publisher {
       acquire: () =>
         this.acquire(locations.lock, { ...options, validate: async () => {} }),
     });
+  }
+
+  async reviewUnknown(
+    input: Batch,
+    signal?: AbortSignal,
+  ): Promise<UnknownReview> {
+    const batch = validateBatch(input);
+    const locations = await this.layout(batch);
+    const result = await unknownRecovery({
+      batch,
+      directory: locations.directory,
+      log: this.log,
+      signal,
+    });
+    if (result.kind !== "review") {
+      throw new PublishError("RECOVERY_PROTOCOL");
+    }
+
+    return result;
+  }
+
+  async acceptUnknown(
+    input: Batch,
+    token: string,
+    signal?: AbortSignal,
+  ): Promise<UnknownAccepted> {
+    if (!/^[a-f0-9]{64}$/.test(token)) {
+      throw new PublishError("RECOVERY_TOKEN_INVALID");
+    }
+
+    const batch = validateBatch(input);
+    const locations = await this.layout(batch);
+    const result = await unknownRecovery({
+      batch,
+      directory: locations.directory,
+      log: this.log,
+      token,
+      signal,
+    });
+    if (result.kind !== "accepted") {
+      throw new PublishError("RECOVERY_PROTOCOL");
+    }
+
+    return result;
   }
 }
