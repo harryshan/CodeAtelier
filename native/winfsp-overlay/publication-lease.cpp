@@ -4,6 +4,7 @@
 // 3. publicationSession 在单线程 stdin 协议内调用所有来源副作用；没有短命令子进程。
 // 4. 显式 finish 才 flush closed；EOF/协议失败仍 active。检查模式不改旧记录/来源，仅可按哈希释放固定协调锁。
 // 5. 每项失败返回固定状态并封闭后续写命令；允许 finish 证明执行已排空，不等于批次成功。
+// 6. v2 记录在首次来源副作用前 flush mutated；旧 v1 一律按可能写入处理，缺失 journal 不是未开始证明。
 // 普通 OS 权限约束仍适用；不排除外部宿主写者，不承诺多文件原子提交或断电持久性。
 #include "publication-lease.hpp"
 #include "publish.hpp"
@@ -20,6 +21,7 @@ struct Record {
   DWORD helper = 0;
   UINT64 helperCreated = 0;
   std::string generation;
+  bool mutated = false;
 };
 
 UINT64 created(HANDLE process) {
@@ -70,18 +72,24 @@ Record readRecord(HANDLE file) {
   Record record;
   std::string extra;
   if (!(input >> version >> record.state >> record.owner >> record.ownerCreated >> record.helper >>
-        record.helperCreated >> record.generation) || input >> extra || version != 1 ||
+        record.helperCreated >> record.generation) || (version != 1 && version != 2) ||
       (record.state != "active" && record.state != "closed") || !record.owner || !record.ownerCreated ||
       !record.helper || !record.helperCreated || !identifier(record.generation)) {
     throw Error{STATUS_FILE_INVALID};
   }
+  unsigned mutation = 1;
+  if ((version == 2 && (!(input >> mutation) || mutation > 1)) || input >> extra) {
+    throw Error{STATUS_FILE_INVALID};
+  }
+  record.mutated = mutation != 0;
   return record;
 }
 
 void writeRecord(HANDLE file, const Record& record) {
   std::ostringstream output;
-  output << "1 " << record.state << ' ' << record.owner << ' ' << record.ownerCreated << ' '
-         << record.helper << ' ' << record.helperCreated << ' ' << record.generation << '\n';
+  output << "2 " << record.state << ' ' << record.owner << ' ' << record.ownerCreated << ' '
+         << record.helper << ' ' << record.helperCreated << ' ' << record.generation << ' '
+         << (record.mutated ? 1 : 0) << '\n';
   auto bytes = output.str();
   LARGE_INTEGER zero{};
   require(SetFilePointerEx(file, zero, nullptr, FILE_BEGIN));
@@ -153,8 +161,10 @@ void publicationSession(const std::wstring& gate, const std::wstring& generation
   std::vector<Handle> parents;
   bool fresh = false;
   auto file = openGate(gate, parents, fresh, inspection);
+  bool previousMutation = false;
   if (!fresh) {
     auto previous = readRecord(file.value);
+    previousMutation = previous.mutated;
     if (inspection && previous.generation != token) {
       throw Error{STATUS_FILE_INVALID};
     }
@@ -171,7 +181,14 @@ void publicationSession(const std::wstring& gate, const std::wstring& generation
   if (!inspection) {
     writeRecord(file.value, current);
   }
-  std::cout << "{\"version\":1,\"state\":\"publication-ready\",\"generation\":\"" << token << "\"}\n" << std::flush;
+  std::cout << "{\"version\":1,\"state\":\"publication-ready\",\"generation\":\"" << token
+            << "\",\"mutated\":" << (inspection && previousMutation ? "true" : "false") << "}\n" << std::flush;
+  auto beginWrite = [&]() {
+    if (!current.mutated) {
+      current.mutated = true;
+      writeRecord(file.value, current);
+    }
+  };
   bool failed = false;
   std::string line;
   while (std::getline(std::cin, line)) {
@@ -200,15 +217,19 @@ void publicationSession(const std::wstring& gate, const std::wstring& generation
       input >> operation >> a >> b >> c;
       if (operation == "replace") {
         if (!(input >> d) || input >> extra) { throw Error{STATUS_INVALID_PARAMETER}; }
+        beginWrite();
         auto backup = publishReplace(decoded(a), decoded(b), wide(c), wide(d));
         std::cout << "{\"version\":1,\"state\":\"published\",\"backupIdentity\":\"" << utf8(backup) << "\"}\n";
       } else if (operation == "create" && !(input >> extra)) {
+        beginWrite();
         publishCreate(decoded(a), decoded(b), wide(c));
         std::cout << "{\"version\":1,\"state\":\"created\"}\n";
       } else if (operation == "delete" && c.empty()) {
+        beginWrite();
         publishDelete(decoded(a), wide(b));
         std::cout << "{\"version\":1,\"state\":\"deleted\"}\n";
       } else if (operation == "cleanup" && !(input >> extra)) {
+        beginWrite();
         publishCleanup(decoded(a), wide(b), wide(c));
         std::cout << "{\"version\":1,\"state\":\"cleaned\"}\n";
       } else {

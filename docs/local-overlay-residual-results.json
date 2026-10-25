@@ -1,0 +1,27 @@
+{
+  "timestamp": "2026-10-25T17:49:59.185Z",
+  "platform": "win32",
+  "release": "10.0.26200",
+  "node": "v26.10.0",
+  "results": [
+    {
+      "mode": "unstarted",
+      "oldLockReleased": true,
+      "sourceAndJournalPreserved": true,
+      "nextPublicationPassed": true,
+      "newOwnerLockPreserved": true
+    },
+    {
+      "mode": "complete",
+      "oldLockReleased": true,
+      "sourceAndJournalPreserved": true,
+      "nextPublicationPassed": true,
+      "newOwnerLockPreserved": true
+    }
+  ],
+  "limitations": [
+    "Missing execution lease or old claims remain blocked",
+    "Host NTFS fixture; no dirty volume or Sandbox product recovery",
+    "No source rollback/replay or private object cleanup"
+  ]
+}

@@ -1,6 +1,6 @@
 # Local 会话文件隔离与发布：重新定界
 
-状态：2026-10-25 用户重新澄清目标（D170），随后授权继续验证并接入 agent。Overlay 与 Git worktree 完全并列，服务于同一 Local 工作区多个对话的文件修改隔离与冲突整合，不负责 Git 工作区管理。受控发布、Local WinFsp 双挂载、`.git` 屏蔽、真实 Sandbox 并行/取消/重挂载、原生捕获/冻结导出、Windows owner/group/DACL 保留发布及成功后确认/续轮刷新的 PoC 已验证；产品自动发布和恢复操作仍待接入，不改变现有服务或历史会话。
+状态：2026-10-25 用户重新澄清目标（D170），随后授权继续验证并接入 agent。Overlay 与 Git worktree 完全并列，服务于同一 Local 工作区多个对话的文件修改隔离与冲突整合，不负责 Git 工作区管理。受控发布、Local WinFsp 双挂载、`.git` 屏蔽、真实 Sandbox 并行/取消/重挂载、原生捕获/冻结导出、Windows owner/group/DACL 保留发布及成功后确认/续轮刷新的 PoC 已验证；产品自动发布和恢复入口仍待接入，不改变现有服务或历史会话。
 
 ## 需求与模式
 
@@ -117,9 +117,17 @@ Windows 原生发布使用单个 `PublicationLease` helper 持有来源协调目
 
 `pnpm overlay:verify-lease` 真实验证了活跃 helper、helper 已死但宿主仍活跃、宿主已死但 helper 仍活跃、双方退出、错误 generation、首文件发布后宿主直接退出，以及陈旧审核拒绝和接受当前现场后新批次继续。来源只保留已经发生的修改与外部后续修改，旧备份保留。结果见 [执行租约与未知恢复报告](local-overlay-lease-results.json)。`overlay:verify-drain` 额外覆盖发布 helper 被终止时，组合信号排空真实候选进程树；视图可干净关闭，但无法证明执行 finish 时仍保留锁。
 
-边界：这是 Windows/NTFS 宿主 PoC，不排斥非 CodeAtelier 外部写者，不声称多文件原子性或断电证明。宿主仍活跃但 helper 被强杀时保守拒绝接管；journal 建立前失败留下的孤立租约、异常私有卷恢复、产品审核入口、POSIX、对象回收及完整任务生命周期仍待接入。每个来源只新增常量大小执行记录，不扫描来源。trace 增加 `local_overlay.execution_lease` 和 `local_overlay.unknown_review/unknown_accept`，不含路径、正文、token 或版本摘要。
+边界：这是 Windows/NTFS 宿主 PoC，不排斥非 CodeAtelier 外部写者，不声称多文件原子性或断电证明。宿主仍活跃但 helper 被强杀时保守拒绝接管；尚未建立匹配执行记录的孤立锁、异常私有卷恢复、产品审核入口、POSIX、对象回收及完整任务生命周期仍待接入。每个来源只新增常量大小执行记录，不扫描来源。trace 增加 `local_overlay.execution_lease` 和 `local_overlay.unknown_review/unknown_accept`，不含路径、正文、token 或版本摘要。
 
 句柄与进程终止判定依据 Windows 官方 [CreateFile 共享语义](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew)、[进程时间](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocesstimes) 和 [等待函数](https://learn.microsoft.com/en-us/windows/win32/sync/wait-functions)。
+
+### 未开始和已完成发布的残留锁恢复 PoC
+
+新原生发布将 v2 协调锁 ID 直接用作执行 generation，并在锁内记录 batch ID。`publicationClaim` 只提供待核查的原生锁身份，不宣称执行已停止。`releaseUnstartedLock` 要求匹配的原生租约证明旧执行排空、明确记录尚未开始来源写入、且对应 journal 确实不存在；任何现存 journal（包括损坏文件）都不走此路径。原生执行记录 v2 在第一次替换/新建/删除/备份清理前 flush `mutated`，因此后来删除 journal 不能抹掉写入证据。旧 v1 记录按可能写入处理，旧 helper 缺少该字段时不默认 false。Local 文件视图数据库仍为 v5，没有迁移私有文件。
+
+`releaseCompletedLock` 核对 complete journal、执行 generation 与原锁摘要后只释放协调锁；不改来源完成态、文件、私有编辑或视图 pending 确认。两条路径都在原生排他内再次检查前提，先保存恢复决定，再由原生按句柄释放固定锁。缺失锁可重复调用，旧锁身份不能删除新所有者的锁，恢复 trace 不包含路径、正文或版本摘要。
+
+`pnpm overlay:verify-residual` 在真实宿主子进程中分别于原生 ready 后、Publisher 结束执行租约前直接退出，验证无 journal/complete 两种残留锁；错误锁 ID、损坏 journal、原生已写但 journal 被删除均拒绝，恢复后新批次可以继续。来源后续修改和完整 journal 保留。结果见 [残留锁恢复报告](local-overlay-residual-results.json)。尚未建立匹配执行记录、记录损坏、未知私有卷及产品 UI 的恢复仍未完成；不根据单独 PID 或文件缺失推断安全。
 
 ### 完整发布流程与后续产品接入
 

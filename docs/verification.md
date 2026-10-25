@@ -1,5 +1,13 @@
 # 初版验证记录
 
+## Local 残留发布锁恢复（D170，2026-10-26）
+
+- 新原生协调锁记录 batch ID，并绑定执行 generation。显式未开始恢复要求匹配原生排空证明、尚未写入的持久标记及 journal 缺失；complete 恢复只释放原协调锁，不改来源、journal 或私有视图。没有匹配执行记录的旧锁仍保留，不猜测恢复。
+- 自审先复现“journal 被删除后，仍可错误走未开始解锁”的回归（`.local/local-overlay-residual-before-mutation-proof.log`）。原生执行记录改为 v2，在来源副作用前 flush mutated；旧 v1 按可能写入处理，旧 helper 缺字段也拒绝未开始解锁。Local 视图数据库格式 v5 不变。
+- 原生构建通过（`.local/local-overlay-residual-build.log`，既有 SDK 对齐 warning）。`overlay:verify-residual` 通过（`.local/local-overlay-residual-t01bBt/report.json`）：真实宿主在 ready 后/close 前直接退出；错误锁 ID、损坏 journal、原生写入后删除 journal 均拒绝；来源后续修改和完整 journal 保留，旧恢复不删新锁，新批次可继续。[摘要](local-overlay-residual-results.json)。
+- 新格式复验通过：执行排他与未知恢复 `.local/local-overlay-lease-CslYD1/report.json`，完成态视图确认 `.local/local-overlay-recovery-sdqtDA/report.json`。未安装/Repair、未改真实项目或重启服务；没有运行 Evaluation。此证据不代表 Sandbox 产品恢复、缺失执行记录或 dirty 私有卷恢复。
+- 最终 `pnpm check` 通过：141 个测试文件、1082 passed / 1 existing skipped，类型/lint/格式及 Web/Windows/POSIX Runtime 构建通过（`.local/local-overlay-residual-check.log`）。只读进程检查无遗留 overlay helper；没有 UI/HTTP/SSE 改动，不运行 e2e。
+
 ## Local 原生执行租约与未知现场恢复（D170，2026-10-26）
 
 - 新增持独占句柄的单进程发布会话，记录宿主/helper 的 PID、创建时间、generation 和显式 finish。替换、新建、删除、备份清理串行执行；检查模式不能写来源，仅能按哈希/句柄释放固定协调锁。正常关闭不触发失败取消，失败/未知状态不伪造 finish。

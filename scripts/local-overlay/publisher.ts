@@ -11,6 +11,7 @@
  * 9. recoverRefresh 只恢复 complete 批次的视图确认；重读日志/私有版本，不重放来源写入或接管未知锁。
  * 10. Windows 来源写入在单个 PublicationLease 中串行执行，finally 等待显式结束后才允许释放协调锁。
  * 11. reviewUnknown/acceptUnknown 以执行排他核对并明确接受当前现场，不重放/回滚；保留原批次与私有内容。
+ * 12. v2 协调锁绑定 batch 与原生 generation；未开始/已完成的残留锁可显式排空后释放，不改来源或私有视图。
  * 仅普通单链接文件/已存在父目录；新建使用不覆盖的 link，旧对照模式不保证 Windows ACL 保真。
  * 不提供外部写入 CAS、多文件原子提交、断电证明或生产服务集成；故障钩子仅供实验。
  */
@@ -29,6 +30,7 @@ import {
   durableJson,
   snapshot,
   sourceIdentity,
+  type Source,
 } from "./files.js";
 import { equal, mergeContent, PublishError } from "./merge.js";
 import { validateBatch, type Batch } from "./session.js";
@@ -40,6 +42,7 @@ import {
 import { loadJournal, type Entry, type Journal } from "./journal.js";
 import { checkpointSchema, type NativeCheckpoint } from "./native-refresh.js";
 import { recoverCompletedRefresh } from "./refresh-recovery.js";
+import { readPublicationClaim, releaseResidualLock } from "./residual-lock.js";
 import {
   unknownRecovery,
   type UnknownReview,
@@ -74,7 +77,7 @@ export class Publisher {
     private readonly log: Logger = pino({ enabled: false }),
   ) {}
 
-  private async layout(batch: Batch) {
+  private async layout(batch: Pick<Batch, "source">) {
     const current = await sourceIdentity(batch.source.root);
     if (
       current.root !== batch.source.root ||
@@ -113,9 +116,19 @@ export class Publisher {
     return { directory, lock: path.join(directory, "publish.lock") };
   }
 
-  private async acquire(file: string, options: PublishOptions) {
+  private async acquire(
+    file: string,
+    options: PublishOptions,
+    batchId?: string,
+  ) {
     const deadline = performance.now() + (options.lockTimeoutMs ?? 3000);
-    const owner = { id: randomUUID(), pid: process.pid };
+    const owner = {
+      id: randomUUID(),
+      pid: process.pid,
+      version: 2,
+      kind: options.nativeWindows ? "native" : "host",
+      batchId,
+    };
     for (;;) {
       options.signal?.throwIfAborted();
       let handle;
@@ -141,7 +154,7 @@ export class Publisher {
         await handle.close();
       }
 
-      return async () => {
+      const release = async () => {
         const found = JSON.parse(await readFile(file, "utf8"));
         if (found.id !== owner.id) {
           throw new PublishError("LOCK_REPLACED");
@@ -149,6 +162,8 @@ export class Publisher {
 
         await unlink(file);
       };
+
+      return Object.assign(release, { id: owner.id });
     }
   }
 
@@ -406,13 +421,16 @@ export class Publisher {
     };
 
     try {
-      release = await step("queue", () =>
-        this.acquire(locations.lock, options),
+      const acquired = await step("queue", () =>
+        this.acquire(locations.lock, options, batch.id),
       );
+      release = acquired;
       if (options.nativeWindows) {
         lease = await step("execution_lease", () =>
           PublicationLease.start(
             path.join(locations.directory, "execution.lease"),
+            undefined,
+            acquired.id,
           ),
         );
         options = {
@@ -614,6 +632,35 @@ export class Publisher {
     }
 
     return result;
+  }
+
+  async publicationClaim(source: Source) {
+    const locations = await this.layout({ source });
+
+    return readPublicationClaim(locations.directory);
+  }
+
+  async releaseUnstartedLock(source: Source, id: string, signal?: AbortSignal) {
+    const locations = await this.layout({ source });
+
+    return releaseResidualLock({
+      directory: locations.directory,
+      log: this.log,
+      signal,
+      target: { kind: "unstarted", id },
+    });
+  }
+
+  async releaseCompletedLock(input: Batch, signal?: AbortSignal) {
+    const batch = validateBatch(input);
+    const locations = await this.layout(batch);
+
+    return releaseResidualLock({
+      directory: locations.directory,
+      log: this.log,
+      signal,
+      target: { kind: "complete", batch },
+    });
   }
 
   async acceptUnknown(

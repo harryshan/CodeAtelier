@@ -5,6 +5,7 @@
  * 3. 协议/超时/进程退出取消 signal；不能据此推断操作无副作用，调用方保留 journal/锁。
  * 4. close 显式 finish 并等待进程 close，证明 native 执行已排空；失败绝不伪造 closed。
  * 5. releaseLock 仅供检查会话，在 native 排他内按哈希/句柄删除固定协调锁，避免 check/unlink 竞争。
+ * 6. 新发布可绑定协调锁 ID 作为 generation；检查收据暴露原生写入标记，旧 helper 缺少证明时不默认 false。
  * 路径仅编码进私有管道，不进日志/trace；来源级 tracing 与 generation 持久化由调用方负责。
  */
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
@@ -17,6 +18,7 @@ const replySchema = z.object({
   version: z.literal(1),
   state: z.string().optional(),
   generation: z.uuid().optional(),
+  mutated: z.boolean().optional(),
   backupIdentity: z
     .string()
     .regex(/^\d{1,10}:\d{1,20}$/)
@@ -48,6 +50,7 @@ export class PublicationLease {
   private terminal = false;
   private finishRequested = false;
   private closedReceipt = false;
+  private observedMutation?: boolean;
   private closing?: Promise<void>;
 
   private constructor(
@@ -82,14 +85,20 @@ export class PublicationLease {
     });
   }
 
-  static async start(gate: string, inspectionGeneration?: string) {
+  static async start(
+    gate: string,
+    inspectionGeneration?: string,
+    publicationGeneration?: string,
+  ) {
     if (process.platform !== "win32") {
       throw new PublishError("WINDOWS_REQUIRED");
     }
 
     const generation = inspectionGeneration
       ? z.uuid().parse(inspectionGeneration)
-      : randomUUID();
+      : publicationGeneration
+        ? z.uuid().parse(publicationGeneration)
+        : randomUUID();
     const lease = new PublicationLease(
       gate,
       generation,
@@ -104,6 +113,8 @@ export class PublicationLease {
         throw new PublishError("PUBLICATION_PROTOCOL");
       }
 
+      lease.observedMutation = ready.mutated;
+
       return lease;
     } catch (error) {
       lease.child.kill();
@@ -117,6 +128,11 @@ export class PublicationLease {
     this.controller.abort(error);
     this.pending?.reject(error);
     this.pending = undefined;
+  }
+
+  /** Inspection receipt only; undefined means an older helper cannot prove absence of writes. */
+  get sourceMutationStarted() {
+    return this.observedMutation;
   }
 
   private receive(text: string) {
