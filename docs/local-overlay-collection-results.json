@@ -1,0 +1,140 @@
+{
+  "timestamp": "2026-10-25T18:11:28.081Z",
+  "platform": "win32",
+  "release": "10.0.26200",
+  "node": "v26.10.0",
+  "backend": "self-developed WinFsp Local overlay v5",
+  "creation": {
+    "version": 1,
+    "state": "metrics",
+    "treeReads": 0,
+    "infoReads": 0,
+    "blobReads": 0,
+    "blobBytes": 0,
+    "lowerOpens": 0,
+    "lowerEnumerations": 0,
+    "objectMicros": 0,
+    "sqlPrepareMicros": 69,
+    "sqlReadMicros": 5,
+    "sqlWriteMicros": 2176,
+    "sqlExecMicros": 13329,
+    "sqlReads": 1,
+    "sqlWrites": 3,
+    "accessCleanups": 0
+  },
+  "rounds": [
+    {
+      "round": 1,
+      "before": {
+        "count": 6,
+        "bytes": 655404
+      },
+      "collected": {
+        "version": 1,
+        "state": "collected",
+        "mode": "local",
+        "nodes": 1,
+        "examined": 6,
+        "removed": 2,
+        "bytes": 524304,
+        "retained": 0
+      },
+      "after": {
+        "count": 4,
+        "bytes": 131100
+      }
+    },
+    {
+      "round": 2,
+      "before": {
+        "count": 6,
+        "bytes": 655404
+      },
+      "collected": {
+        "version": 1,
+        "state": "collected",
+        "mode": "local",
+        "nodes": 1,
+        "examined": 6,
+        "removed": 2,
+        "bytes": 524304,
+        "retained": 0
+      },
+      "after": {
+        "count": 4,
+        "bytes": 131100
+      }
+    },
+    {
+      "round": 3,
+      "before": {
+        "count": 6,
+        "bytes": 655404
+      },
+      "collected": {
+        "version": 1,
+        "state": "collected",
+        "mode": "local",
+        "nodes": 1,
+        "examined": 6,
+        "removed": 2,
+        "bytes": 524304,
+        "retained": 0
+      },
+      "after": {
+        "count": 4,
+        "bytes": 131100
+      }
+    },
+    {
+      "round": 4,
+      "before": {
+        "count": 6,
+        "bytes": 655404
+      },
+      "collected": {
+        "version": 1,
+        "state": "collected",
+        "mode": "local",
+        "nodes": 1,
+        "examined": 6,
+        "removed": 2,
+        "bytes": 524304,
+        "retained": 0
+      },
+      "after": {
+        "count": 4,
+        "bytes": 131100
+      }
+    },
+    {
+      "round": 5,
+      "before": {
+        "count": 6,
+        "bytes": 655404
+      },
+      "collected": {
+        "version": 1,
+        "state": "collected",
+        "mode": "local",
+        "nodes": 1,
+        "examined": 6,
+        "removed": 2,
+        "bytes": 524304,
+        "retained": 0
+      },
+      "after": {
+        "count": 4,
+        "bytes": 131100
+      }
+    }
+  ],
+  "recovery": "pending confirmation retained B/O; lost confirmed receipt recovered after B/O collection; old receipt replay passed",
+  "retained": "unselected artifact, renamed directory content, conflict B/O, read epochs and receipts survived collection/remount",
+  "unsafeEntries": "hard link, directory, junction and unknown name retained; read-only orphan retained then retried; regular orphan removed",
+  "limitations": [
+    "Host PoC, no product lifecycle or Sandbox automatic collection",
+    "Logical content bytes only; SQLite free pages, observations, journals and receipts retained",
+    "No power-loss or hostile-host proof; unclean views still refuse automatic restore"
+  ]
+}

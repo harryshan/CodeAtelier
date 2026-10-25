@@ -1,5 +1,13 @@
 # 初版验证记录
 
+## Local 私有内容回收（D170，2026-10-26）
+
+- 冻结期显式 collect：先 FULL 事务释放无 namespace 引用的 inode，保留 entries 父链、全部基线/冻结结果，再按句柄清理 GUID 普通单链接孤立内容。创建不回收、不遍历来源；不删观察、收据或发布 journal。30 秒未确认拒绝后续控制操作，未知回收不改变来源 complete。
+- 原生构建通过（`.local/local-overlay-collection-build.log`，仅既有 SDK 对齐 warning）；协议回归 22 项通过（`.local/local-overlay-collection-unit.log`）。首次脚本因保留的历史读依赖正确返回 STALE_DEPENDENCY，已改为显式验证回收前后均拒绝；首次协议测试误将可信 clean-stop 也要求失败，改为分别检查回收失败与关闭证明，没有放宽数据保护断言。
+- `pnpm overlay:verify-collection` 通过（`.local/local-overlay-collection-iCDJHQ/report.json`）：五轮真实发布，各回收 524,304 逻辑字节，私有内容从 655,404 回落至 131,100 字节；未选产物、目录移动、未发布 B/O、读依赖和收据保留。确认前 pending 及确认后回执丢失（B/O 已回收）的恢复通过，旧确认不删新修改。[可提交摘要](local-overlay-collection-results.json)。
+- 正常孤立文件删除；硬链接、junction、目录和未知名称不删除；只读对象保留，解除只读后重试成功；来源目标和重挂载后私有内容保持正确。未测试断电或强杀中途回收，不声称恶意宿主隔离、数据库/journal 空间全回收、巨型目录性能或产品自动清理已完成。
+- 完整检查首次停在新增代码段落空行 lint，已按项目规范修复。最终 `pnpm check` 全部通过：141 个测试文件、1085 passed / 1 existing skipped，类型/lint/格式及 Web/Windows/POSIX Runtime 构建通过（`.local/local-overlay-collection-check.log`）；只读进程检查无遗留 overlay helper。无 UI/HTTP/SSE 变化，不运行 e2e/Evaluation，不安装或 Repair 驱动/账户，不重启实际服务。
+
 ## Local 残留发布锁恢复（D170，2026-10-26）
 
 - 新原生协调锁记录 batch ID，并绑定执行 generation。显式未开始恢复要求匹配原生排空证明、尚未写入的持久标记及 journal 缺失；complete 恢复只释放原协调锁，不改来源、journal 或私有视图。没有匹配执行记录的旧锁仍保留，不猜测恢复。

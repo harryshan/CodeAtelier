@@ -8,6 +8,7 @@
  * 6. 冻结导出必须收到 frozen 后开始，持有 helper 到导出完成；租约丢失不得返回成功结果。
  * 7. 发布确认须等待匹配批次与代次的收据，错误收据及租约丢失均拒绝。
  * 8. 冻结取消/关闭先中止回调并等待排空；不在回调仍运行时释放 helper 或报告关闭成功。
+ * 9. 显式回收等待完整计数收据，排斥并发控制请求，作用域过期和损坏/丢失收据拒绝。
  * 原生文件、Git 和受限 token 语义由手动 verify-winfsp-overlay 独立验证。
  */
 import { EventEmitter } from "node:events";
@@ -78,6 +79,71 @@ async function localFixture() {
 
   return f;
 }
+
+it("collects only within the frozen scope and serializes control requests", async () => {
+  const f = await localFixture();
+  let savedCollect: (() => Promise<unknown>) | undefined;
+  const receipt = {
+    version: 1,
+    state: "collected",
+    mode: "local",
+    nodes: 2,
+    examined: 6,
+    removed: 3,
+    bytes: 8192,
+    retained: 1,
+  };
+  const pending = f.manager.withFrozen(
+    f.id,
+    async (verify, _acknowledge, _signal, collect) => {
+      savedCollect = collect;
+      const first = collect();
+      await expect(collect()).rejects.toThrow("unavailable");
+      await expect(verify()).rejects.toThrow("unavailable");
+      expect(f.helper.stdin.read()?.toString()).toBe("collect\n");
+      f.helper.stdout.write(JSON.stringify(receipt) + "\n");
+
+      return first;
+    },
+  );
+  expect(f.helper.stdin.read()?.toString()).toBe("freeze\n");
+  f.helper.stdout.write('{"version":1,"state":"frozen","mode":"local"}\n');
+  expect(await pending).toEqual(receipt);
+  expect(savedCollect).toBeDefined();
+  await expect(savedCollect!()).rejects.toThrow("ended");
+  await f.manager.close();
+});
+
+it.each(["malformed", "lost"])(
+  "refuses %s collection receipts",
+  async (failure) => {
+    const f = await localFixture();
+    const pending = f.manager.withFrozen(
+      f.id,
+      async (_verify, _acknowledge, _signal, collect) => {
+        const collecting = collect();
+        if (failure === "lost") {
+          f.helper.kill();
+        } else {
+          f.helper.stdout.write(
+            '{"version":1,"state":"collected","mode":"local","removed":-1}\n',
+          );
+        }
+
+        return collecting;
+      },
+    );
+    const rejected = expect(pending).rejects.toThrow();
+    f.helper.stdout.write('{"version":1,"state":"frozen","mode":"local"}\n');
+    await rejected;
+    if (failure === "lost") {
+      await expect(f.manager.close()).rejects.toThrow();
+    } else {
+      // Invalid collection data does not invalidate a separate clean-stop receipt.
+      await f.manager.close();
+    }
+  },
+);
 
 it("waits for frozen receipt and retains the helper until export finishes", async () => {
   const f = await localFixture();

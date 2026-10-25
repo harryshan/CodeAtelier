@@ -2,6 +2,8 @@
 
 所有功能开发均须配套合理的单元/回归测试，测试和文档属于功能交付的一部分。不要等全部开发结束后才首次运行测试。
 
+Local 私有内容回收（D170）：`overlay-manager.test.ts` 验证冻结回调回收的完整收据、并发控制请求拒绝、损坏/丢失收据及过期回调。`pnpm overlay:verify-collection` 手动使用真实 WinFsp，覆盖连续发布后 B/O 回收、未确认检查点保留、确认已完成但回执丢失后的恢复、旧收据不删新修改、未选产物/目录移动/读依赖保留，以及只读对象重试、硬链接/junction/未知文件不删除。不进默认 check/Evaluation，不宣称数据库/journal 全部回收或产品自动清理已接入。
+
 Local 残留锁恢复（D170）：`local-overlay-residual-lock.test.ts` 覆盖未开始/complete 解锁、新锁保留、旧/host claim、journal 已存在或检查中出现、版本变化、取消以及缺失/已开始的原生写入证明。`pnpm overlay:verify-residual` 以真实发布子进程在原生 ready 后或 close 前退出，验证两种残留锁、删除 journal 不能抹掉原生写入证据、来源后续修改与 journal 保留、新批次继续。不运行默认 Evaluation，不宣称缺失执行记录或异常私有卷可恢复。
 
 Local 执行租约与未知恢复（D170）：`local-overlay-publication-lease.test.ts` 覆盖单请求/收据绑定、退出等待、原生拒绝后排空、异常输出/退出及正常关闭不误报取消；`local-overlay-unknown-recovery.test.ts` 覆盖旧日志拒绝、审核版本失效、明确接受当前现场、决定后解锁失败重试、新锁保留和 aborted 残留锁。原生排他不靠 mock 声称通过：`pnpm overlay:verify-lease` 手动验证实际进程/句柄、首写后进程退出和恢复后新批次继续。`overlay:verify-drain` 增加终止发布 helper 的候选树排空。均不触发 Evaluation 或修改真实项目。

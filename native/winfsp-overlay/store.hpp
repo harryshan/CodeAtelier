@@ -7,6 +7,7 @@
 // 6. Local 模式绑定独立持久格式，所有层级隐藏并保留 .git 名称，不允许新建私有仓库入口。
 // 7. observeRead/capture 在实际访问路径上记录版本和不可变原文；不在启动时扫描来源。
 // 8. acknowledge 在冻结租约内按批次幂等释放已发布路径，并切换观察代次；旧修改依赖保留。
+// 9. collect 只在冻结后回收无引用私有内容，保留基线/结果及 namespace 父链，不访问来源。
 // 遮蔽来源的 .git 命名空间；Git PoC 从对象库取内容，不打开来源工作文件。
 // 来源文件打开禁止重解析与写访问，控制目录不暴露于挂载。
 #pragma once
@@ -97,6 +98,14 @@ struct Entry {
   NodePtr node;
 };
 
+struct Collection {
+  UINT64 nodes = 0;
+  UINT64 examined = 0;
+  UINT64 removed = 0;
+  UINT64 bytes = 0;
+  UINT64 retained = 0;
+};
+
 class Store {
  public:
   sqlite3* db = nullptr;
@@ -150,6 +159,7 @@ class Store {
   void capture(const std::wstring& path, int flags = 1);
   Handle baselineInput(const NodePtr& node);
   void sealChanges();
+  Collection collect();
   void checkReads(const std::vector<sqlite3_int64>& epochs = {});
   sqlite3_int64 epoch();
   sqlite3_int64 acknowledge(const std::wstring& id, sqlite3_int64 expectedEpoch, const std::wstring& seal,

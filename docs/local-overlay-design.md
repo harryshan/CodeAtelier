@@ -89,7 +89,7 @@ NTFS 实测覆盖保护 DACL、显式拒绝 ACE、与候选不同的 primary gro
 
 收据绑定批次 ID、冻结标识、原代次和规范化选择；选择不同、代次过期，或尚未执行的旧确认来自另一冻结快照时拒绝。已经提交的完全相同收据才允许跨干净重挂载幂等返回。自审回归先复现了“确认前中断、重挂载后又编辑、重放旧确认会删掉新编辑”，随后用每次冻结的新标识修复；不只依赖观察代次，因为未确认时它尚未增加。
 
-源发布前检查确认请求的大小/格式，来源 complete 后单独记录确认终态。trace 增加 `overlay.local_acknowledge` 与 `local_overlay.refresh`，只含 ID/耗时/状态，不含路径或正文；确认无可信回执记为 unknown。失败/取消轮次如何开始新观察周期、刷新 pending 的产品恢复入口、对象回收及大读集开销仍待实现；本实验没有改变用户会话。结果见 [刷新报告](local-overlay-refresh-results.json)。
+源发布前检查确认请求的大小/格式，来源 complete 后单独记录确认终态。trace 增加 `overlay.local_acknowledge` 与 `local_overlay.refresh`，只含 ID/耗时/状态，不含路径或正文；确认无可信回执记为 unknown。后续增量补充了下述恢复和显式内容回收；失败/取消轮次如何开始新观察周期、产品恢复入口及大读集开销仍待实现。本实验没有改变用户会话。结果见 [刷新报告](local-overlay-refresh-results.json)。
 
 ### 冻结租约失效、取消与排空（Windows PoC）
 
@@ -120,6 +120,18 @@ Windows 原生发布使用单个 `PublicationLease` helper 持有来源协调目
 边界：这是 Windows/NTFS 宿主 PoC，不排斥非 CodeAtelier 外部写者，不声称多文件原子性或断电证明。宿主仍活跃但 helper 被强杀时保守拒绝接管；尚未建立匹配执行记录的孤立锁、异常私有卷恢复、产品审核入口、POSIX、对象回收及完整任务生命周期仍待接入。每个来源只新增常量大小执行记录，不扫描来源。trace 增加 `local_overlay.execution_lease` 和 `local_overlay.unknown_review/unknown_accept`，不含路径、正文、token 或版本摘要。
 
 句柄与进程终止判定依据 Windows 官方 [CreateFile 共享语义](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew)、[进程时间](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocesstimes) 和 [等待函数](https://learn.microsoft.com/en-us/windows/win32/sync/wait-functions)。
+
+### 冻结后的私有内容回收
+
+本增量只回收私有内容，不清理发布 journal、确认收据或历史读依赖。`collect` 只能在 Local dispatcher 已销毁、Store 独占租约仍有效且未 poisoned 时调用；不在创建或挂载时执行。宿主在冻结回调内显式调用，回收失败不能反向改写来源 complete 或确认结果。
+
+引用根包括所有 namespace entries 的目标、父目录及其祖先、根 inode、全部未释放基线和 sealed_changes 内容。先在 FULL SQLite 事务中删除无 namespace 引用的 inode，再以仍存活 inode/冻结结果/基线的对象名保护内容；持久引用删除完成后才删除物理文件。中途退出只留下可重试的孤立内容，不让数据库引用已删除对象。未确认、冲突及未选择的修改仍有基线和命名空间引用，不能因来源已变化而回收。
+
+仅枚举控制目录中固定的 objects/baselines 两个平面目录；只接受生成的 GUID 名称，打开时拒绝重解析、目录和多硬链接，按已打开的文件句柄删除。不递归、不清空目录、不改变 ACL；未知名称/类型、占用或权限失败保留并计数。根目录由既有拒绝 rename/delete 的句柄固定。回收成本与私有存储规模有关，不访问 lower，也不枚举整个 repo。保留仍有 entry 的历史节点及数据库空闲页；不将逻辑内容字节减少宣称为全应用磁盘完全回收。
+
+`OverlayManager.withFrozen` 第四个回调参数提供 `collect()`，回收/复核/确认控制请求互斥，离开冻结作用域后拒绝调用。trace `overlay.local_collect` 记录开始/结束、ID、耗时和失败/未知终态；计数日志记录扫描数、删除数、逻辑字节和保留数，不含路径或正文。当前收据等待上限 30 秒；超时停止继续控制操作并走既有 helper 排空，不伪造回收全部完成。产品尚未自动调度此操作。
+
+2026-10-26 `pnpm overlay:verify-collection` 实测：连续五轮修改约 256 KiB 的同一文件，每轮确认后回收 524,304 字节 B/O，私有内容均回落至 131,100 字节（未选产物、未发布修改与移动目录内容），未逐轮累积。未执行确认前回收不破坏检查点；已确认但回执丢失时，物理 B/O 回收后仍可凭收据恢复；旧收据重放不丢弃新修改。过期读依赖仍被拒绝，硬链接/junction/目录/未知文件保留，只读孤立文件解除只读后重试成功。原始摘要见 [回收报告](local-overlay-collection-results.json)。仅是 Windows 宿主夹具，不是全应用磁盘上限、断电证明或 Sandbox 自动回收验收。
 
 ### 未开始和已完成发布的残留锁恢复 PoC
 

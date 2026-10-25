@@ -25,6 +25,7 @@
     "overlay:verify-recovery": "tsx scripts/verify-local-overlay-recovery.ts",
     "overlay:verify-lease": "tsx scripts/verify-local-overlay-lease.ts",
     "overlay:verify-residual": "tsx scripts/verify-local-overlay-residual.ts",
+    "overlay:verify-collection": "tsx scripts/verify-local-overlay-collection.ts",
     "overlay:verify-drain": "tsx scripts/verify-local-overlay-drain.ts",
     "overlay:verify-sandbox": "tsx scripts/verify-local-overlay-sandbox.ts",
     "start": "node dist/server/server/launcher.js",

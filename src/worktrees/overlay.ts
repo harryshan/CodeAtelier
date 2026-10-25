@@ -10,6 +10,7 @@
  *    同一冻结回调可确认已完成的来源发布；仅匹配批次/代次收据成功后允许调用方记录视图已刷新。
  * 8. 冻结回调接收租约失效/取消信号；关闭先中止并等待回调排空，再幂等卸载，不用竞速伪造完成。
  *    导出回调可复核原生读版本；协议只回执状态，不通过 stdout 传文件内容或路径。
+ * 9. 冻结回调可显式 collect 无引用内容；独立于发布确认，仅记录计数，不改变来源或恢复收据。
  */
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
@@ -46,6 +47,18 @@ const metricsSchema = z.object({
   accessCleanups: z.number().int().nonnegative().optional(),
 });
 export type OverlayMetrics = z.infer<typeof metricsSchema>;
+
+const collectionSchema = z.object({
+  version: z.literal(1),
+  state: z.literal("collected"),
+  mode: z.literal("local"),
+  nodes: z.number().int().nonnegative(),
+  examined: z.number().int().nonnegative(),
+  removed: z.number().int().nonnegative(),
+  bytes: z.number().int().nonnegative(),
+  retained: z.number().int().nonnegative(),
+});
+export type OverlayCollection = z.infer<typeof collectionSchema>;
 
 export function overlayHelperPath() {
   return fileURLToPath(
@@ -99,6 +112,7 @@ interface Mount {
   freezing?: boolean;
   freeze?: () => void;
   readsChecked?: () => void;
+  collected?: (result: OverlayCollection) => void;
   frozenScope?: { controller: AbortController; drained: Promise<void> };
   shutdown?: Promise<void>;
   acknowledgement?: {
@@ -167,7 +181,9 @@ export class OverlayManager {
     });
     const started = performance.now();
     let outcome: "ok" | "error" | "cancelled" | "unknown" =
-      action === "local_acknowledge" ? "unknown" : "error";
+      action === "local_acknowledge" || action === "local_collect"
+        ? "unknown"
+        : "error";
     this.log.info({
       module: "worktree",
       event: `overlay.${action}_started`,
@@ -392,6 +408,16 @@ export class OverlayManager {
             buffer = buffer.slice(lineEnd + 1);
             try {
               const raw: unknown = JSON.parse(line);
+              const collection = collectionSchema.safeParse(raw);
+              if (collection.success) {
+                if (!local || !mount.collected) {
+                  throw new Error("Unexpected collection receipt.");
+                }
+
+                mount.collected(collection.data);
+                continue;
+              }
+
               const metrics = metricsSchema.safeParse(raw);
               if (metrics.success) {
                 mount.metrics?.(metrics.data);
@@ -530,6 +556,7 @@ export class OverlayManager {
             .max(100)
             .parse(epochs);
     if (
+      mount.collected ||
       mount.readsChecked ||
       mount.acknowledgement ||
       mount.failed ||
@@ -569,6 +596,7 @@ export class OverlayManager {
   ) {
     const request = validateOverlayAcknowledgement(input);
     if (
+      mount.collected ||
       mount.readsChecked ||
       mount.acknowledgement ||
       mount.failed ||
@@ -612,6 +640,61 @@ export class OverlayManager {
     });
   }
 
+  private async collectFrozen(id: string, mount: Mount) {
+    if (
+      mount.collected ||
+      mount.readsChecked ||
+      mount.acknowledgement ||
+      mount.failed ||
+      mount.stopping ||
+      mount.closed
+    ) {
+      throw new Error("Frozen collection unavailable.");
+    }
+
+    return this.observe(id, "local_collect", async () => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const result = await Promise.race([
+          new Promise<OverlayCollection>((resolve, reject) => {
+            mount.collected = resolve;
+            timer = setTimeout(() => {
+              // A late receipt must not satisfy a later collection request.
+              mount.failed = true;
+              mount.frozenScope?.controller.abort(
+                new Error("Collection timed out."),
+              );
+              reject(new Error("Collection timed out."));
+            }, 30_000);
+            mount.process.stdin.write("collect\n");
+          }),
+          mount.exit.then(() => {
+            throw new Error("Overlay lease was lost during collection.");
+          }),
+        ]);
+        if (mount.failed || mount.closed || mount.stopping) {
+          throw new Error("Collection was not confirmed.");
+        }
+
+        this.log.info({
+          module: "worktree",
+          event: "overlay.local_collect_counts",
+          worktreeId: id,
+          nodes: result.nodes,
+          examined: result.examined,
+          removed: result.removed,
+          bytes: result.bytes,
+          retained: result.retained,
+        });
+
+        return result;
+      } finally {
+        clearTimeout(timer);
+        mount.collected = undefined;
+      }
+    });
+  }
+
   /** Caller drains its task processes first. Export runs only after the native
    * volume disappears, while the helper still excludes other store owners. */
   async withFrozen<T>(
@@ -620,6 +703,7 @@ export class OverlayManager {
       verifyReads: (epochs?: readonly number[]) => Promise<void>,
       acknowledge: (request: OverlayAcknowledgement) => Promise<void>,
       signal: AbortSignal,
+      collect: () => Promise<OverlayCollection>,
     ) => Promise<T>,
     signal?: AbortSignal,
   ): Promise<T> {
@@ -698,6 +782,11 @@ export class OverlayManager {
               await this.acknowledgeFrozen(id, mount, request);
             },
             controller.signal,
+            async () => {
+              controller.signal.throwIfAborted();
+
+              return this.collectFrozen(id, mount);
+            },
           );
           controller.signal.throwIfAborted();
           if (mount.failed || mount.closed || mount.stopping) {
