@@ -11,7 +11,7 @@ import { z } from "zod";
 import {
   validateOverlayAcknowledgement,
   type OverlayAcknowledgement,
-} from "../../src/worktrees/overlay.js";
+} from "../../worktrees/overlay.js";
 import { digest, durableJson, type Snapshot } from "./files.js";
 import { MAX_BYTES, PublishError } from "./merge.js";
 import { checkpointSchema, type NativeCheckpoint } from "./native-refresh.js";

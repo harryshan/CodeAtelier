@@ -35,7 +35,7 @@
 
 ### Local overlay 目标重新澄清（2026-10-25，D170）
 
-用户要求 Overlay 与 Git worktree 完全并列：Overlay 用于同一 Local 工作区多个对话的文件修改隔离与冲突整合，不负责 Git 分支、提交、index 或对象库管理。此前 D169 的 Git 提交虚拟 worktree 实验不再作为这个需求的后续方向。普通 Worktree 保留原有 Git 工作流；用户追加授权完整验证、自审后接入 agent，并确认每轮成功后自动发布明确选择的源码变更，冲突/验证失败保留私有修改。Windows 沿用自研 WinFsp 后端；LayerFS 调查后不采用。Local 挂载策略、真实 Sandbox 并行/取消/续聊，以及原生自动基线/冻结导出和 Windows owner/group/DACL 保留发布的 PoC 已验证，新路径不依赖 Riftri/Git 注册；成功发布后的确认/刷新、干净卷完成态恢复和持执行排他的未知现场接受已有 Windows PoC；有匹配执行记录的未开始/complete 残留锁已有恢复 PoC；内部会话挂载/排空/续轮生命周期已接入，缺失执行记录、异常私有卷恢复、公开创建与自动发布仍待接入，不自动迁移旧会话。选型、实时读取、编辑基线、串行发布与冲突恢复的边界和证据见 [Local overlay 设计](local-overlay-design.md)。
+用户要求 Overlay 与 Git worktree 完全并列：Overlay 用于同一 Local 工作区多个对话的文件修改隔离与冲突整合，不负责 Git 分支、提交、index 或对象库管理。此前 D169 的 Git 提交虚拟 worktree 实验不再作为这个需求的后续方向。普通 Worktree 保留原有 Git 工作流；用户追加授权完整验证、自审后接入 agent，并确认每轮成功后自动发布明确选择的源码变更，冲突/验证失败保留私有修改。Windows 沿用自研 WinFsp 后端；LayerFS 调查后不采用。Local 挂载策略、真实 Sandbox 并行/取消/续聊，以及原生自动基线/冻结导出和 Windows owner/group/DACL 保留发布的 PoC 已验证，新路径不依赖 Riftri/Git 注册；成功发布后的确认/刷新、干净卷完成态恢复和持执行排他的未知现场接受已有 Windows PoC；有匹配执行记录的未开始/complete 残留锁已有恢复 PoC；内部生命周期及成功任务的显式选择发布已接入，缺失执行记录、异常私有卷恢复、模型选择、公开创建及候选工程命令验证仍待接入，不自动迁移旧会话。选型、实时读取、编辑基线、串行发布与冲突恢复的边界和证据见 [Local overlay 设计](local-overlay-design.md)。
 
 ## 2. 初版功能边界（已确认）
 

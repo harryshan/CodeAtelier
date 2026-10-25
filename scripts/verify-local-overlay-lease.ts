@@ -16,10 +16,14 @@ import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { overlayHelperPath } from "../src/worktrees/overlay.js";
-import { PublicationLease } from "./local-overlay/publication-lease.js";
-import { Publisher } from "./local-overlay/publisher.js";
-import { EditSession } from "./local-overlay/session.js";
-import { digest, durableJson, sourceIdentity } from "./local-overlay/files.js";
+import { PublicationLease } from "../src/local-overlays/publication/publication-lease.js";
+import { Publisher } from "../src/local-overlays/publication/publisher.js";
+import { EditSession } from "../src/local-overlays/publication/session.js";
+import {
+  digest,
+  durableJson,
+  sourceIdentity,
+} from "../src/local-overlays/publication/files.js";
 
 assert.equal(process.platform, "win32");
 

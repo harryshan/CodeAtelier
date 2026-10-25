@@ -2,8 +2,8 @@
  * LocalOverlayService 的平台挂载边界，当前生产实现使用已有 WinFsp v6 helper。
  * 1. LocalOverlayBackend/Mount 定义稳定目录命名、挂载身份、冻结收尾和停止；测试可替换真实文件系统。
  * 2. WinFspLocalBackend 使用独立命名空间，每次挂载创建新的 OverlayManager，拒绝非 Windows 静默降级。
- * 3. finish 在冻结租约中核对 v6 状态，按 task ID 推进代次并回收孤立内容；返回后 helper 已退出。
- * 不管理 Git、不发布来源、不安装驱动；调用方必须先排空任务，异常停止不能冒充成功收尾。
+ * 3. finish 在冻结租约中核对 v6 状态；可选明确选择先发布/确认，否则按 task ID 推进代次，再回收孤立内容并退出。
+ * 不管理 Git、不安装驱动；调用方先排空任务并提供可信候选验证器，异常停止不能冒充成功收尾。
  */
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -16,10 +16,22 @@ import {
   overlayWorkspaceId,
 } from "../worktrees/overlay.js";
 import { directoryIdentity } from "../worktrees/git.js";
+import {
+  publishFrozen,
+  type FrozenPublication,
+  type PublicationState,
+} from "./publication.js";
 
 export interface LocalOverlayMount {
   identity(): Promise<string>;
-  finish(taskId: string): Promise<{ epoch: number; capturedPaths: number }>;
+  finish(
+    taskId: string,
+    publication?: FrozenPublication,
+  ): Promise<{
+    epoch: number;
+    capturedPaths: number;
+    publication?: PublicationState;
+  }>;
   close(): Promise<void>;
 }
 
@@ -88,10 +100,26 @@ export class WinFspLocalBackend implements LocalOverlayBackend {
     return {
       identity: () => directoryIdentity(this.workspace(id)),
       close: () => manager.close(),
-      finish: async (taskId: string) =>
+      finish: async (taskId: string, plan?: FrozenPublication) =>
         manager.withFrozen(
           id,
-          async (_verify, _acknowledge, _signal, collect, nextEpoch) => {
+          async (verify, acknowledge, signal, collect, nextEpoch) => {
+            const publication = plan
+              ? await publishFrozen({
+                  directory: path.join(this.directory, "publications"),
+                  source,
+                  control,
+                  log: this.log,
+                  plan,
+                  signal,
+                  verify,
+                  acknowledge,
+                })
+              : undefined;
+            if (publication) {
+              await plan!.record(publication);
+            }
+
             const db = new DatabaseSync(path.join(control, "overlay.sqlite"), {
               readOnly: true,
             });
@@ -123,10 +151,14 @@ export class WinFspLocalBackend implements LocalOverlayBackend {
               db.close();
             }
 
-            await nextEpoch({ requestId: taskId, epoch, seal });
+            if (publication?.state !== "published") {
+              await nextEpoch({ requestId: taskId, epoch, seal });
+              epoch++;
+            }
+
             await collect();
 
-            return { epoch: epoch + 1, capturedPaths };
+            return { epoch, capturedPaths, publication };
           },
         ),
     } satisfies LocalOverlayMount;

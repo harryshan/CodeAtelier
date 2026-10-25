@@ -22,11 +22,17 @@ import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
-import { Publisher } from "./local-overlay/publisher.js";
-import { PublicationLease } from "./local-overlay/publication-lease.js";
-import { EditSession, loadBatch } from "./local-overlay/session.js";
-import { sourceIdentity, durableJson } from "./local-overlay/files.js";
-import { PublishError } from "./local-overlay/merge.js";
+import { Publisher } from "../src/local-overlays/publication/publisher.js";
+import { PublicationLease } from "../src/local-overlays/publication/publication-lease.js";
+import {
+  EditSession,
+  loadBatch,
+} from "../src/local-overlays/publication/session.js";
+import {
+  sourceIdentity,
+  durableJson,
+} from "../src/local-overlays/publication/files.js";
+import { PublishError } from "../src/local-overlays/publication/merge.js";
 
 assert.equal(process.platform, "win32");
 

@@ -1,5 +1,5 @@
 /**
- * Local overlay 发布 PoC 的纯内容整合器，供 Publisher 与回归测试调用。
+ * Local overlay 发布的纯内容整合器，供生产 Publisher 与回归测试调用。
  * 1. mergeContent 先处理相等、存在/删除和单方变化，不依赖 Git 或文件系统。
  * 2. changes 用现有 diff 库产生有界行修改，保留原换行和 EOF；不忽略空白。
  * 3. 双方修改只合并互不重叠的行区间；同点插入、边界歧义、二进制双改保守冲突。

@@ -5,7 +5,8 @@
  * 3. validate/projectWorkspace 不挂载，供 admission 和项目记忆使用；begin 才取得整个任务租约。
  * 4. lease.finish 在调用方排空后冻结续轮、回收、卸载并保存 ready；清理未知则隔离且保留锁。
  * 5. cancelCreation/close 与 Engine 关闭顺序配合；trace 只记录关联 ID、阶段/耗时/终态。
- * 当前内部入口不自动发布、不开放 UI 创建、不迁移旧历史；未来发布器必须在冻结租约内接线。
+ * 6. select 把明确路径及可信候选验证器绑定当前任务；仅成功且已排空的任务在冻结收尾中发布，选择不跨轮继承。
+ * 当前内部入口不开放 UI 创建/模型选择、不迁移旧历史；来源写入只由冻结租约内的协调器执行。
  */
 import { randomUUID } from "node:crypto";
 import { mkdir, open, rename, unlink, realpath, lstat } from "node:fs/promises";
@@ -17,6 +18,11 @@ import { directoryIdentity } from "../worktrees/git.js";
 import { inside } from "../tools/paths.js";
 import { TraceRecorder } from "../tracing/recorder.js";
 import { TraceArchive } from "../tracing/archive.js";
+import {
+  publicationSelection,
+  publicationStateSchema,
+  type PublicationSelection,
+} from "./publication.js";
 import {
   WinFspLocalBackend,
   type LocalOverlayBackend,
@@ -39,6 +45,7 @@ const recordSchema = z.object({
     .optional(),
   epoch: z.number().int().nonnegative().optional(),
   capturedPaths: z.number().int().nonnegative().optional(),
+  publication: publicationStateSchema.optional(),
 });
 export type LocalOverlayRecord = z.infer<typeof recordSchema>;
 export interface LocalOverlayLease {
@@ -51,6 +58,11 @@ export class LocalOverlayService {
   private readonly creation = new AbortController();
   private readonly creating = new Set<Promise<unknown>>();
   private readonly active = new Set<string>();
+  private readonly tasks = new Map<
+    string,
+    { taskId: string; finishing: boolean; selection?: PublicationSelection }
+  >();
+
   private readonly traces = new TraceRecorder();
   private readonly archive: TraceArchive;
 
@@ -222,6 +234,40 @@ export class LocalOverlayService {
     return (await this.validate(workspace))?.source;
   }
 
+  /** Internal trusted selection boundary, not an arbitrary callback from HTTP or model input. */
+  async select(
+    workspace: string,
+    sessionId: string,
+    taskId: string,
+    input: PublicationSelection,
+  ) {
+    const selected = publicationSelection(input);
+    const record = await this.validate(workspace, sessionId);
+    const binding = record && this.tasks.get(record.id);
+    if (
+      !record ||
+      record.phase !== "active" ||
+      !binding ||
+      binding.taskId !== taskId ||
+      binding.finishing
+    ) {
+      throw new Error("发布选择只能绑定当前活动 Local overlay 任务。");
+    }
+
+    // No filesystem or source mutation before the task's drained finish. The
+    // selection itself is saved with that finish, avoiding races with parallel tools.
+    return this.observe(
+      record.id,
+      "select",
+      async () => {
+        binding.selection = selected;
+
+        return { selected: selected.paths.length, published: false };
+      },
+      taskId,
+    );
+  }
+
   /** bind 必须按固定 workspace 幂等查找/建立会话，覆盖 Store 已保存而清单回执丢失的窗口。 */
   create(
     input: { id: string; source: string },
@@ -373,6 +419,7 @@ export class LocalOverlayService {
 
         record.phase = "active";
         record.taskId = taskId;
+        record.publication = undefined;
         await this.save(record);
         let mount: LocalOverlayMount | undefined;
         try {
@@ -394,11 +441,18 @@ export class LocalOverlayService {
         }
 
         this.active.add(record.id);
+        const binding: {
+          taskId: string;
+          finishing: boolean;
+          selection?: PublicationSelection;
+        } = { taskId, finishing: false };
+        this.tasks.set(record.id, binding);
         let finished: Promise<LocalOverlayRecord> | undefined;
         const current = mount;
 
         return {
           finish: (status, drained) => {
+            binding.finishing = true;
             finished ??= this.observe(
               record.id,
               "finish",
@@ -418,9 +472,32 @@ export class LocalOverlayService {
                     );
                   }
 
-                  const result = await current.finish(taskId);
+                  if (binding.selection) {
+                    record.publication = {
+                      state: status === "completed" ? "selected" : "retained",
+                      paths: [...binding.selection.paths],
+                    };
+                    await this.save(record);
+                  }
+
+                  const result = await current.finish(
+                    taskId,
+                    status === "completed" && binding.selection
+                      ? {
+                          ...binding.selection,
+                          signal,
+                          record: async (state) => {
+                            record.publication = state;
+                            await this.save(record);
+                          },
+                        }
+                      : undefined,
+                  );
                   record.phase = "ready";
-                  record.outcome = status as LocalOverlayRecord["outcome"];
+                  record.outcome =
+                    result.publication?.state === "rejected"
+                      ? "failed"
+                      : (status as LocalOverlayRecord["outcome"]);
                   record.epoch = result.epoch;
                   record.capturedPaths = result.capturedPaths;
                   await this.save(record);
@@ -434,6 +511,7 @@ export class LocalOverlayService {
                   throw error;
                 } finally {
                   this.active.delete(record.id);
+                  this.tasks.delete(record.id);
                 }
               },
               taskId,

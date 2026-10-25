@@ -12,7 +12,7 @@ import { z } from "zod";
 import {
   validateOverlayAcknowledgement,
   type OverlayAcknowledgement,
-} from "../../src/worktrees/overlay.js";
+} from "../../worktrees/overlay.js";
 import {
   checkRelative,
   digest,

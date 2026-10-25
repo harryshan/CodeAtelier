@@ -1,8 +1,8 @@
 /**
- * 普通目录上的受控编辑会话，供 Local overlay 发布 PoC 使用；尚不挂载 WinFsp。
+ * Local 发布批次契约和普通目录测试会话；生产 nativeBatch/Publisher 共用批次验证，EditSession 仅供受控实验。
  * 1. read 保存真实来源版本；已有私有修改返回会话内容，调用方不能改写基线 Buffer。
  * 2. edit 在第一次修改前复核读版本，保存 B/O；其它会话此后的变化留给发布三方检查。
- * 3. seal 生成有界、明确路径的变更集及只读依赖；save/load 仅用于独占实验目录和子进程。
+ * 3. validateBatch 校验路径、重复项、内容与数量限额；seal 生成明确路径和读依赖，save/load 供独占实验及子进程。
  * 不运行 Git、不扫描目录、不截获 shell；发布完成后应创建新会话，PoC 不实现续轮 rebase。
  */
 import { randomUUID } from "node:crypto";

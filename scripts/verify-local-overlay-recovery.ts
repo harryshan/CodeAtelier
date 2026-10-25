@@ -19,10 +19,16 @@ import {
   overlayNamespace,
   overlayWorkspace,
 } from "../src/worktrees/overlay.js";
-import { durableJson, sourceIdentity } from "./local-overlay/files.js";
-import { nativeBatch } from "./local-overlay/native-batch.js";
-import { Publisher } from "./local-overlay/publisher.js";
-import { validateBatch, type Batch } from "./local-overlay/session.js";
+import {
+  durableJson,
+  sourceIdentity,
+} from "../src/local-overlays/publication/files.js";
+import { nativeBatch } from "../src/local-overlays/publication/native-batch.js";
+import { Publisher } from "../src/local-overlays/publication/publisher.js";
+import {
+  validateBatch,
+  type Batch,
+} from "../src/local-overlays/publication/session.js";
 
 assert.equal(process.platform, "win32");
 

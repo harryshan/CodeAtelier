@@ -14,7 +14,7 @@
  *    Skill 每任务在 Broker 扫描预设目录，模型先看到摘要、工具按需加载正文；宿主/Runtime/fallback 共用该目录且不授权脚本。
  *    MCP 在首次模型请求前提供已启用服务的公开用途摘要，不提前连接；任务级本机连接池由宿主/Runtime 共用审批后单次执行入口，收尾关闭，摘要、参数和正文不进入 trace。
  * 7. Agent Runtime 取消先经 IPC 等待 runtime_complete/stopping，再关闭原生 transport；清理未知优先于取消。终态保留已验证进程身份；Broker 校验 Runtime trace 时间戳，按该进程的执行槽组织片段、从已保存工具调用附加脱敏参数并统一归档，在结果持久化前按对应执行片段补齐耗时；子任务由 Broker 核对身份与原子保存问题回执，退出先停子线程再归档。
- * 8. LocalOverlayService 独立管理私有视图：admission 不挂载，run 持租约挂载，Runtime/子任务/工具排空后冻结续轮和卸载；unknown 隔离，当前内部入口只保留修改，不自动发布。
+ * 8. LocalOverlayService 独立管理私有视图：admission 不挂载，run 持租约挂载，Runtime/子任务/工具排空后冻结续轮和卸载；成功轮次可发布内部显式选择并经候选验证的文件，拒绝保留私有修改，unknown 隔离。
  * 9. run 的终态持久化与 trace 收尾分开保护；写库失败仍尝试归档失败 trace，导出/归档故障只记警告，最外层 finally 释放 trace 内存和任务级 Sandbox 状态。
  *
  * 模型请求可以重试，但已经执行的工具不能跟着重跑。数据库回滚也撤销不了文件修改或
@@ -214,7 +214,7 @@ export class Engine {
   readonly memories: ProjectMemoryService;
   /** 管理清单与实际工作区绑定；不改变 Store 的 workspace 或调度键。 */
   readonly worktrees: WorktreeService;
-  /** 内部 Local overlay 会话入口；公开选择和自动发布另行接线。 */
+  /** 内部 Local overlay 会话/发布入口；模型选择和公开 UI 另行接线。 */
   readonly localOverlays: LocalOverlayService;
 
   /** 主模型独立审视在途工具；不追加未完成的 function_call_output，也不计为主循环轮次。 */
@@ -3442,18 +3442,44 @@ export class Engine {
       if (localLease) {
         try {
           const record = await localLease.finish(status, localDrained);
+          const publication = record.publication;
+          const published = publication?.state === "published";
+          if (publication?.state === "rejected") {
+            status = signal.aborted
+              ? signal.reason?.message?.startsWith("服务关闭")
+                ? "interrupted"
+                : "cancelled"
+              : "failed";
+            failure = `源码发布未执行，私有修改已保留：${publication.reason ?? "REJECTED"}。`;
+          }
+
           emit("local_overlay", {
-            state: "private",
+            state: published ? "published" : "private",
             epoch: record.epoch,
             capturedPaths: record.capturedPaths,
-            published: false,
+            published,
+            ...(publication
+              ? {
+                  publication: {
+                    state: publication.state,
+                    batchId: publication.batchId,
+                    files: publication.files,
+                    reason: publication.reason,
+                    cleanupPending: publication.cleanupPending,
+                  },
+                }
+              : {}),
           });
           emit("notice", {
-            text: "本轮修改保留在会话私有目录，尚未发布到项目主目录。",
+            text: published
+              ? `已发布明确选择的 ${publication.files} 个源码文件；未选修改仍保留在私有目录。`
+              : "本轮修改保留在会话私有目录，尚未发布到项目主目录。" +
+                (publication?.state === "rejected" ? ` ${failure}` : ""),
           });
         } catch (error) {
           status = "failed";
-          failure = "Local overlay 收尾未确认，私有现场已保留，不能自动续聊。";
+          failure =
+            "Local overlay 收尾或发布结果未确认，现场已保留，不能自动续聊或重放发布。";
           emit("notice", { text: failure, status });
           log.error({ event: "local_overlay.finish_failed", err: error });
         }

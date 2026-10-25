@@ -1,5 +1,13 @@
 # 初版验证记录
 
+## Local 内部任务发布与拒绝保留（D170，2026-10-26）
+
+- 发布、原生批次导出、三方整合和恢复协议移至 `src/local-overlays/publication`，脚本/测试改用相同正式实现。`LocalOverlayService.select` 接收任务绑定的明确路径和可信候选验证器，Engine 在成功且排空的收尾中执行；选择不跨轮继承，失败/取消/中断不发布。日志和 trace 记录选择及发布关联 ID，不记录路径或内容。
+- 自审先复现来源已 complete 后备份记账异常把 journal 降格为 aborted（`.local/local-publication-before.log`）。修复后保留完成证明，并提供 unapplied/unknown 的结构化失败；只有未开始来源写入且执行租约已排空才允许视图继续使用。回归同时保留底层错误代码与原有恢复语义。
+- `pnpm overlay:verify-sandbox --publish` 通过（`.local/local-overlay-sandbox-gnfDSd/report.json`、`.local/local-publication-sandbox-verified.log`，[摘要](local-overlay-publication-results.json)）：真实并行 Runtime 分别自动发布选定文件，未选文件仍私有；候选验证拒绝和主目录冲突均使任务失败且保留视图；外部来源修改不覆盖，取消选择不执行；重建 Engine 后私有拒绝/冲突内容仍存在，最终 A=5/B=2，无 fallback、无活动租约。选择来自可信内部测试调用，验证仅检查合并候选字节，不宣称模型选择工具或 Sandbox 候选命令验证完成。
+- 针对性回归 114 项通过（`.local/local-publication-unit-final.log`）；真实完成态跨进程恢复复验通过（`.local/local-overlay-recovery-NIxOME/report.json`、`.local/local-publication-recovery.log`）。只读进程检查无遗留 overlay helper/Sandbox supervisor。不安装/Repair、不重启实际服务、不运行 Evaluation。
+- 最终 `pnpm check` 通过：142 个测试文件、1117 passed / 1 existing skipped，类型、lint、格式及 Web/Windows/POSIX Runtime 构建通过（`.local/local-publication-check-final.log`）。`pnpm test:e2e` 71 项通过（`.local/local-publication-e2e.log`）；覆盖既有 Web/HTTP/SSE 兼容，不代表尚未开放的 Local 发布 UI 验收。公开入口、模型工具、候选工程命令验证器、冲突操作 UI、POSIX 和大仓库性能仍属于未完成目标。
+
 ## Local overlay 接入 Engine 内部生命周期（D170，2026-10-26）
 
 - `LocalOverlayService` 的持久来源/会话绑定、跨进程任务锁、按任务挂载、排空后冻结续轮/回收/卸载已接入 Engine。未知执行/清理保留失败清单和锁，纯创建请求不匹配不污染既有 ready 状态。宿主/Runtime 均提示私有内容尚未发布；不开放公开创建、不改变默认模式或历史。

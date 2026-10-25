@@ -1,5 +1,5 @@
 /**
- * 发布 PoC 的受控普通文件 I/O，供会话基线、Publisher 与恢复观察使用。
+ * Local 发布的受控普通文件 I/O，供原生批次导出、Publisher、恢复观察和独立测试会话使用。
  * 1. sourceIdentity 固定目录的真实路径和 inode；checkedPath 拒绝越界、链接和管理目录。
  * 2. snapshot 有界读取并核对路径/句柄前后身份；版本含内容和元数据，不依赖 mtime 单项。
  * 3. durableJson 以临时文件、flush、rename 保存私有日志；不宣称跨文件/断电原子性。

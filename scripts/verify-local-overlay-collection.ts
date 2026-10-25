@@ -31,9 +31,9 @@ import {
   overlayWorkspace,
   type OverlayAcknowledgement,
 } from "../src/worktrees/overlay.js";
-import { sourceIdentity } from "./local-overlay/files.js";
-import { nativeBatch } from "./local-overlay/native-batch.js";
-import { Publisher } from "./local-overlay/publisher.js";
+import { sourceIdentity } from "../src/local-overlays/publication/files.js";
+import { nativeBatch } from "../src/local-overlays/publication/native-batch.js";
+import { Publisher } from "../src/local-overlays/publication/publisher.js";
 
 assert.equal(process.platform, "win32");
 await mkdir(".local", { recursive: true });

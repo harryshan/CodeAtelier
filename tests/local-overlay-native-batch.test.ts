@@ -11,7 +11,7 @@ import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { expect, it } from "vitest";
 import { nativeFixture as fixture } from "./fixtures/local-overlay-native.js";
-import { nativeBatch } from "../scripts/local-overlay/native-batch.js";
+import { nativeBatch } from "../src/local-overlays/publication/native-batch.js";
 
 it("exports only selected B/O without substituting the latest lower for B", async () => {
   const f = await fixture();

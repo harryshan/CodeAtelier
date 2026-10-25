@@ -18,14 +18,14 @@ import {
 import path from "node:path";
 import { expect, it } from "vitest";
 import { temp } from "./fixtures/helpers.js";
-import { mergeContent } from "../scripts/local-overlay/merge.js";
+import { mergeContent } from "../src/local-overlays/publication/merge.js";
 import {
   bytes,
   snapshot,
   sourceIdentity,
-} from "../scripts/local-overlay/files.js";
-import { EditSession } from "../scripts/local-overlay/session.js";
-import { Publisher } from "../scripts/local-overlay/publisher.js";
+} from "../src/local-overlays/publication/files.js";
+import { EditSession } from "../src/local-overlays/publication/session.js";
+import { Publisher } from "../src/local-overlays/publication/publisher.js";
 
 const buffer = (value: string | null) =>
   value === null ? null : Buffer.from(value);
@@ -287,7 +287,7 @@ it("stops before the next file when cancellation follows a completed write", asy
       signal: controller.signal,
       afterWrite: async () => controller.abort(new Error("Lease lost")),
     }),
-  ).rejects.toThrow("Lease lost");
+  ).rejects.toMatchObject({ message: "Lease lost", outcome: "unknown" });
   expect(await f.read()).toBe("first published\n");
   expect(await f.read("two.txt")).toBe("second\n");
   expect(await f.publisher.inspect(batch)).toEqual({
@@ -335,7 +335,11 @@ it("rejects a failed candidate validation without changing source or retaining t
         throw new Error("candidate check failed");
       },
     }),
-  ).rejects.toThrow("candidate check failed");
+  ).rejects.toMatchObject({
+    message: "candidate check failed",
+    outcome: "unapplied",
+    reason: "VALIDATION_FAILED",
+  });
   expect(await f.read()).toBe("one\ntwo\nthree\n");
   expect((await f.publisher.inspect(session.seal())).state).toBe("aborted");
 

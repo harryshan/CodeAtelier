@@ -1,0 +1,39 @@
+{
+  "timestamp": "2026-10-25T19:23:39.280Z",
+  "platform": "win32",
+  "node": "v26.10.0",
+  "backend": "Local WinFsp + installed dedicated-account Runtime",
+  "registration": "production LocalOverlayService internal Engine lifecycle; no registration overrides",
+  "parallelRuntimeCommands": "passed",
+  "commandIntervals": {
+    "B": [
+      1792956192005,
+      1792956194311
+    ],
+    "A": [
+      1792956192009,
+      1792956194311
+    ]
+  },
+  "sourceAbsoluteWrite": "denied",
+  "gitMetadataCreation": "denied",
+  "sourceGitWriteRootsGranted": 0,
+  "privateWrites": "independent",
+  "cancelRunningCommand": "passed",
+  "remountAndContinue": "both sessions passed after Engine recreation",
+  "epochs": {
+    "A": 5,
+    "B": 2
+  },
+  "publication": "two selected files automatically published; cancelled selection retained",
+  "rejection": "candidate failure and source conflict preserved; both private results survived restart",
+  "selection": "trusted internal caller; model tool not yet connected",
+  "validation": "exact merged candidate bytes; no validation command executed",
+  "fallback": false,
+  "activeLeasesAfterTasks": 0,
+  "cleanup": "engine drained; helpers cleanly stopped",
+  "limitations": [
+    "Not an OS security boundary between sessions",
+    "No public UI/API creation, model selection or Sandbox candidate command runner yet"
+  ]
+}

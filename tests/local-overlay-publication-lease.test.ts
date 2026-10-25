@@ -9,7 +9,7 @@ import { EventEmitter } from "node:events";
 import { PassThrough, Writable } from "node:stream";
 import { setImmediate as immediate } from "node:timers/promises";
 import { describe, expect, it, vi } from "vitest";
-import { PublicationLease } from "../scripts/local-overlay/publication-lease.js";
+import { PublicationLease } from "../src/local-overlays/publication/publication-lease.js";
 
 const state = vi.hoisted(() => ({ children: [] as MockChild[] }));
 vi.mock("node:child_process", async (original) => ({

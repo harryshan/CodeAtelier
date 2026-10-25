@@ -22,7 +22,7 @@ export { detectWindowsShell } from "../tools/command-shell.js";
 
 /** Broker 生成的目录约束；宿主指令和 Runtime 的已有 Broker 上下文通道使用同一文本。 */
 export const localOverlayGuidance =
-  "This workspace is a private Local overlay view. All task edits belong in this view. Git metadata is unavailable here; do not initialize a repository or redirect Git or file writes to the source project. Changes are retained privately and are not published to the source project by this internal lifecycle implementation. Clearly distinguish verified private changes from published changes. Project memory is shared with the source project and is not current file evidence.";
+  "This workspace is a private Local overlay view. All task edits belong in this view. Git metadata is unavailable here; do not initialize a repository or redirect Git or file writes to the source project. Changes remain private unless the host receives an explicit source-file selection and validates the merged candidates after a successful task. Do not claim publication before a confirmed publication result. Clearly distinguish verified private changes from published changes. Project memory is shared with the source project and is not current file evidence.";
 
 function searchCommandGuidance(tools: RepositorySearchTool[]) {
   if (!tools.length) {

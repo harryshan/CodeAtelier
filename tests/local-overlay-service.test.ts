@@ -12,6 +12,7 @@ import path from "node:path";
 import pino from "pino";
 import { expect, it } from "vitest";
 import type { LocalOverlayBackend } from "../src/local-overlays/backend.js";
+import type { FrozenPublication } from "../src/local-overlays/publication.js";
 import { LocalOverlayService } from "../src/local-overlays/service.js";
 import { directoryIdentity } from "../src/worktrees/git.js";
 import { Config } from "../src/config/config.js";
@@ -24,6 +25,7 @@ const log = pino({ enabled: false });
 class FakeBackend implements LocalOverlayBackend {
   readonly mounted = new Set<string>();
   readonly epochs = new Map<string, number>();
+  readonly publications: FrozenPublication[] = [];
   creates = 0;
   failOpen = false;
   failFinish = false;
@@ -69,9 +71,13 @@ class FakeBackend implements LocalOverlayBackend {
       close: async () => {
         this.mounted.delete(id);
       },
-      finish: async () => {
+      finish: async (_taskId: string, publication?: FrozenPublication) => {
         if (this.failFinish) {
           throw new Error("freeze failed");
+        }
+
+        if (publication) {
+          this.publications.push(publication);
         }
 
         const epoch = (this.epochs.get(id) ?? 0) + 1;
@@ -311,6 +317,79 @@ it("refuses a stale active manifest after restart without mounting or changing i
   ).rejects.toThrow("身份改变");
   expect(await f.record()).toEqual(stale);
   expect(f.backend.mounted.size).toBe(0);
+});
+
+it.each(["completed", "failed", "cancelled", "interrupted"] as const)(
+  "only passes explicit selection to drained successful finish (%s)",
+  async (status) => {
+    const f = await fixture();
+    const session = await f.create();
+    const taskId = randomUUID();
+    const lease = (await f.service.begin(
+      session.workspace,
+      session.id,
+      taskId,
+      new AbortController().signal,
+    ))!;
+    const paths = ["source.ts"];
+    const selection = { paths, validate: async () => {} };
+    await expect(
+      f.service.select(session.workspace, session.id, randomUUID(), selection),
+    ).rejects.toThrow("当前活动");
+    await f.service.select(session.workspace, session.id, taskId, selection);
+    paths.push("artifact.bin");
+    await lease.finish(status, true);
+    expect(f.backend.publications).toHaveLength(status === "completed" ? 1 : 0);
+    if (status === "completed") {
+      expect(f.backend.publications[0]!.paths).toEqual(["source.ts"]);
+    }
+
+    await expect(
+      f.service.select(session.workspace, session.id, taskId, selection),
+    ).rejects.toThrow("当前活动");
+    const next = (await f.service.begin(
+      session.workspace,
+      session.id,
+      randomUUID(),
+      new AbortController().signal,
+    ))!;
+    await next.finish("completed", true);
+    expect(f.backend.publications).toHaveLength(status === "completed" ? 1 : 0);
+  },
+);
+
+it("requires a bounded explicit selection and a validator", async () => {
+  const f = await fixture();
+  const session = await f.create();
+  const taskId = randomUUID();
+  const lease = (await f.service.begin(
+    session.workspace,
+    session.id,
+    taskId,
+    new AbortController().signal,
+  ))!;
+  for (const paths of [
+    [],
+    [".git/config"],
+    ["../source.ts"],
+    ["a.ts", "A.ts"],
+    Array.from({ length: 101 }, (_, i) => `${i}.ts`),
+  ]) {
+    await expect(
+      f.service.select(session.workspace, session.id, taskId, {
+        paths,
+        validate: async () => {},
+      }),
+    ).rejects.toThrow();
+  }
+
+  await expect(
+    f.service.select(session.workspace, session.id, taskId, {
+      paths: ["a.ts"],
+    } as any),
+  ).rejects.toThrow("VALIDATOR_REQUIRED");
+  await lease.finish("completed", true);
+  expect(f.backend.publications).toHaveLength(0);
 });
 
 it.each([false, true])(

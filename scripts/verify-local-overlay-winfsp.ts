@@ -21,11 +21,14 @@ import {
   overlayNamespace,
   overlayWorkspace,
 } from "../src/worktrees/overlay.js";
-import { durableJson, sourceIdentity } from "./local-overlay/files.js";
-import { EditSession } from "./local-overlay/session.js";
-import type { Batch } from "./local-overlay/session.js";
-import { nativeBatch } from "./local-overlay/native-batch.js";
-import { Publisher } from "./local-overlay/publisher.js";
+import {
+  durableJson,
+  sourceIdentity,
+} from "../src/local-overlays/publication/files.js";
+import { EditSession } from "../src/local-overlays/publication/session.js";
+import type { Batch } from "../src/local-overlays/publication/session.js";
+import { nativeBatch } from "../src/local-overlays/publication/native-batch.js";
+import { Publisher } from "../src/local-overlays/publication/publisher.js";
 
 const execute = promisify(execFile);
 const native = process.argv.includes("--native");

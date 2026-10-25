@@ -9,7 +9,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { temp } from "./helpers.js";
-import { sourceIdentity } from "../../scripts/local-overlay/files.js";
+import { sourceIdentity } from "../../src/local-overlays/publication/files.js";
 
 export async function nativeFixture() {
   const root = await temp();

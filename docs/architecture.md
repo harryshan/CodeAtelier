@@ -2,7 +2,7 @@
 
 当前初版为本机后端、浏览器单页应用、默认单 agent 和可按任务开启的只读 subagent；不同真实工作目录的会话默认最多两个任务并行，同一目录严格串行。
 
-D170 新 Local overlay 已接入 Engine **内部生命周期**：`src/local-overlays/service.ts` 管理独立的来源/会话/目录身份清单和跨进程任务锁，`backend.ts` 使用 WinFsp v6 Local 挂载。任务开始挂载，Runtime/子任务/命令排空后冻结、推进观察周期、回收孤立内容并卸载；unknown 保留锁与失败清单。私有视图用于执行和调度，记忆映射来源，Sandbox 不追加来源/Git 写根。空闲视图不挂载；公开创建入口、自动发布和冲突恢复 UI 尚待接入，不改变以下旧模式及默认选择。详见 [Local overlay 设计](local-overlay-design.md#engine-内部生命周期接入2026-10-26)。
+D170 新 Local overlay 已接入 Engine **内部生命周期**：`src/local-overlays/service.ts` 管理独立的来源/会话/目录身份清单和跨进程任务锁，`backend.ts` 使用 WinFsp v6 Local 挂载。任务开始挂载，Runtime/子任务/命令排空后冻结、推进观察周期、回收孤立内容并卸载；unknown 保留锁与失败清单。私有视图用于执行和调度，记忆映射来源，Sandbox 不追加来源/Git 写根。空闲视图不挂载；已接入成功任务的内部显式选择发布及确认；公开创建入口、模型选择、候选工程命令验证和冲突恢复 UI 尚待接入，不改变以下旧模式及默认选择。详见 [Local overlay 设计](local-overlay-design.md#engine-内部生命周期接入2026-10-26)。
 
 D167/D168 将默认 Riftri 当前状态工作视图与显式 Git worktree 并列：`src/worktrees/service.ts` 管理宿主清单、请求 UUID/模式去重、目录身份和旧清单兼容。`sessions.workspace` 始终是实际目录；工具、Skills/MCP、调度与恢复使用该路径，侧栏/记忆按来源分组。POSIX 副本/普通 checkout 在 Broker 数据目录同级，Windows overlay 的实际路径是稳定本机 UNC，私有层和清单在 Broker 数据目录；不迁移历史 v11，不自动回写或删除，详见 [工作区设计](worktrees.md)。
 

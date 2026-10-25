@@ -10,17 +10,17 @@ import { mkdir, readFile, readdir, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { expect, it, vi } from "vitest";
 import { temp } from "./fixtures/helpers.js";
-import { EditSession } from "../scripts/local-overlay/session.js";
-import { Publisher } from "../scripts/local-overlay/publisher.js";
+import { EditSession } from "../src/local-overlays/publication/session.js";
+import { Publisher } from "../src/local-overlays/publication/publisher.js";
 import {
   digest,
   durableJson,
   sourceIdentity,
-} from "../scripts/local-overlay/files.js";
-import { loadJournal } from "../scripts/local-overlay/journal.js";
+} from "../src/local-overlays/publication/files.js";
+import { loadJournal } from "../src/local-overlays/publication/journal.js";
 
 const behavior = vi.hoisted(() => ({ failRelease: false }));
-vi.mock("../scripts/local-overlay/publication-lease.js", () => ({
+vi.mock("../src/local-overlays/publication/publication-lease.js", () => ({
   PublicationLease: {
     start: async (gate: string) => ({
       signal: new AbortController().signal,

@@ -10,8 +10,8 @@ import { execFile } from "node:child_process";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
-import { loadBatch } from "./session.js";
-import { Publisher } from "./publisher.js";
+import { loadBatch } from "../../src/local-overlays/publication/session.js";
+import { Publisher } from "../../src/local-overlays/publication/publisher.js";
 import { createLogger } from "../../src/logging/logger.js";
 
 const execute = promisify(execFile);

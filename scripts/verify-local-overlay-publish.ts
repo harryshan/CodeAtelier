@@ -21,9 +21,12 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { createLogger } from "../src/logging/logger.js";
-import { digest, sourceIdentity } from "./local-overlay/files.js";
-import { Publisher } from "./local-overlay/publisher.js";
-import { EditSession } from "./local-overlay/session.js";
+import {
+  digest,
+  sourceIdentity,
+} from "../src/local-overlays/publication/files.js";
+import { Publisher } from "../src/local-overlays/publication/publisher.js";
+import { EditSession } from "../src/local-overlays/publication/session.js";
 import {
   windowsReplace,
   windowsCleanup,

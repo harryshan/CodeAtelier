@@ -5,7 +5,8 @@
  * 3. 专用账户读 lower、写私有层，尝试来源绝对路径写入和 .git 创建均须失败；无宿主 fallback。
  * 4. 取消正在运行的命令，再关闭/新建 Engine，自动按相同历史重挂载并续聊检查私有内容和租约。
  * 不替换 Runtime、Broker、ACL 或 IPC，不安装/Repair、不使用真实模型或用户仓库。
- * 验证内部会话生命周期；没有公开创建入口或自动发布，不声明完整产品闭环。失败现场保留。
+ * 5. --publish 使用可信内部选择和精确候选字节验证，成功轮次发布指定新文件；取消轮次选择不执行。
+ * 验证内部会话生命周期；没有公开创建/模型选择，不声明完整产品闭环或 Sandbox 候选命令验证。失败现场保留。
  */
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
@@ -20,6 +21,8 @@ import type { Session } from "../src/shared/types.js";
 import { Store } from "../src/sessions/store.js";
 
 assert.equal(process.platform, "win32");
+const publish = process.argv.includes("--publish");
+let validated = 0;
 process.env.CODEATELIER_SANDBOX_ENABLED = "true";
 process.env.CODEATELIER_BASE_URL = "http://127.0.0.1:1/v1";
 process.env.CODEATELIER_MODEL = "local-overlay-verification";
@@ -43,6 +46,7 @@ const views = ["A", "B"].map((label) => {
     id,
     label,
     workspace: "",
+    sessionId: "",
   };
 });
 
@@ -54,7 +58,8 @@ async function until(predicate: () => boolean | Promise<boolean>) {
   }
 }
 
-let phase: "parallel" | "cancel" | "restore" = "parallel";
+let phase: "parallel" | "validation" | "conflict" | "cancel" | "restore" =
+  "parallel";
 const calls = new Map<string, number>();
 const intervals = new Map<string, [number, number]>();
 let arrived = 0;
@@ -63,12 +68,23 @@ const barrier = new Promise<void>((resolve) => {
   release = resolve;
 });
 function command(label: string) {
+  if (phase === "validation" || phase === "conflict") {
+    const file = phase === "validation" ? "rejected.txt" : "source-A.txt";
+
+    return `whoami; Set-Content -LiteralPath '${file}' -Value 'private rejected'; Write-Output 'LOCAL_REJECTION_READY'`;
+  }
+
   if (phase === "cancel") {
     return "Set-Content -LiteralPath 'cancel-start.txt' -Value 'started'; Start-Sleep -Seconds 60; Set-Content -LiteralPath 'cancel-finished.txt' -Value 'unexpected'";
   }
 
   if (phase === "restore") {
-    return `whoami; if ((Get-Content -LiteralPath 'runtime.txt' -Raw).Trim() -ne '${label}') { throw 'Private content lost' }; if (Test-Path -LiteralPath 'cancel-finished.txt') { throw 'Cancelled command survived' }; Write-Output 'LOCAL_RESTORED_${label}'`;
+    const retained =
+      publish && label === "A"
+        ? "if ((Get-Content -LiteralPath 'rejected.txt' -Raw).Trim() -ne 'private rejected') { throw 'Rejected content lost' }; if ((Get-Content -LiteralPath 'source-A.txt' -Raw).Trim() -ne 'private rejected') { throw 'Conflict content lost' }; "
+        : "";
+
+    return `whoami; if ((Get-Content -LiteralPath 'runtime.txt' -Raw).Trim() -ne '${label}') { throw 'Private content lost' }; if (Test-Path -LiteralPath 'cancel-finished.txt') { throw 'Cancelled command survived' }; ${retained}Write-Output 'LOCAL_RESTORED_${label}'`;
   }
 
   const forbidden = path
@@ -84,6 +100,11 @@ function command(label: string) {
     "$denied = $false; try { Set-Content -LiteralPath '.git' -Value 'forbidden' } catch { $denied = $true }; if (-not $denied) { throw 'Metadata creation allowed' }",
     `$denied = $false; try { Set-Content -LiteralPath '${forbidden}' -Value 'forbidden' } catch { $denied = $true }; if (-not $denied) { throw 'Source write allowed' }`,
     `Set-Content -LiteralPath 'runtime.txt' -Value '${label}'`,
+    ...(publish
+      ? [
+          `Set-Content -LiteralPath 'source-${label}.txt' -Value 'published ${label}'`,
+        ]
+      : []),
     "Start-Sleep -Seconds 2",
     "$finished = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()",
     `Write-Output "LOCAL_INTERVAL_${label}:$($started):$($finished)"`,
@@ -104,6 +125,24 @@ const provider: ModelProvider = {
     const count = calls.get(key) ?? 0;
     calls.set(key, count + 1);
     if (count === 0) {
+      if (publish && phase === "cancel") {
+        const view = views.find((view) => view.label === label)!;
+        const active = engine.activeTasks.find(
+          (task) => task.sessionId === view.sessionId,
+        )!;
+        await engine.localOverlays.select(
+          view.workspace,
+          active.sessionId,
+          active.id,
+          {
+            paths: ["cancel-start.txt"],
+            validate: async () => {
+              assert.fail("Cancelled task must not validate or publish");
+            },
+          },
+        );
+      }
+
       if (phase === "parallel") {
         if (++arrived === 2) {
           release();
@@ -145,6 +184,49 @@ const provider: ModelProvider = {
       );
       assert.ok(match, "Runtime command did not finish its assertions");
       intervals.set(label, [Number(match[1]), Number(match[2])]);
+      if (publish) {
+        const view = views.find((view) => view.label === label)!;
+        const active = engine.activeTasks.find(
+          (task) => task.sessionId === view.sessionId,
+        )!;
+        await engine.localOverlays.select(
+          view.workspace,
+          active.sessionId,
+          active.id,
+          {
+            paths: [`source-${label}.txt`],
+            validate: async (files, signal) => {
+              signal?.throwIfAborted();
+              assert.equal(files.size, 1);
+              assert.equal(
+                files.get(`source-${label}.txt`)?.toString("utf8").trim(),
+                `published ${label}`,
+              );
+              validated++;
+            },
+          },
+        );
+      }
+    } else if (phase === "validation" || phase === "conflict") {
+      assert.match(serialized, /LOCAL_REJECTION_READY/);
+      if (phase === "conflict") {
+        await writeFile(path.join(source, "source-A.txt"), "external winner\n");
+      }
+
+      const active = engine.activeTasks.find(
+        (task) => task.sessionId === views[0]!.sessionId,
+      )!;
+      await engine.localOverlays.select(
+        views[0]!.workspace,
+        active.sessionId,
+        active.id,
+        {
+          paths: [phase === "validation" ? "rejected.txt" : "source-A.txt"],
+          validate: async () => {
+            throw new Error("Expected candidate validation refusal");
+          },
+        },
+      );
     } else {
       assert.match(serialized, new RegExp(`LOCAL_RESTORED_${label}`));
     }
@@ -160,7 +242,7 @@ function createEngine() {
 function assertRuntime(
   sessionId: string,
   taskId: string,
-  state: "completed" | "cancelled",
+  state: "completed" | "cancelled" | "failed",
 ) {
   const events = store
     .events(sessionId)
@@ -172,7 +254,7 @@ function assertRuntime(
         event.type === "execution_instance" &&
         event.data.kind === "agent-runtime" &&
         event.data.mode === "windows-sandbox-user" &&
-        event.data.state === state &&
+        event.data.state === (state === "failed" ? "completed" : state) &&
         event.data.sandboxApplied === true,
     ),
   );
@@ -186,7 +268,8 @@ function assertRuntime(
   assert(
     events.some(
       (event) =>
-        event.type === "local_overlay" && event.data.published === false,
+        event.type === "local_overlay" &&
+        event.data.published === (publish && phase === "parallel"),
     ),
   );
 }
@@ -202,6 +285,7 @@ try {
         store.create(workspace, `Local Sandbox ${view.label}`),
     );
     view.workspace = session.workspace;
+    view.sessionId = session.id;
     sessions.push(session);
     assert.equal(
       await engine.localOverlays.projectWorkspace(view.workspace),
@@ -249,10 +333,52 @@ try {
     await assert.rejects(readFile(path.join(source, name)), { code: "ENOENT" });
   }
 
+  if (publish) {
+    for (const label of ["A", "B"]) {
+      assert.equal(
+        (
+          await readFile(path.join(source, `source-${label}.txt`), "utf8")
+        ).trim(),
+        `published ${label}`,
+      );
+    }
+
+    assert.equal(validated, 2);
+  }
+
   assert.equal(
     await readFile(path.join(source, ".git", "sentinel"), "utf8"),
     "source metadata",
   );
+
+  if (publish) {
+    for (const rejection of ["validation", "conflict"] as const) {
+      phase = rejection;
+      const rejected = await engine.start(
+        sessions[0]!.id,
+        `LOCAL_SESSION_A: ${rejection} probe.`,
+      );
+      await until(async () => !(await engine.hasActiveTasks()));
+      assertRuntime(sessions[0]!.id, rejected.id, "failed");
+      const record = await engine.localOverlays.validate(views[0]!.workspace);
+      assert.equal(record?.phase, "ready");
+      assert.equal(record.publication?.state, "rejected");
+      if (rejection === "validation") {
+        assert.equal(record.publication.reason, "VALIDATION_FAILED");
+      } else {
+        assert.notEqual(record.publication.reason, "VALIDATION_FAILED");
+      }
+
+      await assert.rejects(readFile(path.join(source, "rejected.txt")), {
+        code: "ENOENT",
+      });
+    }
+
+    assert.equal(
+      await readFile(path.join(source, "source-A.txt"), "utf8"),
+      "external winner\n",
+    );
+  }
 
   phase = "cancel";
   const cancelled = await engine.start(
@@ -294,7 +420,7 @@ try {
   assertRuntime(sessions[0]!.id, cancelled.id, "cancelled");
   assert.equal(
     (await engine.localOverlays.validate(views[0]!.workspace))?.epoch,
-    2,
+    publish ? 4 : 2,
   );
   assert.equal(
     engine.sandbox.accountGenerationSnapshot()?.activeInstanceCount,
@@ -320,7 +446,7 @@ try {
       sessions[index]!.id,
     );
     assert.equal(record?.phase, "ready");
-    assert.equal(record.epoch, index === 0 ? 3 : 2);
+    assert.equal(record.epoch, index === 0 ? (publish ? 5 : 3) : 2);
     epochs[view.label] = record.epoch;
     await assert.rejects(readFile(path.join(view.workspace, "runtime.txt")));
   }
@@ -354,12 +480,22 @@ try {
     cancelRunningCommand: "passed",
     remountAndContinue: "both sessions passed after Engine recreation",
     epochs,
+    publication: publish
+      ? "two selected files automatically published; cancelled selection retained"
+      : "not selected",
+    rejection: publish
+      ? "candidate failure and source conflict preserved; both private results survived restart"
+      : "not requested",
+    selection: "trusted internal caller; model tool not yet connected",
+    validation: publish
+      ? "exact merged candidate bytes; no validation command executed"
+      : "not requested",
     fallback: false,
     activeLeasesAfterTasks: 0,
     cleanup: "engine drained; helpers cleanly stopped",
     limitations: [
       "Not an OS security boundary between sessions",
-      "No public UI/API creation or automatic publication yet",
+      "No public UI/API creation, model selection or Sandbox candidate command runner yet",
     ],
   };
   const file = path.join(root, "report.json");

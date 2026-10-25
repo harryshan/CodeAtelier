@@ -20,16 +20,16 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { beforeEach, expect, it, vi } from "vitest";
 import { temp } from "./fixtures/helpers.js";
-import { sourceIdentity } from "../scripts/local-overlay/files.js";
-import { EditSession } from "../scripts/local-overlay/session.js";
-import { Publisher } from "../scripts/local-overlay/publisher.js";
+import { sourceIdentity } from "../src/local-overlays/publication/files.js";
+import { EditSession } from "../src/local-overlays/publication/session.js";
+import { Publisher } from "../src/local-overlays/publication/publisher.js";
 
 const native = vi.hoisted(() => ({
   windowsReplace: vi.fn(),
   windowsCleanup: vi.fn(),
   close: vi.fn(),
 }));
-vi.mock("../scripts/local-overlay/publication-lease.js", () => ({
+vi.mock("../src/local-overlays/publication/publication-lease.js", () => ({
   PublicationLease: {
     start: async () => ({
       generation: randomUUID(),
@@ -56,6 +56,29 @@ beforeEach(() => {
     .mockReset()
     .mockImplementation(async (backup: string) => unlink(backup));
 });
+
+windows(
+  "never downgrades durable completion when backup bookkeeping throws",
+  async () => {
+    const f = await fixture();
+    vi.spyOn(f.publisher as any, "cleanupBackups").mockRejectedValueOnce(
+      new Error("backup bookkeeping unavailable"),
+    );
+    await expect(
+      f.publisher.publish(f.batch, {
+        nativeWindows: true,
+        validate: async () => {},
+      }),
+    ).rejects.toMatchObject({
+      message: "backup bookkeeping unavailable",
+      outcome: "unknown",
+    });
+    expect((await f.publisher.inspect(f.batch)).state).toBe("complete");
+    expect(await readFile(path.join(f.source, "file.txt"), "utf8")).toBe(
+      "new\n",
+    );
+  },
+);
 
 windows(
   "keeps complete source and its coordination lock if execution close is unconfirmed",

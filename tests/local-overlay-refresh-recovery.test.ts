@@ -11,15 +11,15 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { expect, it } from "vitest";
 import { nativeFixture } from "./fixtures/local-overlay-native.js";
-import { nativeBatch } from "../scripts/local-overlay/native-batch.js";
-import { nativeRefreshRequest } from "../scripts/local-overlay/native-refresh.js";
-import { Publisher } from "../scripts/local-overlay/publisher.js";
-import { durableJson } from "../scripts/local-overlay/files.js";
+import { nativeBatch } from "../src/local-overlays/publication/native-batch.js";
+import { nativeRefreshRequest } from "../src/local-overlays/publication/native-refresh.js";
+import { Publisher } from "../src/local-overlays/publication/publisher.js";
+import { durableJson } from "../src/local-overlays/publication/files.js";
 import {
   loadJournal,
   saveJournal,
   parseJournal,
-} from "../scripts/local-overlay/journal.js";
+} from "../src/local-overlays/publication/journal.js";
 import type { OverlayAcknowledgement } from "../src/worktrees/overlay.js";
 
 async function pendingFixture() {

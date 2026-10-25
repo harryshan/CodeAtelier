@@ -10,8 +10,8 @@
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import type { Logger } from "pino";
-import { TraceRecorder } from "../../src/tracing/recorder.js";
-import type { TraceStatus } from "../../src/tracing/types.js";
+import { TraceRecorder } from "../../tracing/recorder.js";
+import type { TraceStatus } from "../../tracing/types.js";
 import {
   digest,
   snapshot,
@@ -112,7 +112,7 @@ export async function unknownRecovery(options: {
   let decisionWritten = false;
   let activeSignal = signal;
   log.info({
-    module: "local-overlay-poc",
+    module: "local-publication",
     event: "unknown_recovery_started",
     batchId: batch.id,
     operationId: task,
@@ -226,7 +226,7 @@ export async function unknownRecovery(options: {
         );
       } catch {
         log.warn({
-          module: "local-overlay-poc",
+          module: "local-publication",
           event: "unknown_trace_failed",
           batchId: batch.id,
           operationId: task,
@@ -235,7 +235,7 @@ export async function unknownRecovery(options: {
 
       traces.discardTask(task);
       log.info({
-        module: "local-overlay-poc",
+        module: "local-publication",
         event: "unknown_recovery_finished",
         batchId: batch.id,
         operationId: task,

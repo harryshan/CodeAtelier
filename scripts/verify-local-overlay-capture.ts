@@ -31,8 +31,8 @@ import {
   overlayNamespace,
   overlayWorkspace,
 } from "../src/worktrees/overlay.js";
-import { sourceIdentity } from "./local-overlay/files.js";
-import { nativeBatch } from "./local-overlay/native-batch.js";
+import { sourceIdentity } from "../src/local-overlays/publication/files.js";
+import { nativeBatch } from "../src/local-overlays/publication/native-batch.js";
 
 assert.equal(process.platform, "win32", "Requires native Windows and WinFsp");
 await mkdir(".local", { recursive: true });

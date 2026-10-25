@@ -12,8 +12,8 @@ import { lstat } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { Logger } from "pino";
-import { TraceRecorder } from "../../src/tracing/recorder.js";
-import type { TraceStatus } from "../../src/tracing/types.js";
+import { TraceRecorder } from "../../tracing/recorder.js";
+import type { TraceStatus } from "../../tracing/types.js";
 import { digest, durableJson, snapshot, sourceIdentity } from "./files.js";
 import { loadJournal } from "./journal.js";
 import { PublicationLease } from "./publication-lease.js";
@@ -91,7 +91,7 @@ export async function releaseResidualLock(options: {
   let lease: PublicationLease | undefined;
   let executing = false;
   log.info({
-    module: "local-overlay-poc",
+    module: "local-publication",
     event: "residual_lock_started",
     operationId: task,
     mode: target.kind,
@@ -199,7 +199,7 @@ export async function releaseResidualLock(options: {
         );
       } catch {
         log.warn({
-          module: "local-overlay-poc",
+          module: "local-publication",
           event: "residual_trace_failed",
           operationId: task,
         });
@@ -207,7 +207,7 @@ export async function releaseResidualLock(options: {
 
       traces.discardTask(task);
       log.info({
-        module: "local-overlay-poc",
+        module: "local-publication",
         event: "residual_lock_finished",
         operationId: task,
         mode: target.kind,

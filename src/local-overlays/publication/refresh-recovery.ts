@@ -9,9 +9,9 @@
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import type { Logger } from "pino";
-import { TraceRecorder } from "../../src/tracing/recorder.js";
-import type { TraceStatus } from "../../src/tracing/types.js";
-import type { OverlayAcknowledgement } from "../../src/worktrees/overlay.js";
+import { TraceRecorder } from "../../tracing/recorder.js";
+import type { TraceStatus } from "../../tracing/types.js";
+import type { OverlayAcknowledgement } from "../../worktrees/overlay.js";
 import { durableJson } from "./files.js";
 import { loadJournal, saveJournal } from "./journal.js";
 import { PublishError } from "./merge.js";
@@ -43,7 +43,7 @@ export async function recoverCompletedRefresh(options: {
   let release: (() => Promise<void>) | undefined;
   let intent = false;
   log.info({
-    module: "local-overlay-poc",
+    module: "local-publication",
     event: "refresh_recovery_started",
     batchId: batch.id,
     operationId,
@@ -113,7 +113,7 @@ export async function recoverCompletedRefresh(options: {
         );
       } catch {
         log.warn({
-          module: "local-overlay-poc",
+          module: "local-publication",
           event: "recovery_trace_failed",
           batchId: batch.id,
           operationId,
@@ -122,7 +122,7 @@ export async function recoverCompletedRefresh(options: {
 
       traces.discardTask(operationId);
       log.info({
-        module: "local-overlay-poc",
+        module: "local-publication",
         event: "refresh_recovery_finished",
         batchId: batch.id,
         operationId,

@@ -1,5 +1,5 @@
 /**
- * Local overlay 发布协议 PoC，调用方提供实验协调目录、变更集与候选验证函数。
+ * Local overlay 发布协调器，供生产冻结收尾和独立验证脚本调用；输入为私有协调目录、变更集与候选验证函数。
  * 1. publish 按真实来源身份获取跨进程独占锁；等待有界，未知/崩溃锁不自动删除。
  * 2. prepare 整批合并 B/O/T、保存来源备份和候选；验证后复核所有文件及已知读依赖。
  * 3. apply 记录逐文件 intent，再执行替换/删除；任何开始执行后的失败保留日志和锁。
@@ -13,16 +13,17 @@
  * 11. reviewUnknown/acceptUnknown 以执行排他核对并明确接受当前现场，不重放/回滚；保留原批次与私有内容。
  * 12. v2 协调锁绑定 batch 与原生 generation；未开始/已完成的残留锁可显式排空后释放，不改来源或私有视图。
  * 仅普通单链接文件/已存在父目录；新建使用不覆盖的 link，旧对照模式不保证 Windows ACL 保真。
- * 不提供外部写入 CAS、多文件原子提交、断电证明或生产服务集成；故障钩子仅供实验。
+ * 13. publish 的错误只在执行租约排空后标为 unapplied；已开始写入、完成后故障或清理未知均需恢复核对，不降格完成 journal。
+ * 不提供外部写入 CAS、多文件原子提交或断电证明；故障钩子仅供实验，产品调用不得跳过候选验证。
  */
 import { mkdir, open, readFile, rename, unlink, link } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import pino, { type Logger } from "pino";
-import { TraceRecorder } from "../../src/tracing/recorder.js";
-import type { TraceStatus } from "../../src/tracing/types.js";
-import { canonical } from "../../src/tools/paths.js";
+import { TraceRecorder } from "../../tracing/recorder.js";
+import type { TraceStatus } from "../../tracing/types.js";
+import { canonical } from "../../tools/paths.js";
 import {
   bytes,
   checkedPath,
@@ -38,7 +39,7 @@ import { PublicationLease } from "./publication-lease.js";
 import {
   validateOverlayAcknowledgement,
   type OverlayAcknowledgement,
-} from "../../src/worktrees/overlay.js";
+} from "../../worktrees/overlay.js";
 import { loadJournal, type Entry, type Journal } from "./journal.js";
 import { checkpointSchema, type NativeCheckpoint } from "./native-refresh.js";
 import { recoverCompletedRefresh } from "./refresh-recovery.js";
@@ -63,6 +64,38 @@ export interface PublishOptions {
     checkpoint?: NativeCheckpoint;
     acknowledge: (request: OverlayAcknowledgement) => Promise<void>;
   };
+}
+
+/** Caller may retain a usable private view only when this attempt never began source writes. */
+export class PublicationFailure extends Error {
+  readonly reason: string;
+  readonly code?: string;
+
+  constructor(
+    readonly outcome: "unapplied" | "unknown",
+    cause: unknown,
+    validation: boolean,
+  ) {
+    super(cause instanceof Error ? cause.message : "Publication failed", {
+      cause,
+    });
+    this.name = "PublicationFailure";
+    if (
+      cause &&
+      typeof cause === "object" &&
+      "code" in cause &&
+      typeof cause.code === "string"
+    ) {
+      this.code = cause.code;
+    }
+
+    this.reason =
+      cause instanceof PublishError
+        ? cause.code
+        : validation
+          ? "VALIDATION_FAILED"
+          : "OPERATION_FAILED";
+  }
 }
 
 function decode(value: string | null) {
@@ -330,7 +363,7 @@ export class Publisher {
       await durableJson(file, journal);
     } catch {
       this.log.warn({
-        module: "local-overlay-poc",
+        module: "local-publication",
         event: "backup_cleanup_record_failed",
         batchId: journal.batch.id,
       });
@@ -338,7 +371,7 @@ export class Publisher {
 
     if (pending) {
       this.log.warn({
-        module: "local-overlay-poc",
+        module: "local-publication",
         event: "backup_cleanup_pending",
         batchId: journal.batch.id,
         count: pending,
@@ -349,6 +382,31 @@ export class Publisher {
   }
 
   async publish(input: Batch, options: PublishOptions) {
+    const attempt = {
+      started: false,
+      uncertainCleanup: false,
+      validation: false,
+    };
+    try {
+      return await this.publishAttempt(input, options, attempt);
+    } catch (error) {
+      throw new PublicationFailure(
+        attempt.started || attempt.uncertainCleanup ? "unknown" : "unapplied",
+        error,
+        attempt.validation,
+      );
+    }
+  }
+
+  private async publishAttempt(
+    input: Batch,
+    options: PublishOptions,
+    attempt: {
+      started: boolean;
+      uncertainCleanup: boolean;
+      validation: boolean;
+    },
+  ) {
     if (options.nativeWindows && process.platform !== "win32") {
       throw new PublishError("WINDOWS_REQUIRED");
     }
@@ -387,7 +445,7 @@ export class Publisher {
     let outputCreated = false;
     const started = performance.now();
     this.log.info({
-      module: "local-overlay-poc",
+      module: "local-publication",
       event: "publish_started",
       batchId: batch.id,
       operationId: task,
@@ -470,14 +528,17 @@ export class Publisher {
         journal.entries.map((entry) => [entry.path, decode(entry.after)]),
       );
       options.signal?.throwIfAborted();
+      attempt.validation = true;
       await step("validate", () =>
         options.validate(candidates, options.signal),
       );
+      attempt.validation = false;
       options.signal?.throwIfAborted();
       await this.verify(journal);
       journal.state = "applying";
       await durableJson(path.join(output, "journal.json"), journal);
       applying = true;
+      attempt.started = true;
       await step("apply", () =>
         this.apply(journal!, path.join(output, "journal.json"), options, lease),
       );
@@ -506,7 +567,7 @@ export class Publisher {
         } catch {
           refreshPending = true;
           this.log.warn({
-            module: "local-overlay-poc",
+            module: "local-publication",
             event: "view_refresh_pending",
             batchId: batch.id,
           });
@@ -526,7 +587,7 @@ export class Publisher {
         : options.signal?.aborted
           ? "cancelled"
           : "error";
-      if (journal) {
+      if (journal && journal.state !== "complete") {
         journal.state = applying ? "unknown" : "aborted";
         await durableJson(path.join(output, "journal.json"), journal);
       }
@@ -540,6 +601,7 @@ export class Publisher {
         }
       } catch (error) {
         outcome = "unknown";
+        attempt.uncertainCleanup = true;
         throw error;
       } finally {
         this.traces.finishTask(task, outcome);
@@ -551,7 +613,7 @@ export class Publisher {
             );
           } catch {
             this.log.warn({
-              module: "local-overlay-poc",
+              module: "local-publication",
               event: "trace_failed",
               batchId: batch.id,
             });
@@ -560,7 +622,7 @@ export class Publisher {
 
         this.traces.discardTask(task);
         this.log.info({
-          module: "local-overlay-poc",
+          module: "local-publication",
           event: "publish_finished",
           batchId: batch.id,
           operationId: task,

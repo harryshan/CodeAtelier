@@ -12,9 +12,9 @@ import { mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { sourceIdentity } from "./local-overlay/files.js";
-import { EditSession } from "./local-overlay/session.js";
-import { Publisher } from "./local-overlay/publisher.js";
+import { sourceIdentity } from "../src/local-overlays/publication/files.js";
+import { EditSession } from "../src/local-overlays/publication/session.js";
+import { Publisher } from "../src/local-overlays/publication/publisher.js";
 
 const execute = promisify(execFile);
 await mkdir(".local", { recursive: true });

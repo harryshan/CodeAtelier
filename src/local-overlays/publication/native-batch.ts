@@ -1,5 +1,5 @@
 /**
- * 将已冻结的 Local WinFsp 结果转换为发布 PoC 的明确路径批次。
+ * 将已冻结的 Local WinFsp 结果转换为生产协调器和验证脚本使用的明确路径批次。
  * 1. 调用方必须位于 OverlayManager.withFrozen 回调内；校验 v6 来源与私有表，不挂载或自行获取租约。
  * 2. 仅查询选择的路径，读取不可变 B 和封存 O；普通文件有界读取，拒绝目录、重解析和显式属性变更。
  * 3. 对其它已读路径先取宿主内容版本，再经仍持租约的 helper 复核原生观察戳；拒绝失效依赖。
@@ -13,7 +13,7 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
-import type { OverlayAcknowledgement } from "../../src/worktrees/overlay.js";
+import type { OverlayAcknowledgement } from "../../worktrees/overlay.js";
 import {
   checkRelative,
   digest,
