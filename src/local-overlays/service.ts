@@ -2,12 +2,12 @@
  * Engine 的 Local overlay 持久目录生命周期；独立于 WorktreeService 和 Git metadata。
  * 1. 有界清单、原子保存和逐视图锁绑定来源/控制/卷身份；未知状态不重新创建或抢占。
  * 2. create 先保存 preparing，再建立/关闭空视图，最后绑定会话；未知挂载保留现场，纯校验失败不污染已有状态。
- * 3. validate/projectWorkspace 不挂载，供 admission 和项目记忆使用；begin 才取得整个任务租约。
+ * 3. validate/projectWorkspace 不挂载，供 admission 和项目记忆使用；describe 只投影历史状态，损坏清单标为不可用；begin 才取得整个任务租约。
  * 4. lease.finish 在调用方排空后冻结续轮、回收、卸载并保存 ready；清理未知则隔离且保留锁。
  * 5. cancelCreation/close 与 Engine 关闭顺序配合；trace 只记录关联 ID、阶段/耗时/终态。
  * 6. select 把明确路径及可信候选验证器绑定当前任务，null 撤销本轮选择；取消/错误任务身份不能更改选择。
  *    仅成功且已排空的任务在冻结收尾中发布，选择不跨轮继承；模型入口由 Engine 转换，不能反序列化验证函数。
- * 当前入口不开放 UI 创建、不迁移旧历史；来源写入只由冻结租约内的协调器执行。
+ * 公开创建由 HTTP 单独检查平台/Sandbox 能力，不迁移旧历史；来源写入只由冻结租约内的协调器执行。
  */
 import { randomUUID } from "node:crypto";
 import { mkdir, open, rename, unlink, realpath, lstat } from "node:fs/promises";
@@ -233,6 +233,38 @@ export class LocalOverlayService {
 
   async projectWorkspace(workspace: string) {
     return (await this.validate(workspace))?.source;
+  }
+
+  /** 历史读取只投影公开状态，不挂载或修复；损坏/丢失清单仍标为托管视图。 */
+  async describe(session: Session): Promise<Session> {
+    const id = this.backend.idFor(session.workspace);
+    if (!id) {
+      return session;
+    }
+
+    try {
+      const record = await this.read(id);
+      if (record.sessionId !== session.id) {
+        throw new Error("Local overlay 会话身份不匹配。");
+      }
+
+      return {
+        ...session,
+        localOverlay: {
+          id,
+          projectWorkspace: record.source,
+          state: record.phase,
+          epoch: record.epoch,
+          publication: record.publication && {
+            state: record.publication.state,
+            files: record.publication.files,
+            reason: record.publication.reason,
+          },
+        },
+      };
+    } catch {
+      return { ...session, localOverlay: { id, state: "unavailable" } };
+    }
   }
 
   /** Internal trusted selection boundary, not an arbitrary callback from HTTP or model input. */

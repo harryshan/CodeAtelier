@@ -1,5 +1,7 @@
 # 测试约定与功能覆盖
 
+Local 公开创建与状态（D170）：`local-overlay-http.test.ts` 使用真实 Fastify/Engine/Store 和替身挂载，覆盖鉴权/CSRF、平台及 Sandbox 门禁、非 Git 来源、固定 UUID 重试、模式互斥、列表/快照/历史分页、坏清单历史可读，以及关闭 Sandbox 后已有会话启动/恢复拒绝。`local-overlay-service.test.ts` 先复现请求隔离后错误转宿主和错误执行归因，再验证不调用宿主模型、不发 fallback 事件并保留私有修改。`e2e/local-overlay.spec.ts` 用受控 HTTP/SSE 数据验证创建重试、来源分组、重载后状态、私有/已发布/拒绝/保留区分和失效提交禁用；截图检查布局。这些测试不替代 WinFsp 或安装态 Sandbox 验证。
+
 Local 模型选择工具（D170）：`local-overlay-tool.test.ts` 验证默认工具表不暴露专属能力、有界严格参数及同批竞争选择拒绝。`local-overlay-service.test.ts` 通过真实 stdio Runtime 子进程和生产 Engine 验证模型选择、撤销、普通会话伪造调用拒绝及 trace 不含命令/路径；挂载边界仍为测试替身，不证明 WinFsp/OS Sandbox。IPC 回归额外验证认证不等于启用发布能力，旧 v17 拒绝。真实安装脚本 `overlay:verify-sandbox --commands` 改用模型工具，不再从脚本直接调用 Engine 绑定命令。
 
 Local 产品候选命令（D170）：`local-overlay-command-plan.test.ts` 覆盖有界计划、回执绑定、失败停止和缺失回执不重发；`local-overlay-command-runtime.test.ts` 使用真实子进程/IPC 验证顺序执行、取消排空、未知清理拒绝和启动失败不转宿主，该 stdio 夹具不作为 OS Sandbox 证明。`local-overlay-publication-queue.test.ts` 覆盖取消中间等待者不能越过当前发布、不同来源独立和失败释放；候选测试先复现正常验证超出残留锁短等待的失败，再验证同进程排队成功。`pnpm overlay:verify-sandbox --commands` 使用已安装专用账户 Runtime 与生产 Engine 内部命令入口，覆盖两会话并行、候选成功/失败/取消、来源冲突、重建 Engine 后私有内容保留；不进入默认 check 或 Evaluation。

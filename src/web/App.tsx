@@ -4,7 +4,7 @@
  *
  * 0. workspaceDescription 按后端解释实时 lower、固定 CoW 或 Git 提交基线，供实际路径提示使用。
  * 1. 状态和 effects 管理当前会话、默认关闭的一次性 subagent 勾选、服务端能力标志、弹窗及加载状态；useHistoryScroll 自动加载旧页，Timeline 保持阅读位置；历史加载使用低强调状态行，读取失败独立警告并允许重试。
- * 2. 按服务端来源项目路径分组（旧 Local 使用实际路径）；项目可折叠并默认显示最近五个对话。新建默认 Riftri、失败重试保留请求 UUID；WorktreeDialog 显式创建提交基线目录。项目栏显示模式及实际路径，手机端使用导航抽屉。
+ * 2. 按服务端来源项目路径分组（旧 Local 使用实际路径）；项目可折叠并默认显示最近五个对话。新建默认 Riftri；WorktreeDialog/LocalOverlayDialog 显式创建其它模式，重试保留 UUID。项目栏显示模式、实际路径与 Local 发布状态，失效私有视图阻止新任务；手机端使用导航抽屉。
  * 3. resume、reloadService、stopServer、createProject、createConversation 和 send 处理恢复、受确认的服务重载、关闭服务、连接项目、新建会话和发送消息，并显示操作结果。
  * 4. 服务关闭后显示重启说明；正常页面由侧栏或手机端导航抽屉、项目栏、当前会话实际 Runtime 隔离模式（没有证据时显示启动初始状态，并提示获批宿主命令例外）、可折叠会话统计、会将已完成任务过程默认收纳的时间线或项目连接页、所见即所得 Markdown 任务编辑器组成。
  * 5. 侧栏另开同源对话阅读器；SettingsPage 接管版本化编辑和初始引导，保存更新主页面状态，不中断活动任务。
@@ -23,6 +23,8 @@ import { SettingsPage } from "./settings/SettingsPage";
 import { Timeline } from "./Timeline";
 import { SessionStatistics } from "./SessionStatistics";
 import { WorktreeDialog, requestId } from "./WorktreeDialog";
+import { LocalOverlayDialog } from "./LocalOverlayDialog";
+import { LocalOverlayStatus } from "./LocalOverlayStatus";
 import s from "./app.module.css";
 
 const RECENT_CONVERSATION_LIMIT = 5;
@@ -53,6 +55,7 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [addingProject, setAddingProject] = useState(false);
   const [worktreeProject, setWorktreeProject] = useState<string>();
+  const [localOverlayProject, setLocalOverlayProject] = useState<string>();
   const creationRequest = useRef<{ workspace: string; id: string } | undefined>(
     undefined,
   );
@@ -152,7 +155,9 @@ export default function App() {
   const projects = new Map<string, Session[]>();
   for (const session of list) {
     const projectWorkspace =
-      session.worktree?.projectWorkspace ?? session.workspace;
+      session.localOverlay?.projectWorkspace ??
+      session.worktree?.projectWorkspace ??
+      session.workspace;
     const conversations = projects.get(projectWorkspace) ?? [];
     conversations.push(session);
     projects.set(projectWorkspace, conversations);
@@ -422,6 +427,18 @@ export default function App() {
                     >
                       ⑂
                     </button>
+                    <button
+                      className={s.projectNewButton}
+                      disabled={busy}
+                      aria-label="新建隔离 Local 对话"
+                      title="私有编辑，验证后发布选定源码"
+                      onClick={() => {
+                        setLocalOverlayProject(projectWorkspace);
+                        setMobileSidebarOpen(false);
+                      }}
+                    >
+                      ⧉
+                    </button>
                   </div>
                   <small
                     className={s.projectWorkspace}
@@ -450,11 +467,13 @@ export default function App() {
                         }}
                       >
                         <span className={s.sessionIcon}>
-                          {item.worktree
-                            ? item.worktree.mode === "riftri"
-                              ? "◈"
-                              : "⑂"
-                            : "⌘"}
+                          {item.localOverlay
+                            ? "⧉"
+                            : item.worktree
+                              ? item.worktree.mode === "riftri"
+                                ? "◈"
+                                : "⑂"
+                              : "⌘"}
                         </span>
                         <span className={s.conversationTitle}>
                           <strong>{item.title}</strong>
@@ -651,6 +670,13 @@ export default function App() {
                   >
                     改用 Git worktree
                   </button>
+                  <button
+                    type="button"
+                    disabled={busy || !workspace.trim()}
+                    onClick={() => setLocalOverlayProject(workspace)}
+                  >
+                    使用隔离 Local
+                  </button>
                   {list.length > 0 && (
                     <button
                       type="button"
@@ -697,17 +723,28 @@ export default function App() {
             <>
               <div className={s.projectBar}>
                 <span>⌁</span>
-                <span title={workspaceDescription(data?.session.worktree)}>
-                  {data?.session.worktree
-                    ? data.session.worktree.mode === "riftri"
-                      ? "Riftri"
-                      : "Worktree"
-                    : "本地项目（历史）"}
+                <span
+                  title={
+                    data?.session.localOverlay
+                      ? `来源：${data.session.localOverlay.projectWorkspace ?? "清单不可用"}；实时读取，私有写入`
+                      : workspaceDescription(data?.session.worktree)
+                  }
+                >
+                  {data?.session.localOverlay
+                    ? "隔离 Local"
+                    : data?.session.worktree
+                      ? data.session.worktree.mode === "riftri"
+                        ? "Riftri"
+                        : "Worktree"
+                      : "本地项目（历史）"}
                 </span>
                 <code title={data?.session.workspace}>
                   {data?.session.workspace}
                 </code>
               </div>
+              {data?.session.localOverlay && (
+                <LocalOverlayStatus info={data.session.localOverlay} />
+              )}
               {data?.history &&
                 (olderError || loadingOlder || data.history.hasOlder) && (
                   <div
@@ -810,7 +847,14 @@ export default function App() {
                 ) : (
                   <button
                     className={s.primary}
-                    disabled={busy || !prompt.trim() || !hasKey}
+                    disabled={
+                      busy ||
+                      !prompt.trim() ||
+                      !hasKey ||
+                      ["failed", "unavailable", "preparing"].includes(
+                        data?.session.localOverlay?.state ?? "",
+                      )
+                    }
                     onClick={() => void send()}
                   >
                     开始执行 ↑
@@ -833,6 +877,22 @@ export default function App() {
             setSelected(session.id);
             setAddingProject(false);
             setWorktreeProject(undefined);
+            setError("");
+          }}
+        />
+      )}
+      {localOverlayProject && (
+        <LocalOverlayDialog
+          workspace={localOverlayProject}
+          onClose={() => setLocalOverlayProject(undefined)}
+          onCreated={(session) => {
+            setList((current) => [
+              session,
+              ...current.filter((item) => item.id !== session.id),
+            ]);
+            setSelected(session.id);
+            setAddingProject(false);
+            setLocalOverlayProject(undefined);
             setError("");
           }}
         />

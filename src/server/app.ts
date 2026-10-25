@@ -2,9 +2,9 @@
  * 创建 Fastify 应用，接入会话、任务、设置、审批和历史接口；默认仅本机访问，也可由入口显式开放局域网监听。
  * 服务入口和测试服务都调用 createApp，得到 app、engine、store 及 shutdown。
  *
- * 1. 创建 Fastify、Store 和 Engine；若启用 Windows Sandbox，在监听前排空上次服务遗留的账户进程和 ACL journal。
+ * 1. 创建 Fastify、Store 和 Engine；测试可替换 Local 挂载边界。若启用 Windows Sandbox，在监听前排空上次服务遗留的账户进程和 ACL journal。
  * 2. 先按监听范围注册来源与凭据检查、关闭/受监督重载接口和错误处理，再注册 bootstrap、设置接口。
- * 3. bootstrap 报告 subagent 发布门禁；会话路由默认 Riftri 当前状态副本或显式 Worktree，严格校验互斥模式和基线；固定请求 UUID 绑定目录、列表/快照补充来源。任务路由独立检查启动、恢复、取消和 trace/审批。
+ * 3. bootstrap 报告 subagent 和隔离 Local 入口能力；默认 Riftri、显式 Worktree/Local 严格互斥，固定 UUID 绑定目录。列表/快照/分页补充来源与私有发布状态；公开 Local 创建、启动和恢复均检查平台与 Sandbox 配置，历史读取不挂载。
  * 4. 注册复用 Store 的只读任务阅读接口，接入 SSE，并提供构建后的网页；没有前端产物时显示开发提示。
  * 5. preClose 中断任务并结束 SSE，onClose 关闭数据库。
  *
@@ -34,6 +34,7 @@ import { SUBAGENT_PUBLIC_READY } from "../agent/subagent-readiness.js";
 import type { ModelProviderFactory } from "../providers/model-provider.js";
 import { workspacePath } from "../tools/paths.js";
 import { simplifyTrace } from "../tracing/simple-view.js";
+import type { LocalOverlayBackend } from "../local-overlays/backend.js";
 
 export async function createApp(
   config: Config,
@@ -42,6 +43,7 @@ export async function createApp(
   onStopped?: () => void,
   onReload?: () => void,
   allowNetworkAccess = false,
+  localOverlayBackend?: LocalOverlayBackend,
 ) {
   const app = Fastify({
     loggerInstance: log,
@@ -60,7 +62,15 @@ export async function createApp(
   const store = await AsyncStore.open(
     path.join(config.directory, "history.sqlite"),
   );
-  const engine = new Engine(store, config, log, providerFactory);
+  const engine = new Engine(
+    store,
+    config,
+    log,
+    providerFactory,
+    undefined,
+    undefined,
+    localOverlayBackend,
+  );
   store.startMaintenance(log);
   await engine.sandbox.recoverAtStartup();
   let stopping = false;
@@ -176,6 +186,7 @@ export async function createApp(
       ...config.publicValue(),
       sandbox: engine.sandbox.status,
       subagentsAvailable: SUBAGENT_PUBLIC_READY,
+      localOverlayCreation: engine.localOverlayCreation,
       active: engine.activeTasks,
     };
   });
@@ -183,7 +194,7 @@ export async function createApp(
   registerReplayRoutes(app, store, log);
   app.get("/api/sessions", async () =>
     Promise.all(
-      (await store.list()).map((session) => engine.worktrees.describe(session)),
+      (await store.list()).map((session) => engine.describeSession(session)),
     ),
   );
   app.post("/api/worktrees/inspect", async (req) => {
@@ -202,6 +213,7 @@ export async function createApp(
       .object({
         workspace: z.string().min(1),
         riftri: z.object({ id: z.uuid() }).strict().optional(),
+        localOverlay: z.object({ id: z.uuid() }).strict().optional(),
         worktree: z
           .object({ id: z.uuid(), baseRef: z.string().min(1).max(1024) })
           .strict()
@@ -209,8 +221,10 @@ export async function createApp(
       })
       .strict()
       .refine(
-        (value) => !(value.riftri && value.worktree),
-        "不能同时指定 Riftri 和 Worktree",
+        (value) =>
+          [value.riftri, value.worktree, value.localOverlay].filter(Boolean)
+            .length <= 1,
+        "不能同时指定多个工作区模式",
       )
       .parse(req.body);
 
@@ -222,6 +236,20 @@ export async function createApp(
 
       return existing ?? store.createAsync(checkout);
     };
+
+    if (data.localOverlay) {
+      const availability = engine.localOverlayCreation;
+      if (!availability.enabled) {
+        throw new Error(availability.reason);
+      }
+
+      const session = await engine.localOverlays.create(
+        { id: data.localOverlay.id, source: workspace },
+        bind,
+      );
+
+      return engine.describeSession(session);
+    }
 
     if (data.worktree) {
       return engine.worktrees.create({ ...data.worktree, workspace }, bind);
@@ -261,7 +289,7 @@ export async function createApp(
       return {
         ...snapshot,
         session: snapshot.session
-          ? await engine.worktrees.describe(snapshot.session)
+          ? await engine.describeSession(snapshot.session)
           : undefined,
         approvals: engine.approvals.list(id),
       };
@@ -282,6 +310,21 @@ export async function createApp(
 
     return store.eventBody(id, eventId, offset);
   });
+  // 公开 Local 暂只支持 Sandbox；关闭配置后不能把已创建会话转为宿主任务。
+  // 内部 Engine 仍可用于独立生命周期夹具，安装能力则由真实启动验证。
+  async function requireLocalExecution(sessionId: string) {
+    const session = await store.get(sessionId);
+    if (
+      session &&
+      (await engine.localOverlays.describe(session)).localOverlay
+    ) {
+      const availability = engine.localOverlayCreation;
+      if (!availability.enabled) {
+        throw new Error(availability.reason);
+      }
+    }
+  }
+
   app.post("/api/sessions/:id/tasks", async (req, reply) => {
     const { id } = req.params as { id: string };
     const { prompt, subagentsEnabled } = z
@@ -298,6 +341,8 @@ export async function createApp(
         .send({ error: "subagent 尚未就绪，不能启用本次任务。" });
     }
 
+    await requireLocalExecution(id);
+
     return engine.startAsync(id, prompt, { subagentsEnabled });
   });
   app.post("/api/tasks/:id/resume", async (req) => {
@@ -305,7 +350,13 @@ export async function createApp(
       .object({ instruction: z.string().max(40000).default("") })
       .parse(req.body);
 
-    return engine.resumeAsync((req.params as { id: string }).id, instruction);
+    const id = (req.params as { id: string }).id;
+    const task = await store.task(id);
+    if (task) {
+      await requireLocalExecution(task.sessionId);
+    }
+
+    return engine.resumeAsync(id, instruction);
   });
   app.post("/api/tasks/:id/cancel", async (req) => {
     await engine.cancelAsync((req.params as { id: string }).id);

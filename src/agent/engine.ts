@@ -17,6 +17,7 @@
  * 8. LocalOverlayService 独立管理私有视图：admission 不挂载，run 持租约挂载，Runtime/子任务/工具排空后冻结续轮和卸载；成功轮次可发布内部显式选择并经候选验证的文件，拒绝保留私有修改，unknown 隔离。
  *    selectLocalPublication 把明确路径/命令绑定当前任务，收尾通过独立候选 Runtime 执行固定计划并保存回执，不调用主模型或允许宿主 fallback。
  *    local_publish 经认证 Runtime 主任务与已记录工具参数双重核对，只选定或撤销本轮计划，命令/路径不进入 trace。
+ *    localOverlayCreation 提供公开创建/执行前提，describeSession 统一历史投影；Local 要求 Runtime 时启动失败保留私有视图，不转宿主且不记录为已回退。
  * 9. run 的终态持久化与 trace 收尾分开保护；写库失败仍尝试归档失败 trace，导出/归档故障只记警告，最外层 finally 释放 trace 内存和任务级 Sandbox 状态。
  *
  * 模型请求可以重试，但已经执行的工具不能跟着重跑。数据库回滚也撤销不了文件修改或
@@ -37,7 +38,7 @@ import { McpTaskClient } from "../mcp/task-client.js";
 import { mcpCatalogInstructions } from "../mcp/catalog.js";
 import type { McpAction } from "../mcp/contracts.js";
 import { auxiliarySettings } from "../config/auxiliary-model.js";
-import type { Settings } from "../shared/types.js";
+import type { Settings, Session } from "../shared/types.js";
 import { tokenScope } from "../context/token-anchor.js";
 import { SessionTokenCalibration } from "../context/session-token-calibration.js";
 import { createBudget } from "../context/token-budget.js";
@@ -224,10 +225,30 @@ export class Engine {
   readonly memories: ProjectMemoryService;
   /** 管理清单与实际工作区绑定；不改变 Store 的 workspace 或调度键。 */
   readonly worktrees: WorktreeService;
-  /** 内部 Local overlay 会话/发布入口；模型选择和公开 UI 另行接线。 */
+  /** Local overlay 生命周期/发布服务；公开创建使用独立能力检查，历史读取不挂载。 */
   readonly localOverlays: LocalOverlayService;
 
-  /** 内部任务计划入口；不接受任意执行闭包，模型工具/公开入口另外接线。 */
+  get localOverlayCreation(): import("../shared/types.js").LocalOverlayCreation {
+    if (process.platform !== "win32") {
+      return { enabled: false, reason: "隔离 Local 暂仅支持 Windows。" };
+    }
+
+    if (!this.config.sandbox.enabled) {
+      return {
+        enabled: false,
+        reason:
+          "隔离 Local 当前需要启用并安装 Sandbox；请在设置中配置后重启服务。",
+      };
+    }
+
+    return { enabled: true };
+  }
+
+  async describeSession(session: Session) {
+    return this.localOverlays.describe(await this.worktrees.describe(session));
+  }
+
+  /** 本轮计划入口；模型调用由认证 IPC 核对，不接受任意执行闭包。 */
   async selectLocalPublication(
     taskId: string,
     input: { paths: readonly string[]; commands: readonly string[] },
@@ -686,7 +707,7 @@ export class Engine {
       return {
         ...snapshot,
         session: snapshot.session
-          ? await this.worktrees.describe(snapshot.session)
+          ? await this.describeSession(snapshot.session)
           : undefined,
         approvals: this.approvals.list(id),
       };
@@ -1255,6 +1276,7 @@ export class Engine {
     >,
     onLaunched: (pid: number) => void,
     skills: TaskSkills,
+    requireIsolation = false,
   ): Promise<{ status: TaskStatus; failure?: string }> {
     const launcher = this.agentRuntimeLauncher!;
     const runtimeContextSpans = new Map<string, TraceSpan | undefined>();
@@ -1379,7 +1401,7 @@ export class Engine {
       } catch (error) {
         if (error instanceof AgentRuntimeFallbackError) {
           publishExecution("failed", {
-            mode: "host-process",
+            mode: requireIsolation ? "unknown" : "host-process",
             sandboxApplied: false,
             failureCategory: "runtime_self_check",
             sideEffectsPossible: false,
@@ -1388,7 +1410,7 @@ export class Engine {
             enabled: true,
             requested: true,
             applied: false,
-            mode: "host-process-fallback",
+            mode: requireIsolation ? "unknown" : "host-process-fallback",
             platform: process.platform,
             level: null,
             reason: error.message,
@@ -2433,6 +2455,7 @@ export class Engine {
               runtimeProcessId = pid;
             },
             skills,
+            !!localLease,
           );
           status = result.status;
           failure = result.failure;
@@ -2441,6 +2464,13 @@ export class Engine {
         } catch (error) {
           if (!(error instanceof AgentRuntimeFallbackError)) {
             throw error;
+          }
+
+          if (localLease) {
+            throw new Error(
+              "隔离 Local 的 Sandbox 启动失败；私有修改已保留，不会转宿主执行。",
+              { cause: error },
+            );
           }
 
           emit("sandbox_fallback", {

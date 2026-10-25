@@ -5,6 +5,7 @@
  * 1. TaskStatus 和 TitleState 列出任务及自动标题状态，Session 和 Task 描述会话及其中的任务；Task 的 subagentsEnabled 是任务创建时固定的选择，createdAt、startedAt 与 finishedAt 区分排队、实际运行和结束时间。
  * 2. SubagentRecord 描述研究子任务的状态、检查点与报告；Event 表示有顺序的历史条目，Approval 表示待审批操作。
  * 3. WorktreeInfo 是 API 从清单补充的模式（Riftri/Worktree）、来源/创建基线和后端诊断；旧清单默认 Worktree，不根据 backend 推断模式。Session.workspace 始终是实际执行路径；Settings 描述公开配置，Snapshot 汇总会话、事件、任务和审批。
+ * 4. LocalOverlayInfo 独立描述私有视图与选定源码发布状态，不携带控制路径或候选命令；LocalOverlayCreation 仅报告入口前提，不证明驱动/Runtime 已可用。
  *
  * 类型不会在运行时校验请求，相关检查仍由 API 和 Config 完成。公开 Settings 不包含密钥。
  */
@@ -39,9 +40,28 @@ export interface Session {
   workspace: string;
   /** API 从宿主清单补充；workspace 始终是实际执行目录。 */
   worktree?: WorktreeInfo;
+  localOverlay?: LocalOverlayInfo;
   createdAt: string;
   updatedAt: string;
   titleState: TitleState;
+}
+
+/** API 从 Local 清单补充，独立于 Git 模式；不传控制目录、基线正文或候选命令。 */
+export interface LocalOverlayInfo {
+  id: string;
+  projectWorkspace?: string;
+  state: "preparing" | "ready" | "active" | "failed" | "unavailable";
+  epoch?: number;
+  publication?: {
+    state: "selected" | "publishing" | "published" | "rejected" | "retained";
+    files?: number;
+    reason?: string;
+  };
+}
+
+export interface LocalOverlayCreation {
+  enabled: boolean;
+  reason?: string;
 }
 
 export interface Task {

@@ -3,7 +3,7 @@
  * 1. FakeBackend 只替换挂载/冻结边界；目录、清单、锁、Store 和 Engine 均使用真实实现。
  * 2. 创建测试覆盖绑定重试、只读拒绝不污染、未知挂载保留和身份替换。
  * 3. 租约测试覆盖同视图互斥、不同视图并行、跨进程 active 拒绝及完成/失败/取消续轮。
- * 4. Engine 测试检查执行期间挂载、私有提示、来源记忆映射、排空后的冻结和 unknown 隔离。
+ * 4. Engine 测试检查执行期间挂载、私有提示、来源记忆映射、排空后的冻结和 unknown 隔离；请求 Sandbox 的启动失败不得执行宿主模型或留下 fallback 事件。
  * 5. 真实 stdio Runtime 子进程执行模型 local_publish，验证选定/撤销和普通任务拒绝；模拟模式不是 OS Sandbox 证据。
  * 假后端不证明文件系统隔离/ACL；真实 WinFsp 与 Sandbox 由手动 verifier 验证。
  */
@@ -13,10 +13,8 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import pino from "pino";
 import { expect, it } from "vitest";
-import type { LocalOverlayBackend } from "../src/local-overlays/backend.js";
-import type { FrozenPublication } from "../src/local-overlays/publication.js";
+import { FakeLocalOverlayBackend as FakeBackend } from "./fixtures/local-overlay-backend.js";
 import { LocalOverlayService } from "../src/local-overlays/service.js";
-import { directoryIdentity } from "../src/worktrees/git.js";
 import { Config } from "../src/config/config.js";
 import type { ModelProvider } from "../src/providers/model-provider.js";
 import { TestEngine, TestStore } from "./fixtures/managed-runtime.js";
@@ -24,6 +22,7 @@ import { temp } from "./fixtures/helpers.js";
 import { createRuntimeChildClose } from "./fixtures/runtime-child-close.js";
 import { currentTestResources } from "./fixtures/test-resources.js";
 import type { AgentRuntimeLauncher } from "../src/sandbox/agent-runtime-launcher.js";
+import { AgentRuntimeFallbackError } from "../src/sandbox/agent-runtime-launcher.js";
 
 const log = pino({ enabled: false });
 
@@ -65,74 +64,6 @@ const protocolLauncher: AgentRuntimeLauncher = {
   },
 };
 
-class FakeBackend implements LocalOverlayBackend {
-  readonly mounted = new Set<string>();
-  readonly epochs = new Map<string, number>();
-  readonly publications: FrozenPublication[] = [];
-  creates = 0;
-  failOpen = false;
-  failFinish = false;
-
-  constructor(readonly root: string) {}
-
-  workspace(id: string) {
-    return path.join(this.root, id);
-  }
-
-  idFor(workspace: string) {
-    return path.dirname(workspace) === this.root
-      ? path.basename(workspace)
-      : undefined;
-  }
-
-  async open(
-    id: string,
-    _source: string,
-    control: string,
-    create: boolean,
-    signal: AbortSignal,
-  ) {
-    signal.throwIfAborted();
-    if (this.failOpen) {
-      throw new Error("mount failed");
-    }
-
-    if (this.mounted.has(id)) {
-      throw new Error("already mounted");
-    }
-
-    if (create) {
-      this.creates++;
-      await mkdir(control);
-      await mkdir(this.workspace(id));
-    }
-
-    this.mounted.add(id);
-
-    return {
-      identity: () => directoryIdentity(this.workspace(id)),
-      close: async () => {
-        this.mounted.delete(id);
-      },
-      finish: async (_taskId: string, publication?: FrozenPublication) => {
-        if (this.failFinish) {
-          throw new Error("freeze failed");
-        }
-
-        if (publication) {
-          this.publications.push(publication);
-        }
-
-        const epoch = (this.epochs.get(id) ?? 0) + 1;
-        this.epochs.set(id, epoch);
-        this.mounted.delete(id);
-
-        return { epoch, capturedPaths: 1 };
-      },
-    };
-  }
-}
-
 async function fixture() {
   const source = await temp();
   const directory = await temp();
@@ -160,6 +91,55 @@ async function fixture() {
     record,
   };
 }
+
+it("never executes a Local overlay task on the host after requested Sandbox startup fails", async () => {
+  const f = await fixture();
+  const config = new Config(f.directory);
+  config.sandbox.enabled = true;
+  let hostCalls = 0;
+  const engine = new TestEngine(
+    f.store,
+    config,
+    log,
+    () => ({
+      async run(_input, _instructions, tools) {
+        if (tools.length) {
+          hostCalls++;
+        }
+
+        return { text: "host must not execute", output: [] };
+      },
+    }),
+    {
+      launch: async () => {
+        throw new AgentRuntimeFallbackError();
+      },
+    },
+    undefined,
+    f.backend,
+  );
+  const session = await engine.localOverlays.create(
+    { id: f.id, source: f.source },
+    f.bind,
+  );
+  const task = await engine.start(session.id, "must stay isolated");
+  await engine.active?.done;
+  expect(hostCalls).toBe(0);
+  expect(f.store.task(task.id)?.status).toBe("failed");
+  expect(
+    f.store
+      .events(session.id)
+      .filter((event) => event.taskId === task.id)
+      .some(
+        (event) =>
+          event.type === "sandbox_fallback" ||
+          event.data?.mode === "host-process-fallback",
+      ),
+  ).toBe(false);
+  expect(await f.record()).toMatchObject({ phase: "ready", outcome: "failed" });
+  expect(f.backend.publications).toHaveLength(0);
+  await engine.close();
+});
 
 it("binds once without mounting during admission and maps memory to the source", async () => {
   const f = await fixture();

@@ -1,5 +1,13 @@
 # 初版验证记录
 
+## 隔离 Local 公开创建与历史状态（D170，2026-10-26）
+
+- 新增显式“隔离 Local”创建表单和 `localOverlay:{id}` 请求，不改变默认 Riftri 或 Worktree。非 Git 来源、稳定请求重试、来源项目分组和实际执行目录分别保留；列表/快照/历史分页返回独立元数据，区分私有、选定、发布完成、拒绝和保留，失效清单仍能查看历史。公开创建/启动/恢复均检查 Windows 与 Sandbox 配置；能力摘要不代表 WinFsp/Runtime 安装健康。
+- 自审先复现 Local Sandbox 启动失败进入宿主模型（`.local/local-ui-fallback-before.log`），修复后再复现错误的 fallback 归因（`.local/local-ui-fallback-state-before.log`）；最终不调用宿主模型、不发 fallback 事件，保留 ready 私有视图并记录任务失败。关闭 Sandbox 后已有会话的启动/恢复缺少门禁也先复现（`.local/local-ui-disabled-before.log`），修复后在创建任务前拒绝，旧中断任务和私有视图保持可读。
+- 相关单元/API 33 项通过（`.local/local-ui-unit-final.log`）。两个新增浏览器测试通过（`.local/local-ui-browser-final.log`）：创建重试、来源分组、重载后私有/发布状态及禁用提交；初次测试错误假设刷新后自动选择对话，按既有产品行为显式选择后通过。截图 `test-results/local-overlay-create.png` / `local-overlay-private.png` 已检查，修复侧栏第三按钮换行和状态文字间距。挂载使用替身，浏览器使用合成 HTTP/SSE，不能作为真实 WinFsp/Sandbox 或完整发布链路证明。
+- 本增量未执行安装/Repair、未重启实际服务、未运行 Evaluation；真实 IPC v18 模型工具发布链路仍等待显式 Repair 授权。冲突审核/恢复操作、宿主候选执行、异常私有卷恢复、POSIX 和大工程成本仍未完成，完整目标保持进行中。
+- 最终 `pnpm check` 通过：148 个测试文件、1168 passed / 1 existing skipped，类型/lint/格式及 Web/Windows/POSIX Runtime 构建通过（`.local/local-ui-check.log`）。最终文案与测试注释另作格式复核；`pnpm test:e2e` 73 项全部通过，耗时 3.7 分钟（`.local/local-ui-e2e.log`），包含新增 Local 页面和原有 Worktree 流程。构建仍有既有第三方注释及大 chunk 提示，不作为本次回归失败。
+
 ## Local 模型发布选择与 IPC v18（D170，2026-10-26）
 
 - 新增 `local_publish` 主任务工具，支持完整替换本轮选择及 clear；回执明确 `published:false`，不会在工具调用时写来源。普通 Local/Worktree、宿主 fallback、候选 Runtime 与只读子任务不声明能力。Broker 要求可信启用标志和已记录的当前调用 ID/参数，仍使用原任务绑定的候选验证与发布链路；同响应多个选择在执行前拒绝。
