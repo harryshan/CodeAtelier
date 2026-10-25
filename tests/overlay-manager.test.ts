@@ -3,6 +3,7 @@
  * 1. 使用管道夹具控制 ready/stopped/close，检查只接受完整收据且同一请求去重。
  * 2. helper 异常退出后不得在本进程重挂载；取消必须等待停止，关闭必须证明 stopped + exit 0。
  * 3. 校验托管 UNC 命名空间不能将子目录或另一数据目录误认作同一个挂载。
+ * 4. Git PoC 显式选择及分段 metrics 收据不能改变 live 挂载协议或终止普通挂载。
  * 原生文件、Git 和受限 token 语义由手动 verify-winfsp-overlay 独立验证。
  */
 import { EventEmitter } from "node:events";
@@ -71,7 +72,7 @@ async function fixture(helper = new Helper()) {
   const start = () =>
     manager.start(id, directory, directory, workspace, true, controller.signal);
 
-  return { helper, manager, controller, start };
+  return { helper, manager, controller, start, id, workspace, directory };
 }
 
 it("waits for ready, deduplicates the mount and proves clean shutdown", async () => {
@@ -153,6 +154,54 @@ it("unmounts a failed creation without stopping another ready workspace", async 
   await mounting;
   await f.manager.stop(id);
   expect(peer.stdin.writableEnded).toBe(true);
+  expect(f.helper.stdin.writableEnded).toBe(false);
+  await f.manager.close();
+});
+
+it("reads complete Git PoC metrics without treating them as a stop receipt", async () => {
+  const f = await fixture();
+  const starting = f.manager.start(
+    f.id,
+    f.directory,
+    f.directory,
+    f.workspace,
+    true,
+    f.controller.signal,
+    {
+      executable: "fixed-git",
+      directory: "fixed-common",
+      tree: "a".repeat(40),
+    },
+  );
+  f.helper.ready();
+  await starting;
+  const pending = f.manager.metrics(f.id);
+  await expect(f.manager.metrics(f.id)).rejects.toThrow("already pending");
+  const receipt = {
+    version: 1,
+    state: "metrics",
+    treeReads: 0,
+    infoReads: 0,
+    blobReads: 0,
+    blobBytes: 0,
+    lowerOpens: 0,
+    lowerEnumerations: 0,
+  };
+  const json = JSON.stringify(receipt);
+  f.helper.stdout.write(json.slice(0, 20));
+  f.helper.stdout.write(json.slice(20) + "\n");
+  expect(await pending).toEqual(receipt);
+  expect(f.helper.stdin.writableEnded).toBe(false);
+  await f.manager.close();
+});
+
+it("rejects metrics on live overlays without sending an unsupported native command", async () => {
+  const f = await fixture();
+  const starting = f.start();
+  f.helper.ready();
+  await starting;
+  await expect(f.manager.metrics(f.id)).rejects.toThrow("unavailable");
+  expect(f.helper.stdin.read()).toBeNull();
   expect(f.helper.stdin.writableEnded).toBe(false);
   await f.manager.close();
 });

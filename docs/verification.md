@@ -1,5 +1,15 @@
 # 初版验证记录
 
+## Git 提交虚拟 worktree PoC（D169，2026-10-25）
+
+- 仅新增人工 PoC，不接入产品默认模式、会话清单或 UI，不迁移历史、不重启服务，不安装/Repair Sandbox 或创建分区。原生 WinFsp upper、SQLite 命名空间/ACL、身份与卸载流程复用；Git lower 使用固定 tree 和常驻本地 cat-file，读取不物化工作文件。
+- 十万文件实测夹具 `.local/virtual-worktree-poc-XqC9Wi`：来源只有 `.git`，创建 0.552 s/私有分配 9.04 MB，对照普通 worktree 20.552 s/418.41 MB。首次 status 106.217 s，对照 0.120 s；第二次 2.086 s，对照 0.071 s。首次 status 后 41.45 MB；全部阶段来源工作文件打开/枚举为零。计量定义、阶段耗时、1000 个复用 blob 的限制和原始 JSON 见 [PoC 报告](virtual-worktree-poc.md)。没有把“首次命令”称为冷缓存，也没有用跳过 Git 检查伪造 clean。
+- 最终功能夹具 `.local/virtual-worktree-poc-Vvx0Fb`（`.local/virtual-worktree-verify-final.log`）：选定非来源 HEAD 提交、主目录 staged/dirty/untracked 排除、双视图隔离、隐藏文件、diff/add/commit/branch/reset/restore、目录 rename/文件删除以及正常重挂载身份/内容均通过。真实专用账户 Runtime 读提交文件、写入并 commit、完成/取消均为 agent-runtime/windows-sandbox-user/sandboxApplied，结束零租约，没有 host fallback。仅实验 workspace 注册适配器替换，Runtime/ACL/IPC/cleanup 均走生产代码；不扩展为产品模式选择/恢复入口验收。
+- `.local/virtual-worktree-poc-NdyuZD` 先复现不兼容 tree 的文件系统错误被 Git 部分解释为删除；新增发现不兼容 tree 后拒绝新路径查找，最终相同 `.gitattributes` 失败用例通过。未支持的子树按需发现，不声称创建时已经检查整个仓库。
+- 原有实时 overlay 完整人工回归通过：`.local/winfsp-verification-dGaEF4` / `.local/virtual-worktree-live-regression.log`，覆盖 Git、DACL、锁、映射写入、重挂载、强杀拒绝恢复及真实 Sandbox 完成/恢复/取消。原生构建及解析回归通过：`.local/virtual-worktree-native-final.log`；只有上游 SDK 结构对齐警告。
+- 最终 `pnpm check` 通过：134 文件、987 passed / 1 existing skipped，类型、lint、格式和构建通过（`.local/virtual-worktree-check-final.log`）。最初一轮在新脚本段落空行 lint 停止，修复格式后全套通过；无 UI/HTTP/SSE 行为变更，未重复浏览器验收。结束后确认没有遗留本次 overlay helper 或 Git 对象查询子进程。
+- 本 PoC 不足以证明巨型真实项目的总体提速：首次扫描明显更慢，任意 attributes/filter/LFS/submodule、GC base 保活、Linux/macOS 以及完整故障矩阵未验收。未运行 Evaluation。
+
 ## Windows WinFsp 实时 overlay（D168，2026-10-25）
 
 - 在用户明确授权后安装已验签的官方 WinFsp 2.1.25156 Runtime，exit 0。无分区创建、系统/用户服务重启或 Sandbox 安装/Repair。MSVC x64 构建原生 helper 成功；只保留上游 SDK 的结构对齐警告。

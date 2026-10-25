@@ -1,6 +1,6 @@
 # 构建 WinFsp 原生 overlay helper，供工作区管理器和人工 Windows 验证使用。
 # 1. 接收显式 SDK 目录，定位 MSVC；不下载/安装驱动或修改 Sandbox。
-# 2. 编译 Store、原生回调和入口，链接系统 SQLite 与固定 SDK import library。
+# 2. 编译 Store、Git PoC lower、原生回调和入口，链接系统 SQLite 与固定 SDK import library。
 # 3. 使用 WinFsp delay-load，从已安装的官方 WinFsp 运行时加载 DLL；保留许可证。
 # 4. -VerifyReparse 可选构建并运行纯解析回归，不需要创建符号链接权限或挂载。
 # 仅写 dist/native/win32-x64 与可选 .local 测试产物；非默认 build/check 入口。
@@ -16,7 +16,7 @@ if (-not $Installation) { throw 'MSVC x64 toolchain missing' }
 $DevCmd = Join-Path $Installation 'Common7\Tools\VsDevCmd.bat'
 $Output = Join-Path $Repository 'dist\native\win32-x64'
 New-Item -ItemType Directory -Force -Path $Output | Out-Null
-$Sources = @('store.cpp', 'reparse.cpp', 'filesystem.cpp', 'main.cpp') | ForEach-Object { '"' + (Join-Path $Repository "native\winfsp-overlay\$_") + '"' }
+$Sources = @('store.cpp', 'git-lower.cpp', 'reparse.cpp', 'filesystem.cpp', 'main.cpp') | ForEach-Object { '"' + (Join-Path $Repository "native\winfsp-overlay\$_") + '"' }
 $Command = "`"$DevCmd`" -arch=x64 -host_arch=x64 >nul && cl /nologo /std:c++20 /EHsc /W4 /O2 /guard:cf /DUNICODE /D_UNICODE /DNOMINMAX /utf-8 /I`"$Sdk\inc`" $($Sources -join ' ') /Fe:`"$Output\codeatelier-overlay.exe`" /Fo:`"$Output\\`" /link /guard:cf /DYNAMICBASE /NXCOMPAT /DELAYLOAD:winfsp-x64.dll `"$Sdk\lib\winfsp-x64.lib`" delayimp.lib advapi32.lib ole32.lib winsqlite3.lib"
 & $env:ComSpec /d /s /c $Command
 if ($LASTEXITCODE -ne 0) { throw 'WinFsp overlay build failed' }
@@ -25,7 +25,7 @@ Write-Host "OVERLAY_BUILD PASS $Output"
 if ($VerifyReparse) {
     $TestOutput = Join-Path $Repository '.local\winfsp-native-test'
     New-Item -ItemType Directory -Force -Path $TestOutput | Out-Null
-    $TestSources = @('store.cpp', 'reparse.cpp', 'reparse-test.cpp') | ForEach-Object { '"' + (Join-Path $Repository "native\winfsp-overlay\$_") + '"' }
+    $TestSources = @('store.cpp', 'git-lower.cpp', 'reparse.cpp', 'reparse-test.cpp') | ForEach-Object { '"' + (Join-Path $Repository "native\winfsp-overlay\$_") + '"' }
     $TestCommand = "`"$DevCmd`" -arch=x64 -host_arch=x64 >nul && cl /nologo /std:c++20 /EHsc /W4 /O2 /DUNICODE /D_UNICODE /DNOMINMAX /utf-8 /I`"$Sdk\inc`" $($TestSources -join ' ') /Fe:`"$TestOutput\reparse-test.exe`" /Fo:`"$TestOutput\\`" /link /DELAYLOAD:winfsp-x64.dll `"$Sdk\lib\winfsp-x64.lib`" delayimp.lib advapi32.lib ole32.lib winsqlite3.lib"
     & $env:ComSpec /d /s /c $TestCommand
     if ($LASTEXITCODE -ne 0) { throw 'Reparse test build failed' }

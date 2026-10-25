@@ -3,12 +3,15 @@
 // 2. 构造函数验证来源身份和持久格式，按需导入对象并合并目录；lower .git 永远遮蔽。
 // 3. create/promote/rename/remove 持久化私有状态；旧对象保留，崩溃不猜测或回写 lower。
 // 4. security 用 Windows 继承算法合成 DACL，SetSecurity 只保存描述符，不改来源 ACL。
+// 5. 可选 GitLower 按目录事务导入不可变树，read 直接返回 blob，只有写入才物化对象。
 #include "store.hpp"
 
 #include <objbase.h>
 
 #include <algorithm>
 #include <cstring>
+
+#include "git-lower.hpp"
 
 namespace overlay {
 void require(bool ok) {
@@ -226,7 +229,8 @@ void Store::sql(const char* text) {
 }
 
 Store::Store(const fs::path& sourcePath, const fs::path& directory, const fs::path& workspacePath,
-             bool create)
+             bool create, const fs::path& gitExecutable, const fs::path& gitDirectory,
+             const std::wstring& tree)
     : source(fs::absolute(sourcePath)), root(fs::absolute(directory)), workspace(workspacePath) {
   try {
     if (create) {
@@ -265,6 +269,11 @@ Store::Store(const fs::path& sourcePath, const fs::path& directory, const fs::pa
     std::wstring sourceIdentity = std::to_wstring(raw.dwVolumeSerialNumber) + L":" +
                                   std::to_wstring(identity.IndexNumber) + L":" +
                                   std::to_wstring(identity.CreationTime);
+    if (!tree.empty()) {
+      git = std::make_unique<GitLower>(gitExecutable, gitDirectory);
+      // Bind restore to exactly the same immutable base and object database.
+      sourceIdentity += L":" + tree + L":" + fs::absolute(gitDirectory).wstring();
+    }
     auto database = utf8((root / L"overlay.sqlite").wstring());
     sqlite(sqlite3_open_v2(database.c_str(), &db,
                            SQLITE_OPEN_READWRITE | (create ? SQLITE_OPEN_CREATE : 0), nullptr));
@@ -287,7 +296,7 @@ Store::Store(const fs::path& sourcePath, const fs::path& directory, const fs::pa
           .number(3, serial)
           .step();
       Node value;
-      value.origin = L"\\";
+      value.origin = git ? tree : L"\\";
       value.info = identity;
       value.security = descriptor(lower.value);
       detachRootInheritance(value.security);
@@ -330,6 +339,11 @@ void Store::finish() {
 }
 
 Handle Store::openLower(const std::wstring& origin, DWORD sharing) {
+  ++lowerOpens;
+  if (git) {
+    // A Git lower must never silently fall back to a source working file.
+    throw Error{STATUS_NOT_SUPPORTED};
+  }
   if (origin.empty()) {
     throw Error{STATUS_OBJECT_NAME_NOT_FOUND};
   }
@@ -502,7 +516,7 @@ NodePtr Store::child(const NodePtr& parent, const std::wstring& name) {
     auto result = node(query.number(0));
     // Imported entries remain a live lower view until content is private or
     // renamed.
-    if (result->object.empty() && !result->origin.empty()) {
+    if (!git && result->object.empty() && !result->origin.empty()) {
       auto handle = openLower(result->origin);
     }
     return result;
@@ -513,11 +527,25 @@ NodePtr Store::child(const NodePtr& parent, const std::wstring& name) {
   if (parent->origin.empty()) {
     throw Error{STATUS_OBJECT_NAME_NOT_FOUND};
   }
+  if (git) {
+    importGitDirectory(parent);
+    Query imported(db, "SELECT node FROM entries WHERE parent=? AND key=?");
+    imported.number(1, parent->id).text(2, fold(name));
+    if (!imported.step() || !imported.number(0)) {
+      throw Error{STATUS_OBJECT_NAME_NOT_FOUND};
+    }
+    return node(imported.number(0));
+  }
   auto origin = parent->origin == L"\\" ? L"\\" + name : parent->origin + L"\\" + name;
   return import(parent, name, origin);
 }
 
 NodePtr Store::lookup(const std::wstring& path) {
+  if (gitIncompatible) {
+    // Once a directory cannot be represented faithfully, don't expose a
+    // partial repository as if unsupported entries were simply missing.
+    throw Error{STATUS_NOT_SUPPORTED};
+  }
   if (path.empty() || path[0] != L'\\') {
     throw Error{STATUS_OBJECT_NAME_INVALID};
   }
@@ -562,6 +590,66 @@ static bool missing(NTSTATUS status) {
          status == STATUS_NO_SUCH_FILE;
 }
 
+static std::vector<BYTE> childDescriptor(const std::vector<BYTE>& parent) {
+  // Store owner/group, but no copied root capability ACEs: child DACLs inherit
+  // dynamically so revoking a root grant also revokes access to imported files.
+  SECURITY_DESCRIPTOR descriptor{};
+  require(InitializeSecurityDescriptor(&descriptor, SECURITY_DESCRIPTOR_REVISION));
+  PSID owner = nullptr;
+  PSID group = nullptr;
+  BOOL defaulted = FALSE;
+  require(GetSecurityDescriptorOwner(const_cast<BYTE*>(parent.data()), &owner, &defaulted));
+  require(GetSecurityDescriptorGroup(const_cast<BYTE*>(parent.data()), &group, &defaulted));
+  require(SetSecurityDescriptorOwner(&descriptor, owner, FALSE));
+  require(SetSecurityDescriptorGroup(&descriptor, group, FALSE));
+  ACL empty{};
+  require(InitializeAcl(&empty, sizeof(empty), ACL_REVISION));
+  require(SetSecurityDescriptorDacl(&descriptor, TRUE, &empty, FALSE));
+  DWORD length = 0;
+  MakeSelfRelativeSD(&descriptor, nullptr, &length);
+  std::vector<BYTE> result(length);
+  require(MakeSelfRelativeSD(&descriptor, result.data(), &length));
+  return result;
+}
+
+void Store::importGitDirectory(const NodePtr& parent) {
+  if (parent->origin.empty() || importedTrees.contains(parent->id)) {
+    return;
+  }
+  const std::vector<GitEntry>* entries = nullptr;
+  try {
+    entries = &git->tree(parent->origin);
+  } catch (const Error& error) {
+    if (error.status == STATUS_NOT_SUPPORTED) {
+      gitIncompatible = true;
+    }
+    throw;
+  }
+  auto sd = childDescriptor(node(1)->security);
+  Transaction transaction(*this);
+  for (const auto& entry : *entries) {
+    Query existing(db, "SELECT 1 FROM entries WHERE parent=? AND key=?");
+    existing.number(1, parent->id).text(2, fold(entry.name));
+    if (existing.step()) {
+      continue;
+    }
+    Node value;
+    value.parent = parent->id;
+    value.origin = entry.oid;
+    value.security = sd;
+    value.info.FileAttributes = entry.directory ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_NORMAL;
+    value.info.HardLinks = 1;
+    value.info.CreationTime = value.info.LastWriteTime = value.info.LastAccessTime =
+        value.info.ChangeTime = node(1)->info.CreationTime;
+    value.info.FileSize = entry.directory ? 0 : git->size(entry.oid);
+    value.info.AllocationSize = (value.info.FileSize + 4095) & ~4095ULL;
+    auto result = insert(std::move(value));
+    link(parent->id, entry.name, result->id, false);
+  }
+  transaction.commit();
+  importedTrees.insert(parent->id);
+}
+
 std::vector<Entry> Store::list(const NodePtr& parent) {
   if (!parent->directory()) {
     throw Error{STATUS_NOT_A_DIRECTORY};
@@ -569,7 +657,10 @@ std::vector<Entry> Store::list(const NodePtr& parent) {
   if (!parent->reparse.empty()) {
     throw Error{STATUS_REPARSE_POINT_NOT_RESOLVED};
   }
-  if (!parent->origin.empty()) {
+  if (git) {
+    importGitDirectory(parent);
+  } else if (!parent->origin.empty()) {
+    ++lowerEnumerations;
     Handle handle;
     try {
       handle = openLower(parent->origin);
@@ -676,7 +767,15 @@ void Store::promote(const NodePtr& value) {
                             CREATE_NEW, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
                             nullptr));
   require(output.value != INVALID_HANDLE_VALUE);
-  if (!value->origin.empty()) {
+  if (git && !value->origin.empty()) {
+    const auto& bytes = git->blob(value->origin);
+    DWORD written = 0;
+    require(
+        WriteFile(output.value, bytes.data(), static_cast<DWORD>(bytes.size()), &written, nullptr));
+    if (written != bytes.size()) {
+      throw Error{STATUS_DISK_FULL};
+    }
+  } else if (!value->origin.empty()) {
     // Deny concurrent write/delete while copying; the cached read handle has no
     // write access.
     auto input = openLower(value->origin, FILE_SHARE_READ);
@@ -731,6 +830,9 @@ HANDLE Store::content(const NodePtr& value, bool write) {
 
 FSP_FSCTL_FILE_INFO Store::info(const NodePtr& value) {
   auto result = value->info;
+  if (git && (value->object.empty() || value->directory())) {
+    return result;
+  }
   if (!value->directory() && value->reparse.empty()) {
     auto actual = fileInfo(content(value, false));
     result.FileSize = actual.FileSize;
@@ -754,6 +856,26 @@ FSP_FSCTL_FILE_INFO Store::info(const NodePtr& value) {
   }
   result.IndexNumber = value->id;
   return result;
+}
+
+DWORD Store::read(const NodePtr& value, void* buffer, UINT64 offset, DWORD length) {
+  if (git && value->object.empty()) {
+    const auto& bytes = git->blob(value->origin);
+    auto count = offset >= bytes.size()
+                     ? 0
+                     : static_cast<DWORD>(std::min<UINT64>(length, bytes.size() - offset));
+    if (count) {
+      memcpy(buffer, bytes.data() + offset, count);
+    }
+    return count;
+  }
+  HANDLE handle = content(value, false);
+  LARGE_INTEGER position{};
+  position.QuadPart = offset;
+  require(SetFilePointerEx(handle, position, nullptr, FILE_BEGIN));
+  DWORD transferred = 0;
+  require(ReadFile(handle, buffer, length, &transferred, nullptr));
+  return transferred;
 }
 
 void Store::rename(const std::wstring& from, const std::wstring& to, bool replace) {

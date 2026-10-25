@@ -31,6 +31,8 @@ Runtime stdio 集成夹具共用 `runtime-child-close.ts`：spawn 后立即监�
 
 ## 共享执行逻辑回归
 
+- Git 提交虚拟 worktree PoC（D169）：`pnpm worktree:verify-virtual --count=100000 --sandbox` 是显式手动入口，复用 WinFsp/已安装 Sandbox，使用未展开工作文件的 Git 对象夹具。覆盖选定提交（含非来源 HEAD）、来源 staged/dirty 排除、双视图、diff/add/commit/branch/reset/restore、rename/delete、隐藏文件、持久化恢复和不支持属性转换时拒绝访问/拒绝报告 clean。测量 metadata-only 创建、原生 tree/blob/工作文件访问计数、FILE_STANDARD_INFO 分配字节与首次/重复真实 status；`--verify-only` 跳过性能对照。Sandbox 只替换实验 workspace 注册适配器，Runtime/ACL/IPC 与完成/取消清理保持生产路径；不是完整产品入口验收。协议层 `overlay-manager.test.ts` 覆盖 metrics 分段收据和 live 模式禁止误发命令。不进入默认 check 或 Evaluation。
+
 - Windows overlay（D168）：`overlay-git.test.ts` 使用真实 Git 检查无 checkout、dirty/staged、独立 HEAD/index、共享 objects/refs、split-index、unborn 和失败前置检查；`overlay-manager.test.ts` 用管道模拟覆盖 ready、取消、异常退出与干净卸载协议。`riftri.test.ts` 覆盖 Windows 探测不要求同卷、缺驱动/协议错误拒绝。浏览器夹具显式注入缺 helper 的管理器，使已安装 WinFsp 的开发机器也能稳定验证不可用提示，不将其冒称原生 UI 挂载成功。
 - `pnpm worktree:build-winfsp -Sdk <SDK> -VerifyReparse` 编译并运行相对链接移动、外部目标、坏缓冲区、根重映射的原生解析回归；无需创建符号链接权限。`pnpm worktree:verify-winfsp --sandbox` 手动验证真实 WinFsp：双视图、实时 lower、文件 copy-up/rename/whiteout、内部 junction、Git、DACL 继承/撤销、文件锁、映射写入、重挂载身份、helper 强杀后拒绝恢复，以及已安装专用账户 Runtime 的提交/取消/清理。该脚本不自动安装驱动或 Sandbox，不调用真实模型，不属于 Evaluation，也不进入默认 check。Windows 新建 symlink 的宿主权限限制、SACL/ADS/EFS/硬链接及完整通知/故障矩阵另记边界。
 

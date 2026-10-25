@@ -197,6 +197,8 @@ README.md
 
 ## 6. 实现决定与后续范围
 
+- 2026-10-25 D169：授权 [Git 提交虚拟 worktree PoC](virtual-worktree-poc.md)，目标是减少巨型仓库并行工作文件副本及创建延迟；包含主目录未提交修改不是要求。实验复用 WinFsp、标准 linked Git metadata 和既有 Sandbox，单独测 index 与首次 status 的成本，不改变当前默认模式或历史会话。
+
 - 采用 Node.js 24/26、pnpm（packageManager 固定版本）、React/Vite、Fastify、Node 内置 SQLite、Pino。接口与目录职责见 architecture.md。
 - 使用用户自建服务及 Bearer key；本地配置的模型已通过真实流式工具往返验证。
 - 权限规则、历史存储、输出限制、日志轮转、配置优先级和启动方式见 development.md。

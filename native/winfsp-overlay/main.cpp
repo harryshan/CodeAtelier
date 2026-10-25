@@ -2,9 +2,11 @@
 // 1. probe 检查 WinFsp driver；create/restore 打开独占 Store，创建稳定 serial 的本机 UNC 卷。
 // 2. ready 收据只含协议版本/状态；路径由调用方决定，不输出文件内容或安全描述符。
 // 3. stdin EOF/stop 停止 dispatcher、删除卷，再标记干净退出；数据和 worktree 登记保留。
+// 4. 显式 create-git/restore-git PoC 参数固定 Git/tree；metrics 不包含路径/OID/内容。
 // 不安装驱动、不创建分区、不托管网络服务；UNC 由 WinFsp 本机 MUP provider 提供。
 #include <iostream>
 
+#include "git-lower.hpp"
 #include "store.hpp"
 
 int wmain(int argc, wchar_t** argv) {
@@ -18,7 +20,10 @@ int wmain(int argc, wchar_t** argv) {
                 << "}\n";
       return 0;
     }
-    if (argc != 5 || (std::wstring(argv[1]) != L"create" && std::wstring(argv[1]) != L"restore")) {
+    bool gitMode = argc == 8 && (std::wstring(argv[1]) == L"create-git" ||
+                                 std::wstring(argv[1]) == L"restore-git");
+    if (!gitMode && (argc != 5 ||
+                     (std::wstring(argv[1]) != L"create" && std::wstring(argv[1]) != L"restore"))) {
       return 2;
     }
     std::wstring prefix = argv[4];
@@ -26,7 +31,9 @@ int wmain(int argc, wchar_t** argv) {
         prefix.find(L'\\', 13) != std::wstring::npos) {
       return 2;
     }
-    Store store(argv[2], argv[3], L"\\" + prefix + L"\\", std::wstring(argv[1]) == L"create");
+    Store store(argv[2], argv[3], L"\\" + prefix + L"\\",
+                std::wstring(argv[1]).rfind(L"create", 0) == 0, gitMode ? argv[5] : L"",
+                gitMode ? argv[6] : L"", gitMode ? argv[7] : L"");
     FSP_FSCTL_VOLUME_PARAMS params{};
     params.SectorSize = 4096;
     params.SectorsPerAllocationUnit = 1;
@@ -54,7 +61,18 @@ int wmain(int argc, wchar_t** argv) {
     }
     std::cout << "{\"version\":1,\"state\":\"ready\"}\n" << std::flush;
     std::string command;
-    std::getline(std::cin, command);
+    while (std::getline(std::cin, command)) {
+      if (command != "metrics" || !store.git) {
+        break;
+      }
+      std::lock_guard lock(store.mutex);
+      auto& metrics = store.git->metrics;
+      std::cout << "{\"version\":1,\"state\":\"metrics\",\"treeReads\":" << metrics.treeReads
+                << ",\"infoReads\":" << metrics.infoReads << ",\"blobReads\":" << metrics.blobReads
+                << ",\"blobBytes\":" << metrics.blobBytes << ",\"lowerOpens\":" << store.lowerOpens
+                << ",\"lowerEnumerations\":" << store.lowerEnumerations << "}\n"
+                << std::flush;
+    }
     FspFileSystemStopDispatcher(filesystem);
     FspFileSystemDelete(filesystem);
     store.finish();

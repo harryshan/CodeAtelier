@@ -3,7 +3,9 @@
 // 2. Store 按需导入 lower 元数据，持久化命名空间、删除标记、ACL 和虚拟 inode。
 // 3. copy-up 先 flush 私有对象再发布引用；文件 rename 固化内容，目录 rename 保留 live lower。
 // 4. security/reparse 接口维护虚拟卷权限和内部链接；finish 仅在状态可信时标记干净卸载。
-// 不复制工作目录，不读取 lower .git；来源打开禁止重解析与写访问，控制目录不暴露于挂载。
+// 5. 显式 Git PoC lower 按 tree/blob 提供内容，read 不物化文件；生产 live lower 保持原样。
+// 遮蔽来源的 .git 命名空间；Git PoC 从对象库取内容，不打开来源工作文件。
+// 来源文件打开禁止重解析与写访问，控制目录不暴露于挂载。
 #pragma once
 #include <aclapi.h>
 #include <winfsp/winfsp.h>
@@ -14,6 +16,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -71,6 +74,7 @@ struct Node {
   }
 };
 using NodePtr = std::shared_ptr<Node>;
+class GitLower;
 struct Entry {
   std::wstring name;
   NodePtr node;
@@ -90,8 +94,13 @@ class Store {
   UINT32 serial = 0;
   bool poisoned = false;
   std::map<sqlite3_int64, std::weak_ptr<Node>> cache;
+  std::unique_ptr<GitLower> git;
+  UINT64 lowerOpens = 0;
+  UINT64 lowerEnumerations = 0;
 
-  Store(const fs::path& source, const fs::path& root, const fs::path& workspace, bool create);
+  Store(const fs::path& source, const fs::path& root, const fs::path& workspace, bool create,
+        const fs::path& gitExecutable = {}, const fs::path& gitDirectory = {},
+        const std::wstring& tree = L"");
   ~Store();
   void sql(const char* text);
   NodePtr node(sqlite3_int64 id);
@@ -112,10 +121,14 @@ class Store {
   std::vector<BYTE> security(const NodePtr& node);
   FSP_FSCTL_FILE_INFO info(const NodePtr& node);
   HANDLE content(const NodePtr& node, bool write);
+  DWORD read(const NodePtr& node, void* buffer, UINT64 offset, DWORD length);
   Handle openLower(const std::wstring& path,
                    DWORD sharing = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE);
 
  private:
+  std::set<sqlite3_int64> importedTrees;
+  bool gitIncompatible = false;
+  void importGitDirectory(const NodePtr& parent);
   NodePtr import(const NodePtr& parent, const std::wstring& name, const std::wstring& origin);
   std::pair<NodePtr, std::wstring> parent(const std::wstring& path);
   NodePtr insert(Node value);

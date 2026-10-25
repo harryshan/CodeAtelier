@@ -232,9 +232,7 @@ static NTSTATUS read(FSP_FILE_SYSTEM* fs, PVOID context, PVOID buffer, UINT64 of
     if (node->directory()) {
       throw Error{STATUS_FILE_IS_A_DIRECTORY};
     }
-    HANDLE handle = store.content(node, false);
-    seek(handle, offset);
-    require(ReadFile(handle, buffer, length, transferred, nullptr));
+    *transferred = store.read(node, buffer, offset, length);
     if (!*transferred && length) {
       throw Error{STATUS_END_OF_FILE};
     }

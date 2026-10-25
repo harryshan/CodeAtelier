@@ -4,6 +4,7 @@
  * 2. start 等待有界协议 ready，stdin 生命周期绑定宿主；同一 ID 去重，异常退出后本进程内不重挂载。
  * 3. stop 在任务排空后关闭 stdin，等待停止/退出；超时仅终止自己创建的 helper，保留磁盘现场。
  * 4. mount/restore/unmount/异常退出记录独立 trace 和受控生命周期日志，原生诊断只含状态码/源码行号。
+ * 5. 显式 gitBase 仅供人工虚拟 worktree PoC；metrics 读取原生计数，不改变生产创建入口。
  */
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
@@ -13,6 +14,25 @@ import type { Logger } from "pino";
 import { z } from "zod";
 import { TraceRecorder } from "../tracing/recorder.js";
 import { TraceArchive } from "../tracing/archive.js";
+import { gitEnvironment } from "./git.js";
+
+export interface GitOverlayBase {
+  executable: string;
+  directory: string;
+  tree: string;
+}
+
+const metricsSchema = z.object({
+  version: z.literal(1),
+  state: z.literal("metrics"),
+  treeReads: z.number().int().nonnegative(),
+  infoReads: z.number().int().nonnegative(),
+  blobReads: z.number().int().nonnegative(),
+  blobBytes: z.number().int().nonnegative(),
+  lowerOpens: z.number().int().nonnegative(),
+  lowerEnumerations: z.number().int().nonnegative(),
+});
+export type OverlayMetrics = z.infer<typeof metricsSchema>;
 
 export function overlayHelperPath() {
   return fileURLToPath(
@@ -60,6 +80,8 @@ interface Mount {
   stopped: boolean;
   exitCode?: number | null;
   closed: boolean;
+  gitLower: boolean;
+  metrics?: (value: OverlayMetrics) => void;
 }
 
 export class OverlayManager {
@@ -133,6 +155,7 @@ export class OverlayManager {
     workspace: string,
     create: boolean,
     signal: AbortSignal,
+    gitBase?: GitOverlayBase,
   ) {
     const existing = this.mounts.get(id);
     if (existing) {
@@ -148,18 +171,47 @@ export class OverlayManager {
 
     return this.observe(
       id,
-      create ? "mount" : "restore",
+      gitBase
+        ? create
+          ? "git_mount"
+          : "git_restore"
+        : create
+          ? "mount"
+          : "restore",
       async () => {
         signal.throwIfAborted();
         const child = spawn(
           this.executable,
           [
-            create ? "create" : "restore",
+            (create ? "create" : "restore") + (gitBase ? "-git" : ""),
             source,
             control,
             workspace.slice(1).replace(/\\$/, ""),
+            ...(gitBase
+              ? [
+                  gitBase.executable,
+                  gitBase.directory,
+                  z
+                    .string()
+                    .regex(/^[a-f0-9]{40}$/)
+                    .parse(gitBase.tree),
+                ]
+              : []),
           ],
-          { windowsHide: true, stdio: ["pipe", "pipe", "pipe"] },
+          {
+            windowsHide: true,
+            stdio: ["pipe", "pipe", "pipe"],
+            ...(gitBase
+              ? {
+                  env: {
+                    ...process.env,
+                    ...gitEnvironment(),
+                    GIT_NO_LAZY_FETCH: "1",
+                    GIT_NO_REPLACE_OBJECTS: "1",
+                  },
+                }
+              : {}),
+          },
         );
         let resolveReady!: () => void;
         let rejectReady!: (error: Error) => void;
@@ -179,6 +231,7 @@ export class OverlayManager {
           stopping: false,
           stopped: false,
           closed: false,
+          gitLower: gitBase !== undefined,
         };
         this.mounts.set(id, mount);
         let buffer = "";
@@ -266,12 +319,19 @@ export class OverlayManager {
             const line = buffer.slice(0, lineEnd);
             buffer = buffer.slice(lineEnd + 1);
             try {
+              const raw: unknown = JSON.parse(line);
+              const metrics = metricsSchema.safeParse(raw);
+              if (metrics.success) {
+                mount.metrics?.(metrics.data);
+                continue;
+              }
+
               const message = z
                 .object({
                   version: z.literal(1),
                   state: z.enum(["ready", "stopped"]),
                 })
-                .parse(JSON.parse(line));
+                .parse(raw);
               if (message.state === "ready") {
                 resolveReady();
               } else {
@@ -309,6 +369,35 @@ export class OverlayManager {
       },
       signal,
     );
+  }
+
+  /** Read native PoC counters without enumerating the mounted working tree. */
+  async metrics(id: string): Promise<OverlayMetrics> {
+    const mount = this.mounts.get(id);
+    if (
+      !mount ||
+      !mount.gitLower ||
+      mount.failed ||
+      mount.stopping ||
+      mount.metrics
+    ) {
+      throw new Error("Overlay metrics unavailable or already pending.");
+    }
+
+    let timer: ReturnType<typeof setTimeout>;
+    try {
+      return await new Promise<OverlayMetrics>((resolve, reject) => {
+        mount.metrics = resolve;
+        timer = setTimeout(
+          () => reject(new Error("Overlay metrics timed out.")),
+          30_000,
+        );
+        mount.process.stdin.write("metrics\n");
+      });
+    } finally {
+      clearTimeout(timer!);
+      mount.metrics = undefined;
+    }
   }
 
   /** Release only a mount owned by this manager; creation failures keep their disk state. */

@@ -1,5 +1,7 @@
 # Riftri 与 Git worktree 工作区
 
+大仓库的提交基线虚拟化正在进行独立 [WinFsp PoC（D169）](virtual-worktree-poc.md)。它不进入以下生产入口；当前默认模式与既有会话仍按本页执行。
+
 ## 选择模式（D167 / D168）
 
 新对话默认使用 **Riftri**，包含主目录的未提交修改、暂存区、未跟踪与忽略文件；不能指定分支或 commit，不另建完整 base。Linux/macOS 使用创建时原生 CoW 副本；Windows 使用 WinFsp 实时 overlay，尚未写入私有层的文件继续读取主目录。两者的时间语义和 Git 共享边界不同，不能统称固定快照。
