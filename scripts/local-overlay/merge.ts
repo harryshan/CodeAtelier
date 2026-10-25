@@ -10,8 +10,11 @@ import { diffLines } from "diff";
 export const MAX_BYTES = 2 * 1024 * 1024;
 
 export class PublishError extends Error {
-  constructor(public readonly code: string) {
-    super(code);
+  constructor(
+    public readonly code: string,
+    options?: ErrorOptions,
+  ) {
+    super(code, options);
   }
 }
 

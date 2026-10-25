@@ -64,7 +64,7 @@ export function checkRelative(relative: string) {
       /[. ]$/.test(part) ||
       /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(part) ||
       /^(?:\.git|\.hg|\.svn)$/i.test(part) ||
-      part.startsWith(".codeatelier-publish-")
+      part.toLowerCase().startsWith(".codeatelier-publish-")
     ) {
       throw new PublishError("PATH_REJECTED");
     }

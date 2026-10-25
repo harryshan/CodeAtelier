@@ -174,6 +174,7 @@ try {
   const candidates: string[] = [];
   for (const view of views) {
     await publisher.publish(batches.get(view.id) ?? view.session.seal(), {
+      nativeWindows: native,
       validate: async (files) => {
         const content = files.get("module.mjs");
         assert.ok(content);
@@ -266,7 +267,9 @@ try {
         : "Explicit module.mjs baseline only; no native changeset export or arbitrary shell dependency capture",
       "Host Node processes; no Sandbox validation in this experiment",
       "No large-repository or cold-cache benchmark",
-      "Publisher still has phase-one ACL and external-writer race limitations",
+      native
+        ? "Native owner/group/DACL replacement; no SACL or external-writer CAS guarantee"
+        : "Publisher still has phase-one ACL and external-writer race limitations",
     ],
   };
   await writeFile(

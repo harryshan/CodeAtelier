@@ -6,16 +6,29 @@
 // 5. create-local/restore-local 选择无 Git 视图并回执策略；metrics 证明创建期 lower 访问成本。
 // 6. freeze 销毁 Local dispatcher 后封存路径结果；helper 保留控制目录独占租约直到 stop。
 //    check-reads 仅在冻结后复核读依赖并返回无正文收据，路径有效性保存在私有数据库。
+// 7. publish-replace/cleanup 是宿主发布器的短命令，保留权限并返回无正文确认；不启动挂载。
 // 不安装驱动、不创建分区、不托管网络服务；UNC 由 WinFsp 本机 MUP provider 提供。
 #include <iostream>
 
 #include "git-lower.hpp"
+#include "publish.hpp"
 #include "store.hpp"
 
 int wmain(int argc, wchar_t** argv) {
   using namespace overlay;
   try {
     checked(FspLoad(nullptr));
+    if (argc == 6 && std::wstring(argv[1]) == L"publish-replace") {
+      auto backup = publishReplace(argv[2], argv[3], argv[4], argv[5]);
+      std::cout << "{\"version\":1,\"state\":\"published\",\"backupIdentity\":\""
+                << utf8(backup) << "\"}\n";
+      return 0;
+    }
+    if (argc == 5 && std::wstring(argv[1]) == L"publish-cleanup") {
+      publishCleanup(argv[2], argv[3], argv[4]);
+      std::cout << "{\"version\":1,\"state\":\"cleaned\"}\n";
+      return 0;
+    }
     if (argc == 2 && std::wstring(argv[1]) == L"probe") {
       auto result =
           FspFileSystemPreflight(const_cast<PWSTR>(L"" FSP_FSCTL_NET_DEVICE_NAME), nullptr);
@@ -110,7 +123,7 @@ int wmain(int argc, wchar_t** argv) {
     return 0;
   } catch (const Error& error) {
     std::cout << "{\"version\":1,\"error\":\"native\",\"status\":"
-              << static_cast<UINT32>(error.status) << "}\n";
+              << static_cast<UINT32>(error.status) << ",\"stage\":" << publishStage() << "}\n";
   } catch (...) {
     std::cout << "{\"version\":1,\"error\":\"filesystem\"}\n";
   }

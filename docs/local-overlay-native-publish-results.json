@@ -1,0 +1,19 @@
+{
+  "timestamp": "2026-10-25T15:50:19.505Z",
+  "platform": "win32",
+  "release": "10.0.26200",
+  "ownerGroupDacl": "matched; protected DACL, explicit deny ACE and non-default primary group",
+  "originalNamedStream": "retained",
+  "cleanup": "wrong identity and changed content refused; matching backup removed",
+  "staleHashHardlinkAndJunction": "rejected",
+  "sourceWriteDenied": "replacement refused before source mutation",
+  "publisherSuccess": "content and security verified; backup removed after complete journal",
+  "cleanupConflict": "changed backup retained; publication remains complete with cleanupPending=1",
+  "publisherUnknown": "after-write fault retained backup and lock; replay refused",
+  "limitations": [
+    "No SACL, integrity-label or arbitrary foreign-owner privilege guarantee",
+    "No foreign-owner privilege guarantee; differing group uses the exact source DACL's WRITE_OWNER right",
+    "Not an external-writer compare-and-swap or multi-file atomic commit",
+    "Synthetic NTFS host fixtures; not product UI or Sandbox publication lifecycle"
+  ]
+}

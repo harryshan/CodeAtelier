@@ -1,5 +1,14 @@
 # 初版验证记录
 
+## Windows 原生发布与权限保留（D170，2026-10-25）
+
+- 新增 `publish-replace/publish-cleanup` 短命令及显式 `nativeWindows` 发布路径；保留 owner/group/DACL，哈希复核前后正文，不提供普通 rename fallback。只在 complete journal 后按 file ID/原文 hash 清理备份；unknown 保留现场和锁，清理冲突返回 pending 而不覆盖 complete。
+- `pnpm overlay:verify-native-publish` 真实 NTFS 验证通过，完整 SDDL 断言包含保护/自动继承位、拒绝 ACE、不同 primary group；来源写拒绝、陈旧哈希、硬链接、独立 junction 夹具被拒绝。错误备份身份或修改后的内容保留，写后故障保留原文备份及 unknown，并阻止再次发布。结果见 [报告](local-overlay-native-publish-results.json)。不是异属主/SACL/完整性标签或产品自动发布的完整验收。
+- 自审修复了候选无谓要求 WRITE_OWNER、通用安全设置丢失 AUTO_INHERITED 的问题；改用来源真实 DACL 权限和文件系统 SetSecurityInfo，未放宽 SDDL 一致性断言。测试中 PowerShell 模块路径问题改用直接 .NET ACL API；不同 primary group 的夹具先为自己创建的文件设置允许 WRITE_OWNER 的来源 DACL，没有请求系统权限或改变其它文件。
+- 双挂载 `overlay:verify-filesystem --native` 已使用原生替换，仍通过自动捕获、独立候选验证、选择发布与原视图保留的断言。4 项 Windows journal 接线回归和既有 28 项发布回归通过；最终完整检查另记收尾结果。
+- 最终原生编译/reparse 和两项真实脚本通过：`.local/local-overlay-publish-p0wyFd/report.json`、`.local/local-overlay-winfsp-hiD9qa/report.json`（[双挂载报告](local-overlay-native-publish-filesystem-results.json)）。替换后还复核真实备份的身份、原文和安全描述符，失败不回执成功；不据此宣称完整外部写入竞态矩阵通过。
+- `pnpm check` 通过：137 个测试文件、1035 passed / 1 existing skipped，类型/lint/格式/构建通过（`.local/local-overlay-native-publish-check-final.log`）。原生实现随后追加备份后置复核并重建/重跑上述两个真实脚本；TypeScript 未再改变。没有 UI/HTTP/SSE 改动，不运行 e2e/Evaluation。
+
 ## Local 原生批次与发布桥接（D170，2026-10-25）
 
 - `pnpm overlay:verify-filesystem --native` 通过：实际子进程自行触发捕获，不再预先声明原文；导出所选源码后在新临时视图验证候选，三方合并来源输出 `30`，未选产物不进入候选/来源，原会话私有输出继续保留。路径和报告见 [桥接结果](local-overlay-native-batch-results.json)。

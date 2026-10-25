@@ -1,6 +1,6 @@
 # Local 会话文件隔离与发布：重新定界
 
-状态：2026-10-25 用户重新澄清目标（D170），随后授权继续验证并接入 agent。Overlay 与 Git worktree 完全并列，服务于同一 Local 工作区多个对话的文件修改隔离与冲突整合，不负责 Git 工作区管理。受控发布、Local WinFsp 双挂载、`.git` 屏蔽、真实 Sandbox 并行/取消/重挂载，以及原生按需基线捕获/冻结导出到发布器的 PoC 已验证；ACL 保真回写、发布确认/刷新、产品自动发布和恢复操作仍待接入，不改变现有服务或历史会话。
+状态：2026-10-25 用户重新澄清目标（D170），随后授权继续验证并接入 agent。Overlay 与 Git worktree 完全并列，服务于同一 Local 工作区多个对话的文件修改隔离与冲突整合，不负责 Git 工作区管理。受控发布、Local WinFsp 双挂载、`.git` 屏蔽、真实 Sandbox 并行/取消/重挂载，以及原生捕获/冻结导出和 Windows owner/group/DACL 保留发布的 PoC 已验证；发布确认/刷新、产品自动发布和恢复操作仍待接入，不改变现有服务或历史会话。
 
 ## 需求与模式
 
@@ -51,7 +51,7 @@ Overlay 本身只解决写入分离。发布协调器负责变更范围、版本
 
 `OverlayManager.withFrozen` 要求调用方先排空任务进程，然后发送原生 `freeze`：停止 dispatcher、撤销卷、仅按已捕获路径写入 `sealed_changes`。helper 继续持有控制目录独占租约，宿主只读导出；收到 frozen 前不读取，导出时失去 helper 不返回成功结果，结束后等待正常 stopped/exit。实测冻结后挂载不可访问、封存内容可读、第二个 helper 不能接管；干净退出后可恢复私有状态。旧普通模式不接受 freeze。生命周期复用 `overlay.local_freeze` tracing，仅记录 ID、状态与耗时。
 
-Local 实验格式升至 v4；旧 v3 没有原文记录，拒绝自动转换或把当前来源伪装成旧基线。旧 D168 v2 格式保持不变。封存表中的目录、重解析及尚未私有化的 live 内容有独立类型，不自动当普通文件发布；复杂目录重命名、ACL 保真替换、发布确认及续轮刷新仍待完成。结果见 [捕获报告](local-overlay-capture-results.json)。
+Local 实验格式升至 v4；旧 v3 没有原文记录，拒绝自动转换或把当前来源伪装成旧基线。旧 D168 v2 格式保持不变。封存表中的目录、重解析及尚未私有化的 live 内容有独立类型，不自动当普通文件发布；复杂目录重命名、显式权限修改发布、发布确认及续轮刷新仍待完成。结果见 [捕获报告](local-overlay-capture-results.json)。
 
 ### 原生结果到发布 PoC 的衔接
 
@@ -63,9 +63,19 @@ Local 实验格式升至 v4；旧 v3 没有原文记录，拒绝自动转换或�
 
 Windows 实测：两个挂载独立修改同一文件，私有程序输出 `12` 和 `21`；自动捕获的原文均为初始版本。只选择 `module.mjs`，在每次全新的临时候选 overlay 运行语法检查和程序，结果依次 `12`、`30`，来源最终 `30`。临时候选看不到未选择的 `generated.txt`，也不覆盖原会话修改；原视图重挂载仍是 `12` 和 `21`。成功后的刷新与确认尚未实现，不能把保留旧视图当成完整续轮体验。另一个真实挂载测试确认未选择的已读文件过期时返回 `STALE_DEPENDENCY`。[自动发布桥接报告](local-overlay-native-batch-results.json)。
 
-这仍是手动宿主 PoC，不是生产自动发布：明确路径由实验指定，尚无产品源码选择入口；ACL 保真、未知发布后的恢复操作、成功确认和新观察周期要继续接入。默认不带 `--native` 的脚本保留先前显式基线对照。
+这仍是手动宿主 PoC，不是生产自动发布：明确路径由实验指定，尚无产品源码选择入口；未知发布后的恢复操作、成功确认和新观察周期要继续接入。Windows 已追加下述 owner/group/DACL 保留替换；默认不带 `--native` 的脚本保留先前显式基线对照。
 
-下一验证增量是 Windows 原生发布替换：准备同卷候选，保留来源 owner/group/DACL，调用不忽略元数据错误的 `ReplaceFileW` 并复核结果；替换前校验内容，部分失败保留原文/日志，不能用普通 rename 宣称权限保真。官方 API 明确列出 DACL 等保留项，也列出可能已经移动文件的失败状态；不推导 SACL/任意外部写入 CAS 或多文件原子性。[Microsoft API 语义](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-replacefilew)。此段是待实施计划，不是已验证能力。
+### Windows 原生发布与权限保留
+
+`pnpm overlay:verify-native-publish` 与 `overlay:verify-filesystem --native` 已接入原生发布短命令；默认不带 `--native` 的对照仍沿用旧 rename。显式 `nativeWindows` 不允许缺 helper 时降级。原生代码固定同目录候选，持有祖先目录句柄并拒绝 reparse/多硬链接等不支持文件；以系统 BCrypt 复核前后 SHA-256，将来源实际 owner/group/DACL 应用到候选，再调用不忽略元数据错误的 `ReplaceFileW`。替换后再次核对正文与完整 owner/group/DACL SDDL，只有正常退出和成功收据同时存在才确认。
+
+相同 owner/group 不重复申请 `WRITE_OWNER`；不同时先应用来源原有 DACL，再按它真实授予的权限设置原 SID，不能为方便发布额外增加权限 ACE。使用文件系统 `SetSecurityInfo` 保留 NTFS 自动继承标记；测试发现通用 `SetKernelObjectSecurity` 会改变这一控制位，因此未降低 SDDL 一致性断言来绕过差异。来源的显式写拒绝、陈旧哈希、硬链接及独立 junction 夹具均在来源改动前被拒绝。
+
+原生替换把原文件保留为同目录、随机批次命名的 `.codeatelier-publish-*.backup`；路径先写入 intent，替换后核对真实备份的身份、原文和安全描述符，成功收据再记录 volume/file ID。部分失败或收据丢失保留备份、候选与 unknown 日志/协调锁，不自动重试。整批 complete 日志持久化后才按备份身份和原文 hash 打开句柄删除；备份被替换或修改时保留并返回 `cleanupPending`，不把已完成的发布改写成 aborted。后台清理或跨会话恢复尚未接入产品。
+
+NTFS 实测覆盖保护 DACL、显式拒绝 ACE、与候选不同的 primary group、原有命名流保留、错误备份身份/内容拒绝清理、写后故障保留及重放拒绝。夹具只修改自身文件 ACL，不申请系统提权；异属主情况下所需权限不足仍会拒绝，不保证任意 foreign owner、SACL 或完整性标签保真。现阶段仅支持有界普通文件；不声明外部写入 CAS、多文件原子提交或断电保证。官方 API 的部分失败状态也是保留 unknown 的理由。[ReplaceFileW 语义](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-replacefilew)、[文件安全描述符设置](https://learn.microsoft.com/en-us/windows/win32/api/aclapi/nf-aclapi-setsecurityinfo)。结果见 [原生发布报告](local-overlay-native-publish-results.json)。
+
+观测复用 `local_overlay.apply/cleanup` trace 和批次关联 ID。helper 错误仅提供固定阶段号与 NTSTATUS；stdout/stderr 不包含路径、正文或安全描述符。候选/备份路径仅保存在私有 journal，不能写入 Perfetto 属性。
 
 ## 文件发布建议
 

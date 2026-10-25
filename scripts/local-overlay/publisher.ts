@@ -5,7 +5,8 @@
  * 3. apply 记录逐文件 intent，再执行替换/删除；任何开始执行后的失败保留日志和锁。
  * 4. inspect 只比较现场与 before/after，不续写、不回滚、不释放未知锁。
  * 5. src/tracing 记录 queue/prepare/validate/apply 的 ID、耗时和安全终态，不含路径/正文。
- * 仅普通单链接文件/已存在父目录；新建使用不覆盖的 link，替换不保证 Windows ACL 保真。
+ * 6. 显式 nativeWindows 使用保留 owner/group/DACL 的原生替换，完整发布后按身份清理备份。
+ * 仅普通单链接文件/已存在父目录；新建使用不覆盖的 link，旧对照模式不保证 Windows ACL 保真。
  * 不提供外部写入 CAS、多文件原子提交、断电证明或生产服务集成；故障钩子仅供实验。
  */
 import { mkdir, open, readFile, rename, unlink, link } from "node:fs/promises";
@@ -27,12 +28,14 @@ import {
 } from "./files.js";
 import { equal, mergeContent, PublishError } from "./merge.js";
 import { validateBatch, type Batch } from "./session.js";
+import { windowsReplace, windowsCleanup } from "./windows-publish.js";
 
 interface Entry {
   path: string;
   before: Snapshot;
   after: string | null;
   state: "pending" | "intent" | "written" | "unchanged";
+  backup?: { path: string; identity?: string; cleaned?: boolean };
 }
 
 interface Journal {
@@ -46,6 +49,7 @@ export interface PublishOptions {
   signal?: AbortSignal;
   lockTimeoutMs?: number;
   afterWrite?: (index: number) => Promise<void>;
+  nativeWindows?: boolean;
 }
 
 function decode(value: string | null) {
@@ -223,6 +227,12 @@ export class Publisher {
 
       // Intent precedes the source side effect. An exit after rename and before
       // acknowledgement remains observable as unknown, never assumed absent.
+      if (temporary && before.content !== null && options.nativeWindows) {
+        entry.backup = {
+          path: path.relative(journal.batch.source.root, temporary + ".backup"),
+        };
+      }
+
       entry.state = "intent";
       await durableJson(file, journal);
       if (
@@ -237,6 +247,13 @@ export class Publisher {
         if (before.content === null) {
           await link(temporary, target);
           await unlink(temporary);
+        } else if (options.nativeWindows) {
+          entry.backup!.identity = await windowsReplace(
+            target,
+            temporary,
+            digest(bytes(before)!),
+            digest(content!),
+          );
         } else {
           await rename(temporary, target);
         }
@@ -250,7 +267,52 @@ export class Publisher {
     }
   }
 
+  private async cleanupBackups(journal: Journal, file: string) {
+    let pending = 0;
+    for (const entry of journal.entries) {
+      if (!entry.backup?.identity) {
+        continue;
+      }
+
+      try {
+        await windowsCleanup(
+          path.join(journal.batch.source.root, entry.backup.path),
+          entry.backup.identity,
+          digest(bytes(entry.before)!),
+        );
+        entry.backup.cleaned = true;
+      } catch {
+        pending++;
+      }
+    }
+
+    try {
+      await durableJson(file, journal);
+    } catch {
+      this.log.warn({
+        module: "local-overlay-poc",
+        event: "backup_cleanup_record_failed",
+        batchId: journal.batch.id,
+      });
+    }
+
+    if (pending) {
+      this.log.warn({
+        module: "local-overlay-poc",
+        event: "backup_cleanup_pending",
+        batchId: journal.batch.id,
+        count: pending,
+      });
+    }
+
+    return pending;
+  }
+
   async publish(input: Batch, options: PublishOptions) {
+    if (options.nativeWindows && process.platform !== "win32") {
+      throw new PublishError("WINDOWS_REQUIRED");
+    }
+
     const batch = validateBatch(input);
     const locations = await this.layout(batch);
     const task = randomUUID();
@@ -324,8 +386,17 @@ export class Publisher {
       await durableJson(path.join(output, "journal.json"), journal);
       applying = false;
       outcome = "ok";
+      const cleanupPending = options.nativeWindows
+        ? await step("cleanup", () =>
+            this.cleanupBackups(journal!, path.join(output, "journal.json")),
+          )
+        : 0;
 
-      return { directory: output, files: journal.entries.length };
+      return {
+        directory: output,
+        files: journal.entries.length,
+        cleanupPending,
+      };
     } catch (error) {
       reason = error instanceof PublishError ? error.code : "OPERATION_FAILED";
       outcome = applying
