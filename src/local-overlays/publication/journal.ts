@@ -4,6 +4,7 @@
  * 2. parseJournal 校验批次、逐文件正文编码/状态与确认请求的路径归属，不相信反序列化类型断言。
  * 3. saveJournal 在来源协调锁内复核日志摘要，再沿用 durableJson 保存；不改来源文件。
  * 4. execution 绑定原生租约 generation/锁摘要；reconciled 必须保存明确接受当前现场的逐文件版本。
+ * 5. 可选 validation 保存候选执行新增的来源读凭据；旧日志缺字段不伪造已验证的依赖。
  * 字段保留兼容现有实验日志；没有检查点的旧日志不能凭空生成刷新证明。外部写者不受应用锁约束。
  */
 import { lstat, open } from "node:fs/promises";
@@ -16,6 +17,7 @@ import { digest, durableJson, type Snapshot } from "./files.js";
 import { MAX_BYTES, PublishError } from "./merge.js";
 import { checkpointSchema, type NativeCheckpoint } from "./native-refresh.js";
 import { validateBatch, type Batch } from "./session.js";
+import { validateReceipt, type ValidationReceipt } from "../candidate-reads.js";
 
 export interface Entry {
   path: string;
@@ -28,6 +30,7 @@ export interface Journal {
   version?: 1;
   execution?: { version: 1; generation: string; lockDigest?: string };
   batch: Batch;
+  validation?: ValidationReceipt;
   state:
     "prepared" | "applying" | "complete" | "aborted" | "unknown" | "reconciled";
   resolution?: {
@@ -70,6 +73,7 @@ const schema = z.object({
     })
     .optional(),
   batch: z.unknown().transform(validateBatch),
+  validation: z.unknown().transform(validateReceipt).optional(),
   state: z.enum([
     "prepared",
     "applying",

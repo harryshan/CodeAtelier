@@ -79,6 +79,14 @@ NTFS 实测覆盖保护 DACL、显式拒绝 ACE、与候选不同的 primary gro
 
 ## 文件发布建议
 
+### 候选工程验证器（2026-10-26）
+
+候选验证建立一次性 Local 视图，以主目录为实时 lower，只写入 Publisher 已计算的合并候选；不叠加原会话未选文件，不遍历或复制工程。可信执行适配器在该目录运行验证，必须返回真实执行模式及进程树排空结果；异常或排空未知不能按普通验证拒绝恢复会话。此适配器不自动提升权限，Sandbox 启用时不得把宿主 fallback 当作验证成功。
+
+`src/local-overlays/candidate-validator.ts` 已实现一次性视图与可信 `CandidateExecutor` 契约，`candidate-reads.ts` 在冻结租约中核对选定文件仍等于输入候选（验证命令自行修复源码不算验证通过），提取新读取的来源版本，经原生观察复核后交给 Publisher 在应用前再次检查。凭据保存到 journal 的可选 validation 字段；旧日志不伪造依赖。目录枚举、缺失路径及工作区外依赖仍不属于完整读取集；沿用有界文件限制，不宣称任意测试的完整事务隔离。正常卸载后才删除一次性 UUID 控制目录；未知状态保留，不恢复或重跑命令。内部执行器若抛异常而未交付排空证明，按 unknown 处理，不降为可续聊的普通拒绝。
+
+`pnpm overlay:verify-candidate` 以生产 Engine、固定内存 provider 与已安装专用账户 Runtime 验证真实候选命令；来源发布仍由生产 Publisher 执行。脚本提供可信执行适配器，核对 Runtime 终态、无 fallback 和零活动租约，验证真实合并结果、新读依赖与取消；不需要修改 IPC 或安装 Runtime。模型工具、产品执行适配器与公开入口仍待接线，不能将此脚本视为自动任务命令选择或产品候选执行器已完成。
+
 ### 发布确认与下一轮观察（Windows PoC）
 
 发布与视图确认分开记录：来源 journal 已 complete 才允许在仍持独占冻结租约的 helper 中确认。确认按 batch ID、冻结标识、观察代次和明确路径形成持久收据，只释放这些普通文件的私有命名空间覆盖和基线；未选择的修改、产物及历史对象保留。确认失败返回 refresh-pending，不能将来源 complete 改写成未发布或重做来源写入。下一轮须干净重挂载，以清除旧句柄和缓存。
@@ -190,7 +198,7 @@ v5 没有完整私有读传递记录，不能猜测迁移或把缺失依赖当�
 
 选择在排空收尾时持久化，导出成功后先保存 publishing/batchId 再调用来源级协调器；来源完成且私有确认成功后保存 published，已确认覆盖释放，未选内容保留。仅在本次来源写入尚未开始且执行租约已排空时返回 rejected，使视图可续聊且任务失败；写入/清理未知、来源完成后确认缺失则保留任务清单和锁，不能重放。Publisher 错误明确区分 unapplied/unknown；完成后的备份记账异常不把 complete journal 降格为 aborted。协调目录固定在 `<data-dir>/local-overlays/publications`，参与视图共用来源锁。
 
-这是内部发布接线；模型选择工具、路径审批整合、候选工程的 Sandbox 命令验证器和公开 UI 尚未接入。当前手动验证器精确检查候选字节，不执行候选命令，不把普通回调当成权限边界，也不承诺任意 shell 的依赖完整性。生产接口不从 HTTP/模型输入反序列化函数。原有单文件/总内容/100 路径与读依赖限额仍有效，不扩大为任意大型构建或目录发布验收。
+这是内部发布接线；模型选择工具、路径审批整合、候选命令的产品执行适配器和公开 UI 尚未接入。内部生命周期脚本精确检查候选字节，新增独立候选脚本在真实 Sandbox 执行命令并返回新读依赖；两者的证据范围分别记录，不把普通回调当成权限边界，也不承诺任意 shell 的依赖完整性。生产接口不从 HTTP/模型输入反序列化函数。原有单文件/总内容/100 路径与读依赖限额仍有效，不扩大为任意大型构建或目录发布验收。
 
 Local overlay 使用独立于 WorktreeService 的清单和 UNC 命名空间，清单绑定来源/控制目录/虚拟卷身份及会话，不包含 Git metadata。内部创建先持久 preparing，再创建 v6 空视图、核对身份、干净卸载并保存 ready；创建或任务执行的未知结果保留锁和失败状态，不重新创建。旧 Local/Riftri/Worktree 不迁移。本增量不开放 UI/API 创建选择，也不改变默认模式。
 
@@ -244,18 +252,18 @@ Windows 11 / Node 26.10.0 本机结果：28 个回归用例通过；双进程发
 
 所需能力是普通目录实时读取、每会话私有写入、创建不遍历或复制来源、来源持续接收发布，以及可冻结并导出的修改集。Windows 还需要原生安全描述符、跨专用账户挂载访问及持久 capability；“能通过 FUSE 挂载”不足以满足这组条件。
 
-| 候选 | 已核实的实现与差距 | 本次选择 |
-| --- | --- | --- |
-| Riftri | 上游管理 Git linked worktree、不可变基线和原生 CoW；项目当前只抽取其 storage API，Windows 自研 WinFsp 已不依赖它的克隆代码 | 新 Local overlay 链路不依赖 Riftri；旧模式暂不删除，避免破坏历史目录 |
-| WinFsp + 现有原生后端 | WinFsp 是文件系统框架，不是现成 unionfs。现有 `Store` 已实现普通目录 lower、私有对象、whiteout、ACL 和稳定 UNC；普通 create/restore 不需要 Git 参数 | Windows 优先复用；不经 `WorktreeService` 的 Riftri/Git 注册路径。原生基线、修改记录和冻结导出仍需补充 |
-| unionfs-fuse | 有普通目录 CoW union，README 明确 Linux/macOS 路径；未核实官方 Windows 原生 ACL 实现。其 copy-up/whiteout 不能代替编辑时原文和冲突发布 | POSIX 后端首批候选，需要验证实时来源、缓存、rename、恢复及 Sandbox；尚未安装实测 |
-| Linux OverlayFS | 官方明确禁止挂载期间修改底层文件系统；我们的发布会修改其它会话的 lower | 不直接用于实时主目录。若未来采用稳定快照/统一停挂发布，才重新评估 |
-| fuse-overlayfs | 为 Linux rootless 容器提供 upper/lower/workdir，依赖 libfuse；未核实支持我们要求的外部 live lower 变化 | 保留 Linux 候选，不根据名称假定解决实时来源一致性，也不作为三平台实现 |
-| HUBFS 内部 unionfs | `Config.Fslist` 可组合一般 FUSE 文件系统，不强依赖 Git 类型；但产品 CLI 面向 Git/GitHub，内部仍需单独封装。使用 cgofuse；代码许可为 AGPLv3；缓存负查找，未证明动态 lower 新建的完整失效语义 | 可参考接口，不能直接替换原生 Windows ACL 后端；不能把可抽取库描述为现成命令 |
-| Turso AgentFS | 固定提交 `0a014ebd4918615baff589ed17486e557e7c6a23`：Windows `run` 明确不支持，`mount_stub.rs` 只允许 Unix 挂载；SQLite SDK/Windows CLI 发布不等于 Windows 文件系统挂载 | 当前不满足 Windows 接入 |
-| ContextFS | 固定提交 `5daff08f620cfcd04384e16f5fe34829a874bba9`：有 WinFsp 原生挂载，但 `GetSecurity/SetSecurity` 为空，按名称查询返回固定描述符并向 Everyone 授完全访问；启动调用后台 Bootstrap，逐文件读取并写入 CAS | 不直接采用；与 capability ACL 和不全量导入要求冲突，换用它仍需改写关键部分 |
-| AgentHarborFS | 官方文档描述 lazy live overlay、Linux FUSE/macOS FSKit/Windows WinFsp，语义最接近；文档链接的公开 `agent-harbor/agent-harbor` 仓库本次网页和 API 均返回 404 | 待核实源码、许可、独立使用接口及 ACL，不能仅据文档认定是可集成依赖 |
-| OmniVFS | 固定提交 `cfa9a1526253088f345507fea18b79349ec8ffc9`：README 提及 Windows FUSE，但 CLI `handle_mount` 仅 `cfg(unix)` 执行真实挂载，非 Unix 只打印不支持提示 | 不视为已提供 Windows 后端 |
+| 候选                  | 已核实的实现与差距                                                                                                                                                                                         | 本次选择                                                                                              |
+| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| Riftri                | 上游管理 Git linked worktree、不可变基线和原生 CoW；项目当前只抽取其 storage API，Windows 自研 WinFsp 已不依赖它的克隆代码                                                                                 | 新 Local overlay 链路不依赖 Riftri；旧模式暂不删除，避免破坏历史目录                                  |
+| WinFsp + 现有原生后端 | WinFsp 是文件系统框架，不是现成 unionfs。现有 `Store` 已实现普通目录 lower、私有对象、whiteout、ACL 和稳定 UNC；普通 create/restore 不需要 Git 参数                                                        | Windows 优先复用；不经 `WorktreeService` 的 Riftri/Git 注册路径。原生基线、修改记录和冻结导出仍需补充 |
+| unionfs-fuse          | 有普通目录 CoW union，README 明确 Linux/macOS 路径；未核实官方 Windows 原生 ACL 实现。其 copy-up/whiteout 不能代替编辑时原文和冲突发布                                                                     | POSIX 后端首批候选，需要验证实时来源、缓存、rename、恢复及 Sandbox；尚未安装实测                      |
+| Linux OverlayFS       | 官方明确禁止挂载期间修改底层文件系统；我们的发布会修改其它会话的 lower                                                                                                                                     | 不直接用于实时主目录。若未来采用稳定快照/统一停挂发布，才重新评估                                     |
+| fuse-overlayfs        | 为 Linux rootless 容器提供 upper/lower/workdir，依赖 libfuse；未核实支持我们要求的外部 live lower 变化                                                                                                     | 保留 Linux 候选，不根据名称假定解决实时来源一致性，也不作为三平台实现                                 |
+| HUBFS 内部 unionfs    | `Config.Fslist` 可组合一般 FUSE 文件系统，不强依赖 Git 类型；但产品 CLI 面向 Git/GitHub，内部仍需单独封装。使用 cgofuse；代码许可为 AGPLv3；缓存负查找，未证明动态 lower 新建的完整失效语义                | 可参考接口，不能直接替换原生 Windows ACL 后端；不能把可抽取库描述为现成命令                           |
+| Turso AgentFS         | 固定提交 `0a014ebd4918615baff589ed17486e557e7c6a23`：Windows `run` 明确不支持，`mount_stub.rs` 只允许 Unix 挂载；SQLite SDK/Windows CLI 发布不等于 Windows 文件系统挂载                                    | 当前不满足 Windows 接入                                                                               |
+| ContextFS             | 固定提交 `5daff08f620cfcd04384e16f5fe34829a874bba9`：有 WinFsp 原生挂载，但 `GetSecurity/SetSecurity` 为空，按名称查询返回固定描述符并向 Everyone 授完全访问；启动调用后台 Bootstrap，逐文件读取并写入 CAS | 不直接采用；与 capability ACL 和不全量导入要求冲突，换用它仍需改写关键部分                            |
+| AgentHarborFS         | 官方文档描述 lazy live overlay、Linux FUSE/macOS FSKit/Windows WinFsp，语义最接近；文档链接的公开 `agent-harbor/agent-harbor` 仓库本次网页和 API 均返回 404                                                | 待核实源码、许可、独立使用接口及 ACL，不能仅据文档认定是可集成依赖                                    |
+| OmniVFS               | 固定提交 `cfa9a1526253088f345507fea18b79349ec8ffc9`：README 提及 Windows FUSE，但 CLI `handle_mount` 仅 `cfg(unix)` 执行真实挂载，非 Unix 只打印不支持提示                                                 | 不视为已提供 Windows 后端                                                                             |
 
 另排除 mergerfs（上游明确不提供 OverlayFS 式只读 lower + 可写 upper 和 whiteout）、absfs/unionfs（应用内 Go 文件接口，不是给任意程序使用的系统挂载）、面向 squashfs/EROFS 固定镜像的 Windows overlay（需先生成镜像，不满足直接读取可变目录），以及通过进程注入实现的 winrsbox（改变执行/沙箱路径，不是可直接替换的挂载后端）。不宣称全世界不存在其它实现；结论是本次核查未找到可直接满足全部要求的三平台替换件。
 

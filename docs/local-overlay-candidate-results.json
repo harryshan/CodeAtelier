@@ -1,0 +1,55 @@
+{
+  "timestamp": "2026-10-25T19:47:22.547Z",
+  "platform": "win32",
+  "node": "v26.10.0",
+  "validation": "merged candidate executed in installed dedicated-account Runtime",
+  "selectedResult": 30,
+  "selectedCreateDelete": "candidate and source existence checked",
+  "unselectedFiles": "absent",
+  "sourceAbsoluteWrite": "denied",
+  "gitMetadata": "hidden",
+  "newReadDependencies": "captured and rechecked after teardown",
+  "nonzeroExit": "rejected",
+  "validatorSourceRewrite": "rejected",
+  "cancellation": "drained without publication",
+  "normalCandidateControlDirectoriesRemaining": 0,
+  "injectedUnconfirmedExecution": "one private control retained; no command launched",
+  "injectedHostReceipt": "rejected as sandbox validation; no command launched",
+  "fallback": false,
+  "executions": [
+    {
+      "taskId": "783c6e75-a1e5-4591-a310-c3c65d222693",
+      "status": "completed",
+      "exitCode": 0
+    },
+    {
+      "taskId": "e1bc469c-1e93-46e0-9629-d110f98da886",
+      "status": "completed",
+      "exitCode": 7
+    },
+    {
+      "taskId": "509b42d1-6390-4627-98b0-b1567822cf61",
+      "status": "completed",
+      "exitCode": 0
+    },
+    {
+      "taskId": "f4369b79-c69a-448b-bf38-a216f3abb568",
+      "status": "completed",
+      "exitCode": 0
+    },
+    {
+      "taskId": "2f947d27-a485-4dd4-90aa-f75e2be7c4c4",
+      "status": "completed",
+      "exitCode": 0
+    },
+    {
+      "taskId": "117c591d-b474-4b6f-9ccc-5a49ca50c123",
+      "status": "cancelled",
+      "exitCode": null
+    }
+  ],
+  "limitations": [
+    "Trusted verifier execution adapter, not yet a product validation-command API",
+    "Directory, absent-path and external reads are not a complete transaction dependency set"
+  ]
+}

@@ -2,6 +2,8 @@
 
 所有功能开发均须配套合理的单元/回归测试，测试和文档属于功能交付的一部分。不要等全部开发结束后才首次运行测试。
 
+Local 候选工程验证（D170）：`local-overlay-candidate.test.ts` 覆盖冻结候选内容复核、新读依赖与原生观察绑定、私有修改不抹去读依赖、发布前新增依赖变化拒绝、journal 凭据及排空未知分类。`pnpm overlay:verify-candidate` 手动用已安装 WinFsp/专用账户 Runtime 运行真正合并候选，验证创建/删除、未选文件与 Git 隐藏、来源绝对写拒绝、退出失败/候选改写/验证中及卸载后依赖变化/取消，以及正常目录回收；宿主模式与未知排空收据另作注入拒绝用例，不冒充真实失控进程测试。脚本执行适配器尚未接入产品命令选择，不进入默认 check/Evaluation。
+
 Local 内部任务发布（D170）：发布/导出/恢复测试均改为导入 `src/local-overlays/publication`。生命周期回归新增当前任务选择、验证器必需、路径限额/重复/管理目录拒绝、选择不继承、失败/取消/中断不发布；发布回归核对未写入/unknown 的结构化失败，以及来源 complete 后清理异常不降格 journal。`pnpm overlay:verify-sandbox --publish` 以真实 Runtime 任务验证自动发布两个明确选择文件、未选产物保留、候选验证拒绝、来源冲突保留外部修改、取消选择不执行及重建 Engine 后私有结果仍在。选择来自可信内部调用，验证仅核对候选字节，不代表模型工具或候选工程 Sandbox 命令验证完成。
 
 Local 内部生命周期（D170）：`local-overlay-service.test.ts` 使用真实清单/锁/Store/Engine 和替换挂载边界，覆盖创建绑定重试、来源/控制/卷身份、同视图互斥、跨视图并行、四种已排空终态续轮、unknown 隔离、重启 active 拒绝，以及模型完成/失败和 Engine 关闭顺序。`pnpm overlay:verify-sandbox` 已改用生产 LocalOverlayService，不再替换 WorktreeService 注册；真实验证双专用账户 Runtime 命令区间重叠、私有写入、来源/.git 拒绝、取消排空、空闲卸载和两会话跨 Engine 续聊。手动脚本不进入默认 check/Evaluation；它不验证自动发布或公开 UI 创建。

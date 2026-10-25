@@ -1,5 +1,12 @@
 # 初版验证记录
 
+## Local 候选工程与新增读依赖（D170，2026-10-26）
+
+- `CandidateValidator` 创建一次性 Local 视图，使用当前来源与合并候选，不枚举复制工程或复用未选 upper；可信执行适配器必须报告模式、退出码及进程树排空。冻结后核对所选文件未被验证命令改写，并取得新增读依赖；Publisher 在应用前再次复核，journal 保存 validation 凭据。排空未知不降为普通未发布拒绝。
+- `pnpm overlay:verify-candidate` 通过（`.local/local-overlay-candidate-Dp5ZDm/report.json`、`.local/local-candidate-sandbox-final.log`，[摘要](local-overlay-candidate-results.json)）：六次真实专用账户 Runtime 执行，合并后结果 30，新增/删除路径一致；退出码 7、候选源码改写、验证中/卸载后依赖变化、取消均阻止发布。`.git` 和未选产物不可见，来源绝对写拒绝，无 fallback。正常候选控制目录全部回收；另注入宿主模式及排空未确认收据，分别拒绝与保留一份私有控制目录，不将注入描述为真实进程失控实验。
+- 类型检查、针对性 69 项回归通过（`.local/local-candidate-unit-final.log`）；首次单元测试失败是夹具漏掉 EditSession 必需的 read，修正后未弱化断言。最终 `pnpm check` 通过：143 个测试文件、1128 passed / 1 existing skipped，类型/lint/格式及 Web/Windows/POSIX Runtime 构建通过（`.local/local-candidate-check.log`）。只读进程检查无遗留 overlay helper/Sandbox supervisor。没有 UI/HTTP/SSE 改动，不运行 e2e/Evaluation，不安装或 Repair、不重启实际服务。
+- 执行适配器目前位于手动脚本，通过现有生产 Engine 与固定内存 provider 运行命令，不改 IPC/已安装 Runtime。产品验证命令工具、同任务执行适配器、公开入口及异常私有卷恢复仍待接入；POSIX 与大型构建性能未验证。普通文件读取凭据不覆盖目录、缺失路径、外部文件或所有 shell/模型历史依赖。
+
 ## Local 内部任务发布与拒绝保留（D170，2026-10-26）
 
 - 发布、原生批次导出、三方整合和恢复协议移至 `src/local-overlays/publication`，脚本/测试改用相同正式实现。`LocalOverlayService.select` 接收任务绑定的明确路径和可信候选验证器，Engine 在成功且排空的收尾中执行；选择不跨轮继承，失败/取消/中断不发布。日志和 trace 记录选择及发布关联 ID，不记录路径或内容。

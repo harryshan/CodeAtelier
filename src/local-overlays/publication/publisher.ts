@@ -14,6 +14,7 @@
  * 12. v2 协调锁绑定 batch 与原生 generation；未开始/已完成的残留锁可显式排空后释放，不改来源或私有视图。
  * 仅普通单链接文件/已存在父目录；新建使用不覆盖的 link，旧对照模式不保证 Windows ACL 保真。
  * 13. publish 的错误只在执行租约排空后标为 unapplied；已开始写入、完成后故障或清理未知均需恢复核对，不降格完成 journal。
+ * 14. 候选验证可返回新读取版本，记入 journal 并在应用前复核；候选排空未知不降为普通未发布拒绝。
  * 不提供外部写入 CAS、多文件原子提交或断电证明；故障钩子仅供实验，产品调用不得跳过候选验证。
  */
 import { mkdir, open, readFile, rename, unlink, link } from "node:fs/promises";
@@ -22,6 +23,11 @@ import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import pino, { type Logger } from "pino";
 import { TraceRecorder } from "../../tracing/recorder.js";
+import {
+  CandidateCleanupUnknownError,
+  validateReceipt,
+  type ValidationReceipt,
+} from "../candidate-reads.js";
 import type { TraceStatus } from "../../tracing/types.js";
 import { canonical } from "../../tools/paths.js";
 import {
@@ -54,7 +60,7 @@ export interface PublishOptions {
   validate: (
     files: ReadonlyMap<string, Buffer | null>,
     signal?: AbortSignal,
-  ) => Promise<void>;
+  ) => Promise<void | ValidationReceipt>;
   signal?: AbortSignal;
   lockTimeoutMs?: number;
   afterWrite?: (index: number) => Promise<void>;
@@ -391,7 +397,11 @@ export class Publisher {
       return await this.publishAttempt(input, options, attempt);
     } catch (error) {
       throw new PublicationFailure(
-        attempt.started || attempt.uncertainCleanup ? "unknown" : "unapplied",
+        attempt.started ||
+          attempt.uncertainCleanup ||
+          error instanceof CandidateCleanupUnknownError
+          ? "unknown"
+          : "unapplied",
         error,
         attempt.validation,
       );
@@ -468,7 +478,9 @@ export class Publisher {
       } catch (error) {
         this.traces.endSpan(
           span,
-          applying || name === "refresh"
+          applying ||
+            name === "refresh" ||
+            error instanceof CandidateCleanupUnknownError
             ? "unknown"
             : options.signal?.aborted
               ? "cancelled"
@@ -529,12 +541,22 @@ export class Publisher {
       );
       options.signal?.throwIfAborted();
       attempt.validation = true;
-      await step("validate", () =>
+      const validation = await step("validate", () =>
         options.validate(candidates, options.signal),
       );
+      journal.validation =
+        validation === undefined ? undefined : validateReceipt(validation);
       attempt.validation = false;
       options.signal?.throwIfAborted();
       await this.verify(journal);
+      for (const read of journal.validation?.reads ?? []) {
+        if (
+          (await snapshot(batch.source, read.path)).version !== read.version
+        ) {
+          throw new PublishError("STALE_VALIDATION_DEPENDENCY");
+        }
+      }
+
       journal.state = "applying";
       await durableJson(path.join(output, "journal.json"), journal);
       applying = true;
@@ -582,11 +604,12 @@ export class Publisher {
       };
     } catch (error) {
       reason = error instanceof PublishError ? error.code : "OPERATION_FAILED";
-      outcome = applying
-        ? "unknown"
-        : options.signal?.aborted
-          ? "cancelled"
-          : "error";
+      outcome =
+        applying || error instanceof CandidateCleanupUnknownError
+          ? "unknown"
+          : options.signal?.aborted
+            ? "cancelled"
+            : "error";
       if (journal && journal.state !== "complete") {
         journal.state = applying ? "unknown" : "aborted";
         await durableJson(path.join(output, "journal.json"), journal);
