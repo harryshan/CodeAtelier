@@ -1,5 +1,7 @@
 # 测试约定与功能覆盖
 
+Local 模型选择工具（D170）：`local-overlay-tool.test.ts` 验证默认工具表不暴露专属能力、有界严格参数及同批竞争选择拒绝。`local-overlay-service.test.ts` 通过真实 stdio Runtime 子进程和生产 Engine 验证模型选择、撤销、普通会话伪造调用拒绝及 trace 不含命令/路径；挂载边界仍为测试替身，不证明 WinFsp/OS Sandbox。IPC 回归额外验证认证不等于启用发布能力，旧 v17 拒绝。真实安装脚本 `overlay:verify-sandbox --commands` 改用模型工具，不再从脚本直接调用 Engine 绑定命令。
+
 Local 产品候选命令（D170）：`local-overlay-command-plan.test.ts` 覆盖有界计划、回执绑定、失败停止和缺失回执不重发；`local-overlay-command-runtime.test.ts` 使用真实子进程/IPC 验证顺序执行、取消排空、未知清理拒绝和启动失败不转宿主，该 stdio 夹具不作为 OS Sandbox 证明。`local-overlay-publication-queue.test.ts` 覆盖取消中间等待者不能越过当前发布、不同来源独立和失败释放；候选测试先复现正常验证超出残留锁短等待的失败，再验证同进程排队成功。`pnpm overlay:verify-sandbox --commands` 使用已安装专用账户 Runtime 与生产 Engine 内部命令入口，覆盖两会话并行、候选成功/失败/取消、来源冲突、重建 Engine 后私有内容保留；不进入默认 check 或 Evaluation。
 
 所有功能开发均须配套合理的单元/回归测试，测试和文档属于功能交付的一部分。不要等全部开发结束后才首次运行测试。
@@ -633,7 +635,7 @@ D155 移除了专用 Git diff 上限；CLI 输出沿用 process/core 的通用�
 ### Git 工具退役与命令兼容
 
 - `tests/tool-schema.test.ts` / `agent-runtime-tools.test.ts` 验证旧 Git 请求在开始执行前拒绝，不触发宿主 adapter 或输出。
-- `tests/runtime-ipc.test.ts` 验证 v17 拒绝 git_execute/git_push 与旧握手；Git CLI 通过通用两阶段 capability 授权，拒绝重用授权，取消只中止对应 handler。
+- `tests/runtime-ipc.test.ts` 验证 v18 拒绝 git_execute/git_push 与旧握手，并拒绝未启用的 Local 发布请求；Git CLI 通过通用两阶段 capability 授权，拒绝重用授权，取消只中止对应 handler。
 - `tests/model-tool-batch.test.ts` 验证两个命令工具中的 push 文本与独立节点可共存且保留显式依赖，不引入关键词特殊调度。
 - `tests/agent-runtime-engine.test.ts` 验证获批宿主 Git CLI 的真实状态/写入结果与启动后取消，记录 broker-command 而非旧 broker-git kind。
 - `tests/agent-runtime-engine.test.ts` 使用真实 Node 子进程验证取消时先收到 `runtime_complete`，随后 clean 关闭；即使 Runtime 已回报终态，只要原生清理返回 orphaned，任务也记为失败、执行实例保留 unknown。安装态脚本最终核对取消后无 unknown 和活动 generation lease。

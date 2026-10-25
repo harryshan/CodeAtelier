@@ -4,6 +4,7 @@
  *
  * 1. ModelToolCall 描述计划所需的模型字段，buildModelToolGraph 复用工具及历史读取参数校验，按任务开关验证 subagent 协调调用，再交给 createToolGraph 验证依赖。
  * 2. Git CLI 与其他命令一样只按显式 DAG 依赖调度，不识别命令文本或提供 push 专属独占。
+ *    一批最多一次 Local 发布选择，先于任何节点执行拒绝竞争选择；新响应可明确替换或撤销。
  * 3. serializeToolOutput 按原始 JSON 字符数截断模型反馈；只处理序列化，脱敏及报告消费判定仍留在入口。
  * 4. toolSucceeded 同时检查工具错误、平面及 Git 写入嵌套退出码和多文件 failed/unknown，供 DAG、日志和 tracing 使用同一结论。
  */
@@ -29,6 +30,10 @@ export function buildModelToolGraph(
   calls: ModelToolCall[],
   options: { subagentsEnabled?: boolean } = {},
 ) {
+  if (calls.filter((call) => call.name === "local_publish").length > 1) {
+    throw new Error("每个模型响应只能包含一次 Local 发布选择，避免并发覆盖。");
+  }
+
   const nodes = calls.map((call, ordinal) => {
     const raw = JSON.parse(call.arguments);
     if (call.name === "subagent" && !options.subagentsEnabled) {

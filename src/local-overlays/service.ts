@@ -5,8 +5,9 @@
  * 3. validate/projectWorkspace 不挂载，供 admission 和项目记忆使用；begin 才取得整个任务租约。
  * 4. lease.finish 在调用方排空后冻结续轮、回收、卸载并保存 ready；清理未知则隔离且保留锁。
  * 5. cancelCreation/close 与 Engine 关闭顺序配合；trace 只记录关联 ID、阶段/耗时/终态。
- * 6. select 把明确路径及可信候选验证器绑定当前任务；仅成功且已排空的任务在冻结收尾中发布，选择不跨轮继承。
- * 当前内部入口不开放 UI 创建/模型选择、不迁移旧历史；来源写入只由冻结租约内的协调器执行。
+ * 6. select 把明确路径及可信候选验证器绑定当前任务，null 撤销本轮选择；取消/错误任务身份不能更改选择。
+ *    仅成功且已排空的任务在冻结收尾中发布，选择不跨轮继承；模型入口由 Engine 转换，不能反序列化验证函数。
+ * 当前入口不开放 UI 创建、不迁移旧历史；来源写入只由冻结租约内的协调器执行。
  */
 import { randomUUID } from "node:crypto";
 import { mkdir, open, rename, unlink, realpath, lstat } from "node:fs/promises";
@@ -239,9 +240,11 @@ export class LocalOverlayService {
     workspace: string,
     sessionId: string,
     taskId: string,
-    input: PublicationSelection,
+    input: PublicationSelection | null,
+    signal?: AbortSignal,
   ) {
-    const selected = publicationSelection(input);
+    signal?.throwIfAborted();
+    const selected = input === null ? undefined : publicationSelection(input);
     const record = await this.validate(workspace, sessionId);
     const binding = record && this.tasks.get(record.id);
     if (
@@ -260,9 +263,13 @@ export class LocalOverlayService {
       record.id,
       "select",
       async () => {
+        signal?.throwIfAborted();
         binding.selection = selected;
 
-        return { selected: selected.paths.length, published: false };
+        return {
+          selected: selected?.paths.length ?? 0,
+          published: false as const,
+        };
       },
       taskId,
     );

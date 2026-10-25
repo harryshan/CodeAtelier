@@ -4,7 +4,7 @@
  * 2. publishFrozen 在 helper 租约内导出 B/O/读依赖，先持久 publishing 批次关联，再验证并发布。
  * 3. 仅已排空且未开始来源写入的拒绝返回 rejected；unknown 或完成后确认缺失抛出并保留恢复现场。
  * 4. 成功确认释放所选覆盖，未选内容继续私有；不选择全部 upper，不调用 Git，不自建验证执行权限。
- * 当前接口是内部接线边界；模型选择工具、候选工程 Sandbox 执行器和公开 UI 仍须另外接入。
+ * 当前接口是内部接线边界；模型选择由 Engine 转换为可信候选 Sandbox 验证器，公开创建 UI 尚未开放。
  */
 import type { Logger } from "pino";
 import { z } from "zod";

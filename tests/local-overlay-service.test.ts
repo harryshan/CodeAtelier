@@ -4,9 +4,11 @@
  * 2. 创建测试覆盖绑定重试、只读拒绝不污染、未知挂载保留和身份替换。
  * 3. 租约测试覆盖同视图互斥、不同视图并行、跨进程 active 拒绝及完成/失败/取消续轮。
  * 4. Engine 测试检查执行期间挂载、私有提示、来源记忆映射、排空后的冻结和 unknown 隔离。
+ * 5. 真实 stdio Runtime 子进程执行模型 local_publish，验证选定/撤销和普通任务拒绝；模拟模式不是 OS Sandbox 证据。
  * 假后端不证明文件系统隔离/ACL；真实 WinFsp 与 Sandbox 由手动 verifier 验证。
  */
 import { randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import pino from "pino";
@@ -19,8 +21,49 @@ import { Config } from "../src/config/config.js";
 import type { ModelProvider } from "../src/providers/model-provider.js";
 import { TestEngine, TestStore } from "./fixtures/managed-runtime.js";
 import { temp } from "./fixtures/helpers.js";
+import { createRuntimeChildClose } from "./fixtures/runtime-child-close.js";
+import { currentTestResources } from "./fixtures/test-resources.js";
+import type { AgentRuntimeLauncher } from "../src/sandbox/agent-runtime-launcher.js";
 
 const log = pino({ enabled: false });
+
+// Real child/IPC, simulated mode only. This cannot prove OS isolation or mount semantics.
+const protocolLauncher: AgentRuntimeLauncher = {
+  async launch(input) {
+    const child = spawn(
+      process.execPath,
+      [
+        "--import",
+        "tsx",
+        path.resolve("tests/fixtures/agent-runtime-service-child.ts"),
+      ],
+      {
+        cwd: process.cwd(),
+        stdio: ["pipe", "pipe", "pipe"],
+        env: {
+          ...process.env,
+          CODEATELIER_TEST_RUNTIME_DESCRIPTOR: JSON.stringify({
+            identity: input.identity,
+            nonce: input.nonce,
+          }),
+        },
+      },
+    );
+    child.stderr.resume();
+    const close = createRuntimeChildClose(child);
+    currentTestResources().defer(async () => {
+      await close();
+    });
+
+    return {
+      input: child.stdout,
+      output: child.stdin,
+      pid: child.pid!,
+      mode: "windows-sandbox-user",
+      close,
+    };
+  },
+};
 
 class FakeBackend implements LocalOverlayBackend {
   readonly mounted = new Set<string>();
@@ -505,3 +548,125 @@ it("Engine shutdown cancels and drains the model before closing its private view
     epoch: 1,
   });
 });
+
+it.each(["select", "clear", "unavailable"] as const)(
+  "routes model Local publication through the authenticated Runtime (%s)",
+  async (mode) => {
+    const f = await fixture();
+    const config = new Config(f.directory);
+    config.sandbox.enabled = true;
+    let calls = 0;
+    const provider: ModelProvider = {
+      async getCapabilities() {
+        return {
+          limits: {
+            max_context_window_tokens: 32_000,
+            max_output_tokens: 1_024,
+          },
+        };
+      },
+      async run(input, _instructions, tools) {
+        expect(tools.some((tool: any) => tool.name === "local_publish")).toBe(
+          mode !== "unavailable",
+        );
+        calls++;
+        if (calls === 1 || (mode === "clear" && calls === 2)) {
+          if (calls === 2) {
+            expect(JSON.stringify(input)).toContain('\\"published\\":false');
+          }
+
+          return {
+            text: "",
+            output: [
+              {
+                type: "function_call",
+                call_id: `selection-${calls}`,
+                name: "local_publish",
+                arguments: JSON.stringify({
+                  execution: { id: `selection-${calls}`, dependsOn: [] },
+                  arguments: {
+                    request:
+                      calls === 2
+                        ? { action: "clear" }
+                        : {
+                            action: "select",
+                            paths: ["a.ts"],
+                            commands: ["echo candidate"],
+                          },
+                  },
+                }),
+              },
+            ],
+          };
+        }
+
+        expect(JSON.stringify(input)).toContain(
+          mode === "unavailable" ? "未启用 Local" : '\\"published\\":false',
+        );
+
+        return {
+          text: "Selection handled; not a publication receipt.",
+          output: [],
+        };
+      },
+    };
+    const engine = new TestEngine(
+      f.store,
+      config,
+      log,
+      () => provider,
+      protocolLauncher,
+      undefined,
+      f.backend,
+    );
+    const session =
+      mode === "unavailable"
+        ? f.store.create(f.source, "ordinary Local")
+        : await engine.localOverlays.create(
+            { id: f.id, source: f.source },
+            f.bind,
+          );
+    const task = await engine.start(session.id, "select source changes");
+    await engine.active?.done;
+    expect(f.store.task(task.id)?.status).toBe("completed");
+    expect(f.backend.publications).toHaveLength(mode === "select" ? 1 : 0);
+    if (mode === "select") {
+      expect(f.backend.publications[0]?.paths).toEqual(["a.ts"]);
+    }
+
+    const events = f.store
+      .events(session.id)
+      .filter((event) => event.taskId === task.id);
+    const results = events.filter(
+      (event) =>
+        event.type === "tool_result" && event.data.name === "local_publish",
+    );
+    expect(results).toHaveLength(mode === "clear" ? 2 : 1);
+    expect(results[0]!.data.result).toMatchObject(
+      mode === "unavailable"
+        ? { error: expect.any(String) }
+        : { selected: 1, published: false },
+    );
+    if (mode === "clear") {
+      expect(results[1]!.data.result).toEqual({
+        selected: 0,
+        published: false,
+      });
+    }
+
+    const trace = JSON.parse((await engine.savedTrace(task))!);
+    const selectionSpans = trace.traceEvents.filter(
+      (event: any) => event.name === "tool.local_publish",
+    );
+    if (mode === "unavailable") {
+      expect(selectionSpans).toHaveLength(0);
+    } else {
+      expect(selectionSpans.length).toBeGreaterThan(0);
+    }
+
+    expect(JSON.stringify(selectionSpans)).not.toContain("echo candidate");
+    expect(JSON.stringify(selectionSpans)).not.toContain("a.ts");
+
+    await engine.close();
+  },
+);

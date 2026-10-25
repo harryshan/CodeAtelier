@@ -3,7 +3,7 @@
  * 内存流用例覆盖协议错误，独立 Node fixture 覆盖 model request/delta/response 跨进程，但不冒充 Windows Named Pipe 身份验收。
  *
  * 1. 双向 PassThrough peer 完成请求并拒绝未知响应、畸形 JSON 和超限半帧。
- * 2. 旧 Git 请求与 v16 握手均拒绝；RuntimeCapabilityClient（含 Git CLI） 先准备审批、再用连接内一次性授权执行，且授权不可重放。
+ * 2. 旧 Git 请求与 v16/v17 握手均拒绝；RuntimeCapabilityClient（含 Git CLI） 先准备审批、再用连接内一次性授权执行，且授权不可重放；未启用的 Local 发布即使已认证也拒绝。
  * 3. AbortSignal 发送 request_cancel，中止远端同 requestId handler；竞态迟到响应不会破坏后续请求。
  * 4. Runtime trace 与 session event 只接受固定类型；子消息/取消 span 不携带正文，Runtime 不能伪造 Broker execution/sandbox/终态事件。
  * 5. 子进程经继承 stdio 请求模型，Broker test adapter 流式回传 delta 和最终结果，进程正常退出。
@@ -21,7 +21,10 @@ import { RuntimeIpcBrokerSession } from "../src/sandbox/runtime-ipc-broker-sessi
 import { RuntimeBrokerGateway } from "../src/sandbox/runtime-capability-core.js";
 import { TraceRecorder } from "../src/tracing/recorder.js";
 import { connectAgentRuntime } from "../src/sandbox/agent-runtime-connection.js";
-import { RuntimeCapabilityClient } from "../src/sandbox/runtime-tool-adapters.js";
+import {
+  RuntimeCapabilityClient,
+  RuntimeLocalPublicationClient,
+} from "../src/sandbox/runtime-tool-adapters.js";
 import { runtimeIpcMessageSchema } from "../src/sandbox/runtime-ipc-protocol.js";
 
 function peers() {
@@ -66,7 +69,7 @@ it.each(["git_execute", "git_push"])(
   },
 );
 
-it("rejects the pre-removal Runtime protocol", () => {
+it("rejects Runtime protocols without task-bound Local publication", () => {
   const hello = {
     type: "runtime_hello",
     taskId: "task",
@@ -80,6 +83,10 @@ it("rejects the pre-removal Runtime protocol", () => {
   ).toBe(false);
   expect(
     runtimeIpcMessageSchema.safeParse({ ...hello, protocolVersion: 17 })
+      .success,
+  ).toBe(false);
+  expect(
+    runtimeIpcMessageSchema.safeParse({ ...hello, protocolVersion: 18 })
       .success,
   ).toBe(true);
 });
@@ -160,6 +167,7 @@ it("keeps an approved capability command inactive until its one-time authorizati
     new TraceRecorder(),
   );
   let executions = 0;
+  let selections = 0;
   new RuntimeIpcBrokerSession(
     { input: runtimeToBroker, output: brokerToRuntime },
     identity,
@@ -167,6 +175,11 @@ it("keeps an approved capability command inactive until its one-time authorizati
     gateway,
     {
       requestApproval: async () => ({ approved: true }),
+      selectLocalPublication: async () => {
+        selections++;
+
+        return { selected: 0, published: false };
+      },
       prepareCapabilityCommand: async () => async () => {
         executions++;
 
@@ -204,6 +217,14 @@ it("keeps an approved capability command inactive until its one-time authorizati
   );
 
   expect(executions).toBe(0);
+  await expect(
+    new RuntimeLocalPublicationClient(peer).select(
+      { action: "clear" },
+      "forged-selection",
+      AbortSignal.timeout(1000),
+    ),
+  ).rejects.toThrow("未启用");
+  expect(selections).toBe(0);
   await expect(execute()).resolves.toMatchObject({ output: "executed" });
   expect(executions).toBe(1);
   await expect(execute()).rejects.toBeInstanceOf(RuntimeIpcError);

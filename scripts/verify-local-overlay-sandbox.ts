@@ -6,8 +6,8 @@
  * 4. 取消正在运行的命令，再关闭/新建 Engine，自动按相同历史重挂载并续聊检查私有内容和租约。
  * 不替换 Runtime、Broker、ACL 或 IPC，不安装/Repair、不使用真实模型或用户仓库。
  * 5. --publish 使用可信内部选择和精确候选字节验证，成功轮次发布指定新文件；取消轮次选择不执行。
- * 6. --commands 使用 Engine 的产品命令计划/候选 Runtime：验证成功、非零退出、来源冲突及候选命令运行中取消。
- * 验证内部会话生命周期；候选 Sandbox 命令仅由 --commands 覆盖，没有公开创建/模型选择。失败现场保留。
+ * 6. --commands 由固定 provider 返回 local_publish 工具，经实际 Runtime IPC 绑定计划，再验证成功、非零退出、冲突和取消。
+ * 验证内部会话生命周期；候选 Sandbox 命令仅由 --commands 覆盖，没有公开创建入口。失败现场保留。
  */
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
@@ -117,45 +117,59 @@ function command(label: string) {
   ].join("; ");
 }
 
+function selectResponse(key: string, paths: string[], validation: string[]) {
+  return {
+    text: "",
+    output: [
+      {
+        type: "function_call" as const,
+        call_id: `${key}-select`,
+        name: "local_publish",
+        arguments: JSON.stringify({
+          execution: { id: `${key}-select`, dependsOn: [] },
+          arguments: {
+            request: { action: "select", paths, commands: validation },
+          },
+        }),
+      },
+    ],
+  };
+}
+
 const provider: ModelProvider = {
   async getCapabilities() {
     return {
       limits: { max_context_window_tokens: 64_000, max_output_tokens: 1_024 },
     };
   },
-  async run(input, instructions, _tools, signal) {
+  async run(input, instructions, tools, signal) {
     assert.match(instructions, /private Local overlay view/);
+    if (commands) {
+      assert(tools.some((tool: any) => tool.name === "local_publish"));
+    }
+
     const serialized = JSON.stringify(input);
     const label = serialized.includes("LOCAL_SESSION_A") ? "A" : "B";
     const key = `${phase}-${label}`;
     const count = calls.get(key) ?? 0;
     calls.set(key, count + 1);
     if (count === 0) {
-      if (publish && phase === "cancel") {
+      if (publish && phase === "cancel" && !commands) {
         const view = views.find((view) => view.label === label)!;
         const active = engine.activeTasks.find(
           (task) => task.sessionId === view.sessionId,
         )!;
-        if (commands) {
-          await engine.selectLocalPublication(active.id, {
+        await engine.localOverlays.select(
+          view.workspace,
+          active.sessionId,
+          active.id,
+          {
             paths: ["cancel-start.txt"],
-            commands: [
-              "Write-Output 'CANDIDATE_RUNNING'; Start-Sleep -Seconds 60; Set-Content -LiteralPath 'cancel-finished.txt' -Value 'unexpected'",
-            ],
-          });
-        } else {
-          await engine.localOverlays.select(
-            view.workspace,
-            active.sessionId,
-            active.id,
-            {
-              paths: ["cancel-start.txt"],
-              validate: async () => {
-                assert.fail("Cancelled task must not validate or publish");
-              },
+            validate: async () => {
+              assert.fail("Cancelled task must not validate or publish");
             },
-          );
-        }
+          },
+        );
       }
 
       if (phase === "parallel") {
@@ -193,6 +207,34 @@ const provider: ModelProvider = {
     }
 
     assert.match(serialized, /codeateliersandbox/i);
+    if (commands && count === 2) {
+      const feedback = (input as any[]).find(
+        (item) =>
+          item.type === "function_call_output" &&
+          item.call_id === `${key}-select`,
+      );
+      assert.ok(feedback, "Selection tool receipt missing");
+      assert.deepEqual(JSON.parse(feedback.output), {
+        selected: 1,
+        published: false,
+      });
+
+      return {
+        text: "Selection registered; publication still pending.",
+        output: [],
+      };
+    }
+
+    if (commands && phase === "cancel") {
+      return selectResponse(
+        key,
+        ["cancel-start.txt"],
+        [
+          "Write-Output 'CANDIDATE_RUNNING'; Start-Sleep -Seconds 60; Set-Content -LiteralPath 'cancel-finished.txt' -Value 'unexpected'",
+        ],
+      );
+    }
+
     if (phase === "parallel") {
       const match = new RegExp(`LOCAL_INTERVAL_${label}:(\\d+):(\\d+)`).exec(
         serialized,
@@ -205,13 +247,14 @@ const provider: ModelProvider = {
           (task) => task.sessionId === view.sessionId,
         )!;
         if (commands) {
-          await engine.selectLocalPublication(active.id, {
-            paths: [`source-${label}.txt`],
-            commands: [
+          return selectResponse(
+            key,
+            [`source-${label}.txt`],
+            [
               `whoami; if ((Get-Content -LiteralPath 'source-${label}.txt' -Raw).Trim() -ne 'published ${label}') { throw 'Wrong candidate' }; if ((Test-Path -LiteralPath 'runtime.txt') -or (Test-Path -LiteralPath '.git')) { throw 'Private content exposed' }; Set-Content -LiteralPath 'candidate-artifact.txt' -Value 'private'`,
               "if ((Get-Content -LiteralPath 'candidate-artifact.txt' -Raw).Trim() -ne 'private') { throw 'Plan ordering failed' }",
             ],
-          });
+          );
         } else {
           await engine.localOverlays.select(
             view.workspace,
@@ -242,10 +285,11 @@ const provider: ModelProvider = {
         (task) => task.sessionId === views[0]!.sessionId,
       )!;
       if (commands) {
-        await engine.selectLocalPublication(active.id, {
-          paths: [phase === "validation" ? "rejected.txt" : "source-A.txt"],
-          commands: ["exit 7", "throw 'Must not run after failure'"],
-        });
+        return selectResponse(
+          key,
+          [phase === "validation" ? "rejected.txt" : "source-A.txt"],
+          ["exit 7", "throw 'Must not run after failure'"],
+        );
       } else {
         await engine.localOverlays.select(
           views[0]!.workspace,
@@ -557,7 +601,9 @@ try {
     rejection: publish
       ? "candidate failure and source conflict preserved; both private results survived restart"
       : "not requested",
-    selection: "trusted internal caller; model tool not yet connected",
+    selection: commands
+      ? "model local_publish tool through authenticated Runtime IPC"
+      : "trusted internal caller",
     validation: commands
       ? "production Engine command plan and candidate Runtime; ordered success, exit rejection and cancellation"
       : publish
@@ -568,7 +614,7 @@ try {
     cleanup: "engine drained; helpers cleanly stopped",
     limitations: [
       "Not an OS security boundary between sessions",
-      "No public UI/API creation or model selection yet; command plans are bound by trusted test caller",
+      "No public UI/API creation yet; fixed provider, not a real model evaluation",
     ],
   };
   const file = path.join(root, "report.json");

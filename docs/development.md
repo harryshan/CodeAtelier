@@ -51,7 +51,7 @@ MCP 在设置页管理并保存到 `mcp.servers`；旧 `mcp.json` 仅由显式�
 
 `models.main.protocol` 可选 `responses`（默认）、`chat-completions`、`messages`。主任务、标题、摘要、审批和 Broker 模型代理共用协议工厂；辅助连接在设置页独立配置，或显式继承主连接。跨端点或协议不继承主密钥。完整示例与限制见 [模型协议](model-protocols.md)。
 
-新增两种协议首批仅提供文字流、本地函数调用与 usage；不发送思考参数、不声明内置搜索。UI 显示所选协议并禁用不适用的思考选项。不自动改写旧历史或猜测模型容量；不能安全转换的不透明历史会明确拒绝。Runtime IPC v17，安装式 Sandbox 须重建并 Repair。
+新增两种协议首批仅提供文字流、本地函数调用与 usage；不发送思考参数、不声明内置搜索。UI 显示所选协议并禁用不适用的思考选项。不自动改写旧历史或猜测模型容量；不能安全转换的不透明历史会明确拒绝。Runtime IPC v18，安装式 Sandbox 须重建并 Repair。
 
 ### 配置来源与优先级
 
@@ -131,7 +131,7 @@ tracing 默认启用：每个实际开始的任务在当前服务进程内生成
 
 这些槽位表示并发操作而不是 Node 物理线程，人工审批耗时不会显示为 worker 占用。`read_file` 的路径授权与解析发生在执行槽取得之前，包含在 tool.prepare 中；取得槽位后，文件检查（`read_file.stat`）、异步字节读取（`read_file.bytes`）和读完后直接计算（`read_file.compute`）阶段在调用对应的 `Tool worker`（Agent Runtime 路径为可复用的 `Agent Runtime tool 1`～`4`）逻辑槽位中记录，并通过 `parentSpanId` 关联 `tool.read_file`。这些工具轨道是逻辑并发槽，不是物理线程。哈希与行扫描直接在工具所在进程的执行线程计算，`computeMs` 表示同步计算的墙钟耗时；不再有读取 Worker 启动、排队、消息传输或池关闭。计算前后检查取消，正在进行的同步扫描不支持中途抢占。
 
-阶段仅附 callId、有界字节数及计时，不保存路径或内容；Runtime IPC v17 的 trace span 必须携带单调时间戳（旧版本拒绝握手），固定白名单上报这些阶段及取得执行槽后的工具执行边界；Broker 校验任务时间窗、以已验证 Runtime PID 分组、按槽号分配复用轨道、从已保存的 tool_start 提取参数，统一导出落盘。Runtime 的 `Agent Runtime` 主轨道展示上下文；`tool_start` 到取得执行槽之间是排队/准备时间，不冒充实际执行；尚未开放的 subagent `await` 在槽位之前等待，不把事后取得槽位误记为工具执行。获批 Broker 命令仍在 Broker 的宿主执行轨道记录，Runtime 工具片段表示等待其结果，不能称为在 Sandbox 内执行命令。普通实际 tool span 的 `args.parameters` 保存传给执行器的完整结构化参数（run_with_permissions、Skill、MCP、项目记忆和 subagent 不记录正文参数），递归遮盖 API key、access/refresh/session token、client secret、private/secret key、password、authorization、cookie 等凭据字段（包括非字符串值）；文本同时处理带引号的赋值、长命令选项、认证头及已知密钥；因此 trace 文件可能含命令、路径和编辑文本，必须按敏感本机诊断数据保护，不能上传或提交。
+阶段仅附 callId、有界字节数及计时，不保存路径或内容；Runtime IPC v18 的 trace span 必须携带单调时间戳（旧版本拒绝握手），固定白名单上报这些阶段及取得执行槽后的工具执行边界；Broker 校验任务时间窗、以已验证 Runtime PID 分组、按槽号分配复用轨道、从已保存的 tool_start 提取参数，统一导出落盘。Runtime 的 `Agent Runtime` 主轨道展示上下文；`tool_start` 到取得执行槽之间是排队/准备时间，不冒充实际执行；尚未开放的 subagent `await` 在槽位之前等待，不把事后取得槽位误记为工具执行。获批 Broker 命令仍在 Broker 的宿主执行轨道记录，Runtime 工具片段表示等待其结果，不能称为在 Sandbox 内执行命令。普通实际 tool span 的 `args.parameters` 保存传给执行器的完整结构化参数（run_with_permissions、Skill、MCP、项目记忆、local_publish 和 subagent 不记录正文参数），递归遮盖 API key、access/refresh/session token、client secret、private/secret key、password、authorization、cookie 等凭据字段（包括非字符串值）；文本同时处理带引号的赋值、长命令选项、认证头及已知密钥；因此 trace 文件可能含命令、路径和编辑文本，必须按敏感本机诊断数据保护，不能上传或提交。
 
 导出格式 v2 统一使用进程内唯一 `id2.local` 的异步 `b/e`，不再用同步 `B/E` 栈或 `X` 表达可交叉生命周期；普通同刻区间先结束再开始，零时长区间先开始再结束。Perfetto 按进程和操作名称分组、复用异步展示轨道，原逻辑槽位保留于 `tid`/`args.logicalTrack`，父关系保留于 `args.parentSpanId`，不承诺按槽位嵌套显示，也不表示 CPU 占用。模型到工具的 flow 使用同名同分类的异步 `n` 端点和整数 `bind_id`，关系名在 `args.flowName`，支持跨进程及一对多连接。旧归档保持原样，不重写。
 
@@ -435,4 +435,4 @@ Web 侧栏的“关闭服务”需确认。`POST /api/server/shutdown` 接受 `{
 
 旧 `git` 调用、git_output、action-specific 结果和执行实例仍可在历史、压缩与恢复上下文中读取；不改写或迁移数据库。新 `git` 请求（扁平、request 包装或调度信封）均拒绝，不自动转译为 CLI。通用命令结果是 output/exitCode/truncated，不再返回 add/stage/commit 嵌套结果。
 
-Runtime IPC v17 移除 git_execute/git_push，拒绝旧版本握手；安装式 Windows Sandbox 需按指南显式重建 Runtime 并 Repair，POSIX 随应用重建。不会自动停服或维护真实安装。
+Runtime IPC v18 增加任务绑定 Local 发布选择能力并继续拒绝 git_execute/git_push，拒绝旧版本握手；安装式 Windows Sandbox 需按指南显式重建 Runtime 并 Repair，POSIX 随应用重建。不会自动停服或维护真实安装。

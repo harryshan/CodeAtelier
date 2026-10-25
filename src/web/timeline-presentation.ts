@@ -22,6 +22,7 @@ const toolLabels: Record<string, string> = {
   git_push: "Git 推送（旧记录）",
   mcp: "MCP 服务",
   skill: "技能参考",
+  local_publish: "选择发布变更",
   memory_apply: "项目记忆",
   read_context_history: "读取归档上下文",
 };

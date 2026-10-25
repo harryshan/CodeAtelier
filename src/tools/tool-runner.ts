@@ -7,6 +7,7 @@
  * 3. execute 先通过 parseToolArguments 校验当前工具参数。统一的精确编辑和显式新建文件均分流给共享读取哈希的 FileEditor，已有文件成功编辑后会作废对应哈希；Git CLI 与其他命令共用执行路径，越界命令经 run_with_permissions adapter 审批后在宿主执行。
  *    run_command 与 run_with_permissions 均不按 Git 关键词过滤；后者仍先完成 Broker 审批准备，再通知执行开始并消费授权。
  *    Skill 通过 skillExecute 读取 Broker 固定目录，不在 Runtime 扫描宿主文件或执行脚本。
+ *    Local 发布选择仅在显式能力与 Runtime 边界同时存在时转交任务绑定 adapter，forCall 保留实际调用 ID。
  *    MCP 先经 prepareMcp 在 Broker 审批，再取得执行槽消费单次授权；ToolRunner 从不读取 MCP 配置或创建连接。
  *    本地进程不设固定总时限，execute 为当前调用绑定 reviewTool；forCall 隔离状态/输出，进程执行器每五分钟复查，Broker 操作由 Broker 自己监视。
  *    Broker 可通过 commandEnvironment 为已验证的 overlay 子进程附加精确 Git 信任；不修改全局配置，不在 Runtime 内探测宿主挂载。
@@ -61,6 +62,13 @@ const ignored = new Set([
 ]);
 
 export interface ToolContext {
+  localPublication?: (
+    request: import("../local-overlays/tool-contract.js").LocalPublicationRequest,
+    signal: AbortSignal,
+    toolCallId?: string,
+  ) => Promise<
+    import("../local-overlays/tool-contract.js").LocalPublicationResult
+  >;
   root: string;
   /** Broker validates a managed mount before constructing child-only Git trust. */
   commandEnvironment?: () => Promise<NodeJS.ProcessEnv>;
@@ -146,6 +154,7 @@ export class ToolRunner {
    * 子实例共享本任务读取哈希；已有文件成功编辑后，FileEditor 会作废其凭证，后继 edit_files 必须先重新读取。
    */
   forCall(callId: string) {
+    const parentLocalPublication = this.ctx.localPublication;
     const parentSkillExecute = this.ctx.skillExecute;
     const parentPrepareMcp = this.ctx.prepareMcp;
     const parentPrepareRunWithPermissions = this.ctx.prepareRunWithPermissions;
@@ -154,6 +163,9 @@ export class ToolRunner {
       {
         ...this.ctx,
         toolCallId: callId,
+        localPublication: parentLocalPublication
+          ? (request, signal) => parentLocalPublication(request, signal, callId)
+          : undefined,
         sandbox: this.sandbox,
         skillExecute: parentSkillExecute
           ? (request, signal) => parentSkillExecute(request, signal, callId)
@@ -549,6 +561,19 @@ export class ToolRunner {
       executionStart ??= onExecutionStart?.() ?? Promise.resolve();
       await executionStart;
     };
+
+    if (name === "local_publish") {
+      if (
+        this.ctx.executionBoundary !== "agent-runtime" ||
+        !this.ctx.localPublication
+      ) {
+        throw new Error("当前任务未启用 Local overlay 发布选择。");
+      }
+
+      await startExecution();
+
+      return this.ctx.localPublication(args.request, this.ctx.signal);
+    }
 
     if (name === "skill") {
       if (!this.ctx.skillExecute) {

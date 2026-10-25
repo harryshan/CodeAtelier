@@ -12,6 +12,7 @@
  *
  * Git 没有专属调度或隐式转发。越界命令先经 IPC 审批取得一次性授权，获得 worker 槽后由 Broker 启动，因而可与无依赖的普通工具正确并行。context/tool/model tracing 经固定 schema 回到 Broker。
  * 工具异步上下文安装固定进程 observer，取消/终止/直子退出经白名单 IPC 回传；持久化阶段携带 callId。
+ * Broker 显式启用 Local 发布选择时追加主模型工具及任务绑定 adapter；普通任务、候选 Runtime 和只读子任务不继承此能力。
  */
 
 import { SessionTokenCalibration } from "../context/session-token-calibration.js";
@@ -33,7 +34,11 @@ import {
   type SubagentAction,
 } from "../agent/subagent-contracts.js";
 import { RuntimeSubagentClient } from "./runtime-subagent-client.js";
-import { runtimeDefinitions, webSearchTool } from "../tools/registry.js";
+import {
+  runtimeDefinitions,
+  webSearchTool,
+  localPublicationDefinition,
+} from "../tools/registry.js";
 import { createToolReviewer } from "../agent/tool-review.js";
 import { executeToolGraph, type ToolGraphNode } from "../tools/tool-graph.js";
 import { ToolRunner } from "../tools/tool-runner.js";
@@ -60,6 +65,7 @@ import {
   RuntimeMemoryClient,
   RuntimeMcpClient,
   RuntimeSkillClient,
+  RuntimeLocalPublicationClient,
 } from "./runtime-tool-adapters.js";
 import { withProcessObserver } from "../tracing/process-observer.js";
 import { withTraceCall } from "../tracing/context.js";
@@ -68,6 +74,7 @@ import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 
 interface StartTaskInput {
+  localPublicationEnabled?: boolean;
   workspace: string;
   prompt: string;
   settings: RuntimeTaskSettings;
@@ -240,6 +247,7 @@ export class AgentRuntimeService {
       const capability = new RuntimeCapabilityClient(this.peer);
       const mcp = new RuntimeMcpClient(this.peer);
       const skills = new RuntimeSkillClient(this.peer);
+      const publication = new RuntimeLocalPublicationClient(this.peer);
       const runner = new ToolRunner({
         root: input.workspace,
         sessionId: this.identity.sessionId,
@@ -259,6 +267,15 @@ export class AgentRuntimeService {
         }),
         approvals: new RuntimeApprovalClient(this.peer),
         memory: new RuntimeMemoryClient(this.peer, signal),
+        localPublication: input.localPublicationEnabled
+          ? (request, requestSignal, toolCallId) => {
+              if (!toolCallId) {
+                throw new Error("Local 发布选择缺少工具调用标识。");
+              }
+
+              return publication.select(request, toolCallId, requestSignal);
+            }
+          : undefined,
         skillExecute: (request, requestSignal, toolCallId) => {
           if (!toolCallId) {
             throw new Error("Skill 请求缺少工具调用标识。");
@@ -287,6 +304,7 @@ export class AgentRuntimeService {
       // 只声明 Broker 确认可用的原生搜索；新协议不能误收到 Responses 内置工具。
       const tools = [
         ...runtimeDefinitions,
+        ...(input.localPublicationEnabled ? [localPublicationDefinition] : []),
         ...(input.settings.webSearchEnabled !== false ? [webSearchTool] : []),
         historyDefinition,
         ...(input.settings.subagentsEnabled ? [subagentToolDefinition] : []),

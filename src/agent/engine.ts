@@ -16,6 +16,7 @@
  * 7. Agent Runtime 取消先经 IPC 等待 runtime_complete/stopping，再关闭原生 transport；清理未知优先于取消。终态保留已验证进程身份；Broker 校验 Runtime trace 时间戳，按该进程的执行槽组织片段、从已保存工具调用附加脱敏参数并统一归档，在结果持久化前按对应执行片段补齐耗时；子任务由 Broker 核对身份与原子保存问题回执，退出先停子线程再归档。
  * 8. LocalOverlayService 独立管理私有视图：admission 不挂载，run 持租约挂载，Runtime/子任务/工具排空后冻结续轮和卸载；成功轮次可发布内部显式选择并经候选验证的文件，拒绝保留私有修改，unknown 隔离。
  *    selectLocalPublication 把明确路径/命令绑定当前任务，收尾通过独立候选 Runtime 执行固定计划并保存回执，不调用主模型或允许宿主 fallback。
+ *    local_publish 经认证 Runtime 主任务与已记录工具参数双重核对，只选定或撤销本轮计划，命令/路径不进入 trace。
  * 9. run 的终态持久化与 trace 收尾分开保护；写库失败仍尝试归档失败 trace，导出/归档故障只记警告，最外层 finally 释放 trace 内存和任务级 Sandbox 状态。
  *
  * 模型请求可以重试，但已经执行的工具不能跟着重跑。数据库回滚也撤销不了文件修改或
@@ -28,6 +29,10 @@ import path from "node:path";
 import { CandidateValidator } from "../local-overlays/candidate-validator.js";
 import { runCandidateCommands } from "../local-overlays/command-runtime.js";
 import { validationCommands } from "../local-overlays/command-plan.js";
+import {
+  localPublicationRequestSchema,
+  type LocalPublicationRequest,
+} from "../local-overlays/tool-contract.js";
 import { McpTaskClient } from "../mcp/task-client.js";
 import { mcpCatalogInstructions } from "../mcp/catalog.js";
 import type { McpAction } from "../mcp/contracts.js";
@@ -226,7 +231,9 @@ export class Engine {
   async selectLocalPublication(
     taskId: string,
     input: { paths: readonly string[]; commands: readonly string[] },
+    signal?: AbortSignal,
   ) {
+    signal?.throwIfAborted();
     const active = this.activeByTaskId.get(taskId);
     if (!active || !this.config.sandbox.enabled || !this.agentRuntimeLauncher) {
       throw new Error(
@@ -282,6 +289,7 @@ export class Engine {
           );
         },
       },
+      signal,
     );
     this.emit(active.task, "local_validation_plan", {
       commands,
@@ -290,6 +298,39 @@ export class Engine {
     await this.drainEvents(taskId);
 
     return selected;
+  }
+
+  /** 模型请求只能作用于认证连接对应的当前任务；clear 不触碰私有文件或来源。 */
+  private async localPublication(
+    taskId: string,
+    raw: LocalPublicationRequest,
+    signal: AbortSignal,
+  ) {
+    const request = localPublicationRequestSchema.parse(raw);
+    signal.throwIfAborted();
+    if (request.action === "select") {
+      return this.selectLocalPublication(taskId, request, signal);
+    }
+
+    const active = this.activeByTaskId.get(taskId);
+    if (!active) {
+      throw new Error("Local 发布选择已不属于活动任务。");
+    }
+
+    const result = await this.localOverlays.select(
+      active.workspace,
+      active.task.sessionId,
+      taskId,
+      null,
+      signal,
+    );
+    this.emit(active.task, "local_validation_plan", {
+      selected: 0,
+      cleared: true,
+    });
+    await this.drainEvents(taskId);
+
+    return result;
   }
 
   /** 主模型独立审视在途工具；不追加未完成的 function_call_output，也不计为主循环轮次。 */
@@ -1662,6 +1703,7 @@ export class Engine {
                         execution:
                           tool!.name === "run_with_permissions" ||
                           tool!.name === "mcp" ||
+                          tool!.name === "local_publish" ||
                           tool!.name === "skill"
                             ? "broker-host-wait"
                             : "runtime",
@@ -1669,6 +1711,7 @@ export class Engine {
                           // 宿主命令和审批理由只留会话记录，不进入 Runtime 等待片段。
                           tool!.name === "run_with_permissions" ||
                           tool!.name === "memory_apply" ||
+                          tool!.name === "local_publish" ||
                           tool!.name === "mcp" ||
                           tool!.name === "skill" ||
                           tool!.name === "subagent"
@@ -1717,6 +1760,24 @@ export class Engine {
           },
           executeSkill: (_runtime, request, toolCallId, requestSignal) =>
             skills.execute(request, requestSignal, toolCallId),
+          selectLocalPublication: async (
+            _runtime,
+            request,
+            toolCallId,
+            requestSignal,
+          ) => {
+            const offered = runtimeToolCalls.get(toolCallId);
+            const args = offered?.args as { request?: unknown } | undefined;
+            if (
+              !(await this.localOverlays.validate(workspace, task.sessionId)) ||
+              offered?.name !== "local_publish" ||
+              JSON.stringify(args?.request) !== JSON.stringify(request)
+            ) {
+              throw new Error("Local 发布选择与当前工具调用不匹配。");
+            }
+
+            return this.localPublication(task.id, request, requestSignal);
+          },
           prepareMcp: (_runtime, request, toolCallId, requestSignal) =>
             this.prepareMcp(
               task,
@@ -1884,6 +1945,7 @@ export class Engine {
         const taskRequest = currentBroker.startTask(
           {
             workspace,
+            localPublicationEnabled: !!localOverlay,
             prompt,
             settings: {
               model: settings.model,
@@ -3322,6 +3384,7 @@ export class Engine {
                           parameters:
                             node.name === "run_with_permissions" ||
                             node.name === "memory_apply" ||
+                            node.name === "local_publish" ||
                             node.name === "subagent" ||
                             node.name === "mcp" ||
                             node.name === "skill"

@@ -1,5 +1,14 @@
 # 初版验证记录
 
+## Local 模型发布选择与 IPC v18（D170，2026-10-26）
+
+- 新增 `local_publish` 主任务工具，支持完整替换本轮选择及 clear；回执明确 `published:false`，不会在工具调用时写来源。普通 Local/Worktree、宿主 fallback、候选 Runtime 与只读子任务不声明能力。Broker 要求可信启用标志和已记录的当前调用 ID/参数，仍使用原任务绑定的候选验证与发布链路；同响应多个选择在执行前拒绝。
+- IPC 升至 v18，新增 `local_publication` 固定请求及 start_task 能力标志。v16/v17 拒绝，不能丢弃新字段后执行。只读核对本机受保护的安装 Runtime 仍为 v17；本轮尚未执行 Repair，不能把源码/stdio 回归描述为安装态通过。`overlay:verify-sandbox --commands` 已改为固定 provider 返回真正工具调用；新安装态的完整链路仍须显式升级后运行，既有 v17 报告仅证明上轮内部调用版本。
+- 初轮模型/任务/协议定向 50 项通过（`.local/local-tool-unit.log`）。扩展 trace 回归发现“未启用”请求在执行前拒绝、没有执行 span，修正夹具为明确断言零个执行 span；成功选择/clear 仍要求有 span 且无路径或命令正文，不放宽产品检查。
+- 最终 `pnpm check` 通过：147 个测试文件、1161 passed / 1 existing skipped，类型/lint/格式及 Web/Windows/POSIX Runtime 构建通过（`.local/local-tool-check-final.log`）。Windows bundle 三个产物 SHA-256 与 manifest 一致，入口确认为 IPC v18；本机安装仍为 v17。只读进程核对没有遗留 overlay helper/Sandbox supervisor，当前令牌非管理员。
+- `pnpm test:e2e` 71 项通过（`.local/local-tool-e2e.log`），覆盖现有 Web/HTTP/SSE 与工具历史展示兼容；不等于尚未开放的 Local 创建/发布 UI 或真实 v18 Sandbox 验收。
+- 公开创建/状态与冲突恢复 UI、宿主候选执行、异常私有卷恢复、POSIX 和大工程成本仍未完成；不切换默认模式或迁移旧历史，不运行 Evaluation。
+
 ## Local 产品候选 Runtime 与发布排队（D170，2026-10-26）
 
 - Engine 内部 `selectLocalPublication` 绑定当前活动任务的源码选择和最多八条命令。固定计划沿用既有 Runtime IPC，使用原任务身份和新的候选 execution instance；不调用真实模型、不改主模型上下文，不开放权限扩展或宿主 fallback。候选事件持久化并关联 trace；停止回执和平台 clean 均确认后才使用退出码，未知保留现场。

@@ -8,10 +8,12 @@
  * 3. runtimeEventSchema 承载模型 delta、取消、Runtime 生命周期以及固定 context/tool/read_file/subagent trace span；微秒时间戳由 Runtime 单调时钟提供，Broker 核验后归档，名称与属性不是任意日志通道。
  * 4. hello schema 绑定协议版本、任务和 instance；其中 Runtime 自报字段只用于一致性核对，不能替代 transport 身份。
  * 5. 子任务计划、问题、检查点和报告不加专属容量阈值；统一的帧大小与背压限制仍由 IPC transport 执行。
- * v17 移除 Git 专用请求；保留网页搜索能力标志、工具结果原子提交与 process 阶段白名单，不传模型凭据或扩大权限。
+ * v18 在 v17 移除 Git 专用请求的基础上增加 local_publication 和主任务启用标志；请求无 workspace/session/task 可覆盖字段。
+ * 保留网页搜索能力标志、工具结果原子提交与 process 阶段白名单，不传模型凭据或扩大权限。
  */
 
 import { z } from "zod";
+import { localPublicationRequestSchema } from "../local-overlays/tool-contract.js";
 import { tokenAnchorSchema } from "../context/token-anchor.js";
 import { skillActionSchema } from "../skills/contracts.js";
 import { mcpActionSchema } from "../mcp/contracts.js";
@@ -19,8 +21,8 @@ import { capabilityCommandRequestSchema } from "./capability-request.js";
 import { contextSnapshotSchema } from "../context/types.js";
 import { subtaskSchema } from "../agent/subagent-contracts.js";
 
-// v17 拒绝仍暴露 Git 专用工具的旧 Runtime；须重建并更新安装，不能静默降级协议。
-export const RUNTIME_IPC_PROTOCOL_VERSION = 17;
+// v18 增加任务绑定 Local 发布选择；旧 Runtime 须显式更新，不允许丢弃能力字段后执行。
+export const RUNTIME_IPC_PROTOCOL_VERSION = 18;
 export const MAX_RUNTIME_IPC_FRAME_BYTES = 8 * 1024 * 1024;
 
 const identifier = z.string().min(1).max(120);
@@ -209,6 +211,7 @@ export const runtimeRequestSchema = z.discriminatedUnion("operation", [
         .object({
           workspace: z.string().min(1).max(32_767),
           prompt: boundedText,
+          localPublicationEnabled: z.boolean().optional(),
           settings: runtimeTaskSettingsSchema,
           // 256 项 × 160 字符标题，覆盖最坏六倍 JSON 转义、UUID 和固定说明；不裁剪目录。
           memoryText: z.string().max(300_000).optional(),
@@ -267,6 +270,18 @@ export const runtimeRequestSchema = z.discriminatedUnion("operation", [
           description: z.string().min(1).max(32_000),
           grantKey: z.string().min(1).max(64_000).optional(),
           toolCallId: identifier.optional(),
+        })
+        .strict(),
+    })
+    .strict(),
+  z
+    .object({
+      ...requestBase,
+      operation: z.literal("local_publication"),
+      body: z
+        .object({
+          toolCallId: identifier,
+          request: localPublicationRequestSchema,
         })
         .strict(),
     })

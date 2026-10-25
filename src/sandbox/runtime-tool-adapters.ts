@@ -10,6 +10,7 @@
  * 5. RuntimeMcpClient 仅提交服务别名/操作，由 Broker 审批后消费一次性授权；连接配置和凭据不经过 Runtime。
  * 6. RuntimeCapabilityClient 先发送命令、理由和 toolCallId 完成 Broker 审批；调用方取得
  *    Tool worker 槽后才用一次性 authorizationId 启动 Broker 宿主命令，审批等待不会占用执行槽。
+ * 7. RuntimeLocalPublicationClient 仅提交选定路径/命令或 clear 及 callId，路由身份与可用性由 Broker 决定。
  */
 
 import type { SkillAction, SkillResult } from "../skills/contracts.js";
@@ -17,6 +18,10 @@ import type { McpAction, McpResult } from "../mcp/contracts.js";
 import type { Approval } from "../shared/types.js";
 import { currentTraceCallId } from "../tracing/context.js";
 import type { RuntimeIpcPeer } from "./runtime-ipc-peer.js";
+import type {
+  LocalPublicationRequest,
+  LocalPublicationResult,
+} from "../local-overlays/tool-contract.js";
 import {
   capabilityCommandResultSchema,
   type CapabilityCommandRequest,
@@ -56,6 +61,22 @@ export class RuntimeMemoryClient {
     request: unknown,
   ) {
     return this.peer.request("memory_apply", { request }, this.signal);
+  }
+}
+
+export class RuntimeLocalPublicationClient {
+  constructor(private peer: RuntimeIpcPeer) {}
+
+  async select(
+    request: LocalPublicationRequest,
+    toolCallId: string,
+    signal: AbortSignal,
+  ) {
+    return this.peer.request(
+      "local_publication",
+      { toolCallId, request },
+      signal,
+    ) as Promise<LocalPublicationResult>;
   }
 }
 
