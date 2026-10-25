@@ -10,6 +10,7 @@
 - 替代关系：撤回把 D169 Git 提交虚拟 worktree 作为此需求后续方向的假设；D168 的 WinFsp 文件后端可复用，但其 linked Git metadata 不是新方案要求。旧实现、会话和验证记录保留，不宣称已迁移。
 - 设计建议：实时文件 lower、会话私有 upper、按需编辑基线与来源级串行发布；三方文件整合独立于 Git，必须区分写隔离、读一致性、外部写入和多文件故障恢复。发布时机、共享管理目录/Git CLI 的处理及产品默认入口尚待确定，详见 [Local overlay 重新设计](local-overlay-design.md)。
 - 第一阶段验证：普通目录上的按需基线、文本三方整合、跨进程串行发布及进程中断后只读观察；真实双进程与故障脚本为 `pnpm overlay:verify-publish`。不接入 WinFsp、任意 shell 或 Sandbox，不将通过此实验描述为产品并行会话可用。
+- 后续授权：用户要求继续接入文件系统，并先复核 Riftri/WinFsp 及现成替代方案。选型复核后，新 Local overlay 不依赖 Riftri/Git 管理，Windows 首先复用既有 WinFsp 原生文件后端；POSIX 通用 union 后端单独验收。首个挂载/发布实验只处理预先声明基线的路径，不宣称原生自动变更捕获或 Sandbox 联动已完成；候选源码证据与边界见 [选型复核](local-overlay-design.md#文件系统接入前选型复核2026-10-25)。
 
 ## D169：基于 Git 提交的虚拟 worktree PoC
 

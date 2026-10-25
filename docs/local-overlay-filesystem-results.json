@@ -1,0 +1,30 @@
+{
+  "timestamp": "2026-10-25T13:29:03.235Z",
+  "platform": "win32",
+  "release": "10.0.26200",
+  "node": "v26.10.0",
+  "backend": "existing native WinFsp live-directory overlay",
+  "gitOperations": 0,
+  "riftriInvocations": 0,
+  "mounts": 2,
+  "initialPrivateContentObjects": 0,
+  "privateProgramResults": [
+    "12",
+    "21"
+  ],
+  "mergedCandidateResults": [
+    "12",
+    "30"
+  ],
+  "sourceProgramResult": "30",
+  "liveLowerReads": "passed",
+  "unselectedArtifactsPublished": false,
+  "cleanRemount": "passed; private contents retained, no automatic rebase",
+  "cleanup": "clean helper exits confirmed",
+  "limitations": [
+    "Explicit module.mjs baseline only; no native changeset export or arbitrary shell dependency capture",
+    "Host Node processes; no Sandbox validation in this experiment",
+    "No large-repository benchmark or creation traversal counter",
+    "Publisher still has phase-one ACL and external-writer race limitations"
+  ]
+}

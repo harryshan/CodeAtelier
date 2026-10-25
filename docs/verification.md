@@ -1,5 +1,13 @@
 # 初版验证记录
 
+## Local overlay 文件系统选型与 WinFsp 衔接（D170，2026-10-25）
+
+- 复核本地 live WinFsp、Riftri 接入，以及现成 unionfs/AgentFS 候选；公开源码按固定提交检查 ContextFS、Turso AgentFS 和 OmniVFS 的 Windows 路径。结论及源码链接见 [选型复核](local-overlay-design.md#文件系统接入前选型复核2026-10-25)。这是源码/文档核查，不是第三方项目运行验收；AgentHarborFS 文档可读但所指公开仓库返回 404，未确认其许可和独立接入。WSL 探测有 FUSE 设备，但未安装 unionfs/fuse-overlayfs，没有将未执行的 POSIX 实验写成通过。
+- `pnpm overlay:verify-filesystem` 在本机 Windows 11 / Node 26.10.0 通过：`.local/local-overlay-winfsp-1oV3ae/report.json` / `.local/local-overlay-winfsp.log`。未执行 Git/Riftri、未调用 `WorktreeService`，直接创建两个原生 WinFsp 普通目录视图。创建后各有零个私有内容对象；真实 Node 临时文件替换编辑得到独立 `12`/`21`，来源保持原文，未修改路径可读来源更新。
+- 显式声明路径/基线后，把私有文件交给 Publisher，候选在真实挂载内语法检查和执行，最终来源输出 `30`；未选择的产物不发布。干净卸载/重挂载保留旧私有内容和产物，不自动 rebase。最终卸载收到成功收据并确认 helper 退出。可提交摘要见 [JSON](local-overlay-filesystem-results.json)。
+- 最终 `pnpm check` 通过：135 个测试文件、1015 passed / 1 existing skipped，类型、lint、格式和构建通过（`.local/local-overlay-fs-check.log`），构建仍有既有 Zod 注释/大 chunk 提示。收尾只读检查没有本次夹具的 overlay helper 残留。
+- 这是宿主文件系统与发布器的最小衔接，不是任意 shell 自动导出、Sandbox、原生 ACL 发布保真、巨型 repo 性能或产品入口验收。未修改生产源码、驱动/安装态、服务设置或历史会话；未运行 Evaluation 或浏览器验收。
+
 ## Local overlay 文件发布 PoC（D170，2026-10-25）
 
 - 第一阶段只验证普通目录上的受控读/编辑/发布，不创建 Git repo、worktree 或索引，也不接入 WinFsp/Sandbox/产品入口。实现和可重跑命令见 [Local overlay 设计](local-overlay-design.md#第一阶段-poc受控编辑与发布)，摘要见 [JSON 报告](local-overlay-poc-results.json)。

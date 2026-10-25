@@ -1,6 +1,6 @@
 # Local 会话文件隔离与发布：重新定界
 
-状态：2026-10-25 用户重新澄清目标（D170），随后授权继续验证。Overlay 与 Git worktree 完全并列，服务于同一 Local 工作区多个对话的文件修改隔离与冲突整合，不负责 Git 工作区管理。受控文件发布的第一阶段 PoC 已实现，证据见本文末节；产品发布时机、Git CLI 限制和恢复操作尚未实施，不改变现有服务或历史会话。
+状态：2026-10-25 用户重新澄清目标（D170），随后授权继续验证并接入文件系统。Overlay 与 Git worktree 完全并列，服务于同一 Local 工作区多个对话的文件修改隔离与冲突整合，不负责 Git 工作区管理。受控文件发布 PoC 与 WinFsp 双挂载最小衔接已验证，证据见本文后两节；原生自动变更集、产品发布时机、Git CLI 限制和恢复操作尚未实施，不改变现有服务或历史会话。
 
 ## 需求与模式
 
@@ -98,3 +98,48 @@ Windows 11 / Node 26.10.0 本机结果：28 个回归用例通过；双进程发
 - 拒绝管理目录、链接、路径穿越及复杂目录操作；普通 mode 保留不等于 Windows DACL/owner/ADS 保真。不将旧 WinFsp 的 ACL 或 Sandbox 验证结果转移到这个新发布器。
 - 接入既有 `src/tracing` 的 queue/prepare/validate/apply，记录批次/操作 ID、数量、耗时和终态，无文件正文或原始路径。进入批次目录后的普通流程导出 trace；进程立即退出可能没有 trace 尾部，恢复以已落盘 journal 和现场为依据。队列失败保留生命周期日志，不保证生成批次 trace 文件。
 - 目前只在本机 Windows 验证；未验证 Linux/macOS，不改变产品默认模式、Local 串行调度或 Git worktree。
+
+## 文件系统接入前选型复核（2026-10-25）
+
+用户授权继续接入文件系统，并要求先重新评估 Riftri、WinFsp 和可直接使用的替代品。下面是本次工程选择，不把上游宣传、编译通过或旧验证推导为 CodeAtelier 实机兼容。当前产品和历史会话暂时保持既有行为。
+
+所需能力是普通目录实时读取、每会话私有写入、创建不遍历或复制来源、来源持续接收发布，以及可冻结并导出的修改集。Windows 还需要原生安全描述符、跨专用账户挂载访问及持久 capability；“能通过 FUSE 挂载”不足以满足这组条件。
+
+| 候选 | 已核实的实现与差距 | 本次选择 |
+| --- | --- | --- |
+| Riftri | 上游管理 Git linked worktree、不可变基线和原生 CoW；项目当前只抽取其 storage API，Windows 自研 WinFsp 已不依赖它的克隆代码 | 新 Local overlay 链路不依赖 Riftri；旧模式暂不删除，避免破坏历史目录 |
+| WinFsp + 现有原生后端 | WinFsp 是文件系统框架，不是现成 unionfs。现有 `Store` 已实现普通目录 lower、私有对象、whiteout、ACL 和稳定 UNC；普通 create/restore 不需要 Git 参数 | Windows 优先复用；不经 `WorktreeService` 的 Riftri/Git 注册路径。原生基线、修改记录和冻结导出仍需补充 |
+| unionfs-fuse | 有普通目录 CoW union，README 明确 Linux/macOS 路径；未核实官方 Windows 原生 ACL 实现。其 copy-up/whiteout 不能代替编辑时原文和冲突发布 | POSIX 后端首批候选，需要验证实时来源、缓存、rename、恢复及 Sandbox；尚未安装实测 |
+| Linux OverlayFS | 官方明确禁止挂载期间修改底层文件系统；我们的发布会修改其它会话的 lower | 不直接用于实时主目录。若未来采用稳定快照/统一停挂发布，才重新评估 |
+| fuse-overlayfs | 为 Linux rootless 容器提供 upper/lower/workdir，依赖 libfuse；未核实支持我们要求的外部 live lower 变化 | 保留 Linux 候选，不根据名称假定解决实时来源一致性，也不作为三平台实现 |
+| HUBFS 内部 unionfs | `Config.Fslist` 可组合一般 FUSE 文件系统，不强依赖 Git 类型；但产品 CLI 面向 Git/GitHub，内部仍需单独封装。使用 cgofuse；代码许可为 AGPLv3；缓存负查找，未证明动态 lower 新建的完整失效语义 | 可参考接口，不能直接替换原生 Windows ACL 后端；不能把可抽取库描述为现成命令 |
+| Turso AgentFS | 固定提交 `0a014ebd4918615baff589ed17486e557e7c6a23`：Windows `run` 明确不支持，`mount_stub.rs` 只允许 Unix 挂载；SQLite SDK/Windows CLI 发布不等于 Windows 文件系统挂载 | 当前不满足 Windows 接入 |
+| ContextFS | 固定提交 `5daff08f620cfcd04384e16f5fe34829a874bba9`：有 WinFsp 原生挂载，但 `GetSecurity/SetSecurity` 为空，按名称查询返回固定描述符并向 Everyone 授完全访问；启动调用后台 Bootstrap，逐文件读取并写入 CAS | 不直接采用；与 capability ACL 和不全量导入要求冲突，换用它仍需改写关键部分 |
+| AgentHarborFS | 官方文档描述 lazy live overlay、Linux FUSE/macOS FSKit/Windows WinFsp，语义最接近；文档链接的公开 `agent-harbor/agent-harbor` 仓库本次网页和 API 均返回 404 | 待核实源码、许可、独立使用接口及 ACL，不能仅据文档认定是可集成依赖 |
+| OmniVFS | 固定提交 `cfa9a1526253088f345507fea18b79349ec8ffc9`：README 提及 Windows FUSE，但 CLI `handle_mount` 仅 `cfg(unix)` 执行真实挂载，非 Unix 只打印不支持提示 | 不视为已提供 Windows 后端 |
+
+另排除 mergerfs（上游明确不提供 OverlayFS 式只读 lower + 可写 upper 和 whiteout）、absfs/unionfs（应用内 Go 文件接口，不是给任意程序使用的系统挂载）、面向 squashfs/EROFS 固定镜像的 Windows overlay（需先生成镜像，不满足直接读取可变目录），以及通过进程注入实现的 winrsbox（改变执行/沙箱路径，不是可直接替换的挂载后端）。不宣称全世界不存在其它实现；结论是本次核查未找到可直接满足全部要求的三平台替换件。
+
+因此下一增量采用“独立 Local overlay 管理 + Windows 原生 WinFsp 后端 + 发布协调器”，不增加 Git base、index 或对象库。复用既有文件系统代码的理由是当前 ACL/UNC/Runtime 路径有可追踪实现和既有证据，不是因为已经投入过开发。`git-lower.*`、`overlay-git.ts` 和 Riftri CoW helper 不进入新路径；旧代码保留到历史兼容迁移明确后再处理。
+
+接入顺序：先用既有 `OverlayManager` 直接建立普通目录双挂载，真实命令修改并验证私有视图，然后将预先记录基线的显式路径交给发布 PoC。此小实验只证明文件后端与发布器能够衔接，不自动发现全部 shell 写入，不给未知文件猜测 B。之后才在原生层补充不可变基线、内容/namespace 变化记录、停止写入后的导出以及元数据变化分类，并复验 ACL 和真实 Sandbox。首写 copy-up 捕获的是写入时内容，不能冒充此前模型或命令读到的版本；来源变化时必须保留旧读版本或拒绝过期结果。
+
+参考与可复核来源（本次未运行第三方安装脚本或改变驱动）：
+
+- [Riftri](https://github.com/assistant-ui/riftri)、[WinFsp 原生 API 与 FUSE 的安全描述符差别](https://winfsp.dev/doc/Native-API-vs-FUSE/)。
+- [unionfs-fuse](https://github.com/rpodgorny/unionfs-fuse)、[Linux OverlayFS 底层修改限制](https://docs.kernel.org/filesystems/overlayfs.html#changes-to-underlying-filesystems)、[fuse-overlayfs](https://github.com/containers/fuse-overlayfs)。
+- [HUBFS unionfs 源码](https://github.com/winfsp/hubfs/blob/master/src/fs/unionfs/unionfs.go)、[HUBFS CLI 和平台](https://github.com/winfsp/hubfs)。
+- [AgentFS Windows run](https://github.com/tursodatabase/agentfs/blob/0a014ebd4918615baff589ed17486e557e7c6a23/cli/src/cmd/run_windows.rs)、[mount stub](https://github.com/tursodatabase/agentfs/blob/0a014ebd4918615baff589ed17486e557e7c6a23/cli/src/cmd/mount_stub.rs)。
+- [ContextFS Windows ACL](https://github.com/thustorage/ContextFS/blob/5daff08f620cfcd04384e16f5fe34829a874bba9/src/cas/platform/windows/winfsp_adapter.cpp)、[启动](https://github.com/thustorage/ContextFS/blob/5daff08f620cfcd04384e16f5fe34829a874bba9/src/cas/platform/windows/main_windows.cpp)、[后台导入](https://github.com/thustorage/ContextFS/blob/5daff08f620cfcd04384e16f5fe34829a874bba9/src/cas/bootstrap.cpp)。
+- [AgentHarborFS 文档](https://docs.agent-harbor.com/agentharborfs)、[其安装文档所指仓库](https://docs.agent-harbor.com/getting-started/installation)、[OmniVFS 挂载入口](https://github.com/The-Arc-Studios/OmniVFS/blob/cfa9a1526253088f345507fea18b79349ec8ffc9/crates/omnivfs-cli/src/main.rs)。
+- [mergerfs 非目标](https://github.com/trapexit/mergerfs#non-features)、[absfs/unionfs](https://github.com/absfs/unionfs)、[squashfs overlay](https://github.com/aderumier/mount_squashfs_overlay)、[winrsbox](https://github.com/PHPCraftdream/winrsbox)。
+
+## WinFsp 与发布器最小衔接验证
+
+新增手动入口 `pnpm overlay:verify-filesystem`（`scripts/verify-local-overlay-winfsp.ts`），要求本机已有 WinFsp Runtime 和已构建的 `codeatelier-overlay.exe`。在 `.local/local-overlay-winfsp-*` 中建立未初始化 Git 的普通来源目录，直接调用 `OverlayManager.start` 的 live 模式，不执行 Git CLI 或 Riftri helper，也不经过现有产品的工作区创建策略。
+
+2026-10-25 本机 Windows 实测通过：建立两个真实 UNC 挂载后，私有内容对象均为零；先明确记录 `module.mjs` 的基线，然后两个宿主 Node 进程分别通过临时文件 + rename 修改挂载内文件，执行各自程序得到 `12` 和 `21`，来源仍为原文。未修改文件继续读取更新后的 lower；每个视图各自产生 `generated.txt`，没有写入来源。
+
+脚本随后仅提取已声明的 `module.mjs` 私有内容，交给第一阶段 Publisher。发布候选放回对应挂载运行真实 `node --check` 和程序执行，结果依次为 `12`、合并后的 `30`，最终来源程序输出 `30`。干净卸载、重挂载后两视图分别仍是 `12` 和 `30`，私有产物也保留：此结果同时说明旧视图不会自动 rebase 成最新来源。再次卸载均收到成功收据并确认 helper 退出。摘要见 [JSON 报告](local-overlay-filesystem-results.json)。
+
+这个实验验证了既有 Windows 文件后端能够独立于 Riftri/Git 与发布 PoC 衔接。它不提供原生自动变化捕获：选择路径和旧基线由脚本明确给出，任意 shell 新增/删除/rename 的自动导出仍待实现；`generated.txt` 未发布来自显式选择，不是已有自动产物识别策略。本次运行身份是宿主 Node，未使用 Sandbox，未测巨型目录创建速度/磁盘或完整 lower 遍历计数。发布器仍有第一阶段 ACL 保真和外部竞争限制，不应接到真实项目的自动回写路径。

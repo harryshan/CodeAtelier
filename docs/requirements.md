@@ -35,7 +35,7 @@
 
 ### Local overlay 目标重新澄清（2026-10-25，D170）
 
-用户要求 Overlay 与 Git worktree 完全并列：Overlay 用于同一 Local 工作区多个对话的文件修改隔离与冲突整合，不负责 Git 分支、提交、index 或对象库管理。此前 D169 的 Git 提交虚拟 worktree 实验不再作为这个需求的后续方向。普通 Worktree 保留原有 Git 工作流；后续授权验证已实现受控文件发布 PoC，不删除旧实现、迁移会话或切换默认模式。实时读取、编辑基线、串行发布与冲突恢复的建议和第一阶段证据见 [Local overlay 设计](local-overlay-design.md)，自动发布时机尚未确认。
+用户要求 Overlay 与 Git worktree 完全并列：Overlay 用于同一 Local 工作区多个对话的文件修改隔离与冲突整合，不负责 Git 分支、提交、index 或对象库管理。此前 D169 的 Git 提交虚拟 worktree 实验不再作为这个需求的后续方向。普通 Worktree 保留原有 Git 工作流；后续授权验证已实现受控文件发布 PoC，并按用户要求先复核现成文件系统，再验证直接 WinFsp 双挂载与显式路径发布衔接。新路径不依赖 Riftri/Git 注册，尚无原生自动变化捕获或产品接入，不删除旧实现、迁移会话或切换默认模式。选型、实时读取、编辑基线、串行发布与冲突恢复的边界和证据见 [Local overlay 设计](local-overlay-design.md)，自动发布时机尚未确认。
 
 ## 2. 初版功能边界（已确认）
 
