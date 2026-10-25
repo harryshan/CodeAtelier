@@ -1,0 +1,25 @@
+{
+  "timestamp": "2026-10-25T22:24:15.278Z",
+  "platform": "win32",
+  "release": "10.0.26200",
+  "command": "pnpm overlay:verify-resolution",
+  "passed": true,
+  "creationMsForSingleSmallFileReference": 115.6918,
+  "checks": [
+    "Old conflict and private edit retained",
+    "Parent database bytes unchanged",
+    "Fixed creation request idempotent",
+    "New view reads current source and dependency",
+    "Reference not applied to source path or publishable",
+    "Explicit new edit passes candidate Node execution",
+    "Native publication and private refresh succeed",
+    "Original baseline and private result preserved after publication"
+  ],
+  "rawReport": ".local/local-overlay-resolution-8YrCf1/report.json",
+  "limitations": [
+    "Host fixture and trusted validation adapter, not model/Sandbox IPC v18 evidence",
+    "Single selected file; no automatic semantic conflict resolution or full project test",
+    "Original view deliberately retained; no cleanup or in-place reset",
+    "One small fixture timing; not a large-repository benchmark"
+  ]
+}

@@ -3,6 +3,7 @@
  * 1. 固定创建 UUID 的错误/重试、模式参数、来源项目归组和刷新后私有状态展示。
  * 2. 后端能力拒绝阻止提交，合成已发布/拒绝/不可用状态不能被模型完成文本覆盖。
  * 3. 单文件检查显示纯文本 B/O/T 和预览，错误保留输入，改路径取消旧结果；不把模拟响应当真实发布证明。
+ * 4. 显式创建冲突继续对话，失败保留固定请求重试，显示参考状态且仅预填任务，不自动提交。
  * 页面和请求代码为生产实现；真实挂载/权限/发布链路另由手动 WinFsp 验证证明。
  */
 import { expect, test } from "@playwright/test";
@@ -181,8 +182,9 @@ test("disables unsupported creation and distinguishes retained from published hi
 test("reviews private contents as text and clears stale results on path edits", async ({
   page,
 }) => {
+  let sessions = [created];
   await page.route("**/api/sessions", (route) =>
-    route.fulfill({ json: [created] }),
+    route.fulfill({ json: sessions }),
   );
   await page.route(/\/api\/sessions\/local-overlay-ui(?:\?.*)?$/, (route) =>
     route.fulfill({
@@ -196,6 +198,56 @@ test("reviews private contents as text and clears stale results on path edits", 
     }),
   );
   const requests: string[] = [];
+  const continuations: any[] = [];
+  const child: Session = {
+    ...created,
+    id: "resolution-ui",
+    title: "解决冲突",
+    workspace: "/private/resolution-ui",
+    localOverlay: {
+      id: "new-view",
+      projectWorkspace: source,
+      state: "ready",
+      resolution: {
+        sessionId: created.id,
+        path: "merged.txt",
+        directory: ".codeatelier-recovery-fixture",
+      },
+    },
+  };
+  await page.route(
+    "**/api/sessions/local-overlay-ui/local-resolution",
+    async (route) => {
+      continuations.push(route.request().postDataJSON());
+      if (continuations.length === 1) {
+        await route.fulfill({
+          status: 409,
+          json: { error: "创建结果未确认，请重试同一请求。" },
+        });
+
+        return;
+      }
+
+      sessions = [child, created];
+      await route.fulfill({ json: child });
+    },
+  );
+  await page.route(/\/api\/sessions\/resolution-ui(?:\?.*)?$/, (route) =>
+    route.fulfill({
+      json: { session: child, tasks: [], events: [], approvals: [] },
+    }),
+  );
+  await page.route("**/api/sessions/resolution-ui/events", (route) =>
+    route.fulfill({
+      contentType: "text/event-stream",
+      body: "event: refresh\ndata: {}\n\n",
+    }),
+  );
+  let submitted = false;
+  await page.route("**/api/sessions/resolution-ui/tasks", async (route) => {
+    submitted = true;
+    await route.abort();
+  });
   await page.route(
     "**/api/sessions/local-overlay-ui/local-review",
     async (route) => {
@@ -262,6 +314,33 @@ test("reviews private contents as text and clears stale results on path edits", 
   expect(requests).toEqual(["missing.txt", "conflict.txt", "merged.txt"]);
   await page.screenshot({
     path: "test-results/local-overlay-review.png",
+    fullPage: true,
+  });
+  await page.getByLabel("任务描述").fill("保留尚未发送的处理目标");
+  await page
+    .getByRole("button", { name: "在新对话中解决", exact: true })
+    .click();
+  await expect(page.getByRole("alert")).toContainText("创建结果未确认");
+  await page
+    .getByRole("button", { name: "重试同一创建请求", exact: true })
+    .click();
+  expect(continuations).toHaveLength(2);
+  expect(continuations[0]).toEqual(continuations[1]);
+  expect(continuations[0]).toMatchObject({
+    path: "merged.txt",
+    version: "fixture",
+  });
+  await expect(page.getByText(/本对话从最新主目录开始/)).toBeVisible();
+  await expect(page.getByLabel("任务描述")).toHaveText(/重新检查当前源码/);
+  await expect(page.getByLabel("任务描述")).toContainText(
+    "保留尚未发送的处理目标",
+  );
+  await expect(
+    page.getByRole("button", { name: created.title, exact: true }),
+  ).toBeVisible();
+  expect(submitted).toBe(false);
+  await page.screenshot({
+    path: "test-results/local-overlay-resolution.png",
     fullPage: true,
   });
 });

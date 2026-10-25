@@ -1,5 +1,9 @@
 # 测试约定与功能覆盖
 
+Local 冲突继续（D170）：`local-overlay-resolution.test.ts` 使用真实 SQLite/Store 与替身挂载，验证参考材料、旧清单/DB/来源保留、版本过期拒绝、固定请求幂等、绑定回执丢失、未知新卷拒绝重放、保留前缀拒绝发布及实际 Engine 指引。HTTP 回归检查创建能力门禁、父会话关联、固定请求复用及未自动创建任务；浏览器覆盖创建失败重试同一 ID、新对话状态和预填而不提交。手动 `pnpm overlay:verify-resolution` 使用真实 WinFsp 与宿主 Node 候选验证，覆盖旧依赖过期、新视图当前源码/依赖、明确重新编辑及生产发布/确认；不运行模型或 Sandbox，不属于 Evaluation，不进入默认 check。
+
+预填提示的草稿保留先以浏览器用例复现覆盖失败，再验证新会话同时保留用户未发送的文本和重新读取/验证要求；该操作仍不自动提交任务。
+
 Local 单文件冲突检查（D170）：`local-overlay-review.test.ts` 使用真实 SQLite/私有文件覆盖 B/O/T、内容合并与冲突、空文件/缺失/二进制、材料版本变化、dirty/旧格式/坏 seal/来源身份/路径/对象/祖先修改/大小限制/取消；检查不改数据库或清除陈旧依赖。`local-overlay-service.test.ts` 检查失败后的锁释放、活动拒绝与关闭拒绝。手动 `pnpm overlay:verify-review` 使用生产服务和真实 WinFsp 创建/编辑/卸载，证明检查不改清单与数据库、主目录后来修改保留、重挂载继续编辑和版本变化；仅夹具宿主进程，不是 Sandbox、冲突解决或 UI 验收，不进入默认 check/Evaluation。
 
 检查入口由 `local-overlay-http.test.ts` 覆盖鉴权/CSRF/no-store、真实 SQLite 材料、活动任务/普通会话/越界参数拒绝及受控错误；浏览器 `local-overlay.spec.ts` 验证检查输入、错误后重试、纯文本呈现潜在 HTML、冲突/合并提示和改路径清空旧结果。HTTP 使用假挂载，浏览器使用合成响应，不扩大为真实 Sandbox 证明。

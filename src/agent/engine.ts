@@ -18,6 +18,7 @@
  *    selectLocalPublication 把明确路径/命令绑定当前任务，收尾通过独立候选 Runtime 执行固定计划并保存回执，不调用主模型或允许宿主 fallback。
  *    local_publish 经认证 Runtime 主任务与已记录工具参数双重核对，只选定或撤销本轮计划，命令/路径不进入 trace。
  *    localOverlayCreation 提供公开创建/执行前提，describeSession 统一历史投影；Local 要求 Runtime 时启动失败保留私有视图，不转宿主且不记录为已回退。
+ *    冲突继续会话只向模型提供可信参考目录指引，材料本身仍是不可信历史；新编辑重读当前来源并沿用正常发布验证。
  * 9. run 的终态持久化与 trace 收尾分开保护；写库失败仍尝试归档失败 trace，导出/归档故障只记警告，最外层 finally 释放 trace 内存和任务级 Sandbox 状态。
  *
  * 模型请求可以重试，但已经执行的工具不能跟着重跑。数据库回滚也撤销不了文件修改或
@@ -63,6 +64,7 @@ import {
   type SubagentAction,
 } from "./subagent-contracts.js";
 import { createInstructions, localOverlayGuidance } from "./instructions.js";
+import { resolutionGuidance } from "../local-overlays/resolution.js";
 import { runModelLoop } from "./model-loop.js";
 import { acceptModelResponse } from "./model-response.js";
 import { dispatchModelTool } from "../tools/dispatch-model-tool.js";
@@ -1985,6 +1987,9 @@ export class Engine {
             memoryText:
               [
                 localOverlay ? localOverlayGuidance : undefined,
+                localOverlay
+                  ? resolutionGuidance(localOverlay.id, localOverlay.resolution)
+                  : undefined,
                 memory.bundle?.text,
               ]
                 .filter(Boolean)
@@ -2577,8 +2582,14 @@ export class Engine {
         emit("notice", { text: "项目记忆不可用，当前任务将不使用历史记忆。" });
       }
 
+      const resolutionRecord = localLease
+        ? await this.localOverlays.validate(session.workspace, session.id)
+        : undefined;
       const instructions = [
         baseInstructions,
+        resolutionRecord
+          ? resolutionGuidance(resolutionRecord.id, resolutionRecord.resolution)
+          : undefined,
         skills.instructions(),
         mcpCatalogInstructions(this.taskConfig(task.id).mcpServers),
         memory.bundle?.text,

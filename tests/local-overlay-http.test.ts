@@ -91,6 +91,44 @@ it("reviews selected files with authentication without exposing control paths or
   expect(result.body).not.toContain(native.source.root);
   expect(result.body).not.toContain(f.engine.localOverlays.root);
   expect(f.backend.mounted.size).toBe(0);
+  const resolutionUrl = `/api/sessions/${session.id}/local-resolution`;
+  const resolutionPayload = {
+    id: randomUUID(),
+    path: "code.txt",
+    version: result.json().version,
+  };
+  expect(
+    (
+      await f.app.inject({
+        method: "POST",
+        url: resolutionUrl,
+        payload: resolutionPayload,
+        headers: f.headers,
+      })
+    ).statusCode,
+  ).toBe(409);
+  vi.spyOn(f.engine, "localOverlayCreation", "get").mockReturnValue({
+    enabled: true,
+  });
+  const continued = await f.app.inject({
+    method: "POST",
+    url: resolutionUrl,
+    payload: resolutionPayload,
+    headers: f.headers,
+  });
+  expect(continued.statusCode).toBe(200);
+  expect(continued.json().localOverlay.resolution.sessionId).toBe(session.id);
+  expect(
+    (
+      await f.app.inject({
+        method: "POST",
+        url: resolutionUrl,
+        payload: resolutionPayload,
+        headers: f.headers,
+      })
+    ).json().id,
+  ).toBe(continued.json().id);
+  expect(await f.store.tasks(continued.json().id)).toHaveLength(0);
   for (const name of ["../escape", ".git/config", "missing.txt"]) {
     const rejected = await f.app.inject({
       method: "POST",

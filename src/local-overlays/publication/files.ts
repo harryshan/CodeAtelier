@@ -1,6 +1,7 @@
 /**
  * Local 发布的受控普通文件 I/O，供原生批次导出、Publisher、恢复观察和独立测试会话使用。
  * 1. sourceIdentity 固定目录的真实路径和 inode；checkedPath 拒绝越界、链接和管理目录。
+ *    发布备份与冲突参考保留前缀也拒绝，防止私有参考材料被当成源码发布。
  * 2. snapshot 有界读取并核对路径/句柄前后身份；版本含内容和元数据，不依赖 mtime 单项。
  * 3. durableJson 以临时文件、flush、rename 保存私有日志；不宣称跨文件/断电原子性。
  * 首版要求父目录已存在、普通文件只有一个硬链接；不支持 ACL 保真或目录 rename。
@@ -64,7 +65,8 @@ export function checkRelative(relative: string) {
       /[. ]$/.test(part) ||
       /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(part) ||
       /^(?:\.git|\.hg|\.svn)$/i.test(part) ||
-      part.toLowerCase().startsWith(".codeatelier-publish-")
+      part.toLowerCase().startsWith(".codeatelier-publish-") ||
+      part.toLowerCase().startsWith(".codeatelier-recovery-")
     ) {
       throw new PublishError("PATH_REJECTED");
     }
