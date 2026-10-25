@@ -1,6 +1,8 @@
 # Riftri 与 Git worktree 工作区
 
-大仓库的提交基线虚拟化正在进行独立 [WinFsp PoC（D169）](virtual-worktree-poc.md)。它不进入以下生产入口；当前默认模式与既有会话仍按本页执行。
+2026-10-25 用户按 D170 重新澄清 Overlay 的目标为 Local 对话文件隔离与冲突整合，独立于 Git worktree，见 [重新设计](local-overlay-design.md)。该设计尚未实施；下文描述当前既有行为，不代表新方向已切换上线。
+
+此前提交基线虚拟化的实现与计量保留在 [WinFsp PoC（D169）](virtual-worktree-poc.md)，不作为 D170 的后续方向。它不进入以下生产入口；当前默认模式与既有会话仍按本页执行。
 
 ## 选择模式（D167 / D168）
 

@@ -2,6 +2,14 @@
 
 只记录已确认的方向；候选技术选择保留在需求说明中。后续修改需记录替代关系，避免历史决定被误当成当前要求。
 
+## D170：Overlay 改为 Local 会话文件隔离，与 Git worktree 并列
+
+- 日期：2026-10-25。
+- 状态：用户澄清目标并要求重新考虑方案；本轮更新设计，不实施默认模式切换、迁移或自动回写。
+- 决定：Overlay 服务于同一 Local 工作区多个对话的文件修改隔离与冲突整合，独立于 Git；普通 Git worktree 保持独立模式。Overlay 不承担 branch/commit/index/objects 管理，也不是普通 worktree 的替代或 fallback。
+- 替代关系：撤回把 D169 Git 提交虚拟 worktree 作为此需求后续方向的假设；D168 的 WinFsp 文件后端可复用，但其 linked Git metadata 不是新方案要求。旧实现、会话和验证记录保留，不宣称已迁移。
+- 设计建议：实时文件 lower、会话私有 upper、按需编辑基线与来源级串行发布；三方文件整合独立于 Git，必须区分写隔离、读一致性、外部写入和多文件故障恢复。发布时机、共享管理目录/Git CLI 的处理及产品默认入口尚待确定，详见 [Local overlay 重新设计](local-overlay-design.md)。
+
 ## D169：基于 Git 提交的虚拟 worktree PoC
 
 - 日期：2026-10-25。
