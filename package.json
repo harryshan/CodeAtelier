@@ -20,6 +20,7 @@
     "overlay:verify-filesystem": "tsx scripts/verify-local-overlay-winfsp.ts",
     "overlay:verify-policy": "tsx scripts/verify-local-overlay-policy.ts",
     "overlay:verify-scale": "tsx scripts/verify-local-overlay-scale.ts",
+    "overlay:verify-directory": "tsx scripts/verify-local-overlay-directory.ts",
     "overlay:verify-capture": "tsx scripts/verify-local-overlay-capture.ts",
     "overlay:verify-native-publish": "tsx scripts/verify-local-overlay-publish.ts",
     "overlay:verify-refresh": "tsx scripts/verify-local-overlay-refresh.ts",

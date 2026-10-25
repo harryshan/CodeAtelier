@@ -208,6 +208,10 @@ try {
   const firstMetrics = await manager.metrics(item.id);
   assert.equal(firstWalk.value, count);
   assert.equal(sourceWalk.value, count);
+  assert(
+    firstMetrics.lowerEnumerations <= Math.ceil(count / 100) + 2,
+    "Directory continuation pages must not re-enumerate the live lower",
+  );
   assert.equal(typeof firstMetrics.lowerImportCommits, "number");
   assert(
     firstMetrics.lowerImportCommits! <= Math.ceil(count / 100) + 1,

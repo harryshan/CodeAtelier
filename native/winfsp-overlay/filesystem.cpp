@@ -5,6 +5,7 @@
 // 4. 重解析回调在当前虚拟路径检查目标，目录移动不能使相对链接越出视图。
 // 5. Git PoC 卷使用 no-atime；仅忽略自动访问时间，显式 SetBasic/写入仍持久化。
 // 6. Local 显式元数据修改与可删除预检保存基线，避免仅在无错误返回的 Cleanup 中发现陈旧读。
+// 7. Local 枚举按打开句柄缓冲名称/元数据；续页不重扫，重启/重开观察来源，异常填充清空、Close 释放。
 // WinFsp 内核执行用户访问、共享模式和锁检查，不以 helper 宿主权限替调用者绕过检查。
 #include <algorithm>
 #include <cstring>
@@ -16,6 +17,10 @@
 namespace overlay {
 struct Context {
   NodePtr node;
+  PVOID directoryBuffer = nullptr;
+  ~Context() {
+    FspFileSystemDeleteDirectoryBuffer(&directoryBuffer);
+  }
 };
 static NodePtr opened(PVOID context) {
   return static_cast<Context*>(context)->node;
@@ -376,9 +381,50 @@ static NTSTATUS setSecurity(FSP_FILE_SYSTEM* fs, PVOID context, SECURITY_INFORMA
       fs, [&](Store& store) { store.setSecurity(opened(context), information, descriptor); });
 }
 
+static void localDirectory(Store& store, Context& context, PWSTR marker, PVOID output,
+                            ULONG length, PULONG transferred) {
+  NTSTATUS result;
+  if (FspFileSystemAcquireDirectoryBuffer(&context.directoryBuffer, marker == nullptr, &result)) {
+    try {
+      auto entries = store.list(context.node);
+      if (context.node->id != 1) {
+        entries.insert(entries.begin(), {L"..", store.node(context.node->parent)});
+        entries.insert(entries.begin(), {L".", context.node});
+      }
+      // WinFsp sorts the completed buffer using its continuation-marker ordering.
+      // Only names and returned metadata are retained, never open lower file handles.
+      for (const auto& entry : entries) {
+        const size_t size = FIELD_OFFSET(FSP_FSCTL_DIR_INFO, FileNameBuf) +
+                            entry.name.size() * sizeof(wchar_t);
+        std::vector<BYTE> bytes(size);
+        auto info = reinterpret_cast<FSP_FSCTL_DIR_INFO*>(bytes.data());
+        info->Size = static_cast<UINT16>(size);
+        info->FileInfo = store.info(entry.node);
+        memcpy(info->FileNameBuf, entry.name.data(), entry.name.size() * sizeof(wchar_t));
+        if (!FspFileSystemFillDirectoryBuffer(&context.directoryBuffer, info, &result)) {
+          checked(result);
+          throw Error{STATUS_UNEXPECTED_IO_ERROR};
+        }
+      }
+    } catch (...) {
+      FspFileSystemReleaseDirectoryBuffer(&context.directoryBuffer);
+      FspFileSystemDeleteDirectoryBuffer(&context.directoryBuffer);
+      throw;
+    }
+    FspFileSystemReleaseDirectoryBuffer(&context.directoryBuffer);
+  }
+  checked(result);
+  *transferred = 0;
+  FspFileSystemReadDirectoryBuffer(&context.directoryBuffer, marker, output, length, transferred);
+}
+
 static NTSTATUS directory(FSP_FILE_SYSTEM* fs, PVOID context, PWSTR, PWSTR marker, PVOID output,
                           ULONG length, PULONG transferred) {
   return guarded(fs, [&](Store& store) {
+    if (store.localMode) {
+      localDirectory(store, *static_cast<Context*>(context), marker, output, length, transferred);
+      return;
+    }
     auto node = opened(context);
     auto entries = store.list(node);
     if (node->id != 1) {

@@ -1,5 +1,13 @@
 # 初版验证记录
 
+## Local 目录缓冲与真实分页（D170，2026-10-26）
+
+- 先在原回调用一千文件复现续页反复枚举的计数失败（`.local/local-dirbuffer-before.log`）。Local 改用 WinFsp `Acquire/Fill/Release/Read/DeleteDirectoryBuffer`，每打开句柄独立保留本次枚举的名称/元数据；restart 重建，异常清空，Close 释放。没有提高 FileInfoTimeout、跳过 ACL/来源检查或更改旧 Riftri/Git 的原回调；标准 SDK 源码中的使用方式与 buffer 生命周期已核对。
+- 十万文件真实挂载计量通过（`.local/local-dirbuffer-scale.log`、`.local/local-overlay-scale-tf4pNV/report.json`）：首次遍历 75.51 s、第二次 12.38 s；对照上轮 87.33/26.85 s。lower 枚举 3012→1001，打开 735024→310003，导入提交仍为 1001。创建不遍历/复制及双私有层/大文件 copy-up 原断言继续通过。结果追加至 [成本报告](local-overlay-scale-results.json) 的 `afterDirectoryBuffer`；未测冷缓存或峰值内存，不推广单次计时比例。
+- 真实 512 字节 Win32 分页探针通过（`.local/local-directory-run-final.log`、`.local/local-overlay-directory-df7DYW/report.json`）：1505 个条目含补充平面/私用区 Unicode，跨页无重复或缺失；来源新增/删除及文件大小变化不改写当前枚举，另一句柄和显式 restart 可见新状态；私有新增/whiteout、空目录 EOF、干净重挂载均通过。首轮探针阶段成功，但脚本错误复用已 stop 的 manager 重挂载；改用新 manager 后复跑通过，没有放宽生产挂载保护或断言。
+- `.git` 策略、基线捕获、发布刷新及跨轮依赖四组真实 WinFsp 回归通过（`.local/local-directory-{policy,capture,refresh,epochs}.log`），预期故障仍保留失败收据。没有安装/Repair、实际服务重启、Sandbox/真实模型或 Evaluation；v18 安装链路及其它完整目标仍未完成。
+- 最终 `pnpm check` 通过：148 个测试文件、1168 passed / 1 existing skipped，类型/lint/格式及构建通过（`.local/local-directory-check.log`）。自审补充缓冲内存边界：restart 刷新内容但可能保留已增长的容量，关闭句柄才释放；尚无峰值内存测量。实际挂载已排空，进程检查无 overlay helper 残留；无 UI/HTTP/SSE 改动，不重复浏览器测试。
+
 ## Local 大目录成本与目录导入事务（D170，2026-10-26）
 
 - 手动 `pnpm overlay:verify-scale` 在独占普通 NTFS 目录比较空目录、一万/十万文件；每规模三次原生挂载和生产 LocalOverlayService + AsyncStore 创建。真实挂载初始 lower 打开/枚举均为零，内容/基线对象为空；十万文件优化后生产创建 72.49～79.33 ms，原生挂载 50.72～60.95 ms，控制文件分配 233472 B（228 KiB）。计量排除夹具准备及测量进程，不包含 HTTP/Runtime 启动和 NTFS MFT/目录索引/日志，也不声称清空 OS 缓存。

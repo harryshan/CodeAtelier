@@ -1,5 +1,7 @@
 # 测试约定与功能覆盖
 
+Local 目录分页（D170）：`overlay:verify-scale` 增加续页不能反复枚举 lower 的计数断言，旧回调先复现失败。先用 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-winfsp-overlay.ps1 -Sdk <SDK目录> -BuildDirectoryProbe` 构建探针，再手动执行 `pnpm overlay:verify-directory`；真实 Win32 512 字节分页覆盖 1505 项、Unicode 完整无重复、续页保留初始名称/大小、另一句柄和 restart 看到来源新增/删除/大小变化、私有新增/whiteout、空目录 EOF 与重挂载。原 `.git` 策略、捕获、刷新和跨轮依赖脚本另作回归。均不进入默认 check/Evaluation，不把宿主 I/O 描述为 Sandbox 验证。
+
 Local 大目录成本与按目录导入（D170）：手动 `pnpm overlay:verify-scale`（可用 `--count=1000` 缩小夹具）记录原生/生产 Service 创建、lower 打开/枚举、首次/再次遍历、有限读取、双私有层以及 64 MiB 文件的单字节 copy-up；通过真实 AllocationSize 区分内容、基线及元数据。断言目录导入提交数不随文件数线性增长，先在旧实现复现失败。`build-winfsp-overlay.ps1 -Sdk <SDK目录> -VerifyImport` 使用真实 Store/SQLite 验证一目录一次提交、持久 inode、来源新文件可见、独立 lookup 提交，以及第二次插入故障导致整批回滚/拒绝 clean/拒绝恢复；不挂载、不修改安装态。以上均非默认 check/Evaluation；manager 单元回归兼容旧收据和新的可选导入计数。
 
 Local 公开创建与状态（D170）：`local-overlay-http.test.ts` 使用真实 Fastify/Engine/Store 和替身挂载，覆盖鉴权/CSRF、平台及 Sandbox 门禁、非 Git 来源、固定 UUID 重试、模式互斥、列表/快照/历史分页、坏清单历史可读，以及关闭 Sandbox 后已有会话启动/恢复拒绝。`local-overlay-service.test.ts` 先复现请求隔离后错误转宿主和错误执行归因，再验证不调用宿主模型、不发 fallback 事件并保留私有修改。`e2e/local-overlay.spec.ts` 用受控 HTTP/SSE 数据验证创建重试、来源分组、重载后状态、私有/已发布/拒绝/保留区分和失效提交禁用；截图检查布局。这些测试不替代 WinFsp 或安装态 Sandbox 验证。

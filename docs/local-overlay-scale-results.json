@@ -949,5 +949,101 @@
     "lowerOpens excludes the constant source-root identity/security handle",
     "Service timing includes real Store binding and clean unmount, but not HTTP or Runtime startup",
     "Read-only enumeration can persist namespace metadata; file-level copy-up copies complete content and baseline"
-  ]
+  ],
+  "afterDirectoryBuffer": {
+    "evidence": [
+      ".local/local-overlay-scale-tf4pNV/report.json",
+      ".local/local-overlay-directory-df7DYW/report.json",
+      ".local/local-dirbuffer-before.log"
+    ],
+    "timestamp": "2026-10-25T21:33:05.42Z",
+    "firstWalk": {
+      "ms": 75511.3903,
+      "value": 100000
+    },
+    "secondWalk": {
+      "ms": 12376.065799999997,
+      "value": 100000
+    },
+    "firstMetrics": {
+      "version": 1,
+      "state": "metrics",
+      "treeReads": 0,
+      "infoReads": 0,
+      "blobReads": 0,
+      "blobBytes": 0,
+      "lowerOpens": 310003,
+      "lowerEnumerations": 1001,
+      "lowerImportCommits": 1001,
+      "objectMicros": 0,
+      "sqlPrepareMicros": 3168786,
+      "sqlReadMicros": 370566,
+      "sqlWriteMicros": 1663451,
+      "sqlExecMicros": 1386177,
+      "sqlReads": 415004,
+      "sqlWrites": 304004,
+      "accessCleanups": 1001
+    },
+    "firstDisk": {
+      "total": {
+        "files": 4,
+        "logicalBytes": 67756112,
+        "allocatedBytes": 67788800
+      },
+      "objects": {
+        "files": 0,
+        "logicalBytes": 0,
+        "allocatedBytes": 0
+      },
+      "baselines": {
+        "files": 0,
+        "logicalBytes": 0,
+        "allocatedBytes": 0
+      }
+    },
+    "probe": {
+      "timestamp": "2026-10-25T21:37:56.921Z",
+      "platform": "win32",
+      "release": "10.0.26200",
+      "probe": {
+        "passed": true,
+        "initialEntries": 1505,
+        "bufferBytes": 512,
+        "continuationSnapshot": true,
+        "restartFresh": true,
+        "independentHandles": true,
+        "privateNamespace": true,
+        "emptyEof": true
+      },
+      "metrics": {
+        "version": 1,
+        "state": "metrics",
+        "treeReads": 0,
+        "infoReads": 0,
+        "blobReads": 0,
+        "blobBytes": 0,
+        "lowerOpens": 18088,
+        "lowerEnumerations": 5,
+        "lowerImportCommits": 2,
+        "objectMicros": 0,
+        "sqlPrepareMicros": 51772,
+        "sqlReadMicros": 12964,
+        "sqlWriteMicros": 13199,
+        "sqlExecMicros": 20480,
+        "sqlReads": 28648,
+        "sqlWrites": 4549,
+        "accessCleanups": 6
+      },
+      "remount": "passed",
+      "limitations": [
+        "Real Win32/WinFsp, no Sandbox",
+        "Per-enumeration metadata snapshot, not a source or content snapshot"
+      ]
+    },
+    "limitations": [
+      "Single-host synthetic before/after; no cold-cache or universal speedup claim",
+      "Each open directory retains buffer capacity up to its enumeration high-water mark until close; restart refreshes entries but may reuse capacity; process peak memory not measured",
+      "Continuation names/metadata are a per-enumeration snapshot; content and new/restarted queries remain live"
+    ]
+  }
 }
