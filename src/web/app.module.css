@@ -3,7 +3,7 @@
  *
  * 1. 开头定义主页面/设置模态框共用主题变量、字体和基础控件样式，再定义双栏布局、侧栏和标题区。
  * 2. 项目分组与侧栏、欢迎页、实际 sandbox 状态、会话统计及 Perfetto 下载链接、带子任务徽标的 Markdown 对话消息、工具结果、diff 和通知；历史状态行与原文卡片统一技术记录样式，窄屏换行、正文限高滚动。
- * 3. 审批按钮、所见即所得 Markdown 输入区、按服务端门禁显示的子代理勾选、弹窗和字段网格对应页面操作。
+ * 3. 审批按钮、所见即所得 Markdown 输入区、子代理勾选、Local/Worktree 创建按钮和弹窗字段对应页面操作；实际目录可截断但模式标记保持可见。
  * 4. 末尾通过媒体查询调整窄屏间距和排列；手机端把完整侧栏改为带遮罩的导航抽屉，避免隐藏项目和会话操作。
  *
  * 修改类名时要同步 TSX 引用。按钮是否禁用由组件状态控制，不能只改成看起来不可用的样式。
@@ -158,7 +158,7 @@
 }
 .projectTitle {
   display: grid;
-  grid-template-columns: 18px minmax(0, 1fr) auto 26px;
+  grid-template-columns: 18px minmax(0, 1fr) auto 26px 26px;
   align-items: center;
   gap: 8px;
 }
@@ -674,11 +674,13 @@
   font-size: 11px;
 }
 .projectBar code {
+  min-width: 0;
+  white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.projectBar > span:last-child {
-  margin-left: auto;
+.projectBar > span {
+  flex-shrink: 0;
   white-space: nowrap;
 }
 .timeline {
@@ -1393,4 +1395,21 @@
   .sidebar {
     transition: none;
   }
+}
+
+.worktreePath {
+  overflow-wrap: anywhere;
+}
+.worktreeField {
+  display: grid;
+  gap: 8px;
+  margin: 20px 0;
+}
+.worktreeField input {
+  width: 100%;
+  padding: 10px;
+  border: 1px solid var(--ca-border);
+  border-radius: 8px;
+  color: inherit;
+  background: transparent;
 }

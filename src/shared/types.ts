@@ -4,7 +4,7 @@
  *
  * 1. TaskStatus 和 TitleState 列出任务及自动标题状态，Session 和 Task 描述会话及其中的任务；Task 的 subagentsEnabled 是任务创建时固定的选择，createdAt、startedAt 与 finishedAt 区分排队、实际运行和结束时间。
  * 2. SubagentRecord 描述研究子任务的状态、检查点与报告；Event 表示有顺序的历史条目，Approval 表示待审批操作。
- * 3. Settings 描述公开配置，Snapshot 汇总页面需要的会话、事件、任务和审批。
+ * 3. WorktreeInfo 是 API 从宿主清单补充的来源/创建基线，不改变 Session.workspace 的执行路径；Settings 描述公开配置，Snapshot 汇总会话、事件、任务和审批。
  *
  * 类型不会在运行时校验请求，相关检查仍由 API 和 Config 完成。公开 Settings 不包含密钥。
  */
@@ -21,10 +21,20 @@ export type TaskStatus =
 export type TitleState =
   "pending" | "generating" | "completed" | "failed" | "manual";
 
+export interface WorktreeInfo {
+  id: string;
+  projectWorkspace?: string;
+  baseRef?: string;
+  baseCommit?: string;
+  state: "preparing" | "ready" | "failed" | "unavailable";
+}
+
 export interface Session {
   id: string;
   title: string;
   workspace: string;
+  /** API 从宿主清单补充；workspace 始终是实际执行目录。 */
+  worktree?: WorktreeInfo;
   createdAt: string;
   updatedAt: string;
   titleState: TitleState;

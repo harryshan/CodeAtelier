@@ -19,7 +19,7 @@
 - Git CLI 和普通命令相同：Runtime 内执行不自动转发；需宿主文件、网络或凭据时显式用 `run_with_permissions`。旧 action/路径/revision/upstream/OID/ref 校验与 hook/签名禁用不再存在，命令按实际身份读取配置、执行 helper/hook。WFP 不会因 Git 临时放宽。
 - Runtime 内普通命令的输出先写入实例私有 TEMP，再按固定间隔回传；单次临时输出达到 64 MiB 会终止该命令并报错。临时文件在命令结束后删除，Broker 宿主命令不使用这一传输路径；Git CLI 随所选命令路径处理。
 
-Sandbox **不会**创建 worktree、暂存副本或自动回滚：可写操作直接改动真实工作区，取消、失败和崩溃都不能撤销已发生的文件或 Git 副作用。工作区内的 `.git`、`.env` 和其他文件没有额外保护。请在启用前提交、备份或另行复制重要工作。
+Sandbox 本身**不会**创建 worktree、暂存副本或自动回滚：可写操作直接改动真实工作区，取消、失败和崩溃都不能撤销已发生的文件或 Git 副作用。D165 允许用户先在 UI 显式创建 Worktree 对话；此时 Sandbox 使用该 checkout，并追加已核验的 Git 公共元数据写根，不额外授权整个来源目录。共享 refs/objects 不是任务隔离边界，新增链路尚未做 Windows 安装态专项验收，见 [Worktree 指南](worktrees.md)。工作区内的 `.git`、`.env` 和其他文件没有额外保护。请在启用前提交、备份或另行复制重要工作。
 
 ### 安全边界与不应作出的假设
 

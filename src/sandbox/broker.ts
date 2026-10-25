@@ -7,12 +7,12 @@
  * 2. executeCommand 记录策略、preflight、fallback、执行和收集阶段；Sandbox 关闭时完全沿用既有宿主执行器。
  * 3. 启用时先建立 WorkspaceView 并调用 runtime.selfCheck；缺后端或启动前检查失败时按任务固定转为宿主执行。
  * 4. runtime.execute 开始后的异常绝不自动重放到宿主；unknown/orphaned 会冻结 generation 并调用原生整代排空。
- * 5. 共享 ACL acquire 与 prepare/native revoke/commit 共用串行队列；provision waiter 可取消，安装者失败会拒绝全部等待者。
+ * 5. 共享 ACL acquire 与 prepare/native revoke/commit 共用串行队列；provision waiter 可取消，安装者失败会拒绝全部等待者。launch 将 Engine 核验的 worktree Git 根交给 prepareAccess，不扩大整个来源目录。
  * 6. MXC launchTask 使用私有实例生命周期，不进入 Windows ACL/generation 分支；启用后失败关闭，禁止逐命令旁路。
  * 7. 旧 Runner kind 在策略分流前拒绝，不得触发宿主 fallback 或发放新租约。
  * 8. 独立 Sandbox logger 只接收类别、阶段、关联 ID、耗时和结果，不记录命令、路径、SID、端口或输出。
  *
- * WorkspaceView 仍是历史 WSL2 Runtime 的契约；目标 Windows Runtime 将以 AccessManifest 取代它。fallback
+ * WorkspaceView 提供真实工作区描述；Windows 通过 AccessManifest 投影根权限。fallback
  * 只保证功能继续，不具备 Sandbox 的文件、进程和网络隔离能力。
  * 可选 Recorder 按实际 Windows provision 阶段、撤权与清理记录关联实例；未知清理保持 unknown，不以正常返回冒称 clean。
  */
@@ -487,6 +487,7 @@ export class SandboxBroker implements AgentRuntimeLauncher {
     identity: RuntimeExecutionIdentity;
     nonce: string;
     workspace: string;
+    gitWriteRoots?: string[];
     signal: AbortSignal;
   }): Promise<LaunchedAgentRuntime> {
     if (this.configuration.enabled && this.runtime?.launchTask) {
@@ -501,6 +502,7 @@ export class SandboxBroker implements AgentRuntimeLauncher {
       command: "",
       args: [],
       cwd: input.workspace,
+      readWriteRoots: input.gitWriteRoots,
       signal: input.signal,
       timeoutMs: 0,
       outputLimit: 0,
