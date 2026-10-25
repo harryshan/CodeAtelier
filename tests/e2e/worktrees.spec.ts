@@ -1,6 +1,6 @@
 /**
  * 浏览器验证显式 Worktree 对话的创建、项目分组、真实文件修改与历史重载。
- * 1. 临时 Git 仓库提供已提交基线和故意修改的本地文件；页面经生产 HTTP 创建 checkout。
+ * 1. 临时 Git 仓库提供已提交基线和脏文件；无 helper 部署先拒绝默认 Riftri，用户再显式选择 Worktree，经生产 HTTP 创建 checkout。
  * 2. 固定测试模型执行真实 edit_files，断言产物仅出现在新目录，刷新仍显示同一对话。
  * 3. finally 通过 Git 删除本用例创建的 checkout，再删除唯一临时来源目录；不操作用户仓库。
  * 测试使用普通宿主执行，不能作为 Windows/MXC 安装态 Sandbox 验收。
@@ -38,15 +38,10 @@ test("creates a worktree conversation, edits there and reloads its history", asy
     await page.goto("/");
     await page.getByLabel("项目目录").fill(source);
     await page.getByRole("button", { name: "连接项目并新建对话" }).click();
+    await expect(page.getByText(/Riftri 不可用/)).toBeVisible();
+    await expect(page.getByText(/请显式选择 Git worktree/)).toBeVisible();
+    await page.getByRole("button", { name: "改用 Git worktree" }).click();
     const project = page.getByRole("group", { name: source, exact: true });
-    const localButton = await project
-      .getByRole("button", { name: "新建对话", exact: true })
-      .boundingBox();
-    const worktreeButton = await project
-      .getByRole("button", { name: "新建 Worktree 对话" })
-      .boundingBox();
-    expect(localButton?.y).toBe(worktreeButton?.y);
-    await project.getByRole("button", { name: "新建 Worktree 对话" }).click();
     const dialog = page.getByRole("dialog", { name: "新建 Worktree 对话" });
     await expect(dialog.getByText("起始分支或 commit")).toBeVisible();
     await dialog.getByLabel("起始分支或 commit").fill("refs/heads/main");

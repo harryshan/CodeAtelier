@@ -2,7 +2,7 @@
 
 日期：2026-10-25。状态：WSL/XFS 原生 reflink PoC 完成；不代表产品已接入。
 
-后续 D166 已采用不同于本报告原版 CLI 的产品接入：直接复用原 checkout 的单文件 CoW，不建立 immutable base，普通 Git 为 fallback。当前实现及验证分别见 [Worktree 指南](worktrees.md) 和 [验证记录](verification.md)；下文保留原 PoC 的测量与限制。
+后续 D167 已改为默认 Riftri 当前目录快照，与显式 Git worktree 并列：直接克隆原目录和独立 Git metadata，包含脏文件，不建立 immutable base，不支持指定提交，也不自动 fallback。当前实现及验证分别见 [工作区指南](worktrees.md) 和 [验证记录](verification.md)；下文保留原版 CLI PoC 的测量与限制，不能用其创建耗时代表当前实现。
 
 ## 授权与范围
 

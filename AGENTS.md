@@ -24,7 +24,7 @@
 
 - 会话内上下文压缩已授权：保留用户原文、历史快照与未知执行状态，摘要不提升权限；细节见 docs/context-management.md。已接入服务模型容量与实际 usage，token 预算与备用字符模式见 docs/model-tokens.md。
 - 提供 Web UI“关闭服务”入口及终端 Ctrl+C 退出方式；关闭时停止任务并保存为可恢复中断，保留历史和已修改文件。服务关闭流程必须覆盖鉴权、清理与端口释放测试。
-- 初版默认单 agent；2026-09-23 用户追加授权可选只读 subagent，2026-10-17 进一步要求开放 UI 任务级开关（D158），默认关闭、仅本次提交生效、恢复继承原选择。入口开放不等于安装态或全平台专项验收通过，限制见 [多 agent 说明](docs/multi-agent-design.md)。2026-10-17 用户要求内置 `explorer`（获取并筛选信息）与 `reviewer`（干净上下文审查修改），两角色均可多实例、不同范围并行；沿用共享活动 Worker 调度与只读边界（D157）；D158 开放试用入口，不改变 Sandbox 权限。不同真实工作目录的会话最多可并行运行 2 个编码任务（可在设置中调为 1～4），同一工作目录始终串行排队。默认直接修改选定工作目录；2026-10-25 用户授权显式创建 Git worktree 对话（D165），固定实际执行目录并与来源项目共享记忆，不自动迁移、清理或提供一键回滚。详见 docs/worktrees.md。页面关闭后后端仍运行时任务可继续。
+- 初版默认单 agent；2026-09-23 用户追加授权可选只读 subagent，2026-10-17 进一步要求开放 UI 任务级开关（D158），默认关闭、仅本次提交生效、恢复继承原选择。入口开放不等于安装态或全平台专项验收通过，限制见 [多 agent 说明](docs/multi-agent-design.md)。2026-10-17 用户要求内置 `explorer`（获取并筛选信息）与 `reviewer`（干净上下文审查修改），两角色均可多实例、不同范围并行；沿用共享活动 Worker 调度与只读边界（D157）；D158 开放试用入口，不改变 Sandbox 权限。不同真实工作目录的会话最多可并行运行 2 个编码任务（可在设置中调为 1～4），同一工作目录始终串行排队。2026-10-25 D167 将新对话默认改为 Riftri 当前状态副本，显式选择 Git worktree 时使用提交基线；固定实际执行目录并与来源项目共享记忆，不自动迁移已有 Local 历史、清理或提供一键回滚。详见 docs/worktrees.md。页面关闭后后端仍运行时任务可继续。
 - 2026-10-17 用户追加要求向两种 subagent 暴露 Responses 内置 `web_search`（D159），按主任务协议能力提供，Chat Completions / Messages 不声明。搜索由模型服务执行，引用随报告保存；不开放子任务 shell、任意网络命令或写入权限。
 - 用户已追加授权 MCP 支持，并明确所有连接由本机后端建立：支持 stdio 和远程 Streamable HTTP，不使用模型服务商托管 MCP；连接配置及凭据留在 Broker，每主任务主动提供已启用服务的名称与配置用途摘要，不提前连接；模型按需发现 schema，操作经既有审批，执行不受 Runtime Sandbox 保护。实现与边界见 docs/mcp.md。
 - 用户已追加授权 Skill 系统：每任务从项目/宿主用户预设目录自动发现 SKILL.md，以 `skill` 工具按需加载参考正文；不自动执行脚本或授予权限，宿主/Runtime 均经后端读取。目录、冲突和安全边界见 docs/skills.md。
@@ -46,9 +46,9 @@ Agent Runtime 已有权限内的工具不再审批；越界命令通过 `run_wit
 
 取消结果以 executionInstance kind 写入 session。首版不依赖 AppContainer、自研 WFP callout driver、实验性的 `CreateProcessInSandbox`/Bound File System 或 Chromium Target hook。这些未采用机制不得描述为已实现。Windows Sandbox 的日常可用性已获用户确认，但不因此扩大既有权限保证或跨平台能力声明；专项故障与安全矩阵仍按实际证据记录。
 
-### Worktree 原生 CoW（D166）
+### Riftri 与 Git worktree（D167）
 
-2026-10-25 用户要求接入 Riftri，普通 Git worktree 作为 fallback，功能边界不变；进一步明确直接使用原 Git checkout，不另建完整 base。使用固定 Riftri storage 的窄单文件 API 和可选宿主 helper，克隆结果按目标 commit blob 校验，其余由 Git 补齐。来源文件权限不改变，不复制 dirty/untracked/ignored 或来源 index。Linux/macOS 原生接口与 Windows 普通 Git fallback 的验证边界见 docs/worktrees.md；WSL 用于 Linux 验证，不创建 Windows 分区，不由 Windows 服务隐式跨 WSL。创建后的未知/失败结果保留现场，不重新创建；不增加自动回写、清理或新的 Sandbox 授权根。
+2026-10-25 用户要求将 Riftri 与普通 Git worktree 并列：新对话默认 Riftri，主目录当前状态为基准，包含 dirty/staged/untracked/ignored 和独立 Git metadata，不支持指定 commit/branch，不另建 base，不计算 blob hash。原生能力不可用时拒绝创建，提示显式选择 Worktree；不回退复制或普通 Git。显式 Worktree 保留选定提交、detached HEAD 和共享 common directory；旧 D166 清单继续按 Worktree 读取。Riftri 使用实际目录的 Git，不授予来源 Git 根；逐文件克隆不是原子快照，源变化/不支持条目停止并保留失败现场。两模式续聊/恢复复用已有目录，不自动回写、清理或迁移 Local 历史。Linux/macOS helper 与 Windows 当前不支持原生 CoW 的边界见 docs/worktrees.md；WSL 只做 Linux 验证，不创建 Windows 分区、不由 Windows 服务隐式跨 WSL。
 
 ## 设置系统（D153）
 

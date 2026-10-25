@@ -4,7 +4,7 @@
  *
  * 1. 创建 Fastify、Store 和 Engine；若启用 Windows Sandbox，在监听前排空上次服务遗留的账户进程和 ACL journal。
  * 2. 先按监听范围注册来源与凭据检查、关闭/受监督重载接口和错误处理，再注册 bootstrap、设置接口。
- * 3. bootstrap 报告与 Engine 一致的 subagent 发布门禁；会话路由支持显式 Worktree 创建与幂等绑定、列表/分页快照补充来源；任务路由仍独立检查启动、恢复、取消和 trace/审批。
+ * 3. bootstrap 报告 subagent 发布门禁；会话路由默认 Riftri 当前状态副本或显式 Worktree，严格校验互斥模式和基线；固定请求 UUID 绑定目录、列表/快照补充来源。任务路由独立检查启动、恢复、取消和 trace/审批。
  * 4. 注册复用 Store 的只读任务阅读接口，接入 SSE，并提供构建后的网页；没有前端产物时显示开发提示。
  * 5. preClose 中断任务并结束 SSE，onClose 关闭数据库。
  *
@@ -14,6 +14,7 @@
  */
 
 import Fastify, { LogController } from "fastify";
+import { randomUUID } from "node:crypto";
 import staticPlugin from "@fastify/static";
 import {
   registerLocalSecurity,
@@ -200,31 +201,36 @@ export async function createApp(
     const data = z
       .object({
         workspace: z.string().min(1),
+        riftri: z.object({ id: z.uuid() }).strict().optional(),
         worktree: z
           .object({ id: z.uuid(), baseRef: z.string().min(1).max(1024) })
           .strict()
           .optional(),
       })
       .strict()
+      .refine(
+        (value) => !(value.riftri && value.worktree),
+        "不能同时指定 Riftri 和 Worktree",
+      )
       .parse(req.body);
 
     const workspace = await workspacePath(data.workspace);
-    if (data.worktree) {
-      return engine.worktrees.create(
-        { ...data.worktree, workspace },
-        async (checkout) => {
-          const existing = (await store.list()).find(
-            (session) => session.workspace === checkout,
-          );
-
-          return existing ?? store.createAsync(checkout);
-        },
+    const bind = async (checkout: string) => {
+      const existing = (await store.list()).find(
+        (session) => session.workspace === checkout,
       );
+
+      return existing ?? store.createAsync(checkout);
+    };
+
+    if (data.worktree) {
+      return engine.worktrees.create({ ...data.worktree, workspace }, bind);
     }
 
-    await engine.worktrees.validate(workspace);
-
-    return engine.worktrees.describe(await store.createAsync(workspace));
+    return engine.worktrees.createRiftri(
+      { id: data.riftri?.id ?? randomUUID(), workspace },
+      bind,
+    );
   });
   app.get("/api/sessions/:id/traces", async (req, reply) => {
     const { id } = req.params as { id: string };

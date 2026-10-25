@@ -2,9 +2,9 @@
 
 当前初版为本机后端、浏览器单页应用、默认单 agent 和可按任务开启的只读 subagent；不同真实工作目录的会话默认最多两个任务并行，同一目录严格串行。
 
-D165 增加显式 Git worktree 对话：`src/worktrees/service.ts` 管理宿主创建清单、幂等创建和目录/Git 关联验证，`git.ts` 执行固定管理命令。`sessions.workspace` 继续保存实际目录，API/SSE 补充清单元数据、侧栏按来源项目分组；记忆解析到来源，文件工具、Skills/MCP、调度与恢复仍绑定 checkout。Sandbox 启动仅追加已核验的 Git common directory 写根；checkout 位于 Broker 数据目录同级，清单位于私有数据目录。不修改历史 v11 schema、不新增模型工具、不复制脏文件或自动清理，详见 [worktree 设计](worktrees.md)。
+D167 将默认 Riftri 当前目录副本与显式 Git worktree 并列：`src/worktrees/service.ts` 管理宿主清单、请求 UUID/模式去重、目录身份和旧清单兼容。`sessions.workspace` 仍是实际目录，API/SSE 的 worktree 元数据补充 mode，侧栏与记忆按来源分组；工具、Skills/MCP、调度与恢复绑定副本。两种目录均在 Broker 数据目录同级，清单在私有数据目录；不迁移历史 v11，不自动回写或清理，详见 [工作区设计](worktrees.md)。
 
-D166 的 `src/worktrees/riftri.ts` 选择固定应用 helper 或普通 Git fallback；`native/riftri` 复用固定 Riftri storage 单文件 clone，直接从来源 checkout 克隆并验证目标 blob，由 Git 补齐其余文件。不创建 immutable base、不进入 Runtime、不增加挂载或授权根；后端诊断存在兼容的可选清单字段中。
+`src/worktrees/riftri.ts` 要求固定应用 v2 helper 和同卷原生 CoW；`native/riftri` 克隆当前文件树和独立 Git metadata，保留 dirty/staged/untracked/ignored，不计算 blob hash、不调用 checkout。不支持就拒绝并提示显式 Worktree；不挂载、不另建 immutable base、不进入 Runtime。Riftri 的 Git 在实际目录内部，Sandbox 无需来源授权。显式 Worktree 由 `git.ts` 执行普通 Git 创建，保留原 common directory 写根投影；旧 D166 清单继续按 linked Worktree 验证。
 
 Windows Sandbox 已通过用户实际使用验证，可用于日常开发：启用时默认产品组装会由 C++ Sandbox Supervisor 启动常驻 Agent Runtime；Supervisor 创建任务专属 Named Pipe，联合核对 PID、创建时间、Job、账户、restricted SID、capability 与固定 Node 映像后代理 Broker IPC。
 

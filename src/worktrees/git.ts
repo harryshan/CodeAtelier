@@ -1,7 +1,7 @@
 /**
  * 为显式 Worktree UI 操作执行固定的本地 Git 命令，供 WorktreeService 调用。
- * 1. git 使用 execFile 参数数组查询；addWorktree 复用 executeProcess 的进程树取消，可为 Riftri 只建立无 checkout 的 metadata。
- *    gitEnvironment 为管理命令及 native helper 的 Git 子进程清除继承 GIT 环境，禁用交互、管理 hooks 和 submodule recurse。
+ * 1. git 使用 execFile 参数数组查询；addWorktree 复用 executeProcess 的进程树取消，供显式 Git 模式建立 detached checkout。
+ *    gitEnvironment 为管理命令和宿主 helper 清除继承 GIT 环境，禁用交互、管理 hooks 和 submodule recurse；Riftri 快照不调用 addWorktree。
  * 2. 输出有容量和时间上限；取消/失败只返回受控错误，不将过滤器输出或配置写入日志。
  * 3. directoryIdentity / samePath 核验真实目录与文件系统身份，拒绝被替换的 checkout。
  * 不直接调用 shell/fetch/pull，也不自动重试或清理；Git 自身的 checkout filters 仍可运行。普通模型 Git 命令不经过本模块。

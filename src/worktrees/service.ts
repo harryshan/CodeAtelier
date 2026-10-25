@@ -1,7 +1,7 @@
 /**
- * 管理显式创建的 Git worktree，并为 Engine/API 提供持久绑定与验证。
- * 输入是用户选择的仓库根、提交基线和请求 UUID；输出是实际 checkout 与来源项目元数据。
- * 1. inspect 只读获取仓库身份和可选分支；create 选择 Riftri 原生克隆或 Git fallback，串行持久化 preparing/ready 清单。
+ * 管理默认 Riftri 当前目录副本和显式 Git worktree，为 Engine/API 提供持久绑定与验证。
+ * 输入是模式、来源目录、请求 UUID，以及仅 Worktree 可用的提交基线；输出是实际目录与来源元数据。
+ * 1. inspect 获取 Git 身份/分支；create 与 createRiftri 并列进入串行持久化 preparing/ready 清单。
  * 2. 创建使用文件排他锁与 UUID 去重；未知结果保留现场，不删除、不重新 checkout；bind 按 workspace 找回已写历史。
  * 3. describe 装饰历史而不依赖目录存在；validate 在任务 admission/执行/Sandbox 启动前验证目录、gitfile 和共享元数据。
  * 4. projectWorkspace 只映射项目记忆，文件工具和调度仍使用实际路径；close 取消管理进程并排空队列。
@@ -25,7 +25,7 @@ import { z } from "zod";
 import type { Session, WorktreeInfo } from "../shared/types.js";
 import { TraceRecorder } from "../tracing/recorder.js";
 import { TraceArchive } from "../tracing/archive.js";
-import { directoryIdentity, git, samePath } from "./git.js";
+import { addWorktree, directoryIdentity, git, samePath } from "./git.js";
 import {
   checkoutSchema,
   createCheckout,
@@ -36,6 +36,7 @@ import {
 const recordSchema = z.object({
   version: z.literal(1),
   id: z.uuid(),
+  mode: z.enum(["riftri", "worktree"]).default("worktree"),
   projectWorkspace: z.string(),
   baseRef: z.string(),
   baseCommit: z.string(),
@@ -48,6 +49,13 @@ const recordSchema = z.object({
 });
 type Record = z.infer<typeof recordSchema>;
 
+type Creation = {
+  id: string;
+  workspace: string;
+  mode: "riftri" | "worktree";
+  baseRef: string;
+};
+
 function contains(parent: string, child: string) {
   const relative = path.relative(parent, child);
 
@@ -57,6 +65,15 @@ function contains(parent: string, child: string) {
       relative !== ".." &&
       !path.isAbsolute(relative))
   );
+}
+
+async function assertNoGitRedirection(workspace: string, signal: AbortSignal) {
+  const config = await git(workspace, ["config", "--null", "--list"], signal);
+  if (config.split("\0").some((entry) => entry.startsWith("core.worktree\n"))) {
+    throw new Error(
+      "Riftri 不支持 core.worktree 重定向；请显式选择 Git worktree。",
+    );
+  }
 }
 
 export class WorktreeService {
@@ -172,6 +189,7 @@ export class WorktreeService {
       const record = await this.read(id);
       const worktree: WorktreeInfo = {
         id,
+        mode: record.mode,
         projectWorkspace: record.projectWorkspace,
         baseRef: record.baseRef,
         baseCommit: record.baseCommit,
@@ -195,6 +213,21 @@ export class WorktreeService {
 
     try {
       const record = await this.read(id);
+      if (record.mode === "riftri") {
+        if (
+          record.state !== "ready" ||
+          (await directoryIdentity(workspace)) !== record.workspaceIdentity ||
+          (record.commonDirectory &&
+            (!samePath(record.commonDirectory, path.join(workspace, ".git")) ||
+              (await directoryIdentity(record.commonDirectory)) !==
+                record.commonIdentity))
+        ) {
+          throw new Error("Riftri 身份改变。");
+        }
+
+        return record;
+      }
+
       await this.assertPrivateDataDisjoint(record.commonDirectory);
       if (
         record.state !== "ready" ||
@@ -245,11 +278,31 @@ export class WorktreeService {
   async gitWriteRoots(workspace: string) {
     const record = await this.validate(workspace);
 
-    return record ? [record.commonDirectory] : [];
+    return record?.mode === "worktree" ? [record.commonDirectory] : [];
   }
 
   create(
     input: { id: string; workspace: string; baseRef: string },
+    bind: (workspace: string) => Promise<Session>,
+  ) {
+    return this.enqueue({ ...input, mode: "worktree" }, bind);
+  }
+
+  createRiftri(
+    input: { id: string; workspace: string },
+    bind: (workspace: string) => Promise<Session>,
+  ) {
+    if ("baseRef" in input || "baseCommit" in input) {
+      return Promise.reject(
+        new Error("Riftri 仅使用主目录当前状态，不能指定 commit/branch。"),
+      );
+    }
+
+    return this.enqueue({ ...input, mode: "riftri", baseRef: "" }, bind);
+  }
+
+  private enqueue(
+    input: Creation,
     bind: (workspace: string) => Promise<Session>,
   ) {
     const operation = this.pending.then(() => this.createSerial(input, bind));
@@ -269,12 +322,117 @@ export class WorktreeService {
     }
   }
 
-  /** Persist intent before Git; failed or cancelled checkout is retained for inspection. */
-  private async prepareCheckout(
-    input: { id: string; workspace: string; baseRef: string },
+  /** Snapshot current bytes and private Git metadata; no Git checkout or source writes. */
+  private async prepareRiftri(
+    input: Creation,
     workspace: string,
     operationId: string,
   ) {
+    const projectWorkspace = await realpath(input.workspace);
+    await directoryIdentity(projectWorkspace);
+    await this.assertPrivateDataDisjoint(projectWorkspace);
+    await mkdir(this.root, { recursive: true });
+    await directoryIdentity(this.root);
+    if (
+      contains(projectWorkspace, this.root) ||
+      contains(this.root, projectWorkspace)
+    ) {
+      throw new Error(
+        "Riftri 来源与托管目录不能重叠，请选择主项目目录并将数据目录设在项目之外。",
+      );
+    }
+
+    const gitPath = path.join(projectWorkspace, ".git");
+    const metadata = await lstat(gitPath).catch(
+      (error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") {
+          return undefined;
+        }
+
+        throw error;
+      },
+    );
+    if (metadata) {
+      if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
+        throw new Error(
+          "Riftri 需要独立 .git 目录；linked worktree/外置 Git metadata 请显式选择 Git worktree。",
+        );
+      }
+
+      await assertNoGitRedirection(projectWorkspace, this.controller.signal);
+    }
+
+    const selection = await selectCheckout(
+      projectWorkspace,
+      this.root,
+      this.controller.signal,
+      this.helperPath,
+    );
+    const record: Record = {
+      version: 1,
+      mode: "riftri",
+      id: input.id,
+      projectWorkspace,
+      baseRef: "",
+      baseCommit: "",
+      commonDirectory: metadata ? path.join(workspace, ".git") : "",
+      commonIdentity: "",
+      state: "preparing",
+      checkout: selection,
+    };
+    await this.save(record);
+    const span = this.traces.startSpan(operationId, {
+      name: "riftri.snapshot",
+      category: "worktree",
+      track: "Worktree management",
+      attributes: { backend: selection.backend },
+    });
+    let outcome: "ok" | "error" | "cancelled" = "error";
+    try {
+      record.checkout = await createCheckout(
+        projectWorkspace,
+        workspace,
+        selection,
+        this.controller.signal,
+        this.helperPath,
+      );
+      record.workspaceIdentity = await directoryIdentity(workspace);
+      record.commonIdentity = record.commonDirectory
+        ? await directoryIdentity(record.commonDirectory)
+        : "";
+      if (record.commonDirectory) {
+        // Inspect the captured config too: source config may have changed after preflight.
+        await assertNoGitRedirection(workspace, this.controller.signal);
+      }
+
+      record.state = "ready";
+      await this.save(record);
+      await this.validate(workspace);
+      outcome = "ok";
+    } catch (error) {
+      record.state = "failed";
+      await this.save(record).catch(() => {});
+      throw error;
+    } finally {
+      this.traces.endSpan(
+        span,
+        this.controller.signal.aborted ? "cancelled" : outcome,
+      );
+    }
+  }
+
+  /** Persist intent before Git; failed or cancelled checkout is retained for inspection. */
+  private async prepareCheckout(
+    input: Creation,
+    workspace: string,
+    operationId: string,
+  ) {
+    if (input.mode === "riftri") {
+      await this.prepareRiftri(input, workspace, operationId);
+
+      return;
+    }
+
     const repository = await this.inspect(input.workspace);
     await this.assertPrivateDataDisjoint(repository.commonDirectory);
     if (contains(repository.projectWorkspace, this.root)) {
@@ -295,14 +453,10 @@ export class WorktreeService {
       ],
       this.controller.signal,
     );
-    const selection = await selectCheckout(
-      repository.projectWorkspace,
-      this.root,
-      this.controller.signal,
-      this.helperPath,
-    );
+    const selection = { backend: "git" as const };
     const record: Record = {
       version: 1,
+      mode: "worktree",
       id: input.id,
       projectWorkspace: repository.projectWorkspace,
       baseRef: input.baseRef,
@@ -319,18 +473,16 @@ export class WorktreeService {
       track: "Worktree management",
       attributes: {
         backend: selection.backend,
-        fallbackReason: selection.fallbackReason ?? "none",
+        fallbackReason: "none",
       },
     });
     let outcome: "ok" | "error" | "cancelled" = "error";
     try {
-      record.checkout = await createCheckout(
+      await addWorktree(
         repository.projectWorkspace,
         workspace,
         baseCommit,
-        selection,
         this.controller.signal,
-        this.helperPath,
       );
       this.log.info({
         module: "worktree",
@@ -363,7 +515,7 @@ export class WorktreeService {
   }
 
   private async createSerial(
-    input: { id: string; workspace: string; baseRef: string },
+    input: Creation,
     bind: (workspace: string) => Promise<Session>,
   ) {
     const id = z.uuid().parse(input.id);
@@ -386,13 +538,14 @@ export class WorktreeService {
       name: "worktree.create",
       category: "worktree",
       track: "Worktree management",
-      attributes: { worktreeId: id },
+      attributes: { worktreeId: id, mode: input.mode },
     });
     let outcome: "ok" | "error" | "cancelled" = "error";
     this.log.info({
       module: "worktree",
       event: "worktree.create_started",
       worktreeId: id,
+      mode: input.mode,
       operationId,
     });
     try {
@@ -409,6 +562,7 @@ export class WorktreeService {
       if (record) {
         if (
           !samePath(record.projectWorkspace, await realpath(input.workspace)) ||
+          record.mode !== input.mode ||
           record.baseRef !== input.baseRef
         ) {
           throw new Error("相同 Worktree 请求 ID 不能改变来源或基线。");
@@ -428,6 +582,7 @@ export class WorktreeService {
         category: "worktree",
         track: "Worktree management",
         attributes: {
+          mode: input.mode,
           backend: session.worktree?.backend ?? "git",
           fallbackReason: session.worktree?.fallbackReason ?? "none",
           clonedFiles: session.worktree?.clonedFiles ?? 0,
@@ -454,6 +609,7 @@ export class WorktreeService {
         module: "worktree",
         event: "worktree.create_finished",
         worktreeId: id,
+        mode: input.mode,
         operationId,
         outcome,
         durationMs: performance.now() - started,

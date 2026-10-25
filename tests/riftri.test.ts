@@ -1,89 +1,60 @@
 /**
- * 验证可选 Riftri 适配器的后端选择和不可重放边界，不访问真实模型。
- * 1. 模拟进程收据与 Git 查询，测试未安装、不支持、协议损坏和取消时的 fallback 规则。
- * 2. 创建测试确认已开始的原生失败不再次创建普通 checkout，成功后准确保存后端与克隆计数。
- * 原生物理共享由手动 verify-riftri 与 WSL fiemap 验证，不以这些模拟用例替代。
+ * 验证 Riftri v2 原生适配器，进程和文件探测使用模拟，不冒充真实 CoW 验证。
+ * 1. 缺少 helper、跨卷、旧版本和不支持卷均拒绝；取消不会变成能力错误。
+ * 2. snapshot 不携带 commit、不调用 Git checkout；严格校验收据并保留未知结果。
+ * 3. 空目录仍属于 Riftri；普通 Git 模式由 WorktreeService 单独处理。
  */
-
 import { beforeEach, expect, it, vi } from "vitest";
 import { createCheckout, selectCheckout } from "../src/worktrees/riftri.js";
 
 const mocks = vi.hoisted(() => ({
   process: vi.fn(),
-  git: vi.fn(),
-  add: vi.fn(),
   lstat: vi.fn(),
   stat: vi.fn(),
 }));
 vi.mock("node:fs/promises", () => ({ lstat: mocks.lstat, stat: mocks.stat }));
 vi.mock("../src/tools/process.js", () => ({ executeProcess: mocks.process }));
-vi.mock("../src/worktrees/git.js", () => ({
-  git: mocks.git,
-  addWorktree: mocks.add,
-  gitEnvironment: () => ({}),
-}));
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mocks.lstat.mockResolvedValue(undefined);
-  mocks.stat.mockResolvedValue({ dev: 1 });
-  mocks.git.mockResolvedValue("");
-  mocks.add.mockResolvedValue(undefined);
-});
-
-it("uses ordinary Git when the optional helper is absent", async () => {
-  const selection = await selectCheckout(
-    "source",
-    "root",
-    new AbortController().signal,
-    "missing",
-  );
-  expect(selection).toEqual({
-    backend: "git",
-    fallbackReason: "helper-unavailable",
-  });
-  expect(mocks.process).not.toHaveBeenCalled();
-});
-
-it("does not downgrade cancellation into a successful fallback", async () => {
-  const controller = new AbortController();
-  controller.abort();
-  await expect(
-    selectCheckout("source", "root", controller.signal, "missing"),
-  ).rejects.toThrow();
-});
-
-it.each([
-  { output: '{"version":1,"backend":null}', reason: "unsupported-volume" },
-  { output: '{"version":99}', reason: "helper-unavailable" },
-])(
-  "falls back before mutation when capability probing is unavailable: %j",
-  async ({ output, reason }) => {
-    mocks.lstat.mockResolvedValue({
-      isFile: () => true,
-      isSymbolicLink: () => false,
-    });
-    mocks.process.mockResolvedValue({ exitCode: 0, output, truncated: false });
-    expect(
-      await selectCheckout(
-        "source",
-        "root",
-        new AbortController().signal,
-        "helper",
-      ),
-    ).toEqual({ backend: "git", fallbackReason: reason });
-    expect(mocks.add).not.toHaveBeenCalled();
-  },
-);
-
-it("selects native cloning only on a supported same-volume checkout", async () => {
   mocks.lstat.mockResolvedValue({
     isFile: () => true,
     isSymbolicLink: () => false,
   });
+  mocks.stat.mockResolvedValue({ dev: 1 });
+});
+
+it("rejects unavailable helpers rather than losing dirty files through Git fallback", async () => {
+  mocks.lstat.mockResolvedValue(undefined);
+  await expect(
+    selectCheckout("source", "root", new AbortController().signal, "missing"),
+  ).rejects.toThrow("显式选择 Git worktree");
+  expect(mocks.process).not.toHaveBeenCalled();
+});
+
+it("does not downgrade cancellation", async () => {
+  const controller = new AbortController();
+  controller.abort();
+  await expect(
+    selectCheckout("source", "root", controller.signal, "helper"),
+  ).rejects.toThrow();
+});
+
+it.each([
+  { output: '{"version":2,"backend":null}' },
+  { output: '{"version":1,"backend":"riftri-reflink"}' },
+  { output: "invalid receipt" },
+])("rejects unsupported or stale probes: %j", async ({ output }) => {
+  mocks.process.mockResolvedValue({ exitCode: 0, output, truncated: false });
+  await expect(
+    selectCheckout("source", "root", new AbortController().signal, "helper"),
+  ).rejects.toThrow("不会自动回退");
+});
+
+it("selects native cloning only on a supported same-volume destination", async () => {
   mocks.process.mockResolvedValue({
     exitCode: 0,
-    output: '{"version":1,"backend":"riftri-reflink"}',
+    output: '{"version":2,"backend":"riftri-reflink"}',
     truncated: false,
   });
   expect(
@@ -97,83 +68,50 @@ it("selects native cloning only on a supported same-volume checkout", async () =
   mocks.stat
     .mockResolvedValueOnce({ dev: 1 })
     .mockResolvedValueOnce({ dev: 2 });
-  expect(
-    await selectCheckout(
-      "source",
-      "root",
-      new AbortController().signal,
-      "helper",
-    ),
-  ).toEqual({ backend: "git", fallbackReason: "different-volume" });
-  mocks.git.mockResolvedValue("core.sparsecheckout\ntrue\0");
-  expect(
-    await selectCheckout(
-      "source",
-      "root",
-      new AbortController().signal,
-      "helper",
-    ),
-  ).toEqual({ backend: "git", fallbackReason: "sparse-checkout" });
+  await expect(
+    selectCheckout("source", "root", new AbortController().signal, "helper"),
+  ).rejects.toThrow("同一文件系统");
 });
 
-it("retains the native choice and count after a verified population", async () => {
-  mocks.process.mockResolvedValue({
-    exitCode: 0,
-    output: '{"version":1,"clonedFiles":7}',
-    truncated: false,
-  });
-  expect(
-    await createCheckout(
-      "source",
-      "destination",
-      "commit",
-      { backend: "riftri-reflink" },
-      new AbortController().signal,
-      "helper",
-    ),
-  ).toEqual({ backend: "riftri-reflink", clonedFiles: 7 });
-});
-
-it.each([
-  { exitCode: 1, output: "", truncated: false },
-  { exitCode: 0, output: '{"version":2,"clonedFiles":7}', truncated: false },
-  { exitCode: 0, output: '{"version":1,"clonedFiles":7}', truncated: true },
-])(
-  "never repeats checkout after a failed or unknown native population: %j",
-  async (result) => {
-    mocks.process.mockResolvedValue(result);
-    await expect(
-      createCheckout(
+it.each([0, 7])(
+  "retains snapshot semantics even with %i regular files",
+  async (count) => {
+    mocks.process.mockResolvedValue({
+      exitCode: 0,
+      output: JSON.stringify({ version: 2, clonedFiles: count }),
+      truncated: false,
+    });
+    expect(
+      await createCheckout(
         "source",
         "destination",
-        "commit",
         { backend: "riftri-reflink" },
         new AbortController().signal,
         "helper",
       ),
-    ).rejects.toThrow();
-    expect(mocks.add).toHaveBeenCalledTimes(1);
+    ).toEqual({ backend: "riftri-reflink", clonedFiles: count });
+    expect(mocks.process.mock.calls[0]?.[1]).toEqual([
+      "snapshot",
+      "source",
+      "destination",
+    ]);
   },
 );
 
-it("reports Git when all files required ordinary checkout", async () => {
-  mocks.process.mockResolvedValue({
-    exitCode: 0,
-    output: '{"version":1,"clonedFiles":0}',
-    truncated: false,
-  });
-  expect(
-    await createCheckout(
+it.each([
+  { exitCode: 1, output: "", truncated: false },
+  { exitCode: 0, output: '{"version":1,"clonedFiles":7}', truncated: false },
+  { exitCode: 0, output: '{"version":2,"clonedFiles":7}', truncated: true },
+])("never repeats failed or unknown native writes: %j", async (result) => {
+  mocks.process.mockResolvedValue(result);
+  await expect(
+    createCheckout(
       "source",
       "destination",
-      "commit",
       { backend: "riftri-reflink" },
       new AbortController().signal,
       "helper",
     ),
-  ).toEqual({
-    backend: "git",
-    clonedFiles: 0,
-    fallbackReason: "no-reusable-files",
-  });
+  ).rejects.toThrow();
+  expect(mocks.process).toHaveBeenCalledTimes(1);
 });

@@ -3,7 +3,7 @@
  * 通过 api 请求后端，通过 useSessionConnection 同步会话，再交给 Timeline 和分类 SettingsPage 展示。
  *
  * 1. 状态和 effects 管理当前会话、默认关闭的一次性 subagent 勾选、服务端能力标志、弹窗及加载状态；useHistoryScroll 自动加载旧页，Timeline 保持阅读位置；历史加载使用低强调状态行，读取失败独立警告并允许重试。
- * 2. 按服务端来源项目路径分组（Local 使用实际路径）；项目可折叠并默认显示最近五个对话。WorktreeDialog 显式创建独立 checkout，项目栏仍展示实际执行路径；手机端使用导航抽屉。
+ * 2. 按服务端来源项目路径分组（旧 Local 使用实际路径）；项目可折叠并默认显示最近五个对话。新建默认 Riftri、失败重试保留请求 UUID；WorktreeDialog 显式创建提交基线目录。项目栏显示模式及实际路径，手机端使用导航抽屉。
  * 3. resume、reloadService、stopServer、createProject、createConversation 和 send 处理恢复、受确认的服务重载、关闭服务、连接项目、新建会话和发送消息，并显示操作结果。
  * 4. 服务关闭后显示重启说明；正常页面由侧栏或手机端导航抽屉、项目栏、当前会话实际 Runtime 隔离模式（没有证据时显示启动初始状态，并提示获批宿主命令例外）、可折叠会话统计、会将已完成任务过程默认收纳的时间线或项目连接页、所见即所得 Markdown 任务编辑器组成。
  * 5. 侧栏另开同源对话阅读器；SettingsPage 接管版本化编辑和初始引导，保存更新主页面状态，不中断活动任务。
@@ -21,7 +21,7 @@ import { MarkdownTaskEditor } from "./MarkdownTaskEditor";
 import { SettingsPage } from "./settings/SettingsPage";
 import { Timeline } from "./Timeline";
 import { SessionStatistics } from "./SessionStatistics";
-import { WorktreeDialog } from "./WorktreeDialog";
+import { WorktreeDialog, requestId } from "./WorktreeDialog";
 import s from "./app.module.css";
 
 const RECENT_CONVERSATION_LIMIT = 5;
@@ -34,6 +34,9 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [addingProject, setAddingProject] = useState(false);
   const [worktreeProject, setWorktreeProject] = useState<string>();
+  const creationRequest = useRef<{ workspace: string; id: string } | undefined>(
+    undefined,
+  );
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [expandedProjectHistories, setExpandedProjectHistories] = useState<
     Set<string>
@@ -249,11 +252,24 @@ export default function App() {
     setBusy(true);
     setError("");
     try {
+      if (creationRequest.current?.workspace !== projectWorkspace) {
+        creationRequest.current = {
+          workspace: projectWorkspace,
+          id: requestId(),
+        };
+      }
+
       const session = await api<Session>("/sessions", {
         workspace: projectWorkspace,
+        riftri: { id: creationRequest.current.id },
       });
 
-      setList(await sessions());
+      creationRequest.current = undefined;
+
+      setList((current) => [
+        session,
+        ...current.filter((item) => item.id !== session.id),
+      ]);
       setSelected(session.id);
       setAddingProject(false);
       setMobileSidebarOpen(false);
@@ -371,7 +387,7 @@ export default function App() {
                       disabled={busy}
                       onClick={() => void createConversation(projectWorkspace)}
                       aria-label="新建对话"
-                      title="在此项目中新建对话"
+                      title="以主目录当前状态新建 Riftri 对话"
                     >
                       <span>＋</span>
                     </button>
@@ -415,7 +431,11 @@ export default function App() {
                         }}
                       >
                         <span className={s.sessionIcon}>
-                          {item.worktree ? "⑂" : "⌘"}
+                          {item.worktree
+                            ? item.worktree.mode === "riftri"
+                              ? "◈"
+                              : "⑂"
+                            : "⌘"}
                         </span>
                         <span className={s.conversationTitle}>
                           <strong>{item.title}</strong>
@@ -586,6 +606,11 @@ export default function App() {
                 每一步执行清晰可见，每一次对话留在本机。
               </p>
               <form className={s.projectForm} onSubmit={createProject}>
+                <p>
+                  默认使用 Riftri
+                  创建独立目录，包含主目录的未提交与忽略文件。需要原生 CoW
+                  支持。
+                </p>
                 <label>
                   项目目录
                   <input
@@ -599,6 +624,13 @@ export default function App() {
                 <div>
                   <button disabled={busy} className={s.primary}>
                     {busy ? "连接中…" : "连接项目并新建对话"}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={busy || !workspace.trim()}
+                    onClick={() => setWorktreeProject(workspace)}
+                  >
+                    改用 Git worktree
                   </button>
                   {list.length > 0 && (
                     <button
@@ -649,11 +681,15 @@ export default function App() {
                 <span
                   title={
                     data?.session.worktree
-                      ? `来源：${data.session.worktree.projectWorkspace ?? "清单不可用"}；创建基线：${data.session.worktree.baseRef ?? "未知"} (${data.session.worktree.baseCommit?.slice(0, 12) ?? ""})；存储：${data.session.worktree.backend ?? "git"}`
+                      ? `来源：${data.session.worktree.projectWorkspace ?? "清单不可用"}；创建基线：${data.session.worktree.mode === "riftri" ? "主目录创建时状态（包含脏文件）" : `${data.session.worktree.baseRef ?? "未知"} (${data.session.worktree.baseCommit?.slice(0, 12) ?? ""})`}；存储：${data.session.worktree.backend ?? "git"}`
                       : undefined
                   }
                 >
-                  {data?.session.worktree ? "Worktree" : "本地项目"}
+                  {data?.session.worktree
+                    ? data.session.worktree.mode === "riftri"
+                      ? "Riftri"
+                      : "Worktree"
+                    : "本地项目（历史）"}
                 </span>
                 <code title={data?.session.workspace}>
                   {data?.session.workspace}

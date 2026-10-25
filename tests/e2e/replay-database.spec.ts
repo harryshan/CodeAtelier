@@ -1,6 +1,6 @@
 /**
  * 阅读器数据库模式的 Chromium 回归：真实服务用例经正常 API 保存任务，再通过 UI 查看，另以合成响应验证竞态。
- * 1. 真实链路验证对话/Task 选择、模型记录、刷新恢复和空对话，浏览操作不提交任务。
+ * 1. 用测试服务专属入口预置升级前 Local 会话，再经生产任务 API 保存记录；验证对话/Task 选择、模型记录、刷新恢复和空对话，浏览操作不提交任务。
  * 2. 控制只读响应验证晚到的任务详情不覆盖新选择、404 读取错误清空旧记录且可手动重试。
  * 3. 模拟空库及无效深链接，避免悄悄显示其他会话；只保存 IDs，不向 URL/localStorage 写正文。
  * 使用临时项目和测试服务模拟模型，不读个人 SQLite 或真实导出，不运行 Evaluation。
@@ -33,13 +33,16 @@ test("browses saved conversations and tasks from the real database without expor
     const auth = await page.request.get("/api/bootstrap");
     const { token } = await auth.json();
     const headers = { "x-codeatelier-token": token };
-    const created = await page.request.post("/api/sessions", {
+    const created = await page.request.post("/api/test/legacy-sessions", {
       headers,
       data: { workspace },
     });
     const session = await created.json();
     const empty = await (
-      await page.request.post("/api/sessions", { headers, data: { workspace } })
+      await page.request.post("/api/test/legacy-sessions", {
+        headers,
+        data: { workspace },
+      })
     ).json();
     const task = await (
       await page.request.post(`/api/sessions/${session.id}/tasks`, {

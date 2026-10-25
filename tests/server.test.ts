@@ -57,7 +57,7 @@ async function createFixture() {
   };
 }
 
-it("creates isolated sessions and validates missing sessions and bad payloads", async () => {
+it("reads legacy sessions and validates missing sessions and bad payloads", async () => {
   const fixture = await createFixture();
 
   try {
@@ -67,15 +67,8 @@ it("creates isolated sessions and validates missing sessions and bad payloads", 
     });
     expect(bootstrap.json().subagentsAvailable).toBe(true);
 
-    const created = await fixture.app.inject({
-      method: "POST",
-      url: "/api/sessions",
-      headers: fixture.headers,
-      payload: { workspace: await temp() },
-    });
-
-    expect(created.statusCode).toBe(200);
-    const id = created.json().id;
+    // Seed a pre-D167 Local conversation; new default creation is covered in riftri-workspaces.
+    const { id } = await fixture.store.createAsync(await temp());
 
     expect(
       (

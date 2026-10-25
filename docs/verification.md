@@ -1,5 +1,16 @@
 # 初版验证记录
 
+## 默认 Riftri 当前状态副本（D167，2026-10-25）
+
+- Riftri 与普通 Worktree 已拆为并列模式。新会话默认 Riftri，不接受 commit/branch；v2 helper 直接从原目录克隆当前文件和独立 Git metadata，移除 blob hash、Git checkout/filter 与 fallback。Windows 无原生支持时明确拒绝，UI 提供显式 Worktree 入口。
+- WSL / Linux Node 24.19.0、Rust 1.93.1：用正式构建流程和锁文件构建最终 helper，复用已有普通文件 XFS 镜像，无 Windows 分区/格式化。真实 `WorktreeService` 创建两个各克隆 40 个普通文件的副本，保留 dirty/staged/deleted/untracked/ignored、CRLF attributes 下的实际字节、非 UTF-8/换行/tab 文件名、执行位及内部链接。副本提交只改变自己 HEAD/refs/index，来源状态不变；普通 Worktree 仍是干净提交基线。
+- 32 MiB 文件在来源与两个副本均共享块 `2435832..2501367`（flags `0x2001`）。分别修改首 4 KiB 后，副本分配 `6714392..6714399` 与 `4990808..4990815`，剩余 `2435840..2501367` 仍共享；来源哈希保持不变。卸载重挂载后，独立 Node 进程在无 helper 时验证身份、后端与持久内容成功，最终已卸载。
+- Git 活跃锁、alternates 和外部符号链接均使创建失败并保留现场；移除问题条目后同一请求仍拒绝重放。普通 WSL/ext4 上 Riftri 拒绝、显式 Worktree 成功。单独的协议兼容阻塞 helper 验证关闭真正终止进程、写 failed 清单、重启禁止重放；该阻塞夹具不代表 ext4 有 CoW。
+- 证据：`.local/riftri-snapshots/` 的 `wsl-verify.log`、`wsl-result.json`、`extents*.json`、`remount.log`、`ext4.log`、`cancel.log`。原生内容校验中的哈希仅由测试计算，产品创建路径不再计算 Git blob hash。
+- Windows 浏览器回归 `pnpm test:e2e` 71 passed：真实 UI 确认默认 Riftri 不可用提示、显式 Worktree 创建/编辑/刷新；旧 Local 的既有任务与历史回归通过测试专属预置入口继续执行，不将其冒称原生 Riftri 浏览器成功。
+- Windows / Node 26.10.0：最终 `pnpm check` 全套通过，132 文件、969 passed / 1 existing skipped；类型、lint、格式和测试构建通过。中间一轮既有 `token-anchor.test.ts` 的历史迁移用例偶发报源/目标文件身份相同，单独 20 项复跑及最终全套均通过，未改迁移代码或弱化断言；保留 `check-final.log`、`token-anchor-recheck.log` 和 `check-final-retry.log` 记录。
+- 边界：逐文件克隆不是全目录原子快照；创建期间应停止来源写入。嵌套/外置 Git、初始化 submodule gitfile、外部链接及特殊文件目前拒绝。macOS APFS、Windows 原生 CoW/完整 ACL、巨型 repo 性能和真实 Sandbox 安装态未验收。未运行 Evaluation、安装/Repair、自动回写/清理或重启当前服务。
+
 ## Riftri 直接来源 CoW（D166，2026-10-25）
 
 - 采用 Riftri v0.6.5 storage 源码与窄单文件 API，不调用创建 immutable base 的上游 CLI。正式构建脚本在 WSL 使用固定源码 SHA-256 与 Cargo.lock 成功构建；本次工具链为独立目录中的 Rust 1.93.1，Linux Node 24.19.0。构建过程的 Cargo 镜像配置仅在实验目录，不进入产品或修改系统安装。

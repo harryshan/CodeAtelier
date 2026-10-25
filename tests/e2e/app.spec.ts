@@ -2,7 +2,7 @@
  * 用 Chromium 操作真实页面，检查用户完成会话任务时看到的结果。
  * Playwright 启动本地测试服务器和临时工作区，模型响应由 tests/fixtures/server.ts 模拟。
  *
- * 1. 创建会话、通过统一文件编辑创建文件、查看 diff、刷新历史，再检查审批、取消和设置保存。
+ * 1. 预置升级前 Local 会话、通过统一文件编辑创建文件、查看 diff、刷新历史，再检查审批、取消和设置保存。新默认 Riftri/Worktree 入口在 worktrees.spec 验证。
  * 2. 检查重试文本分开显示且保持原始顺序、凭据失效后重新连接，以及会话切换后的数据隔离。
  * 3. 检查受确认的重载服务入口会等待替代服务、完整刷新页面，以及关闭服务成功和请求失败时的不同提示。
  * 4. 检查压缩通知、原始历史及模型用量在刷新后仍能显示。
@@ -25,6 +25,24 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 async function createInitialConversation(page: Page, workspace: string) {
+  // Keep these existing task/history assertions on a pre-upgrade Local fixture.
+  // Only session creation is redirected; auth, task execution and storage stay real.
+  await page.unroute("**/api/sessions");
+  await page.route("**/api/sessions", async (route) => {
+    if (route.request().method() !== "POST") {
+      await route.continue();
+
+      return;
+    }
+
+    const response = await route.fetch({
+      url: route
+        .request()
+        .url()
+        .replace("/api/sessions", "/api/test/legacy-sessions"),
+    });
+    await route.fulfill({ response });
+  });
   await page.getByLabel("项目目录").fill(workspace);
   await page.getByRole("button", { name: "连接项目并新建对话" }).click();
 }

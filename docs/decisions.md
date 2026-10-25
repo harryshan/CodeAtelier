@@ -2,6 +2,15 @@
 
 只记录已确认的方向；候选技术选择保留在需求说明中。后续修改需记录替代关系，避免历史决定被误当成当前要求。
 
+## D167：默认 Riftri 当前目录副本与显式 Git worktree 并列
+
+- 日期：2026-10-25
+- 状态：用户要求替代 D166 的 commit 校验和 Git fallback；明确原生 CoW 不可用时拒绝创建，提示显式选择 Worktree。
+- 决定：新对话默认从来源主目录当前状态创建 Riftri 原生 CoW 私有目录，不接受 branch/commit；保留脏文件、未跟踪和忽略文件、独立 Git metadata/index/refs，不另建 immutable base，不计算 Git blob hash。显式 Worktree 保持选定提交、detached HEAD 和共享 Git 公共目录的原行为。Riftri 的 overlay 指独立 CoW 文件视图，不是挂载 OverlayFS 或实时跟随主目录。
+- 生命周期：同一会话的后续任务、恢复继续使用已有私有目录，不重新取主目录；已有 Local 历史保持原路径，用户新建对话才采用默认模式。不自动回写、合并或清理。新创建请求固定 UUID、模式及来源；失败/未知结果保留现场，不能重放。
+- 边界：完整目录仍需枚举和创建条目；逐文件原生克隆不是全目录原子快照，检测到复制过程中的源变化就失败。主目录在创建时应保持静止；符号链接不递归跟随。Git linked checkout、外置 Git metadata/alternates 和无法独立复制的条目明确拒绝，不产生指回来源 Git 的写通道。Git 已登记的其他 worktrees 不属于本次目录状态，复制 .git 时排除 worktrees 管理目录。
+- 联动：沿用实际路径调度、项目来源分组和记忆、Skills/MCP/只读 subagent、身份核验与历史清单。Riftri 的 Git metadata 位于私有目录，Sandbox 不追加来源 Git 授权；普通 Worktree 继续追加已核验的 shared common directory。创建 trace 区分 mode/backend/count 和终态，不记录文件内容或路径。Linux 用 WSL 验证，Windows 无 helper/原生支持时拒绝 Riftri；不创建 Windows 分区、不自动重启服务。
+
 ## D166：直接复用来源 checkout 的 Riftri 原生 CoW
 
 - 日期：2026-10-25

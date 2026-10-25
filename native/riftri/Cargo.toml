@@ -9,8 +9,6 @@ rust-version = "1.88"
 [dependencies]
 riftri-storage = { path = "../../.local/riftri-native/riftri-0.6.5/crates/riftri-storage" }
 serde_json = "1"
-sha1 = "0.10"
-sha2 = "0.10"
 
 [profile.release]
 strip = true
