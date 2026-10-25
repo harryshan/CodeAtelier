@@ -5,6 +5,7 @@
  * 3. 校验托管 UNC 命名空间不能将子目录或另一数据目录误认作同一个挂载。
  * 4. Git PoC 显式选择及新旧分段 metrics 收据不能改变 live 挂载协议或终止普通挂载。
  * 5. Local 策略须有明确能力收据；重复 ID 不能换来源、控制目录或策略。
+ * 6. 冻结导出必须收到 frozen 后开始，持有 helper 到导出完成；租约丢失不得返回成功结果。
  * 原生文件、Git 和受限 token 语义由手动 verify-winfsp-overlay 独立验证。
  */
 import { EventEmitter } from "node:events";
@@ -58,6 +59,84 @@ class Helper extends EventEmitter {
 }
 
 beforeEach(() => spawn.mockReset());
+
+async function localFixture() {
+  const f = await fixture();
+  const starting = f.manager.start(
+    f.id,
+    f.directory,
+    f.directory,
+    f.workspace,
+    true,
+    f.controller.signal,
+    { kind: "local" },
+  );
+  f.helper.stdout.write('{"version":1,"state":"ready","mode":"local"}\n');
+  await starting;
+
+  return f;
+}
+
+it("waits for frozen receipt and retains the helper until export finishes", async () => {
+  const f = await localFixture();
+  let entered = false;
+  let finish!: () => void;
+  const pending = f.manager.withFrozen(f.id, async () => {
+    entered = true;
+    await new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+
+    return "sealed result";
+  });
+  expect(entered).toBe(false);
+  expect(f.helper.stdin.read()?.toString()).toBe("freeze\n");
+  f.helper.stdout.write('{"version":1,"state":"frozen","mode":"local"}\n');
+  await vi.waitFor(() => expect(entered).toBe(true));
+  expect(f.helper.stdin.writableEnded).toBe(false);
+  await expect(f.manager.metrics(f.id)).rejects.toThrow("unavailable");
+  await expect(f.manager.withFrozen(f.id, async () => null)).rejects.toThrow(
+    "cannot be frozen",
+  );
+  finish();
+  expect(await pending).toBe("sealed result");
+  expect(f.helper.stdin.writableEnded).toBe(true);
+  await f.manager.close();
+});
+
+it("does not return export results when the helper lease is lost", async () => {
+  const f = await localFixture();
+  const pending = f.manager.withFrozen(f.id, async () => {
+    f.helper.kill();
+
+    return "untrusted result";
+  });
+  const rejected = expect(pending).rejects.toThrow();
+  f.helper.stdout.write('{"version":1,"state":"frozen","mode":"local"}\n');
+  await rejected;
+  await expect(f.manager.close()).rejects.toThrow("清理未全部完成");
+});
+
+it("cleans up after export failure and never freezes legacy mounts", async () => {
+  const f = await localFixture();
+  const pending = f.manager.withFrozen(f.id, async () => {
+    throw new Error("export rejected");
+  });
+  const rejected = expect(pending).rejects.toThrow("export rejected");
+  f.helper.stdout.write('{"version":1,"state":"frozen","mode":"local"}\n');
+  await rejected;
+  await f.manager.close();
+
+  const legacy = await fixture();
+  const starting = legacy.start();
+  legacy.helper.ready();
+  await starting;
+  await expect(
+    legacy.manager.withFrozen(legacy.id, async () => null),
+  ).rejects.toThrow("cannot be frozen");
+  expect(legacy.helper.stdin.read()).toBeNull();
+  await legacy.manager.close();
+});
 
 async function fixture(helper = new Helper()) {
   spawn.mockImplementation(() => helper);

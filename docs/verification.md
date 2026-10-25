@@ -1,5 +1,13 @@
 # 初版验证记录
 
+## Local 自动捕获与冻结（D170，2026-10-25）
+
+- `pnpm overlay:verify-capture` 通过（`.local/local-overlay-capture-52WogB/report.json`）：无预声明基线，真实文件 API 覆盖写入/替换/删除/rename/二进制；创建期 lower 打开和枚举零次，纯读取后内容副本仍为零；主目录同长度修改并恢复 mtime 后陈旧修改拒绝，属性修改后的旧基线也不能复用。冻结撤销卷而保留独占 helper 租约，封存表/原文可读，竞争挂载拒绝；正常重挂载保留结果。[报告](local-overlay-capture-results.json)。
+- 原生编译与 reparse 回归通过；`overlay-manager.test.ts` 13 项通过，包括冻结收据顺序、导出失败清理和租约丢失拒绝。
+- `pnpm check` 通过：135 个测试文件、1020 passed / 1 existing skipped，类型/lint/格式/构建全部通过（`.local/local-overlay-capture-check.log`）。没有 UI/HTTP/SSE 改动，未运行 e2e/Evaluation。新增回归最初用 utimes 修改属性，但该操作按既有语义已固定内容，后改用真正仅改属性的 attrib 夹具验证未私有化内容的边界；未放宽拒绝断言。
+- 新 helper 下 `pnpm overlay:verify-sandbox` 再次通过（`.local/local-overlay-sandbox-XdggSx/report.json` / `.local/local-overlay-capture-sandbox.log`），包括真实双命令并行、取消、租约释放、重挂载及续聊；无 fallback/unknown。不扩大为产品自动发布或跨平台验收。
+- 原生格式 v4 不自动恢复旧实验 v3；正式旧模式 v2 不变。发布器桥接、跨文件读依赖复核、ACL 保真发布和成功后刷新仍未完成。
+
 ## Local 专用策略与真实 Sandbox 并行（D170，2026-10-25）
 
 - `pnpm overlay:verify-policy` 通过（`.local/local-overlay-policy-miZE18/report.json`）：所有层级的 `.git` 文件/目录不可见，大小写、内部链接、创建与文件/目录改名测试通过，拒绝操作不污染挂载或丢失被改名的文件。`git status` 确认因非仓库失败，`git init` 在 `.git` 路径失败。两种持久模式互相拒绝恢复，正确模式可继续恢复；旧私有 gitfile 行为不变。NTFS 规范路径校验覆盖短名解析，但夹具未生成 8.3 名称，不宣称实测该别名。

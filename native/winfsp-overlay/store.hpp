@@ -5,6 +5,7 @@
 // 4. security/reparse 接口维护虚拟卷权限和内部链接；finish 仅在状态可信时标记干净卸载。
 // 5. 显式 Git PoC lower 按 tree/blob 提供内容，read 不物化文件；生产 live lower 保持原样。
 // 6. Local 模式绑定独立持久格式，所有层级隐藏并保留 .git 名称，不允许新建私有仓库入口。
+// 7. observeRead/capture 在实际访问路径上记录版本和不可变原文；不在启动时扫描来源。
 // 遮蔽来源的 .git 命名空间；Git PoC 从对象库取内容，不打开来源工作文件。
 // 来源文件打开禁止重解析与写访问，控制目录不暴露于挂载。
 #pragma once
@@ -105,6 +106,7 @@ class Store {
   Handle lower;
   Handle controlDirectory;
   Handle objectsDirectory;
+  Handle baselinesDirectory;
   std::recursive_mutex mutex;
   UINT32 serial = 0;
   bool poisoned = false;
@@ -141,6 +143,11 @@ class Store {
   DWORD read(const NodePtr& node, void* buffer, UINT64 offset, DWORD length);
   Handle openLower(const std::wstring& path,
                    DWORD sharing = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE);
+  std::wstring observeRead(const NodePtr& node, HANDLE handle,
+                           const std::wstring& expected = L"");
+  void capture(const std::wstring& path, int flags = 1);
+  Handle baselineInput(const NodePtr& node);
+  void sealChanges();
 
  private:
   void closeDatabase() noexcept;

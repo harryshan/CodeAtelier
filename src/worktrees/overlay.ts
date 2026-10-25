@@ -6,6 +6,7 @@
  * 4. mount/restore/unmount/异常退出记录独立 trace 和受控生命周期日志，原生诊断只含状态码/源码行号。
  * 5. 显式 gitBase 仅供人工虚拟 worktree PoC；metrics 读取累计计数/微秒耗时，兼容旧 helper 收据。
  * 6. Local 模式要求独立策略收据，挂载身份/策略固定；旧模式保持私有 gitfile 兼容。
+ * 7. withFrozen 停止 Local 文件系统服务后执行导出，helper 全程持有控制目录租约；返回后正常退出。
  */
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
@@ -92,6 +93,8 @@ interface Mount {
   closed: boolean;
   gitLower: boolean;
   local: boolean;
+  freezing?: boolean;
+  freeze?: () => void;
   metrics?: (value: OverlayMetrics) => void;
 }
 
@@ -178,7 +181,7 @@ export class OverlayManager {
       }
 
       await existing.ready;
-      if (existing.failed || existing.stopping) {
+      if (existing.failed || existing.stopping || existing.freezing) {
         throw new Error(
           "Overlay 已失去挂载；保留现场，请停止任务并重启服务检查。",
         );
@@ -354,7 +357,7 @@ export class OverlayManager {
               const message = z
                 .object({
                   version: z.literal(1),
-                  state: z.enum(["ready", "stopped"]),
+                  state: z.enum(["ready", "stopped", "frozen"]),
                   mode: z.literal("local").optional(),
                 })
                 .parse(raw);
@@ -371,6 +374,12 @@ export class OverlayManager {
                 }
 
                 resolveReady();
+              } else if (message.state === "frozen") {
+                if (!local || !mount.freezing || message.mode !== "local") {
+                  throw new Error("Unexpected freeze receipt.");
+                }
+
+                mount.freeze?.();
               } else {
                 mount.stopped = true;
               }
@@ -416,6 +425,7 @@ export class OverlayManager {
       (!mount.gitLower && !mount.local) ||
       mount.failed ||
       mount.stopping ||
+      mount.freezing ||
       mount.metrics
     ) {
       throw new Error("Overlay metrics unavailable or already pending.");
@@ -435,6 +445,55 @@ export class OverlayManager {
       clearTimeout(timer!);
       mount.metrics = undefined;
     }
+  }
+
+  /** Caller drains its task processes first. Export runs only after the native
+   * volume disappears, while the helper still excludes other store owners. */
+  async withFrozen<T>(id: string, exportChanges: () => Promise<T>): Promise<T> {
+    const mount = this.mounts.get(id);
+    if (!mount?.local || mount.failed || mount.stopping || mount.freezing) {
+      throw new Error("Local overlay cannot be frozen in its current state.");
+    }
+
+    mount.freezing = true;
+
+    return this.observe(id, "local_freeze", async () => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          new Promise<void>((resolve, reject) => {
+            mount.freeze = resolve;
+            timer = setTimeout(
+              () => reject(new Error("Local overlay freeze timed out.")),
+              30_000,
+            );
+            mount.process.stdin.write("freeze\n");
+          }),
+          mount.exit.then(() => {
+            throw new Error("Overlay exited before frozen export completed.");
+          }),
+        ]);
+        if (mount.failed || mount.closed) {
+          throw new Error("Overlay freeze was not confirmed.");
+        }
+
+        const result = await Promise.race([
+          exportChanges(),
+          mount.exit.then(() => {
+            throw new Error("Overlay lease was lost during frozen export.");
+          }),
+        ]);
+        if (mount.failed || mount.closed || mount.stopping) {
+          throw new Error("Overlay lease was lost during frozen export.");
+        }
+
+        return result;
+      } finally {
+        clearTimeout(timer);
+        mount.freeze = undefined;
+        await this.stop(id);
+      }
+    });
   }
 
   /** Release only a mount owned by this manager; creation failures keep their disk state. */

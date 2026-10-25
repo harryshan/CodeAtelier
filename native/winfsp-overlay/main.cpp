@@ -4,6 +4,7 @@
 // 3. stdin EOF/stop 停止 dispatcher、删除卷，再标记干净退出；数据和 worktree 登记保留。
 // 4. 显式 create-git/restore-git PoC 参数固定 Git/tree；metrics 不包含路径/OID/内容。
 // 5. create-local/restore-local 选择无 Git 视图并回执策略；metrics 证明创建期 lower 访问成本。
+// 6. freeze 销毁 Local dispatcher 后封存路径结果；helper 保留控制目录独占租约直到 stop。
 // 不安装驱动、不创建分区、不托管网络服务；UNC 由 WinFsp 本机 MUP provider 提供。
 #include <iostream>
 
@@ -66,6 +67,14 @@ int wmain(int argc, wchar_t** argv) {
               << (localMode ? ",\"mode\":\"local\"" : "") << "}\n" << std::flush;
     std::string command;
     while (std::getline(std::cin, command)) {
+      if (command == "freeze" && store.localMode && filesystem) {
+        FspFileSystemStopDispatcher(filesystem);
+        FspFileSystemDelete(filesystem);
+        filesystem = nullptr;
+        store.sealChanges();
+        std::cout << "{\"version\":1,\"state\":\"frozen\",\"mode\":\"local\"}\n" << std::flush;
+        continue;
+      }
       if (command != "metrics" || (!store.git && !store.localMode)) {
         break;
       }
@@ -85,8 +94,10 @@ int wmain(int argc, wchar_t** argv) {
                 << ",\"accessCleanups\":" << queryMetrics.accessCleanups << "}\n"
                 << std::flush;
     }
-    FspFileSystemStopDispatcher(filesystem);
-    FspFileSystemDelete(filesystem);
+    if (filesystem) {
+      FspFileSystemStopDispatcher(filesystem);
+      FspFileSystemDelete(filesystem);
+    }
     store.finish();
     std::cout << "{\"version\":1,\"state\":\"stopped\"}\n" << std::flush;
     return 0;

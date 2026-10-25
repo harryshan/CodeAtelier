@@ -4,6 +4,7 @@
 // 3. 命名空间、属性、DACL 与枚举委托 Store；Cleanup 无错误通道，失败使挂载失效。
 // 4. 重解析回调在当前虚拟路径检查目标，目录移动不能使相对链接越出视图。
 // 5. Git PoC 卷使用 no-atime；仅忽略自动访问时间，显式 SetBasic/写入仍持久化。
+// 6. Local 显式元数据修改与可删除预检保存基线，避免仅在无错误返回的 Cleanup 中发现陈旧读。
 // WinFsp 内核执行用户访问、共享模式和锁检查，不以 helper 宿主权限替调用者绕过检查。
 #include <algorithm>
 #include <cstring>
@@ -304,6 +305,9 @@ static NTSTATUS setBasic(FSP_FILE_SYSTEM* fs, PVOID context, UINT32 attributes, 
                          UINT64 access, UINT64 write, UINT64 change, FSP_FSCTL_FILE_INFO* info) {
   return guarded(fs, [&](Store& store) {
     auto node = opened(context);
+    if (node->id != 1 && (attributes != INVALID_FILE_ATTRIBUTES || creation || access || write || change)) {
+      store.capture(store.name(node), 4);
+    }
     if (attributes != INVALID_FILE_ATTRIBUTES) {
       if (attributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_ENCRYPTED)) {
         throw Error{STATUS_NOT_SUPPORTED};
@@ -343,7 +347,7 @@ static NTSTATUS setSize(FSP_FILE_SYSTEM* fs, PVOID context, UINT64 size, BOOLEAN
   });
 }
 
-static NTSTATUS canDelete(FSP_FILE_SYSTEM* fs, PVOID context, PWSTR) {
+static NTSTATUS canDelete(FSP_FILE_SYSTEM* fs, PVOID context, PWSTR name) {
   return guarded(fs, [&](Store& store) {
     auto node = opened(context);
     if (node->id == 1) {
@@ -352,6 +356,7 @@ static NTSTATUS canDelete(FSP_FILE_SYSTEM* fs, PVOID context, PWSTR) {
     if (node->directory() && node->reparse.empty() && !store.list(node).empty()) {
       throw Error{STATUS_DIRECTORY_NOT_EMPTY};
     }
+    store.capture(name, 2);
   });
 }
 

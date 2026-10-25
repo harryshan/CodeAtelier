@@ -1,0 +1,20 @@
+{
+  "timestamp": "2026-10-25T14:34:27.134Z",
+  "platform": "win32",
+  "release": "10.0.26200",
+  "initialLowerOpensExcludingRootIdentity": 0,
+  "initialLowerEnumerations": 0,
+  "initialContentObjects": 0,
+  "contentObjectsAfterReadOnlyAccess": 0,
+  "capturedPaths": 11,
+  "operations": "overwrite, replace, delete, rename, create/delete, binary",
+  "staleReadWithRestoredMtime": "write/delete/replace rejected",
+  "sourceWriteIsolation": "passed",
+  "immutableBaselinesAndCleanRemount": "passed",
+  "frozenExport": "volume unavailable; sealed results readable; competing owner rejected",
+  "limitations": [
+    "No publisher bridge, epoch reset or publication acknowledgement yet",
+    "No arbitrary directory/reparse publication or cryptographic read fingerprint",
+    "Windows host file API test; not product/Sandbox lifecycle validation"
+  ]
+}

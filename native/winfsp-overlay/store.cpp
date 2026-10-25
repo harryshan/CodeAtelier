@@ -6,6 +6,7 @@
 // 4. security 用 Windows 继承算法合成 DACL，SetSecurity 只保存描述符，不改来源 ACL。
 // 5. 可选 GitLower 按目录事务导入不可变树，read 直接返回 blob，只有写入才物化对象。
 // 6. Local 模式独立格式和保留名称校验避免旧私有 gitfile 路径混入无仓库视图。
+//    changes.cpp 保存按需读版本和不可变基线；内容/命名空间修改在副作用前调用 capture。
 #include "store.hpp"
 
 #include <objbase.h>
@@ -283,6 +284,9 @@ Store::Store(const fs::path& sourcePath, const fs::path& directory, const fs::pa
         throw Error{STATUS_OBJECT_NAME_COLLISION};
       }
       fs::create_directory(root / L"objects");
+      if (localMode) {
+        fs::create_directory(root / L"baselines");
+      }
     }
     // No shared lease: a second mount must never open the same private state
     // concurrently.
@@ -303,6 +307,14 @@ Store::Store(const fs::path& sourcePath, const fs::path& directory, const fs::pa
                            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
     require(objectsDirectory.value != INVALID_HANDLE_VALUE);
     fileInfo(objectsDirectory.value);
+    if (localMode) {
+      baselinesDirectory = Handle(CreateFileW(
+          (root / L"baselines").c_str(), FILE_LIST_DIRECTORY | READ_CONTROL,
+          FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+          FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+      require(baselinesDirectory.value != INVALID_HANDLE_VALUE);
+      fileInfo(baselinesDirectory.value);
+    }
     lower = Handle(CreateFileW(source.c_str(),
                                FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | READ_CONTROL,
                                FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
@@ -336,7 +348,7 @@ Store::Store(const fs::path& sourcePath, const fs::path& directory, const fs::pa
       require(SUCCEEDED(CoCreateGuid(&guid)));
       serial = guid.Data1 ? guid.Data1 : 1;
       Query(*this, "INSERT INTO meta VALUES(?,?,?,?,0)")
-          .number(1, localMode ? 3 : 2)
+          .number(1, localMode ? 4 : 2)
           .text(2, source.wstring())
           .text(3, sourceIdentity)
           .number(4, serial)
@@ -350,9 +362,14 @@ Store::Store(const fs::path& sourcePath, const fs::path& directory, const fs::pa
       if (rootNode->id != 1) {
         throw Error{STATUS_FILE_CORRUPT_ERROR};
       }
+      if (localMode) {
+        sql("CREATE TABLE observations(path TEXT PRIMARY KEY,name TEXT,stamp TEXT);"
+            "CREATE TABLE baselines(path TEXT PRIMARY KEY,name TEXT,kind INTEGER,"
+            "object TEXT,stamp TEXT,attributes INTEGER,security BLOB,flags INTEGER);");
+      }
     } else {
       Query meta(*this, "SELECT version,source,identity,serial,clean FROM meta");
-      if (!meta.step() || meta.number(0) != (localMode ? 3 : 2) || meta.number(4) != 1 ||
+      if (!meta.step() || meta.number(0) != (localMode ? 4 : 2) || meta.number(4) != 1 ||
           fold(meta.text(1)) != fold(source.wstring()) || meta.text(2) != sourceIdentity) {
         throw Error{STATUS_FILE_INVALID};
       }
@@ -812,6 +829,7 @@ NodePtr Store::create(const std::wstring& path, DWORD attributes, PSECURITY_DESC
   if (attributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_ENCRYPTED)) {
     throw Error{STATUS_NOT_SUPPORTED};
   }
+  capture(path, 2);
   Node value;
   value.parent = directory->id;
   value.info.FileAttributes = attributes;
@@ -837,6 +855,9 @@ void Store::promote(const NodePtr& value) {
   if (value->directory() || !value->object.empty()) {
     return;
   }
+  if (localMode && !value->origin.empty()) {
+    capture(this->name(value));
+  }
   pinParents(value);
   GUID guid{};
   require(SUCCEEDED(CoCreateGuid(&guid)));
@@ -859,7 +880,10 @@ void Store::promote(const NodePtr& value) {
   } else if (!value->origin.empty()) {
     // Deny concurrent write/delete while copying; the cached read handle has no
     // write access.
-    auto input = openLower(value->origin, FILE_SHARE_READ);
+    auto input = baselineInput(value);
+    if (input.value == INVALID_HANDLE_VALUE) {
+      input = openLower(value->origin, FILE_SHARE_READ);
+    }
     std::vector<BYTE> buffer(1024 * 1024);
     for (;;) {
       DWORD count = 0;
@@ -951,11 +975,14 @@ DWORD Store::read(const NodePtr& value, void* buffer, UINT64 offset, DWORD lengt
     return count;
   }
   HANDLE handle = content(value, false);
+  auto observed = observeRead(value, handle);
   LARGE_INTEGER position{};
   position.QuadPart = offset;
   require(SetFilePointerEx(handle, position, nullptr, FILE_BEGIN));
   DWORD transferred = 0;
   require(ReadFile(handle, buffer, length, &transferred, nullptr));
+  // A source writer racing this read must not produce a silently mixed view.
+  observeRead(value, handle, observed);
   return transferred;
 }
 
@@ -980,6 +1007,8 @@ void Store::rename(const std::wstring& from, const std::wstring& to, bool replac
   }
   // A renamed regular file belongs to the private namespace and must survive
   // removal of its former lower path. Directories retain live lower children.
+  capture(from, 2);
+  capture(to, 2);
   if (!value->directory() && value->reparse.empty()) {
     promote(value);
   }
@@ -1023,6 +1052,7 @@ void Store::remove(const std::wstring& path, sqlite3_int64 expected) {
     throw Error{STATUS_DIRECTORY_NOT_EMPTY};
   }
   auto [directory, name] = parent(path);
+  capture(path, 2);
   link(directory->id, name, 0);
 }
 
@@ -1051,6 +1081,9 @@ void Store::setSecurity(const NodePtr& value, SECURITY_INFORMATION information,
   if (information & (SACL_SECURITY_INFORMATION | LABEL_SECURITY_INFORMATION)) {
     throw Error{STATUS_NOT_SUPPORTED};
   }
+  if (value->id != 1) {
+    capture(name(value), 4);
+  }
   auto current = security(value);
   PSECURITY_DESCRIPTOR output = nullptr;
   checked(FspSetSecurityDescriptor(current.data(), information, modification, &output));
@@ -1073,6 +1106,7 @@ void Store::setReparse(const NodePtr& value, const void* data, size_t size) {
   // New links accept only relative in-volume targets. Source junctions are
   // translated on import.
   auto bytes = internalReparse(data, size, workspace / name(value).substr(1), workspace, workspace);
+  capture(name(value), 4);
   value->reparse = std::move(bytes);
   value->origin.clear();
   value->info.FileAttributes |= FILE_ATTRIBUTE_REPARSE_POINT;
