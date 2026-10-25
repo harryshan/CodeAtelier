@@ -16,6 +16,7 @@
     "worktree:build-winfsp": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-winfsp-overlay.ps1",
     "worktree:verify-winfsp": "tsx scripts/verify-winfsp-overlay.ts",
     "worktree:verify-virtual": "tsx scripts/verify-virtual-worktree.ts",
+    "overlay:verify-publish": "tsx scripts/verify-local-overlay.ts",
     "start": "node dist/server/server/launcher.js",
     "settings:migrate": "tsx scripts/migrate-settings.ts",
     "typecheck": "tsc --noEmit",

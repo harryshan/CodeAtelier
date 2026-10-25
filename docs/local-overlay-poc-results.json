@@ -1,0 +1,61 @@
+{
+  "timestamp": "2026-10-25T13:10:57.664Z",
+  "platform": "win32",
+  "release": "10.0.26200",
+  "node": "v26.10.0",
+  "gitOperations": 0,
+  "concurrent": {
+    "status": "passed",
+    "publishers": 2,
+    "finalProgramOutput": "30",
+    "candidateSyntaxChecks": "passed",
+    "lifecycleLogs": "passed; plain text without source paths or file content",
+    "journals": [
+      "concurrent\\coordinator\\51dc72d27e45e8a3eb81e0be496a08a543ccce461335b6020c5c3dbc2b2cb864\\49c938ff-59b2-4423-93ee-4d53b7446cfc",
+      "concurrent\\coordinator\\51dc72d27e45e8a3eb81e0be496a08a543ccce461335b6020c5c3dbc2b2cb864\\ee2dfc34-9073-4ef7-9082-6e3199d51315"
+    ]
+  },
+  "crash": {
+    "status": "passed",
+    "exitCode": 86,
+    "observed": {
+      "state": "applying",
+      "files": [
+        {
+          "path": "one.txt",
+          "recorded": "intent",
+          "observed": "matches_after"
+        },
+        {
+          "path": "two.txt",
+          "recorded": "pending",
+          "observed": "matches_before"
+        }
+      ]
+    },
+    "later": {
+      "state": "applying",
+      "files": [
+        {
+          "path": "one.txt",
+          "recorded": "intent",
+          "observed": "diverged"
+        },
+        {
+          "path": "two.txt",
+          "recorded": "pending",
+          "observed": "matches_before"
+        }
+      ]
+    },
+    "replay": "blocked",
+    "recovery": "inspect only; lock retained",
+    "originalBackups": "verified"
+  },
+  "limitations": [
+    "Controlled file API only; no WinFsp or Sandbox integration",
+    "No arbitrary external-writer CAS or multi-file atomicity",
+    "Recovery observes and blocks; no automatic completion or rollback",
+    "No Windows DACL-preserving replacement or directory rename validation"
+  ]
+}

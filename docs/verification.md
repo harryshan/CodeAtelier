@@ -1,5 +1,14 @@
 # 初版验证记录
 
+## Local overlay 文件发布 PoC（D170，2026-10-25）
+
+- 第一阶段只验证普通目录上的受控读/编辑/发布，不创建 Git repo、worktree 或索引，也不接入 WinFsp/Sandbox/产品入口。实现和可重跑命令见 [Local overlay 设计](local-overlay-design.md#第一阶段-poc受控编辑与发布)，摘要见 [JSON 报告](local-overlay-poc-results.json)。
+- Windows 11（10.0.26200）、Node 26.10.0，`pnpm overlay:verify-publish` 通过：`.local/local-overlay-poc-oi5G87/report.json` / `.local/local-overlay-process.log`。两个独立 Node 进程屏障后同时发布同文件不同行修改，各自对合并候选进行真实语法检查；最终程序输出 `30`，两项修改保留，来源只含预期文件。统一纯文本生命周期日志存在且不含来源路径/正文。
+- 真实子进程在第一个来源替换完成、written 确认落盘前 `exit(86)`。重启观察得到首文件 `intent/matches_after`、第二文件 `pending/matches_before`，原文备份完整；发布锁保留，重试拒绝。来源首文件随后被外部修改，观察变为 `diverged` 且不覆盖。此项证明中断检测和禁止盲目重放，不是自动恢复完成或断电耐久性证明。
+- `local-overlay-poc.test.ts` 的 28 个用例覆盖 B/O/T 整合、BOM/CRLF/EOF、132 组对称非重叠替换检查、二进制双改/同段/同名新建/删除对修改冲突、整批预检、陈旧读依赖、候选验证失败/失效、取消、未知写、重复批次、路径穿越和验证期间 junction 替换。路径攻击用例检查原文件及外部目标均未被发布器修改；trace 检查无来源路径/正文。
+- 最终 `pnpm check` 通过：135 个测试文件、1015 passed / 1 existing skipped，类型、lint、格式和构建通过（`.local/local-overlay-check-final.log`）。初次完整检查在手动脚本 stdout/stderr 可空类型处停止，按已配置 pipe 修正声明后通过；构建仍有既有 Zod 注释和大 chunk 提示。收尾检查没有本次发布 worker 残留。没有 UI/HTTP/SSE 行为变化，未运行浏览器验收或 Evaluation。
+- 多文件仍逐一替换；应用锁只约束同一协调目录下的参与者，不提供任意外部写入的内容 CAS。首次读取会保存实际文件内容；尚无 shell 私有写层、完整工程候选验证视图、ACL 保真、自动解锁/回滚、续轮 rebase 或 Linux/macOS 验证。保留实验日志，不清理或修改生产会话。
+
 ## 虚拟 worktree 首次扫描优化（D169，2026-10-25）
 
 - 原实现一万文件 profiling `.local/virtual-worktree-poc-iVF6ZY`：首次 status 10.561 s，SQLite 写累计 6.294 s；逐文件 Cleanup 自动 atime 触发持久化是主要可消除成本。Git PoC 改用 no-atime，并增加 `(parent,node)` 索引与 SQL statement 复用；未关闭 SQLite FULL，未改变生产实时 overlay 的时间语义。

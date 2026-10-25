@@ -31,6 +31,8 @@ Runtime stdio 集成夹具共用 `runtime-child-close.ts`：spawn 后立即监�
 
 ## 共享执行逻辑回归
 
+- Local overlay 发布协议（D170）：`local-overlay-poc.test.ts` 覆盖普通非 Git 文件上的 B/O/T 合并、并发发布、整批冲突拒绝、陈旧读取/依赖、候选失效、验证失败、取消、写后未知、路径替换及重复批次。`pnpm overlay:verify-publish` 单独启动两个真实发布进程，检查合并候选语法和最终执行结果，并在首个替换后立即退出验证锁/日志/现场与禁止盲目重放；手动脚本不进入默认 check，不属于 Evaluation。此阶段不挂载 WinFsp、不接入 Sandbox 或产品会话，不推导任意外部写入下无竞争；限制见 [Local overlay 设计](local-overlay-design.md#第一阶段-poc受控编辑与发布)。
+
 - 虚拟 worktree 首次扫描优化：人工虚拟 worktree 脚本还覆盖首次扫描前/后同长度修改、删除和 untracked 的真实 Git 检测，检查 index 无 assume-unchanged/skip-worktree 标记；读取不改 atime、显式设置 atime 和 staged 修改经重挂载保留。`--unique-blobs=100000 --count=100000` 验证唯一内容夹具；新增累计 SQL/Git 对象耗时不记录路径/内容。仍保持 SQLite FULL 和完整 Git 扫描，不进入默认检查。
 
 - Git 提交虚拟 worktree PoC（D169）：`pnpm worktree:verify-virtual --count=100000 --sandbox` 是显式手动入口，复用 WinFsp/已安装 Sandbox，使用未展开工作文件的 Git 对象夹具。覆盖选定提交（含非来源 HEAD）、来源 staged/dirty 排除、双视图、diff/add/commit/branch/reset/restore、rename/delete、隐藏文件、持久化恢复和不支持属性转换时拒绝访问/拒绝报告 clean。测量 metadata-only 创建、原生 tree/blob/工作文件访问计数、FILE_STANDARD_INFO 分配字节与首次/重复真实 status；`--verify-only` 跳过性能对照。Sandbox 只替换实验 workspace 注册适配器，Runtime/ACL/IPC 与完成/取消清理保持生产路径；不是完整产品入口验收。协议层 `overlay-manager.test.ts` 覆盖 metrics 分段收据和 live 模式禁止误发命令。不进入默认 check 或 Evaluation。
