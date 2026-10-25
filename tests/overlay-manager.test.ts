@@ -117,6 +117,29 @@ it("does not return export results when the helper lease is lost", async () => {
   await expect(f.manager.close()).rejects.toThrow("清理未全部完成");
 });
 
+it("waits for native read verification before releasing a frozen batch", async () => {
+  const f = await localFixture();
+  let finished = false;
+  const pending = f.manager.withFrozen(f.id, async (verifyReads) => {
+    await verifyReads();
+    finished = true;
+
+    return "verified batch";
+  });
+  f.helper.stdin.read();
+  f.helper.stdout.write('{"version":1,"state":"frozen","mode":"local"}\n');
+  await vi.waitFor(() => {
+    expect(f.helper.stdin.read()?.toString()).toBe("check-reads\n");
+  });
+  expect(finished).toBe(false);
+  expect(f.helper.stdin.writableEnded).toBe(false);
+  f.helper.stdout.write(
+    '{"version":1,"state":"reads-checked","mode":"local"}\n',
+  );
+  expect(await pending).toBe("verified batch");
+  await f.manager.close();
+});
+
 it("cleans up after export failure and never freezes legacy mounts", async () => {
   const f = await localFixture();
   const pending = f.manager.withFrozen(f.id, async () => {

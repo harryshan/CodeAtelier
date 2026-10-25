@@ -1,5 +1,12 @@
 # 初版验证记录
 
+## Local 原生批次与发布桥接（D170，2026-10-25）
+
+- `pnpm overlay:verify-filesystem --native` 通过：实际子进程自行触发捕获，不再预先声明原文；导出所选源码后在新临时视图验证候选，三方合并来源输出 `30`，未选产物不进入候选/来源，原会话私有输出继续保留。路径和报告见 [桥接结果](local-overlay-native-batch-results.json)。
+- `pnpm overlay:verify-capture` 增加冻结 helper 复核读版本，未选择的已读文件过期时拒绝生成批次（`.local/local-overlay-capture-pM5LeF/report.json` / `.local/local-overlay-native-batch-capture.log`）。类型范围/大小/数量限制见设计，未验证生产级任意 shell 依赖隔离。
+- 原生编译和 reparse 回归通过；初轮 21 项相关单元通过，随后补充读版本收据等待回归。此增量不涉及 UI/HTTP/SSE、不运行 e2e/Evaluation；生产自动发布、ACL 保真和成功后刷新仍待完成。
+- 最终 `pnpm check` 通过：136 个测试文件、1031 passed / 1 existing skipped，类型/lint/格式/构建通过（`.local/local-overlay-native-batch-check-final.log`）。自审增加目录变更祖先和非 ASCII 大小写回归，封存路径检查使用原生 folded key；24 项相关测试包含在完整检查内。只读进程核查没有 overlay helper 遗留。
+
 ## Local 自动捕获与冻结（D170，2026-10-25）
 
 - `pnpm overlay:verify-capture` 通过（`.local/local-overlay-capture-52WogB/report.json`）：无预声明基线，真实文件 API 覆盖写入/替换/删除/rename/二进制；创建期 lower 打开和枚举零次，纯读取后内容副本仍为零；主目录同长度修改并恢复 mtime 后陈旧修改拒绝，属性修改后的旧基线也不能复用。冻结撤销卷而保留独占 helper 租约，封存表/原文可读，竞争挂载拒绝；正常重挂载保留结果。[报告](local-overlay-capture-results.json)。

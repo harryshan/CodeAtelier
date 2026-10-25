@@ -1,0 +1,34 @@
+{
+  "timestamp": "2026-10-25T14:47:49.901Z",
+  "platform": "win32",
+  "release": "10.0.26200",
+  "node": "v26.10.0",
+  "backend": "native WinFsp Local live-directory overlay; Git metadata hidden and reserved",
+  "baselineCapture": "automatic native capture and frozen export",
+  "gitOperations": 0,
+  "riftriInvocations": 0,
+  "mounts": 2,
+  "initialPrivateContentObjects": 0,
+  "initialLowerEnumerations": 0,
+  "initialLowerOpensExcludingRootIdentity": 0,
+  "privateProgramResults": [
+    "12",
+    "21"
+  ],
+  "mergedCandidateResults": [
+    "12",
+    "30"
+  ],
+  "validationView": "fresh overlay; original private results retained",
+  "sourceProgramResult": "30",
+  "liveLowerReads": "passed",
+  "unselectedArtifactsPublished": false,
+  "cleanRemount": "passed; private contents retained, no automatic rebase",
+  "cleanup": "clean helper exits confirmed",
+  "limitations": [
+    "Selected module.mjs only; bounded native read dependencies; no epoch reset or publication acknowledgement",
+    "Host Node processes; no Sandbox validation in this experiment",
+    "No large-repository or cold-cache benchmark",
+    "Publisher still has phase-one ACL and external-writer race limitations"
+  ]
+}

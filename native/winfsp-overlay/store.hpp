@@ -148,6 +148,7 @@ class Store {
   void capture(const std::wstring& path, int flags = 1);
   Handle baselineInput(const NodePtr& node);
   void sealChanges();
+  void checkReads();
 
  private:
   void closeDatabase() noexcept;

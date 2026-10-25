@@ -7,6 +7,7 @@
  * 5. 显式 gitBase 仅供人工虚拟 worktree PoC；metrics 读取累计计数/微秒耗时，兼容旧 helper 收据。
  * 6. Local 模式要求独立策略收据，挂载身份/策略固定；旧模式保持私有 gitfile 兼容。
  * 7. withFrozen 停止 Local 文件系统服务后执行导出，helper 全程持有控制目录租约；返回后正常退出。
+ *    导出回调可复核原生读版本；协议只回执状态，不通过 stdout 传文件内容或路径。
  */
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
@@ -95,6 +96,7 @@ interface Mount {
   local: boolean;
   freezing?: boolean;
   freeze?: () => void;
+  readsChecked?: () => void;
   metrics?: (value: OverlayMetrics) => void;
 }
 
@@ -357,7 +359,12 @@ export class OverlayManager {
               const message = z
                 .object({
                   version: z.literal(1),
-                  state: z.enum(["ready", "stopped", "frozen"]),
+                  state: z.enum([
+                    "ready",
+                    "stopped",
+                    "frozen",
+                    "reads-checked",
+                  ]),
                   mode: z.literal("local").optional(),
                 })
                 .parse(raw);
@@ -374,6 +381,12 @@ export class OverlayManager {
                 }
 
                 resolveReady();
+              } else if (message.state === "reads-checked") {
+                if (!local || !mount.readsChecked || message.mode !== "local") {
+                  throw new Error("Unexpected read verification receipt.");
+                }
+
+                mount.readsChecked();
               } else if (message.state === "frozen") {
                 if (!local || !mount.freezing || message.mode !== "local") {
                   throw new Error("Unexpected freeze receipt.");
@@ -449,7 +462,10 @@ export class OverlayManager {
 
   /** Caller drains its task processes first. Export runs only after the native
    * volume disappears, while the helper still excludes other store owners. */
-  async withFrozen<T>(id: string, exportChanges: () => Promise<T>): Promise<T> {
+  async withFrozen<T>(
+    id: string,
+    exportChanges: (verifyReads: () => Promise<void>) => Promise<T>,
+  ): Promise<T> {
     const mount = this.mounts.get(id);
     if (!mount?.local || mount.failed || mount.stopping || mount.freezing) {
       throw new Error("Local overlay cannot be frozen in its current state.");
@@ -478,7 +494,39 @@ export class OverlayManager {
         }
 
         const result = await Promise.race([
-          exportChanges(),
+          exportChanges(async () => {
+            if (
+              mount.readsChecked ||
+              mount.failed ||
+              mount.stopping ||
+              mount.closed
+            ) {
+              throw new Error("Frozen read verification unavailable.");
+            }
+
+            let readTimer: ReturnType<typeof setTimeout> | undefined;
+            try {
+              await Promise.race([
+                new Promise<void>((resolve, reject) => {
+                  mount.readsChecked = resolve;
+                  readTimer = setTimeout(
+                    () =>
+                      reject(new Error("Frozen read verification timed out.")),
+                    30_000,
+                  );
+                  mount.process.stdin.write("check-reads\n");
+                }),
+                mount.exit.then(() => {
+                  throw new Error(
+                    "Overlay lease was lost during read verification.",
+                  );
+                }),
+              ]);
+            } finally {
+              clearTimeout(readTimer);
+              mount.readsChecked = undefined;
+            }
+          }),
           mount.exit.then(() => {
             throw new Error("Overlay lease was lost during frozen export.");
           }),

@@ -4,6 +4,7 @@
 // 3. baselines 表记录路径原始状态和修改类别；缺失/目录/重解析不递归展开或猜测普通文件内容。
 // 4. baselineInput 保证普通 copy-up 使用同一份已捕获原文；目录移动仍保留原有 live lower 行为。
 // 5. sealChanges 仅在 dispatcher 已销毁后运行；导出已捕获路径的结果引用，不枚举整个视图。
+// 6. checkReads 在冻结期间复核观察版本，逐路径保存有效性，供宿主筛除已选择编辑后检查其余依赖。
 // 所有入口由 Store mutex 串行化；文件先 flush 后引用，失败不修改 lower，孤立对象留待受控清理。
 // 版本戳不是密码学摘要，也不提供跨文件快照；尚未包含 epoch 切换、发布确认或任意目录发布。
 #include "store.hpp"
@@ -229,6 +230,38 @@ void Store::sealChanges() {
           .text(3, current ? current->object : L"")
           .text(4, current ? current->origin : L"")
           .number(5, current ? current->info.FileAttributes : 0)
+          .step();
+    }
+    sql("COMMIT; PRAGMA wal_checkpoint(FULL)");
+  } catch (...) {
+    sql("ROLLBACK");
+    throw;
+  }
+}
+
+void Store::checkReads() {
+  if (!localMode || poisoned) {
+    throw Error{STATUS_FILE_INVALID};
+  }
+  sql("BEGIN IMMEDIATE");
+  try {
+    sql("DROP TABLE IF EXISTS checked_reads;"
+        "CREATE TABLE checked_reads(path TEXT PRIMARY KEY,valid INTEGER);");
+    Query observed(*this, "SELECT path,name,stamp FROM observations");
+    while (observed.step()) {
+      bool valid = false;
+      try {
+        auto input = openLower(observed.text(1), FILE_SHARE_READ);
+        valid = version(input.value) == observed.text(2);
+      } catch (const Error& error) {
+        if (error.status != STATUS_OBJECT_NAME_NOT_FOUND &&
+            error.status != STATUS_OBJECT_PATH_NOT_FOUND && error.status != STATUS_NO_SUCH_FILE) {
+          throw;
+        }
+      }
+      Query(*this, "INSERT INTO checked_reads VALUES(?,?)")
+          .text(1, observed.text(0))
+          .number(2, valid ? 1 : 0)
           .step();
     }
     sql("COMMIT; PRAGMA wal_checkpoint(FULL)");

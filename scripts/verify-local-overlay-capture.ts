@@ -31,6 +31,8 @@ import {
   overlayNamespace,
   overlayWorkspace,
 } from "../src/worktrees/overlay.js";
+import { sourceIdentity } from "./local-overlay/files.js";
+import { nativeBatch } from "./local-overlay/native-batch.js";
 
 assert.equal(process.platform, "win32", "Requires native Windows and WinFsp");
 await mkdir(".local", { recursive: true });
@@ -190,7 +192,7 @@ try {
   // An already-private edit retains its original B, even after lower changes.
   await writeFile(path.join(source, "edit.txt"), "external next version\n");
   await writeFile(mounted("edit.txt"), "private second edit\n");
-  const capturedPaths = await manager.withFrozen(id, async () => {
+  const capturedPaths = await manager.withFrozen(id, async (verifyReads) => {
     await assert.rejects(readFile(mounted("edit.txt")));
     const db = new DatabaseSync(path.join(control, "overlay.sqlite"), {
       readOnly: true,
@@ -218,6 +220,15 @@ try {
           "utf8",
         ),
         "private second edit\n",
+      );
+      await assert.rejects(
+        nativeBatch(
+          await sourceIdentity(source),
+          control,
+          ["edit.txt"],
+          verifyReads,
+        ),
+        { message: "STALE_DEPENDENCY" },
       );
       const contender = new OverlayManager(root, log);
       await assert.rejects(
@@ -274,8 +285,9 @@ try {
         immutableBaselinesAndCleanRemount: "passed",
         frozenExport:
           "volume unavailable; sealed results readable; competing owner rejected",
+        staleUnselectedRead: "native batch rejected before publication",
         limitations: [
-          "No publisher bridge, epoch reset or publication acknowledgement yet",
+          "This script only checks batch rejection; no epoch reset or publication acknowledgement yet",
           "No arbitrary directory/reparse publication or cryptographic read fingerprint",
           "Windows host file API test; not product/Sandbox lifecycle validation",
         ],

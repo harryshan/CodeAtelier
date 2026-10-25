@@ -1,10 +1,10 @@
 /**
  * 手动验证 D170 发布 PoC 与现有 WinFsp 普通目录后端的最小衔接。
  * 1. 创建独占非 Git 来源，直接调用 OverlayManager Local 模式建立双视图，不经过 Riftri/WorktreeService。
- * 2. 预先记录明确路径的基线；真实 Node 子进程经挂载执行临时文件替换和私有产物写入。
- * 3. 读取已声明路径的私有结果交给 Publisher，在相应挂载中验证合并候选后发布。
+ * 2. 默认保留旧的预声明基线对照；--native 改用原生自动基线和冻结导出，真实子进程编辑不变。
+ * 3. 将明确选择的结果交给 Publisher；--native 在全新临时视图验证候选，保留原会话私有结果。
  * 4. 干净卸载/重挂载检查私有内容持久化，保存有界报告并保留实验现场。
- * 此脚本不是自动修改集导出：不捕获任意 shell 读依赖，不从当前 lower 猜测旧基线。
+ * --native 只发布明确选择的路径并校验其它原生读依赖；不宣称捕获所有 shell 副作用或自动 rebase。
  * 仅使用已安装 WinFsp/helper，不安装驱动、不创建分区、不接入产品 UI 或 Sandbox。
  * 所有子进程有期限；挂载管理和发布沿用统一日志/tracing；不属于默认 check 或 Evaluation。
  */
@@ -21,11 +21,15 @@ import {
   overlayNamespace,
   overlayWorkspace,
 } from "../src/worktrees/overlay.js";
-import { sourceIdentity } from "./local-overlay/files.js";
+import { durableJson, sourceIdentity } from "./local-overlay/files.js";
 import { EditSession } from "./local-overlay/session.js";
+import type { Batch } from "./local-overlay/session.js";
+import { nativeBatch } from "./local-overlay/native-batch.js";
 import { Publisher } from "./local-overlay/publisher.js";
 
 const execute = promisify(execFile);
+const native = process.argv.includes("--native");
+const batches = new Map<string, Batch>();
 assert.equal(process.platform, "win32", "Requires native Windows and WinFsp");
 await mkdir(".local", { recursive: true });
 const root = await mkdtemp(path.resolve(".local/local-overlay-winfsp-"));
@@ -80,15 +84,21 @@ try {
     assert.equal(metrics.lowerOpens, 0);
     assert.equal(metrics.lowerEnumerations, 0);
     assert.deepEqual(await readdir(path.join(view.control, "objects")), []);
-    assert.equal((await view.session.read("module.mjs"))?.toString(), original);
+    if (!native) {
+      assert.equal(
+        (await view.session.read("module.mjs"))?.toString(),
+        original,
+      );
+    }
+
     assert.equal(
       await readFile(path.join(view.workspace, "module.mjs"), "utf8"),
       original,
     );
   }
 
-  // Both baselines are explicit and captured while this synthetic source is
-  // unchanged. This is not a substitute for native first-read/write tracking.
+  // In native mode these child operations alone establish their own baselines;
+  // the caller has never captured B through EditSession or declared a write list.
   const editing = `
     import { readFile, writeFile, rename } from 'node:fs/promises';
     const text = await readFile('module.mjs', 'utf8');
@@ -135,27 +145,73 @@ try {
       await readFile(path.join(view.workspace, "live.txt"), "utf8"),
       "updated lower\n",
     );
-    await view.session.edit(
-      "module.mjs",
-      await readFile(path.join(view.workspace, "module.mjs")),
-    );
-    await view.session.save(path.join(root, `${view.id}.json`));
+    if (native) {
+      const batch = await manager.withFrozen(view.id, (verifyReads) =>
+        nativeBatch(identity, view.control, ["module.mjs"], verifyReads),
+      );
+      assert.equal(
+        Buffer.from(batch.changes[0]!.base.content!, "base64").toString(),
+        original,
+      );
+      batches.set(view.id, batch);
+      await durableJson(path.join(root, `${view.id}.json`), batch);
+    } else {
+      await view.session.edit(
+        "module.mjs",
+        await readFile(path.join(view.workspace, "module.mjs")),
+      );
+      await view.session.save(path.join(root, `${view.id}.json`));
+    }
+  }
+
+  if (native) {
+    await manager.close();
+    manager = new OverlayManager(root, log);
+    await mount(false);
   }
 
   const publisher = new Publisher(path.join(root, "publisher"), log);
   const candidates: string[] = [];
   for (const view of views) {
-    await publisher.publish(view.session.seal(), {
+    await publisher.publish(batches.get(view.id) ?? view.session.seal(), {
       validate: async (files) => {
         const content = files.get("module.mjs");
         assert.ok(content);
-        await writeFile(path.join(view.workspace, "module.mjs"), content);
-        await execute(process.execPath, ["--check", "module.mjs"], {
-          cwd: view.workspace,
-          windowsHide: true,
-          timeout: 10_000,
-        });
-        candidates.push(await program(view.workspace));
+        const validator = new OverlayManager(root, log);
+        const validationId = randomUUID();
+        const validationWorkspace = native
+          ? overlayWorkspace(overlayNamespace(root), validationId)
+          : view.workspace;
+        try {
+          if (native) {
+            await validator.start(
+              validationId,
+              source,
+              path.join(root, `validate-${validationId}`),
+              validationWorkspace,
+              true,
+              AbortSignal.timeout(30_000),
+              { kind: "local" },
+            );
+            await assert.rejects(
+              readFile(path.join(validationWorkspace, "generated.txt")),
+              { code: "ENOENT" },
+            );
+          }
+
+          await writeFile(
+            path.join(validationWorkspace, "module.mjs"),
+            content,
+          );
+          await execute(process.execPath, ["--check", "module.mjs"], {
+            cwd: validationWorkspace,
+            windowsHide: true,
+            timeout: 10_000,
+          });
+          candidates.push(await program(validationWorkspace));
+        } finally {
+          await validator.close();
+        }
       },
     });
   }
@@ -168,7 +224,7 @@ try {
   await mount(false);
   assert.deepEqual(
     await Promise.all(views.map((view) => program(view.workspace))),
-    ["12", "30"],
+    native ? ["12", "21"] : ["12", "30"],
   );
   for (const view of views) {
     assert.equal(
@@ -185,6 +241,9 @@ try {
     node: process.version,
     backend:
       "native WinFsp Local live-directory overlay; Git metadata hidden and reserved",
+    baselineCapture: native
+      ? "automatic native capture and frozen export"
+      : "explicit EditSession baseline",
     gitOperations: 0,
     riftriInvocations: 0,
     mounts: 2,
@@ -193,15 +252,20 @@ try {
     initialLowerOpensExcludingRootIdentity: 0,
     privateProgramResults: ["12", "21"],
     mergedCandidateResults: candidates,
+    validationView: native
+      ? "fresh overlay; original private results retained"
+      : "same private view",
     sourceProgramResult: "30",
     liveLowerReads: "passed",
     unselectedArtifactsPublished: false,
     cleanRemount: "passed; private contents retained, no automatic rebase",
     cleanup: "clean helper exits confirmed",
     limitations: [
-      "Explicit module.mjs baseline only; no native changeset export or arbitrary shell dependency capture",
+      native
+        ? "Selected module.mjs only; bounded native read dependencies; no epoch reset or publication acknowledgement"
+        : "Explicit module.mjs baseline only; no native changeset export or arbitrary shell dependency capture",
       "Host Node processes; no Sandbox validation in this experiment",
-      "No large-repository benchmark or creation traversal counter",
+      "No large-repository or cold-cache benchmark",
       "Publisher still has phase-one ACL and external-writer race limitations",
     ],
   };

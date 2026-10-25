@@ -35,6 +35,7 @@ Runtime stdio 集成夹具共用 `runtime-child-close.ts`：spawn 后立即监�
 - Local overlay 文件系统衔接（D170）：`pnpm overlay:verify-filesystem` 显式调用既有 WinFsp live 后端，在没有 Git 初始化的夹具上建立双挂载；真实宿主 Node 验证临时文件替换、私有产物、来源不变、live lower、显式路径导出、合并候选在挂载内执行、发布及干净重挂载。只使用预声明基线，不冒充自动 shell 修改集；不运行 Sandbox、不进入默认 check/Evaluation、不安装驱动。
 - Local 专用策略：`overlay-manager.test.ts` 覆盖模式收据和同 ID 不同来源/控制目录/策略拒绝；`pnpm overlay:verify-policy` 真实验证 `.git` 文件/目录/大小写/链接别名/创建/改名、双向跨模式恢复拒绝及旧 gitfile 兼容，并比较空目录与一万文件树的创建计数和逻辑存储成本。
 - Local 自动捕获：`pnpm overlay:verify-capture` 不预声明基线，真实验证读取零内容复制、覆盖/替换/删除/rename/二进制的原文保存、恢复 mtime 后陈旧写拒绝、属性修改后旧基线复用拒绝、不可变 B 与重挂载；冻结撤销卷但保留 helper 租约，第二个 helper 不能接管。`overlay-manager.test.ts` 覆盖 frozen 收据顺序、导出失败清理、租约丢失与旧模式拒绝。手动脚本不进入默认 check/Evaluation，不运行产品自动回写。
+- Local 原生发布桥接：`local-overlay-native-batch.test.ts` 覆盖原始 B/当前 O、选择范围、空变更的读依赖、陈旧依赖、目录/属性/坏对象/非冻结格式及重复路径拒绝；协议测试等待原生 `reads-checked`。`pnpm overlay:verify-filesystem --native` 真实双挂载自动捕获，冻结导出选择源码，在全新候选视图验证后发布同文件非重叠修改，检查产物不发布及原会话结果保留；capture 脚本增加真实陈旧依赖拒绝。仍无产品发布确认/刷新，不属于 Evaluation。
 - Local 安装态 Sandbox：`pnpm overlay:verify-sandbox` 使用实验注册适配器和真实 Engine/Runtime，证明双命令时间区间重叠、私有修改独立、绝对来源写入和 `.git` 新建失败，覆盖运行中命令取消、租约释放、重挂载及旧会话续聊；fallback 一律失败。不是产品自动发布或全平台验收，不安装/Repair，不进入默认 check/Evaluation。
 
 - 虚拟 worktree 首次扫描优化：人工虚拟 worktree 脚本还覆盖首次扫描前/后同长度修改、删除和 untracked 的真实 Git 检测，检查 index 无 assume-unchanged/skip-worktree 标记；读取不改 atime、显式设置 atime 和 staged 修改经重挂载保留。`--unique-blobs=100000 --count=100000` 验证唯一内容夹具；新增累计 SQL/Git 对象耗时不记录路径/内容。仍保持 SQLite FULL 和完整 Git 扫描，不进入默认检查。

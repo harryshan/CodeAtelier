@@ -5,6 +5,7 @@
 // 4. 显式 create-git/restore-git PoC 参数固定 Git/tree；metrics 不包含路径/OID/内容。
 // 5. create-local/restore-local 选择无 Git 视图并回执策略；metrics 证明创建期 lower 访问成本。
 // 6. freeze 销毁 Local dispatcher 后封存路径结果；helper 保留控制目录独占租约直到 stop。
+//    check-reads 仅在冻结后复核读依赖并返回无正文收据，路径有效性保存在私有数据库。
 // 不安装驱动、不创建分区、不托管网络服务；UNC 由 WinFsp 本机 MUP provider 提供。
 #include <iostream>
 
@@ -67,6 +68,12 @@ int wmain(int argc, wchar_t** argv) {
               << (localMode ? ",\"mode\":\"local\"" : "") << "}\n" << std::flush;
     std::string command;
     while (std::getline(std::cin, command)) {
+      if (command == "check-reads" && store.localMode && !filesystem) {
+        store.checkReads();
+        std::cout << "{\"version\":1,\"state\":\"reads-checked\",\"mode\":\"local\"}\n"
+                  << std::flush;
+        continue;
+      }
       if (command == "freeze" && store.localMode && filesystem) {
         FspFileSystemStopDispatcher(filesystem);
         FspFileSystemDelete(filesystem);
