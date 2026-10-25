@@ -3,6 +3,7 @@
  * 1. 新视图仅携带选定参考，原清单/DB/源码不变；审核过期在创建前拒绝。
  * 2. 固定 ID 重试不重新读取后来材料、不重建或重复绑定；错误请求/未知挂载保持拒绝。
  * 3. 验证参考前缀禁止发布，Engine 实际指令指向参考并要求重新读取当前源码。
+ * 4. 批量 v2 按编号保留缺失/空文件/二进制引用，整组审核过期拒绝，旧单文件 v1 仍可使用。
  * 假挂载不证明 live lower、原生 ACL 或 Sandbox；手动 verifier 单独覆盖真实 WinFsp。
  */
 import { randomUUID } from "node:crypto";
@@ -113,6 +114,107 @@ it("creates only a private reference and preserves the original view, dependenci
       validate: async () => {},
     }),
   ).toThrow("PATH_REJECTED");
+  await f.service.close();
+});
+
+async function batchFixture() {
+  const f = await fixture();
+  await f.native.change("empty.txt", null, "");
+  await f.native.change("removed.bin", "\0base", null);
+  await cp(f.native.control, path.join(f.service.root, f.parentId), {
+    recursive: true,
+  });
+  const paths = ["removed.bin", "code.txt", "empty.txt"];
+  const review = await f.service.reviewBatch(
+    f.parent.workspace,
+    f.parent.id,
+    paths,
+    new AbortController().signal,
+  );
+  const input = {
+    id: randomUUID(),
+    workspace: f.parent.workspace,
+    sessionId: f.parent.id,
+    paths,
+    version: review.version,
+  };
+
+  return { ...f, review, input };
+}
+
+it("seeds a numbered group of exact references and retries the whole intent without duplication", async () => {
+  const f = await batchFixture();
+  const database = path.join(f.service.root, f.parentId, "overlay.sqlite");
+  const before = await readFile(database);
+  const session = await f.service.continueResolution(f.input, f.bind);
+  const folder = resolutionDirectory(f.input.id);
+  const directory = path.join(session.workspace, folder);
+  expect(await readdir(session.workspace)).toEqual([folder]);
+  const manifest = JSON.parse(
+    await readFile(path.join(directory, "manifest.json"), "utf8"),
+  );
+  expect(manifest.version).toBe(2);
+  expect(
+    manifest.entries.map((entry: { path: string; directory: string }) => [
+      entry.path,
+      entry.directory,
+    ]),
+  ).toEqual([
+    ["code.txt", "0000"],
+    ["empty.txt", "0001"],
+    ["removed.bin", "0002"],
+  ]);
+  expect(await readFile(path.join(directory, "0000", "ours"), "utf8")).toBe(
+    "old private\n",
+  );
+  expect(await readFile(path.join(directory, "0001", "ours"))).toHaveLength(0);
+  expect(manifest.entries[1].files.base.exists).toBe(false);
+  expect(manifest.entries[2].files.ours.exists).toBe(false);
+  expect(await readFile(path.join(directory, "0002", "base"))).toEqual(
+    Buffer.from("\0base"),
+  );
+  expect(await readFile(database)).toEqual(before);
+  expect(
+    (await f.service.describe(session)).localOverlay?.resolution?.paths,
+  ).toEqual(["code.txt", "empty.txt", "removed.bin"]);
+
+  await writeFile(
+    path.join(f.native.source.root, "empty.txt"),
+    "later external",
+  );
+  expect(
+    (
+      await f.service.continueResolution(
+        { ...f.input, paths: [...f.input.paths].reverse() },
+        f.bind,
+      )
+    ).id,
+  ).toBe(session.id);
+  expect(f.backend.creates).toBe(2);
+  expect(f.store.list()).toHaveLength(2);
+  await expect(
+    f.service.continueResolution({ ...f.input, paths: ["code.txt"] }, f.bind),
+  ).rejects.toThrow("已绑定");
+  await f.service.close();
+});
+
+it("refuses the entire group before allocation if any selected source changes", async () => {
+  const f = await batchFixture();
+  await writeFile(
+    path.join(f.native.source.root, "empty.txt"),
+    "new source member",
+  );
+  await expect(f.service.continueResolution(f.input, f.bind)).rejects.toThrow(
+    "材料已经改变",
+  );
+  expect(f.backend.creates).toBe(1);
+  expect(f.store.list()).toHaveLength(1);
+  await expect(
+    readFile(path.join(f.service.root, `${f.input.id}.json`)),
+  ).rejects.toMatchObject({ code: "ENOENT" });
+  expect((await f.service.describe(f.parent)).localOverlay?.state).toBe(
+    "ready",
+  );
   await f.service.close();
 });
 

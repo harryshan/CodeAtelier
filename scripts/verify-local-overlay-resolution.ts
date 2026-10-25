@@ -1,6 +1,6 @@
 /**
  * 手动验证保留旧私有修改、建立新 Local 对话并重新编辑/发布的真实 WinFsp 流程。
- * 1. 旧视图读取依赖并产生私有修改，外部更新来源后检查旧 B/O/T。
+ * 1. 旧视图读取依赖并产生两个私有修改，外部更新来源后整组检查旧 B/O/T；任一文件过期拒绝分配。
  * 2. 固定请求建立新视图及少量参考，验证新视图的源码来自当前来源、旧依赖不被修改。
  * 3. 显式重新读取依赖/编辑，候选以独立 Node 夹具执行后通过生产发布链路写回；旧视图仍完整保留。
  * 仅使用本脚本独占目录和宿主验证进程，不运行模型/Sandbox，不安装/Repair，不属于 Evaluation。
@@ -33,6 +33,7 @@ const oldPrivate = "export const value = 10;\n";
 const external = "export const value = 2;\n";
 const resolved = "export const value = 30;\n";
 await writeFile(path.join(source, "module.mjs"), base);
+await writeFile(path.join(source, "message.txt"), "base message");
 await writeFile(path.join(source, "dependency.txt"), "1");
 const service = new LocalOverlayService(data, createLogger(root, "info"));
 const sessions = new Map<string, Session>();
@@ -61,26 +62,43 @@ try {
     "1",
   );
   await writeFile(path.join(parent.workspace, "module.mjs"), oldPrivate);
+  await writeFile(
+    path.join(parent.workspace, "message.txt"),
+    "old private message",
+  );
   await lease.finish("failed", true);
   lease = undefined;
   await writeFile(path.join(source, "module.mjs"), external);
   await writeFile(path.join(source, "dependency.txt"), "3");
-  const review = await service.review(
+  const paths = ["message.txt", "module.mjs"];
+  const review = await service.reviewBatch(
     parent.workspace,
     parent.id,
-    "module.mjs",
+    paths,
     signal,
   );
-  assert.equal(review.preview.state, "conflict");
+  assert.equal(
+    review.files.find((file) => file.path === "module.mjs")?.preview.state,
+    "conflict",
+  );
   const parentDb = path.join(service.root, parentId, "overlay.sqlite");
   const parentBefore = await readFile(parentDb);
   const input = {
     id: randomUUID(),
     workspace: parent.workspace,
     sessionId: parent.id,
-    path: review.path,
+    paths,
     version: review.version,
   };
+  await writeFile(path.join(source, "message.txt"), "external message");
+  await assert.rejects(service.continueResolution(input, bind), /材料已经改变/);
+  assert.equal(sessions.size, 1);
+  await assert.rejects(readFile(path.join(service.root, `${input.id}.json`)), {
+    code: "ENOENT",
+  });
+  input.version = (
+    await service.reviewBatch(parent.workspace, parent.id, paths, signal)
+  ).version;
   const started = performance.now();
   const child = await service.continueResolution(input, bind);
   const creationMs = performance.now() - started;
@@ -99,23 +117,50 @@ try {
     "3",
   );
   const reference = path.join(child.workspace, resolutionDirectory(input.id));
+  const manifest = JSON.parse(
+    await readFile(path.join(reference, "manifest.json"), "utf8"),
+  );
+  assert.equal(manifest.version, 2);
+  assert.deepEqual(
+    manifest.entries.map((entry: { path: string; directory: string }) => [
+      entry.path,
+      entry.directory,
+    ]),
+    [
+      ["message.txt", "0000"],
+      ["module.mjs", "0001"],
+    ],
+  );
   assert.equal(
-    await readFile(path.join(reference, "ours"), "utf8"),
+    await readFile(path.join(reference, "0001", "ours"), "utf8"),
     oldPrivate,
   );
+  assert.equal(
+    await readFile(path.join(reference, "0000", "ours"), "utf8"),
+    "old private message",
+  );
+  assert.equal(
+    await readFile(path.join(child.workspace, "message.txt"), "utf8"),
+    "external message",
+  );
   await writeFile(path.join(child.workspace, "module.mjs"), resolved);
+  await writeFile(
+    path.join(child.workspace, "message.txt"),
+    "resolved message",
+  );
   await assert.rejects(
     service.select(child.workspace, child.id, taskId, {
-      paths: [`${resolutionDirectory(input.id)}/ours`],
+      paths: [`${resolutionDirectory(input.id)}/0001/ours`],
       validate: async () => {},
     }),
     /PATH_REJECTED/,
   );
   await service.select(child.workspace, child.id, taskId, {
-    paths: ["module.mjs"],
+    paths,
     validate: async (files) => {
       const candidate = files.get("module.mjs");
       assert(candidate);
+      assert.equal(files.get("message.txt")?.toString(), "resolved message");
       const execution = await execute(
         process.execPath,
         [
@@ -134,6 +179,10 @@ try {
   assert.equal(
     await readFile(path.join(source, "module.mjs"), "utf8"),
     resolved,
+  );
+  assert.equal(
+    await readFile(path.join(source, "message.txt"), "utf8"),
+    "resolved message",
   );
   assert.equal(
     (await readdir(source)).some((name) =>
@@ -171,6 +220,8 @@ try {
           "old conflict retained",
           "parent database unchanged",
           "fixed request idempotent",
+          "stale member refuses entire group before allocation",
+          "two selected files preserved in numbered v2 references",
           "fresh source and dependency",
           "reference not applied or publishable",
           "candidate Node execution",
@@ -179,7 +230,7 @@ try {
         ],
         limitations: [
           "Host fixture and trusted validation adapter, not Sandbox/model IPC v18",
-          "Single selected file, no automatic semantic merge or complete project validation",
+          "Two small selected files, no automatic semantic merge or complete project validation",
           "Old view intentionally preserved, no cleanup or in-place reset",
         ],
       },

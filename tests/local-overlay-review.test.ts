@@ -3,13 +3,19 @@
  * 1. 检查冲突、缺失和二进制材料，确认内容合并只是预览且不清除陈旧依赖。
  * 2. 拒绝 dirty/旧格式/路径/对象/类型及大小错误；失败不改数据库或来源。
  * 3. 来源或代次改变使材料摘要变化，服务互斥/关闭另由生命周期回归覆盖。
+ * 4. 批量检查绑定完整选集、拒绝重复或部分无效材料，限制文件数/路径/内容预算并复核来源。
  */
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { nativeFixture } from "./fixtures/local-overlay-native.js";
-import { reviewCleanFile } from "../src/local-overlays/publication/review.js";
+import {
+  reviewCleanFile,
+  reviewCleanFiles,
+  reviewSelection,
+} from "../src/local-overlays/publication/review.js";
+import * as files from "../src/local-overlays/publication/files.js";
 
 async function fixture(
   base = "one\ntwo\nthree\n",
@@ -169,4 +175,135 @@ it("rejects missing seals, source mismatch, and changed ancestors", async () => 
   await expect(f.review("dir/code.txt")).rejects.toThrow(
     "NATIVE_ANCESTOR_CHANGE_UNSUPPORTED",
   );
+});
+
+it("binds the entire selection independent of order, preserving single-file versions", async () => {
+  const f = await fixture();
+  await f.change("second.txt", null, "new");
+  const single = await f.review();
+  const signal = new AbortController().signal;
+  const first = await reviewCleanFiles(
+    f.source,
+    f.control,
+    ["second.txt", "code.txt"],
+    signal,
+  );
+  const second = await reviewCleanFiles(
+    f.source,
+    f.control,
+    ["CODE.TXT", "second.txt"],
+    signal,
+  );
+  expect(first).toEqual(second);
+  expect(first.files.map((file) => file.path)).toEqual([
+    "code.txt",
+    "second.txt",
+  ]);
+  expect(first.files[0]?.version).toBe(single.version);
+  await writeFile(path.join(f.source.root, "second.txt"), "external");
+  expect(
+    (
+      await reviewCleanFiles(
+        f.source,
+        f.control,
+        ["code.txt", "second.txt"],
+        signal,
+      )
+    ).version,
+  ).not.toBe(first.version);
+});
+
+it("rejects the whole group on duplicate or unsupported selections without mutation", async () => {
+  const f = await fixture();
+  const database = path.join(f.control, "overlay.sqlite");
+  const before = await readFile(database);
+  const signal = new AbortController().signal;
+  await expect(
+    reviewCleanFiles(f.source, f.control, ["code.txt", "CODE.TXT"], signal),
+  ).rejects.toThrow("DUPLICATE_PATH");
+  await expect(
+    reviewCleanFiles(f.source, f.control, ["code.txt", "missing.txt"], signal),
+  ).rejects.toThrow("NATIVE_CHANGE_MISSING");
+  expect(await readFile(database)).toEqual(before);
+  await f.change("unsupported.txt", "base", "ours");
+  f.mutate("UPDATE baselines SET kind=2 WHERE path='\\UNSUPPORTED.TXT'");
+  await expect(
+    reviewCleanFiles(
+      f.source,
+      f.control,
+      ["code.txt", "unsupported.txt"],
+      signal,
+    ),
+  ).rejects.toThrow("NATIVE_CHANGE_UNSUPPORTED");
+});
+
+it("bounds group count, UTF-8 paths, and aggregate content including preview", async () => {
+  expect(() => reviewSelection([])).toThrow("REVIEW_FILE_LIMIT");
+  expect(() =>
+    reviewSelection(Array.from({ length: 101 }, (_, index) => `${index}.txt`)),
+  ).toThrow("REVIEW_FILE_LIMIT");
+  expect(() =>
+    reviewSelection(
+      Array.from(
+        { length: 100 },
+        (_, index) => `文件${index}${"长".repeat(60)}`,
+      ),
+    ),
+  ).toThrow("REVIEW_PATH_LIMIT");
+  const f = await fixture();
+  const selection = [];
+  for (let index = 0; index < 3; index++) {
+    const name = `large${index}.txt`;
+    const content = "x".repeat(2 * 1024 * 1024);
+    await f.change(name, content, content);
+    await writeFile(path.join(f.source.root, name), content);
+    selection.push(name);
+  }
+
+  await expect(
+    reviewCleanFiles(
+      f.source,
+      f.control,
+      selection.slice(0, 2),
+      new AbortController().signal,
+    ),
+  ).resolves.toHaveProperty("files.length", 2);
+  await expect(
+    reviewCleanFiles(
+      f.source,
+      f.control,
+      selection,
+      new AbortController().signal,
+    ),
+  ).rejects.toThrow("REVIEW_CONTENT_LIMIT");
+});
+
+it("rejects a source file changed while reading another member of the group", async () => {
+  const f = await fixture();
+  await f.change("second.txt", null, "private");
+  const original = files.snapshot;
+  const spy = vi
+    .spyOn(files, "snapshot")
+    .mockImplementation(async (source, relative) => {
+      if (source.root === f.source.root && relative === "second.txt") {
+        await writeFile(
+          path.join(f.source.root, "code.txt"),
+          "changed during group read",
+        );
+      }
+
+      return original(source, relative);
+    });
+  try {
+    await expect(
+      reviewCleanFiles(
+        f.source,
+        f.control,
+        ["code.txt", "second.txt"],
+        new AbortController().signal,
+      ),
+    ).rejects.toThrow("READ_CHANGED");
+  } finally {
+    spy.mockRestore();
+  }
 });

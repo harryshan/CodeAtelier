@@ -7,7 +7,7 @@
  * 5. cancelCreation/close 与 Engine 关闭顺序配合；trace 只记录关联 ID、阶段/耗时/终态。
  * 6. select 把明确路径及可信候选验证器绑定当前任务，null 撤销本轮选择；取消/错误任务身份不能更改选择。
  *    仅成功且已排空的任务在冻结收尾中发布，选择不跨轮继承；模型入口由 Engine 转换，不能反序列化验证函数。
- * 7. review 在 ready 视图锁内读取单文件 B/O/T，不挂载或更改清单；关闭时取消并等待检查排空。
+ * 7. review/reviewBatch 在 ready 视图锁内读取单文件/有界整组 B/O/T，不挂载或更改清单；关闭时取消并等待检查排空。
  * 8. continueResolution 用已审核版本建立新视图及参考材料，固定请求重试绑定父会话；不修改旧视图或清空依赖。
  * 公开创建由 HTTP 单独检查平台/Sandbox 能力，不迁移旧历史；来源写入只由冻结租约内的协调器执行。
  */
@@ -31,11 +31,22 @@ import {
   type LocalOverlayBackend,
   type LocalOverlayMount,
 } from "./backend.js";
-import { reviewCleanFile, type LocalFileReview } from "./publication/review.js";
-import { sourceIdentity, checkRelative } from "./publication/files.js";
+import {
+  reviewCleanFile,
+  reviewCleanFiles,
+  reviewSelection,
+  type LocalFileReview,
+  type LocalReviewBatch,
+} from "./publication/review.js";
+import {
+  sourceIdentity,
+  checkRelative,
+  type Source,
+} from "./publication/files.js";
 import {
   resolutionOriginSchema,
   resolutionDirectory,
+  resolutionPaths,
   seedResolution,
   type ResolutionOrigin,
 } from "./resolution.js";
@@ -63,6 +74,13 @@ export type LocalOverlayRecord = z.infer<typeof recordSchema>;
 export interface LocalOverlayLease {
   finish(status: TaskStatus, drained: boolean): Promise<LocalOverlayRecord>;
 }
+
+type ResolutionRequest = {
+  id: string;
+  workspace: string;
+  sessionId: string;
+  version: string;
+} & ({ path: string } | { paths: readonly string[] });
 
 export class LocalOverlayService {
   readonly root: string;
@@ -252,10 +270,40 @@ export class LocalOverlayService {
     relative: string,
     signal: AbortSignal,
   ) {
+    return this.inspect(
+      workspace,
+      sessionId,
+      (source, control, currentSignal) =>
+        reviewCleanFile(source, control, relative, currentSignal),
+      signal,
+    );
+  }
+
+  reviewBatch(
+    workspace: string,
+    sessionId: string,
+    paths: readonly string[],
+    signal: AbortSignal,
+  ) {
+    return this.inspect(
+      workspace,
+      sessionId,
+      (source, control, currentSignal) =>
+        reviewCleanFiles(source, control, paths, currentSignal),
+      signal,
+    );
+  }
+
+  private inspect<T>(
+    workspace: string,
+    sessionId: string,
+    read: (source: Source, control: string, signal: AbortSignal) => Promise<T>,
+    signal: AbortSignal,
+  ) {
     const work = this.reviewSerial(
       workspace,
       sessionId,
-      relative,
+      read,
       AbortSignal.any([signal, this.creation.signal]),
     );
     this.creating.add(work);
@@ -264,10 +312,10 @@ export class LocalOverlayService {
     return work;
   }
 
-  private async reviewSerial(
+  private async reviewSerial<T>(
     workspace: string,
     sessionId: string,
-    relative: string,
+    read: (source: Source, control: string, signal: AbortSignal) => Promise<T>,
     signal: AbortSignal,
   ) {
     signal.throwIfAborted();
@@ -284,10 +332,9 @@ export class LocalOverlayService {
           throw new Error("Local overlay 检查期间状态改变。");
         }
 
-        const result = await reviewCleanFile(
+        const result = await read(
           await sourceIdentity(record.source),
           this.control(record.id),
-          relative,
           signal,
         );
         await this.validate(workspace, sessionId);
@@ -324,7 +371,10 @@ export class LocalOverlayService {
           epoch: record.epoch,
           resolution: record.resolution && {
             sessionId: record.resolution.sessionId,
-            path: record.resolution.path,
+            path: resolutionPaths(record.resolution)[0]!,
+            ...("paths" in record.resolution
+              ? { paths: record.resolution.paths }
+              : {}),
             directory: resolutionDirectory(record.id),
           },
           publication: record.publication && {
@@ -392,13 +442,7 @@ export class LocalOverlayService {
   }
 
   continueResolution(
-    input: {
-      id: string;
-      workspace: string;
-      sessionId: string;
-      path: string;
-      version: string;
-    },
+    input: ResolutionRequest,
     bind: (workspace: string, sessionId?: string) => Promise<Session>,
   ) {
     const work = this.continueResolutionSerial(input, bind);
@@ -409,13 +453,7 @@ export class LocalOverlayService {
   }
 
   private async continueResolutionSerial(
-    input: {
-      id: string;
-      workspace: string;
-      sessionId: string;
-      path: string;
-      version: string;
-    },
+    input: ResolutionRequest,
     bind: (workspace: string, sessionId?: string) => Promise<Session>,
   ) {
     const parentId = this.backend.idFor(input.workspace);
@@ -423,11 +461,16 @@ export class LocalOverlayService {
       throw new Error("冲突继续需要新的 Local 视图标识。");
     }
 
-    checkRelative(input.path);
+    if (!("paths" in input)) {
+      checkRelative(input.path);
+    }
+
     const origin = resolutionOriginSchema.parse({
       overlayId: parentId,
       sessionId: input.sessionId,
-      path: input.path,
+      ...("paths" in input
+        ? { paths: reviewSelection(input.paths) }
+        : { path: input.path }),
       version: input.version,
     });
     const parent = await this.read(parentId);
@@ -438,12 +481,20 @@ export class LocalOverlayService {
     return this.createSerial({ id: input.id, source: parent.source }, bind, {
       origin,
       prepare: async () => {
-        const review = await this.review(
-          input.workspace,
-          input.sessionId,
-          input.path,
-          this.creation.signal,
-        );
+        const review =
+          "paths" in input
+            ? await this.reviewBatch(
+                input.workspace,
+                input.sessionId,
+                input.paths,
+                this.creation.signal,
+              )
+            : await this.review(
+                input.workspace,
+                input.sessionId,
+                input.path,
+                this.creation.signal,
+              );
         if (review.version !== input.version) {
           throw new Error("检查材料已经改变，请重新检查后继续。");
         }
@@ -458,7 +509,7 @@ export class LocalOverlayService {
     bind: (workspace: string, sessionId?: string) => Promise<Session>,
     resolution?: {
       origin: ResolutionOrigin;
-      prepare: () => Promise<LocalFileReview>;
+      prepare: () => Promise<LocalFileReview | LocalReviewBatch>;
     },
   ) {
     const id = z.uuid().parse(input.id);

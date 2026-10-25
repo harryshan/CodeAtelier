@@ -6,7 +6,7 @@
  * 2. SubagentRecord 描述研究子任务的状态、检查点与报告；Event 表示有顺序的历史条目，Approval 表示待审批操作。
  * 3. WorktreeInfo 是 API 从清单补充的模式（Riftri/Worktree）、来源/创建基线和后端诊断；旧清单默认 Worktree，不根据 backend 推断模式。Session.workspace 始终是实际执行路径；Settings 描述公开配置，Snapshot 汇总会话、事件、任务和审批。
  * 4. LocalOverlayInfo 独立描述私有视图与选定源码发布状态，不携带控制路径或候选命令；LocalOverlayCreation 仅报告入口前提，不证明驱动/Runtime 已可用。
- *    resolution 仅记录冲突继续的父会话、文件及新视图内参考目录，不把历史内容当成已应用源码。
+ *    resolution 仅记录冲突继续的父会话、文件及新视图内参考目录；paths 为整组选择，path 保留首文件兼容，不把历史内容当成已应用源码。
  *
  * 类型不会在运行时校验请求，相关检查仍由 API 和 Config 完成。公开 Settings 不包含密钥。
  */
@@ -56,6 +56,7 @@ export interface LocalOverlayInfo {
   resolution?: {
     sessionId: string;
     path: string;
+    paths?: string[];
     directory: string;
   };
   publication?: {

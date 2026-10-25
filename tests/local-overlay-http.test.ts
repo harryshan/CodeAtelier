@@ -3,7 +3,7 @@
  * 1. 挂载由 FakeLocalOverlayBackend 替代，允许开关仅在正例替换；鉴权、互斥参数和缺能力拒绝均走真实路由。
  * 2. 固定 UUID 创建/重试、来源身份、列表/快照/历史分页及损坏清单的历史可读性。
  * 3. 冲突参数与源目录更换不创建额外视图；关闭 Sandbox 后旧视图启动/恢复也须拒绝，不调度 Runtime 或宣称真实 WinFsp/Sandbox 可用。
- * 4. 单文件检查走真实 SQLite 与服务锁，验证鉴权、正常材料、脏卷拒绝及受控错误；不挂载。
+ * 4. 单文件及整组检查走真实 SQLite 与服务锁，验证鉴权、材料版本、脏卷拒绝及受控错误；检查不挂载，新对话不自动运行。
  */
 import { randomUUID } from "node:crypto";
 import { cp, writeFile } from "node:fs/promises";
@@ -173,6 +173,101 @@ it("reviews selected files with authentication without exposing control paths or
       })
     ).statusCode,
   ).toBe(404);
+});
+
+it("reviews and continues a bounded group without changing the single-file contract", async () => {
+  const f = await fixture();
+  const native = await nativeFixture();
+  await native.change("first.txt", "base", "first private");
+  await native.change("second.txt", null, "second private");
+  native.mutate("UPDATE meta SET clean=1");
+  const id = randomUUID();
+  const parent = await f.engine.localOverlays.create(
+    { id, source: native.source.root },
+    (workspace) => f.store.create(workspace, "Batch review"),
+  );
+  await cp(native.control, path.join(f.engine.localOverlays.root, id), {
+    recursive: true,
+  });
+  const url = `/api/sessions/${parent.id}/local-review`;
+  const paths = ["first.txt", "second.txt"];
+  const result = await f.app.inject({
+    method: "POST",
+    url,
+    payload: { paths },
+    headers: f.headers,
+  });
+  expect(result.statusCode).toBe(200);
+  expect(result.headers["cache-control"]).toBe("no-store");
+  expect(
+    result.json().files.map((file: { path: string }) => file.path),
+  ).toEqual(paths);
+  for (const payload of [
+    { paths: [] },
+    { paths, path: "first.txt" },
+    { paths: Array(101).fill("first.txt") },
+  ]) {
+    expect(
+      (await f.app.inject({ method: "POST", url, payload, headers: f.headers }))
+        .statusCode,
+    ).toBe(400);
+  }
+
+  const resolutionUrl = `/api/sessions/${parent.id}/local-resolution`;
+  const payload = { id: randomUUID(), paths, version: result.json().version };
+  expect(
+    (
+      await f.app.inject({
+        method: "POST",
+        url: resolutionUrl,
+        payload,
+        headers: f.headers,
+      })
+    ).statusCode,
+  ).toBe(409);
+  vi.spyOn(f.engine, "localOverlayCreation", "get").mockReturnValue({
+    enabled: true,
+  });
+  await writeFile(path.join(native.source.root, "second.txt"), "changed");
+  expect(
+    (
+      await f.app.inject({
+        method: "POST",
+        url: resolutionUrl,
+        payload,
+        headers: f.headers,
+      })
+    ).statusCode,
+  ).toBe(409);
+  expect(f.backend.creates).toBe(1);
+  const refreshed = await f.app.inject({
+    method: "POST",
+    url,
+    payload: { paths },
+    headers: f.headers,
+  });
+  payload.version = refreshed.json().version;
+  const child = await f.app.inject({
+    method: "POST",
+    url: resolutionUrl,
+    payload,
+    headers: f.headers,
+  });
+  expect(child.statusCode).toBe(200);
+  expect(child.json().localOverlay.resolution.paths).toEqual(paths);
+  expect(
+    (
+      await f.app.inject({
+        method: "POST",
+        url: resolutionUrl,
+        payload,
+        headers: f.headers,
+      })
+    ).json().id,
+  ).toBe(child.json().id);
+  expect(await f.store.tasks(child.json().id)).toHaveLength(0);
+  expect(f.backend.creates).toBe(2);
+  expect(f.backend.mounted.size).toBe(0);
 });
 
 it("requires authorization and creation capability before allocating a view", async () => {

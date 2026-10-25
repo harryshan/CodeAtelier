@@ -2,7 +2,7 @@
  * 隔离 Local 的浏览器契约验证，使用合成 HTTP/SSE，不挂载文件系统或运行 Sandbox。
  * 1. 固定创建 UUID 的错误/重试、模式参数、来源项目归组和刷新后私有状态展示。
  * 2. 后端能力拒绝阻止提交，合成已发布/拒绝/不可用状态不能被模型完成文本覆盖。
- * 3. 单文件检查显示纯文本 B/O/T 和预览，错误保留输入，改路径取消旧结果；不把模拟响应当真实发布证明。
+ * 3. 批量检查按文件展开纯文本 B/O/T 和预览，错误保留输入，改路径取消旧结果；不把模拟响应当真实发布证明。
  * 4. 显式创建冲突继续对话，失败保留固定请求重试，显示参考状态且仅预填任务，不自动提交。
  * 页面和请求代码为生产实现；真实挂载/权限/发布链路另由手动 WinFsp 验证证明。
  */
@@ -197,7 +197,7 @@ test("reviews private contents as text and clears stale results on path edits", 
       body: "event: refresh\ndata: {}\n\n",
     }),
   );
-  const requests: string[] = [];
+  const requests: string[][] = [];
   const continuations: any[] = [];
   const child: Session = {
     ...created,
@@ -211,6 +211,7 @@ test("reviews private contents as text and clears stale results on path edits", 
       resolution: {
         sessionId: created.id,
         path: "merged.txt",
+        paths: ["merged.txt", "second.txt"],
         directory: ".codeatelier-recovery-fixture",
       },
     },
@@ -251,9 +252,9 @@ test("reviews private contents as text and clears stale results on path edits", 
   await page.route(
     "**/api/sessions/local-overlay-ui/local-review",
     async (route) => {
-      const name = route.request().postDataJSON().path;
-      requests.push(name);
-      if (name === "missing.txt") {
+      const paths: string[] = route.request().postDataJSON().paths;
+      requests.push(paths);
+      if (paths.includes("missing.txt")) {
         await route.fulfill({
           status: 409,
           json: { error: "该路径没有封存私有修改。" },
@@ -269,20 +270,24 @@ test("reviews private contents as text and clears stale results on path edits", 
       });
       await route.fulfill({
         json: {
-          path: name,
-          epoch: 1,
-          version: "fixture",
+          version: "group-fixture",
           publicationChecked: false,
-          base: content("base"),
-          ours: content("<img src=x onerror=alert(1)>"),
-          current: content("external"),
-          preview:
-            name === "conflict.txt"
-              ? { state: "conflict", reason: "TEXT_CONFLICT" }
-              : {
-                  state: "merged",
-                  content: Buffer.from("candidate").toString("base64"),
-                },
+          files: paths.map((name) => ({
+            path: name,
+            epoch: 1,
+            version: "fixture",
+            publicationChecked: false,
+            base: content("base"),
+            ours: content("<img src=x onerror=alert(1)>"),
+            current: content("external"),
+            preview:
+              name === "conflict.txt"
+                ? { state: "conflict", reason: "TEXT_CONFLICT" }
+                : {
+                    state: "merged",
+                    content: Buffer.from("candidate").toString("base64"),
+                  },
+          })),
         },
       });
     },
@@ -304,14 +309,30 @@ test("reviews private contents as text and clears stale results on path edits", 
     result.getByRole("region", { name: "私有修改", exact: true }),
   ).toContainText("<img src=x onerror=alert(1)>");
   await expect(result.locator("img")).toHaveCount(0);
-  await input.fill("merged.txt");
+  await input.fill("merged.txt\nsecond.txt");
   await expect(result).toBeHidden();
   await submit.click();
   await expect(result).toContainText("尚未进行依赖检查和候选测试");
   await expect(result.getByRole("region", { name: "合并预览" })).toContainText(
     "candidate",
   );
-  expect(requests).toEqual(["missing.txt", "conflict.txt", "merged.txt"]);
+  await expect(
+    result.getByRole("region", { name: "私有修改", exact: true }),
+  ).toHaveCount(1);
+  await result.getByText("second.txt", { exact: true }).click();
+  await expect(
+    result.getByRole("region", { name: "私有修改", exact: true }),
+  ).toHaveCount(2);
+  await result.getByText("second.txt", { exact: true }).click();
+  await expect(
+    result.getByRole("region", { name: "私有修改", exact: true }),
+  ).toHaveCount(1);
+  expect(requests).toEqual([
+    ["missing.txt"],
+    ["conflict.txt"],
+    ["merged.txt", "second.txt"],
+  ]);
+  await input.scrollIntoViewIfNeeded();
   await page.screenshot({
     path: "test-results/local-overlay-review.png",
     fullPage: true,
@@ -327,10 +348,13 @@ test("reviews private contents as text and clears stale results on path edits", 
   expect(continuations).toHaveLength(2);
   expect(continuations[0]).toEqual(continuations[1]);
   expect(continuations[0]).toMatchObject({
-    path: "merged.txt",
-    version: "fixture",
+    paths: ["merged.txt", "second.txt"],
+    version: "group-fixture",
   });
   await expect(page.getByText(/本对话从最新主目录开始/)).toBeVisible();
+  await expect(page.getByText(/本对话从最新主目录开始/)).toContainText(
+    "所选 2 个文件",
+  );
   await expect(page.getByLabel("任务描述")).toHaveText(/重新检查当前源码/);
   await expect(page.getByLabel("任务描述")).toContainText(
     "保留尚未发送的处理目标",
