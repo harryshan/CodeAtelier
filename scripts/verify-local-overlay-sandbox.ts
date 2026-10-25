@@ -1,11 +1,11 @@
 /**
  * 手动验证新 Local WinFsp 视图与已安装 Windows Sandbox 的真实联动。
- * 1. 独占普通目录和两份 Local 挂载；实验注册适配器只验证卷身份并返回空 Git 写根。
+ * 1. 独占普通目录和两份 Local 视图，使用生产 LocalOverlayService 绑定持久会话。
  * 2. 一个生产 Engine/固定内存模型启动两个会话，通过模型屏障与命令时间区间证明并行。
  * 3. 专用账户读 lower、写私有层，尝试来源绝对路径写入和 .git 创建均须失败；无宿主 fallback。
- * 4. 取消正在运行的命令，再关闭 Engine/卸载/重挂载，使用相同历史续聊检查私有内容和租约。
+ * 4. 取消正在运行的命令，再关闭/新建 Engine，自动按相同历史重挂载并续聊检查私有内容和租约。
  * 不替换 Runtime、Broker、ACL 或 IPC，不安装/Repair、不使用真实模型或用户仓库。
- * 本脚本尚不是产品注册/发布流程验收；所有测试实例排空后才卸载，失败现场保留。
+ * 验证内部会话生命周期；没有公开创建入口或自动发布，不声明完整产品闭环。失败现场保留。
  */
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
@@ -16,13 +16,8 @@ import { Engine } from "../src/agent/engine.js";
 import { Config } from "../src/config/config.js";
 import { createLogger } from "../src/logging/logger.js";
 import type { ModelProvider } from "../src/providers/model-provider.js";
+import type { Session } from "../src/shared/types.js";
 import { Store } from "../src/sessions/store.js";
-import { directoryIdentity } from "../src/worktrees/git.js";
-import {
-  OverlayManager,
-  overlayNamespace,
-  overlayWorkspace,
-} from "../src/worktrees/overlay.js";
 
 assert.equal(process.platform, "win32");
 process.env.CODEATELIER_SANDBOX_ENABLED = "true";
@@ -41,38 +36,15 @@ config.settings.maxConcurrentTasks = 2;
 config.settings.maxSteps = 3;
 const log = createLogger(root, "info");
 const store = new Store(path.join(config.directory, "history.sqlite"));
-let manager = new OverlayManager(root, log);
 const views = ["A", "B"].map((label) => {
   const id = randomUUID();
 
   return {
     id,
     label,
-    workspace: overlayWorkspace(overlayNamespace(root), id),
-    control: path.join(root, `control-${label}`),
-    identity: "",
+    workspace: "",
   };
 });
-
-async function mount(create: boolean) {
-  for (const view of views) {
-    await manager.start(
-      view.id,
-      source,
-      view.control,
-      view.workspace,
-      create,
-      AbortSignal.timeout(30_000),
-      { kind: "local" },
-    );
-    const identity = await directoryIdentity(view.workspace);
-    if (view.identity) {
-      assert.equal(identity, view.identity);
-    }
-
-    view.identity = identity;
-  }
-}
 
 async function until(predicate: () => boolean | Promise<boolean>) {
   const deadline = performance.now() + 90_000;
@@ -96,7 +68,7 @@ function command(label: string) {
   }
 
   if (phase === "restore") {
-    return `whoami; if ((Get-Content -LiteralPath 'runtime.txt' -Raw).Trim() -ne '${label}') { throw 'Private content lost' }; Write-Output 'LOCAL_RESTORED_${label}'`;
+    return `whoami; if ((Get-Content -LiteralPath 'runtime.txt' -Raw).Trim() -ne '${label}') { throw 'Private content lost' }; if (Test-Path -LiteralPath 'cancel-finished.txt') { throw 'Cancelled command survived' }; Write-Output 'LOCAL_RESTORED_${label}'`;
   }
 
   const forbidden = path
@@ -124,7 +96,8 @@ const provider: ModelProvider = {
       limits: { max_context_window_tokens: 64_000, max_output_tokens: 1_024 },
     };
   },
-  async run(input, _instructions, _tools, signal) {
+  async run(input, instructions, _tools, signal) {
+    assert.match(instructions, /private Local overlay view/);
     const serialized = JSON.stringify(input);
     const label = serialized.includes("LOCAL_SESSION_A") ? "A" : "B";
     const key = `${phase}-${label}`;
@@ -181,24 +154,7 @@ const provider: ModelProvider = {
 };
 
 function createEngine() {
-  const result = new Engine(store, config, log, () => provider);
-  // Substitute only experimental registration. All Runtime and root grants are
-  // production paths; neither source nor common Git directory is granted here.
-  result.worktrees.validate = async (workspace) => {
-    const view = views.find((candidate) => candidate.workspace === workspace);
-    assert.ok(view, "Unknown experimental view");
-    assert.equal(await directoryIdentity(workspace), view.identity);
-
-    return undefined;
-  };
-
-  result.worktrees.gitWriteRoots = async (workspace) => {
-    await result.worktrees.validate(workspace);
-
-    return [];
-  };
-
-  return result;
+  return new Engine(store, config, log, () => provider);
 }
 
 function assertRuntime(
@@ -227,14 +183,33 @@ function assertRuntime(
         (event.type === "execution_instance" && event.data.state === "unknown"),
     ),
   );
+  assert(
+    events.some(
+      (event) =>
+        event.type === "local_overlay" && event.data.published === false,
+    ),
+  );
 }
 
 let engine = createEngine();
 try {
-  await mount(true);
-  const sessions = views.map((view) =>
-    store.create(view.workspace, `Local Sandbox ${view.label}`),
-  );
+  const sessions: Session[] = [];
+  for (const view of views) {
+    const session = await engine.localOverlays.create(
+      { id: view.id, source },
+      async (workspace) =>
+        store.list().find((saved) => saved.workspace === workspace) ??
+        store.create(workspace, `Local Sandbox ${view.label}`),
+    );
+    view.workspace = session.workspace;
+    sessions.push(session);
+    assert.equal(
+      await engine.localOverlays.projectWorkspace(view.workspace),
+      source,
+    );
+    assert.deepEqual(await engine.worktrees.gitWriteRoots(view.workspace), []);
+  }
+
   const tasks = [];
   for (const [index, session] of sessions.entries()) {
     tasks.push(
@@ -248,14 +223,15 @@ try {
   await until(async () => !(await engine.hasActiveTasks()));
   for (const [index, task] of tasks.entries()) {
     assertRuntime(sessions[index]!.id, task.id, "completed");
-    assert.equal(
-      (
-        await readFile(
-          path.join(views[index]!.workspace, "runtime.txt"),
-          "utf8",
-        )
-      ).trim(),
-      views[index]!.label,
+    const record = await engine.localOverlays.validate(
+      views[index]!.workspace,
+      sessions[index]!.id,
+    );
+    assert.equal(record?.phase, "ready");
+    assert.equal(record.epoch, 1);
+    // Idle sessions retain private disk state but have no live filesystem mount.
+    await assert.rejects(
+      readFile(path.join(views[index]!.workspace, "runtime.txt")),
     );
   }
 
@@ -283,6 +259,18 @@ try {
     sessions[0]!.id,
     "LOCAL_SESSION_A: run the cancellation probe.",
   );
+  // The idle UNC intentionally does not exist. Poll the real Runtime start
+  // event before touching its files; WinFsp reports UNKNOWN for an unmounted UNC.
+  await until(() =>
+    store
+      .events(sessions[0]!.id)
+      .some(
+        (event) =>
+          event.taskId === cancelled.id &&
+          event.type === "execution_instance" &&
+          event.data.state === "running",
+      ),
+  );
   await until(async () => {
     try {
       return (
@@ -304,40 +292,59 @@ try {
   engine.cancel(cancelled.id);
   await until(async () => !(await engine.hasActiveTasks()));
   assertRuntime(sessions[0]!.id, cancelled.id, "cancelled");
-  await assert.rejects(
-    readFile(path.join(views[0]!.workspace, "cancel-finished.txt")),
-    { code: "ENOENT" },
+  assert.equal(
+    (await engine.localOverlays.validate(views[0]!.workspace))?.epoch,
+    2,
   );
   assert.equal(
     engine.sandbox.accountGenerationSnapshot()?.activeInstanceCount,
     0,
   );
   await engine.close();
-  await manager.close();
 
   phase = "restore";
-  manager = new OverlayManager(root, log);
-  await mount(false);
   engine = createEngine();
-  const resumed = await engine.start(
-    sessions[0]!.id,
-    "LOCAL_SESSION_A: verify persisted private content.",
-  );
-  await until(async () => !(await engine.hasActiveTasks()));
-  assertRuntime(sessions[0]!.id, resumed.id, "completed");
+  for (const [index, session] of sessions.entries()) {
+    const resumed = await engine.start(
+      session.id,
+      `LOCAL_SESSION_${views[index]!.label}: verify persisted private content.`,
+    );
+    await until(async () => !(await engine.hasActiveTasks()));
+    assertRuntime(session.id, resumed.id, "completed");
+  }
+
+  const epochs: Record<string, number> = {};
+  for (const [index, view] of views.entries()) {
+    const record = await engine.localOverlays.validate(
+      view.workspace,
+      sessions[index]!.id,
+    );
+    assert.equal(record?.phase, "ready");
+    assert.equal(record.epoch, index === 0 ? 3 : 2);
+    epochs[view.label] = record.epoch;
+    await assert.rejects(readFile(path.join(view.workspace, "runtime.txt")));
+  }
+
+  for (const file of [
+    "runtime.txt",
+    "cancel-start.txt",
+    "cancel-finished.txt",
+  ]) {
+    await assert.rejects(readFile(path.join(source, file)), { code: "ENOENT" });
+  }
+
   assert.equal(
     engine.sandbox.accountGenerationSnapshot()?.activeInstanceCount,
     0,
   );
   await engine.close();
-  await manager.close();
   const report = {
     timestamp: new Date().toISOString(),
     platform: process.platform,
     node: process.version,
     backend: "Local WinFsp + installed dedicated-account Runtime",
     registration:
-      "experimental identity adapter; not product session integration",
+      "production LocalOverlayService internal Engine lifecycle; no registration overrides",
     parallelRuntimeCommands: "passed",
     commandIntervals: Object.fromEntries(intervals),
     sourceAbsoluteWrite: "denied",
@@ -345,13 +352,14 @@ try {
     sourceGitWriteRootsGranted: 0,
     privateWrites: "independent",
     cancelRunningCommand: "passed",
-    remountAndContinue: "passed",
+    remountAndContinue: "both sessions passed after Engine recreation",
+    epochs,
     fallback: false,
     activeLeasesAfterTasks: 0,
     cleanup: "engine drained; helpers cleanly stopped",
     limitations: [
       "Not an OS security boundary between sessions",
-      "No changeset export or automatic publication in this verifier",
+      "No public UI/API creation or automatic publication yet",
     ],
   };
   const file = path.join(root, "report.json");
@@ -359,6 +367,5 @@ try {
   process.stdout.write(`LOCAL_OVERLAY_SANDBOX PASS report=${file}\n`);
 } finally {
   await engine.close();
-  await manager.close();
   await store.closeAsync();
 }

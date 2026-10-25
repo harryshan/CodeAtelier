@@ -4,7 +4,7 @@
  *
  * 1. 用 resolveTarget 和 regularFile 检查根目录 AGENTS.md 的位置、类型及大小，再读取完整内容，并标记来源路径与加载状态；空文件也算加载成功。
  * 2. searchCommandGuidance 注入检测到的仓库搜索命令及排序；memoryMaintenanceGuidance 定义按需读取记忆正文、自行维护跨会话项目记忆的通用触发条件与排除项；behavior 按 webSearchEnabled 说明可用的服务端网页搜索或明确无内置搜索、复杂任务的调查、计划、编辑、验证和 DAG 调度要求。只有实际运行在 Agent Runtime 时，才追加 Broker 宿主命令与网页 curl 的 Sandbox 权限边界；Git CLI 与其他命令共用这些规则，没有专用工具或自动转发。
- * 3. gitfile 工作区追加 detached HEAD、共享 refs 与跨版本记忆提示；再把实际目录、操作系统、基础规则和项目说明合并返回。普通命令只接受一条文本；宿主路径及启动前 fallback 不接收 Sandbox 专属提示。
+ * 3. gitfile 工作区追加 detached HEAD、共享 refs 与跨版本记忆提示；Local overlay 则按可信任务标志说明私有修改和无 Git 边界，不从项目文件推断。再把实际目录、操作系统、基础规则和项目说明合并返回。普通命令只接受一条文本；宿主路径及启动前 fallback 不接收 Sandbox 专属提示。
  *
  * AGENTS.md 缺失或无法读取时仍使用基础规则。项目说明不能放宽应用的权限限制；
  * 子目录里的 AGENTS.md 由模型在处理相关文件时按规则读取。执行器选择 shell 不会绕过命令审批或赋予程序额外权限。
@@ -19,6 +19,10 @@ import {
 } from "../tools/search-commands.js";
 
 export { detectWindowsShell } from "../tools/command-shell.js";
+
+/** Broker 生成的目录约束；宿主指令和 Runtime 的已有 Broker 上下文通道使用同一文本。 */
+export const localOverlayGuidance =
+  "This workspace is a private Local overlay view. All task edits belong in this view. Git metadata is unavailable here; do not initialize a repository or redirect Git or file writes to the source project. Changes are retained privately and are not published to the source project by this internal lifecycle implementation. Clearly distinguish verified private changes from published changes. Project memory is shared with the source project and is not current file evidence.";
 
 function searchCommandGuidance(tools: RepositorySearchTool[]) {
   if (!tools.length) {
@@ -50,6 +54,7 @@ export async function createInstructions(
   searchTools = detectSearchCommands(),
   agentRuntime = false,
   webSearchEnabled = true,
+  localOverlay = false,
 ): Promise<string> {
   let projectRules: string | null = null;
   const rules = await resolveTarget(workspace, "AGENTS.md");
@@ -71,6 +76,7 @@ export async function createInstructions(
     : "";
 
   const behavior = [
+    localOverlay ? localOverlayGuidance : "",
     (await lstat(path.join(workspace, ".git")).catch(() => undefined))?.isFile()
       ? "This checkout uses a Git directory pointer and may be a linked worktree. Verify the current branch before committing; a newly created managed worktree starts detached, so create a named branch when retaining commits. Other checkouts share Git objects and refs: keep edits in this workspace, coordinate repository-wide operations, and do not remove or repair sibling worktrees. Shared project memory can describe another revision; verify it against this checkout."
       : "",

@@ -1,0 +1,35 @@
+{
+  "timestamp": "2026-10-25T19:02:07.488Z",
+  "platform": "win32",
+  "node": "v26.10.0",
+  "backend": "Local WinFsp + installed dedicated-account Runtime",
+  "registration": "production LocalOverlayService internal Engine lifecycle; no registration overrides",
+  "parallelRuntimeCommands": "passed",
+  "commandIntervals": {
+    "A": [
+      1792954912713,
+      1792954914905
+    ],
+    "B": [
+      1792954912716,
+      1792954914905
+    ]
+  },
+  "sourceAbsoluteWrite": "denied",
+  "gitMetadataCreation": "denied",
+  "sourceGitWriteRootsGranted": 0,
+  "privateWrites": "independent",
+  "cancelRunningCommand": "passed",
+  "remountAndContinue": "both sessions passed after Engine recreation",
+  "epochs": {
+    "A": 3,
+    "B": 2
+  },
+  "fallback": false,
+  "activeLeasesAfterTasks": 0,
+  "cleanup": "engine drained; helpers cleanly stopped",
+  "limitations": [
+    "Not an OS security boundary between sessions",
+    "No public UI/API creation or automatic publication yet"
+  ]
+}

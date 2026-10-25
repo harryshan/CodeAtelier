@@ -1,5 +1,14 @@
 # 初版验证记录
 
+## Local overlay 接入 Engine 内部生命周期（D170，2026-10-26）
+
+- `LocalOverlayService` 的持久来源/会话绑定、跨进程任务锁、按任务挂载、排空后冻结续轮/回收/卸载已接入 Engine。未知执行/清理保留失败清单和锁，纯创建请求不匹配不污染既有 ready 状态。宿主/Runtime 均提示私有内容尚未发布；不开放公开创建、不改变默认模式或历史。
+- `pnpm overlay:verify-sandbox` 已去掉实验注册适配器，直接使用生产服务。最终报告 `.local/local-overlay-sandbox-aOq7i0/report.json`（[摘要](local-overlay-lifecycle-results.json)）验证两会话专用账户命令重叠、独立私有写入、来源绝对路径写入和 `.git` 创建拒绝、取消排空、空闲卸载及重建 Engine 后两份会话续聊；最终观察周期 A=3、B=2，活动租约为 0，无 fallback，来源没有 runtime/cancel 文件。
+- 首次实验给旧安装 Runtime 发送新增严格 IPC 字段后未完成启动任务，超时退出为 unknown；Engine 实际保留失败清单/锁，排空并卸载，未自动重试现场（`.local/local-overlay-lifecycle-sandbox-before.log`）。最终改为既有 Broker 上下文通道传递私有目录提示，不改 IPC 或安装态。第二次脚本在任务刚排队时读取已卸载 UNC 得到 UNKNOWN，已改为等真实 Runtime running 事件再读取；没有弱化命令、取消或来源保护断言。
+- 验证只使用独占夹具与已安装 WinFsp/Sandbox；未安装/Repair、未重启真实服务或运行 Evaluation。这证明内部任务生命周期，不代表自动发布、冲突 UI、异常私有卷恢复或 POSIX 已完成。
+- 完整 `pnpm check` 通过：142 个测试文件、1111 passed / 1 existing skipped，包含 18 项新增生命周期回归；类型、lint、格式及 Web/Windows/POSIX Runtime 构建通过（`.local/local-overlay-lifecycle-check-final.log`）。真实最终脚本日志为 `.local/local-overlay-lifecycle-sandbox-verified.log`；只读核对无遗留 overlay helper/Sandbox supervisor。
+- `pnpm test:e2e` 71 项通过（`.local/local-overlay-lifecycle-e2e.log`），覆盖既有 HTTP/SSE、历史、关闭与 Worktree UI 兼容；新 Local 模式没有公开 UI，因此不把这组结果表述为 Local 创建/发布 UI 验收。
+
 ## Local 失败/取消续轮与私有读依赖（D170，2026-10-26）
 
 - 先增加回归复现导出忽略跨轮传递依赖（`.local/local-overlay-epoch-before.log`，应拒绝但返回批次）。Local v6 新增对象来源代次、私有读依赖边和幂等 next-epoch 收据；导出展开有界闭包，缺对象记录、旧格式、非法边和超限拒绝。v5 私有卷缺少历史信息，不自动迁移；旧 D168 v2/worktree 路径保持原边界。

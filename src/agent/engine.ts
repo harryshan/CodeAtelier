@@ -14,7 +14,8 @@
  *    Skill 每任务在 Broker 扫描预设目录，模型先看到摘要、工具按需加载正文；宿主/Runtime/fallback 共用该目录且不授权脚本。
  *    MCP 在首次模型请求前提供已启用服务的公开用途摘要，不提前连接；任务级本机连接池由宿主/Runtime 共用审批后单次执行入口，收尾关闭，摘要、参数和正文不进入 trace。
  * 7. Agent Runtime 取消先经 IPC 等待 runtime_complete/stopping，再关闭原生 transport；清理未知优先于取消。终态保留已验证进程身份；Broker 校验 Runtime trace 时间戳，按该进程的执行槽组织片段、从已保存工具调用附加脱敏参数并统一归档，在结果持久化前按对应执行片段补齐耗时；子任务由 Broker 核对身份与原子保存问题回执，退出先停子线程再归档。
- * 8. run 的终态持久化与 trace 收尾分开保护；写库失败仍尝试归档失败 trace，导出/归档故障只记警告，最外层 finally 释放 trace 内存和任务级 Sandbox 状态。
+ * 8. LocalOverlayService 独立管理私有视图：admission 不挂载，run 持租约挂载，Runtime/子任务/工具排空后冻结续轮和卸载；unknown 隔离，当前内部入口只保留修改，不自动发布。
+ * 9. run 的终态持久化与 trace 收尾分开保护；写库失败仍尝试归档失败 trace，导出/归档故障只记警告，最外层 finally 释放 trace 内存和任务级 Sandbox 状态。
  *
  * 模型请求可以重试，但已经执行的工具不能跟着重跑。数据库回滚也撤销不了文件修改或
  * 已启动的命令，所以保存失败时必须停止任务，并留下足够的记录供后续恢复。
@@ -50,7 +51,7 @@ import {
   subagentToolDefinition,
   type SubagentAction,
 } from "./subagent-contracts.js";
-import { createInstructions } from "./instructions.js";
+import { createInstructions, localOverlayGuidance } from "./instructions.js";
 import { runModelLoop } from "./model-loop.js";
 import { acceptModelResponse } from "./model-response.js";
 import { dispatchModelTool } from "../tools/dispatch-model-tool.js";
@@ -90,6 +91,11 @@ import { ToolRunner } from "../tools/tool-runner.js";
 import { SubagentReadOnly } from "../tools/subagent-readonly.js";
 import { ProjectMemoryService } from "../memory/service.js";
 import { WorktreeService } from "../worktrees/service.js";
+import {
+  LocalOverlayService,
+  type LocalOverlayLease,
+} from "../local-overlays/service.js";
+import type { LocalOverlayBackend } from "../local-overlays/backend.js";
 import { SandboxBroker } from "../sandbox/broker.js";
 import { createSandboxRuntime } from "../sandbox/runtime-factory.js";
 import { definitions, webSearchTool } from "../tools/registry.js";
@@ -208,6 +214,8 @@ export class Engine {
   readonly memories: ProjectMemoryService;
   /** 管理清单与实际工作区绑定；不改变 Store 的 workspace 或调度键。 */
   readonly worktrees: WorktreeService;
+  /** 内部 Local overlay 会话入口；公开选择和自动发布另行接线。 */
+  readonly localOverlays: LocalOverlayService;
 
   /** 主模型独立审视在途工具；不追加未完成的 function_call_output，也不计为主循环轮次。 */
   private async toolReviewer(task: Task, settings: Settings) {
@@ -374,6 +382,7 @@ export class Engine {
     private factory?: ModelProviderFactory,
     private agentRuntimeLauncher?: AgentRuntimeLauncher,
     private modelStepLimitOverride?: number | null,
+    localOverlayBackend?: LocalOverlayBackend,
   ) {
     this.traces = new TraceRecorder(config.tracing);
     this.traceArchive = new TraceArchive(
@@ -422,10 +431,17 @@ export class Engine {
       ? this.sandbox
       : undefined;
     this.worktrees = new WorktreeService(config.directory, log);
+    this.localOverlays = new LocalOverlayService(
+      config.directory,
+      log,
+      localOverlayBackend,
+    );
     this.memories = new ProjectMemoryService(
       config.directory,
       log,
-      (workspace) => this.worktrees.projectWorkspace(workspace),
+      async (workspace) =>
+        (await this.localOverlays.projectWorkspace(workspace)) ??
+        this.worktrees.projectWorkspace(workspace),
     );
     this.approvals = new ApprovalManager(
       () => this.updateWaitingTaskStatuses(),
@@ -662,6 +678,7 @@ export class Engine {
 
     const session = await this.store.get(sessionId);
     if (session) {
+      await this.localOverlays.validate(session.workspace, session.id);
       await this.worktrees.validate(session.workspace);
     }
 
@@ -977,6 +994,7 @@ export class Engine {
     this.closing = true;
     try {
       await this.worktrees.cancelCreation();
+      await this.localOverlays.cancelCreation();
       await this.schedulingWork;
       for (const queued of await this.store.queuedTasks()) {
         const message = "服务关闭，任务中断，可手动恢复。";
@@ -1015,6 +1033,7 @@ export class Engine {
       this.traceTasks.stop();
       await this.store.drain();
       await this.sandbox.shutdown();
+      await this.localOverlays.close();
       await this.worktrees.close();
     } finally {
       this.closing = false;
@@ -1781,6 +1800,10 @@ export class Engine {
       signal.addEventListener("abort", cancelled, { once: true });
       try {
         const memory = await this.memories.retrieve(workspace);
+        const localOverlay = await this.localOverlays.validate(
+          workspace,
+          task.sessionId,
+        );
         signal.throwIfAborted();
         taskRequestStarted = true;
         const taskRequest = currentBroker.startTask(
@@ -1798,7 +1821,15 @@ export class Engine {
               outputChars: settings.outputChars,
               subagentsEnabled: task.subagentsEnabled,
             },
-            memoryText: memory.bundle?.text,
+            // This existing Broker context channel is included in Runtime token accounting.
+            // Directory guidance is trusted host metadata, not a project-memory entry.
+            memoryText:
+              [
+                localOverlay ? localOverlayGuidance : undefined,
+                memory.bundle?.text,
+              ]
+                .filter(Boolean)
+                .join("\n\n") || undefined,
             skillsText: skills.instructions(),
             mcpText: mcpCatalogInstructions(
               this.taskConfig(task.id).mcpServers,
@@ -2100,7 +2131,16 @@ export class Engine {
     this.traces.startTask(task.id, task.sessionId);
     let status: TaskStatus = "completed";
     let failure: string | undefined;
-    const emit = (type: string, data: any) => this.emit(task, type, data);
+    let localLease: LocalOverlayLease | undefined;
+    let localDrained = true;
+    const emit = (type: string, data: any) => {
+      if (type === "execution_instance" && data?.state === "unknown") {
+        localDrained = false;
+      }
+
+      this.emit(task, type, data);
+    };
+
     let step = 0;
     let attempt = 1;
     let buffer = "";
@@ -2126,6 +2166,12 @@ export class Engine {
         track: "Task preparation",
       });
       try {
+        localLease = await this.localOverlays.begin(
+          session.workspace,
+          session.id,
+          task.id,
+          signal,
+        );
         await this.worktrees.validate(session.workspace);
         this.traces.endSpan(workspaceSpan, "ok");
       } catch (error) {
@@ -2316,6 +2362,10 @@ export class Engine {
           );
         },
         onExecutionInstance: (record) => {
+          if (record.state === "unknown") {
+            localDrained = false;
+          }
+
           this.traces.instant(
             task.id,
             `sandbox.execution_instance.${record.state}`,
@@ -2340,6 +2390,7 @@ export class Engine {
         undefined,
         false,
         protocolFeatures(settings.protocol).webSearch,
+        Boolean(localLease),
       );
       const memorySpan = this.traces.startSpan(task.id, {
         name: "memory.retrieve",
@@ -3328,6 +3379,10 @@ export class Engine {
       }
     } catch (error: any) {
       flush();
+      if (error instanceof AgentRuntimeCleanupUnknownError) {
+        localDrained = false;
+      }
+
       status =
         error instanceof AgentRuntimeCleanupUnknownError
           ? "failed"
@@ -3360,6 +3415,7 @@ export class Engine {
       } catch (error) {
         status = "failed";
         failure = "MCP 连接清理失败，任务结果不能视为完成。";
+        localDrained = false;
         log.error({ event: "mcp.cleanup_failed", err: error });
       } finally {
         this.mcpTasks.delete(task.id);
@@ -3370,6 +3426,7 @@ export class Engine {
       } catch (error) {
         status = "failed";
         failure = "subagent 退出或状态落盘失败，任务结果不能视为完成。";
+        localDrained = false;
         log.error({ event: "subagent.cleanup_failed", err: error });
       }
 
@@ -3378,7 +3435,28 @@ export class Engine {
       } catch (error) {
         status = "failed";
         failure = "事件持久化失败，请检查存储状态后恢复。";
+        localDrained = false;
         log.error({ event: "task.persistence_failed", err: error });
+      }
+
+      if (localLease) {
+        try {
+          const record = await localLease.finish(status, localDrained);
+          emit("local_overlay", {
+            state: "private",
+            epoch: record.epoch,
+            capturedPaths: record.capturedPaths,
+            published: false,
+          });
+          emit("notice", {
+            text: "本轮修改保留在会话私有目录，尚未发布到项目主目录。",
+          });
+        } catch (error) {
+          status = "failed";
+          failure = "Local overlay 收尾未确认，私有现场已保留，不能自动续聊。";
+          emit("notice", { text: failure, status });
+          log.error({ event: "local_overlay.finish_failed", err: error });
+        }
       }
 
       try {

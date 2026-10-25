@@ -1,0 +1,461 @@
+/**
+ * Engine 的 Local overlay 持久目录生命周期；独立于 WorktreeService 和 Git metadata。
+ * 1. 有界清单、原子保存和逐视图锁绑定来源/控制/卷身份；未知状态不重新创建或抢占。
+ * 2. create 先保存 preparing，再建立/关闭空视图，最后绑定会话；未知挂载保留现场，纯校验失败不污染已有状态。
+ * 3. validate/projectWorkspace 不挂载，供 admission 和项目记忆使用；begin 才取得整个任务租约。
+ * 4. lease.finish 在调用方排空后冻结续轮、回收、卸载并保存 ready；清理未知则隔离且保留锁。
+ * 5. cancelCreation/close 与 Engine 关闭顺序配合；trace 只记录关联 ID、阶段/耗时/终态。
+ * 当前内部入口不自动发布、不开放 UI 创建、不迁移旧历史；未来发布器必须在冻结租约内接线。
+ */
+import { randomUUID } from "node:crypto";
+import { mkdir, open, rename, unlink, realpath, lstat } from "node:fs/promises";
+import path from "node:path";
+import type { Logger } from "pino";
+import { z } from "zod";
+import type { Session, TaskStatus } from "../shared/types.js";
+import { directoryIdentity } from "../worktrees/git.js";
+import { inside } from "../tools/paths.js";
+import { TraceRecorder } from "../tracing/recorder.js";
+import { TraceArchive } from "../tracing/archive.js";
+import {
+  WinFspLocalBackend,
+  type LocalOverlayBackend,
+  type LocalOverlayMount,
+} from "./backend.js";
+
+const recordSchema = z.object({
+  version: z.literal(1),
+  format: z.literal(6),
+  id: z.uuid(),
+  source: z.string(),
+  sourceIdentity: z.string(),
+  phase: z.enum(["preparing", "ready", "active", "failed"]),
+  sessionId: z.uuid().optional(),
+  controlIdentity: z.string().optional(),
+  workspaceIdentity: z.string().optional(),
+  taskId: z.uuid().optional(),
+  outcome: z
+    .enum(["completed", "failed", "cancelled", "interrupted"])
+    .optional(),
+  epoch: z.number().int().nonnegative().optional(),
+  capturedPaths: z.number().int().nonnegative().optional(),
+});
+export type LocalOverlayRecord = z.infer<typeof recordSchema>;
+export interface LocalOverlayLease {
+  finish(status: TaskStatus, drained: boolean): Promise<LocalOverlayRecord>;
+}
+
+export class LocalOverlayService {
+  readonly root: string;
+  private readonly backend: LocalOverlayBackend;
+  private readonly creation = new AbortController();
+  private readonly creating = new Set<Promise<unknown>>();
+  private readonly active = new Set<string>();
+  private readonly traces = new TraceRecorder();
+  private readonly archive: TraceArchive;
+
+  constructor(
+    private readonly directory: string,
+    private readonly log: Logger,
+    backend?: LocalOverlayBackend,
+  ) {
+    this.root = path.resolve(directory, "local-overlays");
+    this.backend = backend ?? new WinFspLocalBackend(this.root, log);
+    this.archive = new TraceArchive(this.root, log);
+  }
+
+  private file(id: string) {
+    return path.join(this.root, `${z.uuid().parse(id)}.json`);
+  }
+
+  private control(id: string) {
+    return path.join(this.root, z.uuid().parse(id));
+  }
+
+  private async read(id: string) {
+    const file = this.file(id);
+    const info = await lstat(file);
+    if (
+      !info.isFile() ||
+      info.isSymbolicLink() ||
+      info.nlink !== 1 ||
+      info.size > 65536
+    ) {
+      throw new Error("Local overlay 清单类型或大小无效。");
+    }
+
+    const handle = await open(file, "r");
+    let text: string;
+    try {
+      const opened = await handle.stat();
+      if (
+        opened.dev !== info.dev ||
+        opened.ino !== info.ino ||
+        opened.size !== info.size
+      ) {
+        throw new Error("Local overlay 清单读取期间改变。");
+      }
+
+      const buffer = Buffer.alloc(65537);
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+      if (bytesRead !== info.size) {
+        throw new Error("Local overlay 清单读取不完整或大小改变。");
+      }
+
+      text = buffer.toString("utf8", 0, bytesRead);
+    } finally {
+      await handle.close();
+    }
+
+    const record = recordSchema.parse(JSON.parse(text));
+    if (record.id !== id) {
+      throw new Error("Local overlay 清单身份不匹配。");
+    }
+
+    return record;
+  }
+
+  private async save(record: LocalOverlayRecord) {
+    const temporary = path.join(this.root, `${record.id}-${randomUUID()}.tmp`);
+    const file = await open(temporary, "wx", 0o600);
+    try {
+      await file.writeFile(JSON.stringify(recordSchema.parse(record)) + "\n");
+      await file.sync();
+    } finally {
+      await file.close();
+    }
+
+    await rename(temporary, this.file(record.id));
+  }
+
+  private async lock(id: string) {
+    await mkdir(this.root, { recursive: true });
+    const file = path.join(this.root, `${id}.lock`);
+    const handle = await open(file, "wx", 0o600).catch(() => {
+      throw new Error(
+        "Local overlay 已被占用或上次操作结果未知；不会抢占或重放。",
+      );
+    });
+    await handle.close();
+
+    return () => unlink(file);
+  }
+
+  private async observe<T>(
+    id: string,
+    action: string,
+    operation: () => Promise<T>,
+    taskId?: string,
+  ) {
+    const operationId = randomUUID();
+    this.traces.startTask(operationId, id);
+    const span = this.traces.startSpan(operationId, {
+      name: `local_overlay.${action}`,
+      category: "worktree",
+      track: "Local overlay lifecycle",
+      attributes: { overlayId: id, ...(taskId ? { taskId } : {}) },
+    });
+    const started = performance.now();
+    let outcome: "ok" | "unknown" = "unknown";
+    this.log.info({
+      module: "local-overlay",
+      event: `${action}.started`,
+      overlayId: id,
+      taskId,
+      operationId,
+    });
+    try {
+      const result = await operation();
+      outcome = "ok";
+
+      return result;
+    } finally {
+      this.traces.endSpan(span, outcome);
+      this.traces.finishTask(operationId, outcome);
+      await this.archive
+        .write(id, operationId, this.traces.exportTask(operationId))
+        .catch((err) => {
+          this.log.warn({
+            module: "local-overlay",
+            event: "trace.failed",
+            err,
+          });
+        });
+      this.traces.discardTask(operationId);
+      this.log.info({
+        module: "local-overlay",
+        event: `${action}.finished`,
+        overlayId: id,
+        taskId,
+        operationId,
+        outcome,
+        durationMs: performance.now() - started,
+      });
+    }
+  }
+
+  async validate(workspace: string, sessionId?: string) {
+    const id = this.backend.idFor(workspace);
+    if (!id) {
+      return undefined;
+    }
+
+    const record = await this.read(id);
+    if (
+      (record.phase !== "ready" &&
+        !(record.phase === "active" && this.active.has(id))) ||
+      !record.controlIdentity ||
+      !record.workspaceIdentity ||
+      (sessionId && record.sessionId !== sessionId) ||
+      (await directoryIdentity(record.source)) !== record.sourceIdentity ||
+      (await directoryIdentity(this.control(id))) !== record.controlIdentity
+    ) {
+      throw new Error(
+        "Local overlay 状态或目录身份改变；保留现场，不会自动恢复。",
+      );
+    }
+
+    return record;
+  }
+
+  async projectWorkspace(workspace: string) {
+    return (await this.validate(workspace))?.source;
+  }
+
+  /** bind 必须按固定 workspace 幂等查找/建立会话，覆盖 Store 已保存而清单回执丢失的窗口。 */
+  create(
+    input: { id: string; source: string },
+    bind: (workspace: string, sessionId?: string) => Promise<Session>,
+  ) {
+    const work = this.createSerial(input, bind);
+    this.creating.add(work);
+    void work.finally(() => this.creating.delete(work)).catch(() => {});
+
+    return work;
+  }
+
+  private async createSerial(
+    input: { id: string; source: string },
+    bind: (workspace: string, sessionId?: string) => Promise<Session>,
+  ) {
+    const id = z.uuid().parse(input.id);
+    this.creation.signal.throwIfAborted();
+    const source = await realpath(input.source);
+    const sourceIdentity = await directoryIdentity(source);
+    await mkdir(this.root, { recursive: true });
+    const privateRoot = await realpath(this.directory);
+    if (
+      inside(source, privateRoot) ||
+      inside(privateRoot, source) ||
+      this.backend.idFor(source)
+    ) {
+      throw new Error("Local overlay 来源不能与宿主私有数据或托管视图重叠。");
+    }
+
+    const release = await this.lock(id);
+
+    return this.observe(id, "create", async () => {
+      // Pure admission failures must not quarantine an existing healthy view.
+      // Once preparation starts, uncertain side effects retain this lease.
+      let releaseAllowed = true;
+      let mount: LocalOverlayMount | undefined;
+      let record: LocalOverlayRecord | undefined;
+      try {
+        record = await this.read(id).catch((error: NodeJS.ErrnoException) => {
+          if (error.code !== "ENOENT") {
+            throw error;
+          }
+
+          return undefined;
+        });
+        if (record) {
+          if (
+            record.phase !== "ready" ||
+            record.source !== source ||
+            record.sourceIdentity !== sourceIdentity
+          ) {
+            throw new Error("Local overlay 创建请求已绑定其它状态或来源。");
+          }
+
+          await this.validate(this.backend.workspace(id));
+          releaseAllowed = true;
+        } else {
+          releaseAllowed = false;
+          record = {
+            version: 1,
+            format: 6,
+            id,
+            source,
+            sourceIdentity,
+            phase: "preparing",
+          };
+          await this.save(record);
+          mount = await this.backend.open(
+            id,
+            source,
+            this.control(id),
+            true,
+            this.creation.signal,
+          );
+          record.controlIdentity = await directoryIdentity(this.control(id));
+          record.workspaceIdentity = await mount.identity();
+          await mount.close();
+          mount = undefined;
+          record.phase = "ready";
+          await this.save(record);
+          releaseAllowed = true;
+        }
+
+        this.creation.signal.throwIfAborted();
+        const session = await bind(
+          this.backend.workspace(id),
+          record.sessionId,
+        );
+        if (
+          session.workspace !== this.backend.workspace(id) ||
+          (record.sessionId && session.id !== record.sessionId)
+        ) {
+          throw new Error("Local overlay 会话绑定改变。");
+        }
+
+        record.sessionId = session.id;
+        await this.save(record);
+
+        return session;
+      } catch (error) {
+        if (!releaseAllowed && record) {
+          record.phase = "failed";
+          await this.save(record).catch(() => {});
+        }
+
+        await mount?.close().catch(() => {});
+        throw error;
+      } finally {
+        if (releaseAllowed) {
+          await release();
+        }
+      }
+    });
+  }
+
+  async begin(
+    workspace: string,
+    sessionId: string,
+    taskId: string,
+    signal: AbortSignal,
+  ): Promise<LocalOverlayLease | undefined> {
+    const initial = await this.validate(workspace, sessionId);
+    if (!initial) {
+      return undefined;
+    }
+
+    z.uuid().parse(taskId);
+    signal.throwIfAborted();
+    const release = await this.lock(initial.id);
+
+    return this.observe(
+      initial.id,
+      "begin",
+      async () => {
+        let record: LocalOverlayRecord;
+        try {
+          const checked = await this.validate(workspace, sessionId);
+          if (!checked || checked.phase !== "ready") {
+            throw new Error("Local overlay 上次任务未确认结束。");
+          }
+
+          signal.throwIfAborted();
+          record = checked;
+        } catch (error) {
+          await release();
+          throw error;
+        }
+
+        record.phase = "active";
+        record.taskId = taskId;
+        await this.save(record);
+        let mount: LocalOverlayMount | undefined;
+        try {
+          mount = await this.backend.open(
+            record.id,
+            record.source,
+            this.control(record.id),
+            false,
+            signal,
+          );
+          if ((await mount.identity()) !== record.workspaceIdentity) {
+            throw new Error("Local overlay 卷身份改变。");
+          }
+        } catch (error) {
+          record.phase = "failed";
+          await this.save(record).catch(() => {});
+          await mount?.close().catch(() => {});
+          throw error;
+        }
+
+        this.active.add(record.id);
+        let finished: Promise<LocalOverlayRecord> | undefined;
+        const current = mount;
+
+        return {
+          finish: (status, drained) => {
+            finished ??= this.observe(
+              record.id,
+              "finish",
+              async () => {
+                try {
+                  if (
+                    !drained ||
+                    ![
+                      "completed",
+                      "failed",
+                      "cancelled",
+                      "interrupted",
+                    ].includes(status)
+                  ) {
+                    throw new Error(
+                      "Local overlay 任务排空未确认，私有现场已隔离。",
+                    );
+                  }
+
+                  const result = await current.finish(taskId);
+                  record.phase = "ready";
+                  record.outcome = status as LocalOverlayRecord["outcome"];
+                  record.epoch = result.epoch;
+                  record.capturedPaths = result.capturedPaths;
+                  await this.save(record);
+                  await release();
+
+                  return record;
+                } catch (error) {
+                  record.phase = "failed";
+                  await this.save(record).catch(() => {});
+                  await current.close().catch(() => {});
+                  throw error;
+                } finally {
+                  this.active.delete(record.id);
+                }
+              },
+              taskId,
+            );
+
+            return finished;
+          },
+        };
+      },
+      taskId,
+    );
+  }
+
+  async cancelCreation() {
+    this.creation.abort(new Error("服务正在关闭。"));
+    await Promise.allSettled([...this.creating]);
+  }
+
+  async close() {
+    await this.cancelCreation();
+    if (this.active.size) {
+      throw new Error("Local overlay 活动任务尚未排空。");
+    }
+  }
+}
