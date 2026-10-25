@@ -167,6 +167,7 @@ UINT64 GitLower::request(const std::wstring& oid, const char* type, bool content
 }
 
 std::vector<BYTE> GitLower::object(const std::wstring& oid, const char* type, size_t limit) {
+  auto start = monotonicMicros();
   auto length = request(oid, type, true);
   if (length > limit) {
     // The pending body makes this pipe unusable. Do not guess where a new response begins.
@@ -180,6 +181,7 @@ std::vector<BYTE> GitLower::object(const std::wstring& oid, const char* type, si
   if (end != '\n') {
     throw Error{STATUS_FILE_CORRUPT_ERROR};
   }
+  metrics.objectMicros += monotonicMicros() - start;
   return result;
 }
 

@@ -1,5 +1,6 @@
 // Store 的 Windows/SQLite 实现；宿主 helper 持有 lower 与控制目录租约，所有调用串行。
-// 1. UTF/句柄/Query 和 Transaction 管理有界 Win32/数据库操作。
+// 1. UTF/句柄/Query 和 Transaction 管理 Win32/数据库操作；累计计量拆分 SQL 与对象读取耗时。
+//    Git PoC 每种固定 SQL 缓存一个空闲 statement，嵌套查询独立借用；关闭连接前全部释放。
 // 2. 构造函数验证来源身份和持久格式，按需导入对象并合并目录；lower .git 永远遮蔽。
 // 3. create/promote/rename/remove 持久化私有状态；旧对象保留，崩溃不猜测或回写 lower。
 // 4. security 用 Windows 继承算法合成 DACL，SetSecurity 只保存描述符，不改来源 ACL。
@@ -9,11 +10,20 @@
 #include <objbase.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstring>
 
 #include "git-lower.hpp"
 
 namespace overlay {
+QueryMetrics queryMetrics;
+
+UINT64 monotonicMicros() {
+  return std::chrono::duration_cast<std::chrono::microseconds>(
+             std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+}
+
 void require(bool ok) {
   if (!ok) {
     throw Error{FspNtStatusFromWin32(GetLastError())};
@@ -94,12 +104,30 @@ static void sqlite(int result) {
   }
 }
 
-Query::Query(sqlite3* db, const char* sql) {
-  sqlite(sqlite3_prepare_v2(db, sql, -1, &value, nullptr));
+Query::Query(Store& store, const char* sql) {
+  if (store.git) {
+    pooled = &store.statements[sql];
+    value = *pooled;
+    *pooled = nullptr;
+    if (value) {
+      return;
+    }
+  }
+  auto start = monotonicMicros();
+  auto result = sqlite3_prepare_v2(store.db, sql, -1, &value, nullptr);
+  queryMetrics.prepareMicros += monotonicMicros() - start;
+  sqlite(result);
 }
 
 Query::~Query() {
-  sqlite3_finalize(value);
+  // Reset releases read cursors/locks. Clear every binding before reuse; an
+  // error or an already idle instance of this SQL falls back to finalization.
+  if (pooled && !*pooled && sqlite3_reset(value) == SQLITE_OK &&
+      sqlite3_clear_bindings(value) == SQLITE_OK) {
+    *pooled = value;
+  } else {
+    sqlite3_finalize(value);
+  }
 }
 
 Query& Query::number(int index, sqlite3_int64 number) {
@@ -120,7 +148,16 @@ Query& Query::blob(int index, const void* data, int size) {
 }
 
 bool Query::step() {
+  auto start = monotonicMicros();
   int result = sqlite3_step(value);
+  auto elapsed = monotonicMicros() - start;
+  if (sqlite3_stmt_readonly(value)) {
+    ++queryMetrics.reads;
+    queryMetrics.readMicros += elapsed;
+  } else {
+    ++queryMetrics.writes;
+    queryMetrics.writeMicros += elapsed;
+  }
   if (result == SQLITE_ROW) {
     return true;
   }
@@ -225,7 +262,10 @@ static void detachRootInheritance(std::vector<BYTE>& bytes) {
 }
 
 void Store::sql(const char* text) {
-  sqlite(sqlite3_exec(db, text, nullptr, nullptr, nullptr));
+  auto start = monotonicMicros();
+  auto result = sqlite3_exec(db, text, nullptr, nullptr, nullptr);
+  queryMetrics.execMicros += monotonicMicros() - start;
+  sqlite(result);
 }
 
 Store::Store(const fs::path& sourcePath, const fs::path& directory, const fs::path& workspacePath,
@@ -290,7 +330,7 @@ Store::Store(const fs::path& sourcePath, const fs::path& directory, const fs::pa
       GUID guid{};
       require(SUCCEEDED(CoCreateGuid(&guid)));
       serial = guid.Data1 ? guid.Data1 : 1;
-      Query(db, "INSERT INTO meta VALUES(2,?,?,?,0)")
+      Query(*this, "INSERT INTO meta VALUES(2,?,?,?,0)")
           .text(1, source.wstring())
           .text(2, sourceIdentity)
           .number(3, serial)
@@ -305,7 +345,7 @@ Store::Store(const fs::path& sourcePath, const fs::path& directory, const fs::pa
         throw Error{STATUS_FILE_CORRUPT_ERROR};
       }
     } else {
-      Query meta(db, "SELECT version,source,identity,serial,clean FROM meta");
+      Query meta(*this, "SELECT version,source,identity,serial,clean FROM meta");
       if (!meta.step() || meta.number(0) != 2 || meta.number(4) != 1 ||
           fold(meta.text(1)) != fold(source.wstring()) || meta.text(2) != sourceIdentity) {
         throw Error{STATUS_FILE_INVALID};
@@ -316,18 +356,29 @@ Store::Store(const fs::path& sourcePath, const fs::path& directory, const fs::pa
       }
       sql("UPDATE meta SET clean=0");
     }
-  } catch (...) {
-    if (db) {
-      sqlite3_close_v2(db);
-      db = nullptr;
+    if (git) {
+      // OpenFile normalized names look up an inode in its parent. The primary
+      // (parent,key) index otherwise scans every sibling for each file opened.
+      sql("CREATE INDEX IF NOT EXISTS entries_inode ON entries(parent,node)");
     }
+  } catch (...) {
+    closeDatabase();
     throw;
   }
 }
 
 Store::~Store() {
+  closeDatabase();
+}
+
+void Store::closeDatabase() noexcept {
+  for (auto& [sql, statement] : statements) {
+    sqlite3_finalize(statement);
+  }
+  statements.clear();
   if (db) {
     sqlite3_close_v2(db);
+    db = nullptr;
   }
 }
 
@@ -373,7 +424,7 @@ Handle Store::openLower(const std::wstring& origin, DWORD sharing) {
 }
 
 NodePtr Store::insert(Node value) {
-  Query(db,
+  Query(*this,
         "INSERT INTO nodes(parent,origin,object,info,security,reparse) "
         "VALUES(?,?,?,?,?,?)")
       .number(1, value.parent)
@@ -393,7 +444,7 @@ NodePtr Store::insert(Node value) {
 
 void Store::save(const NodePtr& node) {
   try {
-    Query(db,
+    Query(*this,
           "UPDATE nodes SET "
           "parent=?,origin=?,object=?,info=?,security=?,reparse=? WHERE id=?")
         .number(1, node->parent)
@@ -414,7 +465,7 @@ NodePtr Store::node(sqlite3_int64 id) {
   if (auto result = cache[id].lock()) {
     return result;
   }
-  Query query(db,
+  Query query(*this,
               "SELECT parent,origin,object,info,security,reparse FROM nodes "
               "WHERE id=?");
   query.number(1, id);
@@ -461,7 +512,7 @@ void Store::pinParents(const NodePtr& value) {
 }
 
 void Store::link(sqlite3_int64 parent, const std::wstring& name, sqlite3_int64 id, bool touch) {
-  Query(db,
+  Query(*this,
         "INSERT INTO entries VALUES(?,?,?,?) ON CONFLICT(parent,key) DO UPDATE "
         "SET name=excluded.name,node=excluded.node")
       .number(1, parent)
@@ -507,7 +558,7 @@ NodePtr Store::child(const NodePtr& parent, const std::wstring& name) {
   if (!parent->reparse.empty()) {
     throw Error{STATUS_REPARSE_POINT_NOT_RESOLVED};
   }
-  Query query(db, "SELECT node FROM entries WHERE parent=? AND key=?");
+  Query query(*this, "SELECT node FROM entries WHERE parent=? AND key=?");
   query.number(1, parent->id).text(2, fold(name));
   if (query.step()) {
     if (query.number(0) == 0) {
@@ -529,7 +580,7 @@ NodePtr Store::child(const NodePtr& parent, const std::wstring& name) {
   }
   if (git) {
     importGitDirectory(parent);
-    Query imported(db, "SELECT node FROM entries WHERE parent=? AND key=?");
+    Query imported(*this, "SELECT node FROM entries WHERE parent=? AND key=?");
     imported.number(1, parent->id).text(2, fold(name));
     if (!imported.step() || !imported.number(0)) {
       throw Error{STATUS_OBJECT_NAME_NOT_FOUND};
@@ -566,7 +617,7 @@ std::wstring Store::name(const NodePtr& value) {
   if (value->id == 1) {
     return L"\\";
   }
-  Query query(db, "SELECT name FROM entries WHERE parent=? AND node=?");
+  Query query(*this, "SELECT name FROM entries WHERE parent=? AND node=?");
   query.number(1, value->parent).number(2, value->id);
   if (!query.step()) {
     throw Error{STATUS_FILE_INVALID};
@@ -628,7 +679,7 @@ void Store::importGitDirectory(const NodePtr& parent) {
   auto sd = childDescriptor(node(1)->security);
   Transaction transaction(*this);
   for (const auto& entry : *entries) {
-    Query existing(db, "SELECT 1 FROM entries WHERE parent=? AND key=?");
+    Query existing(*this, "SELECT 1 FROM entries WHERE parent=? AND key=?");
     existing.number(1, parent->id).text(2, fold(entry.name));
     if (existing.step()) {
       continue;
@@ -704,7 +755,7 @@ std::vector<Entry> Store::list(const NodePtr& parent) {
     }
   }
   std::vector<Entry> result;
-  Query query(db, "SELECT name,node FROM entries WHERE parent=? AND node<>0 ORDER BY key");
+  Query query(*this, "SELECT name,node FROM entries WHERE parent=? AND node<>0 ORDER BY key");
   query.number(1, parent->id);
   while (query.step()) {
     try {
@@ -929,7 +980,7 @@ void Store::rename(const std::wstring& from, const std::wstring& to, bool replac
 void Store::remove(const std::wstring& path, sqlite3_int64 expected) {
   // Replacement may already have unlinked an inode that still has open handles.
   // Its delayed Cleanup must not remove the new occupant at the same name.
-  Query linked(db, "SELECT 1 FROM entries WHERE node=? LIMIT 1");
+  Query linked(*this, "SELECT 1 FROM entries WHERE node=? LIMIT 1");
   linked.number(1, expected);
   if (!linked.step()) {
     return;

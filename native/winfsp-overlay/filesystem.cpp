@@ -3,6 +3,7 @@
 // 2. 创建/打开/读取/写入共享 Node 身份，copy-up 后旧描述符也读取同一个私有对象。
 // 3. 命名空间、属性、DACL 与枚举委托 Store；Cleanup 无错误通道，失败使挂载失效。
 // 4. 重解析回调在当前虚拟路径检查目标，目录移动不能使相对链接越出视图。
+// 5. Git PoC 卷使用 no-atime；仅忽略自动访问时间，显式 SetBasic/写入仍持久化。
 // WinFsp 内核执行用户访问、共享模式和锁检查，不以 helper 宿主权限替调用者绕过检查。
 #include <algorithm>
 #include <cstring>
@@ -186,6 +187,14 @@ static NTSTATUS overwrite(FSP_FILE_SYSTEM* fs, PVOID context, UINT32 attributes,
 static void cleanup(FSP_FILE_SYSTEM* fs, PVOID context, PWSTR name, ULONG flags) {
   NTSTATUS result = guarded(fs, [&](Store& store) {
     auto node = opened(context);
+    if (flags & FspCleanupSetLastAccessTime) {
+      ++queryMetrics.accessCleanups;
+      if (store.git) {
+        // Reading immutable Git content must not issue a durable SQLite
+        // transaction per file. Git stat validation does not use access time.
+        flags &= ~FspCleanupSetLastAccessTime;
+      }
+    }
     if (flags & FspCleanupDelete) {
       store.remove(name, node->id);
     }

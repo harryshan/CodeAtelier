@@ -4,7 +4,7 @@
  * 2. start 等待有界协议 ready，stdin 生命周期绑定宿主；同一 ID 去重，异常退出后本进程内不重挂载。
  * 3. stop 在任务排空后关闭 stdin，等待停止/退出；超时仅终止自己创建的 helper，保留磁盘现场。
  * 4. mount/restore/unmount/异常退出记录独立 trace 和受控生命周期日志，原生诊断只含状态码/源码行号。
- * 5. 显式 gitBase 仅供人工虚拟 worktree PoC；metrics 读取原生计数，不改变生产创建入口。
+ * 5. 显式 gitBase 仅供人工虚拟 worktree PoC；metrics 读取累计计数/微秒耗时，兼容旧 helper 收据。
  */
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
@@ -31,6 +31,14 @@ const metricsSchema = z.object({
   blobBytes: z.number().int().nonnegative(),
   lowerOpens: z.number().int().nonnegative(),
   lowerEnumerations: z.number().int().nonnegative(),
+  objectMicros: z.number().int().nonnegative().optional(),
+  sqlPrepareMicros: z.number().int().nonnegative().optional(),
+  sqlReadMicros: z.number().int().nonnegative().optional(),
+  sqlWriteMicros: z.number().int().nonnegative().optional(),
+  sqlExecMicros: z.number().int().nonnegative().optional(),
+  sqlReads: z.number().int().nonnegative().optional(),
+  sqlWrites: z.number().int().nonnegative().optional(),
+  accessCleanups: z.number().int().nonnegative().optional(),
 });
 export type OverlayMetrics = z.infer<typeof metricsSchema>;
 

@@ -1,7 +1,7 @@
 /**
  * 人工虚拟 worktree PoC 的 Git/挂载夹具，不进入产品创建入口或默认测试。
  * 1. gitAt 使用固定 Git CLI、受控环境和真实 optional index refresh；输出只用于断言。
- * 2. fixture 直接 fast-import Git 对象，不展开来源工作文件，生成可重复的两次提交。
+ * 2. fixture 流式 fast-import 指定数量的唯一/复用 blob 与基线提交，不展开来源工作文件。
  * 3. virtualWorktree 分别计量 no-checkout 登记、read-tree、挂载和绑定；不复制来源 index。
  * 4. 返回验证/关闭方法；失败现场及登记保留，挂载仅由本夹具拥有的 OverlayManager 清理。
  */
@@ -11,6 +11,8 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import pino from "pino";
 import { gitEnvironment, directoryIdentity } from "../src/worktrees/git.js";
 import { attachOverlayGit } from "../src/worktrees/overlay-git.js";
@@ -46,7 +48,11 @@ export async function gitAt(cwd: string, args: string[]) {
   return result.stdout.trim();
 }
 
-export async function fixture(root: string, count: number) {
+export async function fixture(
+  root: string,
+  count: number,
+  uniqueBlobs = Math.min(count, 1000),
+) {
   const source = path.join(root, "source");
   await mkdir(source);
   await gitAt(source, ["init", "-b", "main"]);
@@ -64,27 +70,25 @@ export async function fixture(root: string, count: number) {
   }
 
   await writeFile(path.join(source, ".git", "empty-attributes"), "");
-  // Repeated 4 KiB objects model a metadata-heavy checkout. The report states
-  // this explicitly; this is not a Chromium compile or unique-data throughput test.
-  const blobs = Math.min(count, 1000);
-  const records: string[] = [];
-  for (let index = 0; index < blobs; index++) {
-    const content = `${index}:`.padEnd(4095, "x") + "\n";
-    records.push(`blob\nmark :${index + 1}\ndata 4096\n${content}\n`);
-  }
+  // Record the unique count so repeated and unique-content scans are comparable.
+  // Stream records to avoid allocating the entire large fixture in JS memory.
+  const blobs = uniqueBlobs;
+  function* records() {
+    for (let index = 0; index < blobs; index++) {
+      const content = `${index}:`.padEnd(4095, "x") + "\n";
+      yield `blob\nmark :${index + 1}\ndata 4096\n${content}\n`;
+    }
 
-  records.push(
-    `commit refs/heads/main\nmark :${blobs + 1}\ncommitter Fixture <fixture@example.invalid> 1700000000 +0000\ndata 4\nbase\n`,
-  );
-  for (let index = 0; index < count; index++) {
-    records.push(
-      `M 100644 :${(index % blobs) + 1} d${Math.floor(index / 1000)
+    yield `commit refs/heads/main\nmark :${blobs + 1}\ncommitter Fixture <fixture@example.invalid> 1700000000 +0000\ndata 4\nbase\n`;
+    for (let index = 0; index < count; index++) {
+      yield `M 100644 :${(index % blobs) + 1} d${Math.floor(index / 1000)
         .toString()
-        .padStart(5, "0")}/f${index.toString().padStart(7, "0")}.txt\n`,
-    );
+        .padStart(5, "0")}/f${index.toString().padStart(7, "0")}.txt\n`;
+    }
+
+    yield "\ndone\n";
   }
 
-  records.push("\ndone\n");
   const child = spawn("git", ["fast-import", "--quiet"], {
     cwd: source,
     env: pocEnvironment,
@@ -105,8 +109,10 @@ export async function fixture(root: string, count: number) {
         : reject(new Error(`Fixture fast-import failed: ${errors}`)),
     );
   });
-  child.stdin.end(records.join(""));
-  await finished;
+  await Promise.all([
+    pipeline(Readable.from(records()), child.stdin),
+    finished,
+  ]);
   assert.deepEqual(await readdir(source), [".git"]);
 
   return {

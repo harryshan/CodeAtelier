@@ -1,0 +1,446 @@
+{
+  "sources": {
+    "baselineProfile10k": ".local/virtual-worktree-poc-iVF6ZY/report.json",
+    "optimized100k": ".local/virtual-worktree-poc-VL9Dsm/report.json",
+    "unique100k": ".local/virtual-worktree-poc-tcgsD2/report.json"
+  },
+  "baselineProfile10k": {
+    "timestamp": "2026-10-25T11:57:55.412Z",
+    "platform": "win32",
+    "release": "10.0.26200",
+    "cpu": "12th Gen Intel(R) Core(TM) i9-12900K",
+    "node": "v26.10.0",
+    "git": "git version 2.55.0.windows.2",
+    "verification": {
+      "git": "passed",
+      "isolation": "passed",
+      "restore": "passed",
+      "sandbox": "not requested"
+    },
+    "measurements": {
+      "files": 10000,
+      "fileBytes": 4096,
+      "uniqueBlobs": 1000,
+      "sourceWorkingFiles": 0,
+      "virtual": {
+        "creation": {
+          "registrationMs": 44.2586999999985,
+          "indexMs": 47.33230000000003,
+          "mountMs": 47.29440000000068,
+          "attachMs": 65.42749999999978,
+          "readyMs": 487.0084999999999
+        },
+        "mountMetrics": {
+          "version": 1,
+          "state": "metrics",
+          "treeReads": 0,
+          "infoReads": 0,
+          "blobReads": 0,
+          "blobBytes": 0,
+          "lowerOpens": 0,
+          "lowerEnumerations": 0,
+          "objectMicros": 0,
+          "sqlPrepareMicros": 34,
+          "sqlReadMicros": 4,
+          "sqlWriteMicros": 1792,
+          "sqlExecMicros": 7306,
+          "sqlReads": 1,
+          "sqlWrites": 3,
+          "accessCleanups": 0
+        },
+        "ready": {
+          "metrics": {
+            "version": 1,
+            "state": "metrics",
+            "treeReads": 0,
+            "infoReads": 0,
+            "blobReads": 0,
+            "blobBytes": 0,
+            "lowerOpens": 0,
+            "lowerEnumerations": 0,
+            "objectMicros": 0,
+            "sqlPrepareMicros": 691,
+            "sqlReadMicros": 189,
+            "sqlWriteMicros": 19327,
+            "sqlExecMicros": 8130,
+            "sqlReads": 112,
+            "sqlWrites": 36,
+            "accessCleanups": 22
+          },
+          "disk": {
+            "files": 11,
+            "logicalBytes": 1082508,
+            "allocatedBytes": 1114536
+          }
+        },
+        "firstStatusMs": 10561.121299999999,
+        "first": {
+          "metrics": {
+            "version": 1,
+            "state": "metrics",
+            "treeReads": 11,
+            "infoReads": 1000,
+            "blobReads": 10000,
+            "blobBytes": 40960000,
+            "lowerOpens": 0,
+            "lowerEnumerations": 0,
+            "objectMicros": 736529,
+            "sqlPrepareMicros": 707179,
+            "sqlReadMicros": 470640,
+            "sqlWriteMicros": 6293883,
+            "sqlExecMicros": 24849,
+            "sqlReads": 311634,
+            "sqlWrites": 40120,
+            "accessCleanups": 10076
+          },
+          "disk": {
+            "files": 11,
+            "logicalBytes": 7851660,
+            "allocatedBytes": 7860648
+          }
+        },
+        "secondStatusMs": 507.7623999999996,
+        "second": {
+          "metrics": {
+            "version": 1,
+            "state": "metrics",
+            "treeReads": 11,
+            "infoReads": 1000,
+            "blobReads": 10000,
+            "blobBytes": 40960000,
+            "lowerOpens": 0,
+            "lowerEnumerations": 0,
+            "objectMicros": 736529,
+            "sqlPrepareMicros": 931096,
+            "sqlReadMicros": 535019,
+            "sqlWriteMicros": 6334321,
+            "sqlExecMicros": 24849,
+            "sqlReads": 493135,
+            "sqlWrites": 40174,
+            "accessCleanups": 10130
+          },
+          "disk": {
+            "files": 11,
+            "logicalBytes": 7851660,
+            "allocatedBytes": 7860648
+          }
+        }
+      },
+      "ordinary": {
+        "readyMs": 1646.7783000000018,
+        "ready": {
+          "files": 10007,
+          "logicalBytes": 41840829,
+          "allocatedBytes": 41841080
+        },
+        "firstStatusMs": 198.81169999999838,
+        "secondStatusMs": 48.21320000000196,
+        "after": {
+          "files": 10007,
+          "logicalBytes": 41840829,
+          "allocatedBytes": 41841080
+        }
+      }
+    },
+    "caveats": [
+      "First command, not cold OS cache",
+      "Virtual measured before ordinary",
+      "Allocation excludes NTFS MFT/directory/journal overhead and shared Git object database",
+      "Synthetic repeated 4 KiB blobs; no build/submodule/filter workload"
+    ]
+  },
+  "optimized100k": {
+    "timestamp": "2026-10-25T12:14:59.805Z",
+    "platform": "win32",
+    "release": "10.0.26200",
+    "cpu": "12th Gen Intel(R) Core(TM) i9-12900K",
+    "node": "v26.10.0",
+    "git": "git version 2.55.0.windows.2",
+    "verification": {
+      "git": "passed",
+      "isolation": "passed",
+      "restore": "passed",
+      "sandbox": "passed",
+      "unsupportedTree": "passed",
+      "statDetection": "passed"
+    },
+    "measurements": {
+      "files": 100000,
+      "fileBytes": 4096,
+      "uniqueBlobs": 1000,
+      "sourceWorkingFiles": 0,
+      "virtual": {
+        "creation": {
+          "registrationMs": 45.345400000000154,
+          "indexMs": 96.24109999999928,
+          "mountMs": 46.787099999999555,
+          "attachMs": 51.7546999999995,
+          "readyMs": 508.34740000000056
+        },
+        "mountMetrics": {
+          "version": 1,
+          "state": "metrics",
+          "treeReads": 0,
+          "infoReads": 0,
+          "blobReads": 0,
+          "blobBytes": 0,
+          "lowerOpens": 0,
+          "lowerEnumerations": 0,
+          "objectMicros": 0,
+          "sqlPrepareMicros": 33,
+          "sqlReadMicros": 4,
+          "sqlWriteMicros": 1821,
+          "sqlExecMicros": 7788,
+          "sqlReads": 1,
+          "sqlWrites": 3,
+          "accessCleanups": 0
+        },
+        "ready": {
+          "metrics": {
+            "version": 1,
+            "state": "metrics",
+            "treeReads": 0,
+            "infoReads": 0,
+            "blobReads": 0,
+            "blobBytes": 0,
+            "lowerOpens": 0,
+            "lowerEnumerations": 0,
+            "objectMicros": 0,
+            "sqlPrepareMicros": 79,
+            "sqlReadMicros": 159,
+            "sqlWriteMicros": 5269,
+            "sqlExecMicros": 8672,
+            "sqlReads": 112,
+            "sqlWrites": 17,
+            "accessCleanups": 22
+          },
+          "disk": {
+            "files": 11,
+            "logicalBytes": 8943771,
+            "allocatedBytes": 8974760
+          }
+        },
+        "firstStatusMs": 30993.162600000003,
+        "first": {
+          "metrics": {
+            "version": 1,
+            "state": "metrics",
+            "treeReads": 101,
+            "infoReads": 1000,
+            "blobReads": 100000,
+            "blobBytes": 409600000,
+            "lowerOpens": 0,
+            "lowerEnumerations": 0,
+            "objectMicros": 7263428,
+            "sqlPrepareMicros": 978526,
+            "sqlReadMicros": 2166138,
+            "sqlWriteMicros": 177813,
+            "sqlExecMicros": 235798,
+            "sqlReads": 2213097,
+            "sqlWrites": 300317,
+            "accessCleanups": 100156
+          },
+          "disk": {
+            "files": 11,
+            "logicalBytes": 41716539,
+            "allocatedBytes": 41738664
+          }
+        },
+        "secondStatusMs": 837.8165999999983,
+        "second": {
+          "metrics": {
+            "version": 1,
+            "state": "metrics",
+            "treeReads": 101,
+            "infoReads": 1000,
+            "blobReads": 100000,
+            "blobBytes": 409600000,
+            "lowerOpens": 0,
+            "lowerEnumerations": 0,
+            "objectMicros": 7263428,
+            "sqlPrepareMicros": 978613,
+            "sqlReadMicros": 2458763,
+            "sqlWriteMicros": 177813,
+            "sqlExecMicros": 235798,
+            "sqlReads": 3125967,
+            "sqlWrites": 300317,
+            "accessCleanups": 100290
+          },
+          "disk": {
+            "files": 11,
+            "logicalBytes": 41716539,
+            "allocatedBytes": 41738664
+          }
+        }
+      },
+      "ordinary": {
+        "readyMs": 21784.7849,
+        "ready": {
+          "files": 100007,
+          "logicalBytes": 418403893,
+          "allocatedBytes": 418406840
+        },
+        "firstStatusMs": 152.84790000000794,
+        "secondStatusMs": 82.73029999999562,
+        "after": {
+          "files": 100007,
+          "logicalBytes": 418403893,
+          "allocatedBytes": 418406840
+        }
+      }
+    },
+    "caveats": [
+      "First command, not cold OS cache",
+      "Virtual measured before ordinary",
+      "Allocation excludes NTFS MFT/directory/journal overhead and shared Git object database",
+      "Synthetic 4 KiB blobs with recorded unique count; no build/submodule/filter workload"
+    ]
+  },
+  "unique100k": {
+    "timestamp": "2026-10-25T12:13:33.291Z",
+    "platform": "win32",
+    "release": "10.0.26200",
+    "cpu": "12th Gen Intel(R) Core(TM) i9-12900K",
+    "node": "v26.10.0",
+    "git": "git version 2.55.0.windows.2",
+    "verification": {
+      "git": "passed",
+      "isolation": "passed",
+      "restore": "passed",
+      "sandbox": "not requested",
+      "unsupportedTree": "passed",
+      "statDetection": "passed"
+    },
+    "measurements": {
+      "files": 100000,
+      "fileBytes": 4096,
+      "uniqueBlobs": 100000,
+      "sourceWorkingFiles": 0,
+      "virtual": {
+        "creation": {
+          "registrationMs": 47.148699999999735,
+          "indexMs": 103.09970000000067,
+          "mountMs": 48.71740000000136,
+          "attachMs": 57.052200000000084,
+          "readyMs": 519.7520999999997
+        },
+        "mountMetrics": {
+          "version": 1,
+          "state": "metrics",
+          "treeReads": 0,
+          "infoReads": 0,
+          "blobReads": 0,
+          "blobBytes": 0,
+          "lowerOpens": 0,
+          "lowerEnumerations": 0,
+          "objectMicros": 0,
+          "sqlPrepareMicros": 36,
+          "sqlReadMicros": 3,
+          "sqlWriteMicros": 1756,
+          "sqlExecMicros": 7347,
+          "sqlReads": 1,
+          "sqlWrites": 3,
+          "accessCleanups": 0
+        },
+        "ready": {
+          "metrics": {
+            "version": 1,
+            "state": "metrics",
+            "treeReads": 0,
+            "infoReads": 0,
+            "blobReads": 0,
+            "blobBytes": 0,
+            "lowerOpens": 0,
+            "lowerEnumerations": 0,
+            "objectMicros": 0,
+            "sqlPrepareMicros": 94,
+            "sqlReadMicros": 190,
+            "sqlWriteMicros": 5587,
+            "sqlExecMicros": 8110,
+            "sqlReads": 112,
+            "sqlWrites": 17,
+            "accessCleanups": 22
+          },
+          "disk": {
+            "files": 11,
+            "logicalBytes": 8947891,
+            "allocatedBytes": 8974760
+          }
+        },
+        "firstStatusMs": 35414.24340000001,
+        "first": {
+          "metrics": {
+            "version": 1,
+            "state": "metrics",
+            "treeReads": 101,
+            "infoReads": 100000,
+            "blobReads": 100000,
+            "blobBytes": 409600000,
+            "lowerOpens": 0,
+            "lowerEnumerations": 0,
+            "objectMicros": 7364232,
+            "sqlPrepareMicros": 929094,
+            "sqlReadMicros": 2070682,
+            "sqlWriteMicros": 227694,
+            "sqlExecMicros": 238523,
+            "sqlReads": 2213104,
+            "sqlWrites": 300317,
+            "accessCleanups": 100156
+          },
+          "disk": {
+            "files": 11,
+            "logicalBytes": 41745307,
+            "allocatedBytes": 41750952
+          }
+        },
+        "secondStatusMs": 911.2404000000024,
+        "second": {
+          "metrics": {
+            "version": 1,
+            "state": "metrics",
+            "treeReads": 101,
+            "infoReads": 100000,
+            "blobReads": 100000,
+            "blobBytes": 409600000,
+            "lowerOpens": 0,
+            "lowerEnumerations": 0,
+            "objectMicros": 7364232,
+            "sqlPrepareMicros": 929239,
+            "sqlReadMicros": 2387721,
+            "sqlWriteMicros": 227694,
+            "sqlExecMicros": 238523,
+            "sqlReads": 3125961,
+            "sqlWrites": 300317,
+            "accessCleanups": 100290
+          },
+          "disk": {
+            "files": 11,
+            "logicalBytes": 41745307,
+            "allocatedBytes": 41750952
+          }
+        }
+      },
+      "ordinary": {
+        "readyMs": 22860.33759999999,
+        "ready": {
+          "files": 100007,
+          "logicalBytes": 418403893,
+          "allocatedBytes": 418406840
+        },
+        "firstStatusMs": 194.22930000000633,
+        "secondStatusMs": 71.1984000000084,
+        "after": {
+          "files": 100007,
+          "logicalBytes": 418403893,
+          "allocatedBytes": 418406840
+        }
+      }
+    },
+    "caveats": [
+      "First command, not cold OS cache",
+      "Virtual measured before ordinary",
+      "Allocation excludes NTFS MFT/directory/journal overhead and shared Git object database",
+      "Synthetic 4 KiB blobs with recorded unique count; no build/submodule/filter workload"
+    ]
+  }
+}

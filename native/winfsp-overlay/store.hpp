@@ -1,5 +1,5 @@
 // Windows overlay 对象/事务接口，供 WinFsp callbacks 与原生解析测试使用。
-// 1. Win32 RAII、错误及 SQLite 查询封装统一资源与失败处理。
+// 1. Win32 RAII、错误及 SQLite 查询封装统一资源与失败处理；Git PoC 复用固定 SQL 的空闲语句。
 // 2. Store 按需导入 lower 元数据，持久化命名空间、删除标记、ACL 和虚拟 inode。
 // 3. copy-up 先 flush 私有对象再发布引用；文件 rename 固化内容，目录 rename 保留 live lower。
 // 4. security/reparse 接口维护虚拟卷权限和内部链接；finish 仅在状态可信时标记干净卸载。
@@ -31,6 +31,18 @@ std::string utf8(const std::wstring& value);
 std::wstring wide(const std::string& value);
 std::wstring fold(const std::wstring& value);
 UINT64 now();
+UINT64 monotonicMicros();
+struct QueryMetrics {
+  UINT64 prepareMicros = 0;
+  UINT64 readMicros = 0;
+  UINT64 writeMicros = 0;
+  UINT64 execMicros = 0;
+  UINT64 reads = 0;
+  UINT64 writes = 0;
+  UINT64 accessCleanups = 0;
+};
+// One Store per helper; startup and callbacks serialize these process-local counters.
+extern QueryMetrics queryMetrics;
 std::vector<BYTE> internalReparse(const void* buffer, size_t size, const fs::path& origin,
                                   const fs::path& root, const fs::path& targetRoot);
 std::vector<BYTE> lowerReparse(HANDLE handle, const fs::path& origin, const fs::path& root,
@@ -47,9 +59,11 @@ struct Handle {
   ~Handle();
 };
 
+class Store;
 struct Query {
   sqlite3_stmt* value = nullptr;
-  Query(sqlite3* db, const char* sql);
+  sqlite3_stmt** pooled = nullptr;
+  Query(Store& store, const char* sql);
   ~Query();
   Query& number(int index, sqlite3_int64 value);
   Query& text(int index, const std::wstring& value);
@@ -95,6 +109,7 @@ class Store {
   bool poisoned = false;
   std::map<sqlite3_int64, std::weak_ptr<Node>> cache;
   std::unique_ptr<GitLower> git;
+  std::map<std::string, sqlite3_stmt*> statements;
   UINT64 lowerOpens = 0;
   UINT64 lowerEnumerations = 0;
 
@@ -126,6 +141,7 @@ class Store {
                    DWORD sharing = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE);
 
  private:
+  void closeDatabase() noexcept;
   std::set<sqlite3_int64> importedTrees;
   bool gitIncompatible = false;
   void importGitDirectory(const NodePtr& parent);

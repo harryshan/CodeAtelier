@@ -1,5 +1,5 @@
 // Git 提交 lower 的人工 PoC 接口，供 Store 复用现有 WinFsp 回调与 upper。
-// 1. GitEntry/GitMetrics 表示一层 tree 和真实对象读取计数，不表示工作文件快照。
+// 1. GitEntry/GitMetrics 表示一层 tree、真实读取计数与内容请求耗时，不表示工作文件快照。
 // 2. GitLower 通过独占 Job 中的常驻 cat-file 查询固定 OID，不运行 checkout/filter。
 // 3. tree/size 按需缓存元数据，blob 只缓存最近一个有界对象；不写磁盘内容缓存。
 // 生命周期由 Store 拥有，异常关闭 Job 终止自己的 Git；不管理其他 Git 或产品任务。
@@ -20,6 +20,7 @@ struct GitMetrics {
   UINT64 infoReads = 0;
   UINT64 blobReads = 0;
   UINT64 blobBytes = 0;
+  UINT64 objectMicros = 0;  // Successful tree/blob contents requests; excludes size-only queries.
 };
 
 class GitLower {

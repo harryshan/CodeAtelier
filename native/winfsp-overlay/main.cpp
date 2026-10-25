@@ -70,7 +70,15 @@ int wmain(int argc, wchar_t** argv) {
       std::cout << "{\"version\":1,\"state\":\"metrics\",\"treeReads\":" << metrics.treeReads
                 << ",\"infoReads\":" << metrics.infoReads << ",\"blobReads\":" << metrics.blobReads
                 << ",\"blobBytes\":" << metrics.blobBytes << ",\"lowerOpens\":" << store.lowerOpens
-                << ",\"lowerEnumerations\":" << store.lowerEnumerations << "}\n"
+                << ",\"lowerEnumerations\":" << store.lowerEnumerations
+                << ",\"objectMicros\":" << metrics.objectMicros
+                << ",\"sqlPrepareMicros\":" << queryMetrics.prepareMicros
+                << ",\"sqlReadMicros\":" << queryMetrics.readMicros
+                << ",\"sqlWriteMicros\":" << queryMetrics.writeMicros
+                << ",\"sqlExecMicros\":" << queryMetrics.execMicros
+                << ",\"sqlReads\":" << queryMetrics.reads
+                << ",\"sqlWrites\":" << queryMetrics.writes
+                << ",\"accessCleanups\":" << queryMetrics.accessCleanups << "}\n"
                 << std::flush;
     }
     FspFileSystemStopDispatcher(filesystem);

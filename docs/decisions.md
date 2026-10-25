@@ -9,6 +9,7 @@
 - 需求澄清：优先解决大仓库 worktree 创建慢和工作文件重复占用；包含主目录未提交状态只是此前的实现妥协，不再作为本实验要求。
 - 决定：固定 Git commit 的 tree/blob 按需提供 lower，复用 WinFsp upper/ACL；标准 linked worktree 共享 objects/refs，独立 HEAD/index 从提交初始化。创建不遍历/复制主目录工作文件，但如实记录 Git tree/index 元数据成本。
 - 验证：实际 Git、已安装 Windows Sandbox、大文件树创建耗时/磁盘/首次 status；禁止以宿主 fallback、skip-worktree 或假 clean 代替。实验与生产入口隔离，不迁移会话、创建分区或重启服务。设计及限制见 [虚拟 worktree PoC](virtual-worktree-poc.md)。
+- 同日追加：用户要求优化首次扫描。计量定位后，Git PoC 卷采用 no-atime（不自动更新访问时间，显式设置仍持久化），添加 inode 反查索引并复用已编译 SQL；保留 SQLite FULL、真实内容扫描和脏文件检测。普通实时 overlay 的时间语义不变；不将尚未验证的 index/stat 预热或 FSMonitor 写成已实现。
 
 ## D168：Windows NTFS 的 WinFsp 实时 overlay
 

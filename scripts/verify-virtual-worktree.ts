@@ -1,7 +1,7 @@
 /**
  * 手动运行的 Windows Git 虚拟 worktree PoC；不属于默认测试或 Evaluation。
- * 1. verify 用小型对象夹具检查提交基线、双视图隔离、Git 变更/重置、卸载恢复和可选真实 Sandbox。
- * 2. benchmark 从未 checkout 的大树创建虚拟/普通 worktree，分别计量创建与首次/重复 status。
+ * 1. verify 系列检查提交/隔离、Git/恢复、脏文件检测、显式时间、不兼容树和可选真实 Sandbox。
+ * 2. benchmark 从未 checkout 的大树创建虚拟/普通 worktree，记录唯一 blob 数与创建/扫描计量。
  * 3. disk 只枚举自己的物理 upper/admin/普通 checkout，计入 SQLite/WAL/index 的真实分配长度。
  * 4. 将命令、环境、计数和耗时保存到独占 .local 目录；正常退出关闭自己挂载，失败保留现场。
  * 不部署、不更改默认模式、不修复/安装 Sandbox；首次命令不宣称 OS 冷缓存。
@@ -15,7 +15,9 @@ import {
   readFile,
   readdir,
   rename,
+  stat,
   unlink,
+  utimes,
   writeFile,
 } from "node:fs/promises";
 import os from "node:os";
@@ -45,6 +47,13 @@ const count = Number(
   args.find((arg) => arg.startsWith("--count="))?.slice(8) ?? 100_000,
 );
 assert(Number.isInteger(count) && count >= 8 && count <= 1_000_000);
+const uniqueBlobs = Number(
+  args.find((arg) => arg.startsWith("--unique-blobs="))?.slice(15) ??
+    Math.min(count, 1000),
+);
+assert(
+  Number.isInteger(uniqueBlobs) && uniqueBlobs >= 1 && uniqueBlobs <= count,
+);
 await mkdir(path.join(repository, ".local"), { recursive: true });
 const root = await mkdtemp(
   path.join(repository, ".local", "virtual-worktree-poc-"),
@@ -257,6 +266,97 @@ async function verifyUnsupportedTree() {
   }
 }
 
+async function verifyStatDetection() {
+  const location = path.join(root, "stat-detection");
+  await mkdir(location);
+  const base = await fixture(location, 8);
+  const view = await virtualWorktree(
+    base.source,
+    base.commit,
+    path.join(location, "view"),
+  );
+  const tracked = path.join(view.workspace, file);
+  try {
+    const before = await stat(tracked, { bigint: true });
+    const content = await readFile(tracked);
+    assert.equal(
+      (await stat(tracked, { bigint: true })).atimeNs,
+      before.atimeNs,
+      "Reading immutable lower must not persist automatic atime changes.",
+    );
+    content[0] = "x".charCodeAt(0);
+    await writeFile(tracked, content);
+    const deleted = "d00000/f0000001.txt";
+    await unlink(path.join(view.workspace, deleted));
+    await writeFile(path.join(view.workspace, "untracked.txt"), "visible\n");
+    const initial = await gitAt(view.workspace, [
+      "status",
+      "--porcelain=v1",
+      "--untracked-files=all",
+    ]);
+    assert.match(initial, /M d00000\/f0000000.txt/);
+    assert.match(initial, /D d00000\/f0000001.txt/);
+    assert.match(initial, /\?\? untracked.txt/);
+    await assert.rejects(
+      gitAt(view.workspace, ["diff", "--exit-code", "--", file]),
+    );
+    assert.match(
+      await gitAt(view.workspace, ["ls-files", "-v", "--", file]),
+      /^H /,
+      "No assume-unchanged or skip-worktree flags may suppress dirty detection.",
+    );
+
+    await gitAt(view.workspace, ["restore", "--", "."]);
+    await unlink(path.join(view.workspace, "untracked.txt"));
+    assert.equal(await gitAt(view.workspace, ["status", "--porcelain=v1"]), "");
+    content[0] = "y".charCodeAt(0);
+    await writeFile(tracked, content);
+    await assert.rejects(
+      gitAt(view.workspace, ["diff", "--exit-code", "--", file]),
+    );
+    await gitAt(view.workspace, ["add", file]);
+    assert.match(
+      await gitAt(view.workspace, ["diff", "--cached", "--", file]),
+      /y:/,
+    );
+
+    const explicit = path.join(view.workspace, "d00000/f0000002.txt");
+    const original = await stat(explicit);
+    const access = new Date("2020-01-02T03:04:05Z");
+    await utimes(explicit, access, original.mtime);
+    assert.equal(
+      (await stat(explicit)).atimeMs,
+      access.getTime(),
+      "Explicit timestamps still take the persistent mutation path.",
+    );
+  } finally {
+    await view.close();
+  }
+
+  const restored = new OverlayManager(view.root, pino({ enabled: false }));
+  try {
+    await restored.start(
+      view.id,
+      view.source,
+      view.control,
+      view.workspace,
+      false,
+      AbortSignal.timeout(30_000),
+      view.base,
+    );
+    assert.equal(
+      (await stat(path.join(view.workspace, "d00000/f0000002.txt"))).atimeMs,
+      new Date("2020-01-02T03:04:05Z").getTime(),
+    );
+    assert.match(
+      await gitAt(view.workspace, ["diff", "--cached", "--", file]),
+      /y:/,
+    );
+  } finally {
+    await restored.close();
+  }
+}
+
 async function disk(roots: string[]) {
   const input = path.join(root, `disk-input-${randomUUID()}.json`);
   await writeFile(input, JSON.stringify(roots));
@@ -301,7 +401,7 @@ async function benchmark() {
   const location = path.join(root, `benchmark-${count}`);
   await mkdir(location);
   progress(`fixture_started files=${count}`);
-  const base = await fixture(location, count);
+  const base = await fixture(location, count, uniqueBlobs);
   progress("virtual_creation_started");
   const view = await virtualWorktree(
     base.source,
@@ -390,6 +490,11 @@ async function benchmark() {
 progress(`started root=${root}`);
 const verification = await verify();
 await verifyUnsupportedTree();
+await verifyStatDetection();
+Object.assign(verification, {
+  unsupportedTree: "passed",
+  statDetection: "passed",
+});
 progress("verification_passed");
 const measurements = args.includes("--verify-only")
   ? undefined
@@ -407,7 +512,7 @@ const report = {
     "First command, not cold OS cache",
     "Virtual measured before ordinary",
     "Allocation excludes NTFS MFT/directory/journal overhead and shared Git object database",
-    "Synthetic repeated 4 KiB blobs; no build/submodule/filter workload",
+    "Synthetic 4 KiB blobs with recorded unique count; no build/submodule/filter workload",
   ],
 };
 await writeFile(

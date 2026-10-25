@@ -3,7 +3,7 @@
  * 1. 使用管道夹具控制 ready/stopped/close，检查只接受完整收据且同一请求去重。
  * 2. helper 异常退出后不得在本进程重挂载；取消必须等待停止，关闭必须证明 stopped + exit 0。
  * 3. 校验托管 UNC 命名空间不能将子目录或另一数据目录误认作同一个挂载。
- * 4. Git PoC 显式选择及分段 metrics 收据不能改变 live 挂载协议或终止普通挂载。
+ * 4. Git PoC 显式选择及新旧分段 metrics 收据不能改变 live 挂载协议或终止普通挂载。
  * 原生文件、Git 和受限 token 语义由手动 verify-winfsp-overlay 独立验证。
  */
 import { EventEmitter } from "node:events";
@@ -191,6 +191,20 @@ it("reads complete Git PoC metrics without treating them as a stop receipt", asy
   f.helper.stdout.write(json.slice(0, 20));
   f.helper.stdout.write(json.slice(20) + "\n");
   expect(await pending).toEqual(receipt);
+  const profiled = {
+    ...receipt,
+    objectMicros: 120,
+    sqlPrepareMicros: 4,
+    sqlReadMicros: 6,
+    sqlWriteMicros: 12,
+    sqlExecMicros: 18,
+    sqlReads: 3,
+    sqlWrites: 2,
+    accessCleanups: 1,
+  };
+  const next = f.manager.metrics(f.id);
+  f.helper.stdout.write(JSON.stringify(profiled) + "\n");
+  expect(await next).toEqual(profiled);
   expect(f.helper.stdin.writableEnded).toBe(false);
   await f.manager.close();
 });

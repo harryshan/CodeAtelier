@@ -1,5 +1,14 @@
 # 初版验证记录
 
+## 虚拟 worktree 首次扫描优化（D169，2026-10-25）
+
+- 原实现一万文件 profiling `.local/virtual-worktree-poc-iVF6ZY`：首次 status 10.561 s，SQLite 写累计 6.294 s；逐文件 Cleanup 自动 atime 触发持久化是主要可消除成本。Git PoC 改用 no-atime，并增加 `(parent,node)` 索引与 SQL statement 复用；未关闭 SQLite FULL，未改变生产实时 overlay 的时间语义。
+- 最终十万文件/1000 blob 夹具 `.local/virtual-worktree-poc-VL9Dsm` / `.local/virtual-scan-final-100k.log`：首次 status **30.993 s**，相对首轮 106.217 s 缩短 70.8%；第二次 0.838 s，创建 0.508 s，私有分配创建/扫描后 8.97/41.74 MB。创建加首次扫描 31.50 s，仍慢于本轮普通 worktree 21.94 s。首次读取全部十万个 blob/409.6 MB，来源工作文件打开/枚举始终零；不把首次命令当 OS 冷缓存。
+- 全部唯一内容十万文件 `.local/virtual-worktree-poc-tcgsD2` / `.local/virtual-scan-unique-100k.log`：创建 0.520 s、首次 status 35.414 s、第二次 0.911 s；未测该样本优化前版本，不推导其加速比。完整计量和限制见 [扫描优化报告](virtual-worktree-poc.md#首次扫描优化) / [JSON](virtual-worktree-scan-results.json)。
+- 增加真实 Git 回归：首次扫描前/后同长度修改、删除、untracked 均能检测；index 无跳过标志；no-atime 读取、显式时间设置、staged diff 与重挂载通过。开发中曾先采用仅 lower no-atime，显式 atime 用例在 `.local/virtual-worktree-poc-G3xcmb` / `YJu3dB` 复现 upper 属性读取覆盖时间，最终统一 Git PoC 卷 no-atime 后通过；未弱化断言。
+- 最终虚拟 worktree Sandbox 完成/取消均为 `agent-runtime/windows-sandbox-user/sandboxApplied`，结束零租约，没有 fallback。原实时后端 `.local/winfsp-verification-2e8GU9` / `.local/virtual-scan-live-regression.log` 的 Git、ACL、锁、映射写入、重挂载、强杀拒绝恢复及真实 Sandbox 完成/恢复/取消全部通过。原生构建及解析回归通过，日志 `.local/virtual-scan-native-final.log`，仍只有 SDK 结构对齐警告。未安装/Repair Sandbox、创建分区或重启服务。
+- 最终 `pnpm check` 通过：134 个测试文件、987 passed / 1 existing skipped，类型/lint/格式/构建通过（`.local/virtual-scan-check-final.log`）。新增协议验证接受旧计数收据和扩展微秒计量；结束后无本次夹具 helper/Git 子进程残留。无 UI/HTTP/SSE 改动，未重复浏览器验收。
+
 ## Git 提交虚拟 worktree PoC（D169，2026-10-25）
 
 - 仅新增人工 PoC，不接入产品默认模式、会话清单或 UI，不迁移历史、不重启服务，不安装/Repair Sandbox 或创建分区。原生 WinFsp upper、SQLite 命名空间/ACL、身份与卸载流程复用；Git lower 使用固定 tree 和常驻本地 cat-file，读取不物化工作文件。
