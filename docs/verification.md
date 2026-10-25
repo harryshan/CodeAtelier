@@ -1,5 +1,13 @@
 # 初版验证记录
 
+## Local 完成态视图恢复（D170，2026-10-26）
+
+- 为显式所选 B/O 保存控制目录身份、映射、关联代次和物理文件版本检查点；创建时不增加来源扫描。完成来源的恢复只操作确认与私有日志；unknown/applying 和已有未知锁不接管。
+- `pnpm overlay:verify-recovery` 真实 WinFsp/NTFS 通过（`.local/local-overlay-recovery-Ml6kGw/report.json`）：独立发布进程干净退出后，新进程从磁盘恢复未执行的确认；来源后续修改不被重写且刷新后可见。原确认/恢复确认丢失回执时重试均保留后来私有编辑；未执行确认但私有文件已改时拒绝清理，未选产物保留。[摘要](local-overlay-recovery-results.json)。
+- 针对性 23 项回归通过，覆盖同字节重写、映射/代次变化、旧日志缺少证明、日志内容/版本失配及 unknown/applying 锁保留。日志读取有界并核对读取前后文件身份，恢复写前复核摘要，不将其宣称为外部写者 CAS。
+- 未修改原生格式/代码或驱动安装态、未重启产品服务、未运行 Evaluation。此次是宿主夹具、干净卸载后的持久恢复，不是异常卷、未知来源发布、Sandbox 自动发布或产品入口验收。
+- 自审补充控制目录/路径证明失配、恢复前取消和原生确认后日志变化的回归。最终 `pnpm check` 通过：138 个测试文件、1061 passed / 1 existing skipped，类型/lint/格式及 Web/Windows/POSIX Runtime 构建通过（`.local/local-overlay-recovery-check.log`）。无 UI/HTTP/SSE 改动，不运行 e2e；只读进程检查确认无遗留 overlay helper。
+
 ## Local 冻结故障取消与排空（D170，2026-10-26）
 
 - 先用 `.local/local-overlay-drain-before.log` 的协议回归复现 helper 失效后未提供取消信号、未排空回调的问题。改为冻结作用域信号与协作排空，失效/用户取消/管理器关闭均等待回调结束；重复关闭复用卸载。未结束的不合作回调不报告完成。

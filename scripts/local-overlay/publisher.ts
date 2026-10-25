@@ -8,6 +8,7 @@
  * 6. 显式 nativeWindows 使用保留 owner/group/DACL 的原生替换，完整发布后按身份清理备份。
  * 7. 可选 refresh 在来源 complete 后确认私有视图；失败保留 pending 收据，不重写来源完成状态。
  * 8. signal 传给候选验证，写前和逐文件复核取消；在途原生替换等待结果，不以取消推断没有副作用。
+ * 9. recoverRefresh 只恢复 complete 批次的视图确认；重读日志/私有版本，不重放来源写入或接管未知锁。
  * 仅普通单链接文件/已存在父目录；新建使用不覆盖的 link，旧对照模式不保证 Windows ACL 保真。
  * 不提供外部写入 CAS、多文件原子提交、断电证明或生产服务集成；故障钩子仅供实验。
  */
@@ -26,7 +27,6 @@ import {
   durableJson,
   snapshot,
   sourceIdentity,
-  type Snapshot,
 } from "./files.js";
 import { equal, mergeContent, PublishError } from "./merge.js";
 import { validateBatch, type Batch } from "./session.js";
@@ -35,21 +35,9 @@ import {
   validateOverlayAcknowledgement,
   type OverlayAcknowledgement,
 } from "../../src/worktrees/overlay.js";
-
-interface Entry {
-  path: string;
-  before: Snapshot;
-  after: string | null;
-  state: "pending" | "intent" | "written" | "unchanged";
-  backup?: { path: string; identity?: string; cleaned?: boolean };
-}
-
-interface Journal {
-  batch: Batch;
-  state: "prepared" | "applying" | "complete" | "aborted" | "unknown";
-  entries: Entry[];
-  refresh?: { request: OverlayAcknowledgement; state: "pending" | "confirmed" };
-}
+import { loadJournal, type Entry, type Journal } from "./journal.js";
+import { checkpointSchema, type NativeCheckpoint } from "./native-refresh.js";
+import { recoverCompletedRefresh } from "./refresh-recovery.js";
 
 export interface PublishOptions {
   validate: (
@@ -62,6 +50,7 @@ export interface PublishOptions {
   nativeWindows?: boolean;
   refresh?: {
     request: OverlayAcknowledgement;
+    checkpoint?: NativeCheckpoint;
     acknowledge: (request: OverlayAcknowledgement) => Promise<void>;
   };
 }
@@ -181,7 +170,7 @@ export class Publisher {
       });
     }
 
-    return { batch, entries, state: "prepared" };
+    return { version: 1, batch, entries, state: "prepared" };
   }
 
   private async verify(journal: Journal) {
@@ -330,6 +319,9 @@ export class Publisher {
     const batch = validateBatch(input);
     if (options.refresh) {
       validateOverlayAcknowledgement(options.refresh.request);
+      if (options.refresh.checkpoint) {
+        checkpointSchema.parse(options.refresh.checkpoint);
+      }
     }
 
     if (
@@ -402,6 +394,9 @@ export class Publisher {
       if (options.refresh) {
         journal.refresh = {
           request: structuredClone(options.refresh.request),
+          ...(options.refresh.checkpoint
+            ? { checkpoint: structuredClone(options.refresh.checkpoint) }
+            : {}),
           state: "pending",
         };
       }
@@ -512,12 +507,10 @@ export class Publisher {
   async inspect(input: Batch) {
     const batch = validateBatch(input);
     const locations = await this.layout(batch);
-    const journal = JSON.parse(
-      await readFile(
-        path.join(locations.directory, batch.id, "journal.json"),
-        "utf8",
-      ),
-    ) as Journal;
+    const { journal } = await loadJournal(
+      path.join(locations.directory, batch.id, "journal.json"),
+      batch,
+    );
     const results = [];
     for (const entry of journal.entries) {
       const current = await snapshot(batch.source, entry.path);
@@ -530,5 +523,27 @@ export class Publisher {
     }
 
     return { state: journal.state, files: results };
+  }
+
+  /** Must run under the target view's withFrozen lease; never replays source writes. */
+  async recoverRefresh(
+    input: Batch,
+    control: string,
+    acknowledge: (request: OverlayAcknowledgement) => Promise<void>,
+    options: { signal?: AbortSignal; lockTimeoutMs?: number } = {},
+  ) {
+    const batch = validateBatch(input);
+    const locations = await this.layout(batch);
+
+    return recoverCompletedRefresh({
+      batch,
+      directory: path.join(locations.directory, batch.id),
+      control,
+      acknowledge,
+      signal: options.signal,
+      log: this.log,
+      acquire: () =>
+        this.acquire(locations.lock, { ...options, validate: async () => {} }),
+    });
   }
 }

@@ -1,0 +1,18 @@
+{
+  "timestamp": "2026-10-25T16:55:38.761Z",
+  "platform": "win32",
+  "release": "10.0.26200",
+  "node": "v26.10.0",
+  "backend": "self-developed native WinFsp Local v5",
+  "processRestart": "publish and recovery use separate Node processes with clean unmount",
+  "beforeAck": "unchanged private checkpoint rebound to current seal; later source retained and visible",
+  "afterAck": "original receipt replay preserves later private edits",
+  "recoveryReceiptLoss": "persisted recovery intent replay preserves later private edits",
+  "laterPrivateChanges": "unapplied acknowledgement rejected; edits and artifact retained",
+  "repeatedConfirmed": "idempotent; no helper acknowledgement or source write",
+  "limitations": [
+    "No dirty-volume or unknown-source recovery",
+    "Host fixture only; not production or Sandbox automatic publication",
+    "No object GC, external-writer CAS or multi-file atomicity"
+  ]
+}

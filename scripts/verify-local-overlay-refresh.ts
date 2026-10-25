@@ -161,6 +161,7 @@ async function staleConfirmation() {
       validate,
       refresh: {
         request,
+        checkpoint: batch.checkpoint,
         acknowledge: async () => {
           throw new Error("Interrupted before acknowledgement");
         },
@@ -217,6 +218,7 @@ async function publish(
         validate,
         refresh: {
           request: batch.acknowledgement,
+          checkpoint: batch.checkpoint,
           acknowledge: async (request) => {
             await acknowledge(request);
             // Same lease replay is idempotent and does not advance a second epoch.

@@ -109,7 +109,11 @@ async function scenario(mode: "validation" | "applying") {
           await publisher.publish(batch, {
             nativeWindows: true,
             signal,
-            refresh: { request: captured.acknowledgement, acknowledge },
+            refresh: {
+              request: captured.acknowledgement,
+              checkpoint: captured.checkpoint,
+              acknowledge,
+            },
             validate: async (files, validationSignal) => {
               assert.equal(validationSignal, signal);
               if (mode !== "validation") {

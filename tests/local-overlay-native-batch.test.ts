@@ -6,87 +6,12 @@
  * 4. 新代次不会删除旧修改依赖；仅新修改导出可排除与其无关的旧观察。
  * 不写用户文件、不运行发布或模型；测试资源由现有 temp 管理。
  */
-import { randomUUID } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+
+import { writeFile } from "node:fs/promises";
 import path from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { expect, it } from "vitest";
-import { temp } from "./fixtures/helpers.js";
-import { sourceIdentity } from "../scripts/local-overlay/files.js";
+import { nativeFixture as fixture } from "./fixtures/local-overlay-native.js";
 import { nativeBatch } from "../scripts/local-overlay/native-batch.js";
-
-async function fixture() {
-  const root = await temp();
-  const lower = path.join(root, "lower");
-  const control = path.join(root, "control");
-  await mkdir(lower);
-  await mkdir(path.join(control, "baselines"), { recursive: true });
-  await mkdir(path.join(control, "objects"));
-  const source = await sourceIdentity(lower);
-  const db = new DatabaseSync(path.join(control, "overlay.sqlite"));
-  const seal = randomUUID();
-  db.exec(`
-    CREATE TABLE meta(version INTEGER,source TEXT,clean INTEGER);
-    CREATE TABLE baselines(path TEXT,name TEXT,kind INTEGER,object TEXT,stamp TEXT,attributes INTEGER,flags INTEGER);
-    CREATE TABLE sealed_changes(path TEXT,kind INTEGER,object TEXT);
-    CREATE TABLE observations(path TEXT,name TEXT,epoch INTEGER DEFAULT 0);
-    CREATE TABLE checked_reads(path TEXT,valid INTEGER,epoch INTEGER DEFAULT 0);
-    CREATE TABLE change_epochs(path TEXT,epoch INTEGER);
-    CREATE TABLE local_state(epoch INTEGER,seal TEXT);
-  `);
-  db.prepare("INSERT INTO meta VALUES(5,?,0)").run(source.root);
-  db.prepare("INSERT INTO local_state VALUES(0,?)").run(seal);
-  db.close();
-
-  function mutate(sql: string) {
-    const update = new DatabaseSync(path.join(control, "overlay.sqlite"));
-    try {
-      update.exec(sql);
-    } finally {
-      update.close();
-    }
-  }
-
-  async function change(
-    name: string,
-    base: string | null,
-    ours: string | null,
-  ) {
-    const before = base === null ? "" : `{${randomUUID()}}`;
-    const after = ours === null ? "" : `{${randomUUID()}}`;
-    if (base !== null) {
-      await writeFile(path.join(control, "baselines", before), base);
-    }
-
-    if (ours !== null) {
-      await writeFile(path.join(control, "objects", after), ours);
-    }
-
-    const update = new DatabaseSync(path.join(control, "overlay.sqlite"));
-    try {
-      const native = `\\${name}`;
-      update
-        .prepare("INSERT INTO baselines VALUES(?,?,?,?,?,32,1)")
-        .run(
-          native.toUpperCase(),
-          native,
-          base === null ? 0 : 1,
-          before,
-          "original-stamp",
-        );
-      update
-        .prepare("INSERT INTO sealed_changes VALUES(?,?,?)")
-        .run(native.toUpperCase(), ours === null ? 0 : 1, after);
-      update
-        .prepare("INSERT INTO change_epochs VALUES(?,0)")
-        .run(native.toUpperCase());
-    } finally {
-      update.close();
-    }
-  }
-
-  return { source, control, change, mutate, seal };
-}
 
 it("exports only selected B/O without substituting the latest lower for B", async () => {
   const f = await fixture();

@@ -4,6 +4,7 @@
  * 2. 仅查询选择的路径，读取不可变 B 和封存 O；普通文件有界读取，拒绝目录、重解析和显式属性变更。
  * 3. 对其它已读路径先取宿主内容版本，再经仍持租约的 helper 复核原生观察戳；拒绝失效依赖。
  * 4. 按所选修改的历史代次及当前代次检查依赖，返回 Batch 与绑定的确认请求；不自行发布或确认。
+ * 5. 对真正变化的选定路径保存私有检查点，供 complete 后的刷新恢复；额外复核仅限这些文件。
  * 沿用 PoC 的 100 个文件/读依赖/关联代次和内容大小限制，不将全部 upper 当源码。
  * 日志与 trace 由外层冻结/发布生命周期提供，不输出路径、内容或安全描述符。
  */
@@ -21,6 +22,7 @@ import {
 } from "./files.js";
 import { PublishError } from "./merge.js";
 import { validateBatch, type Batch } from "./session.js";
+import { nativeCheckpoint, type NativeCheckpoint } from "./native-refresh.js";
 
 const rowSchema = z.object({
   path: z.string(),
@@ -67,7 +69,12 @@ export async function nativeBatch(
   controlDirectory: string,
   selected: readonly string[],
   verifyReads: (epochs?: readonly number[]) => Promise<void>,
-): Promise<Batch & { acknowledgement: OverlayAcknowledgement }> {
+): Promise<
+  Batch & {
+    acknowledgement: OverlayAcknowledgement;
+    checkpoint: NativeCheckpoint;
+  }
+> {
   if (selected.length < 1 || selected.length > 100) {
     throw new PublishError("BATCH_LIMIT");
   }
@@ -216,16 +223,19 @@ export async function nativeBatch(
     }
 
     const batch = validateBatch({ id: randomUUID(), source, changes, reads });
+    const paths = batch.changes.map(
+      (change) => "\\" + change.path.replaceAll("/", "\\"),
+    );
+    const checkpoint = await nativeCheckpoint(source, controlDirectory, paths);
 
     return {
       ...batch,
+      checkpoint,
       acknowledgement: {
         batchId: batch.id,
         seal,
         epoch,
-        paths: batch.changes.map(
-          (change) => "\\" + change.path.replaceAll("/", "\\"),
-        ),
+        paths,
       },
     };
   } finally {

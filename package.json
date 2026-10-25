@@ -22,6 +22,7 @@
     "overlay:verify-capture": "tsx scripts/verify-local-overlay-capture.ts",
     "overlay:verify-native-publish": "tsx scripts/verify-local-overlay-publish.ts",
     "overlay:verify-refresh": "tsx scripts/verify-local-overlay-refresh.ts",
+    "overlay:verify-recovery": "tsx scripts/verify-local-overlay-recovery.ts",
     "overlay:verify-drain": "tsx scripts/verify-local-overlay-drain.ts",
     "overlay:verify-sandbox": "tsx scripts/verify-local-overlay-sandbox.ts",
     "start": "node dist/server/server/launcher.js",
