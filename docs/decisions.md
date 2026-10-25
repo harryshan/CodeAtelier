@@ -5,10 +5,11 @@
 ## D168：Windows NTFS 的 WinFsp 实时 overlay
 
 - 日期：2026-10-25。
-- 状态：用户授权实现，并明确选择“允许实时读取原目录；所有写入只进入私有层”；随后明确要求像 Git worktree、不以选定 commit/branch 物化文件、不复制原 repo，要求重新设计。实现与验收状态见 [WinFsp 设计](winfsp-overlay.md)，不得将设计当作已可用功能。
+- 状态：用户确认按 linked worktree + 实时工作文件 overlay 实现，并授权安装已验签的官方 WinFsp Runtime 继续真实验证。首版原生实现、Git 和 Sandbox 完成/取消/恢复闭环已验证；不扩展为完整 NTFS、SACL 或巨型仓库性能验收，证据见 [WinFsp 后端](winfsp-overlay.md)。
 - 决定：Windows 的 Riftri 新增 WinFsp 原生 API 后端；未 copy-up 的工作文件实时读取来源目录，内容/属性/ACL 的写入和删除只进入会话私有层。Windows 此后端依赖来源持续存在，不再承诺 D167 的固定文件快照及删除来源后独立恢复；Linux/macOS 原生 CoW 和显式 Git worktree 不变。
-- Git：撤回完整复制 `.git` 及手工拆分私有对象库的方案。改从标准 linked worktree 的独立 HEAD/index、共享 objects/refs 结构研究，与原工作目录 overlay 分层。已用小型夹具验证 `worktree add --no-checkout` 不展开文件、复制独立 index 保留 staged 状态；挂载及产品接入尚未验证。共享 Git metadata 的写入与工作文件只写 upper 必须分别说明，不能宣称整个来源目录绝对只读。
+- Git：撤回完整复制 `.git` 及手工拆分私有对象库方案。使用标准 linked worktree 独立 HEAD/index、共享 objects/refs；`worktree add --no-checkout` 不展开文件，复制来源 index 保留 staged 状态，split-index 在任务侧展开。UNC 精确 safe.directory 只作用于任务进程和 Runtime 实例配置。共享 Git metadata 的写入与工作文件只写 upper 分别说明，不能宣称整个来源目录绝对只读。
 - 联动：挂载身份、原生 ACL、持久 capability、跨账户可见性、Runtime 取消、服务排空后卸载与重启恢复必须逐项验证；不能全局放宽重解析点检查或向 Sandbox 授予 lower/后端控制目录。无 helper/driver 时拒绝创建；异常状态不回退来源目录、不自动重做创建。
+- 实现：使用稳定本机 UNC，不依赖 drive/junction 入口。虚拟根的来源继承权限转为自身有效 ACL，防止授权时丢失原权限；子项继续按虚拟父项继承。SQLite 事务保存 namespace/ACL/whiteout，随机对象保存内容；正常卸载设置 clean，强杀/未知写入不自动恢复。内部 junction 映射为目录 symlink；SACL/审计/完整性标签、ADS、硬链接创建及 lower 通知未支持。挂载/恢复/卸载/异常退出均有 ID、耗时、终态 tracing；不记录路径、ACL 或正文。
 - 安装与分发：不创建 Windows 分区，不隐式借助 WSL；WinFsp 驱动需独立安装。其 GPLv3/FLOSS 例外与 Riftri MIT 分开记录，暂不选择 CodeAtelier 分发许可证。
 
 ## D167：默认 Riftri 当前目录副本与显式 Git worktree 并列

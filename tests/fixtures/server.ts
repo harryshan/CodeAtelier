@@ -6,7 +6,8 @@
  * 2. 长历史用例生成压缩材料与模拟摘要；subagent 用例经真实 Worker 规划、等待、收集固定报告，不绕过任务入口。
  * 3. 统一文件新建/编辑、命令（含 Git CLI 状态请求）交给真实 ToolRunner 并经过通用审批；普通回复分段输出并带固定 usage。
  * 4. 测试专用 legacy-sessions 入口在既有鉴权下预置升级前的 Local 历史，供既有 UI 回归继续原路径；生产创建入口仍使用 Riftri/Worktree。
- * 5. 启动测试端口，收到 SIGTERM 后关闭引擎和应用。
+ * 5. 为默认 Riftri 创建注入确定缺失的 helper，避免测试意外启动本机驱动；仍走真实管理器的失败路径。
+ * 6. 启动测试端口，收到 SIGTERM 后关闭引擎和应用。
  *
  * 不绕过鉴权、任务审批或数据库保存；legacy fixture 不参与生产构建，也不宣称验证原生 CoW。
  */
@@ -20,6 +21,7 @@ import { Config } from "../../src/config/config.js";
 import { createApp } from "../../src/server/app.js";
 import { TITLE_INSTRUCTIONS } from "../../src/sessions/title-generator.js";
 import { z } from "zod";
+import { WorktreeService } from "../../src/worktrees/service.js";
 
 const config = new Config(
   await realpath(await mkdtemp(path.join(tmpdir(), "codeatelier-ui-"))),
@@ -265,6 +267,15 @@ const { app, engine, store } = await createApp(
     };
   },
 );
+
+const unavailableRiftri = new WorktreeService(
+  config.directory,
+  pino({ enabled: false }),
+  path.join(config.directory, "intentionally-missing-native-helper"),
+);
+engine.worktrees.createRiftri =
+  unavailableRiftri.createRiftri.bind(unavailableRiftri);
+app.addHook("onClose", () => unavailableRiftri.close());
 
 app.post("/api/test/legacy-sessions", async (request) => {
   const { workspace } = z

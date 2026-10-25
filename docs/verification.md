@@ -1,5 +1,15 @@
 # 初版验证记录
 
+## Windows WinFsp 实时 overlay（D168，2026-10-25）
+
+- 在用户明确授权后安装已验签的官方 WinFsp 2.1.25156 Runtime，exit 0。无分区创建、系统/用户服务重启或 Sandbox 安装/Repair。MSVC x64 构建原生 helper 成功；只保留上游 SDK 的结构对齐警告。
+- `pnpm worktree:verify-winfsp --sandbox` 使用正式 WorktreeService/Engine 与现有专用账户 Runtime，最终夹具 `.local/winfsp-verification-PNAutR` 通过：双视图隔离、实时 lower、dirty/staged/untracked/ignored、内部 junction 到虚拟 symlink、copy-up、whiteout、大小写/文件/目录 rename、临时文件替换、8 路独立写入、Git add/commit 与来源 HEAD/index/工作文件保持、项目映射和公共 Git 根。输出保存在 `.local/winfsp-runtime-final.log`。
+- 同一脚本验证 DACL deny/protection、owner/group 保留、根继承授权/撤销、文件独占共享锁和内存映射写入；来源 ACL/字节不变。Sandbox 实际执行身份为专用账户，没有 host fallback；提交完成后零租约，关闭并重建 Engine 后恢复原挂载，取消同样完成 Runtime 清理并零租约。重挂载 dev/ino/birthtime 相同，内容及删除标记保留。单独 helper 强杀后拒绝恢复并保留私有对象。
+- 审查回归先在 `.local/winfsp-verification-KcPahi` 复现只改名 lower 文件随来源删除而消失；修复为普通文件 rename 先 copy-up，QSKSbf 已覆盖。初次 Sandbox 清理失败定位为虚拟根 inherited ACE 被安全描述符修改丢弃；将来源有效根 ACE 固化为显式保护 DACL后重新验证授权/撤销成功，原测试现场仅撤销其自身的四项已知授权。
+- 相对 symlink 创建在宿主 Node 下被 Windows 权限拒绝（`.local/winfsp-verification-TeQAdD`），不修改系统策略来掩盖；移动后越界约束另由原生解析回归验证，不将其称为完整 symlink 安装态通过。
+- 最终 `pnpm check` 通过：134 个文件、985 passed / 1 existing skipped，类型、lint、格式与构建通过（`.local/winfsp-check-delivery.log`）。原生 `-VerifyReparse` 通过（`.local/winfsp-native-final.log`）；全套浏览器验收 71 passed（`.local/winfsp-e2e.log`），仍通过测试专用缺 helper 注入验证不可用提示，不冒称原生挂载的浏览器端验收。创建失败的单挂载清理回归确认不影响另一个活动视图。
+- 边界：不是完整 NTFS/ACL 兼容认证；PowerShell 整描述符 Set-Acl 路径未通过，DACL 专用 API 和 Sandbox 原生 API 已通过。SACL/审计、ADS、新建硬链接、EFS、外部重解析点不支持；lower 事件通知、断电/每阶段故障注入、Windows ARM64、巨型 repo 性能未验收。POSIX 后端与普通 Worktree 行为保持；没有自动回写/清理，未运行 Evaluation。
+
 ## 默认 Riftri 当前状态副本（D167，2026-10-25）
 
 - Riftri 与普通 Worktree 已拆为并列模式。新会话默认 Riftri，不接受 commit/branch；v2 helper 直接从原目录克隆当前文件和独立 Git metadata，移除 blob hash、Git checkout/filter 与 fallback。Windows 无原生支持时明确拒绝，UI 提供显式 Worktree 入口。

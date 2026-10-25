@@ -4,9 +4,9 @@
 
 CodeAtelier 是一个运行在本机的个人 AI 编程助手。连接模型服务、选好项目目录，就可以开始对话。它会直接操作项目文件，你可以随时查看修改和执行过程，或停止任务。
 
-新对话默认通过 Riftri 原生 CoW 使用主目录当前状态，包含脏文件、暂存区和未跟踪/忽略文件；不支持选择基线。侧栏 `⑂` 或“改用 Git worktree”显式选择普通 Worktree，从指定提交建立干净目录。对话持久绑定实际目录，共享项目记忆，不自动回写或清理。使用方式、Sandbox 和恢复边界见 [工作区指南](docs/worktrees.md)。
+新对话默认通过 Riftri 使用主目录当前状态，包含脏文件、暂存区和未跟踪/忽略文件，不支持选择基线。Linux/macOS 使用原生 CoW 副本，Windows 使用 WinFsp 实时 overlay。侧栏 `⑂` 或“改用 Git worktree”显式从指定提交建立普通 Worktree。对话持久绑定实际目录，共享项目记忆，不自动回写或清理。使用方式、Sandbox 和恢复边界见 [工作区指南](docs/worktrees.md)。
 
-Riftri 直接克隆原目录，不建立额外 base、不计算 Git blob hash；原生能力不可用时拒绝创建，不自动降级。Linux/macOS helper 需显式构建，Windows 当前需显式选择 Git worktree。已有 Local 历史保持原路径，新模式不会自动迁移已有对话。
+两种 Riftri 后端均不建立额外 base、不计算 Git blob hash。Windows 不复制项目树或 `.git/objects`，工作文件实时读来源、写私有层，Git HEAD/index 独立而 objects/refs 共享；需显式构建 helper 并安装 WinFsp Runtime。能力不可用时拒绝创建，不自动降级。已有 Local 历史保持原路径，新模式不会自动迁移已有对话。
 
 ## 项目亮点
 

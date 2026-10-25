@@ -1,11 +1,13 @@
 /**
- * 验证 Riftri v2 原生适配器，进程和文件探测使用模拟，不冒充真实 CoW 验证。
+ * 验证 Riftri v2 / Windows overlay v1 选择，进程和文件探测使用模拟，不冒充真实挂载验证。
  * 1. 缺少 helper、跨卷、旧版本和不支持卷均拒绝；取消不会变成能力错误。
  * 2. snapshot 不携带 commit、不调用 Git checkout；严格校验收据并保留未知结果。
  * 3. 空目录仍属于 Riftri；普通 Git 模式由 WorktreeService 单独处理。
+ * 4. Windows overlay 不要求同卷，缺驱动或协议异常仍明确拒绝，不回退 Git。
  */
 import { beforeEach, expect, it, vi } from "vitest";
 import { createCheckout, selectCheckout } from "../src/worktrees/riftri.js";
+import { overlayHelperPath } from "../src/worktrees/overlay.js";
 
 const mocks = vi.hoisted(() => ({
   process: vi.fn(),
@@ -22,6 +24,42 @@ beforeEach(() => {
     isSymbolicLink: () => false,
   });
   mocks.stat.mockResolvedValue({ dev: 1 });
+});
+
+it.skipIf(process.platform !== "win32")(
+  "selects the Windows live overlay without a same-volume clone requirement",
+  async () => {
+    mocks.process.mockResolvedValue({
+      exitCode: 0,
+      output: '{"version":1,"available":true}',
+      truncated: false,
+    });
+    mocks.stat.mockRejectedValue(new Error("No volume clone check expected"));
+    await expect(
+      selectCheckout(
+        "source",
+        "root",
+        new AbortController().signal,
+        overlayHelperPath(),
+      ),
+    ).resolves.toEqual({ backend: "riftri-winfsp" });
+  },
+);
+
+it.skipIf(process.platform !== "win32").each([
+  { exitCode: 0, output: '{"version":1,"available":false}', truncated: false },
+  { exitCode: 0, output: '{"version":2,"available":true}', truncated: false },
+  { exitCode: 1, output: "driver missing", truncated: false },
+])("refuses unavailable Windows overlays: %j", async (result) => {
+  mocks.process.mockResolvedValue(result);
+  await expect(
+    selectCheckout(
+      "source",
+      "root",
+      new AbortController().signal,
+      overlayHelperPath(),
+    ),
+  ).rejects.toThrow("显式选择 Git worktree");
 });
 
 it("rejects unavailable helpers rather than losing dirty files through Git fallback", async () => {

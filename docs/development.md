@@ -14,6 +14,8 @@ Node.js 24 或 26，pnpm 版本由 package.json 的 packageManager 固定。提�
 | pnpm start                                        | 运行构建后的本机服务；由监督进程支持 UI 确认后的后端重载                  |
 | pnpm typecheck / lint / test                      | 类型、静态规则、核心测试；test 只使用白名单测试环境                       |
 | pnpm check                                        | 类型、lint、核心测试、测试模式构建                                        |
+| pnpm worktree:build-winfsp -Sdk <SDK> -VerifyReparse | 显式构建 Windows x64 WinFsp overlay 与可选解析回归；不安装驱动             |
+| pnpm worktree:verify-winfsp --sandbox              | 手动验证真实 NTFS/WinFsp 和已安装 Sandbox；独占夹具，不调用模型服务          |
 | pnpm test:e2e                                     | 先进行不读取 dotenv 的测试模式构建，再启动独立模拟服务验证浏览器交互      |
 | pnpm exec tsx scripts/probe-model-capabilities.ts | 检查模型窗口、计数接口及真实 usage（少量模型调用）                        |
 | pnpm exec tsx scripts/probe-responses.ts          | 读取私有设置测试真实 Responses 工具往返                                   |

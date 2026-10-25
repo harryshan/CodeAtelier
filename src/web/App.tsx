@@ -2,6 +2,7 @@
  * CodeAtelier 的主页面，负责选择会话、提交任务和打开设置等用户操作。
  * 通过 api 请求后端，通过 useSessionConnection 同步会话，再交给 Timeline 和分类 SettingsPage 展示。
  *
+ * 0. workspaceDescription 按后端解释实时 lower、固定 CoW 或 Git 提交基线，供实际路径提示使用。
  * 1. 状态和 effects 管理当前会话、默认关闭的一次性 subagent 勾选、服务端能力标志、弹窗及加载状态；useHistoryScroll 自动加载旧页，Timeline 保持阅读位置；历史加载使用低强调状态行，读取失败独立警告并允许重试。
  * 2. 按服务端来源项目路径分组（旧 Local 使用实际路径）；项目可折叠并默认显示最近五个对话。新建默认 Riftri、失败重试保留请求 UUID；WorktreeDialog 显式创建提交基线目录。项目栏显示模式及实际路径，手机端使用导航抽屉。
  * 3. resume、reloadService、stopServer、createProject、createConversation 和 send 处理恢复、受确认的服务重载、关闭服务、连接项目、新建会话和发送消息，并显示操作结果。
@@ -25,6 +26,24 @@ import { WorktreeDialog, requestId } from "./WorktreeDialog";
 import s from "./app.module.css";
 
 const RECENT_CONVERSATION_LIMIT = 5;
+
+function workspaceDescription(worktree: Session["worktree"]) {
+  if (!worktree) {
+    return undefined;
+  }
+
+  let baseline: string;
+  if (worktree.backend === "riftri-winfsp") {
+    baseline = "实时读取主目录，工作文件写入私有层；Git objects/refs 共享";
+  } else if (worktree.mode === "riftri") {
+    baseline = "主目录创建时状态（包含脏文件）";
+  } else {
+    baseline = `${worktree.baseRef ?? "未知"} (${worktree.baseCommit?.slice(0, 12) ?? ""})`;
+  }
+
+  return `来源：${worktree.projectWorkspace ?? "清单不可用"}；创建基线：${baseline}；存储：${worktree.backend ?? "git"}`;
+}
+
 export default function App() {
   const [list, setList] = useState<Session[]>([]);
   const [selected, setSelected] = useState("");
@@ -608,8 +627,8 @@ export default function App() {
               <form className={s.projectForm} onSubmit={createProject}>
                 <p>
                   默认使用 Riftri
-                  创建独立目录，包含主目录的未提交与忽略文件。需要原生 CoW
-                  支持。
+                  创建独立工作视图，包含主目录的未提交与忽略文件。Windows 需要
+                  WinFsp，未修改文件实时读取主目录；Linux/macOS 需要原生 CoW。
                 </p>
                 <label>
                   项目目录
@@ -678,13 +697,7 @@ export default function App() {
             <>
               <div className={s.projectBar}>
                 <span>⌁</span>
-                <span
-                  title={
-                    data?.session.worktree
-                      ? `来源：${data.session.worktree.projectWorkspace ?? "清单不可用"}；创建基线：${data.session.worktree.mode === "riftri" ? "主目录创建时状态（包含脏文件）" : `${data.session.worktree.baseRef ?? "未知"} (${data.session.worktree.baseCommit?.slice(0, 12) ?? ""})`}；存储：${data.session.worktree.backend ?? "git"}`
-                      : undefined
-                  }
-                >
+                <span title={workspaceDescription(data?.session.worktree)}>
                   {data?.session.worktree
                     ? data.session.worktree.mode === "riftri"
                       ? "Riftri"

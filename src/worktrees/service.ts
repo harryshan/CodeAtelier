@@ -1,11 +1,12 @@
 /**
- * 管理默认 Riftri 当前目录副本和显式 Git worktree，为 Engine/API 提供持久绑定与验证。
+ * 管理默认 Riftri（POSIX CoW / Windows 实时 overlay）和显式 Git worktree，为 Engine/API 提供持久绑定与验证。
  * 输入是模式、来源目录、请求 UUID，以及仅 Worktree 可用的提交基线；输出是实际目录与来源元数据。
  * 1. inspect 获取 Git 身份/分支；create 与 createRiftri 并列进入串行持久化 preparing/ready 清单。
  * 2. 创建使用文件排他锁与 UUID 去重；未知结果保留现场，不删除、不重新 checkout；bind 按 workspace 找回已写历史。
  * 3. describe 装饰历史而不依赖目录存在；validate 在任务 admission/执行/Sandbox 启动前验证目录、gitfile 和共享元数据。
- * 4. projectWorkspace 只映射项目记忆，文件工具和调度仍使用实际路径；close 取消管理进程并排空队列。
- * 清单在 Broker 私有目录，checkout 在其同级目录；日志/trace 只包含关联 ID、状态和耗时。
+ * 4. projectWorkspace 映射记忆；gitWriteRoots 投影核验后的共享 Git 根，commandEnvironment 只为托管 UNC 添加子进程信任。
+ * 5. cancelCreation 先停止创建；Engine 排空任务和 Sandbox 后 close 卸载 overlay，不删除私有层或回写来源。
+ * 清单/overlay 对象在 Broker 私有目录；普通 checkout 在其同级目录，挂载使用稳定本机 UNC。日志/trace 不采集文件正文。
  */
 
 import { randomUUID } from "node:crypto";
@@ -27,6 +28,13 @@ import { TraceRecorder } from "../tracing/recorder.js";
 import { TraceArchive } from "../tracing/archive.js";
 import { addWorktree, directoryIdentity, git, samePath } from "./git.js";
 import {
+  OverlayManager,
+  overlayNamespace,
+  overlayWorkspace,
+  overlayWorkspaceId,
+} from "./overlay.js";
+import { attachOverlayGit, registerOverlayGit } from "./overlay-git.js";
+import {
   checkoutSchema,
   createCheckout,
   nativeHelperPath,
@@ -46,6 +54,10 @@ const recordSchema = z.object({
   workspaceIdentity: z.string().optional(),
   adminDirectory: z.string().optional(),
   checkout: checkoutSchema.optional(),
+  executionWorkspace: z.string().optional(),
+  overlay: z
+    .object({ sourceIdentity: z.string(), controlIdentity: z.string() })
+    .optional(),
 });
 type Record = z.infer<typeof recordSchema>;
 
@@ -83,6 +95,8 @@ export class WorktreeService {
   private readonly controller = new AbortController();
   private readonly traces = new TraceRecorder();
   private readonly archive: TraceArchive;
+  private readonly overlays: OverlayManager;
+  private readonly namespace: string;
 
   constructor(
     directory: string,
@@ -96,6 +110,11 @@ export class WorktreeService {
     );
     this.metadata = path.join(absolute, "worktrees");
     this.archive = new TraceArchive(this.metadata, log);
+    this.overlays = new OverlayManager(
+      path.join(this.metadata, "overlay-traces"),
+      log,
+    );
+    this.namespace = overlayNamespace(absolute);
   }
 
   private file(id: string) {
@@ -103,6 +122,11 @@ export class WorktreeService {
   }
 
   private idFor(workspace: string) {
+    const overlayId = overlayWorkspaceId(this.namespace, workspace);
+    if (overlayId) {
+      return overlayId;
+    }
+
     const relative = path.relative(this.root, workspace);
     if (
       relative === ".." ||
@@ -213,7 +237,42 @@ export class WorktreeService {
 
     try {
       const record = await this.read(id);
-      if (record.mode === "riftri") {
+      if (record.checkout?.backend === "riftri-winfsp") {
+        const control = path.join(this.metadata, `${id}-overlay`);
+        if (
+          record.mode !== "riftri" ||
+          record.state !== "ready" ||
+          !record.overlay ||
+          !samePath(workspace, overlayWorkspace(this.namespace, id)) ||
+          !samePath(workspace, record.executionWorkspace ?? "") ||
+          (await directoryIdentity(record.projectWorkspace)) !==
+            record.overlay.sourceIdentity ||
+          (await directoryIdentity(control)) !== record.overlay.controlIdentity
+        ) {
+          throw new Error("Overlay 身份改变。");
+        }
+
+        await this.overlays.start(
+          id,
+          record.projectWorkspace,
+          control,
+          workspace,
+          false,
+          this.controller.signal,
+        );
+        if ((await directoryIdentity(workspace)) !== record.workspaceIdentity) {
+          throw new Error("Overlay 卷身份改变。");
+        }
+
+        if (!record.commonDirectory) {
+          return record;
+        }
+      }
+
+      if (
+        record.mode === "riftri" &&
+        record.checkout?.backend !== "riftri-winfsp"
+      ) {
         if (
           record.state !== "ready" ||
           (await directoryIdentity(workspace)) !== record.workspaceIdentity ||
@@ -278,7 +337,31 @@ export class WorktreeService {
   async gitWriteRoots(workspace: string) {
     const record = await this.validate(workspace);
 
-    return record?.mode === "worktree" ? [record.commonDirectory] : [];
+    return record &&
+      (record.mode === "worktree" ||
+        record.checkout?.backend === "riftri-winfsp") &&
+      record.commonDirectory
+      ? [record.commonDirectory]
+      : [];
+  }
+
+  /** Git for Windows rejects UNC ownership. Trust only this verified mount in child processes. */
+  async commandEnvironment(workspace: string): Promise<NodeJS.ProcessEnv> {
+    const record = await this.validate(workspace);
+    if (record?.checkout?.backend !== "riftri-winfsp") {
+      return {};
+    }
+
+    const count = Number(process.env.GIT_CONFIG_COUNT ?? "0");
+    if (!Number.isSafeInteger(count) || count < 0 || count > 1024) {
+      throw new Error("Git 进程配置数量无效，无法添加精确工作区信任。");
+    }
+
+    return {
+      GIT_CONFIG_COUNT: String(count + 1),
+      [`GIT_CONFIG_KEY_${count}`]: "safe.directory",
+      [`GIT_CONFIG_VALUE_${count}`]: workspace.replaceAll("\\", "/"),
+    };
   }
 
   create(
@@ -322,7 +405,7 @@ export class WorktreeService {
     }
   }
 
-  /** Snapshot current bytes and private Git metadata; no Git checkout or source writes. */
+  /** Select POSIX snapshots or Windows live views; neither materializes a commit tree. */
   private async prepareRiftri(
     input: Creation,
     workspace: string,
@@ -368,6 +451,10 @@ export class WorktreeService {
       this.controller.signal,
       this.helperPath,
     );
+    if (selection.backend === "riftri-winfsp") {
+      return this.prepareOverlay(input, projectWorkspace, Boolean(metadata));
+    }
+
     const record: Record = {
       version: 1,
       mode: "riftri",
@@ -419,6 +506,91 @@ export class WorktreeService {
         this.controller.signal.aborted ? "cancelled" : outcome,
       );
     }
+
+    return workspace;
+  }
+
+  private async prepareOverlay(
+    input: Creation,
+    source: string,
+    hasGit: boolean,
+  ) {
+    const workspace = overlayWorkspace(this.namespace, input.id);
+    const control = path.join(this.metadata, `${input.id}-overlay`);
+    const record: Record = {
+      version: 1,
+      id: input.id,
+      mode: "riftri",
+      projectWorkspace: source,
+      baseRef: "",
+      baseCommit: "",
+      commonDirectory: "",
+      commonIdentity: "",
+      state: "preparing",
+      executionWorkspace: workspace,
+      checkout: { backend: "riftri-winfsp" },
+    };
+    await this.save(record);
+    try {
+      const sourceIdentity = await directoryIdentity(source);
+      const registration = hasGit
+        ? await registerOverlayGit(
+            source,
+            path.join(this.metadata, `${input.id}-registration`),
+            input.id,
+            this.controller.signal,
+          )
+        : undefined;
+      if (registration) {
+        await this.assertPrivateDataDisjoint(registration.commonDirectory);
+        record.commonDirectory = registration.commonDirectory;
+        record.commonIdentity = await directoryIdentity(
+          registration.commonDirectory,
+        );
+        record.adminDirectory = registration.adminDirectory;
+        record.baseCommit = registration.head;
+        await this.save(record);
+      }
+
+      await this.overlays.start(
+        input.id,
+        source,
+        control,
+        workspace,
+        true,
+        this.controller.signal,
+      );
+      if (registration) {
+        await attachOverlayGit(
+          source,
+          workspace,
+          registration,
+          this.controller.signal,
+        );
+      }
+
+      record.workspaceIdentity = await directoryIdentity(workspace);
+      record.overlay = {
+        sourceIdentity,
+        controlIdentity: await directoryIdentity(control),
+      };
+      record.state = "ready";
+      await this.save(record);
+      await this.validate(workspace);
+
+      return workspace;
+    } catch (error) {
+      record.state = "failed";
+      await this.save(record).catch(() => {});
+      await this.overlays.stop(input.id).catch(() => {
+        this.log.warn({
+          module: "worktree",
+          event: "overlay.failed_creation_cleanup_unknown",
+          worktreeId: input.id,
+        });
+      });
+      throw error;
+    }
   }
 
   /** Persist intent before Git; failed or cancelled checkout is retained for inspection. */
@@ -428,9 +600,7 @@ export class WorktreeService {
     operationId: string,
   ) {
     if (input.mode === "riftri") {
-      await this.prepareRiftri(input, workspace, operationId);
-
-      return;
+      return this.prepareRiftri(input, workspace, operationId);
     }
 
     const repository = await this.inspect(input.workspace);
@@ -512,6 +682,8 @@ export class WorktreeService {
         this.controller.signal.aborted ? "cancelled" : outcome,
       );
     }
+
+    return workspace;
   }
 
   private async createSerial(
@@ -549,7 +721,7 @@ export class WorktreeService {
       operationId,
     });
     try {
-      const workspace = path.join(this.root, id);
+      let workspace = path.join(this.root, id);
       let record: Record | undefined;
       try {
         record = await this.read(id);
@@ -560,6 +732,7 @@ export class WorktreeService {
       }
 
       if (record) {
+        workspace = record.executionWorkspace ?? workspace;
         if (
           !samePath(record.projectWorkspace, await realpath(input.workspace)) ||
           record.mode !== input.mode ||
@@ -570,7 +743,7 @@ export class WorktreeService {
 
         await this.validate(workspace);
       } else {
-        await this.prepareCheckout(input, workspace, operationId);
+        workspace = await this.prepareCheckout(input, workspace, operationId);
       }
 
       // Match Local session creation: the scheduler key must use filesystem spelling on Windows.
@@ -619,8 +792,13 @@ export class WorktreeService {
     }
   }
 
-  async close() {
+  async cancelCreation() {
     this.controller.abort();
     await this.pending;
+  }
+
+  async close() {
+    await this.cancelCreation();
+    await this.overlays.close();
   }
 }

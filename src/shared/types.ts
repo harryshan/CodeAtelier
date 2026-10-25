@@ -27,7 +27,7 @@ export interface WorktreeInfo {
   projectWorkspace?: string;
   baseRef?: string;
   baseCommit?: string;
-  backend?: "git" | "riftri-reflink" | "riftri-apfs";
+  backend?: "git" | "riftri-reflink" | "riftri-apfs" | "riftri-winfsp";
   fallbackReason?: string;
   clonedFiles?: number;
   state: "preparing" | "ready" | "failed" | "unavailable";

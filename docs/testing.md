@@ -31,6 +31,9 @@ Runtime stdio 集成夹具共用 `runtime-child-close.ts`：spawn 后立即监�
 
 ## 共享执行逻辑回归
 
+- Windows overlay（D168）：`overlay-git.test.ts` 使用真实 Git 检查无 checkout、dirty/staged、独立 HEAD/index、共享 objects/refs、split-index、unborn 和失败前置检查；`overlay-manager.test.ts` 用管道模拟覆盖 ready、取消、异常退出与干净卸载协议。`riftri.test.ts` 覆盖 Windows 探测不要求同卷、缺驱动/协议错误拒绝。浏览器夹具显式注入缺 helper 的管理器，使已安装 WinFsp 的开发机器也能稳定验证不可用提示，不将其冒称原生 UI 挂载成功。
+- `pnpm worktree:build-winfsp -Sdk <SDK> -VerifyReparse` 编译并运行相对链接移动、外部目标、坏缓冲区、根重映射的原生解析回归；无需创建符号链接权限。`pnpm worktree:verify-winfsp --sandbox` 手动验证真实 WinFsp：双视图、实时 lower、文件 copy-up/rename/whiteout、内部 junction、Git、DACL 继承/撤销、文件锁、映射写入、重挂载身份、helper 强杀后拒绝恢复，以及已安装专用账户 Runtime 的提交/取消/清理。该脚本不自动安装驱动或 Sandbox，不调用真实模型，不属于 Evaluation，也不进入默认 check。Windows 新建 symlink 的宿主权限限制、SACL/ADS/EFS/硬链接及完整通知/故障矩阵另记边界。
+
 - Worktree（D165）：`worktrees.test.ts` 使用真实临时 Git 检查 committed 基线、独立文件/index、并发请求去重、会话落盘失败后找回、重启、清单/目录/Git 指针失效拒绝、未知创建不重放、共享记忆、HTTP 快照、跨 checkout 并行/同目录排队与恢复。`sandbox-agent-runtime-launcher.test.ts` 和 `mxc-runtime.test.ts` 检查共享 Git 根进入 manifest/MXC policy 且不授予来源 checkout；使用假后端，不构成安装态验收。`e2e/worktrees.spec.ts` 检查真实页面创建、项目分组、文件修改只落到 checkout 和历史刷新。
 - Riftri（D167）：`riftri.test.ts` 检查 v2 helper、同卷能力、缺失/旧版/不支持时明确拒绝、取消/坏收据不重放。`riftri-workspaces.test.ts` 仅模拟原生复制，使用真实 Git/Service/HTTP 验证默认 Riftri、显式 Worktree、脏/暂存/忽略/未跟踪状态、独立 index/refs、幂等重启、失败保留、共享项目来源和不授权原 Git 根。`scripts/verify-riftri.ts` 手动使用真实 Linux helper 验证同类状态及字节文件名、链接重映射、外置 Git/活跃锁拒绝；fiemap 另核对物理共享。普通 ext4 必须拒绝 Riftri而允许显式 Worktree，不是 fallback。不自动挂载/格式化，不属于 Evaluation。
 - UI 工作区覆盖：`e2e/worktrees.spec.ts` 在无 helper 的测试部署确认默认 Riftri 失败与显式 Worktree 创建/实际编辑/刷新。既有 `e2e/app.spec.ts` 与阅读器用测试服务专属、同样鉴权的 `/api/test/legacy-sessions` 预置升级前 Local 历史，保留原有任务/审批/恢复断言；该入口不在生产应用中，不代替原生 CoW 验证。

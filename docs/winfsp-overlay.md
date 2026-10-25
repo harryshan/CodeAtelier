@@ -1,8 +1,8 @@
-# Windows NTFS / WinFsp overlay 后端设计
+# Windows NTFS / WinFsp overlay 后端
 
-状态：2026-10-25 用户已确认实时 lower，随后要求按类似 Git worktree、无提交 checkout、无 repo 复制重新设计（D168）。**尚未实现 WinFsp 后端**；已验证下述 Git 元数据方案，不代表挂载或 Sandbox 通过。原私有仓库方向的未完成源码草稿已撤回，现有产品代码不变。
+状态：2026-10-25 已实现 D168：Windows 默认 Riftri 使用原生 WinFsp 实时 overlay，Git 使用 linked worktree metadata。已在本机 NTFS、WinFsp 2.1.25156 和现有专用账户 Sandbox 做真实挂载验证；这不是完整 NTFS/ACL 兼容认证，也不代表巨型仓库性能验收。Linux/macOS 继续使用原生 CoW 副本。
 
-## 已确认范围与待确认项
+## 已确认语义
 
 在 Riftri 工作区模式下增加 Windows 原生 WinFsp overlay 后端，使 NTFS 不再依赖块级 reflink。使用 WinFsp 原生文件系统 API，覆盖 CodeAtelier 的 Git、文件工具、Sandbox ACL、并发、取消、历史续聊与服务重启。普通 Git worktree 和现有 Linux/macOS 原生 CoW 后端保持原行为。不创建 Windows 分区，不使用 WSL 承载 Windows 产品挂载。
 
@@ -25,7 +25,7 @@ WinFsp 自身不提供原目录的时间快照；只在第一次写入时 copy-u
 4. objects、pack、普通 refs 和公共配置继续按 Git worktree 规则共享；HEAD、index 和工作文件视图独立。初始 detached HEAD 避免 task commit 自动移动主目录当前分支，但显式更新共享分支、fetch、config 等仍有标准 worktree 的共享影响。
 5. 新对象直接写公共 Git 对象库，Git 自己负责登记/reflog/GC 关系；不建立另一套只读 alternates 或“私有 refs + 外部 objects”的不完整仓库。托管挂载下线时保持 worktree lock，避免被普通 prune 当作失踪目录清除；lock 不等于阻止 Git 命令或自动保护所有引用。
 
-“不以 commit 为工作文件 base”不等于“不存在 Git HEAD”。无提交仓库可研究 `--orphan` 注册路径；官方 CLI 不允许它与 `--no-checkout` 同时使用，但其空工作区创建也不物化历史文件。没有 Git 的普通目录只使用 overlay。
+“不以 commit 为工作文件 base”不等于“不存在 Git HEAD”。无提交仓库使用 `--orphan` 注册路径；Git CLI 不允许它与 `--no-checkout` 同时使用，但其空工作区创建也不物化历史文件。没有 Git 的普通目录只使用 overlay。
 
 工作文件写入只在 upper；Git 命令则会写入共享 `.git`，与标准 worktree 一致。因此不能同时声称“像 worktree 共享仓库”和“包括公共 Git metadata 在内，来源所有字节绝不改变”。Sandbox 应复用现有显式 Worktree 对 common Git 根的精确授权，不向 Runtime 授予 lower 工作文件写权限或后端控制目录权限。
 
@@ -60,7 +60,7 @@ WinFsp 自身不提供原目录的时间快照；只在第一次写入时 copy-u
 
 ## 与现有系统的接入点
 
-| 系统 | 当前接入点 | Windows overlay 必须补充 |
+| 系统 | 当前接入点 | Windows overlay 实现 |
 | --- | --- | --- |
 | 创建与幂等 | `src/worktrees/service.ts` 的 preparing/ready/failed 清单、UUID 排他锁 | 挂载准备、可信 ready 收据、已存在挂载身份核验；未知创建不重新初始化 upper |
 | 后端选择 | `src/worktrees/riftri.ts` 的 v2 一次性 helper | Windows 长驻挂载 helper 协议；缺 driver/helper 时继续明确拒绝，不回退原目录 |
@@ -75,7 +75,28 @@ WinFsp 自身不提供原目录的时间快照；只在第一次写入时 copy-u
 | 历史续聊与重启 | 持久清单定位原 workspace | 校验 lower/upper/control 身份后重新挂载，不重新取基线；缺失或未知状态明确阻止执行 |
 | tracing 与日志 | worktree.create / riftri.snapshot | 增加挂载、就绪、异常退出、卸载、恢复开始/终态和耗时；只记 ID、后端、受控错误，不记源码/安全描述符 |
 
-WinFsp 的目录挂载与原生 Sandbox `FILE_FLAG_OPEN_REPARSE_POINT` 校验存在实际兼容问题，不能通过删掉校验来解决。实现前需用受控夹具验证挂载路径的 `realpath/lstat`、GetFileInformationByHandle 和跨账户打开结果，再选择具体路径形式。
+采用 `\\CodeAtelier\<数据目录命名空间>-<UUID>\` 本机 UNC 卷，跨账户可见，不建立盘符或目录 junction。已实测 realpath/lstat、稳定卷号/inode/birthtime 和 Sandbox 句柄身份；不放宽既有重解析入口检查。UNC 由 WinFsp MUP provider 提供，不启动 SMB 服务。
+
+## 实现与使用
+
+- `native/winfsp-overlay`：原生 API callbacks、只读 lower、私有对象和 SQLite WAL 元数据。按需导入命名空间/ACL；普通文件首次写入或重命名时整文件 copy-up，目录重命名保留实时 lower 子项。每次内容修改 flush 后保存 metadata，优先恢复安全，吞吐仍需测量。
+- `src/worktrees/overlay-git.ts`：来源 index.lock 协调、HEAD/index 检查、split-index 展开及 gitfile repair；独立 HEAD/index，公共 objects/refs/config。拒绝 sparse-checkout、fsmonitor、活跃合并/rebase 和 submodule；嵌套 `.git` 在访问时拒绝，不先全树扫描。
+- `src/worktrees/overlay.ts`：有界 ready/stop 协议、幂等挂载、异常退出失效和 trace。独占 control lease；SQLite clean 标记要求干净退出，未知状态保留并拒绝自动重挂载。不能将 helper 强杀后的数据自动视为已恢复。
+- `WorktreeService` 持久化来源/control/view 身份，续聊校验后挂回相同路径；Engine 排空任务与 Sandbox ACL 清理后才卸载。没有自动回写、删除或未知状态自动修复。
+- 根的来源有效继承 ACE 转为受保护显式 DACL，作为虚拟卷继承起点，避免 Sandbox 授权时丢失宿主访问；子项用 Windows 继承算法合成。授权/撤销只改虚拟 ACL，不改 lower。
+
+先显式安装 WinFsp Runtime，再使用含 `inc/winfsp`、`lib/winfsp-x64.lib`、`License.txt` 的 SDK 编译（当前构建仅 Windows x64）：
+
+```powershell
+pnpm worktree:build-winfsp -Sdk C:\path\to\winfsp-sdk
+pnpm worktree:verify-winfsp
+# 仅在本机已安装 CodeAtelier Sandbox 时额外验证真实 Runtime：
+pnpm worktree:verify-winfsp --sandbox
+```
+
+产物位于 `dist/native/win32-x64/`，随部署保留。默认 build/check 不下载 SDK、安装驱动或运行实机脚本；缺能力仍明确拒绝创建并提示显式 Worktree。验证使用 `.local/winfsp-verification-*` 独占夹具和内存固定模型，保留诊断数据，不连接真实模型或重启用户服务。
+
+当前限制：SACL/审计、ADS、新建硬链接、EFS、外部/未知重解析点不支持；owner/group 保留已验证，不能声称任意 owner 变更或所有 ACL 工具兼容（PowerShell 整描述符 Set-Acl 路径未通过，DACL 专用 API 与 Sandbox 原生授权/撤销通过）。内部 junction 映射为目录 symlink，Git 可能观察到类型变化。父目录移动后相对链接仍须通过当前位置的越界检查。lower 通知透传、完整文件系统故障矩阵、断电恢复、Windows ARM64、巨型仓库吞吐尚未验收。读取导入的元数据也占用空间，尚不做垃圾回收。
 
 ## 验收顺序
 
@@ -86,13 +107,13 @@ WinFsp 的目录挂载与原生 Sandbox `FILE_FLAG_OPEN_REPARSE_POINT` 校验存
 5. 崩溃和重启：写入/rename/copy-up 各阶段中断、helper 被终止、失去挂载、重复服务启动和重挂载身份；未知状态不盲目重放。
 6. 安装态 Sandbox：专用账户 Runtime 实际读写、Git、ACL 赋权/撤销、服务重启；宿主成功不能代替该项。
 
-单元或原生核心测试通过不能标为挂载或安装态验证通过。达到上述条件前不将后端加入默认选择，不修改现有失败关闭行为。
+上述是持续验收清单，不等于全部完成。当前默认选择仅在 helper/driver 探测成功时启用，缺失或未知状态保持失败关闭；真实验证覆盖范围见 [验证记录](verification.md)，不能由单元测试外推完整兼容性。
 
 ## 依赖、许可与当前环境
 
-2026-10-25 检查到本机有 MSVC x64 工具链；默认安装目录、WinFsp 注册表项及相关服务均未发现 WinFsp 安装。尚未安装驱动、SDK，未改动 Sandbox 安装或正在运行的 CodeAtelier 服务。
+2026-10-25 使用本机 MSVC x64 构建。用户明确批准安装 WinFsp Runtime 后，安装官方 `F.Main,F.User` 功能成功（exit 0）；没有创建 Windows 分区、重启系统/用户 CodeAtelier 服务或执行 Sandbox 安装/Repair。
 
-官方最新稳定发布查询返回 `v2.1`，安装包 `winfsp-2.1.25156.msi` 的 GitHub 资产 SHA-256 为 `073a70e00f77423e34bed98b86e600def93393ba5822204fac57a29324db9f7a`。已下载、核对该哈希，Authenticode 为 Valid、发布者 NAVIMATICS LLC；仅通过 MSI administrative extraction 解包 SDK 至 `.local/winfsp-sdk/extracted`，没有安装或启动驱动。
+本次使用官方 `v2.1` 的 `winfsp-2.1.25156.msi`，SHA-256 为 `073a70e00f77423e34bed98b86e600def93393ba5822204fac57a29324db9f7a`。安装前核对发布资产哈希及 Authenticode Valid、发布者 NAVIMATICS LLC；SDK 解包在 `.local/winfsp-sdk/extracted`，安装日志为 `.local/winfsp-sdk/install-runtime.log`。
 
 Riftri v0.6.5 是 MIT；WinFsp 是 GPLv3 加 FLOSS 例外，另有商业许可。不能把 Riftri 的许可结论扩展到 WinFsp。当前可继续私有开发与验证；未来分发须单独决定符合条件的开源分发或商业授权，不擅自为 CodeAtelier 选择许可证，也不假定拆成 helper 就自动解除分发义务。
 

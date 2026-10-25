@@ -1,7 +1,7 @@
 /**
- * WorktreeService 的 Riftri 当前目录原生 CoW 适配层，不调用 immutable-base CLI。
- * 1. nativeHelperPath 固定可信应用产物；selectCheckout 验证 v2 helper 与同卷能力。
- * 2. createCheckout 只请求 snapshot：复制当前文件和独立 Git metadata，不选择提交、不运行 checkout/filters、不计算 blob hash。
+ * WorktreeService 的 Riftri 后端选择与 POSIX 原生 CoW 适配，不调用 immutable-base CLI。
+ * 1. nativeHelperPath 固定可信应用产物；Windows 探测 WinFsp v1 长驻 helper，POSIX 验证 v2 snapshot 与同卷能力。
+ * 2. createCheckout 只负责 POSIX snapshot；Windows 交给 OverlayManager/overlay-git，不复制来源树和 Git objects。
  * 3. 缺少能力明确拒绝并提示 Worktree；启动后的失败/取消/不可信收据保留现场，不降级或重放。
  * checkoutSchema 保留旧 Git fallback 清单可读；新 Riftri 请求永远不选择 Git。
  */
@@ -11,9 +11,10 @@ import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import { executeProcess } from "../tools/process.js";
 import { gitEnvironment } from "./git.js";
+import { overlayHelperPath } from "./overlay.js";
 
 export const checkoutSchema = z.object({
-  backend: z.enum(["git", "riftri-reflink", "riftri-apfs"]),
+  backend: z.enum(["git", "riftri-reflink", "riftri-apfs", "riftri-winfsp"]),
   fallbackReason: z
     .enum([
       "helper-unavailable",
@@ -34,13 +35,17 @@ function unavailable(reason: string): never {
 }
 
 export function nativeHelperPath() {
+  if (process.platform === "win32") {
+    return overlayHelperPath();
+  }
+
   const base = import.meta.url.endsWith(".ts")
     ? "../../dist/native/"
     : "../../native/";
 
   return fileURLToPath(
     new URL(
-      `${base}${process.platform}-${process.arch}/codeatelier-riftri${process.platform === "win32" ? ".exe" : ""}`,
+      `${base}${process.platform}-${process.arch}/codeatelier-riftri`,
       import.meta.url,
     ),
   );
@@ -108,6 +113,23 @@ export async function selectCheckout(
     return unavailable("缺少原生 helper");
   }
 
+  if (process.platform === "win32" && executable === overlayHelperPath()) {
+    const probe = await (async () =>
+      z
+        .object({ version: z.literal(1), available: z.boolean() })
+        .parse(await helper(["probe"], source, signal, executable)))().catch(
+      () => {
+        signal.throwIfAborted();
+
+        return undefined;
+      },
+    );
+
+    return probe?.available
+      ? { backend: "riftri-winfsp" }
+      : unavailable("WinFsp Runtime 未安装、helper 不兼容或无法启动");
+  }
+
   if ((await stat(source)).dev !== (await stat(root)).dev) {
     return unavailable("来源与目标不在同一文件系统");
   }
@@ -141,7 +163,7 @@ export async function createCheckout(
   signal: AbortSignal,
   executable = nativeHelperPath(),
 ): Promise<Checkout> {
-  if (selection.backend === "git") {
+  if (selection.backend === "git" || selection.backend === "riftri-winfsp") {
     return unavailable("Riftri 不能使用 Git 后端");
   }
 

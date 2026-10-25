@@ -46,9 +46,9 @@ Agent Runtime 已有权限内的工具不再审批；越界命令通过 `run_wit
 
 取消结果以 executionInstance kind 写入 session。首版不依赖 AppContainer、自研 WFP callout driver、实验性的 `CreateProcessInSandbox`/Bound File System 或 Chromium Target hook。这些未采用机制不得描述为已实现。Windows Sandbox 的日常可用性已获用户确认，但不因此扩大既有权限保证或跨平台能力声明；专项故障与安全矩阵仍按实际证据记录。
 
-### Riftri 与 Git worktree（D167）
+### Riftri 与 Git worktree（D167 / D168）
 
-2026-10-25 用户要求将 Riftri 与普通 Git worktree 并列：新对话默认 Riftri，主目录当前状态为基准，包含 dirty/staged/untracked/ignored 和独立 Git metadata，不支持指定 commit/branch，不另建 base，不计算 blob hash。原生能力不可用时拒绝创建，提示显式选择 Worktree；不回退复制或普通 Git。显式 Worktree 保留选定提交、detached HEAD 和共享 common directory；旧 D166 清单继续按 Worktree 读取。Riftri 使用实际目录的 Git，不授予来源 Git 根；逐文件克隆不是原子快照，源变化/不支持条目停止并保留失败现场。两模式续聊/恢复复用已有目录，不自动回写、清理或迁移 Local 历史。Linux/macOS helper 与 Windows 当前不支持原生 CoW 的边界见 docs/worktrees.md；WSL 只做 Linux 验证，不创建 Windows 分区、不由 Windows 服务隐式跨 WSL。
+2026-10-25 用户要求 Riftri 与普通 Git worktree 并列，新对话默认 Riftri，不支持指定 commit/branch、不另建 base、不计算 blob hash。Linux/macOS 使用原生 CoW 当前状态副本及独立 Git metadata；D168 将 Windows 改为 WinFsp 实时 lower + 私有 upper，标准 linked worktree 独立 HEAD/index，objects/普通 refs/common config 共享。Windows 不复制整个 repo 或 `.git/objects`，不以 HEAD checkout 文件；Sandbox 精确授予虚拟工作目录及共享 Git common 根，不授 lower 工作文件写根。helper/driver/原生能力缺失时拒绝创建，提示显式 Worktree，不自动降级。显式 Worktree 保留指定提交和原语义，旧 D166 清单继续按 Worktree 读取。两模式复用实际目录、不自动回写/清理或迁移 Local。Windows 正常关闭先排空任务与 Sandbox 再卸载；未正常停止的私有层拒绝自动恢复。原生支持/ACL/链接限制见 docs/worktrees.md 和 docs/winfsp-overlay.md；WSL 仅用于 Linux，不创建 Windows 分区、不隐式跨 WSL。
 
 ## 设置系统（D153）
 

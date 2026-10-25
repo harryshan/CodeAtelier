@@ -94,6 +94,7 @@
 - 2026-10-17 用户要求两种内置 subagent：`explorer` 获取并筛选信息后交回主 agent；`reviewer` 用干净上下文审查主 agent 修改。两种角色均可多开，在不同范围内并行；沿用共享活动 Worker 调度与只读边界，UI 开放按 D158。reviewer 接收明确的变更材料，不自动继承父对话或同伴报告，详见 [多 agent 设计](multi-agent-design.md)（D157）。
 - 2026-10-17 用户追加要求向 subagent 暴露 `web_search`（D159）：explorer/reviewer 在 Responses 协议下均可使用模型服务内置公开搜索，Chat Completions / Messages 不声明。沿用来源引用、模型历史、取消和恢复，不开放子任务 shell、任意网络命令或写入权限。
 - D167：新对话默认 Riftri 原生 CoW，以主目录当前状态创建独立目录，包含脏文件、暂存区、未跟踪和忽略文件，不选择 commit/branch、不另建 base、不做 blob hash 校验。普通 Git worktree 并列且须显式选择，保留指定提交的干净基线。Riftri 不可用时拒绝创建，不自动 fallback。不同实际目录按既有并发调度，同目录串行；续聊和恢复使用已绑定目录，已有 Local 历史不自动迁移。不自动回写、清理或提供一键回滚。存储、平台限制、Sandbox、记忆与恢复见 [工作区设计](worktrees.md)。
+- D168 替代上述 Windows 部分：WinFsp 原生实时 overlay 直接读取来源工作目录，写入私有层，不复制 repo 或 Git 对象库；通过 no-checkout linked worktree 独立 HEAD/index、共享 objects/refs/common config。挂载采用跨账户可见的本机 UNC；Sandbox 授权虚拟根和核验的公共 Git 根，来源工作文件 ACL 不变。正常排空后卸载/恢复，未知状态拒绝重建；缺 Runtime/helper 明确拒绝。POSIX CoW 与显式 Worktree 保持原行为，具体未支持项及实机证据见 [Windows overlay](winfsp-overlay.md)。
 - 关闭页面后，只要后端仍运行，任务可以继续；重启后端后，将未完成任务标记为中断，不自动重放命令。
 - 历史对话可以继续交流，但每次重新执行任务时读取当前文件，不把历史内容当成最新代码。
 - 限制工具输出和上下文长度；每次主任务模型请求及重试前按完整历史计量，接近容量时自动压缩会话内旧上下文，保留用户原文、原始历史与恢复状态。无法安全压缩时明确停止。跨会话项目记忆使用平台数据目录中的 JSONL 快照（D142、D143）：首行项目元数据、后续每行一条完整记忆；已有项目记忆经备份和完整核对后一次性迁移，运行时不再读取 Markdown 或自动迁移。每个任务按文件顺序提供所有有效条目的 ID、逐条版本与标题摘要，不再关键词评分、排序或按目录条数/字符裁剪，正文和来源通过现有 `memory_apply` 的单条 `read` 操作按需读取；该工具继续支持自动添加、更新和归档同项目记忆，不等待人工确认；read/update/archive 各自校验目标条目的 expectedVersion，create 无需版本，无关条目修改不使旧目录中的其他版本失效，维护批次全成或全不写（D144）；不引入 SQLite/FTS 或向量检索。

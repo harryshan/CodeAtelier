@@ -13,6 +13,8 @@
     "build": "tsc -p tsconfig.server.json && vite build && tsx scripts/windows-sandbox/build-runtime.ts && tsx scripts/build-posix-runtime.ts",
     "build:test": "tsx scripts/test-runner.ts build",
     "worktree:build-native": "tsx scripts/build-riftri.ts",
+    "worktree:build-winfsp": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-winfsp-overlay.ps1",
+    "worktree:verify-winfsp": "tsx scripts/verify-winfsp-overlay.ts",
     "start": "node dist/server/server/launcher.js",
     "settings:migrate": "tsx scripts/migrate-settings.ts",
     "typecheck": "tsc --noEmit",
