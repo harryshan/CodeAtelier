@@ -7,6 +7,7 @@
  * 5. cancelCreation/close 与 Engine 关闭顺序配合；trace 只记录关联 ID、阶段/耗时/终态。
  * 6. select 把明确路径及可信候选验证器绑定当前任务，null 撤销本轮选择；取消/错误任务身份不能更改选择。
  *    仅成功且已排空的任务在冻结收尾中发布，选择不跨轮继承；模型入口由 Engine 转换，不能反序列化验证函数。
+ * 7. review 在 ready 视图锁内读取单文件 B/O/T，不挂载或更改清单；关闭时取消并等待检查排空。
  * 公开创建由 HTTP 单独检查平台/Sandbox 能力，不迁移旧历史；来源写入只由冻结租约内的协调器执行。
  */
 import { randomUUID } from "node:crypto";
@@ -29,6 +30,8 @@ import {
   type LocalOverlayBackend,
   type LocalOverlayMount,
 } from "./backend.js";
+import { reviewCleanFile } from "./publication/review.js";
+import { sourceIdentity } from "./publication/files.js";
 
 const recordSchema = z.object({
   version: z.literal(1),
@@ -233,6 +236,62 @@ export class LocalOverlayService {
 
   async projectWorkspace(workspace: string) {
     return (await this.validate(workspace))?.source;
+  }
+
+  review(
+    workspace: string,
+    sessionId: string,
+    relative: string,
+    signal: AbortSignal,
+  ) {
+    const work = this.reviewSerial(
+      workspace,
+      sessionId,
+      relative,
+      AbortSignal.any([signal, this.creation.signal]),
+    );
+    this.creating.add(work);
+    void work.finally(() => this.creating.delete(work)).catch(() => {});
+
+    return work;
+  }
+
+  private async reviewSerial(
+    workspace: string,
+    sessionId: string,
+    relative: string,
+    signal: AbortSignal,
+  ) {
+    signal.throwIfAborted();
+    const initial = await this.validate(workspace, sessionId);
+    if (!initial || initial.phase !== "ready") {
+      throw new Error("只可检查已正常结束的 Local overlay 私有修改。");
+    }
+
+    const release = await this.lock(initial.id);
+    try {
+      return await this.observe(initial.id, "review", async () => {
+        const record = await this.validate(workspace, sessionId);
+        if (!record || record.phase !== "ready") {
+          throw new Error("Local overlay 检查期间状态改变。");
+        }
+
+        const result = await reviewCleanFile(
+          await sourceIdentity(record.source),
+          this.control(record.id),
+          relative,
+          signal,
+        );
+        await this.validate(workspace, sessionId);
+        signal.throwIfAborted();
+
+        return result;
+      });
+    } finally {
+      // This operation never mounts or writes the view/source. A failed read is
+      // not an unknown publication and must not quarantine a healthy view.
+      await release();
+    }
   }
 
   /** 历史读取只投影公开状态，不挂载或修复；损坏/丢失清单仍标为托管视图。 */

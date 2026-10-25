@@ -685,6 +685,30 @@
   font-size: 12px;
   line-height: 1.6;
 }
+.localReview summary {
+  cursor: pointer;
+}
+.localReview form {
+  display: flex;
+  gap: 12px;
+  align-items: end;
+  flex-wrap: wrap;
+}
+.localReview label {
+  display: grid;
+  gap: 4px;
+  flex: 1;
+  min-width: 160px;
+}
+.localReview pre {
+  max-height: 240px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  padding: 12px;
+  border: 1px solid currentColor;
+  border-radius: 6px;
+}
 .projectBar > span {
   flex-shrink: 0;
   white-space: nowrap;

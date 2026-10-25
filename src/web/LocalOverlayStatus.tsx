@@ -2,12 +2,20 @@
  * 展示 Local 清单的只读状态，供 App 项目路径栏下方使用。
  * 1. 先提示失效/未知视图，再区分来源发布成功、拒绝、私有保留和正在处理。
  * 2. 无发布凭据时明确私有，不从模型文本、任务完成或工具登记回执推断发布成功。
- * 只使用 API 的安全摘要，不显示控制路径/内部错误码或提供未经实现的恢复操作。
+ * 3. ready 时展示显式单文件检查；状态/代次/会话变化销毁旧内容和未完成请求。
+ * 不显示控制路径/内部错误码；只读内容面板不会执行恢复或发布。
  */
 import type { LocalOverlayInfo } from "../shared/types";
+import { LocalFileReview } from "./LocalFileReview";
 import s from "./app.module.css";
 
-export function LocalOverlayStatus({ info }: { info: LocalOverlayInfo }) {
+export function LocalOverlayStatus({
+  info,
+  sessionId,
+}: {
+  info: LocalOverlayInfo;
+  sessionId: string;
+}) {
   let message = "修改保留在本对话的私有视图，尚无源码发布记录。";
   if (info.state === "failed" || info.state === "unavailable") {
     message =
@@ -25,8 +33,14 @@ export function LocalOverlayStatus({ info }: { info: LocalOverlayInfo }) {
   }
 
   return (
-    <p role="status" className={s.localOverlayStatus}>
-      {message}
-    </p>
+    <div className={s.localOverlayStatus}>
+      <p role="status">{message}</p>
+      {info.state === "ready" && (
+        <LocalFileReview
+          key={`${sessionId}:${info.epoch}`}
+          sessionId={sessionId}
+        />
+      )}
+    </div>
   );
 }

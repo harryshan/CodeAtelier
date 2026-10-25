@@ -1,5 +1,12 @@
 # 初版验证记录
 
+## Local 私有修改三方检查（D170，2026-10-26）
+
+- 生产服务新增闲置 clean v6 的单文件检查，复用视图锁，读取已封存 B/O 和当前 T；返回有界预览及材料版本，不验证依赖或执行发布。鉴权 HTTP 和会话页入口已接入，正文只作文本显示；未知/活动视图拒绝，输入变化与卸载取消请求，失败不隔离正常视图。
+- `pnpm overlay:verify-review` 真实 WinFsp 通过（`.local/local-review-native.log`、[报告摘要](local-overlay-review-results.json)）：两个小文件合计约 31 ms，正确分离原文/私有/来源冲突并生成非重叠合并预览；数据库与清单字节未变。再次挂载编辑及取消排空后检查版本改变，主目录外部修改保留。全部自身挂载已关闭，进程检查无 overlay helper 残留。只操作宿主实验夹具，无 Runtime/Sandbox/安装/服务重启/Evaluation，不把小文件计时或 UI 模拟扩大为完整产品闭环。
+- 最终 `pnpm check` 通过：149 个测试文件、1187 passed / 1 existing skipped，类型/lint/格式及构建通过（`.local/local-review-check.log`）。初次检查修正了空行风格和新增路由未沿用项目 `HttpServer` 类型的问题；不改变权限或弱化断言。新回归覆盖内容/版本/类型/大小/取消、锁释放、真实 SQLite HTTP 读取和鉴权/CSRF/活动拒绝。
+- 完整 `pnpm test:e2e` 74 项通过（`.local/local-review-e2e.log`）；新增检查用例覆盖输入、失败后重试、HTML 作为纯文本、冲突/预览提示和路径切换清空结果。已查看 `test-results/local-overlay-review.png`，面板正常可读，潜在 HTML 未被执行。UI 使用合成 HTTP/SSE，不等于真实 Sandbox 或冲突解决验收；没有重启实际服务。
+
 ## Local 目录缓冲与真实分页（D170，2026-10-26）
 
 - 先在原回调用一千文件复现续页反复枚举的计数失败（`.local/local-dirbuffer-before.log`）。Local 改用 WinFsp `Acquire/Fill/Release/Read/DeleteDirectoryBuffer`，每打开句柄独立保留本次枚举的名称/元数据；restart 重建，异常清空，Close 释放。没有提高 FileInfoTimeout、跳过 ACL/来源检查或更改旧 Riftri/Git 的原回调；标准 SDK 源码中的使用方式与 buffer 生命周期已核对。

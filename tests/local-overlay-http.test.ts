@@ -3,9 +3,10 @@
  * 1. 挂载由 FakeLocalOverlayBackend 替代，允许开关仅在正例替换；鉴权、互斥参数和缺能力拒绝均走真实路由。
  * 2. 固定 UUID 创建/重试、来源身份、列表/快照/历史分页及损坏清单的历史可读性。
  * 3. 冲突参数与源目录更换不创建额外视图；关闭 Sandbox 后旧视图启动/恢复也须拒绝，不调度 Runtime 或宣称真实 WinFsp/Sandbox 可用。
+ * 4. 单文件检查走真实 SQLite 与服务锁，验证鉴权、正常材料、脏卷拒绝及受控错误；不挂载。
  */
 import { randomUUID } from "node:crypto";
-import { writeFile } from "node:fs/promises";
+import { cp, writeFile } from "node:fs/promises";
 import path from "node:path";
 import pino from "pino";
 import { expect, it, vi } from "vitest";
@@ -13,6 +14,7 @@ import { Config } from "../src/config/config.js";
 import { createTestApp } from "./fixtures/managed-runtime.js";
 import { FakeLocalOverlayBackend } from "./fixtures/local-overlay-backend.js";
 import { temp } from "./fixtures/helpers.js";
+import { nativeFixture } from "./fixtures/local-overlay-native.js";
 
 async function fixture() {
   const config = new Config(await temp());
@@ -40,6 +42,100 @@ async function fixture() {
 
   return { ...server, backend, headers, source: await temp() };
 }
+
+it("reviews selected files with authentication without exposing control paths or mounting", async () => {
+  const f = await fixture();
+  const native = await nativeFixture();
+  await native.change("code.txt", "base", "private");
+  native.mutate("UPDATE meta SET clean=1");
+  await writeFile(path.join(native.source.root, "code.txt"), "external");
+  const id = randomUUID();
+  const session = await f.engine.localOverlays.create(
+    { id, source: native.source.root },
+    (workspace) => f.store.create(workspace, "Review"),
+  );
+  await cp(native.control, path.join(f.engine.localOverlays.root, id), {
+    recursive: true,
+  });
+  const url = `/api/sessions/${session.id}/local-review`;
+  const payload = { path: "code.txt" };
+  expect(
+    (await f.app.inject({ method: "POST", url, payload })).statusCode,
+  ).toBe(401);
+  expect(
+    (
+      await f.app.inject({
+        method: "POST",
+        url,
+        payload,
+        headers: { host: f.headers.host, cookie: f.headers.cookie },
+      })
+    ).statusCode,
+  ).toBe(403);
+  const result = await f.app.inject({
+    method: "POST",
+    url,
+    payload,
+    headers: f.headers,
+  });
+  expect(result.statusCode).toBe(200);
+  expect(result.headers["cache-control"]).toBe("no-store");
+  expect(result.json()).toMatchObject({
+    path: "code.txt",
+    publicationChecked: false,
+    preview: { state: "conflict", reason: "TEXT_CONFLICT" },
+  });
+  expect(Buffer.from(result.json().ours.content, "base64").toString()).toBe(
+    "private",
+  );
+  expect(result.body).not.toContain(native.source.root);
+  expect(result.body).not.toContain(f.engine.localOverlays.root);
+  expect(f.backend.mounted.size).toBe(0);
+  for (const name of ["../escape", ".git/config", "missing.txt"]) {
+    const rejected = await f.app.inject({
+      method: "POST",
+      url,
+      payload: { path: name },
+      headers: f.headers,
+    });
+    expect(rejected.statusCode).toBe(409);
+    expect(rejected.body).not.toContain("SQLite");
+    expect(rejected.body).not.toContain(f.engine.localOverlays.root);
+  }
+
+  expect(
+    (
+      await f.app.inject({
+        method: "POST",
+        url,
+        payload: { ...payload, control: native.control },
+        headers: f.headers,
+      })
+    ).statusCode,
+  ).toBe(400);
+  const lease = await f.engine.localOverlays.begin(
+    session.workspace,
+    session.id,
+    randomUUID(),
+    new AbortController().signal,
+  );
+  expect(
+    (await f.app.inject({ method: "POST", url, payload, headers: f.headers }))
+      .statusCode,
+  ).toBe(409);
+  await lease!.finish("cancelled", true);
+  const ordinary = await f.store.create(f.source, "ordinary");
+  expect(
+    (
+      await f.app.inject({
+        method: "POST",
+        url: `/api/sessions/${ordinary.id}/local-review`,
+        payload,
+        headers: f.headers,
+      })
+    ).statusCode,
+  ).toBe(404);
+});
 
 it("requires authorization and creation capability before allocating a view", async () => {
   const f = await fixture();

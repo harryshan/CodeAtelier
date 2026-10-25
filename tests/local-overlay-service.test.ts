@@ -5,6 +5,7 @@
  * 3. 租约测试覆盖同视图互斥、不同视图并行、跨进程 active 拒绝及完成/失败/取消续轮。
  * 4. Engine 测试检查执行期间挂载、私有提示、来源记忆映射、排空后的冻结和 unknown 隔离；请求 Sandbox 的启动失败不得执行宿主模型或留下 fallback 事件。
  * 5. 真实 stdio Runtime 子进程执行模型 local_publish，验证选定/撤销和普通任务拒绝；模拟模式不是 OS Sandbox 证据。
+ * 6. 闲置检查复用逐视图锁；活动任务和关闭拒绝，读取失败不改变清单或阻止续聊。
  * 假后端不证明文件系统隔离/ACL；真实 WinFsp 与 Sandbox 由手动 verifier 验证。
  */
 import { randomUUID } from "node:crypto";
@@ -91,6 +92,48 @@ async function fixture() {
     record,
   };
 }
+
+it("releases failed read-only review locks without mounting or changing ready state", async () => {
+  const f = await fixture();
+  const session = await f.create();
+  const before = await f.record();
+  // FakeBackend deliberately has no native DB: a failed inspection must leave
+  // this healthy lifecycle record reusable, without mounting the private view.
+  await expect(
+    f.service.review(
+      session.workspace,
+      session.id,
+      "code.txt",
+      new AbortController().signal,
+    ),
+  ).rejects.toThrow();
+  expect(await f.record()).toEqual(before);
+  expect(f.backend.mounted.size).toBe(0);
+  const lease = await f.service.begin(
+    session.workspace,
+    session.id,
+    randomUUID(),
+    new AbortController().signal,
+  );
+  await expect(
+    f.service.review(
+      session.workspace,
+      session.id,
+      "code.txt",
+      new AbortController().signal,
+    ),
+  ).rejects.toThrow("正常结束");
+  await lease!.finish("cancelled", true);
+  await f.service.close();
+  await expect(
+    f.service.review(
+      session.workspace,
+      session.id,
+      "code.txt",
+      new AbortController().signal,
+    ),
+  ).rejects.toThrow("关闭");
+});
 
 it("never executes a Local overlay task on the host after requested Sandbox startup fails", async () => {
   const f = await fixture();

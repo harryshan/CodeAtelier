@@ -6,6 +6,7 @@
  * 2. 先按监听范围注册来源与凭据检查、关闭/受监督重载接口和错误处理，再注册 bootstrap、设置接口。
  * 3. bootstrap 报告 subagent 和隔离 Local 入口能力；默认 Riftri、显式 Worktree/Local 严格互斥，固定 UUID 绑定目录。列表/快照/分页补充来源与私有发布状态；公开 Local 创建、启动和恢复均检查平台与 Sandbox 配置，历史读取不挂载。
  * 4. 注册复用 Store 的只读任务阅读接口，接入 SSE，并提供构建后的网页；没有前端产物时显示开发提示。
+ *    Local 单文件检查复用既有鉴权及视图排他锁，不启动 Runtime 或发布文件。
  * 5. preClose 中断任务并结束 SSE，onClose 关闭数据库。
  *
  * 关闭时要先确认任务已经中断，再结束服务。页面从保存的会话快照读取状态，任务循环由 Engine 执行。
@@ -23,6 +24,7 @@ import {
 import { registerSessionEvents } from "./session-events.js";
 import { registerSettingsRoutes } from "./settings-routes.js";
 import { registerReplayRoutes } from "./replay-routes.js";
+import { registerLocalReviewRoutes } from "./local-review-routes.js";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
@@ -260,6 +262,7 @@ export async function createApp(
       bind,
     );
   });
+  registerLocalReviewRoutes(app, store, engine);
   app.get("/api/sessions/:id/traces", async (req, reply) => {
     const { id } = req.params as { id: string };
     const session = await store.get(id);

@@ -743,7 +743,10 @@ export default function App() {
                 </code>
               </div>
               {data?.session.localOverlay && (
-                <LocalOverlayStatus info={data.session.localOverlay} />
+                <LocalOverlayStatus
+                  info={data.session.localOverlay}
+                  sessionId={data.session.id}
+                />
               )}
               {data?.history &&
                 (olderError || loadingOlder || data.history.hasOlder) && (

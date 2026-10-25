@@ -1,0 +1,24 @@
+{
+  "timestamp": "2026-10-25T21:53:08.821Z",
+  "platform": "win32",
+  "release": "10.0.26200",
+  "command": "pnpm overlay:verify-review",
+  "passed": true,
+  "reviewMsForTwoSmallFiles": 30.9591,
+  "checks": [
+    "Active task review refused",
+    "Original, private and current source contents remain distinct",
+    "Text conflict and non-overlapping merged preview",
+    "Database and lifecycle manifest bytes unchanged by review",
+    "Remount and subsequent private edit succeeds",
+    "Changed private content has a different review version",
+    "External source changes preserved"
+  ],
+  "rawReport": ".local/local-overlay-review-X4X352/report.json",
+  "limitations": [
+    "Real WinFsp with host fixture, not Sandbox or IPC v18 verification",
+    "Timing is a single small fixture observation, not a large-repository benchmark",
+    "Read-only review; no conflict resolution or publication",
+    "UI and HTTP are validated separately with test fixtures"
+  ]
+}
