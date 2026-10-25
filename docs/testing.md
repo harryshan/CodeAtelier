@@ -1,5 +1,7 @@
 # 测试约定与功能覆盖
 
+Local 产品候选命令（D170）：`local-overlay-command-plan.test.ts` 覆盖有界计划、回执绑定、失败停止和缺失回执不重发；`local-overlay-command-runtime.test.ts` 使用真实子进程/IPC 验证顺序执行、取消排空、未知清理拒绝和启动失败不转宿主，该 stdio 夹具不作为 OS Sandbox 证明。`local-overlay-publication-queue.test.ts` 覆盖取消中间等待者不能越过当前发布、不同来源独立和失败释放；候选测试先复现正常验证超出残留锁短等待的失败，再验证同进程排队成功。`pnpm overlay:verify-sandbox --commands` 使用已安装专用账户 Runtime 与生产 Engine 内部命令入口，覆盖两会话并行、候选成功/失败/取消、来源冲突、重建 Engine 后私有内容保留；不进入默认 check 或 Evaluation。
+
 所有功能开发均须配套合理的单元/回归测试，测试和文档属于功能交付的一部分。不要等全部开发结束后才首次运行测试。
 
 Local 候选工程验证（D170）：`local-overlay-candidate.test.ts` 覆盖冻结候选内容复核、新读依赖与原生观察绑定、私有修改不抹去读依赖、发布前新增依赖变化拒绝、journal 凭据及排空未知分类。`pnpm overlay:verify-candidate` 手动用已安装 WinFsp/专用账户 Runtime 运行真正合并候选，验证创建/删除、未选文件与 Git 隐藏、来源绝对写拒绝、退出失败/候选改写/验证中及卸载后依赖变化/取消，以及正常目录回收；宿主模式与未知排空收据另作注入拒绝用例，不冒充真实失控进程测试。脚本执行适配器尚未接入产品命令选择，不进入默认 check/Evaluation。

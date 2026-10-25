@@ -21,6 +21,7 @@ import {
 } from "../src/local-overlays/publication/files.js";
 import { EditSession } from "../src/local-overlays/publication/session.js";
 import { Publisher } from "../src/local-overlays/publication/publisher.js";
+import { setTimeout as delay } from "node:timers/promises";
 
 it("captures new candidate dependencies and requires native observation proof", async () => {
   const f = await nativeFixture();
@@ -144,6 +145,43 @@ it("does not classify unconfirmed candidate cleanup as safe to resume", async ()
   ).rejects.toMatchObject({ outcome: "unknown" });
   expect(await readFile(path.join(f.directory, "code.txt"), "utf8")).toBe(
     "original",
+  );
+});
+
+it("queues same-process publications beyond the residual lock timeout", async () => {
+  const f = await fixture();
+  await writeFile(path.join(f.directory, "other.txt"), "old");
+  const other = new EditSession(f.source);
+  await other.read("other.txt");
+  await other.edit("other.txt", Buffer.from("new"));
+  let ready!: () => void;
+  const started = new Promise<void>((resolve) => {
+    ready = resolve;
+  });
+  let release!: () => void;
+  const barrier = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const first = f.publisher.publish(f.batch, {
+    validate: async () => {
+      ready();
+      await barrier;
+    },
+  });
+  await started;
+  const second = new Publisher(f.publisher.directory).publish(other.seal(), {
+    lockTimeoutMs: 10,
+    validate: async () => {},
+  });
+  const completion = Promise.allSettled([first, second]);
+  await delay(80);
+  release();
+  expect((await completion).map((result) => result.status)).toEqual([
+    "fulfilled",
+    "fulfilled",
+  ]);
+  expect(await readFile(path.join(f.directory, "other.txt"), "utf8")).toBe(
+    "new",
   );
 });
 

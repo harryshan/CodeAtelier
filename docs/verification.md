@@ -1,5 +1,13 @@
 # 初版验证记录
 
+## Local 产品候选 Runtime 与发布排队（D170，2026-10-26）
+
+- Engine 内部 `selectLocalPublication` 绑定当前活动任务的源码选择和最多八条命令。固定计划沿用既有 Runtime IPC，使用原任务身份和新的候选 execution instance；不调用真实模型、不改主模型上下文，不开放权限扩展或宿主 fallback。候选事件持久化并关联 trace；停止回执和平台 clean 均确认后才使用退出码，未知保留现场。
+- `pnpm overlay:verify-sandbox --commands` 通过（`.local/local-overlay-sandbox-qEzbxl/report.json`、`.local/local-command-sandbox-queued.log`，[摘要](local-overlay-command-results.json)）：真实双 Runtime 命令重叠，两个所选源码自动发布、未选产物保持私有；顺序候选命令成功、非零退出拒绝、候选执行中取消排空、来源冲突及 Engine 重建后私有拒绝结果保留均通过。最终 A=5/B=2、无 fallback、活动租约为零，helper 干净停止。选择由可信测试调用绑定，尚未接入模型工具或公开 UI/API。
+- 初轮真实验证揭示正常候选约五秒，第二个发布超过三秒磁盘锁等待；先增加回归并确认失败（`.local/local-command-queue-before.log`），再加入同进程同来源发布队列。跨进程短等待/残留锁协议不变，不自动删锁。定向 58 项回归通过（`.local/local-command-queue-after.log`）。
+- 最终 `pnpm check` 通过：146 个测试文件、1148 passed / 1 existing skipped，类型/lint/格式及 Web/Windows/POSIX Runtime 构建通过（`.local/local-command-check.log`）。`pnpm test:e2e` 71 项通过（`.local/local-command-e2e.log`），证明现有 Web/HTTP/SSE 兼容，不代替尚未开放的 Local UI 验收。只读进程检查没有遗留 overlay helper/Sandbox supervisor。
+- 仍未覆盖宿主验证适配器、POSIX、异常私有卷恢复、大型构建性能。长命令可取消，但固定验证计划没有长工具模型复审能力；现有 Runtime 的复审失败等待行为不等于已实现模型监控。未安装/Repair、未重启真实服务、未运行 Evaluation。
+
 ## Local 候选工程与新增读依赖（D170，2026-10-26）
 
 - `CandidateValidator` 创建一次性 Local 视图，使用当前来源与合并候选，不枚举复制工程或复用未选 upper；可信执行适配器必须报告模式、退出码及进程树排空。冻结后核对所选文件未被验证命令改写，并取得新增读依赖；Publisher 在应用前再次复核，journal 保存 validation 凭据。排空未知不降为普通未发布拒绝。

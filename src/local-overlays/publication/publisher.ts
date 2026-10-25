@@ -15,6 +15,7 @@
  * 仅普通单链接文件/已存在父目录；新建使用不覆盖的 link，旧对照模式不保证 Windows ACL 保真。
  * 13. publish 的错误只在执行租约排空后标为 unapplied；已开始写入、完成后故障或清理未知均需恢复核对，不降格完成 journal。
  * 14. 候选验证可返回新读取版本，记入 journal 并在应用前复核；候选排空未知不降为普通未发布拒绝。
+ * 15. 同进程同来源先进入可取消队列，再取得持久锁；长验证不触发合作任务的残留锁短等待失败。
  * 不提供外部写入 CAS、多文件原子提交或断电证明；故障钩子仅供实验，产品调用不得跳过候选验证。
  */
 import { mkdir, open, readFile, rename, unlink, link } from "node:fs/promises";
@@ -41,6 +42,7 @@ import {
 } from "./files.js";
 import { equal, mergeContent, PublishError } from "./merge.js";
 import { validateBatch, type Batch } from "./session.js";
+import { publicationTurn } from "./queue.js";
 import { PublicationLease } from "./publication-lease.js";
 import {
   validateOverlayAcknowledgement,
@@ -443,6 +445,22 @@ export class Publisher {
     }
 
     const locations = await this.layout(batch);
+
+    return publicationTurn(locations.lock, options.signal, () =>
+      this.publishLocked(batch, options, attempt, locations),
+    );
+  }
+
+  private async publishLocked(
+    batch: Batch,
+    options: PublishOptions,
+    attempt: {
+      started: boolean;
+      uncertainCleanup: boolean;
+      validation: boolean;
+    },
+    locations: { directory: string; lock: string },
+  ) {
     const task = randomUUID();
     const output = path.join(locations.directory, batch.id);
     this.traces.startTask(task, batch.id);

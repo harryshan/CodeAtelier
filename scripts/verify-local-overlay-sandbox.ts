@@ -6,7 +6,8 @@
  * 4. 取消正在运行的命令，再关闭/新建 Engine，自动按相同历史重挂载并续聊检查私有内容和租约。
  * 不替换 Runtime、Broker、ACL 或 IPC，不安装/Repair、不使用真实模型或用户仓库。
  * 5. --publish 使用可信内部选择和精确候选字节验证，成功轮次发布指定新文件；取消轮次选择不执行。
- * 验证内部会话生命周期；没有公开创建/模型选择，不声明完整产品闭环或 Sandbox 候选命令验证。失败现场保留。
+ * 6. --commands 使用 Engine 的产品命令计划/候选 Runtime：验证成功、非零退出、来源冲突及候选命令运行中取消。
+ * 验证内部会话生命周期；候选 Sandbox 命令仅由 --commands 覆盖，没有公开创建/模型选择。失败现场保留。
  */
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
@@ -21,7 +22,8 @@ import type { Session } from "../src/shared/types.js";
 import { Store } from "../src/sessions/store.js";
 
 assert.equal(process.platform, "win32");
-const publish = process.argv.includes("--publish");
+const commands = process.argv.includes("--commands");
+const publish = commands || process.argv.includes("--publish");
 let validated = 0;
 process.env.CODEATELIER_SANDBOX_ENABLED = "true";
 process.env.CODEATELIER_BASE_URL = "http://127.0.0.1:1/v1";
@@ -75,6 +77,10 @@ function command(label: string) {
   }
 
   if (phase === "cancel") {
+    if (commands) {
+      return "whoami; Set-Content -LiteralPath 'cancel-start.txt' -Value 'started'";
+    }
+
     return "Set-Content -LiteralPath 'cancel-start.txt' -Value 'started'; Start-Sleep -Seconds 60; Set-Content -LiteralPath 'cancel-finished.txt' -Value 'unexpected'";
   }
 
@@ -130,17 +136,26 @@ const provider: ModelProvider = {
         const active = engine.activeTasks.find(
           (task) => task.sessionId === view.sessionId,
         )!;
-        await engine.localOverlays.select(
-          view.workspace,
-          active.sessionId,
-          active.id,
-          {
+        if (commands) {
+          await engine.selectLocalPublication(active.id, {
             paths: ["cancel-start.txt"],
-            validate: async () => {
-              assert.fail("Cancelled task must not validate or publish");
+            commands: [
+              "Write-Output 'CANDIDATE_RUNNING'; Start-Sleep -Seconds 60; Set-Content -LiteralPath 'cancel-finished.txt' -Value 'unexpected'",
+            ],
+          });
+        } else {
+          await engine.localOverlays.select(
+            view.workspace,
+            active.sessionId,
+            active.id,
+            {
+              paths: ["cancel-start.txt"],
+              validate: async () => {
+                assert.fail("Cancelled task must not validate or publish");
+              },
             },
-          },
-        );
+          );
+        }
       }
 
       if (phase === "parallel") {
@@ -189,23 +204,33 @@ const provider: ModelProvider = {
         const active = engine.activeTasks.find(
           (task) => task.sessionId === view.sessionId,
         )!;
-        await engine.localOverlays.select(
-          view.workspace,
-          active.sessionId,
-          active.id,
-          {
+        if (commands) {
+          await engine.selectLocalPublication(active.id, {
             paths: [`source-${label}.txt`],
-            validate: async (files, signal) => {
-              signal?.throwIfAborted();
-              assert.equal(files.size, 1);
-              assert.equal(
-                files.get(`source-${label}.txt`)?.toString("utf8").trim(),
-                `published ${label}`,
-              );
-              validated++;
+            commands: [
+              `whoami; if ((Get-Content -LiteralPath 'source-${label}.txt' -Raw).Trim() -ne 'published ${label}') { throw 'Wrong candidate' }; if ((Test-Path -LiteralPath 'runtime.txt') -or (Test-Path -LiteralPath '.git')) { throw 'Private content exposed' }; Set-Content -LiteralPath 'candidate-artifact.txt' -Value 'private'`,
+              "if ((Get-Content -LiteralPath 'candidate-artifact.txt' -Raw).Trim() -ne 'private') { throw 'Plan ordering failed' }",
+            ],
+          });
+        } else {
+          await engine.localOverlays.select(
+            view.workspace,
+            active.sessionId,
+            active.id,
+            {
+              paths: [`source-${label}.txt`],
+              validate: async (files, signal) => {
+                signal?.throwIfAborted();
+                assert.equal(files.size, 1);
+                assert.equal(
+                  files.get(`source-${label}.txt`)?.toString("utf8").trim(),
+                  `published ${label}`,
+                );
+                validated++;
+              },
             },
-          },
-        );
+          );
+        }
       }
     } else if (phase === "validation" || phase === "conflict") {
       assert.match(serialized, /LOCAL_REJECTION_READY/);
@@ -216,18 +241,25 @@ const provider: ModelProvider = {
       const active = engine.activeTasks.find(
         (task) => task.sessionId === views[0]!.sessionId,
       )!;
-      await engine.localOverlays.select(
-        views[0]!.workspace,
-        active.sessionId,
-        active.id,
-        {
+      if (commands) {
+        await engine.selectLocalPublication(active.id, {
           paths: [phase === "validation" ? "rejected.txt" : "source-A.txt"],
-          validate: async () => {
-            throw new Error("Expected candidate validation refusal");
+          commands: ["exit 7", "throw 'Must not run after failure'"],
+        });
+      } else {
+        await engine.localOverlays.select(
+          views[0]!.workspace,
+          active.sessionId,
+          active.id,
+          {
+            paths: [phase === "validation" ? "rejected.txt" : "source-A.txt"],
+            validate: async () => {
+              throw new Error("Expected candidate validation refusal");
+            },
           },
-        },
-      );
-    } else {
+        );
+      }
+    } else if (phase === "restore") {
       assert.match(serialized, new RegExp(`LOCAL_RESTORED_${label}`));
     }
 
@@ -343,7 +375,30 @@ try {
       );
     }
 
-    assert.equal(validated, 2);
+    if (commands) {
+      for (const session of sessions) {
+        const events = store.events(session.id);
+        assert.equal(
+          events.filter(
+            (event) =>
+              event.type === "execution_instance" &&
+              event.data.purpose === "local-validation" &&
+              event.data.state === "completed",
+          ).length,
+          1,
+        );
+        assert.equal(
+          events.filter(
+            (event) =>
+              event.type === "local_validation" &&
+              event.data.event === "tool_result",
+          ).length,
+          2,
+        );
+      }
+    } else {
+      assert.equal(validated, 2);
+    }
   }
 
   assert.equal(
@@ -364,7 +419,10 @@ try {
       assert.equal(record?.phase, "ready");
       assert.equal(record.publication?.state, "rejected");
       if (rejection === "validation") {
-        assert.equal(record.publication.reason, "VALIDATION_FAILED");
+        assert.equal(
+          record.publication.reason,
+          commands ? "CANDIDATE_VALIDATION_FAILED" : "VALIDATION_FAILED",
+        );
       } else {
         assert.notEqual(record.publication.reason, "VALIDATION_FAILED");
       }
@@ -398,6 +456,18 @@ try {
       ),
   );
   await until(async () => {
+    if (commands) {
+      return store
+        .events(sessions[0]!.id)
+        .some(
+          (event) =>
+            event.taskId === cancelled.id &&
+            event.type === "local_validation" &&
+            event.data.event === "command_output" &&
+            event.data.data.text.includes("CANDIDATE_RUNNING"),
+        );
+    }
+
     try {
       return (
         (
@@ -455,6 +525,7 @@ try {
     "runtime.txt",
     "cancel-start.txt",
     "cancel-finished.txt",
+    "candidate-artifact.txt",
   ]) {
     await assert.rejects(readFile(path.join(source, file)), { code: "ENOENT" });
   }
@@ -477,7 +548,7 @@ try {
     gitMetadataCreation: "denied",
     sourceGitWriteRootsGranted: 0,
     privateWrites: "independent",
-    cancelRunningCommand: "passed",
+    cancelRunningCommand: commands ? "candidate Runtime drained" : "passed",
     remountAndContinue: "both sessions passed after Engine recreation",
     epochs,
     publication: publish
@@ -487,15 +558,17 @@ try {
       ? "candidate failure and source conflict preserved; both private results survived restart"
       : "not requested",
     selection: "trusted internal caller; model tool not yet connected",
-    validation: publish
-      ? "exact merged candidate bytes; no validation command executed"
-      : "not requested",
+    validation: commands
+      ? "production Engine command plan and candidate Runtime; ordered success, exit rejection and cancellation"
+      : publish
+        ? "exact merged candidate bytes; no validation command executed"
+        : "not requested",
     fallback: false,
     activeLeasesAfterTasks: 0,
     cleanup: "engine drained; helpers cleanly stopped",
     limitations: [
       "Not an OS security boundary between sessions",
-      "No public UI/API creation, model selection or Sandbox candidate command runner yet",
+      "No public UI/API creation or model selection yet; command plans are bound by trusted test caller",
     ],
   };
   const file = path.join(root, "report.json");

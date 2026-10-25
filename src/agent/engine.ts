@@ -15,6 +15,7 @@
  *    MCP 在首次模型请求前提供已启用服务的公开用途摘要，不提前连接；任务级本机连接池由宿主/Runtime 共用审批后单次执行入口，收尾关闭，摘要、参数和正文不进入 trace。
  * 7. Agent Runtime 取消先经 IPC 等待 runtime_complete/stopping，再关闭原生 transport；清理未知优先于取消。终态保留已验证进程身份；Broker 校验 Runtime trace 时间戳，按该进程的执行槽组织片段、从已保存工具调用附加脱敏参数并统一归档，在结果持久化前按对应执行片段补齐耗时；子任务由 Broker 核对身份与原子保存问题回执，退出先停子线程再归档。
  * 8. LocalOverlayService 独立管理私有视图：admission 不挂载，run 持租约挂载，Runtime/子任务/工具排空后冻结续轮和卸载；成功轮次可发布内部显式选择并经候选验证的文件，拒绝保留私有修改，unknown 隔离。
+ *    selectLocalPublication 把明确路径/命令绑定当前任务，收尾通过独立候选 Runtime 执行固定计划并保存回执，不调用主模型或允许宿主 fallback。
  * 9. run 的终态持久化与 trace 收尾分开保护；写库失败仍尝试归档失败 trace，导出/归档故障只记警告，最外层 finally 释放 trace 内存和任务级 Sandbox 状态。
  *
  * 模型请求可以重试，但已经执行的工具不能跟着重跑。数据库回滚也撤销不了文件修改或
@@ -23,6 +24,10 @@
  */
 
 import { TaskSkills } from "../skills/task-skills.js";
+import path from "node:path";
+import { CandidateValidator } from "../local-overlays/candidate-validator.js";
+import { runCandidateCommands } from "../local-overlays/command-runtime.js";
+import { validationCommands } from "../local-overlays/command-plan.js";
 import { McpTaskClient } from "../mcp/task-client.js";
 import { mcpCatalogInstructions } from "../mcp/catalog.js";
 import type { McpAction } from "../mcp/contracts.js";
@@ -216,6 +221,76 @@ export class Engine {
   readonly worktrees: WorktreeService;
   /** 内部 Local overlay 会话/发布入口；模型选择和公开 UI 另行接线。 */
   readonly localOverlays: LocalOverlayService;
+
+  /** 内部任务计划入口；不接受任意执行闭包，模型工具/公开入口另外接线。 */
+  async selectLocalPublication(
+    taskId: string,
+    input: { paths: readonly string[]; commands: readonly string[] },
+  ) {
+    const active = this.activeByTaskId.get(taskId);
+    if (!active || !this.config.sandbox.enabled || !this.agentRuntimeLauncher) {
+      throw new Error(
+        "候选命令发布目前要求活动 Sandbox 任务；不会转宿主验证。",
+      );
+    }
+
+    const commands = validationCommands(input.commands);
+    const record = await this.localOverlays.validate(
+      active.workspace,
+      active.task.sessionId,
+    );
+    if (!record) {
+      throw new Error("候选命令发布仅适用于 Local overlay 会话。");
+    }
+
+    const validator = new CandidateValidator(
+      path.join(this.localOverlays.root, "candidates"),
+      this.log,
+    );
+    const launcher = this.agentRuntimeLauncher;
+    const selected = await this.localOverlays.select(
+      active.workspace,
+      active.task.sessionId,
+      taskId,
+      {
+        paths: input.paths,
+        validate: async (files, signal) => {
+          if (!signal) {
+            throw new Error("候选验证缺少任务取消信号。");
+          }
+
+          return validator.validate(
+            record.source,
+            files,
+            (workspace, candidateSignal) =>
+              runCandidateCommands({
+                launcher,
+                traces: this.traces,
+                log: this.sandboxLog,
+                sessionId: active.task.sessionId,
+                taskId,
+                workspace,
+                commands,
+                signal: candidateSignal,
+                getErrorSecrets: () => this.config.errorSecrets(),
+                emit: async (type, data) => {
+                  this.emit(active.task, type, data);
+                  await this.drainEvents(taskId);
+                },
+              }),
+            signal,
+          );
+        },
+      },
+    );
+    this.emit(active.task, "local_validation_plan", {
+      commands,
+      selected: selected.selected,
+    });
+    await this.drainEvents(taskId);
+
+    return selected;
+  }
 
   /** 主模型独立审视在途工具；不追加未完成的 function_call_output，也不计为主循环轮次。 */
   private async toolReviewer(task: Task, settings: Settings) {
