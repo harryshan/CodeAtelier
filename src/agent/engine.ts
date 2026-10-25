@@ -5,7 +5,7 @@
  * 0. toolReviewer/processReviewer 绑定主模型的独立状态检查，供进程与 MCP 每五分钟使用；usage/replay/trace 按 callId 关联，不追加主对话或重放执行。
  * 1. 构造器接好审批通知；手动评测可仅对宿主模型循环覆盖步数阈值，snapshot 读取会话状态，emit 脱敏并保存事件。
  * 2. start 原子保存用户消息和任务级 subagent 选择为 queued；多 agent 尚未就绪时拒绝开启。调度器在全局并发上限内启动不同工作区的任务，并对相同真实工作区保持互斥。
- * 3. resume 继续最后一个可恢复任务；cancel 处理用户取消，close 处理服务关闭。
+ * 3. resume 继续最后一个可恢复任务；cancel 处理用户取消，close 处理服务关闭及 Worktree 管理取消。托管 checkout 在 admission/run/Runtime 启动前核验；快照补充来源清单，记忆映射来源而工具保留实际根。
  * 4. createModelProvider 按主/辅助协议和密钥创建客户端；主/子任务按协议裁剪搜索，Responses 由宿主/Broker 绑定稳定 cache key 后进入 tracing/Replay；子模型继承任务输出上限和已知容量约束，捕获同时保存可信 subagentId/subagentRequestId。
  *    摘要请求按服务容量独立预算，不受主任务手动窗口限制；首条 prompt 先用辅助模型生成标题；run 再读取历史和项目规则，准备工具及上下文预算；首次压缩检查前恢复会话 token 锚点，响应保存后更新锚点，Runtime 经 Broker 共用持久化。
  * 5. model-loop 共用轮次、重试和停止控制，model-response 共用响应接收顺序，dispatch-model-tool 共用节点分派，model-tool-batch 共用计划、结果截断与成功判断；Engine 保留宿主事务、replay 与 tracing。为压缩提供 ToolRunner 的安全文件哈希探测；每轮记录上下文准备和请求计量、模型重试、实际模型请求和响应处理，再记录服务实报用量。完整响应保存后校验工具 DAG，节点先完成准备/审批，实际执行才取得有界 worker 槽。
@@ -89,6 +89,7 @@ import type { ToolReviewSubject } from "../tools/long-tool-monitor.js";
 import { ToolRunner } from "../tools/tool-runner.js";
 import { SubagentReadOnly } from "../tools/subagent-readonly.js";
 import { ProjectMemoryService } from "../memory/service.js";
+import { WorktreeService } from "../worktrees/service.js";
 import { SandboxBroker } from "../sandbox/broker.js";
 import { createSandboxRuntime } from "../sandbox/runtime-factory.js";
 import { definitions, webSearchTool } from "../tools/registry.js";
@@ -205,6 +206,8 @@ export class Engine {
   readonly sandboxLog: Logger;
   /** 项目记忆只写入平台数据目录；任务开始时读取固定 bundle，工具调用时执行受限维护操作。 */
   readonly memories: ProjectMemoryService;
+  /** 管理清单与实际工作区绑定；不改变 Store 的 workspace 或调度键。 */
+  readonly worktrees: WorktreeService;
 
   /** 主模型独立审视在途工具；不追加未完成的 function_call_output，也不计为主循环轮次。 */
   private async toolReviewer(task: Task, settings: Settings) {
@@ -418,7 +421,12 @@ export class Engine {
     this.agentRuntimeLauncher ??= config.sandbox.enabled
       ? this.sandbox
       : undefined;
-    this.memories = new ProjectMemoryService(config.directory, log);
+    this.worktrees = new WorktreeService(config.directory, log);
+    this.memories = new ProjectMemoryService(
+      config.directory,
+      log,
+      (workspace) => this.worktrees.projectWorkspace(workspace),
+    );
     this.approvals = new ApprovalManager(
       () => this.updateWaitingTaskStatuses(),
       (subject, signal, context) =>
@@ -545,6 +553,9 @@ export class Engine {
 
       return {
         ...snapshot,
+        session: snapshot.session
+          ? await this.worktrees.describe(snapshot.session)
+          : undefined,
         approvals: this.approvals.list(id),
       };
     } catch (error) {
@@ -647,6 +658,11 @@ export class Engine {
       (!this.factory && !this.config.modelKey())
     ) {
       throw new Error("请先在设置中完成主模型连接与密钥配置。");
+    }
+
+    const session = await this.store.get(sessionId);
+    if (session) {
+      await this.worktrees.validate(session.workspace);
     }
 
     const { task, events } = await this.store.startTaskAsync(
@@ -960,6 +976,7 @@ export class Engine {
   async close() {
     this.closing = true;
     try {
+      await this.worktrees.close();
       await this.schedulingWork;
       for (const queued of await this.store.queuedTasks()) {
         const message = "服务关闭，任务中断，可手动恢复。";
@@ -1220,6 +1237,7 @@ export class Engine {
           identity,
           nonce,
           workspace,
+          gitWriteRoots: await this.worktrees.gitWriteRoots(workspace),
           signal,
         });
       } catch (error) {
@@ -2101,6 +2119,19 @@ export class Engine {
     };
 
     try {
+      const workspaceSpan = this.traces.startSpan(task.id, {
+        name: "worktree.validate",
+        category: "worktree",
+        track: "Task preparation",
+      });
+      try {
+        await this.worktrees.validate(session.workspace);
+        this.traces.endSpan(workspaceSpan, "ok");
+      } catch (error) {
+        this.traces.endSpan(workspaceSpan, "error");
+        throw error;
+      }
+
       await this.store.replayAsync(task.id, "create", null, {
         schemaVersion: 1,
         capturedAt: new Date().toISOString(),

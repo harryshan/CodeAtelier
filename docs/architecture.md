@@ -2,6 +2,8 @@
 
 当前初版为本机后端、浏览器单页应用、默认单 agent 和可按任务开启的只读 subagent；不同真实工作目录的会话默认最多两个任务并行，同一目录严格串行。
 
+D165 增加显式 Git worktree 对话：`src/worktrees/service.ts` 管理宿主创建清单、幂等创建和目录/Git 关联验证，`git.ts` 执行固定管理命令。`sessions.workspace` 继续保存实际目录，API/SSE 补充清单元数据、侧栏按来源项目分组；记忆解析到来源，文件工具、Skills/MCP、调度与恢复仍绑定 checkout。Sandbox 启动仅追加已核验的 Git common directory 写根；checkout 位于 Broker 数据目录同级，清单位于私有数据目录。不修改历史 v11 schema、不新增模型工具、不复制脏文件或自动清理，详见 [worktree 设计](worktrees.md)。
+
 Windows Sandbox 已通过用户实际使用验证，可用于日常开发：启用时默认产品组装会由 C++ Sandbox Supervisor 启动常驻 Agent Runtime；Supervisor 创建任务专属 Named Pipe，联合核对 PID、创建时间、Job、账户、restricted SID、capability 与固定 Node 映像后代理 Broker IPC。
 
 该路径已有 native build、协议回归及本机固定账户安装态产品链路证据；2026-10-03 用户进一步确认持续使用一段时间功能正常（D130）。日常可用性确认不代表所有故障注入或安全专项矩阵均已通过。严格术语和完成判据见 [Windows 专用用户 Sandbox Runtime 与 Broker 架构](windows-integrity-sandbox.md#0-术语进程和完成条件)。Sandbox 模式沿用 1～4 个不同工作区并发和同工作区串行；macOS/Linux 明确不加载这套 Windows 后端。

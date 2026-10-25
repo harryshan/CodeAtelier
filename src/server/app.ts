@@ -4,7 +4,7 @@
  *
  * 1. 创建 Fastify、Store 和 Engine；若启用 Windows Sandbox，在监听前排空上次服务遗留的账户进程和 ACL journal。
  * 2. 先按监听范围注册来源与凭据检查、关闭/受监督重载接口和错误处理，再注册 bootstrap、设置接口。
- * 3. bootstrap 报告与 Engine 一致的 subagent 发布门禁；会话和任务路由仍独立拒绝未就绪的勾选，处理启动、恢复、取消和 trace/审批。
+ * 3. bootstrap 报告与 Engine 一致的 subagent 发布门禁；会话路由支持显式 Worktree 创建与幂等绑定、列表/分页快照补充来源；任务路由仍独立检查启动、恢复、取消和 trace/审批。
  * 4. 注册复用 Store 的只读任务阅读接口，接入 SSE，并提供构建后的网页；没有前端产物时显示开发提示。
  * 5. preClose 中断任务并结束 SSE，onClose 关闭数据库。
  *
@@ -180,14 +180,51 @@ export async function createApp(
   });
   registerSettingsRoutes(app, config, engine);
   registerReplayRoutes(app, store, log);
-  app.get("/api/sessions", async () => await store.list());
-  app.post("/api/sessions", async (req) => {
+  app.get("/api/sessions", async () =>
+    Promise.all(
+      (await store.list()).map((session) => engine.worktrees.describe(session)),
+    ),
+  );
+  app.post("/api/worktrees/inspect", async (req) => {
     const data = z
       .object({ workspace: z.string().min(1) })
       .strict()
       .parse(req.body);
+    const repository = await engine.worktrees.inspect(
+      await workspacePath(data.workspace),
+    );
 
-    return store.createAsync(await workspacePath(data.workspace));
+    return { branches: repository.branches };
+  });
+  app.post("/api/sessions", async (req) => {
+    const data = z
+      .object({
+        workspace: z.string().min(1),
+        worktree: z
+          .object({ id: z.uuid(), baseRef: z.string().min(1).max(1024) })
+          .strict()
+          .optional(),
+      })
+      .strict()
+      .parse(req.body);
+
+    const workspace = await workspacePath(data.workspace);
+    if (data.worktree) {
+      return engine.worktrees.create(
+        { ...data.worktree, workspace },
+        async (checkout) => {
+          const existing = (await store.list()).find(
+            (session) => session.workspace === checkout,
+          );
+
+          return existing ?? store.createAsync(checkout);
+        },
+      );
+    }
+
+    await engine.worktrees.validate(workspace);
+
+    return engine.worktrees.describe(await store.createAsync(workspace));
   });
   app.get("/api/sessions/:id/traces", async (req, reply) => {
     const { id } = req.params as { id: string };
@@ -213,8 +250,13 @@ export async function createApp(
     }
 
     if (options.before !== undefined) {
+      const snapshot = await store.snapshotPage(id, options);
+
       return {
-        ...(await store.snapshotPage(id, options)),
+        ...snapshot,
+        session: snapshot.session
+          ? await engine.worktrees.describe(snapshot.session)
+          : undefined,
         approvals: engine.approvals.list(id),
       };
     }

@@ -1,5 +1,13 @@
 # 初版验证记录
 
+## 显式 Git worktree 对话（D165，2026-10-25，Windows / Node 24.19.0）
+
+- 创建与恢复使用真实临时 Git 仓库；16 项 worktree 回归覆盖 detached 基线、独立文件/index、重试去重、会话写入失败后的重新绑定、重启、目录/Git 指针丢失或替换、未知创建不重放、共享记忆、HTTP 元数据、跨目录并发/同目录串行和恢复。
+- 关闭服务能终止真实挂起的 checkout filter 子进程，失败请求不可自动重放；管理 checkout hooks 被禁用。Windows 大小写路径按 realpath 保存为调度键，数据目录 junction 的真实目标参与 Git 公共目录/私有数据重叠检查；两项边界均先复现失败再修复，未放宽断言。
+- `pnpm check` 完整通过：130 个文件，951 项通过、1 项既有跳过；TypeScript、ESLint、Prettier 与 Web/server/Windows/POSIX Runtime 测试构建通过。保留依赖注释及前端 chunk 大小提示。
+- 完整 `pnpm test:e2e` 71 项通过；新增流程实测 UI 创建、文件写入只落 checkout、来源分组和刷新历史，并检查创建弹窗与对话截图。
+- Sandbox 的 common directory 写根传递由 Windows manifest 与 MXC policy 假后端回归覆盖；没有运行安装/Repair、真实专用账户或 native POSIX Sandbox 验收、巨型仓库性能测试或 Evaluation。未重启当前服务。首版不含 CoW/Riftri、自动清理、handoff 或可写 subagent。
+
 ## 持久授权根 capability（D163，Windows / Node 24.19.0）
 
 - 每个长期可写根注册独立 SID 于应用数据目录；跨任务/重启复用，临时目录和 execution 身份仍隔离。v4 原生帧传递逐根身份，Runtime 客户端联合核验增加持久 SID，正常/失败清理保留长期根 ACE；旧 ACL journal/revoke v2 不变。

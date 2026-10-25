@@ -2,7 +2,7 @@
  * 验证 SandboxBroker 作为产品 AgentRuntimeLauncher 时的 provision、fallback 与 unknown 边界。
  * 测试使用临时普通目录和内存流，不启动 Windows 账户、native supervisor、ACL 或 WFP；原生身份验证另由平台验收覆盖。
  *
- * 1. 正常启动必须在 Runtime started 后提交共享 grant，close 时先关闭进程再原生撤销并清理私有目录。
+ * 1. 正常启动把已核验的 worktree Git 根纳入 manifest，在 Runtime started 后提交共享 grant；close 先关闭进程再原生撤销并清理私有目录。
  * 2. self-check 在 Runtime 创建前失败时允许显式 host-process fallback，不留下活动 lease。
  * 3. Supervisor 回传的 generation 摘要必须与 preflight 一致，否则按已启动 Runtime 的 unknown 处理。
  * 4. 已启动 Runtime 的 close 若无法证明 clean，或 Broker 未取得可信任务终态，必须 quarantine 并调用整代排空，绝不降级成 fallback。
@@ -71,6 +71,11 @@ describe("SandboxBroker Agent Runtime launcher", () => {
     "records provision and cleanup without masking cleanup failure (%s)",
     async (cleanupFails) => {
       const files = await fixture();
+      const commonDirectory = path.join(
+        path.dirname(files.workspace),
+        "common-git",
+      );
+      await mkdir(commonDirectory);
       const cleanup = vi.fn(async () => {
         if (cleanupFails) {
           throw new Error("fixture cleanup failure");
@@ -84,9 +89,12 @@ describe("SandboxBroker Agent Runtime launcher", () => {
           workspaceProtection: "direct-path" as const,
           accountGenerationDigest: "a".repeat(64),
         })),
-        prepareAccess: vi.fn(async () => ({
+        prepareAccess: vi.fn(async (command) => ({
           readOnlyRoots: [],
-          readWriteRoots: [files.privateDirectory],
+          readWriteRoots: [
+            files.privateDirectory,
+            ...(command.readWriteRoots ?? []),
+          ],
           gitConfigFiles: [files.gitConfig],
           privateDirectory: files.privateDirectory,
           gitGlobalConfigPath: files.gitConfig,
@@ -97,7 +105,12 @@ describe("SandboxBroker Agent Runtime launcher", () => {
           exitCode: 0,
           truncated: false,
         })),
-        launchAgentRuntime: vi.fn(async (command) => {
+        launchAgentRuntime: vi.fn(async (command, _workspace, access) => {
+          expect(
+            access.manifest.writeRoots.map(
+              (root: { path: string }) => root.path,
+            ),
+          ).toContain(commonDirectory);
           command.onAccessProvisioned?.();
           const transport = new PassThrough();
 
@@ -125,6 +138,7 @@ describe("SandboxBroker Agent Runtime launcher", () => {
         identity: identity(),
         nonce: "b".repeat(64),
         workspace: files.workspace,
+        gitWriteRoots: [commonDirectory],
         signal: new AbortController().signal,
       });
 

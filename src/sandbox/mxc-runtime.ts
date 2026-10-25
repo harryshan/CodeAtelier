@@ -1,7 +1,7 @@
 /**
  * MXC 1.0.0 的 Linux/Bubblewrap 与 macOS/Seatbelt 产品启动器，由平台工厂交给 SandboxBroker。
  * 1. recoverStartup/selfCheck 初始化标记目录、核对残留与平台限制；launch 预检再核对后端和可信 bundle。未知实例阻止新启动，不猜 PID、不 fallback。
- * 2. launchTask 为每任务规范化根、复制只读代码、持久化启动标记，再创建私有 stdio；首帧只走管道，不继承宿主秘密。
+ * 2. launchTask 为每任务规范化根（含 Broker 核验的 worktree Git 元数据写根）、复制只读代码、持久化启动标记，再创建私有 stdio；首帧只走管道，不继承宿主秘密。
  * 3. SDK spawn 不可取消：取消/启动超时后仍接管迟到 handle 并终止，绝不重放；进程 wait 与清理各自有界。
  * 4. close 幂等终止 MXC handle、等待退出并释放实例；unknown/清理失败隔离本启动器、排空活动实例，保留故障标记供人工核对。
  * 5. 日志和 tracing 记录 preflight/launch/cleanup、关联 ID、耗时与终态，不记录路径、nonce、正文或 stderr。
@@ -238,7 +238,10 @@ export class MxcSandboxRuntime implements SandboxRuntime {
           ].map((root) => realpath(root)),
         );
         const writeRoots = await Promise.all(
-          (this.options.writeRoots ?? []).map((root) => realpath(root)),
+          [
+            ...(this.options.writeRoots ?? []),
+            ...(input.gitWriteRoots ?? []),
+          ].map((root) => realpath(root)),
         );
         assertDisjointRoots(
           [workspace, ...readRoots, ...writeRoots],

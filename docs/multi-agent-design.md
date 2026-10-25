@@ -6,6 +6,8 @@ Windows Sandbox 的日常功能已于 2026-10-03 获用户实际使用验证确�
 
 ## 目标和不可混淆的边界
 
+D165 的 Worktree 对话创建独立的主任务执行目录；同一来源项目的不同 checkout 可按现有全局上限并行，同一实际目录仍串行。subagent 继承所属主任务的实际 checkout，只读边界与开关不变，不为 subagent 创建额外 worktree 或开放写入。详见 [Worktree 指南](worktrees.md)。
+
 - 用户在**每个新任务提交前**决定是否启用 subagent；默认关闭。主 agent 始终对用户答复、计划、编辑、验证和最终结果负责。
 - subagent 是从属于当前任务的短生命周期研究者：可以阅读受控资料、整理结论和提出修改建议，不能执行写入。主 agent 可并行协调它们；不同会话的工作区锁与全局任务并发上限不因 subagent 增加。
 - **用户已确认只要求 subagent prompt 与工具层禁止写入**：指令明确不允许修改文件，模型工具声明和执行入口采用只读白名单，写入提案交给主 agent。Node Worker thread 与主 loop 同进程、同 OS 身份；这不抵御恶意线程直接调用 Node `fs` 或启动子进程，也不提供线程级 ACL 隔离。此风险属于已确认方案的非目标，不再作为实施前待确认冲突；不得将工具层约束宣传为 OS 级只读 Sandbox。Windows 专用账户 Sandbox 仍保护整个 Runtime 与宿主之间的边界，而非主、子线程之间的边界。

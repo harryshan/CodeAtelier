@@ -1,7 +1,7 @@
 /**
  * 离线验证 MXC 产品启动器的策略、启动首帧、文件快照、持久标记及失败关闭。
  * 1. 假 SDK 只提供可控流和退出结果，不启动原生后端；测试真实 Broker/MxcSandboxRuntime 与临时文件系统。
- * 2. 正常路径用固定宿主身份验证实例 Git 信任/身份、授权根、无宿主环境、实例 mode/PID kind、nonce 只经首帧和幂等释放。
+ * 2. 正常路径用固定宿主身份验证实例 Git 信任/身份、授权根（包括 worktree common directory，不包含来源 checkout）、无宿主环境、实例 mode/PID kind、nonce 只经首帧和幂等释放。
  * 3. 损坏 bundle、危险根、残留标记、SDK/清理失败、迟到 handle 和取消覆盖不重放与隔离。
  * 4. Mac 仅检查生成策略，不把假 SDK 或普通单测当 macOS 实机证据；Linux 原生验证另有手动入口。
  */
@@ -244,6 +244,21 @@ it("generates restrictive Seatbelt settings without exercising macOS", () => {
   expect(request.filesystem!.deniedPaths).toEqual(["/broker"]);
   expect(request.inheritDefaultEnvironment).toBe(false);
   expect(request.network!.egress!.default).toBe("deny");
+});
+
+it("grants verified worktree metadata without granting the source checkout", async () => {
+  const f = await fixture();
+  const source = path.join(f.root, "source");
+  const common = path.join(source, ".git");
+  await mkdir(common, { recursive: true });
+  const child = await f.broker.launch({ ...f.input, gitWriteRoots: [common] });
+  try {
+    expect(f.requests[0]?.filesystem?.readwritePaths).toContain(common);
+    expect(f.requests[0]?.filesystem?.readwritePaths).not.toContain(source);
+    expect(f.requests[0]?.filesystem?.deniedPaths).toContain(f.dataDirectory);
+  } finally {
+    await child.close("completed");
+  }
 });
 
 it("rejects corrupt runtime code and workspace grants overlapping Broker data before spawning", async () => {

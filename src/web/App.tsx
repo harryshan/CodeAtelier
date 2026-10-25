@@ -3,7 +3,7 @@
  * 通过 api 请求后端，通过 useSessionConnection 同步会话，再交给 Timeline 和分类 SettingsPage 展示。
  *
  * 1. 状态和 effects 管理当前会话、默认关闭的一次性 subagent 勾选、服务端能力标志、弹窗及加载状态；useHistoryScroll 自动加载旧页，Timeline 保持阅读位置；历史加载使用低强调状态行，读取失败独立警告并允许重试。
- * 2. 按服务端返回的工作区路径分组展示会话；项目可独立折叠，展开时默认仅显示最近五个对话，并可按需显示更早记录；手机端以可关闭的抽屉呈现该侧栏。
+ * 2. 按服务端来源项目路径分组（Local 使用实际路径）；项目可折叠并默认显示最近五个对话。WorktreeDialog 显式创建独立 checkout，项目栏仍展示实际执行路径；手机端使用导航抽屉。
  * 3. resume、reloadService、stopServer、createProject、createConversation 和 send 处理恢复、受确认的服务重载、关闭服务、连接项目、新建会话和发送消息，并显示操作结果。
  * 4. 服务关闭后显示重启说明；正常页面由侧栏或手机端导航抽屉、项目栏、当前会话实际 Runtime 隔离模式（没有证据时显示启动初始状态，并提示获批宿主命令例外）、可折叠会话统计、会将已完成任务过程默认收纳的时间线或项目连接页、所见即所得 Markdown 任务编辑器组成。
  * 5. 侧栏另开同源对话阅读器；SettingsPage 接管版本化编辑和初始引导，保存更新主页面状态，不中断活动任务。
@@ -21,6 +21,7 @@ import { MarkdownTaskEditor } from "./MarkdownTaskEditor";
 import { SettingsPage } from "./settings/SettingsPage";
 import { Timeline } from "./Timeline";
 import { SessionStatistics } from "./SessionStatistics";
+import { WorktreeDialog } from "./WorktreeDialog";
 import s from "./app.module.css";
 
 const RECENT_CONVERSATION_LIMIT = 5;
@@ -32,6 +33,7 @@ export default function App() {
   const [bootstrapSandbox, setBootstrapSandbox] = useState<SandboxStatus>();
   const [showSettings, setShowSettings] = useState(false);
   const [addingProject, setAddingProject] = useState(false);
+  const [worktreeProject, setWorktreeProject] = useState<string>();
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [expandedProjectHistories, setExpandedProjectHistories] = useState<
     Set<string>
@@ -127,9 +129,11 @@ export default function App() {
   // 路径已由后端解析为真实目录；不在浏览器按操作系统猜测路径大小写。
   const projects = new Map<string, Session[]>();
   for (const session of list) {
-    const conversations = projects.get(session.workspace) ?? [];
+    const projectWorkspace =
+      session.worktree?.projectWorkspace ?? session.workspace;
+    const conversations = projects.get(projectWorkspace) ?? [];
     conversations.push(session);
-    projects.set(session.workspace, conversations);
+    projects.set(projectWorkspace, conversations);
   }
 
   const toggleProjectHistory = (projectWorkspace: string) => {
@@ -371,6 +375,18 @@ export default function App() {
                     >
                       <span>＋</span>
                     </button>
+                    <button
+                      className={s.projectNewButton}
+                      disabled={busy}
+                      aria-label="新建 Worktree 对话"
+                      title="从 Git 提交创建独立工作目录"
+                      onClick={() => {
+                        setWorktreeProject(projectWorkspace);
+                        setMobileSidebarOpen(false);
+                      }}
+                    >
+                      ⑂
+                    </button>
                   </div>
                   <small
                     className={s.projectWorkspace}
@@ -398,7 +414,9 @@ export default function App() {
                           setMobileSidebarOpen(false);
                         }}
                       >
-                        <span className={s.sessionIcon}>⌘</span>
+                        <span className={s.sessionIcon}>
+                          {item.worktree ? "⑂" : "⌘"}
+                        </span>
                         <span className={s.conversationTitle}>
                           <strong>{item.title}</strong>
                         </span>
@@ -611,7 +629,7 @@ export default function App() {
                 </article>
               </div>
               <div className={s.welcomeFoot}>
-                本地工作区 <i /> 跨项目并行 <i /> 同项目串行 <i /> 操作按需确认
+                本地工作区 <i /> 跨目录并行 <i /> 同目录串行 <i /> 操作按需确认
               </div>
             </section>
           ) : loading ? (
@@ -628,8 +646,18 @@ export default function App() {
             <>
               <div className={s.projectBar}>
                 <span>⌁</span>
-                <code>{data?.session.workspace}</code>
-                <span>本地项目</span>
+                <span
+                  title={
+                    data?.session.worktree
+                      ? `来源：${data.session.worktree.projectWorkspace ?? "清单不可用"}；创建基线：${data.session.worktree.baseRef ?? "未知"} (${data.session.worktree.baseCommit?.slice(0, 12) ?? ""})`
+                      : undefined
+                  }
+                >
+                  {data?.session.worktree ? "Worktree" : "本地项目"}
+                </span>
+                <code title={data?.session.workspace}>
+                  {data?.session.workspace}
+                </code>
               </div>
               {data?.history &&
                 (olderError || loadingOlder || data.history.hasOlder) && (
@@ -744,6 +772,22 @@ export default function App() {
           </footer>
         )}
       </main>
+      {worktreeProject && (
+        <WorktreeDialog
+          workspace={worktreeProject}
+          onClose={() => setWorktreeProject(undefined)}
+          onCreated={(session) => {
+            setList((current) => [
+              session,
+              ...current.filter((item) => item.id !== session.id),
+            ]);
+            setSelected(session.id);
+            setAddingProject(false);
+            setWorktreeProject(undefined);
+            setError("");
+          }}
+        />
+      )}
       {showReload && (
         <div className={s.overlay}>
           <section
