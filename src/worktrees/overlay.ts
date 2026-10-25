@@ -8,6 +8,7 @@
  * 6. Local 模式要求独立策略收据，挂载身份/策略固定；旧模式保持私有 gitfile 兼容。
  * 7. withFrozen 停止 Local 文件系统服务后执行导出，helper 全程持有控制目录租约；返回后正常退出。
  *    同一冻结回调可确认已完成的来源发布；仅匹配批次/代次收据成功后允许调用方记录视图已刷新。
+ * 8. 冻结回调接收租约失效/取消信号；关闭先中止并等待回调排空，再幂等卸载，不用竞速伪造完成。
  *    导出回调可复核原生读版本；协议只回执状态，不通过 stdout 传文件内容或路径。
  */
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
@@ -98,6 +99,8 @@ interface Mount {
   freezing?: boolean;
   freeze?: () => void;
   readsChecked?: () => void;
+  frozenScope?: { controller: AbortController; drained: Promise<void> };
+  shutdown?: Promise<void>;
   acknowledgement?: {
     batchId: string;
     epoch: number;
@@ -303,6 +306,9 @@ export class OverlayManager {
         let buffer = "";
         const fail = () => {
           mount.failed = true;
+          mount.frozenScope?.controller.abort(
+            new Error("Overlay frozen lease failed."),
+          );
           rejectReady(
             new Error(
               "Overlay helper 启动失败或异常退出；保留现场，不自动重放。",
@@ -613,55 +619,105 @@ export class OverlayManager {
     exportChanges: (
       verifyReads: (epochs?: readonly number[]) => Promise<void>,
       acknowledge: (request: OverlayAcknowledgement) => Promise<void>,
+      signal: AbortSignal,
     ) => Promise<T>,
+    signal?: AbortSignal,
   ): Promise<T> {
     const mount = this.mounts.get(id);
     if (!mount?.local || mount.failed || mount.stopping || mount.freezing) {
       throw new Error("Local overlay cannot be frozen in its current state.");
     }
 
+    signal?.throwIfAborted();
+
     mount.freezing = true;
-
-    return this.observe(id, "local_freeze", async () => {
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      try {
-        await Promise.race([
-          new Promise<void>((resolve, reject) => {
-            mount.freeze = resolve;
-            timer = setTimeout(
-              () => reject(new Error("Local overlay freeze timed out.")),
-              30_000,
-            );
-            mount.process.stdin.write("freeze\n");
-          }),
-          mount.exit.then(() => {
-            throw new Error("Overlay exited before frozen export completed.");
-          }),
-        ]);
-        if (mount.failed || mount.closed) {
-          throw new Error("Overlay freeze was not confirmed.");
-        }
-
-        const result = await Promise.race([
-          exportChanges(
-            (epochs) => this.verifyFrozenReads(mount, epochs),
-            (request) => this.acknowledgeFrozen(id, mount, request),
-          ),
-          mount.exit.then(() => {
-            throw new Error("Overlay lease was lost during frozen export.");
-          }),
-        ]);
-        if (mount.failed || mount.closed || mount.stopping) {
-          throw new Error("Overlay lease was lost during frozen export.");
-        }
-
-        return result;
-      } finally {
-        clearTimeout(timer);
-        mount.freeze = undefined;
-        await this.stop(id);
+    const controller = new AbortController();
+    let resolveDrained!: () => void;
+    const scope = {
+      controller,
+      drained: new Promise<void>((resolve) => {
+        resolveDrained = resolve;
+      }),
+    };
+    mount.frozenScope = scope;
+    const abort = () =>
+      controller.abort(
+        signal?.reason ?? new Error("Frozen operation cancelled."),
+      );
+    signal?.addEventListener("abort", abort, { once: true });
+    void mount.exit.then(() => {
+      if (mount.frozenScope === scope) {
+        controller.abort(new Error("Overlay frozen lease exited."));
       }
     });
+
+    return this.observe(
+      id,
+      "local_freeze",
+      async () => {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        let rejectFreeze: ((reason: unknown) => void) | undefined;
+        const abortFreeze = () => rejectFreeze?.(controller.signal.reason);
+        controller.signal.addEventListener("abort", abortFreeze, {
+          once: true,
+        });
+        try {
+          controller.signal.throwIfAborted();
+          await Promise.race([
+            new Promise<void>((resolve, reject) => {
+              mount.freeze = resolve;
+              timer = setTimeout(
+                () => reject(new Error("Local overlay freeze timed out.")),
+                30_000,
+              );
+              mount.process.stdin.write("freeze\n");
+            }),
+            new Promise<never>((_resolve, reject) => {
+              rejectFreeze = reject;
+              if (controller.signal.aborted) {
+                reject(controller.signal.reason);
+              }
+            }),
+          ]);
+          clearTimeout(timer);
+          controller.signal.removeEventListener("abort", abortFreeze);
+          controller.signal.throwIfAborted();
+          if (mount.failed || mount.closed) {
+            throw new Error("Overlay freeze was not confirmed.");
+          }
+
+          // A rejected race cannot stop the callback. Keep ownership of its
+          // lifetime until it has observed cancellation and settled its effects.
+          const result = await exportChanges(
+            async (epochs) => {
+              controller.signal.throwIfAborted();
+              await this.verifyFrozenReads(mount, epochs);
+            },
+            async (request) => {
+              controller.signal.throwIfAborted();
+              await this.acknowledgeFrozen(id, mount, request);
+            },
+            controller.signal,
+          );
+          controller.signal.throwIfAborted();
+          if (mount.failed || mount.closed || mount.stopping) {
+            throw new Error("Overlay lease was lost during frozen export.");
+          }
+
+          return result;
+        } finally {
+          clearTimeout(timer);
+          controller.signal.removeEventListener("abort", abortFreeze);
+          signal?.removeEventListener("abort", abort);
+          controller.abort(new Error("Frozen scope ended."));
+          mount.freeze = undefined;
+          mount.frozenScope = undefined;
+          resolveDrained();
+          await this.stop(id);
+        }
+      },
+      signal,
+    );
   }
 
   /** Release only a mount owned by this manager; creation failures keep their disk state. */
@@ -671,11 +727,17 @@ export class OverlayManager {
       return;
     }
 
+    if (mount.frozenScope) {
+      const scope = mount.frozenScope;
+      scope.controller.abort(new Error("Overlay manager is closing."));
+      await scope.drained;
+    }
+
     if (mount.closed && mount.stopped && mount.exitCode === 0) {
       return;
     }
 
-    await this.observe(id, "unmount", async () => {
+    mount.shutdown ??= this.observe(id, "unmount", async () => {
       mount.stopping = true;
       mount.process.stdin.end();
       const timer = setTimeout(() => mount.process.kill(), 10_000);
@@ -698,6 +760,7 @@ export class OverlayManager {
         clearTimeout(deadline!);
       }
     });
+    await mount.shutdown;
   }
 
   async close() {

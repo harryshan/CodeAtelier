@@ -217,3 +217,30 @@ it("rejects an invalid refresh request before source publication", async () => {
   ).rejects.toThrow();
   expect(await readFile(path.join(f.source, "file.txt"), "utf8")).toBe("old\n");
 });
+
+it("retains complete source state but skips refresh after final-write cancellation", async () => {
+  const f = await fixture();
+  const controller = new AbortController();
+  let acknowledged = false;
+  const result = await f.publisher.publish(f.batch, {
+    validate: async () => {},
+    signal: controller.signal,
+    afterWrite: async () =>
+      controller.abort(new Error("Cancelled after final write")),
+    refresh: {
+      request: {
+        batchId: f.batch.id,
+        seal: randomUUID(),
+        epoch: 0,
+        paths: ["\\file.txt"],
+      },
+      acknowledge: async () => {
+        acknowledged = true;
+      },
+    },
+  });
+  expect(result.refreshPending).toBe(true);
+  expect(acknowledged).toBe(false);
+  expect((await f.publisher.inspect(f.batch)).state).toBe("complete");
+  expect(await readFile(path.join(f.source, "file.txt"), "utf8")).toBe("new\n");
+});

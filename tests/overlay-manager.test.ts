@@ -7,6 +7,7 @@
  * 5. Local 策略须有明确能力收据；重复 ID 不能换来源、控制目录或策略。
  * 6. 冻结导出必须收到 frozen 后开始，持有 helper 到导出完成；租约丢失不得返回成功结果。
  * 7. 发布确认须等待匹配批次与代次的收据，错误收据及租约丢失均拒绝。
+ * 8. 冻结取消/关闭先中止回调并等待排空；不在回调仍运行时释放 helper 或报告关闭成功。
  * 原生文件、Git 和受限 token 语义由手动 verify-winfsp-overlay 独立验证。
  */
 import { EventEmitter } from "node:events";
@@ -118,6 +119,45 @@ it("does not return export results when the helper lease is lost", async () => {
   await expect(f.manager.close()).rejects.toThrow("清理未全部完成");
 });
 
+it("cancels and drains a frozen callback before reporting lost lease cleanup", async () => {
+  const f = await localFixture();
+  let received: AbortSignal | undefined;
+  let entered = false;
+  let settled = false;
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const pending = f.manager.withFrozen(
+    f.id,
+    async (_verify, _acknowledge, signal?: AbortSignal) => {
+      received = signal;
+      entered = true;
+      await gate;
+      signal?.throwIfAborted();
+    },
+  );
+  const completion = pending.then(
+    () => {
+      settled = true;
+    },
+    () => {
+      settled = true;
+    },
+  );
+  f.helper.stdout.write('{"version":1,"state":"frozen","mode":"local"}\n');
+  try {
+    await vi.waitFor(() => expect(entered).toBe(true));
+    f.helper.kill();
+    await vi.waitFor(() => expect(received?.aborted).toBe(true));
+    expect(settled).toBe(false);
+  } finally {
+    release();
+    await completion;
+    await expect(f.manager.close()).rejects.toThrow();
+  }
+});
+
 it("waits for native read verification before releasing a frozen batch", async () => {
   const f = await localFixture();
   let finished = false;
@@ -140,6 +180,63 @@ it("waits for native read verification before releasing a frozen batch", async (
   expect(await pending).toBe("verified batch");
   await f.manager.close();
 });
+
+it.each(["caller", "manager"])(
+  "drains a frozen callback before shutdown requested by %s",
+  async (method) => {
+    const f = await localFixture();
+    const cancellation = new AbortController();
+    let received: AbortSignal | undefined;
+    let finished = false;
+    let release!: () => void;
+    const cleanup = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const pending = f.manager.withFrozen(
+      f.id,
+      async (_verify, _acknowledge, signal) => {
+        received = signal;
+        await new Promise<void>((resolve) =>
+          signal.addEventListener("abort", () => resolve(), { once: true }),
+        );
+        await cleanup;
+        signal.throwIfAborted();
+      },
+      cancellation.signal,
+    );
+    const rejected = expect(pending).rejects.toThrow();
+    const complete = pending.then(
+      () => {
+        finished = true;
+      },
+      () => {
+        finished = true;
+      },
+    );
+    f.helper.stdout.write('{"version":1,"state":"frozen","mode":"local"}\n');
+    await vi.waitFor(() => expect(received).toBeDefined());
+    let closing: Promise<void> | undefined;
+    if (method === "caller") {
+      cancellation.abort(new Error("User cancellation"));
+    } else {
+      closing = f.manager.close();
+    }
+
+    try {
+      await vi.waitFor(() => expect(received?.aborted).toBe(true));
+      expect(finished).toBe(false);
+      expect(f.helper.stdin.writableEnded).toBe(false);
+    } finally {
+      release();
+      await rejected;
+      await complete;
+      await closing;
+      await f.manager.close();
+    }
+
+    expect(f.helper.stdin.writableEnded).toBe(true);
+  },
+);
 
 it("cleans up after export failure and never freezes legacy mounts", async () => {
   const f = await localFixture();

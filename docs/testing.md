@@ -31,6 +31,8 @@ Runtime stdio 集成夹具共用 `runtime-child-close.ts`：spawn 后立即监�
 
 ## 共享执行逻辑回归
 
+- Local 冻结取消与排空：协议回归覆盖 helper 失效、用户取消、管理器关闭后等待回调清理，关闭不得提前释放仍在使用的 helper。发布回归区分验证前取消、部分写入后 unknown 和最后写入后 complete/refresh pending。`pnpm overlay:verify-drain` 真实终止自建 helper，检查候选 Node 进程树已退出、来源未写或仅首文件已写、原文备份/锁保留及重放拒绝；不触碰产品服务，不进入默认 check/Evaluation。
+
 - Local 发布确认与续轮：`overlay-manager.test.ts` 验证匹配批次/代次的确认收据与错误收据拒绝；`local-overlay-native-batch.test.ts` 覆盖 v5 格式、旧修改依赖保留和新代次隔离；journal 回归检查来源 complete 后才刷新、刷新失败保留 pending、无效确认请求在来源写入前拒绝。`pnpm overlay:verify-refresh` 用真实双挂载验证合并后释放所选覆盖、下一轮编辑、未选产物/旧依赖保留、幂等确认不清除后来编辑及新建/删除确认。它只使用宿主实验夹具，不代表产品自动发布或异常退出恢复通过，不进入默认 check/Evaluation。
 
 - Local overlay 发布协议（D170）：`local-overlay-poc.test.ts` 覆盖普通非 Git 文件上的 B/O/T 合并、并发发布、整批冲突拒绝、陈旧读取/依赖、候选失效、验证失败、取消、写后未知、路径替换及重复批次。`pnpm overlay:verify-publish` 单独启动两个真实发布进程，检查合并候选语法和最终执行结果，并在首个替换后立即退出验证锁/日志/现场与禁止盲目重放；手动脚本不进入默认 check，不属于 Evaluation。此阶段不挂载 WinFsp、不接入 Sandbox 或产品会话，不推导任意外部写入下无竞争；限制见 [Local overlay 设计](local-overlay-design.md#第一阶段-poc受控编辑与发布)。

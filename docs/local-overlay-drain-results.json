@@ -1,0 +1,29 @@
+{
+  "timestamp": "2026-10-25T16:30:32.624Z",
+  "platform": "win32",
+  "release": "10.0.26200",
+  "node": "v26.10.0",
+  "results": [
+    {
+      "phase": "validation",
+      "journal": "aborted",
+      "callbackDrained": true,
+      "validationTreeExited": true,
+      "secondFileUntouched": true,
+      "helperExit": "injected; not cleanly restorable"
+    },
+    {
+      "phase": "applying",
+      "journal": "unknown",
+      "callbackDrained": true,
+      "validationTreeExited": true,
+      "secondFileUntouched": true,
+      "helperExit": "injected; not cleanly restorable"
+    }
+  ],
+  "limitations": [
+    "Host process faults; product Sandbox publication lifecycle not wired",
+    "Callbacks must cooperate with signal; uncooperative callbacks remain draining",
+    "In-flight replacement is awaited, not rolled back; no multi-file atomicity"
+  ]
+}

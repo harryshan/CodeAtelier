@@ -7,13 +7,12 @@
  * 本脚本不属于默认 check/Evaluation；异常退出脏卷恢复、产品 UI/Runtime 生命周期另行验收。
  */
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { DatabaseSync } from "node:sqlite";
-import { promisify } from "node:util";
+import { executeProcess } from "../src/tools/process.js";
 import { createLogger } from "../src/logging/logger.js";
 import {
   OverlayManager,
@@ -25,7 +24,6 @@ import { nativeBatch } from "./local-overlay/native-batch.js";
 import { Publisher } from "./local-overlay/publisher.js";
 import { sourceIdentity } from "./local-overlay/files.js";
 
-const execute = promisify(execFile);
 assert.equal(process.platform, "win32");
 await mkdir(".local", { recursive: true });
 const root = await mkdtemp(path.resolve(".local/local-overlay-refresh-"));
@@ -65,14 +63,27 @@ async function mount(view: (typeof views)[number], create: boolean) {
   );
 }
 
-async function program(workspace: string) {
-  return (
-    await execute(process.execPath, ["module.mjs"], {
-      cwd: workspace,
-      windowsHide: true,
-      timeout: 10_000,
-    })
-  ).stdout;
+async function command(
+  workspace: string,
+  args: string[],
+  signal = AbortSignal.timeout(10_000),
+) {
+  const result = await executeProcess(
+    process.execPath,
+    args,
+    workspace,
+    signal,
+    10_000,
+    8192,
+    () => {},
+  );
+  assert.equal(result.exitCode, 0);
+
+  return result.output;
+}
+
+async function program(workspace: string, signal?: AbortSignal) {
+  return command(workspace, ["module.mjs"], signal);
 }
 
 async function edit(
@@ -86,7 +97,10 @@ async function edit(
   await writeFile(file, text.replace(before, after));
 }
 
-async function validate(files: ReadonlyMap<string, Buffer | null>) {
+async function validate(
+  files: ReadonlyMap<string, Buffer | null>,
+  signal = AbortSignal.timeout(30_000),
+) {
   const id = randomUUID();
   const workspace = overlayWorkspace(overlayNamespace(root), id);
   const manager = new OverlayManager(root, log);
@@ -98,10 +112,11 @@ async function validate(files: ReadonlyMap<string, Buffer | null>) {
       path.join(root, `validator-${id}`),
       workspace,
       true,
-      AbortSignal.timeout(30_000),
+      signal,
       { kind: "local" },
     );
     for (const [file, content] of files) {
+      signal.throwIfAborted();
       if (content === null) {
         await unlink(path.join(workspace, file));
       } else {
@@ -109,12 +124,8 @@ async function validate(files: ReadonlyMap<string, Buffer | null>) {
       }
     }
 
-    await execute(process.execPath, ["--check", "module.mjs"], {
-      cwd: workspace,
-      windowsHide: true,
-      timeout: 10_000,
-    });
-    await program(workspace);
+    await command(workspace, ["--check", "module.mjs"], signal);
+    await program(workspace, signal);
     await assert.rejects(readFile(path.join(workspace, "artifact.txt")), {
       code: "ENOENT",
     });
@@ -136,7 +147,7 @@ async function staleConfirmation() {
   await mount(view, true);
   await edit(view, "a = 10000;", "a = 100000;");
   let request: OverlayAcknowledgement | undefined;
-  await view.manager.withFrozen(id, async (verify) => {
+  await view.manager.withFrozen(id, async (verify, _acknowledge, signal) => {
     const batch = await nativeBatch(
       identity,
       view.control,
@@ -146,6 +157,7 @@ async function staleConfirmation() {
     request = batch.acknowledgement;
     const result = await publisher.publish(batch, {
       nativeWindows: true,
+      signal,
       validate,
       refresh: {
         request,
@@ -195,29 +207,33 @@ async function publish(
   selected = ["module.mjs"],
   loseReceipt = false,
 ) {
-  return view.manager.withFrozen(view.id, async (verify, acknowledge) => {
-    const batch = await nativeBatch(identity, view.control, selected, verify);
-    const result = await publisher.publish(batch, {
-      nativeWindows: true,
-      validate,
-      refresh: {
-        request: batch.acknowledgement,
-        acknowledge: async (request) => {
-          await acknowledge(request);
-          // Same lease replay is idempotent and does not advance a second epoch.
-          await acknowledge(request);
-          if (loseReceipt) {
-            lostRequest = request;
-            throw new Error("Simulated receipt loss after native commit");
-          }
+  return view.manager.withFrozen(
+    view.id,
+    async (verify, acknowledge, signal) => {
+      const batch = await nativeBatch(identity, view.control, selected, verify);
+      const result = await publisher.publish(batch, {
+        nativeWindows: true,
+        signal,
+        validate,
+        refresh: {
+          request: batch.acknowledgement,
+          acknowledge: async (request) => {
+            await acknowledge(request);
+            // Same lease replay is idempotent and does not advance a second epoch.
+            await acknowledge(request);
+            if (loseReceipt) {
+              lostRequest = request;
+              throw new Error("Simulated receipt loss after native commit");
+            }
+          },
         },
-      },
-    });
-    assert.equal(result.refreshPending, loseReceipt);
-    assert.equal((await publisher.inspect(batch)).state, "complete");
+      });
+      assert.equal(result.refreshPending, loseReceipt);
+      assert.equal((await publisher.inspect(batch)).state, "complete");
 
-    return result;
-  });
+      return result;
+    },
+  );
 }
 
 try {

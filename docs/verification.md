@@ -1,5 +1,13 @@
 # 初版验证记录
 
+## Local 冻结故障取消与排空（D170，2026-10-26）
+
+- 先用 `.local/local-overlay-drain-before.log` 的协议回归复现 helper 失效后未提供取消信号、未排空回调的问题。改为冻结作用域信号与协作排空，失效/用户取消/管理器关闭均等待回调结束；重复关闭复用卸载。未结束的不合作回调不报告完成。
+- Publisher 向验证传递同一信号，验证前及逐文件写入边界复核；在途原生替换仍等待确切结果。验证前取消保持来源未改、aborted 且释放锁；部分写入后 unknown、保留锁；全部写入确认后取消仍 complete，但跳过视图刷新。相关状态由真实文件 journal 回归覆盖。
+- `pnpm overlay:verify-drain` 通过（`.local/local-overlay-drain-Rhduvd/report.json`）：验证阶段终止原视图 helper 后，真实候选 Node 父子进程均已退出、marker 未写、两份来源原文不变；apply 阶段首文件后故障只留下首文件结果，第二份原文不变，真实原文备份保留、unknown 和锁阻止重试。[摘要](local-overlay-drain-results.json)。使用生产进程树执行器，但运行身份是宿主；不是 Sandbox 自动发布或异常私有卷恢复通过。
+- 正常 `overlay:verify-refresh` 在新取消接线下重跑通过（`.local/local-overlay-refresh-mEHBWg/report.json`），包括已确认重放和未执行的过期确认拒绝。无原生代码/格式变更，不重复编译或安装/Repair；未重启服务，不运行 Evaluation。最终完整检查结果在提交前补充。
+- `pnpm check` 全部通过：137 个测试文件、1048 passed / 1 existing skipped，类型/lint/格式/构建通过（`.local/local-overlay-drain-check.log`）。没有 UI/HTTP/SSE 改动，不运行 e2e。收尾只读检查无 overlay helper 进程遗留；未知夹具仍保留磁盘现场，不冒充干净恢复。
+
 ## Local 发布确认与跨轮刷新（D170，2026-10-26）
 
 - Local 实验格式 v5 增加观察代次、修改与代次关联和确认收据；不迁移旧 v3/v4 实验，也不改变旧 D168 v2。来源 complete 后才确认明确路径，原生事务释放所选覆盖并开启新代次；旧修改、原文和相关读依赖保留。不存在来源全量扫描或 Git 调用。

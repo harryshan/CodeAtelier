@@ -260,7 +260,10 @@ it("cancels before mutation and allows a fresh publication without reusing a bat
   await expect(
     f.publisher.publish(session.seal(), {
       signal: controller.signal,
-      validate: async () => controller.abort(),
+      validate: async (_files, signal) => {
+        expect(signal).toBe(controller.signal);
+        controller.abort();
+      },
     }),
   ).rejects.toThrow();
   expect(await f.read()).toBe("one\ntwo\nthree\n");
@@ -269,6 +272,34 @@ it("cancels before mutation and allows a fresh publication without reusing a bat
   await edit(next, "one.txt", "fresh\n");
   await f.publisher.publish(next.seal(), { validate });
   expect(await f.read()).toBe("fresh\n");
+});
+
+it("stops before the next file when cancellation follows a completed write", async () => {
+  const f = await fixture();
+  const session = f.session();
+  await edit(session, "one.txt", "first published\n");
+  await edit(session, "two.txt", "second private\n");
+  const controller = new AbortController();
+  const batch = session.seal();
+  await expect(
+    f.publisher.publish(batch, {
+      validate,
+      signal: controller.signal,
+      afterWrite: async () => controller.abort(new Error("Lease lost")),
+    }),
+  ).rejects.toThrow("Lease lost");
+  expect(await f.read()).toBe("first published\n");
+  expect(await f.read("two.txt")).toBe("second\n");
+  expect(await f.publisher.inspect(batch)).toEqual({
+    state: "unknown",
+    files: [
+      { path: "one.txt", recorded: "written", observed: "matches_after" },
+      { path: "two.txt", recorded: "pending", observed: "matches_before" },
+    ],
+  });
+  await expect(
+    f.publisher.publish(batch, { validate, lockTimeoutMs: 20 }),
+  ).rejects.toThrow("RECOVERY_REQUIRED");
 });
 
 it("handles file creation/deletion and rejects concurrent create or delete-versus-edit", async () => {

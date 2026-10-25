@@ -7,6 +7,7 @@
  * 5. src/tracing 记录 queue/prepare/validate/apply 的 ID、耗时和安全终态，不含路径/正文。
  * 6. 显式 nativeWindows 使用保留 owner/group/DACL 的原生替换，完整发布后按身份清理备份。
  * 7. 可选 refresh 在来源 complete 后确认私有视图；失败保留 pending 收据，不重写来源完成状态。
+ * 8. signal 传给候选验证，写前和逐文件复核取消；在途原生替换等待结果，不以取消推断没有副作用。
  * 仅普通单链接文件/已存在父目录；新建使用不覆盖的 link，旧对照模式不保证 Windows ACL 保真。
  * 不提供外部写入 CAS、多文件原子提交、断电证明或生产服务集成；故障钩子仅供实验。
  */
@@ -51,7 +52,10 @@ interface Journal {
 }
 
 export interface PublishOptions {
-  validate: (files: ReadonlyMap<string, Buffer | null>) => Promise<void>;
+  validate: (
+    files: ReadonlyMap<string, Buffer | null>,
+    signal?: AbortSignal,
+  ) => Promise<void>;
   signal?: AbortSignal;
   lockTimeoutMs?: number;
   afterWrite?: (index: number) => Promise<void>;
@@ -407,7 +411,10 @@ export class Publisher {
       const candidates = new Map(
         journal.entries.map((entry) => [entry.path, decode(entry.after)]),
       );
-      await step("validate", () => options.validate(candidates));
+      options.signal?.throwIfAborted();
+      await step("validate", () =>
+        options.validate(candidates, options.signal),
+      );
       options.signal?.throwIfAborted();
       await this.verify(journal);
       journal.state = "applying";
@@ -429,6 +436,7 @@ export class Publisher {
       if (journal.refresh && options.refresh) {
         try {
           await step("refresh", async () => {
+            options.signal?.throwIfAborted();
             await options.refresh!.acknowledge(journal!.refresh!.request);
             journal!.refresh!.state = "confirmed";
             await durableJson(path.join(output, "journal.json"), journal);
