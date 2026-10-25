@@ -1,0 +1,31 @@
+{
+  "timestamp": "2026-10-25T13:58:23.459Z",
+  "platform": "win32",
+  "node": "v26.10.0",
+  "backend": "Local WinFsp + installed dedicated-account Runtime",
+  "registration": "experimental identity adapter; not product session integration",
+  "parallelRuntimeCommands": "passed",
+  "commandIntervals": {
+    "A": [
+      1792936692320,
+      1792936694512
+    ],
+    "B": [
+      1792936692317,
+      1792936694512
+    ]
+  },
+  "sourceAbsoluteWrite": "denied",
+  "gitMetadataCreation": "denied",
+  "sourceGitWriteRootsGranted": 0,
+  "privateWrites": "independent",
+  "cancelRunningCommand": "passed",
+  "remountAndContinue": "passed",
+  "fallback": false,
+  "activeLeasesAfterTasks": 0,
+  "cleanup": "engine drained; helpers cleanly stopped",
+  "limitations": [
+    "Not an OS security boundary between sessions",
+    "No changeset export or automatic publication in this verifier"
+  ]
+}

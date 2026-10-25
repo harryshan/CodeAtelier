@@ -1,13 +1,15 @@
 {
-  "timestamp": "2026-10-25T13:29:03.235Z",
+  "timestamp": "2026-10-25T13:53:28.061Z",
   "platform": "win32",
   "release": "10.0.26200",
   "node": "v26.10.0",
-  "backend": "existing native WinFsp live-directory overlay",
+  "backend": "native WinFsp Local live-directory overlay; Git metadata hidden and reserved",
   "gitOperations": 0,
   "riftriInvocations": 0,
   "mounts": 2,
   "initialPrivateContentObjects": 0,
+  "initialLowerEnumerations": 0,
+  "initialLowerOpensExcludingRootIdentity": 0,
   "privateProgramResults": [
     "12",
     "21"

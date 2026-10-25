@@ -5,6 +5,7 @@
  * 3. stop 在任务排空后关闭 stdin，等待停止/退出；超时仅终止自己创建的 helper，保留磁盘现场。
  * 4. mount/restore/unmount/异常退出记录独立 trace 和受控生命周期日志，原生诊断只含状态码/源码行号。
  * 5. 显式 gitBase 仅供人工虚拟 worktree PoC；metrics 读取累计计数/微秒耗时，兼容旧 helper 收据。
+ * 6. Local 模式要求独立策略收据，挂载身份/策略固定；旧模式保持私有 gitfile 兼容。
  */
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
@@ -80,6 +81,7 @@ export function overlayWorkspaceId(namespace: string, workspace: string) {
 }
 
 interface Mount {
+  identity: string;
   process: ChildProcessWithoutNullStreams;
   ready: Promise<void>;
   exit: Promise<void>;
@@ -89,6 +91,7 @@ interface Mount {
   exitCode?: number | null;
   closed: boolean;
   gitLower: boolean;
+  local: boolean;
   metrics?: (value: OverlayMetrics) => void;
 }
 
@@ -163,10 +166,17 @@ export class OverlayManager {
     workspace: string,
     create: boolean,
     signal: AbortSignal,
-    gitBase?: GitOverlayBase,
+    base?: GitOverlayBase | { kind: "local" },
   ) {
+    const local = base !== undefined && "kind" in base;
+    const gitBase = base !== undefined && !("kind" in base) ? base : undefined;
+    const identity = JSON.stringify([source, control, workspace, base ?? null]);
     const existing = this.mounts.get(id);
     if (existing) {
+      if (existing.identity !== identity) {
+        throw new Error("Overlay 挂载身份或策略不匹配；不能复用另一个视图。");
+      }
+
       await existing.ready;
       if (existing.failed || existing.stopping) {
         throw new Error(
@@ -179,19 +189,24 @@ export class OverlayManager {
 
     return this.observe(
       id,
-      gitBase
+      local
         ? create
-          ? "git_mount"
-          : "git_restore"
-        : create
-          ? "mount"
-          : "restore",
+          ? "local_mount"
+          : "local_restore"
+        : gitBase
+          ? create
+            ? "git_mount"
+            : "git_restore"
+          : create
+            ? "mount"
+            : "restore",
       async () => {
         signal.throwIfAborted();
         const child = spawn(
           this.executable,
           [
-            (create ? "create" : "restore") + (gitBase ? "-git" : ""),
+            (create ? "create" : "restore") +
+              (local ? "-local" : gitBase ? "-git" : ""),
             source,
             control,
             workspace.slice(1).replace(/\\$/, ""),
@@ -232,6 +247,7 @@ export class OverlayManager {
           resolveExit = resolve;
         });
         const mount: Mount = {
+          identity,
           process: child,
           ready,
           exit,
@@ -240,6 +256,7 @@ export class OverlayManager {
           stopped: false,
           closed: false,
           gitLower: gitBase !== undefined,
+          local,
         };
         this.mounts.set(id, mount);
         let buffer = "";
@@ -338,9 +355,21 @@ export class OverlayManager {
                 .object({
                   version: z.literal(1),
                   state: z.enum(["ready", "stopped"]),
+                  mode: z.literal("local").optional(),
                 })
                 .parse(raw);
               if (message.state === "ready") {
+                if (local !== (message.mode === "local")) {
+                  rejectReady(
+                    new Error(
+                      "Overlay helper 策略不匹配；拒绝使用旧文件视图。",
+                    ),
+                  );
+                  mount.failed = true;
+                  child.stdin.end();
+                  continue;
+                }
+
                 resolveReady();
               } else {
                 mount.stopped = true;
@@ -384,7 +413,7 @@ export class OverlayManager {
     const mount = this.mounts.get(id);
     if (
       !mount ||
-      !mount.gitLower ||
+      (!mount.gitLower && !mount.local) ||
       mount.failed ||
       mount.stopping ||
       mount.metrics

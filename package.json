@@ -18,6 +18,8 @@
     "worktree:verify-virtual": "tsx scripts/verify-virtual-worktree.ts",
     "overlay:verify-publish": "tsx scripts/verify-local-overlay.ts",
     "overlay:verify-filesystem": "tsx scripts/verify-local-overlay-winfsp.ts",
+    "overlay:verify-policy": "tsx scripts/verify-local-overlay-policy.ts",
+    "overlay:verify-sandbox": "tsx scripts/verify-local-overlay-sandbox.ts",
     "start": "node dist/server/server/launcher.js",
     "settings:migrate": "tsx scripts/migrate-settings.ts",
     "typecheck": "tsc --noEmit",

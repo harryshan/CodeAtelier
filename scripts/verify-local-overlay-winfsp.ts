@@ -1,6 +1,6 @@
 /**
  * 手动验证 D170 发布 PoC 与现有 WinFsp 普通目录后端的最小衔接。
- * 1. 创建独占非 Git 来源，直接调用 OverlayManager 建立双视图，不经过 Riftri/WorktreeService。
+ * 1. 创建独占非 Git 来源，直接调用 OverlayManager Local 模式建立双视图，不经过 Riftri/WorktreeService。
  * 2. 预先记录明确路径的基线；真实 Node 子进程经挂载执行临时文件替换和私有产物写入。
  * 3. 读取已声明路径的私有结果交给 Publisher，在相应挂载中验证合并候选后发布。
  * 4. 干净卸载/重挂载检查私有内容持久化，保存有界报告并保留实验现场。
@@ -68,6 +68,7 @@ async function mount(create: boolean) {
       view.workspace,
       create,
       AbortSignal.timeout(30_000),
+      { kind: "local" },
     );
   }
 }
@@ -75,6 +76,9 @@ async function mount(create: boolean) {
 try {
   await mount(true);
   for (const view of views) {
+    const metrics = await manager.metrics(view.id);
+    assert.equal(metrics.lowerOpens, 0);
+    assert.equal(metrics.lowerEnumerations, 0);
     assert.deepEqual(await readdir(path.join(view.control, "objects")), []);
     assert.equal((await view.session.read("module.mjs"))?.toString(), original);
     assert.equal(
@@ -179,11 +183,14 @@ try {
     platform: process.platform,
     release: os.release(),
     node: process.version,
-    backend: "existing native WinFsp live-directory overlay",
+    backend:
+      "native WinFsp Local live-directory overlay; Git metadata hidden and reserved",
     gitOperations: 0,
     riftriInvocations: 0,
     mounts: 2,
     initialPrivateContentObjects: 0,
+    initialLowerEnumerations: 0,
+    initialLowerOpensExcludingRootIdentity: 0,
     privateProgramResults: ["12", "21"],
     mergedCandidateResults: candidates,
     sourceProgramResult: "30",

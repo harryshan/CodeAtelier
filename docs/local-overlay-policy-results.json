@@ -1,0 +1,78 @@
+{
+  "timestamp": "2026-10-25T13:53:26.159Z",
+  "platform": "win32",
+  "release": "10.0.26200",
+  "node": "v26.10.0",
+  "policy": "local; all .git components hidden and reserved",
+  "gitDirectoryAndFile": "passed",
+  "caseInsensitive": "passed",
+  "renameFailurePreservesSource": "passed",
+  "internalMetadataAlias": "denied",
+  "gitStatusAndInit": "rejected",
+  "cleanRemount": "passed",
+  "crossModeRestore": "rejected in both directions",
+  "legacyPrivateGitfile": "passed",
+  "measurements": [
+    {
+      "files": 0,
+      "sample": 0,
+      "createMs": 60.703500000000076,
+      "mountedControlLogicalBytes": 86336,
+      "stoppedControlLogicalBytes": 24576,
+      "lowerOpens": 0,
+      "lowerEnumerations": 0
+    },
+    {
+      "files": 10000,
+      "sample": 0,
+      "createMs": 43.02480000000014,
+      "mountedControlLogicalBytes": 86336,
+      "stoppedControlLogicalBytes": 24576,
+      "lowerOpens": 0,
+      "lowerEnumerations": 0
+    },
+    {
+      "files": 0,
+      "sample": 1,
+      "createMs": 42.17840000000001,
+      "mountedControlLogicalBytes": 86336,
+      "stoppedControlLogicalBytes": 24576,
+      "lowerOpens": 0,
+      "lowerEnumerations": 0
+    },
+    {
+      "files": 10000,
+      "sample": 1,
+      "createMs": 43.086900000000014,
+      "mountedControlLogicalBytes": 86336,
+      "stoppedControlLogicalBytes": 24576,
+      "lowerOpens": 0,
+      "lowerEnumerations": 0
+    },
+    {
+      "files": 0,
+      "sample": 2,
+      "createMs": 42.124000000000024,
+      "mountedControlLogicalBytes": 86336,
+      "stoppedControlLogicalBytes": 24576,
+      "lowerOpens": 0,
+      "lowerEnumerations": 0
+    },
+    {
+      "files": 10000,
+      "sample": 2,
+      "createMs": 43.989500000000135,
+      "mountedControlLogicalBytes": 86336,
+      "stoppedControlLogicalBytes": 24576,
+      "lowerOpens": 0,
+      "lowerEnumerations": 0
+    }
+  ],
+  "limitations": [
+    "Synthetic 10,000-file tree; not a giant real repository or cold-cache benchmark",
+    "Control bytes are logical file lengths, not allocated NTFS clusters",
+    "lowerOpens excludes the constant source-root identity/security handle",
+    "Native normalized-path guard covers short-name resolution; this NTFS fixture has no 8.3 aliases",
+    "No Sandbox, native changeset capture or publication validation in this script"
+  ]
+}

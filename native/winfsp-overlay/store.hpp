@@ -4,6 +4,7 @@
 // 3. copy-up 先 flush 私有对象再发布引用；文件 rename 固化内容，目录 rename 保留 live lower。
 // 4. security/reparse 接口维护虚拟卷权限和内部链接；finish 仅在状态可信时标记干净卸载。
 // 5. 显式 Git PoC lower 按 tree/blob 提供内容，read 不物化文件；生产 live lower 保持原样。
+// 6. Local 模式绑定独立持久格式，所有层级隐藏并保留 .git 名称，不允许新建私有仓库入口。
 // 遮蔽来源的 .git 命名空间；Git PoC 从对象库取内容，不打开来源工作文件。
 // 来源文件打开禁止重解析与写访问，控制目录不暴露于挂载。
 #pragma once
@@ -107,6 +108,7 @@ class Store {
   std::recursive_mutex mutex;
   UINT32 serial = 0;
   bool poisoned = false;
+  bool localMode = false;
   std::map<sqlite3_int64, std::weak_ptr<Node>> cache;
   std::unique_ptr<GitLower> git;
   std::map<std::string, sqlite3_stmt*> statements;
@@ -115,7 +117,7 @@ class Store {
 
   Store(const fs::path& source, const fs::path& root, const fs::path& workspace, bool create,
         const fs::path& gitExecutable = {}, const fs::path& gitDirectory = {},
-        const std::wstring& tree = L"");
+        const std::wstring& tree = L"", bool localMode = false);
   ~Store();
   void sql(const char* text);
   NodePtr node(sqlite3_int64 id);

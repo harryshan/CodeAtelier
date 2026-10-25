@@ -4,6 +4,7 @@
  * 2. helper 异常退出后不得在本进程重挂载；取消必须等待停止，关闭必须证明 stopped + exit 0。
  * 3. 校验托管 UNC 命名空间不能将子目录或另一数据目录误认作同一个挂载。
  * 4. Git PoC 显式选择及新旧分段 metrics 收据不能改变 live 挂载协议或终止普通挂载。
+ * 5. Local 策略须有明确能力收据；重复 ID 不能换来源、控制目录或策略。
  * 原生文件、Git 和受限 token 语义由手动 verify-winfsp-overlay 独立验证。
  */
 import { EventEmitter } from "node:events";
@@ -217,5 +218,45 @@ it("rejects metrics on live overlays without sending an unsupported native comma
   await expect(f.manager.metrics(f.id)).rejects.toThrow("unavailable");
   expect(f.helper.stdin.read()).toBeNull();
   expect(f.helper.stdin.writableEnded).toBe(false);
+  await f.manager.close();
+});
+
+it("requires a Local policy receipt instead of accepting a legacy helper", async () => {
+  const f = await fixture();
+  const starting = f.manager.start(
+    f.id,
+    f.directory,
+    f.directory,
+    f.workspace,
+    true,
+    f.controller.signal,
+    { kind: "local" },
+  );
+  f.helper.ready();
+  await expect(starting).rejects.toThrow("策略");
+  expect(f.helper.stdin.writableEnded).toBe(true);
+  await f.manager.close();
+});
+
+it("keeps mount identity and policy fixed while allowing identical Local requests", async () => {
+  const f = await fixture();
+  const start = (source = f.directory, control = f.directory, local = true) =>
+    f.manager.start(
+      f.id,
+      source,
+      control,
+      f.workspace,
+      true,
+      f.controller.signal,
+      local ? { kind: "local" } : undefined,
+    );
+  const starting = start();
+  f.helper.stdout.write('{"version":1,"state":"ready","mode":"local"}\n');
+  await starting;
+  await start();
+  await expect(start("different-source")).rejects.toThrow("身份");
+  await expect(start(f.directory, "different-control")).rejects.toThrow("身份");
+  await expect(start(f.directory, f.directory, false)).rejects.toThrow("身份");
+  expect(spawn).toHaveBeenCalledTimes(1);
   await f.manager.close();
 });

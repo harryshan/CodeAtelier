@@ -1,5 +1,13 @@
 # 初版验证记录
 
+## Local 专用策略与真实 Sandbox 并行（D170，2026-10-25）
+
+- `pnpm overlay:verify-policy` 通过（`.local/local-overlay-policy-miZE18/report.json`）：所有层级的 `.git` 文件/目录不可见，大小写、内部链接、创建与文件/目录改名测试通过，拒绝操作不污染挂载或丢失被改名的文件。`git status` 确认因非仓库失败，`git init` 在 `.git` 路径失败。两种持久模式互相拒绝恢复，正确模式可继续恢复；旧私有 gitfile 行为不变。NTFS 规范路径校验覆盖短名解析，但夹具未生成 8.3 名称，不宣称实测该别名。
+- 空目录与一万文件树各创建三次，原生 lowerOpens/lowerEnumerations 均为零（不含固定根身份句柄），私有内容对象为零；计时和控制文件逻辑字节见 [报告](local-overlay-policy-results.json)。不是冷缓存/真实巨型 repo 或分配簇测量。
+- `pnpm overlay:verify-filesystem` 用 Local 模式重跑通过（`.local/local-overlay-winfsp-PBPhKb/report.json`），保留原双视图私有结果、合并候选执行、来源 `30`、未选择产物不发布和正常重挂载断言。
+- `pnpm overlay:verify-sandbox` 通过（`.local/local-overlay-sandbox-x56YO5/report.json` / `.local/local-overlay-sandbox.log`）：生产 Engine 与已安装专用账户 Runtime 执行两个真正重叠的命令，来源绝对写入和 `.git` 创建拒绝；私有文件分别为 A/B。运行中的命令取消后没有执行尾部写入；排空后卸载/重挂载、相同历史续聊成功。无 fallback/unknown，任务后活动租约为零，helper 干净退出。仅注册身份适配器是实验代码，Git 写根为空；不代表产品注册/自动发布已实现。[报告](local-overlay-sandbox-results.json)。
+- 原生编译及 reparse 回归通过；`pnpm check` 通过，135 个文件、1017 passed / 1 existing skipped，类型/lint/格式/构建通过（`.local/local-overlay-policy-check-final.log`）。初次检查只发现空行风格错误，修正后通过；没有 UI/HTTP/SSE 变更，不运行 e2e/Evaluation。收尾进程核查无 overlay helper 遗留。
+
 ## Local overlay 文件系统选型与 WinFsp 衔接（D170，2026-10-25）
 
 - 复核本地 live WinFsp、Riftri 接入，以及现成 unionfs/AgentFS 候选；公开源码按固定提交检查 ContextFS、Turso AgentFS 和 OmniVFS 的 Windows 路径。结论及源码链接见 [选型复核](local-overlay-design.md#文件系统接入前选型复核2026-10-25)。这是源码/文档核查，不是第三方项目运行验收；AgentHarborFS 文档可读但所指公开仓库返回 404，未确认其许可和独立接入。WSL 探测有 FUSE 设备，但未安装 unionfs/fuse-overlayfs，没有将未执行的 POSIX 实验写成通过。

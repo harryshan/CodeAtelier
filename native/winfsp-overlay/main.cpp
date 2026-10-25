@@ -3,6 +3,7 @@
 // 2. ready 收据只含协议版本/状态；路径由调用方决定，不输出文件内容或安全描述符。
 // 3. stdin EOF/stop 停止 dispatcher、删除卷，再标记干净退出；数据和 worktree 登记保留。
 // 4. 显式 create-git/restore-git PoC 参数固定 Git/tree；metrics 不包含路径/OID/内容。
+// 5. create-local/restore-local 选择无 Git 视图并回执策略；metrics 证明创建期 lower 访问成本。
 // 不安装驱动、不创建分区、不托管网络服务；UNC 由 WinFsp 本机 MUP provider 提供。
 #include <iostream>
 
@@ -22,7 +23,9 @@ int wmain(int argc, wchar_t** argv) {
     }
     bool gitMode = argc == 8 && (std::wstring(argv[1]) == L"create-git" ||
                                  std::wstring(argv[1]) == L"restore-git");
-    if (!gitMode && (argc != 5 ||
+    bool localMode = argc == 5 && (std::wstring(argv[1]) == L"create-local" ||
+                                   std::wstring(argv[1]) == L"restore-local");
+    if (!gitMode && !localMode && (argc != 5 ||
                      (std::wstring(argv[1]) != L"create" && std::wstring(argv[1]) != L"restore"))) {
       return 2;
     }
@@ -33,7 +36,7 @@ int wmain(int argc, wchar_t** argv) {
     }
     Store store(argv[2], argv[3], L"\\" + prefix + L"\\",
                 std::wstring(argv[1]).rfind(L"create", 0) == 0, gitMode ? argv[5] : L"",
-                gitMode ? argv[6] : L"", gitMode ? argv[7] : L"");
+                gitMode ? argv[6] : L"", gitMode ? argv[7] : L"", localMode);
     FSP_FSCTL_VOLUME_PARAMS params{};
     params.SectorSize = 4096;
     params.SectorsPerAllocationUnit = 1;
@@ -59,14 +62,15 @@ int wmain(int argc, wchar_t** argv) {
       FspFileSystemDelete(filesystem);
       checked(result);
     }
-    std::cout << "{\"version\":1,\"state\":\"ready\"}\n" << std::flush;
+    std::cout << "{\"version\":1,\"state\":\"ready\""
+              << (localMode ? ",\"mode\":\"local\"" : "") << "}\n" << std::flush;
     std::string command;
     while (std::getline(std::cin, command)) {
-      if (command != "metrics" || !store.git) {
+      if (command != "metrics" || (!store.git && !store.localMode)) {
         break;
       }
       std::lock_guard lock(store.mutex);
-      auto& metrics = store.git->metrics;
+      auto metrics = store.git ? store.git->metrics : GitMetrics{};
       std::cout << "{\"version\":1,\"state\":\"metrics\",\"treeReads\":" << metrics.treeReads
                 << ",\"infoReads\":" << metrics.infoReads << ",\"blobReads\":" << metrics.blobReads
                 << ",\"blobBytes\":" << metrics.blobBytes << ",\"lowerOpens\":" << store.lowerOpens

@@ -5,6 +5,7 @@
 // 3. create/promote/rename/remove 持久化私有状态；旧对象保留，崩溃不猜测或回写 lower。
 // 4. security 用 Windows 继承算法合成 DACL，SetSecurity 只保存描述符，不改来源 ACL。
 // 5. 可选 GitLower 按目录事务导入不可变树，read 直接返回 blob，只有写入才物化对象。
+// 6. Local 模式独立格式和保留名称校验避免旧私有 gitfile 路径混入无仓库视图。
 #include "store.hpp"
 
 #include <objbase.h>
@@ -270,9 +271,13 @@ void Store::sql(const char* text) {
 
 Store::Store(const fs::path& sourcePath, const fs::path& directory, const fs::path& workspacePath,
              bool create, const fs::path& gitExecutable, const fs::path& gitDirectory,
-             const std::wstring& tree)
-    : source(fs::absolute(sourcePath)), root(fs::absolute(directory)), workspace(workspacePath) {
+             const std::wstring& tree, bool localMode)
+    : source(fs::absolute(sourcePath)), root(fs::absolute(directory)), workspace(workspacePath),
+      localMode(localMode) {
   try {
+    if (localMode && !tree.empty()) {
+      throw Error{STATUS_INVALID_PARAMETER};
+    }
     if (create) {
       if (!fs::create_directory(root)) {
         throw Error{STATUS_OBJECT_NAME_COLLISION};
@@ -330,10 +335,11 @@ Store::Store(const fs::path& sourcePath, const fs::path& directory, const fs::pa
       GUID guid{};
       require(SUCCEEDED(CoCreateGuid(&guid)));
       serial = guid.Data1 ? guid.Data1 : 1;
-      Query(*this, "INSERT INTO meta VALUES(2,?,?,?,0)")
-          .text(1, source.wstring())
-          .text(2, sourceIdentity)
-          .number(3, serial)
+      Query(*this, "INSERT INTO meta VALUES(?,?,?,?,0)")
+          .number(1, localMode ? 3 : 2)
+          .text(2, source.wstring())
+          .text(3, sourceIdentity)
+          .number(4, serial)
           .step();
       Node value;
       value.origin = git ? tree : L"\\";
@@ -346,7 +352,7 @@ Store::Store(const fs::path& sourcePath, const fs::path& directory, const fs::pa
       }
     } else {
       Query meta(*this, "SELECT version,source,identity,serial,clean FROM meta");
-      if (!meta.step() || meta.number(0) != 2 || meta.number(4) != 1 ||
+      if (!meta.step() || meta.number(0) != (localMode ? 3 : 2) || meta.number(4) != 1 ||
           fold(meta.text(1)) != fold(source.wstring()) || meta.text(2) != sourceIdentity) {
         throw Error{STATUS_FILE_INVALID};
       }
@@ -420,6 +426,20 @@ Handle Store::openLower(const std::wstring& origin, DWORD sharing) {
                FILE_SYNCHRONOUS_IO_NONALERT | FILE_OPEN_REPARSE_POINT));
   Handle handle(raw);
   fileInfo(handle.value, true);
+  if (localMode) {
+    // An NTFS short name can resolve to .git even when the requested spelling
+    // differs. Check the normalized opened path, without following reparses or
+    // enumerating the directory. The virtual volume never advertises aliases.
+    std::vector<wchar_t> normalized(32768);
+    auto length = GetFinalPathNameByHandleW(handle.value, normalized.data(),
+                                           static_cast<DWORD>(normalized.size()), VOLUME_NAME_NONE);
+    require(length > 0 && length < normalized.size());
+    for (const auto& component : fs::path(std::wstring(normalized.data(), length))) {
+      if (fold(component.wstring()) == L".GIT") {
+        throw Error{STATUS_OBJECT_NAME_NOT_FOUND};
+      }
+    }
+  }
   return handle;
 }
 
@@ -552,6 +572,10 @@ NodePtr Store::import(const NodePtr& parent, const std::wstring& name, const std
 
 NodePtr Store::child(const NodePtr& parent, const std::wstring& name) {
   validName(name);
+  // Check before the private namespace too: Local never exposes a gitfile.
+  if (localMode && fold(name) == L".GIT") {
+    throw Error{STATUS_OBJECT_NAME_NOT_FOUND};
+  }
   if (!parent->directory()) {
     throw Error{STATUS_NOT_A_DIRECTORY};
   }
@@ -633,6 +657,11 @@ std::pair<NodePtr, std::wstring> Store::parent(const std::wstring& path) {
   }
   auto name = path.substr(slash + 1);
   validName(name);
+  // All namespace mutations use parent(); reject before any transaction or
+  // copy-up so a forbidden rename cannot consume the source entry.
+  if (localMode && fold(name) == L".GIT") {
+    throw Error{STATUS_ACCESS_DENIED};
+  }
   return {lookup(slash == 0 ? L"\\" : path.substr(0, slash)), name};
 }
 
@@ -736,7 +765,8 @@ std::vector<Entry> Store::list(const NodePtr& parent) {
         auto entry = reinterpret_cast<FILE_ID_BOTH_DIR_INFO*>(buffer);
         for (;;) {
           std::wstring name(entry->FileName, entry->FileNameLength / sizeof(wchar_t));
-          if (name != L"." && name != L".." && !(parent->id == 1 && fold(name) == L".GIT")) {
+          if (name != L"." && name != L".." &&
+              !((localMode || parent->id == 1) && fold(name) == L".GIT")) {
             try {
               child(parent, name);
             } catch (const Error& error) {

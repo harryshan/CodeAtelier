@@ -5,10 +5,13 @@
 ## D170：Overlay 改为 Local 会话文件隔离，与 Git worktree 并列
 
 - 日期：2026-10-25。
+- 追加授权：用户确认 Local overlay 屏蔽 `.git` 的文件视图方案，并要求继续验证直至完整闭环、自审后接入 agent。新 Local 模式不提供仓库元数据；显式外部 Git 路径仍由实际权限约束，不做 Git 关键词拦截。实施/验收清单见设计文档，未完成项不因挂载 PoC 通过而视为产品可用；旧模式和历史不静默迁移。
+- 发布时机追加确认：每轮成功完成后自动发布明确选择的源码变更；冲突或验证失败保留私有修改，不自动发布全部 upper、失败或取消任务。产品生命周期尚待接入。
+- 选型追加确认：调查 LayerFS 后用户明确继续自研方案和原有目标；不采用其 Store 或开展 Windows 移植。继续原生 WinFsp 文件层、按需基线和 CodeAtelier 发布协调器。
 - 状态：用户澄清目标并要求重新考虑方案，随后授权继续验证；已实现独立于 Git 的受控文件发布 PoC，不实施默认模式切换、迁移或产品自动回写。
 - 决定：Overlay 服务于同一 Local 工作区多个对话的文件修改隔离与冲突整合，独立于 Git；普通 Git worktree 保持独立模式。Overlay 不承担 branch/commit/index/objects 管理，也不是普通 worktree 的替代或 fallback。
 - 替代关系：撤回把 D169 Git 提交虚拟 worktree 作为此需求后续方向的假设；D168 的 WinFsp 文件后端可复用，但其 linked Git metadata 不是新方案要求。旧实现、会话和验证记录保留，不宣称已迁移。
-- 设计建议：实时文件 lower、会话私有 upper、按需编辑基线与来源级串行发布；三方文件整合独立于 Git，必须区分写隔离、读一致性、外部写入和多文件故障恢复。发布时机、共享管理目录/Git CLI 的处理及产品默认入口尚待确定，详见 [Local overlay 重新设计](local-overlay-design.md)。
+- 设计：实时文件 lower、会话私有 upper、按需编辑基线与来源级串行发布；三方文件整合独立于 Git，必须区分写隔离、读一致性、外部写入和多文件故障恢复。发布时机与 `.git` 屏蔽已追加确认，产品入口尚待实现，详见 [Local overlay 重新设计](local-overlay-design.md)。
 - 第一阶段验证：普通目录上的按需基线、文本三方整合、跨进程串行发布及进程中断后只读观察；真实双进程与故障脚本为 `pnpm overlay:verify-publish`。不接入 WinFsp、任意 shell 或 Sandbox，不将通过此实验描述为产品并行会话可用。
 - 后续授权：用户要求继续接入文件系统，并先复核 Riftri/WinFsp 及现成替代方案。选型复核后，新 Local overlay 不依赖 Riftri/Git 管理，Windows 首先复用既有 WinFsp 原生文件后端；POSIX 通用 union 后端单独验收。首个挂载/发布实验只处理预先声明基线的路径，不宣称原生自动变更捕获或 Sandbox 联动已完成；候选源码证据与边界见 [选型复核](local-overlay-design.md#文件系统接入前选型复核2026-10-25)。
 
