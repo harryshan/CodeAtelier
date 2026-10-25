@@ -16,7 +16,7 @@ if (-not $Installation) { throw 'MSVC x64 toolchain missing' }
 $DevCmd = Join-Path $Installation 'Common7\Tools\VsDevCmd.bat'
 $Output = Join-Path $Repository 'dist\native\win32-x64'
 New-Item -ItemType Directory -Force -Path $Output | Out-Null
-$Sources = @('store.cpp', 'changes.cpp', 'publish.cpp', 'git-lower.cpp', 'reparse.cpp', 'filesystem.cpp', 'main.cpp') | ForEach-Object { '"' + (Join-Path $Repository "native\winfsp-overlay\$_") + '"' }
+$Sources = @('store.cpp', 'changes.cpp', 'acknowledgement.cpp', 'publish.cpp', 'git-lower.cpp', 'reparse.cpp', 'filesystem.cpp', 'main.cpp') | ForEach-Object { '"' + (Join-Path $Repository "native\winfsp-overlay\$_") + '"' }
 $Command = "`"$DevCmd`" -arch=x64 -host_arch=x64 >nul && cl /nologo /std:c++20 /EHsc /W4 /O2 /guard:cf /DUNICODE /D_UNICODE /DNOMINMAX /utf-8 /I`"$Sdk\inc`" $($Sources -join ' ') /Fe:`"$Output\codeatelier-overlay.exe`" /Fo:`"$Output\\`" /link /guard:cf /DYNAMICBASE /NXCOMPAT /DELAYLOAD:winfsp-x64.dll `"$Sdk\lib\winfsp-x64.lib`" delayimp.lib advapi32.lib ole32.lib winsqlite3.lib bcrypt.lib"
 & $env:ComSpec /d /s /c $Command
 if ($LASTEXITCODE -ne 0) { throw 'WinFsp overlay build failed' }

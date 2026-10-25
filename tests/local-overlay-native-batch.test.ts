@@ -1,8 +1,9 @@
 /**
  * 冻结结果到发布批次的真实 SQLite/文件回归，不模拟 WinFsp 挂载语义。
- * 1. 夹具写入 v4 私有表、不可变原文与结果对象，确认来源变更不会被当成旧基线。
+ * 1. 夹具写入 v5 私有表、不可变原文与结果对象，确认来源变更不会被当成旧基线。
  * 2. 校验显式选择、空变更、重复路径、目录/属性/对象越界与只读依赖失效。
  * 3. verifyReads 夹具只生成原生结果表；真实句柄与复核协议由手动 --native/capture 脚本验证。
+ * 4. 新代次不会删除旧修改依赖；仅新修改导出可排除与其无关的旧观察。
  * 不写用户文件、不运行发布或模型；测试资源由现有 temp 管理。
  */
 import { randomUUID } from "node:crypto";
@@ -23,14 +24,18 @@ async function fixture() {
   await mkdir(path.join(control, "objects"));
   const source = await sourceIdentity(lower);
   const db = new DatabaseSync(path.join(control, "overlay.sqlite"));
+  const seal = randomUUID();
   db.exec(`
     CREATE TABLE meta(version INTEGER,source TEXT,clean INTEGER);
     CREATE TABLE baselines(path TEXT,name TEXT,kind INTEGER,object TEXT,stamp TEXT,attributes INTEGER,flags INTEGER);
     CREATE TABLE sealed_changes(path TEXT,kind INTEGER,object TEXT);
-    CREATE TABLE observations(path TEXT,name TEXT);
-    CREATE TABLE checked_reads(path TEXT,valid INTEGER);
+    CREATE TABLE observations(path TEXT,name TEXT,epoch INTEGER DEFAULT 0);
+    CREATE TABLE checked_reads(path TEXT,valid INTEGER,epoch INTEGER DEFAULT 0);
+    CREATE TABLE change_epochs(path TEXT,epoch INTEGER);
+    CREATE TABLE local_state(epoch INTEGER,seal TEXT);
   `);
-  db.prepare("INSERT INTO meta VALUES(4,?,0)").run(source.root);
+  db.prepare("INSERT INTO meta VALUES(5,?,0)").run(source.root);
+  db.prepare("INSERT INTO local_state VALUES(0,?)").run(seal);
   db.close();
 
   function mutate(sql: string) {
@@ -72,12 +77,15 @@ async function fixture() {
       update
         .prepare("INSERT INTO sealed_changes VALUES(?,?,?)")
         .run(native.toUpperCase(), ours === null ? 0 : 1, after);
+      update
+        .prepare("INSERT INTO change_epochs VALUES(?,0)")
+        .run(native.toUpperCase());
     } finally {
       update.close();
     }
   }
 
-  return { source, control, change, mutate };
+  return { source, control, change, mutate, seal };
 }
 
 it("exports only selected B/O without substituting the latest lower for B", async () => {
@@ -107,9 +115,9 @@ it("keeps selected but unchanged files as dependencies and rejects stale reads",
   await f.change("code.txt", "old\n", "ours\n");
   await f.change("dep.txt", "same\n", "same\n");
   await writeFile(path.join(f.source.root, "dep.txt"), "same\n");
-  f.mutate("INSERT INTO observations VALUES('\\DEP.TXT','\\dep.txt')");
+  f.mutate("INSERT INTO observations VALUES('\\DEP.TXT','\\dep.txt',0)");
   const verify = async () => {
-    f.mutate("INSERT INTO checked_reads VALUES('\\DEP.TXT',1)");
+    f.mutate("INSERT INTO checked_reads VALUES('\\DEP.TXT',1,0)");
   };
 
   const batch = await nativeBatch(
@@ -127,6 +135,8 @@ it("keeps selected but unchanged files as dependencies and rejects stale reads",
 });
 
 it.each([
+  ["UPDATE meta SET version=4", "NATIVE_FORMAT_OR_LEASE"],
+  ["DELETE FROM change_epochs", "NATIVE_CHANGE_EPOCH_MISSING"],
   ["UPDATE baselines SET kind=2", "NATIVE_CHANGE_UNSUPPORTED"],
   ["UPDATE baselines SET flags=4", "NATIVE_CHANGE_UNSUPPORTED"],
   ["UPDATE sealed_changes SET kind=4", "NATIVE_CHANGE_UNSUPPORTED"],
@@ -172,4 +182,38 @@ it("uses native folded ancestor keys across non-ASCII name casing", async () => 
   await expect(
     nativeBatch(f.source, f.control, ["MÖVED/code.txt"], async () => {}),
   ).rejects.toThrow("NATIVE_ANCESTOR_CHANGE_UNSUPPORTED");
+});
+
+it("retains old dependencies for old edits while isolating new observation epochs", async () => {
+  const f = await fixture();
+  await f.change("old.txt", "old", "old edit");
+  await f.change("new.txt", "new", "new edit");
+  await writeFile(path.join(f.source.root, "dep.txt"), "new dependency");
+  f.mutate(`
+    UPDATE local_state SET epoch=1;
+    UPDATE change_epochs SET epoch=1 WHERE path='\\NEW.TXT';
+    INSERT INTO observations VALUES('\\DEP.TXT','\\dep.txt',0);
+    INSERT INTO checked_reads VALUES('\\DEP.TXT',0,0);
+  `);
+  const fresh = await nativeBatch(
+    f.source,
+    f.control,
+    ["new.txt"],
+    async () => {},
+  );
+  expect(fresh.reads).toEqual([]);
+  expect(fresh.acknowledgement).toEqual({
+    batchId: fresh.id,
+    seal: f.seal,
+    epoch: 1,
+    paths: ["\\new.txt"],
+  });
+  await expect(
+    nativeBatch(f.source, f.control, ["old.txt"], async () => {}),
+  ).rejects.toThrow("STALE_DEPENDENCY");
+
+  f.mutate("INSERT INTO change_epochs VALUES('\\NEW.TXT',0)");
+  await expect(
+    nativeBatch(f.source, f.control, ["new.txt"], async () => {}),
+  ).rejects.toThrow("STALE_DEPENDENCY");
 });

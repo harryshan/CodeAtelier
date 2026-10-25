@@ -6,6 +6,7 @@
  * 4. Git PoC 显式选择及新旧分段 metrics 收据不能改变 live 挂载协议或终止普通挂载。
  * 5. Local 策略须有明确能力收据；重复 ID 不能换来源、控制目录或策略。
  * 6. 冻结导出必须收到 frozen 后开始，持有 helper 到导出完成；租约丢失不得返回成功结果。
+ * 7. 发布确认须等待匹配批次与代次的收据，错误收据及租约丢失均拒绝。
  * 原生文件、Git 和受限 token 语义由手动 verify-winfsp-overlay 独立验证。
  */
 import { EventEmitter } from "node:events";
@@ -160,6 +161,46 @@ it("cleans up after export failure and never freezes legacy mounts", async () =>
   expect(legacy.helper.stdin.read()).toBeNull();
   await legacy.manager.close();
 });
+
+it.each([true, false])(
+  "requires a matching publication acknowledgement receipt: %s",
+  async (matching) => {
+    const f = await localFixture();
+    const batchId = randomUUID();
+    const seal = randomUUID();
+    let entered = false;
+    const pending = f.manager.withFrozen(f.id, async (_verify, acknowledge) => {
+      entered = true;
+      await acknowledge({ batchId, seal, epoch: 2, paths: ["\\src\\file.ts"] });
+
+      return "acknowledged";
+    });
+    const result = matching
+      ? expect(pending).resolves.toBe("acknowledged")
+      : expect(pending).rejects.toThrow();
+    f.helper.stdin.read();
+    f.helper.stdout.write('{"version":1,"state":"frozen","mode":"local"}\n');
+    await vi.waitFor(() => expect(entered).toBe(true));
+    expect(f.helper.stdin.read()?.toString()).toContain(
+      `acknowledge ${batchId} 2 `,
+    );
+    expect(f.helper.stdin.writableEnded).toBe(false);
+    f.helper.stdout.write(
+      JSON.stringify({
+        version: 1,
+        state: "acknowledged",
+        mode: "local",
+        batchId: matching ? batchId : randomUUID(),
+        seal,
+        epoch: 3,
+      }) + "\n",
+    );
+    await result;
+    // This protocol fixture still supplies stopped + exit 0 after rejection.
+    // A rejected acknowledgement must not prevent confirmed resource cleanup.
+    await f.manager.close();
+  },
+);
 
 async function fixture(helper = new Helper()) {
   spawn.mockImplementation(() => helper);

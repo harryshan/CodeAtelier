@@ -7,6 +7,7 @@
 // 5. 可选 GitLower 按目录事务导入不可变树，read 直接返回 blob，只有写入才物化对象。
 // 6. Local 模式独立格式和保留名称校验避免旧私有 gitfile 路径混入无仓库视图。
 //    changes.cpp 保存按需读版本和不可变基线；内容/命名空间修改在副作用前调用 capture。
+//    Local v5 按观察代次保留未发布修改的依赖；旧实验格式不自动迁移。
 #include "store.hpp"
 
 #include <objbase.h>
@@ -348,7 +349,7 @@ Store::Store(const fs::path& sourcePath, const fs::path& directory, const fs::pa
       require(SUCCEEDED(CoCreateGuid(&guid)));
       serial = guid.Data1 ? guid.Data1 : 1;
       Query(*this, "INSERT INTO meta VALUES(?,?,?,?,0)")
-          .number(1, localMode ? 4 : 2)
+          .number(1, localMode ? 5 : 2)
           .text(2, source.wstring())
           .text(3, sourceIdentity)
           .number(4, serial)
@@ -363,13 +364,16 @@ Store::Store(const fs::path& sourcePath, const fs::path& directory, const fs::pa
         throw Error{STATUS_FILE_CORRUPT_ERROR};
       }
       if (localMode) {
-        sql("CREATE TABLE observations(path TEXT PRIMARY KEY,name TEXT,stamp TEXT);"
+        sql("CREATE TABLE local_state(epoch INTEGER,seal TEXT); INSERT INTO local_state VALUES(0,'');"
+            "CREATE TABLE acknowledgements(id TEXT PRIMARY KEY,epoch INTEGER,selection TEXT,seal TEXT);"
+            "CREATE TABLE change_epochs(path TEXT,epoch INTEGER,PRIMARY KEY(path,epoch));"
+            "CREATE TABLE observations(path TEXT,name TEXT,stamp TEXT,epoch INTEGER,PRIMARY KEY(epoch,path));"
             "CREATE TABLE baselines(path TEXT PRIMARY KEY,name TEXT,kind INTEGER,"
             "object TEXT,stamp TEXT,attributes INTEGER,security BLOB,flags INTEGER);");
       }
     } else {
       Query meta(*this, "SELECT version,source,identity,serial,clean FROM meta");
-      if (!meta.step() || meta.number(0) != (localMode ? 4 : 2) || meta.number(4) != 1 ||
+      if (!meta.step() || meta.number(0) != (localMode ? 5 : 2) || meta.number(4) != 1 ||
           fold(meta.text(1)) != fold(source.wstring()) || meta.text(2) != sourceIdentity) {
         throw Error{STATUS_FILE_INVALID};
       }
@@ -916,6 +920,11 @@ HANDLE Store::content(const NodePtr& value, bool write) {
     throw Error{STATUS_NOT_SUPPORTED};
   }
   if (write) {
+    if (localMode && !value->object.empty()) {
+      // Later turns may edit retained private files. Keep their original B and
+      // associate the new turn's read dependencies before the next write.
+      capture(name(value));
+    }
     promote(value);
   }
   if (value->content.value == INVALID_HANDLE_VALUE) {

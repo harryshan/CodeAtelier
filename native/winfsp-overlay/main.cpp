@@ -6,13 +6,47 @@
 // 5. create-local/restore-local 选择无 Git 视图并回执策略；metrics 证明创建期 lower 访问成本。
 // 6. freeze 销毁 Local dispatcher 后封存路径结果；helper 保留控制目录独占租约直到 stop。
 //    check-reads 仅在冻结后复核读依赖并返回无正文收据，路径有效性保存在私有数据库。
+//    acknowledge 以有界 hex 路径参数确认已发布选择；收据只含批次 ID/代次，下一轮重新挂载。
 // 7. publish-replace/cleanup 是宿主发布器的短命令，保留权限并返回无正文确认；不启动挂载。
 // 不安装驱动、不创建分区、不托管网络服务；UNC 由 WinFsp 本机 MUP provider 提供。
 #include <iostream>
+#include <sstream>
 
 #include "git-lower.hpp"
 #include "publish.hpp"
 #include "store.hpp"
+
+static void acknowledge(overlay::Store& store, const std::string& command) {
+  using namespace overlay;
+  if (command.size() > 1024 * 1024) {
+    throw Error{STATUS_INVALID_PARAMETER};
+  }
+  std::istringstream input(command.substr(12));
+  std::string id;
+  std::string seal;
+  sqlite3_int64 epoch = -1;
+  if (!(input >> id >> epoch >> seal)) {
+    throw Error{STATUS_INVALID_PARAMETER};
+  }
+  std::vector<std::wstring> paths;
+  std::string encoded;
+  while (input >> encoded) {
+    if (paths.size() >= 100 || encoded.size() > 32768 || encoded.size() % 2 ||
+        encoded.find_first_not_of("0123456789abcdef") != std::string::npos) {
+      throw Error{STATUS_INVALID_PARAMETER};
+    }
+    std::string decoded;
+    constexpr char digits[] = "0123456789abcdef";
+    for (size_t index = 0; index < encoded.size(); index += 2) {
+      auto digit = [&](char value) { return static_cast<int>(std::string(digits).find(value)); };
+      decoded += static_cast<char>(digit(encoded[index]) * 16 + digit(encoded[index + 1]));
+    }
+    paths.push_back(wide(decoded));
+  }
+  auto next = store.acknowledge(wide(id), epoch, wide(seal), paths);
+  std::cout << "{\"version\":1,\"state\":\"acknowledged\",\"mode\":\"local\",\"batchId\":\""
+            << id << "\",\"seal\":\"" << seal << "\",\"epoch\":" << next << "}\n" << std::flush;
+}
 
 int wmain(int argc, wchar_t** argv) {
   using namespace overlay;
@@ -81,8 +115,25 @@ int wmain(int argc, wchar_t** argv) {
               << (localMode ? ",\"mode\":\"local\"" : "") << "}\n" << std::flush;
     std::string command;
     while (std::getline(std::cin, command)) {
-      if (command == "check-reads" && store.localMode && !filesystem) {
-        store.checkReads();
+      if (command.rfind("acknowledge ", 0) == 0 && store.localMode && !filesystem) {
+        acknowledge(store, command);
+        continue;
+      }
+      if ((command == "check-reads" || command.rfind("check-reads ", 0) == 0) &&
+          store.localMode && !filesystem) {
+        std::istringstream input(command.substr(11));
+        std::vector<sqlite3_int64> epochs;
+        sqlite3_int64 epoch = -1;
+        while (input >> epoch) {
+          if (epochs.size() >= 100) {
+            throw Error{STATUS_INVALID_PARAMETER};
+          }
+          epochs.push_back(epoch);
+        }
+        if (!input.eof()) {
+          throw Error{STATUS_INVALID_PARAMETER};
+        }
+        store.checkReads(epochs);
         std::cout << "{\"version\":1,\"state\":\"reads-checked\",\"mode\":\"local\"}\n"
                   << std::flush;
         continue;

@@ -1,5 +1,16 @@
 # 初版验证记录
 
+## Local 发布确认与跨轮刷新（D170，2026-10-26）
+
+- Local 实验格式 v5 增加观察代次、修改与代次关联和确认收据；不迁移旧 v3/v4 实验，也不改变旧 D168 v2。来源 complete 后才确认明确路径，原生事务释放所选覆盖并开启新代次；旧修改、原文和相关读依赖保留。不存在来源全量扫描或 Git 调用。
+- `pnpm overlay:verify-refresh` 真实 WinFsp/NTFS 通过（`.local/local-overlay-refresh-crAfPH/report.json`）：两个私有输出 `12/21` 经合并、确认、重挂载均读取来源 `30`，下一轮修改来源为 `120`。未选产物仍保留，旧依赖失效时拒绝发布；再次编辑保留产物会关联新代次。[摘要](local-overlay-refresh-results.json)。
+- 在原生确认成功后模拟宿主丢失收据，来源 journal 仍为 complete，refresh 为 pending；同冻结租约及干净重挂载后重复确认均幂等，后来的私有修改不会被丢弃。普通新建/删除确认释放覆盖，外部重建文件重新可见。不是 helper 强杀/断电恢复、产品恢复入口或任意外部写入 CAS 验收。
+- 原生编译/reparse 通过；新 helper 下 `overlay:verify-capture` 通过（`.local/local-overlay-capture-AZLUIY/report.json`），`overlay:verify-sandbox` 通过（`.local/local-overlay-sandbox-q8RI1z/report.json`），后者仍为实际专用账户执行、无 fallback，未安装/Repair 或重启服务。发布确认脚本本身是宿主验证，不扩大为 Sandbox 任务自动发布已接入。
+- 初次检查发现段落空行格式问题，已修正；协议测试原先错误要求清理必须失败，但夹具明确返回 stopped/exit 0，改为确认操作必须拒绝、已证明的资源清理可成功，未放宽错误收据拒绝断言。完整检查结果在提交前补充。
+- 自审增加确认前中断回归，先在 `.local/local-overlay-stale-confirmation-before.log` 复现旧请求错误成功（Missing expected rejection）：来源已完成但原生确认未执行，随后同代次的新私有编辑可能被旧确认删除。修复为每次冻结生成新标识，首次确认严格匹配冻结快照；仅已提交、完整匹配的收据可跨重挂载幂等返回。保留该真实回归，不弱化拒绝断言。
+- 最终冻结标识版本：原生编译/reparse、`overlay:verify-refresh`（`.local/local-overlay-refresh-Kp3qZQ/report.json`）、capture（`.local/local-overlay-capture-rE9lMP/report.json`）、真实 Sandbox（`.local/local-overlay-sandbox-czE9bg/report.json`）全部通过。过期未执行确认的故障夹具按预期拒绝并留下待核查状态；其私有内容及来源均保留，不将此例计作正常恢复。
+- 最终 `pnpm check` 通过：137 个测试文件、1043 passed / 1 existing skipped，类型/lint/格式/构建通过（`.local/local-overlay-refresh-seal-check.log`）。没有 UI/HTTP/SSE 改动，不运行 e2e/Evaluation。自审另识别冻结租约丢失时的回调取消/排空仍须接入，详见设计的下一步边界；不宣称完整产品发布故障恢复已通过。
+
 ## Windows 原生发布与权限保留（D170，2026-10-25）
 
 - 新增 `publish-replace/publish-cleanup` 短命令及显式 `nativeWindows` 发布路径；保留 owner/group/DACL，哈希复核前后正文，不提供普通 rename fallback。只在 complete journal 后按 file ID/原文 hash 清理备份；unknown 保留现场和锁，清理冲突返回 pending 而不覆盖 complete。

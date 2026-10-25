@@ -5,13 +5,27 @@
 // 4. baselineInput 保证普通 copy-up 使用同一份已捕获原文；目录移动仍保留原有 live lower 行为。
 // 5. sealChanges 仅在 dispatcher 已销毁后运行；导出已捕获路径的结果引用，不枚举整个视图。
 // 6. checkReads 在冻结期间复核观察版本，逐路径保存有效性，供宿主筛除已选择编辑后检查其余依赖。
+// 7. epoch 与 change_epochs 将旧修改和新一轮的读依赖区分；确认不清空未发布修改所依赖的观察。
 // 所有入口由 Store mutex 串行化；文件先 flush 后引用，失败不修改 lower，孤立对象留待受控清理。
-// 版本戳不是密码学摘要，也不提供跨文件快照；尚未包含 epoch 切换、发布确认或任意目录发布。
+// 版本戳不是密码学摘要，也不提供跨文件快照；确认由 acknowledgement.cpp 处理，不支持任意目录发布。
 #include "store.hpp"
 
 #include <objbase.h>
 
 namespace overlay {
+sqlite3_int64 Store::epoch() {
+  Query state(*this, "SELECT epoch FROM local_state");
+  if (!localMode || !state.step() || state.number(0) < 0) {
+    throw Error{STATUS_FILE_INVALID};
+  }
+  return state.number(0);
+}
+
+static void associateEpoch(Store& store, const std::wstring& key) {
+  Query(store, "INSERT OR IGNORE INTO change_epochs(path,epoch) VALUES(?,?)")
+      .text(1, key).number(2, store.epoch()).step();
+}
+
 static std::wstring version(HANDLE handle) {
   BY_HANDLE_FILE_INFORMATION identity{};
   FILE_BASIC_INFO basic{};
@@ -78,10 +92,11 @@ std::wstring Store::observeRead(const NodePtr& value, HANDLE handle,
   }
   // Keep the earliest version in this observation epoch. Later live reads may
   // return newer bytes, but must not silently authorize an edit after an old read.
-  Query(*this, "INSERT OR IGNORE INTO observations(path,name,stamp) VALUES(?,?,?)")
+  Query(*this, "INSERT OR IGNORE INTO observations(path,name,stamp,epoch) VALUES(?,?,?,?)")
       .text(1, fold(value->origin))
       .text(2, value->origin)
       .text(3, stamp)
+      .number(4, epoch())
       .step();
   return stamp;
 }
@@ -117,6 +132,7 @@ void Store::capture(const std::wstring& path, int flags) {
           .number(1, flags)
           .text(2, key)
           .step();
+      associateEpoch(*this, key);
       return;
     }
   }
@@ -143,8 +159,8 @@ void Store::capture(const std::wstring& path, int flags) {
                : (attributes & FILE_ATTRIBUTE_DIRECTORY) ? 2 : 1;
   }
   {
-    Query observed(*this, "SELECT stamp FROM observations WHERE path=?");
-    if (observed.text(1, key).step() && observed.text(0) != stamp) {
+    Query observed(*this, "SELECT stamp FROM observations WHERE path=? AND epoch=?");
+    if (observed.text(1, key).number(2, epoch()).step() && observed.text(0) != stamp) {
       throw Error{STATUS_FILE_INVALID};
     }
   }
@@ -174,6 +190,7 @@ void Store::capture(const std::wstring& path, int flags) {
       .blob(7, security.data(), static_cast<int>(security.size()))
       .number(8, flags)
       .step();
+  associateEpoch(*this, key);
 }
 
 Handle Store::baselineInput(const NodePtr& value) {
@@ -201,8 +218,13 @@ void Store::sealChanges() {
   if (!localMode || poisoned) {
     throw Error{STATUS_FILE_INVALID};
   }
+  GUID guid{};
+  require(SUCCEEDED(CoCreateGuid(&guid)));
+  wchar_t seal[40];
+  StringFromGUID2(guid, seal, 40);
   sql("BEGIN IMMEDIATE");
   try {
+    Query(*this, "UPDATE local_state SET seal=?").text(1, std::wstring(seal).substr(1, 36)).step();
     sql("DROP TABLE IF EXISTS sealed_changes;"
         "CREATE TABLE sealed_changes(path TEXT PRIMARY KEY,kind INTEGER,"
         "object TEXT,origin TEXT,attributes INTEGER);");
@@ -233,21 +255,35 @@ void Store::sealChanges() {
           .step();
     }
     sql("COMMIT; PRAGMA wal_checkpoint(FULL)");
+    sealed = true;
   } catch (...) {
     sql("ROLLBACK");
     throw;
   }
 }
 
-void Store::checkReads() {
+void Store::checkReads(const std::vector<sqlite3_int64>& requested) {
   if (!localMode || poisoned) {
     throw Error{STATUS_FILE_INVALID};
   }
+  std::set<sqlite3_int64> epochs(requested.begin(), requested.end());
+  auto current = epoch();
+  if (epochs.empty()) {
+    epochs.insert(current);
+  }
+  if (epochs.size() > 100 || *epochs.begin() < 0 || *epochs.rbegin() > current) {
+    throw Error{STATUS_INVALID_PARAMETER};
+  }
+  std::string query = "SELECT path,name,stamp,epoch FROM observations WHERE epoch IN (";
+  for (auto value : epochs) {
+    query += std::to_string(value) + ",";
+  }
+  query.back() = ')';
   sql("BEGIN IMMEDIATE");
   try {
     sql("DROP TABLE IF EXISTS checked_reads;"
-        "CREATE TABLE checked_reads(path TEXT PRIMARY KEY,valid INTEGER);");
-    Query observed(*this, "SELECT path,name,stamp FROM observations");
+        "CREATE TABLE checked_reads(path TEXT,valid INTEGER,epoch INTEGER,PRIMARY KEY(epoch,path));");
+    Query observed(*this, query.c_str());
     while (observed.step()) {
       bool valid = false;
       try {
@@ -259,9 +295,10 @@ void Store::checkReads() {
           throw;
         }
       }
-      Query(*this, "INSERT INTO checked_reads VALUES(?,?)")
+      Query(*this, "INSERT INTO checked_reads VALUES(?,?,?)")
           .text(1, observed.text(0))
           .number(2, valid ? 1 : 0)
+          .number(3, observed.number(3))
           .step();
     }
     sql("COMMIT; PRAGMA wal_checkpoint(FULL)");

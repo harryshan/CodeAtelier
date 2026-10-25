@@ -1,0 +1,24 @@
+{
+  "timestamp": "2026-10-25T16:17:55.991Z",
+  "platform": "win32",
+  "release": "10.0.26200",
+  "node": "v26.10.0",
+  "backend": "self-developed native WinFsp Local overlay v5",
+  "twoViewsAfterAcknowledgement": [
+    "30",
+    "30"
+  ],
+  "nextTurnSource": "120",
+  "retainedArtifact": "preserved; stale historical dependency rejected",
+  "acknowledgementReplay": "same frozen lease and later clean remount passed; later private edits preserved",
+  "lostReceipt": "source complete; view refresh pending; no source replay",
+  "staleUnappliedConfirmation": "rejected after new freeze; later private edit and source preserved",
+  "createDeleteRefresh": "passed; old whiteout released; external recreation visible",
+  "epochs": 4,
+  "limitations": [
+    "Host verification only; production selection, task drain and Sandbox lifecycle not wired",
+    "Historical objects and observations retained; no garbage collection",
+    "Unexpected helper termination still blocks automatic restore",
+    "No external-writer CAS, multi-file atomicity or complete shell dependency isolation"
+  ]
+}

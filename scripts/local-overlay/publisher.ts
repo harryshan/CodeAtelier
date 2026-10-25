@@ -6,6 +6,7 @@
  * 4. inspect 只比较现场与 before/after，不续写、不回滚、不释放未知锁。
  * 5. src/tracing 记录 queue/prepare/validate/apply 的 ID、耗时和安全终态，不含路径/正文。
  * 6. 显式 nativeWindows 使用保留 owner/group/DACL 的原生替换，完整发布后按身份清理备份。
+ * 7. 可选 refresh 在来源 complete 后确认私有视图；失败保留 pending 收据，不重写来源完成状态。
  * 仅普通单链接文件/已存在父目录；新建使用不覆盖的 link，旧对照模式不保证 Windows ACL 保真。
  * 不提供外部写入 CAS、多文件原子提交、断电证明或生产服务集成；故障钩子仅供实验。
  */
@@ -29,6 +30,10 @@ import {
 import { equal, mergeContent, PublishError } from "./merge.js";
 import { validateBatch, type Batch } from "./session.js";
 import { windowsReplace, windowsCleanup } from "./windows-publish.js";
+import {
+  validateOverlayAcknowledgement,
+  type OverlayAcknowledgement,
+} from "../../src/worktrees/overlay.js";
 
 interface Entry {
   path: string;
@@ -42,6 +47,7 @@ interface Journal {
   batch: Batch;
   state: "prepared" | "applying" | "complete" | "aborted" | "unknown";
   entries: Entry[];
+  refresh?: { request: OverlayAcknowledgement; state: "pending" | "confirmed" };
 }
 
 export interface PublishOptions {
@@ -50,6 +56,10 @@ export interface PublishOptions {
   lockTimeoutMs?: number;
   afterWrite?: (index: number) => Promise<void>;
   nativeWindows?: boolean;
+  refresh?: {
+    request: OverlayAcknowledgement;
+    acknowledge: (request: OverlayAcknowledgement) => Promise<void>;
+  };
 }
 
 function decode(value: string | null) {
@@ -314,6 +324,23 @@ export class Publisher {
     }
 
     const batch = validateBatch(input);
+    if (options.refresh) {
+      validateOverlayAcknowledgement(options.refresh.request);
+    }
+
+    if (
+      options.refresh &&
+      (options.refresh.request.batchId !== batch.id ||
+        JSON.stringify(options.refresh.request.paths) !==
+          JSON.stringify(
+            batch.changes.map(
+              (change) => "\\" + change.path.replaceAll("/", "\\"),
+            ),
+          ))
+    ) {
+      throw new PublishError("REFRESH_BATCH_MISMATCH");
+    }
+
     const locations = await this.layout(batch);
     const task = randomUUID();
     const output = path.join(locations.directory, batch.id);
@@ -349,7 +376,7 @@ export class Publisher {
       } catch (error) {
         this.traces.endSpan(
           span,
-          applying
+          applying || name === "refresh"
             ? "unknown"
             : options.signal?.aborted
               ? "cancelled"
@@ -368,6 +395,13 @@ export class Publisher {
       await mkdir(output);
       outputCreated = true;
       journal = await step("prepare", () => this.prepare(batch));
+      if (options.refresh) {
+        journal.refresh = {
+          request: structuredClone(options.refresh.request),
+          state: "pending",
+        };
+      }
+
       await durableJson(path.join(output, "journal.json"), journal);
       await this.verify(journal);
       const candidates = new Map(
@@ -391,11 +425,29 @@ export class Publisher {
             this.cleanupBackups(journal!, path.join(output, "journal.json")),
           )
         : 0;
+      let refreshPending = false;
+      if (journal.refresh && options.refresh) {
+        try {
+          await step("refresh", async () => {
+            await options.refresh!.acknowledge(journal!.refresh!.request);
+            journal!.refresh!.state = "confirmed";
+            await durableJson(path.join(output, "journal.json"), journal);
+          });
+        } catch {
+          refreshPending = true;
+          this.log.warn({
+            module: "local-overlay-poc",
+            event: "view_refresh_pending",
+            batchId: batch.id,
+          });
+        }
+      }
 
       return {
         directory: output,
         files: journal.entries.length,
         cleanupPending,
+        refreshPending,
       };
     } catch (error) {
       reason = error instanceof PublishError ? error.code : "OPERATION_FAILED";

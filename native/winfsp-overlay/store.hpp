@@ -6,6 +6,7 @@
 // 5. 显式 Git PoC lower 按 tree/blob 提供内容，read 不物化文件；生产 live lower 保持原样。
 // 6. Local 模式绑定独立持久格式，所有层级隐藏并保留 .git 名称，不允许新建私有仓库入口。
 // 7. observeRead/capture 在实际访问路径上记录版本和不可变原文；不在启动时扫描来源。
+// 8. acknowledge 在冻结租约内按批次幂等释放已发布路径，并切换观察代次；旧修改依赖保留。
 // 遮蔽来源的 .git 命名空间；Git PoC 从对象库取内容，不打开来源工作文件。
 // 来源文件打开禁止重解析与写访问，控制目录不暴露于挂载。
 #pragma once
@@ -111,6 +112,7 @@ class Store {
   UINT32 serial = 0;
   bool poisoned = false;
   bool localMode = false;
+  bool sealed = false;
   std::map<sqlite3_int64, std::weak_ptr<Node>> cache;
   std::unique_ptr<GitLower> git;
   std::map<std::string, sqlite3_stmt*> statements;
@@ -148,7 +150,10 @@ class Store {
   void capture(const std::wstring& path, int flags = 1);
   Handle baselineInput(const NodePtr& node);
   void sealChanges();
-  void checkReads();
+  void checkReads(const std::vector<sqlite3_int64>& epochs = {});
+  sqlite3_int64 epoch();
+  sqlite3_int64 acknowledge(const std::wstring& id, sqlite3_int64 expectedEpoch, const std::wstring& seal,
+                            const std::vector<std::wstring>& paths);
 
  private:
   void closeDatabase() noexcept;

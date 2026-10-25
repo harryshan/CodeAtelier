@@ -21,6 +21,7 @@
     "overlay:verify-policy": "tsx scripts/verify-local-overlay-policy.ts",
     "overlay:verify-capture": "tsx scripts/verify-local-overlay-capture.ts",
     "overlay:verify-native-publish": "tsx scripts/verify-local-overlay-publish.ts",
+    "overlay:verify-refresh": "tsx scripts/verify-local-overlay-refresh.ts",
     "overlay:verify-sandbox": "tsx scripts/verify-local-overlay-sandbox.ts",
     "start": "node dist/server/server/launcher.js",
     "settings:migrate": "tsx scripts/migrate-settings.ts",

@@ -7,6 +7,7 @@
  * 5. 显式 gitBase 仅供人工虚拟 worktree PoC；metrics 读取累计计数/微秒耗时，兼容旧 helper 收据。
  * 6. Local 模式要求独立策略收据，挂载身份/策略固定；旧模式保持私有 gitfile 兼容。
  * 7. withFrozen 停止 Local 文件系统服务后执行导出，helper 全程持有控制目录租约；返回后正常退出。
+ *    同一冻结回调可确认已完成的来源发布；仅匹配批次/代次收据成功后允许调用方记录视图已刷新。
  *    导出回调可复核原生读版本；协议只回执状态，不通过 stdout 传文件内容或路径。
  */
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
@@ -97,7 +98,41 @@ interface Mount {
   freezing?: boolean;
   freeze?: () => void;
   readsChecked?: () => void;
+  acknowledgement?: {
+    batchId: string;
+    epoch: number;
+    seal: string;
+    resolve: () => void;
+  };
   metrics?: (value: OverlayMetrics) => void;
+}
+
+const acknowledgementSchema = z.object({
+  batchId: z.uuid(),
+  seal: z.uuid(),
+  epoch: z.number().int().min(0).max(1_000_000_000),
+  paths: z.array(z.string().min(2).max(4096)).min(1).max(100),
+});
+export type OverlayAcknowledgement = z.infer<typeof acknowledgementSchema>;
+
+/** Validate before source publication too: a known oversized refresh request
+ * must not be discovered only after the source has already been changed. */
+export function validateOverlayAcknowledgement(input: unknown) {
+  const request = acknowledgementSchema.parse(input);
+  let encodedLength = 0;
+  for (const value of request.paths) {
+    if (!value.startsWith("\\") || /[\x00-\x1f]/.test(value)) {
+      throw new Error("Invalid acknowledgement path.");
+    }
+
+    encodedLength += Buffer.byteLength(value, "utf8") * 2 + 1;
+  }
+
+  if (encodedLength + 100 > 1024 * 1024) {
+    throw new Error("Acknowledgement request exceeds limit.");
+  }
+
+  return request;
 }
 
 export class OverlayManager {
@@ -128,7 +163,8 @@ export class OverlayManager {
       attributes: { worktreeId: id },
     });
     const started = performance.now();
-    let outcome: "ok" | "error" | "cancelled" = "error";
+    let outcome: "ok" | "error" | "cancelled" | "unknown" =
+      action === "local_acknowledge" ? "unknown" : "error";
     this.log.info({
       module: "worktree",
       event: `overlay.${action}_started`,
@@ -364,8 +400,12 @@ export class OverlayManager {
                     "stopped",
                     "frozen",
                     "reads-checked",
+                    "acknowledged",
                   ]),
                   mode: z.literal("local").optional(),
+                  batchId: z.uuid().optional(),
+                  seal: z.uuid().optional(),
+                  epoch: z.number().int().optional(),
                 })
                 .parse(raw);
               if (message.state === "ready") {
@@ -381,6 +421,20 @@ export class OverlayManager {
                 }
 
                 resolveReady();
+              } else if (message.state === "acknowledged") {
+                const pending = mount.acknowledgement;
+                if (
+                  !local ||
+                  !pending ||
+                  message.mode !== "local" ||
+                  message.batchId !== pending.batchId ||
+                  message.seal !== pending.seal ||
+                  message.epoch !== pending.epoch + 1
+                ) {
+                  throw new Error("Unexpected publication acknowledgement.");
+                }
+
+                pending.resolve();
               } else if (message.state === "reads-checked") {
                 if (!local || !mount.readsChecked || message.mode !== "local") {
                   throw new Error("Unexpected read verification receipt.");
@@ -460,11 +514,106 @@ export class OverlayManager {
     }
   }
 
+  private async verifyFrozenReads(mount: Mount, epochs?: readonly number[]) {
+    const requested =
+      epochs === undefined
+        ? []
+        : z
+            .array(z.number().int().min(0).max(1_000_000_000))
+            .min(1)
+            .max(100)
+            .parse(epochs);
+    if (
+      mount.readsChecked ||
+      mount.acknowledgement ||
+      mount.failed ||
+      mount.stopping ||
+      mount.closed
+    ) {
+      throw new Error("Frozen read verification unavailable.");
+    }
+
+    let readTimer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        new Promise<void>((resolve, reject) => {
+          mount.readsChecked = resolve;
+          readTimer = setTimeout(
+            () => reject(new Error("Frozen read verification timed out.")),
+            30_000,
+          );
+          mount.process.stdin.write(
+            `check-reads${requested.length ? " " + requested.join(" ") : ""}\n`,
+          );
+        }),
+        mount.exit.then(() => {
+          throw new Error("Overlay lease was lost during read verification.");
+        }),
+      ]);
+    } finally {
+      clearTimeout(readTimer);
+      mount.readsChecked = undefined;
+    }
+  }
+
+  private async acknowledgeFrozen(
+    id: string,
+    mount: Mount,
+    input: OverlayAcknowledgement,
+  ) {
+    const request = validateOverlayAcknowledgement(input);
+    if (
+      mount.readsChecked ||
+      mount.acknowledgement ||
+      mount.failed ||
+      mount.stopping ||
+      mount.closed
+    ) {
+      throw new Error("Frozen acknowledgement unavailable.");
+    }
+
+    const encoded = request.paths.map((value) =>
+      Buffer.from(value, "utf8").toString("hex"),
+    );
+    const command = `acknowledge ${request.batchId} ${request.epoch} ${request.seal} ${encoded.join(" ")}\n`;
+    if (command.length > 1024 * 1024) {
+      throw new Error("Acknowledgement request exceeds limit.");
+    }
+
+    await this.observe(id, "local_acknowledge", async () => {
+      let ackTimer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          new Promise<void>((resolve, reject) => {
+            mount.acknowledgement = { ...request, resolve };
+            ackTimer = setTimeout(
+              () => reject(new Error("Publication acknowledgement timed out.")),
+              30_000,
+            );
+            mount.process.stdin.write(command);
+          }),
+          mount.exit.then(() => {
+            throw new Error("Overlay lease was lost during acknowledgement.");
+          }),
+        ]);
+        if (mount.failed || mount.closed || mount.stopping) {
+          throw new Error("Publication acknowledgement was not confirmed.");
+        }
+      } finally {
+        clearTimeout(ackTimer);
+        mount.acknowledgement = undefined;
+      }
+    });
+  }
+
   /** Caller drains its task processes first. Export runs only after the native
    * volume disappears, while the helper still excludes other store owners. */
   async withFrozen<T>(
     id: string,
-    exportChanges: (verifyReads: () => Promise<void>) => Promise<T>,
+    exportChanges: (
+      verifyReads: (epochs?: readonly number[]) => Promise<void>,
+      acknowledge: (request: OverlayAcknowledgement) => Promise<void>,
+    ) => Promise<T>,
   ): Promise<T> {
     const mount = this.mounts.get(id);
     if (!mount?.local || mount.failed || mount.stopping || mount.freezing) {
@@ -494,39 +643,10 @@ export class OverlayManager {
         }
 
         const result = await Promise.race([
-          exportChanges(async () => {
-            if (
-              mount.readsChecked ||
-              mount.failed ||
-              mount.stopping ||
-              mount.closed
-            ) {
-              throw new Error("Frozen read verification unavailable.");
-            }
-
-            let readTimer: ReturnType<typeof setTimeout> | undefined;
-            try {
-              await Promise.race([
-                new Promise<void>((resolve, reject) => {
-                  mount.readsChecked = resolve;
-                  readTimer = setTimeout(
-                    () =>
-                      reject(new Error("Frozen read verification timed out.")),
-                    30_000,
-                  );
-                  mount.process.stdin.write("check-reads\n");
-                }),
-                mount.exit.then(() => {
-                  throw new Error(
-                    "Overlay lease was lost during read verification.",
-                  );
-                }),
-              ]);
-            } finally {
-              clearTimeout(readTimer);
-              mount.readsChecked = undefined;
-            }
-          }),
+          exportChanges(
+            (epochs) => this.verifyFrozenReads(mount, epochs),
+            (request) => this.acknowledgeFrozen(id, mount, request),
+          ),
           mount.exit.then(() => {
             throw new Error("Overlay lease was lost during frozen export.");
           }),
