@@ -20,7 +20,7 @@ import {
   saveJournal,
   parseJournal,
 } from "../src/local-overlays/publication/journal.js";
-import type { OverlayAcknowledgement } from "../src/worktrees/overlay.js";
+import type { OverlayAcknowledgement } from "../src/local-overlays/winfsp-manager.js";
 
 async function pendingFixture() {
   const f = await nativeFixture();

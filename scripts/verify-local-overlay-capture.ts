@@ -30,7 +30,7 @@ import {
   OverlayManager,
   overlayNamespace,
   overlayWorkspace,
-} from "../src/worktrees/overlay.js";
+} from "../src/local-overlays/winfsp-manager.js";
 import { sourceIdentity } from "../src/local-overlays/publication/files.js";
 import { nativeBatch } from "../src/local-overlays/publication/native-batch.js";
 

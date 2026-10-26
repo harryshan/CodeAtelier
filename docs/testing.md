@@ -1,5 +1,7 @@
 # 测试约定与功能覆盖
 
+Riftri 清理（D171）：`worktrees.test.ts` 用磁盘/UNC 两类旧清单验证历史可读、任务与普通 Local 重分类拒绝、私有修改和清单保持；普通 Git worktree 继续覆盖提交基线、身份校验、并发/排队、恢复与记忆。`server.test.ts` 使用生产默认 Local 创建入口，并拒绝旧 `riftri` 请求字段；浏览器用例不再走测试专用 Local 路由。`e2e/worktrees.spec.ts` 覆盖退役历史提示、恢复/发送禁用和草稿保留。`overlay-manager.test.ts` 保留 Local 协议/冻结/清理回归，拒绝无策略的旧 helper。旧 Riftri/Git virtual 实验的脚本、测试和报告已删除，当前 WinFsp 后端仍可通过 `overlay:build-winfsp` 与 `overlay:verify-filesystem --native` 显式验证，产品开关不打开。
+
 Local overlay 默认关闭（D170）：`local-overlay-readiness.test.ts` 使用未替换的生产开关，验证开启 Sandbox/注入后端仍不能创建、执行、恢复、选择发布、检查或处理事故；直接 Engine 调用和坏清单同样拒绝，历史/私有内容/清单保留，普通 Local 仍可执行。已有 HTTP、生命周期、事故套件显式模拟开启，以保留后续重开时的回归覆盖；不提供产品运行时覆盖。`e2e/local-overlay.spec.ts` 的关闭用例使用真实 bootstrap，验证隐藏两处创建入口、禁用历史任务/键盘提交及保留草稿；其它用例明确模拟开启能力。此变更不推进 Linux 或运行 Evaluation。
 
 Linux 正常用户取消：手动 `startup-probe.mjs --cancel` / `startup-cancel.mjs` 经公开 HTTP 和固定回环模型计划先编辑/选择发布，再启动长命令；观察真实开始标记和已登记的验证计划后调用取消 API。核对 cancelled/ready、Runtime 排空、未启动候选、来源不变及 B/O 保留；继续任务不选择时仍不发布，随后重新选择才经过新 Sandbox 候选发布。探针不杀服务、不模拟清理回执，不进入默认检查或 Evaluation。
@@ -149,16 +151,7 @@ Runtime stdio 集成夹具共用 `runtime-child-close.ts`：spawn 后立即监�
 - Windows 原生发布：`local-overlay-windows-journal.test.ts` 通过替身控制原生确认/清理结果，真实检查持久 journal、unknown 锁、完整提交后清理、清理冲突保持 complete，以及原生拒绝不 fallback；只在 Windows 执行接线测试。`pnpm overlay:verify-native-publish` 则验证真实 NTFS owner/group/DACL SDDL 一致、非默认 primary group、继承控制位/显式拒绝 ACE、原有流、备份身份/内容检查、独立 junction/硬链接/陈旧哈希/来源写拒绝、未知写入与重放拒绝；仅自建夹具，不改变用户项目或系统 ACL，不属于默认 check/Evaluation。
 - Local 安装态 Sandbox：`pnpm overlay:verify-sandbox` 使用生产 Service/Engine 与真实 Runtime，证明双命令时间区间重叠、私有修改独立、绝对来源写入和 `.git` 新建失败，覆盖运行中命令取消、租约释放、重挂载及旧会话续聊；fallback 一律失败。`--commands` 接入真实模型工具发布和候选命令，`--merge` 追加同文件合并；不是公开 HTTP/UI 或全平台验收，不安装/Repair，不进入默认 check/Evaluation。
 
-- 虚拟 worktree 首次扫描优化：人工虚拟 worktree 脚本还覆盖首次扫描前/后同长度修改、删除和 untracked 的真实 Git 检测，检查 index 无 assume-unchanged/skip-worktree 标记；读取不改 atime、显式设置 atime 和 staged 修改经重挂载保留。`--unique-blobs=100000 --count=100000` 验证唯一内容夹具；新增累计 SQL/Git 对象耗时不记录路径/内容。仍保持 SQLite FULL 和完整 Git 扫描，不进入默认检查。
 
-- Git 提交虚拟 worktree PoC（D169）：`pnpm worktree:verify-virtual --count=100000 --sandbox` 是显式手动入口，复用 WinFsp/已安装 Sandbox，使用未展开工作文件的 Git 对象夹具。覆盖选定提交（含非来源 HEAD）、来源 staged/dirty 排除、双视图、diff/add/commit/branch/reset/restore、rename/delete、隐藏文件、持久化恢复和不支持属性转换时拒绝访问/拒绝报告 clean。测量 metadata-only 创建、原生 tree/blob/工作文件访问计数、FILE_STANDARD_INFO 分配字节与首次/重复真实 status；`--verify-only` 跳过性能对照。Sandbox 只替换实验 workspace 注册适配器，Runtime/ACL/IPC 与完成/取消清理保持生产路径；不是完整产品入口验收。协议层 `overlay-manager.test.ts` 覆盖 metrics 分段收据和 live 模式禁止误发命令。不进入默认 check 或 Evaluation。
-
-- Windows overlay（D168）：`overlay-git.test.ts` 使用真实 Git 检查无 checkout、dirty/staged、独立 HEAD/index、共享 objects/refs、split-index、unborn 和失败前置检查；`overlay-manager.test.ts` 用管道模拟覆盖 ready、取消、异常退出与干净卸载协议。`riftri.test.ts` 覆盖 Windows 探测不要求同卷、缺驱动/协议错误拒绝。浏览器夹具显式注入缺 helper 的管理器，使已安装 WinFsp 的开发机器也能稳定验证不可用提示，不将其冒称原生 UI 挂载成功。
-- `pnpm worktree:build-winfsp -Sdk <SDK> -VerifyReparse` 编译并运行相对链接移动、外部目标、坏缓冲区、根重映射的原生解析回归；无需创建符号链接权限。`pnpm worktree:verify-winfsp --sandbox` 手动验证真实 WinFsp：双视图、实时 lower、文件 copy-up/rename/whiteout、内部 junction、Git、DACL 继承/撤销、文件锁、映射写入、重挂载身份、helper 强杀后拒绝恢复，以及已安装专用账户 Runtime 的提交/取消/清理。该脚本不自动安装驱动或 Sandbox，不调用真实模型，不属于 Evaluation，也不进入默认 check。Windows 新建 symlink 的宿主权限限制、SACL/ADS/EFS/硬链接及完整通知/故障矩阵另记边界。
-
-- Worktree（D165）：`worktrees.test.ts` 使用真实临时 Git 检查 committed 基线、独立文件/index、并发请求去重、会话落盘失败后找回、重启、清单/目录/Git 指针失效拒绝、未知创建不重放、共享记忆、HTTP 快照、跨 checkout 并行/同目录排队与恢复。`sandbox-agent-runtime-launcher.test.ts` 和 `mxc-runtime.test.ts` 检查共享 Git 根进入 manifest/MXC policy 且不授予来源 checkout；使用假后端，不构成安装态验收。`e2e/worktrees.spec.ts` 检查真实页面创建、项目分组、文件修改只落到 checkout 和历史刷新。
-- Riftri（D167）：`riftri.test.ts` 检查 v2 helper、同卷能力、缺失/旧版/不支持时明确拒绝、取消/坏收据不重放。`riftri-workspaces.test.ts` 仅模拟原生复制，使用真实 Git/Service/HTTP 验证默认 Riftri、显式 Worktree、脏/暂存/忽略/未跟踪状态、独立 index/refs、幂等重启、失败保留、共享项目来源和不授权原 Git 根。`scripts/verify-riftri.ts` 手动使用真实 Linux helper 验证同类状态及字节文件名、链接重映射、外置 Git/活跃锁拒绝；fiemap 另核对物理共享。普通 ext4 必须拒绝 Riftri而允许显式 Worktree，不是 fallback。不自动挂载/格式化，不属于 Evaluation。
-- UI 工作区覆盖：`e2e/worktrees.spec.ts` 在无 helper 的测试部署确认默认 Riftri 失败与显式 Worktree 创建/实际编辑/刷新。既有 `e2e/app.spec.ts` 与阅读器用测试服务专属、同样鉴权的 `/api/test/legacy-sessions` 预置升级前 Local 历史，保留原有任务/审批/恢复断言；该入口不在生产应用中，不代替原生 CoW 验证。
 
 - Responses prompt cache key（D160）：`prompt-cache.test.ts` 覆盖分组稳定性、交叉调用、子任务/会话隔离、错误/取消与非 Responses 原行为、trace 指纹及缺失 usage；`provider.test.ts` 通过本机 HTTP/SSE 验证实际发送/省略；`engine-subagent.test.ts` 验证宿主主/子任务、Replay 和续聊；`runtime-capability-core.test.ts` 验证 Broker 可信身份、实例变化和辅助用途排除；`agent-runtime-subagent.test.ts` 验证真实 Runtime 子进程跨 IPC 后实际收到的 key 和 Replay。测试不验证真实服务命中改善。
 

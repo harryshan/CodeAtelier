@@ -15,7 +15,7 @@ import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
-import { overlayHelperPath } from "../src/worktrees/overlay.js";
+import { overlayHelperPath } from "../src/local-overlays/winfsp-manager.js";
 import { PublicationLease } from "../src/local-overlays/publication/publication-lease.js";
 import { Publisher } from "../src/local-overlays/publication/publisher.js";
 import { EditSession } from "../src/local-overlays/publication/session.js";

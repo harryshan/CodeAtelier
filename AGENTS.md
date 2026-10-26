@@ -24,7 +24,7 @@
 
 - 会话内上下文压缩已授权：保留用户原文、历史快照与未知执行状态，摘要不提升权限；细节见 docs/context-management.md。已接入服务模型容量与实际 usage，token 预算与备用字符模式见 docs/model-tokens.md。
 - 提供 Web UI“关闭服务”入口及终端 Ctrl+C 退出方式；关闭时停止任务并保存为可恢复中断，保留历史和已修改文件。服务关闭流程必须覆盖鉴权、清理与端口释放测试。
-- 初版默认单 agent；2026-09-23 用户追加授权可选只读 subagent，2026-10-17 进一步要求开放 UI 任务级开关（D158），默认关闭、仅本次提交生效、恢复继承原选择。入口开放不等于安装态或全平台专项验收通过，限制见 [多 agent 说明](docs/multi-agent-design.md)。2026-10-17 用户要求内置 `explorer`（获取并筛选信息）与 `reviewer`（干净上下文审查修改），两角色均可多实例、不同范围并行；沿用共享活动 Worker 调度与只读边界（D157）；D158 开放试用入口，不改变 Sandbox 权限。不同真实工作目录的会话最多可并行运行 2 个编码任务（可在设置中调为 1～4），同一工作目录始终串行排队。2026-10-25 D167 将新对话默认改为 Riftri 当前状态副本，显式选择 Git worktree 时使用提交基线；固定实际执行目录并与来源项目共享记忆，不自动迁移已有 Local 历史、清理或提供一键回滚。详见 docs/worktrees.md。页面关闭后后端仍运行时任务可继续。
+- 初版默认单 agent；2026-09-23 用户追加授权可选只读 subagent，2026-10-17 进一步要求开放 UI 任务级开关（D158），默认关闭、仅本次提交生效、恢复继承原选择。入口开放不等于安装态或全平台专项验收通过，限制见 [多 agent 说明](docs/multi-agent-design.md)。2026-10-17 用户要求内置 `explorer`（获取并筛选信息）与 `reviewer`（干净上下文审查修改），两角色均可多实例、不同范围并行；沿用共享活动 Worker 调度与只读边界（D157）；D158 开放试用入口，不改变 Sandbox 权限。不同真实工作目录的会话最多可并行运行 2 个编码任务（可在设置中调为 1～4），同一工作目录始终串行排队。2026-10-27 D171 移除 Riftri，新对话默认普通 Local；显式选择 Git worktree 时使用提交基线。旧 Riftri 历史可读但不可执行，保留私有数据，不迁移或自动清理。详见 docs/worktrees.md。页面关闭后后端仍运行时任务可继续。
 - 2026-10-17 用户追加要求向两种 subagent 暴露 Responses 内置 `web_search`（D159），按主任务协议能力提供，Chat Completions / Messages 不声明。搜索由模型服务执行，引用随报告保存；不开放子任务 shell、任意网络命令或写入权限。
 - 用户已追加授权 MCP 支持，并明确所有连接由本机后端建立：支持 stdio 和远程 Streamable HTTP，不使用模型服务商托管 MCP；连接配置及凭据留在 Broker，每主任务主动提供已启用服务的名称与配置用途摘要，不提前连接；模型按需发现 schema，操作经既有审批，执行不受 Runtime Sandbox 保护。实现与边界见 docs/mcp.md。
 - 用户已追加授权 Skill 系统：每任务从项目/宿主用户预设目录自动发现 SKILL.md，以 `skill` 工具按需加载参考正文；不自动执行脚本或授予权限，宿主/Runtime 均经后端读取。目录、冲突和安全边界见 docs/skills.md。
@@ -46,9 +46,11 @@ Agent Runtime 已有权限内的工具不再审批；越界命令通过 `run_wit
 
 取消结果以 executionInstance kind 写入 session。首版不依赖 AppContainer、自研 WFP callout driver、实验性的 `CreateProcessInSandbox`/Bound File System 或 Chromium Target hook。这些未采用机制不得描述为已实现。Windows Sandbox 的日常可用性已获用户确认，但不因此扩大既有权限保证或跨平台能力声明；专项故障与安全矩阵仍按实际证据记录。
 
-### Riftri 与 Git worktree（D167 / D168）
+### Local、Git worktree 与隔离 Local（D170 / D171）
 
-2026-10-25 用户要求 Riftri 与普通 Git worktree 并列，新对话默认 Riftri，不支持指定 commit/branch、不另建 base、不计算 blob hash。Linux/macOS 使用原生 CoW 当前状态副本及独立 Git metadata；D168 将 Windows 改为 WinFsp 实时 lower + 私有 upper，标准 linked worktree 独立 HEAD/index，objects/普通 refs/common config 共享。Windows 不复制整个 repo 或 `.git/objects`，不以 HEAD checkout 文件；Sandbox 精确授予虚拟工作目录及共享 Git common 根，不授 lower 工作文件写根。helper/driver/原生能力缺失时拒绝创建，提示显式 Worktree，不自动降级。显式 Worktree 保留指定提交和原语义，旧 D166 清单继续按 Worktree 读取。两模式复用实际目录、不自动回写/清理或迁移 Local。Windows 正常关闭先排空任务与 Sandbox 再卸载；未正常停止的私有层拒绝自动恢复。原生支持/ACL/链接限制见 docs/worktrees.md 和 docs/winfsp-overlay.md；WSL 仅用于 Linux，不创建 Windows 分区、不隐式跨 WSL。
+新对话默认普通 Local，直接使用所选目录，同一实际目录串行；显式 Git worktree 保留指定提交、独立 HEAD/index、共享 Git common metadata 与既有 Sandbox 授权。Riftri CoW、Git metadata 接线和 Git 提交虚拟 worktree PoC 已移除；旧清单仅用于历史识别和拒绝执行，私有数据不删除、不重新挂载、不迁移。标准 Git worktree 不自动回写或清理。
+
+隔离 Local 是独立的文件修改隔离与发布机制，Windows 使用自研 WinFsp 实时 lower + 私有 upper，不管理 Git metadata；继续保留 ACL、冲突检测、发布和 Sandbox 联动。整个功能由 `src/local-overlays/readiness.ts` 的 `LOCAL_OVERLAY_ENABLED = false` 关闭，没有设置或环境变量覆盖。Linux 暂不继续，macOS 暂不实现；不要因移除 Riftri 而启用此功能。详见 docs/worktrees.md、docs/local-overlay-usage.md 和 docs/winfsp-overlay.md。
 
 ## 设置系统（D153）
 

@@ -8,7 +8,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { z } from "zod";
-import { overlayHelperPath } from "../../src/worktrees/overlay.js";
+import { overlayHelperPath } from "../../src/local-overlays/winfsp-manager.js";
 import { PublishError } from "../../src/local-overlays/publication/merge.js";
 
 const execute = promisify(execFile);

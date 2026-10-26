@@ -8,7 +8,7 @@
  */
 import type { Logger } from "pino";
 import { z } from "zod";
-import type { OverlayAcknowledgement } from "../worktrees/overlay.js";
+import type { OverlayAcknowledgement } from "../local-overlays/winfsp-manager.js";
 import { checkRelative, sourceIdentity } from "./publication/files.js";
 import { nativeBatch } from "./publication/native-batch.js";
 import { PublishError } from "./publication/merge.js";

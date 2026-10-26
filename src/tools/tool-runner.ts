@@ -10,7 +10,6 @@
  *    Local 发布选择仅在显式能力与 Runtime 边界同时存在时转交任务绑定 adapter，forCall 保留实际调用 ID。
  *    MCP 先经 prepareMcp 在 Broker 审批，再取得执行槽消费单次授权；ToolRunner 从不读取 MCP 配置或创建连接。
  *    本地进程不设固定总时限，execute 为当前调用绑定 reviewTool；forCall 隔离状态/输出，进程执行器每五分钟复查，Broker 操作由 Broker 自己监视。
- *    Broker 可通过 commandEnvironment 为已验证的 overlay 子进程附加精确 Git 信任；不修改全局配置，不在 Runtime 内探测宿主挂载。
  * 4. 每个 execution instance 只读取 Broker 为该 task/instance 保存的状态；并发任务的 fallback/unknown 不会污染其它 PID、session 或 trace 记录。
  * 5. 只读分支只处理读取；目录浏览和代码搜索均由 run_command 在审批后执行。read_file 在主线程完成安全访问、类型检查和异步字节读取，读完后直接计算全文哈希与行扫描；可选 trace 将检查、读取及同步计算阶段分开计时，不保存文件内容。
  *
@@ -70,8 +69,6 @@ export interface ToolContext {
     import("../local-overlays/tool-contract.js").LocalPublicationResult
   >;
   root: string;
-  /** Broker validates a managed mount before constructing child-only Git trust. */
-  commandEnvironment?: () => Promise<NodeJS.ProcessEnv>;
   sessionId: string;
   taskId: string;
   signal: AbortSignal;
@@ -227,10 +224,6 @@ export class ToolRunner {
     onOutput: (text: string) => void;
     environment?: NodeJS.ProcessEnv;
   }) {
-    input.environment = {
-      ...(await this.ctx.commandEnvironment?.()),
-      ...input.environment,
-    };
     if (this.ctx.executionBoundary === "agent-runtime") {
       process.stderr.write(
         "CODEATELIER_AGENT_RUNTIME_STAGE command_spawn_begin\n",

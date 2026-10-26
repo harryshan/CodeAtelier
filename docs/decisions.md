@@ -2,6 +2,14 @@
 
 只记录已确认的方向；候选技术选择保留在需求说明中。后续修改需记录替代关系，避免历史决定被误当成当前要求。
 
+## D171：移除 Riftri 与旧 Git 虚拟化实验
+
+- 日期：2026-10-27。用户确认当前方向是自研 WinFsp Local overlay，并要求删除 Riftri 和无用的代码、文档及测试。
+- 新对话恢复普通 Local，直接使用所选项目目录；同一真实目录串行排队。Git worktree 保持显式选择与提交基线。D170 的隔离 Local 保留代码开关且默认关闭，Linux 暂不推进、macOS 不实现。
+- 删除原生 CoW helper、Riftri 创建/恢复、旧 overlay Git metadata 绑定和 Git tree/blob 虚拟 worktree PoC、专用脚本/报告/测试；WinFsp Local 的文件系统、ACL、发布、冻结/恢复与 Sandbox 联动继续保留。
+- 不删除实际会话目录、私有层、Git 登记或历史数据库。旧 Riftri 清单仅供历史来源展示和阻止执行，不自动转换普通 Local、不重新挂载或回写。早期已经物化为普通 linked Git worktree 的旧记录仍按 Git 身份校验。
+- 观测：普通 Local 沿用任务生命周期，Git worktree 保留创建/checkout/验证 trace；移除 Riftri 专属创建事件，旧 trace 仍可读。旧模式拒绝在挂载/任务创建前发生，不记录源码、私有路径或凭据。
+
 ## D170：Overlay 改为 Local 会话文件隔离，与 Git worktree 并列
 
 - 隔离 Local 总开关（2026-10-27）：用户要求暂不继续 Linux 工作，并将整个功能置于代码开关之后、默认关闭。唯一开关为 `src/local-overlays/readiness.ts` 的 `LOCAL_OVERLAY_ENABLED = false`，没有设置、环境变量或 HTTP 覆盖。关闭时隐藏创建入口，拒绝创建、旧视图任务启动/恢复、发布选择、文件检查、参考继续、私有刷新及来源事故操作；`start:overlay` 也在创建 namespace 前拒绝。历史与私有数据保留，取消、关闭卸载及旧 Sandbox 授权清理继续执行。普通 Local、Riftri、Git worktree 和 Sandbox 原有行为不变。未来启用须修改常量并重新构建/启动，仍须满足平台与 Sandbox 条件；macOS 仍不实现。下面已完成的 Windows/Linux 记录仅作为关闭前的历史证据，不表示当前产品开放。
@@ -63,47 +71,26 @@
 - 完成态来源恢复增量：complete 日志在独立明确请求下可释放匹配的残留来源锁；沿用原生 generation/锁摘要与退出证明，不接收客户端来源路径/批次，不重放写入或更改私有视图状态。新发布者锁保留，缺失锁幂等返回。真实 WinFsp 关闭回执丢失夹具验证通过；HTTP/页面与生命周期 tracing 接入，不推导异常私有卷已恢复。
 - 状态：用户澄清目标并要求重新考虑方案，随后授权继续验证；已实现独立于 Git 的发布协议、任务发布与公开显式入口，真实 v18 内部链路已验证；异常私有卷、完成态刷新等恢复操作仍待完成，不切换默认模式或迁移历史。
 - 决定：Overlay 服务于同一 Local 工作区多个对话的文件修改隔离与冲突整合，独立于 Git；普通 Git worktree 保持独立模式。Overlay 不承担 branch/commit/index/objects 管理，也不是普通 worktree 的替代或 fallback。
-- 替代关系：撤回把 D169 Git 提交虚拟 worktree 作为此需求后续方向的假设；D168 的 WinFsp 文件后端可复用，但其 linked Git metadata 不是新方案要求。旧实现、会话和验证记录保留，不宣称已迁移。
+- 替代关系：撤回把 D169 Git 提交虚拟 worktree 作为此需求后续方向的假设；D168 的 WinFsp 文件后端可复用，但其 linked Git metadata 不是新方案要求。当时保留旧实现和会话；后续 D171 删除旧实现和实验报告，实际会话/私有数据保留，不迁移。
 - 设计：实时文件 lower、会话私有 upper、按需编辑基线与来源级串行发布；三方文件整合独立于 Git，必须区分写隔离、读一致性、外部写入和多文件故障恢复。发布时机与 `.git` 屏蔽已追加确认，产品入口和实机验收边界详见 [Local overlay 重新设计](local-overlay-design.md)。
 - 第一阶段验证：普通目录上的按需基线、文本三方整合、跨进程串行发布及进程中断后只读观察；真实双进程与故障脚本为 `pnpm overlay:verify-publish`。不接入 WinFsp、任意 shell 或 Sandbox，不将通过此实验描述为产品并行会话可用。
 - 后续授权：用户要求继续接入文件系统，并先复核 Riftri/WinFsp 及现成替代方案。选型复核后，新 Local overlay 不依赖 Riftri/Git 管理，Windows 首先复用既有 WinFsp 原生文件后端；POSIX 通用 union 后端单独验收。首个挂载/发布实验只处理预先声明基线的路径，不宣称原生自动变更捕获或 Sandbox 联动已完成；候选源码证据与边界见 [选型复核](local-overlay-design.md#文件系统接入前选型复核2026-10-25)。
 
-## D169：基于 Git 提交的虚拟 worktree PoC
+## D169：Git 提交虚拟 worktree PoC（已移除）
 
-- 日期：2026-10-25。
-- 状态：用户授权 PoC，尚未授权替换产品默认模式。
-- 需求澄清：优先解决大仓库 worktree 创建慢和工作文件重复占用；包含主目录未提交状态只是此前的实现妥协，不再作为本实验要求。
-- 决定：固定 Git commit 的 tree/blob 按需提供 lower，复用 WinFsp upper/ACL；标准 linked worktree 共享 objects/refs，独立 HEAD/index 从提交初始化。创建不遍历/复制主目录工作文件，但如实记录 Git tree/index 元数据成本。
-- 验证：实际 Git、已安装 Windows Sandbox、大文件树创建耗时/磁盘/首次 status；禁止以宿主 fallback、skip-worktree 或假 clean 代替。实验与生产入口隔离，不迁移会话、创建分区或重启服务。设计及限制见 [虚拟 worktree PoC](virtual-worktree-poc.md)。
-- 同日追加：用户要求优化首次扫描。计量定位后，Git PoC 卷采用 no-atime（不自动更新访问时间，显式设置仍持久化），添加 inode 反查索引并复用已编译 SQL；保留 SQLite FULL、真实内容扫描和脏文件检测。普通实时 overlay 的时间语义不变；不将尚未验证的 index/stat 预热或 FSMonitor 写成已实现。
+2026-10-25 的 Git tree/blob 虚拟化与首次扫描实验已被 D170 的无 Git Local 隔离方向替代；D171 删除实现、专用脚本、报告和测试，历史细节留在 Git 提交中。
 
-## D168：Windows NTFS 的 WinFsp 实时 overlay
+## D168：Windows linked-Git 实时 overlay（已移除）
 
-- 日期：2026-10-25。
-- 状态：用户确认按 linked worktree + 实时工作文件 overlay 实现，并授权安装已验签的官方 WinFsp Runtime 继续真实验证。首版原生实现、Git 和 Sandbox 完成/取消/恢复闭环已验证；不扩展为完整 NTFS、SACL 或巨型仓库性能验收，证据见 [WinFsp 后端](winfsp-overlay.md)。
-- 决定：Windows 的 Riftri 新增 WinFsp 原生 API 后端；未 copy-up 的工作文件实时读取来源目录，内容/属性/ACL 的写入和删除只进入会话私有层。Windows 此后端依赖来源持续存在，不再承诺 D167 的固定文件快照及删除来源后独立恢复；Linux/macOS 原生 CoW 和显式 Git worktree 不变。
-- Git：撤回完整复制 `.git` 及手工拆分私有对象库方案。使用标准 linked worktree 独立 HEAD/index、共享 objects/refs；`worktree add --no-checkout` 不展开文件，复制来源 index 保留 staged 状态，split-index 在任务侧展开。UNC 精确 safe.directory 只作用于任务进程和 Runtime 实例配置。共享 Git metadata 的写入与工作文件只写 upper 分别说明，不能宣称整个来源目录绝对只读。
-- 联动：挂载身份、原生 ACL、持久 capability、跨账户可见性、Runtime 取消、服务排空后卸载与重启恢复必须逐项验证；不能全局放宽重解析点检查或向 Sandbox 授予 lower/后端控制目录。无 helper/driver 时拒绝创建；异常状态不回退来源目录、不自动重做创建。
-- 实现：使用稳定本机 UNC，不依赖 drive/junction 入口。虚拟根的来源继承权限转为自身有效 ACL，防止授权时丢失原权限；子项继续按虚拟父项继承。SQLite 事务保存 namespace/ACL/whiteout，随机对象保存内容；正常卸载设置 clean，强杀/未知写入不自动恢复。内部 junction 映射为目录 symlink；SACL/审计/完整性标签、ADS、硬链接创建及 lower 通知未支持。挂载/恢复/卸载/异常退出均有 ID、耗时、终态 tracing；不记录路径、ACL 或正文。
-- 安装与分发：不创建 Windows 分区，不隐式借助 WSL；WinFsp 驱动需独立安装。其 GPLv3/FLOSS 例外与 Riftri MIT 分开记录，暂不选择 CodeAtelier 分发许可证。
+旧 Riftri Windows 后端由 WinFsp 提供 live lower 与共享 Git metadata。D171 删除旧模式，仅保留 D170 自研 Local 文件系统及 Sandbox/发布共用实现；不删除用户私有层或 Git 登记。
 
-## D167：默认 Riftri 当前目录副本与显式 Git worktree 并列
+## D167：默认 Riftri 当前状态副本（已移除）
 
-- 日期：2026-10-25
-- 状态：用户要求替代 D166 的 commit 校验和 Git fallback；明确原生 CoW 不可用时拒绝创建，提示显式选择 Worktree。
-- 决定：新对话默认从来源主目录当前状态创建 Riftri 原生 CoW 私有目录，不接受 branch/commit；保留脏文件、未跟踪和忽略文件、独立 Git metadata/index/refs，不另建 immutable base，不计算 Git blob hash。显式 Worktree 保持选定提交、detached HEAD 和共享 Git 公共目录的原行为。Riftri 的 overlay 指独立 CoW 文件视图，不是挂载 OverlayFS 或实时跟随主目录。
-- 生命周期：同一会话的后续任务、恢复继续使用已有私有目录，不重新取主目录；已有 Local 历史保持原路径，用户新建对话才采用默认模式。不自动回写、合并或清理。新创建请求固定 UUID、模式及来源；失败/未知结果保留现场，不能重放。
-- 边界：完整目录仍需枚举和创建条目；逐文件原生克隆不是全目录原子快照，检测到复制过程中的源变化就失败。主目录在创建时应保持静止；符号链接不递归跟随。Git linked checkout、外置 Git metadata/alternates 和无法独立复制的条目明确拒绝，不产生指回来源 Git 的写通道。Git 已登记的其他 worktrees 不属于本次目录状态，复制 .git 时排除 worktrees 管理目录。
-- 联动：沿用实际路径调度、项目来源分组和记忆、Skills/MCP/只读 subagent、身份核验与历史清单。Riftri 的 Git metadata 位于私有目录，Sandbox 不追加来源 Git 授权；普通 Worktree 继续追加已核验的 shared common directory。创建 trace 区分 mode/backend/count 和终态，不记录文件内容或路径。Linux 用 WSL 验证，Windows 无 helper/原生支持时拒绝 Riftri；不创建 Windows 分区、不自动重启服务。
+旧默认模式包含主目录当前状态。D171 移除该功能，新对话恢复普通 Local，Git worktree 仍显式选择。
 
-## D166：直接复用来源 checkout 的 Riftri 原生 CoW
+## D166：Riftri CoW checkout 接入（已移除）
 
-- 日期：2026-10-25
-- 状态：用户要求接入 Riftri、普通 worktree 作为 fallback、功能边界不变，并明确禁止另建完整 base，使用 WSL 验证。
-- 决定：复用固定 Riftri v0.6.5 的原生存储代码，通过可选宿主 helper 直接克隆来源 checkout 中的普通受控文件。逐个校验克隆文件的 Git blob 哈希；只保留与选定 commit 完全一致的内容，其余交给 Git 从该 commit checkout。不复制来源 index、未跟踪/ignored 文件，不改变来源文件权限，不创建 Riftri immutable base。
-- 回退：helper 未安装、平台/文件系统不支持或 checkout 转换规则不能保守等价时使用普通 Git worktree。原生克隆只发生在新建、尚未绑定会话的目录；部分文件无法克隆时由 Git 补齐。取消、未知结果、磁盘/权限或 Git 失败保留失败现场，不重新创建或回退原项目。已存在的工作区永不重新选择后端。
-- 实现边界：上游 CLI 不支持可变原目录作为 base，因此使用小型存储 API 扩展和原生 helper，不冒称直接调用原版 CLI。初期启用 Linux reflink/macOS clonefile 接口；Windows 继续普通 Git，ReFS/ACL 优化另行验收。可选构建不安装全局工具、不创建文件系统、不挂载 OverlayFS。WSL 只用于 Linux 验证，不由 Windows 产品隐式跨系统操作路径。
-- 联动：沿用 D165 的 detached HEAD、路径、持久清单、调度/记忆/恢复及 Sandbox Git 公共根；不增加自动回写、清理、handoff 或可写 subagent。记录后端、fallback 原因及克隆文件数，沿用创建 trace 的开始/终态/取消/耗时和 ID，不记录文件内容或路径。
+旧原生 CoW helper 与 fallback 已删除；已生成的普通 linked Git worktree 仍可按身份验证继续使用，Riftri 独立副本不自动迁移。
 
 ## D165：显式 Git worktree 对话
 

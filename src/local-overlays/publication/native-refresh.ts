@@ -12,7 +12,7 @@ import { z } from "zod";
 import {
   validateOverlayAcknowledgement,
   type OverlayAcknowledgement,
-} from "../../worktrees/overlay.js";
+} from "../../local-overlays/winfsp-manager.js";
 import {
   checkRelative,
   digest,

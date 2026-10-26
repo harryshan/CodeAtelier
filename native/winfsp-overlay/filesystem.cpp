@@ -3,7 +3,7 @@
 // 2. 创建/打开/读取/写入共享 Node 身份，copy-up 后旧描述符也读取同一个私有对象。
 // 3. 命名空间、属性、DACL 与枚举委托 Store；Cleanup 无错误通道，失败使挂载失效。
 // 4. 重解析回调在当前虚拟路径检查目标，目录移动不能使相对链接越出视图。
-// 5. Git PoC/Local 卷使用 no-atime；仅忽略自动访问时间，显式 SetBasic/写入仍持久化。
+// 5. Local 卷使用 no-atime；仅忽略自动访问时间，显式 SetBasic/写入仍持久化。
 // 6. Local 显式元数据修改与可删除预检保存基线，避免仅在无错误返回的 Cleanup 中发现陈旧读。
 // 7. Local 枚举按打开句柄缓冲名称/元数据；续页不重扫，重启/重开观察来源，异常填充清空、Close 释放。
 // 8. ACL 恢复使用独立回调表，仅根身份/Open/Close/GetSecurity/SetSecurity；WinFsp 必填的创建/覆盖及枚举回调明确拒绝。
@@ -196,12 +196,10 @@ static void cleanup(FSP_FILE_SYSTEM* fs, PVOID context, PWSTR name, ULONG flags)
     auto node = opened(context);
     if (flags & FspCleanupSetLastAccessTime) {
       ++queryMetrics.accessCleanups;
-      if (store.git || store.localMode) {
-        // Plain reads must not issue an atime-only durable transaction per
-        // close. Neither Git stat nor Local read stamps use access time;
-        // explicit SetBasic timestamps and all other cleanup flags persist.
-        flags &= ~FspCleanupSetLastAccessTime;
-      }
+      // Plain reads must not issue an atime-only durable transaction per
+      // close. Local read stamps do not use access time;
+      // explicit SetBasic timestamps and all other cleanup flags persist.
+      flags &= ~FspCleanupSetLastAccessTime;
     }
     if (flags & FspCleanupDelete) {
       store.remove(name, node->id);
@@ -214,9 +212,6 @@ static void cleanup(FSP_FILE_SYSTEM* fs, PVOID context, PWSTR name, ULONG flags)
     }
     if (flags & FspCleanupSetChangeTime) {
       node->info.ChangeTime = now();
-    }
-    if (flags & FspCleanupSetLastAccessTime) {
-      node->info.LastAccessTime = now();
     }
     if (flags) {
       store.save(node);
@@ -423,40 +418,7 @@ static void localDirectory(Store& store, Context& context, PWSTR marker, PVOID o
 static NTSTATUS directory(FSP_FILE_SYSTEM* fs, PVOID context, PWSTR, PWSTR marker, PVOID output,
                           ULONG length, PULONG transferred) {
   return guarded(fs, [&](Store& store) {
-    if (store.localMode) {
-      localDirectory(store, *static_cast<Context*>(context), marker, output, length, transferred);
-      return;
-    }
-    auto node = opened(context);
-    auto entries = store.list(node);
-    if (node->id != 1) {
-      entries.insert(entries.begin(), {L"..", store.node(node->parent)});
-      entries.insert(entries.begin(), {L".", node});
-    }
-    // Match the UTF-16 ordinal ordering used for continuation markers. SQLite's
-    // UTF-8 byte order differs for supplementary Unicode characters.
-    std::sort(entries.begin(), entries.end(), [](const Entry& left, const Entry& right) {
-      return CompareStringOrdinal(left.name.c_str(), -1, right.name.c_str(), -1, TRUE) ==
-             CSTR_LESS_THAN;
-    });
-    *transferred = 0;
-    for (auto& entry : entries) {
-      if (marker &&
-          CompareStringOrdinal(entry.name.c_str(), -1, marker, -1, TRUE) != CSTR_GREATER_THAN) {
-        continue;
-      }
-      size_t size =
-          FIELD_OFFSET(FSP_FSCTL_DIR_INFO, FileNameBuf) + entry.name.size() * sizeof(wchar_t);
-      std::vector<BYTE> buffer(size);
-      auto info = reinterpret_cast<FSP_FSCTL_DIR_INFO*>(buffer.data());
-      info->Size = static_cast<UINT16>(size);
-      info->FileInfo = store.info(entry.node);
-      memcpy(info->FileNameBuf, entry.name.data(), entry.name.size() * sizeof(wchar_t));
-      if (!FspFileSystemAddDirInfo(info, output, length, transferred)) {
-        return;
-      }
-    }
-    FspFileSystemAddDirInfo(nullptr, output, length, transferred);
+    localDirectory(store, *static_cast<Context*>(context), marker, output, length, transferred);
   });
 }
 

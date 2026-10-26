@@ -2295,7 +2295,7 @@ export class Engine {
         0,
         settings.outputChars,
         (text) => emit("capability_output", { text, callId: toolCallId }),
-        await this.worktrees.commandEnvironment(workspace),
+        undefined,
         (startedPid) => {
           pid = startedPid;
           publish("running");
@@ -2536,8 +2536,6 @@ export class Engine {
 
       const runner = new ToolRunner({
         root: session.workspace,
-        commandEnvironment: () =>
-          this.worktrees.commandEnvironment(session.workspace),
         sessionId: session.id,
         taskId: task.id,
         signal,

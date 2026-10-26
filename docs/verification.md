@@ -1,5 +1,13 @@
 # 初版验证记录
 
+## 移除 Riftri 与旧 Git 虚拟化实现（2026-10-27）
+
+- 删除 Riftri 原生 CoW、Git metadata 接线和 tree/blob lower，以及专用构建/验证脚本、旧实验报告和测试。新对话默认普通 Local，显式 Git worktree 保留。WinFsp 管理器移至 `src/local-overlays/winfsp-manager.ts`，原生 helper 只接收 Local/根 ACL 恢复挂载命令；旧模式与持久格式不再挂载。历史清单仅用于显示和拒绝执行，实际用户数据不删除。
+- MSVC 构建、`-VerifyReparse` 和 `-VerifyImport` 通过。原生重解析、事务导入、身份/失败恢复回归均使用独立夹具；保留 SDK 对齐及既有局部变量遮蔽警告，没有编译错误。
+- 最终 helper 的 `pnpm overlay:verify-filesystem --native` 通过，报告位于 `.local/local-overlay-winfsp-jhxc96/report.json`：两个私有视图，初始内容对象、lower 枚举和除根身份外的 lower 打开均为 0；实时读取、独立修改、原生基线/冻结导出、候选验证、选择发布、干净重挂载和 helper 正常退出通过。未选产物未发布，Git 操作计数为 0。
+- 最终 `pnpm check` 通过：165 个测试文件、1324 项通过/2 项跳过，类型、ESLint、格式与测试构建通过。`pnpm test:e2e` 全部 80 项通过，包括生产默认 Local、显式 Worktree 创建/编辑/历史，以及退役 Riftri 的提示、禁用恢复/发送和草稿保留；没有重定向到旧测试专用创建接口。文档无指向本轮删除文件的链接，`git diff --check` 通过。
+- 本轮真实挂载使用宿主 Node，不新增 Sandbox 安装态或巨型 repo 性能结论；产品开关仍为 false，未重启日常服务、未继续 Linux、未运行 Evaluation。
+
 ## 隔离 Local 代码总开关默认关闭（2026-10-27）
 
 - 唯一生产开关为 `src/local-overlays/readiness.ts` 的 `LOCAL_OVERLAY_ENABLED = false`。UI 从 bootstrap 获取开关，创建、任务启动/恢复、发布 IPC、全部文件检查/参考继续/事故操作与显式 namespace 启动均拒绝；历史、私有数据、取消/关闭和旧 Sandbox 授权清理保留。没有运行时设置或环境覆盖，不继续 Linux 开发，macOS 仍不实现。
@@ -520,55 +528,6 @@
 - `local-overlay-poc.test.ts` 的 28 个用例覆盖 B/O/T 整合、BOM/CRLF/EOF、132 组对称非重叠替换检查、二进制双改/同段/同名新建/删除对修改冲突、整批预检、陈旧读依赖、候选验证失败/失效、取消、未知写、重复批次、路径穿越和验证期间 junction 替换。路径攻击用例检查原文件及外部目标均未被发布器修改；trace 检查无来源路径/正文。
 - 最终 `pnpm check` 通过：135 个测试文件、1015 passed / 1 existing skipped，类型、lint、格式和构建通过（`.local/local-overlay-check-final.log`）。初次完整检查在手动脚本 stdout/stderr 可空类型处停止，按已配置 pipe 修正声明后通过；构建仍有既有 Zod 注释和大 chunk 提示。收尾检查没有本次发布 worker 残留。没有 UI/HTTP/SSE 行为变化，未运行浏览器验收或 Evaluation。
 - 多文件仍逐一替换；应用锁只约束同一协调目录下的参与者，不提供任意外部写入的内容 CAS。首次读取会保存实际文件内容；尚无 shell 私有写层、完整工程候选验证视图、ACL 保真、自动解锁/回滚、续轮 rebase 或 Linux/macOS 验证。保留实验日志，不清理或修改生产会话。
-
-## 虚拟 worktree 首次扫描优化（D169，2026-10-25）
-
-- 原实现一万文件 profiling `.local/virtual-worktree-poc-iVF6ZY`：首次 status 10.561 s，SQLite 写累计 6.294 s；逐文件 Cleanup 自动 atime 触发持久化是主要可消除成本。Git PoC 改用 no-atime，并增加 `(parent,node)` 索引与 SQL statement 复用；未关闭 SQLite FULL，未改变生产实时 overlay 的时间语义。
-- 最终十万文件/1000 blob 夹具 `.local/virtual-worktree-poc-VL9Dsm` / `.local/virtual-scan-final-100k.log`：首次 status **30.993 s**，相对首轮 106.217 s 缩短 70.8%；第二次 0.838 s，创建 0.508 s，私有分配创建/扫描后 8.97/41.74 MB。创建加首次扫描 31.50 s，仍慢于本轮普通 worktree 21.94 s。首次读取全部十万个 blob/409.6 MB，来源工作文件打开/枚举始终零；不把首次命令当 OS 冷缓存。
-- 全部唯一内容十万文件 `.local/virtual-worktree-poc-tcgsD2` / `.local/virtual-scan-unique-100k.log`：创建 0.520 s、首次 status 35.414 s、第二次 0.911 s；未测该样本优化前版本，不推导其加速比。完整计量和限制见 [扫描优化报告](virtual-worktree-poc.md#首次扫描优化) / [JSON](virtual-worktree-scan-results.json)。
-- 增加真实 Git 回归：首次扫描前/后同长度修改、删除、untracked 均能检测；index 无跳过标志；no-atime 读取、显式时间设置、staged diff 与重挂载通过。开发中曾先采用仅 lower no-atime，显式 atime 用例在 `.local/virtual-worktree-poc-G3xcmb` / `YJu3dB` 复现 upper 属性读取覆盖时间，最终统一 Git PoC 卷 no-atime 后通过；未弱化断言。
-- 最终虚拟 worktree Sandbox 完成/取消均为 `agent-runtime/windows-sandbox-user/sandboxApplied`，结束零租约，没有 fallback。原实时后端 `.local/winfsp-verification-2e8GU9` / `.local/virtual-scan-live-regression.log` 的 Git、ACL、锁、映射写入、重挂载、强杀拒绝恢复及真实 Sandbox 完成/恢复/取消全部通过。原生构建及解析回归通过，日志 `.local/virtual-scan-native-final.log`，仍只有 SDK 结构对齐警告。未安装/Repair Sandbox、创建分区或重启服务。
-- 最终 `pnpm check` 通过：134 个测试文件、987 passed / 1 existing skipped，类型/lint/格式/构建通过（`.local/virtual-scan-check-final.log`）。新增协议验证接受旧计数收据和扩展微秒计量；结束后无本次夹具 helper/Git 子进程残留。无 UI/HTTP/SSE 改动，未重复浏览器验收。
-
-## Git 提交虚拟 worktree PoC（D169，2026-10-25）
-
-- 仅新增人工 PoC，不接入产品默认模式、会话清单或 UI，不迁移历史、不重启服务，不安装/Repair Sandbox 或创建分区。原生 WinFsp upper、SQLite 命名空间/ACL、身份与卸载流程复用；Git lower 使用固定 tree 和常驻本地 cat-file，读取不物化工作文件。
-- 十万文件实测夹具 `.local/virtual-worktree-poc-XqC9Wi`：来源只有 `.git`，创建 0.552 s/私有分配 9.04 MB，对照普通 worktree 20.552 s/418.41 MB。首次 status 106.217 s，对照 0.120 s；第二次 2.086 s，对照 0.071 s。首次 status 后 41.45 MB；全部阶段来源工作文件打开/枚举为零。计量定义、阶段耗时、1000 个复用 blob 的限制和原始 JSON 见 [PoC 报告](virtual-worktree-poc.md)。没有把“首次命令”称为冷缓存，也没有用跳过 Git 检查伪造 clean。
-- 最终功能夹具 `.local/virtual-worktree-poc-Vvx0Fb`（`.local/virtual-worktree-verify-final.log`）：选定非来源 HEAD 提交、主目录 staged/dirty/untracked 排除、双视图隔离、隐藏文件、diff/add/commit/branch/reset/restore、目录 rename/文件删除以及正常重挂载身份/内容均通过。真实专用账户 Runtime 读提交文件、写入并 commit、完成/取消均为 agent-runtime/windows-sandbox-user/sandboxApplied，结束零租约，没有 host fallback。仅实验 workspace 注册适配器替换，Runtime/ACL/IPC/cleanup 均走生产代码；不扩展为产品模式选择/恢复入口验收。
-- `.local/virtual-worktree-poc-NdyuZD` 先复现不兼容 tree 的文件系统错误被 Git 部分解释为删除；新增发现不兼容 tree 后拒绝新路径查找，最终相同 `.gitattributes` 失败用例通过。未支持的子树按需发现，不声称创建时已经检查整个仓库。
-- 原有实时 overlay 完整人工回归通过：`.local/winfsp-verification-dGaEF4` / `.local/virtual-worktree-live-regression.log`，覆盖 Git、DACL、锁、映射写入、重挂载、强杀拒绝恢复及真实 Sandbox 完成/恢复/取消。原生构建及解析回归通过：`.local/virtual-worktree-native-final.log`；只有上游 SDK 结构对齐警告。
-- 最终 `pnpm check` 通过：134 文件、987 passed / 1 existing skipped，类型、lint、格式和构建通过（`.local/virtual-worktree-check-final.log`）。最初一轮在新脚本段落空行 lint 停止，修复格式后全套通过；无 UI/HTTP/SSE 行为变更，未重复浏览器验收。结束后确认没有遗留本次 overlay helper 或 Git 对象查询子进程。
-- 本 PoC 不足以证明巨型真实项目的总体提速：首次扫描明显更慢，任意 attributes/filter/LFS/submodule、GC base 保活、Linux/macOS 以及完整故障矩阵未验收。未运行 Evaluation。
-
-## Windows WinFsp 实时 overlay（D168，2026-10-25）
-
-- 在用户明确授权后安装已验签的官方 WinFsp 2.1.25156 Runtime，exit 0。无分区创建、系统/用户服务重启或 Sandbox 安装/Repair。MSVC x64 构建原生 helper 成功；只保留上游 SDK 的结构对齐警告。
-- `pnpm worktree:verify-winfsp --sandbox` 使用正式 WorktreeService/Engine 与现有专用账户 Runtime，最终夹具 `.local/winfsp-verification-PNAutR` 通过：双视图隔离、实时 lower、dirty/staged/untracked/ignored、内部 junction 到虚拟 symlink、copy-up、whiteout、大小写/文件/目录 rename、临时文件替换、8 路独立写入、Git add/commit 与来源 HEAD/index/工作文件保持、项目映射和公共 Git 根。输出保存在 `.local/winfsp-runtime-final.log`。
-- 同一脚本验证 DACL deny/protection、owner/group 保留、根继承授权/撤销、文件独占共享锁和内存映射写入；来源 ACL/字节不变。Sandbox 实际执行身份为专用账户，没有 host fallback；提交完成后零租约，关闭并重建 Engine 后恢复原挂载，取消同样完成 Runtime 清理并零租约。重挂载 dev/ino/birthtime 相同，内容及删除标记保留。单独 helper 强杀后拒绝恢复并保留私有对象。
-- 审查回归先在 `.local/winfsp-verification-KcPahi` 复现只改名 lower 文件随来源删除而消失；修复为普通文件 rename 先 copy-up，QSKSbf 已覆盖。初次 Sandbox 清理失败定位为虚拟根 inherited ACE 被安全描述符修改丢弃；将来源有效根 ACE 固化为显式保护 DACL后重新验证授权/撤销成功，原测试现场仅撤销其自身的四项已知授权。
-- 相对 symlink 创建在宿主 Node 下被 Windows 权限拒绝（`.local/winfsp-verification-TeQAdD`），不修改系统策略来掩盖；移动后越界约束另由原生解析回归验证，不将其称为完整 symlink 安装态通过。
-- 最终 `pnpm check` 通过：134 个文件、985 passed / 1 existing skipped，类型、lint、格式与构建通过（`.local/winfsp-check-delivery.log`）。原生 `-VerifyReparse` 通过（`.local/winfsp-native-final.log`）；全套浏览器验收 71 passed（`.local/winfsp-e2e.log`），仍通过测试专用缺 helper 注入验证不可用提示，不冒称原生挂载的浏览器端验收。创建失败的单挂载清理回归确认不影响另一个活动视图。
-- 边界：不是完整 NTFS/ACL 兼容认证；PowerShell 整描述符 Set-Acl 路径未通过，DACL 专用 API 和 Sandbox 原生 API 已通过。SACL/审计、ADS、新建硬链接、EFS、外部重解析点不支持；lower 事件通知、断电/每阶段故障注入、Windows ARM64、巨型 repo 性能未验收。POSIX 后端与普通 Worktree 行为保持；没有自动回写/清理，未运行 Evaluation。
-
-## 默认 Riftri 当前状态副本（D167，2026-10-25）
-
-- Riftri 与普通 Worktree 已拆为并列模式。新会话默认 Riftri，不接受 commit/branch；v2 helper 直接从原目录克隆当前文件和独立 Git metadata，移除 blob hash、Git checkout/filter 与 fallback。Windows 无原生支持时明确拒绝，UI 提供显式 Worktree 入口。
-- WSL / Linux Node 24.19.0、Rust 1.93.1：用正式构建流程和锁文件构建最终 helper，复用已有普通文件 XFS 镜像，无 Windows 分区/格式化。真实 `WorktreeService` 创建两个各克隆 40 个普通文件的副本，保留 dirty/staged/deleted/untracked/ignored、CRLF attributes 下的实际字节、非 UTF-8/换行/tab 文件名、执行位及内部链接。副本提交只改变自己 HEAD/refs/index，来源状态不变；普通 Worktree 仍是干净提交基线。
-- 32 MiB 文件在来源与两个副本均共享块 `2435832..2501367`（flags `0x2001`）。分别修改首 4 KiB 后，副本分配 `6714392..6714399` 与 `4990808..4990815`，剩余 `2435840..2501367` 仍共享；来源哈希保持不变。卸载重挂载后，独立 Node 进程在无 helper 时验证身份、后端与持久内容成功，最终已卸载。
-- Git 活跃锁、alternates 和外部符号链接均使创建失败并保留现场；移除问题条目后同一请求仍拒绝重放。普通 WSL/ext4 上 Riftri 拒绝、显式 Worktree 成功。单独的协议兼容阻塞 helper 验证关闭真正终止进程、写 failed 清单、重启禁止重放；该阻塞夹具不代表 ext4 有 CoW。
-- 证据：`.local/riftri-snapshots/` 的 `wsl-verify.log`、`wsl-result.json`、`extents*.json`、`remount.log`、`ext4.log`、`cancel.log`。原生内容校验中的哈希仅由测试计算，产品创建路径不再计算 Git blob hash。
-- Windows 浏览器回归 `pnpm test:e2e` 71 passed：真实 UI 确认默认 Riftri 不可用提示、显式 Worktree 创建/编辑/刷新；旧 Local 的既有任务与历史回归通过测试专属预置入口继续执行，不将其冒称原生 Riftri 浏览器成功。
-- Windows / Node 26.10.0：最终 `pnpm check` 全套通过，132 文件、969 passed / 1 existing skipped；类型、lint、格式和测试构建通过。中间一轮既有 `token-anchor.test.ts` 的历史迁移用例偶发报源/目标文件身份相同，单独 20 项复跑及最终全套均通过，未改迁移代码或弱化断言；保留 `check-final.log`、`token-anchor-recheck.log` 和 `check-final-retry.log` 记录。
-- 边界：逐文件克隆不是全目录原子快照；创建期间应停止来源写入。嵌套/外置 Git、初始化 submodule gitfile、外部链接及特殊文件目前拒绝。macOS APFS、Windows 原生 CoW/完整 ACL、巨型 repo 性能和真实 Sandbox 安装态未验收。未运行 Evaluation、安装/Repair、自动回写/清理或重启当前服务。
-
-## Riftri 直接来源 CoW（D166，2026-10-25）
-
-- 采用 Riftri v0.6.5 storage 源码与窄单文件 API，不调用创建 immutable base 的上游 CLI。正式构建脚本在 WSL 使用固定源码 SHA-256 与 Cargo.lock 成功构建；本次工具链为独立目录中的 Rust 1.93.1，Linux Node 24.19.0。构建过程的 Cargo 镜像配置仅在实验目录，不进入产品或修改系统安装。
-- 真实产品 `WorktreeService` 在 WSL/XFS 创建两个 detached checkout，各复用 5 个文件。32 MiB `large.bin` 与原 checkout 都映射到物理块 `2303808..2369343`，flags `0x2001`；没有额外 Riftri base，也没有来源 `.git/riftri` 状态目录。
-- 分别写入两副本前 4 KiB 后，块范围成为 `5013512..5013519` 和 `2369408..2369415`；其余 `2303816..2369343` 保持共享，来源哈希不变。卸载/重挂载后，独立 Node 进程在 helper 缺失时仍验证 worktree 身份、后端记录和写入哈希成功。
-- 手动真实 Git 覆盖 dirty/staged/untracked/ignored、选定旧 commit、HEAD 移动后的请求去重、源权限保持/目标执行位、CRLF、smudge/clean、符号链接、gitlink、含空格/换行/tab 的文件名、非 UTF-8 路径退回 Git、独立修改/index、共享 Git 根/项目映射、helper 缺失、创建失败与关闭取消不重放。普通 WSL/ext4 使用同一 fixture 实测 `backend=git`、`fallbackReason=unsupported-volume`，另覆盖 SHA-256 仓库的普通 fallback。
-- 原生验证入口为 `scripts/verify-riftri.ts`；本机证据在 `.local/riftri-integration/` 的 `wsl-verify.log`、`wsl-result.json`、`extents.json`、`extents-after-write.json`、`remount.log` 和 `wsl-ext4*.log`。仅复用之前的普通文件 XFS 镜像，最终已卸载；未创建 Windows 分区。
-- Windows / Node 24.19.0：`pnpm check` 通过，131 个测试文件、962 passed / 1 existing skipped；包括 17 项 Worktree 生命周期与 10 项 Riftri adapter 用例。`pnpm test:e2e` 71 passed。真实 Sandbox 安装态、macOS APFS、Windows ReFS/ACL、断电以及巨型仓库性能没有在本轮验收。不运行 Evaluation，不重启当前服务。仍没有自动回写/清理/handoff。
 
 ## 显式 Git worktree 对话（D165，2026-10-25，Windows / Node 24.19.0）
 

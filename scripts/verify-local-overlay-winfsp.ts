@@ -1,6 +1,6 @@
 /**
  * 手动验证 D170 发布 PoC 与现有 WinFsp 普通目录后端的最小衔接。
- * 1. 创建独占非 Git 来源，直接调用 OverlayManager Local 模式建立双视图，不经过 Riftri/WorktreeService。
+ * 1. 创建独占非 Git 来源，直接调用 OverlayManager Local 模式建立双视图，不经过 WorktreeService。
  * 2. 默认保留旧的预声明基线对照；--native 改用原生自动基线和冻结导出，真实子进程编辑不变。
  * 3. 将明确选择的结果交给 Publisher；--native 在全新临时视图验证候选，保留原会话私有结果。
  * 4. 干净卸载/重挂载检查私有内容持久化，保存有界报告并保留实验现场。
@@ -20,7 +20,7 @@ import {
   OverlayManager,
   overlayNamespace,
   overlayWorkspace,
-} from "../src/worktrees/overlay.js";
+} from "../src/local-overlays/winfsp-manager.js";
 import {
   durableJson,
   sourceIdentity,
@@ -249,7 +249,6 @@ try {
       ? "automatic native capture and frozen export"
       : "explicit EditSession baseline",
     gitOperations: 0,
-    riftriInvocations: 0,
     mounts: 2,
     initialPrivateContentObjects: 0,
     initialLowerEnumerations: 0,

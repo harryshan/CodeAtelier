@@ -20,7 +20,7 @@ import {
   overlayNamespace,
   overlayWorkspace,
   type OverlayEpochTransition,
-} from "../src/worktrees/overlay.js";
+} from "../src/local-overlays/winfsp-manager.js";
 import { nativeBatch } from "../src/local-overlays/publication/native-batch.js";
 import { Publisher } from "../src/local-overlays/publication/publisher.js";
 import { sourceIdentity } from "../src/local-overlays/publication/files.js";

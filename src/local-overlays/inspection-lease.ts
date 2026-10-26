@@ -6,7 +6,7 @@
  * 不挂载、修复或写来源；外层恢复操作负责 ID、耗时、失败/取消日志及 tracing。
  */
 import { spawn } from "node:child_process";
-import { overlayHelperPath } from "../worktrees/overlay.js";
+import { overlayHelperPath } from "../local-overlays/winfsp-manager.js";
 import { PublishError } from "./publication/merge.js";
 
 export async function withLocalInspection<T>(

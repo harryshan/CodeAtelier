@@ -2,9 +2,9 @@
  * CodeAtelier 的主页面，负责选择会话、提交任务和打开设置等用户操作。
  * 通过 api 请求后端，通过 useSessionConnection 同步会话，再交给 Timeline 和分类 SettingsPage 展示。
  *
- * 0. workspaceDescription 按后端解释实时 lower、固定 CoW 或 Git 提交基线，供实际路径提示使用。
+ * 0. workspaceDescription 显示 Git 提交基线或旧私有视图的退役说明，供实际路径提示使用。
  * 1. 状态和 effects 管理当前会话、默认关闭的一次性 subagent 勾选、服务端能力标志、弹窗及加载状态；useHistoryScroll 自动加载旧页，Timeline 保持阅读位置；历史加载使用低强调状态行，读取失败独立警告并允许重试。
- * 2. 按服务端来源项目路径分组（旧 Local 使用实际路径）；项目可折叠并默认显示最近五个对话。新建默认 Riftri；WorktreeDialog/LocalOverlayDialog 显式创建其它模式，重试保留 UUID。项目栏显示模式、实际路径与 Local 发布状态，失效私有视图阻止新任务；手机端使用导航抽屉。
+ * 2. 按服务端来源项目路径分组（旧 Local 使用实际路径）；项目可折叠并默认显示最近五个对话。新建默认普通 Local；WorktreeDialog/LocalOverlayDialog 显式创建其它模式，重试保留 UUID。项目栏显示模式、实际路径与 Local 发布状态，失效或退役的私有视图阻止新任务；手机端使用导航抽屉。
  *    Local 选集检查可显式建立参考对话；中断材料提示可能部分写入，成功切换时保留草稿并追加重新验证提示，不自动提交任务。
  * 3. resume、reloadService、stopServer、createProject、createConversation 和 send 处理恢复、受确认的服务重载、关闭服务、连接项目、新建会话和发送消息，并显示操作结果。
  *    Local 私有刷新成功的任务匹配回执只改变当前操作提示，历史失败保留；引导新任务而不重做已发布批次。
@@ -31,7 +31,7 @@ import { MarkdownTaskEditor } from "./MarkdownTaskEditor";
 import { SettingsPage } from "./settings/SettingsPage";
 import { Timeline } from "./Timeline";
 import { SessionStatistics } from "./SessionStatistics";
-import { WorktreeDialog, requestId } from "./WorktreeDialog";
+import { WorktreeDialog } from "./WorktreeDialog";
 import { LocalOverlayDialog } from "./LocalOverlayDialog";
 import { LocalOverlayStatus } from "./LocalOverlayStatus";
 import s from "./app.module.css";
@@ -43,16 +43,11 @@ function workspaceDescription(worktree: Session["worktree"]) {
     return undefined;
   }
 
-  let baseline: string;
-  if (worktree.backend === "riftri-winfsp") {
-    baseline = "实时读取主目录，工作文件写入私有层；Git objects/refs 共享";
-  } else if (worktree.mode === "riftri") {
-    baseline = "主目录创建时状态（包含脏文件）";
-  } else {
-    baseline = `${worktree.baseRef ?? "未知"} (${worktree.baseCommit?.slice(0, 12) ?? ""})`;
+  if (worktree.state === "retired") {
+    return `来源：${worktree.projectWorkspace ?? "清单不可用"}；旧 Riftri 已移除，历史和私有数据保留，不能执行`;
   }
 
-  return `来源：${worktree.projectWorkspace ?? "清单不可用"}；创建基线：${baseline}；存储：${worktree.backend ?? "git"}`;
+  return `来源：${worktree.projectWorkspace ?? "清单不可用"}；Git 基线：${worktree.baseRef ?? "未知"} (${worktree.baseCommit?.slice(0, 12) ?? ""})`;
 }
 
 export default function App() {
@@ -67,9 +62,6 @@ export default function App() {
   const [localOverlayProject, setLocalOverlayProject] = useState<string>();
   const [localOverlayCreation, setLocalOverlayCreation] =
     useState<LocalOverlayCreation>({ enabled: false });
-  const creationRequest = useRef<{ workspace: string; id: string } | undefined>(
-    undefined,
-  );
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [expandedProjectHistories, setExpandedProjectHistories] = useState<
     Set<string>
@@ -133,8 +125,9 @@ export default function App() {
     data?.session.id === selected
       ? (data.latestSandbox ?? bootstrapSandbox)
       : bootstrapSandbox;
-  const localExecutionBlocked = Boolean(
-    data?.session.localOverlay && !localOverlayCreation.enabled,
+  const workspaceExecutionBlocked = Boolean(
+    (data?.session.localOverlay && !localOverlayCreation.enabled) ||
+    (data?.session.worktree && data.session.worktree.state !== "ready"),
   );
 
   useEffect(() => {
@@ -225,7 +218,7 @@ export default function App() {
     data.session.localOverlay.refreshedTaskId === recoverable.id,
   );
   const resume = async () => {
-    if (!recoverable || localExecutionBlocked) {
+    if (!recoverable || workspaceExecutionBlocked) {
       return;
     }
 
@@ -303,19 +296,9 @@ export default function App() {
     setBusy(true);
     setError("");
     try {
-      if (creationRequest.current?.workspace !== projectWorkspace) {
-        creationRequest.current = {
-          workspace: projectWorkspace,
-          id: requestId(),
-        };
-      }
-
       const session = await api<Session>("/sessions", {
         workspace: projectWorkspace,
-        riftri: { id: creationRequest.current.id },
       });
-
-      creationRequest.current = undefined;
 
       setList((current) => [
         session,
@@ -337,7 +320,7 @@ export default function App() {
   };
 
   const send = async () => {
-    if (!prompt.trim() || !selected || localExecutionBlocked) {
+    if (!prompt.trim() || !selected || workspaceExecutionBlocked) {
       return;
     }
 
@@ -438,7 +421,7 @@ export default function App() {
                       disabled={busy}
                       onClick={() => void createConversation(projectWorkspace)}
                       aria-label="新建对话"
-                      title="以主目录当前状态新建 Riftri 对话"
+                      title="在主目录新建 Local 对话"
                     >
                       <span>＋</span>
                     </button>
@@ -499,7 +482,7 @@ export default function App() {
                           {item.localOverlay
                             ? "⧉"
                             : item.worktree
-                              ? item.worktree.mode === "riftri"
+                              ? item.worktree.state === "retired"
                                 ? "◈"
                                 : "⑂"
                               : "⌘"}
@@ -676,9 +659,8 @@ export default function App() {
               </p>
               <form className={s.projectForm} onSubmit={createProject}>
                 <p>
-                  默认使用 Riftri
-                  创建独立工作视图，包含主目录的未提交与忽略文件。Windows 需要
-                  WinFsp，未修改文件实时读取主目录；Linux/macOS 需要原生 CoW。
+                  默认直接在项目目录工作，同一目录的任务串行执行。需要独立 Git
+                  工作目录时可显式选择 Git worktree。
                 </p>
                 <label>
                   项目目录
@@ -766,15 +748,22 @@ export default function App() {
                   {data?.session.localOverlay
                     ? "隔离 Local"
                     : data?.session.worktree
-                      ? data.session.worktree.mode === "riftri"
-                        ? "Riftri"
+                      ? data.session.worktree.state === "retired"
+                        ? "已移除的工作区"
                         : "Worktree"
-                      : "本地项目（历史）"}
+                      : "Local"}
                 </span>
                 <code title={data?.session.workspace}>
                   {data?.session.workspace}
                 </code>
               </div>
+              {data?.session.worktree?.state === "retired" && (
+                <p role="status">
+                  Riftri
+                  已移除。历史与私有数据保留，此对话不能继续执行；请从项目主目录新建
+                  Local 或 Git worktree 对话。
+                </p>
+              )}
               {data?.session.localOverlay && (
                 <LocalOverlayStatus
                   capability={localOverlayCreation}
@@ -859,7 +848,7 @@ export default function App() {
                         可在下方填写恢复说明，或直接恢复。
                       </p>
                       <button
-                        disabled={busy || !hasKey || localExecutionBlocked}
+                        disabled={busy || !hasKey || workspaceExecutionBlocked}
                         onClick={() => void resume()}
                       >
                         恢复任务
@@ -916,7 +905,7 @@ export default function App() {
                       busy ||
                       !prompt.trim() ||
                       !hasKey ||
-                      localExecutionBlocked ||
+                      workspaceExecutionBlocked ||
                       ["failed", "unavailable", "preparing"].includes(
                         data?.session.localOverlay?.state ?? "",
                       )

@@ -2,7 +2,7 @@
  * 用临时真实 Git 仓库验证 Worktree 生命周期与系统联动，不访问用户仓库或模型。
  * 1. fixture 在同一个测试根下放置来源、私有数据和 checkout，并登记服务关闭后再清理。
  * 2. 创建测试检查基线、独立文件/index、请求去重、重启与未知状态；替换和 gitfile 篡改必须拒绝。
- * 3. HTTP/Engine 测试检查项目分组元数据、调度、恢复和失效路径；记忆映射保留工具的实际工作区。
+ * 3. HTTP/Engine 测试检查项目分组元数据、调度、恢复和失效路径；退役 Riftri 历史可读但不能执行或降格 Local，私有数据保留。
  * 4. 所有 Git 参数固定，清理仅针对 fixture 自己创建的临时根。
  */
 
@@ -21,6 +21,10 @@ import path from "node:path";
 import pino from "pino";
 import { expect, it } from "vitest";
 import { WorktreeService } from "../src/worktrees/service.js";
+import {
+  overlayNamespace,
+  overlayWorkspace,
+} from "../src/local-overlays/winfsp-manager.js";
 import { git } from "../src/worktrees/git.js";
 import type { Session } from "../src/shared/types.js";
 import { Config } from "../src/config/config.js";
@@ -134,7 +138,7 @@ it("retains a successful checkout when session persistence fails and binds it on
   );
 });
 
-it("continues pre-Riftri manifests without recreating the checkout or requiring a helper", async () => {
+it("continues legacy Git manifests without recreating the checkout", async () => {
   const f = await fixture();
   const session = await f.service.create(f.input, f.bind);
   const manifest = path.join(f.directory, "worktrees", `${f.input.id}.json`);
@@ -146,11 +150,7 @@ it("continues pre-Riftri manifests without recreating the checkout or requiring 
     "preserved legacy edit\n",
   );
   await f.service.close();
-  const restarted = new WorktreeService(
-    f.directory,
-    log,
-    path.join(f.root, "missing-helper"),
-  );
+  const restarted = new WorktreeService(f.directory, log);
   currentTestResources().defer(() => restarted.close());
 
   const restored = await restarted.create(f.input, f.bind);
@@ -160,6 +160,78 @@ it("continues pre-Riftri manifests without recreating the checkout or requiring 
     await readFile(path.join(session.workspace, "tracked.txt"), "utf8"),
   ).toBe("preserved legacy edit\n");
 });
+
+it.each(["disk", "unc"])(
+  "keeps retired Riftri %s history and data but rejects execution and Local reclassification",
+  async (kind) => {
+    const f = await fixture();
+    const created = await f.service.create(f.input, f.bind);
+    const manifest = path.join(f.directory, "worktrees", `${f.input.id}.json`);
+    const record = JSON.parse(await readFile(manifest, "utf8"));
+    record.mode = "riftri";
+    record.checkout = {
+      backend: kind === "unc" ? "winfsp-overlay" : "reflink",
+    };
+    const workspace =
+      kind === "unc"
+        ? overlayWorkspace(overlayNamespace(f.directory), f.input.id)
+        : created.workspace;
+    if (kind === "unc") {
+      record.executionWorkspace = workspace;
+    }
+
+    await writeFile(manifest, JSON.stringify(record));
+    await writeFile(
+      path.join(created.workspace, "private.txt"),
+      "unpublished edit",
+    );
+
+    const app = await createApp(new Config(f.directory), log);
+    currentTestResources().defer(() => app.app.close());
+    const session = await app.store.createAsync(workspace);
+    const bootstrap = await app.app.inject({
+      url: "/api/bootstrap",
+      headers: { host: "127.0.0.1" },
+    });
+    const token = bootstrap.json().token;
+    const headers = {
+      host: "127.0.0.1",
+      cookie: `ca_session=${token}`,
+      "x-codeatelier-token": token,
+    };
+    const history = await app.app.inject({
+      url: `/api/sessions/${session.id}`,
+      headers,
+    });
+    expect(history.statusCode).toBe(200);
+    expect(history.json().session.worktree).toMatchObject({
+      mode: "retired",
+      state: "retired",
+      projectWorkspace: f.source,
+    });
+    await expect(app.engine.worktrees.validate(workspace)).rejects.toThrow(
+      "Riftri",
+    );
+    const run = await app.app.inject({
+      method: "POST",
+      url: `/api/sessions/${session.id}/tasks`,
+      headers,
+      payload: { prompt: "must not run" },
+    });
+    expect(run.statusCode).toBe(409);
+    const reclassify = await app.app.inject({
+      method: "POST",
+      url: "/api/sessions",
+      headers,
+      payload: { workspace },
+    });
+    expect(reclassify.statusCode).toBeGreaterThanOrEqual(400);
+    expect(
+      await readFile(path.join(created.workspace, "private.txt"), "utf8"),
+    ).toBe("unpublished edit");
+    expect(JSON.parse(await readFile(manifest, "utf8")).mode).toBe("riftri");
+  },
+);
 
 it("rejects missing or replaced directories while keeping history readable", async () => {
   const f = await fixture();

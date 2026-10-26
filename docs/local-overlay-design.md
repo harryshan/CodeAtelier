@@ -1,6 +1,6 @@
 # Local 会话文件隔离与发布：重新定界
 
-隔离 Local 总开关（2026-10-27）：用户要求暂不继续 Linux 工作，并将整个功能置于代码开关之后、默认关闭。唯一开关为 `src/local-overlays/readiness.ts` 的 `LOCAL_OVERLAY_ENABLED = false`，没有设置、环境变量或 HTTP 覆盖。关闭时隐藏创建入口，拒绝创建、旧视图任务启动/恢复、发布选择、文件检查、参考继续、私有刷新及来源事故操作；`start:overlay` 也在创建 namespace 前拒绝。历史与私有数据保留，取消、关闭卸载及旧 Sandbox 授权清理继续执行。普通 Local、Riftri、Git worktree 和 Sandbox 原有行为不变。未来启用须修改常量并重新构建/启动，仍须满足平台与 Sandbox 条件；macOS 仍不实现。下面已完成的 Windows/Linux 记录仅作为关闭前的历史证据，不表示当前产品开放。
+隔离 Local 总开关（2026-10-27）：用户要求暂不继续 Linux 工作，并将整个功能置于代码开关之后、默认关闭。唯一开关为 `src/local-overlays/readiness.ts` 的 `LOCAL_OVERLAY_ENABLED = false`，没有设置、环境变量或 HTTP 覆盖。关闭时隐藏创建入口，拒绝创建、旧视图任务启动/恢复、发布选择、文件检查、参考继续、私有刷新及来源事故操作；`start:overlay` 也在创建 namespace 前拒绝。历史与私有数据保留，取消、关闭卸载及旧 Sandbox 授权清理继续执行。普通 Local、Git worktree 和 Sandbox 原有行为不变；Riftri 已按 D171 移除。未来启用须修改常量并重新构建/启动，仍须满足平台与 Sandbox 条件；macOS 仍不实现。下面已完成的 Windows/Linux 记录仅作为关闭前的历史证据，不表示当前产品开放。
 
 状态：2026-10-25 用户重新澄清目标（D170），随后授权继续验证并接入 agent。Overlay 与 Git worktree 完全并列，服务于同一 Local 工作区多个对话的文件修改隔离与冲突整合，不负责 Git 工作区管理。受控发布、Local WinFsp 双挂载、`.git` 屏蔽、真实 Sandbox 并行/取消/重挂载、原生捕获/冻结导出、Windows owner/group/DACL 保留发布及成功后确认/续轮刷新的 PoC 已验证；Engine 内部生命周期、明确选择发布和候选 Sandbox 命令已接入；模型选择工具和显式创建/状态入口已接入，真实 IPC v18 模型工具/候选验证/发布及同文件并行已通过，异常私有卷等恢复操作仍待完成，不改变现有服务或历史会话。
 
@@ -48,7 +48,7 @@
 
 实机 noEmit 1,260 个输入/110,544 行 TypeScript、1,385 条读取复核通过；编译器 32.08 秒、含 Runtime 启停 37.571 秒。后端 emit 为 774 输入/47,327 行、819 条读取，生成 406 文件/2,676,554 字节，其中 203 个 JS 与直接构建逐字节一致；Runtime 总计 25.560 秒，编译器 21.78 秒，控制层分配约 9.37 MiB。两种创建期 lower 打开/枚举均为零，真实专用账户终态及零活动租约确认，正常候选回收；见 [报告](local-overlay-sandbox-build-results.json)。目录/缺失路径/外部依赖完整性、峰值总内存、Vite/原生构建、运行生成服务及 POSIX 仍未由该验证证明；source map 只校验路径/非空，源路径相对输出目录不同，不比较 map 正文。耗时为未控制缓存的单次顺序结果，不作为普遍性能保证。
 
-工程读取开销优化（2026-10-26）：Local 复用最多 128 种 SQL 的空闲 statement，reset 并清除绑定，嵌套借用使用独立实例，错误实例丢弃；不缓存查询结果或跳过 lower/权限/依赖检查。Local 采用 no-atime：普通读取后的自动 LastAccessTime 不更新私有数据库，显式 SetBasic 时间和其它写入/清理仍持久化。保留 SQLite FULL、每次首次观察/修改记录和旧 Riftri 行为；计量沿用原生无路径计数及外层生命周期 tracing，新增可选 sqlPrepares 兼容旧 helper。原生回归覆盖绑定清除、嵌套、错误释放、schema 改变与数量限制；真实挂载验证普通私有读取零 SQL 写入、显式时间跨重挂载保留、lower 改变可见及旧观察失效。手动 `pnpm overlay:verify-read-cost` 不进入默认 check/Evaluation。
+工程读取开销优化（2026-10-26）：Local 复用最多 128 种 SQL 的空闲 statement，reset 并清除绑定，嵌套借用使用独立实例，错误实例丢弃；不缓存查询结果或跳过 lower/权限/依赖检查。Local 采用 no-atime：普通读取后的自动 LastAccessTime 不更新私有数据库，显式 SetBasic 时间和其它写入/清理仍持久化。保留 SQLite FULL 和每次首次观察/修改记录；计量沿用原生无路径计数及外层生命周期 tracing，新增可选 sqlPrepares 兼容旧 helper。原生回归覆盖绑定清除、嵌套、错误释放、schema 改变与数量限制；真实挂载验证普通私有读取零 SQL 写入、显式时间跨重挂载保留、lower 改变可见及旧观察失效。手动 `pnpm overlay:verify-read-cost` 不进入默认 check/Evaluation。
 
 本机工程编译前后单次比较：候选 45.100 → 26.664 秒，SQL 写入 15.941 → 2.995 秒/15,599 → 9,716 次，SQL 准备 1.827 → 0.296 秒。优化后 lower 仍打开 239,725 次、枚举 35 次，1,311 条依赖通过，控制层分配 6,402,048 字节；创建期 lower 打开/枚举仍为零。直接编译约 5.528 秒，差距仍显著；两次未控 OS 缓存、输入增加一份验证脚本，不作严格基准或普遍加速承诺。原始计数、编译器诊断及独立语义检查见 [报告](local-overlay-read-cost-results.json)，宿主 noEmit 不代表 Sandbox 大型工程、产物构建或目录/外部依赖完整性。
 
@@ -62,7 +62,7 @@
 
 Windows 公开入口的手动验收需要已安装 WinFsp、已构建 overlay helper、IPC v18 Sandbox 和 Chromium。先运行 `pnpm build:test`，再执行 `pnpm overlay:verify-browser`；脚本只在 `.local/local-overlay-browser-*` 建立合成来源、私有设置、临时 HTTP 服务和截图/报告，不连接真实模型，不自动安装依赖。启动沿用生产 Sandbox 账户恢复流程，应在没有其它 Sandbox 任务时运行。它关闭/重建的仅是自身夹具服务，未改变产品默认创建模式。
 
-公开入口实施增量：在保留现有默认 Riftri/显式 Worktree 的同时，新增显式“隔离 Local”创建。HTTP 请求携带 `localOverlay:{id}`，与其它创建模式互斥，无 commit/branch；来源可以是普通非 Git 目录。首批公开创建、启动和恢复只接受 Windows 且 Sandbox 已启用，helper/驱动/运行时仍按真实启动验证，失败不自动改用其它模式。会话列表、快照及历史分页都返回单独的 Local overlay 元数据并按来源项目归组；错误清单仍可查看历史，不能把失效卷降格成普通目录。任务要求 Sandbox 时，Local 的启动失败不转宿主执行。真实 IPC v18 链路和公开浏览器/HTTP/SSE 已分别实机验证：独立夹具完成双会话创建、并行编辑、选择发布、冲突检查和参考继续，见 [浏览器报告](local-overlay-browser-results.json)。固定 provider 不证明真实模型表现或任意工程构建；异常卷与 POSIX 仍须独立完成。
+公开入口实施增量：曾新增显式“隔离 Local”创建；目前入口由代码开关关闭，D171 已恢复默认普通 Local，保留显式 Worktree。HTTP 请求携带 `localOverlay:{id}`，与其它创建模式互斥，无 commit/branch；来源可以是普通非 Git 目录。首批公开创建、启动和恢复只接受 Windows 且 Sandbox 已启用，helper/驱动/运行时仍按真实启动验证，失败不自动改用其它模式。会话列表、快照及历史分页都返回单独的 Local overlay 元数据并按来源项目归组；错误清单仍可查看历史，不能把失效卷降格成普通目录。任务要求 Sandbox 时，Local 的启动失败不转宿主执行。真实 IPC v18 链路和公开浏览器/HTTP/SSE 已分别实机验证：独立夹具完成双会话创建、并行编辑、选择发布、冲突检查和参考继续，见 [浏览器报告](local-overlay-browser-results.json)。固定 provider 不证明真实模型表现或任意工程构建；异常卷与 POSIX 仍须独立完成。
 
 2026-10-25 用户追加授权：继续验证完整方案，自审通过后接入 agent，实现安全、低消耗的多 session 并行工作。此授权不把 PoC 通过等同于产品完成；以下验收项持续跟踪，尚未通过的项目不得用其它阶段结果替代。
 
@@ -76,7 +76,7 @@ Windows 公开入口的手动验收需要已安装 WinFsp、已构建 overlay he
 - Local overlay：以当前实际目录为来源，可以用于非 Git 目录；多个会话拥有各自私有写层，最终将选定文件变更发布到该目录。
 - Git worktree：保留现有按 Git 提交建立独立工作目录、HEAD/index 和分支工作流的实现。它不是 overlay 的 fallback，两者不互相替代。
 - Overlay 不创建 commit/branch、linked worktree、Git index 或对象库，不解析 Git tree/blob，不承担 Git merge、push 或 PR。源文件的未提交状态自然可见，无须为此定义 Git 语义。
-- 不在这次设计讨论中删除 D168/D169 代码、迁移已有会话、切换默认模式或自动回写文件。D169 的性能结果只描述旧实验，不能直接推导此方案性能。
+- D171 已删除 D168/D169 的旧 Git 接线和虚拟化代码；历史会话不迁移，私有数据保留，不自动回写。旧实验性能不推导为当前方案性能。
 
 完成态私有刷新接入（2026-10-26）：任务收尾只为已排空、明确 `VIEW_REFRESH_PENDING` 且挂载关闭已确认的失败记录保存 task/batch 恢复资格。产品显式请求在独立恢复锁下复核会话、来源/控制身份及原任务锁，正常挂载并冻结后复用 `Publisher.recoverRefresh`；完整 journal、私有检查点或原生收据仍必须通过。不执行来源写入、模型、候选命令或旧任务重放，未选私有修改保留。正常卸载后才解除任务锁、保存 ready。恢复本身的未知状态保留恢复锁，旧历史缺证明、dirty 卷、私有内容改变或来源残留锁均拒绝；来源锁可走已有独立完成态释放入口。公开 POST /api/sessions/:id/local-refresh 仅接受空请求并沿用鉴权、CSRF、平台/Sandbox 门禁及断线取消；界面明确点击后重读状态，不改草稿或启动任务。真实 WinFsp 确认前/后回执丢失两种场景均已通过，原始报告 .local/local-private-refresh-NUWm4f/report.json；宿主夹具声明排空，不推导 Sandbox 或完整崩溃恢复。
 
@@ -91,7 +91,7 @@ Windows 公开入口的手动验收需要已安装 WinFsp、已构建 overlay he
 A/B 的变更集 ──> 按来源目录串行的发布协调器 ──> 主目录
 ```
 
-来源目录是工作文件来源；每个会话的内容写入、新建、删除和重命名先保留在私有层。首版沿用 Windows WinFsp 的路径/ACL/upper 基础，不建立 Git lower。Linux/macOS 后端需独立设计和实机验证，不把现有逐文件 Riftri CoW 当成免遍历实现。
+来源目录是工作文件来源；每个会话的内容写入、新建、删除和重命名先保留在私有层。首版沿用 Windows WinFsp 的路径/ACL/upper 基础，不建立 Git lower。Linux 原生后端已有独立验证记录，目前暂停推进；macOS 暂不实现。
 
 Overlay 本身只解决写入分离。发布协调器负责变更范围、版本复核、冲突、恢复与来源目录写入；不允许把 upper 当成普通文件目录直接覆盖来源。
 
@@ -107,7 +107,7 @@ Overlay 本身只解决写入分离。发布协调器负责变更范围、版本
 
 `POST /api/sessions/:id/local-resolution` 接收 `{id,paths,version}`，兼容旧 `{id,path,version}`；只从所绑定的父会话取得来源，沿用鉴权/CSRF 和 Windows/Sandbox 创建门禁。成功返回新会话并预填解决提示，用户自行启动；Runtime 和内部宿主模型都获得受控参考目录指引，不将参考正文加入可信指令或复制旧对话上下文。每份文件最多 2 MiB，只复制原文/私有/检查时来源三份材料；空文件与不存在通过 manifest 区分。中途失败保留新视图，原视图不变。浏览器只在当前面板内保存重试 ID，刷新/切换后可能已创建的会话仍留在列表，不自动撤销或重新启动。新视图中后续读取参考也遵守既有私有对象的保守跨轮依赖规则；不提供永久免冲突的上下文。
 
-目录分页优化已接入：Local 单个打开句柄的同一次枚举使用 WinFsp 原生目录缓冲，续页不重新读取 lower；显式重启枚举或新句柄重新观察来源，关闭释放缓冲。只固定本次枚举的名称/元数据，不缓存文件内容、不改变路径打开和写入前检查，也不承诺目录变化的发布依赖完整性。缓冲容量按该句柄枚举条目的高水位增长，restart 可复用容量而非立即归还内存；填充失败会清空半份结果；旧 Riftri/Git 路径保持原回调。512 字节 Win32 实验已验证多页、跨 UTF-16 排序边界的 Unicode、同句柄重启、不同句柄、来源新增/删除和私有 whiteout。十万文件首次/再次遍历进一步为 75.51/12.38 s，lower 枚举 1001 次、打开 310003 次；计数和原始证据见成本报告的 `afterDirectoryBuffer`，同机单组测试不作普遍加速承诺。未测进程峰值内存，超大单目录或大量并发目录句柄仍有缓冲成本。
+目录分页优化已接入：Local 单个打开句柄的同一次枚举使用 WinFsp 原生目录缓冲，续页不重新读取 lower；显式重启枚举或新句柄重新观察来源，关闭释放缓冲。只固定本次枚举的名称/元数据，不缓存文件内容、不改变路径打开和写入前检查，也不承诺目录变化的发布依赖完整性。缓冲容量按该句柄枚举条目的高水位增长，restart 可复用容量而非立即归还内存；填充失败会清空半份结果。512 字节 Win32 实验已验证多页、跨 UTF-16 排序边界的 Unicode、同句柄重启、不同句柄、来源新增/删除和私有 whiteout。十万文件首次/再次遍历进一步为 75.51/12.38 s，lower 枚举 1001 次、打开 310003 次；计数和原始证据见成本报告的 `afterDirectoryBuffer`，同机单组测试不作普遍加速承诺。未测进程峰值内存，超大单目录或大量并发目录句柄仍有缓冲成本。
 
 Local 首次枚举优化：目录枚举期间发现的新 lower 条目共享一次 SQLite 事务，普通路径 lookup 仍独立提交。保留 FULL 同步、逐文件来源身份/ACL/链接检查、稳定 inode、原有 dirty/clean 及失败回滚后停止使用视图的保护；不更改持久格式或把 live lower 当快照。`lowerImportCommits` 仅为进程累计计数，无路径/内容；旧 helper 缺少此可选字段仍可读取，其性能验收必须使用提供计数的新构建。此优化只减少首次元数据导入的提交次数，不能消除遍历/数据库增长或整文件 copy-up。
 
@@ -133,7 +133,7 @@ Local 首次枚举优化：目录枚举期间发现的新 lower 条目共享一�
 
 `OverlayManager.withFrozen` 要求调用方先排空任务进程，然后发送原生 `freeze`：停止 dispatcher、撤销卷、仅按已捕获路径写入 `sealed_changes`。helper 继续持有控制目录独占租约，宿主只读导出；收到 frozen 前不读取，导出时失去 helper 不返回成功结果，结束后等待正常 stopped/exit。实测冻结后挂载不可访问、封存内容可读、第二个 helper 不能接管；干净退出后可恢复私有状态。旧普通模式不接受 freeze。生命周期复用 `overlay.local_freeze` tracing，仅记录 ID、状态与耗时。
 
-首次捕获实验使用 v4，发布确认实验使用 v5，续轮与私有读依赖传递使用当前 v6；旧 v3 没有原文记录，v4 没有修改代次关联，v5 缺少对象来源/私有读传递，均拒绝自动转换或猜测旧依赖。旧 D168 v2 格式保持不变。封存表中的目录、重解析及尚未私有化的 live 内容有独立类型，不自动当普通文件发布；复杂目录重命名、显式权限修改发布仍未支持。原始结果见 [捕获报告](local-overlay-capture-results.json)，各格式重跑见 verification。
+首次捕获实验使用 v4，发布确认实验使用 v5，续轮与私有读依赖传递使用当前 v6；旧 v3 没有原文记录，v4 没有修改代次关联，v5 缺少对象来源/私有读传递，均拒绝自动转换或猜测旧依赖。旧 D168 v2 卷已随旧模式退役，不再挂载。封存表中的目录、重解析及尚未私有化的 live 内容有独立类型，不自动当普通文件发布；复杂目录重命名、显式权限修改发布仍未支持。原始结果见 [捕获报告](local-overlay-capture-results.json)，各格式重跑见 verification。
 
 ### 原生结果到发布 PoC 的衔接
 
@@ -227,7 +227,7 @@ Windows 原生发布使用单个 `PublicationLease` helper 持有来源协调目
 
 只增加 epoch 会漏掉跨轮私有内容依赖。Local v6 增加 object_epochs（私有内容来源代次）和 epoch_links（本轮读取私有内容所依赖的较早代次）；写入前关联对象与当前/路径已有代次，rename 不丢失对象关联。读取私有文件时建立向旧代次的边；导出从当前代次、所选路径及结果对象的关联出发，展开有界依赖闭包，再复核对应来源观察。新文件不能借读取旧私有结果绕过原有依赖。重复边去重，不扫描来源；超出既有 100 代次/读取限制拒绝导出。
 
-v5 没有完整私有读传递记录，不能猜测迁移或把缺失依赖当作空集；新 Local helper/导出使用 v6，旧 v5 实验卷保留且拒绝自动恢复，D168 v2 与 Git worktree 不变。旧已确认收据可在同一 v6 卷幂等重取，未执行的旧 epoch 请求跨冻结拒绝；来源 complete 的 pending 确认仍走既有检查点恢复。保留旧私有修改的过期依赖是预期行为，重新计算/显式解决冲突另行处理。此机制只覆盖已捕获文件读取，不承诺 LLM 历史、目录或外部依赖的完整事务隔离。
+v5 没有完整私有读传递记录，不能猜测迁移或把缺失依赖当作空集；新 Local helper/导出使用 v6，旧 v5 实验卷保留且拒绝自动恢复，旧 D168 v2 已退役，普通 Git worktree 保持原样。旧已确认收据可在同一 v6 卷幂等重取，未执行的旧 epoch 请求跨冻结拒绝；来源 complete 的 pending 确认仍走既有检查点恢复。保留旧私有修改的过期依赖是预期行为，重新计算/显式解决冲突另行处理。此机制只覆盖已捕获文件读取，不承诺 LLM 历史、目录或外部依赖的完整事务隔离。
 
 `withFrozen` 第五个回调参数提供 `nextEpoch(request)`；只在 dispatcher 销毁且租约有效期间可用，与确认/回收/读取复核互斥。trace `overlay.local_next_epoch` 保存 ID、开始/结束、耗时与未知终态，无正文或路径；收据绑定错误、丢失或 30 秒超时均不能假定推进未发生。正常取消命令后必须先证明进程排空，再以独立清理信号进入冻结，不能复用已取消信号也不能继续执行任务命令。
 
@@ -298,7 +298,7 @@ v5 没有完整私有读传递记录，不能猜测迁移或把缺失依赖当�
 
 这是内部发布接线的最初验证范围；后续已接入模型选择、候选 Sandbox 命令及显式创建/状态 UI，真实 v18 安装链路另见 [安装态报告](local-overlay-runtime18-results.json)。内部生命周期脚本精确检查候选字节，新增独立候选脚本在真实 Sandbox 执行命令并返回新读依赖；两者的证据范围分别记录，不把普通回调当成权限边界，也不承诺任意 shell 的依赖完整性。生产接口不从 HTTP/模型输入反序列化函数。原有单文件/总内容/100 条选定路径限额仍有效，工程读集按前述扩容增量处理，不扩大为任意大型构建或目录发布验收。
 
-Local overlay 使用独立于 WorktreeService 的清单和 UNC 命名空间，清单绑定来源/控制目录/虚拟卷身份及会话，不包含 Git metadata。内部创建先持久 preparing，再创建 v6 空视图、核对身份、干净卸载并保存 ready；创建或任务执行的未知结果保留锁和失败状态，不重新创建。旧 Local/Riftri/Worktree 不迁移。内部生命周期的初始增量不开放 UI/API 创建选择；后续显式入口见文首，默认模式保持不变。
+Local overlay 使用独立于 WorktreeService 的清单和 UNC 命名空间，清单绑定来源/控制目录/虚拟卷身份及会话，不包含 Git metadata。内部创建先持久 preparing，再创建 v6 空视图、核对身份、干净卸载并保存 ready；创建或任务执行的未知结果保留锁和失败状态，不重新创建。旧 Local/Worktree 不迁移；Riftri 已退役，只保留历史识别。内部生命周期的初始增量不开放 UI/API 创建选择；后续显式入口见文首，默认模式保持不变。
 
 实现位于 `src/local-overlays/service.ts` 和 `backend.ts`。私有文件及清单位于 `<data-dir>/local-overlays`，实际路径由该目录派生独立的稳定 UNC 命名空间；不在来源内建立目录。空闲视图卸载，清单校验不访问其 UNC，下一轮执行时才重新挂载。来源必须与私有数据目录分离。`engine.localOverlays.create({ id, source }, bind)` 是内部入口；bind 必须按固定 workspace 查找已有会话再创建，以覆盖会话已保存而清单回执丢失。重复 UUID 只重试绑定，不重建文件层；纯请求不匹配不破坏已有 ready 清单。
 
@@ -346,14 +346,14 @@ Windows 11 / Node 26.10.0 本机结果：28 个回归用例通过；双进程发
 
 ## 文件系统接入前选型复核（2026-10-25）
 
-用户授权继续接入文件系统，并要求先重新评估 Riftri、WinFsp 和可直接使用的替代品。下面是本次工程选择，不把上游宣传、编译通过或旧验证推导为 CodeAtelier 实机兼容。当前产品和历史会话暂时保持既有行为。
+用户授权继续接入文件系统，并要求先重新评估 Riftri、WinFsp 和可直接使用的替代品。下面是本次工程选择，不把上游宣传、编译通过或旧验证推导为 CodeAtelier 实机兼容。本节保留当时的选型依据；D171 已删除 Riftri 和 Git 虚拟 worktree 实现，历史仅供读取。
 
 所需能力是普通目录实时读取、每会话私有写入、创建不遍历或复制来源、来源持续接收发布，以及可冻结并导出的修改集。Windows 还需要原生安全描述符、跨专用账户挂载访问及持久 capability；“能通过 FUSE 挂载”不足以满足这组条件。
 
 | 候选                  | 已核实的实现与差距                                                                                                                                                                                         | 本次选择                                                                                              |
 | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| Riftri                | 上游管理 Git linked worktree、不可变基线和原生 CoW；项目当前只抽取其 storage API，Windows 自研 WinFsp 已不依赖它的克隆代码                                                                                 | 新 Local overlay 链路不依赖 Riftri；旧模式暂不删除，避免破坏历史目录                                  |
-| WinFsp + 现有原生后端 | WinFsp 是文件系统框架，不是现成 unionfs。现有 `Store` 已实现普通目录 lower、私有对象、whiteout、ACL 和稳定 UNC；普通 create/restore 不需要 Git 参数                                                        | Windows 优先复用；不经 `WorktreeService` 的 Riftri/Git 注册路径。原生基线、修改记录和冻结导出仍需补充 |
+| Riftri                | 上游管理 Git linked worktree、不可变基线和原生 CoW；项目曾抽取其 storage API，现已移除；Windows 自研 WinFsp 不依赖它                                                                                 | 已移除实现和构建入口，保留历史目录，不执行旧视图                                  |
+| WinFsp + 现有原生后端 | WinFsp 是文件系统框架，不是现成 unionfs。现有 `Store` 已实现普通目录 lower、私有对象、whiteout、ACL 和稳定 UNC；当前仅提供 Local 挂载命令，不接收 Git 参数                                                        | Windows 优先复用；不经 `WorktreeService` 的 Riftri/Git 注册路径。原生基线、修改记录和冻结导出仍需补充 |
 | unionfs-fuse          | 有普通目录 CoW union，README 明确 Linux/macOS 路径；未核实官方 Windows 原生 ACL 实现。其 copy-up/whiteout 不能代替编辑时原文和冲突发布                                                                     | POSIX 后端首批候选，需要验证实时来源、缓存、rename、恢复及 Sandbox；尚未安装实测                      |
 | Linux OverlayFS       | 官方明确禁止挂载期间修改底层文件系统；我们的发布会修改其它会话的 lower                                                                                                                                     | 不直接用于实时主目录。若未来采用稳定快照/统一停挂发布，才重新评估                                     |
 | fuse-overlayfs        | 为 Linux rootless 容器提供 upper/lower/workdir，依赖 libfuse；未核实支持我们要求的外部 live lower 变化                                                                                                     | 保留 Linux 候选，不根据名称假定解决实时来源一致性，也不作为三平台实现                                 |
@@ -365,7 +365,7 @@ Windows 11 / Node 26.10.0 本机结果：28 个回归用例通过；双进程发
 
 另排除 mergerfs（上游明确不提供 OverlayFS 式只读 lower + 可写 upper 和 whiteout）、absfs/unionfs（应用内 Go 文件接口，不是给任意程序使用的系统挂载）、面向 squashfs/EROFS 固定镜像的 Windows overlay（需先生成镜像，不满足直接读取可变目录），以及通过进程注入实现的 winrsbox（改变执行/沙箱路径，不是可直接替换的挂载后端）。不宣称全世界不存在其它实现；结论是本次核查未找到可直接满足全部要求的三平台替换件。
 
-因此下一增量采用“独立 Local overlay 管理 + Windows 原生 WinFsp 后端 + 发布协调器”，不增加 Git base、index 或对象库。复用既有文件系统代码的理由是当前 ACL/UNC/Runtime 路径有可追踪实现和既有证据，不是因为已经投入过开发。`git-lower.*`、`overlay-git.ts` 和 Riftri CoW helper 不进入新路径；旧代码保留到历史兼容迁移明确后再处理。
+因此下一增量采用“独立 Local overlay 管理 + Windows 原生 WinFsp 后端 + 发布协调器”，不增加 Git base、index 或对象库。复用既有文件系统代码的理由是当前 ACL/UNC/Runtime 路径有可追踪实现和既有证据，不是因为已经投入过开发。`git-lower.*`、`overlay-git.ts` 和 Riftri CoW helper 已按 D171 删除；历史识别不再依赖这些实现。
 
 ### LayerFS 追加调查与 Windows 移植边界（2026-10-25）
 
@@ -398,7 +398,7 @@ Windows 11 / Node 26.10.0 本机结果：28 个回归用例通过；双进程发
 
 ## WinFsp 与发布器最小衔接验证
 
-新增手动入口 `pnpm overlay:verify-filesystem`（`scripts/verify-local-overlay-winfsp.ts`），要求本机已有 WinFsp Runtime 和已构建的 `codeatelier-overlay.exe`。在 `.local/local-overlay-winfsp-*` 中建立未初始化 Git 的普通来源目录，直接调用 `OverlayManager.start` 的 live 模式，不执行 Git CLI 或 Riftri helper，也不经过现有产品的工作区创建策略。
+新增手动入口 `pnpm overlay:verify-filesystem`（`scripts/verify-local-overlay-winfsp.ts`），要求本机已有 WinFsp Runtime 和已构建的 `codeatelier-overlay.exe`。在 `.local/local-overlay-winfsp-*` 中建立未初始化 Git 的普通来源目录，直接调用 `OverlayManager.start` 的 Local 模式，不执行 Git CLI 或 Riftri helper，也不经过现有产品的工作区创建策略。
 
 2026-10-25 本机 Windows 实测通过：建立两个真实 UNC 挂载后，私有内容对象均为零；先明确记录 `module.mjs` 的基线，然后两个宿主 Node 进程分别通过临时文件 + rename 修改挂载内文件，执行各自程序得到 `12` 和 `21`，来源仍为原文。未修改文件继续读取更新后的 lower；每个视图各自产生 `generated.txt`，没有写入来源。
 

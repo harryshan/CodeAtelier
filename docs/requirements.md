@@ -1,10 +1,12 @@
 # CodeAtelier 需求说明
 
-隔离 Local 总开关（2026-10-27）：用户要求暂不继续 Linux 工作，并将整个功能置于代码开关之后、默认关闭。唯一开关为 `src/local-overlays/readiness.ts` 的 `LOCAL_OVERLAY_ENABLED = false`，没有设置、环境变量或 HTTP 覆盖。关闭时隐藏创建入口，拒绝创建、旧视图任务启动/恢复、发布选择、文件检查、参考继续、私有刷新及来源事故操作；`start:overlay` 也在创建 namespace 前拒绝。历史与私有数据保留，取消、关闭卸载及旧 Sandbox 授权清理继续执行。普通 Local、Riftri、Git worktree 和 Sandbox 原有行为不变。未来启用须修改常量并重新构建/启动，仍须满足平台与 Sandbox 条件；macOS 仍不实现。下面已完成的 Windows/Linux 记录仅作为关闭前的历史证据，不表示当前产品开放。
+2026-10-27 D171：移除 Riftri 和 Git 提交虚拟 worktree 实验，新对话默认普通 Local，显式 Git worktree 保持原语义；自研 WinFsp 隔离 Local 保留并默认关闭。旧 Riftri 数据不删除，历史可读但不能执行或重新挂载；下文历史记录不再代表当前开放能力。
+
+隔离 Local 总开关（2026-10-27）：用户要求暂不继续 Linux 工作，并将整个功能置于代码开关之后、默认关闭。唯一开关为 `src/local-overlays/readiness.ts` 的 `LOCAL_OVERLAY_ENABLED = false`，没有设置、环境变量或 HTTP 覆盖。关闭时隐藏创建入口，拒绝创建、旧视图任务启动/恢复、发布选择、文件检查、参考继续、私有刷新及来源事故操作；`start:overlay` 也在创建 namespace 前拒绝。历史与私有数据保留，取消、关闭卸载及旧 Sandbox 授权清理继续执行。普通 Local、Git worktree 和 Sandbox 原有行为不变；Riftri 已按 D171 移除。未来启用须修改常量并重新构建/启动，仍须满足平台与 Sandbox 条件；macOS 仍不实现。下面已完成的 Windows/Linux 记录仅作为关闭前的历史证据，不表示当前产品开放。
 
 状态：初版功能边界已确认，进入实现与验证阶段。最后更新：2026-10-27。
 
-Local overlay 平台范围（2026-10-27）：用户明确暂不实现 macOS 版本，macOS 保持功能关闭。本轮实施与验收只覆盖 Windows/Linux；不编写或分发 FSKit 后端，不以启用 Sandbox 或设置 Linux namespace 环境变量绕过平台门禁。普通 Local、Git worktree、已有 Riftri 和 macOS Sandbox 的原有边界不变。此决定替代下面历史记录中仍计划继续 macOS overlay 实现的部分，见 D170。
+Local overlay 平台范围（2026-10-27）：用户明确暂不实现 macOS 版本，macOS 保持功能关闭。本轮实施与验收只覆盖 Windows/Linux；不编写或分发 FSKit 后端，不以启用 Sandbox 或设置 Linux namespace 环境变量绕过平台门禁。普通 Local、Git worktree 和 macOS Sandbox 的原有边界不变；旧 Riftri 历史只读。此决定替代下面历史记录中仍计划继续 macOS overlay 实现的部分，见 D170。
 
 Linux 普通文件新增/删除续轮（2026-10-27）：已有父目录中的选定源码新增/删除成功发布后，只确认完整发布日志能解释的目录成员变化，再复核来源、私有内容及其它依赖。真实 OverlayFS/Sandbox 已验证删除标记检查、独立候选验证、后续发布保留的私有修改及正常缓存清理；不扩大到目录发布或异常恢复。详见 [验证记录](verification.md#linux-普通文件新增删除续轮2026-10-27)。
 
@@ -149,8 +151,7 @@ Local 中断参考入口增量（2026-10-26）：异常私有卷可按明确路�
 - 用户于 2026-10-03 要求移除 subagent 专属研究配额：不再限制提问/消息次数、子模型轮数、独立运行时长、累计 token、文本与上下文大小、累计创建数量；保留活动 Worker 并发调度、只读权限、取消/恢复及共享传输/模型物理容量边界，入口开放由 D158 另行决定。2026-10-18 用户明确 subagent 也须遵循设置中的最大输出 token：两角色每轮继承当前任务配置及已知模型容量约束，不恢复旧固定 2,048 token 配额。完整清单见 [多 agent 设计](multi-agent-design.md)。
 - 2026-10-17 用户要求两种内置 subagent：`explorer` 获取并筛选信息后交回主 agent；`reviewer` 用干净上下文审查主 agent 修改。两种角色均可多开，在不同范围内并行；沿用共享活动 Worker 调度与只读边界，UI 开放按 D158。reviewer 接收明确的变更材料，不自动继承父对话或同伴报告，详见 [多 agent 设计](multi-agent-design.md)（D157）。
 - 2026-10-17 用户追加要求向 subagent 暴露 `web_search`（D159）：explorer/reviewer 在 Responses 协议下均可使用模型服务内置公开搜索，Chat Completions / Messages 不声明。沿用来源引用、模型历史、取消和恢复，不开放子任务 shell、任意网络命令或写入权限。
-- D167：新对话默认 Riftri 原生 CoW，以主目录当前状态创建独立目录，包含脏文件、暂存区、未跟踪和忽略文件，不选择 commit/branch、不另建 base、不做 blob hash 校验。普通 Git worktree 并列且须显式选择，保留指定提交的干净基线。Riftri 不可用时拒绝创建，不自动 fallback。不同实际目录按既有并发调度，同目录串行；续聊和恢复使用已绑定目录，已有 Local 历史不自动迁移。不自动回写、清理或提供一键回滚。存储、平台限制、Sandbox、记忆与恢复见 [工作区设计](worktrees.md)。
-- D168 替代上述 Windows 部分：WinFsp 原生实时 overlay 直接读取来源工作目录，写入私有层，不复制 repo 或 Git 对象库；通过 no-checkout linked worktree 独立 HEAD/index、共享 objects/refs/common config。挂载采用跨账户可见的本机 UNC；Sandbox 授权虚拟根和核验的公共 Git 根，来源工作文件 ACL 不变。正常排空后卸载/恢复，未知状态拒绝重建；缺 Runtime/helper 明确拒绝。POSIX CoW 与显式 Worktree 保持原行为，具体未支持项及实机证据见 [Windows overlay](winfsp-overlay.md)。
+- D171：新对话默认普通 Local，直接使用所选目录，同一实际目录串行。Git worktree 须显式选择，保留指定提交的干净基线、独立 HEAD/index 和共享对象库；不自动回写或清理。Riftri 已移除，旧私有数据与历史保留但拒绝执行，不自动迁移。自研 WinFsp 隔离 Local 独立保留并默认关闭。详见 [工作区设计](worktrees.md)。
 - 关闭页面后，只要后端仍运行，任务可以继续；重启后端后，将未完成任务标记为中断，不自动重放命令。
 - 历史对话可以继续交流，但每次重新执行任务时读取当前文件，不把历史内容当成最新代码。
 - 限制工具输出和上下文长度；每次主任务模型请求及重试前按完整历史计量，接近容量时自动压缩会话内旧上下文，保留用户原文、原始历史与恢复状态。无法安全压缩时明确停止。跨会话项目记忆使用平台数据目录中的 JSONL 快照（D142、D143）：首行项目元数据、后续每行一条完整记忆；已有项目记忆经备份和完整核对后一次性迁移，运行时不再读取 Markdown 或自动迁移。每个任务按文件顺序提供所有有效条目的 ID、逐条版本与标题摘要，不再关键词评分、排序或按目录条数/字符裁剪，正文和来源通过现有 `memory_apply` 的单条 `read` 操作按需读取；该工具继续支持自动添加、更新和归档同项目记忆，不等待人工确认；read/update/archive 各自校验目标条目的 expectedVersion，create 无需版本，无关条目修改不使旧目录中的其他版本失效，维护批次全成或全不写（D144）；不引入 SQLite/FTS 或向量检索。
@@ -253,7 +254,6 @@ README.md
 
 ## 6. 实现决定与后续范围
 
-- 2026-10-25 D169：授权 [Git 提交虚拟 worktree PoC](virtual-worktree-poc.md)，目标是减少巨型仓库并行工作文件副本及创建延迟；包含主目录未提交修改不是要求。实验复用 WinFsp、标准 linked Git metadata 和既有 Sandbox，单独测 index 与首次 status 的成本，不改变当前默认模式或历史会话。
 
 - 采用 Node.js 24/26、pnpm（packageManager 固定版本）、React/Vite、Fastify、Node 内置 SQLite、Pino。接口与目录职责见 architecture.md。
 - 使用用户自建服务及 Bearer key；本地配置的模型已通过真实流式工具往返验证。

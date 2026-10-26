@@ -33,13 +33,13 @@ test("browses saved conversations and tasks from the real database without expor
     const auth = await page.request.get("/api/bootstrap");
     const { token } = await auth.json();
     const headers = { "x-codeatelier-token": token };
-    const created = await page.request.post("/api/test/legacy-sessions", {
+    const created = await page.request.post("/api/sessions", {
       headers,
       data: { workspace },
     });
     const session = await created.json();
     const empty = await (
-      await page.request.post("/api/test/legacy-sessions", {
+      await page.request.post("/api/sessions", {
         headers,
         data: { workspace },
       })

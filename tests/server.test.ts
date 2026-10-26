@@ -57,7 +57,7 @@ async function createFixture() {
   };
 }
 
-it("reads legacy sessions and validates missing sessions and bad payloads", async () => {
+it("creates ordinary Local sessions through the public API and validates history", async () => {
   const fixture = await createFixture();
 
   try {
@@ -67,8 +67,30 @@ it("reads legacy sessions and validates missing sessions and bad payloads", asyn
     });
     expect(bootstrap.json().subagentsAvailable).toBe(true);
 
-    // Seed a pre-D167 Local conversation; new default creation is covered in riftri-workspaces.
-    const { id } = await fixture.store.createAsync(await temp());
+    const workspace = await temp();
+    const create = () =>
+      fixture.app.inject({
+        method: "POST",
+        url: "/api/sessions",
+        headers: fixture.headers,
+        payload: { workspace },
+      });
+    const first = await create();
+    expect(first.statusCode).toBe(200);
+    const { id } = first.json();
+    expect(first.json()).toMatchObject({ workspace });
+    expect(first.json().worktree).toBeUndefined();
+    const second = await create();
+    expect(second.statusCode).toBe(200);
+    expect(second.json().id).not.toBe(id);
+    expect(second.json().workspace).toBe(workspace);
+    const retired = await fixture.app.inject({
+      method: "POST",
+      url: "/api/sessions",
+      headers: fixture.headers,
+      payload: { workspace, riftri: { id: "unused" } },
+    });
+    expect(retired.statusCode).toBe(400);
 
     expect(
       (

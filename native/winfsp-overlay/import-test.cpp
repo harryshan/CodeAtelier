@@ -46,7 +46,7 @@ static void verifyPersistence(const fs::path& root) {
   }
   sqlite3_int64 inode = 0;
   {
-    Store store(source, control, workspace, true, {}, {}, L"", true);
+    Store store(source, control, workspace, true);
     check(store.list(store.node(1)).size() == 200, "Incomplete directory");
     check(store.lowerImportCommits == 1, "Expected one import commit per directory");
     inode = store.lookup(L"\\f0")->id;
@@ -56,7 +56,7 @@ static void verifyPersistence(const fs::path& root) {
   }
   put(source / L"added");
   {
-    Store restored(source, control, workspace, false, {}, {}, L"", true);
+    Store restored(source, control, workspace, false);
     check(restored.lookup(L"\\f0")->id == inode, "Inode changed after restore");
     check(restored.list(restored.node(1)).size() == 201, "Live source addition missing");
     check(restored.lowerImportCommits == 1, "New entry not committed in directory batch");
@@ -75,7 +75,7 @@ static void verifyRollback(const fs::path& root) {
   put(source / L"first");
   put(source / L"second");
   {
-    Store store(source, control, workspace, true, {}, {}, L"", true);
+    Store store(source, control, workspace, true);
     store.sql("CREATE TEMP TRIGGER fail_second BEFORE INSERT ON nodes "
               "WHEN (SELECT count(*) FROM nodes)>1 "
               "BEGIN SELECT RAISE(ABORT,'injected second import failure'); END");
@@ -100,7 +100,7 @@ static void verifyRollback(const fs::path& root) {
   }
   bool restoreRejected = false;
   try {
-    Store restored(source, control, workspace, false, {}, {}, L"", true);
+    Store restored(source, control, workspace, false);
   } catch (const Error&) {
     restoreRejected = true;
   }
@@ -110,7 +110,7 @@ static void verifyRollback(const fs::path& root) {
 static void verifyStatements(const fs::path& root) {
   const auto source = root / L"query-source";
   fs::create_directory(source);
-  Store store(source, root / L"query-control", root / L"query-view", true, {}, {}, L"", true);
+  Store store(source, root / L"query-control", root / L"query-view", true);
   const auto sql = "SELECT ?";
   {
     Query outer(store, sql);
@@ -166,7 +166,7 @@ static void verifyMissing(const fs::path& root) {
   fs::create_directory(source / L".git");
   put(source / L"busy");
   {
-    Store store(source, control, workspace, true, {}, {}, L"", true);
+    Store store(source, control, workspace, true);
     try {
       store.openLower(L"\\internal");
     } catch (const Error&) {
@@ -210,7 +210,7 @@ static void verifyMissing(const fs::path& root) {
   }
   put(source / L"absent");
   {
-    Store store(source, control, workspace, false, {}, {}, L"", true);
+    Store store(source, control, workspace, false);
     store.lookup(L"\\absent");
     store.checkReads({0});
     check(scalar(store, "SELECT valid FROM checked_reads WHERE path='\\ABSENT'") == 0,
@@ -220,7 +220,7 @@ static void verifyMissing(const fs::path& root) {
     store.finish();
   }
   {
-    Store store(source, root / L"missing-failure", workspace, true, {}, {}, L"", true);
+    Store store(source, root / L"missing-failure", workspace, true);
     store.sql("CREATE TEMP TRIGGER fail_observation BEFORE INSERT ON observations "
               "BEGIN SELECT RAISE(ABORT,'injected missing read failure'); END");
     try {
@@ -240,7 +240,7 @@ static void verifyDirectories(const fs::path& root) {
   fs::create_directories(source / L"empty");
   put(source / L"modules" / L"one");
   {
-    Store store(source, control, workspace, true, {}, {}, L"", true);
+    Store store(source, control, workspace, true);
     check(store.lowerOpens == 0 && store.lowerEnumerations == 0, "Creation scanned source");
     check(store.list(store.lookup(L"\\modules")).size() == 1, "Incomplete source list");
     check(scalar(store, "SELECT count(*) FROM observations") == 1, "Unvisited dependency recorded");
@@ -270,7 +270,7 @@ static void verifyDirectories(const fs::path& root) {
   }
   put(source / L"modules" / L"added");
   {
-    Store store(source, control, workspace, false, {}, {}, L"", true);
+    Store store(source, control, workspace, false);
     store.list(store.lookup(L"\\modules"));
     const auto nodes = scalar(store, "SELECT count(*) FROM nodes");
     store.checkReads({0});
@@ -285,7 +285,7 @@ static void verifyDirectories(const fs::path& root) {
     store.finish();
   }
   {
-    Store store(source, root / L"directory-failure", workspace, true, {}, {}, L"", true);
+    Store store(source, root / L"directory-failure", workspace, true);
     store.sql("CREATE TEMP TRIGGER fail_directory BEFORE INSERT ON observations "
               "BEGIN SELECT RAISE(ABORT,'injected directory failure'); END");
     try {

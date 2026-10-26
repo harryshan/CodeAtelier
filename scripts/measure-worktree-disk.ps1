@@ -1,4 +1,4 @@
-# 测量人工 PoC 的独立实际目录，供 verify-virtual-worktree.ts 调用。
+# 测量人工 PoC 的独立实际目录，供 Local overlay 规模与工程验证调用。
 # 1. JSON 输入列出自己的 control/admin 或普通 checkout；不枚举虚拟卷或来源 Git common。
 # 2. C# 读取 FILE_STANDARD_INFO 的实际 AllocationSize，并累计逻辑长度和文件数。
 # 3. 拒绝重解析条目，保留失败；只读，不修复 ACL 或清理文件。

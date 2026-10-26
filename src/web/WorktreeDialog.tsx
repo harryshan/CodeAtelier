@@ -1,6 +1,6 @@
 /**
  * 项目侧栏打开的 Worktree 创建表单，使用现有鉴权 API，不直接运行 Git。
- * 1. requestId 为此表单及 App 的默认 Riftri 创建生成兼容 HTTP LAN 的 UUID；挂载时只读加载本地/远端引用，允许选择分支或输入 commit，初始 HEAD。
+ * 1. requestId 为此表单及隔离 Local 创建生成兼容 HTTP LAN 的 UUID；挂载时只读加载本地/远端引用，允许选择分支或输入 commit，初始 HEAD。
  * 2. 首次提交固定请求 UUID 和参数；响应失败后重试同一请求，避免重复创建。
  * 3. 成功交给 App 选择新会话；关闭/失败不清理 checkout，表单说明脏文件与共享 Git 边界。
  * 请求在后端继续完成，不把浏览器关闭视为 Git 已取消；组件不启动模型任务。
@@ -92,7 +92,7 @@ export function WorktreeDialog({
         <p>
           从已提交的版本创建独立目录。原目录的未提交改动、依赖和忽略文件不会复制。
         </p>
-        <p>使用普通 Git worktree。Riftri 是保留主目录当前状态的另一种模式。</p>
+        <p>从 Git 提交创建独立工作目录。主目录未提交的修改不会自动带入。</p>
         <form
           onSubmit={(event) => {
             event.preventDefault();

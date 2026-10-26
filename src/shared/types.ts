@@ -4,7 +4,7 @@
  *
  * 1. TaskStatus 和 TitleState 列出任务及自动标题状态，Session 和 Task 描述会话及其中的任务；Task 的 subagentsEnabled 是任务创建时固定的选择，createdAt、startedAt 与 finishedAt 区分排队、实际运行和结束时间。
  * 2. SubagentRecord 描述研究子任务的状态、检查点与报告；Event 表示有顺序的历史条目，Approval 表示待审批操作。
- * 3. WorktreeInfo 是 API 从清单补充的模式（Riftri/Worktree）、来源/创建基线和后端诊断；旧清单默认 Worktree，不根据 backend 推断模式。Session.workspace 始终是实际执行路径；Settings 描述公开配置，Snapshot 汇总会话、事件、任务和审批。
+ * 3. WorktreeInfo 是 API 从清单补充的模式（Worktree/已移除历史）、来源/创建基线和后端诊断；旧清单默认 Worktree，不根据 backend 推断模式。Session.workspace 始终是实际执行路径；Settings 描述公开配置，Snapshot 汇总会话、事件、任务和审批。
  * 4. LocalOverlayInfo 独立描述私有视图与选定源码发布状态，不携带控制路径或候选命令；LocalOverlayCreation 仅报告入口前提，不证明驱动/Runtime 已可用。
  *    resolution 仅记录冲突继续的父会话、文件及新视图内参考目录；paths 为整组选择，path 保留首文件兼容，不把历史内容当成已应用源码。
  *    publicationRecovery 仅表示会话存在待核查的批次，真实来源执行排空仍由原生租约验证。
@@ -29,14 +29,12 @@ export type TitleState =
 
 export interface WorktreeInfo {
   id: string;
-  mode?: "riftri" | "worktree";
+  mode?: "retired" | "worktree";
   projectWorkspace?: string;
   baseRef?: string;
   baseCommit?: string;
-  backend?: "git" | "riftri-reflink" | "riftri-apfs" | "riftri-winfsp";
-  fallbackReason?: string;
-  clonedFiles?: number;
-  state: "preparing" | "ready" | "failed" | "unavailable";
+  backend?: "git";
+  state: "preparing" | "ready" | "failed" | "unavailable" | "retired";
 }
 
 export interface Session {

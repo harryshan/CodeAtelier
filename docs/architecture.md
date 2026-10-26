@@ -20,11 +20,11 @@ Local 的完成态私有刷新由 `LocalOverlayService.recoverPrivateRefresh` �
 
 Local 发布的候选验证基础设施位于 `src/local-overlays/candidate-validator.ts` 与 `candidate-reads.ts`：新建一次性 WinFsp 视图，只播种合并候选，可信执行器报告命令终态与排空后才冻结并导出新读依赖；Publisher 在应用前再次复核，并保存 journal 凭据。正常目录回收，排空未知保留并隔离。Engine 内部 `selectLocalPublication` 已接入 `command-plan.ts` / `command-runtime.ts`：有界命令计划通过现有 IPC 在新 Sandbox Runtime 顺序执行，原任务关联的事件/trace 独立于主模型上下文。验证不开放宿主权限扩展，启动失败不 fallback；模型选择工具已接入，宿主验证适配器尚未接入。来源发布先经同进程队列，再获取原有磁盘锁，避免正常候选耗时触发短锁等待失败；跨进程残留锁仍保守拒绝。
 
-D170 新 Local overlay 已接入 Engine 生命周期及公开显式入口：`src/local-overlays/service.ts` 管理独立的来源/会话/目录身份清单和跨进程任务锁，`backend.ts` 使用 WinFsp v6 Local 挂载。任务开始挂载，Runtime/子任务/命令排空后冻结、推进观察周期、回收孤立内容并卸载；unknown 保留锁与失败清单。私有视图用于执行和调度，记忆映射来源，Sandbox 不追加来源/Git 写根。空闲视图不挂载；成功任务的明确选择经候选 Sandbox 命令验证后发布并确认。公开检查/新参考会话区分正常 B/O/T 与 interrupted B/私有材料，旧卷不就地解锁或重放。`manifest-queue.ts` 仅串行同一视图的短 read/save，避免 Windows 清单只读句柄阻止原子替换，不扩大到整个任务或替代磁盘锁；跨视图仍并行。完整刷新恢复等仍待完成，不改变以下旧模式及默认选择。详见 [Local overlay 设计](local-overlay-design.md#engine-内部生命周期接入2026-10-26)。
+D170 新 Local overlay 已接入 Engine 生命周期及公开显式入口：`src/local-overlays/service.ts` 管理独立的来源/会话/目录身份清单和跨进程任务锁，`backend.ts` 使用 WinFsp v6 Local 挂载。任务开始挂载，Runtime/子任务/命令排空后冻结、推进观察周期、回收孤立内容并卸载；unknown 保留锁与失败清单。私有视图用于执行和调度，记忆映射来源，Sandbox 不追加来源/Git 写根。空闲视图不挂载；成功任务的明确选择经候选 Sandbox 命令验证后发布并确认。公开检查/新参考会话区分正常 B/O/T 与 interrupted B/私有材料，旧卷不就地解锁或重放。`manifest-queue.ts` 仅串行同一视图的短 read/save，避免 Windows 清单只读句柄阻止原子替换，不扩大到整个任务或替代磁盘锁；跨视图仍并行。公开入口现由 D170 代码总开关默认关闭；当前默认 Local 与显式 Worktree 见下文。详见 [Local overlay 设计](local-overlay-design.md#engine-内部生命周期接入2026-10-26)。
 
-D167/D168 将默认 Riftri 当前状态工作视图与显式 Git worktree 并列：`src/worktrees/service.ts` 管理宿主清单、请求 UUID/模式去重、目录身份和旧清单兼容。`sessions.workspace` 始终是实际目录；工具、Skills/MCP、调度与恢复使用该路径，侧栏/记忆按来源分组。POSIX 副本/普通 checkout 在 Broker 数据目录同级，Windows overlay 的实际路径是稳定本机 UNC，私有层和清单在 Broker 数据目录；不迁移历史 v11，不自动回写或删除，详见 [工作区设计](worktrees.md)。
+D171 恢复默认普通 Local：会话使用原工作目录，同目录串行排队。显式 Git worktree 由 `src/worktrees/service.ts` 创建/校验，目录身份和固定 UUID 绑定保持不变；侧栏与项目记忆按来源共享。旧 Riftri 清单只读识别并拒绝执行，不自动删除数据。见 [工作区设计](worktrees.md)。
 
-`riftri.ts` 对 POSIX 要求固定 v2 helper/同卷原生 CoW；`native/riftri` 克隆当前文件树和独立 Git metadata，无 hash/checkout，Sandbox 无需来源授权。Windows 选择 `native/winfsp-overlay` 的 WinFsp v1 长驻协议：`overlay.ts` 管理 helper/trace/有界就绪和卸载，`overlay-git.ts` 用 no-checkout/repair 登记标准 linked metadata，不复制 objects。SQLite v2 保存目录映射、ACL、删除标记、稳定卷号和正常停止证据；文件只在写入时复制。工作文件授权虚拟根，Git 额外投影核验的 common 根。Engine 先停止创建，排空 Runtime/Sandbox 后卸载；异常退出失败关闭。普通 Worktree 与旧 D166 验证不变。
+自研 WinFsp Local 文件系统由 `src/local-overlays/winfsp-manager.ts` 管理长驻 helper，与普通 Git worktree 并列且总开关默认关闭。它只保留 Local/根 ACL 恢复模式，不提供 linked Git metadata 或 Git tree/blob lower。Engine 排空 Runtime/Sandbox 后卸载，未知现场保留。
 
 Windows Sandbox 已通过用户实际使用验证，可用于日常开发：启用时默认产品组装会由 C++ Sandbox Supervisor 启动常驻 Agent Runtime；Supervisor 创建任务专属 Named Pipe，联合核对 PID、创建时间、Job、账户、restricted SID、capability 与固定 Node 映像后代理 Broker IPC。
 

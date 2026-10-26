@@ -2,7 +2,7 @@
 // 1. probe 检查 WinFsp driver；create/restore 打开独占 Store，创建稳定 serial 的本机 UNC 卷。
 // 2. ready 收据只含协议版本/状态；路径由调用方决定，不输出文件内容或安全描述符。
 // 3. stdin EOF/stop 停止 dispatcher、删除卷，再标记干净退出；数据和 worktree 登记保留。
-// 4. 显式 create-git/restore-git PoC 参数固定 Git/tree；metrics 不包含路径/OID/内容。
+// 4. 仅接受 create-local/restore-local 与根 ACL 恢复；旧 Git/live 入口拒绝，metrics 不含路径/内容。
 // 5. create-local/restore-local 选择无 Git 视图并回执策略；metrics 提供 lower 导入及 SQL prepare/读写计数与耗时。
 // 6. freeze 销毁 Local dispatcher 后封存路径结果；helper 保留控制目录独占租约直到 stop。
 //    check-reads 仅在冻结后复核读依赖并返回无正文收据，路径有效性保存在私有数据库。
@@ -17,7 +17,6 @@
 #include <iostream>
 #include <sstream>
 
-#include "git-lower.hpp"
 #include "publish.hpp"
 #include "publication-lease.hpp"
 #include "store.hpp"
@@ -85,13 +84,10 @@ int wmain(int argc, wchar_t** argv) {
                 << "}\n";
       return 0;
     }
-    bool gitMode = argc == 8 && (std::wstring(argv[1]) == L"create-git" ||
-                                 std::wstring(argv[1]) == L"restore-git");
     bool securityRecovery = argc == 6 && std::wstring(argv[1]) == L"restore-local-security";
-    bool localMode = securityRecovery || (argc == 6 && (std::wstring(argv[1]) == L"create-local" ||
+    bool validMount = securityRecovery || (argc == 6 && (std::wstring(argv[1]) == L"create-local" ||
                                    std::wstring(argv[1]) == L"restore-local"));
-    if (!gitMode && !localMode && (argc != 5 ||
-                     (std::wstring(argv[1]) != L"create" && std::wstring(argv[1]) != L"restore"))) {
+    if (!validMount) {
       return 2;
     }
     std::wstring prefix = argv[4];
@@ -100,9 +96,8 @@ int wmain(int argc, wchar_t** argv) {
       return 2;
     }
     Store store(argv[2], argv[3], L"\\" + prefix + L"\\",
-                std::wstring(argv[1]).rfind(L"create", 0) == 0, gitMode ? argv[5] : L"",
-                gitMode ? argv[6] : L"", gitMode ? argv[7] : L"", localMode, securityRecovery);
-    if (localMode && !securityRecovery) {
+                std::wstring(argv[1]) == L"create-local", securityRecovery);
+    if (!securityRecovery) {
       std::wstring owner(argv[5]);
       if (owner.empty() || owner.find_first_not_of(L"0123456789") != std::wstring::npos) {
         throw Error{STATUS_INVALID_PARAMETER};
@@ -135,13 +130,13 @@ int wmain(int argc, wchar_t** argv) {
       checked(result);
     }
     std::cout << "{\"version\":1,\"state\":\"ready\""
-              << (securityRecovery ? ",\"mode\":\"local-security\"" : localMode ? ",\"mode\":\"local\"" : "") << "}\n" << std::flush;
+              << (securityRecovery ? ",\"mode\":\"local-security\"" : ",\"mode\":\"local\"") << "}\n" << std::flush;
     std::string command;
     while (std::getline(std::cin, command)) {
       if (securityRecovery) {
         break;
       }
-      if (command.rfind("next-epoch ", 0) == 0 && store.localMode && !filesystem) {
+      if (command.rfind("next-epoch ", 0) == 0 && !filesystem) {
         std::istringstream input(command.substr(11));
         std::string id;
         std::string seal;
@@ -155,19 +150,19 @@ int wmain(int argc, wchar_t** argv) {
                   << id << "\",\"seal\":\"" << seal << "\",\"epoch\":" << next << "}\n" << std::flush;
         continue;
       }
-      if (command == "collect" && store.localMode && !filesystem) {
+      if (command == "collect" && !filesystem) {
         auto collection = store.collect();
         std::cout << "{\"version\":1,\"state\":\"collected\",\"mode\":\"local\",\"nodes\":" << collection.nodes
                   << ",\"examined\":" << collection.examined << ",\"removed\":" << collection.removed
                   << ",\"bytes\":" << collection.bytes << ",\"retained\":" << collection.retained << "}\n" << std::flush;
         continue;
       }
-      if (command.rfind("acknowledge ", 0) == 0 && store.localMode && !filesystem) {
+      if (command.rfind("acknowledge ", 0) == 0 && !filesystem) {
         acknowledge(store, command);
         continue;
       }
       if ((command == "check-reads" || command.rfind("check-reads ", 0) == 0) &&
-          store.localMode && !filesystem) {
+          !filesystem) {
         std::istringstream input(command.substr(11));
         std::vector<sqlite3_int64> epochs;
         sqlite3_int64 epoch = -1;
@@ -185,7 +180,7 @@ int wmain(int argc, wchar_t** argv) {
                   << std::flush;
         continue;
       }
-      if (command == "freeze" && store.localMode && filesystem) {
+      if (command == "freeze" && filesystem) {
         FspFileSystemStopDispatcher(filesystem);
         FspFileSystemDelete(filesystem);
         filesystem = nullptr;
@@ -193,17 +188,13 @@ int wmain(int argc, wchar_t** argv) {
         std::cout << "{\"version\":1,\"state\":\"frozen\",\"mode\":\"local\"}\n" << std::flush;
         continue;
       }
-      if (command != "metrics" || (!store.git && !store.localMode)) {
+      if (command != "metrics") {
         break;
       }
       std::lock_guard lock(store.mutex);
-      auto metrics = store.git ? store.git->metrics : GitMetrics{};
-      std::cout << "{\"version\":1,\"state\":\"metrics\",\"treeReads\":" << metrics.treeReads
-                << ",\"infoReads\":" << metrics.infoReads << ",\"blobReads\":" << metrics.blobReads
-                << ",\"blobBytes\":" << metrics.blobBytes << ",\"lowerOpens\":" << store.lowerOpens
+      std::cout << "{\"version\":1,\"state\":\"metrics\",\"lowerOpens\":" << store.lowerOpens
                 << ",\"lowerEnumerations\":" << store.lowerEnumerations
                 << ",\"lowerImportCommits\":" << store.lowerImportCommits
-                << ",\"objectMicros\":" << metrics.objectMicros
                 << ",\"sqlPrepareMicros\":" << queryMetrics.prepareMicros
                 << ",\"sqlPrepares\":" << queryMetrics.prepares
                 << ",\"sqlReadMicros\":" << queryMetrics.readMicros
@@ -219,7 +210,7 @@ int wmain(int argc, wchar_t** argv) {
       FspFileSystemDelete(filesystem);
     }
     store.finish();
-    if (localMode && !securityRecovery) {
+    if (!securityRecovery) {
       closeLocalMount(store.lease.value);
     }
     std::cout << "{\"version\":1,\"state\":\"stopped\"}\n" << std::flush;

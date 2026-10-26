@@ -17,7 +17,7 @@ import {
   overlayNamespace,
   overlayWorkspace,
   overlayWorkspaceId,
-} from "../worktrees/overlay.js";
+} from "../local-overlays/winfsp-manager.js";
 import { directoryIdentity } from "../worktrees/git.js";
 import {
   publishFrozen,

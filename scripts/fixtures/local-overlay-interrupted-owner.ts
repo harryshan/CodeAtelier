@@ -14,7 +14,7 @@ import {
   overlayHelperPath,
   overlayNamespace,
   overlayWorkspace,
-} from "../../src/worktrees/overlay.js";
+} from "../../src/local-overlays/winfsp-manager.js";
 
 const root = path.resolve(process.argv[2]!);
 const restore = process.argv[3] !== undefined;

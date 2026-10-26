@@ -13,7 +13,7 @@ import { z } from "zod";
 import {
   validateOverlayAcknowledgement,
   type OverlayAcknowledgement,
-} from "../../worktrees/overlay.js";
+} from "../../local-overlays/winfsp-manager.js";
 import { digest, durableJson, type Snapshot } from "./files.js";
 import { MAX_BYTES, PublishError } from "./merge.js";
 import { checkpointSchema, type NativeCheckpoint } from "./native-refresh.js";

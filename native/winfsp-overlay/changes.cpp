@@ -19,7 +19,7 @@
 namespace overlay {
 sqlite3_int64 Store::epoch() {
   Query state(*this, "SELECT epoch FROM local_state");
-  if (!localMode || !state.step() || state.number(0) < 0) {
+  if (!state.step() || state.number(0) < 0) {
     throw Error{STATUS_FILE_INVALID};
   }
   return state.number(0);
@@ -87,9 +87,6 @@ static std::wstring copyBaseline(Store& store, HANDLE source) {
 
 std::wstring Store::observeRead(const NodePtr& value, HANDLE handle,
                                 const std::wstring& expected) {
-  if (!localMode) {
-    return L"";
-  }
   if (!value->object.empty()) {
     observePrivate(value);
     return L"";
@@ -113,9 +110,6 @@ std::wstring Store::observeRead(const NodePtr& value, HANDLE handle,
 }
 
 void Store::observeMissing(const std::wstring& path) {
-  if (!localMode) {
-    return;
-  }
   try {
     Query(*this, "INSERT OR IGNORE INTO observations(path,name,stamp,epoch) VALUES(?,?,?,?)")
         .text(1, fold(path)).text(2, path).text(3, L"missing").number(4, epoch()).step();
@@ -127,7 +121,7 @@ void Store::observeMissing(const std::wstring& path) {
 }
 
 void Store::capture(const std::wstring& path, int flags) {
-  if (!localMode || path == L"\\") {
+  if (path == L"\\") {
     return;
   }
   auto key = fold(path);
@@ -227,7 +221,7 @@ void Store::capture(const std::wstring& path, int flags) {
 }
 
 Handle Store::baselineInput(const NodePtr& value) {
-  if (!localMode || value->origin.empty() || fold(name(value)) != fold(value->origin)) {
+  if (value->origin.empty() || fold(name(value)) != fold(value->origin)) {
     return {};
   }
   Query baseline(*this, "SELECT kind,object FROM baselines WHERE path=?");
@@ -248,7 +242,7 @@ Handle Store::baselineInput(const NodePtr& value) {
 }
 
 void Store::sealChanges() {
-  if (!localMode || poisoned) {
+  if (poisoned) {
     throw Error{STATUS_FILE_INVALID};
   }
   GUID guid{};
@@ -296,7 +290,7 @@ void Store::sealChanges() {
 }
 
 void Store::checkReads(const std::vector<sqlite3_int64>& requested) {
-  if (!localMode || poisoned) {
+  if (poisoned) {
     throw Error{STATUS_FILE_INVALID};
   }
   std::set<sqlite3_int64> epochs(requested.begin(), requested.end());

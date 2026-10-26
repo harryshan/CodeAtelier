@@ -8,7 +8,7 @@
 
 namespace overlay {
 void Store::trackObject(const NodePtr& value) {
-  if (!localMode || value->directory() || value->object.empty()) {
+  if (value->directory() || value->object.empty()) {
     return;
   }
   try {
@@ -28,7 +28,7 @@ void Store::trackObject(const NodePtr& value) {
 }
 
 void Store::observePrivate(const NodePtr& value) {
-  if (!localMode || value->object.empty()) {
+  if (value->object.empty()) {
     return;
   }
   try {
@@ -58,7 +58,7 @@ void Store::observePrivate(const NodePtr& value) {
 
 sqlite3_int64 Store::nextEpoch(const std::wstring& id, sqlite3_int64 expectedEpoch,
                               const std::wstring& seal) {
-  if (!localMode || !sealed || poisoned || expectedEpoch < 0 || expectedEpoch >= 1000000000 ||
+  if (!sealed || poisoned || expectedEpoch < 0 || expectedEpoch >= 1000000000 ||
       id.size() != 36 || id.find_first_not_of(L"0123456789abcdef-") != std::wstring::npos ||
       id[8] != L'-' || id[13] != L'-' || id[18] != L'-' || id[23] != L'-') {
     throw Error{STATUS_INVALID_PARAMETER};

@@ -11,7 +11,7 @@ import { randomUUID } from "node:crypto";
 import type { Logger } from "pino";
 import { TraceRecorder } from "../../tracing/recorder.js";
 import type { TraceStatus } from "../../tracing/types.js";
-import type { OverlayAcknowledgement } from "../../worktrees/overlay.js";
+import type { OverlayAcknowledgement } from "../../local-overlays/winfsp-manager.js";
 import { durableJson } from "./files.js";
 import { loadJournal, saveJournal } from "./journal.js";
 import { PublishError } from "./merge.js";

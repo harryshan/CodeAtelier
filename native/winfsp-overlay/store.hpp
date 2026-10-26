@@ -5,7 +5,7 @@
 // 2. Store 按需导入 lower 元数据，持久化命名空间、删除标记、ACL 和虚拟 inode；Local 枚举按目录提交并计数。
 // 3. copy-up 先 flush 私有对象再发布引用；文件 rename 固化内容，目录 rename 保留 live lower。
 // 4. security/reparse 接口维护虚拟卷权限和内部链接；finish 仅在状态可信时标记干净卸载。
-// 5. 显式 Git PoC lower 按 tree/blob 提供内容，read 不物化文件；生产 live lower 保持原样。
+// 5. lower 按需实时读取来源文件；首次修改才物化私有对象，创建不遍历来源目录。
 // 6. Local 模式绑定独立持久格式，所有层级隐藏并保留 .git 名称，不允许新建私有仓库入口。
 // 7. observeRead/capture 在实际访问路径上记录版本和不可变原文；不在启动时扫描来源。
 // 8. acknowledge 在冻结租约内按批次幂等释放已发布路径，并切换观察代次；旧修改依赖保留。
@@ -13,7 +13,7 @@
 // 10. v6 trackObject/observePrivate 保存跨轮私有读依赖；nextEpoch 只推进观察代次，不发布或丢弃修改。
 // 11. lookup/import 的真实 lower 缺失记录首个 missing 观察；不把策略隐藏/whiteout/访问拒绝当成缺失。
 // 12. Local 目录枚举记录来源身份及名称/类型摘要；冻结仅重新枚举已观察目录，不导入新节点。
-// 遮蔽来源的 .git 命名空间；Git PoC 从对象库取内容，不打开来源工作文件。
+// 遮蔽来源的 .git 命名空间；不再提供旧 Git 对象 lower 或 linked Git metadata 模式。
 // 来源文件打开禁止重解析与写访问，控制目录不暴露于挂载。
 #pragma once
 #include <aclapi.h>
@@ -100,7 +100,6 @@ struct Node {
   }
 };
 using NodePtr = std::shared_ptr<Node>;
-class GitLower;
 struct Entry {
   std::wstring name;
   NodePtr node;
@@ -136,19 +135,16 @@ class Store {
   std::recursive_mutex mutex;
   UINT32 serial = 0;
   bool poisoned = false;
-  bool localMode = false;
   bool securityRecovery = false;
   bool sealed = false;
   std::map<sqlite3_int64, std::weak_ptr<Node>> cache;
-  std::unique_ptr<GitLower> git;
   std::map<std::string, sqlite3_stmt*> statements;
   UINT64 lowerOpens = 0;
   UINT64 lowerEnumerations = 0;
   UINT64 lowerImportCommits = 0;
 
   Store(const fs::path& source, const fs::path& root, const fs::path& workspace, bool create,
-        const fs::path& gitExecutable = {}, const fs::path& gitDirectory = {},
-        const std::wstring& tree = L"", bool localMode = false, bool securityRecovery = false);
+        bool securityRecovery = false);
   ~Store();
   void sql(const char* text);
   NodePtr node(sqlite3_int64 id);
@@ -191,9 +187,6 @@ class Store {
 
  private:
   void closeDatabase() noexcept;
-  std::set<sqlite3_int64> importedTrees;
-  bool gitIncompatible = false;
-  void importGitDirectory(const NodePtr& parent);
   NodePtr import(const NodePtr& parent, const std::wstring& name, const std::wstring& origin,
                  bool batchedImport);
   std::pair<NodePtr, std::wstring> parent(const std::wstring& path);

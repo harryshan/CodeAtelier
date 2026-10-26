@@ -11,7 +11,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import { overlayHelperPath } from "../../worktrees/overlay.js";
+import { overlayHelperPath } from "../../local-overlays/winfsp-manager.js";
 import { PublishError } from "./merge.js";
 
 const replySchema = z.object({

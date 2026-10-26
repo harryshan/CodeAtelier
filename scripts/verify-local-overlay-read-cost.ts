@@ -22,7 +22,7 @@ import {
   OverlayManager,
   overlayNamespace,
   overlayWorkspace,
-} from "../src/worktrees/overlay.js";
+} from "../src/local-overlays/winfsp-manager.js";
 
 assert.equal(process.platform, "win32");
 await mkdir(".local", { recursive: true });

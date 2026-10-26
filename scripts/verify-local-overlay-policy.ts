@@ -29,7 +29,7 @@ import {
   OverlayManager,
   overlayNamespace,
   overlayWorkspace,
-} from "../src/worktrees/overlay.js";
+} from "../src/local-overlays/winfsp-manager.js";
 import { git, gitEnvironment } from "../src/worktrees/git.js";
 
 assert.equal(process.platform, "win32");

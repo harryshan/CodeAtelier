@@ -18,7 +18,7 @@ import {
   OverlayManager,
   overlayNamespace,
   overlayWorkspace,
-} from "../src/worktrees/overlay.js";
+} from "../src/local-overlays/winfsp-manager.js";
 import {
   durableJson,
   sourceIdentity,

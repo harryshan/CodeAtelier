@@ -1,11 +1,11 @@
 /**
- * 管理 WinFsp 长驻挂载进程，供 WorktreeService 创建/验证/关闭使用。
- * 1. 固定本机 UNC 命名空间和可信 helper 路径；能力探测由 riftri.ts 统一处理。
+ * 管理 WinFsp 长驻挂载进程，供 LocalOverlayService 与候选验证器创建/验证/关闭使用。
+ * 1. 固定本机 UNC 命名空间和可信 helper 路径；不负责 Git 仓库管理或原生 CoW。
  * 2. start 等待有界协议 ready，stdin 生命周期绑定宿主；同一 ID 去重，异常退出后本进程内不重挂载。
  * 3. stop 在任务排空后关闭 stdin，等待停止/退出；超时仅终止自己创建的 helper，保留磁盘现场。
  * 4. mount/restore/unmount/异常退出记录独立 trace 和受控生命周期日志，原生诊断只含状态码/源码行号。
- * 5. 显式 gitBase 仅供人工虚拟 worktree PoC；metrics 读取累计计数/耗时及可选 SQL prepare、lower 导入提交数，兼容旧 helper 收据。
- * 6. Local 模式要求独立策略收据，挂载身份/策略固定；旧模式保持私有 gitfile 兼容。
+ * 5. metrics 只读取 Local 的 lower/SQL 累计计数和耗时；不再支持 Git 对象 lower 或普通 live 模式。
+ * 6. Local 模式要求独立策略收据，挂载身份/策略固定；旧无策略 helper 收据拒绝。
  * 7. withFrozen 停止 Local 文件系统服务后执行导出，helper 全程持有控制目录租约；返回后正常退出。
  *    同一冻结回调可确认已完成的来源发布；仅匹配批次/代次收据成功后允许调用方记录视图已刷新。
  * 8. 冻结回调接收租约失效/取消信号；关闭先中止并等待回调排空，再幂等卸载，不用竞速伪造完成。
@@ -15,6 +15,7 @@
  * 11. Local 启动传递宿主 PID，helper 持久记录 PID/创建时间，供异常卷离线检查验证旧进程退出。
  * 12. local-security 使用根 ACL 专用策略收据，不支持创建或任务文件访问，旧 helper 拒绝而非回退。
  */
+
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -23,25 +24,13 @@ import type { Logger } from "pino";
 import { z } from "zod";
 import { TraceRecorder } from "../tracing/recorder.js";
 import { TraceArchive } from "../tracing/archive.js";
-import { gitEnvironment } from "./git.js";
-
-export interface GitOverlayBase {
-  executable: string;
-  directory: string;
-  tree: string;
-}
 
 const metricsSchema = z.object({
   version: z.literal(1),
   state: z.literal("metrics"),
-  treeReads: z.number().int().nonnegative(),
-  infoReads: z.number().int().nonnegative(),
-  blobReads: z.number().int().nonnegative(),
-  blobBytes: z.number().int().nonnegative(),
   lowerOpens: z.number().int().nonnegative(),
   lowerEnumerations: z.number().int().nonnegative(),
   lowerImportCommits: z.number().int().nonnegative().optional(),
-  objectMicros: z.number().int().nonnegative().optional(),
   sqlPrepareMicros: z.number().int().nonnegative().optional(),
   sqlPrepares: z.number().int().nonnegative().optional(),
   sqlReadMicros: z.number().int().nonnegative().optional(),
@@ -112,7 +101,6 @@ interface Mount {
   stopped: boolean;
   exitCode?: number | null;
   closed: boolean;
-  gitLower: boolean;
   local: boolean;
   freezing?: boolean;
   freeze?: () => void;
@@ -190,7 +178,7 @@ export class OverlayManager {
       name: `overlay.${action}`,
       category: "worktree",
       track: "Overlay mounts",
-      attributes: { worktreeId: id },
+      attributes: { overlayId: id },
     });
     const started = performance.now();
     let outcome: "ok" | "error" | "cancelled" | "unknown" =
@@ -200,9 +188,9 @@ export class OverlayManager {
         ? "unknown"
         : "error";
     this.log.info({
-      module: "worktree",
+      module: "local-overlay",
       event: `overlay.${action}_started`,
-      worktreeId: id,
+      overlayId: id,
       operationId,
     });
     try {
@@ -224,9 +212,9 @@ export class OverlayManager {
       );
       this.traces.discardTask(operationId);
       this.log.info({
-        module: "worktree",
+        module: "local-overlay",
         event: `overlay.${action}_finished`,
-        worktreeId: id,
+        overlayId: id,
         operationId,
         outcome,
         durationMs: performance.now() - started,
@@ -241,15 +229,14 @@ export class OverlayManager {
     workspace: string,
     create: boolean,
     signal: AbortSignal,
-    base?: GitOverlayBase | { kind: "local" | "local-security" },
+    base: { kind: "local" | "local-security" } = { kind: "local" },
   ) {
-    const local = base !== undefined && "kind" in base;
-    const securityRecovery = local && base.kind === "local-security";
+    const local = base.kind === "local";
+    const securityRecovery = base.kind === "local-security";
     if (securityRecovery && create) {
       throw new Error("ACL 恢复不能创建新卷。");
     }
 
-    const gitBase = base !== undefined && !("kind" in base) ? base : undefined;
     const identity = JSON.stringify([source, control, workspace, base ?? null]);
     const existing = this.mounts.get(id);
     if (existing) {
@@ -269,59 +256,20 @@ export class OverlayManager {
 
     return this.observe(
       id,
-      local
-        ? create
-          ? "local_mount"
-          : "local_restore"
-        : gitBase
-          ? create
-            ? "git_mount"
-            : "git_restore"
-          : create
-            ? "mount"
-            : "restore",
+      create ? "local_mount" : "local_restore",
       async () => {
         signal.throwIfAborted();
         const child = spawn(
           this.executable,
           [
             (create ? "create" : "restore") +
-              (securityRecovery
-                ? "-local-security"
-                : local
-                  ? "-local"
-                  : gitBase
-                    ? "-git"
-                    : ""),
+              (securityRecovery ? "-local-security" : "-local"),
             source,
             control,
             workspace.slice(1).replace(/\\$/, ""),
-            ...(local ? [String(process.pid)] : []),
-            ...(gitBase
-              ? [
-                  gitBase.executable,
-                  gitBase.directory,
-                  z
-                    .string()
-                    .regex(/^[a-f0-9]{40}$/)
-                    .parse(gitBase.tree),
-                ]
-              : []),
+            String(process.pid),
           ],
-          {
-            windowsHide: true,
-            stdio: ["pipe", "pipe", "pipe"],
-            ...(gitBase
-              ? {
-                  env: {
-                    ...process.env,
-                    ...gitEnvironment(),
-                    GIT_NO_LAZY_FETCH: "1",
-                    GIT_NO_REPLACE_OBJECTS: "1",
-                  },
-                }
-              : {}),
-          },
+          { windowsHide: true, stdio: ["pipe", "pipe", "pipe"] },
         );
         let resolveReady!: () => void;
         let rejectReady!: (error: Error) => void;
@@ -342,7 +290,6 @@ export class OverlayManager {
           stopping: false,
           stopped: false,
           closed: false,
-          gitLower: gitBase !== undefined,
           local,
         };
         this.mounts.set(id, mount);
@@ -369,9 +316,9 @@ export class OverlayManager {
           if (!mount.stopping) {
             fail();
             this.log.warn({
-              module: "worktree",
+              module: "local-overlay",
               event: "overlay.unexpected_exit",
-              worktreeId: id,
+              overlayId: id,
             });
             void this.observe(id, "unexpected_exit", async () => {
               throw new Error("Overlay helper exited unexpectedly.");
@@ -406,9 +353,9 @@ export class OverlayManager {
                   ? this.log.warn.bind(this.log)
                   : this.log.debug.bind(this.log);
               report({
-                module: "worktree",
+                module: "local-overlay",
                 event: "overlay.native_error",
-                worktreeId: id,
+                overlayId: id,
                 operation: match[1],
                 nativeLine: Number(match[2] ?? 0),
                 nativeStatus: Number(match[3]),
@@ -470,7 +417,7 @@ export class OverlayManager {
                 })
                 .parse(raw);
               if (message.state === "ready") {
-                if (message.mode !== (local ? base.kind : undefined)) {
+                if (message.mode !== base.kind) {
                   rejectReady(
                     new Error(
                       "Overlay helper 策略不匹配；拒绝使用旧文件视图。",
@@ -559,12 +506,12 @@ export class OverlayManager {
     );
   }
 
-  /** Read native PoC counters without enumerating the mounted working tree. */
+  /** Read native Local counters without enumerating the mounted working tree. */
   async metrics(id: string): Promise<OverlayMetrics> {
     const mount = this.mounts.get(id);
     if (
       !mount ||
-      (!mount.gitLower && !mount.local) ||
+      !mount.local ||
       mount.failed ||
       mount.stopping ||
       mount.freezing ||
@@ -723,9 +670,9 @@ export class OverlayManager {
         }
 
         this.log.info({
-          module: "worktree",
+          module: "local-overlay",
           event: "overlay.local_collect_counts",
-          worktreeId: id,
+          overlayId: id,
           nodes: result.nodes,
           examined: result.examined,
           removed: result.removed,

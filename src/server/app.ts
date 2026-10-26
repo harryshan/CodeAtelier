@@ -4,7 +4,7 @@
  *
  * 1. 创建 Fastify、Store 和 Engine；测试可替换 Local 挂载边界。若启用 Windows Sandbox，在监听前排空上次服务遗留的账户进程和 ACL journal。
  * 2. 先按监听范围注册来源与凭据检查、关闭/受监督重载接口和错误处理，再注册 bootstrap、设置接口。
- * 3. bootstrap 报告 subagent 和隔离 Local 入口能力；默认 Riftri、显式 Worktree/Local 严格互斥，固定 UUID 绑定目录。列表/快照/分页补充来源与私有发布状态；公开 Local 创建、启动和恢复均检查代码总开关、平台与 Sandbox 配置，历史读取不挂载。
+ * 3. bootstrap 报告 subagent 和隔离 Local 入口能力；默认普通 Local、显式 Worktree/隔离 Local 严格互斥，固定 UUID 绑定目录。列表/快照/分页补充来源与私有发布状态；公开 Local 创建、启动和恢复均检查代码总开关、平台与 Sandbox 配置，历史读取不挂载。
  * 4. 注册复用 Store 的只读任务阅读接口，接入 SSE，并提供构建后的网页；没有前端产物时显示开发提示。
  *    Local 单文件检查复用既有鉴权及视图排他锁，不启动 Runtime 或发布文件。
  * 5. preClose 中断任务并结束 SSE，onClose 关闭数据库。
@@ -15,7 +15,6 @@
  */
 
 import Fastify, { LogController } from "fastify";
-import { randomUUID } from "node:crypto";
 import staticPlugin from "@fastify/static";
 import {
   registerLocalSecurity,
@@ -214,7 +213,6 @@ export async function createApp(
     const data = z
       .object({
         workspace: z.string().min(1),
-        riftri: z.object({ id: z.uuid() }).strict().optional(),
         localOverlay: z.object({ id: z.uuid() }).strict().optional(),
         worktree: z
           .object({ id: z.uuid(), baseRef: z.string().min(1).max(1024) })
@@ -224,8 +222,7 @@ export async function createApp(
       .strict()
       .refine(
         (value) =>
-          [value.riftri, value.worktree, value.localOverlay].filter(Boolean)
-            .length <= 1,
+          [value.worktree, value.localOverlay].filter(Boolean).length <= 1,
         "不能同时指定多个工作区模式",
       )
       .parse(req.body);
@@ -257,10 +254,13 @@ export async function createApp(
       return engine.worktrees.create({ ...data.worktree, workspace }, bind);
     }
 
-    return engine.worktrees.createRiftri(
-      { id: data.riftri?.id ?? randomUUID(), workspace },
-      bind,
-    );
+    // Reject retired managed paths even when supplied through the ordinary Local API.
+    await engine.worktrees.validate(workspace);
+    if (await engine.localOverlays.validate(workspace)) {
+      throw new Error("隔离 Local 私有目录不能作为普通 Local 创建。");
+    }
+
+    return engine.describeSession(await store.createAsync(workspace));
   });
   registerLocalReviewRoutes(app, store, engine);
   app.get("/api/sessions/:id/traces", async (req, reply) => {

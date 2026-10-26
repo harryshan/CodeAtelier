@@ -6,7 +6,7 @@
 //    Local 的目录枚举在同一事务导入新条目；独立 lookup 仍逐项提交，失败回滚污染保护不变。
 // 3. create/promote/rename/remove 持久化私有状态；旧对象保留，崩溃不猜测或回写 lower。
 // 4. security 用 Windows 继承算法合成 DACL，SetSecurity 只保存描述符，不改来源 ACL。
-// 5. 可选 GitLower 按目录事务导入不可变树，read 直接返回 blob，只有写入才物化对象。
+// 5. 只保留 Local 实时 lower 与私有对象，不导入 Git tree/blob；旧非 Local 持久格式拒绝。
 // 6. Local 模式独立格式和保留名称校验避免旧私有 gitfile 路径混入无仓库视图。
 //    changes.cpp 保存按需读版本和不可变基线；内容/命名空间修改在副作用前调用 capture。
 //    Local v6 按观察代次和对象来源保留跨轮依赖；旧实验格式不自动迁移。
@@ -21,8 +21,6 @@
 #include <algorithm>
 #include <chrono>
 #include <cstring>
-
-#include "git-lower.hpp"
 
 namespace overlay {
 QueryMetrics queryMetrics;
@@ -114,8 +112,7 @@ static void sqlite(int result) {
 }
 
 Query::Query(Store& store, const char* sql) {
-  if (store.git || (store.localMode &&
-                    (store.statements.contains(sql) || store.statements.size() < 128))) {
+  if (store.statements.contains(sql) || store.statements.size() < 128) {
     pooled = &store.statements[sql];
     value = *pooled;
     *pooled = nullptr;
@@ -280,25 +277,20 @@ void Store::sql(const char* text) {
 }
 
 Store::Store(const fs::path& sourcePath, const fs::path& directory, const fs::path& workspacePath,
-             bool create, const fs::path& gitExecutable, const fs::path& gitDirectory,
-             const std::wstring& tree, bool localMode, bool securityRecovery)
+             bool create, bool securityRecovery)
     : source(fs::absolute(sourcePath)), root(fs::absolute(directory)), workspace(workspacePath),
-      localMode(localMode), securityRecovery(securityRecovery) {
+      securityRecovery(securityRecovery) {
   try {
-    if (securityRecovery && (!localMode || create || !tree.empty())) {
+    if (securityRecovery && create) {
       throw Error{STATUS_INVALID_PARAMETER};
     }
-    if (localMode && !tree.empty()) {
-      throw Error{STATUS_INVALID_PARAMETER};
-    }
+
     if (create) {
       if (!fs::create_directory(root)) {
         throw Error{STATUS_OBJECT_NAME_COLLISION};
       }
       fs::create_directory(root / L"objects");
-      if (localMode) {
-        fs::create_directory(root / L"baselines");
-      }
+      fs::create_directory(root / L"baselines");
     }
     // No shared lease: a second mount must never open the same private state
     // concurrently.
@@ -322,14 +314,12 @@ Store::Store(const fs::path& sourcePath, const fs::path& directory, const fs::pa
                            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
     require(objectsDirectory.value != INVALID_HANDLE_VALUE);
     fileInfo(objectsDirectory.value);
-    if (localMode) {
-      baselinesDirectory = Handle(CreateFileW(
-          (root / L"baselines").c_str(), FILE_LIST_DIRECTORY | READ_CONTROL,
-          FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
-          FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
-      require(baselinesDirectory.value != INVALID_HANDLE_VALUE);
-      fileInfo(baselinesDirectory.value);
-    }
+    baselinesDirectory = Handle(CreateFileW(
+        (root / L"baselines").c_str(), FILE_LIST_DIRECTORY | READ_CONTROL,
+        FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+    require(baselinesDirectory.value != INVALID_HANDLE_VALUE);
+    fileInfo(baselinesDirectory.value);
     lower = Handle(CreateFileW(source.c_str(),
                                FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | READ_CONTROL,
                                FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
@@ -341,11 +331,7 @@ Store::Store(const fs::path& sourcePath, const fs::path& directory, const fs::pa
     std::wstring sourceIdentity = std::to_wstring(raw.dwVolumeSerialNumber) + L":" +
                                   std::to_wstring(identity.IndexNumber) + L":" +
                                   std::to_wstring(identity.CreationTime);
-    if (!tree.empty()) {
-      git = std::make_unique<GitLower>(gitExecutable, gitDirectory);
-      // Bind restore to exactly the same immutable base and object database.
-      sourceIdentity += L":" + tree + L":" + fs::absolute(gitDirectory).wstring();
-    }
+
     auto database = utf8((root / L"overlay.sqlite").wstring());
     sqlite(sqlite3_open_v2(database.c_str(), &db,
                            SQLITE_OPEN_READWRITE | (create ? SQLITE_OPEN_CREATE : 0), nullptr));
@@ -363,13 +349,13 @@ Store::Store(const fs::path& sourcePath, const fs::path& directory, const fs::pa
       require(SUCCEEDED(CoCreateGuid(&guid)));
       serial = guid.Data1 ? guid.Data1 : 1;
       Query(*this, "INSERT INTO meta VALUES(?,?,?,?,0)")
-          .number(1, localMode ? 6 : 2)
+          .number(1, 6)
           .text(2, source.wstring())
           .text(3, sourceIdentity)
           .number(4, serial)
           .step();
       Node value;
-      value.origin = git ? tree : L"\\";
+      value.origin = L"\\";
       value.info = identity;
       value.security = descriptor(lower.value);
       detachRootInheritance(value.security);
@@ -377,20 +363,18 @@ Store::Store(const fs::path& sourcePath, const fs::path& directory, const fs::pa
       if (rootNode->id != 1) {
         throw Error{STATUS_FILE_CORRUPT_ERROR};
       }
-      if (localMode) {
-        sql("CREATE TABLE local_state(epoch INTEGER,seal TEXT); INSERT INTO local_state VALUES(0,'');"
-            "CREATE TABLE epoch_transitions(id TEXT PRIMARY KEY,epoch INTEGER,seal TEXT);"
-            "CREATE TABLE epoch_links(epoch INTEGER,dependency INTEGER,PRIMARY KEY(epoch,dependency));"
-            "CREATE TABLE object_epochs(object TEXT,epoch INTEGER,PRIMARY KEY(object,epoch));"
-            "CREATE TABLE acknowledgements(id TEXT PRIMARY KEY,epoch INTEGER,selection TEXT,seal TEXT);"
-            "CREATE TABLE change_epochs(path TEXT,epoch INTEGER,PRIMARY KEY(path,epoch));"
-            "CREATE TABLE observations(path TEXT,name TEXT,stamp TEXT,epoch INTEGER,PRIMARY KEY(epoch,path));"
-            "CREATE TABLE baselines(path TEXT PRIMARY KEY,name TEXT,kind INTEGER,"
-            "object TEXT,stamp TEXT,attributes INTEGER,security BLOB,flags INTEGER);");
-      }
+      sql("CREATE TABLE local_state(epoch INTEGER,seal TEXT); INSERT INTO local_state VALUES(0,'');"
+          "CREATE TABLE epoch_transitions(id TEXT PRIMARY KEY,epoch INTEGER,seal TEXT);"
+          "CREATE TABLE epoch_links(epoch INTEGER,dependency INTEGER,PRIMARY KEY(epoch,dependency));"
+          "CREATE TABLE object_epochs(object TEXT,epoch INTEGER,PRIMARY KEY(object,epoch));"
+          "CREATE TABLE acknowledgements(id TEXT PRIMARY KEY,epoch INTEGER,selection TEXT,seal TEXT);"
+          "CREATE TABLE change_epochs(path TEXT,epoch INTEGER,PRIMARY KEY(path,epoch));"
+          "CREATE TABLE observations(path TEXT,name TEXT,stamp TEXT,epoch INTEGER,PRIMARY KEY(epoch,path));"
+          "CREATE TABLE baselines(path TEXT PRIMARY KEY,name TEXT,kind INTEGER,"
+          "object TEXT,stamp TEXT,attributes INTEGER,security BLOB,flags INTEGER);");
     } else {
       Query meta(*this, "SELECT version,source,identity,serial,clean FROM meta");
-      if (!meta.step() || meta.number(0) != (localMode ? 6 : 2) ||
+      if (!meta.step() || meta.number(0) != 6 ||
           (meta.number(4) != 1 && !(securityRecovery && meta.number(4) == 0)) ||
           fold(meta.text(1)) != fold(source.wstring()) || meta.text(2) != sourceIdentity) {
         throw Error{STATUS_FILE_INVALID};
@@ -403,11 +387,7 @@ Store::Store(const fs::path& sourcePath, const fs::path& directory, const fs::pa
         sql("UPDATE meta SET clean=0");
       }
     }
-    if (git) {
-      // OpenFile normalized names look up an inode in its parent. The primary
-      // (parent,key) index otherwise scans every sibling for each file opened.
-      sql("CREATE INDEX IF NOT EXISTS entries_inode ON entries(parent,node)");
-    }
+
   } catch (...) {
     closeDatabase();
     throw;
@@ -441,10 +421,7 @@ void Store::finish() {
 
 Handle Store::openLower(const std::wstring& origin, DWORD sharing, bool observeAbsence) {
   ++lowerOpens;
-  if (git) {
-    // A Git lower must never silently fall back to a source working file.
-    throw Error{STATUS_NOT_SUPPORTED};
-  }
+
   if (origin.empty()) {
     throw Error{STATUS_OBJECT_NAME_NOT_FOUND};
   }
@@ -472,7 +449,7 @@ Handle Store::openLower(const std::wstring& origin, DWORD sharing, bool observeA
       status == STATUS_NO_SUCH_FILE) {
     // Only the OS open failure is evidence. The normalized-path .git policy
     // below also returns NOT_FOUND, but must never become a lower observation.
-    if (observeAbsence && localMode) {
+    if (observeAbsence) {
       observeMissing(origin);
     }
     throw Error{status, true};
@@ -480,18 +457,16 @@ Handle Store::openLower(const std::wstring& origin, DWORD sharing, bool observeA
   checked(status);
   Handle handle(raw);
   fileInfo(handle.value, true);
-  if (localMode) {
-    // An NTFS short name can resolve to .git even when the requested spelling
-    // differs. Check the normalized opened path, without following reparses or
-    // enumerating the directory. The virtual volume never advertises aliases.
-    std::vector<wchar_t> normalized(32768);
-    auto length = GetFinalPathNameByHandleW(handle.value, normalized.data(),
-                                           static_cast<DWORD>(normalized.size()), VOLUME_NAME_NONE);
-    require(length > 0 && length < normalized.size());
-    for (const auto& component : fs::path(std::wstring(normalized.data(), length))) {
-      if (fold(component.wstring()) == L".GIT") {
-        throw Error{STATUS_OBJECT_NAME_NOT_FOUND};
-      }
+  // An NTFS short name can resolve to .git even when the requested spelling
+  // differs. Check the normalized opened path, without following reparses or
+  // enumerating the directory. The virtual volume never advertises aliases.
+  std::vector<wchar_t> normalized(32768);
+  auto length = GetFinalPathNameByHandleW(handle.value, normalized.data(),
+                                         static_cast<DWORD>(normalized.size()), VOLUME_NAME_NONE);
+  require(length > 0 && length < normalized.size());
+  for (const auto& component : fs::path(std::wstring(normalized.data(), length))) {
+    if (fold(component.wstring()) == L".GIT") {
+      throw Error{STATUS_OBJECT_NAME_NOT_FOUND};
     }
   }
   return handle;
@@ -639,7 +614,7 @@ NodePtr Store::import(const NodePtr& parent, const std::wstring& name, const std
 NodePtr Store::child(const NodePtr& parent, const std::wstring& name, bool batchedImport) {
   validName(name);
   // Check before the private namespace too: Local never exposes a gitfile.
-  if (localMode && fold(name) == L".GIT") {
+  if (fold(name) == L".GIT") {
     throw Error{STATUS_OBJECT_NAME_NOT_FOUND};
   }
   if (!parent->directory()) {
@@ -657,7 +632,7 @@ NodePtr Store::child(const NodePtr& parent, const std::wstring& name, bool batch
     auto result = node(query.number(0));
     // Imported entries remain a live lower view until content is private or
     // renamed.
-    if (!git && result->object.empty() && !result->origin.empty()) {
+    if (result->object.empty() && !result->origin.empty()) {
       auto handle = openLower(result->origin, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, true);
     }
     return result;
@@ -668,15 +643,7 @@ NodePtr Store::child(const NodePtr& parent, const std::wstring& name, bool batch
   if (parent->origin.empty()) {
     throw Error{STATUS_OBJECT_NAME_NOT_FOUND};
   }
-  if (git) {
-    importGitDirectory(parent);
-    Query imported(*this, "SELECT node FROM entries WHERE parent=? AND key=?");
-    imported.number(1, parent->id).text(2, fold(name));
-    if (!imported.step() || !imported.number(0)) {
-      throw Error{STATUS_OBJECT_NAME_NOT_FOUND};
-    }
-    return node(imported.number(0));
-  }
+
   auto origin = parent->origin == L"\\" ? L"\\" + name : parent->origin + L"\\" + name;
   return import(parent, name, origin, batchedImport);
 }
@@ -685,11 +652,7 @@ NodePtr Store::lookup(const std::wstring& path) {
   if (securityRecovery && path != L"\\") {
     throw Error{STATUS_ACCESS_DENIED};
   }
-  if (gitIncompatible) {
-    // Once a directory cannot be represented faithfully, don't expose a
-    // partial repository as if unsupported entries were simply missing.
-    throw Error{STATUS_NOT_SUPPORTED};
-  }
+
   if (path.empty() || path[0] != L'\\') {
     throw Error{STATUS_OBJECT_NAME_INVALID};
   }
@@ -728,7 +691,7 @@ std::pair<NodePtr, std::wstring> Store::parent(const std::wstring& path) {
   validName(name);
   // All namespace mutations use parent(); reject before any transaction or
   // copy-up so a forbidden rename cannot consume the source entry.
-  if (localMode && fold(name) == L".GIT") {
+  if (fold(name) == L".GIT") {
     throw Error{STATUS_ACCESS_DENIED};
   }
   return {lookup(slash == 0 ? L"\\" : path.substr(0, slash)), name};
@@ -739,66 +702,6 @@ static bool missing(NTSTATUS status) {
          status == STATUS_NO_SUCH_FILE;
 }
 
-static std::vector<BYTE> childDescriptor(const std::vector<BYTE>& parent) {
-  // Store owner/group, but no copied root capability ACEs: child DACLs inherit
-  // dynamically so revoking a root grant also revokes access to imported files.
-  SECURITY_DESCRIPTOR descriptor{};
-  require(InitializeSecurityDescriptor(&descriptor, SECURITY_DESCRIPTOR_REVISION));
-  PSID owner = nullptr;
-  PSID group = nullptr;
-  BOOL defaulted = FALSE;
-  require(GetSecurityDescriptorOwner(const_cast<BYTE*>(parent.data()), &owner, &defaulted));
-  require(GetSecurityDescriptorGroup(const_cast<BYTE*>(parent.data()), &group, &defaulted));
-  require(SetSecurityDescriptorOwner(&descriptor, owner, FALSE));
-  require(SetSecurityDescriptorGroup(&descriptor, group, FALSE));
-  ACL empty{};
-  require(InitializeAcl(&empty, sizeof(empty), ACL_REVISION));
-  require(SetSecurityDescriptorDacl(&descriptor, TRUE, &empty, FALSE));
-  DWORD length = 0;
-  MakeSelfRelativeSD(&descriptor, nullptr, &length);
-  std::vector<BYTE> result(length);
-  require(MakeSelfRelativeSD(&descriptor, result.data(), &length));
-  return result;
-}
-
-void Store::importGitDirectory(const NodePtr& parent) {
-  if (parent->origin.empty() || importedTrees.contains(parent->id)) {
-    return;
-  }
-  const std::vector<GitEntry>* entries = nullptr;
-  try {
-    entries = &git->tree(parent->origin);
-  } catch (const Error& error) {
-    if (error.status == STATUS_NOT_SUPPORTED) {
-      gitIncompatible = true;
-    }
-    throw;
-  }
-  auto sd = childDescriptor(node(1)->security);
-  Transaction transaction(*this);
-  for (const auto& entry : *entries) {
-    Query existing(*this, "SELECT 1 FROM entries WHERE parent=? AND key=?");
-    existing.number(1, parent->id).text(2, fold(entry.name));
-    if (existing.step()) {
-      continue;
-    }
-    Node value;
-    value.parent = parent->id;
-    value.origin = entry.oid;
-    value.security = sd;
-    value.info.FileAttributes = entry.directory ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_NORMAL;
-    value.info.HardLinks = 1;
-    value.info.CreationTime = value.info.LastWriteTime = value.info.LastAccessTime =
-        value.info.ChangeTime = node(1)->info.CreationTime;
-    value.info.FileSize = entry.directory ? 0 : git->size(entry.oid);
-    value.info.AllocationSize = (value.info.FileSize + 4095) & ~4095ULL;
-    auto result = insert(std::move(value));
-    link(parent->id, entry.name, result->id, false);
-  }
-  transaction.commit();
-  importedTrees.insert(parent->id);
-}
-
 std::vector<Entry> Store::list(const NodePtr& parent) {
   if (!parent->directory()) {
     throw Error{STATUS_NOT_A_DIRECTORY};
@@ -806,9 +709,7 @@ std::vector<Entry> Store::list(const NodePtr& parent) {
   if (!parent->reparse.empty()) {
     throw Error{STATUS_REPARSE_POINT_NOT_RESOLVED};
   }
-  if (git) {
-    importGitDirectory(parent);
-  } else if (!parent->origin.empty()) {
+  if (!parent->origin.empty()) {
     ++lowerEnumerations;
     Handle handle;
     try {
@@ -821,63 +722,23 @@ std::vector<Entry> Store::list(const NodePtr& parent) {
     if (handle.value != INVALID_HANDLE_VALUE) {
       // Preserve FULL durability, ACL and source validation. Batching only avoids
       // one flush per new directory entry; it is not a snapshot of the live source.
-      std::unique_ptr<Transaction> transaction;
       const auto changesBefore = sqlite3_total_changes(db);
-      if (localMode) {
-        transaction = std::make_unique<Transaction>(*this);
-      }
-      if (localMode) {
-        auto observed = directorySnapshot(handle.value);
-        for (const auto& [name, attributes] : observed.entries) {
-          try {
-            child(parent, name, true);
-          } catch (const Error& error) {
-            if (!missing(error.status)) {
-              throw;
-            }
-          }
-        }
-        verifyDirectoryGuard(handle.value, observed.guard);
-        observeDirectory(parent->origin, observed.stamp);
-      } else {
-        alignas(8) BYTE buffer[65536];
-        bool first = true;
-        for (;;) {
-          if (!GetFileInformationByHandleEx(
-                  handle.value, first ? FileIdBothDirectoryRestartInfo : FileIdBothDirectoryInfo,
-                  buffer, sizeof(buffer))) {
-            if (GetLastError() == ERROR_NO_MORE_FILES) {
-              break;
-            }
-            require(false);
-          }
-          first = false;
-          auto entry = reinterpret_cast<FILE_ID_BOTH_DIR_INFO*>(buffer);
-          for (;;) {
-            std::wstring name(entry->FileName, entry->FileNameLength / sizeof(wchar_t));
-            if (name != L"." && name != L".." &&
-                !((localMode || parent->id == 1) && fold(name) == L".GIT")) {
-              try {
-                child(parent, name, localMode);
-              } catch (const Error& error) {
-                if (!missing(error.status)) {
-                  throw;
-                }
-              }
-            }
-            if (!entry->NextEntryOffset) {
-              break;
-            }
-            entry = reinterpret_cast<FILE_ID_BOTH_DIR_INFO*>(reinterpret_cast<BYTE*>(entry) +
-                                                             entry->NextEntryOffset);
+      Transaction transaction(*this);
+      auto observed = directorySnapshot(handle.value);
+      for (const auto& [name, attributes] : observed.entries) {
+        try {
+          child(parent, name, true);
+        } catch (const Error& error) {
+          if (!missing(error.status)) {
+            throw;
           }
         }
       }
-      if (transaction) {
-        transaction->commit();
-        if (sqlite3_total_changes(db) != changesBefore) {
-          ++lowerImportCommits;
-        }
+      verifyDirectoryGuard(handle.value, observed.guard);
+      observeDirectory(parent->origin, observed.stamp);
+      transaction.commit();
+      if (sqlite3_total_changes(db) != changesBefore) {
+        ++lowerImportCommits;
       }
     }
   }
@@ -936,7 +797,7 @@ void Store::promote(const NodePtr& value) {
   if (value->directory() || !value->object.empty()) {
     return;
   }
-  if (localMode && !value->origin.empty()) {
+  if (!value->origin.empty()) {
     capture(this->name(value));
   }
   pinParents(value);
@@ -950,15 +811,7 @@ void Store::promote(const NodePtr& value) {
                             CREATE_NEW, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
                             nullptr));
   require(output.value != INVALID_HANDLE_VALUE);
-  if (git && !value->origin.empty()) {
-    const auto& bytes = git->blob(value->origin);
-    DWORD written = 0;
-    require(
-        WriteFile(output.value, bytes.data(), static_cast<DWORD>(bytes.size()), &written, nullptr));
-    if (written != bytes.size()) {
-      throw Error{STATUS_DISK_FULL};
-    }
-  } else if (!value->origin.empty()) {
+  if (!value->origin.empty()) {
     // Deny concurrent write/delete while copying; the cached read handle has no
     // write access.
     auto input = baselineInput(value);
@@ -998,7 +851,7 @@ HANDLE Store::content(const NodePtr& value, bool write) {
     throw Error{STATUS_NOT_SUPPORTED};
   }
   if (write) {
-    if (localMode && !value->object.empty()) {
+    if (!value->object.empty()) {
       // Later turns may edit retained private files. Keep their original B and
       // associate the new turn's read dependencies before the next write.
       capture(name(value));
@@ -1029,9 +882,7 @@ FSP_FSCTL_FILE_INFO Store::info(const NodePtr& value) {
     return value->info;
   }
   auto result = value->info;
-  if (git && (value->object.empty() || value->directory())) {
-    return result;
-  }
+
   if (!value->directory() && value->reparse.empty()) {
     auto actual = fileInfo(content(value, false));
     result.FileSize = actual.FileSize;
@@ -1058,16 +909,6 @@ FSP_FSCTL_FILE_INFO Store::info(const NodePtr& value) {
 }
 
 DWORD Store::read(const NodePtr& value, void* buffer, UINT64 offset, DWORD length) {
-  if (git && value->object.empty()) {
-    const auto& bytes = git->blob(value->origin);
-    auto count = offset >= bytes.size()
-                     ? 0
-                     : static_cast<DWORD>(std::min<UINT64>(length, bytes.size() - offset));
-    if (count) {
-      memcpy(buffer, bytes.data() + offset, count);
-    }
-    return count;
-  }
   HANDLE handle = content(value, false);
   auto observed = observeRead(value, handle);
   LARGE_INTEGER position{};

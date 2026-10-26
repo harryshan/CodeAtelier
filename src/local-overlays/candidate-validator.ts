@@ -18,7 +18,7 @@ import {
   OverlayManager,
   overlayNamespace,
   overlayWorkspace,
-} from "../worktrees/overlay.js";
+} from "../local-overlays/winfsp-manager.js";
 import { canonical, inside } from "../tools/paths.js";
 import { checkRelative, sourceIdentity } from "./publication/files.js";
 import { MAX_BYTES, PublishError } from "./publication/merge.js";

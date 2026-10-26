@@ -1,12 +1,12 @@
 /**
- * 管理默认 Riftri（POSIX CoW / Windows 实时 overlay）和显式 Git worktree，为 Engine/API 提供持久绑定与验证。
- * 输入是模式、来源目录、请求 UUID，以及仅 Worktree 可用的提交基线；输出是实际目录与来源元数据。
- * 1. inspect 获取 Git 身份/分支；create 与 createRiftri 并列进入串行持久化 preparing/ready 清单。
+ * 管理显式 Git worktree，为 Engine/API 提供持久绑定、创建和身份验证。
+ * 输入是来源目录、请求 UUID 和提交基线；输出实际目录与来源元数据，默认普通 Local 不经过创建流程。
+ * 1. inspect 获取 Git 身份/分支；create 串行持久化 preparing/ready 清单并 checkout。
  * 2. 创建使用文件排他锁与 UUID 去重；未知结果保留现场，不删除、不重新 checkout；bind 按 workspace 找回已写历史。
  * 3. describe 装饰历史而不依赖目录存在；validate 在任务 admission/执行/Sandbox 启动前验证目录、gitfile 和共享元数据。
- * 4. projectWorkspace 映射记忆；gitWriteRoots 投影核验后的共享 Git 根，commandEnvironment 只为托管 UNC 添加子进程信任。
- * 5. cancelCreation 先停止创建；Engine 排空任务和 Sandbox 后 close 卸载 overlay，不删除私有层或回写来源。
- * 清单/overlay 对象在 Broker 私有目录；普通 checkout 在其同级目录，挂载使用稳定本机 UNC。日志/trace 不采集文件正文。
+ * 4. projectWorkspace 映射记忆；gitWriteRoots 投影核验后的共享 Git 根。旧 Riftri 仅作历史识别，拒绝执行且不再挂载。
+ * 5. cancelCreation/close 停止创建，不删除 checkout 或旧私有层，不回写来源。
+ * 清单位于 Broker 私有目录，checkout 在其同级目录；旧 UNC 命名空间只用于防止历史被当成普通 Local。日志/trace 不采集正文。
  */
 
 import { randomUUID } from "node:crypto";
@@ -28,18 +28,12 @@ import { TraceRecorder } from "../tracing/recorder.js";
 import { TraceArchive } from "../tracing/archive.js";
 import { addWorktree, directoryIdentity, git, samePath } from "./git.js";
 import {
-  OverlayManager,
   overlayNamespace,
-  overlayWorkspace,
   overlayWorkspaceId,
-} from "./overlay.js";
-import { attachOverlayGit, registerOverlayGit } from "./overlay-git.js";
-import {
-  checkoutSchema,
-  createCheckout,
-  nativeHelperPath,
-  selectCheckout,
-} from "./riftri.js";
+} from "../local-overlays/winfsp-manager.js";
+
+// Only decode old backend identifiers to keep retired histories recognizable.
+const checkoutSchema = z.object({ backend: z.string() });
 
 const recordSchema = z.object({
   version: z.literal(1),
@@ -55,16 +49,13 @@ const recordSchema = z.object({
   adminDirectory: z.string().optional(),
   checkout: checkoutSchema.optional(),
   executionWorkspace: z.string().optional(),
-  overlay: z
-    .object({ sourceIdentity: z.string(), controlIdentity: z.string() })
-    .optional(),
 });
 type Record = z.infer<typeof recordSchema>;
 
 type Creation = {
   id: string;
   workspace: string;
-  mode: "riftri" | "worktree";
+  mode: "worktree";
   baseRef: string;
 };
 
@@ -79,15 +70,6 @@ function contains(parent: string, child: string) {
   );
 }
 
-async function assertNoGitRedirection(workspace: string, signal: AbortSignal) {
-  const config = await git(workspace, ["config", "--null", "--list"], signal);
-  if (config.split("\0").some((entry) => entry.startsWith("core.worktree\n"))) {
-    throw new Error(
-      "Riftri 不支持 core.worktree 重定向；请显式选择 Git worktree。",
-    );
-  }
-}
-
 export class WorktreeService {
   readonly root: string;
   private readonly metadata: string;
@@ -95,13 +77,11 @@ export class WorktreeService {
   private readonly controller = new AbortController();
   private readonly traces = new TraceRecorder();
   private readonly archive: TraceArchive;
-  private readonly overlays: OverlayManager;
   private readonly namespace: string;
 
   constructor(
     directory: string,
     private readonly log: Logger,
-    private readonly helperPath = nativeHelperPath(),
   ) {
     const absolute = path.resolve(directory);
     this.root = path.join(
@@ -110,10 +90,6 @@ export class WorktreeService {
     );
     this.metadata = path.join(absolute, "worktrees");
     this.archive = new TraceArchive(this.metadata, log);
-    this.overlays = new OverlayManager(
-      path.join(this.metadata, "overlay-traces"),
-      log,
-    );
     this.namespace = overlayNamespace(absolute);
   }
 
@@ -213,14 +189,21 @@ export class WorktreeService {
       const record = await this.read(id);
       const worktree: WorktreeInfo = {
         id,
-        mode: record.mode,
+        mode:
+          record.mode === "riftri" || record.executionWorkspace
+            ? "retired"
+            : "worktree",
         projectWorkspace: record.projectWorkspace,
         baseRef: record.baseRef,
         baseCommit: record.baseCommit,
-        state: record.state,
-        backend: record.checkout?.backend ?? "git",
-        fallbackReason: record.checkout?.fallbackReason,
-        clonedFiles: record.checkout?.clonedFiles,
+        state:
+          record.mode === "riftri" || record.executionWorkspace
+            ? "retired"
+            : record.state,
+        backend:
+          record.mode === "riftri" || record.executionWorkspace
+            ? undefined
+            : "git",
       };
 
       return { ...session, worktree };
@@ -237,54 +220,8 @@ export class WorktreeService {
 
     try {
       const record = await this.read(id);
-      if (record.checkout?.backend === "riftri-winfsp") {
-        const control = path.join(this.metadata, `${id}-overlay`);
-        if (
-          record.mode !== "riftri" ||
-          record.state !== "ready" ||
-          !record.overlay ||
-          !samePath(workspace, overlayWorkspace(this.namespace, id)) ||
-          !samePath(workspace, record.executionWorkspace ?? "") ||
-          (await directoryIdentity(record.projectWorkspace)) !==
-            record.overlay.sourceIdentity ||
-          (await directoryIdentity(control)) !== record.overlay.controlIdentity
-        ) {
-          throw new Error("Overlay 身份改变。");
-        }
-
-        await this.overlays.start(
-          id,
-          record.projectWorkspace,
-          control,
-          workspace,
-          false,
-          this.controller.signal,
-        );
-        if ((await directoryIdentity(workspace)) !== record.workspaceIdentity) {
-          throw new Error("Overlay 卷身份改变。");
-        }
-
-        if (!record.commonDirectory) {
-          return record;
-        }
-      }
-
-      if (
-        record.mode === "riftri" &&
-        record.checkout?.backend !== "riftri-winfsp"
-      ) {
-        if (
-          record.state !== "ready" ||
-          (await directoryIdentity(workspace)) !== record.workspaceIdentity ||
-          (record.commonDirectory &&
-            (!samePath(record.commonDirectory, path.join(workspace, ".git")) ||
-              (await directoryIdentity(record.commonDirectory)) !==
-                record.commonIdentity))
-        ) {
-          throw new Error("Riftri 身份改变。");
-        }
-
-        return record;
+      if (record.mode === "riftri" || record.executionWorkspace) {
+        throw new Error("Riftri 已移除，旧私有视图不能执行或重新挂载。");
       }
 
       await this.assertPrivateDataDisjoint(record.commonDirectory);
@@ -325,7 +262,7 @@ export class WorktreeService {
       return record;
     } catch {
       throw new Error(
-        "Worktree 不可用或身份已改变。请检查原仓库、实际目录及创建清单；不会回退原项目或自动重建。",
+        "Worktree 不可用、身份已改变或属于已移除的 Riftri。旧私有视图不能执行；请检查原仓库、实际目录及创建清单，不会回退原项目或自动重建。",
       );
     }
   }
@@ -337,31 +274,7 @@ export class WorktreeService {
   async gitWriteRoots(workspace: string) {
     const record = await this.validate(workspace);
 
-    return record &&
-      (record.mode === "worktree" ||
-        record.checkout?.backend === "riftri-winfsp") &&
-      record.commonDirectory
-      ? [record.commonDirectory]
-      : [];
-  }
-
-  /** Git for Windows rejects UNC ownership. Trust only this verified mount in child processes. */
-  async commandEnvironment(workspace: string): Promise<NodeJS.ProcessEnv> {
-    const record = await this.validate(workspace);
-    if (record?.checkout?.backend !== "riftri-winfsp") {
-      return {};
-    }
-
-    const count = Number(process.env.GIT_CONFIG_COUNT ?? "0");
-    if (!Number.isSafeInteger(count) || count < 0 || count > 1024) {
-      throw new Error("Git 进程配置数量无效，无法添加精确工作区信任。");
-    }
-
-    return {
-      GIT_CONFIG_COUNT: String(count + 1),
-      [`GIT_CONFIG_KEY_${count}`]: "safe.directory",
-      [`GIT_CONFIG_VALUE_${count}`]: workspace.replaceAll("\\", "/"),
-    };
+    return record?.commonDirectory ? [record.commonDirectory] : [];
   }
 
   create(
@@ -369,19 +282,6 @@ export class WorktreeService {
     bind: (workspace: string) => Promise<Session>,
   ) {
     return this.enqueue({ ...input, mode: "worktree" }, bind);
-  }
-
-  createRiftri(
-    input: { id: string; workspace: string },
-    bind: (workspace: string) => Promise<Session>,
-  ) {
-    if ("baseRef" in input || "baseCommit" in input) {
-      return Promise.reject(
-        new Error("Riftri 仅使用主目录当前状态，不能指定 commit/branch。"),
-      );
-    }
-
-    return this.enqueue({ ...input, mode: "riftri", baseRef: "" }, bind);
   }
 
   private enqueue(
@@ -405,204 +305,12 @@ export class WorktreeService {
     }
   }
 
-  /** Select POSIX snapshots or Windows live views; neither materializes a commit tree. */
-  private async prepareRiftri(
-    input: Creation,
-    workspace: string,
-    operationId: string,
-  ) {
-    const projectWorkspace = await realpath(input.workspace);
-    await directoryIdentity(projectWorkspace);
-    await this.assertPrivateDataDisjoint(projectWorkspace);
-    await mkdir(this.root, { recursive: true });
-    await directoryIdentity(this.root);
-    if (
-      contains(projectWorkspace, this.root) ||
-      contains(this.root, projectWorkspace)
-    ) {
-      throw new Error(
-        "Riftri 来源与托管目录不能重叠，请选择主项目目录并将数据目录设在项目之外。",
-      );
-    }
-
-    const gitPath = path.join(projectWorkspace, ".git");
-    const metadata = await lstat(gitPath).catch(
-      (error: NodeJS.ErrnoException) => {
-        if (error.code === "ENOENT") {
-          return undefined;
-        }
-
-        throw error;
-      },
-    );
-    if (metadata) {
-      if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
-        throw new Error(
-          "Riftri 需要独立 .git 目录；linked worktree/外置 Git metadata 请显式选择 Git worktree。",
-        );
-      }
-
-      await assertNoGitRedirection(projectWorkspace, this.controller.signal);
-    }
-
-    const selection = await selectCheckout(
-      projectWorkspace,
-      this.root,
-      this.controller.signal,
-      this.helperPath,
-    );
-    if (selection.backend === "riftri-winfsp") {
-      return this.prepareOverlay(input, projectWorkspace, Boolean(metadata));
-    }
-
-    const record: Record = {
-      version: 1,
-      mode: "riftri",
-      id: input.id,
-      projectWorkspace,
-      baseRef: "",
-      baseCommit: "",
-      commonDirectory: metadata ? path.join(workspace, ".git") : "",
-      commonIdentity: "",
-      state: "preparing",
-      checkout: selection,
-    };
-    await this.save(record);
-    const span = this.traces.startSpan(operationId, {
-      name: "riftri.snapshot",
-      category: "worktree",
-      track: "Worktree management",
-      attributes: { backend: selection.backend },
-    });
-    let outcome: "ok" | "error" | "cancelled" = "error";
-    try {
-      record.checkout = await createCheckout(
-        projectWorkspace,
-        workspace,
-        selection,
-        this.controller.signal,
-        this.helperPath,
-      );
-      record.workspaceIdentity = await directoryIdentity(workspace);
-      record.commonIdentity = record.commonDirectory
-        ? await directoryIdentity(record.commonDirectory)
-        : "";
-      if (record.commonDirectory) {
-        // Inspect the captured config too: source config may have changed after preflight.
-        await assertNoGitRedirection(workspace, this.controller.signal);
-      }
-
-      record.state = "ready";
-      await this.save(record);
-      await this.validate(workspace);
-      outcome = "ok";
-    } catch (error) {
-      record.state = "failed";
-      await this.save(record).catch(() => {});
-      throw error;
-    } finally {
-      this.traces.endSpan(
-        span,
-        this.controller.signal.aborted ? "cancelled" : outcome,
-      );
-    }
-
-    return workspace;
-  }
-
-  private async prepareOverlay(
-    input: Creation,
-    source: string,
-    hasGit: boolean,
-  ) {
-    const workspace = overlayWorkspace(this.namespace, input.id);
-    const control = path.join(this.metadata, `${input.id}-overlay`);
-    const record: Record = {
-      version: 1,
-      id: input.id,
-      mode: "riftri",
-      projectWorkspace: source,
-      baseRef: "",
-      baseCommit: "",
-      commonDirectory: "",
-      commonIdentity: "",
-      state: "preparing",
-      executionWorkspace: workspace,
-      checkout: { backend: "riftri-winfsp" },
-    };
-    await this.save(record);
-    try {
-      const sourceIdentity = await directoryIdentity(source);
-      const registration = hasGit
-        ? await registerOverlayGit(
-            source,
-            path.join(this.metadata, `${input.id}-registration`),
-            input.id,
-            this.controller.signal,
-          )
-        : undefined;
-      if (registration) {
-        await this.assertPrivateDataDisjoint(registration.commonDirectory);
-        record.commonDirectory = registration.commonDirectory;
-        record.commonIdentity = await directoryIdentity(
-          registration.commonDirectory,
-        );
-        record.adminDirectory = registration.adminDirectory;
-        record.baseCommit = registration.head;
-        await this.save(record);
-      }
-
-      await this.overlays.start(
-        input.id,
-        source,
-        control,
-        workspace,
-        true,
-        this.controller.signal,
-      );
-      if (registration) {
-        await attachOverlayGit(
-          source,
-          workspace,
-          registration,
-          this.controller.signal,
-        );
-      }
-
-      record.workspaceIdentity = await directoryIdentity(workspace);
-      record.overlay = {
-        sourceIdentity,
-        controlIdentity: await directoryIdentity(control),
-      };
-      record.state = "ready";
-      await this.save(record);
-      await this.validate(workspace);
-
-      return workspace;
-    } catch (error) {
-      record.state = "failed";
-      await this.save(record).catch(() => {});
-      await this.overlays.stop(input.id).catch(() => {
-        this.log.warn({
-          module: "worktree",
-          event: "overlay.failed_creation_cleanup_unknown",
-          worktreeId: input.id,
-        });
-      });
-      throw error;
-    }
-  }
-
   /** Persist intent before Git; failed or cancelled checkout is retained for inspection. */
   private async prepareCheckout(
     input: Creation,
     workspace: string,
     operationId: string,
   ) {
-    if (input.mode === "riftri") {
-      return this.prepareRiftri(input, workspace, operationId);
-    }
-
     const repository = await this.inspect(input.workspace);
     await this.assertPrivateDataDisjoint(repository.commonDirectory);
     if (contains(repository.projectWorkspace, this.root)) {
@@ -643,7 +351,6 @@ export class WorktreeService {
       track: "Worktree management",
       attributes: {
         backend: selection.backend,
-        fallbackReason: "none",
       },
     });
     let outcome: "ok" | "error" | "cancelled" = "error";
@@ -757,8 +464,6 @@ export class WorktreeService {
         attributes: {
           mode: input.mode,
           backend: session.worktree?.backend ?? "git",
-          fallbackReason: session.worktree?.fallbackReason ?? "none",
-          clonedFiles: session.worktree?.clonedFiles ?? 0,
         },
       });
       this.traces.endSpan(checkoutSpan, "ok");
@@ -799,6 +504,5 @@ export class WorktreeService {
 
   async close() {
     await this.cancelCreation();
-    await this.overlays.close();
   }
 }

@@ -52,7 +52,7 @@ import { PublicationLease } from "./publication-lease.js";
 import {
   validateOverlayAcknowledgement,
   type OverlayAcknowledgement,
-} from "../../worktrees/overlay.js";
+} from "../../local-overlays/winfsp-manager.js";
 import {
   loadJournal,
   readJournal,

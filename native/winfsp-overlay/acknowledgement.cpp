@@ -9,7 +9,7 @@
 namespace overlay {
 sqlite3_int64 Store::acknowledge(const std::wstring& id, sqlite3_int64 expectedEpoch, const std::wstring& seal,
                                 const std::vector<std::wstring>& paths) {
-  if (!localMode || !sealed || poisoned || expectedEpoch < 0 || expectedEpoch > 1000000000 ||
+  if (!sealed || poisoned || expectedEpoch < 0 || expectedEpoch > 1000000000 ||
       id.size() != 36 || id.find_first_not_of(L"0123456789abcdef-") != std::wstring::npos ||
       id[8] != L'-' || id[13] != L'-' || id[18] != L'-' || id[23] != L'-' ||
       paths.empty() || paths.size() > 100) {

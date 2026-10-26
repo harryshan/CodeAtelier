@@ -1,6 +1,6 @@
 # 隔离 Local 使用指南
 
-隔离 Local 总开关（2026-10-27）：用户要求暂不继续 Linux 工作，并将整个功能置于代码开关之后、默认关闭。唯一开关为 `src/local-overlays/readiness.ts` 的 `LOCAL_OVERLAY_ENABLED = false`，没有设置、环境变量或 HTTP 覆盖。关闭时隐藏创建入口，拒绝创建、旧视图任务启动/恢复、发布选择、文件检查、参考继续、私有刷新及来源事故操作；`start:overlay` 也在创建 namespace 前拒绝。历史与私有数据保留，取消、关闭卸载及旧 Sandbox 授权清理继续执行。普通 Local、Riftri、Git worktree 和 Sandbox 原有行为不变。未来启用须修改常量并重新构建/启动，仍须满足平台与 Sandbox 条件；macOS 仍不实现。下面已完成的 Windows/Linux 记录仅作为关闭前的历史证据，不表示当前产品开放。
+隔离 Local 总开关（2026-10-27）：用户要求暂不继续 Linux 工作，并将整个功能置于代码开关之后、默认关闭。唯一开关为 `src/local-overlays/readiness.ts` 的 `LOCAL_OVERLAY_ENABLED = false`，没有设置、环境变量或 HTTP 覆盖。关闭时隐藏创建入口，拒绝创建、旧视图任务启动/恢复、发布选择、文件检查、参考继续、私有刷新及来源事故操作；`start:overlay` 也在创建 namespace 前拒绝。历史与私有数据保留，取消、关闭卸载及旧 Sandbox 授权清理继续执行。普通 Local、Git worktree 和 Sandbox 原有行为不变；Riftri 已按 D171 移除。未来启用须修改常量并重新构建/启动，仍须满足平台与 Sandbox 条件；macOS 仍不实现。下面已完成的 Windows/Linux 记录仅作为关闭前的历史证据，不表示当前产品开放。
 
 隔离 Local 用于多个对话同时修改同一个项目。每个对话拥有私有写层，按需读取主目录文件；创建时不遍历或复制整个项目，也不创建 Git worktree。Windows 和显式启动的 Linux 已接入任务、Sandbox、发布及正常文件检查/参考继续；Linux 异常恢复尚未实现。用户于 2026-10-27 决定本轮不实现 macOS 后端，macOS 保持隔离 Local 关闭，启用 Sandbox 也不会开放它。
 
@@ -12,7 +12,7 @@
 4. Agent 用 `local_publish` 明确选择源码路径和验证命令。任务成功后，服务合并当前来源，创建独立候选视图重新验证，再按来源串行发布。未选择的修改、缓存和构建产物留在私有层。
 5. 查看任务结束状态：“已发布”才表示所选文件已写回来源；“私有内容已保留”不表示写回。正常结束后视图卸载，下一轮使用原会话继续。
 
-新建对话的既有默认模式保持不变；需要这个机制时明确选择“隔离 Local”。已有 Local、Riftri 和 Worktree 会话不自动迁移。
+新建对话默认普通 Local。隔离 Local 当前关闭；未来启用后须显式选择。已有 Local 和 Worktree 会话不自动迁移，旧 Riftri 历史可读但不能执行。
 
 ## Linux 启动
 

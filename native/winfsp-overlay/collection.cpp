@@ -74,7 +74,7 @@ static void sweep(const fs::path& directory, const std::set<std::wstring>& refer
 }
 
 Collection Store::collect() {
-  if (!localMode || !sealed || poisoned) {
+  if (!sealed || poisoned) {
     throw Error{STATUS_FILE_INVALID};
   }
   // FspFileSystemDelete has drained kernel contexts. Be conservative if any

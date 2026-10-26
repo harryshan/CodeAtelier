@@ -1,6 +1,6 @@
 # POSIX Local overlay：原生文件系统优先
 
-隔离 Local 总开关（2026-10-27）：用户要求暂不继续 Linux 工作，并将整个功能置于代码开关之后、默认关闭。唯一开关为 `src/local-overlays/readiness.ts` 的 `LOCAL_OVERLAY_ENABLED = false`，没有设置、环境变量或 HTTP 覆盖。关闭时隐藏创建入口，拒绝创建、旧视图任务启动/恢复、发布选择、文件检查、参考继续、私有刷新及来源事故操作；`start:overlay` 也在创建 namespace 前拒绝。历史与私有数据保留，取消、关闭卸载及旧 Sandbox 授权清理继续执行。普通 Local、Riftri、Git worktree 和 Sandbox 原有行为不变。未来启用须修改常量并重新构建/启动，仍须满足平台与 Sandbox 条件；macOS 仍不实现。下面已完成的 Windows/Linux 记录仅作为关闭前的历史证据，不表示当前产品开放。
+隔离 Local 总开关（2026-10-27）：用户要求暂不继续 Linux 工作，并将整个功能置于代码开关之后、默认关闭。唯一开关为 `src/local-overlays/readiness.ts` 的 `LOCAL_OVERLAY_ENABLED = false`，没有设置、环境变量或 HTTP 覆盖。关闭时隐藏创建入口，拒绝创建、旧视图任务启动/恢复、发布选择、文件检查、参考继续、私有刷新及来源事故操作；`start:overlay` 也在创建 namespace 前拒绝。历史与私有数据保留，取消、关闭卸载及旧 Sandbox 授权清理继续执行。普通 Local、Git worktree 和 Sandbox 原有行为不变；Riftri 已按 D171 移除。未来启用须修改常量并重新构建/启动，仍须满足平台与 Sandbox 条件；macOS 仍不实现。下面已完成的 Windows/Linux 记录仅作为关闭前的历史证据，不表示当前产品开放。
 
 状态：2026-10-27 Linux 已完成原生文件层、Service/Engine、HTTP/SSE、真实 Sandbox 双任务和候选发布接入，显式 namespace 启动并启用 Sandbox 后开放入口。Linux 正常文件检查/参考继续、普通文件新增/删除后的续轮已接入；事故恢复和预编译包自动分发尚未实现。用户已明确本轮不写 macOS 版本，保持该平台 Local overlay 关闭；下面 macOS 调查只供未来参考。Windows 的已验证实现保持不变。以下保留各阶段证据，当前使用方式以 [指南](local-overlay-usage.md) 为准。
 

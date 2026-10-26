@@ -29,7 +29,7 @@ import { executeProcess } from "../src/tools/process.js";
 import {
   OverlayManager,
   type OverlayMetrics,
-} from "../src/worktrees/overlay.js";
+} from "../src/local-overlays/winfsp-manager.js";
 import { runBuildInSandbox } from "./local-overlay-build-runtime.js";
 
 assert.equal(process.platform, "win32");

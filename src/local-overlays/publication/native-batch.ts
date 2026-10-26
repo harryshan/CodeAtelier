@@ -13,7 +13,7 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
-import type { OverlayAcknowledgement } from "../../worktrees/overlay.js";
+import type { OverlayAcknowledgement } from "../../local-overlays/winfsp-manager.js";
 import {
   checkRelative,
   digest,

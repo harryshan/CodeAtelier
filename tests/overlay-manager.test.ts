@@ -3,7 +3,7 @@
  * 1. 使用管道夹具控制 ready/stopped/close，检查只接受完整收据且同一请求去重。
  * 2. helper 异常退出后不得在本进程重挂载；取消必须等待停止，关闭必须证明 stopped + exit 0。
  * 3. 校验托管 UNC 命名空间不能将子目录或另一数据目录误认作同一个挂载。
- * 4. Git PoC 显式选择及新旧分段 metrics 收据不能改变 live 挂载协议或终止普通挂载。
+ * 4. Local 分段 metrics 收据不能终止挂载；ACL 专用恢复不开放文件操作。
  * 5. Local 策略须有明确能力收据；重复 ID 不能换来源、控制目录或策略。
  * 6. 冻结导出必须收到 frozen 后开始，持有 helper 到导出完成；租约丢失不得返回成功结果。
  * 7. 发布确认须等待匹配批次与代次的收据，错误收据及租约丢失均拒绝。
@@ -11,7 +11,7 @@
  * 9. 显式回收等待完整计数收据，排斥并发控制请求，作用域过期和损坏/丢失收据拒绝。
  * 10. 新观察周期绑定请求/旧代次/seal；不接受另一请求的收据，且与其它冻结控制请求互斥。
  * 11. 根 ACL 恢复只接受 local-security 收据，不接受普通 Local/旧 helper，也不能创建新卷。
- * 原生文件、Git 和受限 token 语义由手动 verify-winfsp-overlay 独立验证。
+ * 原生文件和受限 token 语义由 Local 专项手动验证覆盖。
  */
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
@@ -23,7 +23,7 @@ import {
   overlayNamespace,
   overlayWorkspace,
   overlayWorkspaceId,
-} from "../src/worktrees/overlay.js";
+} from "../src/local-overlays/winfsp-manager.js";
 import { temp } from "./fixtures/helpers.js";
 
 const { spawn } = vi.hoisted(() => ({ spawn: vi.fn() }));
@@ -58,8 +58,14 @@ class Helper extends EventEmitter {
     this.emit("close", 1);
   }
 
-  ready() {
-    this.stdout.write('{"version":1,"state":"ready"}\n');
+  ready(mode: "local" | null = "local") {
+    this.stdout.write(
+      JSON.stringify({
+        version: 1,
+        state: "ready",
+        ...(mode ? { mode } : {}),
+      }) + "\n",
+    );
   }
 }
 
@@ -346,7 +352,7 @@ it.each(["caller", "manager"])(
   },
 );
 
-it("cleans up after export failure and never freezes legacy mounts", async () => {
+it("cleans up after export failure", async () => {
   const f = await localFixture();
   const pending = f.manager.withFrozen(f.id, async () => {
     throw new Error("export rejected");
@@ -355,16 +361,6 @@ it("cleans up after export failure and never freezes legacy mounts", async () =>
   f.helper.stdout.write('{"version":1,"state":"frozen","mode":"local"}\n');
   await rejected;
   await f.manager.close();
-
-  const legacy = await fixture();
-  const starting = legacy.start();
-  legacy.helper.ready();
-  await starting;
-  await expect(
-    legacy.manager.withFrozen(legacy.id, async () => null),
-  ).rejects.toThrow("cannot be frozen");
-  expect(legacy.helper.stdin.read()).toBeNull();
-  await legacy.manager.close();
 });
 
 it.each([true, false])(
@@ -507,7 +503,7 @@ it("unmounts a failed creation without stopping another ready workspace", async 
   await f.manager.close();
 });
 
-it("reads complete Git PoC metrics without treating them as a stop receipt", async () => {
+it("reads complete Local metrics without treating them as a stop receipt", async () => {
   const f = await fixture();
   const starting = f.manager.start(
     f.id,
@@ -516,11 +512,7 @@ it("reads complete Git PoC metrics without treating them as a stop receipt", asy
     f.workspace,
     true,
     f.controller.signal,
-    {
-      executable: "fixed-git",
-      directory: "fixed-common",
-      tree: "a".repeat(40),
-    },
+    { kind: "local" },
   );
   f.helper.ready();
   await starting;
@@ -529,10 +521,6 @@ it("reads complete Git PoC metrics without treating them as a stop receipt", asy
   const receipt = {
     version: 1,
     state: "metrics",
-    treeReads: 0,
-    infoReads: 0,
-    blobReads: 0,
-    blobBytes: 0,
     lowerOpens: 0,
     lowerEnumerations: 0,
   };
@@ -542,7 +530,6 @@ it("reads complete Git PoC metrics without treating them as a stop receipt", asy
   expect(await pending).toEqual(receipt);
   const profiled = {
     ...receipt,
-    objectMicros: 120,
     sqlPrepareMicros: 4,
     sqlReadMicros: 6,
     sqlWriteMicros: 12,
@@ -559,17 +546,6 @@ it("reads complete Git PoC metrics without treating them as a stop receipt", asy
   await f.manager.close();
 });
 
-it("rejects metrics on live overlays without sending an unsupported native command", async () => {
-  const f = await fixture();
-  const starting = f.start();
-  f.helper.ready();
-  await starting;
-  await expect(f.manager.metrics(f.id)).rejects.toThrow("unavailable");
-  expect(f.helper.stdin.read()).toBeNull();
-  expect(f.helper.stdin.writableEnded).toBe(false);
-  await f.manager.close();
-});
-
 it("requires a Local policy receipt instead of accepting a legacy helper", async () => {
   const f = await fixture();
   const starting = f.manager.start(
@@ -581,7 +557,7 @@ it("requires a Local policy receipt instead of accepting a legacy helper", async
     f.controller.signal,
     { kind: "local" },
   );
-  f.helper.ready();
+  f.helper.ready(null);
   await expect(starting).rejects.toThrow("策略");
   expect(f.helper.stdin.writableEnded).toBe(true);
   await f.manager.close();
@@ -639,9 +615,9 @@ it("keeps mount identity and policy fixed while allowing identical Local request
       source,
       control,
       f.workspace,
-      true,
+      local,
       f.controller.signal,
-      local ? { kind: "local" } : undefined,
+      local ? { kind: "local" } : { kind: "local-security" },
     );
   const starting = start();
   f.helper.stdout.write('{"version":1,"state":"ready","mode":"local"}\n');
