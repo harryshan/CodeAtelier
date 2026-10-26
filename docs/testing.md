@@ -1,5 +1,7 @@
 # 测试约定与功能覆盖
 
+Linux 捕获只读依赖：`posix-overlay-batch.test.ts` 用真实 3 MiB 文件及来源硬链接先复现旧桥接的 FILE_TYPE_OR_LIMIT，再验证流式版本等于 Publisher 版本、源码成功发布、来源变更/缓存损坏拒绝，以及明确选择大文件/硬链接时仍拒绝发布。另复现旧依赖使正常跨轮保存失败，验证多版本凭据持久保留、重复保存不累积相同项且实际发布继续拒绝。手动 `startup-probe.mjs --typescript` 使用实际 TypeScript 编译器和类型库，在双主 Runtime 和新候选执行编译，检查命令回执、私有产物及持久依赖；依赖布局为普通文件/硬链接，不宣称 pnpm 符号链接或整个 CodeAtelier 工程通过。
+
 Linux 正式构建/启动：`linux-overlay-startup.test.ts` 核对控制根/服务绑定同一数据目录、固定产物、空格路径 argv、独立视图根和平台/参数拒绝。手动 `startup-probe.mjs` 装配当前编译产物及既有 Linux SDK，真实启动 `overlay-launcher` → namespace → 原 supervisor/main，经回环 Responses 协议和公开 HTTP 运行两个 Sandbox 任务及候选发布，检查私有产物、合并源码和服务正常关闭；无 Engine/Runtime 注入，不接默认测试或 Evaluation。正式 helper 由 `overlay:build-linux` 显式构建，不在默认 check 安装/编译 FUSE。
 
 Linux 公开入口：平台工厂测试覆盖 Windows、普通 Linux、完整 namespace 上下文和不支持平台；Service 回归验证 Linux 文件检查/恢复在 I/O 前拒绝且清单不变，UI 回归核对 ready 可提交、failed 禁止提交、无未实现操作入口以及 Linux Sandbox 提示。手动 `engine-probe.mjs --http` 通过生产 Fastify/CSRF/SSE、AsyncStore Workers、SandboxBroker 和真实 MXC 执行双任务及候选发布，检查幂等创建、项目归属、状态投影和正常服务关闭；固定 provider 只注入模型响应，SDK/bundle 仅指定实验依赖位置。`--browser` 额外保留临时 UI 供人工查看，不进入默认检查或 Evaluation。

@@ -5,6 +5,7 @@
  * 2. 回环 Responses HTTP/SSE 返回固定工具计划，两阶段屏障确保双会话从同一基线并行编辑。
  * 3. 保存独立 v1 设置，启动 dist 的 overlay-launcher，由实际 HTTP 创建/运行会话；没有内部类注入。
  * 4. 核对真实 Runtime/候选、来源合并、私有产物，重载服务后继续原会话读取，再正常退出并保留报告。
+ *    --typescript 另准备真实编译器/类型库与硬链接依赖，在主任务和候选中编译，产物保持私有。
  * 5. finally 仅关闭本脚本服务/子进程；不安装依赖、不修改用户设置、不重启现有服务或运行 Evaluation。
  */
 import assert from "node:assert/strict";
@@ -13,6 +14,8 @@ import { spawn } from "node:child_process";
 import { createWriteStream } from "node:fs";
 import {
   cp,
+  link,
+  lstat,
   mkdir,
   readFile,
   readdir,
@@ -37,6 +40,25 @@ await mkdir(app);
 await mkdir(data, { mode: 0o700 });
 await mkdir(source);
 await writeFile(path.join(source, "module.py"), "a = 1\nb = 2\n");
+const typescript = process.argv.includes("--typescript");
+if (typescript) {
+  const library = path.join(checkout, "node_modules/typescript/lib");
+  const vendor = path.join(source, "vendor");
+  await mkdir(vendor);
+  for (const file of await readdir(library)) {
+    if (file.endsWith(".d.ts") || ["tsc.js", "_tsc.js"].includes(file)) {
+      await cp(path.join(library, file), path.join(vendor, file));
+    }
+  }
+  await link(
+    path.join(vendor, "_tsc.js"),
+    path.join(root, "compiler-store-alias"),
+  );
+  await writeFile(
+    path.join(source, "input.ts"),
+    "export const answer: number = 42;\n",
+  );
+}
 await writeFile(path.join(app, "package.json"), '{"type":"module"}\n');
 for (const directory of [
   "server",
@@ -69,7 +91,17 @@ const { defaultDocument } = await import(
   pathToFileURL(path.join(app, "dist/server/config/settings-document.js")).href
 );
 
-const report = { passed: false, closed: false, tasks: [], requests: 0 };
+const report = {
+  passed: false,
+  closed: false,
+  tasks: [],
+  requests: 0,
+  typescript,
+};
+if (typescript) {
+  const info = await lstat(path.join(source, "vendor/_tsc.js"));
+  report.compiler = { bytes: info.size, links: info.nlink };
+}
 const calls = new Map();
 const intervals = new Map();
 function barrier() {
@@ -88,6 +120,9 @@ function barrier() {
 const started = barrier();
 const edited = barrier();
 const python = (code) => `python3 -B -c '${code.replaceAll("'", "'\\''")}'`;
+const compile = typescript
+  ? ` && '${process.execPath.replaceAll("'", "'\\''")}' vendor/tsc.js --strict --target es2022 --module nodenext --outDir build input.ts && printf TSC_OK`
+  : "";
 function tool(label, step, name, args) {
   const id = `${label}-${step}`;
   return [
@@ -140,9 +175,10 @@ async function respond(body) {
     await started();
     const content = label === "A" ? "a = 10\nb = 2\n" : "a = 1\nb = 20\n";
     return tool(label, step, "run_command", {
-      command: python(
-        `import pathlib,time; p=pathlib.Path('module.py'); assert p.read_text()=='a = 1\\nb = 2\\n'; start=time.time_ns(); time.sleep(0.5); p.write_text(${JSON.stringify(content)}); pathlib.Path('artifact').write_text('private'); print('INTERVAL_${label}:'+str(start)+':'+str(time.time_ns()))`,
-      ),
+      command:
+        python(
+          `import pathlib,time; p=pathlib.Path('module.py'); assert p.read_text()=='a = 1\\nb = 2\\n'; start=time.time_ns(); time.sleep(0.5); p.write_text(${JSON.stringify(content)}); pathlib.Path('artifact').write_text('private'); print('INTERVAL_${label}:'+str(start)+':'+str(time.time_ns()))`,
+        ) + compile,
     });
   }
   if (step === 1) {
@@ -150,6 +186,17 @@ async function respond(body) {
       serialized,
     );
     assert.ok(match, "Runtime did not complete the fixed edit");
+    if (typescript) {
+      const receipt = body.input.find(
+        (entry) =>
+          entry.type === "function_call_output" &&
+          entry.call_id === `${label}-0`,
+      );
+      assert.ok(receipt);
+      const result = JSON.parse(receipt.output);
+      assert.equal(result.exitCode, 0);
+      assert.match(result.output, /TSC_OK/);
+    }
     intervals.set(label, [BigInt(match[1]), BigInt(match[2])]);
     await edited();
     assert.equal(
@@ -163,7 +210,7 @@ async function respond(body) {
         commands: [
           python(
             `import pathlib; assert '${label === "A" ? "a = 10" : "b = 20"}' in pathlib.Path('module.py').read_text(); assert not pathlib.Path('artifact').exists()`,
-          ),
+          ) + compile,
         ],
       },
     });
@@ -331,6 +378,33 @@ try {
       executions,
       publication: snapshot.session.localOverlay.publication,
     });
+    if (typescript) {
+      assert.match(
+        await readFile(
+          path.join(
+            data,
+            "local-overlays",
+            session.localOverlay.id,
+            "upper/build/input.js",
+          ),
+          "utf8",
+        ),
+        /answer = 42/,
+      );
+      const round = JSON.parse(
+        await readFile(
+          path.join(
+            data,
+            "local-overlays",
+            session.localOverlay.id,
+            "round.json",
+          ),
+          "utf8",
+        ),
+      );
+      assert.ok(round.reads.some((entry) => entry.path === "vendor/_tsc.js"));
+      report.tasks.at(-1).readDependencies = round.reads.length;
+    }
   }
   const a = intervals.get("A");
   const b = intervals.get("B");
@@ -339,7 +413,10 @@ try {
     await readFile(path.join(source, "module.py"), "utf8"),
     "a = 10\nb = 20\n",
   );
-  assert.deepEqual(await readdir(source), ["module.py"]);
+  assert.deepEqual(
+    (await readdir(source)).sort(),
+    typescript ? ["input.ts", "module.py", "vendor"] : ["module.py"],
+  );
   assert.deepEqual(await readdir(path.join(data, "mxc/active")), []);
 
   // 重载只替换 supervisor 的服务子进程；新 bootstrap token 证明读取的不是旧进程快照。

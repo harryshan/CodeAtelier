@@ -1,5 +1,13 @@
 # 初版验证记录
 
+## Linux 工程依赖与正常跨轮保留（2026-10-26）
+
+- 新回归先复现两个 FILE_TYPE_OR_LIMIT：已捕获的 3 MiB 只读文件和来源硬链接被错误地按源码 B 读取。`posixReads` 现用 64 KiB 固定缓冲核对私有捕获对象并重建原始版本，再复核当前来源；缓存仍须单链接及匹配 seal stamp/大小，来源只读依赖允许硬链接。原生 16 MiB 捕获上限和 2 MiB/单链接源码发布限制保持。新增测试另证明来源变更、缓存损坏及不支持的源码选择继续拒绝（前后日志 `.local/linux-read-dependency-before.log` / `linux-read-dependency-after.log`）。
+- `startup-probe.mjs --typescript` 使用实际 TypeScript 5.9.2 编译器和类型库，编译器正文 6,211,917 字节、两个硬链接。两个主 Runtime 和各自新候选都实际编译小 TS 输入，核对命令退出 0/输出、私有 JS 产物和持久依赖，每主任务 69 条读凭据，最终源码合并成功。依赖布局为普通文件和硬链接，不是 pnpm 符号链接或完整项目验收。
+- 首次编译/发布通过后，实机续聊发现旧的已发布 `module.py` 版本因另一会话发布而过期，触发 capturePosixRound 收尾失败。保留现场 `typescript-nSYA5b`，只读比较确认具体旧凭据；新增回归复现 STALE_DEPENDENCY 后，将历史保存与发布许可分开：正常收尾保留不同版本，只去重完全相同凭据；发布仍核对全部历史，不用新读取覆盖旧事实。专项 28 项通过（`.local/linux-retained-read-before.log` / `linux-retained-read-after.log`）。
+- 最终完整链路在 `ts-AsCUya` 通过：双 Sandbox 编译/候选/合并发布、公开重载、过期历史下的只读续聊和正常关闭退出 0，见 [报告](posix-overlay-typescript-results.json)。其中一次临时目录名过长导致 AF_UNIX 启动失败（`typescript-final-2jYsUB`），确认进程退出后换短夹具名；未放宽 socket 限制或改用户服务。最终正常关闭后，每个私有视图目录按 `st_blocks * 512` 汇总为 53,248 字节，lower 正文对象均为 0，私有产物/历史版本仍保留；不含峰值缓存、共享发布日志、应用安装或全部磁盘占用。
+- 最终 `pnpm check` 通过：165 文件、1,323 passed / 1 existing skipped，类型、Lint、格式及既有构建通过（`.local/linux-read-dependency-check-final.log`），原有 chunk 提示保留。未改变 HTTP/UI 契约，不重复上一增量的 78 项浏览器回归；实际 HTTP/模型协议在上述正式启动实验中执行。没有 Evaluation、安装依赖、分区或重启用户服务；符号链接布局、Linux 检查/恢复与 macOS 后端仍未完成。
+
 ## Linux 正式构建、启动、重载与续聊（2026-10-26）
 
 - 只读 helper 从实验目录归入 `native/linux-local-overlay`。新增 `pnpm overlay:build-linux`，固定 C++20/O2/警告检查，编译到临时文件后替换 helper 并复制 namespace 控制器；默认 build/check 不运行此原生构建。在 WSL 使用现有 g++、已解包 FUSE 3.18.2 头文件和系统 `libfuse3.so.4` 实际编译通过，未安装包。

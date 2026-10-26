@@ -4,6 +4,10 @@
 
 ## D170：Overlay 改为 Local 会话文件隔离，与 Git worktree 并列
 
+- Linux 工程只读依赖（2026-10-26，已验证）：修复已捕获的只读依赖误用 2 MiB/单链接源码快照而阻断正常收尾的问题。对私有捕获对象用固定 64 KiB 缓冲重建原始内容版本，再与当前来源复核；缓存仍须单链接且匹配 seal 身份/大小/时间，来源只读文件允许硬链接。原生 16 MiB 捕获上限、选定源码 2 MiB/单链接及跨轮 B 预算保持，不扩大为符号链接支持；创建仍不扫描，沿用外层冻结/收尾 trace。
+
+- Linux 历史依赖保存（2026-10-26）：真实编译发布后，另一会话继续修改来源会使旧凭据过期；只查看私有文件的续聊不应因此变成收尾未知。正常跨轮保存保留所有不同的 path/kind/version 凭据，只去掉完全相同项，不在保存阶段要求旧来源仍有效。实际发布仍在 posixBatch/Publisher 核验全部历史版本，冲突读凭据继续拒绝发布，不隐式重置或重新取基线；仍受现有 10,000 项/4 MiB 读集预算限制。
+
 - Linux 构建/启动接线（2026-10-26，已验证）：将已验证的只读 lower helper 归入 `native/linux-local-overlay`，提供显式本机编译及 `start:overlay` 入口；产物固定在 `dist/native/linux-<arch>`，不下载或安装系统依赖。入口复用 `--data-dir`，要求独立 `--views`，固定启动 namespace 控制器和原有服务 supervisor；普通 `start` 不改变。构建及启动的开始/失败/退出使用命令行状态，真实挂载/任务继续沿用现有 tracing，不引入第二套持久配置。
 
 - Linux 公开入口（2026-10-26）：完成 HTTP/SSE、异步存储、生产 SandboxBroker/真实 MXC 双任务和候选发布验收后，显式 namespace 上下文与已启用 Sandbox 共同控制创建入口；缺失前提拒绝，不改变普通启动、Windows 或默认会话模式。Linux 返回 `fileReviewSupported: false`，隐藏未实现的文件检查和事故恢复入口，服务在任何检查 I/O 前拒绝这些调用；正常 ready 会话可续聊，未知状态继续保留。UI 按实际平台说明 Sandbox，创建提示不再限定 Windows。用户要求不再考虑内部建仓库问题，停止该方向扩展。观测复用既有 Local/任务/Runtime/候选/HTTP 生命周期，不新增正文属性；启动分发及 macOS 仍未完成。

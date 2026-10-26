@@ -13,6 +13,8 @@ node experiments/native-local-overlay/startup-probe.mjs "$probe_root" /absolute/
 
 报告为夹具 `startup-report.json`，当前摘要见 [正式启动结果](../../docs/posix-overlay-startup-results.json)。发布后还通过公开 API 重载，确认服务身份变化，并在原会话继续实际 Sandbox 读取合并源码及私有产物。Windows 安装的 Koffi 原生模块不能在 Linux 加载，因此探针只在独占安装树绑定已有 Linux SDK；不改宿主 node_modules，不下载安装包，也不复制用户项目。它不替代真实模型或大型工程验收，不自动触发。
 
+在命令尾追加 `--typescript`，另将现有 TypeScript 的 `tsc.js`、`_tsc.js` 和 `.d.ts` 库准备为合成项目依赖，并为大型编译器正文建立第二个硬链接。主 Runtime 与候选都实际编译一个小 TS 文件，核对命令退出/输出回执、仅私有层的编译产物及持久读依赖；不依赖私有 SDK 注入。它用于验证大型/硬链接只读依赖不会阻断源码发布，仍不覆盖符号链接包布局或任意工程。最新 [编译结果](../../docs/posix-overlay-typescript-results.json) 同时记录重载/续聊和正常关闭后的私有层计数；计数只汇总夹具内各视图的 `st_blocks * 512`，不代表运行峰值或应用总占用。控制 socket 有平台路径长度上限，夹具应采用较短目录名。
+
 ## Engine 主流程
 
 `build-runtime-probe.mjs` 现在另生成 `.local/posix-overlay-engine-probe.mjs`。沿用下文显式 namespace 启动命令和独立 `--views`，将 backend 探针路径改为该文件，参数仍为独占夹具根、既有 MXC SDK 入口和当前 POSIX Runtime bundle。运行固定内存模型 → `run_command` → `local_publish` → Engine 排空 → 独立候选 Sandbox → Publisher，报告保存在夹具 `engine-report.json`，包含合成任务事件。无需真实模型或凭据。

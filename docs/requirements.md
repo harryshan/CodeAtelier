@@ -2,6 +2,8 @@
 
 状态：初版功能边界已确认，进入实现与验证阶段。最后更新：2026-10-26。
 
+Linux 工程读取增量（2026-10-26）：已捕获只读依赖允许来源硬链接和 16 MiB 内文件，以固定 64 KiB 缓冲校验，不扩大源码发布上限。真实 TypeScript 编译、双任务/候选发布及重载续聊通过；历史凭据过期仅阻止发布，正常保存保留冲突版本，不把只读续聊变成收尾未知。仍不支持符号链接包布局，不推导完整大型工程通过，见 [验证记录](verification.md)。
+
 Linux 启动接入（2026-10-26）：提供显式 `overlay:build-linux` 与 `start:overlay`，固定打包原生 helper/控制器，复用数据目录及原 supervisor。使用正式构建产物、真实回环模型协议和默认 MXC 加载，双会话并行发布、服务重载、原会话 Sandbox 续聊及正常关闭已在 WSL/ext4 验证；不自动安装依赖或修改普通 start。使用方式见 [指南](local-overlay-usage.md)，不扩大为 macOS、预编译包分发或大型工程验收。
 
 POSIX 实现方向（2026-10-26）：用户要求尽量采用平台原生文件系统并参考类似实现。Linux 原生 OverlayFS/Bubblewrap、按需基线、双会话发布、正常跨轮刷新和缓存回收已在 WSL/ext4 验证；公开 HTTP/SSE、生产 SandboxBroker/异步存储及真实浏览器主流程也已通过。通过显式 namespace 启动且启用 Sandbox 后开放 Linux 创建入口；普通启动不开放，不自动安装依赖。Linux 暂无文件检查/事故恢复面板，未知现场保留。用户要求不再考虑私有视图内部建仓库问题。macOS 仍处于 APFS/FSKit 方案阶段，不默认安装第三方驱动或将目录克隆称为零遍历。使用方式和限制见 [使用指南](local-overlay-usage.md) 与 [POSIX Local 方案](posix-local-overlay.md)。

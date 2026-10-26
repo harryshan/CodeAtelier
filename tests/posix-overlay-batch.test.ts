@@ -5,11 +5,13 @@
  * 3. 真实 Publisher 验证三方合并、同一行冲突和私有修改保留；候选回调只检查合并结果。
  * 4. 两轮状态序列化保留未发布 B，验证 complete 确认、私有版本和历史依赖拒绝。
  * 5. upper 的私有管理目录留在磁盘但不进入基线/发布；普通源码仍可捕获和发布。
+ * 6. 大型及硬链接只读依赖不受源码正文上限约束，来源/缓存变化仍拒绝，可发布选集限制不变。
  * 原生 seal、真实 Runtime 与候选执行由独立 WSL 手动实验验证，不把本测试当 Sandbox 证据。
  */
 import { randomUUID } from "node:crypto";
 import {
   copyFile,
+  link,
   lstat,
   mkdir,
   readFile,
@@ -25,6 +27,7 @@ import { posixBatch } from "../src/local-overlays/posix-batch.js";
 import {
   sourceIdentity,
   snapshot,
+  snapshotVersion,
   durableJson,
 } from "../src/local-overlays/publication/files.js";
 import { Publisher } from "../src/local-overlays/publication/publisher.js";
@@ -36,6 +39,87 @@ import {
 } from "../src/local-overlays/posix-round.js";
 
 const original = "a = 1\nb = 2\n";
+
+it.each(["large", "hardlinked"])(
+  "publishes source with a captured %s read-only dependency",
+  async (kind) => {
+    const f = await fixture();
+    const dependency = path.join(f.input.source.root, "dep.txt");
+    if (kind === "large") {
+      await writeFile(dependency, Buffer.alloc(3 * 1024 * 1024, 0x61));
+    } else {
+      await link(dependency, path.join(f.root, "package-store-alias"));
+    }
+
+    const entry = await record(f.input.source.root, "dep.txt");
+    await copyFile(dependency, path.join(f.input.control, "object-2"));
+    entry.object = "object-2";
+    entry.objectStamp = (await record(f.input.control, "object-2")).stamp;
+    f.manifest.entries[2] = entry;
+    await f.save();
+    await writeFile(path.join(f.input.workspace, "code.py"), "a = 10\nb = 2\n");
+
+    const batch = await posixBatch(f.input);
+    expect(batch.reads).toContainEqual({
+      path: "dep.txt",
+      version: await snapshotVersion(f.input.source, "dep.txt"),
+    });
+    await new Publisher(path.join(f.root, "publications")).publish(batch, {
+      validate: async () => {},
+    });
+    expect(
+      await readFile(path.join(f.input.source.root, "code.py"), "utf8"),
+    ).toBe("a = 10\nb = 2\n");
+    await expect(
+      posixBatch({ ...f.input, selected: ["dep.txt"] }),
+    ).rejects.toThrow("FILE_TYPE_OR_LIMIT");
+
+    await writeFile(dependency, "changed dependency");
+    await expect(posixBatch(f.input)).rejects.toThrow("STALE_DEPENDENCY");
+    await writeFile(path.join(f.input.control, "object-2"), "changed cache");
+    await expect(posixBatch(f.input)).rejects.toThrow("POSIX_OBJECT_CHANGED");
+  },
+);
+
+it("preserves stale history during a normal round but still rejects publication", async () => {
+  const f = await fixture();
+  const previous = await capturePosixRound({
+    ...f.input,
+    upper: f.input.workspace,
+  });
+  const oldRead = previous.reads.find((entry) => entry.path === "dep.txt")!;
+  await writeFile(path.join(f.input.source.root, "dep.txt"), "new dependency");
+  f.manifest.entries[2] = await record(f.input.source.root, "dep.txt");
+  await f.save();
+
+  const next = await capturePosixRound({
+    ...f.input,
+    upper: f.input.workspace,
+    previous,
+  });
+  expect(next.reads.filter((entry) => entry.path === "dep.txt")).toEqual(
+    expect.arrayContaining([
+      oldRead,
+      {
+        path: "dep.txt",
+        version: await snapshotVersion(f.input.source, "dep.txt"),
+      },
+    ]),
+  );
+  expect(next.baselines).toEqual(previous.baselines);
+  await expect(
+    posixBatch({
+      ...f.input,
+      ...posixRoundInputs(next, f.input.source, ["code.py"]),
+    }),
+  ).rejects.toThrow("STALE_DEPENDENCY");
+  const again = await capturePosixRound({
+    ...f.input,
+    upper: f.input.workspace,
+    previous: next,
+  });
+  expect(again.reads).toEqual(next.reads);
+});
 
 it("retains private Git metadata without capturing or publishing it", async () => {
   const f = await fixture();

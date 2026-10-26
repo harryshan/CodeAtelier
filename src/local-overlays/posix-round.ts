@@ -2,6 +2,7 @@
  * Linux Local 正常跨轮状态：独立于可重建的 lower 缓存保存未发布 B 与保守依赖。
  * 1. capturePosixRound 只遍历私有 upper，用当前原生观察或先前 B 记录私有普通文件；
  *    新生成物保存 missing 基线，不读取其正文。私有管理目录跳过且保留，目录/不支持对象不作为源码发布。
+ *    历史读凭据保留不同版本，正常保存不要求旧来源仍有效；真正发布在 posixBatch/Publisher 复核全部版本。
  * 2. validatePosixRound 严格验证来源、路径、正文及总预算；状态通过既有 durableJson 保存。
  * 3. acknowledgePosixRound 只接受 Publisher complete 日志，复核来源结果与所选私有内容，
  *    返回剔除已发布 B 的下一状态和待移除覆盖；不修改 upper、不重放来源写入。
@@ -161,17 +162,14 @@ export async function capturePosixRound(input: {
     new Set(paths),
   );
   for (const read of previous?.reads ?? []) {
-    if ((await readVersion(input.source, read)) !== read.version) {
-      throw new PublishError("STALE_DEPENDENCY");
-    }
-
-    const existing = reads.find((entry) => entry.path === read.path);
-    if (
-      existing &&
-      (existing.version !== read.version || existing.kind !== read.kind)
-    ) {
-      throw new PublishError("STALE_DEPENDENCY");
-    }
+    // 保存私有内容不是发布许可。保留冲突版本可让只读续聊正常收尾，
+    // 又不以本轮新观察覆盖旧依赖；发布必须同时满足所有历史凭据。
+    const existing = reads.some(
+      (entry) =>
+        entry.path === read.path &&
+        entry.kind === read.kind &&
+        entry.version === read.version,
+    );
 
     if (!existing) {
       reads.push(read);

@@ -2,14 +2,15 @@
  * 将 Linux 只读 lower 的一次性观察清单转换为现有 Publisher 批次。
  * 1. readPosixManifest 有界读取并核对清单句柄/路径版本，严格校验格式、来源与 seal ID。
  * 2. readBase 从捕获对象和原始 stamp 重建 B；未读正文仅在来源观察版本未变时补读。
- * 3. posixReads 导出文件/目录依赖，目录沿用 Publisher 名称/类型摘要，拒绝来源过期。
+ * 3. capturedReadVersion 对捕获的只读依赖流式重建版本，允许来源硬链接和最多 16 MiB 正文；缓存须单链接且身份匹配。
+ *    posixReads 导出文件/目录依赖，目录沿用 Publisher 名称/类型摘要，拒绝来源过期，不将只读依赖转成可发布 B。
  * 4. posixBatch 只读取明确选集的私有结果，优先保留先前轮次 B 并验证历史依赖。
  * 5. posixBaseline 由原生记录或已观察祖先的缺失成员证明 B，不读取私有生成物。
  * 调用方须先排空 Runtime、独占视图并取得 helper seal；本模块不冻结挂载、不发布，
- * 也不从清单推断进程退出。产品入口仍关闭；实验和后续 Linux backend 共用此桥接。
+ * 也不从清单推断进程退出。正式 Linux backend 和手动实验共用此桥接。
  * I/O 不扫描整树，受既有内容/读集预算限制；tracing 由外层冻结/发布生命周期提供。
  */
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { lstat, open } from "node:fs/promises";
 import type { BigIntStats } from "node:fs";
 import path from "node:path";
@@ -228,6 +229,67 @@ async function readBase(
   };
 }
 
+async function capturedReadVersion(
+  control: Source,
+  entry: Entry,
+  signal?: AbortSignal,
+) {
+  const file = await checkedPath(control, entry.object!);
+  const before = await lstat(file, { bigint: true });
+  if (
+    !before.isFile() ||
+    before.nlink !== 1n ||
+    stamp(before) !== entry.objectStamp ||
+    before.size !== BigInt(entry.stamp.split(":")[2]!) ||
+    before.size > 16n * 1024n * 1024n
+  ) {
+    throw new PublishError("POSIX_OBJECT_CHANGED");
+  }
+
+  const handle = await open(file, "r");
+  try {
+    if (stamp(await handle.stat({ bigint: true })) !== entry.objectStamp) {
+      throw new PublishError("POSIX_OBJECT_CHANGED");
+    }
+
+    const buffer = Buffer.alloc(64 * 1024);
+    const hash = createHash("sha256");
+    let length = 0;
+    while (length <= Number(before.size)) {
+      signal?.throwIfAborted();
+      const result = await handle.read(
+        buffer,
+        0,
+        Math.min(buffer.length, Number(before.size) + 1 - length),
+        length,
+      );
+      if (!result.bytesRead) {
+        break;
+      }
+
+      hash.update(buffer.subarray(0, result.bytesRead));
+      length += result.bytesRead;
+    }
+
+    if (
+      length !== Number(before.size) ||
+      stamp(await handle.stat({ bigint: true })) !== entry.objectStamp ||
+      stamp(
+        await lstat(await checkedPath(control, entry.object!), {
+          bigint: true,
+        }),
+      ) !== entry.objectStamp
+    ) {
+      throw new PublishError("POSIX_OBJECT_CHANGED");
+    }
+
+    // 原始 source stamp 与捕获正文组合，编码须与 Publisher snapshotVersion 完全一致。
+    return digest(`${entry.stamp}:${hash.digest("hex")}`);
+  } finally {
+    await handle.close();
+  }
+}
+
 export async function posixReads(
   source: Source,
   control: string,
@@ -266,17 +328,16 @@ export async function posixReads(
 
       reads.push({ ...read, version });
     } else {
-      const base = entry.object
-        ? await readBase(source, storage, entry)
-        : await observedFile(source, entry, false);
+      const version = entry.object
+        ? await capturedReadVersion(storage, entry, signal)
+        : (await observedFile(source, entry, false)).version;
       if (
-        (await readVersion(source, { path: entry.path }, signal)) !==
-        base.version
+        (await readVersion(source, { path: entry.path }, signal)) !== version
       ) {
         throw new PublishError("STALE_DEPENDENCY");
       }
 
-      reads.push({ path: entry.path, version: base.version });
+      reads.push({ path: entry.path, version });
     }
   }
 
