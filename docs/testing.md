@@ -1,5 +1,7 @@
 # 测试约定与功能覆盖
 
+Linux 首读持久化：手动 `sync-probe.py` 使用测试专用 `--wrap=fsync` / `--wrap=sync_file_range` helper，在真实 FUSE 上验证首读稳定内容和零同步、冻结时先排队写回再同步所有对象/清单/目录、对象/写回 EIO 不交付清单且缓存保留，以及不支持写回时仍完成所有 fsync。正式工程探针另测端到端编译/收尾，`startup-probe.mjs --review --symlinks` 验证新 helper 下实际 HTTP/Engine/Sandbox 发布与参考继续。测试注入不进入产品或默认 check/CI/Evaluation；不声称执行过断电实验。
+
 Linux 真实后端工程：手动 `prepare-project.py` 准备独立 ext4 来源与已有依赖，`project-build-probe.mjs` 比较直接编译、两个并行真实 MXC Sandbox 编译和独立候选编译。核对服务关键产物、全部产物摘要、实际重叠区间、真实 Sandbox/退出排空回执、候选读集及正常缓存回收；记录创建、首读、编译与收尾占用/耗时。成本口径见 [结果说明](posix-local-overlay.md#真实-codeatelier-后端编译成本)，不进入默认检查、CI 或 Evaluation，不新增源码发布或任意包安装的验收声明。
 
 Linux 正常检查/参考继续：`linux-overlay-backend.test.ts` 使用真实 Service/Publisher 和目录控制器替身核对 B/O/T、冲突预览、版本变化拒绝新参考创建、原私有保留及 pending/缺失/重复选集拒绝；`posix-overlay-batch.test.ts` 验证根 UUID 参考材料不捕获、不发布。`linux-overlay-controller.test.ts` 验证只读分类失败后仍可查询，原写操作未知拒绝不变。浏览器用例独立检查正常入口和异常恢复提示；`startup-probe.mjs --review` 通过真实 HTTP/OverlayFS/Sandbox 验证空文件与删除标记、新参考对话读取材料后重新编辑发布及原视图保留。

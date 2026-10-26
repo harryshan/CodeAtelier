@@ -4,9 +4,11 @@
  * 1. Fd、Node、sameVersion 与 key 管理句柄、观察版本及管理目录过滤；
  *    管理目录 lookup 拒绝访问，避免 ENOENT 允许 OverlayFS 在有 lower 的目录中创建同名项。
  * 2. Store 只在创建时读取根身份；list 按需固定目录成员，capture 在首次读取
- *    普通文件时保存内容。openSource 不沿宿主符号链接；内部相对链接固定文本供虚拟视图解析。
+ *    普通文件时完整捕获内容并校验版本，不逐文件等待落盘。openSource 不沿宿主符号链接；
+ *    内部相对链接固定文本供虚拟视图解析。
  * 3. verify 检查已观察版本；seal 在调用方排空消费者后导出一次性清单供发布桥接，
- *    report 仅输出状态。清单不代表完整崩溃恢复或全目录原子快照。
+ *    seal 先排队范围写回，再 fsync 全部捕获对象与清单/目录，成功前不交付持久化回执；report 仅输出状态。
+ *    未 seal 的活跃缓存不承诺断电持久性，清单不代表完整崩溃恢复或全目录原子快照。
  * 4. operations 仅提供 FUSE 读取回调，写入、copy-up 和 whiteout 由上层内核
  *    OverlayFS 完成；main 通过 stdin 接收 metrics/verify/seal UUID/close。
  * 5. 正常 close 卸载并关闭句柄；控制器负责有界等待、异常退出后的卸载检查。
@@ -327,7 +329,6 @@ public:
         auto current = openSource(name, O_PATH);
         require(::fstat(current.get(), &after) == 0, errno);
         require(sameVersion(before, after), ESTALE);
-        require(::fsync(destination.get()) == 0, errno);
         struct stat saved{};
         require(::fstat(destination.get(), &saved) == 0, errno);
         entry.objectStamp = stamp(saved);
@@ -382,6 +383,26 @@ public:
             require(document.size() <= 16 * 1024 * 1024, EFBIG);
         }
         document += "]}\n";
+
+        // 运行中的缓存只负责稳定读取；Linux 不从未冻结的异常视图恢复。
+        // 先发起全部缓存对象的范围写回，减少逐 inode fsync 触发的分散块分配/写回。
+        // 此请求本身不保证持久化，文件系统不支持时仍逐对象执行下面的 fsync。
+        for (const auto& item : nodes_) {
+            const auto& entry = item.second;
+            if (entry.data >= 0 &&
+                ::sync_file_range(entry.data, 0, 0, SYNC_FILE_RANGE_WRITE) != 0) {
+                require(errno == ENOSYS || errno == EOPNOTSUPP || errno == EINVAL, errno);
+            }
+        }
+
+        // 任一对象同步失败都不得创建清单；清单/目录的同步顺序仍在这些对象之后。
+        for (const auto& item : nodes_) {
+            const auto& entry = item.second;
+            if (entry.data >= 0) {
+                require(::fsync(entry.data) == 0, errno);
+            }
+        }
+
         auto file = id + ".json";
         Fd output(::openat(control_.get(), file.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600));
         std::size_t position = 0;

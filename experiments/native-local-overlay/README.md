@@ -38,6 +38,26 @@ python3 -B native/linux-local-overlay/launcher.py \
 
 `project-build-probe.mjs` 比较一次直接编译、两个并行真实 Sandbox 编译和一次独立候选编译，核对所有产物的路径/内容摘要、执行区间及正常排空；不更改来源源码或发布生成物。报告 `project-build-report.json` 保存编译器诊断、创建/收尾耗时、helper ready 计数、首次读取缓存与收尾保留占用，原始事件和 trace 留在夹具。磁盘统计为已知私有目录的 `st_blocks * 512`，跳过挂载点及内核受保护 work 目录，不包含视图外 Store/trace；编译后样本不是整个进程的峰值内存/磁盘测量。失败保留现场，不自动重跑未知任务。它不覆盖包安装、前端打包、真实模型或巨型 repo。已验证结果见 [工程报告](../../docs/posix-overlay-project-build-results.json) 和 [成本说明](../../docs/posix-local-overlay.md#真实-codeatelier-后端编译成本)。
 
+## 首读与冻结持久化回归
+
+`sync-probe.py` 仅手动执行，使用通过链接包装器编译的测试 helper。真实 FUSE 读取 128 个小文件，记录首次读取/冻结耗时及同步调用；修改来源后仍须读到原捕获内容。冻结必须先对所有对象排队范围写回、完成所有对象 fsync，再同步清单/目录。独立夹具注入对象 fsync EIO、范围写回 EIO，要求不交付清单且缓存保留；范围写回不支持时仍须完成所有 fsync 才返回成功。这是调用顺序与错误处理验证，不是断电实验。
+
+以下示例在 Linux shell 中运行，头文件/库路径按已有安装调整，不自动安装依赖：
+
+```sh
+mkdir -p "$HOME/codeatelier-native-overlay-probes"
+g++ -std=c++20 -Wall -Wextra -Werror -D_FILE_OFFSET_BITS=64 \
+  -I/absolute/fuse-dev/usr/include \
+  native/linux-local-overlay/readonly-lower.cpp \
+  experiments/native-local-overlay/sync-wrapper.cpp \
+  -Wl,--wrap=fsync -Wl,--wrap=sync_file_range -Wl,-l:libfuse3.so.4 -pthread \
+  -o "$HOME/codeatelier-native-overlay-probes/readonly-lower-sync"
+python3 -B experiments/native-local-overlay/sync-probe.py \
+  --binary "$HOME/codeatelier-native-overlay-probes/readonly-lower-sync"
+```
+
+报告留在独占 `sync-*` 夹具。包装器只影响该测试二进制，不能替换正常 `overlay:build-linux` 产物；不向产品暴露测试环境变量或注入参数，不接默认 check/CI/Evaluation。完整工程性能另用上面的 `project-build-probe.mjs` 和未包装的正式 helper 测量。
+
 ## Engine 主流程
 
 正式 `startup-probe.mjs` 命令追加 `--review`，会在两个主任务中保留普通、空及删除文件，通过公开 `local-review` 检查并用 `local-resolution` 创建新参考对话；随后实际 Sandbox 读取历史材料、检查当前源码、重新编辑并经候选发布。核对来源/原私有层和正常关闭，见 [检查报告](../../docs/posix-overlay-review-results.json)。不测试异常挂载恢复，也不会自动启动用户服务。
