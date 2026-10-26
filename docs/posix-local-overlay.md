@@ -10,6 +10,8 @@
 
 正常整应用重启已通过正式入口验收（2026-10-27）：旧启动器/控制器退出后，以相同 data/views 启动新 namespace，历史、round 基线、upper 身份与私有内容保持；原对话继续实际 Sandbox 写入，新参考会话继续候选验证并发布。使用入口与单进程重载相同，不要求目录复制或重新扫描来源；详见 [重启证据](posix-overlay-restart-results.json)。这只覆盖先正常排空并关闭的 ready 会话，不解除未知挂载或发布事故状态。
 
+正常用户取消已通过真实 HTTP/Sandbox 验收（2026-10-27）：即使任务已经选择发布，取消仍先排空 Runtime、保存私有内容和旧 B，来源不写回、不启动候选。下一任务可继续读取，但不继承上次选择；再次明确选择后才建立新候选并发布，取消历史保留。检查使用实际工具回执、Runtime 终态和最终来源内容，见 [取消报告](posix-overlay-cancel-results.json)；不作为异常挂载恢复证明。
+
 参考 Bubblewrap 的 `--overlay-src/--overlay`，Linux 优先由内核 OverlayFS 提供 lower/upper/workdir，并在任务的 mount/user namespace 中建立视图；私有写入由内核完成，不重新用 FUSE 实现同样的 copy-up。正常结束退出命名空间即可卸载，upper 留在宿主私有目录供检查和下一轮使用。[Bubblewrap 官方接口](https://raw.githubusercontent.com/containers/bubblewrap/main/bwrap.xml)
 
 Docker 同样用只读 image layers 作为 lower、独立容器层作为 upper。可借鉴其共享 lower、独占 upper、按文件 copy-up 和 whiteout 处理；它没有为可变宿主项目提供 CodeAtelier 的三方源码发布协议。[Docker OverlayFS 说明](https://docs.docker.com/engine/storage/drivers/overlayfs-driver/)

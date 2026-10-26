@@ -1,0 +1,56 @@
+{
+  "date": "2026-10-27",
+  "fixture": "sr-lApzzR",
+  "report": "startup-report.json",
+  "environment": "WSL2 Ubuntu 26.04 ext4, Node 24.19.0, production launcher/HTTP/Engine/Store/Broker, MXC Bubblewrap",
+  "options": ["--review", "--cancel"],
+  "passed": true,
+  "parallelTasksPublished": 2,
+  "serviceReloadAndContinuation": true,
+  "normalEmptyDeletedReview": true,
+  "referenceTaskPublished": true,
+  "cancellation": {
+    "selectedBeforeCancellation": true,
+    "selectionProof": "Persisted local_validation_plan event before cancellation",
+    "longCommandStartObserved": true,
+    "cancelledAndDrained": true,
+    "viewReady": true,
+    "noCandidateOrSourceWriteOnCancellation": true,
+    "privateEditAndBaseRetained": true,
+    "continuedWithoutInheritedSelection": true,
+    "commandExitAndOutputReceiptsChecked": true,
+    "continuationSandboxApplied": true,
+    "explicitReselectionPublished": true,
+    "freshCandidateSandboxApplied": true,
+    "cancellationHistoryPreserved": true,
+    "privateArtifactRetained": true
+  },
+  "modelRequests": 22,
+  "finalExitCode": 0,
+  "activeRuntimeMarkers": 0,
+  "hostResidualMounts": 0,
+  "earlierFixtures": [
+    {
+      "fixture": "sr-5gTHEH",
+      "result": "Test assumed running selection was already in the finish manifest; corrected to inspect the persisted plan event. Fixture shut down normally."
+    },
+    {
+      "fixture": "sr-NMl2Rr",
+      "result": "Passed before strengthening command-receipt and continuation Sandbox assertions; final fixture reran the stronger checks."
+    }
+  ],
+  "checks": {
+    "pnpmCheck": "passed",
+    "testFiles": 167,
+    "testsPassed": 1349,
+    "testsSkipped": 2,
+    "manualProbeLintAndFormat": "passed",
+    "browserE2eRun": false,
+    "evaluationRun": false
+  },
+  "limits": [
+    "Normal user cancellation before source publication; not crash or power-loss recovery",
+    "Fixed local model protocol, not external model acceptance",
+    "No macOS backend; deferred by user"
+  ]
+}

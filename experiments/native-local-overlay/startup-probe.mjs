@@ -8,6 +8,7 @@
  *    --typescript 另准备真实编译器/类型库与硬链接依赖；--symlinks 通过内部包链接和 bin 链运行，产物保持私有。
  *    --review 再检查普通/空/删除文件并创建参考会话，在新 Sandbox 中读取参考、重新编辑和发布。
  *    --restart 在正常重载/续聊后关闭整个启动树，再以原 data/views 启动，验证新 namespace 中的持久历史与私有内容。
+ *    --cancel 在已选择发布后取消真实命令，核对排空/私有保留，再续聊和重新明确选择发布。
  * 5. finally 仅关闭本脚本服务/子进程；不安装依赖、不修改用户设置、不重启现有服务或运行 Evaluation。
  */
 import assert from "node:assert/strict";
@@ -29,6 +30,7 @@ import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { verifyNormalRestart } from "./startup-restart.mjs";
+import { cancellationResponse, verifyCancellation } from "./startup-cancel.mjs";
 
 assert.equal(process.platform, "linux");
 const [root, linuxSdk] = process.argv.slice(2);
@@ -46,6 +48,7 @@ await writeFile(path.join(source, "module.py"), "a = 1\nb = 2\n");
 const symlinks = process.argv.includes("--symlinks");
 const reviewFiles = process.argv.includes("--review");
 const restart = process.argv.includes("--restart");
+const cancellation = process.argv.includes("--cancel");
 if (reviewFiles) {
   await writeFile(path.join(source, "empty.txt"), "before empty");
   await writeFile(path.join(source, "remove.txt"), "before delete");
@@ -131,6 +134,7 @@ const report = {
   symlinks,
   reviewFiles,
   restart,
+  cancellation,
 };
 if (typescript) {
   const info = await lstat(path.join(source, compilerDirectory, "_tsc.js"));
@@ -200,6 +204,11 @@ async function respond(body) {
   }
 
   const serialized = JSON.stringify(body.input);
+  const cancelPlan = cancellationResponse(body, { python, tool, message });
+  if (cancelPlan) {
+    return cancelPlan;
+  }
+
   if (serialized.includes("STARTUP_RESTART")) {
     const step = calls.get("restart") ?? 0;
     calls.set("restart", step + 1);
@@ -767,6 +776,14 @@ try {
       referenceTaskPublished: true,
       originalPrivateRetained: true,
     };
+  }
+
+  if (cancellation) {
+    report.cancellationResult = await verifyCancellation({
+      data,
+      source,
+      request,
+    });
   }
 
   report.passed = true;

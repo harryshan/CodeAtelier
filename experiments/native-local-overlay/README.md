@@ -2,6 +2,8 @@
 
 ## 正式构建与启动
 
+追加 `--cancel` 验证真实任务取消：新会话先编辑并选择发布，再启动长命令；探针确认开始标记和登记计划后调用公开取消 API。必须正常排空、保留原 B/私有内容且来源不变，下一任务无选择也不得发布；再明确选择后才运行独立候选并发布。可与 `--review` 联用，不需要重复运行重启或编译场景；只操作当前独占夹具。
+
 命令尾追加 `--restart` 可验证整个应用正常退出后，以同一 data/views 重新启动。探针保留旧 namespace 句柄以避免编号回收干扰比较，并确认旧控制器退出、新 namespace、持久历史及私有层不变，再通过公开 API 在真实 Sandbox 继续旧会话。与 `--review --symlinks` 联用可同时核对后续新参考会话的候选发布与内部依赖编译；这不验证崩溃、断电或未知挂载恢复。
 
 helper 已迁入 `native/linux-local-overlay/readonly-lower.cpp`，使用 `pnpm overlay:build-linux` 显式构建；产品通过 `pnpm start:overlay --data-dir ... --views ...` 启动，见 [原生组件说明](../../native/linux-local-overlay/README.md)。

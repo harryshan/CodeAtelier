@@ -1,5 +1,12 @@
 # 初版验证记录
 
+## Linux 用户取消后继续与重新发布（2026-10-27）
+
+- `startup-probe.mjs --review --cancel` 在 `sr-lApzzR` 使用正式构建产物、公开 HTTP、固定回环模型、生产 Engine/Store/Broker/Controller 和真实 MXC Sandbox。新会话编辑源码并完成 `local_publish` 选择后启动长命令，观察实际开始标记和持久计划事件，再调用取消 API；状态为 cancelled/ready，Runtime 终态为已应用 Sandbox 的 cancelled，未启动候选且来源未修改，原 B 和私有编辑可检查。
+- 新任务实际读取保留的内容及取消标记，核对命令回执退出码/输出与 Sandbox 完成事件，无选择时不继承旧发布；再一个任务明确重新选择，经独立候选 Sandbox 验证后才发布，旧任务仍为 cancelled，私有产物保留。初始双任务并行、参考继续和服务重载也通过。22 次固定模型请求，正常退出 0，活动 Runtime 标记与宿主残留挂载均为零。
+- 先前 `sr-5gTHEH` 因探针误从运行中清单读取 selected 状态而停止；产品按设计只在排空收尾时保存该清单，随后夹具正常关闭。探针改用已登记计划事件；`sr-NMl2Rr` 通过后，自审加强实际命令回执和续聊 Sandbox 断言，最终新夹具再次通过。未修改产品取消语义、重放旧任务或模拟排空成功。
+- 本轮 `pnpm check` 为 167 个文件、1349 项通过/2 项跳过，探针单独 ESLint/Prettier 通过。结果见 [报告](posix-overlay-cancel-results.json)。此项证明正常用户取消和新任务续聊，不证明服务崩溃、异常挂载或发布中途断电恢复；未运行 Evaluation 或浏览器 e2e，没有 UI/HTTP 契约变更。
+
 ## macOS Local overlay 保持关闭（2026-10-27）
 
 用户明确本轮不实现 macOS 后端，已同步范围决定及使用说明。核对当前工厂、Engine 能力、HTTP 创建/执行/参考继续门禁与创建按钮：Darwin 不开放 Local overlay，Sandbox 或完整 Linux 上下文不改变该结论。新增完整上下文下的 Darwin 回归，平台/HTTP 两文件 18 项通过；`pnpm check` 为 167 个文件、1349 项通过/2 项跳过。仅在 Windows 上验证平台接线和通用拒绝路径，不宣称 macOS 实机验收；没有添加 FSKit 实现或安装扩展。

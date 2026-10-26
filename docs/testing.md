@@ -1,5 +1,7 @@
 # 测试约定与功能覆盖
 
+Linux 正常用户取消：手动 `startup-probe.mjs --cancel` / `startup-cancel.mjs` 经公开 HTTP 和固定回环模型计划先编辑/选择发布，再启动长命令；观察真实开始标记和已登记的验证计划后调用取消 API。核对 cancelled/ready、Runtime 排空、未启动候选、来源不变及 B/O 保留；继续任务不选择时仍不发布，随后重新选择才经过新 Sandbox 候选发布。探针不杀服务、不模拟清理回执，不进入默认检查或 Evaluation。
+
 macOS Local overlay 门禁：`local-overlay-platform.test.ts` 核对普通 Darwin 启动及带完整 Linux namespace 上下文时都不开放入口、不选择 Linux backend；HTTP 既有用例核对能力拒绝发生在创建视图之前。平台工厂测试可注入平台值，不等于 macOS 实机验证；按 2026-10-27 用户决定不实现 macOS overlay。
 
 Linux 整应用正常重启：手动 `startup-probe.mjs --restart` 在原有双任务发布和服务重载后，正常关闭整个启动树，以同一 data/views 重新启动。`startup-restart.mjs` 核对旧控制器已退出、PID/namespace 更换、历史事件/任务及 round/upper/私有检查保持，再通过公开 HTTP 在真实 Sandbox 续聊并保留新私有产物。与 `--review` 联用，继续验证新参考会话的候选发布；此探针不用于崩溃恢复，也不进入默认检查或 Evaluation。
