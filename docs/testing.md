@@ -79,6 +79,8 @@ Runtime stdio 集成夹具共用 `runtime-child-close.ts`：spawn 后立即监�
 
 ## 共享执行逻辑回归
 
+- Local 清单并发：`local-overlay-manifest.test.ts` 固定一个真实只读句柄打开的窗口，跨平台注入已在 Windows 实测的 rename EPERM，先复现历史读取使正常任务收尾失败，再验证短 I/O 排队后保存 ready、释放正常服务锁；不替代外部进程锁验收。`pnpm overlay:verify-browser --interrupted` 在既有真实 UI/HTTP/SSE/WinFsp/Sandbox 场景后追加中断参考检查、新会话显式提交、真实 Runtime 重读参考/当前源码和候选发布；中断 helper/owner 为真实终止，遗留 active 清单/服务锁为夹具注入，不宣称真实 Runtime 崩溃或未知操作重放。保持手动入口，不进入默认 check/Evaluation，不安装/Repair。
+
 - Local 中断参考产品入口：`local-overlay-interrupted-service.test.ts` 使用真实清单/SQLite、替代原生租约，验证身份/状态绑定、材料版本、v3 参考、固定请求重试、旧卷不变、证明失败和服务关闭排空。HTTP 回归检查显式模式、鉴权/CSRF、受控错误、创建门禁及无自动任务；浏览器合成路由验证纯文本/部分写入提示、无合并预览和新会话。`local-overlay-directory-dependency.test.ts` 先复现参考根缺失凭据误拒绝，再验证精确 UUID 根只读缺失、来源后来出现拒绝及禁止参考发布。手动 `pnpm overlay:verify-interrupted-product` 使用真实 WinFsp 和独立 helper/owner 中断，验证服务检查到新参考视图及显式重新编辑发布；遗留 active 清单/服务锁为注入，可信验证回调为宿主，不能称为真实 Sandbox 中断恢复。所有手动 verifier 不进入默认 check/Evaluation，也不安装或 Repair。
 
 - Local 异常私有层检查：`local-overlay-interrupted-review.test.ts` 覆盖当前 namespace 优先于旧 seal、中断标记、删除与缺对象区分、格式/路径/祖先/类型/硬链接/取消/正文限额拒绝和数据库不变。手动 `pnpm overlay:verify-interrupted` 创建独立宿主/helper，用真实进程终止验证原生排他与 PID/创建时间证明、部分写入、并发/活进程/缺证明拒绝及正常停止；只读取引用材料，不挂载 dirty 卷，不接产品恢复 UI、不改安装态或执行 Evaluation。

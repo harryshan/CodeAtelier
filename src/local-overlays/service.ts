@@ -12,6 +12,7 @@
  * 9. publicationRecovery 从非本进程活动会话定位发布事故，原生来源租约控制审核/接受；不取得或删除私有视图残留锁，不把失败卷改为 ready。
  *    release-complete 仅释放有原生退出证明的完整批次来源锁，不能重放写入或影响后来发布者。
  * 10. reviewInterrupted 不取得或删除旧服务锁；原生离线租约证明旧 helper/owner 退出，只读取选定中断参考。
+ * 11. 同清单 read/save 只在短 I/O 期间排队，避免 Windows 读句柄阻止 rename；不重试发布或改变磁盘锁语义。
  * 公开创建由 HTTP 单独检查平台/Sandbox 能力，不迁移旧历史；来源写入只由冻结租约内的协调器执行。
  */
 import { randomUUID } from "node:crypto";
@@ -47,6 +48,7 @@ import {
   type Source,
 } from "./publication/files.js";
 import { Publisher } from "./publication/publisher.js";
+import { ManifestQueue } from "./manifest-queue.js";
 import {
   inspectInterruptedFiles,
   type InterruptedReview,
@@ -102,6 +104,7 @@ export class LocalOverlayService {
   >();
 
   private readonly traces = new TraceRecorder();
+  private readonly manifests = new ManifestQueue();
   private readonly archive: TraceArchive;
 
   constructor(
@@ -122,7 +125,11 @@ export class LocalOverlayService {
     return path.join(this.root, z.uuid().parse(id));
   }
 
-  private async read(id: string) {
+  private read(id: string) {
+    return this.manifests.run(id, () => this.readManifest(id));
+  }
+
+  private async readManifest(id: string) {
     const file = this.file(id);
     const info = await lstat(file);
     if (
@@ -165,7 +172,11 @@ export class LocalOverlayService {
     return record;
   }
 
-  private async save(record: LocalOverlayRecord) {
+  private save(record: LocalOverlayRecord) {
+    return this.manifests.run(record.id, () => this.saveManifest(record));
+  }
+
+  private async saveManifest(record: LocalOverlayRecord) {
     const temporary = path.join(this.root, `${record.id}-${randomUUID()}.tmp`);
     const file = await open(temporary, "wx", 0o600);
     try {

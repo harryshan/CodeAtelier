@@ -1,5 +1,13 @@
 # 初版验证记录
 
+## Local 中断参考真实浏览器与 Sandbox 闭环（2026-10-26）
+
+- `pnpm overlay:verify-browser --interrupted` 通过：[汇总报告](local-overlay-interrupted-browser-results.json)，原始现场 `.local/local-overlay-browser-HV2gql/report.json`。Chromium 通过生产 HTTP/SSE、真实 WinFsp 和已安装 IPC v18 Runtime 完成检查、新参考会话、明确重新编辑、候选验证及所选源码发布，无路由拦截或宿主 fallback。夹具服务重启后历史与发布结果仍在。
+- 活 helper、helper 退出但 owner 仍活分别拒绝检查；两者退出后显示可能部分写入的参考。新 Runtime 同时读取参考和检查后改变的最新来源，候选不包含参考目录。原清单、锁、SQLite main/WAL 和原生租约字节不变，未选中的中断新增/删除没有写回。已查看 `interrupted-published.png` 的 Sandbox、发布和参考提示。
+- 首次真实浏览器运行发现并发历史读取令清单原子替换返回 EPERM（`.local/local-interrupted-browser.log`）。实际只读句柄探针和回归先复现，再以同清单短 I/O 队列修复；专项 43 项通过（`.local/local-manifest-fixed.log`）。不同视图仍并行，不重试 rename/发布、不删除残留磁盘锁；此队列只协调同一 Service 的读取和保存。
+- 最终 `pnpm check` 通过（`.local/local-manifest-check.log`）：155 个测试文件、1,237 项通过、1 项既有跳过，类型、Lint、格式及构建通过，仅既有依赖注释/产物体积提示。完整 `pnpm test:e2e` 76 项通过（`.local/local-manifest-e2e.log`）；自审核对队列失败释放、跨视图并发与磁盘锁边界，未发现新增问题，无 overlay helper 残留。
+- 范围限定：固定 provider、合成小文件；helper/owner 真实终止，但遗留 active 清单/服务锁由夹具注入，不等于真实 Runtime/服务器崩溃或后代排空验证。不重挂载旧 dirty 卷，不代表大型工程、完整刷新恢复、外部依赖或 POSIX 验收。没有再次 Repair、重启用户服务、创建分区或执行 Evaluation。
+
 ## Local 中断参考产品入口（2026-10-26）
 
 - 汇总：[中断参考产品验证报告](local-overlay-interrupted-product-results.json)。`pnpm test:e2e` 全部 76 项通过（`.local/local-interrupted-product-e2e.log`），包含新增中断内容纯文本显示、部分写入提示、明确模式请求、无合并预览和新会话不自动运行；Local 专项使用合成 HTTP/SSE，不代替真实中断 Sandbox 浏览器全链路。

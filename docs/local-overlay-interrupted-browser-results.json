@@ -1,0 +1,71 @@
+{
+  "timestamp": "2026-10-26T14:10:47.5825307+08:00",
+  "scope": "Windows Local interrupted reference: production browser, WinFsp and installed Sandbox",
+  "verification": {
+    "browser": {
+      "artifact": ".local/local-overlay-browser-HV2gql/report.json",
+      "log": ".local/local-interrupted-browser-delivery.log",
+      "result": {
+        "timestamp": "2026-10-26T06:04:34.335Z",
+        "platform": "win32",
+        "passed": true,
+        "settings": "private v1 settings, Sandbox enabled",
+        "browser": "Chromium, production UI/HTTP/SSE; no route interception",
+        "execution": "installed Windows dedicated-account Runtime IPC v18 and real WinFsp",
+        "commandIntervals": {
+          "A": [1792994647268, 1792994649461],
+          "B": [1792994647266, 1792994649461]
+        },
+        "interruptedReference": {
+          "passed": true,
+          "checks": [
+            "active helper refused through HTTP",
+            "active owner refused after helper exit",
+            "partial material checked and continued through real UI",
+            "new Runtime reads reference and latest lower",
+            "explicit edit and local_publish pass candidate Runtime",
+            "old manifest locks and SQLite bytes unchanged",
+            "unselected interrupted additions and deletions not applied"
+          ],
+          "historyAfterRestart": true
+        },
+        "checks": [
+          "UI creates two isolated Local conversations",
+          "real parallel Runtime and selected publication",
+          "candidate Runtime and no host fallback",
+          "source conflict retained and visible",
+          "three-way review and fresh continuation through UI",
+          "unsent draft retained; no automatic task",
+          "fixture service restart preserves history and source grouping",
+          "all own tasks and server drained"
+        ],
+        "limitations": [
+          "fixed provider, not a real model evaluation",
+          "synthetic small files, not a large project build",
+          "sessions are not OS security boundaries",
+          "no old dirty-volume remount or POSIX acceptance",
+          "interrupted helper/owner are real; stale active manifest/service lock are injected, not a real Runtime/server crash"
+        ]
+      }
+    },
+    "manifestRegression": {
+      "before": ".local/local-manifest-regression.log",
+      "after": ".local/local-manifest-fixed.log",
+      "targetedTestsPassed": 43,
+      "observation": "A held Node read handle prevents manifest replacement with EPERM on this Windows host; same-view short read/save operations now queue within LocalOverlayService.",
+      "boundary": "No rename or publication retry; no disk lock removal; no cross-process exclusion claim."
+    },
+    "check": {
+      "passed": true,
+      "log": ".local/local-manifest-check.log",
+      "files": 155,
+      "passedTests": 1237,
+      "skippedTests": 1
+    },
+    "e2e": {
+      "passed": true,
+      "log": ".local/local-manifest-e2e.log",
+      "passedTests": 76
+    }
+  }
+}

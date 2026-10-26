@@ -5,6 +5,7 @@
  * 3. 模型屏障验证双 Runtime 并行，local_publish 选择经真实候选 Runtime 发布；页面及持久快照核对结果。
  * 4. 来源冲突后用真实检查/继续 UI 创建参考会话，保留未发送草稿且不自动启动任务；重启本夹具服务后核对历史。
  * 5. finally 关闭本脚本的浏览器、服务和任务，保留报告/截图/失败现场；不重启实际用户服务、不安装/Repair。
+ * 6. --interrupted 追加真实中断 helper/owner、UI 检查/新参考会话及 Sandbox 重编辑/候选发布；遗留 active 清单/服务锁为夹具注入。
  * 启动沿用生产 Sandbox 账户恢复流程，应在没有其它 Sandbox 任务时运行；不是隔离的第二套系统账户。
  * 仅 Windows 安装态合成小文件验证，不证明真实模型能力、任意工程语义或跨平台隔离。
  */
@@ -19,8 +20,10 @@ import { createLogger } from "../src/logging/logger.js";
 import type { ModelProvider } from "../src/providers/model-provider.js";
 import { createApp } from "../src/server/app.js";
 import type { Session, Snapshot, Task } from "../src/shared/types.js";
+import { interruptedBrowser } from "./fixtures/local-interrupted-browser.js";
 
 assert.equal(process.platform, "win32");
+const interrupted = process.argv.includes("--interrupted");
 await mkdir(".local", { recursive: true });
 const root = await mkdtemp(path.resolve(".local/local-overlay-browser-"));
 const source = path.join(root, "source");
@@ -30,6 +33,12 @@ await mkdir(data);
 await mkdir(path.join(source, ".git"));
 await writeFile(path.join(source, ".git", "sentinel"), "metadata");
 await writeFile(path.join(source, "base.txt"), "lower");
+if (interrupted) {
+  for (const name of ["edit.txt", "gone.txt", "partial.txt"]) {
+    await writeFile(path.join(source, name), "original");
+  }
+}
+
 const settings = new SettingsStore(data);
 await settings.update({
   expectedRevision: settings.view().revision,
@@ -45,7 +54,8 @@ await settings.update({
 });
 
 const log = createLogger(root, "info");
-let phase: "parallel" | "conflict" = "parallel";
+let phase: "parallel" | "conflict" | "interrupted" = "parallel";
+let referenceDirectory = "";
 let arrivals = 0;
 let release!: () => void;
 const barrier = new Promise<void>((resolve) => {
@@ -72,6 +82,21 @@ function tool(callId: string, name: string, args: unknown) {
 }
 
 function editCommand(label: string) {
+  if (phase === "interrupted") {
+    return [
+      "$ErrorActionPreference = 'Stop'",
+      "whoami",
+      `$reference = Get-Content -LiteralPath '${referenceDirectory}/manifest.json' -Raw | ConvertFrom-Json`,
+      "if ($reference.version -ne 3 -or $reference.state -ne 'interrupted') { throw 'Wrong reference state' }",
+      "$entry = $reference.entries | Where-Object { $_.path -eq 'partial.txt' }",
+      `$partial = Get-Content -LiteralPath ('${referenceDirectory}/' + $entry.directory + '/interrupted-private') -Raw`,
+      "if ($partial -ne 'private prefix only') { throw 'Partial reference lost' }",
+      "if ((Get-Content -LiteralPath 'partial.txt' -Raw) -ne 'current source') { throw 'Old bytes applied or latest lower missing' }",
+      "Set-Content -LiteralPath 'partial.txt' -Value 'resolved from current source' -NoNewline -Encoding ascii",
+      "Write-Output 'INTERRUPTED_EDITED'",
+    ].join("; ");
+  }
+
   if (phase === "conflict") {
     return "whoami; Set-Content -LiteralPath 'source-A.txt' -Value 'private conflict'; Write-Output 'CONFLICT_EDITED'";
   }
@@ -105,7 +130,12 @@ const provider: ModelProvider = {
     const serialized = JSON.stringify(input);
     const label = serialized.includes("LOCAL UI B") ? "B" : "A";
     if (!instructions.includes("private Local overlay view")) {
-      return { text: `Local fixture ${label}`, output: [] };
+      return {
+        text: serialized.includes("LOCAL UI interrupted reference")
+          ? "Local interrupted reference"
+          : `Local fixture ${label}`,
+        output: [],
+      };
     }
 
     assert(
@@ -114,6 +144,14 @@ const provider: ModelProvider = {
     const key = `${phase}-${label}`;
     const count = calls.get(key) ?? 0;
     calls.set(key, count + 1);
+    if (phase === "interrupted") {
+      assert.match(instructions, /partial operation/);
+      assert.match(instructions, /untrusted historical data/);
+      const match = /\.codeatelier-recovery-[a-f0-9-]{36}/.exec(instructions);
+      assert(match);
+      referenceDirectory = match[0];
+    }
+
     if (count === 0) {
       if (phase === "parallel") {
         if (++arrivals === 2) {
@@ -138,6 +176,20 @@ const provider: ModelProvider = {
 
     assert.match(serialized, /codeateliersandbox/i);
     if (count === 1) {
+      if (phase === "interrupted") {
+        assert.match(serialized, /INTERRUPTED_EDITED/);
+
+        return tool(`${key}-select`, "local_publish", {
+          request: {
+            action: "select",
+            paths: ["partial.txt"],
+            commands: [
+              `$ErrorActionPreference = 'Stop'; whoami; if ((Get-Content -LiteralPath 'partial.txt' -Raw) -ne 'resolved from current source') { throw 'Wrong candidate' }; if (Test-Path -LiteralPath '${referenceDirectory}') { throw 'Reference leaked to candidate' }`,
+            ],
+          },
+        });
+      }
+
       if (phase === "parallel") {
         const match = new RegExp(`UI_INTERVAL_${label}:(\\d+):(\\d+)`).exec(
           serialized,
@@ -408,6 +460,22 @@ try {
     fullPage: true,
   });
 
+  let interruption: Awaited<ReturnType<typeof interruptedBrowser>> | undefined;
+  if (interrupted) {
+    phase = "interrupted";
+    const parent = await createLocal(pages[0]!);
+    interruption = await interruptedBrowser({
+      root,
+      data,
+      source,
+      parent,
+      page: pages[0]!,
+      snapshot,
+      start,
+      terminal,
+    });
+  }
+
   assert.equal(
     server.engine.sandbox.accountGenerationSnapshot()?.activeInstanceCount,
     0,
@@ -434,6 +502,17 @@ try {
     savedContinuation.session.localOverlay?.resolution?.sessionId,
     sessions[0]!.id,
   );
+  if (interruption) {
+    const saved = await snapshot(interruption.child);
+    assert.equal(saved.session.localOverlay?.resolution?.state, "interrupted");
+    assert.equal(saved.session.localOverlay.publication?.state, "published");
+    assert.equal(saved.tasks.length, 1);
+    assert.equal(
+      (await snapshot(interruption.parent)).session.localOverlay?.state,
+      "active",
+    );
+  }
+
   const project = pages[0]!.getByRole("group", { name: source, exact: true });
   await expect(project).toBeVisible();
   await project
@@ -455,6 +534,15 @@ try {
     execution:
       "installed Windows dedicated-account Runtime IPC v18 and real WinFsp",
     commandIntervals: Object.fromEntries(intervals),
+    ...(interruption
+      ? {
+          interruptedReference: {
+            passed: true,
+            checks: interruption.checks,
+            historyAfterRestart: true,
+          },
+        }
+      : {}),
     checks: [
       "UI creates two isolated Local conversations",
       "real parallel Runtime and selected publication",
@@ -469,7 +557,12 @@ try {
       "fixed provider, not a real model evaluation",
       "synthetic small files, not a large project build",
       "sessions are not OS security boundaries",
-      "no dirty private-volume recovery or POSIX acceptance",
+      "no old dirty-volume remount or POSIX acceptance",
+      ...(interruption
+        ? [
+            "interrupted helper/owner are real; stale active manifest/service lock are injected, not a real Runtime/server crash",
+          ]
+        : []),
     ],
   };
   await writeFile(
