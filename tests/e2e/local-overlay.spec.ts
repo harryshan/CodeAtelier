@@ -8,6 +8,7 @@
  *    完成态只允许明确释放该批次来源锁，失败可重试；不提交任务或重新接受部分发布现场。
  * 6. 中断检查明确传递恢复模式，只呈现可能部分写入的参考，参考新会话不自动提交任务。
  * 7. 私有刷新显式请求后重读状态，失败可重试且草稿保留；不自动提交旧任务。
+ *    已确认恢复绑定原任务，当前操作区不继续建议重做发布；历史失败内容仍保留。
  * 页面和请求代码为生产实现；真实挂载/权限/发布链路另由手动 WinFsp 验证证明。
  */
 import { expect, test } from "@playwright/test";
@@ -16,6 +17,16 @@ import type { Session } from "../../src/shared/types.js";
 test("explicitly restores a completed private refresh and keeps the unsent draft", async ({
   page,
 }) => {
+  const failedTask = {
+    id: "refresh-failed",
+    sessionId: created.id,
+    status: "failed",
+    subagentsEnabled: false,
+    createdAt: created.createdAt,
+    finishedAt: created.updatedAt,
+    error:
+      "Local overlay 收尾或发布结果未确认，现场已保留，不能自动续聊或重放发布。",
+  };
   let current: Session = {
     ...created,
     localOverlay: {
@@ -31,7 +42,12 @@ test("explicitly restores a completed private refresh and keeps the unsent draft
     new RegExp(`/api/sessions/${created.id}(?:\\?.*)?$`),
     (route) =>
       route.fulfill({
-        json: { session: current, tasks: [], events: [], approvals: [] },
+        json: {
+          session: current,
+          tasks: [failedTask],
+          events: [],
+          approvals: [],
+        },
       }),
   );
   await page.route(`**/api/sessions/${created.id}/events`, (route) =>
@@ -66,6 +82,7 @@ test("explicitly restores a completed private refresh and keeps the unsent draft
           ...created.localOverlay!,
           state: "ready",
           publication: { state: "published", files: 1 },
+          refreshedTaskId: failedTask.id,
         },
       };
       await route.fulfill({ json: current });
@@ -84,6 +101,15 @@ test("explicitly restores a completed private refresh and keeps the unsent draft
   await button.click();
   await expect(page.getByText(/所选源码已发布/)).toBeVisible();
   await expect(button).toHaveCount(0);
+  await expect(
+    page.getByText(
+      "此前任务在收尾时失败；所选源码现已确认发布，私有视图已恢复。请从当前文件开始新任务。",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "恢复任务", exact: true }),
+  ).toHaveCount(0);
   await expect(page.getByLabel("任务描述")).toContainText(
     "keep this unsent draft",
   );

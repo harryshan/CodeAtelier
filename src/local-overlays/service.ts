@@ -14,6 +14,7 @@
  * 10. reviewInterrupted 不取得或删除旧服务锁；原生离线租约证明旧 helper/owner 退出，只读取选定中断参考。
  * 11. 同清单 read/save 只在短 I/O 期间排队，避免 Windows 读句柄阻止 rename；不重试发布或改变磁盘锁语义。
  * 12. recoverPrivateRefresh 仅恢复有任务排空/关闭凭据的 complete 刷新；独立恢复锁保护原任务锁，失败不重写来源。
+ *     成功后保存原任务 ID 供当前 UI 区分历史失败与已恢复视图，下一任务清除；不改历史任务终态。
  * 公开创建由 HTTP 单独检查平台/Sandbox 能力，不迁移旧历史；来源写入只由冻结租约内的协调器执行。
  */
 import { randomUUID } from "node:crypto";
@@ -82,6 +83,7 @@ const recordSchema = z.object({
   publication: publicationStateSchema.optional(),
   resolution: resolutionOriginSchema.optional(),
   refreshRecovery: z.object({ taskId: z.uuid(), batchId: z.uuid() }).optional(),
+  refreshedTaskId: z.uuid().optional(),
 });
 export type LocalOverlayRecord = z.infer<typeof recordSchema>;
 export interface LocalOverlayLease {
@@ -428,6 +430,7 @@ export class LocalOverlayService {
           ).length,
         };
         record.refreshRecovery = undefined;
+        record.refreshedTaskId = record.taskId;
         await this.save(record);
         releaseGuard = true;
 
@@ -735,6 +738,12 @@ export class LocalOverlayService {
           projectWorkspace: record.source,
           state: record.phase,
           epoch: record.epoch,
+          ...(record.phase === "ready" &&
+          record.publication?.state === "published" &&
+          record.refreshedTaskId &&
+          record.refreshedTaskId === record.taskId
+            ? { refreshedTaskId: record.refreshedTaskId }
+            : {}),
           ...(record.phase === "failed" && record.refreshRecovery
             ? { privateRefreshRecovery: true }
             : {}),
@@ -1058,6 +1067,7 @@ export class LocalOverlayService {
         record.taskId = taskId;
         record.publication = undefined;
         record.refreshRecovery = undefined;
+        record.refreshedTaskId = undefined;
         await this.save(record);
         let mount: LocalOverlayMount | undefined;
         try {

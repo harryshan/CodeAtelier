@@ -57,6 +57,7 @@ export interface LocalOverlayInfo {
   epoch?: number;
   publicationRecovery?: boolean;
   privateRefreshRecovery?: boolean;
+  refreshedTaskId?: string;
   interruptedReview?: boolean;
   resolution?: {
     sessionId: string;

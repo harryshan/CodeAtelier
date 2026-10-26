@@ -7,6 +7,7 @@
  * 2. 按服务端来源项目路径分组（旧 Local 使用实际路径）；项目可折叠并默认显示最近五个对话。新建默认 Riftri；WorktreeDialog/LocalOverlayDialog 显式创建其它模式，重试保留 UUID。项目栏显示模式、实际路径与 Local 发布状态，失效私有视图阻止新任务；手机端使用导航抽屉。
  *    Local 选集检查可显式建立参考对话；中断材料提示可能部分写入，成功切换时保留草稿并追加重新验证提示，不自动提交任务。
  * 3. resume、reloadService、stopServer、createProject、createConversation 和 send 处理恢复、受确认的服务重载、关闭服务、连接项目、新建会话和发送消息，并显示操作结果。
+ *    Local 私有刷新成功的任务匹配回执只改变当前操作提示，历史失败保留；引导新任务而不重做已发布批次。
  * 4. 服务关闭后显示重启说明；正常页面由侧栏或手机端导航抽屉、项目栏、当前会话实际 Runtime 隔离模式（没有证据时显示启动初始状态，并提示获批宿主命令例外）、可折叠会话统计、会将已完成任务过程默认收纳的时间线或项目连接页、所见即所得 Markdown 任务编辑器组成。
  * 5. 侧栏另开同源对话阅读器；SettingsPage 接管版本化编辑和初始引导，保存更新主页面状态，不中断活动任务。
  * 6. 末尾渲染与主页面同主题的设置模态框及重载/关闭确认框；未完成模型配置时阻止提交并引导设置，项目连接不使用弹窗。
@@ -204,6 +205,12 @@ export default function App() {
     ["queued", "running", "waiting"].includes(t.status),
   );
   const recoverable = data?.tasks.at(-1);
+  const privateRefreshCompleted = Boolean(
+    recoverable &&
+    data?.session.localOverlay?.state === "ready" &&
+    data.session.localOverlay.publication?.state === "published" &&
+    data.session.localOverlay.refreshedTaskId === recoverable.id,
+  );
   const resume = async () => {
     if (!recoverable) {
       return;
@@ -815,16 +822,24 @@ export default function App() {
                 recoverable.status,
               ) && (
                 <div className={s.notice}>
-                  <p>
-                    {recoverable.error || "任务中断"}{" "}
-                    可在下方填写恢复说明，或直接恢复。
-                  </p>
-                  <button
-                    disabled={busy || !hasKey}
-                    onClick={() => void resume()}
-                  >
-                    恢复任务
-                  </button>
+                  {privateRefreshCompleted ? (
+                    <p>
+                      此前任务在收尾时失败；所选源码现已确认发布，私有视图已恢复。请从当前文件开始新任务。
+                    </p>
+                  ) : (
+                    <>
+                      <p>
+                        {recoverable.error || "任务中断"}{" "}
+                        可在下方填写恢复说明，或直接恢复。
+                      </p>
+                      <button
+                        disabled={busy || !hasKey}
+                        onClick={() => void resume()}
+                      >
+                        恢复任务
+                      </button>
+                    </>
+                  )}
                 </div>
               )}
             <div className={s.composer}>

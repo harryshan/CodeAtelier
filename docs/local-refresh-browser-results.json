@@ -1,0 +1,65 @@
+{
+  "scope": "Production browser, WinFsp and installed Sandbox private-refresh recovery",
+  "nativeBrowser": {
+    "artifact": ".local/local-overlay-browser-7MWSUj/report.json",
+    "log": ".local/local-refresh-browser-final.log",
+    "result": {
+      "timestamp": "2026-10-26T06:53:39.322Z",
+      "platform": "win32",
+      "passed": true,
+      "settings": "private v1 settings, Sandbox enabled",
+      "browser": "Chromium, production UI/HTTP/SSE; no route interception",
+      "execution": "installed Windows dedicated-account Runtime IPC v18 and real WinFsp",
+      "commandIntervals": {
+        "B": [1792997581383, 1792997583579],
+        "A": [1792997581386, 1792997583579]
+      },
+      "privateRefresh": {
+        "passed": true,
+        "cases": ["before acknowledgement", "after acknowledgement"],
+        "resumedSessions": 2,
+        "historyAfterRestart": true,
+        "sourceNotRewritten": true,
+        "unselectedPrivateRetained": true,
+        "noAutomaticTask": true
+      },
+      "checks": [
+        "UI creates two isolated Local conversations",
+        "real parallel Runtime and selected publication",
+        "candidate Runtime and no host fallback",
+        "source conflict retained and visible",
+        "three-way review and fresh continuation through UI",
+        "unsent draft retained; no automatic task",
+        "fixture service restart preserves history and source grouping",
+        "all own tasks and server drained"
+      ],
+      "limitations": [
+        "fixed provider, not a real model evaluation",
+        "synthetic small files, not a large project build",
+        "sessions are not OS security boundaries",
+        "no old dirty-volume remount or POSIX acceptance",
+        "Refresh acknowledgement loss injected around the real callback; no process or server crash"
+      ]
+    }
+  },
+  "recoveredTaskNotice": {
+    "before": ".local/local-refresh-notice-before.log",
+    "after": ".local/local-refresh-notice-after.log",
+    "lifecycleTests": ".local/local-refresh-notice-unit.log",
+    "screenshot": ".local/local-overlay-browser-7MWSUj/refresh-after.png",
+    "historyPreserved": true,
+    "taskBound": true
+  },
+  "check": {
+    "passed": true,
+    "log": ".local/local-refresh-browser-check-final.log",
+    "files": 156,
+    "passedTests": 1243,
+    "skippedTests": 1
+  },
+  "e2e": {
+    "passed": true,
+    "log": ".local/local-refresh-browser-e2e.log",
+    "passedTests": 77
+  }
+}

@@ -6,6 +6,7 @@
  * 4. 来源冲突后用真实检查/继续 UI 创建参考会话，保留未发送草稿且不自动启动任务；重启本夹具服务后核对历史。
  * 5. finally 关闭本脚本的浏览器、服务和任务，保留报告/截图/失败现场；不重启实际用户服务、不安装/Repair。
  * 6. --interrupted 追加真实中断 helper/owner、UI 检查/新参考会话及 Sandbox 重编辑/候选发布；遗留 active 清单/服务锁为夹具注入。
+ * 7. --refresh 在真实任务收尾注入确认前/后回执丢失，经页面恢复并以新 Sandbox 任务验证当前来源和未选私有文件。
  * 启动沿用生产 Sandbox 账户恢复流程，应在没有其它 Sandbox 任务时运行；不是隔离的第二套系统账户。
  * 仅 Windows 安装态合成小文件验证，不证明真实模型能力、任意工程语义或跨平台隔离。
  */
@@ -21,9 +22,11 @@ import type { ModelProvider } from "../src/providers/model-provider.js";
 import { createApp } from "../src/server/app.js";
 import type { Session, Snapshot, Task } from "../src/shared/types.js";
 import { interruptedBrowser } from "./fixtures/local-interrupted-browser.js";
+import { privateRefreshBrowser } from "./fixtures/local-private-refresh-browser.js";
 
 assert.equal(process.platform, "win32");
 const interrupted = process.argv.includes("--interrupted");
+const refresh = process.argv.includes("--refresh");
 await mkdir(".local", { recursive: true });
 const root = await mkdtemp(path.resolve(".local/local-overlay-browser-"));
 const source = path.join(root, "source");
@@ -54,7 +57,9 @@ await settings.update({
 });
 
 const log = createLogger(root, "info");
-let phase: "parallel" | "conflict" | "interrupted" = "parallel";
+let phase:
+  "parallel" | "conflict" | "interrupted" | "refresh-edit" | "refresh-check" =
+  "parallel";
 let referenceDirectory = "";
 let arrivals = 0;
 let release!: () => void;
@@ -82,6 +87,14 @@ function tool(callId: string, name: string, args: unknown) {
 }
 
 function editCommand(label: string) {
+  if (phase === "refresh-edit") {
+    return "$ErrorActionPreference = 'Stop'; whoami; Set-Content -LiteralPath 'refresh.txt' -Value 'published refresh' -NoNewline -Encoding ascii; Set-Content -LiteralPath 'unselected-refresh.txt' -Value 'retained privately' -NoNewline -Encoding ascii; Write-Output 'REFRESH_EDITED'";
+  }
+
+  if (phase === "refresh-check") {
+    return "$ErrorActionPreference = 'Stop'; whoami; if ((Get-Content -LiteralPath 'refresh.txt' -Raw) -ne 'external after refresh') { throw 'Source overwritten or stale' }; if ((Get-Content -LiteralPath 'unselected-refresh.txt' -Raw) -ne 'retained privately') { throw 'Private file lost' }; Write-Output 'REFRESH_FOLLOWUP'";
+  }
+
   if (phase === "interrupted") {
     return [
       "$ErrorActionPreference = 'Stop'",
@@ -131,9 +144,13 @@ const provider: ModelProvider = {
     const label = serialized.includes("LOCAL UI B") ? "B" : "A";
     if (!instructions.includes("private Local overlay view")) {
       return {
-        text: serialized.includes("LOCAL UI interrupted reference")
-          ? "Local interrupted reference"
-          : `Local fixture ${label}`,
+        text: serialized.includes("LOCAL refresh before")
+          ? "Local refresh before"
+          : serialized.includes("LOCAL refresh after")
+            ? "Local refresh after"
+            : serialized.includes("LOCAL UI interrupted reference")
+              ? "Local interrupted reference"
+              : `Local fixture ${label}`,
         output: [],
       };
     }
@@ -176,6 +193,29 @@ const provider: ModelProvider = {
 
     assert.match(serialized, /codeateliersandbox/i);
     if (count === 1) {
+      if (phase === "refresh-check") {
+        assert.match(serialized, /REFRESH_FOLLOWUP/);
+
+        return {
+          text: "Fresh source and retained private file verified",
+          output: [],
+        };
+      }
+
+      if (phase === "refresh-edit") {
+        assert.match(serialized, /REFRESH_EDITED/);
+
+        return tool(`${key}-select`, "local_publish", {
+          request: {
+            action: "select",
+            paths: ["refresh.txt"],
+            commands: [
+              "$ErrorActionPreference = 'Stop'; whoami; if ((Get-Content -LiteralPath 'refresh.txt' -Raw) -ne 'published refresh') { throw 'Candidate differs' }; if (Test-Path -LiteralPath 'unselected-refresh.txt') { throw 'Unselected private file leaked' }",
+            ],
+          },
+        });
+      }
+
       if (phase === "interrupted") {
         assert.match(serialized, /INTERRUPTED_EDITED/);
 
@@ -326,6 +366,7 @@ async function terminal(
   session: Session,
   task: Task,
   expected: "completed" | "failed",
+  expectedView: "ready" | "failed" = "ready",
 ) {
   const deadline = performance.now() + 90000;
   let saved: Snapshot;
@@ -365,7 +406,7 @@ async function terminal(
           event.data.mode === "host-process"),
     ),
   );
-  assert.equal(saved.session.localOverlay?.state, "ready");
+  assert.equal(saved.session.localOverlay?.state, expectedView);
 
   return saved;
 }
@@ -476,6 +517,22 @@ try {
     });
   }
 
+  const refreshed = refresh
+    ? await privateRefreshBrowser({
+        root,
+        source,
+        page: pages[0]!,
+        create: () => createLocal(pages[0]!),
+        snapshot,
+        start,
+        terminal,
+        setPhase: (next) => {
+          phase = next;
+          calls.clear();
+        },
+      })
+    : [];
+
   assert.equal(
     server.engine.sandbox.accountGenerationSnapshot()?.activeInstanceCount,
     0,
@@ -513,6 +570,20 @@ try {
     );
   }
 
+  for (const session of refreshed) {
+    const saved = await snapshot(session);
+    assert.equal(saved.session.localOverlay?.state, "ready");
+    assert.equal(saved.tasks.length, 2);
+    assert.equal(
+      saved.tasks.filter((task) => task.status === "failed").length,
+      1,
+    );
+    assert.equal(
+      saved.tasks.filter((task) => task.status === "completed").length,
+      1,
+    );
+  }
+
   const project = pages[0]!.getByRole("group", { name: source, exact: true });
   await expect(project).toBeVisible();
   await project
@@ -534,6 +605,19 @@ try {
     execution:
       "installed Windows dedicated-account Runtime IPC v18 and real WinFsp",
     commandIntervals: Object.fromEntries(intervals),
+    ...(refresh
+      ? {
+          privateRefresh: {
+            passed: true,
+            cases: ["before acknowledgement", "after acknowledgement"],
+            resumedSessions: refreshed.length,
+            historyAfterRestart: true,
+            sourceNotRewritten: true,
+            unselectedPrivateRetained: true,
+            noAutomaticTask: true,
+          },
+        }
+      : {}),
     ...(interruption
       ? {
           interruptedReference: {
@@ -558,6 +642,11 @@ try {
       "synthetic small files, not a large project build",
       "sessions are not OS security boundaries",
       "no old dirty-volume remount or POSIX acceptance",
+      ...(refresh
+        ? [
+            "Refresh acknowledgement loss injected around the real callback; no process or server crash",
+          ]
+        : []),
       ...(interruption
         ? [
             "interrupted helper/owner are real; stale active manifest/service lock are injected, not a real Runtime/server crash",

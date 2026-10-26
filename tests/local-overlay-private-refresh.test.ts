@@ -3,6 +3,7 @@
  * 1. 真实来源发布后丢失确认，服务必须保存绑定 task/batch 的排空恢复资格。
  * 2. 新服务实例恢复时确认私有收据、保留来源后续编辑，解除原锁并允许新任务。
  * 3. 缺证明、并发、改选集和关闭未知均拒绝；只读失败可重试，未知收尾保留恢复锁。
+ * 4. 当前 UI 恢复凭据只关联原任务；其它任务 ID 不投影，新一轮执行后清除，历史任务不改写。
  * 原生挂载、冻结和 Runtime 排空由实机验证另计，本文件不模拟成系统安全证据。
  */
 import { randomUUID } from "node:crypto";
@@ -187,6 +188,18 @@ it("restores a proven clean refresh after service recreation without rewriting l
     publication: { state: "published", files: 1 },
   });
   expect((await f.record()).refreshRecovery).toBeUndefined();
+  expect(
+    (await service.describe(f.session)).localOverlay?.refreshedTaskId,
+  ).toBe(f.task);
+  const recovered = await f.record();
+  await writeFile(
+    f.recordFile,
+    JSON.stringify({ ...recovered, refreshedTaskId: randomUUID() }),
+  );
+  expect(
+    (await service.describe(f.session)).localOverlay?.refreshedTaskId,
+  ).toBeUndefined();
+  await writeFile(f.recordFile, JSON.stringify(recovered));
   const next = await service.begin(
     f.session.workspace,
     f.session.id,
@@ -194,6 +207,9 @@ it("restores a proven clean refresh after service recreation without rewriting l
     new AbortController().signal,
   );
   await next!.finish("cancelled", true);
+  expect(
+    (await service.describe(f.session)).localOverlay?.refreshedTaskId,
+  ).toBeUndefined();
   await service.close();
 });
 

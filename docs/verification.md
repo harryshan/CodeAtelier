@@ -1,5 +1,14 @@
 # 初版验证记录
 
+## Local 私有刷新恢复的真实浏览器/Sandbox 验收（2026-10-26）
+
+- `pnpm overlay:verify-browser --refresh` 通过：[报告](local-refresh-browser-results.json)，最终现场 `.local/local-overlay-browser-7MWSUj/report.json`。生产 Chromium/HTTP/SSE、真实 WinFsp、已安装 IPC v18 主/候选 Runtime 完成源码选择、候选验证、Engine 排空与回执丢失后留存。分别在确认前和确认已完成后注入错误，资格由生产 Engine/Service 写入，不由夹具伪造清单或声明主 Runtime 已排空。
+- 两个会话分别从页面恢复，恢复不自动启动任务且保留草稿。后续手动启动的新 Sandbox 任务读取检查后更新的来源和未选私有文件；主目录内容、文件身份、mtime/ctime 不变，未选文件未发布。夹具服务正常重启后，两会话的失败/成功任务历史和 ready 状态仍在。无路由拦截、host fallback、活动租约或 helper 残留。
+- 首轮实机通过后截图发现：顶部显示已恢复，底部仍建议恢复原失败任务。浏览器回归先失败（`.local/local-refresh-notice-before.log`），再修复 task ID 绑定的成功刷新投影；只改变当前操作提示，不改任务历史或恢复 API，新任务开始清除记录。专项通过（`.local/local-refresh-notice-after.log`、5 项生命周期测试），最终真实脚本再次通过（`.local/local-refresh-browser-final.log`）；已查看 `refresh-after.png`，恢复提示与草稿正确。
+- 故障仅注入在真实确认回调前后；这是正常关闭后的回执丢失恢复，不是进程强杀、断电或旧 dirty 卷恢复。固定 provider、小文件场景不代表真实模型、任意工程或 POSIX；没有 Repair、重启用户服务、创建分区或执行 Evaluation。
+- 修复后完整 `pnpm check` 通过（`.local/local-refresh-browser-check-final.log`）：156 个测试文件、1,243 项通过、1 项既有跳过；类型、Lint、格式与构建通过。自审核对匹配任务投影、新任务清除、历史不改写及源文件版本不变；状态字段随既有恢复/任务生命周期落盘，沿用原 tracing，不新增路径或正文属性。
+- 完整 `pnpm test:e2e` 77 项通过（`.local/local-refresh-browser-e2e.log`），包括恢复后任务提示、历史恢复、源码编辑和 Worktree 既有交互。原 1 项浏览器回归失败证据保留，未弱化断言；最终实机截图与完整回归均使用修复后的产品代码。
+
 ## Local 完成态私有刷新产品恢复（2026-10-26）
 
 - 新增显式 `local-refresh` HTTP/UI 入口：任务排空、来源发布完成但刷新待确认、挂载关闭成功后，服务保存绑定 task/batch 的恢复资格。正常重挂载并冻结后复用原私有检查点/收据协议，不运行模型、旧任务或源码发布；完成并卸载后原会话恢复 ready。独立恢复锁和原任务锁保护操作，旧记录缺证明、dirty 卷和恢复自身未知状态继续保留。
