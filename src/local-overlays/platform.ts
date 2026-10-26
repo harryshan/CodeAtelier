@@ -3,7 +3,7 @@
  * 1. Windows/普通启动保留默认 WinFsp Service 与候选验证器，不读取 Linux 环境上下文。
  * 2. Linux 显式 namespace 上下文须完整、绝对路径规范，控制根精确绑定当前数据目录，视图根分离。
  * 3. 创建共享 Linux 控制客户端，交给 backend/候选器；真正 mount namespace 核对仍由 IPC hello 执行。
- * 4. 不启动进程、安装 helper 或放宽公开创建门禁；不持久化内部环境，不记录路径或模型数据。
+ * 4. 同时返回平台入口前提；Engine 还须要求 Sandbox。工厂不启动进程、安装 helper 或证明驱动可用。
  * 测试可指定平台并替换 Engine backend，不能由 HTTP 请求选择文件系统或反序列化执行闭包。
  */
 import path from "node:path";
@@ -23,20 +23,21 @@ export function localOverlayPlatform(
   environment: NodeJS.ProcessEnv,
   platform: NodeJS.Platform = process.platform,
 ): {
+  supported: boolean;
   backend?: LocalOverlayBackend;
   candidate: Pick<CandidateValidator, "validate">;
 } {
   const root = path.resolve(directory, "local-overlays");
   const candidate = new CandidateValidator(path.join(root, "candidates"), log);
   if (platform !== "linux") {
-    return { candidate };
+    return { candidate, supported: platform === "win32" };
   }
 
   const socket = environment.CODEATELIER_OVERLAY_SOCKET;
   const control = environment.CODEATELIER_OVERLAY_ROOT;
   const views = environment.CODEATELIER_OVERLAY_VIEWS;
   if (!socket && !control && !views) {
-    return { candidate };
+    return { candidate, supported: false };
   }
 
   if (
@@ -64,6 +65,7 @@ export function localOverlayPlatform(
   );
 
   return {
+    supported: true,
     backend: new LinuxLocalBackend(root, controller, log, views),
     candidate: new LinuxCandidateValidator(root, controller, log, views),
   };

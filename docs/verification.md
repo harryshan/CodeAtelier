@@ -1,5 +1,14 @@
 # 初版验证记录
 
+## Linux 公开 HTTP/SSE、SandboxBroker 与 UI（2026-10-26）
+
+- `engine-probe.mjs --http` 经生产 Fastify/CSRF、AsyncStore Workers、SandboxBroker 和工厂选择的 MxcSandboxRuntime，在显式 namespace 中创建两个会话、幂等重试创建、订阅 SSE 并启动任务。只注入固定 provider 和已安装 SDK/bundle 位置，没有替换生产 Broker/Runtime 工厂。两个任务命令区间重叠，各自经全新实际 Sandbox 候选验证后发布同一源码的不同位置；最终来源含双方修改，私有产物保留，清单 ready/epoch 1，Runtime 标记为空。报告 [HTTP 摘要](posix-overlay-http-results.json)，现场 `/home/harryshan/codeatelier-native-overlay-probes/http-PSWlcS`，`closed: true` 且启动器退出 0。
+- 真正隔离的证明取自两个任务的 `sandbox_stage.applied=true` 和 execution instance，不把 bootstrap 的配置初始 unknown 当作任务结果。HTTP snapshot 返回发布状态及 `fileReviewSupported=false`；未实现的文件检查 API 返回 409，来源/私有清单未被检查路径改写。
+- 在另一同配置夹具 `ui-jdY4oW` 的真实浏览器核对两个来源分组会话、启用的创建入口、`linux-bubblewrap-mxc-v1` 状态、已发布提示和 Linux 检查限制。发现 UI tooltip 仍使用 Windows 账户说明后增加回归并按平台修正。该旧浏览器持有探针的退出等待未完成；核实 Node 无子进程、无视图挂载且服务已停止监听后，只终止该夹具进程，保留现场，不把它算作正常关闭。探针随后调整 SSE/服务关闭等待顺序；上面的独立 HTTP 探针已正常退出，但不据此宣称覆盖全部浏览器持有场景。
+- `pnpm check` 通过：164 文件、1,317 passed / 1 existing skipped，类型、Lint、格式与 Web/Windows/POSIX Runtime 构建通过（`.local/linux-public-check-complete.log`）。完整 `pnpm test:e2e` 为 78 passed（`.local/linux-public-e2e.log`），最后的平台 tooltip 修改另跑对应 Linux UI 回归 1 passed（`.local/linux-public-e2e-latest.log`）。单元测试验证平台 gate 和 Linux 不支持检查/恢复时无 I/O，UI 回归验证 ready 可提交、failed 阻止提交、未实现操作隐藏。截图 `test-results/local-overlay-linux.png` 已人工查看。
+- 当前开放的是显式 namespace 启动、Sandbox 已启用的 Linux 主流程。helper 仍须手动构建准备，没有自动分发，Linux 文件检查/事故恢复未实现；没有 macOS、所有发行版或真实大型工程验收。没有安装/Repair、分区、重启用户服务或运行 Evaluation。按用户要求不再扩展内部建仓库问题。
+- 最后补齐 HTTP 拒绝响应的 body 消费后，用当前探针在独占 `http-final-e0JEin` 重跑同一完整双任务流程，正常完成并退出 0；没有重启既有服务。
+
 ## Linux Engine 模型工具与候选发布（2026-10-26）
 
 - `engine-probe.mjs` 使用真实 Engine/SQLite inline、平台工厂和注入的真实 MXC 启动器，固定内存 provider 经生产 Runtime 模型工具协议发出 `run_command`/`local_publish`。两个实际命令区间重叠，各收据明确为仅登记；Engine 排空后两批分别通过全新 `linux-bubblewrap` 候选，最终源码包含双方修改，未选产物保留，清单 ready/epoch 1，Runtime 标记为空。最新现场 `/home/harryshan/codeatelier-native-overlay-probes/engine-cE5DGR`，摘要见 [报告](posix-overlay-engine-results.json)。没有连接外部模型，公开 HTTP/UI 不在本次证据内。

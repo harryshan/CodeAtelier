@@ -9,7 +9,8 @@
  * 6. 中断检查明确传递恢复模式，只呈现可能部分写入的参考，参考新会话不自动提交任务。
  * 7. 私有刷新显式请求后重读状态，失败可重试且草稿保留；不自动提交旧任务。
  *    已确认恢复绑定原任务，当前操作区不继续建议重做发布；历史失败内容仍保留。
- * 页面和请求代码为生产实现；真实挂载/权限/发布链路另由手动 WinFsp 验证证明。
+ * 8. Linux ready/failed 状态分别允许/阻止任务，隐藏未实现的检查恢复，Sandbox 说明跟随实际平台。
+ * 页面和请求代码为生产实现；真实挂载/权限/发布链路另由手动 WinFsp/Linux 验证证明。
  */
 import { expect, test } from "@playwright/test";
 import type { Session } from "../../src/shared/types.js";
@@ -409,6 +410,80 @@ const created: Session = {
   updatedAt: "2026-10-26T00:00:00Z",
   localOverlay: { id: "view", projectWorkspace: source, state: "ready" },
 };
+
+test("keeps Linux normal tasks available without advertising unsupported review or recovery", async ({
+  page,
+}) => {
+  let session: Session = {
+    ...created,
+    localOverlay: {
+      ...created.localOverlay!,
+      fileReviewSupported: false,
+      publication: { state: "rejected" },
+    },
+  };
+  await page.route("**/api/sessions", (route) =>
+    route.fulfill({ json: [session] }),
+  );
+  await page.route(/\/api\/sessions\/local-overlay-ui(?:\?.*)?$/, (route) =>
+    route.fulfill({
+      json: {
+        session,
+        tasks: [],
+        events: [
+          {
+            id: 1,
+            sessionId: created.id,
+            taskId: "linux-task",
+            type: "sandbox_stage",
+            createdAt: created.createdAt,
+            data: {
+              stage: "completed",
+              enabled: true,
+              requested: true,
+              applied: true,
+              mode: "sandboxed",
+              platform: "linux",
+              level: "linux-bubblewrap-mxc-v1",
+            },
+          },
+        ],
+        approvals: [],
+      },
+    }),
+  );
+  await page.route("**/api/sessions/local-overlay-ui/events", (route) =>
+    route.fulfill({
+      contentType: "text/event-stream",
+      body: "event: refresh\ndata: {}\n\n",
+    }),
+  );
+  await page.goto("/");
+  await page.getByRole("button", { name: created.title, exact: true }).click();
+  await expect(page.getByText(/来源冲突或验证未通过/)).toBeVisible();
+  await expect(page.getByText(/当前平台暂不提供文件检查/)).toBeVisible();
+  await expect(page.getByLabel("Runtime 隔离状态：sandboxed")).toHaveAttribute(
+    "title",
+    /Linux Bubblewrap/,
+  );
+  await expect(page.getByText("检查私有修改", { exact: true })).toBeHidden();
+  await page.getByLabel("任务描述").fill("继续读取保留的私有修改");
+  await expect(page.getByRole("button", { name: "开始执行" })).toBeEnabled();
+  await page.screenshot({
+    path: "test-results/local-overlay-linux.png",
+    fullPage: true,
+  });
+  session = {
+    ...session,
+    localOverlay: { ...session.localOverlay!, state: "failed" },
+  };
+  await page.reload();
+  await page.getByRole("button", { name: created.title, exact: true }).click();
+  await expect(page.getByText(/私有视图需要核查/)).toBeVisible();
+  await page.getByLabel("任务描述").fill("不能自动恢复未知任务");
+  await expect(page.getByRole("button", { name: "开始执行" })).toBeDisabled();
+  await expect(page.getByText("检查私有修改", { exact: true })).toBeHidden();
+});
 
 test("retries the same explicit Local request and keeps source grouping after reload", async ({
   page,

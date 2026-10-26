@@ -1,10 +1,10 @@
 # 隔离 Local 使用指南
 
-隔离 Local 用于多个对话同时修改同一个项目。每个对话拥有私有写层，读取主目录当前文件；创建时不遍历或复制整个项目，也不创建 Git worktree。Windows 版本已接入任务、Sandbox、发布和冲突界面，Linux/macOS 后端尚未完成。
+隔离 Local 用于多个对话同时修改同一个项目。每个对话拥有私有写层，按需读取主目录文件；创建时不遍历或复制整个项目，也不创建 Git worktree。Windows 和显式启动的 Linux 已接入任务、Sandbox 与发布；Linux 的文件检查/事故恢复面板尚未实现，macOS 后端尚未实现。
 
 ## 开始使用
 
-1. 在 Windows 上准备 WinFsp Runtime、仓库构建的 WinFsp helper 和已启用的 CodeAtelier Sandbox。安装或 Repair 仍须显式执行；入口可见不表示安装健康。
+1. Windows 准备 WinFsp Runtime、仓库构建的 WinFsp helper 和已启用的 CodeAtelier Sandbox；Linux 按下节显式启动。安装或 Repair 仍须显式执行，入口可见不表示安装健康。
 2. 在新项目入口选“使用隔离 Local”，或在已有项目旁选“新建隔离 Local 对话”，确认来源目录后创建。需要并行时为同一来源创建两个对话，设置中的并发任务数至少为 2。
 3. 正常提交编码任务。文件工具和命令使用该对话的虚拟目录；项目分组和记忆仍归属原项目。不要在来源内部指定应用数据目录。
 4. Agent 用 `local_publish` 明确选择源码路径和验证命令。任务成功后，服务合并当前来源，创建独立候选视图重新验证，再按来源串行发布。未选择的修改、缓存和构建产物留在私有层。
@@ -12,28 +12,45 @@
 
 新建对话的既有默认模式保持不变；需要这个机制时明确选择“隔离 Local”。已有 Local、Riftri 和 Worktree 会话不自动迁移。
 
+## Linux 启动
+
+当前通过源码构建和显式启动器使用，尚无自动安装/分发。需要 Node.js 24/26、Python 3、unshare/setpriv/mount、非特权 user namespace、FUSE 3 Runtime 与匹配的只读 helper，以及已准备的 MXC/Bubblewrap Sandbox。真实验证环境为 WSL2/ext4；不支持把本实验能力扩展到 DrvFS。helper 构建方法见 [原生探针说明](../experiments/native-local-overlay/README.md)。
+
+先按项目常规步骤构建 `pnpm build`，在所用数据目录的设置中启用 Sandbox。以下为 Linux shell 示例，替换三个绝对路径占位值；数据目录和视图目录都必须独立于来源项目，视图目录还须独立于数据目录。
+
+```sh
+python3 -B native/linux-local-overlay/launcher.py \
+  --root /absolute/private-data/local-overlays \
+  --views /absolute/private-views \
+  --helper /absolute/readonly-lower -- \
+  node dist/server/server/launcher.js --data-dir /absolute/private-data
+```
+
+启动器只在应用 namespace 内挂载，服务进程撤销挂载 capabilities；宿主编辑器不能通过同名路径直接访问虚拟文件。普通 Linux 启动不会开放创建入口，缺少依赖不会静默改用宿主执行。关闭应用前先排空任务和 Runtime，再正常卸载；不自动接管未知挂载。
+
 ## 冲突和中断
 
-互不重叠的文本改动可以三方合并；同段冲突、依赖变化或候选测试失败时保留私有修改。通过页面检查原文、私有修改和当前来源，再创建参考会话重新处理；新会话不会自动执行任务。
+互不重叠的文本改动可以三方合并；同段冲突、依赖变化或候选测试失败时保留私有修改。Windows 可通过页面检查原文、私有修改和当前来源，再创建参考会话重新处理；新会话不会自动执行任务。Linux 暂无这个面板，正常 ready 会话可以继续任务读取私有文件；历史依赖保守保留，续聊不保证消除先前发布冲突。
 
-服务中断不自动重放命令或发布。已确认的完成态可通过对应恢复入口收尾；异常私有卷可检查中断参考，可能含部分写入。候选验证中断保留候选和发布记录，启动仅清理 Sandbox 残留授权，不视为测试通过。元数据损坏或缺少证明时保留现场，暂不提供自动修复。
+服务中断不自动重放命令或发布。Windows 已确认的完成态可通过对应恢复入口收尾，异常私有卷可检查中断参考，可能含部分写入；候选中断保留记录，启动仅清理 Sandbox 残留授权，不视为测试通过。Linux 异常现场保持保留，暂不提供这些恢复入口。元数据损坏或缺少证明时不自动修复。
 
 ## 与 Git 和 Sandbox 的关系
 
 | 模式 | 文件来源和写入 | Git | 发布到主目录 |
 | --- | --- | --- | --- |
-| 隔离 Local | 实时来源 + 会话私有写层 | 视图隐藏 `.git`，不管理 Git 状态 | 成功任务明确选择、候选验证后自动发布 |
+| 隔离 Local | 按需来源 + 会话私有写层 | 视图隐藏来源 `.git`，不管理 Git 状态 | 成功任务明确选择、候选验证后自动发布 |
 | Git worktree | 指定提交建立的独立工作目录 | 标准独立 HEAD/index 和分支流程 | 沿用 Git 工作流，不自动回写 |
 
 隔离 Local 的 Runtime 只获得视图及显式授权根，不因回写而获得来源写根；发布由宿主协调器处理。Sandbox 启动失败拒绝该任务，不静默转为宿主执行。`.git` 隐藏只阻止视图内的普通仓库发现，不是禁止所有 Git 程序或显式外部路径的安全边界。
 
-多个对话不是互相敌对的 OS 安全边界，沿用现行专用账户限制。主目录仍可被编辑器等外部程序修改；发布会复核已记录依赖，但不提供任意外部写者 CAS、多文件原子事务或完整工作区外依赖跟踪。
+多个对话不是互相敌对的 OS 安全边界，沿用各平台既有 Sandbox 限制。主目录仍可被编辑器等外部程序修改；发布会复核已记录依赖，但不提供任意外部写者 CAS、多文件原子事务或完整工作区外依赖跟踪。
 
 ## 当前限制与成本
 
-- 当前验收平台是 Windows/NTFS + WinFsp + 专用账户 Sandbox；不把 WSL 或 POSIX 能力视为已完成。
+- 当前主流程验收覆盖 Windows/NTFS + WinFsp 和 WSL2/ext4 + Linux OverlayFS/MXC；不扩大为所有 Linux 发行版、macOS 或大型工程验收。
 - 发布最多 100 个普通单链接文件，每文件 2 MiB，总内容 16 MiB；父目录须已存在。不发布目录树、链接或特殊文件；二进制双改保守拒绝。
 - 创建不扫描源码；读取依赖检查、首次写入复制和候选构建仍有成本。私有产物占磁盘，来源大树创建测试不代表大型构建没有开销。
+- Linux 只读 lower 首次查找缓存父目录成员、首次读取保存文件基线；不提供创建时全目录原子快照。当前不支持符号链接，捕获发布桥接仍限 2 MiB 普通单链接文件，历史依赖并集和目录成员变化可能保守拒绝发布；不能套用 Windows 工程读集验收。
 - 不自动删除会话或丢弃未发布内容。异常状态优先保留，不承诺自动恢复所有崩溃和损坏情况。
 
-设计和证据见 [Local overlay 设计](local-overlay-design.md)、[验证记录](verification.md)；手动主流程验收为 `pnpm overlay:verify-browser`，不在默认检查或 Evaluation 中自动执行。
+设计和证据见 [Local overlay 设计](local-overlay-design.md)、[验证记录](verification.md)；Windows 手动验收为 `pnpm overlay:verify-browser`，Linux 使用 [HTTP 探针](../experiments/native-local-overlay/README.md)。两者均不在默认检查或 Evaluation 中自动执行。

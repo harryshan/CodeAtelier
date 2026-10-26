@@ -2,7 +2,7 @@
  * 展示 Local 清单状态及检查/继续入口，供 App 项目路径栏下方使用。
  * 1. 先提示失效/未知视图，再区分来源发布成功、拒绝、私有保留和正在处理。
  * 2. 无发布凭据时明确私有，不从模型文本、任务完成或工具登记回执推断发布成功。
- * 3. ready 时展示明确选集的内容检查；状态/代次/会话变化销毁旧内容和未完成请求。
+ * 3. ready 且平台支持时展示明确选集的内容检查；状态/代次/会话变化销毁旧内容和未完成请求。
  * 4. 冲突继续会话标明旧材料仅供参考，创建回调交回 App；不直接恢复旧卷或发布文件。
  * 5. 待核查批次提供来源事故入口；清单提示不是原生排空证明，接受也不将私有视图变为可执行。
  * 6. 非活动异常清单可显式检查中断参考；状态键销毁旧结果，不把入口标志当作执行退出证明。
@@ -49,14 +49,14 @@ export function LocalOverlayStatus({
   return (
     <div className={s.localOverlayStatus}>
       <p role="status">{message}</p>
-      {info.privateRefreshRecovery && (
+      {info.fileReviewSupported !== false && info.privateRefreshRecovery && (
         <LocalPrivateRefresh
           key={`${sessionId}:${info.epoch}`}
           sessionId={sessionId}
           onUpdated={onUpdated}
         />
       )}
-      {info.publicationRecovery && (
+      {info.fileReviewSupported !== false && info.publicationRecovery && (
         <LocalPublicationRecovery
           key={`${sessionId}:${info.epoch}:${info.state}`}
           sessionId={sessionId}
@@ -73,14 +73,20 @@ export function LocalOverlayStatus({
             "参考来自中断执行，可能包含部分写入，须重新核对当前源码。"}
         </p>
       )}
-      {(info.state === "ready" || info.interruptedReview) && (
-        <LocalFileReview
-          key={`${sessionId}:${info.epoch}:${info.state}:${Boolean(info.interruptedReview)}`}
-          sessionId={sessionId}
-          onCreated={onCreated}
-          interrupted={info.interruptedReview}
-        />
+      {info.fileReviewSupported === false && (
+        <p>
+          当前平台暂不提供文件检查和异常恢复面板。正常结束的对话可继续任务读取私有修改；异常现场保持保留。
+        </p>
       )}
+      {info.fileReviewSupported !== false &&
+        (info.state === "ready" || info.interruptedReview) && (
+          <LocalFileReview
+            key={`${sessionId}:${info.epoch}:${info.state}:${Boolean(info.interruptedReview)}`}
+            sessionId={sessionId}
+            onCreated={onCreated}
+            interrupted={info.interruptedReview}
+          />
+        )}
     </div>
   );
 }

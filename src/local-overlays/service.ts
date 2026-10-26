@@ -18,6 +18,7 @@
  * 13. withSandboxRecoveryRoots 只在账户已排空后的启动撤销阶段暴露已知卷根 ACL；保留 dirty/任务锁/阶段，不执行任务或发布。
  *     主卷使用会话清单，候选卷使用执行前持久身份；候选恢复不删除记录或推断验证结果。
  * 14. 平台格式随 backend 创建并在 validate 绑定；Linux v1 不能被默认 WinFsp v6 接管。
+ * 15. fileReviewSupported 区分平台检查能力；Linux 不调用 Windows 封存/事故恢复代码，历史不展示无实现的入口。
  * 公开创建由 HTTP 单独检查平台/Sandbox 能力，不迁移旧历史；来源写入只由冻结租约内的协调器执行。
  */
 import { randomUUID } from "node:crypto";
@@ -411,6 +412,12 @@ export class LocalOverlayService {
     sessionId: string,
     signal: AbortSignal,
   ) {
+    if (!this.fileReviewSupported) {
+      return Promise.reject(
+        new Error("当前 Local 后端尚不支持文件检查或事故恢复。"),
+      );
+    }
+
     const work = this.recoverPrivateRefreshSerial(
       workspace,
       sessionId,
@@ -565,6 +572,12 @@ export class LocalOverlayService {
     token?: string | { action: "release-complete" },
     signal = new AbortController().signal,
   ) {
+    if (!this.fileReviewSupported) {
+      return Promise.reject(
+        new Error("当前 Local 后端尚不支持文件检查或事故恢复。"),
+      );
+    }
+
     const work = this.recoverPublication(
       workspace,
       sessionId,
@@ -683,6 +696,12 @@ export class LocalOverlayService {
     relative: string,
     signal: AbortSignal,
   ) {
+    if (!this.fileReviewSupported) {
+      return Promise.reject(
+        new Error("当前 Local 后端尚不支持文件检查或事故恢复。"),
+      );
+    }
+
     return this.inspect(
       workspace,
       sessionId,
@@ -698,6 +717,12 @@ export class LocalOverlayService {
     paths: readonly string[],
     signal: AbortSignal,
   ) {
+    if (!this.fileReviewSupported) {
+      return Promise.reject(
+        new Error("当前 Local 后端尚不支持文件检查或事故恢复。"),
+      );
+    }
+
     return this.inspect(
       workspace,
       sessionId,
@@ -713,6 +738,12 @@ export class LocalOverlayService {
     paths: readonly string[],
     signal: AbortSignal,
   ) {
+    if (!this.fileReviewSupported) {
+      return Promise.reject(
+        new Error("当前 Local 后端尚不支持文件检查或事故恢复。"),
+      );
+    }
+
     const work = this.inspectInterrupted(
       workspace,
       sessionId,
@@ -826,6 +857,11 @@ export class LocalOverlayService {
     }
   }
 
+  /** Linux 尚无 Windows 格式的离线检查及事故恢复；入口须在任何 I/O 前拒绝。 */
+  get fileReviewSupported() {
+    return this.backend.format !== "linux-overlay-v1";
+  }
+
   /** 历史读取只投影公开状态，不挂载或修复；损坏/丢失清单仍标为托管视图。 */
   async describe(session: Session): Promise<Session> {
     const id = this.backend.idFor(session.workspace);
@@ -846,20 +882,25 @@ export class LocalOverlayService {
           projectWorkspace: record.source,
           state: record.phase,
           epoch: record.epoch,
+          ...(!this.fileReviewSupported ? { fileReviewSupported: false } : {}),
           ...(record.phase === "ready" &&
           record.publication?.state === "published" &&
           record.refreshedTaskId &&
           record.refreshedTaskId === record.taskId
             ? { refreshedTaskId: record.refreshedTaskId }
             : {}),
-          ...(record.phase === "failed" && record.refreshRecovery
+          ...(this.fileReviewSupported &&
+          record.phase === "failed" &&
+          record.refreshRecovery
             ? { privateRefreshRecovery: true }
             : {}),
-          ...(["failed", "active"].includes(record.phase) &&
+          ...(this.fileReviewSupported &&
+          ["failed", "active"].includes(record.phase) &&
           !this.active.has(id)
             ? { interruptedReview: true }
             : {}),
-          ...(record.publication?.batchId &&
+          ...(this.fileReviewSupported &&
+          record.publication?.batchId &&
           (record.phase === "failed" ||
             (record.phase === "active" && !this.active.has(id)))
             ? { publicationRecovery: true }
@@ -883,7 +924,14 @@ export class LocalOverlayService {
         },
       };
     } catch {
-      return { ...session, localOverlay: { id, state: "unavailable" } };
+      return {
+        ...session,
+        localOverlay: {
+          id,
+          state: "unavailable",
+          ...(!this.fileReviewSupported ? { fileReviewSupported: false } : {}),
+        },
+      };
     }
   }
 
@@ -943,6 +991,12 @@ export class LocalOverlayService {
     input: ResolutionRequest,
     bind: (workspace: string, sessionId?: string) => Promise<Session>,
   ) {
+    if (!this.fileReviewSupported) {
+      return Promise.reject(
+        new Error("当前 Local 后端尚不支持文件检查或事故恢复。"),
+      );
+    }
+
     const work = this.continueResolutionSerial(input, bind);
     this.creating.add(work);
     void work.finally(() => this.creating.delete(work)).catch(() => {});

@@ -4,6 +4,7 @@
  * 2. 验证 Linux 格式绑定、无选集收尾/续轮及失败任务保留，不依赖重挂载 inode。
  * 3. 发布测试验证 complete 后选定覆盖移除、刷新失败 pending 保留、未知 seal 禁止重新打开。
  * 4. 候选测试核对内容变更拒绝、未知排空保留、正常清理；执行器替身不宣称真实 Sandbox。
+ * 5. 历史投影准确报告检查能力，未实现的恢复请求在读写 Windows 格式前拒绝。
  */
 import { randomUUID } from "node:crypto";
 import {
@@ -31,6 +32,72 @@ import { temp } from "./fixtures/helpers.js";
 
 const log = pino({ enabled: false });
 const signal = () => new AbortController().signal;
+
+it("reports Linux inspection limits and rejects unsupported operations without changing its manifest", async () => {
+  const f = await fixture();
+  const manifest = path.join(f.root, `${f.id}.json`);
+  const before = await readFile(manifest, "utf8");
+  const info = (await f.service.describe(f.session)).localOverlay!;
+  expect(info.fileReviewSupported).toBe(false);
+  expect(info.interruptedReview).toBeUndefined();
+  for (const operation of [
+    () =>
+      f.service.review(f.session.workspace, f.session.id, "code.txt", signal()),
+    () =>
+      f.service.reviewBatch(
+        f.session.workspace,
+        f.session.id,
+        ["code.txt"],
+        signal(),
+      ),
+    () =>
+      f.service.reviewInterrupted(
+        f.session.workspace,
+        f.session.id,
+        ["code.txt"],
+        signal(),
+      ),
+    () =>
+      f.service.recoverPrivateRefresh(
+        f.session.workspace,
+        f.session.id,
+        signal(),
+      ),
+    () =>
+      f.service.publicationRecovery(
+        f.session.workspace,
+        f.session.id,
+        undefined,
+        signal(),
+      ),
+    () =>
+      f.service.continueResolution(
+        {
+          id: randomUUID(),
+          workspace: f.session.workspace,
+          sessionId: f.session.id,
+          path: "code.txt",
+          version: "a".repeat(64),
+        },
+        async () => {
+          throw new Error("Must not bind");
+        },
+      ),
+  ]) {
+    await expect(operation()).rejects.toThrow("尚不支持");
+  }
+
+  expect(await readFile(manifest, "utf8")).toBe(before);
+  expect(f.active.size).toBe(0);
+  const record = JSON.parse(before);
+  record.phase = "failed";
+  await writeFile(manifest, JSON.stringify(record));
+  const failed = (await f.service.describe(f.session)).localOverlay!;
+  expect(failed.fileReviewSupported).toBe(false);
+  expect(failed.interruptedReview).toBeUndefined();
+  expect(failed.publicationRecovery).toBeUndefined();
+  await f.service.close();
+});
 
 it("classifies a lost candidate mount receipt as unknown rather than validation rejection", async () => {
   const f = await fixture();

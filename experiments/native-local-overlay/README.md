@@ -4,7 +4,11 @@
 
 `build-runtime-probe.mjs` 现在另生成 `.local/posix-overlay-engine-probe.mjs`。沿用下文显式 namespace 启动命令和独立 `--views`，将 backend 探针路径改为该文件，参数仍为独占夹具根、既有 MXC SDK 入口和当前 POSIX Runtime bundle。运行固定内存模型 → `run_command` → `local_publish` → Engine 排空 → 独立候选 Sandbox → Publisher，报告保存在夹具 `engine-report.json`，包含合成任务事件。无需真实模型或凭据。
 
-最新主流程报告摘要为 [Engine 结果](../../docs/posix-overlay-engine-results.json)。`git-policy-probe.mjs` 仅保留原生目录边界诊断，`--require-root` 可核对根/已有目录拒绝；纯私有新目录可建仓库是用户已接受的限制，不继续扩展该矩阵。公开 HTTP/UI 尚需独立验证，以上不是产品入口已开放的声明。
+基础 Engine 报告为 [Engine 结果](../../docs/posix-overlay-engine-results.json)。在 SDK/bundle 参数后追加 `--http`，走生产 Fastify、AsyncStore Workers、SandboxBroker 和真实 HTTP/CSRF/SSE，验证双会话创建、固定模型任务、候选发布和正常关闭；只指定实验 SDK/bundle 位置，不替换 Broker 或 Runtime 工厂。[HTTP 报告](../../docs/posix-overlay-http-results.json) 已通过。构建脚本同时打包异步 Store 的 host/worker 到忽略的 `.local`。
+
+再追加 `--browser` 会在夹具根写 `browser-ready.json` 并最多保持五分钟，供浏览器打开其中回环地址；核对后创建该夹具根下的空 `browser-done` 文件结束等待。页面由当前 `pnpm build` 产物提供。该模式需要操作者，不能放入默认检查。旧版本人工浏览器持有探针曾停在退出等待并被定点终止；新的不持有 HTTP 探针确认 `closed: true` 和进程正常退出，不把旧现场描述为正常关闭。
+
+`git-policy-probe.mjs` 仅保留历史诊断，用户已要求不再考虑内部建仓库，不继续扩展该矩阵。以下各节描述先前阶段的探针边界，当前产品入口见 [使用指南](../../docs/local-overlay-usage.md)。
 
 ## 基础原语
 
@@ -99,7 +103,7 @@ python3 -B /mnt/g/codeagent/native/linux-local-overlay/launcher.py \
   /mnt/g/codeagent/dist/runtime/posix
 ```
 
-先运行上述打包脚本生成探针。启动器后面的命令也可使用构建后的 `node dist/server/server/launcher.js --data-dir /absolute/private-data`，同时须指定 `--root /absolute/private-data/local-overlays --views /absolute/private-views`；这是显式启动基础设施，**不会因此开放 Linux Local UI**。控制根须独立于来源、当前 UID 所有、权限 0700，Unix socket 路径须满足系统长度限制；不支持 root 启动或自动安装。
+先运行上述打包脚本生成探针。启动器后面的命令也可使用构建后的 `node dist/server/server/launcher.js --data-dir /absolute/private-data`，同时须指定 `--root /absolute/private-data/local-overlays --views /absolute/private-views`；当前版本在此上下文有效且 Sandbox 已启用时开放 Linux Local UI。控制根须独立于来源、当前 UID 所有、权限 0700，Unix socket 路径须满足系统长度限制；不支持 root 启动或自动安装。
 
 每个视图用 UUID 派生目录，open 前 flush active，明确 close 正常卸载后保存 ready。客户端核对 mount namespace；断线/坏回复/超时不重发，服务未关闭视图即退出则保留 active 并返回失败。正常重新打开新建 lower、保留 upper；它不恢复未知卷，也不生成跨轮 B 或执行发布，这仍由后续 backend 协调。报告见 [控制器验收](../../docs/posix-overlay-controller-results.json)。
 

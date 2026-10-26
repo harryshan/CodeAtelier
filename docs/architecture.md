@@ -1,12 +1,12 @@
 # 架构
 
-`local-overlays/platform.ts` 由 Engine 构造时读取启动器固定的内部 IPC 上下文，同时选择挂载后端与候选验证器。Linux 控制根精确绑定当前数据目录、虚拟视图根独立；真正 namespace 由首次 hello 复核。Linux backend 正常收尾在 round 保存、卸载后调用 `linux-cache.ts` 回收身份绑定的本轮 lower 缓存，保留 upper/原始 B/历史未知目录。普通启动与 Windows 路径保持，公开 Linux 门禁仍关闭。
+`local-overlays/platform.ts` 由 Engine 构造时读取启动器固定的内部 IPC 上下文，同时选择挂载后端与候选验证器。Linux 控制根精确绑定当前数据目录、虚拟视图根独立；真正 namespace 由首次 hello 复核。Linux backend 正常收尾在 round 保存、卸载后调用 `linux-cache.ts` 回收身份绑定的本轮 lower 缓存，保留 upper/原始 B/历史未知目录。普通启动与 Windows 路径保持；有效 Linux namespace 上下文和已启用 Sandbox 共同开放公开创建门禁。Linux 历史返回 fileReviewSupported=false，UI 隐藏未实现的文件检查/事故恢复，服务在任何检查 I/O 前拒绝对应调用。
 
-Linux 的 `LinuxLocalBackend` 已实现 `LocalOverlayBackend` 并能注入正式 Service。清单使用 `linux-overlay-v1`，持续身份绑定私有控制目录；虚拟工作路径由独立视图根派生，避免与 Broker 数据根重叠。收尾持久 pending、保存跨轮 B、调用 Publisher，complete 确认后经控制器在卸载状态摘要绑定 release。`LinuxCandidateValidator` 新建独立候选，核对真实 Sandbox 排空、候选内容和读依赖后卸载；正常身份匹配才删除本次候选目录。WSL 已通过 Service/Store/真实 Runtime 的并行发布、续轮和冲突保留；Engine 工厂与公开创建门禁仍未接入。
+Linux 的 `LinuxLocalBackend` 已实现 `LocalOverlayBackend` 并能注入正式 Service。清单使用 `linux-overlay-v1`，持续身份绑定私有控制目录；虚拟工作路径由独立视图根派生，避免与 Broker 数据根重叠。收尾持久 pending、保存跨轮 B、调用 Publisher，complete 确认后经控制器在卸载状态摘要绑定 release。`LinuxCandidateValidator` 新建独立候选，核对真实 Sandbox 排空、候选内容和读依赖后卸载；正常身份匹配才删除本次候选目录。WSL 已通过 Service/Store/真实 Runtime 的并行发布、续轮和冲突保留；Engine 工厂与公开 HTTP/SSE/UI 已接入，固定 provider 驱动的实际 SandboxBroker/MXC 双任务和候选发布通过。
 
-Linux Local 的挂载控制基础设施由 `native/linux-local-overlay/launcher.py` 和 `src/local-overlays/linux-controller.ts` 组成。显式入口创建应用 user/mount namespace，控制器保留其中的挂载能力，服务子进程撤销全部 capabilities。私有 socket 只接受固定 UUID open/seal/close；每次挂载持久 active，正常卸载后 ready，未知结果不重发。客户端核对 namespace 并归档无路径 trace。该链已通过真实 MXC，仍待 Local backend/Engine 接入，普通启动与平台门禁不变。
+Linux Local 的挂载控制基础设施由 `native/linux-local-overlay/launcher.py` 和 `src/local-overlays/linux-controller.ts` 组成。显式入口创建应用 user/mount namespace，控制器保留其中的挂载能力，服务子进程撤销全部 capabilities。私有 socket 只接受固定 UUID open/seal/close；每次挂载持久 active，正常卸载后 ready，未知结果不重发。客户端核对 namespace 并归档无路径 trace。该链已接入 Local backend/Engine，真实 MXC 通过；普通启动不自动建立 namespace 或安装依赖。
 
-Linux Local 的发布桥接位于 `src/local-overlays/posix-batch.ts`：有界读取只读 lower 的一次性观察清单，绑定来源/原始文件版本/私有对象，按明确选集生成现有 Publisher 的 B/O 与读依赖。未修改选集仍作为读依赖，目录使用名称/类型摘要。WSL 手动实验已连接原生 OverlayFS、真实 MXC 候选和 Publisher；该模块尚未注册到产品 Local backend，`posix-round.ts` 保存未发布 B 和保守历史依赖，仅由 complete 发布日志生成摘要绑定的刷新计划，不自行卸载/删除。正常跨轮已在真实挂载中验证，应用 namespace 生命周期与 Engine/UI 仍未接入，详见 [POSIX Local 方案](posix-local-overlay.md)。
+Linux Local 的发布桥接位于 `src/local-overlays/posix-batch.ts`：有界读取只读 lower 的一次性观察清单，绑定来源/原始文件版本/私有对象，按明确选集生成现有 Publisher 的 B/O 与读依赖。未修改选集仍作为读依赖，目录使用名称/类型摘要。WSL 手动实验已连接原生 OverlayFS、真实 MXC 候选和 Publisher；该模块由产品 Linux backend 使用，`posix-round.ts` 保存未发布 B 和保守历史依赖，仅由 complete 发布日志生成摘要绑定的刷新计划，不自行卸载/删除。正常跨轮已在真实挂载中验证，应用 namespace 生命周期与 Engine/UI 已接入，异常恢复尚未实现，详见 [POSIX Local 方案](posix-local-overlay.md)。
 
 Local 的完成态私有刷新由 `LocalOverlayService.recoverPrivateRefresh` 协调：只接受收尾时持久化的 task/batch 排空资格，独立恢复锁阻止并发和未知重入，原任务锁保留到 helper 确认并关闭。WinFsp mount 在冻结回调内复用 Publisher 的 complete 恢复协议，只确认私有覆盖；成功后持久 ready，不执行旧命令或来源写入。`local-refresh` HTTP 与 `LocalPrivateRefresh` 显式入口重读历史，草稿不变；旧/dirty 卷和恢复过程自身的未知结果继续隔离。
 

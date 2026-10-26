@@ -1,9 +1,9 @@
 /**
  * Local 平台工厂的纯接线与路径绑定回归，不连接 socket 或模拟原生挂载成功。
- * 1. 普通启动/非 Linux 保留现有 backend 默认，不因无关环境改变平台。
+ * 1. 普通启动/非 Linux 保留现有 backend 默认，不因无关环境改变平台；入口前提区分 Windows 与未准备平台。
  * 2. 完整 namespace 上下文同时选择 Linux 挂载和候选器；workspace 来自独立视图根。
  * 3. 缺失上下文、来源数据根错配及视图重叠拒绝，不默默选择其它隔离实现。
- * 实际 namespace/Runtime/Publisher 由手动 backend-probe 验证；公开创建门禁仍独立控制。
+ * 实际 namespace/Runtime/Publisher 由手动探针验证；Engine 还须将平台前提与 Sandbox 配置共同用于创建门禁。
  */
 import { randomUUID } from "node:crypto";
 import path from "node:path";
@@ -29,12 +29,20 @@ it("keeps ordinary startup and Windows on their existing implementations", () =>
   ).toBeUndefined();
   const windows = localOverlayPlatform(directory, log, environment, "win32");
   expect(windows.backend).toBeUndefined();
+  expect(windows.supported).toBe(true);
+  expect(localOverlayPlatform(directory, log, {}, "linux").supported).toBe(
+    false,
+  );
+  expect(localOverlayPlatform(directory, log, {}, "darwin").supported).toBe(
+    false,
+  );
   expect(windows.candidate).toBeInstanceOf(CandidateValidator);
 });
 
 it("selects both Linux components from one complete namespace context", () => {
   const result = localOverlayPlatform(directory, log, environment, "linux");
   expect(result.backend?.format).toBe("linux-overlay-v1");
+  expect(result.supported).toBe(true);
   expect(result.candidate).toBeInstanceOf(LinuxCandidateValidator);
   const id = randomUUID();
   expect(result.backend?.workspace(id)).toBe(path.join(views, id));

@@ -5,10 +5,12 @@
  * 3. Engine 排空任务后调用候选 Sandbox 和 Publisher，检查三方合并、事件、私有产物及租约。
  *    命令在新私有子目录初始化 Git；metadata 留在 upper，不阻断源码发布、不进入候选或来源。
  * 4. 保存夹具报告与生产日志；失败保留现场，正常关闭 Engine/Store，不运行 Evaluation。
+ * 5. --http 使用生产 Fastify/异步 Store Workers/SandboxBroker，经真实回环 HTTP/SSE 创建与启动；只指定真实 MXC 的安装路径。
+ *    --browser 最多保留五分钟供真实页面核对，操作者写入夹具 browser-done 后正常关闭。
  */
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, writeFile, readdir } from "node:fs/promises";
+import { mkdir, readFile, writeFile, readdir, access } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
@@ -17,6 +19,7 @@ import { Config } from "../../src/config/config.ts";
 import { createLogger } from "../../src/logging/logger.ts";
 import { Store } from "../../src/sessions/store.ts";
 import { MxcSandboxRuntime } from "../../src/sandbox/mxc-runtime.ts";
+import { createApp } from "../../src/server/app.ts";
 
 const [root, sdkEntry, bundleDirectory] = process.argv.slice(2);
 const source = path.join(root, "source");
@@ -32,13 +35,18 @@ const config = new Config(path.join(root, "data"));
 config.settings.maxConcurrentTasks = 2;
 config.settings.maxSteps = 4;
 const log = createLogger(root, "debug");
-const store = new Store(path.join(config.directory, "history.sqlite"), {
-  inline: true,
-});
+const http = process.argv.includes("--http");
 const sdk = await import(pathToFileURL(sdkEntry).href);
 const quote = (value) => `'${value.replaceAll("'", "'\\''")}'`;
 const python = (value) => `python3 -B -c ${quote(value)}`;
-const report = { passed: false, parallel: false, tasks: [], publications: [] };
+const report = {
+  passed: false,
+  parallel: false,
+  http,
+  tasks: [],
+  publications: [],
+  refreshes: 0,
+};
 const calls = new Map();
 const intervals = new Map();
 
@@ -143,16 +151,19 @@ const provider = {
 };
 
 let runtime;
-const engine = new Engine(
-  store,
-  config,
-  log,
-  (_settings, purpose) =>
-    purpose === "task"
-      ? provider
-      : { run: async () => ({ text: "Linux overlay probe", output: [] }) },
-  { launch: (input) => runtime.launchTask(input) },
-);
+const factory = (_settings, purpose) =>
+  purpose === "task"
+    ? provider
+    : { run: async () => ({ text: "Linux overlay probe", output: [] }) };
+const server = http ? await createApp(config, log, factory) : undefined;
+const store =
+  server?.store ??
+  new Store(path.join(config.directory, "history.sqlite"), { inline: true });
+const engine =
+  server?.engine ??
+  new Engine(store, config, log, factory, {
+    launch: (input) => runtime.launchTask(input),
+  });
 runtime = new MxcSandboxRuntime({
   platform: "linux",
   dataDirectory: config.directory,
@@ -162,24 +173,100 @@ runtime = new MxcSandboxRuntime({
   log,
   loadSdk: async () => sdk,
 });
+if (server) {
+  // 仅为当前实验指定既有 SDK/bundle 路径，保留工厂创建的 Runtime 和完整 SandboxBroker。
+  // 不向产品 HTTP 或设置开放这些测试注入项，也不替换真实 self-check/launch/cleanup。
+  assert.ok(engine.sandbox.runtime instanceof MxcSandboxRuntime);
+  Object.assign(engine.sandbox.runtime.options, {
+    bundleDirectory,
+    nodeExecutable: process.execPath,
+    loadSdk: async () => sdk,
+  });
+}
+
+let address;
+let headers;
+const streams = [];
+async function request(route, payload) {
+  const response = await fetch(address + route, {
+    method: payload === undefined ? "GET" : "POST",
+    headers: { ...headers, "content-type": "application/json" },
+    body: payload === undefined ? undefined : JSON.stringify(payload),
+  });
+  assert.equal(response.status, 200, await response.clone().text());
+  return response.json();
+}
+
+async function watch(sessionId) {
+  const abort = new AbortController();
+  const response = await fetch(`${address}/api/sessions/${sessionId}/events`, {
+    headers,
+    signal: abort.signal,
+  });
+  assert.equal(response.status, 200);
+  const done = (async () => {
+    try {
+      for await (const chunk of response.body) {
+        report.refreshes +=
+          Buffer.from(chunk).toString().split("event: refresh").length - 1;
+      }
+    } catch (error) {
+      if (!abort.signal.aborted) {
+        throw error;
+      }
+    }
+  })();
+  streams.push({ abort, done });
+}
 
 try {
+  if (server) {
+    address = await server.app.listen({ host: "127.0.0.1", port: 0 });
+    const bootstrap = await request("/api/bootstrap");
+    assert.equal(bootstrap.localOverlayCreation.enabled, true);
+    headers = {
+      cookie: `ca_session=${bootstrap.token}`,
+      "x-codeatelier-token": bootstrap.token,
+    };
+  }
   const sessions = [];
   for (const label of ["A", "B"]) {
-    sessions.push(
-      await engine.localOverlays.create(
-        { id: randomUUID(), source },
-        async (workspace) => store.create(workspace, `Linux Engine ${label}`),
-      ),
-    );
+    const id = randomUUID();
+    const session = server
+      ? await request("/api/sessions", {
+          workspace: source,
+          localOverlay: { id },
+        })
+      : await engine.localOverlays.create({ id, source }, async (workspace) =>
+          store.create(workspace, `Linux Engine ${label}`),
+        );
+    sessions.push(session);
+    if (server) {
+      assert.equal(session.localOverlay.fileReviewSupported, false);
+      assert.equal(session.localOverlay.projectWorkspace, source);
+      assert.equal(
+        (
+          await request("/api/sessions", {
+            workspace: source,
+            localOverlay: { id },
+          })
+        ).id,
+        session.id,
+      );
+      await watch(session.id);
+    }
   }
   const tasks = [];
   for (const [index, session] of sessions.entries()) {
     tasks.push(
-      await engine.start(
-        session.id,
-        `ENGINE_LINUX_${index === 0 ? "A" : "B"}: run the fixed probe.`,
-      ),
+      server
+        ? await request(`/api/sessions/${session.id}/tasks`, {
+            prompt: `ENGINE_LINUX_${index === 0 ? "A" : "B"}: run the fixed probe.`,
+          })
+        : await engine.start(
+            session.id,
+            `ENGINE_LINUX_${index === 0 ? "A" : "B"}: run the fixed probe.`,
+          ),
     );
   }
   const deadline = performance.now() + 90000;
@@ -188,11 +275,12 @@ try {
     await delay(100);
   }
   for (const [index, task] of tasks.entries()) {
-    const events = store
-      .events(sessions[index].id)
-      .filter((event) => event.taskId === task.id);
-    report.tasks.push({ task: store.task(task.id), events });
-    assert.equal(store.task(task.id)?.status, "completed");
+    const events = (await store.events(sessions[index].id)).filter(
+      (event) => event.taskId === task.id,
+    );
+    const saved = await store.task(task.id);
+    report.tasks.push({ task: saved, events });
+    assert.equal(saved?.status, "completed");
     assert.ok(
       events.some(
         (event) =>
@@ -233,6 +321,33 @@ try {
     );
     assert.equal(record.phase, "ready");
     assert.equal(record.epoch, 1);
+    if (server) {
+      assert.ok(
+        events.some(
+          (event) =>
+            event.type === "sandbox_stage" &&
+            event.data.applied === true &&
+            event.data.level === "linux-bubblewrap-mxc-v1",
+        ),
+      );
+      const snapshot = await request(`/api/sessions/${sessions[index].id}`);
+      assert.equal(snapshot.session.localOverlay.state, "ready");
+      assert.equal(
+        snapshot.session.localOverlay.publication.state,
+        "published",
+      );
+      assert.equal(snapshot.session.localOverlay.fileReviewSupported, false);
+      const denied = await fetch(
+        `${address}/api/sessions/${sessions[index].id}/local-review`,
+        {
+          method: "POST",
+          headers: { ...headers, "content-type": "application/json" },
+          body: JSON.stringify({ path: "module.py" }),
+        },
+      );
+      assert.equal(denied.status, 409);
+      await denied.arrayBuffer();
+    }
     assert.match(
       await readFile(
         path.join(
@@ -262,12 +377,59 @@ try {
     await readdir(path.join(config.directory, "mxc", "active")),
     [],
   );
+  if (server) {
+    assert.ok(report.refreshes > 2);
+    assert.equal((await request("/api/sessions")).length, 2);
+    // bootstrap 表示下次启动前的配置，不是已完成任务的证明；实际隔离由上面的任务事件断言。
+    report.initialSandbox = (await request("/api/bootstrap")).sandbox;
+    assert.equal(report.initialSandbox.enabled, true);
+    if (process.argv.includes("--browser")) {
+      await writeFile(
+        path.join(root, "browser-ready.json"),
+        JSON.stringify({
+          address,
+          sessions: sessions.map((session) => session.id),
+          source,
+        }),
+      );
+      const deadline = performance.now() + 300000;
+      while (true) {
+        try {
+          await access(path.join(root, "browser-done"));
+          break;
+        } catch (error) {
+          if (error.code !== "ENOENT") {
+            throw error;
+          }
+        }
+        assert.ok(
+          performance.now() < deadline,
+          "Browser verification timed out",
+        );
+        await delay(200);
+      }
+    }
+  }
   report.passed = true;
 } finally {
   await writeFile(
     path.join(root, "engine-report.json"),
     JSON.stringify(report, null, 2),
   );
-  await engine.close();
-  await store.close();
+  for (const stream of streams) {
+    stream.abort.abort();
+  }
+  if (server) {
+    // 服务关闭负责结束 SSE；不能先等待客户端 reader，部分 Node 版本的 abort 会延迟到流结束。
+    await server.shutdown();
+  } else {
+    await engine.close();
+    await store.close();
+  }
+  await Promise.all(streams.map((stream) => stream.done));
+  report.closed = true;
+  await writeFile(
+    path.join(root, "engine-report.json"),
+    JSON.stringify(report, null, 2),
+  );
 }

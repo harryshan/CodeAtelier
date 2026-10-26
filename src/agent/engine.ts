@@ -232,10 +232,17 @@ export class Engine {
   /** Local overlay 生命周期/发布服务；公开创建使用独立能力检查，历史读取不挂载。 */
   readonly localOverlays: LocalOverlayService;
   private readonly localCandidate: Pick<CandidateValidator, "validate">;
+  private readonly localPlatformSupported: boolean;
 
   get localOverlayCreation(): import("../shared/types.js").LocalOverlayCreation {
-    if (process.platform !== "win32") {
-      return { enabled: false, reason: "隔离 Local 暂仅支持 Windows。" };
+    if (!this.localPlatformSupported) {
+      return {
+        enabled: false,
+        reason:
+          process.platform === "linux"
+            ? "隔离 Local 需要通过 Linux namespace 启动器启动服务。"
+            : "当前平台尚不支持隔离 Local。",
+      };
     }
 
     if (!this.config.sandbox.enabled) {
@@ -578,6 +585,7 @@ export class Engine {
       config.startupEnvironment,
     );
     this.localCandidate = localPlatform.candidate;
+    this.localPlatformSupported = localPlatform.supported;
     this.localOverlays = new LocalOverlayService(
       config.directory,
       log,

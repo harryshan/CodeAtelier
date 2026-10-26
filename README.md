@@ -4,7 +4,7 @@
 
 CodeAtelier 是一个运行在本机的个人 AI 编程助手。连接模型服务、选好项目目录，就可以开始对话。它会直接操作项目文件，你可以随时查看修改和执行过程，或停止任务。
 
-同一项目需要多个对话并行修改时，可显式选择“隔离 Local”：各会话使用私有写层，创建不遍历或复制项目；成功后只发布明确选择且通过候选验证的源码，冲突时保留修改。该模式独立于 Git worktree，当前需要 Windows/WinFsp 和已启用的 Sandbox。入口、Git 行为与限制见 [隔离 Local 使用指南](docs/local-overlay-usage.md)。
+同一项目需要多个对话并行修改时，可显式选择“隔离 Local”：各会话使用私有写层，创建不遍历或复制项目；成功后只发布明确选择且通过候选验证的源码，冲突时保留修改。该模式独立于 Git worktree，需要 Windows/WinFsp 或显式启动的 Linux OverlayFS，以及已启用的 Sandbox。Linux 暂无文件检查/事故恢复面板，macOS 尚未实现；启动方式与限制见 [隔离 Local 使用指南](docs/local-overlay-usage.md)。
 
 新对话默认通过 Riftri 使用主目录当前状态，包含脏文件、暂存区和未跟踪/忽略文件，不支持选择基线。Linux/macOS 使用原生 CoW 副本，Windows 使用 WinFsp 实时 overlay。侧栏 `⑂` 或“改用 Git worktree”显式从指定提交建立普通 Worktree。对话持久绑定实际目录，共享项目记忆，不自动回写或清理。使用方式、Sandbox 和恢复边界见 [工作区指南](docs/worktrees.md)。
 

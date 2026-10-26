@@ -1,0 +1,76 @@
+{
+  "environment": "WSL2 Ubuntu 26.04 ext4, Linux OverlayFS, MXC 1.0.0, Node 24.19.0",
+  "fixture": "http-PSWlcS",
+  "passed": true,
+  "http": true,
+  "parallel": true,
+  "closed": true,
+  "sseRefreshes": 104,
+  "tasks": [
+    {
+      "status": "completed",
+      "completedExecutions": [
+        {
+          "kind": "agent-runtime",
+          "purpose": null,
+          "mode": "linux-bubblewrap",
+          "state": "completed",
+          "sandboxApplied": true
+        },
+        {
+          "kind": "agent-runtime",
+          "purpose": "local-validation",
+          "mode": "linux-bubblewrap",
+          "state": "completed",
+          "sandboxApplied": true
+        }
+      ]
+    },
+    {
+      "status": "completed",
+      "completedExecutions": [
+        {
+          "kind": "agent-runtime",
+          "purpose": null,
+          "mode": "linux-bubblewrap",
+          "state": "completed",
+          "sandboxApplied": true
+        },
+        {
+          "kind": "agent-runtime",
+          "purpose": "local-validation",
+          "mode": "linux-bubblewrap",
+          "state": "completed",
+          "sandboxApplied": true
+        }
+      ]
+    }
+  ],
+  "publications": [
+    {
+      "state": "published",
+      "epoch": 1,
+      "capturedPaths": 1,
+      "published": true,
+      "publication": {
+        "state": "published",
+        "batchId": "adb61d11-c8b6-4f3a-bfca-a6c432e9dc9f",
+        "files": 1,
+        "cleanupPending": 0
+      }
+    },
+    {
+      "state": "published",
+      "epoch": 1,
+      "capturedPaths": 1,
+      "published": true,
+      "publication": {
+        "state": "published",
+        "batchId": "0f78cb1a-3e4f-4bc5-866b-c844d8d75ff5",
+        "files": 1,
+        "cleanupPending": 0
+      }
+    }
+  ],
+  "scope": "Synthetic fixed providers, production HTTP/CSRF/SSE, AsyncStore Workers, SandboxBroker and MxcSandboxRuntime with explicit installed SDK/bundle locations. No external model or large project benchmark."
+}

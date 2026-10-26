@@ -1,5 +1,7 @@
 # 测试约定与功能覆盖
 
+Linux 公开入口：平台工厂测试覆盖 Windows、普通 Linux、完整 namespace 上下文和不支持平台；Service 回归验证 Linux 文件检查/恢复在 I/O 前拒绝且清单不变，UI 回归核对 ready 可提交、failed 禁止提交、无未实现操作入口以及 Linux Sandbox 提示。手动 `engine-probe.mjs --http` 通过生产 Fastify/CSRF/SSE、AsyncStore Workers、SandboxBroker 和真实 MXC 执行双任务及候选发布，检查幂等创建、项目归属、状态投影和正常服务关闭；固定 provider 只注入模型响应，SDK/bundle 仅指定实验依赖位置。`--browser` 额外保留临时 UI 供人工查看，不进入默认检查或 Evaluation。
+
 Linux Engine 主流程：手动 `engine-probe.mjs` 使用生产平台工厂、Engine、SQLite、固定内存模型、真实 MXC Runtime 和候选发布，核对模型工具收据、双命令区间重叠、两个 Sandbox 候选、源码合并、私有产物保留和 Runtime 清理；不使用外部模型，不替代公开 HTTP/UI。`sandbox-git-workspace-trust.test.ts` 回归明确拒绝时不授信任、I/O 错误仍失败；`posix-overlay-batch.test.ts` 验证私有 metadata 不进入基线或发布且普通源码仍可发布。Git 目录诊断结果仅记录已确认的原生限制，不继续扩展内部仓库矩阵，不进入默认原生检查或 Evaluation。
 
 Linux 正常缓存与平台工厂：`linux-overlay-cache.test.ts` 验证只删除指定缓存、外部路径/错误身份/链接拒绝；backend 回归覆盖多轮缓存固定、未发布 B/upper 保留及清理失败 pending。`local-overlay-platform.test.ts` 核对 Windows/普通启动兼容、Linux backend/候选器成对选择、上下文缺失/数据根错配/视图重叠拒绝。手动 backend 探针改走同一工厂，真实验证删除 lower 缓存后旧 B 跨轮合并，并记录多轮关闭缓存对象数；不代替完整 Engine/模型工具/UI 验收。

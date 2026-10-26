@@ -77,14 +77,14 @@ export function LocalOverlayDialog({
         <h2>新建隔离 Local 对话</h2>
         <p className={s.worktreePath}>{workspace}</p>
         <p>
-          实时读取主目录，编辑先保留在本对话的私有视图。无需 Git
+          按需读取主目录，编辑先保留在本对话的私有视图。无需 Git
           仓库，也不会复制整个项目。
         </p>
         <p>
           任务成功后，只发布模型明确选择并通过验证的源码。冲突、验证失败或取消时保留私有修改；其他产物不会自动发布。
         </p>
         <p>
-          视图隐藏 .git，不提供仓库元数据。当前需要 Windows、WinFsp 和已更新的
+          视图不提供主目录的仓库元数据。需要已准备好的文件系统后端和
           Sandbox；启动失败不会转为宿主执行。
         </p>
         {capability?.reason && <p role="status">{capability.reason}</p>}

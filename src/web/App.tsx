@@ -9,6 +9,7 @@
  * 3. resume、reloadService、stopServer、createProject、createConversation 和 send 处理恢复、受确认的服务重载、关闭服务、连接项目、新建会话和发送消息，并显示操作结果。
  *    Local 私有刷新成功的任务匹配回执只改变当前操作提示，历史失败保留；引导新任务而不重做已发布批次。
  * 4. 服务关闭后显示重启说明；正常页面由侧栏或手机端导航抽屉、项目栏、当前会话实际 Runtime 隔离模式（没有证据时显示启动初始状态，并提示获批宿主命令例外）、可折叠会话统计、会将已完成任务过程默认收纳的时间线或项目连接页、所见即所得 Markdown 任务编辑器组成。
+ *    隔离提示按实际平台区分专用账户与 POSIX Runtime，不把 Windows ACL 限制套用到 Linux/macOS。
  * 5. 侧栏另开同源对话阅读器；SettingsPage 接管版本化编辑和初始引导，保存更新主页面状态，不中断活动任务。
  * 6. 末尾渲染与主页面同主题的设置模态框及重载/关闭确认框；未完成模型配置时阻止提交并引导设置，项目连接不使用弹窗。
  *
@@ -587,7 +588,9 @@ export default function App() {
               className={s.sandboxBadge}
               title={
                 sandbox?.mode === "sandboxed"
-                  ? "Agent Runtime 使用专用账户；已有 Everyone 可写 ACL 可能允许它写入实例根以外的对象。Git CLI 与其他命令使用相同权限规则；获批的 run_with_permissions 命令由 Broker 以宿主用户权限执行，不受 Sandbox 附加文件、网络或凭据限制。"
+                  ? sandbox.platform === "win32"
+                    ? "Agent Runtime 使用专用账户；已有 Everyone 可写 ACL 可能允许它写入实例根以外的对象。Git CLI 与其他命令使用相同权限规则；获批的 run_with_permissions 命令由 Broker 以宿主用户权限执行，不受 Sandbox 附加文件、网络或凭据限制。"
+                    : `Agent Runtime 使用${sandbox.platform === "linux" ? " Linux Bubblewrap" : sandbox.platform === "darwin" ? " macOS Seatbelt" : "平台 Sandbox"}。Git CLI 与其他命令使用相同权限规则；获批的 run_with_permissions 命令由 Broker 以宿主用户权限执行，不受 Sandbox 附加文件、网络或凭据限制。`
                   : sandbox?.reason
               }
               aria-label={`Runtime 隔离状态：${sandbox?.mode ?? "unknown"}`}

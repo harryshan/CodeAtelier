@@ -55,6 +55,8 @@ export interface LocalOverlayInfo {
   projectWorkspace?: string;
   state: "preparing" | "ready" | "active" | "failed" | "unavailable";
   epoch?: number;
+  /** false 表示此平台尚无封存文件检查及事故恢复入口；缺省保留旧 Windows 契约。 */
+  fileReviewSupported?: boolean;
   publicationRecovery?: boolean;
   privateRefreshRecovery?: boolean;
   refreshedTaskId?: string;
