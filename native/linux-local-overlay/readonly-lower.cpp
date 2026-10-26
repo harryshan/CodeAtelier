@@ -10,7 +10,7 @@
  * 4. operations 仅提供 FUSE 读取回调，写入、copy-up 和 whiteout 由上层内核
  *    OverlayFS 完成；main 通过 stdin 接收 metrics/verify/seal UUID/close。
  * 5. 正常 close 卸载并关闭句柄；控制器负责有界等待、异常退出后的卸载检查。
- *    Linux backend 已接线但公开入口未开放；不支持链接或从清单恢复异常挂载。
+ *    Linux backend 经显式 namespace 启动开放；不支持链接或从清单恢复异常挂载。
  *    纯 upper 新目录不一定经过 lower，管理目录拒绝不等于全局 Git 命令封锁。
  */
 #define FUSE_USE_VERSION 31

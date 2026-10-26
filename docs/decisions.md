@@ -4,6 +4,8 @@
 
 ## D170：Overlay 改为 Local 会话文件隔离，与 Git worktree 并列
 
+- Linux 构建/启动接线（2026-10-26，已验证）：将已验证的只读 lower helper 归入 `native/linux-local-overlay`，提供显式本机编译及 `start:overlay` 入口；产物固定在 `dist/native/linux-<arch>`，不下载或安装系统依赖。入口复用 `--data-dir`，要求独立 `--views`，固定启动 namespace 控制器和原有服务 supervisor；普通 `start` 不改变。构建及启动的开始/失败/退出使用命令行状态，真实挂载/任务继续沿用现有 tracing，不引入第二套持久配置。
+
 - Linux 公开入口（2026-10-26）：完成 HTTP/SSE、异步存储、生产 SandboxBroker/真实 MXC 双任务和候选发布验收后，显式 namespace 上下文与已启用 Sandbox 共同控制创建入口；缺失前提拒绝，不改变普通启动、Windows 或默认会话模式。Linux 返回 `fileReviewSupported: false`，隐藏未实现的文件检查和事故恢复入口，服务在任何检查 I/O 前拒绝这些调用；正常 ready 会话可续聊，未知状态继续保留。UI 按实际平台说明 Sandbox，创建提示不再限定 Windows。用户要求不再考虑内部建仓库问题，停止该方向扩展。观测复用既有 Local/任务/Runtime/候选/HTTP 生命周期，不新增正文属性；启动分发及 macOS 仍未完成。
 
 - Linux Git 策略确认（2026-10-26）：用户明确接受“新建私有子目录可 git init”的限制，保留原生 OverlayFS。lower 管理目录 lookup 改为 EACCES 后，根及已有目录的 `.git` 创建、链接、重命名和 git init 均拒绝；Sandbox 的 Git 信任探测遇到明确拒绝时不授信任，其余 I/O 错误仍失败。纯 upper 新目录可建立独立私有仓库，来源 metadata 和来源写权限不开放，发布器仍拒绝管理目录；收尾不遍历或发布私有管理目录，也不删除它们。此平台边界替代 Linux 全层级禁止新建管理目录的目标，Windows 保持原边界。固定模型驱动的完整 Engine/真实 MXC/候选发布已通过；公开 HTTP/UI 仍需验收，未据此声称全平台可用。

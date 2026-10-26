@@ -12,6 +12,8 @@ Node.js 24 或 26，pnpm 版本由 package.json 的 packageManager 固定。提�
 | pnpm dev:web                                      | Vite 前端，默认 `127.0.0.1:5173`；读取相同监听地址并通过 HMR 更新前端模块 |
 | pnpm build                                        | 编译后端和前端                                                            |
 | pnpm start                                        | 运行构建后的本机服务；由监督进程支持 UI 确认后的后端重载                  |
+| pnpm overlay:build-linux                          | Linux 显式编译可选只读 FUSE helper 并打包 namespace 控制器；不安装依赖     |
+| pnpm start:overlay --data-dir <数据目录> --views <独立视图目录> | 在 Linux namespace 内运行同一服务 supervisor；须先构建 helper 并启用 Sandbox |
 | pnpm typecheck / lint / test                      | 类型、静态规则、核心测试；test 只使用白名单测试环境                       |
 | pnpm check                                        | 类型、lint、核心测试、测试模式构建                                        |
 | pnpm worktree:build-winfsp -Sdk <SDK> -VerifyReparse | 显式构建 Windows x64 WinFsp overlay 与可选解析回归；不安装驱动             |

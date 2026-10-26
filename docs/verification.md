@@ -1,5 +1,14 @@
 # 初版验证记录
 
+## Linux 正式构建、启动、重载与续聊（2026-10-26）
+
+- 只读 helper 从实验目录归入 `native/linux-local-overlay`。新增 `pnpm overlay:build-linux`，固定 C++20/O2/警告检查，编译到临时文件后替换 helper 并复制 namespace 控制器；默认 build/check 不运行此原生构建。在 WSL 使用现有 g++、已解包 FUSE 3.18.2 头文件和系统 `libfuse3.so.4` 实际编译通过，未安装包。
+- 新增 `pnpm start:overlay --data-dir ... --views ...`，固定选择 `dist/native/linux-<arch>` 及原有服务 supervisor。平台、缺失 views、数据/视图根重叠和未知参数在启动前拒绝，不自动跨 WSL、修改 Sandbox 配置或降级。默认数据目录沿用现有配置规则；namespace 内的真实路径/身份仍由控制器核对。
+- 新手动 `startup-probe.mjs` 将编译产物装配到独占 Linux 目录，经正式入口、supervisor/main、真实 HTTP Responses provider、AsyncStore 和默认加载的 MXC 执行全链路，没有 Engine/Runtime 私有字段注入。Windows checkout 的 MXC 依赖因缺少 Linux Koffi 模块不能直接加载；探针仅在独立安装树使用已有 Linux MXC 安装，其余纯 JS 依赖复用，不更改宿主依赖树。
+- 真实双 Runtime 命令区间重叠，两个全新候选均为 `agent-runtime/linux-bubblewrap` 且 `sandboxApplied=true`；最终源码包含两方修改，私有产物保留、Runtime 标记为空。随后通过公开 API 重载，确认新 bootstrap 身份，原会话新任务在真实 Sandbox 读取合并源码和未发布产物，来源不再改写，正常关闭退出 0。最新现场 `/home/harryshan/codeatelier-native-overlay-probes/startup-reload-YozfZW`，报告见 [正式启动结果](posix-overlay-startup-results.json)；先前不含重载的独立 `startup-IPrtFK` 也通过。固定回环模型与小型合成项目，不是模型质量或大工程性能验收。
+- 新参数回归 3 项通过。首次完整检查发现一处段落空行，修正后 `pnpm check` 通过：165 文件、1,320 passed / 1 existing skipped，类型、Lint、格式及所有现有构建通过（`.local/linux-startup-check-final.log`）。`pnpm test:e2e` 78 passed（`.local/linux-startup-e2e.log`）；原有 chunk 体积提示保留。没有运行 Evaluation、安装系统组件、创建分区或重启用户服务。
+- 仍是显式源码构建，尚无预编译包自动分发；Linux 异常恢复、文件检查面板及 macOS backend 未完成。本轮未扩展内部建仓库策略。
+
 ## Linux 公开 HTTP/SSE、SandboxBroker 与 UI（2026-10-26）
 
 - `engine-probe.mjs --http` 经生产 Fastify/CSRF、AsyncStore Workers、SandboxBroker 和工厂选择的 MxcSandboxRuntime，在显式 namespace 中创建两个会话、幂等重试创建、订阅 SSE 并启动任务。只注入固定 provider 和已安装 SDK/bundle 位置，没有替换生产 Broker/Runtime 工厂。两个任务命令区间重叠，各自经全新实际 Sandbox 候选验证后发布同一源码的不同位置；最终来源含双方修改，私有产物保留，清单 ready/epoch 1，Runtime 标记为空。报告 [HTTP 摘要](posix-overlay-http-results.json)，现场 `/home/harryshan/codeatelier-native-overlay-probes/http-PSWlcS`，`closed: true` 且启动器退出 0。

@@ -14,19 +14,19 @@
 
 ## Linux 启动
 
-当前通过源码构建和显式启动器使用，尚无自动安装/分发。需要 Node.js 24/26、Python 3、unshare/setpriv/mount、非特权 user namespace、FUSE 3 Runtime 与匹配的只读 helper，以及已准备的 MXC/Bubblewrap Sandbox。真实验证环境为 WSL2/ext4；不支持把本实验能力扩展到 DrvFS。helper 构建方法见 [原生探针说明](../experiments/native-local-overlay/README.md)。
+当前通过源码构建和显式启动器使用，尚无自动安装/预编译包分发。需要 Linux Node.js 24/26、Python 3、unshare/setpriv/mount、非特权 user namespace、FUSE 3 Runtime/开发头文件、g++ C++20 编译器，以及已准备的 MXC/Bubblewrap Sandbox。依赖必须按 Linux 安装，不能直接复用 Windows `node_modules` 中的原生模块。真实验证环境为 WSL2/ext4；不支持把本实验能力扩展到 DrvFS。
 
-先按项目常规步骤构建 `pnpm build`，在所用数据目录的设置中启用 Sandbox。以下为 Linux shell 示例，替换三个绝对路径占位值；数据目录和视图目录都必须独立于来源项目，视图目录还须独立于数据目录。
+先在所用数据目录的设置中启用 Sandbox。以下从 Linux checkout 根目录执行，替换两个绝对路径占位值；数据目录和视图目录都必须独立于来源项目，视图目录还须独立于数据目录。
 
 ```sh
-python3 -B native/linux-local-overlay/launcher.py \
-  --root /absolute/private-data/local-overlays \
-  --views /absolute/private-views \
-  --helper /absolute/readonly-lower -- \
-  node dist/server/server/launcher.js --data-dir /absolute/private-data
+pnpm build
+pnpm overlay:build-linux
+pnpm start:overlay --data-dir /absolute/private-data --views /absolute/private-views
 ```
 
-启动器只在应用 namespace 内挂载，服务进程撤销挂载 capabilities；宿主编辑器不能通过同名路径直接访问虚拟文件。普通 Linux 启动不会开放创建入口，缺少依赖不会静默改用宿主执行。关闭应用前先排空任务和 Runtime，再正常卸载；不自动接管未知挂载。
+`overlay:build-linux` 将只读 helper 和控制器放到 `dist/native/linux-<arch>`；默认 build/check 不编译或安装 FUSE。预先解包开发头文件时可显式传 `--include-dir /absolute/include --library libfuse3.so.4`，库名须与现有系统 Runtime 匹配，见 [构建说明](../native/linux-local-overlay/README.md)。
+
+`start:overlay` 自动绑定控制根与同一个 `--data-dir`，仍由原 supervisor 支持服务重载。省略 `--data-dir` 时沿用 Linux 默认数据目录，`--views` 必须明确提供；不会在 Windows 自动进入 WSL。启动器只在应用 namespace 内挂载，服务进程撤销挂载 capabilities；宿主编辑器不能通过同名路径直接访问虚拟文件。普通 `pnpm start` 不开放创建入口，缺少依赖不会静默改用宿主执行。关闭应用前先排空任务和 Runtime，再正常卸载；不自动接管未知挂载。
 
 ## 冲突和中断
 

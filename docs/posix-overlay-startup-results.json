@@ -1,0 +1,59 @@
+{
+  "passed": true,
+  "closed": true,
+  "tasks": [
+    {
+      "status": "completed",
+      "executions": [
+        {
+          "kind": "agent-runtime",
+          "purpose": null,
+          "mode": "linux-bubblewrap",
+          "sandboxApplied": true
+        },
+        {
+          "kind": "agent-runtime",
+          "purpose": "local-validation",
+          "mode": "linux-bubblewrap",
+          "sandboxApplied": true
+        }
+      ],
+      "publication": {
+        "state": "published",
+        "files": 1
+      }
+    },
+    {
+      "status": "completed",
+      "executions": [
+        {
+          "kind": "agent-runtime",
+          "purpose": null,
+          "mode": "linux-bubblewrap",
+          "sandboxApplied": true
+        },
+        {
+          "kind": "agent-runtime",
+          "purpose": "local-validation",
+          "mode": "linux-bubblewrap",
+          "sandboxApplied": true
+        }
+      ],
+      "publication": {
+        "state": "published",
+        "files": 1
+      }
+    }
+  ],
+  "requests": 10,
+  "reloaded": true,
+  "continued": true,
+  "parallel": true,
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "fixture": "startup-reload-YozfZW",
+  "environment": "WSL2 Ubuntu 26.04/ext4, Node 24.19.0, Linux OverlayFS, MXC 1.0.0",
+  "scope": "Built production overlay-launcher and server supervisor with real HTTP Responses provider, AsyncStore, SandboxBroker and default MXC loading. Synthetic loopback model and source; isolated installation tree uses existing Linux MXC dependencies. No Engine/Runtime injection. Reload changes the service process; continuation reads merged source and retained private artifact in a real Sandbox."
+}

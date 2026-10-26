@@ -1,6 +1,6 @@
 # POSIX Local overlay：原生文件系统优先
 
-状态：2026-10-26 Linux 已完成原生文件层、Service/Engine、HTTP/SSE、真实 Sandbox 双任务和候选发布接入，显式 namespace 启动并启用 Sandbox 后开放入口。Linux 文件检查/事故恢复和自动分发尚未实现；macOS 仍为选型。Windows 的已验证实现保持不变。以下保留各阶段证据，当前使用方式以 [指南](local-overlay-usage.md) 为准。
+状态：2026-10-26 Linux 已完成原生文件层、Service/Engine、HTTP/SSE、真实 Sandbox 双任务和候选发布接入，显式 namespace 启动并启用 Sandbox 后开放入口。Linux 文件检查/事故恢复和预编译包自动分发尚未实现；macOS 仍为选型。Windows 的已验证实现保持不变。以下保留各阶段证据，当前使用方式以 [指南](local-overlay-usage.md) 为准。
 
 ## 可复用的结构
 
@@ -34,7 +34,7 @@ Docker 同样用只读 image layers 作为 lower、独立容器层作为 upper�
 
 Git 策略实测区分来源隐藏与私有新建：只读 lower 对管理目录 lookup 返回 ENOENT 时，OverlayFS 会允许在 upper 创建同名项。现改为 EACCES，根目录及已有 lower 目录的文件、目录、链接、重命名和 git init 均被拒绝；Sandbox 的 `.git` 信任探测将明确拒绝视为不授信任，根解析和其它 I/O 错误仍失败。纯 upper 新目录不再经过 lower，实测可建立独立私有 Git 仓库（[报告](posix-overlay-git-policy-results.json)）。用户已接受该原生限制，并明确不再围绕内部建仓库扩展工作。来源 metadata 不投影、来源不可写、Publisher 拒绝管理目录；收尾跳过并保留私有 metadata，不因它阻断普通源码发布。不声称全层级拦截或阻止任意 Git 程序。
 
-完整 Engine/模型工具主流程先使用固定 provider、SQLite inline 和注入的真实 MXC 启动器通过（[报告](posix-overlay-engine-results.json)）。随后使用生产 Fastify/AsyncStore Workers/SandboxBroker，通过真实 HTTP/SSE 创建双会话并启动任务，双模型屏障保证 Runtime 从同一基线编辑，各自经 `local_publish`、排空和全新候选验证后合并来源；幂等创建、项目归属、私有产物保留、ready/epoch 1、空 Runtime 标记及正常服务关闭均通过（[HTTP 报告](posix-overlay-http-results.json)）。真实浏览器核对创建入口、隔离状态和发布提示；固定 provider 不代表外部模型验收。产品启动分发及 Linux 恢复入口仍需后续实现。
+完整 Engine/模型工具主流程先使用固定 provider、SQLite inline 和注入的真实 MXC 启动器通过（[报告](posix-overlay-engine-results.json)）。随后使用生产 Fastify/AsyncStore Workers/SandboxBroker，通过真实 HTTP/SSE 创建双会话并启动任务，双模型屏障保证 Runtime 从同一基线编辑，各自经 `local_publish`、排空和全新候选验证后合并来源；幂等创建、项目归属、私有产物保留、ready/epoch 1、空 Runtime 标记及正常服务关闭均通过（[HTTP 报告](posix-overlay-http-results.json)）。真实浏览器核对创建入口、隔离状态和发布提示；固定 provider 不代表外部模型验收。显式构建和 start:overlay 产品启动现已实现，预编译包自动分发及 Linux 恢复入口仍未实现。
 
 正常缓存回收只处理本次打开且已保存目录身份的 `control-UUID`：收尾把必要 B/历史依赖写入独立 round 后，确认正常卸载，核对路径及目录身份再删除本轮 lower 内容缓存，最后清除 pending。未选 upper 和 round 中的原始 B 保留；来源和旧未知目录不参与扫描或删除。发布/挂载结果未知不触发该回收，清理自身失败也保留 pending。创建阶段的空缓存保留一次，不在启动时盲扫清理历史；长期保留的发布日志另遵循原协议。
 
@@ -46,7 +46,7 @@ Linux backend 接线保持 LocalOverlayService 原有任务锁与来源身份协
 
 该接线已通过实际 WSL Service/Store/双 MXC/Publisher 验证（[报告](posix-overlay-backend-results.json)）。原先把 view 放在数据目录内被现有 MXC 私有根重叠检查拒绝，因此启动器新增显式 `--views /absolute/private-views`：虚拟工作路径在数据目录之外，upper/基线/日志仍在私有控制根；不豁免 Sandbox 检查。控制器核对工作挂载点 backing 身份，候选正常关闭后另行移除空挂载点。已有普通源码合并、续轮读取和冲突保留通过；完整 Engine/HTTP/UI 的后续验收见上文。
 
-只读 lower 原型已通过 WSL/ext4 手动实验，代码为 `experiments/native-local-overlay/readonly-lower.cpp` 和 `stable-lower-probe.py`，结果见 [只读基线报告](posix-stable-lower-results.json)。现有 ext4 无原生目录快照时，用只读 FUSE 适配层为内核 OverlayFS 固定已观察的命名空间和内容；内核继续负责可写 upper 与 copy-up。只解包匹配现有 Runtime 的 FUSE 开发头文件，没有安装驱动或系统包。
+只读 lower 原型已通过 WSL/ext4 手动实验，代码为 `native/linux-local-overlay/readonly-lower.cpp` 和 `stable-lower-probe.py`，结果见 [只读基线报告](posix-stable-lower-results.json)。现有 ext4 无原生目录快照时，用只读 FUSE 适配层为内核 OverlayFS 固定已观察的命名空间和内容；内核继续负责可写 upper 与 copy-up。只解包匹配现有 Runtime 的 FUSE 开发头文件，没有安装驱动或系统包。
 
 创建只读取根身份；挂载完成时没有目录枚举或内容副本。首次路径查找缓存父目录成员，首次普通文件读取保存该文件内容，前后身份/版本不一致则返回 ESTALE。已读文件与目录列表在来源修改后保持稳定；单独修改来源文件即可让版本验证失败，已观察元数据但未读内容的文件修改后也被拒绝。私有写入通过内核 copy-up 成功，来源保持外部修改，最后先退出消费者再正常卸载 lower。
 

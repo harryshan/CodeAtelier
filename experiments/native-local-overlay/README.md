@@ -1,5 +1,18 @@
 # Linux 原生 OverlayFS 手动探针
 
+## 正式构建与启动
+
+helper 已迁入 `native/linux-local-overlay/readonly-lower.cpp`，使用 `pnpm overlay:build-linux` 显式构建；产品通过 `pnpm start:overlay --data-dir ... --views ...` 启动，见 [原生组件说明](../../native/linux-local-overlay/README.md)。
+
+`startup-probe.mjs` 不注入 Engine/Runtime：将当前构建产物装配到独占 Linux 夹具，用已有 Linux MXC 安装和其余 JS 依赖启动正式入口。模型由本脚本的回环 Responses HTTP/SSE 固定计划替代；公开 HTTP 创建双会话，真实 Sandbox 并行执行及候选验证，检查合并源码/私有产物并通过公开关闭 API 正常退出。需要先 `pnpm build` 和 Linux helper 构建。示例在 Linux shell 执行，Node 和 SDK 路径须为已准备的 Linux 版本：
+
+```sh
+probe_root=$(mktemp -d "$HOME/codeatelier-native-overlay-probes/startup-XXXXXX")
+node experiments/native-local-overlay/startup-probe.mjs "$probe_root" /absolute/linux-node_modules/@microsoft/mxc-sdk
+```
+
+报告为夹具 `startup-report.json`，当前摘要见 [正式启动结果](../../docs/posix-overlay-startup-results.json)。发布后还通过公开 API 重载，确认服务身份变化，并在原会话继续实际 Sandbox 读取合并源码及私有产物。Windows 安装的 Koffi 原生模块不能在 Linux 加载，因此探针只在独占安装树绑定已有 Linux SDK；不改宿主 node_modules，不下载安装包，也不复制用户项目。它不替代真实模型或大型工程验收，不自动触发。
+
 ## Engine 主流程
 
 `build-runtime-probe.mjs` 现在另生成 `.local/posix-overlay-engine-probe.mjs`。沿用下文显式 namespace 启动命令和独立 `--views`，将 backend 探针路径改为该文件，参数仍为独占夹具根、既有 MXC SDK 入口和当前 POSIX Runtime bundle。运行固定内存模型 → `run_command` → `local_publish` → Engine 排空 → 独立候选 Sandbox → Publisher，报告保存在夹具 `engine-report.json`，包含合成任务事件。无需真实模型或凭据。
@@ -30,14 +43,14 @@ Linux 中将脚本路径替换为当前 checkout 的绝对路径。脚本创建 
 
 ## 只读基线层与内核 OverlayFS 组合
 
-`readonly-lower.cpp` 只实现按需固定内容的只读 FUSE 文件系统，内核 OverlayFS 仍负责私有写入。`stable-lower-probe.py` 比较 0/100,000 个附加文件的创建计数，检查来源修改后的稳定读取、目录成员、首读过期拒绝及真实 copy-up；正常退出先关闭消费者再卸载 lower。报告保存在 `~/codeatelier-native-overlay-probes/stable-*/report.json`，私有数据不自动删除。
+`native/linux-local-overlay/readonly-lower.cpp` 只实现按需固定内容的只读 FUSE 文件系统，内核 OverlayFS 仍负责私有写入。`stable-lower-probe.py` 比较 0/100,000 个附加文件的创建计数，检查来源修改后的稳定读取、目录成员、首读过期拒绝及真实 copy-up；正常退出先关闭消费者再卸载 lower。报告保存在 `~/codeatelier-native-overlay-probes/stable-*/report.json`，私有数据不自动删除。
 
 需要 C++20 编译器、匹配已安装 libfuse3 的头文件/库、已有 fusermount3 与可访问 `/dev/fuse`。不要求 `allow_other` 或修改 fuse.conf。本机仅下载并用 dpkg-deb 解包 `libfuse3-dev=3.18.2-1`，未执行系统安装；ABI 库名依发行版核对。以下命令在 Linux shell 中执行，路径按本机 checkout 和已准备依赖替换：
 
 ```sh
 g++ -std=c++20 -Wall -Wextra -Werror -D_FILE_OFFSET_BITS=64 \
   -I/home/harryshan/codeatelier-native-overlay-probes/deps/fuse3-3.18.2/usr/include \
-  /mnt/g/codeagent/experiments/native-local-overlay/readonly-lower.cpp \
+  /mnt/g/codeagent/native/linux-local-overlay/readonly-lower.cpp \
   -Wl,-l:libfuse3.so.4 -pthread \
   -o /home/harryshan/codeatelier-native-overlay-probes/readonly-lower
 python3 -B /mnt/g/codeagent/experiments/native-local-overlay/stable-lower-probe.py \

@@ -45,6 +45,8 @@
     "overlay:verify-interrupted-product": "tsx scripts/verify-local-overlay-interrupted-product.ts",
     "overlay:verify-candidate": "tsx scripts/verify-local-overlay-candidate.ts",
     "start": "node dist/server/server/launcher.js",
+    "start:overlay": "node dist/server/server/overlay-launcher.js",
+    "overlay:build-linux": "node scripts/build-linux-local-overlay.ts",
     "settings:migrate": "tsx scripts/migrate-settings.ts",
     "typecheck": "tsc --noEmit",
     "test": "tsx scripts/test-runner.ts unit",
