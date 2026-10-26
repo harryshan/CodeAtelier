@@ -30,6 +30,10 @@ Docker 同样用只读 image layers 作为 lower、独立容器层作为 upper�
 
 ## 下一步接入方向
 
+正常缓存回收只处理本次打开且已保存目录身份的 `control-UUID`：收尾把必要 B/历史依赖写入独立 round 后，确认正常卸载，核对路径及目录身份再删除本轮 lower 内容缓存，最后清除 pending。未选 upper 和 round 中的原始 B 保留；来源和旧未知目录不参与扫描或删除。发布/挂载结果未知不触发该回收，清理自身失败也保留 pending。创建阶段的空缓存保留一次，不在启动时盲扫清理历史；长期保留的发布日志另遵循原协议。
+
+Engine 通过平台工厂统一选择 backend 和候选验证器。显式 namespace 启动器把固定控制根、独立视图根与 socket 作为内部 IPC 环境传给服务；Linux 工厂要求控制根精确匹配当前数据目录的 `local-overlays`，视图根与私有数据根不重叠。缺少完整上下文或路径失配时拒绝初始化，不切回其它隔离实现。普通启动和 Windows 保持既有选择；Linux 的公开创建门禁继续关闭，待模型工具/HTTP/UI 及 Git 策略验证完成后开放。
+
 产品启动接线采用显式 Linux namespace 入口：`native/linux-local-overlay/launcher.py` 使用系统 unshare/setpriv 和 Python 标准库管理独占挂载进程，Node 服务及其重载子进程都撤销全部 capabilities。控制器只提供固定 open/seal/close 协议，通过私有 Unix socket 与同一 namespace 的 Broker 通信；挂载目录由启动时指定的私有根和 UUID 派生，不接受任意 mount 命令。来源不进入 Runtime 写根。未确认关闭的持久视图保持 active，后续启动拒绝自动重用；启动器退出清理不等于任务正常结束。此入口的依赖需预装，不自动安装或改动已有启动方式。它不是新配置环境变量体系：socket/namespace 值仅由父启动器注入作为内部 IPC 地址。Local backend/Engine 平台门禁在后续接入完成前保持关闭。
 
 Linux backend 接线保持 LocalOverlayService 原有任务锁与来源身份协议，使用独立 `linux-overlay-v1` 格式标记，不能把 Linux 控制目录当作 WinFsp v6 数据。workspace 身份绑定持久控制目录与控制器验证的 backing 目录身份，不依赖每次重挂载都会改变的虚拟根 inode。收尾先保存 pending，导出并持久化旧 B/依赖，再执行明确选集的 Publisher；只有完整发布日志确认后才请求控制器在普通卸载状态校验摘要并移除所选 upper 文件。完成状态保存和 pending 删除后才回 ready，未知结果保留。候选使用同一控制器新建独立视图和真实 Sandbox，不能继承原 upper；未确认进程排空不卸载或删候选。产品创建门禁暂不改变，先以正式 Service 注入 backend 验证。

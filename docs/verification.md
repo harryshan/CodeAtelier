@@ -1,5 +1,13 @@
 # 初版验证记录
 
+## Linux 正常 lower 缓存回收与 Engine 平台工厂（2026-10-26）
+
+- backend 保存跨轮 round 并确认普通卸载后，`discardLinuxCache` 仅删除本次打开、路径和目录身份匹配的 `control-UUID`。来源、upper、round、历史未知缓存和发布日志均不纳入删除。结果未知不回收；目录替换或删除失败保留 pending。创建时的单个空缓存保留，未做启动时历史扫描。
+- Engine 改用平台工厂同时选择 backend/候选验证器。Linux 显式启动上下文中的控制根须精确对应当前数据目录，socket 固定于控制根，视图根须独立；缺失/错配拒绝初始化。Windows 和普通启动保留原选择，公开 Linux 创建门禁仍关闭。
+- 工厂 → Service → 真实 MXC → Publisher 在 WSL/ext4 通过：[报告](posix-overlay-cache-results.json)，现场 `/home/harryshan/codeatelier-native-overlay-probes/cache-D56Xfp`，日志 `.local/linux-cache-platform-wsl.log`。B 先无发布收尾并回收缓存，A 发布后 B 重挂载仍以原始 B 合并；两次候选实际 Sandbox、最终源码合并、后续读取私有产物和冲突保留通过。7 次收尾采样均仅 1 个空创建缓存、0 个 lower 正文对象/0 正文字节；这是小夹具的缓存结果，不含 upper、round、发布日志和总文件系统分配。
+- 单元回归覆盖 5 轮缓存不累积且原始 B/upper 保留、缓存身份变化 pending 保留、外部路径/链接拒绝和平台上下文绑定。专项 20 项通过（`.local/linux-cache-platform-tests.log`）。最终 `pnpm check` 全部通过：164 文件、1,314 passed / 1 existing skipped，类型/Lint/格式和 Web/Windows/POSIX Runtime 构建通过（`.local/linux-cache-platform-check.log`）；首次检查发现并移除抽取工厂后未使用的 path import。没有公开 HTTP/UI 行为变化，不重复 E2E，不运行 Evaluation。
+- 此次真实探针使用与 Engine 相同的工厂，但固定命令通过 Service 调度；完整主模型工具/Engine 任务循环及公开 HTTP/UI 尚未验收。Linux upper 中的 Git 管理目录策略、异常恢复和大工程成本仍待完成，不扩大到 macOS。未安装/Repair、分区或重启用户服务。
+
 ## Linux 正式 Service/backend 与候选发布闭环（2026-10-26）
 
 - `LinuxLocalBackend` 实现既有挂载接口，Service 新增 `linux-overlay-v1` 清单格式绑定。创建仅初始化空 round；任务排空后 seal、持久 B/依赖及 pending，再按明确选集走正式 Publisher。complete 后核对私有和来源结果，正常卸载后经控制器 `release` 复核摘要/whiteout 并移除所选覆盖；完成前任一未知状态保留 pending，不自动重放。

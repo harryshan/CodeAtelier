@@ -321,6 +321,11 @@ def serve(args):
             server.settimeout(0.25)
             env = dict(os.environ)
             env["CODEATELIER_OVERLAY_SOCKET"] = str(endpoint)
+            env["CODEATELIER_OVERLAY_ROOT"] = str(root)
+            if views:
+                env["CODEATELIER_OVERLAY_VIEWS"] = str(views)
+            else:
+                env.pop("CODEATELIER_OVERLAY_VIEWS", None)
             child = subprocess.Popen([
                 "setpriv", "--inh-caps=-all", "--ambient-caps=-all",
                 "--bounding-set=-all",

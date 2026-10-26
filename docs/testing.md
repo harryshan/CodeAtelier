@@ -1,5 +1,7 @@
 # 测试约定与功能覆盖
 
+Linux 正常缓存与平台工厂：`linux-overlay-cache.test.ts` 验证只删除指定缓存、外部路径/错误身份/链接拒绝；backend 回归覆盖多轮缓存固定、未发布 B/upper 保留及清理失败 pending。`local-overlay-platform.test.ts` 核对 Windows/普通启动兼容、Linux backend/候选器成对选择、上下文缺失/数据根错配/视图重叠拒绝。手动 backend 探针改走同一工厂，真实验证删除 lower 缓存后旧 B 跨轮合并，并记录多轮关闭缓存对象数；不代替完整 Engine/模型工具/UI 验收。
+
 Linux backend 接线：`linux-overlay-backend.test.ts` 用普通目录控制器替身和真实 Service/Store/Publisher，覆盖格式/身份绑定、失败任务续轮、明确源码发布、候选失败 retained/ready、seal 未知和 complete 后释放失败的 pending 拒绝，以及候选内容变更/排空未知的清理边界。`linux-overlay-controller.test.ts` 另覆盖 release 收据。手动 `backend-probe.mjs` 使用实际 Linux 控制器/内核挂载/双 MXC 和新候选验证器，检查两批合并、后续读取源码与产物、冲突拒绝；未替代 Engine/UI 验收，不进入默认原生检查或 Evaluation。
 
 Linux namespace 控制器：`linux-overlay-controller.test.ts` 通过实际本机 socket/Windows pipe 验证 namespace 绑定、open/seal/close 协议、无路径 trace、断线/超限/坏响应/拒绝/超时后的禁止重发。该测试不证明 Linux 挂载；手动 `controller-probe.mjs` 由新显式启动器执行，验证无 capabilities 的 Broker、两视图实际 MXC 并行、来源写拒绝、Git/socket 隐藏、seal、关闭后重挂载及 Runtime 标记清理。没有默认运行原生实验或 Evaluation。

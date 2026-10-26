@@ -2,7 +2,7 @@
 
 状态：初版功能边界已确认，进入实现与验证阶段。最后更新：2026-10-26。
 
-POSIX 实现方向（2026-10-26）：用户要求尽量采用平台原生文件系统并参考类似实现。Linux 原生 OverlayFS/Bubblewrap、按需基线/观察清单、真实 MXC Runtime 和 Publisher 的双会话合并发布已在 WSL/ext4 验证，正常跨轮保留/刷新及显式 namespace 控制器、正式 Service/backend 接线也已通过受控实验，仍需 Engine 工厂与模型工具/HTTP/UI 接入；macOS 先核对 APFS/FSKit，不默认安装第三方驱动或将目录克隆称为零遍历。具体限制与后续接入见 [POSIX Local 方案](posix-local-overlay.md)。
+POSIX 实现方向（2026-10-26）：用户要求尽量采用平台原生文件系统并参考类似实现。Linux 原生 OverlayFS/Bubblewrap、按需基线/观察清单、真实 MXC Runtime 和 Publisher 的双会话合并发布已在 WSL/ext4 验证，正常跨轮保留/刷新及显式 namespace 控制器、正式 Service/backend 接线也已通过受控实验，Engine 平台工厂及正常 lower 缓存回收已接线，仍需完整模型工具/Engine 任务循环与 HTTP/UI 验收；macOS 先核对 APFS/FSKit，不默认安装第三方驱动或将目录克隆称为零遍历。具体限制与后续接入见 [POSIX Local 方案](posix-local-overlay.md)。
 
 验收优先级调整（2026-10-26）：用户要求先跑通多会话主流程，不继续扩展罕见故障矩阵。Windows 显式隔离 Local 的创建、并行编辑、候选验证、选定发布、冲突保留及续聊作为当前交付主线；未知执行仍拒绝重放，未实现的平台和恢复场景明确列为限制。使用步骤见 [隔离 Local 使用指南](local-overlay-usage.md)。
 

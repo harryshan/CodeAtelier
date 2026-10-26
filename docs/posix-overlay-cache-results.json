@@ -1,0 +1,56 @@
+{
+  "passed": true,
+  "parallel": true,
+  "published": [
+    "733a9c4e-914d-4773-b3b4-4d08579d7378",
+    "c5e9ef57-f207-4778-bc3d-d052a7741fee"
+  ],
+  "candidates": 2,
+  "resumed": true,
+  "conflictRetained": true,
+  "cacheRounds": [
+    {
+      "emptyCreationCaches": 1,
+      "objects": 0,
+      "bytes": 0,
+      "retainedBaselines": 3
+    },
+    {
+      "emptyCreationCaches": 1,
+      "objects": 0,
+      "bytes": 0,
+      "retainedBaselines": 2
+    },
+    {
+      "emptyCreationCaches": 1,
+      "objects": 0,
+      "bytes": 0,
+      "retainedBaselines": 2
+    },
+    {
+      "emptyCreationCaches": 1,
+      "objects": 0,
+      "bytes": 0,
+      "retainedBaselines": 2
+    },
+    {
+      "emptyCreationCaches": 1,
+      "objects": 0,
+      "bytes": 0,
+      "retainedBaselines": 2
+    },
+    {
+      "emptyCreationCaches": 1,
+      "objects": 0,
+      "bytes": 0,
+      "retainedBaselines": 2
+    },
+    {
+      "emptyCreationCaches": 1,
+      "objects": 0,
+      "bytes": 0,
+      "retainedBaselines": 2
+    }
+  ],
+  "retainedBaseAfterCollection": true
+}

@@ -12,6 +12,7 @@ import {
   mkdir,
   readFile,
   readdir,
+  rename,
   unlink,
   writeFile,
 } from "node:fs/promises";
@@ -64,13 +65,14 @@ async function fixture() {
   const source = await temp();
   await writeFile(path.join(source, "code.txt"), "original\n");
   const active = new Set<string>();
-  const faults = { seal: false, release: false };
+  const controls = new Map<string, string>();
+  const faults = { seal: false, release: false, replaceCacheOnClose: false };
   const controller: LinuxMountController = {
     async open(id, _source, create) {
       const privateRoot = path.join(root, id);
       if (create) {
         await mkdir(privateRoot);
-        for (const part of ["view", "upper", "control"]) {
+        for (const part of ["view", "upper"]) {
           await mkdir(path.join(privateRoot, part));
         }
 
@@ -80,12 +82,15 @@ async function fixture() {
         );
       }
 
+      const control = path.join(privateRoot, `control-${randomUUID()}`);
+      await mkdir(control);
+      controls.set(id, control);
       active.add(id);
 
       return {
         workspace: path.join(privateRoot, "view"),
         upper: path.join(privateRoot, "upper"),
-        control: path.join(privateRoot, "control"),
+        control,
         ready: {
           state: "ready",
           valid: true,
@@ -121,7 +126,7 @@ async function fixture() {
 
       const sealId = randomUUID();
       await writeFile(
-        path.join(root, id, "control", `${sealId}.json`),
+        path.join(controls.get(id)!, `${sealId}.json`),
         JSON.stringify({
           version: 1,
           id: sealId,
@@ -134,6 +139,11 @@ async function fixture() {
     },
     async close(id) {
       active.delete(id);
+      if (faults.replaceCacheOnClose) {
+        const cache = controls.get(id)!;
+        await rename(cache, cache + "-preserved");
+        await mkdir(cache);
+      }
     },
     async release(id, remove) {
       expect(active.has(id)).toBe(false);
@@ -259,6 +269,51 @@ it("keeps pending and refuses reopening after unknown seal", async () => {
   await expect(
     f.backend.open(f.id, f.source, path.join(f.root, f.id), false, signal()),
   ).rejects.toThrow("ROUND_PENDING");
+});
+
+it("bounds successful round caches while retaining unpublished B and upper", async () => {
+  const f = await fixture();
+  const privateRoot = path.join(f.root, f.id);
+  for (let round = 0; round < 5; round++) {
+    const lease = await f.begin();
+    await f.edit();
+    await lease!.finish("completed", true);
+    const caches = (await readdir(privateRoot)).filter((name) =>
+      name.startsWith("control-"),
+    );
+    expect(caches).toHaveLength(1);
+    expect(await readdir(path.join(privateRoot, caches[0]!))).toEqual([]);
+    const state = JSON.parse(
+      await readFile(path.join(privateRoot, "round.json"), "utf8"),
+    );
+    expect(state.baselines).toHaveLength(1);
+    expect(
+      Buffer.from(state.baselines[0].base.content, "base64").toString(),
+    ).toBe("original\n");
+    expect(
+      await readFile(path.join(privateRoot, "upper", "code.txt"), "utf8"),
+    ).toBe("private\n");
+  }
+});
+
+it("keeps pending and private evidence if the closed cache identity changes", async () => {
+  const f = await fixture();
+  const lease = await f.begin();
+  await f.edit();
+  f.faults.replaceCacheOnClose = true;
+  await expect(lease!.finish("completed", true)).rejects.toThrow(
+    "CACHE_REPLACED",
+  );
+  const privateRoot = path.join(f.root, f.id);
+  expect(
+    await lstat(path.join(privateRoot, "round.pending.json")),
+  ).toBeDefined();
+  expect(
+    (await readdir(privateRoot)).some((name) => name.endsWith("-preserved")),
+  ).toBe(true);
+  expect(
+    await readFile(path.join(privateRoot, "upper", "code.txt"), "utf8"),
+  ).toBe("private\n");
 });
 
 it("retains a ready private view when candidate validation fails before publication", async () => {

@@ -1,20 +1,19 @@
 /**
  * 正式 Linux backend + LocalOverlayService + Store + 候选验证器的真实 WSL 验收。
- * 1. 注入同 namespace 的正式挂载控制器，以真实 SQLite 绑定两个隔离 Local 会话。
+ * 1. 通过与 Engine 相同的平台工厂选择控制器/backend/候选器，以真实 SQLite 绑定两个隔离 Local 会话。
  * 2. 两个 MXC Runtime 并行编辑；Service 绑定明确选集并在排空后调用 backend/Publisher 收尾。
  * 3. 每批候选由 LinuxCandidateValidator 新建视图，真实 Sandbox 验证合并源码，再正常刷新。
- * 4. 续轮检查合并源码及保留产物；另制造外部重叠修改，确认 rejected/ready 和私有结果保留。
+ * 4. B 先保存未发布结果并回收缓存，A 发布后 B 重新挂载仍用旧 B 合并；多轮检查缓存不累积。
+ * 5. 续轮检查合并源码及保留产物；另制造外部重叠修改，确认 rejected/ready 和私有结果保留。
  * 固定命令代替模型，未开放 Engine/HTTP/UI；仅独占夹具，报告和 trace 保留，不运行 Evaluation。
  */
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, writeFile, readdir } from "node:fs/promises";
+import { mkdir, readFile, writeFile, readdir, lstat } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import pino from "pino";
-import { LinuxOverlayController } from "../../src/local-overlays/linux-controller.ts";
-import { LinuxLocalBackend } from "../../src/local-overlays/linux-backend.ts";
-import { LinuxCandidateValidator } from "../../src/local-overlays/linux-candidate.ts";
+import { localOverlayPlatform } from "../../src/local-overlays/platform.ts";
 import { LocalOverlayService } from "../../src/local-overlays/service.ts";
 import { Store } from "../../src/sessions/store.ts";
 import { TraceRecorder } from "../../src/tracing/recorder.ts";
@@ -32,17 +31,12 @@ const storage = path.join(data, "local-overlays");
 const log = pino({ enabled: false });
 const traces = new TraceRecorder();
 const archive = new TraceArchive(data, log);
-const controller = new LinuxOverlayController(
-  process.env.CODEATELIER_OVERLAY_SOCKET,
-  log,
-  traces,
-  archive,
-);
-const views = path.join(root, "views");
-const backend = new LinuxLocalBackend(storage, controller, log, views);
+const platform = localOverlayPlatform(data, log, process.env);
+const backend = platform.backend;
+assert.equal(backend.format, "linux-overlay-v1");
 const service = new LocalOverlayService(data, log, backend);
 const store = new Store(path.join(data, "history.sqlite"), { inline: true });
-const validator = new LinuxCandidateValidator(storage, controller, log, views);
+const validator = platform.candidate;
 const sdk = await import(pathToFileURL(sdkEntry).href);
 const runtime = new MxcSandboxRuntime({
   platform: "linux",
@@ -62,6 +56,8 @@ const report = {
   candidates: 0,
   resumed: false,
   conflictRetained: false,
+  cacheRounds: [],
+  retainedBaseAfterCollection: false,
 };
 
 async function execute(workspace, python) {
@@ -95,6 +91,37 @@ async function create() {
   );
 }
 
+async function cacheSample(session) {
+  const id = backend.idFor(session.workspace);
+  const privateRoot = path.join(storage, id);
+  const caches = (await readdir(privateRoot)).filter((name) =>
+    name.startsWith("control-"),
+  );
+  let objects = 0;
+  let bytes = 0;
+  for (const cache of caches) {
+    for (const file of await readdir(path.join(privateRoot, cache))) {
+      if (file.startsWith("object-")) {
+        objects++;
+        bytes += (await lstat(path.join(privateRoot, cache, file))).size;
+      }
+    }
+  }
+  assert.equal(caches.length, 1);
+  assert.equal(objects, 0);
+  const state = JSON.parse(
+    await readFile(path.join(privateRoot, "round.json"), "utf8"),
+  );
+  const sample = {
+    emptyCreationCaches: caches.length,
+    objects,
+    bytes,
+    retainedBaselines: state.baselines.length,
+  };
+  report.cacheRounds.push(sample);
+  return state;
+}
+
 try {
   const sessions = [await create(), await create()];
   const tasks = [randomUUID(), randomUUID()];
@@ -120,7 +147,30 @@ try {
       Math.min(...intervals.map((value) => value[1])),
   );
   report.parallel = true;
+  assert.equal((await leases[1].finish("completed", true)).phase, "ready");
+  const retained = await cacheSample(sessions[1]);
+  assert.equal(
+    Buffer.from(
+      retained.baselines.find((entry) => entry.path === "module.py").base
+        .content,
+      "base64",
+    ).toString(),
+    "a = 1\nb = 2\n",
+  );
   for (const [index, session] of sessions.entries()) {
+    if (index === 1) {
+      tasks[1] = randomUUID();
+      leases[1] = await service.begin(
+        session.workspace,
+        session.id,
+        tasks[1],
+        signal(),
+      );
+      await execute(
+        session.workspace,
+        "import pathlib; assert pathlib.Path('module.py').read_text()=='a = 1\\nb = 20\\n'; assert pathlib.Path('artifact').read_text()=='private'",
+      );
+    }
     await service.select(session.workspace, session.id, tasks[index], {
       paths: ["module.py"],
       validate: (files, current) =>
@@ -141,6 +191,7 @@ try {
     assert.equal(result.phase, "ready");
     assert.equal(result.publication.state, "published");
     report.published.push(result.publication.batchId);
+    await cacheSample(session);
   }
   assert.equal(
     await readFile(path.join(source, "module.py"), "utf8"),
@@ -157,6 +208,22 @@ try {
     "import pathlib; assert pathlib.Path('module.py').read_text()=='a = 10\\nb = 20\\n'; assert pathlib.Path('artifact').read_text()=='private'",
   );
   assert.equal((await resumed.finish("completed", true)).phase, "ready");
+  await cacheSample(sessions[1]);
+  for (let round = 0; round < 3; round++) {
+    const lease = await service.begin(
+      sessions[1].workspace,
+      sessions[1].id,
+      randomUUID(),
+      signal(),
+    );
+    await execute(
+      sessions[1].workspace,
+      "import pathlib; assert pathlib.Path('module.py').read_text()=='a = 10\\nb = 20\\n'",
+    );
+    assert.equal((await lease.finish("completed", true)).phase, "ready");
+    await cacheSample(sessions[1]);
+  }
+  report.retainedBaseAfterCollection = true;
   report.resumed = true;
   const conflict = await create();
   const conflictTask = randomUUID();

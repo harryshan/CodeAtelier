@@ -18,6 +18,7 @@
  *    selectLocalPublication 把明确路径/命令绑定当前任务，收尾通过独立候选 Runtime 执行固定计划并保存回执，不调用主模型或允许宿主 fallback。
  *    local_publish 经认证 Runtime 主任务与已记录工具参数双重核对，只选定或撤销本轮计划，命令/路径不进入 trace。
  *    localOverlayCreation 提供公开创建/执行前提，describeSession 统一历史投影；Local 要求 Runtime 时启动失败保留私有视图，不转宿主且不记录为已回退。
+ *    平台工厂统一选择挂载后端和候选验证器；Linux 显式 namespace 可接线，公开门禁仍独立控制。
  *    冲突继续会话只向模型提供可信参考目录指引，材料本身仍是不可信历史；新编辑重读当前来源并沿用正常发布验证。
  *    Windows 启动排空后的 ACL 恢复回调只临时暴露旧 Local 卷根身份/权限，保留 dirty 和任务锁，不重放任务。
  * 9. run 的终态持久化与 trace 收尾分开保护；写库失败仍尝试归档失败 trace，导出/归档故障只记警告，最外层 finally 释放 trace 内存和任务级 Sandbox 状态。
@@ -28,8 +29,8 @@
  */
 
 import { TaskSkills } from "../skills/task-skills.js";
-import path from "node:path";
-import { CandidateValidator } from "../local-overlays/candidate-validator.js";
+import type { CandidateValidator } from "../local-overlays/candidate-validator.js";
+import { localOverlayPlatform } from "../local-overlays/platform.js";
 import { runCandidateCommands } from "../local-overlays/command-runtime.js";
 import { validationCommands } from "../local-overlays/command-plan.js";
 import {
@@ -230,6 +231,7 @@ export class Engine {
   readonly worktrees: WorktreeService;
   /** Local overlay 生命周期/发布服务；公开创建使用独立能力检查，历史读取不挂载。 */
   readonly localOverlays: LocalOverlayService;
+  private readonly localCandidate: Pick<CandidateValidator, "validate">;
 
   get localOverlayCreation(): import("../shared/types.js").LocalOverlayCreation {
     if (process.platform !== "win32") {
@@ -274,10 +276,7 @@ export class Engine {
       throw new Error("候选命令发布仅适用于 Local overlay 会话。");
     }
 
-    const validator = new CandidateValidator(
-      path.join(this.localOverlays.root, "candidates"),
-      this.log,
-    );
+    const validator = this.localCandidate;
     const launcher = this.agentRuntimeLauncher;
     const selected = await this.localOverlays.select(
       active.workspace,
@@ -573,10 +572,16 @@ export class Engine {
       ? this.sandbox
       : undefined;
     this.worktrees = new WorktreeService(config.directory, log);
+    const localPlatform = localOverlayPlatform(
+      config.directory,
+      log,
+      config.startupEnvironment,
+    );
+    this.localCandidate = localPlatform.candidate;
     this.localOverlays = new LocalOverlayService(
       config.directory,
       log,
-      localOverlayBackend,
+      localOverlayBackend ?? localPlatform.backend,
     );
     this.memories = new ProjectMemoryService(
       config.directory,

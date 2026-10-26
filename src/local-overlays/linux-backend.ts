@@ -5,6 +5,7 @@
  * 3. finish 在调用方证明 Runtime 排空后 seal，保存原始 B，再将明确选集交给生产 Publisher。
  * 4. complete 后确认当前私有/来源版本，持久刷新计划，正常卸载后按摘要移除覆盖；未选内容保留。
  * 5. 普通拒绝保存 rejected，未知结果保留 pending；close 幂等但不删除恢复证据或重放发布。
+ * 6. 正常收尾在 round 保存、卸载后回收本轮 lower 缓存，未发布 B 与 upper 保留；失败不清 pending。
  * Service 负责任务锁/日志/tracing，控制 IPC 与 Publisher 也各有归档；此后端不建立 Sandbox 权限。
  * 尚未自动注册产品平台入口；不实现 WinFsp 检查/异常恢复接口，不把 mount inode 当跨轮身份。
  */
@@ -14,6 +15,7 @@ import type { Logger } from "pino";
 import { z } from "zod";
 import type { LocalOverlayBackend, LocalOverlayMount } from "./backend.js";
 import type { LinuxOverlayController } from "./linux-controller.js";
+import { discardLinuxCache } from "./linux-cache.js";
 import type { FrozenPublication, PublicationState } from "./publication.js";
 import {
   durableJson,
@@ -154,6 +156,7 @@ export class LinuxLocalBackend implements LocalOverlayBackend {
     }
 
     const identity = (await sourceIdentity(control)).identity;
+    const cacheIdentity = (await sourceIdentity(view.control)).identity;
     if (create) {
       await durableJson(file, state);
     }
@@ -262,6 +265,7 @@ export class LinuxLocalBackend implements LocalOverlayBackend {
       }
 
       await close();
+      await discardLinuxCache(control, view.control, cacheIdentity);
       await unlink(pending);
 
       return {
