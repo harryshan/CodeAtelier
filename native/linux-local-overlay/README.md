@@ -32,3 +32,5 @@ pnpm start:overlay --data-dir /absolute/private-data --views /absolute/private-v
 底层 `launcher.py --root ... --views ... --helper ... -- <argv>` 保留用于受控手动实验；产品入口固定 helper 和 server 路径。真实装配/启动验收见 [探针说明](../../experiments/native-local-overlay/README.md)。
 
 正常文件检查使用固定 `classify` 请求：只对已卸载且 mount 记录 ready 的 upper 明确路径读取类型和版本，区分空文件与 whiteout，不读取源码正文、不挂载或变更状态。Broker 自行读取有界内容和 round 基线。该能力不提供未知挂载恢复，旧启动器须随服务一起更新才能提供正常检查。
+
+内核可能让多个删除路径与工作缓存共享 whiteout inode，`classify/release` 对已识别的删除标记接受这种共享；普通文件仍要求单链接。正常 close 确认卸载和 helper 退出后，仅对身份匹配的私有 `work` 下固定 `work/work` 目录处理内核遗留的 mode 000：要求当前 UID、普通目录及已知 mode，恢复 owner 0700，供 Broker 删除候选。该操作不递归、不沿链接、不修改 upper/来源，不在异常关闭时运行；失败保留未知记录，不自动修复其它权限。

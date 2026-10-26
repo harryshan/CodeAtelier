@@ -1,5 +1,13 @@
 # 初版验证记录
 
+## Linux 普通文件新增/删除续轮（2026-10-27）
+
+- 先增加真实 Publisher 回归，复现已发布新增/删除被旧父目录凭据误判为 `STALE_DEPENDENCY`。修复仅逆验 complete 日志中的自身成员变化，再执行原有来源、私有内容和全部依赖核对；新增父目录成员、类型、身份及历史版本变化拒绝用例。四个相关测试文件 46 项通过；完整 `pnpm check` 为 167 个文件、1348 项通过/2 项跳过，类型、格式、lint 和构建通过。
+- WSL/ext4 实际删除还发现两个正常内核行为：候选卸载后的 `work/work` mode 000 导致清理 EACCES；删除标记与内核缓存共享 inode 导致单链接误判。分别修复正常关闭后的固定目录权限恢复，以及已识别 whiteout 的共享接受。普通文件仍要求单链接；未知关闭不修权限、不重放发布。
+- 最终 `mem-cWR9yH` 使用生产 Service/Publisher/Controller 和真实 MXC Sandbox，通过保存/检查删除标记、一增一删的独立候选发布、后续保留源码发布、再续聊读取，私有产物保留、每轮 lower 内容缓存归零。原有双任务重叠、合并、冲突保留回归也通过。前两次失败夹具保留，未在未知状态重试。`work-1kdc6rdb` 另核对内容保留、错误 mode/父身份/链接拒绝。
+- 重新构建正式 Linux helper/控制器后，`sr-Gpj8Q4` 的 `startup-probe.mjs --review --symlinks` 通过真实 HTTP/Engine/Sandbox 双任务与候选发布、内部链接 TypeScript 编译、服务重载、原对话继续、普通/空/删除检查与新参考发布；14 次固定回环模型请求，正常退出 0。新增/删除发布续轮本身由上述 backend 探针验证，不将它描述为新增 HTTP 场景。
+- 报告见 [结果](posix-overlay-membership-results.json)。本轮未改 UI/HTTP 契约，未运行浏览器 e2e 或 Evaluation；不扩展到目录发布、任意链接写入、macOS 或 Linux 异常恢复。
+
 ## Linux 首读持久化成本（2026-10-26）
 
 - 首先用真实 fsync 的链接包装器复现读取路径同步：128 个小文件首读 749.6 ms、fsync 合计 651.8 ms。最终 helper 将同步集中到 seal，先对私有对象排队范围写回，再逐对象 fsync，最后创建/同步清单及目录；读取 92.1 ms、seal 128.8 ms。包装器只在测试二进制中，正式构建不带注入开关。

@@ -1,5 +1,7 @@
 # 架构
 
+Linux 正常发布后的目录确认由 `posix-directory-refresh.ts` 承担，调用共享 `publication/read-version.ts` 的有界直接成员快照。`posix-round.ts` 先绑定 complete 日志与批次，只逆验日志中自身新增/删除造成的目录成员变化，再复核来源结果、私有内容与全部依赖；不写来源或重新执行发布。目录版本编码保持兼容，历史不同版本均须通过，不递归扫描主目录。
+
 Linux 正常文件检查由 backend 的可选 `review` 接口分派到 `posix-review.ts`，`posix-state.ts` 与续轮共用有界 round 读取。Service 持有原视图锁，控制器只读 `classify` 返回正常卸载 upper 的类型/stamp，Broker 读取明确 B/O/T 并生成版本绑定预览；不会调用 WinFsp 数据库、挂载或发布。异常恢复能力独立投影为 `incidentRecoverySupported=false`。新参考会话复用已有 resolution 协议，根 UUID 历史材料不进入 Linux 源码基线或发布选集。
 
 Linux 可选源码构建入口 `scripts/build-linux-local-overlay.ts` 将 `native/linux-local-overlay/readonly-lower.cpp` 编译到 `dist/native/linux-<arch>` 并复制控制器。`src/server/overlay-launcher.ts` 由 `pnpm start:overlay` 调用，`linux-startup.ts` 仅生成绑定 data/views 的固定 argv；先检查产物，再启动 Python namespace 控制器及原服务 supervisor，转发信号并等待退出。普通 start、设置格式和 Runtime 权限不变；控制器与服务均使用同一数据目录，不由 HTTP 选择命令或 native binary。

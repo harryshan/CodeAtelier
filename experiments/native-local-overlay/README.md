@@ -180,3 +180,13 @@ python3 -B /mnt/g/codeagent/native/linux-local-overlay/launcher.py \
 必须使用新空夹具。`--views` 将实际 workspace 放到 Broker 数据目录之外，不放宽 MXC 对私有数据的重叠检查。两会话通过真实 Runtime 并行编辑，经 Service 选集和排空收尾，各自在全新候选 Sandbox 验证，合并源码后刷新所选覆盖；续轮读取合并源码及未选产物。第三会话验证外部重叠修改导致 rejected、私有修改保留且视图正常关闭。[报告](../../docs/posix-overlay-backend-results.json) 不证明模型/Engine/HTTP/UI 入口已开放。
 
 最新探针使用 Engine 共用平台工厂，B 在 A 发布前先无发布收尾并回收 lower 缓存；再次挂载后使用 round 中旧 B 合并。后续增加三轮真实 Runtime 读取，每轮记录缓存数，断言只有创建时一个空缓存、正文对象为 0；私有产物和原始 B 不丢失。[缓存报告](../../docs/posix-overlay-cache-results.json)。这些数字不包含 upper、round、发布日志或总文件系统分配；未知/旧缓存不自动删除。
+
+2026-10-27 增加已有 `src` 目录内一增一删的正常续轮：先保存并检查真实 whiteout，再以全新候选验证选集，下一轮发布保留的其它源码，最后读取新来源与私有产物并检查缓存。报告 `membership.publishedFiles` 对应这两次发布；原 `candidates` 计数仍只统计前面的双会话场景，不能当作整个探针的候选总数。结果见 [报告](../../docs/posix-overlay-membership-results.json)。该场景不调用 HTTP/模型。
+
+删除操作可能留下 mode-000 内核工作目录，并共享 whiteout inode；实际候选流程检查正常释放/清理。可另手动运行以下无挂载探针，核对固定目录权限恢复和拒绝路径，它不替代真实 Sandbox 证据：
+
+```sh
+python3 -B experiments/native-local-overlay/workdir-cleanup-probe.py
+```
+
+该探针在当前用户的 `~/codeatelier-native-overlay-probes/work-*` 创建独占夹具与报告，不删除证据，不触及现有服务或用户项目。

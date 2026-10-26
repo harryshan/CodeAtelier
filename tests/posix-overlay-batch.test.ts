@@ -3,7 +3,7 @@
  * 1. fixture 用真实文件身份/版本生成 helper 格式记录，普通目录模拟已排空的视图。
  * 2. 验证捕获原文、明确选集、未读正文补读、来源/目录依赖过期及损坏对象拒绝。
  * 3. 真实 Publisher 验证三方合并、同一行冲突和私有修改保留；候选回调只检查合并结果。
- * 4. 两轮状态序列化保留未发布 B，验证 complete 确认、私有版本和历史依赖拒绝。
+ * 4. 两轮状态序列化保留未发布 B，验证自身新增/删除后继续发布、complete 确认、私有版本和历史依赖拒绝。
  * 5. upper 的私有管理目录留在磁盘但不进入基线/发布；普通源码仍可捕获和发布。
  * 6. 大型及硬链接只读依赖不受源码正文上限约束，来源/缓存变化仍拒绝，可发布选集限制不变。
  * 原生 seal、真实 Runtime 与候选执行由独立 WSL 手动实验验证，不把本测试当 Sandbox 证据。
@@ -31,6 +31,7 @@ import {
   durableJson,
 } from "../src/local-overlays/publication/files.js";
 import { Publisher } from "../src/local-overlays/publication/publisher.js";
+import { readVersion } from "../src/local-overlays/publication/read-version.js";
 import {
   capturePosixRound,
   acknowledgePosixRound,
@@ -39,6 +40,84 @@ import {
 } from "../src/local-overlays/posix-round.js";
 
 const original = "a = 1\nb = 2\n";
+
+it.each(["create", "delete"])(
+  "continues after its own %s changes directory membership while retaining private work",
+  async (operation) => {
+    const f = await fixture();
+    const selected = operation === "create" ? "new.txt" : "code.py";
+    const upper = path.join(f.root, "upper");
+    await mkdir(upper);
+    await writeFile(
+      path.join(f.input.workspace, "dep.txt"),
+      "pending change\n",
+    );
+    await writeFile(path.join(upper, "dep.txt"), "pending change\n");
+    if (operation === "create") {
+      await writeFile(path.join(f.input.workspace, selected), "new source\n");
+      await writeFile(path.join(upper, selected), "new source\n");
+    } else {
+      await unlink(path.join(f.input.workspace, selected));
+      // 普通目录替身只标记 upper 路径；真实 whiteout 由独立 WSL 探针验证。
+      await writeFile(path.join(upper, selected), "");
+    }
+
+    const state = await capturePosixRound({ ...f.input, upper });
+    const batch = await posixBatch({ ...f.input, selected: [selected] });
+    const publications = path.join(f.root, "publications");
+    await new Publisher(publications).publish(batch, {
+      validate: async () => {},
+    });
+    const acknowledged = await acknowledgePosixRound({
+      state,
+      batch,
+      publications,
+      workspace: f.input.workspace,
+    });
+    expect(acknowledged.remove.map((entry) => entry.path)).toEqual([selected]);
+    expect(acknowledged.state.baselines.map((entry) => entry.path)).toEqual([
+      "dep.txt",
+    ]);
+    expect(acknowledged.state.reads).toContainEqual({
+      path: ".",
+      kind: "directory",
+      version: await readVersion(f.input.source, {
+        path: ".",
+        kind: "directory",
+      }),
+    });
+
+    // 下一轮 lower 已刷新，未发布 dep.txt 必须沿用最早 B，并可继续正常发布。
+    const directory = await record(f.input.source.root, ".");
+    directory.members = (await readdir(f.input.source.root)).map(
+      (name) => `${name}\0f`,
+    );
+    f.manifest.entries = [
+      directory,
+      await record(f.input.source.root, "dep.txt"),
+    ];
+    f.input.sealId = randomUUID();
+    f.manifest.id = f.input.sealId;
+    await writeFile(
+      path.join(f.input.control, f.input.sealId + ".json"),
+      JSON.stringify(f.manifest),
+    );
+    const next = await posixBatch({
+      ...f.input,
+      selected: ["dep.txt"],
+      ...posixRoundInputs(acknowledged.state, f.input.source, ["dep.txt"]),
+    });
+    await new Publisher(publications).publish(next, {
+      validate: async () => {},
+    });
+    expect(
+      await readFile(path.join(f.input.source.root, "dep.txt"), "utf8"),
+    ).toBe("pending change\n");
+    expect(await readFile(path.join(upper, "dep.txt"), "utf8")).toBe(
+      "pending change\n",
+    );
+  },
+);
 
 it.each(["large", "hardlinked"])(
   "publishes source with a captured %s read-only dependency",

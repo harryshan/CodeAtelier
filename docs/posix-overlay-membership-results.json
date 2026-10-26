@@ -1,0 +1,79 @@
+{
+  "date": "2026-10-27",
+  "environment": "WSL2 Ubuntu 26.04, ext4, real Linux OverlayFS and MXC Bubblewrap Runtime",
+  "scope": "Normal file creation/deletion in existing parents, retained private edits and continuation; not crash recovery, directory publication or macOS",
+  "backend": {
+    "fixture": "mem-cWR9yH",
+    "report": "backend-report.json",
+    "passed": true,
+    "parallel": true,
+    "originalScenarioCandidates": 2,
+    "membershipPublishedFiles": [2, 1],
+    "membershipValidation": "Two fresh candidate views with real Sandbox commands; not included in originalScenarioCandidates",
+    "continuedAfterCreateDelete": true,
+    "retainedEditPublished": true,
+    "postPublicationRead": true,
+    "whiteoutReview": true,
+    "privateArtifactRetained": true,
+    "conflictRetained": true,
+    "retainedBaseAfterCollection": true,
+    "cacheSamples": 8,
+    "cachedObjectsInEverySample": 0,
+    "cachedBytesInEverySample": 0,
+    "emptyCreationCachesPerSample": 1,
+    "activeRuntimeMarkersAfterExit": 0,
+    "hostMountsAfterExit": 0
+  },
+  "workdir": {
+    "fixture": "work-1kdc6rdb",
+    "passed": true,
+    "ownerModeRestored": true,
+    "contentsRetained": true,
+    "unknownModeRefused": true,
+    "parentReplacementRefused": true,
+    "linkRefused": true,
+    "scope": "Direct launcher function probe without mount; paired with real backend deletion validation"
+  },
+  "packagedStartup": {
+    "fixture": "sr-Gpj8Q4",
+    "report": "startup-report.json",
+    "passed": true,
+    "closed": true,
+    "modelRequests": 14,
+    "parallel": true,
+    "typescript": true,
+    "symlinks": true,
+    "reloaded": true,
+    "continued": true,
+    "reviewFiles": true,
+    "referenceTaskPublished": true,
+    "originalPrivateRetained": true,
+    "exitCode": 0,
+    "hostMountsAfterExit": 0,
+    "scope": "Existing HTTP/Engine/Store/Sandbox regression with the current packaged controller; membership publication itself tested through backend above"
+  },
+  "retainedFailedAttempts": [
+    {
+      "fixture": "mem-TVlkJ2",
+      "failure": "Candidate cleanup EACCES on kernel work/work mode 000",
+      "sourceMembershipPublished": false,
+      "unknownStateReplayed": false
+    },
+    {
+      "fixture": "mem-0Fnz6r",
+      "failure": "Release rejected kernel whiteout with link count 2",
+      "sourceMembershipPublished": true,
+      "unknownStateReplayed": false
+    }
+  ],
+  "checks": {
+    "pnpmCheck": "passed",
+    "testFiles": 167,
+    "testsPassed": 1348,
+    "testsSkipped": 2,
+    "targetedTestsPassed": 46,
+    "linuxNativeBuild": "passed",
+    "browserE2eRun": false,
+    "evaluationRun": false
+  }
+}

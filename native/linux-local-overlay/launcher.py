@@ -4,6 +4,7 @@
 #    来源只读 helper 按需捕获基线，内核 OverlayFS 处理 copy-up，不解释 shell 或客户端挂载参数。
 # 3. Lower 管理本进程创建的 helper、有限响应和退出；活跃视图先持久标记再挂载，
 #    只有明确 close 的普通卸载和 helper 退出都成功才变为 ready，未知状态拒绝重用。
+#    普通 close 后仅恢复已核对的内核 work/work owner 权限，供 Broker 清理候选；不递归修权限。
 #    release 仅在卸载后复核所选 upper 摘要/whiteout，逐项删除覆盖；失败保持 active。
 #    classify 只查正常卸载 upper 中的明确路径类型/stamp，识别 whiteout，不读正文或修改状态。
 # 4. serve 通过 setpriv 撤销服务全部 capabilities，转发退出信号；服务重载仍在同一 namespace。
@@ -47,6 +48,27 @@ def directory(file):
     if not stat.S_ISDIR(info.st_mode) or file.resolve() != file:
         raise ValueError("DIRECTORY_IDENTITY")
     return f"{info.st_dev}:{info.st_ino}"
+
+
+def prepare_closed_workdir(private, expected):
+    # 内核会为 whiteout 等操作留下 mode-000 的 work/work；此时视图已卸载、helper 已退出。
+    # 只处理固定名字、匹配父身份且属于当前 UID 的普通目录；不沿链接或触及 upper/来源。
+    work = private / "work"
+    if directory(work) != expected:
+        raise ValueError("WORK_REPLACED")
+    internal = work / "work"
+    try:
+        before = internal.lstat()
+    except FileNotFoundError:
+        return
+    if (not stat.S_ISDIR(before.st_mode) or before.st_uid != os.getuid()
+            or stat.S_IMODE(before.st_mode) not in (0, 0o700)):
+        raise ValueError("WORK_INTERNAL_TYPE")
+    os.chmod(internal, 0o700, follow_symlinks=False)
+    after = internal.lstat()
+    if (before.st_dev != after.st_dev or before.st_ino != after.st_ino
+            or before.st_uid != after.st_uid or not stat.S_ISDIR(after.st_mode)):
+        raise ValueError("WORK_INTERNAL_REPLACED")
 
 
 class Lower:
@@ -188,7 +210,9 @@ class Controller:
                 deleted = os.getxattr(target, "user.overlay.whiteout", follow_symlinks=False) == b"y"
                 if not deleted:
                     raise ValueError("REVIEW_WHITEOUT_INVALID")
-            if (info.st_nlink != 1 or (not deleted and (not stat.S_ISREG(info.st_mode)
+            # 内核可在多个删除路径/工作缓存间硬链接同一个 whiteout。
+            # 删除标记没有可共享改写的正文，普通文件仍必须单链接。
+            if ((not deleted and (info.st_nlink != 1 or not stat.S_ISREG(info.st_mode)
                     or info.st_size > 2 * 1024 * 1024))
                     or "user.overlay.metacopy" in attributes):
                 raise ValueError("REVIEW_FILE_UNSUPPORTED")
@@ -225,7 +249,7 @@ class Controller:
                 directory(target)
             target = target / parts[-1]
             info = target.lstat()
-            if target in targets or info.st_nlink != 1:
+            if target in targets:
                 raise ValueError("RELEASE_DUPLICATE_OR_LINK")
             expected = item["contentDigest"]
             if expected is None:
@@ -234,7 +258,7 @@ class Controller:
                     whiteout = os.getxattr(target, "user.overlay.whiteout") == b"y"
                 if not whiteout:
                     raise ValueError("RELEASE_WHITEOUT")
-            elif (not stat.S_ISREG(info.st_mode) or info.st_size > 2 * 1024 * 1024
+            elif (info.st_nlink != 1 or not stat.S_ISREG(info.st_mode) or info.st_size > 2 * 1024 * 1024
                     or hashlib.sha256(target.read_bytes()).hexdigest() != expected):
                 raise ValueError("RELEASE_CHANGED")
             targets.append(target)
@@ -319,6 +343,7 @@ class Controller:
         lower.close()
         del self.views[identity]
         if clean:
+            prepare_closed_workdir(private, record["directories"]["work"])
             record["phase"] = "ready"
             persist(private / "mount.json", record)
 

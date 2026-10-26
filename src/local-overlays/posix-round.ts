@@ -5,6 +5,7 @@
  *    历史读凭据保留不同版本，正常保存不要求旧来源仍有效；真正发布在 posixBatch/Publisher 复核全部版本。
  * 2. validatePosixRound 严格验证来源、路径、正文及总预算；状态通过既有 durableJson 保存。
  * 3. acknowledgePosixRound 只接受 Publisher complete 日志，复核来源结果与所选私有内容，
+ *    通过 posix-directory-refresh 逆验自身新增/删除的父目录变化，再复核剩余依赖。
  *    返回剔除已发布 B 的下一状态和待移除覆盖；不修改 upper、不重放来源写入。
  * 4. posixRoundInputs 将旧 B 和保守依赖交给下一轮批次，来源变化仍须重新校验。
  * 调用方必须排空 Runtime、持有独占生命周期，普通卸载后移除已确认覆盖，再保存状态。
@@ -27,6 +28,7 @@ import { readVersion } from "./publication/read-version.js";
 import { Publisher } from "./publication/publisher.js";
 import type { Batch } from "./publication/session.js";
 import { posixBaseline, posixReads, readPosixManifest } from "./posix-batch.js";
+import { refreshPosixDirectoryReads } from "./posix-directory-refresh.js";
 
 const baseSchema = z
   .object({
@@ -244,7 +246,7 @@ export async function acknowledgePosixRound(input: {
 
   const view = await sourceIdentity(input.workspace);
   const remove: { path: string; contentDigest: string | null }[] = [];
-  const reads = [...state.reads];
+  const reads = await refreshPosixDirectoryReads(journal, state.reads);
   for (const change of input.batch.changes) {
     const base = state.baselines.find(
       (entry) => entry.path === change.path,
@@ -282,8 +284,7 @@ export async function acknowledgePosixRound(input: {
   const baselines = state.baselines.filter(
     (entry) => !remove.some((item) => item.path === entry.path),
   );
-  // Directory membership changes require a future explicit rebase protocol;
-  // never replace an old digest with today's directory contents implicitly.
+  // 已逆验的父目录也重新读取，避免证明后发生的变化被当作本批成果接受。
   for (const read of reads) {
     if ((await readVersion(state.source, read)) !== read.version) {
       throw new PublishError("STALE_DEPENDENCY");

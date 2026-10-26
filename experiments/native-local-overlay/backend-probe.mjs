@@ -5,7 +5,8 @@
  * 3. 每批候选由 LinuxCandidateValidator 新建视图，真实 Sandbox 验证合并源码，再正常刷新。
  * 4. B 先保存未发布结果并回收缓存，A 发布后 B 重新挂载仍用旧 B 合并；多轮检查缓存不累积。
  * 5. 续轮检查合并源码及保留产物；另制造外部重叠修改，确认 rejected/ready 和私有结果保留。
- * 固定命令代替模型，未开放 Engine/HTTP/UI；仅独占夹具，报告和 trace 保留，不运行 Evaluation。
+ * 6. 在已有子目录保存并检查真实 whiteout，再发布一增一删和保留的私有修改，验证父目录刷新及后续读取。
+ * 固定命令代替模型，本探针不调用 Engine/HTTP/UI；仅独占夹具，报告和 trace 保留，不运行 Evaluation。
  */
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
@@ -82,6 +83,7 @@ async function execute(workspace, python) {
   traces.finishTask(taskId, "ok");
   await archive.write(taskId, taskId, traces.exportTask(taskId));
   traces.discardTask(taskId);
+
   return result;
 }
 
@@ -107,6 +109,7 @@ async function cacheSample(session) {
       }
     }
   }
+
   assert.equal(caches.length, 1);
   assert.equal(objects, 0);
   const state = JSON.parse(
@@ -119,7 +122,111 @@ async function cacheSample(session) {
     retainedBaselines: state.baselines.length,
   };
   report.cacheRounds.push(sample);
+
   return state;
+}
+
+async function verifyMembership() {
+  await mkdir(path.join(source, "src"));
+  await writeFile(path.join(source, "src/old.py"), "old = 1\n");
+  await writeFile(path.join(source, "src/keep.py"), "value = 1\n");
+  const session = await create();
+  const rounds = [
+    {
+      command:
+        "import pathlib; p=pathlib.Path('src'); assert (p/'old.py').read_text()=='old = 1\\n'; assert (p/'keep.py').read_text()=='value = 1\\n'; (p/'new.py').write_text('new = 2\\n'); (p/'old.py').unlink(); (p/'keep.py').write_text('value = 20\\n'); pathlib.Path('artifact2').write_text('private')",
+      paths: ["src/new.py", "src/old.py"],
+      candidate:
+        "import pathlib; p=pathlib.Path('src'); assert (p/'new.py').read_text()=='new = 2\\n'; assert not (p/'old.py').exists(); assert (p/'keep.py').read_text()=='value = 1\\n'; assert not pathlib.Path('artifact2').exists()",
+    },
+    {
+      command:
+        "import pathlib; p=pathlib.Path('src'); assert (p/'new.py').read_text()=='new = 2\\n'; assert not (p/'old.py').exists(); assert (p/'keep.py').read_text()=='value = 20\\n'; (p/'keep.py').write_text('value = 21\\n'); assert pathlib.Path('artifact2').read_text()=='private'",
+      paths: ["src/keep.py"],
+      candidate:
+        "import pathlib; p=pathlib.Path('src'); assert (p/'new.py').read_text()=='new = 2\\n'; assert not (p/'old.py').exists(); assert (p/'keep.py').read_text()=='value = 21\\n'; assert not pathlib.Path('artifact2').exists()",
+    },
+  ];
+  const completed = [];
+  for (const round of rounds) {
+    let taskId = randomUUID();
+    let lease = await service.begin(
+      session.workspace,
+      session.id,
+      taskId,
+      signal(),
+    );
+    await execute(session.workspace, round.command);
+    if (completed.length === 0) {
+      assert.equal((await lease.finish("completed", true)).phase, "ready");
+      const review = await service.reviewBatch(
+        session.workspace,
+        session.id,
+        ["src/old.py"],
+        signal(),
+      );
+      assert.equal(review.files[0].ours.content, null);
+      assert.notEqual(review.files[0].base.content, null);
+      taskId = randomUUID();
+      lease = await service.begin(
+        session.workspace,
+        session.id,
+        taskId,
+        signal(),
+      );
+      await execute(
+        session.workspace,
+        "import pathlib; p=pathlib.Path('src'); assert (p/'new.py').read_text()=='new = 2\\n'; assert not (p/'old.py').exists(); assert (p/'keep.py').read_text()=='value = 20\\n'",
+      );
+    }
+
+    await service.select(session.workspace, session.id, taskId, {
+      paths: round.paths,
+      validate: (files, current) =>
+        validator.validate(
+          source,
+          files,
+          (workspace) => execute(workspace, round.candidate),
+          current ?? signal(),
+        ),
+    });
+    const result = await lease.finish("completed", true);
+    assert.equal(result.phase, "ready");
+    assert.equal(result.publication.state, "published");
+    completed.push(result.publication.files);
+  }
+
+  const lease = await service.begin(
+    session.workspace,
+    session.id,
+    randomUUID(),
+    signal(),
+  );
+  await execute(
+    session.workspace,
+    "import pathlib; p=pathlib.Path('src'); assert (p/'new.py').read_text()=='new = 2\\n'; assert not (p/'old.py').exists(); assert (p/'keep.py').read_text()=='value = 21\\n'; assert pathlib.Path('artifact2').read_text()=='private'",
+  );
+  assert.equal((await lease.finish("completed", true)).phase, "ready");
+  assert.deepEqual((await readdir(path.join(source, "src"))).sort(), [
+    "keep.py",
+    "new.py",
+  ]);
+  assert.equal(
+    await readFile(path.join(source, "src/keep.py"), "utf8"),
+    "value = 21\n",
+  );
+  const retained = await cacheSample(session);
+  report.membership = {
+    publishedFiles: completed,
+    continuedAfterCreateDelete: true,
+    retainedEditPublished: true,
+    postPublicationRead: true,
+    whiteoutReview: true,
+    privateArtifactRetained: retained.baselines.some(
+      (entry) => entry.path === "artifact2",
+    ),
+  };
+  assert.equal(report.membership.privateArtifactRetained, true);
 }
 
 try {
@@ -137,6 +244,7 @@ try {
         session.workspace,
         `import pathlib,time,json; p=pathlib.Path('module.py'); assert p.read_text()=='a = 1\\nb = 2\\n'; start=time.time(); time.sleep(0.4); p.write_text(${JSON.stringify(content)}); pathlib.Path('artifact').write_text('private'); pathlib.Path('interval.json').write_text(json.dumps([start,time.time()]))`,
       );
+
       return JSON.parse(
         await readFile(path.join(session.workspace, "interval.json"), "utf8"),
       );
@@ -171,6 +279,7 @@ try {
         "import pathlib; assert pathlib.Path('module.py').read_text()=='a = 1\\nb = 20\\n'; assert pathlib.Path('artifact').read_text()=='private'",
       );
     }
+
     await service.select(session.workspace, session.id, tasks[index], {
       paths: ["module.py"],
       validate: (files, current) =>
@@ -179,6 +288,7 @@ try {
           files,
           async (workspace) => {
             report.candidates++;
+
             return execute(
               workspace,
               `import pathlib,runpy; assert not pathlib.Path('artifact').exists(); v=runpy.run_path('module.py'); assert v['a']+v['b']==${index === 0 ? 12 : 30}; pathlib.Path('candidate-artifact').write_text('private')`,
@@ -193,6 +303,7 @@ try {
     report.published.push(result.publication.batchId);
     await cacheSample(session);
   }
+
   assert.equal(
     await readFile(path.join(source, "module.py"), "utf8"),
     "a = 10\nb = 20\n",
@@ -223,6 +334,7 @@ try {
     assert.equal((await lease.finish("completed", true)).phase, "ready");
     await cacheSample(sessions[1]);
   }
+
   report.retainedBaseAfterCollection = true;
   report.resumed = true;
   const conflict = await create();
@@ -260,6 +372,7 @@ try {
     "a = 40\nb = 20\n",
   );
   assert.deepEqual((await readdir(source)).sort(), [".git", "module.py"]);
+  await verifyMembership();
   assert.deepEqual(await readdir(path.join(data, "mxc", "active")), []);
   report.conflictRetained = true;
   await service.close();
