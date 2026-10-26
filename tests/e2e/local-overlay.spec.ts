@@ -11,9 +11,93 @@
  *    已确认恢复绑定原任务，当前操作区不继续建议重做发布；历史失败内容仍保留。
  * 8. Linux ready 可检查并继续任务，failed 不展示未实现的恢复；旧不支持检查的投影仍兼容，Sandbox 说明跟随实际平台。
  * 页面和请求代码为生产实现；真实挂载/权限/发布链路另由手动 WinFsp/Linux 验证证明。
+ * 9. 开启用例显式模拟 bootstrap 能力；关闭用例验证隐藏创建/恢复、保留历史与草稿及禁止键盘提交。
  */
 import { expect, test } from "@playwright/test";
 import type { Session } from "../../src/shared/types.js";
+
+// 默认产品关闭；除专门的关闭用例外，合成开启能力以继续验证已有交互。
+test.beforeEach(async ({ page }) => {
+  await page.route("**/api/bootstrap", async (route) => {
+    const response = await route.fetch();
+    await route.fulfill({
+      response,
+      json: {
+        ...(await response.json()),
+        localOverlayCreation: { featureEnabled: true, enabled: true },
+      },
+    });
+  });
+});
+
+test("default-off keeps history but hides overlay actions and blocks keyboard execution", async ({
+  page,
+}) => {
+  // 使用真实服务 bootstrap 的默认关闭值，不伪造开关结果。
+  await page.unroute("**/api/bootstrap");
+  const session: Session = {
+    ...created,
+    localOverlay: {
+      ...created.localOverlay!,
+      privateRefreshRecovery: true,
+      publicationRecovery: true,
+    },
+  };
+  const task = {
+    id: "disabled-interrupted",
+    sessionId: session.id,
+    status: "interrupted",
+    subagentsEnabled: false,
+    createdAt: session.createdAt,
+    error: "旧任务中断，私有数据保留",
+  };
+  await page.route("**/api/sessions", (route) =>
+    route.fulfill({ json: [session] }),
+  );
+  await page.route(/\/api\/sessions\/local-overlay-ui(?:\?.*)?$/, (route) =>
+    route.fulfill({
+      json: { session, tasks: [task], events: [], approvals: [] },
+    }),
+  );
+  await page.route("**/api/sessions/local-overlay-ui/events", (route) =>
+    route.fulfill({
+      contentType: "text/event-stream",
+      body: "event: refresh\ndata: {}\n\n",
+    }),
+  );
+  const writes: string[] = [];
+  page.on("request", (request) => {
+    if (
+      request.method() === "POST" &&
+      /\/api\/(sessions|tasks)/.test(request.url())
+    ) {
+      writes.push(request.url());
+    }
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: session.title, exact: true }).click();
+  await expect(page.getByText(/隔离 Local 功能已关闭/)).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "新建隔离 Local 对话", exact: true }),
+  ).toBeHidden();
+  await expect(page.getByText("检查私有修改", { exact: true })).toBeHidden();
+  await expect(
+    page.getByRole("button", { name: "恢复任务", exact: true }),
+  ).toBeDisabled();
+  const editor = page.getByLabel("任务描述");
+  await editor.fill("保留未发送草稿");
+  await expect(page.getByRole("button", { name: "开始执行" })).toBeDisabled();
+  await editor.press("Enter");
+  await expect(editor).toContainText("保留未发送草稿");
+  await page.getByRole("button", { name: "添加项目", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "使用隔离 Local", exact: true }),
+  ).toBeHidden();
+  await expect(
+    page.getByRole("button", { name: "改用 Git worktree", exact: true }),
+  ).toBeVisible();
+  expect(writes).toEqual([]);
+});
 
 test("explicitly restores a completed private refresh and keeps the unsent draft", async ({
   page,
@@ -496,7 +580,7 @@ test("retries the same explicit Local request and keeps source grouping after re
       response,
       json: {
         ...(await response.json()),
-        localOverlayCreation: { enabled: true },
+        localOverlayCreation: { featureEnabled: true, enabled: true },
       },
     });
   });
@@ -581,6 +665,7 @@ test("disables unsupported creation and distinguishes retained from published hi
       json: {
         ...(await response.json()),
         localOverlayCreation: {
+          featureEnabled: true,
           enabled: false,
           reason: "隔离 Local 当前需要启用 Sandbox。",
         },

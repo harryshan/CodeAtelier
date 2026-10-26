@@ -1,5 +1,7 @@
 # Local 会话文件隔离与发布：重新定界
 
+隔离 Local 总开关（2026-10-27）：用户要求暂不继续 Linux 工作，并将整个功能置于代码开关之后、默认关闭。唯一开关为 `src/local-overlays/readiness.ts` 的 `LOCAL_OVERLAY_ENABLED = false`，没有设置、环境变量或 HTTP 覆盖。关闭时隐藏创建入口，拒绝创建、旧视图任务启动/恢复、发布选择、文件检查、参考继续、私有刷新及来源事故操作；`start:overlay` 也在创建 namespace 前拒绝。历史与私有数据保留，取消、关闭卸载及旧 Sandbox 授权清理继续执行。普通 Local、Riftri、Git worktree 和 Sandbox 原有行为不变。未来启用须修改常量并重新构建/启动，仍须满足平台与 Sandbox 条件；macOS 仍不实现。下面已完成的 Windows/Linux 记录仅作为关闭前的历史证据，不表示当前产品开放。
+
 状态：2026-10-25 用户重新澄清目标（D170），随后授权继续验证并接入 agent。Overlay 与 Git worktree 完全并列，服务于同一 Local 工作区多个对话的文件修改隔离与冲突整合，不负责 Git 工作区管理。受控发布、Local WinFsp 双挂载、`.git` 屏蔽、真实 Sandbox 并行/取消/重挂载、原生捕获/冻结导出、Windows owner/group/DACL 保留发布及成功后确认/续轮刷新的 PoC 已验证；Engine 内部生命周期、明确选择发布和候选 Sandbox 命令已接入；模型选择工具和显式创建/状态入口已接入，真实 IPC v18 模型工具/候选验证/发布及同文件并行已通过，异常私有卷等恢复操作仍待完成，不改变现有服务或历史会话。
 
 ## 需求与模式

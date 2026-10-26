@@ -9,14 +9,27 @@
  * 6. publication-review/accept/release-complete 只接收空请求或检查 token；从会话定位事故，断线取消，不启动任务或恢复私有视图。
  * 7. paths + state=interrupted 显式检查异常卷或创建中断参考会话；原生退出证明逐次验证，不解锁旧卷或自动应用部分写入。
  * 8. local-refresh 只确认已完成批次的私有刷新；平台门禁、持久排空证明和独占恢复由服务复核，不运行旧任务。
+ * 9. 所有操作先经过代码级 featureGate；关闭时不进入检查/恢复服务，已有历史读取由普通路由继续提供。
  */
 import type { HttpServer } from "./http-server.js";
+import type { FastifyRequest, FastifyReply } from "fastify";
+import {
+  LOCAL_OVERLAY_ENABLED,
+  LOCAL_OVERLAY_DISABLED_REASON,
+} from "../local-overlays/readiness.js";
 import { z } from "zod";
 import type { Engine } from "../agent/engine.js";
 import type { AsyncStore } from "../sessions/async-store.js";
 import { PublishError } from "../local-overlays/publication/merge.js";
 
 const relativePath = z.string().min(1).max(1024);
+const featureGate = {
+  async preHandler(_request: FastifyRequest, reply: FastifyReply) {
+    if (!LOCAL_OVERLAY_ENABLED) {
+      return reply.code(409).send({ error: LOCAL_OVERLAY_DISABLED_REASON });
+    }
+  },
+};
 const selectionSchema = z.union([
   z.object({ path: relativePath }).strict(),
   z
@@ -46,43 +59,48 @@ export function registerLocalReviewRoutes(
   store: AsyncStore,
   engine: Engine,
 ) {
-  app.post("/api/sessions/:id/local-refresh", async (request, reply) => {
-    const { id } = z.object({ id: z.uuid() }).parse(request.params);
-    z.object({}).strict().parse(request.body);
-    const session = await store.get(id);
-    if (!session) {
-      return reply.code(404).send({ error: "会话不存在。" });
-    }
+  app.post(
+    "/api/sessions/:id/local-refresh",
+    featureGate,
+    async (request, reply) => {
+      const { id } = z.object({ id: z.uuid() }).parse(request.params);
+      z.object({}).strict().parse(request.body);
+      const session = await store.get(id);
+      if (!session) {
+        return reply.code(404).send({ error: "会话不存在。" });
+      }
 
-    if (!engine.localOverlayCreation.enabled) {
-      return reply
-        .code(409)
-        .send({ error: engine.localOverlayCreation.reason });
-    }
+      if (!engine.localOverlayCreation.enabled) {
+        return reply
+          .code(409)
+          .send({ error: engine.localOverlayCreation.reason });
+      }
 
-    const abort = new AbortController();
-    const disconnected = () => abort.abort();
-    reply.raw.once("close", disconnected);
-    try {
-      await engine.localOverlays.recoverPrivateRefresh(
-        session.workspace,
-        session.id,
-        abort.signal,
-      );
+      const abort = new AbortController();
+      const disconnected = () => abort.abort();
+      reply.raw.once("close", disconnected);
+      try {
+        await engine.localOverlays.recoverPrivateRefresh(
+          session.workspace,
+          session.id,
+          abort.signal,
+        );
 
-      return await engine.describeSession(session);
-    } catch {
-      return reply.code(409).send({
-        error:
-          "私有刷新未确认：可能缺少排空证明、来源仍被锁定、私有内容已变或卷未正常关闭。没有重放来源写入；请重新查看会话状态，未确认现场保持保留。",
-      });
-    } finally {
-      reply.raw.off("close", disconnected);
-    }
-  });
+        return await engine.describeSession(session);
+      } catch {
+        return reply.code(409).send({
+          error:
+            "私有刷新未确认：可能缺少排空证明、来源仍被锁定、私有内容已变或卷未正常关闭。没有重放来源写入；请重新查看会话状态，未确认现场保持保留。",
+        });
+      } finally {
+        reply.raw.off("close", disconnected);
+      }
+    },
+  );
   for (const action of ["review", "accept", "release-complete"] as const) {
     app.post(
       `/api/sessions/:id/local-publication-${action}`,
+      featureGate,
       async (request, reply) => {
         const { id } = z.object({ id: z.uuid() }).parse(request.params);
         const input =
@@ -127,101 +145,112 @@ export function registerLocalReviewRoutes(
     );
   }
 
-  app.post("/api/sessions/:id/local-resolution", async (request, reply) => {
-    const { id } = z.object({ id: z.uuid() }).parse(request.params);
-    const input = continuationSchema.parse(request.body);
-    const parent = await store.get(id);
-    if (!parent) {
-      return reply.code(404).send({ error: "会话不存在。" });
-    }
+  app.post(
+    "/api/sessions/:id/local-resolution",
+    featureGate,
+    async (request, reply) => {
+      const { id } = z.object({ id: z.uuid() }).parse(request.params);
+      const input = continuationSchema.parse(request.body);
+      const parent = await store.get(id);
+      if (!parent) {
+        return reply.code(404).send({ error: "会话不存在。" });
+      }
 
-    const availability = engine.localOverlayCreation;
-    if (!availability.enabled) {
-      return reply.code(409).send({ error: availability.reason });
-    }
+      const availability = engine.localOverlayCreation;
+      if (!availability.enabled) {
+        return reply.code(409).send({ error: availability.reason });
+      }
 
-    try {
-      const session = await engine.localOverlays.continueResolution(
-        { ...input, workspace: parent.workspace, sessionId: parent.id },
-        async (workspace) => {
-          const existing = (await store.list()).find(
-            (entry) => entry.workspace === workspace,
+      try {
+        const session = await engine.localOverlays.continueResolution(
+          { ...input, workspace: parent.workspace, sessionId: parent.id },
+          async (workspace) => {
+            const existing = (await store.list()).find(
+              (entry) => entry.workspace === workspace,
+            );
+
+            return existing ?? store.createAsync(workspace);
+          },
+        );
+
+        return engine.describeSession(session);
+      } catch {
+        return reply.code(409).send({
+          error:
+            "创建未确认或检查材料已改变。可重试同一请求；重新检查不会删除可能已创建的对话。原私有修改已保留。",
+        });
+      }
+    },
+  );
+  app.post(
+    "/api/sessions/:id/local-review",
+    featureGate,
+    async (request, reply) => {
+      const { id } = z.object({ id: z.uuid() }).parse(request.params);
+      const input = selectionSchema.parse(request.body);
+      const session = await store.get(id);
+      if (!session) {
+        return reply.code(404).send({ error: "会话不存在。" });
+      }
+
+      const info = (await engine.localOverlays.describe(session)).localOverlay;
+      if (!info) {
+        return reply
+          .code(404)
+          .send({ error: "此会话没有隔离 Local 私有视图。" });
+      }
+
+      const interrupted = "state" in input && input.state === "interrupted";
+      if (interrupted ? !info.interruptedReview : info.state !== "ready") {
+        return reply.code(409).send({
+          error:
+            "当前会话状态不支持此类检查；活动任务或缺失清单不能读取中断参考。",
+        });
+      }
+
+      const abort = new AbortController();
+      const disconnected = () => abort.abort();
+      reply.raw.once("close", disconnected);
+      try {
+        if ("paths" in input && input.state === "interrupted") {
+          return await engine.localOverlays.reviewInterrupted(
+            session.workspace,
+            session.id,
+            input.paths,
+            abort.signal,
           );
+        }
 
-          return existing ?? store.createAsync(workspace);
-        },
-      );
+        if ("paths" in input) {
+          return await engine.localOverlays.reviewBatch(
+            session.workspace,
+            session.id,
+            input.paths,
+            abort.signal,
+          );
+        }
 
-      return engine.describeSession(session);
-    } catch {
-      return reply.code(409).send({
-        error:
-          "创建未确认或检查材料已改变。可重试同一请求；重新检查不会删除可能已创建的对话。原私有修改已保留。",
-      });
-    }
-  });
-  app.post("/api/sessions/:id/local-review", async (request, reply) => {
-    const { id } = z.object({ id: z.uuid() }).parse(request.params);
-    const input = selectionSchema.parse(request.body);
-    const session = await store.get(id);
-    if (!session) {
-      return reply.code(404).send({ error: "会话不存在。" });
-    }
-
-    const info = (await engine.localOverlays.describe(session)).localOverlay;
-    if (!info) {
-      return reply.code(404).send({ error: "此会话没有隔离 Local 私有视图。" });
-    }
-
-    const interrupted = "state" in input && input.state === "interrupted";
-    if (interrupted ? !info.interruptedReview : info.state !== "ready") {
-      return reply.code(409).send({
-        error:
-          "当前会话状态不支持此类检查；活动任务或缺失清单不能读取中断参考。",
-      });
-    }
-
-    const abort = new AbortController();
-    const disconnected = () => abort.abort();
-    reply.raw.once("close", disconnected);
-    try {
-      if ("paths" in input && input.state === "interrupted") {
-        return await engine.localOverlays.reviewInterrupted(
+        return await engine.localOverlays.review(
           session.workspace,
           session.id,
-          input.paths,
+          input.path,
           abort.signal,
         );
+      } catch (error) {
+        const missing =
+          error instanceof PublishError &&
+          error.code === "NATIVE_CHANGE_MISSING";
+
+        return reply.code(409).send({
+          error: interrupted
+            ? "无法读取中断参考：旧执行可能仍活动、缺少退出证明，或所选文件不支持/超过限额。原卷、锁及未知状态保持不变。"
+            : missing
+              ? "该路径没有可检查的封存私有修改，请核对路径和大小写。"
+              : "当前无法检查所选文件。仅支持正常结束视图中已捕获的小型普通文件，最多 100 项、内容与预览合计 16 MiB；私有修改保持不变。",
+        });
+      } finally {
+        reply.raw.off("close", disconnected);
       }
-
-      if ("paths" in input) {
-        return await engine.localOverlays.reviewBatch(
-          session.workspace,
-          session.id,
-          input.paths,
-          abort.signal,
-        );
-      }
-
-      return await engine.localOverlays.review(
-        session.workspace,
-        session.id,
-        input.path,
-        abort.signal,
-      );
-    } catch (error) {
-      const missing =
-        error instanceof PublishError && error.code === "NATIVE_CHANGE_MISSING";
-
-      return reply.code(409).send({
-        error: interrupted
-          ? "无法读取中断参考：旧执行可能仍活动、缺少退出证明，或所选文件不支持/超过限额。原卷、锁及未知状态保持不变。"
-          : missing
-            ? "该路径没有可检查的封存私有修改，请核对路径和大小写。"
-            : "当前无法检查所选文件。仅支持正常结束视图中已捕获的小型普通文件，最多 100 项、内容与预览合计 16 MiB；私有修改保持不变。",
-      });
-    } finally {
-      reply.raw.off("close", disconnected);
-    }
-  });
+    },
+  );
 }

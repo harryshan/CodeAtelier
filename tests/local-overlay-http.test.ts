@@ -6,6 +6,7 @@
  * 4. 单文件及整组检查走真实 SQLite 与服务锁，验证鉴权、材料版本、脏卷拒绝及受控错误；检查不挂载，新对话不自动运行。
  * 5. 中断接口用明确标记的服务材料替身验证 HTTP 状态/参数和创建门禁；不将此夹具作为原生退出证明。
  * 6. 完成态刷新使用服务替身验证鉴权、空参数、能力门禁、状态回读和无自动任务；原生恢复由专项实机验证。
+ * 7. 本套件显式替换代码开关为开启；默认关闭及无副作用拒绝由 local-overlay-readiness.test.ts 验证。
  */
 import { randomUUID } from "node:crypto";
 import { cp, readFile, writeFile } from "node:fs/promises";
@@ -17,6 +18,13 @@ import { createTestApp } from "./fixtures/managed-runtime.js";
 import { FakeLocalOverlayBackend } from "./fixtures/local-overlay-backend.js";
 import { temp } from "./fixtures/helpers.js";
 import { nativeFixture } from "./fixtures/local-overlay-native.js";
+
+// 显式开启此套件的功能契约，生产默认关闭由 readiness 套件独立验证。
+vi.mock("../src/local-overlays/readiness.js", async (original) => ({
+  ...(await original<typeof import("../src/local-overlays/readiness.js")>()),
+  LOCAL_OVERLAY_ENABLED: true,
+  requireLocalOverlayEnabled() {},
+}));
 
 async function fixture() {
   const config = new Config(await temp());

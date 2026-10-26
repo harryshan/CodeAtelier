@@ -26,11 +26,17 @@
  * 模型请求可以重试，但已经执行的工具不能跟着重跑。数据库回滚也撤销不了文件修改或
  * 已启动的命令，所以保存失败时必须停止任务，并留下足够的记录供后续恢复。
  * 诊断生命周期：从入队建立 trace，精确关联模型/工具/持久化；关闭时等待检查点与终态归档，SSE 和快照只记录安全游标。
+ *    readiness 总开关在任务入队、排队执行及发布 IPC 前拒绝隔离 Local；历史、取消、关闭与旧授权清理仍保留。
  */
 
 import { TaskSkills } from "../skills/task-skills.js";
 import type { CandidateValidator } from "../local-overlays/candidate-validator.js";
 import { localOverlayPlatform } from "../local-overlays/platform.js";
+import {
+  LOCAL_OVERLAY_ENABLED,
+  LOCAL_OVERLAY_DISABLED_REASON,
+  requireLocalOverlayEnabled,
+} from "../local-overlays/readiness.js";
 import { runCandidateCommands } from "../local-overlays/command-runtime.js";
 import { validationCommands } from "../local-overlays/command-plan.js";
 import {
@@ -235,8 +241,17 @@ export class Engine {
   private readonly localPlatformSupported: boolean;
 
   get localOverlayCreation(): import("../shared/types.js").LocalOverlayCreation {
+    if (!LOCAL_OVERLAY_ENABLED) {
+      return {
+        featureEnabled: false,
+        enabled: false,
+        reason: LOCAL_OVERLAY_DISABLED_REASON,
+      };
+    }
+
     if (!this.localPlatformSupported) {
       return {
+        featureEnabled: true,
         enabled: false,
         reason:
           process.platform === "linux"
@@ -247,13 +262,24 @@ export class Engine {
 
     if (!this.config.sandbox.enabled) {
       return {
+        featureEnabled: true,
         enabled: false,
         reason:
           "隔离 Local 当前需要启用并安装 Sandbox；请在设置中配置后重启服务。",
       };
     }
 
-    return { enabled: true };
+    return { featureEnabled: true, enabled: true };
+  }
+
+  /** 只读识别旧视图，关闭时在任务持久化/挂载前拒绝；坏清单同样不能转普通 Local。 */
+  private async requireLocalFeature(session: Session) {
+    if (
+      !LOCAL_OVERLAY_ENABLED &&
+      (await this.localOverlays.describe(session)).localOverlay
+    ) {
+      requireLocalOverlayEnabled();
+    }
   }
 
   async describeSession(session: Session) {
@@ -266,6 +292,7 @@ export class Engine {
     input: { paths: readonly string[]; commands: readonly string[] },
     signal?: AbortSignal,
   ) {
+    requireLocalOverlayEnabled();
     signal?.throwIfAborted();
     const active = this.activeByTaskId.get(taskId);
     if (!active || !this.config.sandbox.enabled || !this.agentRuntimeLauncher) {
@@ -336,6 +363,7 @@ export class Engine {
     raw: LocalPublicationRequest,
     signal: AbortSignal,
   ) {
+    requireLocalOverlayEnabled();
     const request = localPublicationRequestSchema.parse(raw);
     signal.throwIfAborted();
     if (request.action === "select") {
@@ -833,6 +861,7 @@ export class Engine {
 
     const session = await this.store.get(sessionId);
     if (session) {
+      await this.requireLocalFeature(session);
       await this.localOverlays.validate(session.workspace, session.id);
       await this.worktrees.validate(session.workspace);
     }
@@ -2346,6 +2375,7 @@ export class Engine {
         track: "Task preparation",
       });
       try {
+        await this.requireLocalFeature(session);
         localLease = await this.localOverlays.begin(
           session.workspace,
           session.id,

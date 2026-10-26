@@ -1,5 +1,7 @@
 # CodeAtelier
 
+隔离 Local（Local overlay）目前由代码总开关默认关闭；暂停 Linux 推进，macOS 暂不实现。已有历史与私有数据保留，普通 Local、Riftri、Git worktree 不变。详见 [使用指南](docs/local-overlay-usage.md)。
+
 **在浏览器里描述需求，让 AI 帮你读代码、改代码、跑测试。**
 
 CodeAtelier 是一个运行在本机的个人 AI 编程助手。连接模型服务、选好项目目录，就可以开始对话。它会直接操作项目文件，你可以随时查看修改和执行过程，或停止任务。

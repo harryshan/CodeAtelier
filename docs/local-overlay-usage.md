@@ -1,5 +1,7 @@
 # 隔离 Local 使用指南
 
+隔离 Local 总开关（2026-10-27）：用户要求暂不继续 Linux 工作，并将整个功能置于代码开关之后、默认关闭。唯一开关为 `src/local-overlays/readiness.ts` 的 `LOCAL_OVERLAY_ENABLED = false`，没有设置、环境变量或 HTTP 覆盖。关闭时隐藏创建入口，拒绝创建、旧视图任务启动/恢复、发布选择、文件检查、参考继续、私有刷新及来源事故操作；`start:overlay` 也在创建 namespace 前拒绝。历史与私有数据保留，取消、关闭卸载及旧 Sandbox 授权清理继续执行。普通 Local、Riftri、Git worktree 和 Sandbox 原有行为不变。未来启用须修改常量并重新构建/启动，仍须满足平台与 Sandbox 条件；macOS 仍不实现。下面已完成的 Windows/Linux 记录仅作为关闭前的历史证据，不表示当前产品开放。
+
 隔离 Local 用于多个对话同时修改同一个项目。每个对话拥有私有写层，按需读取主目录文件；创建时不遍历或复制整个项目，也不创建 Git worktree。Windows 和显式启动的 Linux 已接入任务、Sandbox、发布及正常文件检查/参考继续；Linux 异常恢复尚未实现。用户于 2026-10-27 决定本轮不实现 macOS 后端，macOS 保持隔离 Local 关闭，启用 Sandbox 也不会开放它。
 
 ## 开始使用

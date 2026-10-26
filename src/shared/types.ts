@@ -12,6 +12,7 @@
  *    正常文件检查与异常恢复能力独立；Linux 正常检查不意味着可以接管未知挂载。
  *
  * 类型不会在运行时校验请求，相关检查仍由 API 和 Config 完成。公开 Settings 不包含密钥。
+ *    LocalOverlayCreation.featureEnabled 单独传递代码总开关，关闭时 UI 隐藏功能入口并保留历史展示。
  */
 
 export type TaskStatus =
@@ -79,6 +80,8 @@ export interface LocalOverlayInfo {
 }
 
 export interface LocalOverlayCreation {
+  /** 代码级总开关；与 enabled 的平台/Sandbox 前提分开，缺省视为未开放。 */
+  featureEnabled?: boolean;
   enabled: boolean;
   reason?: string;
 }

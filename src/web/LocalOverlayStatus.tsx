@@ -9,19 +9,26 @@
  * 7. 具备任务排空凭据的已发布批次可显式恢复私有刷新，完成后重读状态，不运行旧任务。
  * 8. 正常检查与异常恢复能力独立；Linux 可检查正常私有结果但不展示未知卷恢复入口。
  * 不显示控制路径/内部错误码，不从参考材料推断源码已经应用。
+ * 9. 总开关关闭时只显示历史状态和关闭说明，不挂载检查/恢复面板或发送其请求。
  */
-import type { LocalOverlayInfo, Session } from "../shared/types";
+import type {
+  LocalOverlayCreation,
+  LocalOverlayInfo,
+  Session,
+} from "../shared/types";
 import { LocalFileReview } from "./LocalFileReview";
 import { LocalPublicationRecovery } from "./LocalPublicationRecovery";
 import { LocalPrivateRefresh } from "./LocalPrivateRefresh";
 import s from "./app.module.css";
 
 export function LocalOverlayStatus({
+  capability,
   info,
   sessionId,
   onCreated,
   onUpdated,
 }: {
+  capability: LocalOverlayCreation;
   info: LocalOverlayInfo;
   sessionId: string;
   onCreated: (session: Session) => void;
@@ -45,6 +52,17 @@ export function LocalOverlayStatus({
     message = "正在验证并发布所选源码，请等待确认结果。";
   } else if (info.publication?.state === "selected") {
     message = "已登记源码选择，尚未发布。";
+  }
+
+  if (!capability.featureEnabled) {
+    return (
+      <div className={s.localOverlayStatus}>
+        <p role="status">{message}</p>
+        <p>
+          {capability.reason ?? "隔离 Local 功能未开放；历史和私有修改保留。"}
+        </p>
+      </div>
+    );
   }
 
   return (

@@ -4,13 +4,14 @@
  * 2. 固定 ID 重试不重新读取后来材料、不重建或重复绑定；错误请求/未知挂载保持拒绝。
  * 3. 验证参考前缀禁止发布，Engine 实际指令指向参考并要求重新读取当前源码。
  * 4. 批量 v2 按编号保留缺失/空文件/二进制引用，整组审核过期拒绝，旧单文件 v1 仍可使用。
+ * 5. 显式模拟代码开关开启以覆盖参考继续；生产默认关闭由独立门禁套件验证。
  * 假挂载不证明 live lower、原生 ACL 或 Sandbox；手动 verifier 单独覆盖真实 WinFsp。
  */
 import { randomUUID } from "node:crypto";
 import { cp, readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import pino from "pino";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { nativeFixture } from "./fixtures/local-overlay-native.js";
 import { FakeLocalOverlayBackend } from "./fixtures/local-overlay-backend.js";
 import { TestEngine, TestStore } from "./fixtures/managed-runtime.js";
@@ -21,6 +22,12 @@ import { publicationSelection } from "../src/local-overlays/publication.js";
 import { Config } from "../src/config/config.js";
 
 const log = pino({ enabled: false });
+
+vi.mock("../src/local-overlays/readiness.js", async (original) => ({
+  ...(await original<typeof import("../src/local-overlays/readiness.js")>()),
+  LOCAL_OVERLAY_ENABLED: true,
+  requireLocalOverlayEnabled() {},
+}));
 
 async function fixture() {
   const native = await nativeFixture();

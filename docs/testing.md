@@ -1,5 +1,7 @@
 # 测试约定与功能覆盖
 
+Local overlay 默认关闭（D170）：`local-overlay-readiness.test.ts` 使用未替换的生产开关，验证开启 Sandbox/注入后端仍不能创建、执行、恢复、选择发布、检查或处理事故；直接 Engine 调用和坏清单同样拒绝，历史/私有内容/清单保留，普通 Local 仍可执行。已有 HTTP、生命周期、事故套件显式模拟开启，以保留后续重开时的回归覆盖；不提供产品运行时覆盖。`e2e/local-overlay.spec.ts` 的关闭用例使用真实 bootstrap，验证隐藏两处创建入口、禁用历史任务/键盘提交及保留草稿；其它用例明确模拟开启能力。此变更不推进 Linux 或运行 Evaluation。
+
 Linux 正常用户取消：手动 `startup-probe.mjs --cancel` / `startup-cancel.mjs` 经公开 HTTP 和固定回环模型计划先编辑/选择发布，再启动长命令；观察真实开始标记和已登记的验证计划后调用取消 API。核对 cancelled/ready、Runtime 排空、未启动候选、来源不变及 B/O 保留；继续任务不选择时仍不发布，随后重新选择才经过新 Sandbox 候选发布。探针不杀服务、不模拟清理回执，不进入默认检查或 Evaluation。
 
 macOS Local overlay 门禁：`local-overlay-platform.test.ts` 核对普通 Darwin 启动及带完整 Linux namespace 上下文时都不开放入口、不选择 Linux backend；HTTP 既有用例核对能力拒绝发生在创建视图之前。平台工厂测试可注入平台值，不等于 macOS 实机验证；按 2026-10-27 用户决定不实现 macOS overlay。

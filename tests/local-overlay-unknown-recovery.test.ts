@@ -6,6 +6,7 @@
  * 4. 生产 HTTP/Service 从会话定位事故，校验鉴权/来源/批次/选集，接受后保留私有清单与残留锁。
  * 5. 完成态来源解锁只处理固定批次；无证明/活动任务拒绝，重试不能删除新所有者锁或改变私有现场。
  * PID/创建时间/句柄证据由手动 verify-lease 验证，本套件不替代 OS 执行排他验收。
+ * 6. 显式模拟代码开关开启以验证恢复协议；默认关闭由独立门禁套件覆盖。
  */
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir, unlink, writeFile } from "node:fs/promises";
@@ -26,6 +27,11 @@ import { createTestApp } from "./fixtures/managed-runtime.js";
 import { FakeLocalOverlayBackend } from "./fixtures/local-overlay-backend.js";
 
 const behavior = vi.hoisted(() => ({ failRelease: false }));
+vi.mock("../src/local-overlays/readiness.js", async (original) => ({
+  ...(await original<typeof import("../src/local-overlays/readiness.js")>()),
+  LOCAL_OVERLAY_ENABLED: true,
+  requireLocalOverlayEnabled() {},
+}));
 vi.mock("../src/local-overlays/publication/publication-lease.js", () => ({
   PublicationLease: {
     start: async (gate: string) => ({

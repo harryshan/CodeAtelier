@@ -5,13 +5,16 @@
  * 3. SIGINT/SIGTERM 转发控制器，等待其排空服务和卸载后退出；不在未知退出后重启。
  * 应用和挂载 tracing 由现有服务/控制器负责，本入口仅输出不含正文的开始/退出/失败状态。
  * 只用于编译后的 dist；不自动安装 FUSE、启用 Sandbox、迁移历史或回退到普通 start。
+ * 0. 代码总开关关闭时在路径检查/创建 namespace 或启动子进程前拒绝。
  */
 import { constants } from "node:fs";
 import { access } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { linuxOverlayStartup } from "../local-overlays/linux-startup.js";
+import { requireLocalOverlayEnabled } from "../local-overlays/readiness.js";
 
+requireLocalOverlayEnabled();
 const plan = linuxOverlayStartup(
   process.argv.slice(2),
   fileURLToPath(new URL("../../", import.meta.url)),

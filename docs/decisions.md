@@ -4,6 +4,9 @@
 
 ## D170：Overlay 改为 Local 会话文件隔离，与 Git worktree 并列
 
+- 隔离 Local 总开关（2026-10-27）：用户要求暂不继续 Linux 工作，并将整个功能置于代码开关之后、默认关闭。唯一开关为 `src/local-overlays/readiness.ts` 的 `LOCAL_OVERLAY_ENABLED = false`，没有设置、环境变量或 HTTP 覆盖。关闭时隐藏创建入口，拒绝创建、旧视图任务启动/恢复、发布选择、文件检查、参考继续、私有刷新及来源事故操作；`start:overlay` 也在创建 namespace 前拒绝。历史与私有数据保留，取消、关闭卸载及旧 Sandbox 授权清理继续执行。普通 Local、Riftri、Git worktree 和 Sandbox 原有行为不变。未来启用须修改常量并重新构建/启动，仍须满足平台与 Sandbox 条件；macOS 仍不实现。下面已完成的 Windows/Linux 记录仅作为关闭前的历史证据，不表示当前产品开放。
+- 观测：关闭决定通过 bootstrap 与受控入口错误展示；拒绝发生在任务/原生副作用之前，不新建任务 trace。已有任务准备失败、取消与授权清理沿用现有 tracing，不记录源码或控制路径。
+
 - macOS 范围收敛（2026-10-27）：用户明确“暂时在 macOS 上不开启相关功能”“没有，先不写 macOS 版本，macOS 上关闭这个功能”。本轮 Local overlay 实施与验收限定 Windows/Linux；macOS 不实现 FSKit/其它 overlay 后端，保持公开创建、执行和参考继续能力关闭，不因 Linux 环境变量或 Sandbox 已启用而开放。既有普通 Local、Git worktree、Riftri 和 macOS Sandbox 不属于此次关闭范围，不迁移历史或安装扩展。原 POSIX 原生优先决定对 Linux 继续有效，macOS 的接口调查仅保留为未来参考，重新实现须用户另行要求。
 
 - Linux 自身新增/删除后的正常刷新（2026-10-27，已验证）：complete 发布日志可证明本批普通文件的成员变化。刷新时只枚举受影响且已有读凭据的直接父目录，从当前成员逆转日志中的新增/删除，所得目录身份/成员摘要必须等于旧凭据，才更新为当前凭据；其它成员、目录身份或历史版本变化仍拒绝。继续核对所选私有内容、来源结果及全部剩余依赖，再执行原卸载/释放流程。不扩展目录创建、重命名、链接发布或异常恢复，不递归扫描来源；复用原收尾/刷新 tracing。实际删除还要求正确处理内核共享 whiteout（普通文件仍限单链接），以及正常卸载、helper 退出后仅恢复已核对的固定 `work/work` 目录 owner 权限，供候选清理；异常关闭不执行该恢复。

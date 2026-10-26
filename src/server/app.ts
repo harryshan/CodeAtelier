@@ -4,7 +4,7 @@
  *
  * 1. 创建 Fastify、Store 和 Engine；测试可替换 Local 挂载边界。若启用 Windows Sandbox，在监听前排空上次服务遗留的账户进程和 ACL journal。
  * 2. 先按监听范围注册来源与凭据检查、关闭/受监督重载接口和错误处理，再注册 bootstrap、设置接口。
- * 3. bootstrap 报告 subagent 和隔离 Local 入口能力；默认 Riftri、显式 Worktree/Local 严格互斥，固定 UUID 绑定目录。列表/快照/分页补充来源与私有发布状态；公开 Local 创建、启动和恢复均检查平台与 Sandbox 配置，历史读取不挂载。
+ * 3. bootstrap 报告 subagent 和隔离 Local 入口能力；默认 Riftri、显式 Worktree/Local 严格互斥，固定 UUID 绑定目录。列表/快照/分页补充来源与私有发布状态；公开 Local 创建、启动和恢复均检查代码总开关、平台与 Sandbox 配置，历史读取不挂载。
  * 4. 注册复用 Store 的只读任务阅读接口，接入 SSE，并提供构建后的网页；没有前端产物时显示开发提示。
  *    Local 单文件检查复用既有鉴权及视图排他锁，不启动 Runtime 或发布文件。
  * 5. preClose 中断任务并结束 SSE，onClose 关闭数据库。
@@ -314,7 +314,7 @@ export async function createApp(
     return store.eventBody(id, eventId, offset);
   });
   // 公开 Local 暂只支持 Sandbox；关闭配置后不能把已创建会话转为宿主任务。
-  // 内部 Engine 仍可用于独立生命周期夹具，安装能力则由真实启动验证。
+  // Engine 也检查代码总开关，独立生命周期夹具须显式模拟开启。
   async function requireLocalExecution(sessionId: string) {
     const session = await store.get(sessionId);
     if (

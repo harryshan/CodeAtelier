@@ -1,5 +1,12 @@
 # 初版验证记录
 
+## 隔离 Local 代码总开关默认关闭（2026-10-27）
+
+- 唯一生产开关为 `src/local-overlays/readiness.ts` 的 `LOCAL_OVERLAY_ENABLED = false`。UI 从 bootstrap 获取开关，创建、任务启动/恢复、发布 IPC、全部文件检查/参考继续/事故操作与显式 namespace 启动均拒绝；历史、私有数据、取消/关闭和旧 Sandbox 授权清理保留。没有运行时设置或环境覆盖，不继续 Linux 开发，macOS 仍不实现。
+- 新生产默认关闭回归使用真实 HTTP/Engine/Store 和替身挂载：即使开启 Sandbox 或注入后端也不开放；全部入口返回受控拒绝，直接 Engine 调用与坏清单不能绕过，任务数量、原清单、私有文件保持不变且没有挂载/发布，普通 Local 仍能完成任务。四个相关文件 49 项通过，参考继续独立 8 项通过。开启后的旧契约测试显式模拟开关，未修改生产默认值。
+- 最终 `pnpm check` 通过：168 个测试文件、1350 项通过/2 项跳过，类型、ESLint、格式与测试构建均通过。首次全量运行暴露一处旧参考继续夹具未显式开启开关，调整夹具后完整复跑通过；生产默认值保持 false。
+- `pnpm test:e2e` 全部 79 项通过。关闭用例使用真实 bootstrap，验证历史可见、两处创建入口隐藏、恢复/发送禁用、回车不产生写请求及草稿保留；开启状态的合成交互、普通会话和 Git worktree 也通过。未运行 WinFsp/WSL 实机新实验、Evaluation，未重启日常服务；此项是功能门禁验证，不新增平台可用性声明。
+
 ## Linux 用户取消后继续与重新发布（2026-10-27）
 
 - `startup-probe.mjs --review --cancel` 在 `sr-lApzzR` 使用正式构建产物、公开 HTTP、固定回环模型、生产 Engine/Store/Broker/Controller 和真实 MXC Sandbox。新会话编辑源码并完成 `local_publish` 选择后启动长命令，观察实际开始标记和持久计划事件，再调用取消 API；状态为 cancelled/ready，Runtime 终态为已应用 Sandbox 的 cancelled，未启动候选且来源未修改，原 B 和私有编辑可检查。

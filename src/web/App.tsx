@@ -14,12 +14,18 @@
  * 6. 末尾渲染与主页面同主题的设置模态框及重载/关闭确认框；未完成模型配置时阻止提交并引导设置，项目连接不使用弹窗。
  *
  * 关闭请求失败时不能断言服务已经关闭。切换会话和断线重连都只更新显示，不能重新提交任务。
+ * 7. 隔离 Local 总开关由 bootstrap 提供；关闭时隐藏创建入口，禁用旧视图发送/恢复（含键盘），历史和草稿保留。
  */
 
 import { useSessionConnection } from "./useSessionConnection";
 import { useHistoryScroll } from "./useHistoryScroll";
 import { useEffect, useRef, useState } from "react";
-import type { SandboxStatus, Session, Settings } from "../shared/types";
+import type {
+  LocalOverlayCreation,
+  SandboxStatus,
+  Session,
+  Settings,
+} from "../shared/types";
 import { api, bootstrap, sessions } from "./api";
 import { MarkdownTaskEditor } from "./MarkdownTaskEditor";
 import { SettingsPage } from "./settings/SettingsPage";
@@ -59,6 +65,8 @@ export default function App() {
   const [addingProject, setAddingProject] = useState(false);
   const [worktreeProject, setWorktreeProject] = useState<string>();
   const [localOverlayProject, setLocalOverlayProject] = useState<string>();
+  const [localOverlayCreation, setLocalOverlayCreation] =
+    useState<LocalOverlayCreation>({ enabled: false });
   const creationRequest = useRef<{ workspace: string; id: string } | undefined>(
     undefined,
   );
@@ -106,6 +114,7 @@ export default function App() {
         setHasKey(v.hasApiKey);
         setBootstrapSandbox(v.sandbox);
         setSubagentsAvailable(v.subagentsAvailable);
+        setLocalOverlayCreation(v.localOverlayCreation ?? { enabled: false });
 
         return sessions();
       })
@@ -124,6 +133,9 @@ export default function App() {
     data?.session.id === selected
       ? (data.latestSandbox ?? bootstrapSandbox)
       : bootstrapSandbox;
+  const localExecutionBlocked = Boolean(
+    data?.session.localOverlay && !localOverlayCreation.enabled,
+  );
 
   useEffect(() => {
     if (!mobileSidebarOpen) {
@@ -213,7 +225,7 @@ export default function App() {
     data.session.localOverlay.refreshedTaskId === recoverable.id,
   );
   const resume = async () => {
-    if (!recoverable) {
+    if (!recoverable || localExecutionBlocked) {
       return;
     }
 
@@ -238,6 +250,9 @@ export default function App() {
       await new Promise((resolve) => setTimeout(resolve, 250));
       try {
         const replacement = await bootstrap();
+        setLocalOverlayCreation(
+          replacement.localOverlayCreation ?? { enabled: false },
+        );
 
         if (replacement.token !== previousToken) {
           return;
@@ -255,6 +270,9 @@ export default function App() {
     setError("");
     try {
       const current = await bootstrap();
+      setLocalOverlayCreation(
+        current.localOverlayCreation ?? { enabled: false },
+      );
 
       await api("/server/reload", { confirm: true });
       await waitForReplacement(current.token);
@@ -319,7 +337,7 @@ export default function App() {
   };
 
   const send = async () => {
-    if (!prompt.trim() || !selected) {
+    if (!prompt.trim() || !selected || localExecutionBlocked) {
       return;
     }
 
@@ -436,18 +454,20 @@ export default function App() {
                     >
                       ⑂
                     </button>
-                    <button
-                      className={s.projectNewButton}
-                      disabled={busy}
-                      aria-label="新建隔离 Local 对话"
-                      title="私有编辑，验证后发布选定源码"
-                      onClick={() => {
-                        setLocalOverlayProject(projectWorkspace);
-                        setMobileSidebarOpen(false);
-                      }}
-                    >
-                      ⧉
-                    </button>
+                    {localOverlayCreation.featureEnabled && (
+                      <button
+                        className={s.projectNewButton}
+                        disabled={busy}
+                        aria-label="新建隔离 Local 对话"
+                        title="私有编辑，验证后发布选定源码"
+                        onClick={() => {
+                          setLocalOverlayProject(projectWorkspace);
+                          setMobileSidebarOpen(false);
+                        }}
+                      >
+                        ⧉
+                      </button>
+                    )}
                   </div>
                   <small
                     className={s.projectWorkspace}
@@ -681,13 +701,15 @@ export default function App() {
                   >
                     改用 Git worktree
                   </button>
-                  <button
-                    type="button"
-                    disabled={busy || !workspace.trim()}
-                    onClick={() => setLocalOverlayProject(workspace)}
-                  >
-                    使用隔离 Local
-                  </button>
+                  {localOverlayCreation.featureEnabled && (
+                    <button
+                      type="button"
+                      disabled={busy || !workspace.trim()}
+                      onClick={() => setLocalOverlayProject(workspace)}
+                    >
+                      使用隔离 Local
+                    </button>
+                  )}
                   {list.length > 0 && (
                     <button
                       type="button"
@@ -755,6 +777,7 @@ export default function App() {
               </div>
               {data?.session.localOverlay && (
                 <LocalOverlayStatus
+                  capability={localOverlayCreation}
                   info={data.session.localOverlay}
                   sessionId={data.session.id}
                   onUpdated={() => void refreshSession(data.session.id)}
@@ -836,7 +859,7 @@ export default function App() {
                         可在下方填写恢复说明，或直接恢复。
                       </p>
                       <button
-                        disabled={busy || !hasKey}
+                        disabled={busy || !hasKey || localExecutionBlocked}
                         onClick={() => void resume()}
                       >
                         恢复任务
@@ -893,6 +916,7 @@ export default function App() {
                       busy ||
                       !prompt.trim() ||
                       !hasKey ||
+                      localExecutionBlocked ||
                       ["failed", "unavailable", "preparing"].includes(
                         data?.session.localOverlay?.state ?? "",
                       )
@@ -923,7 +947,7 @@ export default function App() {
           }}
         />
       )}
-      {localOverlayProject && (
+      {localOverlayCreation.featureEnabled && localOverlayProject && (
         <LocalOverlayDialog
           workspace={localOverlayProject}
           onClose={() => setLocalOverlayProject(undefined)}

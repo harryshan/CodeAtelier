@@ -7,13 +7,14 @@
  * 5. 真实 stdio Runtime 子进程执行模型 local_publish，验证选定/撤销和普通任务拒绝；模拟模式不是 OS Sandbox 证据。
  * 6. 闲置检查复用逐视图锁；活动任务和关闭拒绝，读取失败不改变清单或阻止续聊。
  * 假后端不证明文件系统隔离/ACL；真实 WinFsp 与 Sandbox 由手动 verifier 验证。
+ * 7. 显式模拟代码开关开启，继续覆盖未来启用后的生命周期；不修改生产默认值。
  */
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import pino from "pino";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { FakeLocalOverlayBackend as FakeBackend } from "./fixtures/local-overlay-backend.js";
 import { LocalOverlayService } from "../src/local-overlays/service.js";
 import { Config } from "../src/config/config.js";
@@ -26,6 +27,13 @@ import type { AgentRuntimeLauncher } from "../src/sandbox/agent-runtime-launcher
 import { AgentRuntimeFallbackError } from "../src/sandbox/agent-runtime-launcher.js";
 
 const log = pino({ enabled: false });
+
+// 本套件显式覆盖开启后的生命周期；默认关闭的生产门禁另由 readiness 套件验证。
+vi.mock("../src/local-overlays/readiness.js", async (original) => ({
+  ...(await original<typeof import("../src/local-overlays/readiness.js")>()),
+  LOCAL_OVERLAY_ENABLED: true,
+  requireLocalOverlayEnabled() {},
+}));
 
 // Real child/IPC, simulated mode only. This cannot prove OS isolation or mount semantics.
 const protocolLauncher: AgentRuntimeLauncher = {
