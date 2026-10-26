@@ -41,6 +41,7 @@
     "overlay:verify-missing": "tsx scripts/verify-local-overlay-missing.ts",
     "overlay:verify-directory-dependency": "tsx scripts/verify-local-overlay-directory-dependency.ts",
     "overlay:verify-interrupted": "tsx scripts/verify-local-overlay-interrupted.ts",
+    "overlay:verify-interrupted-product": "tsx scripts/verify-local-overlay-interrupted-product.ts",
     "overlay:verify-candidate": "tsx scripts/verify-local-overlay-candidate.ts",
     "start": "node dist/server/server/launcher.js",
     "settings:migrate": "tsx scripts/migrate-settings.ts",

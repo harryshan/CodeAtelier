@@ -1,0 +1,129 @@
+{
+  "timestamp": "2026-10-26T05:48:58.066843+00:00",
+  "scope": "Windows Local interrupted reference inspection and explicit fresh-session continuation",
+  "verification": {
+    "interruptedService": {
+      "artifact": ".local/local-interrupted-product-fUSA0O/report.json",
+      "result": {
+        "passed": true,
+        "timestamp": "2026-10-26T05:38:49.359Z",
+        "selected": 3,
+        "referenceVersion": 3,
+        "currentLowerRead": true,
+        "explicitEditValidatedAndPublished": true,
+        "oldEvidenceUnchanged": true,
+        "oldViewRefused": true,
+        "fixedRequestIdempotent": true,
+        "limitations": [
+          "Synthetic active manifest and service lock; real helper/owner crash",
+          "Host trusted validation callback, not model or Sandbox",
+          "No old volume remount or unknown source incident resolution"
+        ]
+      }
+    },
+    "cleanResolutionRegression": {
+      "artifact": ".local/local-overlay-resolution-QuqzyK/report.json",
+      "result": {
+        "timestamp": "2026-10-26T05:42:26.976Z",
+        "platform": "win32",
+        "release": "10.0.26200",
+        "passed": true,
+        "creationMs": 170.02239999999995,
+        "checks": [
+          "old conflict retained",
+          "parent database unchanged",
+          "fixed request idempotent",
+          "stale member refuses entire group before allocation",
+          "two selected files preserved in numbered v2 references",
+          "fresh source and dependency",
+          "reference not applied or publishable",
+          "candidate Node execution",
+          "native publication and refresh",
+          "old private edits preserved"
+        ],
+        "limitations": [
+          "Host fixture and trusted validation adapter, not Sandbox/model IPC v18",
+          "Two small selected files, no automatic semantic merge or complete project validation",
+          "Old view intentionally preserved, no cleanup or in-place reset"
+        ]
+      }
+    },
+    "installedSandboxRegression": {
+      "artifact": ".local/local-overlay-sandbox-c7dgaY/report.json",
+      "result": {
+        "timestamp": "2026-10-26T05:44:24.915Z",
+        "platform": "win32",
+        "node": "v26.10.0",
+        "backend": "Local WinFsp + installed dedicated-account Runtime",
+        "registration": "production LocalOverlayService internal Engine lifecycle; no registration overrides",
+        "parallelRuntimeCommands": "passed",
+        "commandIntervals": {
+          "A": [
+            1792993426742,
+            1792993429000
+          ],
+          "B": [
+            1792993426767,
+            1792993429015
+          ]
+        },
+        "sourceAbsoluteWrite": "denied",
+        "gitMetadataCreation": "denied",
+        "sourceGitWriteRootsGranted": 0,
+        "privateWrites": "independent",
+        "cancelRunningCommand": "candidate Runtime drained",
+        "remountAndContinue": "both sessions passed after Engine recreation",
+        "epochs": {
+          "A": 5,
+          "B": 2
+        },
+        "publication": "two batches each selected an independent file and shared.txt; all three source files published; cancelled selection retained",
+        "rejection": "candidate failure and source conflict preserved; both private results survived restart",
+        "selection": "model local_publish tool through authenticated Runtime IPC",
+        "validation": "production Engine command plan and candidate Runtime; ordered success, exit rejection and cancellation",
+        "sharedFileMerge": {
+          "baseline": "left\nmiddle\nright\n",
+          "candidates": [
+            "left-A\nmiddle\nright\n",
+            "left-A\nmiddle\nright-B\n"
+          ],
+          "published": "left-A\nmiddle\nright-B\n"
+        },
+        "fallback": false,
+        "activeLeasesAfterTasks": 0,
+        "cleanup": "engine drained; helpers cleanly stopped",
+        "limitations": [
+          "Not an OS security boundary between sessions",
+          "Public UI/API creation not exercised by this verifier; fixed provider, not a real model evaluation"
+        ]
+      }
+    }
+  },
+  "check": {
+    "passed": true,
+    "files": 154,
+    "passedTests": 1236,
+    "skippedTests": 1,
+    "log": ".local/local-interrupted-product-check.log"
+  },
+  "browser": {
+    "passed": true,
+    "tests": 76,
+    "log": ".local/local-interrupted-product-e2e.log",
+    "scope": "Production UI with synthetic HTTP/SSE for Local-specific cases, not a real interrupted Sandbox browser chain"
+  },
+  "selfReview": {
+    "found": "Missing read dependency at the private reference UUID root was incorrectly rejected, blocking later ordinary source publication",
+    "reproduction": ".local/local-interrupted-reference-regression.log",
+    "fix": "Allow only exact reference UUID root absence receipts; reject later source appearance, reference subpaths and all reference publication selections",
+    "oldVolume": "Manifest, service lock, SQLite main/WAL and native lease bytes unchanged in the real interrupted verifier",
+    "continuation": "Reference v3 retains partial-operation marker; current lower is read anew, no source edit or task is automatically replayed"
+  },
+  "remaining": [
+    "No old dirty-volume remount, unlock or source-publication incident reconciliation by this entry point",
+    "Real interrupted verifier injects the active manifest/service lock and uses a trusted host validation callback",
+    "Installed Sandbox regression covers normal parallel tasks; full interrupted public browser to Sandbox recovery remains separate",
+    "No proof of Sandbox descendant drain from the private inspection lease",
+    "Complete private refresh recovery, metadata/external dependency coverage, POSIX and host public adapter remain in the active goal"
+  ]
+}

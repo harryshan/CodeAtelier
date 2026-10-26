@@ -1,5 +1,16 @@
 # 初版验证记录
 
+## Local 中断参考产品入口（2026-10-26）
+
+- 汇总：[中断参考产品验证报告](local-overlay-interrupted-product-results.json)。`pnpm test:e2e` 全部 76 项通过（`.local/local-interrupted-product-e2e.log`），包含新增中断内容纯文本显示、部分写入提示、明确模式请求、无合并预览和新会话不自动运行；Local 专项使用合成 HTTP/SSE，不代替真实中断 Sandbox 浏览器全链路。
+
+- Service、HTTP 和 UI 接入明确 interrupted 模式的选集检查与新参考会话。检查验证原会话/来源/控制身份、原生退出证明及前后状态；原卷不改 ready、不删锁。v3 只携带 B/可能部分写入的私有结果，固定创建 UUID 幂等；新任务仍须读取最新来源并重新编辑/验证，不自动重放未知操作。
+- 真实 `pnpm overlay:verify-interrupted-product` 通过（`.local/local-interrupted-product-native-final.log`、`.local/local-interrupted-product-fUSA0O/report.json`）：活 helper、helper 退出但 owner 仍活均拒绝，两者退出后检查三文件参考；错误版本在创建前拒绝，同请求复用新会话；新卷读取检查后更新的 lower，并在明确编辑/验证后发布。原清单、锁、main/WAL/原生租约字节不变，旧卷仍拒绝任务。active 清单/服务锁为故障注入，真实进程终止只针对夹具；发布验证使用可信宿主回调，不代表 Sandbox 中断恢复全链路。
+- 实机首次发现参考目录的缺失读依赖被 `PATH_REJECTED` 拒绝，导致新参考会话无法发布正常源码。新增回归先失败（`.local/local-interrupted-reference-regression.log`），再修复精确 UUID 参考根的缺失凭据；不读取或发布参考、不忽略依赖，来源后来出现任何对象仍拒绝。正常 `pnpm overlay:verify-resolution` 随后通过（`.local/local-interrupted-clean-resolution.log`、`.local/local-overlay-resolution-QuqzyK/report.json`），v2 两文件参考、Node 候选、发布/刷新与旧卷保留正常。
+- `pnpm check` 通过（`.local/local-interrupted-product-check.log`）：154 个文件、1,236 项通过、1 项既有跳过；类型、Lint、格式和构建通过，仅既有依赖注释/产物体积提示。服务测试覆盖身份/错状态/证明失败、材料改变、幂等/模式绑定、原卷不变及关闭取消排空；HTTP 测试使用中断材料替身验证鉴权/CSRF、明确模式、能力门禁及无自动任务，不冒充原生证明。
+- 已安装 `pnpm overlay:verify-sandbox --commands --merge` 回归通过（`.local/local-interrupted-product-sandbox.log`、`.local/local-overlay-sandbox-c7dgaY/report.json`）：生产 Runtime 双会话并行、同文件两处合并、模型工具选集、候选命令、失败/冲突/取消和 Engine 重建后续聊；无 fallback、零活动租约、helper 正常退出。没有安装/Repair、重启用户服务、创建分区或执行 Evaluation。
+- 恢复范围仍有限：此增量不解锁/重挂载旧 dirty 卷、不解决未知来源发布、不证明 Sandbox 后代排空；旧卷无进程记录拒绝。完整 private refresh、元数据/外部依赖及 POSIX 仍在原目标内。
+
 ## Local 异常私有层离线检查基础（2026-10-26）
 
 - 新 Local helper 在 dispatcher 服务前 flush `local-owner-v1` 记录，正常停止后记 closed。`inspect-local` 取得原 mount.lock 排他句柄，固定目录祖先/对象目录并检查旧 helper PID/创建时间/退出；active 记录另外要求旧宿主退出。旧空记录不猜测，正常旧 clean 卷仍可在后续挂载时记录新生命周期。

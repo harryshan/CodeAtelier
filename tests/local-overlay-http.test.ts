@@ -4,9 +4,10 @@
  * 2. 固定 UUID 创建/重试、来源身份、列表/快照/历史分页及损坏清单的历史可读性。
  * 3. 冲突参数与源目录更换不创建额外视图；关闭 Sandbox 后旧视图启动/恢复也须拒绝，不调度 Runtime 或宣称真实 WinFsp/Sandbox 可用。
  * 4. 单文件及整组检查走真实 SQLite 与服务锁，验证鉴权、材料版本、脏卷拒绝及受控错误；检查不挂载，新对话不自动运行。
+ * 5. 中断接口用明确标记的服务材料替身验证 HTTP 状态/参数和创建门禁；不将此夹具作为原生退出证明。
  */
 import { randomUUID } from "node:crypto";
-import { cp, writeFile } from "node:fs/promises";
+import { cp, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import pino from "pino";
 import { expect, it, vi } from "vitest";
@@ -42,6 +43,135 @@ async function fixture() {
 
   return { ...server, backend, headers, source: await temp() };
 }
+
+it("requires explicit interrupted requests and preserves failed state while creating a reference session", async () => {
+  const f = await fixture();
+  const id = randomUUID();
+  const parent = await f.engine.localOverlays.create(
+    { id, source: f.source },
+    (workspace) => f.store.create(workspace, "Interrupted"),
+  );
+  const manifest = path.join(f.engine.localOverlays.root, `${id}.json`);
+  const record = JSON.parse(await readFile(manifest, "utf8"));
+  record.phase = "failed";
+  await writeFile(manifest, JSON.stringify(record));
+  const bytes = {
+    content: Buffer.from("partial").toString("base64"),
+    version: "fixture",
+    mode: null,
+  };
+  const material = {
+    state: "interrupted" as const,
+    publicationChecked: false as const,
+    version: "a".repeat(64),
+    files: [{ path: "code.txt", base: bytes, private: bytes }],
+  };
+  const inspect = vi
+    .spyOn(f.engine.localOverlays, "reviewInterrupted")
+    .mockResolvedValue(material);
+  const url = `/api/sessions/${parent.id}/local-review`;
+  const payload = { paths: ["code.txt"], state: "interrupted" };
+  expect(
+    (await f.app.inject({ method: "POST", url, payload })).statusCode,
+  ).toBe(401);
+  expect(
+    (
+      await f.app.inject({
+        method: "POST",
+        url,
+        payload,
+        headers: { host: f.headers.host, cookie: f.headers.cookie },
+      })
+    ).statusCode,
+  ).toBe(403);
+  expect(
+    (
+      await f.app.inject({
+        method: "POST",
+        url,
+        payload: { paths: ["code.txt"] },
+        headers: f.headers,
+      })
+    ).statusCode,
+  ).toBe(409);
+  for (const invalid of [
+    { ...payload, control: "untrusted" },
+    { path: "code.txt", state: "interrupted" },
+    { ...payload, state: "ready" },
+  ]) {
+    expect(
+      (
+        await f.app.inject({
+          method: "POST",
+          url,
+          payload: invalid,
+          headers: f.headers,
+        })
+      ).statusCode,
+    ).toBe(400);
+  }
+
+  const result = await f.app.inject({
+    method: "POST",
+    url,
+    payload,
+    headers: f.headers,
+  });
+  expect(result.statusCode).toBe(200);
+  expect(result.headers["cache-control"]).toBe("no-store");
+  expect(result.json()).toEqual(material);
+  const continuation = {
+    ...payload,
+    id: randomUUID(),
+    version: material.version,
+  };
+  const continueUrl = `/api/sessions/${parent.id}/local-resolution`;
+  expect(
+    (
+      await f.app.inject({
+        method: "POST",
+        url: continueUrl,
+        payload: continuation,
+        headers: f.headers,
+      })
+    ).statusCode,
+  ).toBe(409);
+  vi.spyOn(f.engine, "localOverlayCreation", "get").mockReturnValue({
+    enabled: true,
+  });
+  const child = await f.app.inject({
+    method: "POST",
+    url: continueUrl,
+    payload: continuation,
+    headers: f.headers,
+  });
+  expect(child.statusCode).toBe(200);
+  expect(child.json().localOverlay.resolution.state).toBe("interrupted");
+  expect(await f.store.tasks(child.json().id)).toHaveLength(0);
+  expect(
+    (
+      await f.app.inject({
+        method: "POST",
+        url: continueUrl,
+        payload: continuation,
+        headers: f.headers,
+      })
+    ).json().id,
+  ).toBe(child.json().id);
+  expect(JSON.parse(await readFile(manifest, "utf8"))).toEqual(record);
+  inspect.mockRejectedValueOnce(
+    new Error("private SQLite path and process detail"),
+  );
+  const rejected = await f.app.inject({
+    method: "POST",
+    url,
+    payload,
+    headers: f.headers,
+  });
+  expect(rejected.statusCode).toBe(409);
+  expect(rejected.body).toContain("原卷、锁及未知状态保持不变");
+  expect(rejected.body).not.toContain("SQLite");
+});
 
 it("reviews selected files with authentication without exposing control paths or mounting", async () => {
   const f = await fixture();

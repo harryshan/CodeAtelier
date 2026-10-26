@@ -5,6 +5,7 @@
  * 3. ready 时展示明确选集的内容检查；状态/代次/会话变化销毁旧内容和未完成请求。
  * 4. 冲突继续会话标明旧材料仅供参考，创建回调交回 App；不直接恢复旧卷或发布文件。
  * 5. 待核查批次提供来源事故入口；清单提示不是原生排空证明，接受也不将私有视图变为可执行。
+ * 6. 非活动异常清单可显式检查中断参考；状态键销毁旧结果，不把入口标志当作执行退出证明。
  * 不显示控制路径/内部错误码，不从参考材料推断源码已经应用。
  */
 import type { LocalOverlayInfo, Session } from "../shared/types";
@@ -22,7 +23,11 @@ export function LocalOverlayStatus({
   onCreated: (session: Session) => void;
 }) {
   let message = "修改保留在本对话的私有视图，尚无源码发布记录。";
-  if (info.state === "failed" || info.state === "unavailable") {
+  if (
+    info.state === "failed" ||
+    info.state === "unavailable" ||
+    info.interruptedReview
+  ) {
     message =
       "私有视图需要核查，暂不能继续任务。已保存的历史仍可查看；不会自动重建或回写。";
   } else if (info.publication?.state === "published") {
@@ -53,13 +58,16 @@ export function LocalOverlayStatus({
             ? `所选 ${info.resolution.paths.length} 个文件`
             : info.resolution.path}{" "}
           的旧修改仅作为参考，尚未自动应用；原对话仍保留。
+          {info.resolution.state === "interrupted" &&
+            "参考来自中断执行，可能包含部分写入，须重新核对当前源码。"}
         </p>
       )}
-      {info.state === "ready" && (
+      {(info.state === "ready" || info.interruptedReview) && (
         <LocalFileReview
-          key={`${sessionId}:${info.epoch}`}
+          key={`${sessionId}:${info.epoch}:${info.state}:${Boolean(info.interruptedReview)}`}
           sessionId={sessionId}
           onCreated={onCreated}
+          interrupted={info.interruptedReview}
         />
       )}
     </div>

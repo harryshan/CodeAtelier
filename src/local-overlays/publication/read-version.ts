@@ -4,10 +4,12 @@
  * 2. nativeReadPath 将原生观察转换为受控路径/类型；不接受任意本机路径或未识别目录标签。
  * 3. readVersion 对文件沿用流式快照；目录只枚举直接名称/类型并绑定身份，排除视图隐藏的 .git。
  *    枚举前后复核身份/时间，持久版本不含时间，避免已清理临时项造成无关失效。
+ * 4. 精确 UUID 参考根仅允许 missing 凭据：私有目录创建也会观察 lower 缺失，后续出现则拒绝；子路径和发布仍禁止。
  * 目录每次最多 100,000 项/16 MiB 编码；不递归、不读取成员正文、不声称涵盖条目的大小/时间元数据。
  * 外部写入仍有检查后竞争窗口，按已观测目录验证不等于 OS 原子事务；日志由外层生命周期负责。
  */
 import { lstat, opendir } from "node:fs/promises";
+import path from "node:path";
 import {
   checkedPath,
   checkRelative,
@@ -23,8 +25,18 @@ export interface ReadPath {
   kind?: "directory";
 }
 
+function referenceRoot(value: string) {
+  return /^\.codeatelier-recovery-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(
+    value,
+  );
+}
+
 export function checkReadPath(read: ReadPath) {
   if (read.kind === "directory" && read.path === ".") {
+    return;
+  }
+
+  if (!read.kind && referenceRoot(read.path)) {
     return;
   }
 
@@ -43,6 +55,9 @@ export function nativeReadPath(name: string, stamp: string): ReadPath {
     ...(kind ? { kind } : {}),
   };
   checkReadPath(read);
+  if (referenceRoot(read.path) && stamp !== "missing") {
+    throw new PublishError("PATH_REJECTED");
+  }
 
   return read;
 }
@@ -53,6 +68,28 @@ export async function readVersion(
   signal?: AbortSignal,
 ): Promise<string> {
   checkReadPath(read);
+  signal?.throwIfAborted();
+  if (referenceRoot(read.path)) {
+    const current = await sourceIdentity(source.root);
+    if (current.root !== source.root || current.identity !== source.identity) {
+      throw new PublishError("SOURCE_REPLACED");
+    }
+
+    // Never read these reserved paths as source data or discard their negative
+    // dependency. Any object appearing at this exact root invalidates it.
+    try {
+      await lstat(path.join(source.root, read.path));
+    } catch (error: unknown) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        return "missing";
+      }
+
+      throw error;
+    }
+
+    throw new PublishError("STALE_DEPENDENCY");
+  }
+
   if (read.kind !== "directory") {
     return snapshotVersion(source, read.path, signal);
   }

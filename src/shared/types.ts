@@ -8,6 +8,7 @@
  * 4. LocalOverlayInfo 独立描述私有视图与选定源码发布状态，不携带控制路径或候选命令；LocalOverlayCreation 仅报告入口前提，不证明驱动/Runtime 已可用。
  *    resolution 仅记录冲突继续的父会话、文件及新视图内参考目录；paths 为整组选择，path 保留首文件兼容，不把历史内容当成已应用源码。
  *    publicationRecovery 仅表示会话存在待核查的批次，真实来源执行排空仍由原生租约验证。
+ *    interruptedReview 仅提供中断参考检查入口，非排空证明；resolution.state 保留可能部分写入标记。
  *
  * 类型不会在运行时校验请求，相关检查仍由 API 和 Config 完成。公开 Settings 不包含密钥。
  */
@@ -55,11 +56,13 @@ export interface LocalOverlayInfo {
   state: "preparing" | "ready" | "active" | "failed" | "unavailable";
   epoch?: number;
   publicationRecovery?: boolean;
+  interruptedReview?: boolean;
   resolution?: {
     sessionId: string;
     path: string;
     paths?: string[];
     directory: string;
+    state?: "interrupted";
   };
   publication?: {
     state: "selected" | "publishing" | "published" | "rejected" | "retained";

@@ -6,10 +6,138 @@
  * 4. 显式创建冲突继续对话，失败保留固定请求重试，显示参考状态且仅预填任务，不自动提交。
  * 5. 来源事故检查/接受使用固定 token，未知结果重试；接受后原私有视图仍禁用，完成态和已记录决定分开提示。
  *    完成态只允许明确释放该批次来源锁，失败可重试；不提交任务或重新接受部分发布现场。
+ * 6. 中断检查明确传递恢复模式，只呈现可能部分写入的参考，参考新会话不自动提交任务。
  * 页面和请求代码为生产实现；真实挂载/权限/发布链路另由手动 WinFsp 验证证明。
  */
 import { expect, test } from "@playwright/test";
 import type { Session } from "../../src/shared/types.js";
+
+test("shows interrupted bytes as reference and explicitly continues in a fresh session", async ({
+  page,
+}) => {
+  const failed: Session = {
+    ...created,
+    localOverlay: {
+      ...created.localOverlay!,
+      state: "failed",
+      interruptedReview: true,
+    },
+  };
+  const child: Session = {
+    ...created,
+    id: "interrupted-child",
+    title: "中断参考会话",
+    workspace: "/private/interrupted-child",
+    localOverlay: {
+      id: "reference-child",
+      state: "ready",
+      resolution: {
+        sessionId: created.id,
+        path: "partial.txt",
+        paths: ["partial.txt"],
+        state: "interrupted",
+        directory: ".codeatelier-recovery-fixture",
+      },
+    },
+  };
+  let sessions = [failed];
+  await page.route("**/api/sessions", (route) =>
+    route.fulfill({ json: sessions }),
+  );
+  for (const session of [failed, child]) {
+    await page.route(
+      new RegExp(`/api/sessions/${session.id}(?:\\?.*)?$`),
+      (route) =>
+        route.fulfill({
+          json: { session, tasks: [], events: [], approvals: [] },
+        }),
+    );
+    await page.route(`**/api/sessions/${session.id}/events`, (route) =>
+      route.fulfill({
+        contentType: "text/event-stream",
+        body: "event: refresh\ndata: {}\n\n",
+      }),
+    );
+  }
+
+  let requests = 0;
+  let submitted = false;
+  const version = "a".repeat(64);
+  await page.route(
+    `**/api/sessions/${failed.id}/local-review`,
+    async (route) => {
+      expect(route.request().postDataJSON()).toEqual({
+        paths: ["partial.txt"],
+        state: "interrupted",
+      });
+      requests++;
+      if (requests === 1) {
+        await route.fulfill({
+          status: 409,
+          json: { error: "旧执行仍活动，不能检查。" },
+        });
+
+        return;
+      }
+
+      const snapshot = (text: string) => ({
+        content: Buffer.from(text).toString("base64"),
+        mode: null,
+        version: "fixture",
+      });
+      await route.fulfill({
+        json: {
+          state: "interrupted",
+          publicationChecked: false,
+          version,
+          files: [
+            {
+              path: "partial.txt",
+              base: snapshot("original"),
+              private: snapshot("<script>partial()</script>"),
+            },
+          ],
+        },
+      });
+    },
+  );
+  await page.route(
+    `**/api/sessions/${failed.id}/local-resolution`,
+    async (route) => {
+      expect(route.request().postDataJSON()).toMatchObject({
+        paths: ["partial.txt"],
+        state: "interrupted",
+        version,
+      });
+      sessions = [child, failed];
+      await route.fulfill({ json: child });
+    },
+  );
+  await page.route(`**/api/sessions/${child.id}/tasks`, async (route) => {
+    submitted = true;
+    await route.abort();
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: failed.title, exact: true }).click();
+  await page.getByText("检查中断参考", { exact: true }).click();
+  await page.getByRole("textbox", { name: "相对文件路径" }).fill("partial.txt");
+  const inspect = page.getByRole("button", { name: "查看中断内容" });
+  await inspect.click();
+  await expect(page.getByRole("alert")).toContainText("旧执行仍活动");
+  await inspect.click();
+  const result = page.getByRole("region", { name: "文件检查结果" });
+  await expect(result).toContainText("可能包含部分写入");
+  await expect(
+    result.getByRole("region", { name: "中断私有内容" }),
+  ).toContainText("<script>partial()</script>");
+  await expect(result.getByRole("region", { name: "合并预览" })).toHaveCount(0);
+  await expect(result.locator("script")).toHaveCount(0);
+  await page.getByRole("button", { name: "在新对话中解决" }).click();
+  await expect(
+    page.getByText("参考来自中断执行", { exact: false }),
+  ).toBeVisible();
+  expect(submitted).toBe(false);
+});
 
 test("reviews a publication incident and accepts only that source decision without resuming the view", async ({
   page,

@@ -3,6 +3,7 @@
  * 1. 直接启动真实 Local helper，传递本宿主 PID，写入覆盖/新建/删除及未完成文件。
  * 2. IPC 提供自己创建的 helper PID，并按父指令异常结束或正常停止 helper，宿主继续存活。
  * 3. 保持文件句柄用于模拟写入中断；只在本夹具内运行，不初始化产品服务或 Sandbox。
+ * 4. 可选控制目录/卷路径由产品恢复 verifier 提供，用 restore-local 操作已创建的真实服务视图。
  */
 import { spawn } from "node:child_process";
 import { open, unlink, writeFile } from "node:fs/promises";
@@ -16,13 +17,16 @@ import {
 } from "../../src/worktrees/overlay.js";
 
 const root = path.resolve(process.argv[2]!);
-const workspace = overlayWorkspace(overlayNamespace(root), randomUUID());
+const restore = process.argv[3] !== undefined;
+const workspace = restore
+  ? process.argv[4]!
+  : overlayWorkspace(overlayNamespace(root), randomUUID());
 const helper = spawn(
   overlayHelperPath(),
   [
-    "create-local",
+    restore ? "restore-local" : "create-local",
     path.join(root, "source"),
-    path.join(root, "control"),
+    restore ? path.resolve(process.argv[3]!) : path.join(root, "control"),
     workspace.slice(1).replace(/\\$/, ""),
     String(process.pid),
   ],

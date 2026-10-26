@@ -11,6 +11,7 @@
  * 8. continueResolution 用已审核版本建立新视图及参考材料，固定请求重试绑定父会话；不修改旧视图或清空依赖。
  * 9. publicationRecovery 从非本进程活动会话定位发布事故，原生来源租约控制审核/接受；不取得或删除私有视图残留锁，不把失败卷改为 ready。
  *    release-complete 仅释放有原生退出证明的完整批次来源锁，不能重放写入或影响后来发布者。
+ * 10. reviewInterrupted 不取得或删除旧服务锁；原生离线租约证明旧 helper/owner 退出，只读取选定中断参考。
  * 公开创建由 HTTP 单独检查平台/Sandbox 能力，不迁移旧历史；来源写入只由冻结租约内的协调器执行。
  */
 import { randomUUID } from "node:crypto";
@@ -46,6 +47,10 @@ import {
   type Source,
 } from "./publication/files.js";
 import { Publisher } from "./publication/publisher.js";
+import {
+  inspectInterruptedFiles,
+  type InterruptedReview,
+} from "./interrupted-review.js";
 import {
   resolutionOriginSchema,
   resolutionDirectory,
@@ -83,7 +88,7 @@ type ResolutionRequest = {
   workspace: string;
   sessionId: string;
   version: string;
-} & ({ path: string } | { paths: readonly string[] });
+} & ({ path: string } | { paths: readonly string[]; state?: "interrupted" });
 
 export class LocalOverlayService {
   readonly root: string;
@@ -415,6 +420,70 @@ export class LocalOverlayService {
     );
   }
 
+  reviewInterrupted(
+    workspace: string,
+    sessionId: string,
+    paths: readonly string[],
+    signal: AbortSignal,
+  ) {
+    const work = this.inspectInterrupted(
+      workspace,
+      sessionId,
+      reviewSelection(paths),
+      AbortSignal.any([signal, this.creation.signal]),
+    );
+    this.creating.add(work);
+    void work.finally(() => this.creating.delete(work)).catch(() => {});
+
+    return work;
+  }
+
+  private async inspectInterrupted(
+    workspace: string,
+    sessionId: string,
+    paths: readonly string[],
+    signal: AbortSignal,
+  ) {
+    signal.throwIfAborted();
+    const id = this.backend.idFor(workspace);
+    if (!id || this.active.has(id)) {
+      throw new Error("中断检查不能读取活动任务或普通工作目录。");
+    }
+
+    return this.observe(id, "interrupted_review", async () => {
+      const record = await this.read(id);
+      const source = await sourceIdentity(record.source);
+      const control = await sourceIdentity(this.control(id));
+      if (
+        record.sessionId !== sessionId ||
+        !["failed", "active"].includes(record.phase) ||
+        (await directoryIdentity(record.source)) !== record.sourceIdentity ||
+        (await directoryIdentity(this.control(id))) !== record.controlIdentity
+      ) {
+        throw new Error("中断检查的会话、来源或私有目录身份无法确认。");
+      }
+
+      // The stale service lock is evidence, not a lease we may steal. Native
+      // inspection holds mount.lock and proves the old execution identities gone.
+      const result = await inspectInterruptedFiles(source, control, paths, {
+        signal,
+        log: this.log,
+        traceDirectory: path.join(this.root, "inspections"),
+      });
+      signal.throwIfAborted();
+      if (
+        this.active.has(id) ||
+        JSON.stringify(await this.read(id)) !== JSON.stringify(record) ||
+        (await directoryIdentity(record.source)) !== record.sourceIdentity ||
+        (await directoryIdentity(this.control(id))) !== record.controlIdentity
+      ) {
+        throw new Error("中断检查期间会话或目录身份改变。");
+      }
+
+      return result;
+    });
+  }
+
   private inspect<T>(
     workspace: string,
     sessionId: string,
@@ -490,6 +559,10 @@ export class LocalOverlayService {
           projectWorkspace: record.source,
           state: record.phase,
           epoch: record.epoch,
+          ...(["failed", "active"].includes(record.phase) &&
+          !this.active.has(id)
+            ? { interruptedReview: true }
+            : {}),
           ...(record.publication?.batchId &&
           (record.phase === "failed" ||
             (record.phase === "active" && !this.active.has(id)))
@@ -502,6 +575,9 @@ export class LocalOverlayService {
               ? { paths: record.resolution.paths }
               : {}),
             directory: resolutionDirectory(record.id),
+            ...("state" in record.resolution
+              ? { state: record.resolution.state }
+              : {}),
           },
           publication: record.publication && {
             state: record.publication.state,
@@ -595,7 +671,10 @@ export class LocalOverlayService {
       overlayId: parentId,
       sessionId: input.sessionId,
       ...("paths" in input
-        ? { paths: reviewSelection(input.paths) }
+        ? {
+            paths: reviewSelection(input.paths),
+            ...(input.state ? { state: input.state } : {}),
+          }
         : { path: input.path }),
       version: input.version,
     });
@@ -609,12 +688,19 @@ export class LocalOverlayService {
       prepare: async () => {
         const review =
           "paths" in input
-            ? await this.reviewBatch(
-                input.workspace,
-                input.sessionId,
-                input.paths,
-                this.creation.signal,
-              )
+            ? input.state === "interrupted"
+              ? await this.reviewInterrupted(
+                  input.workspace,
+                  input.sessionId,
+                  input.paths,
+                  this.creation.signal,
+                )
+              : await this.reviewBatch(
+                  input.workspace,
+                  input.sessionId,
+                  input.paths,
+                  this.creation.signal,
+                )
             : await this.review(
                 input.workspace,
                 input.sessionId,
@@ -635,7 +721,9 @@ export class LocalOverlayService {
     bind: (workspace: string, sessionId?: string) => Promise<Session>,
     resolution?: {
       origin: ResolutionOrigin;
-      prepare: () => Promise<LocalFileReview | LocalReviewBatch>;
+      prepare: () => Promise<
+        LocalFileReview | LocalReviewBatch | InterruptedReview
+      >;
     },
   ) {
     const id = z.uuid().parse(input.id);

@@ -3,6 +3,7 @@
  * 1. 目录版本区别名称/类型/身份变化，忽略普通文件内容和已清理临时项，拒绝越界/取消。
  * 2. 原生候选及主批次导出保留目录类型与根路径，并继续要求各代次原生有效凭据。
  * 3. Publisher 在候选结束后复核主/候选目录依赖，过期时不得改写选定源码。
+ * 4. 参考目录的确切 UUID 根仅允许缺失读凭据；创建后出现或子路径拒绝，写选择仍禁止参考前缀。
  * 实机枚举、私有层和原生持久化由手动目录依赖 verifier 及 native import-test 覆盖。
  */
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
@@ -24,9 +25,47 @@ import {
   validateReceipt,
 } from "../src/local-overlays/candidate-reads.js";
 import { nativeBatch } from "../src/local-overlays/publication/native-batch.js";
+import { publicationSelection } from "../src/local-overlays/publication.js";
 import { Publisher } from "../src/local-overlays/publication/publisher.js";
 
 const rootRead = { path: ".", kind: "directory" as const };
+
+it("retains the absence dependency from creating a private reference without allowing reference publication", async () => {
+  const f = await nativeFixture();
+  const reference =
+    ".codeatelier-recovery-aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+  await f.change("code.txt", "old", "new");
+  const native = "\\" + reference;
+  f.mutate(
+    `INSERT INTO observations(path,name,stamp,epoch) VALUES('${native.toUpperCase()}','${native}','missing',0); INSERT INTO checked_reads VALUES('${native.toUpperCase()}',1,0)`,
+  );
+  const batch = await nativeBatch(
+    f.source,
+    f.control,
+    ["code.txt"],
+    async () => {},
+  );
+  expect(batch.reads).toEqual([{ path: reference, version: "missing" }]);
+  expect(() =>
+    publicationSelection({ paths: [reference], validate: async () => {} }),
+  ).toThrow("PATH_REJECTED");
+  for (const file of [
+    reference + "/child",
+    reference + "/../escape",
+    ".codeatelier-recovery-invalid",
+    ".codeatelier-publish-fixture",
+  ]) {
+    expect(() => checkReadPath({ path: file })).toThrow("PATH_REJECTED");
+  }
+
+  expect(() => checkReadPath({ path: reference, kind: "directory" })).toThrow(
+    "PATH_REJECTED",
+  );
+  await mkdir(path.join(f.source.root, reference));
+  await expect(readVersion(f.source, { path: reference })).rejects.toThrow(
+    "STALE_DEPENDENCY",
+  );
+});
 
 it("versions directory membership without recursive content or transient timestamp dependencies", async () => {
   const root = await temp();
