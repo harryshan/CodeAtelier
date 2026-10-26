@@ -3,6 +3,8 @@
 // 2. Verify directory batching, stable persisted inode identities and later live source additions.
 // 3. Inject a SQLite failure on the second node of a batch; require complete rollback,
 //    poisoned state, failed clean shutdown and refused restore. No WinFsp mount or Sandbox.
+// 4. Exercise Local's bounded statement reuse: independent nested bindings, reset/clear,
+//    error disposal, schema changes and the 128-SQL limit without caching results.
 // Test files are retained for inspection; all handles and databases close through Store RAII.
 #include <fstream>
 #include <iostream>
@@ -101,6 +103,57 @@ static void verifyRollback(const fs::path& root) {
   check(restoreRejected, "Unclean view silently restored");
 }
 
+static void verifyStatements(const fs::path& root) {
+  const auto source = root / L"query-source";
+  fs::create_directory(source);
+  Store store(source, root / L"query-control", root / L"query-view", true, {}, {}, L"", true);
+  const auto sql = "SELECT ?";
+  {
+    Query outer(store, sql);
+    outer.number(1, 11);
+    {
+      Query inner(store, sql);
+      inner.number(1, 22);
+      check(inner.step() && inner.number(0) == 22, "Nested bindings not independent");
+    }
+    check(outer.step() && outer.number(0) == 11, "Outer binding changed");
+  }
+  const auto warmed = queryMetrics.prepares;
+  for (int index = 0; index < 20; ++index) {
+    Query query(store, sql);
+    check(query.step() && sqlite3_column_type(query.value, 0) == SQLITE_NULL,
+          "Bindings or cursor survived reuse");
+  }
+  check(queryMetrics.prepares == warmed, "Warm query recompiled");
+
+  store.sql("CREATE TEMP TABLE reuse_test(value INTEGER UNIQUE)");
+  const auto insert = "INSERT INTO reuse_test VALUES(?)";
+  Query(store, insert).number(1, 1).step();
+  bool rejected = false;
+  try {
+    Query(store, insert).number(1, 1).step();
+  } catch (const Error&) {
+    rejected = true;
+  }
+  check(rejected, "Expected constraint failure");
+  const auto failed = queryMetrics.prepares;
+  Query(store, insert).number(1, 2).step();
+  check(queryMetrics.prepares == failed + 1, "Failed statement not discarded");
+  const auto count = "SELECT count(*) FROM reuse_test";
+  check(scalar(store, count) == 2, "Recovery after query error failed");
+  store.sql("DROP TABLE reuse_test");
+  store.sql("CREATE TEMP TABLE reuse_test(value TEXT)");
+  check(scalar(store, count) == 0, "Schema/results cached across table replacement");
+
+  for (int index = 0; index < 200; ++index) {
+    const auto distinct = "SELECT " + std::to_string(index);
+    check(scalar(store, distinct.c_str()) == index, "Bounded pool changed query result");
+    check(store.statements.size() <= 128, "Statement cache exceeded bound");
+  }
+  check(store.statements.size() == 128, "Local cache was not used");
+  store.finish();
+}
+
 int wmain(int argc, wchar_t** argv) {
   try {
     check(argc == 2, "Expected a fresh workspace fixture directory");
@@ -108,6 +161,7 @@ int wmain(int argc, wchar_t** argv) {
     check(root.is_absolute() && fs::create_directory(root), "Fixture must be fresh and absolute");
     verifyPersistence(root);
     verifyRollback(root);
+    verifyStatements(root);
     std::cout << "LOCAL_IMPORT_TEST PASS\n";
     return 0;
   } catch (const std::exception& error) {

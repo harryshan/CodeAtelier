@@ -1,0 +1,240 @@
+{
+  "before": {
+    "timestamp": "2026-10-26T03:36:10.187Z",
+    "platform": "win32",
+    "passed": true,
+    "project": "CodeAtelier current working tree",
+    "command": "TypeScript --noEmit --incremental false --extendedDiagnostics",
+    "baseline": {
+      "elapsedMs": 5618.0015,
+      "diagnostics": {
+        "Files": "1258",
+        "Lines of TypeScript": "110210",
+        "Memory used": "824128K",
+        "I/O Read time": "0.12s",
+        "ResolveModule time": "0.28s",
+        "Total time": "5.42s"
+      },
+      "exitCode": 0
+    },
+    "overlay": {
+      "elapsedMs": 45100.3588,
+      "diagnostics": {
+        "Files": "1258",
+        "Lines of TypeScript": "110210",
+        "Memory used": "808758K",
+        "I/O Read time": "7.42s",
+        "ResolveModule time": "29.07s",
+        "Total time": "44.54s"
+      },
+      "exitCode": 0
+    },
+    "candidateTotalMs": 48100.7199,
+    "receiptAndCleanupMs": 2231.2041000000027,
+    "observations": 1310,
+    "creationMetrics": {
+      "version": 1,
+      "state": "metrics",
+      "treeReads": 0,
+      "infoReads": 0,
+      "blobReads": 0,
+      "blobBytes": 0,
+      "lowerOpens": 0,
+      "lowerEnumerations": 0,
+      "lowerImportCommits": 0,
+      "objectMicros": 0,
+      "sqlPrepareMicros": 30,
+      "sqlReadMicros": 5,
+      "sqlWriteMicros": 5657,
+      "sqlExecMicros": 41227,
+      "sqlReads": 1,
+      "sqlWrites": 3,
+      "accessCleanups": 0
+    },
+    "compiledMetrics": {
+      "version": 1,
+      "state": "metrics",
+      "treeReads": 0,
+      "infoReads": 0,
+      "blobReads": 0,
+      "blobBytes": 0,
+      "lowerOpens": 239717,
+      "lowerEnumerations": 35,
+      "lowerImportCommits": 1700,
+      "objectMicros": 0,
+      "sqlPrepareMicros": 1827358,
+      "sqlReadMicros": 1022743,
+      "sqlWriteMicros": 15940835,
+      "sqlExecMicros": 3892957,
+      "sqlReads": 574833,
+      "sqlWrites": 15599,
+      "accessCleanups": 5889
+    },
+    "receiptReads": 1310,
+    "privateDisk": {
+      "files": 6,
+      "logicalBytes": 6450587,
+      "allocatedBytes": 6500352
+    },
+    "selectedSourceUnchanged": true,
+    "checks": [
+      "actual project compiles directly and in candidate",
+      "more than 100 native read dependencies verified",
+      "private marker and compiler outputs never published",
+      "successful candidate control removed"
+    ],
+    "limitations": [
+      "host execution, not Sandbox",
+      "single sequential run, uncontrolled OS cache",
+      "external compiler/package reads and directory/absence tracking incomplete",
+      "not a model evaluation or emitted production build"
+    ]
+  },
+  "after": {
+    "timestamp": "2026-10-26T03:44:40.949Z",
+    "platform": "win32",
+    "passed": true,
+    "project": "CodeAtelier current working tree",
+    "command": "TypeScript --noEmit --incremental false --extendedDiagnostics",
+    "baseline": {
+      "elapsedMs": 5528.111900000001,
+      "diagnostics": {
+        "Files": "1259",
+        "Lines of TypeScript": "110344",
+        "Memory used": "811552K",
+        "I/O Read time": "0.12s",
+        "ResolveModule time": "0.28s",
+        "Total time": "5.33s"
+      },
+      "exitCode": 0
+    },
+    "overlay": {
+      "elapsedMs": 26663.9548,
+      "diagnostics": {
+        "Files": "1259",
+        "Lines of TypeScript": "110344",
+        "Memory used": "814822K",
+        "I/O Read time": "4.88s",
+        "ResolveModule time": "14.92s",
+        "Total time": "26.30s"
+      },
+      "exitCode": 0
+    },
+    "candidateTotalMs": 29591.4312,
+    "receiptAndCleanupMs": 2240.0786000000007,
+    "observations": 1311,
+    "creationMetrics": {
+      "version": 1,
+      "state": "metrics",
+      "treeReads": 0,
+      "infoReads": 0,
+      "blobReads": 0,
+      "blobBytes": 0,
+      "lowerOpens": 0,
+      "lowerEnumerations": 0,
+      "lowerImportCommits": 0,
+      "objectMicros": 0,
+      "sqlPrepareMicros": 31,
+      "sqlPrepares": 4,
+      "sqlReadMicros": 5,
+      "sqlWriteMicros": 5665,
+      "sqlExecMicros": 42335,
+      "sqlReads": 1,
+      "sqlWrites": 3,
+      "accessCleanups": 0
+    },
+    "compiledMetrics": {
+      "version": 1,
+      "state": "metrics",
+      "treeReads": 0,
+      "infoReads": 0,
+      "blobReads": 0,
+      "blobBytes": 0,
+      "lowerOpens": 239725,
+      "lowerEnumerations": 35,
+      "lowerImportCommits": 1700,
+      "objectMicros": 0,
+      "sqlPrepareMicros": 296440,
+      "sqlPrepares": 37727,
+      "sqlReadMicros": 1014535,
+      "sqlWriteMicros": 2994957,
+      "sqlExecMicros": 3884804,
+      "sqlReads": 574852,
+      "sqlWrites": 9716,
+      "accessCleanups": 5890
+    },
+    "receiptReads": 1311,
+    "privateDisk": {
+      "files": 6,
+      "logicalBytes": 6401339,
+      "allocatedBytes": 6402048
+    },
+    "selectedSourceUnchanged": true,
+    "checks": [
+      "actual project compiles directly and in candidate",
+      "more than 100 native read dependencies verified",
+      "private marker and compiler outputs never published",
+      "successful candidate control removed"
+    ],
+    "limitations": [
+      "host execution, not Sandbox",
+      "single sequential run, uncontrolled OS cache",
+      "external compiler/package reads and directory/absence tracking incomplete",
+      "not a model evaluation or emitted production build"
+    ]
+  },
+  "semantics": {
+    "timestamp": "2026-10-26T03:43:53.842Z",
+    "passed": true,
+    "before": {
+      "version": 1,
+      "state": "metrics",
+      "treeReads": 0,
+      "infoReads": 0,
+      "blobReads": 0,
+      "blobBytes": 0,
+      "lowerOpens": 5,
+      "lowerEnumerations": 0,
+      "lowerImportCommits": 0,
+      "objectMicros": 0,
+      "sqlPrepareMicros": 131,
+      "sqlPrepares": 16,
+      "sqlReadMicros": 85,
+      "sqlWriteMicros": 5943,
+      "sqlExecMicros": 13142,
+      "sqlReads": 43,
+      "sqlWrites": 24,
+      "accessCleanups": 2
+    },
+    "after": {
+      "version": 1,
+      "state": "metrics",
+      "treeReads": 0,
+      "infoReads": 0,
+      "blobReads": 0,
+      "blobBytes": 0,
+      "lowerOpens": 5,
+      "lowerEnumerations": 0,
+      "lowerImportCommits": 0,
+      "objectMicros": 0,
+      "sqlPrepareMicros": 151,
+      "sqlPrepares": 17,
+      "sqlReadMicros": 465,
+      "sqlWriteMicros": 5943,
+      "sqlExecMicros": 13142,
+      "sqlReads": 343,
+      "sqlWrites": 24,
+      "accessCleanups": 22
+    },
+    "checks": [
+      "no automatic atime persistence",
+      "explicit times preserved across restore",
+      "zero SQLite writes for repeated private reads",
+      "live lower changed content visible and stale observation rejected"
+    ]
+  },
+  "comparisonLimits": [
+    "Two single sequential runs with uncontrolled OS cache; source differs by one new manual verifier and optional metrics field.",
+    "Host noEmit validation, not Sandbox large-project or emitted build; dependency completeness remains limited."
+  ]
+}

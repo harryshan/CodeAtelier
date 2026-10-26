@@ -1,5 +1,6 @@
 // Windows overlay 对象/事务接口，供 WinFsp callbacks 与原生解析测试使用。
-// 1. Win32 RAII、错误及 SQLite 查询封装统一资源与失败处理；Git PoC 复用固定 SQL 的空闲语句。
+// 1. Win32 RAII、错误及 SQLite 查询封装统一资源与失败处理；Git/Local 复用固定 SQL 的空闲语句。
+//    Local 最多保留 128 种 SQL，不缓存数据；计量实际 prepare 和 step 次数/耗时。
 // 2. Store 按需导入 lower 元数据，持久化命名空间、删除标记、ACL 和虚拟 inode；Local 枚举按目录提交并计数。
 // 3. copy-up 先 flush 私有对象再发布引用；文件 rename 固化内容，目录 rename 保留 live lower。
 // 4. security/reparse 接口维护虚拟卷权限和内部链接；finish 仅在状态可信时标记干净卸载。
@@ -38,6 +39,7 @@ std::wstring fold(const std::wstring& value);
 UINT64 now();
 UINT64 monotonicMicros();
 struct QueryMetrics {
+  UINT64 prepares = 0;
   UINT64 prepareMicros = 0;
   UINT64 readMicros = 0;
   UINT64 writeMicros = 0;

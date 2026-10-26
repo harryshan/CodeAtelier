@@ -1,5 +1,7 @@
 # 测试约定与功能覆盖
 
+Local 读取开销：原生 `-VerifyImport` 增加有界 statement 池的绑定清除、嵌套、错误丢弃、schema 替换与数量限制回归，原有导入回滚仍须通过。手动 `pnpm overlay:verify-read-cost` 使用真实 WinFsp，验证重复私有读取零 SQL 写入、显式访问时间跨重挂载保留、实时 lower 改变可见及旧依赖拒绝；夹具位于 `.local/local-overlay-read-cost-*`。`overlay:verify-build` 额外采集创建/编译后计数与编译器 I/O/module resolve 诊断；两脚本均不改变安装态或运行 Evaluation，不加入默认 check。
+
 Local 工程读集：`local-overlay-read-scale.test.ts` 覆盖流式版本与完整快照一致、跨块内容改变、256 MiB 上限、取消、目录/越界拒绝、只读硬链接别名失效与发布限制、128 条主/候选依赖、过大数量/字段预算、旧观察不能被新观察覆盖及大依赖发布前失效。手动 `pnpm overlay:verify-build` 在真实 CodeAtelier 工作树执行直接和候选 noEmit 编译，记录原生读集与私有磁盘；不发布源码、不运行模型/Sandbox/Evaluation，不进入默认 check。应在没有其它工作树写入时运行。
 
 Local 完成态来源锁（D170）：生产 HTTP/Service 回归覆盖 unknown 拒绝、complete 缺少执行证明、鉴权/请求字段拒绝、失败重试、来源后续修改保留、旧请求不删除新发布者锁以及原清单/私有锁/日志不变。浏览器覆盖显式按钮、失败重试与原会话仍禁用；手动 `pnpm overlay:verify-complete` 使用真实 WinFsp/原生发布与租约，只注入租约正常关闭后的回执丢失，验证解锁后新视图发布。该脚本只操作 `.local/local-overlay-complete-*`，不安装/Repair、不运行 Sandbox 或 Evaluation，不加入默认检查。

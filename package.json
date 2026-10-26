@@ -37,6 +37,7 @@
     "overlay:verify-browser": "tsx scripts/verify-local-overlay-browser.ts",
     "overlay:verify-complete": "tsx scripts/verify-local-overlay-complete.ts",
     "overlay:verify-build": "tsx scripts/verify-local-overlay-build.ts",
+    "overlay:verify-read-cost": "tsx scripts/verify-local-overlay-read-cost.ts",
     "overlay:verify-candidate": "tsx scripts/verify-local-overlay-candidate.ts",
     "start": "node dist/server/server/launcher.js",
     "settings:migrate": "tsx scripts/migrate-settings.ts",

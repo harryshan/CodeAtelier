@@ -1,5 +1,14 @@
 # 初版验证记录
 
+## Local 编译读取开销（2026-10-26）
+
+- 原 helper 先复现读取覆盖显式访问时间（`.local/local-read-cost-before.log`）。Local 改用 no-atime，仅屏蔽自动访问时间清理写入；显式 SetBasic 与其它写入照常持久化。同时复用最多 128 种 SQL 的空闲 statement，不缓存数据；保持 FULL、观察和 ACL/lower 校验。
+- 原生构建及 `-VerifyImport -VerifyReparse` 通过（`.local/local-read-cost-native-build.log`）：新增池的绑定清除/嵌套/错误丢弃/schema 变化/容量回归，原有目录批量导入、回滚拒绝和链接解析通过。`pnpm overlay:verify-read-cost` 真实挂载通过（`.local/local-read-cost-after.log`）：20 次私有读取 SQL writes 保持 24，显式时间重挂载保留，来源实时变更可见且旧观察被拒绝。
+- 工程复测通过（`.local/local-build-profile-before.log`、`.local/local-build-profile-after.log`、[报告](local-overlay-read-cost-results.json)）：候选 noEmit 45.100 → 26.664 秒，SQL writes 15,599 → 9,716、耗时 15.941 → 2.995 秒，SQL prepare 1.827 → 0.296 秒。优化后 1,259 个输入/1,311 条依赖复核，创建 lower 打开/枚举零次，控制层 6 文件、分配 6,402,048 字节；来源 README 未修改、正常候选已回收。
+- 两次为宿主单次顺序编译，未控缓存，新增一份脚本使输入/读取各增一；不是严格同版本基准。直接编译约 5.528 秒，剩余读取开销仍明显；未证明完整外部/目录依赖、Sandbox 大型工程、产物构建或峰值总内存。
+- `pnpm overlay:verify-sandbox --commands --merge` 使用已安装 IPC v18 通过（`.local/local-read-cost-sandbox.log`、`.local/local-overlay-sandbox-UM8zcz/report.json`）：双 Runtime 并行、同文件合并、真实候选命令/拒绝/取消、重建 Engine 续聊；无 fallback、零活动租约，helper 干净停止。未重复 Repair、重启实际服务或运行 Evaluation。
+- 最终 `pnpm check` 通过（`.local/local-read-cost-check-final.log`）：151 个文件、1212 项通过 / 1 项既有跳过，类型、Lint、格式、Web/Windows/POSIX Runtime 构建成功；首次仅两处空行规则失败，修正后完整重跑。自审核对池的串行访问/归还/销毁、旧模式不变、no-atime 与内容版本的独立性、真实 lower 改变仍拒绝旧依赖。本次未改 UI/HTTP，未重复此前 75 项浏览器测试。
+
 ## Local 工程读集与真实仓库编译（2026-10-26）
 
 - 初次真实 CodeAtelier 候选 noEmit 编译退出 0，随后因 `READ_LIMIT` 拒绝；扩容后暴露 pnpm 只读依赖的硬链接限制（`.local/local-build-probe.log`、`.local/local-build-probe-expanded.log`）。分别先补回归复现再修复，未绕过原生观察、内容复核或源码发布的单链接限制。

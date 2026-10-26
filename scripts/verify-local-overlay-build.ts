@@ -3,6 +3,7 @@
  * 1. 固定使用本仓库 TypeScript/tsconfig，先直接 noEmit 编译作为单次参考，再在新 WinFsp 候选视图执行。
  * 2. 只在私有 README 写标记，源码 lower 为原目录；临时控制根在系统 TEMP，避免与来源重叠。
  * 3. 生产 CandidateValidator 核对候选及所有原生普通文件读依赖；记录编译诊断、耗时、私有逻辑/分配字节。
+ *    仅包裹当前进程的真实 start 以取得同一 Manager 的累计计数，调用后立即恢复原入口，不替换挂载行为或数据。
  * 4. executeProcess 负责有界输出/超时和进程树排空，正常候选目录由生产生命周期回收，报告和日志保留。
  * 仅宿主 Windows 编译验收，不安装驱动、不运行 Sandbox/模型/Evaluation；不证明外部依赖或目录枚举已完整跟踪。
  * 不清系统缓存，不把一次直接/overlay 顺序运行作为受控性能基准；不要在并发修改本工作树时运行。
@@ -22,6 +23,10 @@ import { createLogger } from "../src/logging/logger.js";
 import { CandidateValidator } from "../src/local-overlays/candidate-validator.js";
 import { digest } from "../src/local-overlays/publication/files.js";
 import { executeProcess } from "../src/tools/process.js";
+import {
+  OverlayManager,
+  type OverlayMetrics,
+} from "../src/worktrees/overlay.js";
 
 assert.equal(process.platform, "win32");
 assert.equal(
@@ -51,7 +56,9 @@ function diagnostics(output: string) {
   const result: Record<string, string> = {};
   for (const line of output.split(/\r?\n/)) {
     const match =
-      /^(Files|Lines of TypeScript|Memory used|Total time):\s+(.+)$/.exec(line);
+      /^(Files|Lines of TypeScript|Memory used|I\/O Read time|ResolveModule time|Total time):\s+(.+)$/.exec(
+        line,
+      );
     if (match) {
       result[match[1]!] = match[2]!.trim();
     }
@@ -127,6 +134,20 @@ async function footprint(control: string) {
 }
 
 const baseline = await compile(source, "direct", signal);
+const nativeStart = OverlayManager.prototype.start;
+let mounted: { manager: OverlayManager; id: string } | undefined;
+let creationMetrics: OverlayMetrics | undefined;
+let compiledMetrics: OverlayMetrics | undefined;
+OverlayManager.prototype.start = async function (...args) {
+  try {
+    await nativeStart.apply(this, args);
+    mounted = { manager: this, id: args[0] };
+    creationMetrics = await this.metrics(args[0]);
+  } finally {
+    OverlayManager.prototype.start = nativeStart;
+  }
+};
+
 const started = performance.now();
 let overlay: Awaited<ReturnType<typeof compile>> | undefined;
 let privateDisk: Awaited<ReturnType<typeof footprint>> | undefined;
@@ -138,6 +159,8 @@ const receipt = await validator.validate(
   async (workspace, currentSignal) => {
     assert.deepEqual(await readFile(path.join(workspace, "README.md")), marker);
     overlay = await compile(workspace, "overlay", currentSignal);
+    assert(mounted);
+    compiledMetrics = await mounted.manager.metrics(mounted.id);
     assert.deepEqual(await readFile(path.join(source, "README.md")), original);
     const volumes = (await readdir(candidates, { withFileTypes: true })).filter(
       (entry) => entry.isDirectory() && /^[a-f0-9-]{36}$/.test(entry.name),
@@ -183,6 +206,8 @@ const report = {
   candidateTotalMs: completed - started,
   receiptAndCleanupMs: completed - executorFinished,
   observations,
+  creationMetrics,
+  compiledMetrics,
   receiptReads: receipt.reads.length,
   privateDisk,
   selectedSourceUnchanged:

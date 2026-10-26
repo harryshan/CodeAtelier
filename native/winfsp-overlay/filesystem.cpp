@@ -3,7 +3,7 @@
 // 2. 创建/打开/读取/写入共享 Node 身份，copy-up 后旧描述符也读取同一个私有对象。
 // 3. 命名空间、属性、DACL 与枚举委托 Store；Cleanup 无错误通道，失败使挂载失效。
 // 4. 重解析回调在当前虚拟路径检查目标，目录移动不能使相对链接越出视图。
-// 5. Git PoC 卷使用 no-atime；仅忽略自动访问时间，显式 SetBasic/写入仍持久化。
+// 5. Git PoC/Local 卷使用 no-atime；仅忽略自动访问时间，显式 SetBasic/写入仍持久化。
 // 6. Local 显式元数据修改与可删除预检保存基线，避免仅在无错误返回的 Cleanup 中发现陈旧读。
 // 7. Local 枚举按打开句柄缓冲名称/元数据；续页不重扫，重启/重开观察来源，异常填充清空、Close 释放。
 // WinFsp 内核执行用户访问、共享模式和锁检查，不以 helper 宿主权限替调用者绕过检查。
@@ -195,9 +195,10 @@ static void cleanup(FSP_FILE_SYSTEM* fs, PVOID context, PWSTR name, ULONG flags)
     auto node = opened(context);
     if (flags & FspCleanupSetLastAccessTime) {
       ++queryMetrics.accessCleanups;
-      if (store.git) {
-        // Reading immutable Git content must not issue a durable SQLite
-        // transaction per file. Git stat validation does not use access time.
+      if (store.git || store.localMode) {
+        // Plain reads must not issue an atime-only durable transaction per
+        // close. Neither Git stat nor Local read stamps use access time;
+        // explicit SetBasic timestamps and all other cleanup flags persist.
         flags &= ~FspCleanupSetLastAccessTime;
       }
     }

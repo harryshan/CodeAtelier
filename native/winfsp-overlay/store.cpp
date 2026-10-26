@@ -1,6 +1,7 @@
 // Store 的 Windows/SQLite 实现；宿主 helper 持有 lower 与控制目录租约，所有调用串行。
 // 1. UTF/句柄/Query 和 Transaction 管理 Win32/数据库操作；累计计量拆分 SQL 与对象读取耗时。
-//    Git PoC 每种固定 SQL 缓存一个空闲 statement，嵌套查询独立借用；关闭连接前全部释放。
+//    Git/Local 每种固定 SQL 缓存一个空闲 statement，Local 最多 128 种；嵌套独立借用。
+//    归还时 reset/清除绑定，错误实例丢弃；关闭连接前全部释放，不缓存查询结果。
 // 2. 构造函数验证来源身份和持久格式，按需导入对象并合并目录；lower .git 永远遮蔽。
 //    Local 的目录枚举在同一事务导入新条目；独立 lookup 仍逐项提交，失败回滚污染保护不变。
 // 3. create/promote/rename/remove 持久化私有状态；旧对象保留，崩溃不猜测或回写 lower。
@@ -109,7 +110,8 @@ static void sqlite(int result) {
 }
 
 Query::Query(Store& store, const char* sql) {
-  if (store.git) {
+  if (store.git || (store.localMode &&
+                    (store.statements.contains(sql) || store.statements.size() < 128))) {
     pooled = &store.statements[sql];
     value = *pooled;
     *pooled = nullptr;
@@ -118,6 +120,7 @@ Query::Query(Store& store, const char* sql) {
     }
   }
   auto start = monotonicMicros();
+  ++queryMetrics.prepares;
   auto result = sqlite3_prepare_v2(store.db, sql, -1, &value, nullptr);
   queryMetrics.prepareMicros += monotonicMicros() - start;
   sqlite(result);
