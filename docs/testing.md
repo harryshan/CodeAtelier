@@ -194,7 +194,7 @@ Runtime stdio 集成夹具共用 `runtime-child-close.ts`：spawn 后立即监�
 
 ## 测试分层
 
-- Node 版本兼容性按 `package.json` 的 Node 24/26 范围验证；`@types/node` 和 Runtime bundle 保留 Node 24 基线，避免引入仅 Node 26 可用的 API。`windows-sandbox-node-version.test.ts` 在真实 PowerShell 中单独加载安装器函数，验证 Node 24/26 选择成功、不受支持版本和探测失败被拒绝；不执行账户安装或 WFP 操作。
+- Node 版本兼容性按 `package.json` 的 Node 24/26 范围验证；`@types/node` 和 Runtime bundle 保留 Node 24 基线，避免引入仅 Node 26 可用的 API。`windows-sandbox-node-version.test.ts` 在真实 PowerShell 中单独加载安装器函数，验证 Node 24/26 版本门禁、直接解释器和版本管理器 shim 解析，以及无效/失败路径探测拒绝。转发夹具实际调用 Node，返回必须是独立解释器；不执行账户安装或 WFP 操作。
 
 - 单元测试验证配置、授权、错误分类等可独立观察的行为。
 - 集成回归使用真实临时文件、SQLite、子进程和本机 HTTP；模型通过可控适配器/SSE 服务注入预设请求与回复，验证上下文与副作用，而非只检查 mock 调用次数。

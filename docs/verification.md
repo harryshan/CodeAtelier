@@ -1,5 +1,11 @@
 # 初版验证记录
 
+## Sandbox Repair 的 Node shim 解析（2026-10-26）
+
+- 用户明确授权管理员 Repair 后，固定入口完成账户保留、ACL/WFP/安装自检；安装 entry 为 IPC v18，与构建 SHA-256 一致。随后真实 `overlay:verify-sandbox --commands` 在两个 Runtime 连接前失败，未执行任务或回退宿主。诊断仅用于该夹具的 Supervisor stderr，确认复制到 ProgramData 的 Node 实为 nvm 转发程序，专用账户报没有配置活动版本；成功的宿主 `--version` 探测不足以证明可独立运行。
+- 先用实际调用 Node 的转发夹具复现：旧安装函数返回 shim 路径（`.local/runtime18-node-before.log`）。修复为解析 `process.execPath`，校验独立普通文件、支持版本与直接运行时自报路径，拒绝相对路径、非 exe 或失败探测；不更改账户权限、IPC 或宿主 fallback 边界。专项修复与原 Repair 测试 22 项通过（`.local/runtime18-node-after.log`），后续补充直接解释器和无效路径检查通过（`.local/runtime18-node-final.log`）。
+- 完整套件首次发现隔离 PATH 找不到 `pwsh`；测试改用系统 PowerShell 的绝对路径，路径校验也兼容其 .NET API，不依赖用户 PATH。最终 `pnpm check` 通过（`.local/local-incident-runtime18-check.log`）：150 个测试文件、1205 项通过 / 1 项既有跳过，类型、Lint、格式和构建通过。该增量只改安装选择，不改 UI；此前完整浏览器 75 项通过。再次 Repair 实机结果须另行确认，不能将源码用例通过视为安装态 Sandbox 通过。
+
 ## Local 来源发布事故的产品审核与接受（D170，2026-10-26）
 
 - 服务从会话清单固定的来源身份、批次 ID 和选择定位有界日志；HTTP 只接受会话 ID/检查 token，沿用鉴权/CSRF/no-store。原生检查租约证明旧来源执行停止后才返回未知现场；逐文件累计的内容合计上限 16 MiB，页面按需纯文本展示。

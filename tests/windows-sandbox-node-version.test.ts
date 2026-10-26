@@ -1,14 +1,14 @@
 /**
  * 验证 Windows Sandbox 安装器对 Node 24/26 的选择与版本拒绝行为，由普通 Vitest 套件执行。
- * 使用 Windows PowerShell 的 AST 只加载安装器的版本和源文件检查函数，不执行安装器顶层维护操作。
+ * 仅提取安装器的版本和源文件检查函数，在系统 PowerShell 中加载，不执行顶层维护操作。
  *
- * 1. 在临时目录创建只响应 --version 的命令夹具，模拟受支持、不受支持及失败的 Node executable。
- * 2. 真实 PowerShell 调用 Resolve-RuntimeNode，核对成功返回文件路径，失败保留明确拒绝结果。
+ * 1. 临时转发脚本模拟版本管理器 shim，实际调用 Node，必须返回真实解释器而非转发文件。
+ * 2. 版本夹具独立调用 Assert-RuntimeNodeVersion，覆盖受支持、不受支持及失败探测；不把版本号视为完整解释器证明。
  * 3. finally 删除本测试的临时文件；不创建账户、不修改 ProgramData、ACL 或 WFP，非 Windows 跳过。
  */
 
 import { execFile } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,6 +16,84 @@ import { promisify } from "node:util";
 import { expect, it } from "vitest";
 
 const execute = promisify(execFile);
+const powershell = path.join(
+  process.env.SystemRoot ?? "C:\\Windows",
+  "System32/WindowsPowerShell/v1.0/powershell.exe",
+);
+
+it.skipIf(process.platform !== "win32")(
+  "resolves a version-manager shim to the standalone Node executable",
+  async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "runtime-node-shim-"));
+    try {
+      const installer = await readFile(
+        new URL("../scripts/windows-sandbox/install.ps1", import.meta.url),
+        "utf8",
+      );
+      const functions = [
+        "Assert-RegularSourceFile",
+        "Assert-RuntimeNodeVersion",
+        "Resolve-RuntimeNode",
+      ].map((name) => {
+        const match = installer.match(
+          new RegExp(`function ${name} \\{[\\s\\S]*?^\\}`, "m"),
+        );
+        expect(match).not.toBeNull();
+
+        return match![0];
+      });
+      const shim = path.join(directory, "node.cmd");
+      await writeFile(shim, `@echo off\r\n"${process.execPath}" %*\r\n`);
+      const probe = path.join(directory, "probe.ps1");
+      await writeFile(
+        probe,
+        [
+          "param([string]$RuntimeNodePath)",
+          "$ErrorActionPreference = 'Stop'",
+          ...functions,
+          "Resolve-RuntimeNode",
+        ].join("\n"),
+      );
+      const { stdout } = await execute(
+        powershell,
+        ["-NoProfile", "-File", probe, shim],
+        {
+          windowsHide: true,
+          timeout: 10000,
+        },
+      );
+      expect(stdout.trim().toLowerCase()).toBe(process.execPath.toLowerCase());
+
+      const direct = await execute(
+        powershell,
+        ["-NoProfile", "-File", probe, process.execPath],
+        {
+          windowsHide: true,
+          timeout: 10000,
+        },
+      );
+      expect(direct.stdout.trim().toLowerCase()).toBe(
+        process.execPath.toLowerCase(),
+      );
+
+      // A version string alone must never admit a wrapper into the installation.
+      for (const reported of ["relative-node.exe", "node.cmd", ""]) {
+        await writeFile(
+          shim,
+          `@echo off\r\nif "%~1"=="--version" (echo v26.10.0) else (${reported ? `echo ${reported}` : "exit /b 2"})\r\n`,
+        );
+        await expect(
+          execute(powershell, ["-NoProfile", "-File", probe, shim], {
+            windowsHide: true,
+            timeout: 10000,
+          }),
+        ).rejects.toMatchObject({ code: 1 });
+      }
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+);
 
 it.skipIf(process.platform !== "win32")(
   "accepts Node 24/26 and rejects unsupported versions and failed probes",
@@ -61,8 +139,9 @@ foreach ($Function in $Functions) {
 $Results = @(for ($Index = 0; $Index -lt $Count; $Index++) {
     $RuntimeNodePath = Join-Path $Directory "node-$Index.cmd"
     try {
-        $Resolved = Resolve-RuntimeNode
-        @{ accepted = $true; path = $Resolved }
+        $Version = & $RuntimeNodePath --version
+        Assert-RuntimeNodeVersion -Version $Version -ExitCode $LASTEXITCODE
+        @{ accepted = $true }
     } catch {
         @{ accepted = $false; error = $_.Exception.Message }
     }
@@ -89,17 +168,14 @@ ConvertTo-Json -InputObject $Results -Compress
       );
       const results = JSON.parse(stdout) as {
         accepted: boolean;
-        path?: string;
         error?: string;
       }[];
 
       expect(results.map((result) => result.accepted)).toEqual(
         cases.map((candidate) => candidate.accepted),
       );
-      for (const [index, result] of results.entries()) {
-        if (result.accepted) {
-          expect(result.path).toBe(path.join(directory, `node-${index}.cmd`));
-        } else {
+      for (const result of results) {
+        if (!result.accepted) {
           expect(result.error).toContain("Node.js 24");
         }
       }

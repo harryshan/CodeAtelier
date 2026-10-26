@@ -18,7 +18,7 @@ WFP provider/sublayer, the account whose SID matches recorded state, the welcome
 directory. No operation scans or deletes unrelated users, filters, or folders.
 
 1. Source and v4 manifest helpers validate entry/compaction/subagent files, hashes and the Node 24 baseline; v5 installed state no longer includes a read Worker.
-2. Assert-RuntimeNodeVersion accepts Node 24/26 for both source selection and installed verification.
+2. Resolve-RuntimeNode resolves version-manager shims to process.execPath before copying; Assert-RuntimeNodeVersion accepts Node 24/26 for source and installed verification.
 3. Read-RepairState validates recorded account/installer identity and relay settings before any repair writes.
 4. Install-Sandbox shares artifact installation between fresh Install and in-place Repair; only fresh Install creates an account or rolls it back.
 5. The Mode switch dispatches maintenance; explicit Uninstall/recover remain destructive account removal operations.
@@ -229,7 +229,26 @@ function Resolve-RuntimeNode {
     $Version = & $Resolved --version
     Assert-RuntimeNodeVersion -Version $Version -ExitCode $LASTEXITCODE
 
-    return $Resolved
+    # PATH may contain an nvm shim which only works with the host user's profile.
+    # Copy the actual interpreter, then require it to identify itself directly.
+    $Executable = & $Resolved -p 'process.execPath'
+    if ($LASTEXITCODE -ne 0 -or $Executable -isnot [string] -or
+        -not [IO.Path]::IsPathRooted($Executable) -or
+        [IO.Path]::GetFullPath($Executable) -ine $Executable -or
+        [IO.Path]::GetExtension($Executable) -ine '.exe') {
+        throw "Agent Runtime Node executable 无法解析为独立 Node.js 24 或 26。"
+    }
+    $Executable = (Resolve-Path -LiteralPath $Executable -ErrorAction Stop).Path
+    Assert-RegularSourceFile -Path $Executable -Label "Agent Runtime Node executable"
+    $Version = & $Executable --version
+    Assert-RuntimeNodeVersion -Version $Version -ExitCode $LASTEXITCODE
+    $Self = & $Executable -p 'process.execPath'
+    if ($LASTEXITCODE -ne 0 -or $Self -isnot [string] -or
+        -not [string]::Equals($Self, $Executable, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Agent Runtime Node executable 必须直接运行 Node.js 24 或 26。"
+    }
+
+    return $Executable
 }
 
 function New-RandomPassword {

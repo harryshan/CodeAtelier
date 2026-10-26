@@ -353,6 +353,8 @@ D162 删除四个代理/凭据字段；D163 进一步将原生命令帧升至 v4
 
 Windows 原生安装命令是显式维护入口，不属于服务启动或默认测试：先在普通终端运行 `pnpm sandbox:native:build` 与 `pnpm sandbox:runtime:build`；若当前 `PATH` 中的 `node` 不是 v24 或 v26，通过 `CODEATELIER_SANDBOX_RUNTIME_NODE` 指定可信 Node 24 或 26 executable。
 
+安装器通过 `process.execPath` 解析实际解释器，再检查该文件直接报告自身路径及受支持版本；不会把 PATH 中仅返回正确版本号的 nvm 转发程序复制给专用账户。显式指定的路径也经过同样解析，解析失败拒绝安装/Repair。
+
 随后必须由用户**先打开“以管理员身份运行”的 PowerShell**，进入仓库目录，再运行 `pnpm sandbox:install`、`sandbox:repair`、`sandbox:verify`、`sandbox:uninstall` 或 `sandbox:recover`；`run.ts` 使用非 shell `spawn`，不会自行触发 UAC 或重新提升。
 
 安装器校验 v4 build manifest 后，把 supervisor/WFP manager、Node 24 或 26、Agent Runtime entry 和 compaction、subagent 两种 Worker 复制到受保护的 ProgramData 目录，并在 v5 state 记录安装副本摘要；旧安装须重新构建 native/runtime 后由用户显式运行 `pnpm sandbox:repair`（转交 `install.ps1 -Mode Repair`），TypeScript 启动前与 native self-check 均拒绝旧状态或不匹配的摘要。安装器还配置专用账户的网络、batch、service 和远程交互拒绝登录权；服务不得自行提权或自动安装。
