@@ -1,5 +1,14 @@
 # 初版验证记录
 
+## Local 真实工程 Sandbox 编译与产物（2026-10-26）
+
+- `overlay:verify-build --sandbox` 通过真实 `runCandidateCommands`、SandboxBroker、已安装 IPC v18 Runtime 执行；无 transport/ACL/命令执行替身，无主目录额外写根和宿主 fallback。Node 来自受保护安装目录，编译器/项目依赖从虚拟目录读取，不连接模型 API、不安装或 Repair。
+- 全仓库 noEmit 通过（`.local/local-build-sandbox-native.log`）：1,260 输入/110,544 行 TS，1,385 条读取复核，编译器总计 32.08 s、含 Runtime 启停 37.571 s、候选生命周期 44.243 s；来源 README 未改变。该单次测量未清缓存，宿主参考 6.243 s 与 Runtime 总时长不是同一计时范围。
+- 后端 `--sandbox --emit` 最终通过（`.local/local-build-sandbox-emit-final.log`）：774 输入/47,327 行 TS，819 条依赖；406 份 JS/map 共 2,676,554 字节，全部路径与参考相同且非空，203 份 JS 摘要/大小逐文件相同。编译器 21.78 s（I/O 写入 8.00 s），Runtime 25.560 s，候选总计 29.669 s；直接参考 3.509 s。私有控制层 412 文件、逻辑 8,983,781/分配 9,826,400 字节；未向来源写入产物。
+- 两次创建期 lower 打开/枚举为零；真实 Sandbox 终态与零活动租约已断言，候选目录正常回收，未发现 helper 残留。[汇总报告](local-overlay-sandbox-build-results.json) 保留无敏感内容的计数；完整命令/输出/trace 留在日志所列 TEMP 夹具。验证脚本新增真实执行适配器与可选 emit，不更改产品权限、默认模式或 IPC。
+- 边界：source map 源路径相对输出目录不同，只校验路径/非空；未运行生成的后端、Vite 或原生构建，不证明目录/缺失路径/外部依赖完整性、巨型仓库普遍性能、所有进程峰值内存或 POSIX。未运行 Evaluation 或重启实际服务。
+- `pnpm check` 通过（`.local/local-build-sandbox-check.log`）：151 个测试文件、1212 项通过 / 1 项既有跳过，类型、Lint、格式与构建通过。新增适配器首次静态检查发现两处环境/退出码类型问题，真实执行前已修正；自审核对命令固定、安装态来源、正常排空与产物只留私有层。未改产品 UI/HTTP，未重复既有完整浏览器测试。
+
 ## Local 编译读取开销（2026-10-26）
 
 - 原 helper 先复现读取覆盖显式访问时间（`.local/local-read-cost-before.log`）。Local 改用 no-atime，仅屏蔽自动访问时间清理写入；显式 SetBasic 与其它写入照常持久化。同时复用最多 128 种 SQL 的空闲 statement，不缓存数据；保持 FULL、观察和 ACL/lower 校验。

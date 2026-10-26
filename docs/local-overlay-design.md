@@ -4,11 +4,15 @@
 
 ## 需求与模式
 
+工程 Sandbox 手动验证（2026-10-26）：`pnpm overlay:verify-build --sandbox` 使用生产 `runCandidateCommands`/SandboxBroker 与已安装 Runtime，在一次性候选视图内运行全仓库 noEmit。编译器及项目依赖均从虚拟目录读取，Node 使用受保护安装目录，不向主目录增加写授权；候选执行失败不转宿主。`pnpm overlay:verify-build --sandbox --emit` 使用 `tsconfig.server.json`，宿主参考产物写 TEMP，候选产物写新建私有目录；核对全部产物路径/非空及所有 JavaScript 字节摘要，不发布源码或产物。此手动入口要求 WinFsp/helper/IPC v18 已安装，并在没有其它 Sandbox 任务和工作树写入时执行；不自动 Repair，不进入默认 check 或 Evaluation。
+
+实机 noEmit 1,260 个输入/110,544 行 TypeScript、1,385 条读取复核通过；编译器 32.08 秒、含 Runtime 启停 37.571 秒。后端 emit 为 774 输入/47,327 行、819 条读取，生成 406 文件/2,676,554 字节，其中 203 个 JS 与直接构建逐字节一致；Runtime 总计 25.560 秒，编译器 21.78 秒，控制层分配约 9.37 MiB。两种创建期 lower 打开/枚举均为零，真实专用账户终态及零活动租约确认，正常候选回收；见 [报告](local-overlay-sandbox-build-results.json)。目录/缺失路径/外部依赖完整性、峰值总内存、Vite/原生构建、运行生成服务及 POSIX 仍未由该验证证明；source map 只校验路径/非空，源路径相对输出目录不同，不比较 map 正文。耗时为未控制缓存的单次顺序结果，不作为普遍性能保证。
+
 工程读取开销优化（2026-10-26）：Local 复用最多 128 种 SQL 的空闲 statement，reset 并清除绑定，嵌套借用使用独立实例，错误实例丢弃；不缓存查询结果或跳过 lower/权限/依赖检查。Local 采用 no-atime：普通读取后的自动 LastAccessTime 不更新私有数据库，显式 SetBasic 时间和其它写入/清理仍持久化。保留 SQLite FULL、每次首次观察/修改记录和旧 Riftri 行为；计量沿用原生无路径计数及外层生命周期 tracing，新增可选 sqlPrepares 兼容旧 helper。原生回归覆盖绑定清除、嵌套、错误释放、schema 改变与数量限制；真实挂载验证普通私有读取零 SQL 写入、显式时间跨重挂载保留、lower 改变可见及旧观察失效。手动 `pnpm overlay:verify-read-cost` 不进入默认 check/Evaluation。
 
 本机工程编译前后单次比较：候选 45.100 → 26.664 秒，SQL 写入 15.941 → 2.995 秒/15,599 → 9,716 次，SQL 准备 1.827 → 0.296 秒。优化后 lower 仍打开 239,725 次、枚举 35 次，1,311 条依赖通过，控制层分配 6,402,048 字节；创建期 lower 打开/枚举仍为零。直接编译约 5.528 秒，差距仍显著；两次未控 OS 缓存、输入增加一份验证脚本，不作严格基准或普遍加速承诺。原始计数、编译器诊断及独立语义检查见 [报告](local-overlay-read-cost-results.json)，宿主 noEmit 不代表 Sandbox 大型工程、产物构建或目录/外部依赖完整性。
 
-真实工程手动验收：在 CodeAtelier 仓库运行 `pnpm overlay:verify-build`，要求已有 WinFsp/helper 和本仓库 TypeScript 依赖。脚本在系统 TEMP 创建候选控制目录（来源之外），直接读取本工作树，先执行宿主参考编译，再在私有视图执行相同 noEmit 编译；只播种私有 README 标记，不发布或复制整个工程。正常视图回收，日志/报告保留。当前实测 1,258 个编译输入、1,310 条原生依赖通过，私有分配约 6.2 MiB；直接/overlay 编译约 6.3/46.3 秒，复核与清理约 1.6 秒，见 [报告](local-overlay-build-results.json)。单次顺序测试未清缓存，既不代表冷缓存基准，也没有证明完整 Sandbox 工程构建；明显的文件系统读取开销仍需优化。
+最初宿主工程验收：`pnpm overlay:verify-build` 默认在系统 TEMP 创建候选控制目录（来源之外），先执行宿主参考编译，再在私有视图执行相同 noEmit 编译；只播种私有 README 标记，不发布或复制整个工程。首次实测 1,258 个输入、1,310 条依赖通过，私有分配约 6.2 MiB，直接/overlay 约 6.3/46.3 秒，见 [历史报告](local-overlay-build-results.json)。后续读取优化及真实 Sandbox/后端 emit 的最新结果见上文；三组各自范围独立，不能把历史宿主耗时当作当前 Sandbox 数据。
 
 只读依赖允许包管理器硬链接：版本绑定文件身份、时间/属性和完整内容哈希，另一硬链接上的修改也会使原版本失效；选定文件的完整快照与发布仍要求单链接。重解析路径、非普通文件、单依赖超过 256 MiB 仍拒绝。历史同一路径可只计算一次当前哈希，但每个相关观察代次均复核；较新有效观察不能遮盖较早失效观察。
 

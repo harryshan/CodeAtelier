@@ -1,0 +1,204 @@
+{
+  "typecheck": {
+    "timestamp": "2026-10-26T03:56:27.442Z",
+    "platform": "win32",
+    "executionMode": "windows-sandbox-user",
+    "passed": true,
+    "project": "CodeAtelier current working tree",
+    "command": "TypeScript --noEmit --incremental false --extendedDiagnostics",
+    "baseline": {
+      "elapsedMs": 6242.743,
+      "diagnostics": {
+        "Files": "1260",
+        "Lines of TypeScript": "110544",
+        "Memory used": "800558K",
+        "I/O Read time": "0.13s",
+        "ResolveModule time": "0.27s",
+        "Total time": "5.41s"
+      },
+      "exitCode": 0
+    },
+    "overlay": {
+      "elapsedMs": 37570.9729,
+      "diagnostics": {
+        "Files": "1260",
+        "Lines of TypeScript": "110544",
+        "Memory used": "793994K",
+        "I/O Read time": "5.85s",
+        "ResolveModule time": "19.45s",
+        "Total time": "32.08s"
+      },
+      "exitCode": 0
+    },
+    "candidateTotalMs": 44242.589,
+    "receiptAndCleanupMs": 2543.976600000002,
+    "observations": 1385,
+    "creationMetrics": {
+      "version": 1,
+      "state": "metrics",
+      "treeReads": 0,
+      "infoReads": 0,
+      "blobReads": 0,
+      "blobBytes": 0,
+      "lowerOpens": 0,
+      "lowerEnumerations": 0,
+      "lowerImportCommits": 0,
+      "objectMicros": 0,
+      "sqlPrepareMicros": 31,
+      "sqlPrepares": 4,
+      "sqlReadMicros": 5,
+      "sqlWriteMicros": 5981,
+      "sqlExecMicros": 42168,
+      "sqlReads": 1,
+      "sqlWrites": 3,
+      "accessCleanups": 0
+    },
+    "compiledMetrics": {
+      "version": 1,
+      "state": "metrics",
+      "treeReads": 0,
+      "infoReads": 0,
+      "blobReads": 0,
+      "blobBytes": 0,
+      "lowerOpens": 241463,
+      "lowerEnumerations": 35,
+      "lowerImportCommits": 1779,
+      "objectMicros": 0,
+      "sqlPrepareMicros": 333460,
+      "sqlPrepares": 38295,
+      "sqlReadMicros": 1218257,
+      "sqlWriteMicros": 3313192,
+      "sqlExecMicros": 4310616,
+      "sqlReads": 579783,
+      "sqlWrites": 10114,
+      "accessCleanups": 6052
+    },
+    "receiptReads": 1385,
+    "privateDisk": {
+      "files": 6,
+      "logicalBytes": 6401387,
+      "allocatedBytes": 6459392
+    },
+    "selectedSourceUnchanged": true,
+    "checks": [
+      "actual project compiles directly and in candidate",
+      "more than 100 native read dependencies verified",
+      "private marker and compiler outputs never published",
+      "successful candidate control removed"
+    ],
+    "limitations": [
+      "Sandbox duration includes Runtime startup/shutdown; direct baseline is host",
+      "single sequential run, uncontrolled OS cache",
+      "external compiler/package reads and directory/absence tracking incomplete",
+      "not a model evaluation or emitted production build"
+    ]
+  },
+  "backendEmit": {
+    "timestamp": "2026-10-26T04:01:03.217Z",
+    "platform": "win32",
+    "executionMode": "windows-sandbox-user",
+    "sandboxProof": {
+      "mode": "windows-sandbox-user",
+      "state": "completed",
+      "sandboxApplied": true
+    },
+    "passed": true,
+    "project": "CodeAtelier current working tree",
+    "command": "TypeScript tsconfig.server.json --outDir private --incremental false --extendedDiagnostics",
+    "baseline": {
+      "elapsedMs": 3508.7058,
+      "diagnostics": {
+        "Files": "774",
+        "Lines of TypeScript": "47327",
+        "Memory used": "460537K",
+        "I/O Read time": "0.08s",
+        "ResolveModule time": "0.13s",
+        "I/O Write time": "0.23s",
+        "Emit time": "0.70s",
+        "Total time": "3.35s"
+      },
+      "exitCode": 0
+    },
+    "overlay": {
+      "elapsedMs": 25559.8967,
+      "diagnostics": {
+        "Files": "774",
+        "Lines of TypeScript": "47327",
+        "Memory used": "447524K",
+        "I/O Read time": "3.56s",
+        "ResolveModule time": "6.26s",
+        "I/O Write time": "8.00s",
+        "Emit time": "8.58s",
+        "Total time": "21.78s"
+      },
+      "exitCode": 0
+    },
+    "candidateTotalMs": 29668.595799999996,
+    "receiptAndCleanupMs": 1701.051199999998,
+    "observations": 819,
+    "creationMetrics": {
+      "version": 1,
+      "state": "metrics",
+      "treeReads": 0,
+      "infoReads": 0,
+      "blobReads": 0,
+      "blobBytes": 0,
+      "lowerOpens": 0,
+      "lowerEnumerations": 0,
+      "lowerImportCommits": 0,
+      "objectMicros": 0,
+      "sqlPrepareMicros": 52,
+      "sqlPrepares": 4,
+      "sqlReadMicros": 6,
+      "sqlWriteMicros": 6469,
+      "sqlExecMicros": 42500,
+      "sqlReads": 1,
+      "sqlWrites": 3,
+      "accessCleanups": 0
+    },
+    "compiledMetrics": {
+      "version": 1,
+      "state": "metrics",
+      "treeReads": 0,
+      "infoReads": 0,
+      "blobReads": 0,
+      "blobBytes": 0,
+      "lowerOpens": 97620,
+      "lowerEnumerations": 22,
+      "lowerImportCommits": 903,
+      "objectMicros": 0,
+      "sqlPrepareMicros": 202604,
+      "sqlPrepares": 20866,
+      "sqlReadMicros": 583999,
+      "sqlWriteMicros": 6264780,
+      "sqlExecMicros": 3026007,
+      "sqlReads": 283665,
+      "sqlWrites": 11784,
+      "accessCleanups": 4243
+    },
+    "receiptReads": 819,
+    "privateDisk": {
+      "files": 412,
+      "logicalBytes": 8983781,
+      "allocatedBytes": 9826400
+    },
+    "outputSummary": {
+      "files": 406,
+      "bytes": 2676554,
+      "matchingJavaScript": 203
+    },
+    "selectedSourceUnchanged": true,
+    "checks": [
+      "actual project compiles directly and in candidate",
+      "more than 100 native read dependencies verified",
+      "private marker and compiler outputs never published",
+      "successful candidate control removed"
+    ],
+    "limitations": [
+      "Sandbox duration includes Runtime startup/shutdown; direct baseline is host",
+      "single sequential run, uncontrolled OS cache",
+      "external compiler/package reads and directory/absence tracking incomplete",
+      "TypeScript backend only, not Vite/native build or execution of generated server; source maps have different relative source roots and only their presence/size was checked"
+    ]
+  }
+}
