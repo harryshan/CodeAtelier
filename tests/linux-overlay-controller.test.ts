@@ -3,6 +3,7 @@
  * 1. fixture 创建独占服务端、跟踪请求和 trace；收尾关闭全部连接并删除仅本测试的临时目录。
  * 2. 正常 open/seal/close/release 核对 namespace、UUID 和实际响应，验证 trace 不含路径。
  * 3. namespace 失配、断线、响应超限/格式错误和服务端拒绝使客户端失效，不重发副作用。
+ *    classify 只读拒绝不会污染后续挂载状态；查询结果绑定明确路径，正文不进入 IPC。
  * 真正 user/mount namespace、capabilities 撤销和 MXC 兼容由手动 WSL 探针验证。
  */
 import { randomUUID } from "node:crypto";
@@ -77,6 +78,34 @@ async function fixture(
 function reply(socket: Socket, value: Record<string, unknown>) {
   socket.end(JSON.stringify({ version: 1, ok: true, ...value }) + "\n");
 }
+
+it("keeps the controller usable after a rejected read-only classification", async () => {
+  let attempt = 0;
+  const f = await fixture((request, socket) => {
+    if (request.operation === "hello") {
+      reply(socket, { namespace: "mnt:[123]" });
+    } else if (request.operation === "classify" && attempt++ === 0) {
+      socket.end(JSON.stringify({ version: 1, ok: false }) + "\n");
+    } else {
+      reply(socket, {
+        source: "/source",
+        sourceIdentity: "1:2",
+        upperIdentity: "1:3",
+        files: [{ path: "a", stamp: "1:4:0:5:6:33152", deleted: true }],
+      });
+    }
+  });
+  const id = randomUUID();
+  await expect(f.controller.classify(id, ["a"])).rejects.toThrow("拒绝操作");
+  expect((await f.controller.classify(id, ["a"])).files).toEqual([
+    { path: "a", stamp: "1:4:0:5:6:33152", deleted: true },
+  ]);
+  expect(f.requests.map((entry) => entry.operation)).toEqual([
+    "hello",
+    "classify",
+    "classify",
+  ]);
+});
 
 it("binds the namespace and records bounded lifecycle traces without source paths", async () => {
   const sealId = randomUUID();

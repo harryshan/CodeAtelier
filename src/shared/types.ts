@@ -9,6 +9,7 @@
  *    resolution 仅记录冲突继续的父会话、文件及新视图内参考目录；paths 为整组选择，path 保留首文件兼容，不把历史内容当成已应用源码。
  *    publicationRecovery 仅表示会话存在待核查的批次，真实来源执行排空仍由原生租约验证。
  *    interruptedReview 仅提供中断参考检查入口，非排空证明；resolution.state 保留可能部分写入标记。
+ *    正常文件检查与异常恢复能力独立；Linux 正常检查不意味着可以接管未知挂载。
  *
  * 类型不会在运行时校验请求，相关检查仍由 API 和 Config 完成。公开 Settings 不包含密钥。
  */
@@ -55,8 +56,10 @@ export interface LocalOverlayInfo {
   projectWorkspace?: string;
   state: "preparing" | "ready" | "active" | "failed" | "unavailable";
   epoch?: number;
-  /** false 表示此平台尚无封存文件检查及事故恢复入口；缺省保留旧 Windows 契约。 */
+  /** false 表示此平台尚无正常文件检查；缺省保留旧契约。 */
   fileReviewSupported?: boolean;
+  /** false 表示此平台尚无异常检查/恢复；独立于正常文件检查。 */
+  incidentRecoverySupported?: boolean;
   publicationRecovery?: boolean;
   privateRefreshRecovery?: boolean;
   refreshedTaskId?: string;

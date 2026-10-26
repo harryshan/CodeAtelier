@@ -1,5 +1,7 @@
 # 测试约定与功能覆盖
 
+Linux 正常检查/参考继续：`linux-overlay-backend.test.ts` 使用真实 Service/Publisher 和目录控制器替身核对 B/O/T、冲突预览、版本变化拒绝新参考创建、原私有保留及 pending/缺失/重复选集拒绝；`posix-overlay-batch.test.ts` 验证根 UUID 参考材料不捕获、不发布。`linux-overlay-controller.test.ts` 验证只读分类失败后仍可查询，原写操作未知拒绝不变。浏览器用例独立检查正常入口和异常恢复提示；`startup-probe.mjs --review` 通过真实 HTTP/OverlayFS/Sandbox 验证空文件与删除标记、新参考对话读取材料后重新编辑发布及原视图保留。
+
 Linux 内部符号链接：`local-overlay-symlinks.test.ts` 验证内部包/bin 目标、前导回退、越界/中途回退拒绝；Linux 专用用例验证独立链接版本及改向阻止发布，Windows 明确跳过该真实链接用例。手动 `symlink-version-probe.mjs` 在 WSL 运行同类实际文件/Publisher 验证，检查链接路径不能作为源码编辑。`startup-probe.mjs --symlinks` 使用内部 `.pnpm` 包布局和 bin 链运行真实 TypeScript；两个主 Sandbox 与候选均拒绝越界链接、编译并完成发布，核对持久链接读凭据及重载续聊。不等于安装包、完整 pnpm 工程或任意链接写入支持。
 
 Linux 捕获只读依赖：`posix-overlay-batch.test.ts` 用真实 3 MiB 文件及来源硬链接先复现旧桥接的 FILE_TYPE_OR_LIMIT，再验证流式版本等于 Publisher 版本、源码成功发布、来源变更/缓存损坏拒绝，以及明确选择大文件/硬链接时仍拒绝发布。另复现旧依赖使正常跨轮保存失败，验证多版本凭据持久保留、重复保存不累积相同项且实际发布继续拒绝。手动 `startup-probe.mjs --typescript` 使用实际 TypeScript 编译器和类型库，在双主 Runtime 和新候选执行编译，检查命令回执、私有产物及持久依赖；依赖布局为普通文件/硬链接，不宣称 pnpm 符号链接或整个 CodeAtelier 工程通过。

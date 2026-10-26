@@ -4,7 +4,7 @@
  * 2. 验证 Linux 格式绑定、无选集收尾/续轮及失败任务保留，不依赖重挂载 inode。
  * 3. 发布测试验证 complete 后选定覆盖移除、刷新失败 pending 保留、未知 seal 禁止重新打开。
  * 4. 候选测试核对内容变更拒绝、未知排空保留、正常清理；执行器替身不宣称真实 Sandbox。
- * 5. 历史投影准确报告检查能力，未实现的恢复请求在读写 Windows 格式前拒绝。
+ * 5. 正常文件检查绑定 B/O/T 和明确选集，新参考会话不覆盖源码；异常恢复仍在读写 Windows 格式前拒绝。
  */
 import { randomUUID } from "node:crypto";
 import {
@@ -28,6 +28,7 @@ import { LinuxCandidateValidator } from "../src/local-overlays/linux-candidate.j
 import { LocalOverlayService } from "../src/local-overlays/service.js";
 import { sourceIdentity } from "../src/local-overlays/publication/files.js";
 import { TestStore } from "./fixtures/managed-runtime.js";
+import type { LinuxOverlayController } from "../src/local-overlays/linux-controller.js";
 import { temp } from "./fixtures/helpers.js";
 
 const log = pino({ enabled: false });
@@ -38,18 +39,10 @@ it("reports Linux inspection limits and rejects unsupported operations without c
   const manifest = path.join(f.root, `${f.id}.json`);
   const before = await readFile(manifest, "utf8");
   const info = (await f.service.describe(f.session)).localOverlay!;
-  expect(info.fileReviewSupported).toBe(false);
+  expect(info.fileReviewSupported).not.toBe(false);
+  expect(info.incidentRecoverySupported).toBe(false);
   expect(info.interruptedReview).toBeUndefined();
   for (const operation of [
-    () =>
-      f.service.review(f.session.workspace, f.session.id, "code.txt", signal()),
-    () =>
-      f.service.reviewBatch(
-        f.session.workspace,
-        f.session.id,
-        ["code.txt"],
-        signal(),
-      ),
     () =>
       f.service.reviewInterrupted(
         f.session.workspace,
@@ -76,7 +69,8 @@ it("reports Linux inspection limits and rejects unsupported operations without c
           id: randomUUID(),
           workspace: f.session.workspace,
           sessionId: f.session.id,
-          path: "code.txt",
+          paths: ["code.txt"],
+          state: "interrupted",
           version: "a".repeat(64),
         },
         async () => {
@@ -93,7 +87,8 @@ it("reports Linux inspection limits and rejects unsupported operations without c
   record.phase = "failed";
   await writeFile(manifest, JSON.stringify(record));
   const failed = (await f.service.describe(f.session)).localOverlay!;
-  expect(failed.fileReviewSupported).toBe(false);
+  expect(failed.fileReviewSupported).not.toBe(false);
+  expect(failed.incidentRecoverySupported).toBe(false);
   expect(failed.interruptedReview).toBeUndefined();
   expect(failed.publicationRecovery).toBeUndefined();
   await f.service.close();
@@ -134,7 +129,28 @@ async function fixture() {
   const active = new Set<string>();
   const controls = new Map<string, string>();
   const faults = { seal: false, release: false, replaceCacheOnClose: false };
-  const controller: LinuxMountController = {
+  const controller: LinuxMountController &
+    Pick<LinuxOverlayController, "classify"> = {
+    async classify(id, paths) {
+      expect(active.has(id)).toBe(false);
+      const upper = await sourceIdentity(path.join(root, id, "upper"));
+      const files = [];
+      for (const file of paths) {
+        const info = await lstat(path.join(upper.root, file), { bigint: true });
+        files.push({
+          path: file,
+          stamp: `${info.dev}:${info.ino}:${info.size}:${info.mtimeNs}:${info.ctimeNs}:${info.mode}`,
+          deleted: false,
+        });
+      }
+
+      return {
+        source: (await sourceIdentity(source)).root,
+        sourceIdentity: (await sourceIdentity(source)).identity,
+        upperIdentity: upper.identity,
+        files,
+      };
+    },
     async open(id, _source, create) {
       const privateRoot = path.join(root, id);
       if (create) {
@@ -253,8 +269,129 @@ async function fixture() {
     controller,
     active,
     faults,
+    bind: async (workspace: string) =>
+      store.create(workspace, "Linux reference"),
   };
 }
+
+it("reviews retained Linux files and binds a fresh reference without mounting the old view", async () => {
+  const f = await fixture();
+  const lease = await f.begin();
+  await f.edit();
+  await lease!.finish("completed", true);
+  await writeFile(path.join(f.source, "code.txt"), "external\n");
+  const review = await f.service.reviewBatch(
+    f.session.workspace,
+    f.session.id,
+    ["code.txt"],
+    signal(),
+  );
+  const file = review.files[0]!;
+  expect(Buffer.from(file.base.content!, "base64").toString()).toBe(
+    "original\n",
+  );
+  expect(Buffer.from(file.ours.content!, "base64").toString()).toBe(
+    "private\n",
+  );
+  expect(Buffer.from(file.current.content!, "base64").toString()).toBe(
+    "external\n",
+  );
+  expect(file.preview.state).toBe("conflict");
+  expect(review.publicationChecked).toBe(false);
+  expect(f.active.size).toBe(0);
+  const request = {
+    id: randomUUID(),
+    workspace: f.session.workspace,
+    sessionId: f.session.id,
+    paths: ["code.txt"],
+    version: review.version,
+  };
+  const next = await f.service.continueResolution(request, f.bind);
+  expect(
+    await readFile(
+      path.join(
+        next.workspace,
+        `.codeatelier-recovery-${request.id}/0000/ours`,
+      ),
+      "utf8",
+    ),
+  ).toBe("private\n");
+  expect(await readFile(path.join(f.source, "code.txt"), "utf8")).toBe(
+    "external\n",
+  );
+  expect(
+    await readFile(path.join(f.root, f.id, "upper/code.txt"), "utf8"),
+  ).toBe("private\n");
+  await writeFile(path.join(f.source, "code.txt"), "later\n");
+  await expect(
+    f.service.continueResolution({ ...request, id: randomUUID() }, f.bind),
+  ).rejects.toThrow("检查材料已经改变");
+  await f.service.close();
+});
+
+it("rejects pending, missing and duplicate Linux reviews while preserving the ready view", async () => {
+  const f = await fixture();
+  const lease = await f.begin();
+  await f.edit();
+  await lease!.finish("completed", true);
+  const review = (paths: string[]) =>
+    f.service.reviewBatch(f.session.workspace, f.session.id, paths, signal());
+  await expect(review(["missing.txt"])).rejects.toThrow(
+    "POSIX_BASELINE_MISSING",
+  );
+  await expect(review(["code.txt", "code.txt"])).rejects.toThrow(
+    "DUPLICATE_PATH",
+  );
+  const pending = path.join(f.root, f.id, "round.pending.json");
+  await writeFile(pending, "{}");
+  await expect(review(["code.txt"])).rejects.toThrow("ROUND_PENDING");
+  await unlink(pending);
+  expect((await review(["code.txt"])).files).toHaveLength(1);
+  expect((await f.service.validate(f.session.workspace))?.phase).toBe("ready");
+  await f.service.close();
+});
+
+it("rejects a private file changed during review without quarantining the normal view", async () => {
+  const f = await fixture();
+  const lease = await f.begin();
+  await f.edit();
+  await lease!.finish("completed", true);
+  const classify = f.controller.classify;
+  let calls = 0;
+  f.controller.classify = async (id, paths) => {
+    if (++calls === 2) {
+      await writeFile(
+        path.join(f.root, f.id, "upper/code.txt"),
+        "later private\n",
+      );
+    }
+
+    return classify(id, paths);
+  };
+
+  await expect(
+    f.service.reviewBatch(
+      f.session.workspace,
+      f.session.id,
+      ["code.txt"],
+      signal(),
+    ),
+  ).rejects.toThrow("READ_CHANGED");
+  expect((await f.service.validate(f.session.workspace))?.phase).toBe("ready");
+  const review = await f.service.review(
+    f.session.workspace,
+    f.session.id,
+    "code.txt",
+    signal(),
+  );
+  expect(Buffer.from(review.ours.content!, "base64").toString()).toBe(
+    "later private\n",
+  );
+  expect(await readFile(path.join(f.source, "code.txt"), "utf8")).toBe(
+    "original\n",
+  );
+  await f.service.close();
+});
 
 it("binds Linux format and persists failed/normal task rounds without publishing", async () => {
   const f = await fixture();

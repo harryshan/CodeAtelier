@@ -6,10 +6,11 @@
  * 4. complete 后确认当前私有/来源版本，持久刷新计划，正常卸载后按摘要移除覆盖；未选内容保留。
  * 5. 普通拒绝保存 rejected，未知结果保留 pending；close 幂等但不删除恢复证据或重放发布。
  * 6. 正常收尾在 round 保存、卸载后回收本轮 lower 缓存，未发布 B 与 upper 保留；失败不清 pending。
+ * 7. review 复用独立只读检查模块，只检查正常卸载后的明确选集，不打开 Windows 数据库或挂载。
  * Service 负责任务锁/日志/tracing，控制 IPC 与 Publisher 也各有归档；此后端不建立 Sandbox 权限。
- * 尚未自动注册产品平台入口；不实现 WinFsp 检查/异常恢复接口，不把 mount inode 当跨轮身份。
+ * 显式 namespace 入口注册此后端；不实现 WinFsp 异常恢复接口，不把 mount inode 当跨轮身份。
  */
-import { lstat, open, unlink } from "node:fs/promises";
+import { lstat, unlink } from "node:fs/promises";
 import path from "node:path";
 import type { Logger } from "pino";
 import { z } from "zod";
@@ -25,11 +26,12 @@ import {
 import { PublicationFailure, Publisher } from "./publication/publisher.js";
 import { PublishError } from "./publication/merge.js";
 import { posixBatch } from "./posix-batch.js";
+import { readPosixRound } from "./posix-state.js";
+import { reviewPosixFiles } from "./posix-review.js";
 import {
   acknowledgePosixRound,
   capturePosixRound,
   posixRoundInputs,
-  validatePosixRound,
   type PosixRound,
 } from "./posix-round.js";
 
@@ -38,58 +40,36 @@ export type LinuxMountController = Pick<
   "open" | "seal" | "close" | "release"
 >;
 
-async function readRound(file: string, source: Source) {
-  const info = await lstat(file);
-  if (
-    !info.isFile() ||
-    info.isSymbolicLink() ||
-    info.nlink !== 1 ||
-    info.size > 32 * 1024 * 1024
-  ) {
-    throw new PublishError("ROUND_STATE_INVALID");
-  }
-
-  const handle = await open(file, "r");
-  try {
-    const opened = await handle.stat();
-    if (
-      opened.dev !== info.dev ||
-      opened.ino !== info.ino ||
-      opened.size !== info.size
-    ) {
-      throw new PublishError("ROUND_STATE_CHANGED");
-    }
-
-    const buffer = Buffer.alloc(info.size + 1);
-    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
-    const after = await handle.stat();
-    if (
-      bytesRead !== info.size ||
-      after.size !== opened.size ||
-      after.mtimeMs !== opened.mtimeMs ||
-      after.ctimeMs !== opened.ctimeMs
-    ) {
-      throw new PublishError("ROUND_STATE_CHANGED");
-    }
-
-    return validatePosixRound(
-      JSON.parse(buffer.subarray(0, bytesRead).toString("utf8")),
-      source,
-    );
-  } finally {
-    await handle.close();
-  }
-}
-
 export class LinuxLocalBackend implements LocalOverlayBackend {
   readonly format = "linux-overlay-v1" as const;
 
   constructor(
     private readonly root: string,
-    private readonly controller: LinuxMountController,
+    private readonly controller: LinuxMountController &
+      Partial<Pick<LinuxOverlayController, "classify">>,
     private readonly log: Logger,
     private readonly views?: string,
   ) {}
+
+  review(
+    source: Source,
+    control: string,
+    paths: readonly string[],
+    signal: AbortSignal,
+  ) {
+    const id = z.uuid().parse(path.basename(control));
+    if (control !== path.join(this.root, id) || !this.controller.classify) {
+      return Promise.reject(new PublishError("REVIEW_CONTROLLER_UNAVAILABLE"));
+    }
+
+    return reviewPosixFiles(
+      source,
+      control,
+      paths,
+      (selected) => this.controller.classify!(id, selected),
+      signal,
+    );
+  }
 
   workspace(id: string) {
     return this.views
@@ -145,7 +125,7 @@ export class LinuxLocalBackend implements LocalOverlayBackend {
           baselines: [],
           reads: [],
         }
-      : await readRound(file, source);
+      : await readPosixRound(file, source);
     const view = await this.controller.open(id, source.root, create);
     if (
       view.workspace !== this.workspace(id) ||

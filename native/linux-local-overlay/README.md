@@ -28,3 +28,5 @@ pnpm start:overlay --data-dir /absolute/private-data --views /absolute/private-v
 视图根必须独立于数据根和来源项目；挂载仅在应用 namespace 可见。服务使用普通 UID 并撤销 mount capabilities，原 supervisor 继续负责重载，正常退出先排空任务再卸载。启动器不会自动进入 WSL、安装依赖或接管未知挂载；完整限制见 [使用指南](../../docs/local-overlay-usage.md)。
 
 底层 `launcher.py --root ... --views ... --helper ... -- <argv>` 保留用于受控手动实验；产品入口固定 helper 和 server 路径。真实装配/启动验收见 [探针说明](../../experiments/native-local-overlay/README.md)。
+
+正常文件检查使用固定 `classify` 请求：只对已卸载且 mount 记录 ready 的 upper 明确路径读取类型和版本，区分空文件与 whiteout，不读取源码正文、不挂载或变更状态。Broker 自行读取有界内容和 round 基线。该能力不提供未知挂载恢复，旧启动器须随服务一起更新才能提供正常检查。

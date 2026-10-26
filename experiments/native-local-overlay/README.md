@@ -21,6 +21,8 @@ node experiments/native-local-overlay/startup-probe.mjs "$probe_root" /absolute/
 
 ## Engine 主流程
 
+正式 `startup-probe.mjs` 命令追加 `--review`，会在两个主任务中保留普通、空及删除文件，通过公开 `local-review` 检查并用 `local-resolution` 创建新参考对话；随后实际 Sandbox 读取历史材料、检查当前源码、重新编辑并经候选发布。核对来源/原私有层和正常关闭，见 [检查报告](../../docs/posix-overlay-review-results.json)。不测试异常挂载恢复，也不会自动启动用户服务。
+
 `build-runtime-probe.mjs` 现在另生成 `.local/posix-overlay-engine-probe.mjs`。沿用下文显式 namespace 启动命令和独立 `--views`，将 backend 探针路径改为该文件，参数仍为独占夹具根、既有 MXC SDK 入口和当前 POSIX Runtime bundle。运行固定内存模型 → `run_command` → `local_publish` → Engine 排空 → 独立候选 Sandbox → Publisher，报告保存在夹具 `engine-report.json`，包含合成任务事件。无需真实模型或凭据。
 
 基础 Engine 报告为 [Engine 结果](../../docs/posix-overlay-engine-results.json)。在 SDK/bundle 参数后追加 `--http`，走生产 Fastify、AsyncStore Workers、SandboxBroker 和真实 HTTP/CSRF/SSE，验证双会话创建、固定模型任务、候选发布和正常关闭；只指定实验 SDK/bundle 位置，不替换 Broker 或 Runtime 工厂。[HTTP 报告](../../docs/posix-overlay-http-results.json) 已通过。构建脚本同时打包异步 Store 的 host/worker 到忽略的 `.local`。

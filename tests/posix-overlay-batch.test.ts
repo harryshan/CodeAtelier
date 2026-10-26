@@ -151,6 +151,29 @@ it("retains private Git metadata without capturing or publishing it", async () =
   expect(await readdir(f.input.source.root)).not.toContain("new");
 });
 
+it("keeps root reference material private across normal Linux rounds", async () => {
+  const f = await fixture();
+  const reference = `.codeatelier-recovery-${randomUUID()}`;
+  await mkdir(path.join(f.input.workspace, reference));
+  await writeFile(
+    path.join(f.input.workspace, reference, "ours"),
+    "historical only",
+  );
+  const state = await capturePosixRound({
+    ...f.input,
+    upper: f.input.workspace,
+  });
+  expect(
+    state.baselines.some((entry) => entry.path.startsWith(reference)),
+  ).toBe(false);
+  expect(
+    await readFile(path.join(f.input.workspace, reference, "ours"), "utf8"),
+  ).toBe("historical only");
+  await expect(
+    posixBatch({ ...f.input, selected: [`${reference}/ours`] }),
+  ).rejects.toThrow("PATH_REJECTED");
+});
+
 async function record(root: string, file: string) {
   const info = await lstat(path.join(root, file), { bigint: true });
   const identity = `${info.dev}:${info.ino}`;

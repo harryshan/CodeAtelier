@@ -18,7 +18,7 @@
  * 13. withSandboxRecoveryRoots 只在账户已排空后的启动撤销阶段暴露已知卷根 ACL；保留 dirty/任务锁/阶段，不执行任务或发布。
  *     主卷使用会话清单，候选卷使用执行前持久身份；候选恢复不删除记录或推断验证结果。
  * 14. 平台格式随 backend 创建并在 validate 绑定；Linux v1 不能被默认 WinFsp v6 接管。
- * 15. fileReviewSupported 区分平台检查能力；Linux 不调用 Windows 封存/事故恢复代码，历史不展示无实现的入口。
+ * 15. 正常文件检查按 backend 分派，异常恢复单独报告；Linux 不调用 Windows 封存/事故恢复代码。
  * 公开创建由 HTTP 单独检查平台/Sandbox 能力，不迁移旧历史；来源写入只由冻结租约内的协调器执行。
  */
 import { randomUUID } from "node:crypto";
@@ -412,7 +412,7 @@ export class LocalOverlayService {
     sessionId: string,
     signal: AbortSignal,
   ) {
-    if (!this.fileReviewSupported) {
+    if (!this.incidentRecoverySupported) {
       return Promise.reject(
         new Error("当前 Local 后端尚不支持文件检查或事故恢复。"),
       );
@@ -572,7 +572,7 @@ export class LocalOverlayService {
     token?: string | { action: "release-complete" },
     signal = new AbortController().signal,
   ) {
-    if (!this.fileReviewSupported) {
+    if (!this.incidentRecoverySupported) {
       return Promise.reject(
         new Error("当前 Local 后端尚不支持文件检查或事故恢复。"),
       );
@@ -705,8 +705,17 @@ export class LocalOverlayService {
     return this.inspect(
       workspace,
       sessionId,
-      (source, control, currentSignal) =>
-        reviewCleanFile(source, control, relative, currentSignal),
+      async (source, control, currentSignal) =>
+        this.backend.review
+          ? (
+              await this.backend.review(
+                source,
+                control,
+                [relative],
+                currentSignal,
+              )
+            ).files[0]!
+          : reviewCleanFile(source, control, relative, currentSignal),
       signal,
     );
   }
@@ -727,7 +736,9 @@ export class LocalOverlayService {
       workspace,
       sessionId,
       (source, control, currentSignal) =>
-        reviewCleanFiles(source, control, paths, currentSignal),
+        this.backend.review
+          ? this.backend.review(source, control, paths, currentSignal)
+          : reviewCleanFiles(source, control, paths, currentSignal),
       signal,
     );
   }
@@ -738,7 +749,7 @@ export class LocalOverlayService {
     paths: readonly string[],
     signal: AbortSignal,
   ) {
-    if (!this.fileReviewSupported) {
+    if (!this.incidentRecoverySupported) {
       return Promise.reject(
         new Error("当前 Local 后端尚不支持文件检查或事故恢复。"),
       );
@@ -857,8 +868,14 @@ export class LocalOverlayService {
     }
   }
 
-  /** Linux 尚无 Windows 格式的离线检查及事故恢复；入口须在任何 I/O 前拒绝。 */
+  /** 正常检查可以由平台 backend 提供；不据此开放异常恢复。 */
   get fileReviewSupported() {
+    return (
+      this.backend.format !== "linux-overlay-v1" || Boolean(this.backend.review)
+    );
+  }
+
+  private get incidentRecoverySupported() {
     return this.backend.format !== "linux-overlay-v1";
   }
 
@@ -883,23 +900,26 @@ export class LocalOverlayService {
           state: record.phase,
           epoch: record.epoch,
           ...(!this.fileReviewSupported ? { fileReviewSupported: false } : {}),
+          ...(!this.incidentRecoverySupported
+            ? { incidentRecoverySupported: false }
+            : {}),
           ...(record.phase === "ready" &&
           record.publication?.state === "published" &&
           record.refreshedTaskId &&
           record.refreshedTaskId === record.taskId
             ? { refreshedTaskId: record.refreshedTaskId }
             : {}),
-          ...(this.fileReviewSupported &&
+          ...(this.incidentRecoverySupported &&
           record.phase === "failed" &&
           record.refreshRecovery
             ? { privateRefreshRecovery: true }
             : {}),
-          ...(this.fileReviewSupported &&
+          ...(this.incidentRecoverySupported &&
           ["failed", "active"].includes(record.phase) &&
           !this.active.has(id)
             ? { interruptedReview: true }
             : {}),
-          ...(this.fileReviewSupported &&
+          ...(this.incidentRecoverySupported &&
           record.publication?.batchId &&
           (record.phase === "failed" ||
             (record.phase === "active" && !this.active.has(id)))
@@ -930,6 +950,9 @@ export class LocalOverlayService {
           id,
           state: "unavailable",
           ...(!this.fileReviewSupported ? { fileReviewSupported: false } : {}),
+          ...(!this.incidentRecoverySupported
+            ? { incidentRecoverySupported: false }
+            : {}),
         },
       };
     }
@@ -991,7 +1014,12 @@ export class LocalOverlayService {
     input: ResolutionRequest,
     bind: (workspace: string, sessionId?: string) => Promise<Session>,
   ) {
-    if (!this.fileReviewSupported) {
+    if (
+      !this.fileReviewSupported ||
+      ("paths" in input &&
+        input.state === "interrupted" &&
+        !this.incidentRecoverySupported)
+    ) {
       return Promise.reject(
         new Error("当前 Local 后端尚不支持文件检查或事故恢复。"),
       );

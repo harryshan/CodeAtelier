@@ -1,0 +1,70 @@
+{
+  "fixture": "rv-ynmXXc",
+  "environment": "WSL2 Ubuntu 26.04/ext4, Node 24.19.0, MXC 1.0.0",
+  "scope": "Production HTTP, OverlayFS and Bubblewrap; normal review of retained, empty and deleted files; fresh reference session reads history, re-reads current source and publishes a new edit while preserving original private data. Synthetic model plan, not incident recovery or a full-project benchmark.",
+  "passed": true,
+  "closed": true,
+  "tasks": [
+    {
+      "status": "completed",
+      "executions": [
+        {
+          "kind": "agent-runtime",
+          "purpose": null,
+          "mode": "linux-bubblewrap",
+          "sandboxApplied": true
+        },
+        {
+          "kind": "agent-runtime",
+          "purpose": "local-validation",
+          "mode": "linux-bubblewrap",
+          "sandboxApplied": true
+        }
+      ],
+      "publication": {
+        "state": "published",
+        "files": 1
+      }
+    },
+    {
+      "status": "completed",
+      "executions": [
+        {
+          "kind": "agent-runtime",
+          "purpose": null,
+          "mode": "linux-bubblewrap",
+          "sandboxApplied": true
+        },
+        {
+          "kind": "agent-runtime",
+          "purpose": "local-validation",
+          "mode": "linux-bubblewrap",
+          "sandboxApplied": true
+        }
+      ],
+      "publication": {
+        "state": "published",
+        "files": 1
+      }
+    }
+  ],
+  "requests": 14,
+  "typescript": false,
+  "symlinks": false,
+  "reviewFiles": true,
+  "reloaded": true,
+  "continued": true,
+  "review": {
+    "normal": true,
+    "emptyFile": true,
+    "deletedFile": true,
+    "referenceCreated": true,
+    "referenceTaskPublished": true,
+    "originalPrivateRetained": true
+  },
+  "parallel": true,
+  "exit": {
+    "code": 0,
+    "signal": null
+  }
+}

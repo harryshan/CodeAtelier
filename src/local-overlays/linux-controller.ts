@@ -2,6 +2,7 @@
  * Broker 到 Linux namespace 挂载控制器的有界私有 IPC；不执行任意 shell 或 mount 参数。
  * 1. constructor 接收父启动器的 Unix socket；首次操作用 hello 核对当前 mount namespace。
  * 2. open/seal/close/release 使用固定请求及 UUID，release 只允许已卸载视图的摘要绑定覆盖；不自动重试。
+ *    classify 仅查询正常卸载 upper 的明确选集类型/版本，不读正文或更改状态；只读失败不污染写操作状态。
  * 3. 一次连接只处理一条有界 JSON；超时、断线、坏响应均使客户端失效，避免重放未知挂载。
  * 4. 各操作记录 ID、耗时与终态的 tracing/log，不记录来源路径、正文或 socket 地址。
  * 调用方必须先排空 Runtime 再 close；本层不提供任务退出证明或自动清理 upper。
@@ -32,6 +33,23 @@ const viewSchema = z.object({
   }),
 });
 export type LinuxOverlayView = z.infer<typeof viewSchema>;
+const classificationSchema = z.object({
+  source: z.string(),
+  sourceIdentity: z.string(),
+  upperIdentity: z.string(),
+  files: z
+    .array(
+      z
+        .object({
+          path: z.string().min(1).max(1024),
+          stamp: z.string().regex(/^\d+:\d+:\d+:-?\d+:-?\d+:\d+$/),
+          deleted: z.boolean(),
+        })
+        .strict(),
+    )
+    .max(100),
+});
+export type LinuxPrivateClassification = z.infer<typeof classificationSchema>;
 
 export class LinuxOverlayController {
   private poisoned = false;
@@ -50,7 +68,10 @@ export class LinuxOverlayController {
     }
   }
 
-  private exchange(request: Record<string, unknown>): Promise<unknown> {
+  private exchange(
+    request: Record<string, unknown>,
+    readOnly = false,
+  ): Promise<unknown> {
     if (this.poisoned) {
       return Promise.reject(
         new Error("Linux overlay 控制器结果未知，禁止重试。"),
@@ -68,7 +89,7 @@ export class LinuxOverlayController {
         }
 
         settled = true;
-        this.poisoned = true;
+        this.poisoned ||= !readOnly;
         socket.destroy();
         reject(new Error("Linux overlay IPC 结果未知；保留私有状态。"));
       };
@@ -107,7 +128,7 @@ export class LinuxOverlayController {
           settled = true;
           socket.destroy();
           if (!reply.ok) {
-            this.poisoned = true;
+            this.poisoned ||= !readOnly;
             reject(new Error("Linux overlay 控制器拒绝操作；不自动重试。"));
           } else {
             resolve(value);
@@ -124,6 +145,7 @@ export class LinuxOverlayController {
     id: string,
     request: Record<string, unknown>,
     decode: (value: unknown) => T,
+    readOnly = false,
   ): Promise<T> {
     z.uuid().parse(id);
     const operationId = randomUUID();
@@ -135,7 +157,7 @@ export class LinuxOverlayController {
       attributes: { overlayId: id },
     });
     const started = performance.now();
-    let outcome: "ok" | "unknown" = "unknown";
+    let outcome: "ok" | "unknown" | "error" = readOnly ? "error" : "unknown";
     this.log.info({
       module: "linux-overlay",
       event: `${operation}.started`,
@@ -146,7 +168,7 @@ export class LinuxOverlayController {
       if (!this.checked) {
         const value = z
           .object({ namespace: z.string() })
-          .parse(await this.exchange({ operation: "hello" }));
+          .parse(await this.exchange({ operation: "hello" }, readOnly));
         if (value.namespace !== (await this.namespace())) {
           throw new Error("Linux overlay 不在当前应用 mount namespace。");
         }
@@ -154,7 +176,9 @@ export class LinuxOverlayController {
         this.checked = true;
       }
 
-      const result = decode(await this.exchange({ operation, id, ...request }));
+      const result = decode(
+        await this.exchange({ operation, id, ...request }, readOnly),
+      );
       outcome = "ok";
       this.log.info({
         module: "linux-overlay",
@@ -166,10 +190,10 @@ export class LinuxOverlayController {
 
       return result;
     } catch (error) {
-      this.poisoned = true;
+      this.poisoned ||= !readOnly;
       this.log.warn({
         module: "linux-overlay",
-        event: `${operation}.unknown`,
+        event: `${operation}.${readOnly ? "failed" : "unknown"}`,
         overlayId: id,
         operationId,
         durationMs: performance.now() - started,
@@ -190,6 +214,16 @@ export class LinuxOverlayController {
   open(id: string, source: string, create: boolean) {
     return this.execute("open", id, { source, create }, (value) =>
       viewSchema.parse(value),
+    );
+  }
+
+  classify(id: string, paths: readonly string[]) {
+    return this.execute(
+      "classify",
+      id,
+      { paths },
+      (value) => classificationSchema.parse(value),
+      true,
     );
   }
 

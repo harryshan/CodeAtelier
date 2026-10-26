@@ -5,6 +5,7 @@
  * 3. finish 在冻结租约中核对 v6 状态；可选明确选择先发布/确认，否则按 task ID 推进代次，再回收孤立内容并退出。
  * 4. recoverRefresh 仅在正常重挂载后的冻结租约内确认 complete 批次，不发布来源或执行任务；退出后返回私有代次。
  * 5. recoverAccess 使用根 ACL 专用挂载，允许保留 dirty 的卷撤销旧账户权限；不暴露 finish 或普通文件操作。
+ * 6. review 可由平台实现正常卸载后的明确文件检查；Service 负责视图锁，不把检查能力当作异常恢复能力。
  * 不管理 Git、不安装驱动；调用方先排空任务并提供可信候选验证器，异常停止不能冒充成功收尾。
  */
 import path from "node:path";
@@ -25,6 +26,8 @@ import {
 } from "./publication.js";
 import { Publisher } from "./publication/publisher.js";
 import type { Batch } from "./publication/session.js";
+import type { Source } from "./publication/files.js";
+import type { LocalReviewBatch } from "./publication/review.js";
 
 export interface LocalOverlayMount {
   identity(): Promise<string>;
@@ -47,6 +50,12 @@ export interface LocalOverlayBackend {
   readonly format?: 6 | "linux-overlay-v1";
   workspace(id: string): string;
   idFor(workspace: string): string | undefined;
+  review?(
+    source: Source,
+    control: string,
+    paths: readonly string[],
+    signal: AbortSignal,
+  ): Promise<LocalReviewBatch>;
   recoverAccess?(
     id: string,
     source: string,

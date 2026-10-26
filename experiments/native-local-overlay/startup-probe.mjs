@@ -6,6 +6,7 @@
  * 3. 保存独立 v1 设置，启动 dist 的 overlay-launcher，由实际 HTTP 创建/运行会话；没有内部类注入。
  * 4. 核对真实 Runtime/候选、来源合并、私有产物，重载服务后继续原会话读取，再正常退出并保留报告。
  *    --typescript 另准备真实编译器/类型库与硬链接依赖；--symlinks 通过内部包链接和 bin 链运行，产物保持私有。
+ *    --review 再检查普通/空/删除文件并创建参考会话，在新 Sandbox 中读取参考、重新编辑和发布。
  * 5. finally 仅关闭本脚本服务/子进程；不安装依赖、不修改用户设置、不重启现有服务或运行 Evaluation。
  */
 import assert from "node:assert/strict";
@@ -41,6 +42,11 @@ await mkdir(data, { mode: 0o700 });
 await mkdir(source);
 await writeFile(path.join(source, "module.py"), "a = 1\nb = 2\n");
 const symlinks = process.argv.includes("--symlinks");
+const reviewFiles = process.argv.includes("--review");
+if (reviewFiles) {
+  await writeFile(path.join(source, "empty.txt"), "before empty");
+  await writeFile(path.join(source, "remove.txt"), "before delete");
+}
 const typescript = process.argv.includes("--typescript") || symlinks;
 const compilerDirectory = symlinks
   ? "node_modules/.pnpm/typescript/node_modules/typescript/lib"
@@ -115,6 +121,7 @@ const report = {
   requests: 0,
   typescript,
   symlinks,
+  reviewFiles,
 };
 if (typescript) {
   const info = await lstat(path.join(source, compilerDirectory, "_tsc.js"));
@@ -176,6 +183,40 @@ async function respond(body) {
     return message();
   }
   const serialized = JSON.stringify(body.input);
+  if (serialized.includes("STARTUP_REFERENCE")) {
+    const step = calls.get("reference") ?? 0;
+    calls.set("reference", step + 1);
+    if (step === 0) {
+      return tool("reference", step, "run_command", {
+        command: python(
+          "import pathlib,json; root=next(pathlib.Path('.').glob('.codeatelier-recovery-*')); m=json.loads((root/'manifest.json').read_text()); assert len(m['entries'])==3; assert (root/'0000/ours').read_text()=='private'; assert pathlib.Path('module.py').read_text()=='a = 10\\nb = 20\\n'; assert not pathlib.Path('artifact').exists(); pathlib.Path('module.py').write_text('a = 11\\nb = 20\\n'); print('REFERENCE_OK')",
+        ),
+      });
+    }
+    if (step === 1) {
+      const receipt = body.input.find(
+        (entry) =>
+          entry.type === "function_call_output" &&
+          entry.call_id === "reference-0",
+      );
+      const result = JSON.parse(receipt.output);
+      assert.equal(result.exitCode, 0);
+      assert.match(result.output, /REFERENCE_OK/);
+      return tool("reference", step, "local_publish", {
+        request: {
+          action: "select",
+          paths: ["module.py"],
+          commands: [
+            python(
+              "import pathlib; assert pathlib.Path('module.py').read_text()=='a = 11\\nb = 20\\n'",
+            ),
+          ],
+        },
+      });
+    }
+    assert.equal(step, 2);
+    return message();
+  }
   if (serialized.includes("STARTUP_CONTINUE")) {
     const step = calls.get("continue") ?? 0;
     calls.set("continue", step + 1);
@@ -201,7 +242,11 @@ async function respond(body) {
       command:
         python(
           `import pathlib,time; p=pathlib.Path('module.py'); assert p.read_text()=='a = 1\\nb = 2\\n'; start=time.time_ns(); time.sleep(0.5); p.write_text(${JSON.stringify(content)}); pathlib.Path('artifact').write_text('private'); print('INTERVAL_${label}:'+str(start)+':'+str(time.time_ns()))`,
-        ) + compile,
+        ) +
+        (reviewFiles
+          ? ` && ${python("import pathlib; assert pathlib.Path('remove.txt').read_text()=='before delete'; pathlib.Path('remove.txt').unlink(); pathlib.Path('empty.txt').write_text('')")}`
+          : "") +
+        compile,
     });
   }
   if (step === 1) {
@@ -456,14 +501,15 @@ try {
     await readFile(path.join(source, "module.py"), "utf8"),
     "a = 10\nb = 20\n",
   );
-  assert.deepEqual(
-    (await readdir(source)).sort(),
-    symlinks
-      ? ["escape", "input.ts", "module.py", "node_modules"]
-      : typescript
-        ? ["input.ts", "module.py", "vendor"]
-        : ["module.py"],
-  );
+  const expectedNames = symlinks
+    ? ["escape", "input.ts", "module.py", "node_modules"]
+    : typescript
+      ? ["input.ts", "module.py", "vendor"]
+      : ["module.py"];
+  if (reviewFiles) {
+    expectedNames.push("empty.txt", "remove.txt");
+  }
+  assert.deepEqual((await readdir(source)).sort(), expectedNames.sort());
   assert.deepEqual(await readdir(path.join(data, "mxc/active")), []);
 
   // 重载只替换 supervisor 的服务子进程；新 bootstrap token 证明读取的不是旧进程快照。
@@ -538,6 +584,84 @@ try {
   assert.deepEqual(await readdir(path.join(data, "mxc/active")), []);
   report.reloaded = true;
   report.continued = true;
+  if (reviewFiles) {
+    const parent = sessions[0];
+    const reviewed = await request(`/api/sessions/${parent.id}/local-review`, {
+      paths: ["artifact", "empty.txt", "remove.txt"],
+    });
+    assert.equal(reviewed.publicationChecked, false);
+    assert.equal(reviewed.files.length, 3);
+    const entries = new Map(reviewed.files.map((file) => [file.path, file]));
+    assert.equal(entries.get("artifact").base.content, null);
+    assert.equal(
+      Buffer.from(entries.get("artifact").ours.content, "base64").toString(),
+      "private",
+    );
+    assert.equal(entries.get("empty.txt").ours.content, "");
+    assert.equal(entries.get("remove.txt").ours.content, null);
+    const child = await request(`/api/sessions/${parent.id}/local-resolution`, {
+      id: randomUUID(),
+      paths: ["artifact", "empty.txt", "remove.txt"],
+      version: reviewed.version,
+    });
+    assert.equal(child.localOverlay.state, "ready");
+    assert.equal(child.localOverlay.incidentRecoverySupported, false);
+    assert.notEqual(child.localOverlay.fileReviewSupported, false);
+    const task = await request(`/api/sessions/${child.id}/tasks`, {
+      prompt:
+        "STARTUP_REFERENCE: read the historical reference, inspect current source and make a new edit.",
+    });
+    const deadline = performance.now() + 45000;
+    let snapshot;
+    do {
+      assert.ok(performance.now() < deadline, "Reference task timed out");
+      snapshot = await request(`/api/sessions/${child.id}`);
+      await delay(100);
+    } while (
+      snapshot.tasks.some(
+        (entry) =>
+          entry.id === task.id && ["queued", "running"].includes(entry.status),
+      )
+    );
+    assert.equal(
+      snapshot.tasks.find((entry) => entry.id === task.id)?.status,
+      "completed",
+    );
+    assert.equal(snapshot.session.localOverlay.publication.state, "published");
+    assert.equal(
+      await readFile(path.join(source, "module.py"), "utf8"),
+      "a = 11\nb = 20\n",
+    );
+    assert.equal(
+      await readFile(
+        path.join(
+          data,
+          "local-overlays",
+          parent.localOverlay.id,
+          "upper/artifact",
+        ),
+        "utf8",
+      ),
+      "private",
+    );
+    assert.ok(
+      snapshot.events.some(
+        (event) =>
+          event.type === "execution_instance" &&
+          event.data.state === "completed" &&
+          event.data.sandboxApplied &&
+          event.data.mode === "linux-bubblewrap",
+      ),
+    );
+    report.review = {
+      normal: true,
+      emptyFile: true,
+      deletedFile: true,
+      referenceCreated: true,
+      referenceTaskPublished: true,
+      originalPrivateRetained: true,
+    };
+  }
   report.passed = true;
   report.parallel = true;
 } finally {

@@ -5,6 +5,7 @@
 # 3. Lower 管理本进程创建的 helper、有限响应和退出；活跃视图先持久标记再挂载，
 #    只有明确 close 的普通卸载和 helper 退出都成功才变为 ready，未知状态拒绝重用。
 #    release 仅在卸载后复核所选 upper 摘要/whiteout，逐项删除覆盖；失败保持 active。
+#    classify 只查正常卸载 upper 中的明确路径类型/stamp，识别 whiteout，不读正文或修改状态。
 # 4. serve 通过 setpriv 撤销服务全部 capabilities，转发退出信号；服务重载仍在同一 namespace。
 #    服务异常退出仅尝试卸载，不清除 active；不强制卸载、不恢复未知任务、不删除私有内容。
 # 5. 控制协议不是同 UID 的安全边界；真实 Sandbox 必须隐藏控制根/socket，不能把宿主测试当隔离验收。
@@ -139,7 +140,66 @@ class Controller:
             return {}
         if operation == "release":
             return self.release(identity, request["remove"])
+        if operation == "classify":
+            return self.classify(identity, request["paths"])
         raise ValueError("UNKNOWN_OPERATION")
+
+    def classify(self, identity, paths):
+        if identity in self.views or not isinstance(paths, list) or not 1 <= len(paths) <= 100:
+            raise ValueError("REVIEW_NOT_CLOSED_OR_LIMIT")
+        private = self.root / identity
+        directory(private)
+        record_file = private / "mount.json"
+        info = record_file.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > 65536:
+            raise ValueError("MOUNT_RECORD_INVALID")
+        record = json.loads(record_file.read_text())
+        upper = private / "upper"
+        upper_identity = directory(upper)
+        if (record.get("version") != 1 or record.get("phase") != "ready"
+                or upper_identity != record["directories"]["upper"]):
+            raise ValueError("REVIEW_NOT_READY")
+        files = []
+        total = 0
+        for relative in paths:
+            if not isinstance(relative, str):
+                raise ValueError("REVIEW_PATH")
+            total += len(relative.encode("utf8"))
+            parts = relative.split("/")
+            if (total > 16384 or any(part in ("", ".", "..", ".git", ".hg", ".svn")
+                                    or "\\" in part or "\x00" in part for part in parts)):
+                raise ValueError("REVIEW_PATH")
+            target = upper
+            for part in parts[:-1]:
+                target = target / part
+                directory(target)
+                attributes = os.listxattr(target, follow_symlinks=False)
+                if ("user.overlay.redirect" in attributes
+                        or ("user.overlay.opaque" in attributes
+                            and os.getxattr(target, "user.overlay.opaque", follow_symlinks=False) == b"y")):
+                    raise ValueError("REVIEW_ANCESTOR_UNSUPPORTED")
+            target = target / parts[-1]
+            info = target.lstat()
+            attributes = os.listxattr(target, follow_symlinks=False)
+            deleted = stat.S_ISCHR(info.st_mode) and info.st_rdev == 0
+            if "user.overlay.whiteout" in attributes:
+                if not stat.S_ISREG(info.st_mode) or info.st_size != 0:
+                    raise ValueError("REVIEW_WHITEOUT_INVALID")
+                deleted = os.getxattr(target, "user.overlay.whiteout", follow_symlinks=False) == b"y"
+                if not deleted:
+                    raise ValueError("REVIEW_WHITEOUT_INVALID")
+            if (info.st_nlink != 1 or (not deleted and (not stat.S_ISREG(info.st_mode)
+                    or info.st_size > 2 * 1024 * 1024))
+                    or "user.overlay.metacopy" in attributes):
+                raise ValueError("REVIEW_FILE_UNSUPPORTED")
+            current = target.lstat()
+            def stamp(value):
+                return f"{value.st_dev}:{value.st_ino}:{value.st_size}:{value.st_mtime_ns}:{value.st_ctime_ns}:{value.st_mode}"
+            if stamp(info) != stamp(current):
+                raise ValueError("REVIEW_FILE_CHANGED")
+            files.append({"path": relative, "stamp": stamp(info), "deleted": deleted})
+        return {"source": record["source"], "sourceIdentity": record["sourceIdentity"],
+                "upperIdentity": upper_identity, "files": files}
 
     def release(self, identity, items):
         if identity in self.views or not isinstance(items, list) or len(items) > 100:
@@ -345,8 +405,10 @@ def serve(args):
                     except TimeoutError:
                         continue
                     with connection:
+                        read_only = False
                         try:
                             request = receive(connection)
+                            read_only = request.get("operation") == "classify"
                             result = controller.dispatch(request)
                             response = {"version": 1, "ok": True, **result}
                         except (ValueError, KeyError) as error:
@@ -355,7 +417,8 @@ def serve(args):
                                 "reason": type(error).__name__,
                             }
                         except Exception as error:
-                            controller.poisoned = True
+                            if not read_only:
+                                controller.poisoned = True
                             response = {
                                 "version": 1, "ok": False,
                                 "reason": type(error).__name__,
@@ -363,7 +426,8 @@ def serve(args):
                         try:
                             connection.sendall((json.dumps(response) + "\n").encode())
                         except OSError:
-                            controller.poisoned = True
+                            if not read_only:
+                                controller.poisoned = True
             finally:
                 clean = controller.shutdown()
                 endpoint.unlink()

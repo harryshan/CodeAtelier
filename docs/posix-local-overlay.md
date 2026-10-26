@@ -1,6 +1,6 @@
 # POSIX Local overlay：原生文件系统优先
 
-状态：2026-10-26 Linux 已完成原生文件层、Service/Engine、HTTP/SSE、真实 Sandbox 双任务和候选发布接入，显式 namespace 启动并启用 Sandbox 后开放入口。Linux 文件检查/事故恢复和预编译包自动分发尚未实现；macOS 仍为选型。Windows 的已验证实现保持不变。以下保留各阶段证据，当前使用方式以 [指南](local-overlay-usage.md) 为准。
+状态：2026-10-26 Linux 已完成原生文件层、Service/Engine、HTTP/SSE、真实 Sandbox 双任务和候选发布接入，显式 namespace 启动并启用 Sandbox 后开放入口。Linux 正常文件检查/参考继续已接入；事故恢复和预编译包自动分发尚未实现；macOS 仍为选型。Windows 的已验证实现保持不变。以下保留各阶段证据，当前使用方式以 [指南](local-overlay-usage.md) 为准。
 
 ## 可复用的结构
 
@@ -30,11 +30,15 @@ Docker 同样用只读 image layers 作为 lower、独立容器层作为 upper�
 
 ## 当前产品接入与分阶段证据
 
+正常文件检查：Service 取得原有 ready 视图锁，Linux backend 读取有界 round B、卸载后的 upper O 和当前来源 T；控制器 `classify` 仅返回明确路径的类型/stamp，识别字符设备及 `user.overlay.whiteout` 删除标记，拒绝复杂 ancestor opaque/redirect、metacopy、链接与超限文件。不打开正文、不挂载、不改变 mount 状态；只读请求拒绝/断线不污染后续写操作状态。Broker 读取普通内容、生成预览并复核分类/round/当前来源，最多 100 项、16 MiB 结果内容。检查复用已有 review trace，classify 单独记录无路径/正文的生命周期。
+
+参考继续：检查版本绑定材料，创建新视图时只播种根 UUID 参考目录，旧视图/私有修改保留；Linux 正常收尾跳过该保留目录，拒绝把参考材料当成源码选择。新任务必须读取当前来源并重新编辑、验证和选择发布。`fileReviewSupported` 与 `incidentRecoverySupported` 独立投影：Linux 支持正常检查，不开放中断检查、来源事故或私有刷新恢复，相关请求在进入 Windows 实现前拒绝。真实公开 HTTP/Sandbox 已验证普通/空/删除检查、新参考任务成功发布和原私有保留，见 [报告](posix-overlay-review-results.json)。
+
 内部相对依赖链接：helper 用 `O_PATH | O_NOFOLLOW` 获取链接自身的句柄，通过 `readlinkat` 固定文本；保持 `RESOLVE_NO_SYMLINKS`，不沿宿主符号链接打开目标。Linux 的这个组合允许获取最终链接对象而不跟随它，见 [openat2 官方手册](https://www.man7.org/linux/man-pages/man2/openat2.2.html)。只接受相对目标和不超出来源根的前导 `../`，拒绝中途回退，避免 `a/../b` 在 `a` 本身是链接时产生不同解析；每段链接仍在 overlay 中解析。链接身份与文本存为独立 `symlink` 读凭据，目标普通文件按实际解析路径捕获；候选、跨轮和 Publisher 都复核该凭据，链接改向拒绝旧发布。helper 创建仍只读根身份，不增加扫描或文件复制。旧文件/目录清单继续兼容，新链接清单要求配套新版 Broker；Windows 不生成该类依赖。
 
 真实 WSL/ext4 的内部 `.pnpm/...` 包目录及 `.bin/tsc` 链接，经两个主 Runtime 和新候选运行实际 TypeScript，合并发布、重载续聊及关闭通过；每主任务 77 条读凭据，见 [报告](posix-overlay-symlink-results.json)。绝对/外部链接、任意链接编辑/发布、包安装器新增 upper 链接及完整 pnpm 项目仍不在该证据范围；普通文件源码发布边界不变。
 
-公开入口接入：只有显式 Linux namespace 启动上下文通过平台工厂校验且启用 Sandbox 时，才允许创建/执行隔离 Local。普通 Linux 启动给出启动器要求，macOS 继续不开放；请求参数仍为原有来源目录与固定 UUID。正常历史、任务、选择发布与续聊沿用同一 HTTP 协议。Linux 尚无 Windows 格式的封存文件检查/事故恢复实现，历史投影显式返回不支持检查，UI 不展示这些操作；直接请求在服务边界拒绝，不让它触碰 Windows 私有数据库。正常 ready 会话可继续任务读取私有内容，异常现场继续保留。此增量不自动安装 helper 或改变默认创建模式。
+公开入口接入：只有显式 Linux namespace 启动上下文通过平台工厂校验且启用 Sandbox 时，才允许创建/执行隔离 Local。普通 Linux 启动给出启动器要求，macOS 继续不开放；请求参数仍为原有来源目录与固定 UUID。正常历史、任务、选择发布与续聊沿用同一 HTTP 协议。Linux 正常文件检查使用独立 round/upper 实现；异常恢复尚未实现，历史投影明确不支持，UI 不展示异常入口；直接请求在服务边界拒绝，不触碰 Windows 私有数据库。正常 ready 会话可继续任务读取私有内容，异常现场继续保留。此增量不自动安装 helper 或改变默认创建模式。
 
 Git 策略实测区分来源隐藏与私有新建：只读 lower 对管理目录 lookup 返回 ENOENT 时，OverlayFS 会允许在 upper 创建同名项。现改为 EACCES，根目录及已有 lower 目录的文件、目录、链接、重命名和 git init 均被拒绝；Sandbox 的 `.git` 信任探测将明确拒绝视为不授信任，根解析和其它 I/O 错误仍失败。纯 upper 新目录不再经过 lower，实测可建立独立私有 Git 仓库（[报告](posix-overlay-git-policy-results.json)）。用户已接受该原生限制，并明确不再围绕内部建仓库扩展工作。来源 metadata 不投影、来源不可写、Publisher 拒绝管理目录；收尾跳过并保留私有 metadata，不因它阻断普通源码发布。不声称全层级拦截或阻止任意 Git 程序。
 

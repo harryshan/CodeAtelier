@@ -1,7 +1,7 @@
 /**
  * Linux Local 正常跨轮状态：独立于可重建的 lower 缓存保存未发布 B 与保守依赖。
  * 1. capturePosixRound 只遍历私有 upper，用当前原生观察或先前 B 记录私有普通文件；
- *    新生成物保存 missing 基线，不读取其正文。私有管理目录跳过且保留，目录/不支持对象不作为源码发布。
+ *    新生成物保存 missing 基线，不读取其正文。私有管理目录及根 UUID 参考材料跳过且保留，目录/不支持对象不作为源码发布。
  *    历史读凭据保留不同版本，正常保存不要求旧来源仍有效；真正发布在 posixBatch/Publisher 复核全部版本。
  * 2. validatePosixRound 严格验证来源、路径、正文及总预算；状态通过既有 durableJson 保存。
  * 3. acknowledgePosixRound 只接受 Publisher complete 日志，复核来源结果与所选私有内容，
@@ -100,6 +100,16 @@ async function upperFiles(directory: string): Promise<string[]> {
       // 纯 upper 新目录可有自己的 Git metadata；它既不是源码基线，也不能发布。
       // 不进入这些目录或读取正文，保留私有状态；显式选集仍由 checkRelative 拒绝。
       if (/^(?:\.git|\.hg|\.svn)$/i.test(entry.name)) {
+        continue;
+      }
+
+      // 参考目录只在新视图根播种，不是源码；不递归它或把历史材料变为本轮 B。
+      if (
+        !relative &&
+        /^\.codeatelier-recovery-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(
+          entry.name,
+        )
+      ) {
         continue;
       }
 

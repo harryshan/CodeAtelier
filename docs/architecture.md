@@ -1,8 +1,10 @@
 # 架构
 
+Linux 正常文件检查由 backend 的可选 `review` 接口分派到 `posix-review.ts`，`posix-state.ts` 与续轮共用有界 round 读取。Service 持有原视图锁，控制器只读 `classify` 返回正常卸载 upper 的类型/stamp，Broker 读取明确 B/O/T 并生成版本绑定预览；不会调用 WinFsp 数据库、挂载或发布。异常恢复能力独立投影为 `incidentRecoverySupported=false`。新参考会话复用已有 resolution 协议，根 UUID 历史材料不进入 Linux 源码基线或发布选集。
+
 Linux 可选源码构建入口 `scripts/build-linux-local-overlay.ts` 将 `native/linux-local-overlay/readonly-lower.cpp` 编译到 `dist/native/linux-<arch>` 并复制控制器。`src/server/overlay-launcher.ts` 由 `pnpm start:overlay` 调用，`linux-startup.ts` 仅生成绑定 data/views 的固定 argv；先检查产物，再启动 Python namespace 控制器及原服务 supervisor，转发信号并等待退出。普通 start、设置格式和 Runtime 权限不变；控制器与服务均使用同一数据目录，不由 HTTP 选择命令或 native binary。
 
-`local-overlays/platform.ts` 由 Engine 构造时读取启动器固定的内部 IPC 上下文，同时选择挂载后端与候选验证器。Linux 控制根精确绑定当前数据目录、虚拟视图根独立；真正 namespace 由首次 hello 复核。Linux backend 正常收尾在 round 保存、卸载后调用 `linux-cache.ts` 回收身份绑定的本轮 lower 缓存，保留 upper/原始 B/历史未知目录。普通启动与 Windows 路径保持；有效 Linux namespace 上下文和已启用 Sandbox 共同开放公开创建门禁。Linux 历史返回 fileReviewSupported=false，UI 隐藏未实现的文件检查/事故恢复，服务在任何检查 I/O 前拒绝对应调用。
+`local-overlays/platform.ts` 由 Engine 构造时读取启动器固定的内部 IPC 上下文，同时选择挂载后端与候选验证器。Linux 控制根精确绑定当前数据目录、虚拟视图根独立；真正 namespace 由首次 hello 复核。Linux backend 正常收尾在 round 保存、卸载后调用 `linux-cache.ts` 回收身份绑定的本轮 lower 缓存，保留 upper/原始 B/历史未知目录。普通启动与 Windows 路径保持；有效 Linux namespace 上下文和已启用 Sandbox 共同开放公开创建门禁。Linux 正常文件检查通过 backend 读取 round/upper，异常恢复独立返回 incidentRecoverySupported=false；UI 隐藏异常入口，服务在进入 Windows 恢复 I/O 前拒绝。
 
 Linux 的 `LinuxLocalBackend` 已实现 `LocalOverlayBackend` 并能注入正式 Service。清单使用 `linux-overlay-v1`，持续身份绑定私有控制目录；虚拟工作路径由独立视图根派生，避免与 Broker 数据根重叠。收尾持久 pending、保存跨轮 B、调用 Publisher，complete 确认后经控制器在卸载状态摘要绑定 release。`LinuxCandidateValidator` 新建独立候选，核对真实 Sandbox 排空、候选内容和读依赖后卸载；正常身份匹配才删除本次候选目录。WSL 已通过 Service/Store/真实 Runtime 的并行发布、续轮和冲突保留；Engine 工厂与公开 HTTP/SSE/UI 已接入，固定 provider 驱动的实际 SandboxBroker/MXC 双任务和候选发布通过。
 

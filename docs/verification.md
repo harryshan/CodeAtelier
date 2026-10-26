@@ -1,5 +1,12 @@
 # 初版验证记录
 
+## Linux 正常文件检查与参考继续（2026-10-26）
+
+- `posix-review.ts` 使用有界 round 和明确选集，控制器只读 classify 区分普通空文件与 OverlayFS whiteout；B/O/T、预览与整组材料版本复用现有 HTTP/UI 契约。检查期间重新核对分类/私有文件、round 和当前来源；pending、缺失基线、重复选集、变化和不支持类型拒绝整组，不把普通检查失败变成未知发布。Service 复用视图锁/review trace，classify 仅记录关联 ID/耗时/状态，不记录路径/正文。
+- 正常与异常能力分离：Linux 支持 ready 文件检查和新参考对话，仍在任何 Windows 恢复 I/O 前拒绝中断检查/继续、来源事故和私有刷新。新视图只携带选定历史材料，不自动应用或运行；根 UUID 参考目录跳过源码捕获，显式发布仍拒绝。专项最终 41 项通过，覆盖 B/O/T、冲突预览、过期材料、pending/重复/缺失、私有内容在检查中改变、参考保留和只读 IPC 失败后继续使用。
+- 真实 WSL2/ext4 夹具 `rv-ynmXXc` 使用正式构建入口、公开 HTTP、生产 Engine/Store/Broker 和 Bubblewrap：双任务编辑/候选发布后重载续聊；检查普通私有产物、空文件及删除文件，创建参考会话，实际 Sandbox 读取历史材料并重新读取来源、编辑、候选验证、发布。原视图私有产物保留，新源码结果正确，全部正常卸载退出 0。见 [报告](posix-overlay-review-results.json)。该探针使用固定模型计划，不是异常恢复或大型工程验收。
+- `pnpm test:e2e` 全部 78 项通过（`.local/linux-review-e2e.log`），人工查看 `test-results/local-overlay-linux.png` 确认 Linux 正常检查入口与异常恢复限制同时可见；浏览器为合成 HTTP/SSE，真实服务能力由上述 WSL 验证证明。最终 pnpm check 通过：166 文件、1,340 passed / 2 existing/platform skipped，类型、Lint、格式与构建通过（.local/linux-review-check-final.log）。开发中只修正了新增模块/测试的空行规范问题，未弱化断言；原有 chunk 提示保留。未安装依赖、分区、运行 Evaluation 或重启用户服务。
+
 ## Linux 内部相对依赖链接（2026-10-26）
 
 - 只读 helper 保持 openat2 不跟随宿主路径，新增链接自身句柄/文本捕获及 FUSE readlink；目标仍由虚拟视图解析。源码发布的普通文件规则未放宽；读集新增 `symlink` 类型，旧记录保持兼容，创建不增加遍历。

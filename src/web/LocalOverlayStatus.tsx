@@ -7,6 +7,7 @@
  * 5. 待核查批次提供来源事故入口；清单提示不是原生排空证明，接受也不将私有视图变为可执行。
  * 6. 非活动异常清单可显式检查中断参考；状态键销毁旧结果，不把入口标志当作执行退出证明。
  * 7. 具备任务排空凭据的已发布批次可显式恢复私有刷新，完成后重读状态，不运行旧任务。
+ * 8. 正常检查与异常恢复能力独立；Linux 可检查正常私有结果但不展示未知卷恢复入口。
  * 不显示控制路径/内部错误码，不从参考材料推断源码已经应用。
  */
 import type { LocalOverlayInfo, Session } from "../shared/types";
@@ -49,19 +50,23 @@ export function LocalOverlayStatus({
   return (
     <div className={s.localOverlayStatus}>
       <p role="status">{message}</p>
-      {info.fileReviewSupported !== false && info.privateRefreshRecovery && (
-        <LocalPrivateRefresh
-          key={`${sessionId}:${info.epoch}`}
-          sessionId={sessionId}
-          onUpdated={onUpdated}
-        />
-      )}
-      {info.fileReviewSupported !== false && info.publicationRecovery && (
-        <LocalPublicationRecovery
-          key={`${sessionId}:${info.epoch}:${info.state}`}
-          sessionId={sessionId}
-        />
-      )}
+      {info.incidentRecoverySupported !== false &&
+        info.fileReviewSupported !== false &&
+        info.privateRefreshRecovery && (
+          <LocalPrivateRefresh
+            key={`${sessionId}:${info.epoch}`}
+            sessionId={sessionId}
+            onUpdated={onUpdated}
+          />
+        )}
+      {info.incidentRecoverySupported !== false &&
+        info.fileReviewSupported !== false &&
+        info.publicationRecovery && (
+          <LocalPublicationRecovery
+            key={`${sessionId}:${info.epoch}:${info.state}`}
+            sessionId={sessionId}
+          />
+        )}
       {info.resolution && (
         <p>
           本对话从最新主目录开始，
@@ -79,7 +84,15 @@ export function LocalOverlayStatus({
         </p>
       )}
       {info.fileReviewSupported !== false &&
-        (info.state === "ready" || info.interruptedReview) && (
+        info.incidentRecoverySupported === false && (
+          <p>
+            当前平台支持正常结束后的文件检查和参考继续；异常视图检查与恢复尚未开放，未知现场继续保留。
+          </p>
+        )}
+      {info.fileReviewSupported !== false &&
+        (info.state === "ready" ||
+          (info.incidentRecoverySupported !== false &&
+            info.interruptedReview)) && (
           <LocalFileReview
             key={`${sessionId}:${info.epoch}:${info.state}:${Boolean(info.interruptedReview)}`}
             sessionId={sessionId}
