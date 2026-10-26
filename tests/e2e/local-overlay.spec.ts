@@ -4,10 +4,133 @@
  * 2. 后端能力拒绝阻止提交，合成已发布/拒绝/不可用状态不能被模型完成文本覆盖。
  * 3. 批量检查按文件展开纯文本 B/O/T 和预览，错误保留输入，改路径取消旧结果；不把模拟响应当真实发布证明。
  * 4. 显式创建冲突继续对话，失败保留固定请求重试，显示参考状态且仅预填任务，不自动提交。
+ * 5. 来源事故检查/接受使用固定 token，未知结果重试；接受后原私有视图仍禁用，完成态和已记录决定分开提示。
  * 页面和请求代码为生产实现；真实挂载/权限/发布链路另由手动 WinFsp 验证证明。
  */
 import { expect, test } from "@playwright/test";
 import type { Session } from "../../src/shared/types.js";
+
+test("reviews a publication incident and accepts only that source decision without resuming the view", async ({
+  page,
+}) => {
+  const failed: Session = {
+    ...created,
+    localOverlay: {
+      ...created.localOverlay!,
+      state: "failed",
+      publicationRecovery: true,
+    },
+  };
+  await page.route("**/api/sessions", (route) =>
+    route.fulfill({ json: [failed] }),
+  );
+  await page.route(/\/api\/sessions\/local-overlay-ui(?:\?.*)?$/, (route) =>
+    route.fulfill({
+      json: { session: failed, tasks: [], events: [], approvals: [] },
+    }),
+  );
+  await page.route("**/api/sessions/local-overlay-ui/events", (route) =>
+    route.fulfill({
+      contentType: "text/event-stream",
+      body: "event: refresh\ndata: {}\n\n",
+    }),
+  );
+  const token = "a".repeat(64);
+  const accepts: unknown[] = [];
+  let reviews = 0;
+  await page.route(
+    "**/api/sessions/local-overlay-ui/local-publication-review",
+    async (route) => {
+      reviews++;
+      expect(route.request().postDataJSON()).toEqual({});
+      const content = (text: string) => ({
+        content: Buffer.from(text).toString("base64"),
+        version: "v",
+        mode: null,
+      });
+      await route.fulfill({
+        json:
+          reviews === 1
+            ? {
+                kind: "review",
+                token,
+                files: [
+                  {
+                    path: "code.txt",
+                    recorded: "intent",
+                    observed: "diverged",
+                    before: content("old"),
+                    proposed: content("candidate").content,
+                    current: content("<script>unexpected()</script>"),
+                  },
+                ],
+              }
+            : reviews === 2
+              ? { kind: "decision", token }
+              : { kind: "complete", refresh: "pending" },
+      });
+    },
+  );
+  await page.route(
+    "**/api/sessions/local-overlay-ui/local-publication-accept",
+    async (route) => {
+      accepts.push(route.request().postDataJSON());
+      await route.fulfill(
+        accepts.length === 1
+          ? { status: 409, json: { error: "解锁结果未确认，可重试同一请求。" } }
+          : { json: { kind: "accepted", alreadyAccepted: accepts.length > 2 } },
+      );
+    },
+  );
+  let taskStarted = false;
+  await page.route("**/api/sessions/local-overlay-ui/tasks", async (route) => {
+    taskStarted = true;
+    await route.abort();
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: created.title, exact: true }).click();
+  await page.getByText("核查来源发布事故", { exact: true }).click();
+  expect(reviews).toBe(0);
+  await page.getByRole("button", { name: "检查发布现场", exact: true }).click();
+  await expect(
+    page.getByText("code.txt：当前现场已变化", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("region", { name: "主目录当前内容" }),
+  ).toHaveCount(0);
+  await page.getByText("code.txt：当前现场已变化", { exact: true }).click();
+  await expect(
+    page.getByRole("region", { name: "主目录当前内容" }),
+  ).toContainText("<script>unexpected()</script>");
+  expect(accepts).toHaveLength(0);
+  const accept = page.getByRole("button", {
+    name: "接受当前现场并解除发布阻塞",
+    exact: true,
+  });
+  await accept.click();
+  await expect(page.getByRole("alert")).toContainText("未确认");
+  await accept.click();
+  expect(accepts).toEqual([{ token }, { token }]);
+  await expect(page.getByText(/本次来源发布阻塞已处理/)).toBeVisible();
+  await page.getByLabel("任务描述").fill("不得恢复事故视图");
+  await expect(page.getByRole("button", { name: "开始执行" })).toBeDisabled();
+  await page.getByRole("button", { name: "检查发布现场", exact: true }).click();
+  await expect(page.getByText(/已记录接受当前现场的决定/)).toBeVisible();
+  await page
+    .getByRole("button", { name: "重试已记录的解锁", exact: true })
+    .click();
+  await expect(page.getByText(/本次来源发布阻塞已处理/)).toBeVisible();
+  await page.screenshot({
+    path: "test-results/local-overlay-incident.png",
+    fullPage: true,
+  });
+  await page.getByRole("button", { name: "检查发布现场", exact: true }).click();
+  await expect(page.getByText(/日志已记录来源发布完成/)).toContainText(
+    "尚未确认",
+  );
+  await expect(accept).toHaveCount(0);
+  expect(taskStarted).toBe(false);
+});
 
 const source = "/local-overlay-source";
 const created: Session = {

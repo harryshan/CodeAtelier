@@ -23,6 +23,7 @@
     "overlay:verify-directory": "tsx scripts/verify-local-overlay-directory.ts",
     "overlay:verify-review": "tsx scripts/verify-local-overlay-review.ts",
     "overlay:verify-resolution": "tsx scripts/verify-local-overlay-resolution.ts",
+    "overlay:verify-incident": "tsx scripts/verify-local-overlay-incident.ts",
     "overlay:verify-capture": "tsx scripts/verify-local-overlay-capture.ts",
     "overlay:verify-native-publish": "tsx scripts/verify-local-overlay-publish.ts",
     "overlay:verify-refresh": "tsx scripts/verify-local-overlay-refresh.ts",

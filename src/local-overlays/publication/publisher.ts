@@ -16,6 +16,7 @@
  * 13. publish 的错误只在执行租约排空后标为 unapplied；已开始写入、完成后故障或清理未知均需恢复核对，不降格完成 journal。
  * 14. 候选验证可返回新读取版本，记入 journal 并在应用前复核；候选排空未知不降为普通未发布拒绝。
  * 15. 同进程同来源先进入可取消队列，再取得持久锁；长验证不触发合作任务的残留锁短等待失败。
+ * 16. recordedJournal 从可信来源与批次 ID 定位有界日志，拒绝路径链接和归属不匹配；产品恢复不接受客户端批次正文。
  * 不提供外部写入 CAS、多文件原子提交或断电证明；故障钩子仅供实验，产品调用不得跳过候选验证。
  */
 import { mkdir, open, readFile, rename, unlink, link } from "node:fs/promises";
@@ -23,6 +24,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import pino, { type Logger } from "pino";
+import { z } from "zod";
 import { TraceRecorder } from "../../tracing/recorder.js";
 import {
   CandidateCleanupUnknownError,
@@ -48,7 +50,12 @@ import {
   validateOverlayAcknowledgement,
   type OverlayAcknowledgement,
 } from "../../worktrees/overlay.js";
-import { loadJournal, type Entry, type Journal } from "./journal.js";
+import {
+  loadJournal,
+  readJournal,
+  type Entry,
+  type Journal,
+} from "./journal.js";
 import { checkpointSchema, type NativeCheckpoint } from "./native-refresh.js";
 import { recoverCompletedRefresh } from "./refresh-recovery.js";
 import { readPublicationClaim, releaseResidualLock } from "./residual-lock.js";
@@ -721,6 +728,7 @@ export class Publisher {
   async reviewUnknown(
     input: Batch,
     signal?: AbortSignal,
+    maxContentBytes?: number,
   ): Promise<UnknownReview> {
     const batch = validateBatch(input);
     const locations = await this.layout(batch);
@@ -729,12 +737,32 @@ export class Publisher {
       directory: locations.directory,
       log: this.log,
       signal,
+      maxContentBytes,
     });
     if (result.kind !== "review") {
       throw new PublishError("RECOVERY_PROTOCOL");
     }
 
     return result;
+  }
+
+  async recordedJournal(source: Source, id: string) {
+    z.uuid().parse(id);
+    const locations = await this.layout({ source });
+    const file = await checkedPath(
+      await sourceIdentity(locations.directory),
+      `${id}/journal.json`,
+    );
+    const loaded = await readJournal(file);
+    if (
+      loaded.journal.batch.id !== id ||
+      loaded.journal.batch.source.root !== source.root ||
+      loaded.journal.batch.source.identity !== source.identity
+    ) {
+      throw new PublishError("JOURNAL_BATCH_MISMATCH");
+    }
+
+    return loaded;
   }
 
   async publicationClaim(source: Source) {

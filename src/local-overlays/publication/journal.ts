@@ -5,6 +5,7 @@
  * 3. saveJournal 在来源协调锁内复核日志摘要，再沿用 durableJson 保存；不改来源文件。
  * 4. execution 绑定原生租约 generation/锁摘要；reconciled 必须保存明确接受当前现场的逐文件版本。
  * 5. 可选 validation 保存候选执行新增的来源读凭据；旧日志缺字段不伪造已验证的依赖。
+ * 6. readJournal 供从持久会话定位批次的恢复入口读取；调用方仍须校验来源、批次 ID 及选择归属。
  * 字段保留兼容现有实验日志；没有检查点的旧日志不能凭空生成刷新证明。外部写者不受应用锁约束。
  */
 import { lstat, open } from "node:fs/promises";
@@ -178,7 +179,7 @@ export function parseJournal(value: unknown): Journal {
   return journal;
 }
 
-export async function loadJournal(file: string, batch: Batch) {
+export async function readJournal(file: string) {
   const info = await lstat(file, { bigint: true });
   if (
     !info.isFile() ||
@@ -228,14 +229,20 @@ export async function loadJournal(file: string, batch: Batch) {
   }
 
   const journal = parseJournal(JSON.parse(bytes.toString("utf8")));
+
+  return { journal, version: digest(bytes) };
+}
+
+export async function loadJournal(file: string, batch: Batch) {
+  const loaded = await readJournal(file);
   if (
-    digest(JSON.stringify(journal.batch)) !==
+    digest(JSON.stringify(loaded.journal.batch)) !==
     digest(JSON.stringify(validateBatch(batch)))
   ) {
     throw new PublishError("JOURNAL_BATCH_MISMATCH");
   }
 
-  return { journal, version: digest(bytes) };
+  return loaded;
 }
 
 export async function saveJournal(

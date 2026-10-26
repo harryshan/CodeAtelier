@@ -5,6 +5,7 @@
  * 3. accept 重新取排他并复核 token，先保存 reconciled 决定再释放同一协调锁；不重放或回滚文件。
  * 4. 重复已落盘决定可完成遗留解锁，旧 token 不能清除新的锁；私有修改、备份及 pending 确认均保留。
  * 5. trace 仅记录 batch ID、模式、耗时、结果，不含路径、正文、token 或文件版本。
+ * 6. 产品检查可限制内容总量，逐文件累计并提前拒绝，避免读完整组选集后才发现超出响应预算。
  * 仅 Windows 原生执行租约可证明排空；旧日志拒绝，外部写者仍可能在最后复核后改变现场。
  */
 import path from "node:path";
@@ -63,10 +64,27 @@ function execution(journal: Journal) {
   return journal.execution;
 }
 
-async function observe(journal: Journal): Promise<UnknownReview["files"]> {
+async function observe(
+  journal: Journal,
+  maxContentBytes = Infinity,
+): Promise<UnknownReview["files"]> {
   const result: UnknownReview["files"] = [];
+  let totalBytes = 0;
   for (const entry of journal.entries) {
     const current = await snapshot(journal.batch.source, entry.path);
+    totalBytes += [
+      entry.before.content,
+      entry.after,
+      current.content,
+    ].reduce<number>(
+      (sum, content) =>
+        sum + (content === null ? 0 : Buffer.byteLength(content, "base64")),
+      0,
+    );
+    if (totalBytes > maxContentBytes) {
+      throw new PublishError("REVIEW_CONTENT_LIMIT");
+    }
+
     const decode = (value: string | null) =>
       value === null ? null : Buffer.from(value, "base64");
     const observed = equal(decode(current.content), decode(entry.after))
@@ -93,6 +111,7 @@ export async function unknownRecovery(options: {
   log: Logger;
   token?: string;
   signal?: AbortSignal;
+  maxContentBytes?: number;
 }): Promise<UnknownReview | UnknownAccepted> {
   const { batch, directory, log, token, signal } = options;
   const file = path.join(directory, batch.id, "journal.json");
@@ -153,7 +172,7 @@ export async function unknownRecovery(options: {
     }
 
     activeSignal.throwIfAborted();
-    const files = await observe(journal);
+    const files = await observe(journal, options.maxContentBytes);
     activeSignal.throwIfAborted();
     const currentToken =
       journal.state === "reconciled"

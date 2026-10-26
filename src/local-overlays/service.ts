@@ -9,6 +9,7 @@
  *    仅成功且已排空的任务在冻结收尾中发布，选择不跨轮继承；模型入口由 Engine 转换，不能反序列化验证函数。
  * 7. review/reviewBatch 在 ready 视图锁内读取单文件/有界整组 B/O/T，不挂载或更改清单；关闭时取消并等待检查排空。
  * 8. continueResolution 用已审核版本建立新视图及参考材料，固定请求重试绑定父会话；不修改旧视图或清空依赖。
+ * 9. publicationRecovery 从非本进程活动会话定位发布事故，原生来源租约控制审核/接受；不取得或删除私有视图残留锁，不把失败卷改为 ready。
  * 公开创建由 HTTP 单独检查平台/Sandbox 能力，不迁移旧历史；来源写入只由冻结租约内的协调器执行。
  */
 import { randomUUID } from "node:crypto";
@@ -43,6 +44,7 @@ import {
   checkRelative,
   type Source,
 } from "./publication/files.js";
+import { Publisher } from "./publication/publisher.js";
 import {
   resolutionOriginSchema,
   resolutionDirectory,
@@ -264,6 +266,105 @@ export class LocalOverlayService {
     return (await this.validate(workspace))?.source;
   }
 
+  publicationRecovery(
+    workspace: string,
+    sessionId: string,
+    token?: string,
+    signal = new AbortController().signal,
+  ) {
+    const work = this.recoverPublication(
+      workspace,
+      sessionId,
+      token,
+      AbortSignal.any([signal, this.creation.signal]),
+    );
+    this.creating.add(work);
+    void work.finally(() => this.creating.delete(work)).catch(() => {});
+
+    return work;
+  }
+
+  private async recoverPublication(
+    workspace: string,
+    sessionId: string,
+    token: string | undefined,
+    signal: AbortSignal,
+  ) {
+    signal.throwIfAborted();
+    const id = this.backend.idFor(workspace);
+    if (!id || this.active.has(id)) {
+      throw new Error("发布现场仍有活动任务或不是 Local 视图。");
+    }
+
+    return this.observe(
+      id,
+      token === undefined ? "publication_review" : "publication_accept",
+      async () => {
+        const record = await this.read(id);
+        if (
+          record.sessionId !== sessionId ||
+          !["failed", "active"].includes(record.phase) ||
+          !record.publication?.batchId ||
+          !record.controlIdentity ||
+          (await directoryIdentity(record.source)) !== record.sourceIdentity ||
+          (await directoryIdentity(this.control(id))) !== record.controlIdentity
+        ) {
+          throw new Error("发布恢复的会话、来源或私有目录身份无法确认。");
+        }
+
+        const publisher = new Publisher(
+          path.join(this.root, "publications"),
+          this.log,
+        );
+        const { journal } = await publisher.recordedJournal(
+          await sourceIdentity(record.source),
+          record.publication.batchId,
+        );
+        const selected = new Set(
+          record.publication.paths.map((file) => file.toLowerCase()),
+        );
+        if (
+          journal.batch.changes.some(
+            (file) => !selected.has(file.path.toLowerCase()),
+          )
+        ) {
+          throw new Error("发布日志超出此会话记录的选择。");
+        }
+
+        signal.throwIfAborted();
+        if (
+          this.active.has(id) ||
+          JSON.stringify(await this.read(id)) !== JSON.stringify(record)
+        ) {
+          throw new Error("发布恢复期间会话状态改变。");
+        }
+
+        if (token !== undefined) {
+          return publisher.acceptUnknown(journal.batch, token, signal);
+        }
+
+        if (journal.state === "complete") {
+          return {
+            kind: "complete" as const,
+            refresh: journal.refresh?.state ?? "unrecorded",
+          };
+        }
+
+        if (journal.state === "reconciled") {
+          return {
+            kind: "decision" as const,
+            token: journal.resolution!.token,
+          };
+        }
+
+        // A private-view lock cannot establish process quiescence. Keep it and
+        // the manifest untouched; the source execution lease independently proves
+        // that the old publisher is gone before returning reviewable contents.
+        return publisher.reviewUnknown(journal.batch, signal, 16 * 1024 * 1024);
+      },
+    );
+  }
+
   review(
     workspace: string,
     sessionId: string,
@@ -369,6 +470,11 @@ export class LocalOverlayService {
           projectWorkspace: record.source,
           state: record.phase,
           epoch: record.epoch,
+          ...(record.publication?.batchId &&
+          (record.phase === "failed" ||
+            (record.phase === "active" && !this.active.has(id)))
+            ? { publicationRecovery: true }
+            : {}),
           resolution: record.resolution && {
             sessionId: record.resolution.sessionId,
             path: resolutionPaths(record.resolution)[0]!,

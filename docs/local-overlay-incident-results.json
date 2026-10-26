@@ -1,0 +1,22 @@
+{
+  "timestamp": "2026-10-25T23:13:55.333Z",
+  "passed": true,
+  "checks": [
+    "real partial publication through Service finish",
+    "native execution proof for review",
+    "stale review rejected",
+    "accept current without replay or rollback",
+    "idempotent decision",
+    "private manifest, lock and database unchanged",
+    "failed private view stays blocked",
+    "new Local view publishes after source recovery"
+  ],
+  "limitations": [
+    "Host fixture and trusted validator, not model/Sandbox v18",
+    "No dirty-volume or private-view recovery",
+    "No external writer CAS or multi-file atomicity"
+  ],
+  "command": "pnpm overlay:verify-incident",
+  "rawReport": ".local/local-overlay-incident-3P04Kn/report.json",
+  "platform": "Windows/NTFS"
+}

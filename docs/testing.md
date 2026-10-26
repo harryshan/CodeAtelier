@@ -1,5 +1,7 @@
 # 测试约定与功能覆盖
 
+Local 来源事故恢复（D170）：`local-overlay-unknown-recovery.test.ts` 除底层协议外，使用真实 HTTP/Service/日志验证会话与选集归属、鉴权/CSRF/no-store、陈旧 token、决定重试、complete 只报告、活动任务拒绝、内容总预算和接受后私有清单/锁保留；原生排他使用替身，不作为系统进程退出证明。`e2e/local-overlay.spec.ts` 覆盖明确检查、文件按需展开、固定 token 重试、已记录决定/complete 区分，以及接受后非空草稿仍不能启动原视图。手动 `pnpm overlay:verify-incident` 用真实 WinFsp 和生产 Service/Publisher 制造第二写共享句柄失败，验证部分发布、来源外部修改保留、私有现场不变和新会话后续发布；仅宿主夹具，不执行模型/Sandbox 或 Evaluation。
+
 Local 冲突继续（D170）：`local-overlay-resolution.test.ts` 使用真实 SQLite/Store 与替身挂载，验证旧 v1 与批量 v2 编号参考、缺失/空/二进制精确保留、整组版本拒绝与排序后幂等、旧清单/DB/来源保留、版本过期拒绝、固定请求幂等、绑定回执丢失、未知新卷拒绝重放、保留前缀拒绝发布及实际 Engine 指引。HTTP 回归检查创建能力门禁、父会话关联、固定请求复用及未自动创建任务；浏览器覆盖按行选择、第二文件惰性展开/收起、整组创建失败重试同一 ID、新对话状态和预填而不提交。手动 `pnpm overlay:verify-resolution` 使用真实 WinFsp 与宿主 Node 候选验证，覆盖两文件选择中任一过期在分配前拒绝、旧依赖过期、新视图当前源码/依赖、明确重新编辑及生产发布/确认；不运行模型或 Sandbox，不属于 Evaluation，不进入默认 check。
 
 预填提示的草稿保留先以浏览器用例复现覆盖失败，再验证新会话同时保留用户未发送的文本和重新读取/验证要求；该操作仍不自动提交任务。

@@ -1,11 +1,12 @@
 /**
  * 已有 Local 会话的文件检查与新对话继续 HTTP 入口，由 createApp 注册。
  * 1. 沿用全局来源/密码/session/CSRF/no-store；只接收会话 ID 和相对路径，不接收控制目录。
- * 2. ready 清单之外拒绝，最终互斥与身份复核交给 LocalOverlayService；无需启动 Runtime。
+ * 2. 私有内容检查只接受 ready 清单，来源事故另由原生租约证明排空；互斥/身份复核交给 Service，无需启动 Runtime。
  * 3. 断开连接取消检查，错误只返回受控提示，不暴露磁盘路径/SQLite 原始错误或记录正文。
  * 不执行冲突解决或发布；生命周期 tracing 由服务负责，路由不向历史 task 追加事件。
  * 4. local-resolution 显式建立新 Local 对话及已审核参考，不自动启动任务；固定 UUID 重试复用创建结果，沿用创建能力门禁。
  * 5. path 保留旧单文件响应；paths 使用整组版本，最多 100 项，任一材料失败即拒绝整组。
+ * 6. publication-review/accept 只接收空请求或检查 token；从会话定位事故，断线取消，不启动任务或恢复私有视图。
  */
 import type { HttpServer } from "./http-server.js";
 import { z } from "zod";
@@ -37,6 +38,47 @@ export function registerLocalReviewRoutes(
   store: AsyncStore,
   engine: Engine,
 ) {
+  for (const action of ["review", "accept"] as const) {
+    app.post(
+      `/api/sessions/:id/local-publication-${action}`,
+      async (request, reply) => {
+        const { id } = z.object({ id: z.uuid() }).parse(request.params);
+        const input =
+          action === "accept"
+            ? z
+                .object({ token: z.string().regex(/^[a-f0-9]{64}$/) })
+                .strict()
+                .parse(request.body)
+            : z.object({}).strict().parse(request.body);
+        const session = await store.get(id);
+        if (!session) {
+          return reply.code(404).send({ error: "会话不存在。" });
+        }
+
+        const abort = new AbortController();
+        const disconnected = () => abort.abort();
+        reply.raw.once("close", disconnected);
+        try {
+          return await engine.localOverlays.publicationRecovery(
+            session.workspace,
+            session.id,
+            "token" in input ? input.token : undefined,
+            abort.signal,
+          );
+        } catch {
+          return reply.code(409).send({
+            error:
+              action === "accept"
+                ? "解锁结果未确认或检查已过期。可重试同一接受请求；重新检查不会回滚已记录的决定。原私有修改保留。"
+                : "发布现场暂不能核查：任务可能仍活动、记录不完整、内容超过 16 MiB 或原生执行证明不可用。保留现场，不解除锁。",
+          });
+        } finally {
+          reply.raw.off("close", disconnected);
+        }
+      },
+    );
+  }
+
   app.post("/api/sessions/:id/local-resolution", async (request, reply) => {
     const { id } = z.object({ id: z.uuid() }).parse(request.params);
     const input = continuationSchema.parse(request.body);

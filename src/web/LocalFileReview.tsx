@@ -5,6 +5,7 @@
  * 3. 各文件按需展开为纯文本，展示原文、私有结果、来源现状和合并预览；二进制只报大小，长文本明确截断。
  * 预览不是测试或发布结果，没有自动重试、执行源码或写回入口。
  * 4. 用户可固定 UUID 创建新对话携带参考；成功交给 App，不自动提交任务，失败重试同一请求，卸载后不切换回旧操作。
+ * 5. displayLocalContent 也供发布事故检查使用，统一纯文本、二进制与截断显示，不执行内容。
  */
 import { useEffect, useRef, useState } from "react";
 import type {
@@ -16,7 +17,7 @@ import type { Session } from "../shared/types";
 import { requestId } from "./WorktreeDialog";
 import s from "./app.module.css";
 
-function display(content: string | null) {
+export function displayLocalContent(content: string | null) {
   if (content === null) {
     return "（文件不存在）";
   }
@@ -72,7 +73,7 @@ function FileContents({
           ].map(([label, content]) => (
             <section key={label} aria-label={label ?? undefined}>
               <h3>{label}</h3>
-              <pre>{display(content ?? null)}</pre>
+              <pre>{displayLocalContent(content ?? null)}</pre>
             </section>
           ))}
         </>

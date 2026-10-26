@@ -1,5 +1,14 @@
 # 初版验证记录
 
+## Local 来源发布事故的产品审核与接受（D170，2026-10-26）
+
+- 服务从会话清单固定的来源身份、批次 ID 和选择定位有界日志；HTTP 只接受会话 ID/检查 token，沿用鉴权/CSRF/no-store。原生检查租约证明旧来源执行停止后才返回未知现场；逐文件累计的内容合计上限 16 MiB，页面按需纯文本展示。
+- 显式接受只记录 `reconciled` 决定并解除该次来源协调锁，不补写、回滚或将事故私有视图变为 ready。已记录决定允许同 token 重试；旧 token 不删除新所有者锁。complete 只显示日志确认状态；原会话的清单、数据库、私有锁和备份仍保留。服务关闭取消并等待在途恢复；不根据空私有锁或 clean 标志推断所有任务进程已结束。
+- 真实 `pnpm overlay:verify-incident` 通过（`.local/local-incident-native.log`、[报告摘要](local-overlay-incident-results.json)）：生产 Service/WinFsp/Publisher 的首文件写入成功、第二文件受脚本只读共享句柄占用而失败。陈旧 token 拒绝；重新审核接受后保留首写和外部后续修改，父清单/私有锁/SQLite 字节不变；旧视图仍拒绝任务，新 Local 会话成功发布独立文件。无 helper 残留；没有安装/Repair、重启服务或执行 Evaluation。这是宿主夹具与可信候选适配器，不是模型/Sandbox v18 验收。
+- 相关四文件回归 57 项通过（`.local/local-incident-unit.log`），随后新增真实大内容预算回归，事故模块 9 项通过（`.local/local-incident-boundary.log`）。浏览器专项 4 项通过（`.local/local-incident-ui.log`）；首次失败是测试误用“开始执行”的精确可访问名称，实际按钮包含箭头，修正定位并增加非空草稿断言后通过。已查看 `test-results/local-overlay-incident.png`，接受结果与仍禁用的原视图显示正常。
+- 自审核对来源/批次/选集绑定、原生执行证明、既有决定重试、无源码写回、私有状态保留、取消与 UI 晚到响应。未知私有卷和完成态刷新仍须后续接线，缺少执行证明的锁继续拒绝；不提供外部写者 CAS、多文件原子提交或 POSIX 恢复保证。
+- 提交前 `pnpm check` 通过（`.local/local-incident-check.log`）：150 个测试文件、1204 项通过 / 1 项既有跳过，类型、Lint、格式与构建成功。完整 `pnpm test:e2e` 75 项通过（`.local/local-incident-e2e.log`）。上述来源事故夹具不依赖 Sandbox 安装态；后续获准执行的 IPC v18 Repair 与真实 Runtime 链路单独记录。
+
 ## Local 批量冲突检查与新对话继续（2026-10-26）
 
 - 生产服务/API/UI 支持明确选择最多 100 个文件；路径 UTF-8 合计 16 KiB，B/O/T 与预览原始字节合计 16 MiB。一次视图锁和只读 SQLite 事务读取整组，结束时复核来源版本；任一无效、重复或变化项拒绝整组。版本摘要绑定规范路径与所有材料，首次创建前整组重检；旧单文件 API、清单及 v1 参考保留兼容。

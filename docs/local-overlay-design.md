@@ -39,7 +39,7 @@ Overlay 本身只解决写入分离。发布协调器负责变更范围、版本
 
 冲突检查实施增量（2026-10-26）：提供闲置、正常卸载视图的有界 B/O/T 只读检查，兼容单文件入口。服务取得既有逐视图锁并检查 ready/clean，直接读取已封存的不可变原文、私有结果及主目录当前普通文件；不挂载、不递归扫描、不推进 epoch、不清除依赖或修改发布状态。每份内容沿用 2 MiB 上限，缺封存、未知卷、链接、目录和祖先目录修改拒绝。返回内容合并预览与绑定本次材料的版本摘要；摘要不是发布授权，也不表示旧读依赖或候选测试已通过。它为后续冲突 UI/明确解决操作提供材料，不能据此自动覆盖来源或解除发布锁。来源仍可能在检查后改变；不宣称跨文件快照或外部写入 CAS。异常卷和未知发布仍走原有保留边界。
 
-公开检查入口：会话页展开“检查私有修改”，每行输入一个已修改的相对路径（使用 `/` 分隔）。`POST /api/sessions/:id/local-review` 接收 `{paths}` 返回整组版本和 `files`；兼容 `{path}` 返回旧单文件结构，两者不可混用；鉴权和 CSRF 仍必需，不允许选择控制目录。仅 ready 视图展示，检查无需启用 Sandbox 或启动 Runtime，故关闭 Sandbox 后仍可查看正常结束的私有修改。页面展示三份纯文本及可合并时的预览，二进制仅显示字节数，单份文本只显示前 65536 字符并明确提示截断；不把二进制误当空文件。断线取消、切换会话/状态/代次及编辑路径丢弃旧请求/内容，不写 URL 或浏览器持久存储。没有发布/接受当前现场按钮；未知发布和异常私有卷恢复尚未接入，新对话继续入口见下文。
+公开检查入口：会话页展开“检查私有修改”，每行输入一个已修改的相对路径（使用 `/` 分隔）。`POST /api/sessions/:id/local-review` 接收 `{paths}` 返回整组版本和 `files`；兼容 `{path}` 返回旧单文件结构，两者不可混用；鉴权和 CSRF 仍必需，不允许选择控制目录。仅 ready 视图展示，检查无需启用 Sandbox 或启动 Runtime，故关闭 Sandbox 后仍可查看正常结束的私有修改。页面展示三份纯文本及可合并时的预览，二进制仅显示字节数，单份文本只显示前 65536 字符并明确提示截断；不把二进制误当空文件。断线取消、切换会话/状态/代次及编辑路径丢弃旧请求/内容，不写 URL 或浏览器持久存储。此内容检查不提供发布/接受当前现场按钮；来源发布事故的独立审核入口见后文，异常私有卷恢复仍未接入。
 
 冲突继续增量：检查后显式“在新对话中解决”建立新的 Local 视图，固定请求 UUID、父会话/视图、明确路径集与已检查版本；首次创建前重新检查，材料已变则拒绝。新视图读取当前主目录，旧视图/依赖/历史完整保留；只把所选文件的三份已审核内容写到新视图的 `.codeatelier-recovery-<id>/` 作为参考，不播种到源码路径，不复制其它私有修改或整个项目。该保留前缀不能通过发布选择进入来源。参考材料不是可信指令或当前源码，模型须重新读取主目录可见文件并验证新编辑，按正常发布链路执行。新对话不自动启动任务；保留父会话关联和可信参考指引，来源项目记忆仍共享。固定 ID 的已完成创建可幂等返回同一会话，不能因旧材料后来变化而重复创建；首次创建的未知挂载/写入仍保留新场景，不重放。只携带明确选择的文件，未选的原有修改不会被悄悄加入；异常恢复仍需后续实现与验证。此方式避免在原视图清除历史依赖或猜测新基线，也不提供自动语义冲突修复。
 
@@ -105,7 +105,7 @@ NTFS 实测覆盖保护 DACL、显式拒绝 ACE、与候选不同的 primary gro
 
 入口只对 Broker 验证的 Local overlay 主 Runtime 启用；普通 Local、Worktree、宿主 fallback、候选 Runtime 和只读子任务不声明此工具，也不能通过伪造调用获得能力。Runtime IPC v18 增加显式能力标志及 `local_publication` 请求；Broker 用认证连接身份路由，并核对当前已记录调用 ID/名称/参数，不能指定另一任务或来源。旧 v17 握手拒绝，真实安装升级必须显式进行，源码构建和 stdio 子进程测试不替代安装态验证。
 
-选择事件留在正常脱敏历史；工具 trace 只保存阶段、关联 ID、耗时与状态，不保存选定路径和命令正文。当前仅接入 Sandbox 验证计划；显式创建/状态 UI 已接入，宿主候选执行、恢复操作以及 POSIX 仍未完成。`pnpm overlay:verify-sandbox --commands` 已改为固定 provider 返回真实工具调用，包含模型→Runtime→Broker→候选 Runtime→发布链路；其安装态执行结果必须单独记录。
+选择事件留在正常脱敏历史；工具 trace 只保存阶段、关联 ID、耗时与状态，不保存选定路径和命令正文。当前仅接入 Sandbox 验证计划；显式创建/状态 UI 已接入，宿主候选执行、私有卷恢复以及 POSIX 仍未完成。`pnpm overlay:verify-sandbox --commands` 已改为固定 provider 返回真实工具调用，包含模型→Runtime→Broker→候选 Runtime→发布链路；其安装态执行结果必须单独记录。
 
 ### 候选工程验证器（2026-10-26）
 
@@ -155,7 +155,7 @@ Windows 原生发布使用单个 `PublicationLease` helper 持有来源协调目
 
 `pnpm overlay:verify-lease` 真实验证了活跃 helper、helper 已死但宿主仍活跃、宿主已死但 helper 仍活跃、双方退出、错误 generation、首文件发布后宿主直接退出，以及陈旧审核拒绝和接受当前现场后新批次继续。来源只保留已经发生的修改与外部后续修改，旧备份保留。结果见 [执行租约与未知恢复报告](local-overlay-lease-results.json)。`overlay:verify-drain` 额外覆盖发布 helper 被终止时，组合信号排空真实候选进程树；视图可干净关闭，但无法证明执行 finish 时仍保留锁。
 
-边界：这是 Windows/NTFS 宿主 PoC，不排斥非 CodeAtelier 外部写者，不声称多文件原子性或断电证明。宿主仍活跃但 helper 被强杀时保守拒绝接管；尚未建立匹配执行记录的孤立锁、异常私有卷恢复、产品审核入口、POSIX、对象回收及完整任务生命周期仍待接入。每个来源只新增常量大小执行记录，不扫描来源。trace 增加 `local_overlay.execution_lease` 和 `local_overlay.unknown_review/unknown_accept`，不含路径、正文、token 或版本摘要。
+边界：这是 Windows/NTFS 宿主 PoC，不排斥非 CodeAtelier 外部写者，不声称多文件原子性或断电证明。宿主仍活跃但 helper 被强杀时保守拒绝接管；尚未建立匹配执行记录的孤立锁、异常私有卷恢复和 POSIX 仍待接入；产品来源审核入口见后文增量，不能推导私有视图已经可恢复。每个来源只新增常量大小执行记录，不扫描来源。trace 增加 `local_overlay.execution_lease` 和 `local_overlay.unknown_review/unknown_accept`，不含路径、正文、token 或版本摘要。
 
 句柄与进程终止判定依据 Windows 官方 [CreateFile 共享语义](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew)、[进程时间](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocesstimes) 和 [等待函数](https://learn.microsoft.com/en-us/windows/win32/sync/wait-functions)。
 
@@ -183,9 +183,15 @@ v5 没有完整私有读传递记录，不能猜测迁移或把缺失依赖当�
 
 2026-10-26 `pnpm overlay:verify-collection` 实测：连续五轮修改约 256 KiB 的同一文件，每轮确认后回收 524,304 字节 B/O，私有内容均回落至 131,100 字节（未选产物、未发布修改与移动目录内容），未逐轮累积。未执行确认前回收不破坏检查点；已确认但回执丢失时，物理 B/O 回收后仍可凭收据恢复；旧收据重放不丢弃新修改。过期读依赖仍被拒绝，硬链接/junction/目录/未知文件保留，只读孤立文件解除只读后重试成功。原始摘要见 [回收报告](local-overlay-collection-results.json)。仅是 Windows 宿主夹具，不是全应用磁盘上限、断电证明或 Sandbox 自动回收验收。
 
-### 未开始和已完成发布的残留锁恢复 PoC
+### 来源发布事故的产品入口与残留锁边界
+
+产品来源事故恢复增量（2026-10-26）：会话只提交自身 ID 和检查 token，由服务从持久清单的来源身份、发布 batch ID 和明确路径集定位有界 journal，不接受客户端提供来源或批次正文。对非本进程活动的 failed/active 会话，使用已有原生发布检查租约证明旧来源执行退出，提供逐文件发布前/拟发布/当前内容及版本绑定审核；用户明确接受后仅保存 reconciled 决定并释放该次来源协调锁。不补写/回滚来源，不解除会话私有锁或改为 ready；空会话锁、clean 标志与单独 PID 都不足以证明任务排空。该入口无需启动 Sandbox，但仍要求原生执行证明，旧/坏日志拒绝。已完成日志只报告确认状态，完成态刷新及异常私有卷恢复另行接线。服务关闭等待在途检查/接受，HTTP 鉴权/CSRF/no-store 不变，正文仅按需纯文本展示，沿用来源恢复和服务生命周期 tracing。发布前/拟发布/当前内容合计最多 16 MiB，读取时逐项限制，不扫描来源。
 
 新原生发布将 v2 协调锁 ID 直接用作执行 generation，并在锁内记录 batch ID。`publicationClaim` 只提供待核查的原生锁身份，不宣称执行已停止。`releaseUnstartedLock` 要求匹配的原生租约证明旧执行排空、明确记录尚未开始来源写入、且对应 journal 确实不存在；任何现存 journal（包括损坏文件）都不走此路径。原生执行记录 v2 在第一次替换/新建/删除/备份清理前 flush `mutated`，因此后来删除 journal 不能抹掉写入证据。旧 v1 记录按可能写入处理，旧 helper 缺少该字段时不默认 false。Local 文件视图数据库仍为 v5，没有迁移私有文件。
+
+公开入口：有待核查批次的会话可展开“核查来源发布事故”。`POST /api/sessions/:id/local-publication-review` 接收 `{}`，未知事故返回带 token 的现场，complete 只返回日志确认状态，reconciled 返回已持久决定供幂等重试；`POST /api/sessions/:id/local-publication-accept` 只接收 `{token}`。不接受 source/batchId/控制路径。当前服务仍活动的任务拒绝；来源锁只在原生排空证明下释放，接受不重放批次、改写来源或释放私有视图锁。刷新页面后可重新读取已记录决定。断线取消但未知接受结果仍须重试同一 token；不把网络失败当成决定未落盘。没有记录的批次、损坏日志和复杂/超限现场保留，不按来源扫描猜测归属。
+
+手动 `pnpm overlay:verify-incident` 使用独占 NTFS 来源与真实 LocalOverlayService/WinFsp/Publisher，在候选阶段用本脚本只读共享句柄占用第二个来源文件，制造首文件写入后第二写失败；验证陈旧 token 拒绝、明确接受保留部分发布和外部修改、原私有清单/锁/数据库不变，并让新 Local 会话发布独立文件。它不运行模型或 Sandbox、不修改安装态、不进入默认 check/Evaluation；[报告摘要](local-overlay-incident-results.json) 的范围仅为该宿主夹具。
 
 `releaseCompletedLock` 核对 complete journal、执行 generation 与原锁摘要后只释放协调锁；不改来源完成态、文件、私有编辑或视图 pending 确认。两条路径都在原生排他内再次检查前提，先保存恢复决定，再由原生按句柄释放固定锁。缺失锁可重复调用，旧锁身份不能删除新所有者的锁，恢复 trace 不包含路径、正文或版本摘要。
 
