@@ -86,6 +86,7 @@ export async function publishFrozen(input: {
       input.control,
       paths,
       input.verify,
+      signal,
     );
   } catch (error) {
     // Export has no source write side effect. A lost/poisoned frozen lease is

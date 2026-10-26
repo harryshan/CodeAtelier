@@ -150,7 +150,13 @@ export class CandidateValidator {
           frozenSignal.throwIfAborted();
           signal.throwIfAborted();
 
-          return candidateReads(source, control, candidates, verify);
+          return candidateReads(
+            source,
+            control,
+            candidates,
+            verify,
+            AbortSignal.any([signal, frozenSignal]),
+          );
         },
       );
       outcome = "ok";

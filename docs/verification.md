@@ -1,5 +1,15 @@
 # 初版验证记录
 
+## Local 工程读集与真实仓库编译（2026-10-26）
+
+- 初次真实 CodeAtelier 候选 noEmit 编译退出 0，随后因 `READ_LIMIT` 拒绝；扩容后暴露 pnpm 只读依赖的硬链接限制（`.local/local-build-probe.log`、`.local/local-build-probe-expanded.log`）。分别先补回归复现再修复，未绕过原生观察、内容复核或源码发布的单链接限制。
+- 主/候选读集最多 10,000 条，JSON 字段含转义合计 4 MiB；只读版本使用 64 KiB 缓冲，流式 SHA-256 与原完整快照版本一致，依赖单文件上限 256 MiB。所选修改仍最多 100 文件、2 MiB/文件、16 MiB 正文，历史代次仍最多 100；不在创建时扫描或 hash 全树。只读硬链接别名变化仍拒绝旧结果，跨代次去重不跳过旧观察；信号贯穿导出和发布前依赖读取。
+- 正式 `pnpm overlay:verify-build` 实机通过（`.local/local-build-native.log`、[报告](local-overlay-build-results.json)）：两次均编译 1,258 个输入/110,166 行 TypeScript，候选导出并复核 1,310 条读取；只在 upper 写 README 标记，来源保持原文，正常候选控制目录回收，无 overlay helper 残留。
+- 单次测量直接编译 6.300 s、候选编译 46.290 s、后续凭据与清理 1.570 s；私有控制层 6 个文件、逻辑 6,450,587 字节/分配 6,500,352 字节。编译器报告自身内存约 824,165/807,636 KiB，不是所有 helper/Runtime 的峰值内存。先直接再 overlay、未清缓存，不能作为普遍性能承诺；文件系统读取开销仍显著。
+- 这是真实工作树的宿主类型编译，不是产物构建、模型评测、Sandbox 工程验收或完整依赖证明；目录/缺失路径/外部读取、异常私有卷与 POSIX 仍未补齐。未改变安装态、默认模式或实际服务。
+- 最终 `pnpm check` 通过（`.local/local-read-scale-check.log`）：151 个测试文件、1212 项通过 / 1 项既有跳过，类型、Lint、格式和构建通过。专项先通过 65 项，随后补充跨代次同路径去重回归纳入全量检查；自审核对内容版本兼容、硬链接只读边界、预算含 JSON 转义及取消/句柄释放。
+- `pnpm overlay:verify-sandbox --commands --merge` 安装态回归通过（`.local/local-read-scale-sandbox.log`、`.local/local-overlay-sandbox-ET1XpJ/report.json`）：双 Runtime 并行、同文件非重叠修改合并、真实候选验证、来源冲突/失败保留、候选取消排空和 Engine 重建续聊均通过；无 fallback、零活动租约、无 helper 残留。该实机用例仍为固定 provider 的小文件链路，与上述宿主工程编译分别计证。本次没有 UI/HTTP 改动，未重复此前已通过的完整 75 项浏览器测试；未运行 Evaluation。
+
 ## Local 完成态来源锁的产品恢复（2026-10-26）
 
 - Service/HTTP/UI 增加明确释放 complete 批次来源锁的动作。绑定持久会话、批次、选集和目录身份，原生检查租约证明旧发布停止；不是接受 unknown，也不删除私有锁、重新发布或把事故卷改为 ready。

@@ -3,6 +3,8 @@
  * 1. sourceIdentity 固定目录的真实路径和 inode；checkedPath 拒绝越界、链接和管理目录。
  *    发布备份与冲突参考保留前缀也拒绝，防止私有参考材料被当成源码发布。
  * 2. snapshot 有界读取并核对路径/句柄前后身份；版本含内容和元数据，不依赖 mtime 单项。
+ *    snapshotVersion 对只读依赖使用固定大小缓冲和流式哈希，不扩大可发布正文上限；同文件版本编码保持一致。
+ *    只读依赖允许包管理器硬链接，任何别名写入仍影响版本；可编辑完整快照仍严格要求单链接。
  * 3. durableJson 以临时文件、flush、rename 保存私有日志；不宣称跨文件/断电原子性。
  * 首版要求父目录已存在、普通文件只有一个硬链接；不支持 ACL 保真或目录 rename。
  * 所有检查仅降低外部写入竞争，不能替代内核级路径/内容 compare-and-swap。
@@ -107,6 +109,24 @@ export async function snapshot(
   source: Source,
   relative: string,
 ): Promise<Snapshot> {
+  return readSnapshot(source, relative, true);
+}
+
+export async function snapshotVersion(
+  source: Source,
+  relative: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  return (await readSnapshot(source, relative, false, signal)).version;
+}
+
+async function readSnapshot(
+  source: Source,
+  relative: string,
+  includeContent: boolean,
+  signal?: AbortSignal,
+): Promise<Snapshot> {
+  signal?.throwIfAborted();
   const target = await checkedPath(source, relative);
   let before: BigIntStats;
   try {
@@ -122,8 +142,8 @@ export async function snapshot(
   if (
     !before.isFile() ||
     before.isSymbolicLink() ||
-    before.nlink !== 1n ||
-    before.size > BigInt(MAX_BYTES)
+    (includeContent && before.nlink !== 1n) ||
+    before.size > BigInt(includeContent ? MAX_BYTES : 256 * 1024 * 1024)
   ) {
     throw new PublishError("FILE_TYPE_OR_LIMIT");
   }
@@ -135,22 +155,30 @@ export async function snapshot(
       throw new PublishError("READ_CHANGED");
     }
 
-    const buffer = Buffer.alloc(Number(before.size) + 1);
+    const buffer = Buffer.alloc(
+      includeContent ? Number(before.size) + 1 : 64 * 1024,
+    );
+    const hash = createHash("sha256");
     let length = 0;
-    while (length < buffer.length) {
+    // Read one byte beyond the original size so concurrent growth also rejects.
+    while (length <= Number(before.size)) {
+      signal?.throwIfAborted();
+      const offset = includeContent ? length : 0;
       const result = await handle.read(
         buffer,
-        length,
-        buffer.length - length,
+        offset,
+        Math.min(buffer.length - offset, Number(before.size) + 1 - length),
         length,
       );
       if (!result.bytesRead) {
         break;
       }
 
+      hash.update(buffer.subarray(offset, offset + result.bytesRead));
       length += result.bytesRead;
     }
 
+    signal?.throwIfAborted();
     const after = await handle.stat({ bigint: true });
     await checkedPath(source, relative);
     const linked = await lstat(target, { bigint: true });
@@ -162,11 +190,11 @@ export async function snapshot(
       throw new PublishError("READ_CHANGED");
     }
 
-    const content = buffer.subarray(0, length);
-
     return {
-      content: content.toString("base64"),
-      version: digest(stamp(before) + ":" + digest(content)),
+      content: includeContent
+        ? buffer.subarray(0, length).toString("base64")
+        : null,
+      version: digest(stamp(before) + ":" + hash.digest("hex")),
       mode: Number(before.mode) & 0o777,
     };
   } finally {

@@ -1,0 +1,68 @@
+{
+  "timestamp": "2026-10-26T03:24:55.488Z",
+  "platform": "win32",
+  "passed": true,
+  "project": "CodeAtelier current working tree",
+  "command": "TypeScript --noEmit --incremental false --extendedDiagnostics",
+  "baseline": {
+    "elapsedMs": 6300.447700000001,
+    "diagnostics": {
+      "Files": "1258",
+      "Lines of TypeScript": "110166",
+      "Memory used": "824165K",
+      "Total time": "5.48s"
+    },
+    "exitCode": 0
+  },
+  "overlay": {
+    "elapsedMs": 46289.924199999994,
+    "diagnostics": {
+      "Files": "1258",
+      "Lines of TypeScript": "110166",
+      "Memory used": "807636K",
+      "Total time": "45.07s"
+    },
+    "exitCode": 0
+  },
+  "candidateTotalMs": 48954.645300000004,
+  "receiptAndCleanupMs": 1569.560900000004,
+  "observations": 1310,
+  "receiptReads": 1310,
+  "privateDisk": {
+    "files": 6,
+    "logicalBytes": 6450587,
+    "allocatedBytes": 6500352
+  },
+  "selectedSourceUnchanged": true,
+  "checks": [
+    "actual project compiles directly and in candidate",
+    "more than 100 native read dependencies verified",
+    "private marker and compiler outputs never published",
+    "successful candidate control removed"
+  ],
+  "limitations": [
+    "host execution, not Sandbox",
+    "single sequential run, uncontrolled OS cache",
+    "external compiler/package reads and directory/absence tracking incomplete",
+    "not a model evaluation or emitted production build"
+  ],
+  "rawLog": ".local/local-build-native.log",
+  "earlierFailures": [
+    {
+      "log": ".local/local-build-probe.log",
+      "result": "compiler exit 0; READ_LIMIT after compilation"
+    },
+    {
+      "log": ".local/local-build-probe-expanded.log",
+      "result": "compiler exit 0; read-only pnpm hardlink rejected as FILE_TYPE_OR_LIMIT"
+    }
+  ],
+  "sandboxRegression": {
+    "scope": "fixed provider small-file Runtime publication; separate from host project compilation",
+    "fallback": false,
+    "activeLeasesAfterTasks": 0,
+    "command": "pnpm overlay:verify-sandbox --commands --merge",
+    "passed": true,
+    "rawReport": ".local/local-overlay-sandbox-ET1XpJ/report.json"
+  }
+}

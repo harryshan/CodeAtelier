@@ -192,7 +192,7 @@ it.each([
     { path: "a", version: "v" },
     { path: "A", version: "v" },
   ],
-  Array.from({ length: 101 }, (_, i) => ({ path: `${i}`, version: "v" })),
+  Array.from({ length: 10001 }, (_, i) => ({ path: `${i}`, version: "v" })),
 ])("rejects malformed validation receipts %#", (reads) => {
   expect(() => validateReceipt({ reads })).toThrow();
 });

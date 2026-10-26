@@ -6,7 +6,7 @@
  * 4. 按所选修改的历史代次及当前代次检查依赖，返回 Batch 与绑定的确认请求；不自行发布或确认。
  * 5. 对真正变化的选定路径保存私有检查点，供 complete 后的刷新恢复；额外复核仅限这些文件。
  * 6. 展开路径/对象代次与跨轮私有读依赖闭包；缺记录、向前/自环边和超限均拒绝，不清空旧依赖。
- * 沿用 PoC 的 100 个文件/读依赖/关联代次和内容大小限制，不将全部 upper 当源码。
+ * 选定文件/关联代次各最多 100；读依赖最多 10,000 条/4 MiB 字段，版本流式计算，不将全部 upper 当源码。
  * 日志与 trace 由外层冻结/发布生命周期提供，不输出路径、内容或安全描述符。
  */
 import { randomUUID } from "node:crypto";
@@ -18,12 +18,14 @@ import {
   checkRelative,
   digest,
   snapshot,
+  snapshotVersion,
   sourceIdentity,
   type Source,
 } from "./files.js";
 import { PublishError } from "./merge.js";
 import { validateBatch, type Batch } from "./session.js";
 import { nativeCheckpoint, type NativeCheckpoint } from "./native-refresh.js";
+import { MAX_READS } from "./read-set.js";
 
 const rowSchema = z.object({
   path: z.string(),
@@ -70,6 +72,7 @@ export async function nativeBatch(
   controlDirectory: string,
   selected: readonly string[],
   verifyReads: (epochs?: readonly number[]) => Promise<void>,
+  signal?: AbortSignal,
 ): Promise<
   Batch & {
     acknowledgement: OverlayAcknowledgement;
@@ -224,14 +227,15 @@ export async function nativeBatch(
 
     const observations = db
       .prepare(
-        `SELECT path,name,epoch FROM observations WHERE epoch IN (${[...epochs].map(() => "?").join(",")}) LIMIT 101`,
+        `SELECT path,name,epoch FROM observations WHERE epoch IN (${[...epochs].map(() => "?").join(",")}) LIMIT ?`,
       )
-      .all(...epochs);
-    if (observations.length > 100) {
+      .all(...epochs, MAX_READS + 1);
+    if (observations.length > MAX_READS) {
       throw new PublishError("READ_LIMIT");
     }
 
     const reads: Batch["reads"] = [];
+    const versions = new Map<string, string>();
     const dependencyKeys: { path: string; epoch: number }[] = [];
     for (const raw of observations) {
       const observed = z
@@ -242,8 +246,12 @@ export async function nativeBatch(
       }
 
       const file = relative(observed.name);
-      const current = await snapshot(source, file);
-      reads.push({ path: file, version: current.version });
+      if (!versions.has(observed.path)) {
+        const version = await snapshotVersion(source, file, signal);
+        versions.set(observed.path, version);
+        reads.push({ path: file, version });
+      }
+
       dependencyKeys.push(observed);
     }
 

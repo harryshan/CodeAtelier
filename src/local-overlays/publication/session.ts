@@ -17,6 +17,7 @@ import {
   type Source,
 } from "./files.js";
 import { MAX_BYTES, PublishError } from "./merge.js";
+import { readSetSchema } from "./read-set.js";
 
 const snapshotSchema = z.object({
   content: z
@@ -40,7 +41,7 @@ const batchSchema = z.object({
     )
     .min(1)
     .max(100),
-  reads: z.array(z.object({ path: z.string(), version: z.string() })).max(100),
+  reads: readSetSchema,
 });
 export type Batch = z.infer<typeof batchSchema>;
 
@@ -84,7 +85,7 @@ export function validateBatch(value: unknown): Batch {
 
 export async function loadBatch(file: string) {
   const content = await readFile(file);
-  if (content.length > 24 * 1024 * 1024) {
+  if (content.length > 32 * 1024 * 1024) {
     throw new PublishError("BATCH_LIMIT");
   }
 

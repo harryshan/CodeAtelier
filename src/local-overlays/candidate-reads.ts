@@ -1,6 +1,7 @@
 /**
  * 候选工程验证结束后的读取凭据，供 CandidateValidator 与 Publisher 共享。
  * 1. ValidationReceipt 只携带有界来源文件版本；validateReceipt 拒绝越界、重复或空版本。
+ *    与主任务共用 10,000 条/4 MiB 字段预算，只读内容版本流式计算，仍须核对原生观察。
  * 2. candidateReads 在候选冻结租约内核对来源/格式、采集未选文件版本，再复核原生观察。
  * 3. 验证过程私有写入的其它文件仍保留其来源读依赖，不把测试生成物当作发布内容。
  * 4. CandidateCleanupUnknownError 标记进程或卷排空未知；Publisher 必须保留原会话而非普通拒绝续聊。
@@ -13,15 +14,15 @@ import {
   bytes,
   checkRelative,
   snapshot,
+  snapshotVersion,
   sourceIdentity,
   type Source,
 } from "./publication/files.js";
 import { PublishError } from "./publication/merge.js";
+import { MAX_READS, readSetSchema } from "./publication/read-set.js";
 
 const receiptSchema = z.object({
-  reads: z
-    .array(z.object({ path: z.string(), version: z.string().min(1).max(1024) }))
-    .max(100),
+  reads: readSetSchema,
 });
 export type ValidationReceipt = z.infer<typeof receiptSchema>;
 
@@ -53,6 +54,7 @@ export async function candidateReads(
   control: string,
   candidates: ReadonlyMap<string, Buffer | null>,
   verify: (epochs?: readonly number[]) => Promise<void>,
+  signal?: AbortSignal,
 ): Promise<ValidationReceipt> {
   const db = new DatabaseSync(path.join(control, "overlay.sqlite"), {
     readOnly: true,
@@ -118,9 +120,9 @@ export async function candidateReads(
     }
 
     const observed = db
-      .prepare("SELECT path,name,epoch FROM observations LIMIT 101")
-      .all();
-    if (observed.length > 100) {
+      .prepare("SELECT path,name,epoch FROM observations LIMIT ?")
+      .all(MAX_READS + 1);
+    if (observed.length > MAX_READS) {
       throw new PublishError("READ_LIMIT");
     }
 
@@ -143,7 +145,7 @@ export async function candidateReads(
       const file = row.name.slice(1).replaceAll("\\", "/");
       reads.push({
         path: file,
-        version: (await snapshot(source, file)).version,
+        version: await snapshotVersion(source, file, signal),
       });
       keys.push(row.path);
     }
