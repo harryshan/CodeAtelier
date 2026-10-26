@@ -1,6 +1,6 @@
 # 隔离 Local 使用指南
 
-隔离 Local 用于多个对话同时修改同一个项目。每个对话拥有私有写层，按需读取主目录文件；创建时不遍历或复制整个项目，也不创建 Git worktree。Windows 和显式启动的 Linux 已接入任务、Sandbox、发布及正常文件检查/参考继续；Linux 异常恢复和 macOS 后端尚未实现。
+隔离 Local 用于多个对话同时修改同一个项目。每个对话拥有私有写层，按需读取主目录文件；创建时不遍历或复制整个项目，也不创建 Git worktree。Windows 和显式启动的 Linux 已接入任务、Sandbox、发布及正常文件检查/参考继续；Linux 异常恢复尚未实现。用户于 2026-10-27 决定本轮不实现 macOS 后端，macOS 保持隔离 Local 关闭，启用 Sandbox 也不会开放它。
 
 ## 开始使用
 

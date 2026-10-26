@@ -1,5 +1,9 @@
 # 初版验证记录
 
+## macOS Local overlay 保持关闭（2026-10-27）
+
+用户明确本轮不实现 macOS 后端，已同步范围决定及使用说明。核对当前工厂、Engine 能力、HTTP 创建/执行/参考继续门禁与创建按钮：Darwin 不开放 Local overlay，Sandbox 或完整 Linux 上下文不改变该结论。新增完整上下文下的 Darwin 回归，平台/HTTP 两文件 18 项通过；`pnpm check` 为 167 个文件、1349 项通过/2 项跳过。仅在 Windows 上验证平台接线和通用拒绝路径，不宣称 macOS 实机验收；没有添加 FSKit 实现或安装扩展。
+
 ## Linux 整应用正常重启（2026-10-27）
 
 - 新增 `startup-probe.mjs --restart` / `startup-restart.mjs` 手动场景，使用正式构建产物、生产 HTTP/Engine/Store/Controller 和实际 MXC Bubblewrap；没有替换内部类或使用宿主执行回退。先完成双任务并行发布、内部 TypeScript 链接编译、服务重载与续聊，再通过关闭 API 停止整个应用，并以相同 data/views 重新启动。

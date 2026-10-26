@@ -3,6 +3,7 @@
  * 1. 普通启动/非 Linux 保留现有 backend 默认，不因无关环境改变平台；入口前提区分 Windows 与未准备平台。
  * 2. 完整 namespace 上下文同时选择 Linux 挂载和候选器；workspace 来自独立视图根。
  * 3. 缺失上下文、来源数据根错配及视图重叠拒绝，不默默选择其它隔离实现。
+ * 4. macOS 无论是否带有完整 Linux 上下文都关闭入口，不选择 Linux backend 或候选器。
  * 实际 namespace/Runtime/Publisher 由手动探针验证；Engine 还须将平台前提与 Sandbox 配置共同用于创建门禁。
  */
 import { randomUUID } from "node:crypto";
@@ -48,6 +49,13 @@ it("selects both Linux components from one complete namespace context", () => {
   expect(result.backend?.workspace(id)).toBe(path.join(views, id));
   expect(result.backend?.idFor(path.join(views, id))).toBe(id);
   expect(result.backend?.idFor(path.join(root, id))).toBeUndefined();
+});
+
+it("keeps macOS disabled even when complete Linux startup context is present", () => {
+  const result = localOverlayPlatform(directory, log, environment, "darwin");
+  expect(result.supported).toBe(false);
+  expect(result.backend).toBeUndefined();
+  expect(result.candidate).not.toBeInstanceOf(LinuxCandidateValidator);
 });
 
 it.each([

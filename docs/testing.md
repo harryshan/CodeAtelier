@@ -1,5 +1,7 @@
 # 测试约定与功能覆盖
 
+macOS Local overlay 门禁：`local-overlay-platform.test.ts` 核对普通 Darwin 启动及带完整 Linux namespace 上下文时都不开放入口、不选择 Linux backend；HTTP 既有用例核对能力拒绝发生在创建视图之前。平台工厂测试可注入平台值，不等于 macOS 实机验证；按 2026-10-27 用户决定不实现 macOS overlay。
+
 Linux 整应用正常重启：手动 `startup-probe.mjs --restart` 在原有双任务发布和服务重载后，正常关闭整个启动树，以同一 data/views 重新启动。`startup-restart.mjs` 核对旧控制器已退出、PID/namespace 更换、历史事件/任务及 round/upper/私有检查保持，再通过公开 HTTP 在真实 Sandbox 续聊并保留新私有产物。与 `--review` 联用，继续验证新参考会话的候选发布；此探针不用于崩溃恢复，也不进入默认检查或 Evaluation。
 
 Linux 普通文件新增/删除续轮：`posix-overlay-batch.test.ts` 先复现自身发布后的目录凭据误判，再验证根目录新增/删除、保留旧 B 和后续发布；`posix-directory-refresh.test.ts` 使用真实 Publisher 一增一删，覆盖父目录成员、类型、身份和历史版本变化拒绝，以及非 complete 日志拒绝。手动 `backend-probe.mjs` 在真实 OverlayFS/Sandbox 检查 whiteout、独立候选、两次发布和后续读取；`workdir-cleanup-probe.py` 另验固定内核工作目录权限恢复及拒绝路径。探针不进默认 check 或 Evaluation，证据见 [报告](posix-overlay-membership-results.json)。

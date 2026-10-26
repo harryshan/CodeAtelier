@@ -4,6 +4,8 @@
 
 ## 需求与模式
 
+当前平台范围（2026-10-27）：用户明确本轮不实现 macOS overlay，macOS 功能保持关闭；以下早期“POSIX 均需完成”的计划不再包含本轮 macOS 实施。Windows/Linux 的文件隔离、按需成本、并行任务、Sandbox 与发布目标继续保持；具体 Linux 进展和限制见 [POSIX 说明](posix-local-overlay.md)。
+
 交付优先级（2026-10-26）：按用户最新要求先跑通多会话主流程，不继续追加罕见故障矩阵。Windows 的生产 UI/HTTP、并行 Sandbox、明确选集/候选验证、正常发布、冲突保留及参考会话已重新验收；操作说明集中在 [使用指南](local-overlay-usage.md)。POSIX 后端、任意大型工程兼容性和所有未知事故的自动恢复没有因此变成已实现能力。
 
 候选 Runtime 崩溃恢复增量（2026-10-26，已验证）：一次性候选卷在 Sandbox 执行前独占写入并 flush 有界 `.access.json`，记录候选 UUID、来源/存储/控制目录及虚拟根身份；不扫描来源树。启动授权撤销同时识别当前数据目录的 candidates 命名空间，按记录、原生 helper/owner 退出证明和卷身份使用同一根 ACL 专用模式。正常排空且卸载确认后删除候选及记录；未知执行、记录损坏/缺失或身份改变保留并拒绝，不猜测候选结果。启动清理不删除候选证据、不解除来源发布锁或旧任务锁，不自动重跑测试/发布。恢复沿用 Local 生命周期 trace，另记 `recover_candidate_access` 阶段；手动 `pnpm overlay:verify-server-crash --candidate` 已通过真实候选 Runtime 中断及启动撤销；源码保持不变，未知发布仍保留，证据见验证记录。

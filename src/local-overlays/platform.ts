@@ -1,6 +1,7 @@
 /**
  * Engine 的 Local 平台接线工厂；从启动器固定的内部 IPC 上下文同时选择挂载和候选验证实现。
  * 1. Windows/普通启动保留默认 WinFsp Service 与候选验证器，不读取 Linux 环境上下文。
+ *    macOS 按 D170 暂不实现 Local overlay；即使传入完整 Linux 上下文也保持入口关闭。
  * 2. Linux 显式 namespace 上下文须完整、绝对路径规范，控制根精确绑定当前数据目录，视图根分离。
  * 3. 创建共享 Linux 控制客户端，交给 backend/候选器；真正 mount namespace 核对仍由 IPC hello 执行。
  * 4. 同时返回平台入口前提；Engine 还须要求 Sandbox。工厂不启动进程、安装 helper 或证明驱动可用。

@@ -1,6 +1,6 @@
 # POSIX Local overlay：原生文件系统优先
 
-状态：2026-10-27 Linux 已完成原生文件层、Service/Engine、HTTP/SSE、真实 Sandbox 双任务和候选发布接入，显式 namespace 启动并启用 Sandbox 后开放入口。Linux 正常文件检查/参考继续、普通文件新增/删除后的续轮已接入；事故恢复和预编译包自动分发尚未实现；macOS 仍为选型。Windows 的已验证实现保持不变。以下保留各阶段证据，当前使用方式以 [指南](local-overlay-usage.md) 为准。
+状态：2026-10-27 Linux 已完成原生文件层、Service/Engine、HTTP/SSE、真实 Sandbox 双任务和候选发布接入，显式 namespace 启动并启用 Sandbox 后开放入口。Linux 正常文件检查/参考继续、普通文件新增/删除后的续轮已接入；事故恢复和预编译包自动分发尚未实现。用户已明确本轮不写 macOS 版本，保持该平台 Local overlay 关闭；下面 macOS 调查只供未来参考。Windows 的已验证实现保持不变。以下保留各阶段证据，当前使用方式以 [指南](local-overlay-usage.md) 为准。
 
 普通文件新增/删除后的续轮（2026-10-27）：发布完整日志绑定批次后，只对受影响且已有读凭据的直接父目录枚举成员，从当前成员逆转本批新增/删除，旧目录身份和成员摘要必须匹配。证明成立才更新目录凭据，并再次复核全部依赖、所选私有内容与来源结果。外部成员/类型/目录身份变化或不一致历史仍拒绝，不隐式重置依赖，不遍历来源树；源码仍限已有父目录内的普通文件。
 
@@ -128,4 +128,4 @@ Linux backend 接线保持 LocalOverlayService 原有任务锁与来源身份协
 
 正常保存与发布校验现已分开：历史凭据过期不阻断只读续聊的私有保存。相同 path/kind/version 去重，发生版本冲突时保留多份凭据，避免本轮观察覆盖旧事实；真正发布仍须通过全部历史和当前版本复核，冲突历史不能自动变为可发布。当前新观察本身无效、状态损坏或挂载未知仍按既有规则拒绝，不据此开放事故恢复。
 
-macOS 先按 APFS 按需 CoW 与系统 FSKit 组合核对接口和打包要求，避免将递归目录克隆包装成零扫描；目前仅官方资料核对，无 macOS 实机验收。两平台均保留“源码明确选择、合并后验证、来源串行发布、冲突保留”的现有协议，不把原生隔离层直接当成发布器。
+macOS 的历史调查曾考虑 APFS 按需 CoW 与 FSKit。2026-10-27 核对了 Apple 的 [目录映射示例](https://developer.apple.com/documentation/fskit/building-a-passthrough-file-system)：该示例要求 macOS/Xcode 26，使用 FSPathURLResource、安全作用域资源及需用户启用的 FSModule 应用扩展；示例只演示透传，不提供私有层或 CodeAtelier 发布协议。本机没有 macOS/Xcode 验证环境。随后用户明确本轮不实现 macOS 后端，相关产品入口保持关闭，不继续编写或安装扩展。Linux 继续复用“源码明确选择、合并后验证、来源串行发布、冲突保留”的现有协议，不把原生隔离层直接当成发布器。
