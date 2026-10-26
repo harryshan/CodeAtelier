@@ -20,7 +20,7 @@
 
 `inspectInterruptedFiles` 是上述公开中断参考入口的底层检查，不使 failed/active 清单变为 ready。每次选择最多 100 路径，每份原文/私有内容最多 2 MiB、总计 16 MiB；数据库和 WAL/SHM 单文件最多 256 MiB，要求普通单链接文件。自审实测 SQLite 只读连接仍可创建空 WAL，因此实现只复制私有 main/WAL 两个元数据文件到全新检查目录，再在那里用只读事务及 quick_check 校验；以 64 KiB 缓冲复制并核对前后身份/大小/时间，副本结束清理。此额外成本只在显式异常检查发生，不复制文件对象或主目录，也不改变创建时零扫描。原 main/WAL/租约字节不变已作真实断言，不能因此声称完整取证介质保证。输出使用当前 entries/nodes，不能依赖上一轮 sealed_changes；目录、链接、祖先目录修改、缺失私有对象及显式属性操作拒绝，不回退读取 newer lower 作为 O。取消/租约失效先等待读取排空再关闭检查进程；独立日志/trace 不记录文件内容。
 
-新 Local 挂载参数追加宿主 PID，须重建 WinFsp helper；旧 helper 拒绝新参数，不能静默缺失记录。正常的旧 clean 卷可由新 helper 打开并记录后续生命周期，旧 dirty 卷无进程证明仍拒绝，不自动迁移或重写。`pnpm overlay:verify-interrupted` 使用自己创建的独立宿主和真实 helper，验证活进程/并发/缺失证明拒绝、部分写入读取、取消关闭及正常停止兼容；不会安装/Repair、重启用户服务或执行模型。新参考会话见上述产品增量；原卷继续任务及 private refresh 的产品恢复仍待后续实施。
+新 Local 挂载参数追加宿主 PID，须重建 WinFsp helper；旧 helper 拒绝新参数，不能静默缺失记录。正常的旧 clean 卷可由新 helper 打开并记录后续生命周期，旧 dirty 卷无进程证明仍拒绝，不自动迁移或重写。`pnpm overlay:verify-interrupted` 使用自己创建的独立宿主和真实 helper，验证活进程/并发/缺失证明拒绝、部分写入读取、取消关闭及正常停止兼容；不会安装/Repair、重启用户服务或执行模型。新参考会话见上述产品增量；原 dirty 卷继续任务仍未实现；具备排空资格且正常关闭的 complete/private refresh 恢复已追加公开入口，见下述实施增量。
 
 目录成员依赖已接入（2026-10-26）：记录已枚举 lower 目录的身份及可见名称/文件类型摘要，不使用目录时间戳作为持久依赖版本，避免临时文件已清理或普通文件内容更新造成无关失效。枚举前后仍核对元数据以拒绝扫描期间变化；只记录 actual lower，私有新建/whiteout 不改变该来源摘要，`.git` 按视图策略排除。原生观察沿用当前代次首版本；冻结只重新枚举曾观察的目录，不导入新节点或全树扫描。主/候选读集增加可选 directory 类型，根目录使用仅限目录依赖的 `.`，文件编辑路径规则不变；发布前再次计算当前目录摘要。每目录最多 100,000 个成员/16 MiB 名称编码，超限拒绝；共享原有 10,000 条/4 MiB 凭据预算。
 
@@ -67,6 +67,8 @@ Windows 公开入口的手动验收需要已安装 WinFsp、已构建 overlay he
 - Git worktree：保留现有按 Git 提交建立独立工作目录、HEAD/index 和分支工作流的实现。它不是 overlay 的 fallback，两者不互相替代。
 - Overlay 不创建 commit/branch、linked worktree、Git index 或对象库，不解析 Git tree/blob，不承担 Git merge、push 或 PR。源文件的未提交状态自然可见，无须为此定义 Git 语义。
 - 不在这次设计讨论中删除 D168/D169 代码、迁移已有会话、切换默认模式或自动回写文件。D169 的性能结果只描述旧实验，不能直接推导此方案性能。
+
+完成态私有刷新接入（2026-10-26）：任务收尾只为已排空、明确 `VIEW_REFRESH_PENDING` 且挂载关闭已确认的失败记录保存 task/batch 恢复资格。产品显式请求在独立恢复锁下复核会话、来源/控制身份及原任务锁，正常挂载并冻结后复用 `Publisher.recoverRefresh`；完整 journal、私有检查点或原生收据仍必须通过。不执行来源写入、模型、候选命令或旧任务重放，未选私有修改保留。正常卸载后才解除任务锁、保存 ready。恢复本身的未知状态保留恢复锁，旧历史缺证明、dirty 卷、私有内容改变或来源残留锁均拒绝；来源锁可走已有独立完成态释放入口。公开 POST /api/sessions/:id/local-refresh 仅接受空请求并沿用鉴权、CSRF、平台/Sandbox 门禁及断线取消；界面明确点击后重读状态，不改草稿或启动任务。真实 WinFsp 确认前/后回执丢失两种场景均已通过，原始报告 .local/local-private-refresh-NUWm4f/report.json；宿主夹具声明排空，不推导 Sandbox 或完整崩溃恢复。
 
 ## 建议结构
 

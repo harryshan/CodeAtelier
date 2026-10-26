@@ -3,6 +3,7 @@
  * 1. LocalOverlayBackend/Mount 定义稳定目录命名、挂载身份、冻结收尾和停止；测试可替换真实文件系统。
  * 2. WinFspLocalBackend 使用独立命名空间，每次挂载创建新的 OverlayManager，拒绝非 Windows 静默降级。
  * 3. finish 在冻结租约中核对 v6 状态；可选明确选择先发布/确认，否则按 task ID 推进代次，再回收孤立内容并退出。
+ * 4. recoverRefresh 仅在正常重挂载后的冻结租约内确认 complete 批次，不发布来源或执行任务；退出后返回私有代次。
  * 不管理 Git、不安装驱动；调用方先排空任务并提供可信候选验证器，异常停止不能冒充成功收尾。
  */
 import path from "node:path";
@@ -21,9 +22,15 @@ import {
   type FrozenPublication,
   type PublicationState,
 } from "./publication.js";
+import { Publisher } from "./publication/publisher.js";
+import type { Batch } from "./publication/session.js";
 
 export interface LocalOverlayMount {
   identity(): Promise<string>;
+  recoverRefresh?(
+    batch: Batch,
+    signal: AbortSignal,
+  ): Promise<{ epoch: number }>;
   finish(
     taskId: string,
     publication?: FrozenPublication,
@@ -100,6 +107,33 @@ export class WinFspLocalBackend implements LocalOverlayBackend {
     return {
       identity: () => directoryIdentity(this.workspace(id)),
       close: () => manager.close(),
+      recoverRefresh: (batch: Batch, signal: AbortSignal) =>
+        manager.withFrozen(
+          id,
+          async (_verify, acknowledge, current) => {
+            await new Publisher(
+              path.join(this.directory, "publications"),
+              this.log,
+            ).recoverRefresh(batch, control, acknowledge, { signal: current });
+            const db = new DatabaseSync(path.join(control, "overlay.sqlite"), {
+              readOnly: true,
+            });
+            try {
+              const epoch = z
+                .number()
+                .int()
+                .nonnegative()
+                .parse(
+                  db.prepare("SELECT epoch FROM local_state").get()?.epoch,
+                );
+
+              return { epoch };
+            } finally {
+              db.close();
+            }
+          },
+          signal,
+        ),
       finish: async (taskId: string, plan?: FrozenPublication) =>
         manager.withFrozen(
           id,

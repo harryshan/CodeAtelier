@@ -1,5 +1,7 @@
 # 架构
 
+Local 的完成态私有刷新由 `LocalOverlayService.recoverPrivateRefresh` 协调：只接受收尾时持久化的 task/batch 排空资格，独立恢复锁阻止并发和未知重入，原任务锁保留到 helper 确认并关闭。WinFsp mount 在冻结回调内复用 Publisher 的 complete 恢复协议，只确认私有覆盖；成功后持久 ready，不执行旧命令或来源写入。`local-refresh` HTTP 与 `LocalPrivateRefresh` 显式入口重读历史，草稿不变；旧/dirty 卷和恢复过程自身的未知结果继续隔离。
+
 当前初版为本机后端、浏览器单页应用、默认单 agent 和可按任务开启的只读 subagent；不同真实工作目录的会话默认最多两个任务并行，同一目录严格串行。
 
 Local 发布的候选验证基础设施位于 `src/local-overlays/candidate-validator.ts` 与 `candidate-reads.ts`：新建一次性 WinFsp 视图，只播种合并候选，可信执行器报告命令终态与排空后才冻结并导出新读依赖；Publisher 在应用前再次复核，并保存 journal 凭据。正常目录回收，排空未知保留并隔离。Engine 内部 `selectLocalPublication` 已接入 `command-plan.ts` / `command-runtime.ts`：有界命令计划通过现有 IPC 在新 Sandbox Runtime 顺序执行，原任务关联的事件/trace 独立于主模型上下文。验证不开放宿主权限扩展，启动失败不 fallback；模型选择工具已接入，宿主验证适配器尚未接入。来源发布先经同进程队列，再获取原有磁盘锁，避免正常候选耗时触发短锁等待失败；跨进程残留锁仍保守拒绝。

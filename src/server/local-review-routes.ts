@@ -8,6 +8,7 @@
  * 5. path 保留旧单文件响应；paths 使用整组版本，最多 100 项，任一材料失败即拒绝整组。
  * 6. publication-review/accept/release-complete 只接收空请求或检查 token；从会话定位事故，断线取消，不启动任务或恢复私有视图。
  * 7. paths + state=interrupted 显式检查异常卷或创建中断参考会话；原生退出证明逐次验证，不解锁旧卷或自动应用部分写入。
+ * 8. local-refresh 只确认已完成批次的私有刷新；平台门禁、持久排空证明和独占恢复由服务复核，不运行旧任务。
  */
 import type { HttpServer } from "./http-server.js";
 import { z } from "zod";
@@ -45,6 +46,40 @@ export function registerLocalReviewRoutes(
   store: AsyncStore,
   engine: Engine,
 ) {
+  app.post("/api/sessions/:id/local-refresh", async (request, reply) => {
+    const { id } = z.object({ id: z.uuid() }).parse(request.params);
+    z.object({}).strict().parse(request.body);
+    const session = await store.get(id);
+    if (!session) {
+      return reply.code(404).send({ error: "会话不存在。" });
+    }
+
+    if (!engine.localOverlayCreation.enabled) {
+      return reply
+        .code(409)
+        .send({ error: engine.localOverlayCreation.reason });
+    }
+
+    const abort = new AbortController();
+    const disconnected = () => abort.abort();
+    reply.raw.once("close", disconnected);
+    try {
+      await engine.localOverlays.recoverPrivateRefresh(
+        session.workspace,
+        session.id,
+        abort.signal,
+      );
+
+      return await engine.describeSession(session);
+    } catch {
+      return reply.code(409).send({
+        error:
+          "私有刷新未确认：可能缺少排空证明、来源仍被锁定、私有内容已变或卷未正常关闭。没有重放来源写入；请重新查看会话状态，未确认现场保持保留。",
+      });
+    } finally {
+      reply.raw.off("close", disconnected);
+    }
+  });
   for (const action of ["review", "accept", "release-complete"] as const) {
     app.post(
       `/api/sessions/:id/local-publication-${action}`,

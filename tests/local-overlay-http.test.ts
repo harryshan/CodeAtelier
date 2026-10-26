@@ -5,6 +5,7 @@
  * 3. 冲突参数与源目录更换不创建额外视图；关闭 Sandbox 后旧视图启动/恢复也须拒绝，不调度 Runtime 或宣称真实 WinFsp/Sandbox 可用。
  * 4. 单文件及整组检查走真实 SQLite 与服务锁，验证鉴权、材料版本、脏卷拒绝及受控错误；检查不挂载，新对话不自动运行。
  * 5. 中断接口用明确标记的服务材料替身验证 HTTP 状态/参数和创建门禁；不将此夹具作为原生退出证明。
+ * 6. 完成态刷新使用服务替身验证鉴权、空参数、能力门禁、状态回读和无自动任务；原生恢复由专项实机验证。
  */
 import { randomUUID } from "node:crypto";
 import { cp, readFile, writeFile } from "node:fs/promises";
@@ -43,6 +44,51 @@ async function fixture() {
 
   return { ...server, backend, headers, source: await temp() };
 }
+
+it("protects explicit private refresh and returns updated history without starting a task", async () => {
+  const f = await fixture();
+  const id = randomUUID();
+  const session = await f.engine.localOverlays.create(
+    { id, source: f.source },
+    (workspace) => f.store.create(workspace, "Refresh"),
+  );
+  const url = `/api/sessions/${session.id}/local-refresh`;
+  const send = (headers = f.headers, payload = {}) =>
+    f.app.inject({ method: "POST", url, headers, payload });
+  expect((await send({} as typeof f.headers)).statusCode).toBe(401);
+  expect(
+    (
+      await send({
+        host: f.headers.host,
+        cookie: f.headers.cookie,
+      } as typeof f.headers)
+    ).statusCode,
+  ).toBe(403);
+  expect((await send()).statusCode).toBe(409);
+  vi.spyOn(f.engine, "localOverlayCreation", "get").mockReturnValue({
+    enabled: true,
+  });
+  expect((await send(f.headers, { source: f.source })).statusCode).toBe(400);
+  const recover = vi
+    .spyOn(f.engine.localOverlays, "recoverPrivateRefresh")
+    .mockRejectedValueOnce(new Error("private internal detail"));
+  const failure = await send();
+  expect(failure.statusCode).toBe(409);
+  expect(failure.body).not.toContain("private internal detail");
+  recover.mockResolvedValueOnce({ recovered: true });
+  const response = await send();
+  expect(response.statusCode).toBe(200);
+  expect(response.headers["cache-control"]).toBe("no-store");
+  expect(response.json().id).toBe(session.id);
+  expect(response.json().localOverlay.state).toBe("ready");
+  expect(await f.store.tasks(session.id)).toHaveLength(0);
+  expect(recover).toHaveBeenCalledWith(
+    session.workspace,
+    session.id,
+    expect.any(AbortSignal),
+  );
+  await f.shutdown();
+});
 
 it("requires explicit interrupted requests and preserves failed state while creating a reference session", async () => {
   const f = await fixture();

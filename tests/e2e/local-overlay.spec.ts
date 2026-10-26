@@ -7,10 +7,92 @@
  * 5. 来源事故检查/接受使用固定 token，未知结果重试；接受后原私有视图仍禁用，完成态和已记录决定分开提示。
  *    完成态只允许明确释放该批次来源锁，失败可重试；不提交任务或重新接受部分发布现场。
  * 6. 中断检查明确传递恢复模式，只呈现可能部分写入的参考，参考新会话不自动提交任务。
+ * 7. 私有刷新显式请求后重读状态，失败可重试且草稿保留；不自动提交旧任务。
  * 页面和请求代码为生产实现；真实挂载/权限/发布链路另由手动 WinFsp 验证证明。
  */
 import { expect, test } from "@playwright/test";
 import type { Session } from "../../src/shared/types.js";
+
+test("explicitly restores a completed private refresh and keeps the unsent draft", async ({
+  page,
+}) => {
+  let current: Session = {
+    ...created,
+    localOverlay: {
+      ...created.localOverlay!,
+      state: "failed",
+      privateRefreshRecovery: true,
+    },
+  };
+  await page.route("**/api/sessions", (route) =>
+    route.fulfill({ json: [current] }),
+  );
+  await page.route(
+    new RegExp(`/api/sessions/${created.id}(?:\\?.*)?$`),
+    (route) =>
+      route.fulfill({
+        json: { session: current, tasks: [], events: [], approvals: [] },
+      }),
+  );
+  await page.route(`**/api/sessions/${created.id}/events`, (route) =>
+    route.fulfill({
+      contentType: "text/event-stream",
+      body: "event: refresh\ndata: {}\n\n",
+    }),
+  );
+  let attempts = 0;
+  let submitted = false;
+  await page.route(`**/api/sessions/${created.id}/tasks`, async (route) => {
+    submitted = true;
+    await route.abort();
+  });
+  await page.route(
+    `**/api/sessions/${created.id}/local-refresh`,
+    async (route) => {
+      expect(route.request().postDataJSON()).toEqual({});
+      attempts++;
+      if (attempts === 1) {
+        await route.fulfill({
+          status: 409,
+          json: { error: "来源仍被锁定，私有修改保留。" },
+        });
+
+        return;
+      }
+
+      current = {
+        ...current,
+        localOverlay: {
+          ...created.localOverlay!,
+          state: "ready",
+          publication: { state: "published", files: 1 },
+        },
+      };
+      await route.fulfill({ json: current });
+    },
+  );
+  await page.goto("/");
+  await page.getByRole("button", { name: created.title, exact: true }).click();
+  await page.getByLabel("任务描述").fill("keep this unsent draft");
+  const button = page.getByRole("button", {
+    name: "恢复已发布批次的私有视图",
+    exact: true,
+  });
+  expect(attempts).toBe(0);
+  await button.click();
+  await expect(page.getByRole("alert")).toContainText("来源仍被锁定");
+  await button.click();
+  await expect(page.getByText(/所选源码已发布/)).toBeVisible();
+  await expect(button).toHaveCount(0);
+  await expect(page.getByLabel("任务描述")).toContainText(
+    "keep this unsent draft",
+  );
+  expect(submitted).toBe(false);
+  await page.screenshot({
+    path: "test-results/local-private-refresh.png",
+    fullPage: true,
+  });
+});
 
 test("shows interrupted bytes as reference and explicitly continues in a fresh session", async ({
   page,

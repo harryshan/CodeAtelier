@@ -1,5 +1,7 @@
 # 测试约定与功能覆盖
 
+Local 完成态私有刷新：`local-overlay-private-refresh.test.ts` 使用真实 Publisher/SQLite 和假挂载验证持久排空资格、服务重建、来源后续修改保留、缺证明/选集不匹配/并发拒绝、关闭未知留锁、服务关闭取消排空和历史投影稳定。HTTP 覆盖鉴权/CSRF、空参数、创建能力门禁、受控错误及无自动任务；浏览器覆盖显式请求、失败重试、状态回读和草稿保留。手动 `pnpm exec tsx scripts/verify-local-private-refresh.ts` 使用真实 WinFsp，在确认前/后丢失回执两种场景重建 Service 并恢复，验证未选文件保留和下一任务可继续；排空与候选回调来自可信宿主夹具，不代表 Sandbox/崩溃验收，不进入默认 check 或 Evaluation。
+
 Local 缺失依赖：`pnpm overlay:verify-missing` 为手动真实 WinFsp 回归，覆盖稳定缺失/父项、来源新增、首次观察保留、编辑前保护、`.git` 与 private whiteout 区分，以及候选卸载后和主任务导出后的发布前拒绝。原生 `-VerifyImport` 另覆盖重挂载、内部 probe、共享拒绝、观察失败 poison；不进入默认 check 或 Evaluation。工程读集/性能与真实 Sandbox 并行链路另外复测，不能用这些用例证明目录列表或外部依赖完整性。
 
 Local 工程 Sandbox：手动 `pnpm overlay:verify-build --sandbox` 走生产候选命令执行器、Broker 与已安装 Runtime；`--sandbox --emit` 另校验后端产物路径集合/非空和所有 JS 与宿主参考字节一致。宿主参考产物只写 TEMP，候选产物在私有视图；断言实际专用账户终态、零活动租约、来源无产物与正常候选回收，保留原生计数/输出/trace。source map 只验证存在且非空，不校验正文；不运行生成的服务、Vite/原生构建、模型或 Evaluation。该入口沿用首次自检账户恢复，须无其它 Sandbox 任务；不安装/Repair、不加入默认检查。

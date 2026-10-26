@@ -1,0 +1,87 @@
+{
+  "scope": "Windows product recovery for complete publication with clean private refresh pending",
+  "native": {
+    "artifact": ".local/local-private-refresh-NUWm4f/report.json",
+    "log": ".local/local-private-refresh-native.log",
+    "result": {
+      "timestamp": "2026-10-26T06:26:35.72Z",
+      "passed": true,
+      "results": [
+        {
+          "afterAcknowledgement": false,
+          "passed": true,
+          "freshSource": true,
+          "privateFileRetained": true,
+          "newTaskAllowed": true
+        },
+        {
+          "afterAcknowledgement": true,
+          "passed": true,
+          "freshSource": true,
+          "privateFileRetained": true,
+          "newTaskAllowed": true
+        }
+      ],
+      "limitations": [
+        "Real clean WinFsp shutdown with injected lost acknowledgement, not a process crash",
+        "Trusted host validation and drain declaration, not installed Sandbox or model",
+        "No dirty-volume or stale recovery-guard reclamation"
+      ]
+    }
+  },
+  "check": {
+    "passed": true,
+    "log": ".local/local-private-refresh-check-final.log",
+    "files": 156,
+    "passedTests": 1243,
+    "skippedTests": 1
+  },
+  "e2e": {
+    "passed": true,
+    "log": ".local/local-private-refresh-e2e.log",
+    "passedTests": 77,
+    "screenshot": "test-results/local-private-refresh.png"
+  },
+  "sandboxRegression": {
+    "artifact": ".local/local-overlay-sandbox-WvGnhj/report.json",
+    "log": ".local/local-private-refresh-sandbox.log",
+    "result": {
+      "timestamp": "2026-10-26T06:37:24.35Z",
+      "platform": "win32",
+      "node": "v26.10.0",
+      "backend": "Local WinFsp + installed dedicated-account Runtime",
+      "registration": "production LocalOverlayService internal Engine lifecycle; no registration overrides",
+      "parallelRuntimeCommands": "passed",
+      "commandIntervals": {
+        "A": [1792996606307, 1792996608582],
+        "B": [1792996606310, 1792996608582]
+      },
+      "sourceAbsoluteWrite": "denied",
+      "gitMetadataCreation": "denied",
+      "sourceGitWriteRootsGranted": 0,
+      "privateWrites": "independent",
+      "cancelRunningCommand": "candidate Runtime drained",
+      "remountAndContinue": "both sessions passed after Engine recreation",
+      "epochs": {
+        "A": 5,
+        "B": 2
+      },
+      "publication": "two batches each selected an independent file and shared.txt; all three source files published; cancelled selection retained",
+      "rejection": "candidate failure and source conflict preserved; both private results survived restart",
+      "selection": "model local_publish tool through authenticated Runtime IPC",
+      "validation": "production Engine command plan and candidate Runtime; ordered success, exit rejection and cancellation",
+      "sharedFileMerge": {
+        "baseline": "left\nmiddle\nright\n",
+        "candidates": ["left-A\nmiddle\nright\n", "left-A\nmiddle\nright-B\n"],
+        "published": "left-A\nmiddle\nright-B\n"
+      },
+      "fallback": false,
+      "activeLeasesAfterTasks": 0,
+      "cleanup": "engine drained; helpers cleanly stopped",
+      "limitations": [
+        "Not an OS security boundary between sessions",
+        "Public UI/API creation not exercised by this verifier; fixed provider, not a real model evaluation"
+      ]
+    }
+  }
+}

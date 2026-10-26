@@ -1,5 +1,15 @@
 # 初版验证记录
 
+## Local 完成态私有刷新产品恢复（2026-10-26）
+
+- 新增显式 `local-refresh` HTTP/UI 入口：任务排空、来源发布完成但刷新待确认、挂载关闭成功后，服务保存绑定 task/batch 的恢复资格。正常重挂载并冻结后复用原私有检查点/收据协议，不运行模型、旧任务或源码发布；完成并卸载后原会话恢复 ready。独立恢复锁和原任务锁保护操作，旧记录缺证明、dirty 卷和恢复自身未知状态继续保留。
+- 手动 `pnpm exec tsx scripts/verify-local-private-refresh.ts` 真实 WinFsp 验证通过（`.local/local-private-refresh-native.log`）：确认前失败、确认已执行但回执丢失两种场景，服务重建后明确恢复，来源后续外部修改保持不变；下一任务读取新来源和未选私有文件，未选文件未进入主目录。详见 [报告](local-private-refresh-results.json)。这是可信宿主回调与排空声明，不代替安装态 Sandbox、真实进程崩溃或断电恢复。
+- `local-overlay-private-refresh.test.ts` 覆盖跨服务实例恢复、关闭未知不保存资格、任务/选集不匹配、恢复并发、未知关闭留锁、服务关闭取消排空及操作中历史投影稳定。HTTP 验证鉴权/CSRF、空参数、能力门禁、受控错误和无自动任务；底层 13 项检查点/收据回归继续通过。
+- 最终 `pnpm check` 通过（`.local/local-private-refresh-check-final.log`）：156 个测试文件、1,243 项通过、1 项既有跳过，类型、Lint、格式、构建通过。首次完整检查仅发现路由排版，格式化后重跑通过；无权限/IPC/安装态变更，没有执行 Evaluation。
+- 完整 `pnpm test:e2e` 77 项通过（`.local/local-private-refresh-e2e.log`）；已查看 `test-results/local-private-refresh.png`，状态更新为已发布、恢复按钮收起、原草稿仍在。新入口的浏览器用例使用合成 HTTP/SSE，不能替代真实 WinFsp/安装态一体化故障验证。
+- `pnpm overlay:verify-sandbox --commands --merge` 正常链路回归通过（`.local/local-private-refresh-sandbox.log`、`.local/local-overlay-sandbox-WvGnhj/report.json`）：双 Runtime 并行、同文件合并、候选验证、失败/冲突/取消保留及续聊正常，无 fallback、零活动租约、无 helper 残留。这项回归不注入新刷新故障；与宿主刷新专项分别计证。
+- 自审区分正常失败可重试与收尾未知保留锁；恢复 UI 在进行中保持组件稳定，防止历史刷新取消自身请求。此增量不接管遗留恢复锁，不解决任意 dirty 卷、完整依赖或 POSIX；这些仍在原 goal 内。
+
 ## Local 中断参考真实浏览器与 Sandbox 闭环（2026-10-26）
 
 - `pnpm overlay:verify-browser --interrupted` 通过：[汇总报告](local-overlay-interrupted-browser-results.json)，原始现场 `.local/local-overlay-browser-HV2gql/report.json`。Chromium 通过生产 HTTP/SSE、真实 WinFsp 和已安装 IPC v18 Runtime 完成检查、新参考会话、明确重新编辑、候选验证及所选源码发布，无路由拦截或宿主 fallback。夹具服务重启后历史与发布结果仍在。

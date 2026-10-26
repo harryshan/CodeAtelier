@@ -13,6 +13,7 @@
  *    release-complete 仅释放有原生退出证明的完整批次来源锁，不能重放写入或影响后来发布者。
  * 10. reviewInterrupted 不取得或删除旧服务锁；原生离线租约证明旧 helper/owner 退出，只读取选定中断参考。
  * 11. 同清单 read/save 只在短 I/O 期间排队，避免 Windows 读句柄阻止 rename；不重试发布或改变磁盘锁语义。
+ * 12. recoverPrivateRefresh 仅恢复有任务排空/关闭凭据的 complete 刷新；独立恢复锁保护原任务锁，失败不重写来源。
  * 公开创建由 HTTP 单独检查平台/Sandbox 能力，不迁移旧历史；来源写入只由冻结租约内的协调器执行。
  */
 import { randomUUID } from "node:crypto";
@@ -49,6 +50,7 @@ import {
 } from "./publication/files.js";
 import { Publisher } from "./publication/publisher.js";
 import { ManifestQueue } from "./manifest-queue.js";
+import { PublishError } from "./publication/merge.js";
 import {
   inspectInterruptedFiles,
   type InterruptedReview,
@@ -79,6 +81,7 @@ const recordSchema = z.object({
   capturedPaths: z.number().int().nonnegative().optional(),
   publication: publicationStateSchema.optional(),
   resolution: resolutionOriginSchema.optional(),
+  refreshRecovery: z.object({ taskId: z.uuid(), batchId: z.uuid() }).optional(),
 });
 export type LocalOverlayRecord = z.infer<typeof recordSchema>;
 export interface LocalOverlayLease {
@@ -262,6 +265,16 @@ export class LocalOverlayService {
     }
 
     const record = await this.read(id);
+    await lstat(path.join(this.root, `${id}.refresh.lock`)).then(
+      () => {
+        throw new Error("Local overlay 刷新仍在进行或结果未知。");
+      },
+      (error: NodeJS.ErrnoException) => {
+        if (error.code !== "ENOENT") {
+          throw error;
+        }
+      },
+    );
     if (
       (record.phase !== "ready" &&
         !(record.phase === "active" && this.active.has(id))) ||
@@ -281,6 +294,158 @@ export class LocalOverlayService {
 
   async projectWorkspace(workspace: string) {
     return (await this.validate(workspace))?.source;
+  }
+
+  recoverPrivateRefresh(
+    workspace: string,
+    sessionId: string,
+    signal: AbortSignal,
+  ) {
+    const work = this.recoverPrivateRefreshSerial(
+      workspace,
+      sessionId,
+      AbortSignal.any([signal, this.creation.signal]),
+    );
+    this.creating.add(work);
+    void work.finally(() => this.creating.delete(work)).catch(() => {});
+
+    return work;
+  }
+
+  private async recoverPrivateRefreshSerial(
+    workspace: string,
+    sessionId: string,
+    signal: AbortSignal,
+  ) {
+    signal.throwIfAborted();
+    const id = this.backend.idFor(workspace);
+    if (!id || this.active.has(id)) {
+      throw new Error("私有刷新需要非活动 Local 视图。");
+    }
+
+    return this.observe(id, "recover_private_refresh", async () => {
+      const record = await this.read(id);
+      if (
+        record.sessionId !== sessionId ||
+        record.phase !== "failed" ||
+        !record.refreshRecovery ||
+        record.refreshRecovery.taskId !== record.taskId ||
+        record.refreshRecovery.batchId !== record.publication?.batchId ||
+        !record.controlIdentity ||
+        !record.workspaceIdentity ||
+        (await directoryIdentity(record.source)) !== record.sourceIdentity ||
+        (await directoryIdentity(this.control(id))) !== record.controlIdentity
+      ) {
+        throw new Error("缺少匹配的排空、批次或目录证明，不能恢复私有刷新。");
+      }
+
+      const guard = path.join(this.root, `${id}.refresh.lock`);
+      const handle = await open(guard, "wx", 0o600);
+      await handle.close();
+      let mount: LocalOverlayMount | undefined;
+      let releaseGuard = true;
+      this.active.add(id);
+      try {
+        const lock = path.join(this.root, `${id}.lock`);
+        const held = await lstat(lock);
+        if (
+          !held.isFile() ||
+          held.isSymbolicLink() ||
+          held.nlink !== 1 ||
+          held.size !== 0 ||
+          JSON.stringify(await this.read(id)) !== JSON.stringify(record)
+        ) {
+          throw new Error("原任务锁或清单改变。");
+        }
+
+        const publisher = new Publisher(
+          path.join(this.root, "publications"),
+          this.log,
+        );
+        const { journal } = await publisher.recordedJournal(
+          await sourceIdentity(record.source),
+          record.refreshRecovery.batchId,
+        );
+        const selected = new Set(
+          record.publication!.paths.map((file) => file.toLowerCase()),
+        );
+        if (
+          journal.state !== "complete" ||
+          !journal.refresh ||
+          journal.batch.changes.some(
+            (file) => !selected.has(file.path.toLowerCase()),
+          )
+        ) {
+          throw new Error("来源发布尚未完成或日志不属于本次选择。");
+        }
+
+        signal.throwIfAborted();
+        // From here an unconfirmed mount/close keeps the recovery guard. The
+        // original task lock remains until both refresh and shutdown are proven.
+        releaseGuard = false;
+        mount = await this.backend.open(
+          id,
+          record.source,
+          this.control(id),
+          false,
+          signal,
+        );
+        if (
+          !mount.recoverRefresh ||
+          (await mount.identity()) !== record.workspaceIdentity
+        ) {
+          throw new Error("私有卷身份或刷新能力无法确认。");
+        }
+
+        const result = await mount.recoverRefresh(journal.batch, signal);
+        await mount.close();
+        mount = undefined;
+        releaseGuard = true;
+        signal.throwIfAborted();
+        const current = await lstat(lock);
+        if (
+          current.dev !== held.dev ||
+          current.ino !== held.ino ||
+          current.size !== 0 ||
+          JSON.stringify(await this.read(id)) !== JSON.stringify(record)
+        ) {
+          throw new Error("刷新收尾时原任务锁或清单改变。");
+        }
+
+        // Never leave a reusable view if deleting the old lock or persisting its
+        // final state is unknown. A retained recovery guard also gates admission.
+        releaseGuard = false;
+        await unlink(lock);
+        record.phase = "ready";
+        record.epoch = result.epoch;
+        record.outcome = "completed";
+        record.publication = {
+          ...record.publication!,
+          state: "published",
+          files: journal.entries.length,
+          cleanupPending: journal.entries.filter(
+            (entry) => entry.backup && !entry.backup.cleaned,
+          ).length,
+        };
+        record.refreshRecovery = undefined;
+        await this.save(record);
+        releaseGuard = true;
+
+        return { recovered: true as const };
+      } finally {
+        try {
+          if (mount) {
+            await mount.close();
+            releaseGuard = true;
+          }
+        } finally {
+          this.active.delete(id);
+          if (releaseGuard) {
+            await unlink(guard);
+          }
+        }
+      }
+    });
   }
 
   publicationRecovery(
@@ -570,6 +735,9 @@ export class LocalOverlayService {
           projectWorkspace: record.source,
           state: record.phase,
           epoch: record.epoch,
+          ...(record.phase === "failed" && record.refreshRecovery
+            ? { privateRefreshRecovery: true }
+            : {}),
           ...(["failed", "active"].includes(record.phase) &&
           !this.active.has(id)
             ? { interruptedReview: true }
@@ -889,6 +1057,7 @@ export class LocalOverlayService {
         record.phase = "active";
         record.taskId = taskId;
         record.publication = undefined;
+        record.refreshRecovery = undefined;
         await this.save(record);
         let mount: LocalOverlayMount | undefined;
         try {
@@ -976,7 +1145,24 @@ export class LocalOverlayService {
                 } catch (error) {
                   record.phase = "failed";
                   await this.save(record).catch(() => {});
-                  await current.close().catch(() => {});
+                  try {
+                    await current.close();
+                    if (
+                      drained &&
+                      error instanceof PublishError &&
+                      error.code === "VIEW_REFRESH_PENDING" &&
+                      record.publication?.batchId
+                    ) {
+                      record.refreshRecovery = {
+                        taskId,
+                        batchId: record.publication.batchId,
+                      };
+                      await this.save(record);
+                    }
+                  } catch {
+                    // No durable proof is added if close or its record is unknown.
+                  }
+
                   throw error;
                 } finally {
                   this.active.delete(record.id);

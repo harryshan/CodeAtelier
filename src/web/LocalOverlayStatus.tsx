@@ -6,21 +6,25 @@
  * 4. 冲突继续会话标明旧材料仅供参考，创建回调交回 App；不直接恢复旧卷或发布文件。
  * 5. 待核查批次提供来源事故入口；清单提示不是原生排空证明，接受也不将私有视图变为可执行。
  * 6. 非活动异常清单可显式检查中断参考；状态键销毁旧结果，不把入口标志当作执行退出证明。
+ * 7. 具备任务排空凭据的已发布批次可显式恢复私有刷新，完成后重读状态，不运行旧任务。
  * 不显示控制路径/内部错误码，不从参考材料推断源码已经应用。
  */
 import type { LocalOverlayInfo, Session } from "../shared/types";
 import { LocalFileReview } from "./LocalFileReview";
 import { LocalPublicationRecovery } from "./LocalPublicationRecovery";
+import { LocalPrivateRefresh } from "./LocalPrivateRefresh";
 import s from "./app.module.css";
 
 export function LocalOverlayStatus({
   info,
   sessionId,
   onCreated,
+  onUpdated,
 }: {
   info: LocalOverlayInfo;
   sessionId: string;
   onCreated: (session: Session) => void;
+  onUpdated: () => void;
 }) {
   let message = "修改保留在本对话的私有视图，尚无源码发布记录。";
   if (
@@ -45,6 +49,13 @@ export function LocalOverlayStatus({
   return (
     <div className={s.localOverlayStatus}>
       <p role="status">{message}</p>
+      {info.privateRefreshRecovery && (
+        <LocalPrivateRefresh
+          key={`${sessionId}:${info.epoch}`}
+          sessionId={sessionId}
+          onUpdated={onUpdated}
+        />
+      )}
       {info.publicationRecovery && (
         <LocalPublicationRecovery
           key={`${sessionId}:${info.epoch}:${info.state}`}

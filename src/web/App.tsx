@@ -747,6 +747,7 @@ export default function App() {
                 <LocalOverlayStatus
                   info={data.session.localOverlay}
                   sessionId={data.session.id}
+                  onUpdated={() => void refreshSession(data.session.id)}
                   onCreated={(session) => {
                     setList((current) => [
                       session,

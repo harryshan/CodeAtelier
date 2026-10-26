@@ -56,6 +56,7 @@ export interface LocalOverlayInfo {
   state: "preparing" | "ready" | "active" | "failed" | "unavailable";
   epoch?: number;
   publicationRecovery?: boolean;
+  privateRefreshRecovery?: boolean;
   interruptedReview?: boolean;
   resolution?: {
     sessionId: string;
