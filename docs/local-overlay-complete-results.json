@@ -1,0 +1,17 @@
+{
+  "timestamp": "2026-10-26T02:50:32.872Z",
+  "passed": true,
+  "checks": [
+    "real publication and refresh complete before lost lease close receipt",
+    "native completed execution proof permits source lock release",
+    "idempotent release preserves later external edits",
+    "private manifest, lock and database unchanged",
+    "old private view blocked; new view publishes successfully",
+    "service drained"
+  ],
+  "limitations": [
+    "host fixture and trusted validator, not model or Sandbox",
+    "no forced process termination or dirty-volume recovery"
+  ],
+  "rawReport": ".local/local-overlay-complete-z0SvYm/report.json"
+}

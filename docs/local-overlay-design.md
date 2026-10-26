@@ -4,6 +4,8 @@
 
 ## 需求与模式
 
+完成态来源锁恢复增量（2026-10-26）：从事故会话绑定的批次和选择读取 complete 日志，页面明确请求后调用既有原生残留锁释放。必须复核来源/控制目录身份、会话未活动、日志完整完成以及原生 generation/锁摘要和旧执行退出证明；缺失证明不解锁。此操作不需要接受部分发布内容，不重写来源或私有层，不变更旧会话清单/私有锁；重试只能处理原批次，不能删除后来发布者的锁。HTTP 沿用鉴权/CSRF/no-store，断线取消；服务沿用恢复生命周期 tracing。手动 `pnpm overlay:verify-complete` 使用已安装 WinFsp 与已构建 helper，在独占夹具中验证完成后丢失租约关闭回执、显式释放及新会话后续发布，见 [报告](local-overlay-complete-results.json)。异常私有卷与完成后私有刷新仍是独立后续项，不能用来源锁已解除代替。
+
 Windows 公开入口的手动验收需要已安装 WinFsp、已构建 overlay helper、IPC v18 Sandbox 和 Chromium。先运行 `pnpm build:test`，再执行 `pnpm overlay:verify-browser`；脚本只在 `.local/local-overlay-browser-*` 建立合成来源、私有设置、临时 HTTP 服务和截图/报告，不连接真实模型，不自动安装依赖。启动沿用生产 Sandbox 账户恢复流程，应在没有其它 Sandbox 任务时运行。它关闭/重建的仅是自身夹具服务，未改变产品默认创建模式。
 
 公开入口实施增量：在保留现有默认 Riftri/显式 Worktree 的同时，新增显式“隔离 Local”创建。HTTP 请求携带 `localOverlay:{id}`，与其它创建模式互斥，无 commit/branch；来源可以是普通非 Git 目录。首批公开创建、启动和恢复只接受 Windows 且 Sandbox 已启用，helper/驱动/运行时仍按真实启动验证，失败不自动改用其它模式。会话列表、快照及历史分页都返回单独的 Local overlay 元数据并按来源项目归组；错误清单仍可查看历史，不能把失效卷降格成普通目录。任务要求 Sandbox 时，Local 的启动失败不转宿主执行。真实 IPC v18 链路和公开浏览器/HTTP/SSE 已分别实机验证：独立夹具完成双会话创建、并行编辑、选择发布、冲突检查和参考继续，见 [浏览器报告](local-overlay-browser-results.json)。固定 provider 不证明真实模型表现或任意工程构建；异常卷与 POSIX 仍须独立完成。
@@ -187,17 +189,17 @@ v5 没有完整私有读传递记录，不能猜测迁移或把缺失依赖当�
 
 ### 来源发布事故的产品入口与残留锁边界
 
-产品来源事故恢复增量（2026-10-26）：会话只提交自身 ID 和检查 token，由服务从持久清单的来源身份、发布 batch ID 和明确路径集定位有界 journal，不接受客户端提供来源或批次正文。对非本进程活动的 failed/active 会话，使用已有原生发布检查租约证明旧来源执行退出，提供逐文件发布前/拟发布/当前内容及版本绑定审核；用户明确接受后仅保存 reconciled 决定并释放该次来源协调锁。不补写/回滚来源，不解除会话私有锁或改为 ready；空会话锁、clean 标志与单独 PID 都不足以证明任务排空。该入口无需启动 Sandbox，但仍要求原生执行证明，旧/坏日志拒绝。已完成日志只报告确认状态，完成态刷新及异常私有卷恢复另行接线。服务关闭等待在途检查/接受，HTTP 鉴权/CSRF/no-store 不变，正文仅按需纯文本展示，沿用来源恢复和服务生命周期 tracing。发布前/拟发布/当前内容合计最多 16 MiB，读取时逐项限制，不扫描来源。
+产品来源事故恢复增量（2026-10-26）：会话只提交自身 ID 和检查 token，由服务从持久清单的来源身份、发布 batch ID 和明确路径集定位有界 journal，不接受客户端提供来源或批次正文。对非本进程活动的 failed/active 会话，使用已有原生发布检查租约证明旧来源执行退出，提供逐文件发布前/拟发布/当前内容及版本绑定审核；用户明确接受后仅保存 reconciled 决定并释放该次来源协调锁。不补写/回滚来源，不解除会话私有锁或改为 ready；空会话锁、clean 标志与单独 PID 都不足以证明任务排空。该入口无需启动 Sandbox，但仍要求原生执行证明，旧/坏日志拒绝。已完成日志报告确认状态，并可明确请求释放本批次残留来源锁；完成态私有刷新及异常私有卷恢复另行接线。服务关闭等待在途检查/接受，HTTP 鉴权/CSRF/no-store 不变，正文仅按需纯文本展示，沿用来源恢复和服务生命周期 tracing。发布前/拟发布/当前内容合计最多 16 MiB，读取时逐项限制，不扫描来源。
 
 新原生发布将 v2 协调锁 ID 直接用作执行 generation，并在锁内记录 batch ID。`publicationClaim` 只提供待核查的原生锁身份，不宣称执行已停止。`releaseUnstartedLock` 要求匹配的原生租约证明旧执行排空、明确记录尚未开始来源写入、且对应 journal 确实不存在；任何现存 journal（包括损坏文件）都不走此路径。原生执行记录 v2 在第一次替换/新建/删除/备份清理前 flush `mutated`，因此后来删除 journal 不能抹掉写入证据。旧 v1 记录按可能写入处理，旧 helper 缺少该字段时不默认 false。Local 文件视图数据库仍为 v5，没有迁移私有文件。
 
-公开入口：有待核查批次的会话可展开“核查来源发布事故”。`POST /api/sessions/:id/local-publication-review` 接收 `{}`，未知事故返回带 token 的现场，complete 只返回日志确认状态，reconciled 返回已持久决定供幂等重试；`POST /api/sessions/:id/local-publication-accept` 只接收 `{token}`。不接受 source/batchId/控制路径。当前服务仍活动的任务拒绝；来源锁只在原生排空证明下释放，接受不重放批次、改写来源或释放私有视图锁。刷新页面后可重新读取已记录决定。断线取消但未知接受结果仍须重试同一 token；不把网络失败当成决定未落盘。没有记录的批次、损坏日志和复杂/超限现场保留，不按来源扫描猜测归属。
+公开入口：有待核查批次的会话可展开“核查来源发布事故”。`POST /api/sessions/:id/local-publication-review` 接收 `{}`，未知事故返回带 token 的现场，complete 只返回日志确认状态，reconciled 返回已持久决定供幂等重试；`POST /api/sessions/:id/local-publication-accept` 只接收 `{token}`；`POST /api/sessions/:id/local-publication-release-complete` 接收 `{}`，仅针对 complete 批次复核原生证明后释放来源锁。不接受 source/batchId/控制路径。当前服务仍活动的任务拒绝；来源锁只在原生排空证明下释放，接受不重放批次、改写来源或释放私有视图锁。刷新页面后可重新读取已记录决定。断线取消但未知接受结果仍须重试同一 token；不把网络失败当成决定未落盘。没有记录的批次、损坏日志和复杂/超限现场保留，不按来源扫描猜测归属。
 
 手动 `pnpm overlay:verify-incident` 使用独占 NTFS 来源与真实 LocalOverlayService/WinFsp/Publisher，在候选阶段用本脚本只读共享句柄占用第二个来源文件，制造首文件写入后第二写失败；验证陈旧 token 拒绝、明确接受保留部分发布和外部修改、原私有清单/锁/数据库不变，并让新 Local 会话发布独立文件。它不运行模型或 Sandbox、不修改安装态、不进入默认 check/Evaluation；[报告摘要](local-overlay-incident-results.json) 的范围仅为该宿主夹具。
 
 `releaseCompletedLock` 核对 complete journal、执行 generation 与原锁摘要后只释放协调锁；不改来源完成态、文件、私有编辑或视图 pending 确认。两条路径都在原生排他内再次检查前提，先保存恢复决定，再由原生按句柄释放固定锁。缺失锁可重复调用，旧锁身份不能删除新所有者的锁，恢复 trace 不包含路径、正文或版本摘要。
 
-`pnpm overlay:verify-residual` 在真实宿主子进程中分别于原生 ready 后、Publisher 结束执行租约前直接退出，验证无 journal/complete 两种残留锁；错误锁 ID、损坏 journal、原生已写但 journal 被删除均拒绝，恢复后新批次可以继续。来源后续修改和完整 journal 保留。结果见 [残留锁恢复报告](local-overlay-residual-results.json)。尚未建立匹配执行记录、记录损坏、未知私有卷及产品 UI 的恢复仍未完成；不根据单独 PID 或文件缺失推断安全。
+`pnpm overlay:verify-residual` 在真实宿主子进程中分别于原生 ready 后、Publisher 结束执行租约前直接退出，验证无 journal/complete 两种残留锁；错误锁 ID、损坏 journal、原生已写但 journal 被删除均拒绝，恢复后新批次可以继续。来源后续修改和完整 journal 保留。结果见 [残留锁恢复报告](local-overlay-residual-results.json)。完成态来源锁已接入产品 UI；未开始批次、尚未建立匹配执行记录、记录损坏及未知私有卷的产品恢复仍未完成；不根据单独 PID 或文件缺失推断安全。
 
 ### 完整发布流程与后续产品接入
 

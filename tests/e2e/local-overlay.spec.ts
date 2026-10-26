@@ -5,6 +5,7 @@
  * 3. 批量检查按文件展开纯文本 B/O/T 和预览，错误保留输入，改路径取消旧结果；不把模拟响应当真实发布证明。
  * 4. 显式创建冲突继续对话，失败保留固定请求重试，显示参考状态且仅预填任务，不自动提交。
  * 5. 来源事故检查/接受使用固定 token，未知结果重试；接受后原私有视图仍禁用，完成态和已记录决定分开提示。
+ *    完成态只允许明确释放该批次来源锁，失败可重试；不提交任务或重新接受部分发布现场。
  * 页面和请求代码为生产实现；真实挂载/权限/发布链路另由手动 WinFsp 验证证明。
  */
 import { expect, test } from "@playwright/test";
@@ -83,6 +84,19 @@ test("reviews a publication incident and accepts only that source decision witho
     },
   );
   let taskStarted = false;
+  let completedReleases = 0;
+  await page.route(
+    "**/api/sessions/local-overlay-ui/local-publication-release-complete",
+    async (route) => {
+      completedReleases++;
+      expect(route.request().postDataJSON()).toEqual({});
+      await route.fulfill(
+        completedReleases === 1
+          ? { status: 409, json: { error: "完成态解锁未确认" } }
+          : { json: { kind: "complete-lock", released: true } },
+      );
+    },
+  );
   await page.route("**/api/sessions/local-overlay-ui/tasks", async (route) => {
     taskStarted = true;
     await route.abort();
@@ -129,6 +143,23 @@ test("reviews a publication incident and accepts only that source decision witho
     "尚未确认",
   );
   await expect(accept).toHaveCount(0);
+  expect(completedReleases).toBe(0);
+  const releaseComplete = page.getByRole("button", {
+    name: "解除已完成批次的来源阻塞",
+    exact: true,
+  });
+  await releaseComplete.click();
+  await expect(page.getByRole("alert")).toContainText("完成态解锁未确认");
+  await releaseComplete.click();
+  await expect(page.getByText(/本批次残留来源锁已解除/)).toContainText(
+    "原私有视图仍保留",
+  );
+  await expect(page.getByRole("button", { name: "开始执行" })).toBeDisabled();
+  await page.screenshot({
+    path: "test-results/local-overlay-complete-lock.png",
+    fullPage: true,
+  });
+  expect(completedReleases).toBe(2);
   expect(taskStarted).toBe(false);
 });
 

@@ -3,6 +3,7 @@
  * 1. 显式请求后按文件展开发布前/拟发布/当前内容；不自动检查、接受或执行源码。
  * 2. 接受始终使用原检查 token，未知结果可重试；已记录决定只提供继续解锁，不重新定义现场。
  * 3. 成功只说明该次来源阻塞已处理，原私有视图仍需核查；complete 不伪装成可接受的 unknown。
+ *    complete 可显式释放本批次残留来源锁，服务复核原生退出证明；不改变原会话可执行状态。
  * 4. 卸载取消在途请求且丢弃晚到响应；正文不进 URL/本地存储，不自动启动任务或刷新私有层。
  */
 import { useEffect, useRef, useState } from "react";
@@ -49,7 +50,7 @@ export function LocalPublicationRecovery({ sessionId }: { sessionId: string }) {
   const request = useRef<AbortController | undefined>(undefined);
   useEffect(() => () => request.current?.abort(), []);
 
-  const run = async (token?: string) => {
+  const run = async (token?: string, releaseComplete = false) => {
     request.current?.abort();
     const abort = new AbortController();
     request.current = abort;
@@ -57,7 +58,7 @@ export function LocalPublicationRecovery({ sessionId }: { sessionId: string }) {
     setError("");
     try {
       const response = await api<Result>(
-        `/sessions/${sessionId}/local-publication-${token ? "accept" : "review"}`,
+        `/sessions/${sessionId}/local-publication-${releaseComplete ? "release-complete" : token ? "accept" : "review"}`,
         token ? { token } : {},
         "POST",
         false,
@@ -98,10 +99,27 @@ export function LocalPublicationRecovery({ sessionId }: { sessionId: string }) {
         </section>
       )}
       {result?.kind === "complete" && (
+        <>
+          <p role="status">
+            日志已记录来源发布完成，私有视图确认
+            {result.refresh === "confirmed" ? "已记录" : "尚未确认"}
+            。此入口不恢复私有视图，请保留现场。
+          </p>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void run(undefined, true)}
+          >
+            解除已完成批次的来源阻塞
+          </button>
+        </>
+      )}
+      {result?.kind === "complete-lock" && (
         <p role="status">
-          日志已记录来源发布完成，私有视图确认
-          {result.refresh === "confirmed" ? "已记录" : "尚未确认"}
-          。此入口不恢复私有视图，请保留现场。
+          {result.released
+            ? "本批次残留来源锁已解除。"
+            : "当前没有属于本批次的来源锁；其它发布者的锁未改动。"}
+          未补写或回滚文件，原私有视图仍保留且不可直接继续任务。
         </p>
       )}
       {result?.kind === "decision" && (

@@ -1,5 +1,13 @@
 # 初版验证记录
 
+## Local 完成态来源锁的产品恢复（2026-10-26）
+
+- Service/HTTP/UI 增加明确释放 complete 批次来源锁的动作。绑定持久会话、批次、选集和目录身份，原生检查租约证明旧发布停止；不是接受 unknown，也不删除私有锁、重新发布或把事故卷改为 ready。
+- 回归先确认公开路由缺失（`.local/local-complete-before.log`），随后 HTTP/Service 专项 10 项通过；覆盖拒绝未知批次/缺失证明、失败重试、鉴权/请求边界、新发布者锁不受旧请求影响、私有现场和外部后续修改不变。原生排他在单测中使用替身，不作为系统退出证据。
+- 真实 `pnpm overlay:verify-complete` 通过（`.local/local-complete-native.log`、[报告](local-overlay-complete-results.json)）：来源发布和私有确认成功、原生租约正常关闭后注入回执丢失，生产 Service 保留 failed 现场。显式解锁及重复请求通过，清单/私有锁/数据库字节保持不变，新 Local 视图可发布独立文件；来源外部后续编辑保留。这是宿主可信验证夹具，不是强杀、断电、Sandbox 或异常私有卷恢复验证。
+- `pnpm check` 通过（`.local/local-complete-check.log`）：150 个测试文件、1206 项通过 / 1 项既有跳过，类型、Lint、格式和构建成功。首次检查仅发现三处段落空行，修正后完整通过。自审核对批次绑定、来源/私有恢复分界、原生锁摘要、重复及晚到请求和服务关闭排空；无新增权限或默认模式变化。
+- 完整 `pnpm test:e2e` 75 项通过（`.local/local-complete-e2e.log`）；已检查 `test-results/local-overlay-complete-lock.png`，完成态解锁提示与禁用的原任务入口显示正常。没有运行 Evaluation 或重启实际服务，无 overlay helper 残留。
+
 ## Local 公开浏览器与安装态完整链路（2026-10-26）
 
 - 新增手动 `pnpm overlay:verify-browser`：私有 v1 设置启用 Sandbox，生产 createApp 绑定临时回环端口；Chromium 通过真实弹窗、HTTP、SSE 与任务输入创建和执行，无 route/mock 挂载或 Runtime 替身。只有模型 provider 使用固定响应和明确的占位 key，不访问真实模型或个人配置。

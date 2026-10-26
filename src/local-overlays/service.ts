@@ -10,6 +10,7 @@
  * 7. review/reviewBatch 在 ready 视图锁内读取单文件/有界整组 B/O/T，不挂载或更改清单；关闭时取消并等待检查排空。
  * 8. continueResolution 用已审核版本建立新视图及参考材料，固定请求重试绑定父会话；不修改旧视图或清空依赖。
  * 9. publicationRecovery 从非本进程活动会话定位发布事故，原生来源租约控制审核/接受；不取得或删除私有视图残留锁，不把失败卷改为 ready。
+ *    release-complete 仅释放有原生退出证明的完整批次来源锁，不能重放写入或影响后来发布者。
  * 公开创建由 HTTP 单独检查平台/Sandbox 能力，不迁移旧历史；来源写入只由冻结租约内的协调器执行。
  */
 import { randomUUID } from "node:crypto";
@@ -269,7 +270,7 @@ export class LocalOverlayService {
   publicationRecovery(
     workspace: string,
     sessionId: string,
-    token?: string,
+    token?: string | { action: "release-complete" },
     signal = new AbortController().signal,
   ) {
     const work = this.recoverPublication(
@@ -287,7 +288,7 @@ export class LocalOverlayService {
   private async recoverPublication(
     workspace: string,
     sessionId: string,
-    token: string | undefined,
+    token: string | { action: "release-complete" } | undefined,
     signal: AbortSignal,
   ) {
     signal.throwIfAborted();
@@ -298,7 +299,11 @@ export class LocalOverlayService {
 
     return this.observe(
       id,
-      token === undefined ? "publication_review" : "publication_accept",
+      token === undefined
+        ? "publication_review"
+        : typeof token === "string"
+          ? "publication_accept"
+          : "publication_release_complete",
       async () => {
         const record = await this.read(id);
         if (
@@ -339,7 +344,22 @@ export class LocalOverlayService {
           throw new Error("发布恢复期间会话状态改变。");
         }
 
-        if (token !== undefined) {
+        if (typeof token === "object") {
+          // This proof belongs only to the source publisher. It says nothing
+          // about private Runtime descendants; never remove the view lock here.
+          if (journal.state !== "complete") {
+            throw new Error("发布尚未完整完成，不能释放完成态来源锁。");
+          }
+
+          const result = await publisher.releaseCompletedLock(
+            journal.batch,
+            signal,
+          );
+
+          return { kind: "complete-lock" as const, released: result.released };
+        }
+
+        if (typeof token === "string") {
           return publisher.acceptUnknown(journal.batch, token, signal);
         }
 

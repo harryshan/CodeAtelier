@@ -6,7 +6,7 @@
  * 不执行冲突解决或发布；生命周期 tracing 由服务负责，路由不向历史 task 追加事件。
  * 4. local-resolution 显式建立新 Local 对话及已审核参考，不自动启动任务；固定 UUID 重试复用创建结果，沿用创建能力门禁。
  * 5. path 保留旧单文件响应；paths 使用整组版本，最多 100 项，任一材料失败即拒绝整组。
- * 6. publication-review/accept 只接收空请求或检查 token；从会话定位事故，断线取消，不启动任务或恢复私有视图。
+ * 6. publication-review/accept/release-complete 只接收空请求或检查 token；从会话定位事故，断线取消，不启动任务或恢复私有视图。
  */
 import type { HttpServer } from "./http-server.js";
 import { z } from "zod";
@@ -38,7 +38,7 @@ export function registerLocalReviewRoutes(
   store: AsyncStore,
   engine: Engine,
 ) {
-  for (const action of ["review", "accept"] as const) {
+  for (const action of ["review", "accept", "release-complete"] as const) {
     app.post(
       `/api/sessions/:id/local-publication-${action}`,
       async (request, reply) => {
@@ -62,7 +62,11 @@ export function registerLocalReviewRoutes(
           return await engine.localOverlays.publicationRecovery(
             session.workspace,
             session.id,
-            "token" in input ? input.token : undefined,
+            "token" in input
+              ? input.token
+              : action === "release-complete"
+                ? { action }
+                : undefined,
             abort.signal,
           );
         } catch {
@@ -70,7 +74,9 @@ export function registerLocalReviewRoutes(
             error:
               action === "accept"
                 ? "解锁结果未确认或检查已过期。可重试同一接受请求；重新检查不会回滚已记录的决定。原私有修改保留。"
-                : "发布现场暂不能核查：任务可能仍活动、记录不完整、内容超过 16 MiB 或原生执行证明不可用。保留现场，不解除锁。",
+                : action === "release-complete"
+                  ? "完成态解锁未确认：日志可能尚未完成或缺少执行退出证明。可重试本次请求；来源文件和原私有现场保留。"
+                  : "发布现场暂不能核查：任务可能仍活动、记录不完整、内容超过 16 MiB 或原生执行证明不可用。保留现场，不解除锁。",
           });
         } finally {
           reply.raw.off("close", disconnected);

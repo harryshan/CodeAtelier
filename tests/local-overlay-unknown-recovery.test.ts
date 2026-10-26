@@ -4,6 +4,7 @@
  * 2. 仅原生排他适配器使用替身；解锁仍核对真实锁摘要，来源/日志/备份行为用磁盘断言。
  * 3. 覆盖旧日志拒绝、陈旧审核、现场接受不重放、决定后解锁失败重试及新所有者锁保留。
  * 4. 生产 HTTP/Service 从会话定位事故，校验鉴权/来源/批次/选集，接受后保留私有清单与残留锁。
+ * 5. 完成态来源解锁只处理固定批次；无证明/活动任务拒绝，重试不能删除新所有者锁或改变私有现场。
  * PID/创建时间/句柄证据由手动 verify-lease 验证，本套件不替代 OS 执行排他验收。
  */
 import { randomUUID } from "node:crypto";
@@ -423,7 +424,76 @@ it("reports complete without a recovery action and refuses an active service tas
   await expect(
     f.service.publicationRecovery(f.session.workspace, f.session.id),
   ).rejects.toThrow("活动任务");
+  await expect(
+    f.service.publicationRecovery(f.session.workspace, f.session.id, {
+      action: "release-complete",
+    }),
+  ).rejects.toThrow("活动任务");
   await lease!.finish("cancelled", true);
+});
+
+it("releases only a completed session publication through HTTP and retains all private state", async () => {
+  const f = await productFixture();
+  const url = `/api/sessions/${f.session.id}/local-publication-release-complete`;
+  const request = () =>
+    f.app.inject({ method: "POST", url, headers: f.headers, payload: {} });
+  const manifest = await readFile(f.manifest);
+  const privateLock = await readFile(f.viewLock);
+  expect((await request()).statusCode).toBe(409);
+  expect(await readFile(f.lock)).toBeTruthy();
+
+  f.journal.state = "complete";
+  for (const entry of f.journal.entries) {
+    entry.state = "written";
+  }
+
+  await durableJson(f.file, f.journal);
+  await writeFile(path.join(f.source, "a.txt"), "external after completion\n");
+  const journal = await readFile(f.file);
+  delete f.journal.execution;
+  await durableJson(f.file, f.journal);
+  expect((await request()).statusCode).toBe(409);
+  expect(await readFile(f.lock)).toBeTruthy();
+  await writeFile(f.file, journal);
+  const anonymous = await f.app.inject({ method: "POST", url, payload: {} });
+  expect(anonymous.statusCode).not.toBe(200);
+  expect(
+    (
+      await f.app.inject({
+        method: "POST",
+        url,
+        headers: f.headers,
+        payload: { batchId: randomUUID() },
+      })
+    ).statusCode,
+  ).toBe(400);
+  behavior.failRelease = true;
+  expect((await request()).statusCode).toBe(409);
+  expect(await readFile(f.lock)).toBeTruthy();
+  behavior.failRelease = false;
+  const released = await request();
+  expect(released.statusCode).toBe(200);
+  expect(released.headers["cache-control"]).toBe("no-store");
+  expect(released.json()).toEqual({ kind: "complete-lock", released: true });
+  await expect(readFile(f.lock)).rejects.toMatchObject({ code: "ENOENT" });
+  expect((await request()).json()).toEqual({
+    kind: "complete-lock",
+    released: false,
+  });
+  await writeFile(f.lock, "new publisher");
+  expect((await request()).json()).toEqual({
+    kind: "complete-lock",
+    released: false,
+  });
+  expect(await readFile(f.lock, "utf8")).toBe("new publisher");
+  expect(await readFile(f.manifest)).toEqual(manifest);
+  expect(await readFile(f.viewLock)).toEqual(privateLock);
+  expect(await readFile(f.file)).toEqual(journal);
+  expect(await readFile(path.join(f.source, "a.txt"), "utf8")).toBe(
+    "external after completion\n",
+  );
+  expect(f.backend.mounted.size).toBe(0);
+  expect(await f.store.tasks(f.session.id)).toHaveLength(0);
 });
 
 it("keeps oversized incident contents off the public review response and retains recovery evidence", async () => {

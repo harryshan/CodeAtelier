@@ -1,5 +1,7 @@
 # 测试约定与功能覆盖
 
+Local 完成态来源锁（D170）：生产 HTTP/Service 回归覆盖 unknown 拒绝、complete 缺少执行证明、鉴权/请求字段拒绝、失败重试、来源后续修改保留、旧请求不删除新发布者锁以及原清单/私有锁/日志不变。浏览器覆盖显式按钮、失败重试与原会话仍禁用；手动 `pnpm overlay:verify-complete` 使用真实 WinFsp/原生发布与租约，只注入租约正常关闭后的回执丢失，验证解锁后新视图发布。该脚本只操作 `.local/local-overlay-complete-*`，不安装/Repair、不运行 Sandbox 或 Evaluation，不加入默认检查。
+
 Local 公开实机闭环（D170）：手动 `pnpm overlay:verify-browser` 用独立 v1 配置与临时回环端口运行生产 App，Chromium 不拦截 HTTP/SSE；固定 provider 是唯一模型替身，WinFsp、专用账户 Runtime 和候选发布均为真实实现。覆盖两弹窗创建、并行执行、页面/快照发布状态、来源冲突保留、三方内容检查、新参考会话、草稿保留、无自动任务及夹具服务重启后历史/项目分组。保存截图与结果，失败也关闭自身资源并保留现场；不进默认 check/Evaluation，不安装/Repair 或重启用户服务。
 
 Local 来源事故恢复（D170）：`local-overlay-unknown-recovery.test.ts` 除底层协议外，使用真实 HTTP/Service/日志验证会话与选集归属、鉴权/CSRF/no-store、陈旧 token、决定重试、complete 只报告、活动任务拒绝、内容总预算和接受后私有清单/锁保留；原生排他使用替身，不作为系统进程退出证明。`e2e/local-overlay.spec.ts` 覆盖明确检查、文件按需展开、固定 token 重试、已记录决定/complete 区分，以及接受后非空草稿仍不能启动原视图。手动 `pnpm overlay:verify-incident` 用真实 WinFsp 和生产 Service/Publisher 制造第二写共享句柄失败，验证部分发布、来源外部修改保留、私有现场不变和新会话后续发布；仅宿主夹具，不执行模型/Sandbox 或 Evaluation。
