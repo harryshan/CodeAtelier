@@ -2,6 +2,8 @@
 
 ## 正式构建与启动
 
+命令尾追加 `--restart` 可验证整个应用正常退出后，以同一 data/views 重新启动。探针保留旧 namespace 句柄以避免编号回收干扰比较，并确认旧控制器退出、新 namespace、持久历史及私有层不变，再通过公开 API 在真实 Sandbox 继续旧会话。与 `--review --symlinks` 联用可同时核对后续新参考会话的候选发布与内部依赖编译；这不验证崩溃、断电或未知挂载恢复。
+
 helper 已迁入 `native/linux-local-overlay/readonly-lower.cpp`，使用 `pnpm overlay:build-linux` 显式构建；产品通过 `pnpm start:overlay --data-dir ... --views ...` 启动，见 [原生组件说明](../../native/linux-local-overlay/README.md)。
 
 `startup-probe.mjs` 不注入 Engine/Runtime：将当前构建产物装配到独占 Linux 夹具，用已有 Linux MXC 安装和其余 JS 依赖启动正式入口。模型由本脚本的回环 Responses HTTP/SSE 固定计划替代；公开 HTTP 创建双会话，真实 Sandbox 并行执行及候选验证，检查合并源码/私有产物并通过公开关闭 API 正常退出。需要先 `pnpm build` 和 Linux helper 构建。示例在 Linux shell 执行，Node 和 SDK 路径须为已准备的 Linux 版本：

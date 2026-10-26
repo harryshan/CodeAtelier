@@ -7,6 +7,7 @@
  * 4. 核对真实 Runtime/候选、来源合并、私有产物，重载服务后继续原会话读取，再正常退出并保留报告。
  *    --typescript 另准备真实编译器/类型库与硬链接依赖；--symlinks 通过内部包链接和 bin 链运行，产物保持私有。
  *    --review 再检查普通/空/删除文件并创建参考会话，在新 Sandbox 中读取参考、重新编辑和发布。
+ *    --restart 在正常重载/续聊后关闭整个启动树，再以原 data/views 启动，验证新 namespace 中的持久历史与私有内容。
  * 5. finally 仅关闭本脚本服务/子进程；不安装依赖、不修改用户设置、不重启现有服务或运行 Evaluation。
  */
 import assert from "node:assert/strict";
@@ -27,6 +28,7 @@ import { createServer } from "node:http";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { verifyNormalRestart } from "./startup-restart.mjs";
 
 assert.equal(process.platform, "linux");
 const [root, linuxSdk] = process.argv.slice(2);
@@ -43,10 +45,12 @@ await mkdir(source);
 await writeFile(path.join(source, "module.py"), "a = 1\nb = 2\n");
 const symlinks = process.argv.includes("--symlinks");
 const reviewFiles = process.argv.includes("--review");
+const restart = process.argv.includes("--restart");
 if (reviewFiles) {
   await writeFile(path.join(source, "empty.txt"), "before empty");
   await writeFile(path.join(source, "remove.txt"), "before delete");
 }
+
 const typescript = process.argv.includes("--typescript") || symlinks;
 const compilerDirectory = symlinks
   ? "node_modules/.pnpm/typescript/node_modules/typescript/lib"
@@ -60,6 +64,7 @@ if (typescript) {
       await cp(path.join(library, file), path.join(vendor, file));
     }
   }
+
   await link(
     path.join(vendor, "_tsc.js"),
     path.join(root, "compiler-store-alias"),
@@ -82,6 +87,7 @@ if (typescript) {
     await writeFile(path.join(root, "outside"), "outside sentinel");
   }
 }
+
 await writeFile(path.join(app, "package.json"), '{"type":"module"}\n');
 for (const directory of [
   "server",
@@ -98,6 +104,7 @@ for (const directory of [
     },
   );
 }
+
 await symlink(path.join(checkout, "dist/web"), path.join(app, "dist/web"));
 const modules = path.join(app, "node_modules");
 await mkdir(path.join(modules, "@microsoft"), { recursive: true });
@@ -109,6 +116,7 @@ for (const name of await readdir(path.join(checkout, "node_modules"))) {
     );
   }
 }
+
 await symlink(linuxSdk, path.join(modules, "@microsoft/mxc-sdk"));
 const { defaultDocument } = await import(
   pathToFileURL(path.join(app, "dist/server/config/settings-document.js")).href
@@ -122,11 +130,13 @@ const report = {
   typescript,
   symlinks,
   reviewFiles,
+  restart,
 };
 if (typescript) {
   const info = await lstat(path.join(source, compilerDirectory, "_tsc.js"));
   report.compiler = { bytes: info.size, links: info.nlink };
 }
+
 const calls = new Map();
 const intervals = new Map();
 function barrier() {
@@ -135,13 +145,16 @@ function barrier() {
   const ready = new Promise((resolve) => {
     release = resolve;
   });
+
   return async () => {
     if (++count === 2) {
       release();
     }
+
     await ready;
   };
 }
+
 const started = barrier();
 const edited = barrier();
 const python = (code) => `python3 -B -c '${code.replaceAll("'", "'\\''")}'`;
@@ -155,6 +168,7 @@ const compile = typescript
   : "";
 function tool(label, step, name, args) {
   const id = `${label}-${step}`;
+
   return [
     {
       type: "function_call",
@@ -167,6 +181,7 @@ function tool(label, step, name, args) {
     },
   ];
 }
+
 function message() {
   return [
     {
@@ -178,11 +193,35 @@ function message() {
     },
   ];
 }
+
 async function respond(body) {
   if (!body.tools?.some((entry) => entry.name === "local_publish")) {
     return message();
   }
+
   const serialized = JSON.stringify(body.input);
+  if (serialized.includes("STARTUP_RESTART")) {
+    const step = calls.get("restart") ?? 0;
+    calls.set("restart", step + 1);
+    if (step === 0) {
+      return tool("restart", step, "run_command", {
+        command: python(
+          "import pathlib; assert pathlib.Path('module.py').read_text()=='a = 10\\nb = 20\\n'; assert pathlib.Path('artifact').read_text()=='private'; pathlib.Path('restart-private.txt').write_text('after restart'); print('RESTART_OK')",
+        ),
+      });
+    }
+
+    assert.equal(step, 1);
+    const receipt = body.input.find(
+      (entry) =>
+        entry.type === "function_call_output" && entry.call_id === "restart-0",
+    );
+    assert.ok(receipt);
+    assert.match(receipt.output, /RESTART_OK/);
+
+    return message();
+  }
+
   if (serialized.includes("STARTUP_REFERENCE")) {
     const step = calls.get("reference") ?? 0;
     calls.set("reference", step + 1);
@@ -193,6 +232,7 @@ async function respond(body) {
         ),
       });
     }
+
     if (step === 1) {
       const receipt = body.input.find(
         (entry) =>
@@ -202,6 +242,7 @@ async function respond(body) {
       const result = JSON.parse(receipt.output);
       assert.equal(result.exitCode, 0);
       assert.match(result.output, /REFERENCE_OK/);
+
       return tool("reference", step, "local_publish", {
         request: {
           action: "select",
@@ -214,9 +255,12 @@ async function respond(body) {
         },
       });
     }
+
     assert.equal(step, 2);
+
     return message();
   }
+
   if (serialized.includes("STARTUP_CONTINUE")) {
     const step = calls.get("continue") ?? 0;
     calls.set("continue", step + 1);
@@ -227,10 +271,13 @@ async function respond(body) {
         ),
       });
     }
+
     assert.equal(step, 1);
     assert.match(serialized, /CONTINUE_OK/);
+
     return message();
   }
+
   const label = /STARTUP_LINUX_([AB])/.exec(serialized)?.[1];
   assert.ok(label);
   const step = calls.get(label) ?? 0;
@@ -238,6 +285,7 @@ async function respond(body) {
   if (step === 0) {
     await started();
     const content = label === "A" ? "a = 10\nb = 2\n" : "a = 1\nb = 20\n";
+
     return tool(label, step, "run_command", {
       command:
         python(
@@ -249,6 +297,7 @@ async function respond(body) {
         compile,
     });
   }
+
   if (step === 1) {
     const match = new RegExp(`INTERVAL_${label}:(\\d+):(\\d+)`).exec(
       serialized,
@@ -265,12 +314,14 @@ async function respond(body) {
       assert.equal(result.exitCode, 0);
       assert.match(result.output, /TSC_OK/);
     }
+
     intervals.set(label, [BigInt(match[1]), BigInt(match[2])]);
     await edited();
     assert.equal(
       await readFile(path.join(source, "module.py"), "utf8"),
       "a = 1\nb = 2\n",
     );
+
     return tool(label, step, "local_publish", {
       request: {
         action: "select",
@@ -283,21 +334,27 @@ async function respond(body) {
       },
     });
   }
+
   assert.equal(step, 2);
+
   return message();
 }
+
 const model = createServer((request, response) => {
   void (async () => {
     if (request.url === "/v1/models") {
       response.setHeader("content-type", "application/json");
       response.end(JSON.stringify({ data: [{ id: "local-startup-fixture" }] }));
+
       return;
     }
+
     assert.equal(request.url, "/v1/responses");
     let text = "";
     for await (const chunk of request) {
       text += chunk;
     }
+
     report.requests++;
     const output = await respond(JSON.parse(text));
     response.setHeader("content-type", "text/event-stream");
@@ -330,23 +387,29 @@ await writeFile(path.join(data, "settings.json"), JSON.stringify(settings), {
   mode: 0o600,
 });
 const log = createWriteStream(path.join(root, "service.log"));
-const child = spawn(
-  process.execPath,
-  [
-    path.join(app, "dist/server/server/overlay-launcher.js"),
-    "--data-dir",
-    data,
-    "--views",
-    views,
-  ],
-  { cwd: app, stdio: ["ignore", "pipe", "pipe"] },
-);
-child.stdout.pipe(log, { end: false });
-child.stderr.pipe(log, { end: false });
-const exited = new Promise((resolve, reject) => {
-  child.once("error", reject);
-  child.once("exit", (code, signal) => resolve({ code, signal }));
-});
+function launch() {
+  const processChild = spawn(
+    process.execPath,
+    [
+      path.join(app, "dist/server/server/overlay-launcher.js"),
+      "--data-dir",
+      data,
+      "--views",
+      views,
+    ],
+    { cwd: app, stdio: ["ignore", "pipe", "pipe"] },
+  );
+  processChild.stdout.pipe(log, { end: false });
+  processChild.stderr.pipe(log, { end: false });
+  const exit = new Promise((resolve, reject) => {
+    processChild.once("error", reject);
+    processChild.once("exit", (code, signal) => resolve({ code, signal }));
+  });
+
+  return { child: processChild, exited: exit };
+}
+
+let { child, exited } = launch();
 const url = `http://127.0.0.1:${port}`;
 let headers = {};
 let ready = false;
@@ -358,9 +421,11 @@ async function request(route, body) {
     signal: AbortSignal.timeout(15000),
   });
   assert.equal(response.status, 200, await response.clone().text());
+
   return response.json();
 }
-try {
+
+async function waitReady() {
   const deadline = performance.now() + 90000;
   let bootstrap;
   while (!bootstrap) {
@@ -375,15 +440,24 @@ try {
       if (error.cause?.code !== "ECONNREFUSED") {
         throw error;
       }
+
       await delay(100);
     }
   }
+
   ready = true;
   headers = {
     cookie: `ca_session=${bootstrap.token}`,
     "x-codeatelier-token": bootstrap.token,
   };
   assert.equal(bootstrap.localOverlayCreation.enabled, true);
+
+  return bootstrap;
+}
+
+try {
+  const bootstrap = await waitReady();
+  const deadline = performance.now() + 90000;
   const sessions = [];
   for (const label of ["A", "B"]) {
     const session = await request("/api/sessions", {
@@ -395,6 +469,7 @@ try {
     });
     sessions.push(session);
   }
+
   for (const session of sessions) {
     let snapshot;
     do {
@@ -404,6 +479,7 @@ try {
     } while (
       snapshot.tasks.some((task) => ["queued", "running"].includes(task.status))
     );
+
     assert.equal(snapshot.tasks[0].status, "completed");
     const executions = snapshot.events
       .filter(
@@ -491,9 +567,11 @@ try {
           ),
         );
       }
+
       report.tasks.at(-1).readDependencies = round.reads.length;
     }
   }
+
   const a = intervals.get("A");
   const b = intervals.get("B");
   assert.ok(a[0] < b[1] && b[0] < a[1]);
@@ -509,6 +587,7 @@ try {
   if (reviewFiles) {
     expectedNames.push("empty.txt", "remove.txt");
   }
+
   assert.deepEqual((await readdir(source)).sort(), expectedNames.sort());
   assert.deepEqual(await readdir(path.join(data, "mxc/active")), []);
 
@@ -543,8 +622,10 @@ try {
         throw error;
       }
     }
+
     await delay(100);
   }
+
   const continuation = await request(`/api/sessions/${sessions[0].id}/tasks`, {
     prompt:
       "STARTUP_CONTINUE: verify the merged source and retained private artifact.",
@@ -562,6 +643,7 @@ try {
         ["queued", "running"].includes(task.status),
     )
   );
+
   assert.equal(
     continued.tasks.find((task) => task.id === continuation.id)?.status,
     "completed",
@@ -584,6 +666,29 @@ try {
   assert.deepEqual(await readdir(path.join(data, "mxc/active")), []);
   report.reloaded = true;
   report.continued = true;
+  if (restart) {
+    report.normalRestart = await verifyNormalRestart({
+      data,
+      source,
+      sessions,
+      request,
+      restart: async () => {
+        await request("/api/server/shutdown", { confirm: true });
+        const previousExit = await Promise.race([
+          exited,
+          delay(20000, { timeout: true }, { ref: false }),
+        ]);
+        assert.equal(previousExit.code, 0, "Old launcher did not exit cleanly");
+        ready = false;
+        headers = {};
+        ({ child, exited } = launch());
+        await waitReady();
+
+        return previousExit;
+      },
+    });
+  }
+
   if (reviewFiles) {
     const parent = sessions[0];
     const reviewed = await request(`/api/sessions/${parent.id}/local-review`, {
@@ -623,6 +728,7 @@ try {
           entry.id === task.id && ["queued", "running"].includes(entry.status),
       )
     );
+
     assert.equal(
       snapshot.tasks.find((entry) => entry.id === task.id)?.status,
       "completed",
@@ -662,6 +768,7 @@ try {
       originalPrivateRetained: true,
     };
   }
+
   report.passed = true;
   report.parallel = true;
 } finally {
@@ -672,6 +779,7 @@ try {
       child.kill("SIGTERM");
     }
   }
+
   report.exit = await Promise.race([
     exited,
     delay(20000, { timeout: true }, { ref: false }),

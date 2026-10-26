@@ -1,5 +1,7 @@
 # 测试约定与功能覆盖
 
+Linux 整应用正常重启：手动 `startup-probe.mjs --restart` 在原有双任务发布和服务重载后，正常关闭整个启动树，以同一 data/views 重新启动。`startup-restart.mjs` 核对旧控制器已退出、PID/namespace 更换、历史事件/任务及 round/upper/私有检查保持，再通过公开 HTTP 在真实 Sandbox 续聊并保留新私有产物。与 `--review` 联用，继续验证新参考会话的候选发布；此探针不用于崩溃恢复，也不进入默认检查或 Evaluation。
+
 Linux 普通文件新增/删除续轮：`posix-overlay-batch.test.ts` 先复现自身发布后的目录凭据误判，再验证根目录新增/删除、保留旧 B 和后续发布；`posix-directory-refresh.test.ts` 使用真实 Publisher 一增一删，覆盖父目录成员、类型、身份和历史版本变化拒绝，以及非 complete 日志拒绝。手动 `backend-probe.mjs` 在真实 OverlayFS/Sandbox 检查 whiteout、独立候选、两次发布和后续读取；`workdir-cleanup-probe.py` 另验固定内核工作目录权限恢复及拒绝路径。探针不进默认 check 或 Evaluation，证据见 [报告](posix-overlay-membership-results.json)。
 
 Linux 首读持久化：手动 `sync-probe.py` 使用测试专用 `--wrap=fsync` / `--wrap=sync_file_range` helper，在真实 FUSE 上验证首读稳定内容和零同步、冻结时先排队写回再同步所有对象/清单/目录、对象/写回 EIO 不交付清单且缓存保留，以及不支持写回时仍完成所有 fsync。正式工程探针另测端到端编译/收尾，`startup-probe.mjs --review --symlinks` 验证新 helper 下实际 HTTP/Engine/Sandbox 发布与参考继续。测试注入不进入产品或默认 check/CI/Evaluation；不声称执行过断电实验。

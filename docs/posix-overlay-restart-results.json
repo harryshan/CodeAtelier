@@ -1,0 +1,54 @@
+{
+  "date": "2026-10-27",
+  "fixture": "sr-bT4Bko",
+  "report": "startup-report.json",
+  "environment": "WSL2 Ubuntu 26.04 ext4, Node 24.19.0, production namespace launcher, MXC Bubblewrap",
+  "options": ["--review", "--symlinks", "--restart"],
+  "passed": true,
+  "parallelTasksPublished": 2,
+  "realSandboxAndCandidates": true,
+  "typescriptInternalLinks": true,
+  "serviceReloadAndContinuation": true,
+  "normalRestart": {
+    "previousLauncherExitCode": 0,
+    "oldControllerExited": true,
+    "newControllerAndNamespace": true,
+    "namespaceEvidence": "Bounded controller hello checked against /proc; old namespace handle retained during comparison to prevent inode reuse",
+    "sameDataAndViews": true,
+    "taskAndEventHistoryPreserved": true,
+    "roundAndUpperIdentityPreserved": true,
+    "privateReviewPreserved": true,
+    "sandboxContinuation": true,
+    "newPrivateArtifactRetained": true,
+    "sourceUnchangedByContinuation": true
+  },
+  "afterRestartReference": {
+    "normalEmptyDeletedReview": true,
+    "created": true,
+    "candidateValidatedAndPublished": true,
+    "originalPrivateRetained": true
+  },
+  "modelRequests": 16,
+  "finalExitCode": 0,
+  "activeRuntimeMarkers": 0,
+  "hostResidualMounts": 0,
+  "retainedObservationFailure": {
+    "fixture": "sr-yXDgY6",
+    "cause": "Unpinned namespace inode reused after controller exit; test assertion corrected by retaining its handle",
+    "productChangeRequired": false
+  },
+  "checks": {
+    "pnpmCheck": "passed",
+    "testFiles": 167,
+    "testsPassed": 1348,
+    "testsSkipped": 2,
+    "manualProbeLintAndFormat": "passed",
+    "browserE2eRun": false,
+    "evaluationRun": false
+  },
+  "limits": [
+    "Normal shutdown of ready views only; not crash, power-loss or unknown publication recovery",
+    "Fixed local model protocol, not external model acceptance",
+    "Not macOS or all Linux distributions"
+  ]
+}

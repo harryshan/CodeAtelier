@@ -1,5 +1,12 @@
 # 初版验证记录
 
+## Linux 整应用正常重启（2026-10-27）
+
+- 新增 `startup-probe.mjs --restart` / `startup-restart.mjs` 手动场景，使用正式构建产物、生产 HTTP/Engine/Store/Controller 和实际 MXC Bubblewrap；没有替换内部类或使用宿主执行回退。先完成双任务并行发布、内部 TypeScript 链接编译、服务重载与续聊，再通过关闭 API 停止整个应用，并以相同 data/views 重新启动。
+- `sr-bT4Bko` 通过：旧启动器退出 0、旧控制器 PID 消失，新 PID/namespace 经 hello 与 `/proc` 共同核对；历史任务/事件逐项一致，round 正文、upper 身份、私有产物和明确 B/O/T 检查不变。重启后的原对话在真实 Sandbox 中读取旧私有内容并写入新私有产物，来源不变；随后新参考会话完成独立候选发布。16 次固定回环模型请求，最终正常退出 0、Runtime 活动标记及宿主残留挂载均为零。
+- 第一次 `sr-yXDgY6` 正常重启已成功，但旧 namespace 销毁后编号被回收，探针的数字不等断言误报。最终探针在比较期间持有旧 namespace 句柄、finally 关闭，避免编号回收造成错误结论；未改产品行为或弱化新 namespace 断言。第一次夹具保留，后续使用全新夹具。
+- `pnpm check` 通过：167 个文件、1348 项通过/2 项跳过，类型、lint、格式及构建通过；手动探针另行 ESLint/Prettier 检查通过。结果见 [重启报告](posix-overlay-restart-results.json)。本轮仅增加验收与文档，不改变产品协议/UI；没有运行浏览器 e2e 或 Evaluation，不扩大为异常退出/断电恢复、macOS 或任意 Linux 发行版验收。
+
 ## Linux 普通文件新增/删除续轮（2026-10-27）
 
 - 先增加真实 Publisher 回归，复现已发布新增/删除被旧父目录凭据误判为 `STALE_DEPENDENCY`。修复仅逆验 complete 日志中的自身成员变化，再执行原有来源、私有内容和全部依赖核对；新增父目录成员、类型、身份及历史版本变化拒绝用例。四个相关测试文件 46 项通过；完整 `pnpm check` 为 167 个文件、1348 项通过/2 项跳过，类型、格式、lint 和构建通过。
