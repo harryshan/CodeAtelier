@@ -4,6 +4,10 @@
 
 ## 需求与模式
 
+交付优先级（2026-10-26）：按用户最新要求先跑通多会话主流程，不继续追加罕见故障矩阵。Windows 的生产 UI/HTTP、并行 Sandbox、明确选集/候选验证、正常发布、冲突保留及参考会话已重新验收；操作说明集中在 [使用指南](local-overlay-usage.md)。POSIX 后端、任意大型工程兼容性和所有未知事故的自动恢复没有因此变成已实现能力。
+
+候选 Runtime 崩溃恢复增量（2026-10-26，已验证）：一次性候选卷在 Sandbox 执行前独占写入并 flush 有界 `.access.json`，记录候选 UUID、来源/存储/控制目录及虚拟根身份；不扫描来源树。启动授权撤销同时识别当前数据目录的 candidates 命名空间，按记录、原生 helper/owner 退出证明和卷身份使用同一根 ACL 专用模式。正常排空且卸载确认后删除候选及记录；未知执行、记录损坏/缺失或身份改变保留并拒绝，不猜测候选结果。启动清理不删除候选证据、不解除来源发布锁或旧任务锁，不自动重跑测试/发布。恢复沿用 Local 生命周期 trace，另记 `recover_candidate_access` 阶段；手动 `pnpm overlay:verify-server-crash --candidate` 已通过真实候选 Runtime 中断及启动撤销；源码保持不变，未知发布仍保留，证据见验证记录。
+
 真实服务崩溃暴露的 ACL 恢复缺口（2026-10-26，已修复并实机验证）：Broker 退出后主 Runtime/命令及 helper 均退出，但卷保留 dirty，持久 Sandbox grant 仍引用已消失的虚拟目录，启动撤销因无法核对原对象而拒绝后续任务。普通重挂载不能解决。修复使用独立 `restore-local-security` 模式：先由原生 Supervisor 排空专用账户，再根据受保护 grant 的路径定位当前数据目录已知清单；核对原 helper/owner 已退出、来源/控制目录/卷身份，仅临时暴露根目录身份和 DACL，供原有 Supervisor 撤销，最后卸载。该模式拒绝文件读写、创建/覆盖、目录枚举及命名空间修改，只可访问根目录；保留 clean/epoch/旧 owner 记录、源码及私有内容/基线，不把 dirty 清成正常。此操作不发布、不删除任务锁、不把异常会话改成 ready，也不重新执行任务；损坏元数据、未知身份、其它数据目录或无法关闭继续拒绝。无需复制来源树或更新 Sandbox 安装态协议。使用 Local `recover_access` 生命周期记录 ID/耗时/终态，不记录路径或正文。真实服务崩溃到新参考会话 Sandbox 发布已通过；范围及原始证据见验证记录。
 
 真实中断参考浏览器验收（2026-10-26）：`pnpm overlay:verify-browser --interrupted` 已通过生产 UI/HTTP/SSE、WinFsp 和已安装 IPC v18 Runtime。helper 或 owner 仍活动时检查拒绝；退出后 UI 检查部分字节并创建新会话，无自动任务。明确提交后 Sandbox 读 v3 参考和检查后更新的 lower，重新编辑并经 local_publish/独立候选 Runtime 发布，旧清单/锁/main/WAL/原生记录不变，未选中断新增/删除不应用。夹具服务重启后参考来源、发布结果与原异常状态保留。固定 provider 和小文件夹具，遗留 active 清单/服务锁为故障注入；不声称真实 Runtime/服务崩溃恢复、旧卷重挂载、POSIX 或任意工程验证通过。

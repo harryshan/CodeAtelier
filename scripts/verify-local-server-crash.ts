@@ -6,6 +6,7 @@
  *    真实鉴权 HTTP 检查中断参考、显式创建新会话，不注入状态/锁；恢复前后只在副本检查元数据。
  * 4. 新 Sandbox 任务读取最新来源和部分参考，重新编辑/候选验证/发布；逐字节核对旧私有证据没有被更改。
  * 5. 报告留在 .local；finally 只关闭本脚本拥有的服务/探针，不停止用户服务、不 Repair、不删除事故锁。
+ * 6. --candidate 改在候选测试持句柄时杀服务，核对根 ACL 恢复和私有/发布记录保留；不自动接受发布现场。
  * 使用已安装的共用 Sandbox 账户，须无其它 Sandbox 任务；具体进程退出不是任意后代完整排空证明。
  */
 import assert from "node:assert/strict";
@@ -25,6 +26,7 @@ import { withLocalInspection } from "../src/local-overlays/inspection-lease.js";
 import { withInspectionDatabase } from "../src/local-overlays/inspection-database.js";
 
 assert.equal(process.platform, "win32");
+const candidate = process.argv.includes("--candidate");
 await mkdir(".local", { recursive: true });
 const root = await mkdtemp(path.resolve(".local/local-server-crash-"));
 const data = path.join(root, "data");
@@ -46,7 +48,7 @@ await settings.update({
   },
 });
 
-async function startServer(phase: "crash" | "restart") {
+async function startServer(phase: "crash" | "candidate-crash" | "restart") {
   const process = spawn(
     globalThis.process.execPath,
     ["--import", "tsx", "scripts/fixtures/local-crash-server.ts", root, phase],
@@ -110,9 +112,10 @@ let probeClosed: Promise<unknown> | undefined;
 const report: Record<string, unknown> = {
   root,
   startedAt: new Date().toISOString(),
+  phase: candidate ? "candidate" : "main",
 };
 try {
-  server = await startServer("crash");
+  server = await startServer(candidate ? "candidate-crash" : "crash");
   const original = await server.request<Session>("/api/sessions", {
     workspace: source,
     localOverlay: { id: randomUUID() },
@@ -150,11 +153,14 @@ try {
     /CRASH_READY:(\d+)/.exec(JSON.stringify(running.events))![1],
   );
   assert(
-    running.events.some(
-      (event) =>
-        event.type === "sandboxed_tool_process" &&
-        event.data.pid === commandPid &&
-        event.data.callId === "crash-write",
+    running.events.some((event) =>
+      candidate
+        ? event.type === "local_validation" &&
+          event.data.event === "sandboxed_tool_process" &&
+          event.data.data?.pid === commandPid
+        : event.type === "sandboxed_tool_process" &&
+          event.data.pid === commandPid &&
+          event.data.callId === "crash-write",
     ),
   );
   const runtime = running.events.find(
@@ -162,6 +168,9 @@ try {
       event.taskId === task.id &&
       event.type === "execution_instance" &&
       event.data.state === "running" &&
+      (candidate
+        ? event.data.purpose === "local-validation"
+        : event.data.purpose !== "local-validation") &&
       event.data.mode === "windows-sandbox-user",
   );
   assert(runtime?.data.sandboxApplied);
@@ -252,10 +261,27 @@ try {
   report.interruptedTaskId = task.id;
   const directory = path.join(data, "local-overlays");
   const id = original.localOverlay!.id;
-  const control = path.join(directory, id);
   const beforeManifest = await readFile(path.join(directory, `${id}.json`));
+  const recoveryDirectory = candidate
+    ? path.join(directory, "candidates")
+    : directory;
+  const candidateFiles = candidate
+    ? (await readdir(recoveryDirectory)).filter((file) =>
+        file.endsWith(".access.json"),
+      )
+    : [];
+  if (candidate) {
+    assert.equal(candidateFiles.length, 1);
+  }
+
+  const accessFile = candidate
+    ? path.join(recoveryDirectory, candidateFiles[0]!)
+    : undefined;
+  const accessBefore = accessFile ? await readFile(accessFile) : undefined;
+  const record = JSON.parse((accessBefore ?? beforeManifest).toString());
+  const recoveryId: string = record.id;
+  const control = path.join(recoveryDirectory, recoveryId);
   const beforeOwner = await readFile(path.join(control, "mount.lock"));
-  const record = JSON.parse(beforeManifest.toString());
   const privateState = () =>
     withLocalInspection(control, AbortSignal.timeout(15000), (signal) =>
       withInspectionDatabase(
@@ -284,9 +310,13 @@ try {
     );
   const beforeState = await privateState();
   assert.equal(beforeState.meta[0].clean, 0);
-  const backend = new WinFspLocalBackend(directory, pino({ enabled: false }));
+  const backend = new WinFspLocalBackend(
+    recoveryDirectory,
+    pino({ enabled: false }),
+  );
+  const recoveryWorkspace = backend.workspace(recoveryId);
   const accessMount = await backend.recoverAccess(
-    id,
+    recoveryId,
     source,
     control,
     AbortSignal.timeout(15000),
@@ -295,13 +325,13 @@ try {
     assert.equal(await accessMount.identity(), record.workspaceIdentity);
     const denied = (error: NodeJS.ErrnoException) =>
       error.code === "EPERM" || error.code === "EACCES";
-    await assert.rejects(readdir(original.workspace), denied);
+    await assert.rejects(readdir(recoveryWorkspace), denied);
     await assert.rejects(
-      readFile(path.join(original.workspace, "partial.txt")),
+      readFile(path.join(recoveryWorkspace, "partial.txt")),
       denied,
     );
     await assert.rejects(
-      writeFile(path.join(original.workspace, "denied.txt"), "forbidden"),
+      writeFile(path.join(recoveryWorkspace, "denied.txt"), "forbidden"),
       denied,
     );
   } finally {
@@ -320,7 +350,13 @@ try {
     beforeOwner,
   );
   await assert.rejects(
-    backend.open(id, source, control, false, AbortSignal.timeout(15000)),
+    backend.open(
+      recoveryId,
+      source,
+      control,
+      false,
+      AbortSignal.timeout(15000),
+    ),
   );
   report.dirtyPreserved = true;
   report.rootOnlySurface =
@@ -332,109 +368,134 @@ try {
   assert.equal(interrupted.tasks[0].status, "interrupted");
   assert(interrupted.session.localOverlay?.interruptedReview);
 
-  const preserved = [
-    `${id}.json`,
-    `${id}.lock`,
-    `${id}/overlay.sqlite`,
-    `${id}/overlay.sqlite-wal`,
-    `${id}/mount.lock`,
-  ];
-  const evidence = () =>
-    Promise.all(
-      preserved.map(async (name) =>
-        readFile(path.join(directory, name)).catch(
-          (error: NodeJS.ErrnoException) => {
-            if (error.code === "ENOENT") {
-              return null;
-            }
+  if (candidate) {
+    assert.deepEqual(await readFile(accessFile!), accessBefore);
+    assert.equal(
+      await readFile(path.join(source, "partial.txt"), "utf8"),
+      "original",
+    );
+    assert.equal(
+      interrupted.session.localOverlay?.publication?.state,
+      "publishing",
+    );
+    assert.equal(interrupted.tasks.length, 1);
+    report.checks = [
+      "actual service killed during independent candidate Sandbox held write",
+      "pre-bound candidate Runtime and command identities exited",
+      "startup revoked persistent candidate grant through root-only mount",
+      "candidate dirty state, access identity, owner and main task manifest preserved",
+      "source unchanged; publishing state retained; no automatic validation or publication",
+    ];
+  } else {
+    const preserved = [
+      `${id}.json`,
+      `${id}.lock`,
+      `${id}/overlay.sqlite`,
+      `${id}/overlay.sqlite-wal`,
+      `${id}/mount.lock`,
+    ];
+    const evidence = () =>
+      Promise.all(
+        preserved.map(async (name) =>
+          readFile(path.join(directory, name)).catch(
+            (error: NodeJS.ErrnoException) => {
+              if (error.code === "ENOENT") {
+                return null;
+              }
 
-            throw error;
-          },
+              throw error;
+            },
+          ),
         ),
+      );
+    const before = await evidence();
+    const selection = { paths: ["partial.txt"], state: "interrupted" };
+    const reviewed = await server.request<{
+      version: string;
+      state: string;
+      files: Array<{ path: string; private: { content: string } }>;
+    }>(`/api/sessions/${original.id}/local-review`, selection);
+    assert.equal(reviewed.state, "interrupted");
+    assert.equal(reviewed.files.length, 1);
+    assert.equal(reviewed.files[0].path, "partial.txt");
+    assert.equal(
+      Buffer.from(reviewed.files[0].private.content, "base64").toString("utf8"),
+      "private prefix only",
+    );
+    await writeFile(path.join(source, "partial.txt"), "current source");
+    const child = await server.request<Session>(
+      `/api/sessions/${original.id}/local-resolution`,
+      { ...selection, id: randomUUID(), version: reviewed.version },
+    );
+    assert.equal(child.localOverlay?.resolution?.state, "interrupted");
+    assert.equal(
+      (await server.request<Snapshot>(`/api/sessions/${child.id}`)).tasks
+        .length,
+      0,
+    );
+    const next = await server.request<Task>(`/api/sessions/${child.id}/tasks`, {
+      prompt:
+        "Read current source and interrupted reference, then explicitly edit and validate",
+    });
+    const finished = await until(
+      () => server!.request<Snapshot>(`/api/sessions/${child.id}`),
+      (value) =>
+        value.tasks.some(
+          (item) =>
+            item.id === next.id &&
+            ["completed", "failed", "cancelled", "interrupted"].includes(
+              item.status,
+            ),
+        ),
+    );
+    await writeFile(
+      path.join(root, "finished.json"),
+      JSON.stringify(finished, null, 2),
+    );
+    assert.equal(
+      finished.tasks.find((item) => item.id === next.id)?.status,
+      "completed",
+    );
+    assert.equal(
+      finished.session.localOverlay?.publication?.state,
+      "published",
+    );
+    assert.equal(finished.session.localOverlay?.publication?.files, 1);
+    const executions = finished.events.filter(
+      (event) => event.type === "execution_instance",
+    );
+    assert(
+      executions.some(
+        (event) =>
+          event.data.state === "completed" &&
+          event.data.purpose === "local-validation" &&
+          event.data.sandboxApplied === true,
       ),
     );
-  const before = await evidence();
-  const selection = { paths: ["partial.txt"], state: "interrupted" };
-  const reviewed = await server.request<{
-    version: string;
-    state: string;
-    files: Array<{ path: string; private: { content: string } }>;
-  }>(`/api/sessions/${original.id}/local-review`, selection);
-  assert.equal(reviewed.state, "interrupted");
-  assert.equal(reviewed.files.length, 1);
-  assert.equal(reviewed.files[0].path, "partial.txt");
-  assert.equal(
-    Buffer.from(reviewed.files[0].private.content, "base64").toString("utf8"),
-    "private prefix only",
-  );
-  await writeFile(path.join(source, "partial.txt"), "current source");
-  const child = await server.request<Session>(
-    `/api/sessions/${original.id}/local-resolution`,
-    { ...selection, id: randomUUID(), version: reviewed.version },
-  );
-  assert.equal(child.localOverlay?.resolution?.state, "interrupted");
-  assert.equal(
-    (await server.request<Snapshot>(`/api/sessions/${child.id}`)).tasks.length,
-    0,
-  );
-  const next = await server.request<Task>(`/api/sessions/${child.id}/tasks`, {
-    prompt:
-      "Read current source and interrupted reference, then explicitly edit and validate",
-  });
-  const finished = await until(
-    () => server!.request<Snapshot>(`/api/sessions/${child.id}`),
-    (value) =>
-      value.tasks.some(
-        (item) =>
-          item.id === next.id &&
-          ["completed", "failed", "cancelled", "interrupted"].includes(
-            item.status,
-          ),
+    assert(
+      executions.some(
+        (event) =>
+          event.data.state === "completed" &&
+          event.data.mode === "windows-sandbox-user" &&
+          event.data.sandboxApplied === true,
       ),
-  );
-  await writeFile(
-    path.join(root, "finished.json"),
-    JSON.stringify(finished, null, 2),
-  );
-  assert.equal(
-    finished.tasks.find((item) => item.id === next.id)?.status,
-    "completed",
-  );
-  assert.equal(finished.session.localOverlay?.publication?.state, "published");
-  assert.equal(finished.session.localOverlay?.publication?.files, 1);
-  const executions = finished.events.filter(
-    (event) => event.type === "execution_instance",
-  );
-  assert(
-    executions.some(
-      (event) =>
-        event.data.state === "completed" &&
-        event.data.purpose === "local-validation" &&
-        event.data.sandboxApplied === true,
-    ),
-  );
-  assert(
-    executions.some(
-      (event) =>
-        event.data.state === "completed" &&
-        event.data.mode === "windows-sandbox-user" &&
-        event.data.sandboxApplied === true,
-    ),
-  );
-  assert(!executions.some((event) => event.data.kind === "host-process"));
-  assert.equal(
-    await readFile(path.join(source, "partial.txt"), "utf8"),
-    "resolved after real crash",
-  );
-  assert.deepEqual(await evidence(), before);
-  report.checks = [
-    "actual service killed during Sandbox held partial write",
-    "pre-bound Runtime and command identities exited (see per-process evidence method)",
-    "real interrupted task retained after restart",
-    "HTTP reference continuation starts no task",
-    "new Sandbox edit and candidate publication succeed",
-    "old private manifest locks and SQLite bytes unchanged",
-  ];
+    );
+    assert(!executions.some((event) => event.data.kind === "host-process"));
+    assert.equal(
+      await readFile(path.join(source, "partial.txt"), "utf8"),
+      "resolved after real crash",
+    );
+    assert.deepEqual(await evidence(), before);
+    report.checks = [
+      "actual service killed during Sandbox held partial write",
+      "pre-bound Runtime and command identities exited (see per-process evidence method)",
+      "real interrupted task retained after restart",
+      "HTTP reference continuation starts no task",
+      "new Sandbox edit and candidate publication succeed",
+      "old private manifest locks and SQLite bytes unchanged",
+    ];
+  }
+
   report.passed = true;
 } catch (error) {
   report.passed = false;

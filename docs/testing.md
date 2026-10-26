@@ -1,5 +1,7 @@
 # 测试约定与功能覆盖
 
+候选根授权恢复：`local-candidate-access.test.ts` 覆盖记录持久化、目录/卷身份拒绝、记录限额、原生证明失败、撤销失败卸载及匹配删除；保留原私有证据。`pnpm overlay:verify-server-crash --candidate` 手动杀死独占夹具 App，实际候选 Sandbox 保持文件句柄，验证启动根 ACL 撤销、dirty/记录不变、无自动发布。普通 `pnpm overlay:verify-browser` 另核对正常候选目录和 `.access.json` 回收。均不安装/Repair、不重启用户服务，不进入默认 check/Evaluation。
+
 Local 私有刷新真实浏览器：手动 `pnpm overlay:verify-browser --refresh` 在生产 UI/HTTP/SSE、真实 WinFsp 和已安装 Sandbox 中覆盖确认前/后回执丢失。两个独立会话经模型工具选集、候选验证、Engine 排空与失败留存，再从页面明确恢复；无自动任务、草稿保留，后续真实 Runtime 读取当前来源和未选私有文件。来源内容/文件身份/mtime/ctime 不变，夹具服务重启后历史仍保留。固定 provider 与有意丢失回调响应不等于真实模型、断电或服务崩溃，不进入默认 check/Evaluation。界面回归另验证原任务匹配的恢复记录替换当前恢复引导，历史错误不改写。
 
 Local 完成态私有刷新：`local-overlay-private-refresh.test.ts` 使用真实 Publisher/SQLite 和假挂载验证持久排空资格、服务重建、来源后续修改保留、缺证明/选集不匹配/并发拒绝、关闭未知留锁、服务关闭取消排空和历史投影稳定。HTTP 覆盖鉴权/CSRF、空参数、创建能力门禁、受控错误及无自动任务；浏览器覆盖显式请求、失败重试、状态回读和草稿保留。手动 `pnpm exec tsx scripts/verify-local-private-refresh.ts` 使用真实 WinFsp，在确认前/后丢失回执两种场景重建 Service 并恢复，验证未选文件保留和下一任务可继续；排空与候选回调来自可信宿主夹具，不代表 Sandbox/崩溃验收，不进入默认 check 或 Evaluation。

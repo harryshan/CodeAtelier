@@ -1,0 +1,37 @@
+{
+  "timestamp": "2026-10-26T08:29:50.445Z",
+  "platform": "win32",
+  "passed": true,
+  "settings": "private v1 settings, Sandbox enabled",
+  "browser": "Chromium, production UI/HTTP/SSE; no route interception",
+  "execution": "installed Windows dedicated-account Runtime IPC v18 and real WinFsp",
+  "commandIntervals": {
+    "A": [
+      1793003371952,
+      1793003374179
+    ],
+    "B": [
+      1793003371952,
+      1793003374179
+    ]
+  },
+  "checks": [
+    "UI creates two isolated Local conversations",
+    "real parallel Runtime and selected publication",
+    "candidate Runtime and no host fallback",
+    "source conflict retained and visible",
+    "three-way review and fresh continuation through UI",
+    "unsent draft retained; no automatic task",
+    "fixture service restart preserves history and source grouping",
+    "all own tasks and server drained",
+    "normal candidate access records and UUID controls removed"
+  ],
+  "limitations": [
+    "fixed provider, not a real model evaluation",
+    "synthetic small files, not a large project build",
+    "sessions are not OS security boundaries",
+    "no old dirty-volume remount or POSIX acceptance"
+  ],
+  "command": "pnpm overlay:verify-browser",
+  "rawReport": ".local/local-overlay-browser-g8KzZ3/report.json"
+}

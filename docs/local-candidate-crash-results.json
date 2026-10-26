@@ -1,0 +1,40 @@
+{
+  "startedAt": "2026-10-26T08:23:26.55Z",
+  "phase": "candidate",
+  "processProof": [
+    {
+      "state": "ready",
+      "identities": [
+        {
+          "handleDenied": true,
+          "created": "2026-10-26T08:23:39.603905Z",
+          "pid": 105180,
+          "method": "cim-creation-identity"
+        },
+        {
+          "handleDenied": true,
+          "created": "2026-10-26T08:23:39.867157Z",
+          "pid": 79916,
+          "method": "cim-creation-identity"
+        }
+      ]
+    },
+    {
+      "state": "exited",
+      "elapsedMs": 1154
+    }
+  ],
+  "interruptedTaskId": "6f44faef-fcb3-406d-98a1-940829fd4981",
+  "dirtyPreserved": true,
+  "rootOnlySurface": "root identity available; enumeration, existing file read and new file write denied",
+  "checks": [
+    "actual service killed during independent candidate Sandbox held write",
+    "pre-bound candidate Runtime and command identities exited",
+    "startup revoked persistent candidate grant through root-only mount",
+    "candidate dirty state, access identity, owner and main task manifest preserved",
+    "source unchanged; publishing state retained; no automatic validation or publication"
+  ],
+  "passed": true,
+  "command": "pnpm overlay:verify-server-crash --candidate",
+  "rawReport": ".local/local-server-crash-roJUTy/report.json"
+}

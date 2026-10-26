@@ -7,11 +7,12 @@
  * 5. finally 关闭本脚本的浏览器、服务和任务，保留报告/截图/失败现场；不重启实际用户服务、不安装/Repair。
  * 6. --interrupted 追加真实中断 helper/owner、UI 检查/新参考会话及 Sandbox 重编辑/候选发布；遗留 active 清单/服务锁为夹具注入。
  * 7. --refresh 在真实任务收尾注入确认前/后回执丢失，经页面恢复并以新 Sandbox 任务验证当前来源和未选私有文件。
+ * 8. 正常任务收尾后核对候选控制目录和持久 ACL 身份记录均回收，私有会话保留不受影响。
  * 启动沿用生产 Sandbox 账户恢复流程，应在没有其它 Sandbox 任务时运行；不是隔离的第二套系统账户。
  * 仅 Windows 安装态合成小文件验证，不证明真实模型能力、任意工程语义或跨平台隔离。
  */
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { chromium, expect, type Page } from "@playwright/test";
@@ -596,6 +597,15 @@ try {
   });
   assert.deepEqual(pageErrors, []);
   await server.shutdown();
+  const candidateEntries = await readdir(
+    path.join(data, "local-overlays", "candidates"),
+  );
+  assert(
+    !candidateEntries.some(
+      (name) => name.endsWith(".access.json") || /^[a-f0-9-]{36}$/.test(name),
+    ),
+  );
+
   const report = {
     timestamp: new Date().toISOString(),
     platform: process.platform,
@@ -636,6 +646,7 @@ try {
       "unsent draft retained; no automatic task",
       "fixture service restart preserves history and source grouping",
       "all own tasks and server drained",
+      "normal candidate access records and UUID controls removed",
     ],
     limitations: [
       "fixed provider, not a real model evaluation",

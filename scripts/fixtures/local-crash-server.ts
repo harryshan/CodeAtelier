@@ -4,6 +4,7 @@
  * 2. crash 阶段让 Sandbox 打开文件、写入并 flush 前半段后等待，持久工具输出报告实际命令 PID。
  * 3. restart 阶段在新参考会话重新读取当前来源/部分参考，明确编辑并选择候选验证发布。
  * 4. IPC 仅向控制器报告监听地址和接受正常 stop；崩溃由控制器杀死本子进程，不修改清单/任务状态。
+ * 5. candidate-crash 先完成主任务编辑，再在独立候选 Sandbox 持有部分产物写句柄，验证候选授权恢复。
  * 不安装或 Repair，不访问真实模型，不重启用户服务；日志和历史仅写入指定独占夹具目录。
  */
 import assert from "node:assert/strict";
@@ -14,7 +15,7 @@ import type { ModelProvider } from "../../src/providers/model-provider.js";
 import { createApp } from "../../src/server/app.js";
 
 const [root, phase] = process.argv.slice(2);
-assert(root && (phase === "crash" || phase === "restart"));
+assert(root && ["crash", "candidate-crash", "restart"].includes(phase));
 let calls = 0;
 
 function tool(id: string, name: string, args: unknown) {
@@ -46,6 +47,40 @@ const provider: ModelProvider = {
     }
 
     const count = calls++;
+    if (phase === "candidate-crash") {
+      if (count === 0) {
+        return tool("candidate-edit", "run_command", {
+          command:
+            "Set-Content -LiteralPath 'partial.txt' -Value 'private prefix only' -NoNewline -Encoding ascii",
+        });
+      }
+
+      if (count === 1) {
+        return tool("candidate-select", "local_publish", {
+          request: {
+            action: "select",
+            paths: ["partial.txt"],
+            commands: [
+              [
+                "$ErrorActionPreference = 'Stop'",
+                "if ((Get-Content -LiteralPath 'partial.txt' -Raw) -ne 'private prefix only') { throw 'Wrong candidate' }",
+                "$file = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath('scratch.txt')",
+                "$stream = [System.IO.File]::Open($file, 'Create', 'Write', 'Read')",
+                "$stream.WriteByte(65)",
+                "$stream.Flush($true)",
+                'Write-Output "CRASH_READY:$PID"',
+                "Start-Sleep -Seconds 120",
+                "$stream.Dispose()",
+                "throw 'Controller did not interrupt candidate'",
+              ].join("; "),
+            ],
+          },
+        });
+      }
+
+      return { text: "Selected edit awaits candidate validation", output: [] };
+    }
+
     if (phase === "crash") {
       assert.equal(
         count,

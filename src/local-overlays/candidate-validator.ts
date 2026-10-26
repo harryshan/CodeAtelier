@@ -5,6 +5,7 @@
  * 3. 执行完成后冻结，核对候选未被测试改写并提取新读依赖；返回给 Publisher 作应用前复核。
  * 4. 正常卸载后删除本次 UUID 控制目录；排空未知保留现场并抛特殊错误，禁止重放或当作普通失败续聊。
  * 5. trace/log 只记录验证 ID、阶段、耗时与终态；命令、路径、候选内容不进入属性。
+ * 6. Runtime 启动前持久保存根身份，供崩溃后仅恢复 ACL 撤销；正常清理删除记录，未知结果保留。
  * 执行器是可信内部接口，不能由模型反序列化；本模块不创建权限、宿主 fallback 或 Git 工作区。
  */
 import { randomUUID } from "node:crypto";
@@ -21,6 +22,7 @@ import {
 import { canonical, inside } from "../tools/paths.js";
 import { checkRelative, sourceIdentity } from "./publication/files.js";
 import { MAX_BYTES, PublishError } from "./publication/merge.js";
+import { CandidateAccessStore } from "./candidate-access.js";
 import {
   candidateReads,
   CandidateCleanupUnknownError,
@@ -108,6 +110,9 @@ export class CandidateValidator {
     let outcome: "ok" | "error" | "cancelled" | "unknown" = "error";
     let executionUnknown = false;
     let controlIdentity: string | undefined;
+    const access = new CandidateAccessStore(storage.root);
+    let accessRecord:
+      Awaited<ReturnType<CandidateAccessStore["save"]>> | undefined;
     this.log.info({
       module: "local-publication",
       event: "candidate.started",
@@ -126,6 +131,8 @@ export class CandidateValidator {
           await writeFile(path.join(workspace, file), content);
         }
       }
+
+      accessRecord = await access.save(id, source.root, workspace);
 
       // A thrown executor cannot prove its children stopped. Adapters must wait
       // for cleanup and resolve nonzero/null for ordinary command failures.
@@ -190,6 +197,9 @@ export class CandidateValidator {
           }
 
           await rm(control, { recursive: true });
+          if (accessRecord) {
+            await access.remove(accessRecord);
+          }
         }
       } catch (error) {
         outcome = "unknown";

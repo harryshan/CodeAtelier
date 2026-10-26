@@ -1,5 +1,20 @@
 # 初版验证记录
 
+## 隔离 Local 主流程收敛验收（2026-10-26）
+
+- 按用户“先跑通、不继续扩大 corner case”的要求，用最新构建重跑 `pnpm overlay:verify-browser`，通过：[本次报告](local-parallel-delivery-results.json)，原始 `.local/local-overlay-browser-g8KzZ3/report.json`、日志 `.local/local-parallel-delivery.log`。两个真实专用账户命令的时间段有重叠，均验证 `.git` 隐藏及来源直接写入拒绝；明确选择各自一个文件，经独立候选 Runtime 发布，未选 `runtime.txt` 留在私有层。
+- 后续来源冲突保留、UI 三方检查、参考对话、草稿保留、无自动新任务及夹具服务重启后历史/项目归属通过。正常候选 UUID 控制目录和 `.access.json` 均回收；已查看 `published-0.png`，界面明确“所选源码已发布（1 个文件）；其他修改仍保留在私有视图”。固定 provider、小文件夹具不等于真实模型或任意工程验收。
+- `pnpm check` 通过（`.local/local-candidate-check.log`）：159 个测试文件、1,274 项通过、1 项既有跳过，类型/Lint/格式/构建通过；未运行 Evaluation。完整 `pnpm test:e2e` 77 项通过（`.local/local-parallel-e2e.log`，4.3 分钟）。验收结束后持久 Sandbox grant 和 WinFsp helper 均为 0。
+- 自审核对候选身份记录在 Runtime 启动前 flush、仅正常排空/卸载后回收，启动恢复不执行文件操作、不改变任务/发布状态；主卷与候选命名空间分开，恢复沿用无正文生命周期 tracing。新增记录只检查目录身份，不增加来源树遍历或 Git 注册。使用入口及当前边界见 [指南](local-overlay-usage.md)。
+- 完整目标仍有平台差距：Local overlay 目前只实现 Windows；Linux/macOS 后端及实机验收未完成。未知/损坏记录保留并拒绝，不继续扩大自动恢复范围；不会把 Windows 主流程通过写成全平台完成。
+
+## 候选 Runtime 中断后的根授权恢复（2026-10-26）
+
+- `pnpm overlay:verify-server-crash --candidate` 通过：`.local/local-server-crash-roJUTy/report.json`、`.local/local-candidate-crash.log`。固定 provider 只发模型工具，生产 App/WinFsp/安装态 IPC v18 Runtime 真实运行；主任务完成后独立候选命令打开并 flush 私有产物，再终止本脚本的服务进程。
+- 原 Runtime/命令通过预先绑定的 CIM 创建身份确认退出（1,154 ms；进程句柄查询被拒绝，未宣称任意后代排空）。正常启动执行原生账户排空及持久 grant 撤销，候选 ACL 恢复生命周期成功。根模式拒绝枚举/文件读写，dirty、观察代次、基线、非根节点、owner 和访问记录保持；普通重挂载继续拒绝 dirty。
+- 主来源保持 original，原任务保留 interrupted/publishing，不创建新任务、不重跑验证或发布。只覆盖当前数据目录已记录候选，不处理损坏元数据、其它数据目录或来源锁自动恢复；不是全平台或断电证明。
+- 12 项候选记录回归与原主卷 4 项回归通过（`.local/local-candidate-access-after.log`）；新增实现前缺模块的失败证据为 `.local/local-candidate-access-before.log`。完整检查和浏览器主流程结果见上节，候选报告见 [汇总](local-candidate-crash-results.json)。
+
 ## Local 真实服务崩溃与 Sandbox ACL 恢复（2026-10-26）
 
 - `pnpm overlay:verify-server-crash` 通过，现场 `.local/local-server-crash-SoKZbl/report.json`、日志 `.local/local-server-crash-delivery.log`，[汇总](local-server-crash-results.json)。独占生产 App 子进程中，真实专用账户命令保持文件句柄、flush 部分内容后被服务崩溃打断；未注入任务/清单/锁，也未声明虚假排空。固定 provider、单文件夹具、HTTP 验证，不等于真实模型或大型工程验收。

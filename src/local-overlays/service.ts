@@ -16,6 +16,7 @@
  * 12. recoverPrivateRefresh 仅恢复有任务排空/关闭凭据的 complete 刷新；独立恢复锁保护原任务锁，失败不重写来源。
  *     成功后保存原任务 ID 供当前 UI 区分历史失败与已恢复视图，下一任务清除；不改历史任务终态。
  * 13. withSandboxRecoveryRoots 只在账户已排空后的启动撤销阶段暴露已知卷根 ACL；保留 dirty/任务锁/阶段，不执行任务或发布。
+ *     主卷使用会话清单，候选卷使用执行前持久身份；候选恢复不删除记录或推断验证结果。
  * 公开创建由 HTTP 单独检查平台/Sandbox 能力，不迁移旧历史；来源写入只由冻结租约内的协调器执行。
  */
 import { randomUUID } from "node:crypto";
@@ -52,6 +53,7 @@ import {
 } from "./publication/files.js";
 import { Publisher } from "./publication/publisher.js";
 import { ManifestQueue } from "./manifest-queue.js";
+import { CandidateAccessStore } from "./candidate-access.js";
 import { withLocalInspection } from "./inspection-lease.js";
 import { PublishError } from "./publication/merge.js";
 import {
@@ -307,6 +309,35 @@ export class LocalOverlayService {
     revoke: () => Promise<void>,
   ) {
     const current = AbortSignal.any([signal, this.creation.signal]);
+    const candidateDirectory = path.join(this.root, "candidates");
+    const candidateBackend = new WinFspLocalBackend(
+      candidateDirectory,
+      this.log,
+    );
+    const candidateAccess = new CandidateAccessStore(candidateDirectory);
+    const candidateIds = [
+      ...new Set(
+        roots
+          .map((root) => candidateBackend.idFor(root))
+          .filter((id): id is string => id !== undefined),
+      ),
+    ];
+    const visitCandidate = async (index: number): Promise<void> => {
+      current.throwIfAborted();
+      const id = candidateIds[index];
+      if (!id) {
+        await revoke();
+
+        return;
+      }
+
+      await this.observe(id, "recover_candidate_access", () =>
+        candidateAccess.recover(id, candidateBackend, current, () =>
+          visitCandidate(index + 1),
+        ),
+      );
+    };
+
     const ids = [
       ...new Set(
         roots
@@ -318,7 +349,7 @@ export class LocalOverlayService {
       current.throwIfAborted();
       const id = ids[index];
       if (!id) {
-        await revoke();
+        await visitCandidate(0);
 
         return;
       }
