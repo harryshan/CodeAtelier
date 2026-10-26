@@ -1,5 +1,7 @@
 # 测试约定与功能覆盖
 
+Linux namespace 控制器：`linux-overlay-controller.test.ts` 通过实际本机 socket/Windows pipe 验证 namespace 绑定、open/seal/close 协议、无路径 trace、断线/超限/坏响应/拒绝/超时后的禁止重发。该测试不证明 Linux 挂载；手动 `controller-probe.mjs` 由新显式启动器执行，验证无 capabilities 的 Broker、两视图实际 MXC 并行、来源写拒绝、Git/socket 隐藏、seal、关闭后重挂载及 Runtime 标记清理。没有默认运行原生实验或 Evaluation。
+
 POSIX 正常跨轮：`posix-overlay-batch.test.ts` 增加持久状态往返、原始 B 跨轮合并、3 MiB 新产物只存缺失基线、complete 日志/私有版本/历史依赖/来源身份拒绝。手动发布探针另验证 B 在 A 发布后正常卸载、保留 upper 重挂载、使用旧 B 合并；发布确认后只删除摘要匹配的源码覆盖，真实 MXC 读取合并结果和未选私有产物。只覆盖普通文件正常生命周期，不声明崩溃恢复或产品入口已开放。
 
 POSIX 发布桥接：`posix-overlay-batch.test.ts` 用真实文件身份与 helper 格式清单覆盖 B 保留、明确选集、未读正文安全补读、文件/目录依赖过期、创建/删除、对象损坏、来源失配和未修改选集的依赖保留；实际 Publisher 检查合并与冲突，普通目录夹具不声称挂载/Sandbox 通过。手动 `sandbox-probe.py --publish-probe ...` 另走原生 seal、真实双 Runtime、全新候选 Sandbox、两批合并发布与冲突保留，不进入默认检查或 Evaluation。

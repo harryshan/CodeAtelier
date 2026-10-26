@@ -30,6 +30,8 @@ Docker 同样用只读 image layers 作为 lower、独立容器层作为 upper�
 
 ## 下一步接入方向
 
+产品启动接线采用显式 Linux namespace 入口：`native/linux-local-overlay/launcher.py` 使用系统 unshare/setpriv 和 Python 标准库管理独占挂载进程，Node 服务及其重载子进程都撤销全部 capabilities。控制器只提供固定 open/seal/close 协议，通过私有 Unix socket 与同一 namespace 的 Broker 通信；挂载目录由启动时指定的私有根和 UUID 派生，不接受任意 mount 命令。来源不进入 Runtime 写根。未确认关闭的持久视图保持 active，后续启动拒绝自动重用；启动器退出清理不等于任务正常结束。此入口的依赖需预装，不自动安装或改动已有启动方式。它不是新配置环境变量体系：socket/namespace 值仅由父启动器注入作为内部 IPC 地址。Local backend/Engine 平台门禁在后续接入完成前保持关闭。
+
 只读 lower 原型已通过 WSL/ext4 手动实验，代码为 `experiments/native-local-overlay/readonly-lower.cpp` 和 `stable-lower-probe.py`，结果见 [只读基线报告](posix-stable-lower-results.json)。现有 ext4 无原生目录快照时，用只读 FUSE 适配层为内核 OverlayFS 固定已观察的命名空间和内容；内核继续负责可写 upper 与 copy-up。只解包匹配现有 Runtime 的 FUSE 开发头文件，没有安装驱动或系统包。
 
 创建只读取根身份；挂载完成时没有目录枚举或内容副本。首次路径查找缓存父目录成员，首次普通文件读取保存该文件内容，前后身份/版本不一致则返回 ESTALE。已读文件与目录列表在来源修改后保持稳定；单独修改来源文件即可让版本验证失败，已观察元数据但未读内容的文件修改后也被拒绝。私有写入通过内核 copy-up 成功，来源保持外部修改，最后先退出消费者再正常卸载 lower。

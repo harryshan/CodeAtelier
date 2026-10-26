@@ -75,3 +75,22 @@ python3 -B /mnt/g/codeagent/experiments/native-local-overlay/sandbox-probe.py \
 同一探针还保存 B 会话的跨轮状态。A 发布后，B 正常卸载并在新 lower 上保留原 upper；真实 Runtime 继续读到未发布内容，批次仍使用旧 B。B 发布完成后，先保存确认计划，普通卸载并核对源码覆盖摘要后移除，再重挂载；真实 Runtime 读到合并源码且未选产物保留。状态与 `refresh-pending.json` 留作实验记录，不提供异常重放。挂载显式使用 `userxattr,index=off,metacopy=off,redirect_dir=nofollow`。
 
 这仍是受控实验，不是 Engine/UI 自动发布已开放。尚无产品 namespace 启动器或崩溃重挂载；正常刷新只验证已有普通源码文件。捕获正文桥接暂为 2 MiB 单链接文件，历史依赖采用保守并集，未覆盖大型工程读集和目录成员变化后的刷新。未修改选集须保留读依赖，不能用于绕过来源变更检查。具体证据与限制见 [POSIX Local 方案](../../docs/posix-local-overlay.md)。
+
+## 显式 namespace 启动器与 Broker IPC
+
+`native/linux-local-overlay/launcher.py` 已提供可复用启动基础设施；`src/local-overlays/linux-controller.ts` 是正式 Broker 客户端。预装 Python 3、unshare/setpriv/mount、FUSE Runtime 和匹配 helper 后，可在独占 ext4 夹具执行：
+
+```sh
+probe_root=$(mktemp -d "$HOME/codeatelier-native-overlay-probes/controller-XXXXXX")
+python3 -B /mnt/g/codeagent/native/linux-local-overlay/launcher.py \
+  --root "$probe_root/control" \
+  --helper "$HOME/codeatelier-native-overlay-probes/readonly-lower" -- \
+  "$HOME/codeatelier-mxc-wsl-20261010/node-v24.19.0-linux-x64/bin/node" \
+  /mnt/g/codeagent/.local/posix-overlay-controller-probe.mjs "$probe_root" \
+  "$HOME/codeatelier-mxc-wsl-20261010/app/node_modules/@microsoft/mxc-sdk/dist/v1/index.js" \
+  /mnt/g/codeagent/dist/runtime/posix
+```
+
+先运行上述打包脚本生成探针。启动器后面的命令也可使用构建后的 `node dist/server/server/launcher.js --data-dir /absolute/private-data`；这是显式启动基础设施，**不会因此开放 Linux Local UI**。控制根须独立于来源、当前 UID 所有、权限 0700，Unix socket 路径须满足系统长度限制；不支持 root 启动或自动安装。
+
+每个视图用 UUID 派生目录，open 前 flush active，明确 close 正常卸载后保存 ready。客户端核对 mount namespace；断线/坏回复/超时不重发，服务未关闭视图即退出则保留 active 并返回失败。正常重新打开新建 lower、保留 upper；它不恢复未知卷，也不生成跨轮 B 或执行发布，这仍由后续 backend 协调。报告见 [控制器验收](../../docs/posix-overlay-controller-results.json)。

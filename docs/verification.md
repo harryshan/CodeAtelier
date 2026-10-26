@@ -1,5 +1,13 @@
 # 初版验证记录
 
+## Linux 显式 namespace 启动与挂载控制 IPC（2026-10-26）
+
+- 新增 `native/linux-local-overlay/launcher.py`：使用系统 unshare 创建同 UID 的应用 user/mount namespace，控制器保留 namespace 内挂载能力，setpriv 撤销 Node 服务的全部 capabilities。0700 私有根内 Unix socket 仅接受固定 UUID open/seal/close；挂载前持久 active，明确正常卸载后 ready，服务退出时未关闭视图保持 active。无普通目录 fallback 或任意 shell/mount 参数。
+- `src/local-overlays/linux-controller.ts` 核对 Broker 与控制器 mount namespace，响应大小/期限有界；断线、超时、坏响应及拒绝后禁止重发。操作 start/end、耗时、ID 和终态沿用 Pino/Perfetto 归档，不记录来源路径或正文。该基础设施尚未注入 LocalOverlayService/Engine，普通启动与平台门禁不变。
+- 实际新启动器 → 正式 IPC 客户端 → 两个真实 MXC Runtime 在 WSL/ext4 通过：[报告](posix-overlay-controller-results.json)，夹具 `/home/harryshan/codeatelier-native-overlay-probes/controller-lSS3Of`，日志 `.local/linux-controller-wsl.log`。Node 的 Inheritable/Permitted/Effective/Bounding/Ambient 全部为零；实际命令区间重叠，各自私有写成功，来源写拒绝、Git/socket 不可见。seal 后普通关闭并重开，两份私有源码保留，来源未改、Runtime 标记为空；启动器成功退出，宿主 mountinfo 无本夹具挂载。两个创建 ready 均零枚举、零正文副本。
+- 8 项协议回归通过，使用实际 Windows named pipe/本机 socket，不将该单测称为原生挂载证明。完整 `pnpm check` 通过：161 文件、1,294 passed / 1 existing skipped，类型/Lint/格式与 Web/Windows/POSIX Runtime 构建通过（`.local/linux-controller-check.log`）；专项最终记录 `.local/linux-controller-tests-final.log`。没有 HTTP/UI 行为变化，不重复 E2E，不运行 Evaluation。
+- 限制：控制器当前只管理 open/seal/close，跨轮 B、发布及源码覆盖刷新还须由 backend 协调；真实服务重载/HTTP 尚未经此启动器验收。依赖预装 Python 3、unshare/setpriv/mount/FUSE 与预构建 helper，不自动安装或修改用户服务；不支持 root 启动、异常卷恢复或 macOS。此增量不扩大任务间 OS 隔离保证。
+
 ## Linux 原生 overlay 正常跨轮保留与刷新（2026-10-26）
 
 - `posix-round.ts` 仅遍历私有 upper，保存未发布原始 B 与保守历史依赖；新生成物只存缺失基线。状态有界验证和序列化往返，complete Publisher 日志、当前私有内容及来源结果同时匹配后才生成覆盖移除摘要。调用方负责独占、Runtime 排空及普通卸载，不根据状态文件自动重放。

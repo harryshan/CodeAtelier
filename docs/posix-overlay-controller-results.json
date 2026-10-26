@@ -1,0 +1,39 @@
+{
+  "passed": true,
+  "capabilities": "none",
+  "ready": [
+    {
+      "state": "ready",
+      "valid": true,
+      "nodes": 1,
+      "objects": 0,
+      "copiedBytes": 0,
+      "sourceOpens": 0,
+      "enumerations": 0
+    },
+    {
+      "state": "ready",
+      "valid": true,
+      "nodes": 1,
+      "objects": 0,
+      "copiedBytes": 0,
+      "sourceOpens": 0,
+      "enumerations": 0
+    }
+  ],
+  "runs": [
+    {
+      "drained": true,
+      "sandboxApplied": true,
+      "exitCode": 0,
+      "interval": [1793012639001823500, 1793012639402590500]
+    },
+    {
+      "drained": true,
+      "sandboxApplied": true,
+      "exitCode": 0,
+      "interval": [1793012638996683000, 1793012639397778000]
+    }
+  ],
+  "reopened": true
+}
