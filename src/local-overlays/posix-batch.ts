@@ -3,7 +3,7 @@
  * 1. readPosixManifest 有界读取并核对清单句柄/路径版本，严格校验格式、来源与 seal ID。
  * 2. readBase 从捕获对象和原始 stamp 重建 B；未读正文仅在来源观察版本未变时补读。
  * 3. capturedReadVersion 对捕获的只读依赖流式重建版本，允许来源硬链接和最多 16 MiB 正文；缓存须单链接且身份匹配。
- *    posixReads 导出文件/目录依赖，目录沿用 Publisher 名称/类型摘要，拒绝来源过期，不将只读依赖转成可发布 B。
+ *    posixReads 导出文件/目录/链接依赖，目录用名称/类型摘要，链接绑定身份和文本；拒绝来源过期，不将只读依赖转成可发布 B。
  * 4. posixBatch 只读取明确选集的私有结果，优先保留先前轮次 B 并验证历史依赖。
  * 5. posixBaseline 由原生记录或已观察祖先的缺失成员证明 B，不读取私有生成物。
  * 调用方须先排空 Runtime、独占视图并取得 helper seal；本模块不冻结挂载、不发布，
@@ -27,12 +27,17 @@ import {
 import { PublishError } from "./publication/merge.js";
 import { readVersion, checkReadPath } from "./publication/read-version.js";
 import { validateBatch, type Batch } from "./publication/session.js";
+import {
+  checkSymlinkTarget,
+  symlinkVersion,
+} from "./publication/symlink-read.js";
 
 const stampSchema = z.string().regex(/^\d+:\d+:\d+:-?\d+:-?\d+:\d+$/);
 const entrySchema = z
   .object({
     path: z.string().min(1).max(1024),
-    kind: z.enum(["file", "directory"]),
+    kind: z.enum(["file", "directory", "symlink"]),
+    target: z.string().min(1).max(4096).optional(),
     identity: z.string().regex(/^\d+:\d+$/),
     stamp: stampSchema,
     mode: z.number().int().min(0).max(0xffff),
@@ -144,13 +149,18 @@ export async function readPosixManifest(
         !entry.stamp.startsWith(entry.identity + ":") ||
         !entry.stamp.endsWith(":" + entry.mode) ||
         (entry.object === null) !== (entry.objectStamp === null) ||
-        (entry.kind === "file" && entry.members !== null) ||
-        (entry.kind === "directory" && entry.object !== null)
+        (entry.kind !== "directory" && entry.members !== null) ||
+        (entry.kind !== "file" && entry.object !== null) ||
+        (entry.kind === "symlink") !== (entry.target !== undefined) ||
+        (entry.kind === "symlink" && (entry.mode & 0o170000) !== 0o120000)
       ) {
         throw new PublishError("POSIX_MANIFEST_INVALID");
       }
 
       paths.add(entry.path);
+      if (entry.kind === "symlink") {
+        checkSymlinkTarget(entry.path, entry.target!);
+      }
     }
 
     if (
@@ -305,7 +315,15 @@ export async function posixReads(
       continue;
     }
 
-    if (entry.kind === "directory") {
+    if (entry.kind === "symlink") {
+      const read = { path: entry.path, kind: "symlink" as const };
+      const version = symlinkVersion(entry.stamp, entry.target!);
+      if ((await readVersion(source, read, signal)) !== version) {
+        throw new PublishError("STALE_DEPENDENCY");
+      }
+
+      reads.push({ ...read, version });
+    } else if (entry.kind === "directory") {
       const read = { path: entry.path, kind: "directory" as const };
       if (entry.members === null) {
         const directory =

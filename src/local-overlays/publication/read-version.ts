@@ -4,6 +4,7 @@
  * 2. nativeReadPath 将原生观察转换为受控路径/类型；不接受任意本机路径或未识别目录标签。
  * 3. readVersion 对文件沿用流式快照；目录只枚举直接名称/类型并绑定身份，排除视图隐藏的 .git。
  *    枚举前后复核身份/时间，持久版本不含时间，避免已清理临时项造成无关失效。
+ *    Linux symlink 类型单独复核链接文本和身份，不沿链接打开或赋予源码写入权限。
  * 4. 精确 UUID 参考根仅允许 missing 凭据：私有目录创建也会观察 lower 缺失，后续出现则拒绝；子路径和发布仍禁止。
  * 目录每次最多 100,000 项/16 MiB 编码；不递归、不读取成员正文、不声称涵盖条目的大小/时间元数据。
  * 外部写入仍有检查后竞争窗口，按已观测目录验证不等于 OS 原子事务；日志由外层生命周期负责。
@@ -19,10 +20,11 @@ import {
   type Source,
 } from "./files.js";
 import { PublishError } from "./merge.js";
+import { readSymlinkVersion } from "./symlink-read.js";
 
 export interface ReadPath {
   path: string;
-  kind?: "directory";
+  kind?: "directory" | "symlink";
 }
 
 function referenceRoot(value: string) {
@@ -88,6 +90,10 @@ export async function readVersion(
     }
 
     throw new PublishError("STALE_DEPENDENCY");
+  }
+
+  if (read.kind === "symlink") {
+    return readSymlinkVersion(source, read.path);
   }
 
   if (read.kind !== "directory") {

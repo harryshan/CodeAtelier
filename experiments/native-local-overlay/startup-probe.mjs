@@ -5,7 +5,7 @@
  * 2. 回环 Responses HTTP/SSE 返回固定工具计划，两阶段屏障确保双会话从同一基线并行编辑。
  * 3. 保存独立 v1 设置，启动 dist 的 overlay-launcher，由实际 HTTP 创建/运行会话；没有内部类注入。
  * 4. 核对真实 Runtime/候选、来源合并、私有产物，重载服务后继续原会话读取，再正常退出并保留报告。
- *    --typescript 另准备真实编译器/类型库与硬链接依赖，在主任务和候选中编译，产物保持私有。
+ *    --typescript 另准备真实编译器/类型库与硬链接依赖；--symlinks 通过内部包链接和 bin 链运行，产物保持私有。
  * 5. finally 仅关闭本脚本服务/子进程；不安装依赖、不修改用户设置、不重启现有服务或运行 Evaluation。
  */
 import assert from "node:assert/strict";
@@ -40,11 +40,15 @@ await mkdir(app);
 await mkdir(data, { mode: 0o700 });
 await mkdir(source);
 await writeFile(path.join(source, "module.py"), "a = 1\nb = 2\n");
-const typescript = process.argv.includes("--typescript");
+const symlinks = process.argv.includes("--symlinks");
+const typescript = process.argv.includes("--typescript") || symlinks;
+const compilerDirectory = symlinks
+  ? "node_modules/.pnpm/typescript/node_modules/typescript/lib"
+  : "vendor";
 if (typescript) {
   const library = path.join(checkout, "node_modules/typescript/lib");
-  const vendor = path.join(source, "vendor");
-  await mkdir(vendor);
+  const vendor = path.join(source, compilerDirectory);
+  await mkdir(vendor, { recursive: true });
   for (const file of await readdir(library)) {
     if (file.endsWith(".d.ts") || ["tsc.js", "_tsc.js"].includes(file)) {
       await cp(path.join(library, file), path.join(vendor, file));
@@ -58,6 +62,19 @@ if (typescript) {
     path.join(source, "input.ts"),
     "export const answer: number = 42;\n",
   );
+  if (symlinks) {
+    await symlink(
+      ".pnpm/typescript/node_modules/typescript",
+      path.join(source, "node_modules/typescript"),
+    );
+    await mkdir(path.join(source, "node_modules/.bin"));
+    await symlink(
+      "../typescript/lib/tsc.js",
+      path.join(source, "node_modules/.bin/tsc"),
+    );
+    await symlink("../outside", path.join(source, "escape"));
+    await writeFile(path.join(root, "outside"), "outside sentinel");
+  }
 }
 await writeFile(path.join(app, "package.json"), '{"type":"module"}\n');
 for (const directory of [
@@ -97,9 +114,10 @@ const report = {
   tasks: [],
   requests: 0,
   typescript,
+  symlinks,
 };
 if (typescript) {
-  const info = await lstat(path.join(source, "vendor/_tsc.js"));
+  const info = await lstat(path.join(source, compilerDirectory, "_tsc.js"));
   report.compiler = { bytes: info.size, links: info.nlink };
 }
 const calls = new Map();
@@ -120,8 +138,13 @@ function barrier() {
 const started = barrier();
 const edited = barrier();
 const python = (code) => `python3 -B -c '${code.replaceAll("'", "'\\''")}'`;
+const checkLinks = symlinks
+  ? python(
+      "import pathlib,errno; p=pathlib.Path('escape'); denied=False\ntry: p.read_text()\nexcept OSError as error: denied=error.errno in (errno.EACCES,errno.EPERM)\nassert denied; assert pathlib.Path('node_modules/typescript').is_symlink(); assert pathlib.Path('node_modules/.bin/tsc').is_symlink()",
+    )
+  : "";
 const compile = typescript
-  ? ` && '${process.execPath.replaceAll("'", "'\\''")}' vendor/tsc.js --strict --target es2022 --module nodenext --outDir build input.ts && printf TSC_OK`
+  ? ` && ${checkLinks ? `${checkLinks} && ` : ""}'${process.execPath.replaceAll("'", "'\\''")}' ${symlinks ? "node_modules/.bin/tsc" : "vendor/tsc.js"} --strict --target es2022 --module nodenext --outDir build input.ts && printf TSC_OK`
   : "";
 function tool(label, step, name, args) {
   const id = `${label}-${step}`;
@@ -402,7 +425,27 @@ try {
           "utf8",
         ),
       );
-      assert.ok(round.reads.some((entry) => entry.path === "vendor/_tsc.js"));
+      assert.ok(
+        round.reads.some(
+          (entry) => entry.path === `${compilerDirectory}/_tsc.js`,
+        ),
+      );
+      if (symlinks) {
+        assert.ok(
+          round.reads.some(
+            (entry) =>
+              entry.path === "node_modules/typescript" &&
+              entry.kind === "symlink",
+          ),
+        );
+        assert.ok(
+          round.reads.some(
+            (entry) =>
+              entry.path === "node_modules/.bin/tsc" &&
+              entry.kind === "symlink",
+          ),
+        );
+      }
       report.tasks.at(-1).readDependencies = round.reads.length;
     }
   }
@@ -415,7 +458,11 @@ try {
   );
   assert.deepEqual(
     (await readdir(source)).sort(),
-    typescript ? ["input.ts", "module.py", "vendor"] : ["module.py"],
+    symlinks
+      ? ["escape", "input.ts", "module.py", "node_modules"]
+      : typescript
+        ? ["input.ts", "module.py", "vendor"]
+        : ["module.py"],
   );
   assert.deepEqual(await readdir(path.join(data, "mxc/active")), []);
 

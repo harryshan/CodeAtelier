@@ -50,7 +50,7 @@ pnpm start:overlay --data-dir /absolute/private-data --views /absolute/private-v
 - 当前主流程验收覆盖 Windows/NTFS + WinFsp 和 WSL2/ext4 + Linux OverlayFS/MXC；不扩大为所有 Linux 发行版、macOS 或大型工程验收。
 - 发布最多 100 个普通单链接文件，每文件 2 MiB，总内容 16 MiB；父目录须已存在。不发布目录树、链接或特殊文件；二进制双改保守拒绝。
 - 创建不扫描源码；读取依赖检查、首次写入复制和候选构建仍有成本。私有产物占磁盘，来源大树创建测试不代表大型构建没有开销。
-- Linux 只读 lower 首次查找缓存父目录成员、首次读取保存文件基线；不提供创建时全目录原子快照。当前不支持符号链接；只读依赖可为硬链接，捕获正文最多 16 MiB，并以 64 KiB 缓冲校验；待发布源码及未发布编辑基线仍限 2 MiB 单链接文件。历史依赖并集和目录成员变化可能保守拒绝发布；不能套用 Windows 工程读集验收。
+- Linux 只读 lower 首次查找缓存父目录成员、首次读取保存文件基线；不提供创建时全目录原子快照。支持项目内相对依赖链接（包含前导 `../`，但不能越出项目；不支持 `a/../b` 这类中途回退、绝对或外部链接）。链接和目标各自记录读依赖，发布仍只接受真实普通文件路径；不支持发布链接或保证包安装器在 upper 创建链接后正常收尾。只读依赖可为硬链接，捕获正文最多 16 MiB，并以 64 KiB 缓冲校验；待发布源码及未发布编辑基线仍限 2 MiB 单链接文件。历史依赖并集和目录成员变化可能保守拒绝发布；不能套用 Windows 工程读集验收。
 - 不自动删除会话或丢弃未发布内容。异常状态优先保留，不承诺自动恢复所有崩溃和损坏情况。
 
 设计和证据见 [Local overlay 设计](local-overlay-design.md)、[验证记录](verification.md)；Windows 手动验收为 `pnpm overlay:verify-browser`，Linux 使用 [HTTP 探针](../experiments/native-local-overlay/README.md)。两者均不在默认检查或 Evaluation 中自动执行。

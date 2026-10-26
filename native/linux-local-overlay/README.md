@@ -2,6 +2,8 @@
 
 `readonly-lower.cpp` 为内核 OverlayFS 提供按需稳定的只读 lower；`launcher.py` 管理应用 user/mount namespace、私有控制 socket 和挂载生命周期。可写 upper/copy-up 由内核完成。组件不管理 Git，不在创建时扫描或复制项目。
 
+内部相对依赖链接固定自身身份/文本，目标经 overlay 解析；支持不越界的前导 `../`，拒绝绝对/外部链接及中途回退路径。发布仍只接受普通文件，不能用链接写入能力推断包安装器兼容性。新链接清单需配套当前 Broker，旧文件/目录清单仍可读取；真实 Sandbox 编译与改向拒绝证据见 [POSIX 方案](../../docs/posix-local-overlay.md)。
+
 在 Linux checkout 中准备 Node.js 24/26、g++（C++20）、FUSE 3 开发头文件和库，然后执行：
 
 ```sh

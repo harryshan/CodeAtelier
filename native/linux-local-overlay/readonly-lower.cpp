@@ -4,13 +4,13 @@
  * 1. Fd、Node、sameVersion 与 key 管理句柄、观察版本及管理目录过滤；
  *    管理目录 lookup 拒绝访问，避免 ENOENT 允许 OverlayFS 在有 lower 的目录中创建同名项。
  * 2. Store 只在创建时读取根身份；list 按需固定目录成员，capture 在首次读取
- *    普通文件时保存内容。openSource 用 openat2 限制根内无符号链接解析。
+ *    普通文件时保存内容。openSource 不沿宿主符号链接；内部相对链接固定文本供虚拟视图解析。
  * 3. verify 检查已观察版本；seal 在调用方排空消费者后导出一次性清单供发布桥接，
  *    report 仅输出状态。清单不代表完整崩溃恢复或全目录原子快照。
  * 4. operations 仅提供 FUSE 读取回调，写入、copy-up 和 whiteout 由上层内核
  *    OverlayFS 完成；main 通过 stdin 接收 metrics/verify/seal UUID/close。
  * 5. 正常 close 卸载并关闭句柄；控制器负责有界等待、异常退出后的卸载检查。
- *    Linux backend 经显式 namespace 启动开放；不支持链接或从清单恢复异常挂载。
+ *    Linux backend 经显式 namespace 启动开放；仅支持根内相对依赖链接，不从清单恢复异常挂载。
  *    纯 upper 新目录不一定经过 lower，管理目录拒绝不等于全局 Git 命令封锁。
  */
 #define FUSE_USE_VERSION 31
@@ -83,6 +83,7 @@ struct Node {
     std::vector<std::string> members;
     std::string object;
     std::string objectStamp;
+    std::string target;
     int data = -1;
 };
 
@@ -148,6 +149,32 @@ std::string key(const char* path) {
     return result;
 }
 
+// 仅前导 ../ 可以回退；拒绝 a/../b，避免 a 为另一个链接时词法折叠改变解析语义。
+// 内核继续在 overlay 中解析，不使用来源绝对路径或沿宿主链接打开目标。
+void checkLinkTarget(const std::string& name, const std::string& target) {
+    require(!target.empty() && target.size() <= 4096 && target.front() != '/', EACCES);
+    std::size_t depth = std::count(name.begin(), name.end(), '/') - 1;
+    bool descended = false;
+    std::size_t offset = 0;
+    while (offset < target.size()) {
+        auto end = target.find('/', offset);
+        auto part = target.substr(offset, end - offset);
+        require(!part.empty(), EACCES);
+        if (part == "..") {
+            require(!descended && depth > 0, EACCES);
+            depth--;
+        } else if (part != ".") {
+            key(("/" + part).c_str());
+            descended = true;
+        }
+        if (end == std::string::npos) {
+            break;
+        }
+        offset = end + 1;
+        require(offset < target.size(), EACCES);
+    }
+}
+
 class Store {
 public:
     Store(const std::string& source, const std::string& control)
@@ -183,7 +210,20 @@ public:
         auto handle = openSource(name, O_PATH);
         Node value;
         require(::fstat(handle.get(), &value.info) == 0, errno);
-        require(S_ISDIR(value.info.st_mode) || S_ISREG(value.info.st_mode), ENOTSUP);
+        require(S_ISDIR(value.info.st_mode) || S_ISREG(value.info.st_mode) || S_ISLNK(value.info.st_mode), ENOTSUP);
+        if (S_ISLNK(value.info.st_mode)) {
+            std::array<char, 4097> buffer;
+            auto length = ::readlinkat(handle.get(), "", buffer.data(), buffer.size());
+            require(length > 0 && length < static_cast<ssize_t>(buffer.size()), EACCES);
+            value.target.assign(buffer.data(), length);
+            checkLinkTarget(name, value.target);
+            struct stat after{};
+            require(::fstat(handle.get(), &after) == 0, errno);
+            require(sameVersion(value.info, after), ESTALE);
+            auto current = openSource(name, O_PATH);
+            require(::fstat(current.get(), &after) == 0, errno);
+            require(sameVersion(value.info, after), ESTALE);
+        }
         return nodes_.emplace(name, std::move(value)).first->second;
     }
 
@@ -313,7 +353,8 @@ public:
             }
             first = false;
             document += "{\"path\":" + jsonString(name == "/" ? "." : name.substr(1)) +
-                ",\"kind\":" + jsonString(S_ISDIR(entry.info.st_mode) ? "directory" : "file") +
+                ",\"kind\":" + jsonString(S_ISDIR(entry.info.st_mode) ? "directory" :
+                    S_ISLNK(entry.info.st_mode) ? "symlink" : "file") +
                 ",\"identity\":" + jsonString(identity(entry.info)) +
                 ",\"stamp\":" + jsonString(stamp(entry.info)) +
                 ",\"mode\":" + std::to_string(entry.info.st_mode) +
@@ -333,6 +374,9 @@ public:
                 document += ']';
             } else {
                 document += "null";
+            }
+            if (S_ISLNK(entry.info.st_mode)) {
+                document += ",\"target\":" + jsonString(entry.target);
             }
             document += '}';
             require(document.size() <= 16 * 1024 * 1024, EFBIG);
@@ -448,6 +492,15 @@ fuse_operations operations() {
                     break;
                 }
             }
+            return 0;
+        });
+    };
+    result.readlink = [](const char* path, char* buffer, std::size_t size) {
+        return call([&](Store& current) {
+            const auto& entry = current.node(key(path));
+            require(S_ISLNK(entry.info.st_mode), EINVAL);
+            require(size > entry.target.size(), ERANGE);
+            std::memcpy(buffer, entry.target.c_str(), entry.target.size() + 1);
             return 0;
         });
     };

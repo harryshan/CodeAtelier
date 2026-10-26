@@ -1,5 +1,13 @@
 # 初版验证记录
 
+## Linux 内部相对依赖链接（2026-10-26）
+
+- 只读 helper 保持 openat2 不跟随宿主路径，新增链接自身句柄/文本捕获及 FUSE readlink；目标仍由虚拟视图解析。源码发布的普通文件规则未放宽；读集新增 `symlink` 类型，旧记录保持兼容，创建不增加遍历。
+- 真实 WSL/ext4 夹具 `ln-laqjhf` 通过正式启动器、公开 HTTP 和实际 `linux-bubblewrap`：两个主 Runtime 经 `.bin/tsc -> ../typescript/lib/tsc.js` 及内部包目录链接运行 TypeScript 5.9.2，新候选同样编译通过；每任务 77 条读凭据，含两个链接。两轮源码发布、重载、原会话只读续聊和正常卸载退出 0 均成功。主/候选同时断言越界 `escape -> ../outside` 访问被拒绝；来源只保留选定源码改动，编译产物私有。见 [报告](posix-overlay-symlink-results.json)。
+- 独立 `symlink-version-probe.mjs` 在 `link-version-4nBvvb` 使用实际构建的 Publisher：目标文件变化有独立版本、链接改向令旧读凭据失效并阻止发布，拒绝后源码不变；链接路径不能被当成可编辑源码，外部/绝对链接及父目录链接拒绝。此证据补足 Windows 检查中跳过的 Linux 文件用例，不替代挂载实验。
+- `pnpm check` 通过：166 文件、1,335 passed / 2 skipped（一个既有跳过及一个 Linux 专用链接用例）；类型、Lint、格式和构建通过，日志 `.local/linux-links-check.log`。首次检查仅发现新文件两处空行格式错误，修正后完整重跑通过。Linux helper 使用既有 FUSE 头文件编译，`-Wall -Wextra -Werror` 通过。未改变 UI/HTTP 契约，不重复前次浏览器回归；真实 HTTP 已在上述实验执行。
+- 支持范围是内部相对依赖读取；不支持绝对/外部链接、中途 `a/../b`、链接源码发布或保证包安装器创建 upper 链接后正常收尾。未运行完整 pnpm 项目或大工程性能测试，Linux 检查/恢复和 macOS 后端仍未完成；没有安装依赖、分区、Evaluation 或重启用户服务。
+
 ## Linux 工程依赖与正常跨轮保留（2026-10-26）
 
 - 新回归先复现两个 FILE_TYPE_OR_LIMIT：已捕获的 3 MiB 只读文件和来源硬链接被错误地按源码 B 读取。`posixReads` 现用 64 KiB 固定缓冲核对私有捕获对象并重建原始版本，再复核当前来源；缓存仍须单链接及匹配 seal stamp/大小，来源只读依赖允许硬链接。原生 16 MiB 捕获上限和 2 MiB/单链接源码发布限制保持。新增测试另证明来源变更、缓存损坏及不支持的源码选择继续拒绝（前后日志 `.local/linux-read-dependency-before.log` / `linux-read-dependency-after.log`）。
