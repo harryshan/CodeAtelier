@@ -1,0 +1,210 @@
+{
+  "passed": true,
+  "preparation": {
+    "preparationMs": 492431,
+    "source": {
+      "files": 18451,
+      "logicalBytes": 378210819,
+      "allocatedBytes": 448331776,
+      "symlinks": 1586
+    }
+  },
+  "opens": [
+    {
+      "ms": 35.298791000000165,
+      "ready": {
+        "state": "ready",
+        "valid": true,
+        "nodes": 1,
+        "objects": 0,
+        "copiedBytes": 0,
+        "sourceOpens": 0,
+        "enumerations": 0
+      }
+    },
+    {
+      "ms": 26.542035000000396,
+      "ready": {
+        "state": "ready",
+        "valid": true,
+        "nodes": 1,
+        "objects": 0,
+        "copiedBytes": 0,
+        "sourceOpens": 0,
+        "enumerations": 0
+      }
+    },
+    {
+      "ms": 28.7811729999994,
+      "ready": {
+        "state": "ready",
+        "valid": true,
+        "nodes": 1,
+        "objects": 0,
+        "copiedBytes": 0,
+        "sourceOpens": 0,
+        "enumerations": 0
+      }
+    },
+    {
+      "ms": 49.39901500000087,
+      "ready": {
+        "state": "ready",
+        "valid": true,
+        "nodes": 1,
+        "objects": 0,
+        "copiedBytes": 0,
+        "sourceOpens": 0,
+        "enumerations": 0
+      }
+    },
+    {
+      "ms": 52.338056000000506,
+      "ready": {
+        "state": "ready",
+        "valid": true,
+        "nodes": 1,
+        "objects": 0,
+        "copiedBytes": 0,
+        "sourceOpens": 0,
+        "enumerations": 0
+      }
+    }
+  ],
+  "sessions": [
+    {
+      "createMs": 150.55915099999947,
+      "created": {
+        "files": 2,
+        "logicalBytes": 466,
+        "allocatedBytes": 20480,
+        "cacheObjects": 0,
+        "cacheBytes": 0,
+        "cacheAllocatedBytes": 0
+      },
+      "compile": {
+        "exitCode": 0,
+        "startedAt": 1793027535746,
+        "endedAt": 1793027553568,
+        "compileMs": 17821.493782,
+        "diagnostics": "Files:                         793\nLines of Library:            52791\nLines of Definitions:       175178\nLines of TypeScript:         51296\nLines of JavaScript:             0\nLines of JSON:                   0\nLines of Other:                  0\nIdentifiers:                278644\nSymbols:                    468158\nTypes:                      123631\nInstantiations:             351880\nMemory used:               536757K\nAssignability cache size:    32503\nIdentity cache size:          1216\nSubtype cache size:           2615\nStrict subtype cache size:     762\nI/O Read time:               7.79s\nParse time:                  0.97s\nResolveModule time:          0.77s\nResolveTypeReference time:   0.04s\nResolveLibrary time:         0.05s\nProgram time:                9.88s\nBind time:                   0.72s\nCheck time:                  5.65s\ntransformTime time:          0.15s\nSource Map time:             0.10s\ncommentTime time:            0.08s\nI/O Write time:              0.12s\nprintTime time:              1.22s\nEmit time:                   1.22s\nTotal time:                 17.46s\n",
+        "files": 444,
+        "bytes": 2919440,
+        "outputSha256": "def42474b4c3b4ab5c21821c67cbcca4d73b0c9734d06dfddfc121af8e3be65f",
+        "runtimeMs": 19379.920635000002
+      },
+      "afterCompile": {
+        "files": 1285,
+        "logicalBytes": 20677575,
+        "allocatedBytes": 23859200,
+        "cacheObjects": 838,
+        "cacheBytes": 17756302,
+        "cacheAllocatedBytes": 19820544
+      },
+      "finishMs": 3653.6763320000027,
+      "retained": {
+        "files": 447,
+        "logicalBytes": 3215290,
+        "allocatedBytes": 4296704,
+        "cacheObjects": 0,
+        "cacheBytes": 0,
+        "cacheAllocatedBytes": 0
+      },
+      "reads": 1128
+    },
+    {
+      "createMs": 116.68293799999992,
+      "created": {
+        "files": 2,
+        "logicalBytes": 466,
+        "allocatedBytes": 20480,
+        "cacheObjects": 0,
+        "cacheBytes": 0,
+        "cacheAllocatedBytes": 0
+      },
+      "compile": {
+        "exitCode": 0,
+        "startedAt": 1793027535739,
+        "endedAt": 1793027553389,
+        "compileMs": 17648.005993,
+        "diagnostics": "Files:                         793\nLines of Library:            52791\nLines of Definitions:       175178\nLines of TypeScript:         51296\nLines of JavaScript:             0\nLines of JSON:                   0\nLines of Other:                  0\nIdentifiers:                278644\nSymbols:                    468158\nTypes:                      123631\nInstantiations:             351880\nMemory used:               536542K\nAssignability cache size:    32503\nIdentity cache size:          1216\nSubtype cache size:           2615\nStrict subtype cache size:     762\nI/O Read time:               7.83s\nParse time:                  0.99s\nResolveModule time:          0.75s\nResolveTypeReference time:   0.03s\nResolveLibrary time:         0.02s\nProgram time:                9.89s\nBind time:                   0.64s\nCheck time:                  5.59s\ntransformTime time:          0.15s\nSource Map time:             0.08s\ncommentTime time:            0.08s\nI/O Write time:              0.15s\nprintTime time:              1.18s\nEmit time:                   1.18s\nTotal time:                 17.29s\n",
+        "files": 444,
+        "bytes": 2919440,
+        "outputSha256": "def42474b4c3b4ab5c21821c67cbcca4d73b0c9734d06dfddfc121af8e3be65f",
+        "runtimeMs": 19280.930765
+      },
+      "afterCompile": {
+        "files": 1285,
+        "logicalBytes": 20677575,
+        "allocatedBytes": 23859200,
+        "cacheObjects": 838,
+        "cacheBytes": 17756302,
+        "cacheAllocatedBytes": 19820544
+      },
+      "finishMs": 3922.7728629999983,
+      "retained": {
+        "files": 447,
+        "logicalBytes": 3215290,
+        "allocatedBytes": 4296704,
+        "cacheObjects": 0,
+        "cacheBytes": 0,
+        "cacheAllocatedBytes": 0
+      },
+      "reads": 1128
+    }
+  ],
+  "direct": {
+    "exitCode": 0,
+    "startedAt": 1793027526425,
+    "endedAt": 1793027533886,
+    "compileMs": 7460.612055,
+    "diagnostics": "Files:                         793\nLines of Library:            52791\nLines of Definitions:       175178\nLines of TypeScript:         51296\nLines of JavaScript:             0\nLines of JSON:                   0\nLines of Other:                  0\nIdentifiers:                278644\nSymbols:                    468158\nTypes:                      123631\nInstantiations:             351880\nMemory used:               539541K\nAssignability cache size:    32503\nIdentity cache size:          1216\nSubtype cache size:           2615\nStrict subtype cache size:     762\nI/O Read time:               0.28s\nParse time:                  0.74s\nResolveModule time:          0.20s\nResolveTypeReference time:   0.01s\nResolveLibrary time:         0.01s\nProgram time:                1.38s\nBind time:                   0.42s\nCheck time:                  4.41s\ntransformTime time:          0.12s\nSource Map time:             0.08s\ncommentTime time:            0.06s\nI/O Write time:              0.10s\nprintTime time:              0.99s\nEmit time:                   1.00s\nTotal time:                  7.20s\n",
+    "files": 444,
+    "bytes": 2919440,
+    "outputSha256": "def42474b4c3b4ab5c21821c67cbcca4d73b0c9734d06dfddfc121af8e3be65f"
+  },
+  "parallel": true,
+  "candidateCompile": {
+    "exitCode": 0,
+    "startedAt": 1793027562167,
+    "endedAt": 1793027576909,
+    "compileMs": 14741.146891,
+    "diagnostics": "Files:                         793\nLines of Library:            52791\nLines of Definitions:       175178\nLines of TypeScript:         51296\nLines of JavaScript:             0\nLines of JSON:                   0\nLines of Other:                  0\nIdentifiers:                278644\nSymbols:                    468158\nTypes:                      123631\nInstantiations:             351880\nMemory used:               533987K\nAssignability cache size:    32503\nIdentity cache size:          1216\nSubtype cache size:           2615\nStrict subtype cache size:     762\nI/O Read time:               6.17s\nParse time:                  1.01s\nResolveModule time:          0.72s\nResolveTypeReference time:   0.04s\nResolveLibrary time:         0.02s\nProgram time:                8.25s\nBind time:                   0.48s\nCheck time:                  4.58s\ntransformTime time:          0.13s\nSource Map time:             0.08s\ncommentTime time:            0.07s\nI/O Write time:              0.13s\nprintTime time:              1.06s\nEmit time:                   1.06s\nTotal time:                 14.38s\n",
+    "files": 444,
+    "bytes": 2919440,
+    "outputSha256": "def42474b4c3b4ab5c21821c67cbcca4d73b0c9734d06dfddfc121af8e3be65f",
+    "runtimeMs": 15406.613229000002
+  },
+  "candidate": {
+    "ms": 19147.969808999995,
+    "reads": 1127
+  },
+  "environment": {
+    "platform": "WSL2 Ubuntu 26.04 ext4",
+    "node": "24.19.0",
+    "typescript": "5.9.2",
+    "sourceCommit": "03b2440",
+    "fixture": "build-PcqRVg",
+    "runtime": "production MXC linux-bubblewrap"
+  },
+  "scope": {
+    "source": "CodeAtelier backend emit with existing pnpm dependencies",
+    "directRuns": 1,
+    "parallelSandboxBuilds": 2,
+    "candidateBuilds": 1,
+    "outputEquality": true,
+    "sourcePublicationTested": false,
+    "sourceCopiedOnlyDuringFixturePreparation": true,
+    "diskSampleExcludes": [
+      "kernel work directory",
+      "mountpoints",
+      "Store and tracing outside each view"
+    ],
+    "peakUsageMeasured": false,
+    "coldCacheControlled": false
+  },
+  "normalShutdown": {
+    "activeRuntimeMarkers": 0,
+    "hostMounts": 0
+  }
+}

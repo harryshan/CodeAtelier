@@ -19,6 +19,25 @@ node experiments/native-local-overlay/startup-probe.mjs "$probe_root" /absolute/
 
 另在 Linux checkout 运行 `node experiments/native-local-overlay/symlink-version-probe.mjs`，直接使用构建后的 Publisher 验证链接改向阻断旧发布、目标正文独立失效、外部/绝对/父目录链接拒绝；独占夹具及 `report.json` 保留在 `~/codeatelier-native-overlay-probes/link-version-*`。它不启动服务或挂载，不能单独当成 Sandbox 验收。
 
+## 真实工程编译与占用
+
+`prepare-project.py` 将 checkout 的 `src`、两个 tsconfig、package.json 和已安装 node_modules 一次性复制到独占 ext4 夹具，保留内部相对依赖链接，不下载安装、不读取用户配置。该准备复制单独计量，**不是产品创建 overlay 的步骤**。Windows 安装的原生依赖不用于 Linux 执行；此探针仅运行平台无关的 TypeScript，Runtime 仍使用既有 Linux SDK。
+
+先常规构建产品、Linux helper 和上面的 `build-runtime-probe.mjs`，然后在 Linux shell 执行，绝对路径按已有环境替换：
+
+```sh
+probe_root=$(mktemp -d "$HOME/codeatelier-native-overlay-probes/build-XXXXXX")
+python3 -B experiments/native-local-overlay/prepare-project.py /absolute/checkout "$probe_root"
+python3 -B native/linux-local-overlay/launcher.py \
+  --root "$probe_root/data/local-overlays" --views "$probe_root/views" \
+  --helper /absolute/checkout/dist/native/linux-x64/codeatelier-overlay-lower -- \
+  /absolute/linux-node/bin/node /absolute/checkout/.local/posix-overlay-project-build-probe.mjs \
+  "$probe_root" /absolute/linux-node_modules/@microsoft/mxc-sdk/dist/v1/index.js \
+  /absolute/checkout/dist/runtime/posix
+```
+
+`project-build-probe.mjs` 比较一次直接编译、两个并行真实 Sandbox 编译和一次独立候选编译，核对所有产物的路径/内容摘要、执行区间及正常排空；不更改来源源码或发布生成物。报告 `project-build-report.json` 保存编译器诊断、创建/收尾耗时、helper ready 计数、首次读取缓存与收尾保留占用，原始事件和 trace 留在夹具。磁盘统计为已知私有目录的 `st_blocks * 512`，跳过挂载点及内核受保护 work 目录，不包含视图外 Store/trace；编译后样本不是整个进程的峰值内存/磁盘测量。失败保留现场，不自动重跑未知任务。它不覆盖包安装、前端打包、真实模型或巨型 repo。已验证结果见 [工程报告](../../docs/posix-overlay-project-build-results.json) 和 [成本说明](../../docs/posix-local-overlay.md#真实-codeatelier-后端编译成本)。
+
 ## Engine 主流程
 
 正式 `startup-probe.mjs` 命令追加 `--review`，会在两个主任务中保留普通、空及删除文件，通过公开 `local-review` 检查并用 `local-resolution` 创建新参考对话；随后实际 Sandbox 读取历史材料、检查当前源码、重新编辑并经候选发布。核对来源/原私有层和正常关闭，见 [检查报告](../../docs/posix-overlay-review-results.json)。不测试异常挂载恢复，也不会自动启动用户服务。

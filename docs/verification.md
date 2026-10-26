@@ -1,5 +1,12 @@
 # 初版验证记录
 
+## Linux 真实 CodeAtelier 后端编译（2026-10-26）
+
+- 新增仅手动执行的真实工程探针：在独立 ext4 夹具使用当前源码与已安装 pnpm 布局，生产 Controller/LocalOverlayService/Store、MXC Runtime 和候选验证器完成双 Sandbox 并行编译及独立候选编译。固定命令不访问模型服务；两侧全部 444 个产物的内容/路径摘要均等于直接编译。真实来源 18,451 个普通文件、1,586 个链接，测试准备复制与产品创建成本单独记录。
+- 两会话创建 150.6/116.7 ms，初始私有数据各 20 KiB；helper ready 为根节点、零枚举/文件打开/复制。并行编译 17.82/17.65 秒，候选单独编译 14.74 秒，对照直接编译 7.46 秒；不控制冷缓存、不把并发比值解释为纯文件系统开销。编译后私有数据约 22.75 MiB，收尾后约 4.10 MiB、缓存对象归零。数据不包括内核 work、挂载点及视图外 Store/trace，也不是峰值。
+- 夹具 `build-PcqRVg` 最终退出 0、Runtime 活动标记和宿主残留挂载均为零；早期探针文件数假设和磁盘测量权限问题已修正，失败报告保留，未调整产品语义/权限。首读逐文件捕获/fsync 是后续性能测量点，本轮未改变持久化。完整数值和边界见 [结果摘要](posix-overlay-project-build-results.json) 与 [POSIX 成本记录](posix-local-overlay.md#真实-codeatelier-后端编译成本)。
+- `pnpm check` 全部通过：166 个文件、1340 项通过/2 项跳过，类型/格式/lint/构建通过。新增实验脚本另行通过 ESLint/Prettier 和 Python 语法检查；本轮没有 UI/HTTP 修改，未重跑浏览器或 Evaluation。不扩展为源码发布新证据、前端构建、包安装、巨型 repo、macOS 或异常恢复验收。
+
 ## Linux 正常文件检查与参考继续（2026-10-26）
 
 - `posix-review.ts` 使用有界 round 和明确选集，控制器只读 classify 区分普通空文件与 OverlayFS whiteout；B/O/T、预览与整组材料版本复用现有 HTTP/UI 契约。检查期间重新核对分类/私有文件、round 和当前来源；pending、缺失基线、重复选集、变化和不支持类型拒绝整组，不把普通检查失败变成未知发布。Service 复用视图锁/review trace，classify 仅记录关联 ID/耗时/状态，不记录路径/正文。
