@@ -4,6 +4,7 @@
  * 2. 验证捕获原文、明确选集、未读正文补读、来源/目录依赖过期及损坏对象拒绝。
  * 3. 真实 Publisher 验证三方合并、同一行冲突和私有修改保留；候选回调只检查合并结果。
  * 4. 两轮状态序列化保留未发布 B，验证 complete 确认、私有版本和历史依赖拒绝。
+ * 5. upper 的私有管理目录留在磁盘但不进入基线/发布；普通源码仍可捕获和发布。
  * 原生 seal、真实 Runtime 与候选执行由独立 WSL 手动实验验证，不把本测试当 Sandbox 证据。
  */
 import { randomUUID } from "node:crypto";
@@ -35,6 +36,36 @@ import {
 } from "../src/local-overlays/posix-round.js";
 
 const original = "a = 1\nb = 2\n";
+
+it("retains private Git metadata without capturing or publishing it", async () => {
+  const f = await fixture();
+  const metadata = path.join(f.input.workspace, "new", ".git");
+  await mkdir(metadata, { recursive: true });
+  await writeFile(path.join(metadata, "HEAD"), "private repository\n");
+  await writeFile(path.join(f.input.workspace, "code.py"), "private source\n");
+  const state = await capturePosixRound({
+    ...f.input,
+    upper: f.input.workspace,
+  });
+  expect(state.baselines.map((entry) => entry.path)).toEqual(["code.py"]);
+  await expect(
+    posixBatch({ ...f.input, selected: ["new/.git/HEAD"] }),
+  ).rejects.toThrow();
+  const batch = await posixBatch({
+    ...f.input,
+    ...posixRoundInputs(state, f.input.source, ["code.py"]),
+  });
+  await new Publisher(path.join(f.root, "publications")).publish(batch, {
+    validate: async () => {},
+  });
+  expect(
+    await readFile(path.join(f.input.source.root, "code.py"), "utf8"),
+  ).toBe("private source\n");
+  expect(await readFile(path.join(metadata, "HEAD"), "utf8")).toBe(
+    "private repository\n",
+  );
+  expect(await readdir(f.input.source.root)).not.toContain("new");
+});
 
 async function record(root: string, file: string) {
   const info = await lstat(path.join(root, file), { bigint: true });

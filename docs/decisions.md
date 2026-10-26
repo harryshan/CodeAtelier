@@ -4,6 +4,8 @@
 
 ## D170：Overlay 改为 Local 会话文件隔离，与 Git worktree 并列
 
+- Linux Git 策略确认（2026-10-26）：用户明确接受“新建私有子目录可 git init”的限制，保留原生 OverlayFS。lower 管理目录 lookup 改为 EACCES 后，根及已有目录的 `.git` 创建、链接、重命名和 git init 均拒绝；Sandbox 的 Git 信任探测遇到明确拒绝时不授信任，其余 I/O 错误仍失败。纯 upper 新目录可建立独立私有仓库，来源 metadata 和来源写权限不开放，发布器仍拒绝管理目录；收尾不遍历或发布私有管理目录，也不删除它们。此平台边界替代 Linux 全层级禁止新建管理目录的目标，Windows 保持原边界。固定模型驱动的完整 Engine/真实 MXC/候选发布已通过；公开 HTTP/UI 仍需验收，未据此声称全平台可用。
+
 - POSIX 选型追加（2026-10-26）：用户要求“尽量用平台原生文件系统来实现，参考其他类似功能的东西来做”。Linux 优先验证内核 OverlayFS/Bubblewrap、原生快照的适用条件；macOS 先核对 APFS/系统接口，不直接默认另写 FUSE 或安装第三方驱动。Linux underlying lower 修改限制和 APFS 克隆粒度须纳入设计，不能牺牲并行发布正确性；平台实现尚未完成，详见 [POSIX Local 方案](posix-local-overlay.md)。
 
 - 验收优先级（2026-10-26）：用户追加要求“不要太在意过于 corner case 的情况，先跑通为准”。当前收敛到双会话主流程、实际 Sandbox、发布/冲突 UI、正常清理和可读使用说明；停止继续扩展罕见损坏/故障矩阵。已有未知执行拒绝重放和保留现场语义不弱化，POSIX 等尚未完成项继续明确记录，不据此声称全平台可用。

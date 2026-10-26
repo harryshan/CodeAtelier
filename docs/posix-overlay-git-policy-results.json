@@ -1,0 +1,112 @@
+{
+  "execution": {
+    "drained": true,
+    "sandboxApplied": true,
+    "exitCode": 0
+  },
+  "attempts": [
+    {
+      "directory": ".",
+      "operation": "status",
+      "exitCode": 128
+    },
+    {
+      "directory": ".",
+      "operation": "mkdir",
+      "allowed": false,
+      "errno": 13
+    },
+    {
+      "directory": ".",
+      "operation": "file",
+      "allowed": false,
+      "errno": 13
+    },
+    {
+      "directory": ".",
+      "operation": "symlink",
+      "allowed": false,
+      "errno": 13
+    },
+    {
+      "directory": ".",
+      "operation": "rename",
+      "allowed": false,
+      "errno": 13
+    },
+    {
+      "directory": ".",
+      "operation": "init",
+      "exitCode": 128,
+      "allowed": false
+    },
+    {
+      "directory": "existing",
+      "operation": "status",
+      "exitCode": 128
+    },
+    {
+      "directory": "existing",
+      "operation": "mkdir",
+      "allowed": false,
+      "errno": 13
+    },
+    {
+      "directory": "existing",
+      "operation": "file",
+      "allowed": false,
+      "errno": 13
+    },
+    {
+      "directory": "existing",
+      "operation": "symlink",
+      "allowed": false,
+      "errno": 13
+    },
+    {
+      "directory": "existing",
+      "operation": "rename",
+      "allowed": false,
+      "errno": 13
+    },
+    {
+      "directory": "existing",
+      "operation": "init",
+      "exitCode": 128,
+      "allowed": false
+    },
+    {
+      "directory": "new",
+      "operation": "status",
+      "exitCode": 128
+    },
+    {
+      "directory": "new",
+      "operation": "mkdir",
+      "allowed": true
+    },
+    {
+      "directory": "new",
+      "operation": "file",
+      "allowed": true
+    },
+    {
+      "directory": "new",
+      "operation": "symlink",
+      "allowed": true
+    },
+    {
+      "directory": "new",
+      "operation": "rename",
+      "allowed": true
+    },
+    {
+      "directory": "new",
+      "operation": "init",
+      "exitCode": 0,
+      "allowed": true
+    }
+  ],
+  "rootDenied": true,
+  "sourceUnchanged": true
+}

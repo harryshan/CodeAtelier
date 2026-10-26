@@ -1,20 +1,54 @@
 /**
  * 验证两个 Sandbox 启动器共用的实例级 Git 信任配置，不修改真实用户 Git 配置。
- * 1. 临时目录覆盖普通仓库、gitfile/worktree、裸库、非仓库以及缺失目录失败。
+ * 1. 临时目录覆盖普通仓库、gitfile/worktree、裸库、非仓库以及缺失目录失败；模拟只拒绝 .git 的视图不授予信任。
  * 2. 使用真实 Git 解析含空格/特殊字符路径；通过 Git 测试开关模拟 owner 不一致并验证 status 恢复。
  * 3. 配置只授予当前路径：另一个仓库仍被拒绝，非仓库不继承父目录信任。
  * 所有写入局限于自动清理的测试临时目录；不改变 owner/ACL，不运行原生 Sandbox 或远程命令。
  */
 
 import { execFile } from "node:child_process";
+import * as fs from "node:fs/promises";
 import { mkdir, realpath, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { workspaceGitConfig } from "../src/sandbox/git-workspace-trust.js";
 import { temp } from "./fixtures/helpers.js";
 
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+
+  return { ...actual, stat: vi.fn(actual.stat) };
+});
+
 const execute = promisify(execFile);
+
+it("does not trust a view that denies Git metadata while propagating I/O failures", async () => {
+  const root = await temp();
+  const original =
+    await vi.importActual<typeof import("node:fs/promises")>(
+      "node:fs/promises",
+    );
+  const probe = vi.mocked(fs.stat);
+  try {
+    for (const code of ["EACCES", "EPERM", "EIO"]) {
+      probe.mockImplementation(async (...args) => {
+        if (args[0] === path.join(root, ".git")) {
+          throw Object.assign(new Error("fixture metadata error"), { code });
+        }
+
+        return original.stat(...args);
+      });
+      if (code === "EIO") {
+        await expect(workspaceGitConfig(root)).rejects.toMatchObject({ code });
+      } else {
+        expect(await workspaceGitConfig(root)).toBe("");
+      }
+    }
+  } finally {
+    probe.mockImplementation(original.stat);
+  }
+});
 
 it.each(["directory", "gitfile", "bare"])(
   "recognizes %s without reading host configuration",

@@ -1,0 +1,72 @@
+{
+  "environment": "WSL2 Ubuntu ext4, Linux OverlayFS and MXC 1.0.0",
+  "fixture": "engine-cE5DGR",
+  "passed": true,
+  "parallel": true,
+  "tasks": [
+    {
+      "status": "completed",
+      "completedExecutions": [
+        {
+          "kind": "agent-runtime",
+          "purpose": null,
+          "mode": "linux-bubblewrap",
+          "state": "completed",
+          "sandboxApplied": true
+        },
+        {
+          "kind": "agent-runtime",
+          "purpose": "local-validation",
+          "mode": "linux-bubblewrap",
+          "state": "completed",
+          "sandboxApplied": true
+        }
+      ]
+    },
+    {
+      "status": "completed",
+      "completedExecutions": [
+        {
+          "kind": "agent-runtime",
+          "purpose": null,
+          "mode": "linux-bubblewrap",
+          "state": "completed",
+          "sandboxApplied": true
+        },
+        {
+          "kind": "agent-runtime",
+          "purpose": "local-validation",
+          "mode": "linux-bubblewrap",
+          "state": "completed",
+          "sandboxApplied": true
+        }
+      ]
+    }
+  ],
+  "publications": [
+    {
+      "state": "published",
+      "epoch": 1,
+      "capturedPaths": 1,
+      "published": true,
+      "publication": {
+        "state": "published",
+        "batchId": "fa5e0fab-a4c6-48f4-a352-981354092abb",
+        "files": 1,
+        "cleanupPending": 0
+      }
+    },
+    {
+      "state": "published",
+      "epoch": 1,
+      "capturedPaths": 1,
+      "published": true,
+      "publication": {
+        "state": "published",
+        "batchId": "6950abb6-69f1-4969-97a9-48046704b7ee",
+        "files": 1,
+        "cleanupPending": 0
+      }
+    }
+  ]
+}

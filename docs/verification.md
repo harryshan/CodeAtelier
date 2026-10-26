@@ -1,5 +1,13 @@
 # 初版验证记录
 
+## Linux Engine 模型工具与候选发布（2026-10-26）
+
+- `engine-probe.mjs` 使用真实 Engine/SQLite inline、平台工厂和注入的真实 MXC 启动器，固定内存 provider 经生产 Runtime 模型工具协议发出 `run_command`/`local_publish`。两个实际命令区间重叠，各收据明确为仅登记；Engine 排空后两批分别通过全新 `linux-bubblewrap` 候选，最终源码包含双方修改，未选产物保留，清单 ready/epoch 1，Runtime 标记为空。最新现场 `/home/harryshan/codeatelier-native-overlay-probes/engine-cE5DGR`，摘要见 [报告](posix-overlay-engine-results.json)。没有连接外部模型，公开 HTTP/UI 不在本次证据内。
+- lower 的管理目录查询由 ENOENT 改为 EACCES，真实探针发现 Sandbox 的 Git 信任探测因此失败；先以回归复现，再修复为明确拒绝时不授信任，其余 I/O 错误仍失败。真实根/已有目录测试通过，纯 upper 新目录仍可创建独立仓库，结果见 [诊断](posix-overlay-git-policy-results.json)。用户已接受该原生限制，随后要求不再考虑内部建仓库问题，停止扩展该测试方向。
+- 为使已接受的私有状态不阻断正常任务收尾，upper 捕获跳过管理目录且不删除它们；明确选择 metadata 仍被发布器拒绝。新增回归先复现 PATH_REJECTED，修复后源码可发布而私有 metadata 保留，最新真实 Engine 探针也通过此正常收尾。专项 19 项通过，日志 `.local/linux-engine-git-tests.log`。
+- 最终 `pnpm check` 通过：164 文件、1,316 passed / 1 existing skipped，类型、Lint、格式及 Web/Windows/POSIX Runtime 构建通过，日志 `.local/linux-engine-git-check-final.log`。本增量没有修改公开 HTTP/UI，不重复 E2E；原有 chunk 体积提示保留。
+- 未安装依赖、Repair、分区或重启用户服务，未运行 Evaluation。Linux 公开创建、HTTP/UI 能力及启动分发仍需下一增量；不扩大为 macOS 或任意大型工程验收。
+
 ## Linux 正常 lower 缓存回收与 Engine 平台工厂（2026-10-26）
 
 - backend 保存跨轮 round 并确认普通卸载后，`discardLinuxCache` 仅删除本次打开、路径和目录身份匹配的 `control-UUID`。来源、upper、round、历史未知缓存和发布日志均不纳入删除。结果未知不回收；目录替换或删除失败保留 pending。创建时的单个空缓存保留，未做启动时历史扫描。

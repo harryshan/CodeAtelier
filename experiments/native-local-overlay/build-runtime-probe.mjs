@@ -6,7 +6,14 @@
  */
 import { build } from "esbuild";
 
-for (const name of ["runtime", "publish", "controller", "backend"]) {
+for (const name of [
+  "runtime",
+  "publish",
+  "controller",
+  "backend",
+  "engine",
+  "git-policy",
+]) {
   await build({
     entryPoints: [`experiments/native-local-overlay/${name}-probe.mjs`],
     outfile: `.local/posix-overlay-${name}-probe.mjs`,

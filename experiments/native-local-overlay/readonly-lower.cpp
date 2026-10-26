@@ -1,7 +1,8 @@
 /**
  * Linux 原生 OverlayFS 的只读基线层，由实验或显式 namespace 控制器启动。
  * 接收来源、独占控制目录和挂载点；输出有界计数，不输出源码或宿主配置。
- * 1. Fd、Node、sameVersion 与 key 管理句柄、观察版本及管理目录过滤。
+ * 1. Fd、Node、sameVersion 与 key 管理句柄、观察版本及管理目录过滤；
+ *    管理目录 lookup 拒绝访问，避免 ENOENT 允许 OverlayFS 在有 lower 的目录中创建同名项。
  * 2. Store 只在创建时读取根身份；list 按需固定目录成员，capture 在首次读取
  *    普通文件时保存内容。openSource 用 openat2 限制根内无符号链接解析。
  * 3. verify 检查已观察版本；seal 在调用方排空消费者后导出一次性清单供发布桥接，
@@ -9,7 +10,8 @@
  * 4. operations 仅提供 FUSE 读取回调，写入、copy-up 和 whiteout 由上层内核
  *    OverlayFS 完成；main 通过 stdin 接收 metrics/verify/seal UUID/close。
  * 5. 正常 close 卸载并关闭句柄；控制器负责有界等待、异常退出后的卸载检查。
- *    尚未注册产品 Local backend，不支持链接或从清单恢复异常挂载。
+ *    Linux backend 已接线但公开入口未开放；不支持链接或从清单恢复异常挂载。
+ *    纯 upper 新目录不一定经过 lower，管理目录拒绝不等于全局 Git 命令封锁。
  */
 #define FUSE_USE_VERSION 31
 #include <fuse3/fuse.h>
@@ -136,7 +138,8 @@ std::string key(const char* path) {
         auto end = result.find('/', offset);
         auto part = result.substr(offset, end - offset);
         require(!part.empty() && part != "." && part != "..", EINVAL);
-        require(part != ".git" && part != ".hg" && part != ".svn", ENOENT);
+        // ENOENT 表示可创建的缺失项；EACCES 才能阻止经过 lower lookup 的同名 upper 写入。
+        require(part != ".git" && part != ".hg" && part != ".svn", EACCES);
         if (end == std::string::npos) {
             break;
         }

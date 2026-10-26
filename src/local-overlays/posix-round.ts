@@ -1,13 +1,13 @@
 /**
  * Linux Local 正常跨轮状态：独立于可重建的 lower 缓存保存未发布 B 与保守依赖。
  * 1. capturePosixRound 只遍历私有 upper，用当前原生观察或先前 B 记录私有普通文件；
- *    新生成物保存 missing 基线，不读取其正文。目录/不支持对象不作为源码发布。
+ *    新生成物保存 missing 基线，不读取其正文。私有管理目录跳过且保留，目录/不支持对象不作为源码发布。
  * 2. validatePosixRound 严格验证来源、路径、正文及总预算；状态通过既有 durableJson 保存。
  * 3. acknowledgePosixRound 只接受 Publisher complete 日志，复核来源结果与所选私有内容，
  *    返回剔除已发布 B 的下一状态和待移除覆盖；不修改 upper、不重放来源写入。
  * 4. posixRoundInputs 将旧 B 和保守依赖交给下一轮批次，来源变化仍须重新校验。
  * 调用方必须排空 Runtime、持有独占生命周期，普通卸载后移除已确认覆盖，再保存状态。
- * 本模块不证明卸载/崩溃恢复；尚未注册产品 backend，观测例外见 POSIX Local 设计。
+ * 本模块由 Linux backend 调用，不证明卸载/崩溃恢复；收尾观测由 backend 生命周期负责。
  */
 import { lstat, readdir } from "node:fs/promises";
 import path from "node:path";
@@ -94,6 +94,12 @@ async function upperFiles(directory: string): Promise<string[]> {
     for (const entry of entries) {
       if (++visited > 10000) {
         throw new PublishError("READ_LIMIT");
+      }
+
+      // 纯 upper 新目录可有自己的 Git metadata；它既不是源码基线，也不能发布。
+      // 不进入这些目录或读取正文，保留私有状态；显式选集仍由 checkRelative 拒绝。
+      if (/^(?:\.git|\.hg|\.svn)$/i.test(entry.name)) {
+        continue;
       }
 
       const file = relative ? `${relative}/${entry.name}` : entry.name;

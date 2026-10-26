@@ -1,5 +1,13 @@
 # Linux 原生 OverlayFS 手动探针
 
+## Engine 主流程
+
+`build-runtime-probe.mjs` 现在另生成 `.local/posix-overlay-engine-probe.mjs`。沿用下文显式 namespace 启动命令和独立 `--views`，将 backend 探针路径改为该文件，参数仍为独占夹具根、既有 MXC SDK 入口和当前 POSIX Runtime bundle。运行固定内存模型 → `run_command` → `local_publish` → Engine 排空 → 独立候选 Sandbox → Publisher，报告保存在夹具 `engine-report.json`，包含合成任务事件。无需真实模型或凭据。
+
+最新主流程报告摘要为 [Engine 结果](../../docs/posix-overlay-engine-results.json)。`git-policy-probe.mjs` 仅保留原生目录边界诊断，`--require-root` 可核对根/已有目录拒绝；纯私有新目录可建仓库是用户已接受的限制，不继续扩展该矩阵。公开 HTTP/UI 尚需独立验证，以上不是产品入口已开放的声明。
+
+## 基础原语
+
 验证内核文件层是否适合 POSIX Local 的低成本私有写入，不开放产品能力，不属于 Evaluation，也不接默认检查/CI。
 
 需要 Linux 原生文件系统、Python 3、可用的非特权 user namespace 和支持 `--overlay` 的 Bubblewrap。本机验证环境为 WSL2/ext4、Bubblewrap 0.11.1；不使用 Windows DrvFS 作为 upper/lower，不安装软件或创建分区。
