@@ -1,5 +1,14 @@
 # 初版验证记录
 
+## Linux 原生观察清单与生产 Publisher 闭环（2026-10-26）
+
+- 只读 lower 增加实际观察清单 `seal UUID`：来源身份、原始 stamp、捕获对象/对象版本和目录名称/类型有界导出，独占创建并 fsync。新增 `posix-batch.ts` 将清单转换为现有 Publisher 批次，文件基线不替换成来源最新内容；仅观察元数据的文件须仍匹配才补读，目录沿用名称/类型版本。平台入口未开放。
+- `sandbox-probe.py --publish-probe ...` 真实 WSL/ext4 通过：[报告](posix-overlay-publication-results.json)，现场 `/home/harryshan/codeatelier-native-overlay-probes/sandbox-h8ugdgl_`，日志 `.local/posix-publication-first.log`。两个实际并行 Runtime 修改同一文件不同两行；从原生清单导出两批，Publisher 逐次建立全新候选 overlay、播种合并结果并通过真实 MXC/IPC 执行 Python 检查，排空后导出候选读依赖，最终主目录为 `a=10,b=20`。
+- 两份未选私有产物保留，候选产物未进入来源。第三次真实 Runtime 在旧私有视图制造同一行重叠修改，Publisher 返回 TEXT_CONFLICT/unapplied，主目录保持合并结果、私有 `a=99,b=2` 保留。Runtime 标记清理、所有候选/主 overlay 与 lower 正常卸载通过；没有宿主 fallback、安装、分区操作或用户服务重启。
+- 自审发现未修改的选集路径可能被排除读依赖，先新增回归失败（`.local/posix-batch-before.log`），再修正为只排除实际变化的路径；9 项专项通过（`.local/posix-batch-after.log`）。覆盖真实 Publisher 合并/冲突、来源和目录过期、首次补读、创建/删除、对象变更、源身份和选集重复。普通目录回归不是原生挂载证明。
+- 此次未验证 Engine/UI 创建与自动收尾、持久跨轮刷新或崩溃重挂载。桥接捕获正文仍限 2 MiB 单链接文件，不将小夹具通过描述为巨型工程读集已支持。实验控制器负责排空与独占；seal 文件不能单独证明执行租约。边界见 [POSIX Local 方案](posix-local-overlay.md)。
+- 提交前 `pnpm check` 完整通过：160 个测试文件、1,283 项通过、1 项既有跳过，类型/Lint/格式和 Web/Windows/POSIX Runtime 构建通过（`.local/posix-publication-check.log`）。原生 helper 以 C++20 `-Wall -Wextra -Werror` 编译通过；最终宿主 mountinfo 无本实验路径。未改 HTTP/UI，不重复运行 E2E，没有运行 Evaluation。
+
 ## Linux 原生 overlay 与真实 MXC Runtime 联调（2026-10-26）
 
 - `namespace-probe.py` 验证非特权私有挂载的 proc-root 直接读写可用，但 realpath 丢失挂载上下文，不能直接交给现有 Broker/MXC。随后采用应用专属 user/mount namespace，挂载控制器保留 namespace 内能力，普通 UID 的 Broker 通过 setpriv 撤销 Inheritable/Permitted/Effective/Bounding/Ambient 全部 capabilities。早期直接传递能力被 Bubblewrap 拒绝；撤销后嵌套 MXC 正常，未放宽其检查。

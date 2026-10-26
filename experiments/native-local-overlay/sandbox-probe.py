@@ -4,9 +4,11 @@
 # 3. setpriv 撤销 Broker 子进程的全部 capabilities，再执行当前打包的 Runtime 探针；
 #    来源与 Broker 目录不作为 Runtime 可写根，参数只来自操作者提供的实验路径。
 # 4. Runtime 确认退出后先 umount overlay，再关闭 lower；不使用 lazy/force 卸载。
+#    可选 publish 阶段通过独占管道创建候选、导出真实 seal，并复用生产发布器。
 # 5. 报告及私有数据保留，宿主检查挂载未传播；不安装、重启现有服务或运行 Evaluation。
 
 import argparse
+import base64
 import importlib.util
 import json
 import os
@@ -14,6 +16,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import uuid
 
 
 spec = importlib.util.spec_from_file_location(
@@ -34,38 +37,92 @@ def inside(args):
     (source / ".git" / "sentinel").write_text("fixture")
     lowers = []
     mounts = []
+    sessions = {}
     report = {"passed": False, "sameUid": os.getuid(), "lowerReady": []}
+
+    def create_view(label):
+        private = args.root / label
+        private.mkdir()
+        for name in ("control", "lower", "upper", "work", "view"):
+            (private / name).mkdir()
+        lower = stable.Process([
+            str(args.helper), str(source), str(private / "control"),
+            str(private / "lower"),
+        ])
+        lowers.append(lower)
+        options = ",".join([
+            f"lowerdir={private / 'lower'}", f"upperdir={private / 'upper'}",
+            f"workdir={private / 'work'}", "userxattr",
+        ])
+        subprocess.run([
+            "mount", "-t", "overlay", "overlay", "-o", options,
+            str(private / "view"),
+        ], check=True)
+        mounts.append(private / "view")
+        sessions[label] = (private, lower)
+        return private, lower
+
+    def seal(label):
+        seal_id = str(uuid.uuid4())
+        result = sessions[label][1].request("seal " + seal_id)
+        assert result["state"] == "sealed" and result["valid"], result
+        return seal_id
+
+    def command(probe):
+        return [
+            "setpriv", "--inh-caps=-all", "--ambient-caps=-all", "--bounding-set=-all",
+            str(args.node), str(probe), str(args.root), str(args.sdk), str(args.bundle),
+        ]
+
     try:
         for label in ("A", "B"):
-            private = args.root / label
-            private.mkdir()
-            for name in ("control", "lower", "upper", "work", "view"):
-                (private / name).mkdir()
-            lower = stable.Process([
-                str(args.helper), str(source), str(private / "control"),
-                str(private / "lower"),
-            ])
-            lowers.append(lower)
+            private, lower = create_view(label)
             report["lowerReady"].append(lower.ready)
-            options = ",".join([
-                f"lowerdir={private / 'lower'}", f"upperdir={private / 'upper'}",
-                f"workdir={private / 'work'}", "userxattr",
-            ])
-            subprocess.run([
-                "mount", "-t", "overlay", "overlay", "-o", options,
-                str(private / "view"),
-            ], check=True)
-            mounts.append(private / "view")
             assert (private / "view" / "module.py").exists()
 
-        subprocess.run([
-            "setpriv", "--inh-caps=-all", "--ambient-caps=-all", "--bounding-set=-all",
-            str(args.node), str(args.probe), str(args.root), str(args.sdk), str(args.bundle),
-        ], check=True, timeout=120)
+        subprocess.run(command(args.probe), check=True, timeout=120)
         report["runtime"] = json.loads((args.root / "runtime-report.json").read_text())
         assert report["runtime"]["passed"]
         for lower in lowers:
             assert lower.request("verify")["valid"]
+        if args.publish_probe:
+            (args.root / "seals.json").write_text(json.dumps({label: seal(label) for label in ("A", "B")}))
+            publisher = stable.Process(command(args.publish_probe))
+            try:
+                publisher.send("start")
+                while True:
+                    request = publisher.receive()
+                    action = request["action"]
+                    if action == "done":
+                        break
+                    response = {"id": request["id"], "ok": True}
+                    if action == "mount":
+                        assert len(request["files"]) == 1
+                        file, content = request["files"][0]
+                        assert file == "module.py" and isinstance(content, str)
+                        value = base64.b64decode(content, validate=True)
+                        assert len(value) <= 2 * 1024 * 1024
+                        label = "candidate-" + str(uuid.uuid4())
+                        private, _ = create_view(label)
+                        (private / "view" / file).write_bytes(value)
+                        response.update(label=label, workspace=str(private / "view"), control=str(private / "control"))
+                    elif action == "seal":
+                        response["sealId"] = seal(request["label"])
+                    elif action == "close":
+                        label = request["label"]
+                        assert label.startswith("candidate-")
+                        private, lower = sessions.pop(label)
+                        subprocess.run(["umount", str(private / "view")], check=True, timeout=10)
+                        mounts.remove(private / "view")
+                        lower.close()
+                        lowers.remove(lower)
+                    else:
+                        raise AssertionError("Unknown publication fixture action")
+                    publisher.send(json.dumps(response))
+            finally:
+                publisher.close()
+            report["publication"] = json.loads((args.root / "publication-report.json").read_text())
+            assert report["publication"]["passed"]
         report["passed"] = True
     finally:
         report["cleanUnmount"] = False
@@ -85,6 +142,7 @@ def main():
     for name in ("helper", "node", "probe", "sdk", "bundle"):
         parser.add_argument(f"--{name}", type=Path, required=True)
     parser.add_argument("--inside", action="store_true")
+    parser.add_argument("--publish-probe", type=Path)
     parser.add_argument("--root", type=Path)
     parser.add_argument("--host-namespace")
     args = parser.parse_args()

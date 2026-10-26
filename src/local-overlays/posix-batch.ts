@@ -1,0 +1,353 @@
+/**
+ * 将 Linux 只读 lower 的一次性观察清单转换为现有 Publisher 批次。
+ * 1. readPosixManifest 有界读取并核对清单句柄/路径版本，严格校验格式、来源与 seal ID。
+ * 2. readBase 从捕获对象和原始 stamp 重建 B；未读正文仅在来源观察版本未变时补读。
+ * 3. posixReads 导出文件/目录依赖，目录沿用 Publisher 名称/类型摘要，拒绝来源过期。
+ * 4. posixBatch 只读取明确选集的私有结果，缺失 B 仅由已观察父目录成员证明。
+ * 调用方须先排空 Runtime、独占视图并取得 helper seal；本模块不冻结挂载、不发布，
+ * 也不从清单推断进程退出。产品入口仍关闭；实验和后续 Linux backend 共用此桥接。
+ * I/O 不扫描整树，受既有内容/读集预算限制；tracing 由外层冻结/发布生命周期提供。
+ */
+import { randomUUID } from "node:crypto";
+import { lstat, open } from "node:fs/promises";
+import type { BigIntStats } from "node:fs";
+import path from "node:path";
+import { z } from "zod";
+import {
+  bytes,
+  checkedPath,
+  digest,
+  snapshot,
+  sourceIdentity,
+  type Snapshot,
+  type Source,
+} from "./publication/files.js";
+import { PublishError } from "./publication/merge.js";
+import { readVersion, checkReadPath } from "./publication/read-version.js";
+import { validateBatch, type Batch } from "./publication/session.js";
+
+const stampSchema = z.string().regex(/^\d+:\d+:\d+:-?\d+:-?\d+:\d+$/);
+const entrySchema = z
+  .object({
+    path: z.string().min(1).max(1024),
+    kind: z.enum(["file", "directory"]),
+    identity: z.string().regex(/^\d+:\d+$/),
+    stamp: stampSchema,
+    mode: z.number().int().min(0).max(0xffff),
+    links: z.number().int().positive(),
+    object: z
+      .string()
+      .regex(/^object-[1-9]\d*$/)
+      .nullable(),
+    objectStamp: stampSchema.nullable(),
+    members: z
+      .array(
+        z
+          .string()
+          .max(1024)
+          .regex(/^[^\0/]+\0[fdlo]$/),
+      )
+      .max(100000)
+      .nullable(),
+  })
+  .strict();
+const manifestSchema = z
+  .object({
+    version: z.literal(1),
+    id: z.uuid(),
+    source: z.object({ root: z.string(), identity: z.string() }).strict(),
+    entries: z.array(entrySchema).min(1).max(10000),
+  })
+  .strict();
+type Entry = z.infer<typeof entrySchema>;
+type Manifest = z.infer<typeof manifestSchema>;
+
+function stamp(info: BigIntStats) {
+  return `${info.dev}:${info.ino}:${info.size}:${info.mtimeNs}:${info.ctimeNs}:${info.mode}`;
+}
+
+export async function readPosixManifest(
+  control: string,
+  id: string,
+  source: Source,
+) {
+  z.uuid().parse(id);
+  const storage = await sourceIdentity(control);
+  const file = await checkedPath(storage, `${id}.json`);
+  const before = await lstat(file, { bigint: true });
+  if (
+    !before.isFile() ||
+    before.nlink !== 1n ||
+    before.size > 16n * 1024n * 1024n
+  ) {
+    throw new PublishError("POSIX_MANIFEST_INVALID");
+  }
+
+  const handle = await open(file, "r");
+  try {
+    if (stamp(await handle.stat({ bigint: true })) !== stamp(before)) {
+      throw new PublishError("READ_CHANGED");
+    }
+
+    const content = Buffer.alloc(Number(before.size) + 1);
+    let length = 0;
+    while (length < content.length) {
+      const read = await handle.read(
+        content,
+        length,
+        content.length - length,
+        length,
+      );
+      if (!read.bytesRead) {
+        break;
+      }
+
+      length += read.bytesRead;
+    }
+
+    if (
+      length !== Number(before.size) ||
+      stamp(await handle.stat({ bigint: true })) !== stamp(before) ||
+      stamp(await lstat(file, { bigint: true })) !== stamp(before)
+    ) {
+      throw new PublishError("READ_CHANGED");
+    }
+
+    const manifest = manifestSchema.parse(
+      JSON.parse(
+        new TextDecoder("utf-8", { fatal: true }).decode(
+          content.subarray(0, length),
+        ),
+      ),
+    );
+    const current = await sourceIdentity(source.root);
+    if (
+      manifest.id !== id ||
+      manifest.source.root !== source.root ||
+      manifest.source.identity !== source.identity ||
+      current.root !== source.root ||
+      current.identity !== source.identity
+    ) {
+      throw new PublishError("SOURCE_REPLACED");
+    }
+
+    const paths = new Set<string>();
+    for (const entry of manifest.entries) {
+      checkReadPath({
+        path: entry.path,
+        ...(entry.kind === "directory" ? { kind: "directory" } : {}),
+      });
+      if (
+        paths.has(entry.path) ||
+        !entry.stamp.startsWith(entry.identity + ":") ||
+        !entry.stamp.endsWith(":" + entry.mode) ||
+        (entry.object === null) !== (entry.objectStamp === null) ||
+        (entry.kind === "file" && entry.members !== null) ||
+        (entry.kind === "directory" && entry.object !== null)
+      ) {
+        throw new PublishError("POSIX_MANIFEST_INVALID");
+      }
+
+      paths.add(entry.path);
+    }
+
+    if (
+      !manifest.entries.some(
+        (entry) =>
+          entry.path === "." &&
+          entry.kind === "directory" &&
+          entry.identity === source.identity,
+      )
+    ) {
+      throw new PublishError("SOURCE_REPLACED");
+    }
+
+    return manifest;
+  } finally {
+    await handle.close();
+  }
+}
+
+async function observedFile(
+  source: Source,
+  entry: Entry,
+  includeContent: boolean,
+): Promise<Snapshot> {
+  const target = await checkedPath(source, entry.path);
+  if (stamp(await lstat(target, { bigint: true })) !== entry.stamp) {
+    throw new PublishError("STALE_DEPENDENCY");
+  }
+
+  const result = includeContent
+    ? await snapshot(source, entry.path)
+    : {
+        content: null,
+        version: await readVersion(source, { path: entry.path }),
+        mode: entry.mode & 0o777,
+      };
+  if (stamp(await lstat(target, { bigint: true })) !== entry.stamp) {
+    throw new PublishError("STALE_DEPENDENCY");
+  }
+
+  return result;
+}
+
+async function readBase(
+  source: Source,
+  control: Source,
+  entry: Entry,
+): Promise<Snapshot> {
+  if (entry.kind !== "file" || entry.links !== 1) {
+    throw new PublishError("FILE_TYPE_OR_LIMIT");
+  }
+
+  if (!entry.object) {
+    return observedFile(source, entry, true);
+  }
+
+  const file = await checkedPath(control, entry.object);
+  if (stamp(await lstat(file, { bigint: true })) !== entry.objectStamp) {
+    throw new PublishError("POSIX_OBJECT_CHANGED");
+  }
+
+  const result = await snapshot(control, entry.object);
+  const content = bytes(result);
+  if (
+    !content ||
+    BigInt(content.length) !== BigInt(entry.stamp.split(":")[2]!) ||
+    stamp(await lstat(file, { bigint: true })) !== entry.objectStamp
+  ) {
+    throw new PublishError("POSIX_OBJECT_CHANGED");
+  }
+
+  return {
+    content: content.toString("base64"),
+    mode: entry.mode & 0o777,
+    version: digest(`${entry.stamp}:${digest(content)}`),
+  };
+}
+
+export async function posixReads(
+  source: Source,
+  control: string,
+  manifest: Manifest,
+  selected: ReadonlySet<string>,
+  signal?: AbortSignal,
+): Promise<Batch["reads"]> {
+  const storage = await sourceIdentity(control);
+  const reads: Batch["reads"] = [];
+  for (const entry of manifest.entries) {
+    signal?.throwIfAborted();
+    if (selected.has(entry.path)) {
+      continue;
+    }
+
+    if (entry.kind === "directory") {
+      const read = { path: entry.path, kind: "directory" as const };
+      if (entry.members === null) {
+        const directory =
+          entry.path === "."
+            ? source.root
+            : await checkedPath(source, entry.path);
+        if (stamp(await lstat(directory, { bigint: true })) !== entry.stamp) {
+          throw new PublishError("STALE_DEPENDENCY");
+        }
+      }
+
+      const actual = await readVersion(source, read, signal);
+      const version =
+        entry.members === null
+          ? actual
+          : `directory-v1:${digest(`${entry.identity}:${JSON.stringify([...entry.members].sort())}`)}`;
+      if (actual !== version) {
+        throw new PublishError("STALE_DEPENDENCY");
+      }
+
+      reads.push({ ...read, version });
+    } else {
+      const base = entry.object
+        ? await readBase(source, storage, entry)
+        : await observedFile(source, entry, false);
+      if (
+        (await readVersion(source, { path: entry.path }, signal)) !==
+        base.version
+      ) {
+        throw new PublishError("STALE_DEPENDENCY");
+      }
+
+      reads.push({ path: entry.path, version: base.version });
+    }
+  }
+
+  return reads;
+}
+
+export async function posixBatch(input: {
+  source: Source;
+  control: string;
+  workspace: string;
+  sealId: string;
+  selected: readonly string[];
+  signal?: AbortSignal;
+}): Promise<Batch> {
+  const manifest = await readPosixManifest(
+    input.control,
+    input.sealId,
+    input.source,
+  );
+  const storage = await sourceIdentity(input.control);
+  const view = await sourceIdentity(input.workspace);
+  const entries = new Map(manifest.entries.map((entry) => [entry.path, entry]));
+  const changes: Batch["changes"] = [];
+  const selected = new Set<string>();
+  if (!input.selected.length || input.selected.length > 100) {
+    throw new PublishError("BATCH_LIMIT");
+  }
+
+  for (const file of input.selected) {
+    input.signal?.throwIfAborted();
+    if (selected.has(file.toLowerCase())) {
+      throw new PublishError("DUPLICATE_PATH");
+    }
+
+    selected.add(file.toLowerCase());
+    const ours = await snapshot(view, file);
+    const entry = entries.get(file);
+    let base: Snapshot;
+    if (entry) {
+      base = await readBase(input.source, storage, entry);
+    } else {
+      const parent = entries.get(path.posix.dirname(file));
+      const leaf = path.posix.basename(file);
+      if (
+        !parent?.members ||
+        parent.members.some((member) => member.split("\0")[0] === leaf)
+      ) {
+        throw new PublishError("POSIX_BASELINE_MISSING");
+      }
+
+      base = { content: null, version: "missing", mode: null };
+    }
+
+    if (ours.mode !== null && base.mode !== null && ours.mode !== base.mode) {
+      throw new PublishError("MODE_CONFLICT");
+    }
+
+    if (ours.content !== base.content) {
+      changes.push({ path: file, base, ours: ours.content });
+    }
+  }
+
+  return validateBatch({
+    id: randomUUID(),
+    source: input.source,
+    changes,
+    reads: await posixReads(
+      input.source,
+      input.control,
+      manifest,
+      new Set(changes.map((change) => change.path)),
+      input.signal,
+    ),
+  });
+}

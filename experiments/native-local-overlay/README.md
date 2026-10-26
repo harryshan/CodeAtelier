@@ -59,3 +59,17 @@ python3 -B /mnt/g/codeagent/experiments/native-local-overlay/sandbox-probe.py \
 脚本只在 `~/codeatelier-native-overlay-probes/sandbox-*` 合成项目运行，报告和 trace 留在该目录。检查两个命令区间重叠、真实 `linux-bubblewrap` 归因、主目录/另一视图写入拒绝、Git metadata 隐藏、Broker 假秘密不可见、正式终态/clean 清理与零启动标记。普通卸载不使用 lazy/force；宿主挂载表不得出现实验路径。
 
 这次已调用生产 Runtime，但仍不是 Engine/UI/自动发布验收。应用 namespace 启动器、挂载控制协议、异常恢复及基线/候选发布联动未接入产品。实验不修改现有服务启动方式，不扩大为不同任务间完整 OS 安全隔离证明。
+
+## 原生观察清单与生产发布器
+
+重新编译 helper，并运行 `build-runtime-probe.mjs` 后，在上面的 `sandbox-probe.py` 命令中增加：
+
+```sh
+--publish-probe /mnt/g/codeagent/.local/posix-overlay-publish-probe.mjs
+```
+
+控制器在 Runtime 排空后调用 helper 的 `seal UUID`，清单以 `<UUID>.json` 独占创建并 fsync，包含来源身份、首次观察 stamp、私有基线对象/版本及目录名称/类型。它不复制整个项目，也不把主目录当前正文当成已捕获的旧 B；重复文件名拒绝覆盖。清单只供已控制生命周期的调用方使用，不证明进程已经退出。
+
+`publish-probe.mjs` 用当前 `posix-batch.ts` 和 Publisher 发布两份实际私有结果。通过私有 stdio 请父控制器建立新候选，每次只播种所选源码；真实 MXC Runtime 执行 Python 检查，正常排空后核对候选未改写、导出依赖并卸载，再由 Publisher 写回。第三次 Runtime 修改制造同一行冲突，要求拒绝且原私有内容保留。报告增加 `publication` 段，私有清单、journal、候选产物和 trace 全部保留。
+
+这仍是受控实验，不是 Engine/UI 自动发布已开放。尚无产品 namespace 启动器、持续代次/刷新或崩溃重挂载；捕获正文桥接暂为 2 MiB 单链接文件，未覆盖大型工程读集。未修改选集须保留读依赖，不能用于绕过来源变更检查。具体证据与限制见 [POSIX Local 方案](../../docs/posix-local-overlay.md)。

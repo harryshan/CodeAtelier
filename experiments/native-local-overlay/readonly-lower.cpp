@@ -4,12 +4,12 @@
  * 1. Fd、Node、sameVersion 与 key 管理句柄、观察版本及管理目录过滤。
  * 2. Store 只在创建时读取根身份；list 按需固定目录成员，capture 在首次读取
  *    普通文件时保存内容。openSource 用 openat2 限制根内无符号链接解析。
- * 3. verify 检查已观察版本是否过期，report 输出状态；缓存仅在本进程内有效，
- *    私有内容保留在调用方独占目录，不实现发布、崩溃恢复或全目录原子快照。
+ * 3. verify 检查已观察版本；seal 在调用方排空消费者后导出一次性清单供发布桥接，
+ *    report 仅输出状态。清单不代表完整崩溃恢复或全目录原子快照。
  * 4. operations 仅提供 FUSE 读取回调，写入、copy-up 和 whiteout 由上层内核
- *    OverlayFS 完成；main 挂载并通过 stdin 接收 metrics/verify/close。
+ *    OverlayFS 完成；main 通过 stdin 接收 metrics/verify/seal UUID/close。
  * 5. 正常 close 卸载并关闭句柄；控制器负责有界等待、异常退出后的卸载检查。
- *    这不是产品后端，尚不支持链接、持久版本清单及产品 Sandbox 生命周期。
+ *    这不是产品后端，尚不支持链接、清单重挂载恢复及产品 Sandbox 生命周期。
  */
 #define FUSE_USE_VERSION 31
 #include <fuse3/fuse.h>
@@ -78,8 +78,43 @@ struct Node {
     struct stat info{};
     bool listed = false;
     std::set<std::string> children;
+    std::vector<std::string> members;
+    std::string object;
+    std::string objectStamp;
     int data = -1;
 };
+
+std::string jsonString(const std::string& input) {
+    constexpr char hex[] = "0123456789abcdef";
+    std::string result = "\"";
+    for (unsigned char value : input) {
+        if (value == '"' || value == '\\') {
+            result += '\\';
+            result += value;
+        } else if (value < 32) {
+            result += "\\u00";
+            result += hex[value >> 4];
+            result += hex[value & 15];
+        } else {
+            result += value;
+        }
+    }
+    return result + "\"";
+}
+
+std::string identity(const struct stat& info) {
+    return std::to_string(info.st_dev) + ":" + std::to_string(info.st_ino);
+}
+
+std::string timestamp(const struct timespec& value) {
+    return std::to_string(static_cast<std::int64_t>(value.tv_sec) * 1000000000 + value.tv_nsec);
+}
+
+std::string stamp(const struct stat& info) {
+    return identity(info) + ":" + std::to_string(info.st_size) + ":" +
+        timestamp(info.st_mtim) + ":" + timestamp(info.st_ctim) + ":" +
+        std::to_string(info.st_mode);
+}
 
 bool sameVersion(const struct stat& left, const struct stat& right) {
     return left.st_dev == right.st_dev && left.st_ino == right.st_ino &&
@@ -163,6 +198,7 @@ public:
         require(directory != nullptr, errno);
         handle.release();
         std::set<std::string> names;
+        std::vector<std::string> members;
         try {
             enumerations_++;
             for (;;) {
@@ -173,8 +209,29 @@ public:
                     break;
                 }
                 std::string child(item->d_name);
-                if (child == "." || child == ".." || child == ".git" ||
-                    child == ".hg" || child == ".svn") {
+                if (child == "." || child == "..") {
+                    continue;
+                }
+                // Match Publisher's directory digest: only .git is excluded.
+                // Other hidden management names still invalidate dependencies.
+                std::string folded = child;
+                std::transform(folded.begin(), folded.end(), folded.begin(), [](unsigned char c) {
+                    return c >= 'A' && c <= 'Z' ? c + ('a' - 'A') : c;
+                });
+                if (folded == ".git") {
+                    continue;
+                }
+                auto type = item->d_type;
+                if (type == DT_UNKNOWN) {
+                    struct stat member{};
+                    require(::fstatat(::dirfd(directory), child.c_str(), &member, AT_SYMLINK_NOFOLLOW) == 0, errno);
+                    type = S_ISDIR(member.st_mode) ? DT_DIR :
+                        S_ISREG(member.st_mode) ? DT_REG : S_ISLNK(member.st_mode) ? DT_LNK : DT_UNKNOWN;
+                }
+                char code = type == DT_DIR ? 'd' : type == DT_REG ? 'f' : type == DT_LNK ? 'l' : 'o';
+                require(members.size() < 100000, EFBIG);
+                members.push_back(child + std::string(1, '\0') + code);
+                if (folded == ".hg" || folded == ".svn") {
                     continue;
                 }
                 require(names.size() < 100000, EFBIG);
@@ -189,6 +246,7 @@ public:
         }
         ::closedir(directory);
         entry.children = std::move(names);
+        entry.members = std::move(members);
         entry.listed = true;
     }
 
@@ -227,8 +285,66 @@ public:
         require(::fstat(current.get(), &after) == 0, errno);
         require(sameVersion(before, after), ESTALE);
         require(::fsync(destination.get()) == 0, errno);
+        struct stat saved{};
+        require(::fstat(destination.get(), &saved) == 0, errno);
+        entry.objectStamp = stamp(saved);
         entry.data = destination.release();
+        entry.object = object;
         bytes_ += position;
+    }
+
+    void seal(const std::string& id) {
+        require(id.size() == 36, EINVAL);
+        for (std::size_t index = 0; index < id.size(); index++) {
+            bool separator = index == 8 || index == 13 || index == 18 || index == 23;
+            require(separator ? id[index] == '-' :
+                ((id[index] >= '0' && id[index] <= '9') || (id[index] >= 'a' && id[index] <= 'f')), EINVAL);
+        }
+        std::string document = "{\"version\":1,\"id\":" + jsonString(id) +
+            ",\"source\":{\"root\":" + jsonString(source_) + ",\"identity\":" +
+            jsonString(identity(nodes_.at("/").info)) + "},\"entries\":[";
+        bool first = true;
+        for (const auto& [name, entry] : nodes_) {
+            if (!first) {
+                document += ',';
+            }
+            first = false;
+            document += "{\"path\":" + jsonString(name == "/" ? "." : name.substr(1)) +
+                ",\"kind\":" + jsonString(S_ISDIR(entry.info.st_mode) ? "directory" : "file") +
+                ",\"identity\":" + jsonString(identity(entry.info)) +
+                ",\"stamp\":" + jsonString(stamp(entry.info)) +
+                ",\"mode\":" + std::to_string(entry.info.st_mode) +
+                ",\"links\":" + std::to_string(entry.info.st_nlink) +
+                ",\"object\":" + (entry.object.empty() ? "null" : jsonString(entry.object)) +
+                ",\"objectStamp\":" + (entry.object.empty() ? "null" : jsonString(entry.objectStamp)) +
+                ",\"members\":";
+            if (entry.listed) {
+                document += '[';
+                for (std::size_t index = 0; index < entry.members.size(); index++) {
+                    if (index) {
+                        document += ',';
+                    }
+                    document += jsonString(entry.members[index]);
+                    require(document.size() <= 16 * 1024 * 1024, EFBIG);
+                }
+                document += ']';
+            } else {
+                document += "null";
+            }
+            document += '}';
+            require(document.size() <= 16 * 1024 * 1024, EFBIG);
+        }
+        document += "]}\n";
+        auto file = id + ".json";
+        Fd output(::openat(control_.get(), file.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600));
+        std::size_t position = 0;
+        while (position < document.size()) {
+            auto count = ::write(output.get(), document.data() + position, document.size() - position);
+            require(count > 0, count == 0 ? EIO : errno);
+            position += count;
+        }
+        require(::fsync(output.get()) == 0, errno);
+        require(::fsync(control_.get()) == 0, errno);
     }
 
     bool verify() {
@@ -377,6 +493,15 @@ int main(int argc, char** argv) {
             std::string command;
             while (std::getline(std::cin, command) && command != "close") {
                 std::lock_guard lock(current.mutex);
+                if (command.starts_with("seal ")) {
+                    try {
+                        current.seal(command.substr(5));
+                        current.report("sealed", true);
+                    } catch (...) {
+                        current.report("seal-failed", false);
+                    }
+                    continue;
+                }
                 bool valid = command == "verify" ? current.verify() : true;
                 current.report(command == "verify" ? "verified" : "metrics", valid);
             }

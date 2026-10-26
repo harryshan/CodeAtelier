@@ -1,5 +1,7 @@
 # 架构
 
+Linux Local 的发布桥接位于 `src/local-overlays/posix-batch.ts`：有界读取只读 lower 的一次性观察清单，绑定来源/原始文件版本/私有对象，按明确选集生成现有 Publisher 的 B/O 与读依赖。未修改选集仍作为读依赖，目录使用名称/类型摘要。WSL 手动实验已连接原生 OverlayFS、真实 MXC 候选和 Publisher；该模块尚未注册到产品 Local backend，应用 namespace 生命周期与跨轮私有刷新仍未接入，详见 [POSIX Local 方案](posix-local-overlay.md)。
+
 Local 的完成态私有刷新由 `LocalOverlayService.recoverPrivateRefresh` 协调：只接受收尾时持久化的 task/batch 排空资格，独立恢复锁阻止并发和未知重入，原任务锁保留到 helper 确认并关闭。WinFsp mount 在冻结回调内复用 Publisher 的 complete 恢复协议，只确认私有覆盖；成功后持久 ready，不执行旧命令或来源写入。`local-refresh` HTTP 与 `LocalPrivateRefresh` 显式入口重读历史，草稿不变；旧/dirty 卷和恢复过程自身的未知结果继续隔离。
 
 当前初版为本机后端、浏览器单页应用、默认单 agent 和可按任务开启的只读 subagent；不同真实工作目录的会话默认最多两个任务并行，同一目录严格串行。
