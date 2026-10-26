@@ -3,6 +3,7 @@
  * 1. workspace/idFor 固定临时目录身份；open 使用实际目录并记录挂载次数，拒绝重复打开。
  * 2. finish 记录传入发布计划、推进观察周期并卸载，不执行候选验证或写入来源。
  * 3. failOpen/failFinish 为失败保留回归提供明确注入点；持久清单/锁/Store 均由生产代码处理。
+ * 4. recoverAccess 只模拟根 ACL 恢复期间的挂载生命周期，不证明真实文件访问限制。
  */
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
@@ -28,6 +29,17 @@ export class FakeLocalOverlayBackend implements LocalOverlayBackend {
     return path.dirname(workspace) === this.root
       ? path.basename(workspace)
       : undefined;
+  }
+
+  async recoverAccess(
+    id: string,
+    source: string,
+    control: string,
+    signal: AbortSignal,
+  ) {
+    const mount = await this.open(id, source, control, false, signal);
+
+    return { identity: mount.identity, close: mount.close };
   }
 
   async open(

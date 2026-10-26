@@ -4,6 +4,7 @@
  * 2. WinFspLocalBackend 使用独立命名空间，每次挂载创建新的 OverlayManager，拒绝非 Windows 静默降级。
  * 3. finish 在冻结租约中核对 v6 状态；可选明确选择先发布/确认，否则按 task ID 推进代次，再回收孤立内容并退出。
  * 4. recoverRefresh 仅在正常重挂载后的冻结租约内确认 complete 批次，不发布来源或执行任务；退出后返回私有代次。
+ * 5. recoverAccess 使用根 ACL 专用挂载，允许保留 dirty 的卷撤销旧账户权限；不暴露 finish 或普通文件操作。
  * 不管理 Git、不安装驱动；调用方先排空任务并提供可信候选验证器，异常停止不能冒充成功收尾。
  */
 import path from "node:path";
@@ -45,6 +46,12 @@ export interface LocalOverlayMount {
 export interface LocalOverlayBackend {
   workspace(id: string): string;
   idFor(workspace: string): string | undefined;
+  recoverAccess?(
+    id: string,
+    source: string,
+    control: string,
+    signal: AbortSignal,
+  ): Promise<Pick<LocalOverlayMount, "identity" | "close">>;
   open(
     id: string,
     source: string,
@@ -70,6 +77,41 @@ export class WinFspLocalBackend implements LocalOverlayBackend {
 
   idFor(workspace: string) {
     return overlayWorkspaceId(this.namespace, workspace);
+  }
+
+  async recoverAccess(
+    id: string,
+    source: string,
+    control: string,
+    signal: AbortSignal,
+  ) {
+    if (process.platform !== "win32") {
+      throw new Error("ACL 恢复后端仅支持 Windows。");
+    }
+
+    const manager = new OverlayManager(
+      path.join(this.directory, "traces"),
+      this.log,
+    );
+    try {
+      await manager.start(
+        id,
+        source,
+        control,
+        this.workspace(id),
+        false,
+        signal,
+        { kind: "local-security" },
+      );
+    } catch (error) {
+      await manager.close().catch(() => {});
+      throw error;
+    }
+
+    return {
+      identity: () => directoryIdentity(this.workspace(id)),
+      close: () => manager.close(),
+    };
   }
 
   async open(

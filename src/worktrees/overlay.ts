@@ -13,6 +13,7 @@
  * 9. 冻结回调可显式 collect 无引用内容；独立于发布确认，仅记录计数，不改变来源或恢复收据。
  * 10. nextEpoch 按请求/旧代次/seal 等待幂等收据，只开启新观察周期；不发布或删除失败轮次修改。
  * 11. Local 启动传递宿主 PID，helper 持久记录 PID/创建时间，供异常卷离线检查验证旧进程退出。
+ * 12. local-security 使用根 ACL 专用策略收据，不支持创建或任务文件访问，旧 helper 拒绝而非回退。
  */
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
@@ -240,9 +241,14 @@ export class OverlayManager {
     workspace: string,
     create: boolean,
     signal: AbortSignal,
-    base?: GitOverlayBase | { kind: "local" },
+    base?: GitOverlayBase | { kind: "local" | "local-security" },
   ) {
     const local = base !== undefined && "kind" in base;
+    const securityRecovery = local && base.kind === "local-security";
+    if (securityRecovery && create) {
+      throw new Error("ACL 恢复不能创建新卷。");
+    }
+
     const gitBase = base !== undefined && !("kind" in base) ? base : undefined;
     const identity = JSON.stringify([source, control, workspace, base ?? null]);
     const existing = this.mounts.get(id);
@@ -280,7 +286,13 @@ export class OverlayManager {
           this.executable,
           [
             (create ? "create" : "restore") +
-              (local ? "-local" : gitBase ? "-git" : ""),
+              (securityRecovery
+                ? "-local-security"
+                : local
+                  ? "-local"
+                  : gitBase
+                    ? "-git"
+                    : ""),
             source,
             control,
             workspace.slice(1).replace(/\\$/, ""),
@@ -450,7 +462,7 @@ export class OverlayManager {
                     "acknowledged",
                     "epoch-advanced",
                   ]),
-                  mode: z.literal("local").optional(),
+                  mode: z.enum(["local", "local-security"]).optional(),
                   batchId: z.uuid().optional(),
                   requestId: z.uuid().optional(),
                   seal: z.uuid().optional(),
@@ -458,7 +470,7 @@ export class OverlayManager {
                 })
                 .parse(raw);
               if (message.state === "ready") {
-                if (local !== (message.mode === "local")) {
+                if (message.mode !== (local ? base.kind : undefined)) {
                   rejectReady(
                     new Error(
                       "Overlay helper 策略不匹配；拒绝使用旧文件视图。",

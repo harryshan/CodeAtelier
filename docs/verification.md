@@ -1,5 +1,14 @@
 # 初版验证记录
 
+## Local 真实服务崩溃与 Sandbox ACL 恢复（2026-10-26）
+
+- `pnpm overlay:verify-server-crash` 通过，现场 `.local/local-server-crash-SoKZbl/report.json`、日志 `.local/local-server-crash-delivery.log`，[汇总](local-server-crash-results.json)。独占生产 App 子进程中，真实专用账户命令保持文件句柄、flush 部分内容后被服务崩溃打断；未注入任务/清单/锁，也未声明虚假排空。固定 provider、单文件夹具、HTTP 验证，不等于真实模型或大型工程验收。
+- Runtime/命令进程的等待句柄被专用账户 ACL 拒绝，改为崩溃前绑定 Windows CIM 的 PID/创建时间；原身份约 1.26 秒后均消失；Runtime 创建时间与原生回执在 CIM 微秒精度内核对，命令 PID 与持久工具进程事件一致。报告明确标记 `cim-creation-identity`，不宣称获得进程句柄、任意后代完整排空或独立安全隔离；随后启动仍必须通过原生账户整体排空/授权撤销。
+- 验证发现旧卷 `clean=0` 且虚拟根遗留 grant 导致启动撤销失败（早期 `.local/local-server-crash-B486CO` 与后续拒绝夹具保留）。新增根 ACL 专用模式，WinFsp 必填 Create/Overwrite 回调始终拒绝，枚举明确拒绝，其余只提供根身份/权限；普通 dirty 挂载仍拒绝。生产启动先排空、再临时暴露根、由原 Supervisor 撤销、最后卸载，不需要 Repair。旧夹具遗留 grant 已通过该生产流程清理（`.local/local-server-crash-existing-recovery-final.log`）。
+- 恢复前后副本检查确认 clean、epoch、基线与非根节点不变；原 owner 记录/清单/任务锁保留，根 DACL 仅发生必要授权撤销。中断参考保留精确部分内容；新会话不自动启动，明确提交后真实主/候选 Runtime 重新读取当前来源、编辑、验证并发布一个选中文件。无宿主 fallback，之后旧私有数据库/锁字节不变。
+- 回归先失败（`.local/local-access-recovery-before.log`）再通过；43 项专项覆盖生命周期、grant 解码/清理错误分类和安全模式收据（`.local/local-access-recovery-reviewed.log`）。最终 `pnpm check` 158 个文件、1,262 项通过、1 项既有跳过，类型/Lint/格式/构建均通过（`.local/local-server-crash-check-delivery.log`）；完整 `pnpm test:e2e` 77 项通过（`.local/local-server-crash-e2e.log`）。原生 helper、目录导入/回滚与重解析回归通过（`.local/local-access-native-regression.log`）；只重建仓库内 helper，不更改安装态驱动或 Runtime。验收后无残留挂载进程，持久 grant 数为 0。
+- 剩余边界：仅当前数据目录可识别的 Local 根；不处理其它目录的遗留授权、候选卷崩溃、损坏数据库、任意后代或整机断电。旧 dirty 卷继续作为参考，不能直接恢复执行；未证明 POSIX 或大型真实构建。
+
 ## Local 私有刷新恢复的真实浏览器/Sandbox 验收（2026-10-26）
 
 - `pnpm overlay:verify-browser --refresh` 通过：[报告](local-refresh-browser-results.json)，最终现场 `.local/local-overlay-browser-7MWSUj/report.json`。生产 Chromium/HTTP/SSE、真实 WinFsp、已安装 IPC v18 主/候选 Runtime 完成源码选择、候选验证、Engine 排空与回执丢失后留存。分别在确认前和确认已完成后注入错误，资格由生产 Engine/Service 写入，不由夹具伪造清单或声明主 Runtime 已排空。

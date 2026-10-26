@@ -2,6 +2,7 @@
 // 1. 记录版本、helper/宿主 PID 与创建时间；mount.lock 由 Store 持排他句柄，记录先 flush 再服务。
 // 2. 正常收尾才记 closed；检查始终要求旧 helper 退出，active 还要求旧宿主退出，PID 复用按创建时间区分。
 // 3. 检查固定控制目录祖先/objects/baselines，拒绝链接/共享锁/无记录/权限未知，终态只等待 stop。
+// 4. verifyLocalStopped 复用当前排他句柄证明退出；ACL 恢复不覆盖旧 owner 记录。
 // 不打开来源、不改数据库或旧记录、不挂载、不解除服务 .lock；不推导 Runtime 子进程已排空。
 #include "local-inspection.hpp"
 
@@ -112,6 +113,14 @@ void closeLocalMount(HANDLE file) {
   saveOwner(file, record);
 }
 
+void verifyLocalStopped(HANDLE file) {
+  auto record = readOwner(file);
+  if (!gone(record.helper, record.helperCreated) ||
+      (record.state == "active" && !gone(record.owner, record.ownerCreated))) {
+    throw Error{STATUS_SHARING_VIOLATION};
+  }
+}
+
 void inspectLocal(const fs::path& control) {
   if (!control.is_absolute() || control.wstring().rfind(L"\\\\", 0) == 0 ||
       control.lexically_normal() != control || control.root_name().wstring().size() != 2) {
@@ -135,11 +144,7 @@ void inspectLocal(const fs::path& control) {
       (info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT))) {
     throw Error{STATUS_NOT_SUPPORTED};
   }
-  auto record = readOwner(file.value);
-  if (!gone(record.helper, record.helperCreated) ||
-      (record.state == "active" && !gone(record.owner, record.ownerCreated))) {
-    throw Error{STATUS_SHARING_VIOLATION};
-  }
+  verifyLocalStopped(file.value);
   std::cout << "{\"version\":1,\"state\":\"local-inspection-ready\"}\n" << std::flush;
   std::string command;
   if (!std::getline(std::cin, command) || command != "stop") {

@@ -83,6 +83,8 @@ Runtime stdio 集成夹具共用 `runtime-child-close.ts`：spawn 后立即监�
 
 ## 共享执行逻辑回归
 
+- Local 服务崩溃/ACL 恢复：`local-overlay-access-recovery.test.ts` 验证旧卷只在撤销回调中挂载、退出证明/身份失败拒绝及原任务锁/清单保留；`sandbox-recovery-roots.test.ts` 验证有界 v2 grant 解码、非法/截断/硬链接拒绝、先排空后挂载/撤销/关闭，以及恢复失败保持 cleanup unknown、在线隔离不重挂载。`pnpm overlay:verify-server-crash` 手动启动独占生产服务，真实 Sandbox 持文件写入期间终止该服务，不注入清单或任务；验证根 ACL 模式拒绝文件/枚举、保持 dirty 和私有元数据，重启经原生撤销后 HTTP 中断参考到新 Sandbox 编辑/候选发布。原任务不重放，来源不自动写回。使用共用已安装账户，须无其它 Sandbox 任务；不进入默认检查或 Evaluation，不安装/Repair、不重启用户服务。
+
 - Local 清单并发：`local-overlay-manifest.test.ts` 固定一个真实只读句柄打开的窗口，跨平台注入已在 Windows 实测的 rename EPERM，先复现历史读取使正常任务收尾失败，再验证短 I/O 排队后保存 ready、释放正常服务锁；不替代外部进程锁验收。`pnpm overlay:verify-browser --interrupted` 在既有真实 UI/HTTP/SSE/WinFsp/Sandbox 场景后追加中断参考检查、新会话显式提交、真实 Runtime 重读参考/当前源码和候选发布；中断 helper/owner 为真实终止，遗留 active 清单/服务锁为夹具注入，不宣称真实 Runtime 崩溃或未知操作重放。保持手动入口，不进入默认 check/Evaluation，不安装/Repair。
 
 - Local 中断参考产品入口：`local-overlay-interrupted-service.test.ts` 使用真实清单/SQLite、替代原生租约，验证身份/状态绑定、材料版本、v3 参考、固定请求重试、旧卷不变、证明失败和服务关闭排空。HTTP 回归检查显式模式、鉴权/CSRF、受控错误、创建门禁及无自动任务；浏览器合成路由验证纯文本/部分写入提示、无合并预览和新会话。`local-overlay-directory-dependency.test.ts` 先复现参考根缺失凭据误拒绝，再验证精确 UUID 根只读缺失、来源后来出现拒绝及禁止参考发布。手动 `pnpm overlay:verify-interrupted-product` 使用真实 WinFsp 和独立 helper/owner 中断，验证服务检查到新参考视图及显式重新编辑发布；遗留 active 清单/服务锁为注入，可信验证回调为宿主，不能称为真实 Sandbox 中断恢复。所有手动 verifier 不进入默认 check/Evaluation，也不安装或 Repair。

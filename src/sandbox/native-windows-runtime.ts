@@ -13,6 +13,7 @@
  * 9. 临时 HOME/TEMP 只在原生确认撤销后删除；启动失败仅记录白名单 station、Runtime pipe/身份阶段、入口固定阶段和数字错误码，日志与错误不包含命令、路径、SID、端口、密码或工具输出。
  * 10. Runtime 普通命令只向 stderr 输出固定阶段标记；启动后异常日志提取最后阶段，供区分 shell 选择、进程启动和进程关闭停滞，不记录命令内容。
  * 11. launchAgentRuntime 的返回值显式标记 windows-sandbox-user/runtime，调用者无需按宿主平台推断已验证的执行模式。
+ * 12. 启动 drain 在账户退出证明后用有界 grant 提示临时恢复已知 Local 根，仅供原生 ACL 撤销；在线隔离不重新挂载活动卷。
  *
  * 该实现启动常驻 Agent Runtime；独立 Push/Capability Runner 与 HTTPS relay 已移除。二进制请求 v4 携带逐根持久 capability SID，不携带代理或凭据字段，旧安装须显式更新。常驻 Runtime 承载完整 agent loop、文件工具和普通命令，Git CLI 使用通用命令路径，不提供专用 Git IPC 或隐式宿主转发。
  */
@@ -35,6 +36,7 @@ import type { RuntimeExecutionIdentity } from "./runtime-capability-core.js";
 import type { TraceRecorder } from "../tracing/recorder.js";
 import { sandboxGitConfig } from "./sandbox-git-config.js";
 import { dataDirectory } from "../config/data-directory.js";
+import { readRecoveryRoots, type WithRecoveryRoots } from "./recovery-roots.js";
 import {
   resolveRootCapabilities,
   validRootCapabilitySid,
@@ -452,6 +454,7 @@ export class NativeWindowsSandboxRuntime implements SandboxRuntime {
     private log?: Logger,
     private traces?: TraceRecorder,
     private brokerDataDirectory = dataDirectory(),
+    private withRecoveryRoots?: WithRecoveryRoots,
   ) {
     this.environment = environment;
     this.paths = installationPaths(environment);
@@ -1009,23 +1012,47 @@ export class NativeWindowsSandboxRuntime implements SandboxRuntime {
 
     try {
       for (const operation of operations) {
-        const result = await this.runSelfCheck(
-          this.paths.supervisor,
-          [operation.argument, this.paths.state, this.paths.networkManager],
-          process.cwd(),
-          signal,
-          20_000,
-          4_096,
-          () => {},
-          {},
-        );
-        if (
-          result.exitCode !== 0 ||
-          !result.output.includes(operation.marker)
-        ) {
-          throw new NativeWindowsSandboxCleanupError(
-            "account generation 排空或 ACL journal 对账失败。",
+        const run = async () => {
+          const result = await this.runSelfCheck(
+            this.paths.supervisor,
+            [operation.argument, this.paths.state, this.paths.networkManager],
+            process.cwd(),
+            signal,
+            20_000,
+            4_096,
+            () => {},
+            {},
           );
+          if (
+            result.exitCode !== 0 ||
+            !result.output.includes(operation.marker)
+          ) {
+            throw new NativeWindowsSandboxCleanupError(
+              "account generation 排空或 ACL journal 对账失败。",
+            );
+          }
+        };
+
+        if (
+          !context &&
+          operation.argument === "--revoke-journal" &&
+          this.withRecoveryRoots
+        ) {
+          try {
+            await this.withRecoveryRoots(
+              await readRecoveryRoots(this.paths.dataRoot),
+              signal,
+              run,
+            );
+          } catch {
+            // A failed mount/close or malformed grant is still unknown ACL cleanup,
+            // not an ordinary pre-launch failure eligible for host fallback.
+            throw new NativeWindowsSandboxCleanupError(
+              "虚拟根 ACL 恢复或关闭未确认，拒绝继续执行。",
+            );
+          }
+        } else {
+          await run();
         }
       }
 

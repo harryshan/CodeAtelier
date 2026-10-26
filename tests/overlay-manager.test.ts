@@ -10,6 +10,7 @@
  * 8. 冻结取消/关闭先中止回调并等待排空；不在回调仍运行时释放 helper 或报告关闭成功。
  * 9. 显式回收等待完整计数收据，排斥并发控制请求，作用域过期和损坏/丢失收据拒绝。
  * 10. 新观察周期绑定请求/旧代次/seal；不接受另一请求的收据，且与其它冻结控制请求互斥。
+ * 11. 根 ACL 恢复只接受 local-security 收据，不接受普通 Local/旧 helper，也不能创建新卷。
  * 原生文件、Git 和受限 token 语义由手动 verify-winfsp-overlay 独立验证。
  */
 import { EventEmitter } from "node:events";
@@ -583,6 +584,50 @@ it("requires a Local policy receipt instead of accepting a legacy helper", async
   f.helper.ready();
   await expect(starting).rejects.toThrow("策略");
   expect(f.helper.stdin.writableEnded).toBe(true);
+  await f.manager.close();
+});
+
+it.each(["local-security", "local", undefined])(
+  "requires the exact ACL recovery receipt: %s",
+  async (mode) => {
+    const f = await fixture();
+    const starting = f.manager.start(
+      f.id,
+      f.directory,
+      f.directory,
+      f.workspace,
+      false,
+      f.controller.signal,
+      { kind: "local-security" },
+    );
+    f.helper.stdout.write(
+      JSON.stringify({ version: 1, state: "ready", mode }) + "\n",
+    );
+    if (mode === "local-security") {
+      await starting;
+      expect(spawn.mock.calls[0][1][0]).toBe("restore-local-security");
+    } else {
+      await expect(starting).rejects.toThrow("策略");
+    }
+
+    await f.manager.close();
+  },
+);
+
+it("refuses new volumes in ACL recovery mode before starting a helper", async () => {
+  const f = await fixture();
+  await expect(
+    f.manager.start(
+      f.id,
+      f.directory,
+      f.directory,
+      f.workspace,
+      true,
+      f.controller.signal,
+      { kind: "local-security" },
+    ),
+  ).rejects.toThrow("不能创建");
+  expect(spawn).not.toHaveBeenCalled();
   await f.manager.close();
 });
 

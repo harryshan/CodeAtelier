@@ -1,4 +1,5 @@
 // Windows overlay 对象/事务接口，供 WinFsp callbacks 与原生解析测试使用。
+// securityRecovery 只供根 DACL 恢复入口，保持 clean/epoch 和私有内容，禁止非根查找。
 // 1. Win32 RAII、错误及 SQLite 查询封装统一资源与失败处理；Git/Local 复用固定 SQL 的空闲语句。
 //    Local 最多保留 128 种 SQL，不缓存数据；计量实际 prepare 和 step 次数/耗时。
 // 2. Store 按需导入 lower 元数据，持久化命名空间、删除标记、ACL 和虚拟 inode；Local 枚举按目录提交并计数。
@@ -136,6 +137,7 @@ class Store {
   UINT32 serial = 0;
   bool poisoned = false;
   bool localMode = false;
+  bool securityRecovery = false;
   bool sealed = false;
   std::map<sqlite3_int64, std::weak_ptr<Node>> cache;
   std::unique_ptr<GitLower> git;
@@ -146,7 +148,7 @@ class Store {
 
   Store(const fs::path& source, const fs::path& root, const fs::path& workspace, bool create,
         const fs::path& gitExecutable = {}, const fs::path& gitDirectory = {},
-        const std::wstring& tree = L"", bool localMode = false);
+        const std::wstring& tree = L"", bool localMode = false, bool securityRecovery = false);
   ~Store();
   void sql(const char* text);
   NodePtr node(sqlite3_int64 id);
@@ -198,5 +200,5 @@ class Store {
   NodePtr insert(Node value);
   void link(sqlite3_int64 parent, const std::wstring& name, sqlite3_int64 id, bool touch = true);
 };
-FSP_FILE_SYSTEM_INTERFACE& callbacks();
+FSP_FILE_SYSTEM_INTERFACE& callbacks(bool securityRecovery = false);
 }  // namespace overlay

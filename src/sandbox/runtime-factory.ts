@@ -7,6 +7,7 @@
  * 2. Windows 注册专用账户原生 Runtime，并传递宿主数据目录以持久化授权根 SID；只有安装 state、二进制摘要、账户凭据和 WFP 均自检通过才执行。
  * 3. Linux/macOS 注册 MXC 私有流启动器，SDK 只在实际任务时动态加载；其他平台不注册后端。
  * 4. 额外授权根从 Config 固定的启动投影读取（旧调用方可提供环境）；非法/相对路径拒绝，不热改活动实例。
+ * 5. 可选恢复根回调只交给 Windows Broker 启动撤销流程，不授予 Runtime 工具挂载权限。
  */
 
 import type { Logger } from "pino";
@@ -16,6 +17,7 @@ import type { TraceRecorder } from "../tracing/recorder.js";
 import path from "node:path";
 import { dataDirectory } from "../config/data-directory.js";
 import { MxcSandboxRuntime } from "./mxc-runtime.js";
+import type { WithRecoveryRoots } from "./recovery-roots.js";
 
 function configuredRoots(name: string, environment: NodeJS.ProcessEnv) {
   const raw = environment[name];
@@ -46,6 +48,7 @@ export function createSandboxRuntime(
   traces?: TraceRecorder,
   brokerDataDirectory = dataDirectory(),
   environment: NodeJS.ProcessEnv = process.env,
+  withRecoveryRoots?: WithRecoveryRoots,
 ): SandboxRuntime | undefined {
   if (!configuration.enabled) {
     return undefined;
@@ -58,6 +61,7 @@ export function createSandboxRuntime(
       log,
       traces,
       brokerDataDirectory,
+      withRecoveryRoots,
     );
   }
 

@@ -12,7 +12,9 @@
 //    Local v6 按观察代次和对象来源保留跨轮依赖；旧实验格式不自动迁移。
 // 7. lookup/import 在 NtOpenFile 的真实缺失返回处记录负向依赖；内部复核不产生新观察。
 // 8. Local 枚举保存 lower 目录成员摘要，与导入共用一次枚举及事务；私有生成物不进入摘要。
+// 9. securityRecovery 重核排他租约上的旧进程，只允许根身份/DACL；不改 clean/epoch、不读取工作文件。
 #include "store.hpp"
+#include "local-inspection.hpp"
 
 #include <objbase.h>
 
@@ -279,10 +281,13 @@ void Store::sql(const char* text) {
 
 Store::Store(const fs::path& sourcePath, const fs::path& directory, const fs::path& workspacePath,
              bool create, const fs::path& gitExecutable, const fs::path& gitDirectory,
-             const std::wstring& tree, bool localMode)
+             const std::wstring& tree, bool localMode, bool securityRecovery)
     : source(fs::absolute(sourcePath)), root(fs::absolute(directory)), workspace(workspacePath),
-      localMode(localMode) {
+      localMode(localMode), securityRecovery(securityRecovery) {
   try {
+    if (securityRecovery && (!localMode || create || !tree.empty())) {
+      throw Error{STATUS_INVALID_PARAMETER};
+    }
     if (localMode && !tree.empty()) {
       throw Error{STATUS_INVALID_PARAMETER};
     }
@@ -302,6 +307,9 @@ Store::Store(const fs::path& sourcePath, const fs::path& directory, const fs::pa
                                FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
     require(lease.value != INVALID_HANDLE_VALUE);
     fileInfo(lease.value);
+    if (securityRecovery) {
+      verifyLocalStopped(lease.value);
+    }
     controlDirectory =
         Handle(CreateFileW(root.c_str(), FILE_LIST_DIRECTORY | READ_CONTROL,
                            FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
@@ -382,7 +390,8 @@ Store::Store(const fs::path& sourcePath, const fs::path& directory, const fs::pa
       }
     } else {
       Query meta(*this, "SELECT version,source,identity,serial,clean FROM meta");
-      if (!meta.step() || meta.number(0) != (localMode ? 6 : 2) || meta.number(4) != 1 ||
+      if (!meta.step() || meta.number(0) != (localMode ? 6 : 2) ||
+          (meta.number(4) != 1 && !(securityRecovery && meta.number(4) == 0)) ||
           fold(meta.text(1)) != fold(source.wstring()) || meta.text(2) != sourceIdentity) {
         throw Error{STATUS_FILE_INVALID};
       }
@@ -390,7 +399,9 @@ Store::Store(const fs::path& sourcePath, const fs::path& directory, const fs::pa
       if (!node(1)->directory()) {
         throw Error{STATUS_FILE_CORRUPT_ERROR};
       }
-      sql("UPDATE meta SET clean=0");
+      if (!securityRecovery) {
+        sql("UPDATE meta SET clean=0");
+      }
     }
     if (git) {
       // OpenFile normalized names look up an inode in its parent. The primary
@@ -422,7 +433,10 @@ void Store::finish() {
   if (poisoned) {
     throw Error{STATUS_FILE_INVALID};
   }
-  sql("UPDATE meta SET clean=1; PRAGMA wal_checkpoint(TRUNCATE)");
+  if (!securityRecovery) {
+    sql("UPDATE meta SET clean=1");
+  }
+  sql("PRAGMA wal_checkpoint(TRUNCATE)");
 }
 
 Handle Store::openLower(const std::wstring& origin, DWORD sharing, bool observeAbsence) {
@@ -668,6 +682,9 @@ NodePtr Store::child(const NodePtr& parent, const std::wstring& name, bool batch
 }
 
 NodePtr Store::lookup(const std::wstring& path) {
+  if (securityRecovery && path != L"\\") {
+    throw Error{STATUS_ACCESS_DENIED};
+  }
   if (gitIncompatible) {
     // Once a directory cannot be represented faithfully, don't expose a
     // partial repository as if unsupported entries were simply missing.
@@ -1005,6 +1022,12 @@ HANDLE Store::content(const NodePtr& value, bool write) {
 }
 
 FSP_FSCTL_FILE_INFO Store::info(const NodePtr& value) {
+  if (securityRecovery) {
+    if (value->id != 1) {
+      throw Error{STATUS_ACCESS_DENIED};
+    }
+    return value->info;
+  }
   auto result = value->info;
   if (git && (value->object.empty() || value->directory())) {
     return result;
@@ -1148,6 +1171,11 @@ std::vector<BYTE> Store::security(const NodePtr& value) {
 
 void Store::setSecurity(const NodePtr& value, SECURITY_INFORMATION information,
                         PSECURITY_DESCRIPTOR modification) {
+  if (securityRecovery && (value->id != 1 ||
+      (information & ~(DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION |
+                       UNPROTECTED_DACL_SECURITY_INFORMATION)))) {
+    throw Error{STATUS_ACCESS_DENIED};
+  }
   // Audit ACLs require separate privilege-aware capture; never silently discard
   // them.
   if (information & (SACL_SECURITY_INFORMATION | LABEL_SECURITY_INFORMATION)) {

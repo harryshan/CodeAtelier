@@ -12,6 +12,7 @@
 // 7. publish-replace/cleanup 保留供独立原生验证使用，保留权限并返回无正文确认；不启动挂载。
 // 8. publish-session 串行执行全部来源写入并持执行排他；inspect-publication 仅持排他核对旧 generation。
 // 9. Local 挂载额外接收宿主 PID，在服务前记录 mount.lock 进程身份；inspect-local 只持离线检查租约。
+// 10. restore-local-security 仅暴露根身份/DACL，保持原 clean/owner，不提供命令、冻结、读写或目录枚举。
 // 不安装驱动、不创建分区、不托管网络服务；UNC 由 WinFsp 本机 MUP provider 提供。
 #include <iostream>
 #include <sstream>
@@ -86,8 +87,9 @@ int wmain(int argc, wchar_t** argv) {
     }
     bool gitMode = argc == 8 && (std::wstring(argv[1]) == L"create-git" ||
                                  std::wstring(argv[1]) == L"restore-git");
-    bool localMode = argc == 6 && (std::wstring(argv[1]) == L"create-local" ||
-                                   std::wstring(argv[1]) == L"restore-local");
+    bool securityRecovery = argc == 6 && std::wstring(argv[1]) == L"restore-local-security";
+    bool localMode = securityRecovery || (argc == 6 && (std::wstring(argv[1]) == L"create-local" ||
+                                   std::wstring(argv[1]) == L"restore-local"));
     if (!gitMode && !localMode && (argc != 5 ||
                      (std::wstring(argv[1]) != L"create" && std::wstring(argv[1]) != L"restore"))) {
       return 2;
@@ -99,8 +101,8 @@ int wmain(int argc, wchar_t** argv) {
     }
     Store store(argv[2], argv[3], L"\\" + prefix + L"\\",
                 std::wstring(argv[1]).rfind(L"create", 0) == 0, gitMode ? argv[5] : L"",
-                gitMode ? argv[6] : L"", gitMode ? argv[7] : L"", localMode);
-    if (localMode) {
+                gitMode ? argv[6] : L"", gitMode ? argv[7] : L"", localMode, securityRecovery);
+    if (localMode && !securityRecovery) {
       std::wstring owner(argv[5]);
       if (owner.empty() || owner.find_first_not_of(L"0123456789") != std::wstring::npos) {
         throw Error{STATUS_INVALID_PARAMETER};
@@ -125,7 +127,7 @@ int wmain(int argc, wchar_t** argv) {
     wcscpy_s(params.FileSystemName, L"CodeAtelier");
     FSP_FILE_SYSTEM* filesystem = nullptr;
     checked(FspFileSystemCreate(const_cast<PWSTR>(L"" FSP_FSCTL_NET_DEVICE_NAME), &params,
-                                &callbacks(), &filesystem));
+                                &callbacks(securityRecovery), &filesystem));
     filesystem->UserContext = &store;
     auto result = FspFileSystemStartDispatcher(filesystem, 0);
     if (!NT_SUCCESS(result)) {
@@ -133,9 +135,12 @@ int wmain(int argc, wchar_t** argv) {
       checked(result);
     }
     std::cout << "{\"version\":1,\"state\":\"ready\""
-              << (localMode ? ",\"mode\":\"local\"" : "") << "}\n" << std::flush;
+              << (securityRecovery ? ",\"mode\":\"local-security\"" : localMode ? ",\"mode\":\"local\"" : "") << "}\n" << std::flush;
     std::string command;
     while (std::getline(std::cin, command)) {
+      if (securityRecovery) {
+        break;
+      }
       if (command.rfind("next-epoch ", 0) == 0 && store.localMode && !filesystem) {
         std::istringstream input(command.substr(11));
         std::string id;
@@ -214,7 +219,7 @@ int wmain(int argc, wchar_t** argv) {
       FspFileSystemDelete(filesystem);
     }
     store.finish();
-    if (localMode) {
+    if (localMode && !securityRecovery) {
       closeLocalMount(store.lease.value);
     }
     std::cout << "{\"version\":1,\"state\":\"stopped\"}\n" << std::flush;

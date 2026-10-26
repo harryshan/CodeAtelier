@@ -15,6 +15,7 @@
  * 11. 同清单 read/save 只在短 I/O 期间排队，避免 Windows 读句柄阻止 rename；不重试发布或改变磁盘锁语义。
  * 12. recoverPrivateRefresh 仅恢复有任务排空/关闭凭据的 complete 刷新；独立恢复锁保护原任务锁，失败不重写来源。
  *     成功后保存原任务 ID 供当前 UI 区分历史失败与已恢复视图，下一任务清除；不改历史任务终态。
+ * 13. withSandboxRecoveryRoots 只在账户已排空后的启动撤销阶段暴露已知卷根 ACL；保留 dirty/任务锁/阶段，不执行任务或发布。
  * 公开创建由 HTTP 单独检查平台/Sandbox 能力，不迁移旧历史；来源写入只由冻结租约内的协调器执行。
  */
 import { randomUUID } from "node:crypto";
@@ -51,6 +52,7 @@ import {
 } from "./publication/files.js";
 import { Publisher } from "./publication/publisher.js";
 import { ManifestQueue } from "./manifest-queue.js";
+import { withLocalInspection } from "./inspection-lease.js";
 import { PublishError } from "./publication/merge.js";
 import {
   inspectInterruptedFiles,
@@ -296,6 +298,79 @@ export class LocalOverlayService {
 
   async projectWorkspace(workspace: string) {
     return (await this.validate(workspace))?.source;
+  }
+
+  /** Called only between native account termination and grant revocation, before serving tasks. */
+  withSandboxRecoveryRoots(
+    roots: readonly string[],
+    signal: AbortSignal,
+    revoke: () => Promise<void>,
+  ) {
+    const current = AbortSignal.any([signal, this.creation.signal]);
+    const ids = [
+      ...new Set(
+        roots
+          .map((root) => this.backend.idFor(root))
+          .filter((id): id is string => id !== undefined),
+      ),
+    ];
+    const visit = async (index: number): Promise<void> => {
+      current.throwIfAborted();
+      const id = ids[index];
+      if (!id) {
+        await revoke();
+
+        return;
+      }
+
+      await this.observe(id, "recover_access", async () => {
+        const record = await this.read(id);
+        if (
+          this.active.has(id) ||
+          !["active", "failed"].includes(record.phase) ||
+          !record.sessionId ||
+          !record.controlIdentity ||
+          !record.workspaceIdentity ||
+          (await directoryIdentity(record.source)) !== record.sourceIdentity ||
+          (await directoryIdentity(this.control(id))) !== record.controlIdentity
+        ) {
+          throw new Error("Local overlay ACL 恢复身份或状态不匹配。");
+        }
+
+        // The root-only mount rechecks this proof under its exclusive native lease.
+        // It exposes no file I/O and preserves dirty state; normal restore stays unchanged.
+        await withLocalInspection(this.control(id), current, async () => {});
+        if (JSON.stringify(await this.read(id)) !== JSON.stringify(record)) {
+          throw new Error("Local overlay ACL 恢复清单已变化。");
+        }
+
+        if (!this.backend.recoverAccess) {
+          throw new Error("Local overlay 缺少专用 ACL 恢复后端。");
+        }
+
+        const mount = await this.backend.recoverAccess(
+          id,
+          record.source,
+          this.control(id),
+          current,
+        );
+        try {
+          if ((await mount.identity()) !== record.workspaceIdentity) {
+            throw new Error("Local overlay ACL 恢复卷身份不匹配。");
+          }
+
+          await visit(index + 1);
+        } finally {
+          await mount.close();
+        }
+      });
+    };
+
+    const work = visit(0);
+    this.creating.add(work);
+    void work.finally(() => this.creating.delete(work)).catch(() => {});
+
+    return work;
   }
 
   recoverPrivateRefresh(

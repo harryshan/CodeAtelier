@@ -1,5 +1,7 @@
 # Windows NTFS / WinFsp overlay 后端
 
+Local 专用恢复增量（D170，2026-10-26）：与下述 Riftri/Git 模式分开，`restore-local-security` 只暴露既有 Local 卷根身份/DACL，用于 Broker 启动排空账户后的原生授权撤销。文件 I/O、创建/覆盖、枚举和命名空间修改拒绝；不清 dirty、不改 epoch、不覆盖旧 owner 记录，不恢复旧任务。WinFsp 要求 Create/Overwrite 回调即便只打开已有对象也存在，因此这两个槽返回固定拒绝。源码与原生 helper 需同步重建，旧 helper 的收据不能充当安全模式；无需更新驱动或 Sandbox IPC。验收和剩余边界见 [Local 设计](local-overlay-design.md) 与 [真实崩溃记录](verification.md)。
+
 状态：2026-10-25 已实现 D168：Windows 默认 Riftri 使用原生 WinFsp 实时 overlay，Git 使用 linked worktree metadata。已在本机 NTFS、WinFsp 2.1.25156 和现有专用账户 Sandbox 做真实挂载验证；这不是完整 NTFS/ACL 兼容认证，也不代表巨型仓库性能验收。Linux/macOS 继续使用原生 CoW 副本。
 
 ## 已确认语义

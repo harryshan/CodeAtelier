@@ -35,6 +35,7 @@
     "overlay:verify-drain": "tsx scripts/verify-local-overlay-drain.ts",
     "overlay:verify-sandbox": "tsx scripts/verify-local-overlay-sandbox.ts",
     "overlay:verify-browser": "tsx scripts/verify-local-overlay-browser.ts",
+    "overlay:verify-server-crash": "tsx scripts/verify-local-server-crash.ts",
     "overlay:verify-complete": "tsx scripts/verify-local-overlay-complete.ts",
     "overlay:verify-build": "tsx scripts/verify-local-overlay-build.ts",
     "overlay:verify-read-cost": "tsx scripts/verify-local-overlay-read-cost.ts",

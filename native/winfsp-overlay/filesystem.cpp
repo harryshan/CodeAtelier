@@ -6,6 +6,7 @@
 // 5. Git PoC/Local 卷使用 no-atime；仅忽略自动访问时间，显式 SetBasic/写入仍持久化。
 // 6. Local 显式元数据修改与可删除预检保存基线，避免仅在无错误返回的 Cleanup 中发现陈旧读。
 // 7. Local 枚举按打开句柄缓冲名称/元数据；续页不重扫，重启/重开观察来源，异常填充清空、Close 释放。
+// 8. ACL 恢复使用独立回调表，仅根身份/Open/Close/GetSecurity/SetSecurity；WinFsp 必填的创建/覆盖及枚举回调明确拒绝。
 // WinFsp 内核执行用户访问、共享模式和锁检查，不以 helper 宿主权限替调用者绕过检查。
 #include <algorithm>
 #include <cstring>
@@ -509,7 +510,37 @@ static NTSTATUS deleteReparse(FSP_FILE_SYSTEM* fs, PVOID context, PWSTR, PVOID b
   });
 }
 
-FSP_FILE_SYSTEM_INTERFACE& callbacks() {
+FSP_FILE_SYSTEM_INTERFACE& callbacks(bool securityRecovery) {
+  static FSP_FILE_SYSTEM_INTERFACE securityCallbacks = [] {
+    FSP_FILE_SYSTEM_INTERFACE value{};
+    value.GetVolumeInfo = volume;
+    value.GetSecurityByName = securityByName;
+    value.Open = open;
+    // WinFsp requires Create and Overwrite callbacks even for FILE_OPEN.
+    // Keep the required slots populated without granting either operation.
+    value.Create = [](FSP_FILE_SYSTEM*, PWSTR, UINT32, UINT32, UINT32,
+                      PSECURITY_DESCRIPTOR, UINT64, PVOID*, FSP_FSCTL_FILE_INFO*) -> NTSTATUS {
+      return STATUS_ACCESS_DENIED;
+    };
+    value.Overwrite = [](FSP_FILE_SYSTEM*, PVOID, UINT32, BOOLEAN, UINT64,
+                         FSP_FSCTL_FILE_INFO*) -> NTSTATUS {
+      return STATUS_ACCESS_DENIED;
+    };
+    value.Close = close;
+    value.GetFileInfo = getInfo;
+    value.GetSecurity = getSecurity;
+    value.SetSecurity = setSecurity;
+    value.GetReparsePoint = getReparse;
+    value.ResolveReparsePoints = resolveReparse;
+    // Return an explicit denial rather than expose private names.
+    value.ReadDirectory = [](FSP_FILE_SYSTEM*, PVOID, PWSTR, PWSTR, PVOID, ULONG, PULONG) -> NTSTATUS {
+      return STATUS_ACCESS_DENIED;
+    };
+    return value;
+  }();
+  if (securityRecovery) {
+    return securityCallbacks;
+  }
   static FSP_FILE_SYSTEM_INTERFACE callbacks = [] {
     FSP_FILE_SYSTEM_INTERFACE value{};
     value.GetVolumeInfo = volume;

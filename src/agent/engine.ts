@@ -19,6 +19,7 @@
  *    local_publish 经认证 Runtime 主任务与已记录工具参数双重核对，只选定或撤销本轮计划，命令/路径不进入 trace。
  *    localOverlayCreation 提供公开创建/执行前提，describeSession 统一历史投影；Local 要求 Runtime 时启动失败保留私有视图，不转宿主且不记录为已回退。
  *    冲突继续会话只向模型提供可信参考目录指引，材料本身仍是不可信历史；新编辑重读当前来源并沿用正常发布验证。
+ *    Windows 启动排空后的 ACL 恢复回调只临时暴露旧 Local 卷根身份/权限，保留 dirty 和任务锁，不重放任务。
  * 9. run 的终态持久化与 trace 收尾分开保护；写库失败仍尝试归档失败 trace，导出/归档故障只记警告，最外层 finally 释放 trace 内存和任务级 Sandbox 状态。
  *
  * 模型请求可以重试，但已经执行的工具不能跟着重跑。数据库回滚也撤销不了文件修改或
@@ -562,6 +563,8 @@ export class Engine {
         this.traces,
         config.directory,
         config.startupEnvironment,
+        (roots, signal, revoke) =>
+          this.localOverlays.withSandboxRecoveryRoots(roots, signal, revoke),
       ),
       this.sandboxLog,
       this.traces,

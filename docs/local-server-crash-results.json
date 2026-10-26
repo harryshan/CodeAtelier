@@ -1,0 +1,38 @@
+{
+  "date": "2026-10-26",
+  "platform": "Windows / NTFS / installed WinFsp / installed Sandbox IPC v18",
+  "command": "pnpm overlay:verify-server-crash",
+  "fixture": ".local/local-server-crash-SoKZbl/report.json",
+  "passed": true,
+  "validation": {
+    "check": { "passedFiles": 158, "passedTests": 1262, "skippedTests": 1 },
+    "browserTestsPassed": 77,
+    "focusedTestsPassed": 43,
+    "nativeImportAndReparse": "passed",
+    "remainingGrantJournals": 0
+  },
+  "processObservation": {
+    "method": "CIM PID plus creation time bound before terminating the fixture service",
+    "processHandles": "access denied by dedicated-account ACL",
+    "knownRuntimeAndCommandGoneAfterMs": 1260,
+    "wholeJobProof": false
+  },
+  "checks": [
+    "Real production task interrupted while Sandbox command held a flushed partial write",
+    "No synthetic task status, manifest, task lock or drain declaration",
+    "Root-only security mount rejects enumeration, file read and file creation",
+    "Native account termination precedes temporary mount, grant revocation and unmount",
+    "Dirty flag, epoch, baselines, non-root nodes, owner record, manifest and task lock retained",
+    "Ordinary dirty restore still rejected",
+    "HTTP interrupted reference creates a fresh session without starting a task",
+    "Explicit new task reads current source and reference, edits and publishes through main and candidate Sandbox Runtimes",
+    "No host fallback"
+  ],
+  "limitations": [
+    "Fixed provider and small synthetic fixture; HTTP coverage, not a new browser crash scenario",
+    "CIM observation covers two bound identities, not arbitrary descendants",
+    "Only known Local roots in the current data directory are recovered for ACL cleanup",
+    "Candidate-volume crashes, damaged databases, other data directories and power loss remain outside this proof",
+    "No automatic resume of the original dirty view and no POSIX claim"
+  ]
+}

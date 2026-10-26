@@ -4,6 +4,8 @@
 
 ## 需求与模式
 
+真实服务崩溃暴露的 ACL 恢复缺口（2026-10-26，已修复并实机验证）：Broker 退出后主 Runtime/命令及 helper 均退出，但卷保留 dirty，持久 Sandbox grant 仍引用已消失的虚拟目录，启动撤销因无法核对原对象而拒绝后续任务。普通重挂载不能解决。修复使用独立 `restore-local-security` 模式：先由原生 Supervisor 排空专用账户，再根据受保护 grant 的路径定位当前数据目录已知清单；核对原 helper/owner 已退出、来源/控制目录/卷身份，仅临时暴露根目录身份和 DACL，供原有 Supervisor 撤销，最后卸载。该模式拒绝文件读写、创建/覆盖、目录枚举及命名空间修改，只可访问根目录；保留 clean/epoch/旧 owner 记录、源码及私有内容/基线，不把 dirty 清成正常。此操作不发布、不删除任务锁、不把异常会话改成 ready，也不重新执行任务；损坏元数据、未知身份、其它数据目录或无法关闭继续拒绝。无需复制来源树或更新 Sandbox 安装态协议。使用 Local `recover_access` 生命周期记录 ID/耗时/终态，不记录路径或正文。真实服务崩溃到新参考会话 Sandbox 发布已通过；范围及原始证据见验证记录。
+
 真实中断参考浏览器验收（2026-10-26）：`pnpm overlay:verify-browser --interrupted` 已通过生产 UI/HTTP/SSE、WinFsp 和已安装 IPC v18 Runtime。helper 或 owner 仍活动时检查拒绝；退出后 UI 检查部分字节并创建新会话，无自动任务。明确提交后 Sandbox 读 v3 参考和检查后更新的 lower，重新编辑并经 local_publish/独立候选 Runtime 发布，旧清单/锁/main/WAL/原生记录不变，未选中断新增/删除不应用。夹具服务重启后参考来源、发布结果与原异常状态保留。固定 provider 和小文件夹具，遗留 active 清单/服务锁为故障注入；不声称真实 Runtime/服务崩溃恢复、旧卷重挂载、POSIX 或任意工程验证通过。
 
 清单读写联动（2026-10-26）：真实浏览器快照轮询和任务收尾可能竞争同一 JSON 清单；本机 Node 只读句柄未关闭时，原子替换返回 EPERM。Local Service 用逐视图短 I/O 队列串行 read/save，读取保持原有有界/身份校验，保存仍为独占临时文件、flush、rename。队列不覆盖整个任务，不阻塞其它视图，不重试写入或接管磁盘锁；外部进程造成的失败仍保留现场。无需改变持久格式、权限或 Runtime IPC，排队时间计入现有检查/创建/收尾 trace。
