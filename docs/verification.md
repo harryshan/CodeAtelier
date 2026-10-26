@@ -1,10 +1,19 @@
 # 初版验证记录
 
+## Local IPC v18 安装态发布与同文件并行（2026-10-26）
+
+- 已获授权的第二次 Repair 于本机 10:07 完成，保留专用账户且没有活动进程需要排空；ACL/WFP/安装自检通过。安装 Node 直接返回 ProgramData 中自身路径，SHA-256 与独立 Node 26.10.0 相同，entry 为 IPC v18。未创建分区、重启 Windows 或实际 CodeAtelier 服务。
+- `pnpm overlay:verify-sandbox --commands` 通过（`.local/local-overlay-runtime18-sandbox-fixed.log`）：生产 Service/Engine、固定 provider 的 `local_publish`、认证 Runtime IPC、独立候选 Runtime、来源串行发布及视图确认完整运行。两个主 Runtime 命令区间重叠约 2.205 秒；源码明确选择后自动发布，未选私有文件及候选产物未进入来源。真实来源绝对写与 `.git` 创建拒绝，不额外授 Git/source 写根，无宿主 fallback。
+- 同轮还验证候选两命令顺序、非零退出停止、来源冲突保留、候选运行中取消并排空、Engine 重建后两视图续聊，失败/冲突私有内容仍在；全部结束零活动 Sandbox 租约，无 overlay helper 残留。该脚本经内部 Engine 启动，不替代公开 HTTP/UI 与安装态一体化验证，也不是真实模型评测。
+- 增加 `--commands --merge` 后实机通过（`.local/local-overlay-runtime18-merge-fixed.log`）：两个 Runtime 先从相同原文完成私有编辑，屏障前来源保持原样；随后两个批次都选择同一文件。首个候选包含单方修改，第二个真实候选 Runtime 输出的文件包含双方修改，最终来源也是合并结果；两个命令区间重叠 2.252 秒。初次失败是夹具把 PowerShell provider 路径传给 .NET，改用普通文件命令后通过，未放宽内容断言。
+- [安装态报告](local-overlay-runtime18-results.json) 保留两份原始结果与路径，并说明旧报告文字的范围修正。自审核对编辑屏障、候选实际输出、真实 execution mode、失败未发布、取消后零租约与私有续聊；不宣称会话是 OS 安全边界、依赖集完备、多文件原子提交、真实大型构建或 POSIX 已验收。未知私有卷、完成态刷新产品恢复和宿主候选适配器仍待完成。
+- 最终 `pnpm check` 通过（`.local/local-overlay-runtime18-check.log`）：150 个测试文件、1205 项通过 / 1 项既有跳过，类型、Lint、格式与构建通过。仅扩展手动实机验证脚本和证据文档，没有 UI/HTTP 行为改动，未重复浏览器测试；此前完整浏览器 75 项通过。未运行 Evaluation。
+
 ## Sandbox Repair 的 Node shim 解析（2026-10-26）
 
 - 用户明确授权管理员 Repair 后，固定入口完成账户保留、ACL/WFP/安装自检；安装 entry 为 IPC v18，与构建 SHA-256 一致。随后真实 `overlay:verify-sandbox --commands` 在两个 Runtime 连接前失败，未执行任务或回退宿主。诊断仅用于该夹具的 Supervisor stderr，确认复制到 ProgramData 的 Node 实为 nvm 转发程序，专用账户报没有配置活动版本；成功的宿主 `--version` 探测不足以证明可独立运行。
 - 先用实际调用 Node 的转发夹具复现：旧安装函数返回 shim 路径（`.local/runtime18-node-before.log`）。修复为解析 `process.execPath`，校验独立普通文件、支持版本与直接运行时自报路径，拒绝相对路径、非 exe 或失败探测；不更改账户权限、IPC 或宿主 fallback 边界。专项修复与原 Repair 测试 22 项通过（`.local/runtime18-node-after.log`），后续补充直接解释器和无效路径检查通过（`.local/runtime18-node-final.log`）。
-- 完整套件首次发现隔离 PATH 找不到 `pwsh`；测试改用系统 PowerShell 的绝对路径，路径校验也兼容其 .NET API，不依赖用户 PATH。最终 `pnpm check` 通过（`.local/local-incident-runtime18-check.log`）：150 个测试文件、1205 项通过 / 1 项既有跳过，类型、Lint、格式和构建通过。该增量只改安装选择，不改 UI；此前完整浏览器 75 项通过。再次 Repair 实机结果须另行确认，不能将源码用例通过视为安装态 Sandbox 通过。
+- 完整套件首次发现隔离 PATH 找不到 `pwsh`；测试改用系统 PowerShell 的绝对路径，路径校验也兼容其 .NET API，不依赖用户 PATH。最终 `pnpm check` 通过（`.local/local-incident-runtime18-check.log`）：150 个测试文件、1205 项通过 / 1 项既有跳过，类型、Lint、格式和构建通过。该增量只改安装选择，不改 UI；此前完整浏览器 75 项通过。随后第二次 Repair 和真实链路通过，具体安装态证据见上一节，源码用例与实机结果分别记录。
 
 ## Local 来源发布事故的产品审核与接受（D170，2026-10-26）
 

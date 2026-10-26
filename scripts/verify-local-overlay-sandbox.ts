@@ -7,7 +7,8 @@
  * 不替换 Runtime、Broker、ACL 或 IPC，不安装/Repair、不使用真实模型或用户仓库。
  * 5. --publish 使用可信内部选择和精确候选字节验证，成功轮次发布指定新文件；取消轮次选择不执行。
  * 6. --commands 由固定 provider 返回 local_publish 工具，经实际 Runtime IPC 绑定计划，再验证成功、非零退出、冲突和取消。
- * 验证内部会话生命周期；候选 Sandbox 命令仅由 --commands 覆盖，没有公开创建入口。失败现场保留。
+ * 7. --commands --merge 让两个 Runtime 从同一文件原文独立编辑不同位置，编辑屏障后才允许发布；检查第二候选含双方修改。
+ * 验证内部会话生命周期；候选 Sandbox 命令仅由 --commands 覆盖，不经公开 HTTP 创建入口。失败现场保留。
  */
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
@@ -23,6 +24,8 @@ import { Store } from "../src/sessions/store.js";
 
 assert.equal(process.platform, "win32");
 const commands = process.argv.includes("--commands");
+const merge = process.argv.includes("--merge");
+assert(!merge || commands, "--merge requires --commands");
 const publish = commands || process.argv.includes("--publish");
 let validated = 0;
 process.env.CODEATELIER_SANDBOX_ENABLED = "true";
@@ -36,6 +39,12 @@ await mkdir(source);
 await mkdir(path.join(source, ".git"));
 await writeFile(path.join(source, ".git", "sentinel"), "source metadata");
 await writeFile(path.join(source, "base.txt"), "source content");
+const sharedBase = "left\nmiddle\nright\n";
+const sharedMerged = "left-A\nmiddle\nright-B\n";
+if (merge) {
+  await writeFile(path.join(source, "shared.txt"), sharedBase);
+}
+
 const config = new Config(path.join(root, "data"));
 config.settings.maxConcurrentTasks = 2;
 config.settings.maxSteps = 3;
@@ -64,11 +73,30 @@ let phase: "parallel" | "validation" | "conflict" | "cancel" | "restore" =
   "parallel";
 const calls = new Map<string, number>();
 const intervals = new Map<string, [number, number]>();
+const sharedCandidates: string[] = [];
 let arrived = 0;
 let release!: () => void;
 const barrier = new Promise<void>((resolve) => {
   release = resolve;
 });
+let edited = 0;
+let releaseEdits!: () => void;
+const editsReady = new Promise<void>((resolve) => {
+  releaseEdits = resolve;
+});
+
+async function waitForPeer(ready: Promise<void>, signal: AbortSignal) {
+  signal.throwIfAborted();
+  await new Promise<void>((resolve, reject) => {
+    const abort = () => reject(signal.reason);
+    signal.addEventListener("abort", abort, { once: true });
+    void ready.then(() => {
+      signal.removeEventListener("abort", abort);
+      resolve();
+    });
+  });
+}
+
 function command(label: string) {
   if (phase === "validation" || phase === "conflict") {
     const file = phase === "validation" ? "rejected.txt" : "source-A.txt";
@@ -106,6 +134,14 @@ function command(label: string) {
     "$denied = $false; try { Set-Content -LiteralPath '.git' -Value 'forbidden' } catch { $denied = $true }; if (-not $denied) { throw 'Metadata creation allowed' }",
     `$denied = $false; try { Set-Content -LiteralPath '${forbidden}' -Value 'forbidden' } catch { $denied = $true }; if (-not $denied) { throw 'Source write allowed' }`,
     `Set-Content -LiteralPath 'runtime.txt' -Value '${label}'`,
+    ...(merge
+      ? [
+          "$shared = Get-Content -LiteralPath 'shared.txt' -Raw",
+          "if ($shared -ne \"left`nmiddle`nright`n\") { throw 'Shared baseline changed before both edits' }",
+          `$shared = $shared.Replace('${label === "A" ? "left" : "right"}', '${label === "A" ? "left-A" : "right-B"}')`,
+          "Set-Content -LiteralPath 'shared.txt' -Value $shared -NoNewline -Encoding ascii",
+        ]
+      : []),
     ...(publish
       ? [
           `Set-Content -LiteralPath 'source-${label}.txt' -Value 'published ${label}'`,
@@ -215,7 +251,7 @@ const provider: ModelProvider = {
       );
       assert.ok(feedback, "Selection tool receipt missing");
       assert.deepEqual(JSON.parse(feedback.output), {
-        selected: 1,
+        selected: merge && phase === "parallel" ? 2 : 1,
         published: false,
       });
 
@@ -241,6 +277,19 @@ const provider: ModelProvider = {
       );
       assert.ok(match, "Runtime command did not finish its assertions");
       intervals.set(label, [Number(match[1]), Number(match[2])]);
+      if (merge) {
+        if (++edited === 2) {
+          assert.equal(
+            await readFile(path.join(source, "shared.txt"), "utf8"),
+            sharedBase,
+          );
+          releaseEdits();
+        }
+
+        // Neither task may publish until both real Runtime edits have finished.
+        await waitForPeer(editsReady, signal);
+      }
+
       if (publish) {
         const view = views.find((view) => view.label === label)!;
         const active = engine.activeTasks.find(
@@ -249,10 +298,13 @@ const provider: ModelProvider = {
         if (commands) {
           return selectResponse(
             key,
-            [`source-${label}.txt`],
+            [`source-${label}.txt`, ...(merge ? ["shared.txt"] : [])],
             [
               `whoami; if ((Get-Content -LiteralPath 'source-${label}.txt' -Raw).Trim() -ne 'published ${label}') { throw 'Wrong candidate' }; if ((Test-Path -LiteralPath 'runtime.txt') -or (Test-Path -LiteralPath '.git')) { throw 'Private content exposed' }; Set-Content -LiteralPath 'candidate-artifact.txt' -Value 'private'`,
-              "if ((Get-Content -LiteralPath 'candidate-artifact.txt' -Raw).Trim() -ne 'private') { throw 'Plan ordering failed' }",
+              "if ((Get-Content -LiteralPath 'candidate-artifact.txt' -Raw).Trim() -ne 'private') { throw 'Plan ordering failed' }" +
+                (merge
+                  ? `; $shared = Get-Content -LiteralPath 'shared.txt' -Raw; if (-not $shared.Contains('${label === "A" ? "left-A" : "right-B"}')) { throw 'Own edit missing from candidate' }; Write-Output ('SHARED_CANDIDATE:' + [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($shared)))`
+                  : ""),
             ],
           );
         } else {
@@ -422,6 +474,28 @@ try {
     if (commands) {
       for (const session of sessions) {
         const events = store.events(session.id);
+        if (merge) {
+          const output = events
+            .filter(
+              (event) =>
+                event.type === "local_validation" &&
+                event.data.event === "command_output",
+            )
+            .map((event) => event.data.data.text)
+            .join("");
+          const candidates = [
+            ...output.matchAll(/SHARED_CANDIDATE:([A-Za-z0-9+/=]+)/g),
+          ];
+          assert.equal(
+            candidates.length,
+            1,
+            "Each candidate must report exactly one shared file",
+          );
+          sharedCandidates.push(
+            Buffer.from(candidates[0]![1]!, "base64").toString("utf8"),
+          );
+        }
+
         assert.equal(
           events.filter(
             (event) =>
@@ -438,6 +512,25 @@ try {
               event.data.event === "tool_result",
           ).length,
           2,
+        );
+      }
+
+      if (merge) {
+        assert.equal(
+          await readFile(path.join(source, "shared.txt"), "utf8"),
+          sharedMerged,
+        );
+        assert.equal(
+          sharedCandidates.filter((content) => content === sharedMerged).length,
+          1,
+        );
+        assert.equal(
+          sharedCandidates.filter((content) =>
+            ["left-A\nmiddle\nright\n", "left\nmiddle\nright-B\n"].includes(
+              content,
+            ),
+          ).length,
+          1,
         );
       }
     } else {
@@ -596,7 +689,9 @@ try {
     remountAndContinue: "both sessions passed after Engine recreation",
     epochs,
     publication: publish
-      ? "two selected files automatically published; cancelled selection retained"
+      ? merge
+        ? "two batches each selected an independent file and shared.txt; all three source files published; cancelled selection retained"
+        : "two selected files automatically published; cancelled selection retained"
       : "not selected",
     rejection: publish
       ? "candidate failure and source conflict preserved; both private results survived restart"
@@ -609,12 +704,19 @@ try {
       : publish
         ? "exact merged candidate bytes; no validation command executed"
         : "not requested",
+    sharedFileMerge: merge
+      ? {
+          baseline: sharedBase,
+          candidates: sharedCandidates,
+          published: sharedMerged,
+        }
+      : "not requested",
     fallback: false,
     activeLeasesAfterTasks: 0,
     cleanup: "engine drained; helpers cleanly stopped",
     limitations: [
       "Not an OS security boundary between sessions",
-      "No public UI/API creation yet; fixed provider, not a real model evaluation",
+      "Public UI/API creation not exercised by this verifier; fixed provider, not a real model evaluation",
     ],
   };
   const file = path.join(root, "report.json");

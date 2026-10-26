@@ -18,7 +18,7 @@ Local 公开创建与状态（D170）：`local-overlay-http.test.ts` 使用真�
 
 Local 模型选择工具（D170）：`local-overlay-tool.test.ts` 验证默认工具表不暴露专属能力、有界严格参数及同批竞争选择拒绝。`local-overlay-service.test.ts` 通过真实 stdio Runtime 子进程和生产 Engine 验证模型选择、撤销、普通会话伪造调用拒绝及 trace 不含命令/路径；挂载边界仍为测试替身，不证明 WinFsp/OS Sandbox。IPC 回归额外验证认证不等于启用发布能力，旧 v17 拒绝。真实安装脚本 `overlay:verify-sandbox --commands` 改用模型工具，不再从脚本直接调用 Engine 绑定命令。
 
-Local 产品候选命令（D170）：`local-overlay-command-plan.test.ts` 覆盖有界计划、回执绑定、失败停止和缺失回执不重发；`local-overlay-command-runtime.test.ts` 使用真实子进程/IPC 验证顺序执行、取消排空、未知清理拒绝和启动失败不转宿主，该 stdio 夹具不作为 OS Sandbox 证明。`local-overlay-publication-queue.test.ts` 覆盖取消中间等待者不能越过当前发布、不同来源独立和失败释放；候选测试先复现正常验证超出残留锁短等待的失败，再验证同进程排队成功。`pnpm overlay:verify-sandbox --commands` 使用已安装专用账户 Runtime 与生产 Engine 内部命令入口，覆盖两会话并行、候选成功/失败/取消、来源冲突、重建 Engine 后私有内容保留；不进入默认 check 或 Evaluation。
+Local 产品候选命令（D170）：`local-overlay-command-plan.test.ts` 覆盖有界计划、回执绑定、失败停止和缺失回执不重发；`local-overlay-command-runtime.test.ts` 使用真实子进程/IPC 验证顺序执行、取消排空、未知清理拒绝和启动失败不转宿主，该 stdio 夹具不作为 OS Sandbox 证明。`local-overlay-publication-queue.test.ts` 覆盖取消中间等待者不能越过当前发布、不同来源独立和失败释放；候选测试先复现正常验证超出残留锁短等待的失败，再验证同进程排队成功。`pnpm overlay:verify-sandbox --commands` 使用已安装专用账户 Runtime 与生产 Engine 内部命令入口，覆盖两会话并行、候选成功/失败/取消、来源冲突、重建 Engine 后私有内容保留。追加 `--merge` 验证两个 Runtime 从同一文件原文编辑不同位置，屏障前来源未改，第二候选实际输出及最终来源包含双方修改；不进入默认 check 或 Evaluation。
 
 所有功能开发均须配套合理的单元/回归测试，测试和文档属于功能交付的一部分。不要等全部开发结束后才首次运行测试。
 
@@ -77,7 +77,7 @@ Runtime stdio 集成夹具共用 `runtime-child-close.ts`：spawn 后立即监�
 - Local 自动捕获：`pnpm overlay:verify-capture` 不预声明基线，真实验证读取零内容复制、覆盖/替换/删除/rename/二进制的原文保存、恢复 mtime 后陈旧写拒绝、属性修改后旧基线复用拒绝、不可变 B 与重挂载；冻结撤销卷但保留 helper 租约，第二个 helper 不能接管。`overlay-manager.test.ts` 覆盖 frozen 收据顺序、导出失败清理、租约丢失与旧模式拒绝。手动脚本不进入默认 check/Evaluation，不运行产品自动回写。
 - Local 原生发布桥接：`local-overlay-native-batch.test.ts` 覆盖原始 B/当前 O、选择范围、空变更的读依赖、陈旧依赖、目录/属性/坏对象/非冻结格式及重复路径拒绝；协议测试等待原生 `reads-checked`。`pnpm overlay:verify-filesystem --native` 真实双挂载自动捕获，冻结导出选择源码，在全新候选视图验证后发布同文件非重叠修改，检查产物不发布及原会话结果保留；capture 脚本增加真实陈旧依赖拒绝。仍无产品发布确认/刷新，不属于 Evaluation。
 - Windows 原生发布：`local-overlay-windows-journal.test.ts` 通过替身控制原生确认/清理结果，真实检查持久 journal、unknown 锁、完整提交后清理、清理冲突保持 complete，以及原生拒绝不 fallback；只在 Windows 执行接线测试。`pnpm overlay:verify-native-publish` 则验证真实 NTFS owner/group/DACL SDDL 一致、非默认 primary group、继承控制位/显式拒绝 ACE、原有流、备份身份/内容检查、独立 junction/硬链接/陈旧哈希/来源写拒绝、未知写入与重放拒绝；仅自建夹具，不改变用户项目或系统 ACL，不属于默认 check/Evaluation。
-- Local 安装态 Sandbox：`pnpm overlay:verify-sandbox` 使用实验注册适配器和真实 Engine/Runtime，证明双命令时间区间重叠、私有修改独立、绝对来源写入和 `.git` 新建失败，覆盖运行中命令取消、租约释放、重挂载及旧会话续聊；fallback 一律失败。不是产品自动发布或全平台验收，不安装/Repair，不进入默认 check/Evaluation。
+- Local 安装态 Sandbox：`pnpm overlay:verify-sandbox` 使用生产 Service/Engine 与真实 Runtime，证明双命令时间区间重叠、私有修改独立、绝对来源写入和 `.git` 新建失败，覆盖运行中命令取消、租约释放、重挂载及旧会话续聊；fallback 一律失败。`--commands` 接入真实模型工具发布和候选命令，`--merge` 追加同文件合并；不是公开 HTTP/UI 或全平台验收，不安装/Repair，不进入默认 check/Evaluation。
 
 - 虚拟 worktree 首次扫描优化：人工虚拟 worktree 脚本还覆盖首次扫描前/后同长度修改、删除和 untracked 的真实 Git 检测，检查 index 无 assume-unchanged/skip-worktree 标记；读取不改 atime、显式设置 atime 和 staged 修改经重挂载保留。`--unique-blobs=100000 --count=100000` 验证唯一内容夹具；新增累计 SQL/Git 对象耗时不记录路径/内容。仍保持 SQLite FULL 和完整 Git 扫描，不进入默认检查。
 

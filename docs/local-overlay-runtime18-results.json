@@ -1,0 +1,100 @@
+{
+  "protocolVersion": 18,
+  "repair": "Authorized account-preserving Repair completed; standalone Node verified",
+  "nodeSha256": "CEA6AC365F9BB9586DAFD2084D996E092E7D3E7D07AB52D1F76BF53D1FCA9BC4",
+  "baselineCommand": "pnpm overlay:verify-sandbox --commands",
+  "baselineRawReport": ".local/local-overlay-sandbox-ywx7dz/report.json",
+  "baseline": {
+    "timestamp": "2026-10-26T02:09:08.526Z",
+    "platform": "win32",
+    "node": "v26.10.0",
+    "backend": "Local WinFsp + installed dedicated-account Runtime",
+    "registration": "production LocalOverlayService internal Engine lifecycle; no registration overrides",
+    "parallelRuntimeCommands": "passed",
+    "commandIntervals": {
+      "A": [
+        1792980510978,
+        1792980513185
+      ],
+      "B": [
+        1792980510980,
+        1792980513185
+      ]
+    },
+    "sourceAbsoluteWrite": "denied",
+    "gitMetadataCreation": "denied",
+    "sourceGitWriteRootsGranted": 0,
+    "privateWrites": "independent",
+    "cancelRunningCommand": "candidate Runtime drained",
+    "remountAndContinue": "both sessions passed after Engine recreation",
+    "epochs": {
+      "A": 5,
+      "B": 2
+    },
+    "publication": "two selected files automatically published; cancelled selection retained",
+    "rejection": "candidate failure and source conflict preserved; both private results survived restart",
+    "selection": "model local_publish tool through authenticated Runtime IPC",
+    "validation": "production Engine command plan and candidate Runtime; ordered success, exit rejection and cancellation",
+    "fallback": false,
+    "activeLeasesAfterTasks": 0,
+    "cleanup": "engine drained; helpers cleanly stopped",
+    "limitations": [
+      "Not an OS security boundary between sessions",
+      "No public UI/API creation yet; fixed provider, not a real model evaluation"
+    ]
+  },
+  "mergeCommand": "pnpm overlay:verify-sandbox --commands --merge",
+  "mergeRawReport": ".local/local-overlay-sandbox-Zarvaw/report.json",
+  "merge": {
+    "timestamp": "2026-10-26T02:14:12.725Z",
+    "platform": "win32",
+    "node": "v26.10.0",
+    "backend": "Local WinFsp + installed dedicated-account Runtime",
+    "registration": "production LocalOverlayService internal Engine lifecycle; no registration overrides",
+    "parallelRuntimeCommands": "passed",
+    "commandIntervals": {
+      "A": [
+        1792980815719,
+        1792980817971
+      ],
+      "B": [
+        1792980815719,
+        1792980817971
+      ]
+    },
+    "sourceAbsoluteWrite": "denied",
+    "gitMetadataCreation": "denied",
+    "sourceGitWriteRootsGranted": 0,
+    "privateWrites": "independent",
+    "cancelRunningCommand": "candidate Runtime drained",
+    "remountAndContinue": "both sessions passed after Engine recreation",
+    "epochs": {
+      "A": 5,
+      "B": 2
+    },
+    "publication": "two selected files automatically published; cancelled selection retained",
+    "rejection": "candidate failure and source conflict preserved; both private results survived restart",
+    "selection": "model local_publish tool through authenticated Runtime IPC",
+    "validation": "production Engine command plan and candidate Runtime; ordered success, exit rejection and cancellation",
+    "sharedFileMerge": {
+      "baseline": "left\nmiddle\nright\n",
+      "candidates": [
+        "left-A\nmiddle\nright\n",
+        "left-A\nmiddle\nright-B\n"
+      ],
+      "published": "left-A\nmiddle\nright-B\n"
+    },
+    "fallback": false,
+    "activeLeasesAfterTasks": 0,
+    "cleanup": "engine drained; helpers cleanly stopped",
+    "limitations": [
+      "Not an OS security boundary between sessions",
+      "Public UI/API creation not exercised by this verifier; fixed provider, not a real model evaluation"
+    ]
+  },
+  "evidenceNotes": [
+    "Original baseline limitation means public UI/API was not exercised; those endpoints already exist.",
+    "Merge run published three distinct paths across two batches; raw publication label inherited the two-file baseline wording and is corrected in the verifier.",
+    "Synthetic fixed-provider evidence, not a real model evaluation, real large-project build, or cross-platform acceptance."
+  ]
+}
