@@ -1,5 +1,13 @@
 # 初版验证记录
 
+## Linux 只读基线与原生 OverlayFS 组合（2026-10-26）
+
+- C++20 只读 FUSE lower 与内核 OverlayFS 在 WSL/ext4 非 root 运行通过，使用已有 libfuse3/fusermount3，仅解包匹配开发头文件，没有系统安装、分区操作或服务重启。最终代码以 `-Wall -Wextra -Werror` 编译，手动执行 `stable-lower-probe.py --files 100000`；[计数报告](posix-stable-lower-results.json)，原始目录 `/home/harryshan/codeatelier-native-overlay-probes/stable-adlspk6_`，日志 `.local/posix-stable-lower-final.log`。
+- 最终十万附加空文件样本：只读 lower 2.93 ms，内核 overlay/worker 185.40 ms；挂载阶段根节点 1、目录枚举 0、内容副本 0，空 upper 分配 4 KiB。首次读取 12 字节源码约 16.74 ms，只枚举父目录，保存 12 字节基线；基线目录和私有 upper 在一次写入后各分配 8 KiB。空夹具样本分别 3.09/150.24/5.29 ms。样本未控制缓存，包含进程启动/协议往返；分配不含总内存和其它文件系统元数据。
+- 来源文件改动被版本验证发现；已读内容和已列目录保持原观察值，来源新增成员不冒入旧列表。仅观察元数据后修改来源，首次读取返回 ESTALE；私有修改经真实内核 copy-up，来源保留外部修改。正常关闭先退出 overlay 消费者再卸载只读 lower，两组均无遗留挂载。
+- 这是稳定读取和私有写入组合实验，未接生产 Runtime、依赖清单或发布器。创建无扫描，但首查会枚举父目录，ext4 首读需要文件基线副本；不支持持久恢复/链接，不承诺全目录原子快照或大型构建低总成本。来源管理目录过滤不等于 upper 的 Git 禁用策略。边界见 [设计](posix-local-overlay.md)。
+- 提交前 `pnpm check` 完整通过：159 个文件、1,274 项通过、1 项既有跳过，类型/Lint/格式与 Web/Windows/POSIX Runtime 构建通过（`.local/posix-stable-lower-check.log`）。本增量没有 UI/HTTP 变化，不重复 E2E，不运行 Evaluation；最终 `/proc/self/mountinfo` 检查本实验挂载为 0。自审修正目录句柄失败清理，并把 uid/gid/nlink 纳入来源版本比较；最终原生探针使用修正后代码重新执行。
+
 ## POSIX 原生 OverlayFS 原语验证（2026-10-26）
 
 - 用户要求优先平台原生文件系统后，参照 Bubblewrap/Docker 与 Linux/Apple 官方接口核对方案；尚未开放 Local 的 POSIX 平台门禁。发现内核 OverlayFS 不支持 mounted lower 被修改，APFS 目录 clone 仍逐项克隆，均不能直接推导与 Windows live lower 等价。设计和来源见 [POSIX Local 方案](posix-local-overlay.md)。

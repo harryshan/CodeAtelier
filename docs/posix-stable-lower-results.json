@@ -1,0 +1,116 @@
+{
+  "schemaVersion": 1,
+  "passed": true,
+  "samples": [
+    {
+      "additionalFiles": 0,
+      "lowerReadyMs": 3.087585,
+      "lowerReady": {
+        "state": "ready",
+        "valid": true,
+        "nodes": 1,
+        "objects": 0,
+        "copiedBytes": 0,
+        "sourceOpens": 0,
+        "enumerations": 0
+      },
+      "overlayReadyMs": 150.237108,
+      "mounted": {
+        "state": "metrics",
+        "valid": true,
+        "nodes": 1,
+        "objects": 0,
+        "copiedBytes": 0,
+        "sourceOpens": 0,
+        "enumerations": 0
+      },
+      "emptyUpper": {
+        "files": [],
+        "allocatedBytes": 4096
+      },
+      "firstReadMs": 5.287893,
+      "afterRead": {
+        "state": "metrics",
+        "valid": true,
+        "nodes": 2,
+        "objects": 1,
+        "copiedBytes": 12,
+        "sourceOpens": 6,
+        "enumerations": 1
+      },
+      "changedFileDetected": true,
+      "changedBeforeFirstReadRejected": true,
+      "stableReadAndDirectory": true,
+      "staleSourceDetected": true,
+      "nativeCopyUpPreservedSource": true,
+      "privateUpper": {
+        "files": [
+          "module.py"
+        ],
+        "allocatedBytes": 8192
+      },
+      "baselineStorage": {
+        "files": [
+          "object-1"
+        ],
+        "allocatedBytes": 8192
+      },
+      "cleanUnmount": true
+    },
+    {
+      "additionalFiles": 100000,
+      "lowerReadyMs": 2.933151,
+      "lowerReady": {
+        "state": "ready",
+        "valid": true,
+        "nodes": 1,
+        "objects": 0,
+        "copiedBytes": 0,
+        "sourceOpens": 0,
+        "enumerations": 0
+      },
+      "overlayReadyMs": 185.396158,
+      "mounted": {
+        "state": "metrics",
+        "valid": true,
+        "nodes": 1,
+        "objects": 0,
+        "copiedBytes": 0,
+        "sourceOpens": 0,
+        "enumerations": 0
+      },
+      "emptyUpper": {
+        "files": [],
+        "allocatedBytes": 4096
+      },
+      "firstReadMs": 16.741305,
+      "afterRead": {
+        "state": "metrics",
+        "valid": true,
+        "nodes": 2,
+        "objects": 1,
+        "copiedBytes": 12,
+        "sourceOpens": 6,
+        "enumerations": 1
+      },
+      "changedFileDetected": true,
+      "changedBeforeFirstReadRejected": true,
+      "stableReadAndDirectory": true,
+      "staleSourceDetected": true,
+      "nativeCopyUpPreservedSource": true,
+      "privateUpper": {
+        "files": [
+          "module.py"
+        ],
+        "allocatedBytes": 8192
+      },
+      "baselineStorage": {
+        "files": [
+          "object-1"
+        ],
+        "allocatedBytes": 8192
+      },
+      "cleanUnmount": true
+    }
+  ]
+}

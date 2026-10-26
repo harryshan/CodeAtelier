@@ -1,5 +1,7 @@
 # 测试约定与功能覆盖
 
+Linux 稳定 lower 组合：`experiments/native-local-overlay/stable-lower-probe.py` 手动启动只读 FUSE helper 和真实内核 OverlayFS，覆盖创建零枚举/零副本、首次读取按需基线、来源文件变更检测、首读前变更 ESTALE、稳定目录成员、native copy-up 保留来源及消费者退出后卸载。代码不进入默认检查/CI/Evaluation；不替代产品 Runtime、持久依赖导出或发布验证。编译、成本和限制见实验 README 与 [POSIX Local 方案](posix-local-overlay.md)。
+
 POSIX 原生文件层手动探针：`experiments/native-local-overlay/probe.py` 用非特权 Bubblewrap/OverlayFS、Linux 原生目录和固定 Python 动作检查 0/100,000 文件准备、inotify OPEN/ACCESS、空 upper 分配、双命名空间并行、来源只读、根 Git metadata 遮罩、正常重挂载和显式候选内容。只运行用户要求的原生方案实验，不接默认检查/CI/Evaluation，不代替产品 Runtime、自动基线/依赖或发布验收。执行和保留目录见该实验 README。
 
 候选根授权恢复：`local-candidate-access.test.ts` 覆盖记录持久化、目录/卷身份拒绝、记录限额、原生证明失败、撤销失败卸载及匹配删除；保留原私有证据。`pnpm overlay:verify-server-crash --candidate` 手动杀死独占夹具 App，实际候选 Sandbox 保持文件句柄，验证启动根 ACL 撤销、dirty/记录不变、无自动发布。普通 `pnpm overlay:verify-browser` 另核对正常候选目录和 `.access.json` 回收。均不安装/Repair、不重启用户服务，不进入默认 check/Evaluation。
