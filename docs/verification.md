@@ -1,5 +1,14 @@
 # 初版验证记录
 
+## Local 公开浏览器与安装态完整链路（2026-10-26）
+
+- 新增手动 `pnpm overlay:verify-browser`：私有 v1 设置启用 Sandbox，生产 createApp 绑定临时回环端口；Chromium 通过真实弹窗、HTTP、SSE 与任务输入创建和执行，无 route/mock 挂载或 Runtime 替身。只有模型 provider 使用固定响应和明确的占位 key，不访问真实模型或个人配置。
+- 实机通过（`.local/local-browser-native-final.log`、[结果](local-overlay-browser-results.json)）：两个对话归属同一来源但执行目录不同，最终真实命令区间重叠约 2.105 秒；各自的模型 `local_publish` 通过已安装 IPC v18、候选 Runtime 和原生发布，页面与持久快照都显示所选单文件已发布。未选私有文件和来源绝对路径写入没有泄漏到主目录，无宿主 fallback。
+- 来源冲突后任务失败且私有结果保留，页面通过真实 API 展示三方内容，明确“在新对话中解决”创建参考视图；保留未发送草稿，不自动启动新任务或覆盖来源。只关闭/重建该夹具服务后，原冲突状态、参考会话及项目分组仍可读取；没有重启实际用户服务、安装/Repair 或运行 Evaluation。
+- 初次夹具未配置 key，真实 UI 正确禁用提交；补上纯占位值。随后富文本把标识中的下划线按 Markdown 转义，固定 provider 误判两个会话，改为普通文本标识；未改变产品的配置门禁或编辑器序列化。失败现场保留；最终运行正常关闭自身资源，无 pageerror、零活动 Sandbox 租约且无 overlay helper 残留。
+- 已查看 `published-0.png`、`continued.png`、`restarted.png`：发布状态、参考提示、原对话和草稿可读。该范围是 Windows 合成小文件的产品闭环，不等于真实模型表现、完整工程依赖/构建、异常私有卷恢复或 POSIX 验收；新参考会话本次未运行任务，重新编辑/候选发布另有原生验证证据。
+- 最终 `pnpm check` 通过（`.local/local-browser-check.log`）：150 个测试文件、1205 项通过 / 1 项既有跳过，类型、Lint、格式与构建通过。完整浏览器 `pnpm test:e2e` 75 项通过（`.local/local-browser-e2e.log`）。自审补齐脚本中点击与响应等待的联合错误处理后，类型/Lint/格式检查及真实安装态浏览器脚本再次通过（`.local/local-browser-native-final.log`）；报告指向最终现场。未运行 Evaluation。
+
 ## Local IPC v18 安装态发布与同文件并行（2026-10-26）
 
 - 已获授权的第二次 Repair 于本机 10:07 完成，保留专用账户且没有活动进程需要排空；ACL/WFP/安装自检通过。安装 Node 直接返回 ProgramData 中自身路径，SHA-256 与独立 Node 26.10.0 相同，entry 为 IPC v18。未创建分区、重启 Windows 或实际 CodeAtelier 服务。
