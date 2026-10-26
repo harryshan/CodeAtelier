@@ -79,6 +79,8 @@ Runtime stdio 集成夹具共用 `runtime-child-close.ts`：spawn 后立即监�
 
 ## 共享执行逻辑回归
 
+- Local 异常私有层检查：`local-overlay-interrupted-review.test.ts` 覆盖当前 namespace 优先于旧 seal、中断标记、删除与缺对象区分、格式/路径/祖先/类型/硬链接/取消/正文限额拒绝和数据库不变。手动 `pnpm overlay:verify-interrupted` 创建独立宿主/helper，用真实进程终止验证原生排他与 PID/创建时间证明、部分写入、并发/活进程/缺证明拒绝及正常停止；只读取引用材料，不挂载 dirty 卷，不接产品恢复 UI、不改安装态或执行 Evaluation。
+
 - Local 目录依赖：`local-overlay-directory-dependency.test.ts` 验证目录版本、根路径只读、候选/主批次导出及应用前变化拒绝。原生 `-VerifyImport` 验证创建零扫描、稳定名称、改名/类型/身份变化、首次观察跨恢复保留、冻结不导入及记录失败毒化。手动 `pnpm overlay:verify-directory-dependency` 用真实 WinFsp 验证私有产物/whiteout、隐藏 `.git`、新删改名/类型变化和候选停止后变化阻止写回；不进入 check/Evaluation，不安装驱动或修改真实项目。
 
 - Local 冻结取消与排空：协议回归覆盖 helper 失效、用户取消、管理器关闭后等待回调清理，关闭不得提前释放仍在使用的 helper。发布回归区分验证前取消、部分写入后 unknown 和最后写入后 complete/refresh pending。`pnpm overlay:verify-drain` 真实终止自建 helper，检查候选 Node 进程树已退出、来源未写或仅首文件已写、原文备份/锁保留及重放拒绝；不触碰产品服务，不进入默认 check/Evaluation。

@@ -1,0 +1,105 @@
+{
+  "timestamp": "2026-10-26T05:20:49.0236421Z",
+  "scope": "Windows Local interrupted private-state inspection foundation",
+  "nativeVerification": {
+    "passed": true,
+    "log": ".local/local-inspection-native.log"
+  },
+  "interrupted": {
+    "passed": true,
+    "timestamp": "2026-10-26T05:21:43.467Z",
+    "interrupted": {
+      "clean": false,
+      "files": 4,
+      "state": "interrupted",
+      "sourceUnchanged": true,
+      "databaseAndLeaseUnchanged": true
+    },
+    "clean": {
+      "clean": true,
+      "files": 4,
+      "state": "interrupted",
+      "sourceUnchanged": true,
+      "databaseAndLeaseUnchanged": true
+    },
+    "checks": [
+      "live helper refused",
+      "active owner refused after helper exit",
+      "dead owner and helper allow inspection",
+      "current private bytes include interrupted prefix",
+      "lease excludes concurrent inspector",
+      "cancellation closes inspection",
+      "missing legacy proof refused",
+      "closed helper permits live owner inspection",
+      "original database WAL and lease bytes unchanged",
+      "temporary metadata snapshots cleaned after inspection"
+    ],
+    "limitations": [
+      "No old volume remount, private writes, publication or lock deletion",
+      "No Runtime descendant drain claim or public recovery UI",
+      "Partial private bytes are reference material, not completed edits"
+    ]
+  },
+  "sandboxMerge": {
+    "timestamp": "2026-10-26T05:12:36.879Z",
+    "platform": "win32",
+    "node": "v26.10.0",
+    "backend": "Local WinFsp + installed dedicated-account Runtime",
+    "registration": "production LocalOverlayService internal Engine lifecycle; no registration overrides",
+    "parallelRuntimeCommands": "passed",
+    "commandIntervals": {
+      "A": [
+        1792991519882,
+        1792991522143
+      ],
+      "B": [
+        1792991519885,
+        1792991522143
+      ]
+    },
+    "sourceAbsoluteWrite": "denied",
+    "gitMetadataCreation": "denied",
+    "sourceGitWriteRootsGranted": 0,
+    "privateWrites": "independent",
+    "cancelRunningCommand": "candidate Runtime drained",
+    "remountAndContinue": "both sessions passed after Engine recreation",
+    "epochs": {
+      "A": 5,
+      "B": 2
+    },
+    "publication": "two batches each selected an independent file and shared.txt; all three source files published; cancelled selection retained",
+    "rejection": "candidate failure and source conflict preserved; both private results survived restart",
+    "selection": "model local_publish tool through authenticated Runtime IPC",
+    "validation": "production Engine command plan and candidate Runtime; ordered success, exit rejection and cancellation",
+    "sharedFileMerge": {
+      "baseline": "left\nmiddle\nright\n",
+      "candidates": [
+        "left-A\nmiddle\nright\n",
+        "left-A\nmiddle\nright-B\n"
+      ],
+      "published": "left-A\nmiddle\nright-B\n"
+    },
+    "fallback": false,
+    "activeLeasesAfterTasks": 0,
+    "cleanup": "engine drained; helpers cleanly stopped",
+    "limitations": [
+      "Not an OS security boundary between sessions",
+      "Public UI/API creation not exercised by this verifier; fixed provider, not a real model evaluation"
+    ]
+  },
+  "selfReview": {
+    "reproduction": ".local/local-inspection-final.log",
+    "issue": "SQLite readOnly connection created empty WAL in original clean control",
+    "finalRegression": ".local/local-inspection-delivery.log",
+    "correction": "copy only bounded private main/WAL metadata to temporary inspection directory; never open original SQLite connection"
+  },
+  "limitations": [
+    "Internal recovery foundation; no public failed-volume recovery UI or automatic task continuation.",
+    "Private bytes can be partial; output is interrupted reference material, not an approved publication.",
+    "Only helper and owner process quiescence is proven; not Runtime descendant drain.",
+    "No original dirty remount, lock deletion, source writes or private mapping changes.",
+    "Source files and private content objects are not copied; temporary metadata copying is limited to 256 MiB per main/WAL file.",
+    "No legacy missing-proof repair, orphan object guessing, POSIX or power-loss validation."
+  ],
+  "checksLog": ".local/local-inspection-check-delivery.log"
+}

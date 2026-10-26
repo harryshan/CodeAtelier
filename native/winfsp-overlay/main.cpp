@@ -11,6 +11,7 @@
 //    next-epoch 绑定请求/旧代次/冻结标识，只开始新的观察周期；失败/取消不触发发布。
 // 7. publish-replace/cleanup 保留供独立原生验证使用，保留权限并返回无正文确认；不启动挂载。
 // 8. publish-session 串行执行全部来源写入并持执行排他；inspect-publication 仅持排他核对旧 generation。
+// 9. Local 挂载额外接收宿主 PID，在服务前记录 mount.lock 进程身份；inspect-local 只持离线检查租约。
 // 不安装驱动、不创建分区、不托管网络服务；UNC 由 WinFsp 本机 MUP provider 提供。
 #include <iostream>
 #include <sstream>
@@ -19,6 +20,7 @@
 #include "publish.hpp"
 #include "publication-lease.hpp"
 #include "store.hpp"
+#include "local-inspection.hpp"
 
 static void acknowledge(overlay::Store& store, const std::string& command) {
   using namespace overlay;
@@ -56,6 +58,10 @@ int wmain(int argc, wchar_t** argv) {
   using namespace overlay;
   try {
     checked(FspLoad(nullptr));
+    if (argc == 3 && std::wstring(argv[1]) == L"inspect-local") {
+      inspectLocal(argv[2]);
+      return 0;
+    }
     if (argc == 5 && (std::wstring(argv[1]) == L"publish-session" || std::wstring(argv[1]) == L"inspect-publication")) {
       publicationSession(argv[2], argv[3], std::stoul(argv[4]), std::wstring(argv[1]) == L"inspect-publication");
       return 0;
@@ -80,7 +86,7 @@ int wmain(int argc, wchar_t** argv) {
     }
     bool gitMode = argc == 8 && (std::wstring(argv[1]) == L"create-git" ||
                                  std::wstring(argv[1]) == L"restore-git");
-    bool localMode = argc == 5 && (std::wstring(argv[1]) == L"create-local" ||
+    bool localMode = argc == 6 && (std::wstring(argv[1]) == L"create-local" ||
                                    std::wstring(argv[1]) == L"restore-local");
     if (!gitMode && !localMode && (argc != 5 ||
                      (std::wstring(argv[1]) != L"create" && std::wstring(argv[1]) != L"restore"))) {
@@ -94,6 +100,13 @@ int wmain(int argc, wchar_t** argv) {
     Store store(argv[2], argv[3], L"\\" + prefix + L"\\",
                 std::wstring(argv[1]).rfind(L"create", 0) == 0, gitMode ? argv[5] : L"",
                 gitMode ? argv[6] : L"", gitMode ? argv[7] : L"", localMode);
+    if (localMode) {
+      std::wstring owner(argv[5]);
+      if (owner.empty() || owner.find_first_not_of(L"0123456789") != std::wstring::npos) {
+        throw Error{STATUS_INVALID_PARAMETER};
+      }
+      recordLocalMount(store.lease.value, std::stoul(owner));
+    }
     FSP_FSCTL_VOLUME_PARAMS params{};
     params.SectorSize = 4096;
     params.SectorsPerAllocationUnit = 1;
@@ -201,6 +214,9 @@ int wmain(int argc, wchar_t** argv) {
       FspFileSystemDelete(filesystem);
     }
     store.finish();
+    if (localMode) {
+      closeLocalMount(store.lease.value);
+    }
     std::cout << "{\"version\":1,\"state\":\"stopped\"}\n" << std::flush;
     return 0;
   } catch (const Error& error) {

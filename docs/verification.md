@@ -1,5 +1,14 @@
 # 初版验证记录
 
+## Local 异常私有层离线检查基础（2026-10-26）
+
+- 新 Local helper 在 dispatcher 服务前 flush `local-owner-v1` 记录，正常停止后记 closed。`inspect-local` 取得原 mount.lock 排他句柄，固定目录祖先/对象目录并检查旧 helper PID/创建时间/退出；active 记录另外要求旧宿主退出。旧空记录不猜测，正常旧 clean 卷仍可在后续挂载时记录新生命周期。
+- 原生构建及 `-VerifyImport -VerifyReparse` 通过（`.local/local-inspection-native.log`）。真实 `pnpm overlay:verify-interrupted` 创建独立宿主/helper 并主动中断，仅作用于自建夹具：活 helper、helper 已退出但宿主仍活、并发检查和缺记录均拒绝；两者退出后覆盖/新建/删除及只写前缀的文件可作为 interrupted 材料读取。正常 closed 后宿主仍活也可检查。结果不证明写入完整，不清 clean 或服务锁、不挂载旧 dirty 卷。
+- 自审增加 WAL 不变断言后复现 SQLite 只读连接仍创建空 WAL（`.local/local-inspection-final.log`）；未放松断言。改为在原生排他期间复制有界私有 main/WAL 到临时目录，SQLite 只打开副本。最终真实回归通过（`.local/local-inspection-delivery.log`、`.local/local-overlay-interrupted-YmLtkG/report.json`）：原数据库/WAL/租约字节和来源不变，取消/错误不留临时检查副本，未知文件仍保留，不改原映射。仅复制私有元数据，每文件最多 256 MiB、缓冲 64 KiB；不扫描或复制主目录、基线和文件对象。
+- `local-overlay-interrupted-review.test.ts` 验证 current namespace 不采用旧 seal、类型/路径/祖先/缺对象/格式/硬链接/限额/取消拒绝及快照清理；`overlay-manager.test.ts` 验证挂载生命周期。最终 `pnpm check` 通过（`.local/local-inspection-check-delivery.log`）：153 个测试文件，1,229 项通过/1 项既有跳过，类型、Lint、格式及构建通过；最终 verifier 自身也仅从元数据副本检查 clean 标志。本增量未改 UI/HTTP，未重复既有浏览器全量测试。
+- 真实安装态 `overlay:verify-sandbox --commands --merge` 通过（`.local/local-inspection-sandbox.log`、`.local/local-overlay-sandbox-xOK8Jy/report.json`）：追加挂载宿主 PID 后双会话同文件合并、候选命令、拒绝/取消/重挂载续聊不变，无 fallback、零活动租约。未再次 Repair、安装驱动、重启用户服务或执行 Evaluation。详细材料见 [汇总报告](local-overlay-interrupted-results.json)。
+- 边界：这是离线检查基础，尚未接公开恢复 UI/HTTP、新参考会话或完整私有刷新；不证明 Sandbox 后代排空。只处理明确选定且当前持久映射可解析的普通文件，不猜测孤立对象、不保证恢复所有崩溃前未完成写入。原卷留存，材料只能辅助后续重新检查与编辑，不能直接当成已验证批次发布。POSIX 与真实断电一致性未验证。
+
 ## Local 目录成员读依赖（2026-10-26）
 
 - 真实缺陷先复现（`.local/local-directory-dependency-before.log`）：候选列出目录后，来源新增成员仍通过。修复后原生保留 lower 目录身份/名称/类型的首次摘要，主/候选导出及发布前复核；不遍历未观察目录，不改变 IPC 或创建路径。

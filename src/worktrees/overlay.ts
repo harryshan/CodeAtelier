@@ -12,6 +12,7 @@
  *    导出回调可复核原生读版本；协议只回执状态，不通过 stdout 传文件内容或路径。
  * 9. 冻结回调可显式 collect 无引用内容；独立于发布确认，仅记录计数，不改变来源或恢复收据。
  * 10. nextEpoch 按请求/旧代次/seal 等待幂等收据，只开启新观察周期；不发布或删除失败轮次修改。
+ * 11. Local 启动传递宿主 PID，helper 持久记录 PID/创建时间，供异常卷离线检查验证旧进程退出。
  */
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
@@ -283,6 +284,7 @@ export class OverlayManager {
             source,
             control,
             workspace.slice(1).replace(/\\$/, ""),
+            ...(local ? [String(process.pid)] : []),
             ...(gitBase
               ? [
                   gitBase.executable,
