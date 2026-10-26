@@ -17,6 +17,7 @@
  *     成功后保存原任务 ID 供当前 UI 区分历史失败与已恢复视图，下一任务清除；不改历史任务终态。
  * 13. withSandboxRecoveryRoots 只在账户已排空后的启动撤销阶段暴露已知卷根 ACL；保留 dirty/任务锁/阶段，不执行任务或发布。
  *     主卷使用会话清单，候选卷使用执行前持久身份；候选恢复不删除记录或推断验证结果。
+ * 14. 平台格式随 backend 创建并在 validate 绑定；Linux v1 不能被默认 WinFsp v6 接管。
  * 公开创建由 HTTP 单独检查平台/Sandbox 能力，不迁移旧历史；来源写入只由冻结租约内的协调器执行。
  */
 import { randomUUID } from "node:crypto";
@@ -70,7 +71,7 @@ import {
 
 const recordSchema = z.object({
   version: z.literal(1),
-  format: z.literal(6),
+  format: z.union([z.literal(6), z.literal("linux-overlay-v1")]),
   id: z.uuid(),
   source: z.string(),
   sourceIdentity: z.string(),
@@ -282,6 +283,7 @@ export class LocalOverlayService {
       },
     );
     if (
+      record.format !== (this.backend.format ?? 6) ||
       (record.phase !== "ready" &&
         !(record.phase === "active" && this.active.has(id))) ||
       !record.controlIdentity ||
@@ -1070,7 +1072,7 @@ export class LocalOverlayService {
           releaseAllowed = false;
           record = {
             version: 1,
-            format: 6,
+            format: this.backend.format ?? 6,
             id,
             source,
             sourceIdentity,

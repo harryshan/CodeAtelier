@@ -94,3 +94,15 @@ python3 -B /mnt/g/codeagent/native/linux-local-overlay/launcher.py \
 先运行上述打包脚本生成探针。启动器后面的命令也可使用构建后的 `node dist/server/server/launcher.js --data-dir /absolute/private-data`；这是显式启动基础设施，**不会因此开放 Linux Local UI**。控制根须独立于来源、当前 UID 所有、权限 0700，Unix socket 路径须满足系统长度限制；不支持 root 启动或自动安装。
 
 每个视图用 UUID 派生目录，open 前 flush active，明确 close 正常卸载后保存 ready。客户端核对 mount namespace；断线/坏回复/超时不重发，服务未关闭视图即退出则保留 active 并返回失败。正常重新打开新建 lower、保留 upper；它不恢复未知卷，也不生成跨轮 B 或执行发布，这仍由后续 backend 协调。报告见 [控制器验收](../../docs/posix-overlay-controller-results.json)。
+
+## 正式 Service 与 Linux backend
+
+`backend-probe.mjs` 使用正式 LocalOverlayService、SQLite Store、LinuxLocalBackend 和 LinuxCandidateValidator。编译探针后，使用上面的启动器命令并替换以下参数（其余 Node/SDK/bundle 参数不变）：
+
+```sh
+--root "$probe_root/data/local-overlays" --views "$probe_root/views"
+# Node 的探针入口替换为：
+/mnt/g/codeagent/.local/posix-overlay-backend-probe.mjs
+```
+
+必须使用新空夹具。`--views` 将实际 workspace 放到 Broker 数据目录之外，不放宽 MXC 对私有数据的重叠检查。两会话通过真实 Runtime 并行编辑，经 Service 选集和排空收尾，各自在全新候选 Sandbox 验证，合并源码后刷新所选覆盖；续轮读取合并源码及未选产物。第三会话验证外部重叠修改导致 rejected、私有修改保留且视图正常关闭。[报告](../../docs/posix-overlay-backend-results.json) 不证明模型/Engine/HTTP/UI 入口已开放。

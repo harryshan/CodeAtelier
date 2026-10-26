@@ -1,5 +1,14 @@
 # 初版验证记录
 
+## Linux 正式 Service/backend 与候选发布闭环（2026-10-26）
+
+- `LinuxLocalBackend` 实现既有挂载接口，Service 新增 `linux-overlay-v1` 清单格式绑定。创建仅初始化空 round；任务排空后 seal、持久 B/依赖及 pending，再按明确选集走正式 Publisher。complete 后核对私有和来源结果，正常卸载后经控制器 `release` 复核摘要/whiteout 并移除所选覆盖；完成前任一未知状态保留 pending，不自动重放。
+- `LinuxCandidateValidator` 建立全新候选，仅播种合并源码；实际执行必须报告 Sandbox/退出码/排空，随后核对候选内容和新读依赖。正常卸载后只删除身份匹配的本次候选及空挂载点；未知执行/挂载回执保留现场。已有 WinFsp 默认、源项目记忆及来源发布队列保持原接口。
+- 第一次真实联调被 MXC 的 Broker 私有根重叠检查拒绝（`backend-kwfQkd`），没有绕过该检查。启动器新增 `--views` 独立虚拟工作根，upper/基线/日志仍在私有数据根；再次联调通过：[报告](posix-overlay-backend-results.json)，现场 `/home/harryshan/codeatelier-native-overlay-probes/backend-2xF3ln`，日志 `.local/linux-backend-wsl.log`。正式 Service/SQLite 绑定两会话，实际 MXC 命令区间重叠；两批各经全新候选 Sandbox 验证后合并到 `a=10,b=20`。最新发布会话续轮读取合并源码及私有产物，第三会话重叠修改被拒绝并保留 upper，来源未被覆盖，Runtime 标记为空且控制器正常退出。
+- 9 项 backend 专项通过（`.local/linux-backend-after.log`），覆盖正常/失败任务续轮、完整发布、验证失败、释放失败 pending、seal 未知、候选内容变化及排空未知。自审先以新增用例复现丢失挂载回执被降为普通错误（`.local/linux-backend-before.log`），修复后返回 cleanup unknown 并保留现场。普通目录控制替身不作为 Linux 系统验收证据。
+- 最终 `pnpm check` 完整通过：162 个测试文件、1,303 passed / 1 existing skipped，类型/Lint/格式及 Web/Windows/POSIX Runtime 构建通过（`.local/linux-backend-check-final.log`）。没有公开 HTTP/UI 行为变化，本增量不重复 E2E；原有构建 chunk 提示保留。
+- 产品 Engine 工厂/模型工具/HTTP/UI 尚未注册 Linux backend；异常恢复、创建/删除导致的目录依赖刷新、opaque/目录重命名、大工程和 macOS 未验收。全局历史依赖仍保守，已关闭 lower 缓存尚未做常规回收；不能据此宣称长期磁盘成本已达标。未安装、Repair、创建分区或重启用户服务，未运行 Evaluation。
+
 ## Linux 显式 namespace 启动与挂载控制 IPC（2026-10-26）
 
 - 新增 `native/linux-local-overlay/launcher.py`：使用系统 unshare 创建同 UID 的应用 user/mount namespace，控制器保留 namespace 内挂载能力，setpriv 撤销 Node 服务的全部 capabilities。0700 私有根内 Unix socket 仅接受固定 UUID open/seal/close；挂载前持久 active，明确正常卸载后 ready，服务退出时未关闭视图保持 active。无普通目录 fallback 或任意 shell/mount 参数。

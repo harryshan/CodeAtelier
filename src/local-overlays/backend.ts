@@ -1,5 +1,5 @@
 /**
- * LocalOverlayService 的平台挂载边界，当前生产实现使用已有 WinFsp v6 helper。
+ * LocalOverlayService 的平台挂载边界；默认 WinFsp v6，Linux 实现在 linux-backend.ts。
  * 1. LocalOverlayBackend/Mount 定义稳定目录命名、挂载身份、冻结收尾和停止；测试可替换真实文件系统。
  * 2. WinFspLocalBackend 使用独立命名空间，每次挂载创建新的 OverlayManager，拒绝非 Windows 静默降级。
  * 3. finish 在冻结租约中核对 v6 状态；可选明确选择先发布/确认，否则按 task ID 推进代次，再回收孤立内容并退出。
@@ -44,6 +44,7 @@ export interface LocalOverlayMount {
 }
 
 export interface LocalOverlayBackend {
+  readonly format?: 6 | "linux-overlay-v1";
   workspace(id: string): string;
   idFor(workspace: string): string | undefined;
   recoverAccess?(

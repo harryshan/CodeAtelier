@@ -1,0 +1,11 @@
+{
+  "passed": true,
+  "parallel": true,
+  "published": [
+    "dcf34364-8f10-4e9b-b2a0-d3ad9e413aca",
+    "18f46bba-ae0a-4f31-9c91-aece73cf3ed2"
+  ],
+  "candidates": 2,
+  "resumed": true,
+  "conflictRetained": true
+}

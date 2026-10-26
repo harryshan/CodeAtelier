@@ -1,5 +1,7 @@
 # 测试约定与功能覆盖
 
+Linux backend 接线：`linux-overlay-backend.test.ts` 用普通目录控制器替身和真实 Service/Store/Publisher，覆盖格式/身份绑定、失败任务续轮、明确源码发布、候选失败 retained/ready、seal 未知和 complete 后释放失败的 pending 拒绝，以及候选内容变更/排空未知的清理边界。`linux-overlay-controller.test.ts` 另覆盖 release 收据。手动 `backend-probe.mjs` 使用实际 Linux 控制器/内核挂载/双 MXC 和新候选验证器，检查两批合并、后续读取源码与产物、冲突拒绝；未替代 Engine/UI 验收，不进入默认原生检查或 Evaluation。
+
 Linux namespace 控制器：`linux-overlay-controller.test.ts` 通过实际本机 socket/Windows pipe 验证 namespace 绑定、open/seal/close 协议、无路径 trace、断线/超限/坏响应/拒绝/超时后的禁止重发。该测试不证明 Linux 挂载；手动 `controller-probe.mjs` 由新显式启动器执行，验证无 capabilities 的 Broker、两视图实际 MXC 并行、来源写拒绝、Git/socket 隐藏、seal、关闭后重挂载及 Runtime 标记清理。没有默认运行原生实验或 Evaluation。
 
 POSIX 正常跨轮：`posix-overlay-batch.test.ts` 增加持久状态往返、原始 B 跨轮合并、3 MiB 新产物只存缺失基线、complete 日志/私有版本/历史依赖/来源身份拒绝。手动发布探针另验证 B 在 A 发布后正常卸载、保留 upper 重挂载、使用旧 B 合并；发布确认后只删除摘要匹配的源码覆盖，真实 MXC 读取合并结果和未选私有产物。只覆盖普通文件正常生命周期，不声明崩溃恢复或产品入口已开放。

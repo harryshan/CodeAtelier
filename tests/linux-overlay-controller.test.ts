@@ -1,7 +1,7 @@
 /**
  * Linux 挂载控制 IPC 的协议回归，使用本机私有 socket/Windows pipe，不冒充 Linux 挂载。
  * 1. fixture 创建独占服务端、跟踪请求和 trace；收尾关闭全部连接并删除仅本测试的临时目录。
- * 2. 正常 open/seal/close 核对 namespace、UUID 和实际响应，验证 trace 不含路径。
+ * 2. 正常 open/seal/close/release 核对 namespace、UUID 和实际响应，验证 trace 不含路径。
  * 3. namespace 失配、断线、响应超限/格式错误和服务端拒绝使客户端失效，不重发副作用。
  * 真正 user/mount namespace、capabilities 撤销和 MXC 兼容由手动 WSL 探针验证。
  */
@@ -98,6 +98,8 @@ it("binds the namespace and records bounded lifecycle traces without source path
           enumerations: 0,
         },
       });
+    } else if (request.operation === "release") {
+      reply(socket, { removed: 1 });
     } else {
       reply(socket, { sealId });
     }
@@ -108,11 +110,15 @@ it("binds the namespace and records bounded lifecycle traces without source path
   );
   expect(await f.controller.seal(id)).toBe(sealId);
   await f.controller.close(id);
+  await f.controller.release(id, [
+    { path: "source.ts", contentDigest: "a".repeat(64) },
+  ]);
   expect(f.requests.map((request) => request.operation)).toEqual([
     "hello",
     "open",
     "seal",
     "close",
+    "release",
   ]);
   expect(f.requests[1]).toMatchObject({
     id,
@@ -120,7 +126,7 @@ it("binds the namespace and records bounded lifecycle traces without source path
     source: "/secret/source",
   });
   const traces = path.join(f.root, "traces", id);
-  expect(await readdir(traces)).toHaveLength(3);
+  expect(await readdir(traces)).toHaveLength(4);
   for (const file of await readdir(traces)) {
     const text = await readFile(path.join(traces, file), "utf8");
     expect(text).not.toContain("/secret/source");

@@ -1,7 +1,7 @@
 /**
  * Broker 到 Linux namespace 挂载控制器的有界私有 IPC；不执行任意 shell 或 mount 参数。
  * 1. constructor 接收父启动器的 Unix socket；首次操作用 hello 核对当前 mount namespace。
- * 2. open/seal/close 使用固定请求及 UUID，回复校验后返回实际视图/基线目录；不提供自动重试。
+ * 2. open/seal/close/release 使用固定请求及 UUID，release 只允许已卸载视图的摘要绑定覆盖；不自动重试。
  * 3. 一次连接只处理一条有界 JSON；超时、断线、坏响应均使客户端失效，避免重放未知挂载。
  * 4. 各操作记录 ID、耗时与终态的 tracing/log，不记录来源路径、正文或 socket 地址。
  * 调用方必须先排空 Runtime 再 close；本层不提供任务退出证明或自动清理 upper。
@@ -20,6 +20,7 @@ const viewSchema = z.object({
   workspace: z.string().min(1),
   control: z.string().min(1),
   upper: z.string().min(1),
+  backingIdentity: z.string().min(1).optional(),
   ready: z.object({
     state: z.literal("ready"),
     valid: z.literal(true),
@@ -203,5 +204,19 @@ export class LinuxOverlayController {
 
   close(id: string) {
     return this.execute("close", id, {}, () => undefined);
+  }
+
+  release(
+    id: string,
+    remove: { path: string; contentDigest: string | null }[],
+  ) {
+    return this.execute("release", id, { remove }, (value) => {
+      const result = z
+        .object({ removed: z.number().int().nonnegative() })
+        .parse(value);
+      if (result.removed !== remove.length) {
+        throw new Error("Linux overlay 覆盖移除数量不匹配。");
+      }
+    });
   }
 }

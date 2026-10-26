@@ -32,6 +32,10 @@ Docker 同样用只读 image layers 作为 lower、独立容器层作为 upper�
 
 产品启动接线采用显式 Linux namespace 入口：`native/linux-local-overlay/launcher.py` 使用系统 unshare/setpriv 和 Python 标准库管理独占挂载进程，Node 服务及其重载子进程都撤销全部 capabilities。控制器只提供固定 open/seal/close 协议，通过私有 Unix socket 与同一 namespace 的 Broker 通信；挂载目录由启动时指定的私有根和 UUID 派生，不接受任意 mount 命令。来源不进入 Runtime 写根。未确认关闭的持久视图保持 active，后续启动拒绝自动重用；启动器退出清理不等于任务正常结束。此入口的依赖需预装，不自动安装或改动已有启动方式。它不是新配置环境变量体系：socket/namespace 值仅由父启动器注入作为内部 IPC 地址。Local backend/Engine 平台门禁在后续接入完成前保持关闭。
 
+Linux backend 接线保持 LocalOverlayService 原有任务锁与来源身份协议，使用独立 `linux-overlay-v1` 格式标记，不能把 Linux 控制目录当作 WinFsp v6 数据。workspace 身份绑定持久控制目录与控制器验证的 backing 目录身份，不依赖每次重挂载都会改变的虚拟根 inode。收尾先保存 pending，导出并持久化旧 B/依赖，再执行明确选集的 Publisher；只有完整发布日志确认后才请求控制器在普通卸载状态校验摘要并移除所选 upper 文件。完成状态保存和 pending 删除后才回 ready，未知结果保留。候选使用同一控制器新建独立视图和真实 Sandbox，不能继承原 upper；未确认进程排空不卸载或删候选。产品创建门禁暂不改变，先以正式 Service 注入 backend 验证。
+
+该接线已通过实际 WSL Service/Store/双 MXC/Publisher 验证（[报告](posix-overlay-backend-results.json)）。原先把 view 放在数据目录内被现有 MXC 私有根重叠检查拒绝，因此启动器新增显式 `--views /absolute/private-views`：虚拟工作路径在数据目录之外，upper/基线/日志仍在私有控制根；不豁免 Sandbox 检查。控制器核对工作挂载点 backing 身份，候选正常关闭后另行移除空挂载点。已有普通源码合并、续轮读取和冲突保留通过，Engine 工厂、模型工具/HTTP/UI 尚未接通。
+
 只读 lower 原型已通过 WSL/ext4 手动实验，代码为 `experiments/native-local-overlay/readonly-lower.cpp` 和 `stable-lower-probe.py`，结果见 [只读基线报告](posix-stable-lower-results.json)。现有 ext4 无原生目录快照时，用只读 FUSE 适配层为内核 OverlayFS 固定已观察的命名空间和内容；内核继续负责可写 upper 与 copy-up。只解包匹配现有 Runtime 的 FUSE 开发头文件，没有安装驱动或系统包。
 
 创建只读取根身份；挂载完成时没有目录枚举或内容副本。首次路径查找缓存父目录成员，首次普通文件读取保存该文件内容，前后身份/版本不一致则返回 ESTALE。已读文件与目录列表在来源修改后保持稳定；单独修改来源文件即可让版本验证失败，已观察元数据但未读内容的文件修改后也被拒绝。私有写入通过内核 copy-up 成功，来源保持外部修改，最后先退出消费者再正常卸载 lower。

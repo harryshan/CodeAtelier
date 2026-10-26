@@ -1,5 +1,7 @@
 # 架构
 
+Linux 的 `LinuxLocalBackend` 已实现 `LocalOverlayBackend` 并能注入正式 Service。清单使用 `linux-overlay-v1`，持续身份绑定私有控制目录；虚拟工作路径由独立视图根派生，避免与 Broker 数据根重叠。收尾持久 pending、保存跨轮 B、调用 Publisher，complete 确认后经控制器在卸载状态摘要绑定 release。`LinuxCandidateValidator` 新建独立候选，核对真实 Sandbox 排空、候选内容和读依赖后卸载；正常身份匹配才删除本次候选目录。WSL 已通过 Service/Store/真实 Runtime 的并行发布、续轮和冲突保留；Engine 工厂与公开创建门禁仍未接入。
+
 Linux Local 的挂载控制基础设施由 `native/linux-local-overlay/launcher.py` 和 `src/local-overlays/linux-controller.ts` 组成。显式入口创建应用 user/mount namespace，控制器保留其中的挂载能力，服务子进程撤销全部 capabilities。私有 socket 只接受固定 UUID open/seal/close；每次挂载持久 active，正常卸载后 ready，未知结果不重发。客户端核对 namespace 并归档无路径 trace。该链已通过真实 MXC，仍待 Local backend/Engine 接入，普通启动与平台门禁不变。
 
 Linux Local 的发布桥接位于 `src/local-overlays/posix-batch.ts`：有界读取只读 lower 的一次性观察清单，绑定来源/原始文件版本/私有对象，按明确选集生成现有 Publisher 的 B/O 与读依赖。未修改选集仍作为读依赖，目录使用名称/类型摘要。WSL 手动实验已连接原生 OverlayFS、真实 MXC 候选和 Publisher；该模块尚未注册到产品 Local backend，`posix-round.ts` 保存未发布 B 和保守历史依赖，仅由 complete 发布日志生成摘要绑定的刷新计划，不自行卸载/删除。正常跨轮已在真实挂载中验证，应用 namespace 生命周期与 Engine/UI 仍未接入，详见 [POSIX Local 方案](posix-local-overlay.md)。
