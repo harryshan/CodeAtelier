@@ -34,3 +34,28 @@ python3 -B /mnt/g/codeagent/experiments/native-local-overlay/stable-lower-probe.
 ```
 
 原型没有持久清单、自动发布或产品 Runtime 集成。首次读取在 ext4 上复制该文件基线，首次查找枚举父目录；创建不扫描不代表构建读取时免费。只读层过滤来源管理目录，但没有限制私有 upper 创建新管理目录。挂载表与报告只能证明本探针正常退出，不证明任意崩溃恢复。详细边界和数值见 [报告](../../docs/posix-stable-lower-results.json) 与 [设计](../../docs/posix-local-overlay.md)。
+
+## 真实 MXC Runtime 联调
+
+`namespace-probe.py` 先验证独立 mount namespace 的 proc-root 路径：直接访问可用，但 realpath 丢失挂载上下文，因此不能直接传给现有 Broker。`sandbox-probe.py` 验证应用专属 user/mount namespace 的替代方案：挂载控制器保留该 namespace 内能力，Broker 子进程通过 setpriv 撤销全部 capabilities，保持普通 UID；两个真实 MXC Runtime 使用普通路径访问各自内核 overlay。
+
+从仓库运行以下构建命令，打包的是当前生产启动器、候选命令执行器、IPC 和 tracing，不复制旧产品源码：
+
+```sh
+pnpm exec node experiments/native-local-overlay/build-runtime-probe.mjs
+```
+
+需要现有 Linux Node 24/26、MXC SDK 1.0.0、当前 `dist/runtime/posix` 及前述只读 helper。SDK 入口为其实际安装位置；运行前先按常规构建生成并核对 Runtime manifest。本机 WSL 命令如下（不安装依赖）：
+
+```sh
+python3 -B /mnt/g/codeagent/experiments/native-local-overlay/sandbox-probe.py \
+  --helper /home/harryshan/codeatelier-native-overlay-probes/readonly-lower \
+  --node /home/harryshan/codeatelier-mxc-wsl-20261010/node-v24.19.0-linux-x64/bin/node \
+  --probe /mnt/g/codeagent/.local/posix-overlay-runtime-probe.mjs \
+  --sdk /home/harryshan/codeatelier-mxc-wsl-20261010/app/node_modules/@microsoft/mxc-sdk/dist/v1/index.js \
+  --bundle /mnt/g/codeagent/dist/runtime/posix
+```
+
+脚本只在 `~/codeatelier-native-overlay-probes/sandbox-*` 合成项目运行，报告和 trace 留在该目录。检查两个命令区间重叠、真实 `linux-bubblewrap` 归因、主目录/另一视图写入拒绝、Git metadata 隐藏、Broker 假秘密不可见、正式终态/clean 清理与零启动标记。普通卸载不使用 lazy/force；宿主挂载表不得出现实验路径。
+
+这次已调用生产 Runtime，但仍不是 Engine/UI/自动发布验收。应用 namespace 启动器、挂载控制协议、异常恢复及基线/候选发布联动未接入产品。实验不修改现有服务启动方式，不扩大为不同任务间完整 OS 安全隔离证明。

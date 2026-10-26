@@ -1,5 +1,13 @@
 # 初版验证记录
 
+## Linux 原生 overlay 与真实 MXC Runtime 联调（2026-10-26）
+
+- `namespace-probe.py` 验证非特权私有挂载的 proc-root 直接读写可用，但 realpath 丢失挂载上下文，不能直接交给现有 Broker/MXC。随后采用应用专属 user/mount namespace，挂载控制器保留 namespace 内能力，普通 UID 的 Broker 通过 setpriv 撤销 Inheritable/Permitted/Effective/Bounding/Ambient 全部 capabilities。早期直接传递能力被 Bubblewrap 拒绝；撤销后嵌套 MXC 正常，未放宽其检查。
+- `sandbox-probe.py` 最终通过：[报告](posix-overlay-runtime-results.json)，现场 `/home/harryshan/codeatelier-native-overlay-probes/sandbox-_dpw3i0v`、日志 `.local/posix-overlay-runtime-final.log`；路径对照 `.local/posix-overlay-namespace.log`。实验打包当前生产 MxcSandboxRuntime/runCandidateCommands/IPC/tracing，读取当前 Runtime bundle 的 manifest，复用已安装 Linux Node 24.19.0/MXC 1.0.0，不使用旧产品源码、不安装或重启服务。
+- 两个真实 `linux-bubblewrap` Runtime 的命令区间重叠，普通 UID 1000、Runtime Effective capabilities 为 0；私有写入正常，来源和另一视图写入拒绝，来源 `.git` 哨兵与 Broker 假秘密不可见。两任务均取得正式完成终态、`drained=true/sandboxApplied=true/exitCode=0`；来源内容不变，持久启动标记为 0，随后 overlay 普通卸载、FUSE lower 关闭成功，宿主挂载表没有实验路径。
+- 尚未接 Engine/UI 创建、持久基线、自动依赖导出、候选合并发布或产品 namespace 启动器。此实验复用候选命令执行器运行固定编辑命令，不等同已验证发布；不证明完整任务间 OS 隔离或 macOS。原生视图仅在应用 namespace 内可见，外部编辑器不能自动用同名路径访问，详见 [设计](posix-local-overlay.md)。
+- 提交前 `pnpm check` 全部通过：159 个测试文件、1,274 项通过、1 项既有跳过，类型/Lint/格式及 Web/Windows/POSIX Runtime 构建通过（`.local/posix-overlay-runtime-check.log`）。新增手动 JS 脚本另经 Prettier，生产路径经真实探针验证；无 UI/HTTP 行为变更，不重复 E2E，不运行 Evaluation。自审要求清理失败时实验总结果不得标为通过；异常现场不自动重放。
+
 ## Linux 只读基线与原生 OverlayFS 组合（2026-10-26）
 
 - C++20 只读 FUSE lower 与内核 OverlayFS 在 WSL/ext4 非 root 运行通过，使用已有 libfuse3/fusermount3，仅解包匹配开发头文件，没有系统安装、分区操作或服务重启。最终代码以 `-Wall -Wextra -Werror` 编译，手动执行 `stable-lower-probe.py --files 100000`；[计数报告](posix-stable-lower-results.json)，原始目录 `/home/harryshan/codeatelier-native-overlay-probes/stable-adlspk6_`，日志 `.local/posix-stable-lower-final.log`。

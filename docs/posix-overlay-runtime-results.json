@@ -1,0 +1,55 @@
+{
+  "passed": true,
+  "sameUid": 1000,
+  "lowerReady": [
+    {
+      "state": "ready",
+      "valid": true,
+      "nodes": 1,
+      "objects": 0,
+      "copiedBytes": 0,
+      "sourceOpens": 0,
+      "enumerations": 0
+    },
+    {
+      "state": "ready",
+      "valid": true,
+      "nodes": 1,
+      "objects": 0,
+      "copiedBytes": 0,
+      "sourceOpens": 0,
+      "enumerations": 0
+    }
+  ],
+  "runtime": {
+    "passed": true,
+    "uid": 1000,
+    "capabilities": "none",
+    "runs": [
+      {
+        "label": "B",
+        "drained": true,
+        "sandboxApplied": true,
+        "exitCode": 0,
+        "interval": [
+          1793007982587,
+          1793007982999
+        ]
+      },
+      {
+        "label": "A",
+        "drained": true,
+        "sandboxApplied": true,
+        "exitCode": 0,
+        "interval": [
+          1793007982592,
+          1793007983005
+        ]
+      }
+    ],
+    "sourcePreserved": true,
+    "parallelCommands": true,
+    "activeRuntimeMarkers": 0
+  },
+  "cleanUnmount": true
+}

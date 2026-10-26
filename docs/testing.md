@@ -1,5 +1,7 @@
 # 测试约定与功能覆盖
 
+Linux 原生层与真实 Runtime：`experiments/native-local-overlay/namespace-probe.py` 固定验证 proc-root 访问与 realpath 丢失挂载上下文；`sandbox-probe.py` 在应用专属 user/mount namespace 中撤销 Broker capabilities 后，以当前生产 MxcSandboxRuntime/runCandidateCommands/IPC 和两个真实 Bubblewrap Runtime 验证并行、私有写、来源/peer 写拒绝、隐藏 Git、假秘密不可见及清理。独占夹具与 trace 保留；不接默认检查/CI/Evaluation，未替代 Engine/UI/发布验收。
+
 Linux 稳定 lower 组合：`experiments/native-local-overlay/stable-lower-probe.py` 手动启动只读 FUSE helper 和真实内核 OverlayFS，覆盖创建零枚举/零副本、首次读取按需基线、来源文件变更检测、首读前变更 ESTALE、稳定目录成员、native copy-up 保留来源及消费者退出后卸载。代码不进入默认检查/CI/Evaluation；不替代产品 Runtime、持久依赖导出或发布验证。编译、成本和限制见实验 README 与 [POSIX Local 方案](posix-local-overlay.md)。
 
 POSIX 原生文件层手动探针：`experiments/native-local-overlay/probe.py` 用非特权 Bubblewrap/OverlayFS、Linux 原生目录和固定 Python 动作检查 0/100,000 文件准备、inotify OPEN/ACCESS、空 upper 分配、双命名空间并行、来源只读、根 Git metadata 遮罩、正常重挂载和显式候选内容。只运行用户要求的原生方案实验，不接默认检查/CI/Evaluation，不代替产品 Runtime、自动基线/依赖或发布验收。执行和保留目录见该实验 README。

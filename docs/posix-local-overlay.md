@@ -40,4 +40,10 @@ Docker 同样用只读 image layers 作为 lower、独立容器层作为 upper�
 
 下一步才是基线清单/读依赖导出、真实 MXC Runtime、候选验证和发布器联动。优先使用来源已有且符合授权范围的原生快照，不自动转换 ext4 或扩大到整卷快照；普通 ext4 的上述组合仍是实验，不开放产品入口。实验只输出无正文计数和状态，未启动生产 tracing；产品接入时须沿用现有生命周期 tracing。
 
+命名空间接入已通过真实实验：非特权 OverlayFS 位于独立 mount namespace，直接经 `/proc/<keeper>/root` 可读写，但 realpath 会返回宿主同名空挂载点；现有 Broker/MXC 的规范化不能直接使用此路径。应用专属 user/mount namespace 则可保持普通路径和 realpath 语义：挂载控制进程仅在该 namespace 保留 mount 能力，普通 UID 的 Broker 子进程撤销全部 capabilities，再运行现有 MXC Runtime。挂载不传播到宿主。直接带 namespace capabilities 启动 Bubblewrap 会被其拒绝，不能省略 Broker 的撤销步骤。
+
+`sandbox-probe.py` 使用当前生产 MxcSandboxRuntime、runCandidateCommands、IPC 和固定 Runtime bundle，以及已有 MXC 1.0.0 Linux 安装。两个真实 Runtime 命令区间重叠，各自私有修改成功，来源和另一视图写入被拒绝，Git metadata/Broker 假秘密不可见；正式终态、平台 clean、启动标记清理和正常卸载均通过。[联调报告](posix-overlay-runtime-results.json)。命令模型是固定本地计划，没有真实服务模型或宿主 fallback。
+
+这条路线仍需要产品级显式启动引导、挂载控制协议和异常生命周期实现；实验不修改现有服务启动方式，也不要求宿主 root/系统挂载权限。视图只在应用 namespace 中存在，宿主外部编辑器不会自动看到同名目录中的挂载；不能把它当成普通 Worktree 的全系统路径。Engine/UI 创建和发布联动未验收，平台入口继续关闭。
+
 macOS 先按 APFS 按需 CoW 与系统 FSKit 组合核对接口和打包要求，避免将递归目录克隆包装成零扫描；目前仅官方资料核对，无 macOS 实机验收。两平台均保留“源码明确选择、合并后验证、来源串行发布、冲突保留”的现有协议，不把原生隔离层直接当成发布器。
