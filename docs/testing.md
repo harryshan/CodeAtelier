@@ -1,5 +1,7 @@
 # 测试约定与功能覆盖
 
+POSIX 正常跨轮：`posix-overlay-batch.test.ts` 增加持久状态往返、原始 B 跨轮合并、3 MiB 新产物只存缺失基线、complete 日志/私有版本/历史依赖/来源身份拒绝。手动发布探针另验证 B 在 A 发布后正常卸载、保留 upper 重挂载、使用旧 B 合并；发布确认后只删除摘要匹配的源码覆盖，真实 MXC 读取合并结果和未选私有产物。只覆盖普通文件正常生命周期，不声明崩溃恢复或产品入口已开放。
+
 POSIX 发布桥接：`posix-overlay-batch.test.ts` 用真实文件身份与 helper 格式清单覆盖 B 保留、明确选集、未读正文安全补读、文件/目录依赖过期、创建/删除、对象损坏、来源失配和未修改选集的依赖保留；实际 Publisher 检查合并与冲突，普通目录夹具不声称挂载/Sandbox 通过。手动 `sandbox-probe.py --publish-probe ...` 另走原生 seal、真实双 Runtime、全新候选 Sandbox、两批合并发布与冲突保留，不进入默认检查或 Evaluation。
 
 Linux 原生层与真实 Runtime：`experiments/native-local-overlay/namespace-probe.py` 固定验证 proc-root 访问与 realpath 丢失挂载上下文；`sandbox-probe.py` 在应用专属 user/mount namespace 中撤销 Broker capabilities 后，以当前生产 MxcSandboxRuntime/runCandidateCommands/IPC 和两个真实 Bubblewrap Runtime 验证并行、私有写、来源/peer 写拒绝、隐藏 Git、假秘密不可见及清理。独占夹具与 trace 保留；不接默认检查/CI/Evaluation，未替代 Engine/UI/发布验收。

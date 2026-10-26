@@ -4,7 +4,8 @@
  * 2. 从实际 lower 清单和私有视图导出两份批次，复用生产三方合并与来源串行发布。
  * 3. 每次验证建立全新视图，只播种候选源码，用真实 Runtime 执行 Python 检查；
  *    排空后导出新读依赖，核对候选源码未改写，再正常卸载。
- * 4. 真实 Runtime 另制造重叠修改，确认发布拒绝并保留原私有结果/来源。
+ * 4. B 在 A 发布后保存状态并正常重挂载；旧 B 跨轮保留，发布确认后精确移除覆盖。
+ * 5. 真实 Runtime 另制造重叠修改，确认发布拒绝并保留原私有结果/来源。
  * 报告和 trace 留在合成夹具，不调用模型服务、不开放产品入口或运行 Evaluation。
  */
 import assert from "node:assert/strict";
@@ -22,7 +23,16 @@ import {
   posixReads,
   readPosixManifest,
 } from "../../src/local-overlays/posix-batch.ts";
-import { sourceIdentity } from "../../src/local-overlays/publication/files.ts";
+import {
+  durableJson,
+  sourceIdentity,
+} from "../../src/local-overlays/publication/files.ts";
+import {
+  acknowledgePosixRound,
+  capturePosixRound,
+  posixRoundInputs,
+  validatePosixRound,
+} from "../../src/local-overlays/posix-round.ts";
 import { Publisher } from "../../src/local-overlays/publication/publisher.ts";
 
 const [root, sdkEntry, bundleDirectory] = process.argv.slice(2);
@@ -65,6 +75,8 @@ const report = {
   published: [],
   candidateRuns: 0,
   conflictRetained: false,
+  unpublishedRemountRetained: false,
+  publishedRefresh: false,
 };
 
 async function execute(workspace, command) {
@@ -96,20 +108,63 @@ async function execute(workspace, command) {
   }
 }
 
-async function batch(label, sealId) {
+async function batch(
+  label,
+  sealId,
+  control = path.join(root, label, "control"),
+  state,
+) {
   return posixBatch({
     source,
-    control: path.join(root, label, "control"),
+    control,
     workspace: path.join(root, label, "view"),
     sealId,
     selected: ["module.py"],
+    ...(state ? posixRoundInputs(state, source, ["module.py"]) : {}),
   });
 }
 
 try {
-  const batches = [await batch("A", seals.A), await batch("B", seals.B)];
-  const publisher = new Publisher(path.join(root, "publications"), log);
-  for (const [index, pending] of batches.entries()) {
+  const publications = path.join(root, "publications");
+  const statePath = path.join(root, "B", "round.json");
+  let state = await capturePosixRound({
+    source,
+    control: path.join(root, "B", "control"),
+    sealId: seals.B,
+    upper: path.join(root, "B", "upper"),
+  });
+  await durableJson(statePath, state);
+  const publisher = new Publisher(publications, log);
+  for (const index of [0, 1]) {
+    let pending;
+    if (index === 0) {
+      pending = await batch("A", seals.A);
+    } else {
+      state = validatePosixRound(
+        JSON.parse(await readFile(statePath, "utf8")),
+        source,
+      );
+      const fresh = await request("refresh", { label: "B", remove: [] });
+      await execute(
+        fresh.workspace,
+        `python3 -B -c ${quote("import pathlib; assert pathlib.Path('module.py').read_text() == 'a = 1\\nb = 20\\n'; assert pathlib.Path('artifact-B').read_text() == 'private'")}`,
+      );
+      const sealed = await request("seal", { label: "B" });
+      state = await capturePosixRound({
+        source,
+        control: fresh.control,
+        sealId: sealed.sealId,
+        upper: path.join(root, "B", "upper"),
+        previous: state,
+      });
+      await durableJson(statePath, state);
+      pending = await batch("B", sealed.sealId, fresh.control, state);
+      assert.equal(
+        Buffer.from(pending.changes[0].base.content, "base64").toString(),
+        "a = 1\nb = 2\n",
+      );
+      report.unpublishedRemountRetained = true;
+    }
     await publisher.publish(pending, {
       validate: async (files) => {
         const candidate = await request("mount", {
@@ -143,6 +198,45 @@ try {
       },
     });
     report.published.push(pending.id);
+    if (index === 1) {
+      const acknowledged = await acknowledgePosixRound({
+        state,
+        batch: pending,
+        publications,
+        workspace: path.join(root, "B", "view"),
+      });
+      await durableJson(
+        path.join(root, "B", "refresh-pending.json"),
+        acknowledged,
+      );
+      const fresh = await request("refresh", {
+        label: "B",
+        remove: acknowledged.remove,
+      });
+      await execute(
+        fresh.workspace,
+        `python3 -B -c ${quote("import pathlib; assert pathlib.Path('module.py').read_text() == 'a = 10\\nb = 20\\n'; assert pathlib.Path('artifact-B').read_text() == 'private'")}`,
+      );
+      await durableJson(statePath, acknowledged.state);
+      state = validatePosixRound(
+        JSON.parse(await readFile(statePath, "utf8")),
+        source,
+      );
+      assert.equal(
+        state.baselines.some((entry) => entry.path === "module.py"),
+        false,
+      );
+      assert.equal(
+        state.baselines.some((entry) => entry.path === "artifact-B"),
+        true,
+      );
+      assert.equal(
+        (await readdir(path.join(root, "B", "upper"))).includes("module.py"),
+        false,
+      );
+      report.publishedRefresh = true;
+      report.retainedEpoch = state.epoch;
+    }
   }
   const merged = "a = 10\nb = 20\n";
   assert.equal(

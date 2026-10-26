@@ -1,0 +1,61 @@
+{
+  "passed": true,
+  "sameUid": 1000,
+  "lowerReady": [
+    {
+      "state": "ready",
+      "valid": true,
+      "nodes": 1,
+      "objects": 0,
+      "copiedBytes": 0,
+      "sourceOpens": 0,
+      "enumerations": 0
+    },
+    {
+      "state": "ready",
+      "valid": true,
+      "nodes": 1,
+      "objects": 0,
+      "copiedBytes": 0,
+      "sourceOpens": 0,
+      "enumerations": 0
+    }
+  ],
+  "runtime": {
+    "passed": true,
+    "uid": 1000,
+    "capabilities": "none",
+    "runs": [
+      {
+        "label": "B",
+        "drained": true,
+        "sandboxApplied": true,
+        "exitCode": 0,
+        "interval": [1793011698903, 1793011699315]
+      },
+      {
+        "label": "A",
+        "drained": true,
+        "sandboxApplied": true,
+        "exitCode": 0,
+        "interval": [1793011698905, 1793011699319]
+      }
+    ],
+    "sourcePreserved": true,
+    "parallelCommands": true,
+    "activeRuntimeMarkers": 0
+  },
+  "publication": {
+    "passed": true,
+    "published": [
+      "adc1c458-ae90-4039-8bbf-05fff81735c0",
+      "79602064-1593-4874-ae66-6645c82c7363"
+    ],
+    "candidateRuns": 2,
+    "conflictRetained": true,
+    "unpublishedRemountRetained": true,
+    "publishedRefresh": true,
+    "retainedEpoch": 1
+  },
+  "cleanUnmount": true
+}

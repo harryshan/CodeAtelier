@@ -3,6 +3,7 @@
  * 1. fixture 用真实文件身份/版本生成 helper 格式记录，普通目录模拟已排空的视图。
  * 2. 验证捕获原文、明确选集、未读正文补读、来源/目录依赖过期及损坏对象拒绝。
  * 3. 真实 Publisher 验证三方合并、同一行冲突和私有修改保留；候选回调只检查合并结果。
+ * 4. 两轮状态序列化保留未发布 B，验证 complete 确认、私有版本和历史依赖拒绝。
  * 原生 seal、真实 Runtime 与候选执行由独立 WSL 手动实验验证，不把本测试当 Sandbox 证据。
  */
 import { randomUUID } from "node:crypto";
@@ -23,8 +24,15 @@ import { posixBatch } from "../src/local-overlays/posix-batch.js";
 import {
   sourceIdentity,
   snapshot,
+  durableJson,
 } from "../src/local-overlays/publication/files.js";
 import { Publisher } from "../src/local-overlays/publication/publisher.js";
+import {
+  capturePosixRound,
+  acknowledgePosixRound,
+  posixRoundInputs,
+  validatePosixRound,
+} from "../src/local-overlays/posix-round.js";
 
 const original = "a = 1\nb = 2\n";
 
@@ -207,4 +215,146 @@ it("rejects mismatched source records and duplicate selected paths", async () =>
   f.manifest.source = { ...f.input.source, identity: "0:0" };
   await f.save();
   await expect(posixBatch(f.input)).rejects.toThrow("SOURCE_REPLACED");
+});
+
+it("retains the original unpublished B across a serialized normal round", async () => {
+  const f = await fixture();
+  await writeFile(path.join(f.input.source.root, "dep.txt"), original);
+  const dependency = await record(f.input.source.root, "dep.txt");
+  await copyFile(
+    path.join(f.input.source.root, "dep.txt"),
+    path.join(f.input.control, "object-2"),
+  );
+  dependency.object = "object-2";
+  dependency.objectStamp = (await record(f.input.control, "object-2")).stamp;
+  f.manifest.entries[2] = dependency;
+  await f.save();
+  await writeFile(path.join(f.input.workspace, "code.py"), "a = 10\nb = 2\n");
+  await writeFile(path.join(f.input.workspace, "dep.txt"), "a = 10\nb = 2\n");
+  await writeFile(
+    path.join(f.input.workspace, "artifact"),
+    Buffer.alloc(3 * 1024 * 1024, 1),
+  );
+  const upper = path.join(f.root, "upper");
+  await mkdir(upper);
+  for (const file of ["code.py", "dep.txt", "artifact"]) {
+    await copyFile(path.join(f.input.workspace, file), path.join(upper, file));
+  }
+
+  const state = await capturePosixRound({ ...f.input, upper });
+  expect(
+    state.baselines.find((entry) => entry.path === "artifact")?.base.content,
+  ).toBeNull();
+  const batch = await posixBatch(f.input);
+  const publications = path.join(f.root, "publications");
+  await new Publisher(publications).publish(batch, {
+    validate: async () => {},
+  });
+  const acknowledged = await acknowledgePosixRound({
+    state,
+    batch,
+    publications,
+    workspace: f.input.workspace,
+  });
+  expect(acknowledged.remove.map((entry) => entry.path)).toEqual(["code.py"]);
+  await durableJson(path.join(f.root, "round.json"), acknowledged.state);
+  const restored = validatePosixRound(
+    JSON.parse(await readFile(path.join(f.root, "round.json"), "utf8")),
+    f.input.source,
+  );
+  await unlink(path.join(upper, "code.py"));
+  await copyFile(
+    path.join(f.input.source.root, "code.py"),
+    path.join(f.input.workspace, "code.py"),
+  );
+  await writeFile(path.join(f.input.source.root, "dep.txt"), "a = 1\nb = 20\n");
+
+  // The next lower observes the current source; dep.txt remains in upper.
+  const directory = await record(f.input.source.root, ".");
+  directory.members = ["code.py\0f", "dep.txt\0f"];
+  f.manifest.entries = [
+    directory,
+    await record(f.input.source.root, "code.py"),
+  ];
+  f.input.sealId = randomUUID();
+  f.manifest.id = f.input.sealId;
+  await writeFile(
+    path.join(f.input.control, f.input.sealId + ".json"),
+    JSON.stringify(f.manifest),
+  );
+  const next = await posixBatch({
+    ...f.input,
+    selected: ["dep.txt"],
+    ...posixRoundInputs(restored, f.input.source, ["dep.txt"]),
+  });
+  expect(Buffer.from(next.changes[0]!.base.content!, "base64").toString()).toBe(
+    original,
+  );
+  await new Publisher(publications).publish(next, {
+    validate: async (files) => {
+      expect(files.get("dep.txt")?.toString()).toBe("a = 10\nb = 20\n");
+    },
+  });
+  expect(
+    await readFile(path.join(f.input.source.root, "dep.txt"), "utf8"),
+  ).toBe("a = 10\nb = 20\n");
+  expect((await lstat(path.join(upper, "artifact"))).size).toBe(
+    3 * 1024 * 1024,
+  );
+});
+
+it("requires a complete publication and the unchanged private result for release", async () => {
+  const f = await fixture();
+  await writeFile(path.join(f.input.workspace, "code.py"), "private\n");
+  const state = await capturePosixRound({
+    ...f.input,
+    upper: f.input.workspace,
+  });
+  const batch = await posixBatch(f.input);
+  const publications = path.join(f.root, "publications");
+  await expect(
+    acknowledgePosixRound({
+      state,
+      batch,
+      publications,
+      workspace: f.input.workspace,
+    }),
+  ).rejects.toThrow();
+  await new Publisher(publications).publish(batch, {
+    validate: async () => {},
+  });
+  await writeFile(path.join(f.input.workspace, "code.py"), "later private\n");
+  await expect(
+    acknowledgePosixRound({
+      state,
+      batch,
+      publications,
+      workspace: f.input.workspace,
+    }),
+  ).rejects.toThrow("PRIVATE_REFRESH_CHANGED");
+  expect(state.baselines).toHaveLength(1);
+  expect(await readFile(path.join(f.input.workspace, "code.py"), "utf8")).toBe(
+    "later private\n",
+  );
+});
+
+it("rejects retained dependencies changed after a successful publication", async () => {
+  const f = await fixture();
+  await writeFile(path.join(f.input.workspace, "code.py"), "private\n");
+  const state = await capturePosixRound({
+    ...f.input,
+    upper: f.input.workspace,
+  });
+  await writeFile(path.join(f.input.source.root, "dep.txt"), "external\n");
+  await expect(
+    posixBatch({
+      ...f.input,
+      ...posixRoundInputs(state, f.input.source, ["code.py"]),
+    }),
+  ).rejects.toThrow("STALE_DEPENDENCY");
+  expect(() =>
+    posixRoundInputs(state, { ...f.input.source, identity: "0:0" }, [
+      "code.py",
+    ]),
+  ).toThrow("SOURCE_REPLACED");
 });

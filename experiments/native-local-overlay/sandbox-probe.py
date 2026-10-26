@@ -5,13 +5,16 @@
 #    来源与 Broker 目录不作为 Runtime 可写根，参数只来自操作者提供的实验路径。
 # 4. Runtime 确认退出后先 umount overlay，再关闭 lower；不使用 lazy/force 卸载。
 #    可选 publish 阶段通过独占管道创建候选、导出真实 seal，并复用生产发布器。
+#    refresh 仅在 Runtime 排空后普通卸载，核对私有摘要后移除所选覆盖并重建 lower。
 # 5. 报告及私有数据保留，宿主检查挂载未传播；不安装、重启现有服务或运行 Evaluation。
 
 import argparse
 import base64
+import hashlib
 import importlib.util
 import json
 import os
+import stat
 from pathlib import Path
 import subprocess
 import sys
@@ -40,26 +43,30 @@ def inside(args):
     sessions = {}
     report = {"passed": False, "sameUid": os.getuid(), "lowerReady": []}
 
-    def create_view(label):
+    def create_view(label, reuse=False):
         private = args.root / label
-        private.mkdir()
-        for name in ("control", "lower", "upper", "work", "view"):
-            (private / name).mkdir()
+        if not reuse:
+            private.mkdir()
+            for name in ("lower", "upper", "work", "view"):
+                (private / name).mkdir()
+        control = private / ("control-" + str(uuid.uuid4()) if reuse else "control")
+        control.mkdir()
         lower = stable.Process([
-            str(args.helper), str(source), str(private / "control"),
+            str(args.helper), str(source), str(control),
             str(private / "lower"),
         ])
         lowers.append(lower)
         options = ",".join([
             f"lowerdir={private / 'lower'}", f"upperdir={private / 'upper'}",
-            f"workdir={private / 'work'}", "userxattr",
+            f"workdir={private / 'work'}", "userxattr", "index=off",
+            "metacopy=off", "redirect_dir=nofollow",
         ])
         subprocess.run([
             "mount", "-t", "overlay", "overlay", "-o", options,
             str(private / "view"),
         ], check=True)
         mounts.append(private / "view")
-        sessions[label] = (private, lower)
+        sessions[label] = (private, lower, control)
         return private, lower
 
     def seal(label):
@@ -111,11 +118,29 @@ def inside(args):
                     elif action == "close":
                         label = request["label"]
                         assert label.startswith("candidate-")
-                        private, lower = sessions.pop(label)
+                        private, lower, _ = sessions.pop(label)
                         subprocess.run(["umount", str(private / "view")], check=True, timeout=10)
                         mounts.remove(private / "view")
                         lower.close()
                         lowers.remove(lower)
+                    elif action == "refresh":
+                        label = request["label"]
+                        assert label in ("A", "B")
+                        private, lower, _ = sessions.pop(label)
+                        subprocess.run(["umount", str(private / "view")], check=True, timeout=10)
+                        mounts.remove(private / "view")
+                        lower.close()
+                        lowers.remove(lower)
+                        assert len(request["remove"]) <= 1
+                        for item in request["remove"]:
+                            assert item["path"] == "module.py"
+                            target = private / "upper" / "module.py"
+                            info = target.lstat()
+                            assert stat.S_ISREG(info.st_mode) and info.st_nlink == 1
+                            assert hashlib.sha256(target.read_bytes()).hexdigest() == item["contentDigest"]
+                            target.unlink()
+                        create_view(label, reuse=True)
+                        response.update(workspace=str(private / "view"), control=str(sessions[label][2]))
                     else:
                         raise AssertionError("Unknown publication fixture action")
                     publisher.send(json.dumps(response))

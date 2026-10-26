@@ -72,4 +72,6 @@ python3 -B /mnt/g/codeagent/experiments/native-local-overlay/sandbox-probe.py \
 
 `publish-probe.mjs` 用当前 `posix-batch.ts` 和 Publisher 发布两份实际私有结果。通过私有 stdio 请父控制器建立新候选，每次只播种所选源码；真实 MXC Runtime 执行 Python 检查，正常排空后核对候选未改写、导出依赖并卸载，再由 Publisher 写回。第三次 Runtime 修改制造同一行冲突，要求拒绝且原私有内容保留。报告增加 `publication` 段，私有清单、journal、候选产物和 trace 全部保留。
 
-这仍是受控实验，不是 Engine/UI 自动发布已开放。尚无产品 namespace 启动器、持续代次/刷新或崩溃重挂载；捕获正文桥接暂为 2 MiB 单链接文件，未覆盖大型工程读集。未修改选集须保留读依赖，不能用于绕过来源变更检查。具体证据与限制见 [POSIX Local 方案](../../docs/posix-local-overlay.md)。
+同一探针还保存 B 会话的跨轮状态。A 发布后，B 正常卸载并在新 lower 上保留原 upper；真实 Runtime 继续读到未发布内容，批次仍使用旧 B。B 发布完成后，先保存确认计划，普通卸载并核对源码覆盖摘要后移除，再重挂载；真实 Runtime 读到合并源码且未选产物保留。状态与 `refresh-pending.json` 留作实验记录，不提供异常重放。挂载显式使用 `userxattr,index=off,metacopy=off,redirect_dir=nofollow`。
+
+这仍是受控实验，不是 Engine/UI 自动发布已开放。尚无产品 namespace 启动器或崩溃重挂载；正常刷新只验证已有普通源码文件。捕获正文桥接暂为 2 MiB 单链接文件，历史依赖采用保守并集，未覆盖大型工程读集和目录成员变化后的刷新。未修改选集须保留读依赖，不能用于绕过来源变更检查。具体证据与限制见 [POSIX Local 方案](../../docs/posix-local-overlay.md)。

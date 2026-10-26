@@ -3,7 +3,8 @@
  * 1. readPosixManifest 有界读取并核对清单句柄/路径版本，严格校验格式、来源与 seal ID。
  * 2. readBase 从捕获对象和原始 stamp 重建 B；未读正文仅在来源观察版本未变时补读。
  * 3. posixReads 导出文件/目录依赖，目录沿用 Publisher 名称/类型摘要，拒绝来源过期。
- * 4. posixBatch 只读取明确选集的私有结果，缺失 B 仅由已观察父目录成员证明。
+ * 4. posixBatch 只读取明确选集的私有结果，优先保留先前轮次 B 并验证历史依赖。
+ * 5. posixBaseline 由原生记录或已观察祖先的缺失成员证明 B，不读取私有生成物。
  * 调用方须先排空 Runtime、独占视图并取得 helper seal；本模块不冻结挂载、不发布，
  * 也不从清单推断进程退出。产品入口仍关闭；实验和后续 Linux backend 共用此桥接。
  * I/O 不扫描整树，受既有内容/读集预算限制；tracing 由外层冻结/发布生命周期提供。
@@ -60,7 +61,7 @@ const manifestSchema = z
   })
   .strict();
 type Entry = z.infer<typeof entrySchema>;
-type Manifest = z.infer<typeof manifestSchema>;
+export type PosixManifest = z.infer<typeof manifestSchema>;
 
 function stamp(info: BigIntStats) {
   return `${info.dev}:${info.ino}:${info.size}:${info.mtimeNs}:${info.ctimeNs}:${info.mode}`;
@@ -230,7 +231,7 @@ async function readBase(
 export async function posixReads(
   source: Source,
   control: string,
-  manifest: Manifest,
+  manifest: PosixManifest,
   selected: ReadonlySet<string>,
   signal?: AbortSignal,
 ): Promise<Batch["reads"]> {
@@ -288,6 +289,9 @@ export async function posixBatch(input: {
   workspace: string;
   sealId: string;
   selected: readonly string[];
+  /** 已核验的先前轮次 B；不从主目录重新构造未发布私有修改的基线。 */
+  retained?: ReadonlyMap<string, Snapshot>;
+  retainedReads?: Batch["reads"];
   signal?: AbortSignal;
 }): Promise<Batch> {
   const manifest = await readPosixManifest(
@@ -314,7 +318,9 @@ export async function posixBatch(input: {
     const ours = await snapshot(view, file);
     const entry = entries.get(file);
     let base: Snapshot;
-    if (entry) {
+    if (input.retained?.has(file)) {
+      base = input.retained.get(file)!;
+    } else if (entry) {
       base = await readBase(input.source, storage, entry);
     } else {
       const parent = entries.get(path.posix.dirname(file));
@@ -338,16 +344,69 @@ export async function posixBatch(input: {
     }
   }
 
+  const reads = await posixReads(
+    input.source,
+    input.control,
+    manifest,
+    new Set(changes.map((change) => change.path)),
+    input.signal,
+  );
+  for (const read of input.retainedReads ?? []) {
+    if (
+      (await readVersion(input.source, read, input.signal)) !== read.version
+    ) {
+      throw new PublishError("STALE_DEPENDENCY");
+    }
+
+    const current = reads.find((entry) => entry.path === read.path);
+    if (
+      current &&
+      (current.kind !== read.kind || current.version !== read.version)
+    ) {
+      throw new PublishError("STALE_DEPENDENCY");
+    }
+
+    if (!current) {
+      reads.push(read);
+    }
+  }
+
   return validateBatch({
     id: randomUUID(),
     source: input.source,
     changes,
-    reads: await posixReads(
-      input.source,
-      input.control,
-      manifest,
-      new Set(changes.map((change) => change.path)),
-      input.signal,
-    ),
+    reads,
   });
+}
+
+/** 收尾仅保存 B，不读取大型私有生成物正文；不存在须由已观察父目录证明。 */
+export async function posixBaseline(
+  source: Source,
+  control: string,
+  manifest: PosixManifest,
+  file: string,
+): Promise<Snapshot> {
+  const entry = manifest.entries.find((entry) => entry.path === file);
+  if (entry) {
+    return readBase(source, await sourceIdentity(control), entry);
+  }
+
+  let current = file;
+  while (current !== ".") {
+    const parent = manifest.entries.find(
+      (entry) => entry.path === path.posix.dirname(current),
+    );
+    if (
+      parent?.members &&
+      !parent.members.some(
+        (member) => member.split("\0")[0] === path.posix.basename(current),
+      )
+    ) {
+      return { content: null, version: "missing", mode: null };
+    }
+
+    current = path.posix.dirname(current);
+  }
+
+  throw new PublishError("POSIX_BASELINE_MISSING");
 }

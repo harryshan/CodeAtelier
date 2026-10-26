@@ -1,5 +1,13 @@
 # 初版验证记录
 
+## Linux 原生 overlay 正常跨轮保留与刷新（2026-10-26）
+
+- `posix-round.ts` 仅遍历私有 upper，保存未发布原始 B 与保守历史依赖；新生成物只存缺失基线。状态有界验证和序列化往返，complete Publisher 日志、当前私有内容及来源结果同时匹配后才生成覆盖移除摘要。调用方负责独占、Runtime 排空及普通卸载，不根据状态文件自动重放。
+- 真实 WSL/ext4/MXC 通过：[报告](posix-overlay-round-results.json)，现场 `/home/harryshan/codeatelier-native-overlay-probes/sandbox-74ahxbnu`，日志 `.local/posix-round-wsl.log`。A 发布后，B 保留 upper 并重建 lower；真实 Runtime 仍读取原私有修改，第二批使用原始 B 合并到 `a=10,b=20`。完成日志确认后保存刷新计划，普通卸载、核对摘要、只移除所选源码覆盖，重挂载后真实 Runtime 读到合并源码且未选产物保留。两次候选均真实 Sandbox，冲突仍保留，Runtime 标记及所有挂载正常清理。
+- 首次挂载使用 `userxattr` 与 `redirect_dir=off` 组合失败，改为显式 `redirect_dir=nofollow` 后全流程通过；同时禁用 index/metacopy。未安装、Repair、创建分区或重启用户服务。两个初始 lower ready 仍记录零枚举、零正文副本。
+- 12 项专项回归通过，包括状态恢复后旧 B 合并、3 MiB 产物不进入基线正文、未完成日志/私有修改变化/历史依赖变化/来源失配拒绝。完整 `pnpm check` 通过：160 文件、1,286 passed / 1 existing skipped，类型/Lint/格式及 Web/Windows/POSIX Runtime 构建通过（`.local/posix-round-check.log`）。没有 HTTP/UI 行为变化，不重复 E2E，不运行 Evaluation。
+- 仍为手动实验调用，未接产品 namespace 启动器、Engine/UI 或异常恢复。已有普通源码的正常刷新通过；历史依赖采用保守并集，目录成员因创建/删除改变时仍拒绝刷新，不支持 opaque/目录重命名的通用刷新。捕获 B 单文件 2 MiB、总 16 MiB，upper 遍历 10,000 项，不能据此宣称巨型工程或 macOS 已验收。
+
 ## Linux 原生观察清单与生产 Publisher 闭环（2026-10-26）
 
 - 只读 lower 增加实际观察清单 `seal UUID`：来源身份、原始 stamp、捕获对象/对象版本和目录名称/类型有界导出，独占创建并 fsync。新增 `posix-batch.ts` 将清单转换为现有 Publisher 批次，文件基线不替换成来源最新内容；仅观察元数据的文件须仍匹配才补读，目录沿用名称/类型版本。平台入口未开放。
