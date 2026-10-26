@@ -77,7 +77,7 @@ it("rejects an excessive native read set before reading any missing dependencies
   const f = await nativeFixture();
   await f.change("code.txt", "old", "new");
   f.mutate(`WITH RECURSIVE n(x) AS (SELECT 0 UNION ALL SELECT x+1 FROM n WHERE x<10000)
-    INSERT INTO observations SELECT '\\DEP-'||x, '\\dep-'||x, 0 FROM n;`);
+    INSERT INTO observations(path,name,epoch) SELECT '\\DEP-'||x, '\\dep-'||x, 0 FROM n;`);
   await expect(
     nativeBatch(f.source, f.control, ["code.txt"], async () => {}),
   ).rejects.toThrow("READ_LIMIT");
@@ -100,7 +100,7 @@ it("exports a compiler-sized dependency set and still rejects a stale observatio
       path.join(f.source.root, `dep-${index}.txt`),
       `dependency ${index}`,
     );
-    sql += `INSERT INTO observations VALUES('\\DEP-${index}.TXT','\\dep-${index}.txt',0);`;
+    sql += `INSERT INTO observations(path,name,epoch) VALUES('\\DEP-${index}.TXT','\\dep-${index}.txt',0);`;
   }
 
   f.mutate(sql);
@@ -145,7 +145,7 @@ it("deduplicates content hashing without dropping an older epoch observation", a
   await f.change("code.txt", "old", "new");
   await writeFile(path.join(f.source.root, "dep.txt"), "dependency");
   f.mutate(`UPDATE local_state SET epoch=1;
-    INSERT INTO observations VALUES('\\DEP.TXT','\\dep.txt',0),('\\DEP.TXT','\\dep.txt',1);
+    INSERT INTO observations(path,name,epoch) VALUES('\\DEP.TXT','\\dep.txt',0),('\\DEP.TXT','\\dep.txt',1);
     INSERT INTO checked_reads VALUES('\\DEP.TXT',1,0),('\\DEP.TXT',1,1);`);
   const batch = await nativeBatch(
     f.source,

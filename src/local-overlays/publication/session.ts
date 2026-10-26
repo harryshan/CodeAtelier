@@ -3,6 +3,7 @@
  * 1. read 保存真实来源版本；已有私有修改返回会话内容，调用方不能改写基线 Buffer。
  * 2. edit 在第一次修改前复核读版本，保存 B/O；其它会话此后的变化留给发布三方检查。
  * 3. validateBatch 校验路径、重复项、内容与数量限额；seal 生成明确路径和读依赖，save/load 供独占实验及子进程。
+ *    原生目录读集允许 directory 类型的根路径；普通文件编辑仍禁止点路径。
  * 不运行 Git、不扫描目录、不截获 shell；发布完成后应创建新会话，PoC 不实现续轮 rebase。
  */
 import { randomUUID } from "node:crypto";
@@ -18,6 +19,7 @@ import {
 } from "./files.js";
 import { MAX_BYTES, PublishError } from "./merge.js";
 import { readSetSchema } from "./read-set.js";
+import { checkReadPath } from "./read-version.js";
 
 const snapshotSchema = z.object({
   content: z
@@ -73,7 +75,7 @@ export function validateBatch(value: unknown): Batch {
   }
 
   for (const read of batch.reads) {
-    checkRelative(read.path);
+    checkReadPath(read);
   }
 
   if (size > 16 * 1024 * 1024) {

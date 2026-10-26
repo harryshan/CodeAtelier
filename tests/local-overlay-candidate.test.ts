@@ -27,7 +27,9 @@ it("captures new candidate dependencies and requires native observation proof", 
   const f = await nativeFixture();
   await f.change("code.txt", "old", "merged");
   await writeFile(path.join(f.source.root, "dep.txt"), "dependency");
-  f.mutate("INSERT INTO observations VALUES('\\DEP.TXT','\\dep.txt',0)");
+  f.mutate(
+    "INSERT INTO observations(path,name,epoch) VALUES('\\DEP.TXT','\\dep.txt',0)",
+  );
   const selected = new Map([["code.txt", Buffer.from("merged")]]);
   const receipt = await candidateReads(
     f.source,
@@ -69,7 +71,7 @@ it("keeps dependencies even when the validator privately modifies them", async (
   await f.change("dep.txt", "dependency", "generated");
   await writeFile(path.join(f.source.root, "dep.txt"), "dependency");
   f.mutate(
-    "INSERT INTO observations VALUES('\\DEP.TXT','\\dep.txt',0); INSERT INTO checked_reads VALUES('\\DEP.TXT',1,0)",
+    "INSERT INTO observations(path,name,epoch) VALUES('\\DEP.TXT','\\dep.txt',0); INSERT INTO checked_reads VALUES('\\DEP.TXT',1,0)",
   );
   const receipt = await candidateReads(
     f.source,

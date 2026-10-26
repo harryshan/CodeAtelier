@@ -7,6 +7,8 @@
 //    error disposal, schema changes and the 128-SQL limit without caching results.
 // 5. Negative reads persist across restore, retain their first epoch version and exclude
 //    hidden/internal/non-missing failures; a failed observation poisons further use.
+// 6. Directory membership observes only visited lower directories, survives restore,
+//    rejects additions/types/identity changes and preserves first versions; failed recording poisons.
 // Test files are retained for inspection; all handles and databases close through Store RAII.
 #include <fstream>
 #include <iostream>
@@ -229,6 +231,71 @@ static void verifyMissing(const fs::path& root) {
   }
 }
 
+static void verifyDirectories(const fs::path& root) {
+  const auto source = root / L"directory-source";
+  const auto control = root / L"directory-control";
+  const auto workspace = root / L"directory-view";
+  fs::create_directories(source / L"modules");
+  fs::create_directories(source / L"untouched");
+  fs::create_directories(source / L"empty");
+  put(source / L"modules" / L"one");
+  {
+    Store store(source, control, workspace, true, {}, {}, L"", true);
+    check(store.lowerOpens == 0 && store.lowerEnumerations == 0, "Creation scanned source");
+    check(store.list(store.lookup(L"\\modules")).size() == 1, "Incomplete source list");
+    check(scalar(store, "SELECT count(*) FROM observations") == 1, "Unvisited dependency recorded");
+    auto dependency = [&]() {
+      store.checkReads({0});
+      return scalar(store, "SELECT valid FROM checked_reads WHERE path='\\MODULES'");
+    };
+    put(source / L"modules" / L"transient");
+    fs::remove(source / L"modules" / L"transient");
+    put(source / L"modules" / L"one");
+    fs::create_directory(source / L"modules" / L".git");
+    check(dependency() == 1, "Content/time/hidden names changed membership");
+    fs::rename(source / L"modules" / L"one", source / L"modules" / L"renamed");
+    check(dependency() == 0, "Rename did not invalidate membership");
+    fs::rename(source / L"modules" / L"renamed", source / L"modules" / L"one");
+    fs::remove(source / L"modules" / L"one");
+    fs::create_directory(source / L"modules" / L"one");
+    check(dependency() == 0, "Type change did not invalidate membership");
+    fs::remove(source / L"modules" / L"one");
+    put(source / L"modules" / L"one");
+    check(dependency() == 1, "Restored names/type rejected");
+    store.list(store.lookup(L"\\empty"));
+    store.capture(L"\\empty", 2);
+    check(scalar(store, "SELECT kind FROM baselines WHERE path='\\EMPTY'") == 2,
+          "Unchanged observed directory mutation rejected");
+    store.finish();
+  }
+  put(source / L"modules" / L"added");
+  {
+    Store store(source, control, workspace, false, {}, {}, L"", true);
+    store.list(store.lookup(L"\\modules"));
+    const auto nodes = scalar(store, "SELECT count(*) FROM nodes");
+    store.checkReads({0});
+    check(scalar(store, "SELECT valid FROM checked_reads WHERE path='\\MODULES'") == 0,
+          "Later enumeration replaced first persistent observation");
+    check(scalar(store, "SELECT count(*) FROM nodes") == nodes, "Frozen check imported nodes");
+    fs::rename(source / L"empty", source / L"old-empty");
+    fs::create_directory(source / L"empty");
+    store.checkReads({0});
+    check(scalar(store, "SELECT valid FROM checked_reads WHERE path='\\EMPTY'") == 0,
+          "Empty directory replacement identity ignored");
+    store.finish();
+  }
+  {
+    Store store(source, root / L"directory-failure", workspace, true, {}, {}, L"", true);
+    store.sql("CREATE TEMP TRIGGER fail_directory BEFORE INSERT ON observations "
+              "BEGIN SELECT RAISE(ABORT,'injected directory failure'); END");
+    try {
+      store.list(store.lookup(L"\\modules"));
+    } catch (const Error&) {
+    }
+    check(store.poisoned, "Unrecorded directory enumeration allowed further edits");
+  }
+}
+
 int wmain(int argc, wchar_t** argv) {
   try {
     check(argc == 2, "Expected a fresh workspace fixture directory");
@@ -238,6 +305,7 @@ int wmain(int argc, wchar_t** argv) {
     verifyRollback(root);
     verifyStatements(root);
     verifyMissing(root);
+    verifyDirectories(root);
     std::cout << "LOCAL_IMPORT_TEST PASS\n";
     return 0;
   } catch (const std::exception& error) {

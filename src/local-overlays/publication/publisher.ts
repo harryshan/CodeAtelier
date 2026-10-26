@@ -16,6 +16,7 @@
  * 13. publish 的错误只在执行租约排空后标为 unapplied；已开始写入、完成后故障或清理未知均需恢复核对，不降格完成 journal。
  * 14. 候选验证可返回新读取版本，记入 journal 并在应用前复核；候选排空未知不降为普通未发布拒绝。
  *     主/候选只读依赖用有界流式内容哈希复核，取消不必等待整个工程读集扫描。
+ *     directory 依赖仅重新枚举已观察目录成员；根目录读依赖不会扩大写入路径权限。
  * 15. 同进程同来源先进入可取消队列，再取得持久锁；长验证不触发合作任务的残留锁短等待失败。
  * 16. recordedJournal 从可信来源与批次 ID 定位有界日志，拒绝路径链接和归属不匹配；产品恢复不接受客户端批次正文。
  * 不提供外部写入 CAS、多文件原子提交或断电证明；故障钩子仅供实验，产品调用不得跳过候选验证。
@@ -40,13 +41,13 @@ import {
   digest,
   durableJson,
   snapshot,
-  snapshotVersion,
   sourceIdentity,
   type Source,
 } from "./files.js";
 import { equal, mergeContent, PublishError } from "./merge.js";
 import { validateBatch, type Batch } from "./session.js";
 import { publicationTurn } from "./queue.js";
+import { readVersion } from "./read-version.js";
 import { PublicationLease } from "./publication-lease.js";
 import {
   validateOverlayAcknowledgement,
@@ -257,8 +258,7 @@ export class Publisher {
 
     for (const read of journal.batch.reads) {
       if (
-        (await snapshotVersion(journal.batch.source, read.path, signal)) !==
-        read.version
+        (await readVersion(journal.batch.source, read, signal)) !== read.version
       ) {
         throw new PublishError("STALE_DEPENDENCY");
       }
@@ -578,7 +578,7 @@ export class Publisher {
       await this.verify(journal, options.signal);
       for (const read of journal.validation?.reads ?? []) {
         if (
-          (await snapshotVersion(batch.source, read.path, options.signal)) !==
+          (await readVersion(batch.source, read, options.signal)) !==
           read.version
         ) {
           throw new PublishError("STALE_VALIDATION_DEPENDENCY");

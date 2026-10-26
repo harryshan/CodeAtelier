@@ -40,7 +40,9 @@ it("keeps selected but unchanged files as dependencies and rejects stale reads",
   await f.change("code.txt", "old\n", "ours\n");
   await f.change("dep.txt", "same\n", "same\n");
   await writeFile(path.join(f.source.root, "dep.txt"), "same\n");
-  f.mutate("INSERT INTO observations VALUES('\\DEP.TXT','\\dep.txt',0)");
+  f.mutate(
+    "INSERT INTO observations(path,name,epoch) VALUES('\\DEP.TXT','\\dep.txt',0)",
+  );
   const verify = async () => {
     f.mutate("INSERT INTO checked_reads VALUES('\\DEP.TXT',1,0)");
   };
@@ -120,7 +122,7 @@ it("retains old dependencies for old edits while isolating new observation epoch
     UPDATE local_state SET epoch=1;
     UPDATE change_epochs SET epoch=1 WHERE path='\\NEW.TXT';
     UPDATE object_epochs SET epoch=1 WHERE object=(SELECT object FROM sealed_changes WHERE path='\\NEW.TXT');
-    INSERT INTO observations VALUES('\\DEP.TXT','\\dep.txt',0);
+    INSERT INTO observations(path,name,epoch) VALUES('\\DEP.TXT','\\dep.txt',0);
     INSERT INTO checked_reads VALUES('\\DEP.TXT',0,0);
   `);
   const fresh = await nativeBatch(
@@ -155,7 +157,7 @@ it("preserves transitive dependencies inherited from retained private content", 
     UPDATE change_epochs SET epoch=2;
     UPDATE object_epochs SET epoch=2;
     INSERT INTO epoch_links VALUES(2,1),(1,0);
-    INSERT INTO observations VALUES('\\DEP.TXT','\\dep.txt',0);
+    INSERT INTO observations(path,name,epoch) VALUES('\\DEP.TXT','\\dep.txt',0);
     INSERT INTO checked_reads VALUES('\\DEP.TXT',0,0);
   `);
   await expect(

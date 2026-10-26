@@ -8,8 +8,10 @@
 // 7. epoch 与 change_epochs 将旧修改和新一轮的读依赖区分；确认不清空未发布修改所依赖的观察。
 //    v6 私有内容读取交给 observePrivate 建立代次依赖边，不把旧结果冒充无依赖的新读取。
 // 8. observeMissing 只接收真实 lower 不存在结果，沿用首次观察；checkReads 将 missing 与仍缺失匹配。
+// 9. directory-v1 观察以身份及成员摘要复核；目录修改基线仍使用原数值版本，不混用两种语义。
 // 所有入口由 Store mutex 串行化；文件先 flush 后引用，失败不修改 lower，孤立对象留待受控清理。
-// 版本戳不是密码学摘要，也不提供跨文件快照；确认由 acknowledgement.cpp 处理，不支持任意目录发布。
+// 文件版本戳不是内容摘要；目录成员使用 directory.cpp 的摘要，均不提供跨文件快照。
+// 确认由 acknowledgement.cpp 处理，不支持任意目录发布。
 #include "store.hpp"
 
 #include <objbase.h>
@@ -183,8 +185,16 @@ void Store::capture(const std::wstring& path, int flags) {
   }
   {
     Query observed(*this, "SELECT stamp FROM observations WHERE path=? AND epoch=?");
-    if (observed.text(1, key).number(2, epoch()).step() && observed.text(0) != stamp) {
-      throw Error{STATUS_FILE_INVALID};
+    if (observed.text(1, key).number(2, epoch()).step()) {
+      auto expected = observed.text(0);
+      auto actual = stamp;
+      if (expected.starts_with(L"directory-v1:") && kind == 2) {
+        ++lowerEnumerations;
+        actual = directorySnapshot(input.value).stamp;
+      }
+      if (expected != actual) {
+        throw Error{STATUS_FILE_INVALID};
+      }
     }
   }
 
@@ -311,7 +321,16 @@ void Store::checkReads(const std::vector<sqlite3_int64>& requested) {
       bool valid = false;
       try {
         auto input = openLower(observed.text(1), FILE_SHARE_READ);
-        valid = version(input.value) == observed.text(2);
+        if (observed.text(2).starts_with(L"directory-v1:")) {
+          ++lowerEnumerations;
+          FILE_BASIC_INFO basic{};
+          require(GetFileInformationByHandleEx(input.value, FileBasicInfo, &basic, sizeof(basic)));
+          valid = (basic.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) &&
+                  !(basic.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) &&
+                  directorySnapshot(input.value).stamp == observed.text(2);
+        } else {
+          valid = version(input.value) == observed.text(2);
+        }
       } catch (const Error& error) {
         if (error.status != STATUS_OBJECT_NAME_NOT_FOUND &&
             error.status != STATUS_OBJECT_PATH_NOT_FOUND && error.status != STATUS_NO_SUCH_FILE) {

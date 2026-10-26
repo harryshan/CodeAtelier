@@ -1,5 +1,14 @@
 # 初版验证记录
 
+## Local 目录成员读依赖（2026-10-26）
+
+- 真实缺陷先复现（`.local/local-directory-dependency-before.log`）：候选列出目录后，来源新增成员仍通过。修复后原生保留 lower 目录身份/名称/类型的首次摘要，主/候选导出及发布前复核；不遍历未观察目录，不改变 IPC 或创建路径。
+- 最终原生构建及 `-VerifyImport -VerifyReparse` 通过（`.local/local-directory-native-final.log`），覆盖零创建扫描、稳定成员、改名/类型/目录身份变动、首读跨重挂载、冻结不导入和记录失败 poison。`pnpm overlay:verify-directory-dependency` 自审扩展通过（`.local/local-directory-reviewed.log`）：真实成员新增/删除/改名/类型变化、私有产物/whiteout、隐藏 `.git`、卸载后来源变动拒绝及稳定根目录连续两次原生发布，候选回收、拒绝不改源码。
+- 真实 Sandbox noEmit：1,264 输入、4,583 条读集；候选 64.215 s，含 Runtime 编译 53.782 s，控制层分配 7,405,568 B。此次与完整检查并发，受资源竞争影响，**不可用来衡量目录检查增量成本**。后端 emit 单独运行：775 输入、2,798 条读集，408 份产物共 2,685,020 B，204 份 JavaScript 与直接构建逐项匹配；候选 35.490 s、含 Runtime 30.088 s，控制层分配 10,317,920 B。两次创建 lower 打开/枚举零，已安装 IPC v18，终态 `windows-sandbox-user`/`sandboxApplied:true`，候选及执行租约排空。原始材料与边界见 [汇总报告](local-overlay-directory-dependency-results.json)。
+- 安装态 `overlay:verify-sandbox --commands --merge` 通过（`.local/local-directory-sandbox-merge.log`、`.local/local-overlay-sandbox-leuc39/report.json`）：双会话同文件合并、真实候选命令、验证拒绝/冲突/取消及重建续聊正常，无宿主 fallback，零活动租约。未再次 Repair、安装驱动、重启用户服务或运行 Evaluation。
+- `pnpm check` 通过记录见 `.local/local-directory-check-final.log`：152 文件、1,217 项通过/1 既有跳过；最终手动脚本扩展另运行完整检查，记录在 `.local/local-directory-check-reviewed-final.log`。本增量不改变 UI/HTTP，未重复浏览器测试。原生构建仅有既有 SDK 对齐警告。
+- 限制：目录成员并不覆盖仅从条目读取的大小/时间等元数据，也不解决外部依赖或检查后的外部竞争；旧卷未记录的枚举无法补录。被私有层遮蔽的来源成员变化、自己的已发布成员变更也可能使旧代次剩余修改失效，按保守规则拒绝。非受控缓存、输入变更和 Sandbox 启停使性能数据不能当严格基准；未验证 Vite/原生构建、产物服务运行或 POSIX。
+
 ## Local 缺失路径读依赖（2026-10-26）
 
 - 先复现真实缺陷（`.local/local-missing-before.log`）：候选确认 `optional.json` 不存在后，来源创建该文件，原候选仍通过。新增 NtOpenFile 缺失观察后，首次缺失保留，后来读到新内容不会覆盖；非缺失错误/策略隐藏/私有删除不记作 lower 缺失，内部复核不记录，持久化失败 poison。

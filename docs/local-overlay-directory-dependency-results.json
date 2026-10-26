@@ -1,0 +1,295 @@
+{
+  "timestamp": "2026-10-26T04:55:16.0761310Z",
+  "scope": "Local directory membership dependencies on Windows NTFS and installed WinFsp/Sandbox",
+  "regression": {
+    "passed": true,
+    "timestamp": "2026-10-26T04:52:08.884Z",
+    "checks": [
+      "addition after enumeration rejects old candidate",
+      "stable root and child directory exported",
+      "private output and whiteout excluded from source membership",
+      "content-only writes and removed temporary names do not invalidate membership",
+      "hidden .git excluded",
+      "delete rename and type changes reject despite later enumeration",
+      "post-candidate membership change refuses publication",
+      "main directory batch rechecked before publication",
+      "refusals preserve source and candidate volumes reclaimed",
+      "stable directory validation supports consecutive native publications"
+    ]
+  },
+  "sandboxNoEmit": {
+    "timestamp": "2026-10-26T04:50:33.033Z",
+    "platform": "win32",
+    "executionMode": "windows-sandbox-user",
+    "sandboxProof": {
+      "mode": "windows-sandbox-user",
+      "state": "completed",
+      "sandboxApplied": true
+    },
+    "passed": true,
+    "project": "CodeAtelier current working tree",
+    "command": "TypeScript --noEmit --incremental false --extendedDiagnostics",
+    "baseline": {
+      "elapsedMs": 8418.597000000002,
+      "diagnostics": {
+        "Files": "1264",
+        "Lines of TypeScript": "111385",
+        "Memory used": "796075K",
+        "I/O Read time": "0.15s",
+        "ResolveModule time": "0.32s",
+        "Emit time": "0.00s",
+        "Total time": "8.16s"
+      },
+      "exitCode": 0
+    },
+    "overlay": {
+      "elapsedMs": 53782.333099999996,
+      "diagnostics": {
+        "Files": "1264",
+        "Lines of TypeScript": "111385",
+        "Memory used": "805379K",
+        "I/O Read time": "6.55s",
+        "ResolveModule time": "31.67s",
+        "Emit time": "0.00s",
+        "Total time": "49.16s"
+      },
+      "exitCode": 0
+    },
+    "candidateTotalMs": 64214.6667,
+    "receiptAndCleanupMs": 6287.050499999998,
+    "observations": 4583,
+    "creationMetrics": {
+      "version": 1,
+      "state": "metrics",
+      "treeReads": 0,
+      "infoReads": 0,
+      "blobReads": 0,
+      "blobBytes": 0,
+      "lowerOpens": 0,
+      "lowerEnumerations": 0,
+      "lowerImportCommits": 0,
+      "objectMicros": 0,
+      "sqlPrepareMicros": 66,
+      "sqlPrepares": 4,
+      "sqlReadMicros": 9,
+      "sqlWriteMicros": 6611,
+      "sqlExecMicros": 45650,
+      "sqlReads": 1,
+      "sqlWrites": 3,
+      "accessCleanups": 0
+    },
+    "compiledMetrics": {
+      "version": 1,
+      "state": "metrics",
+      "treeReads": 0,
+      "infoReads": 0,
+      "blobReads": 0,
+      "blobBytes": 0,
+      "lowerOpens": 241519,
+      "lowerEnumerations": 35,
+      "lowerImportCommits": 1779,
+      "objectMicros": 0,
+      "sqlPrepareMicros": 536857,
+      "sqlPrepares": 38307,
+      "sqlReadMicros": 1933358,
+      "sqlWriteMicros": 10793867,
+      "sqlExecMicros": 4374479,
+      "sqlReads": 583717,
+      "sqlWrites": 13928,
+      "accessCleanups": 6058
+    },
+    "receiptReads": 4583,
+    "privateDisk": {
+      "files": 6,
+      "logicalBytes": 7351683,
+      "allocatedBytes": 7405568
+    },
+    "selectedSourceUnchanged": true,
+    "checks": [
+      "actual project compiles directly and in candidate",
+      "more than 100 native read dependencies verified",
+      "private marker and compiler outputs never published",
+      "successful candidate control removed"
+    ],
+    "limitations": [
+      "Sandbox duration includes Runtime startup/shutdown; direct baseline is host",
+      "single sequential run, uncontrolled OS cache",
+      "external compiler/package reads and directory/absence tracking incomplete",
+      "not a model evaluation or emitted production build"
+    ]
+  },
+  "sandboxEmit": {
+    "timestamp": "2026-10-26T04:51:49.573Z",
+    "platform": "win32",
+    "executionMode": "windows-sandbox-user",
+    "sandboxProof": {
+      "mode": "windows-sandbox-user",
+      "state": "completed",
+      "sandboxApplied": true
+    },
+    "passed": true,
+    "project": "CodeAtelier current working tree",
+    "command": "TypeScript tsconfig.server.json --outDir private --incremental false --extendedDiagnostics",
+    "baseline": {
+      "elapsedMs": 3593.5694,
+      "diagnostics": {
+        "Files": "775",
+        "Lines of TypeScript": "47468",
+        "Memory used": "510048K",
+        "I/O Read time": "0.08s",
+        "ResolveModule time": "0.13s",
+        "I/O Write time": "0.26s",
+        "Emit time": "0.74s",
+        "Total time": "3.44s"
+      },
+      "exitCode": 0
+    },
+    "overlay": {
+      "elapsedMs": 30087.8165,
+      "diagnostics": {
+        "Files": "775",
+        "Lines of TypeScript": "47468",
+        "Memory used": "425415K",
+        "I/O Read time": "3.44s",
+        "ResolveModule time": "10.69s",
+        "I/O Write time": "8.09s",
+        "Emit time": "8.69s",
+        "Total time": "26.30s"
+      },
+      "exitCode": 0
+    },
+    "candidateTotalMs": 35489.700399999994,
+    "receiptAndCleanupMs": 2937.4709999999977,
+    "observations": 2798,
+    "creationMetrics": {
+      "version": 1,
+      "state": "metrics",
+      "treeReads": 0,
+      "infoReads": 0,
+      "blobReads": 0,
+      "blobBytes": 0,
+      "lowerOpens": 0,
+      "lowerEnumerations": 0,
+      "lowerImportCommits": 0,
+      "objectMicros": 0,
+      "sqlPrepareMicros": 45,
+      "sqlPrepares": 4,
+      "sqlReadMicros": 6,
+      "sqlWriteMicros": 6614,
+      "sqlExecMicros": 43492,
+      "sqlReads": 1,
+      "sqlWrites": 3,
+      "accessCleanups": 0
+    },
+    "compiledMetrics": {
+      "version": 1,
+      "state": "metrics",
+      "treeReads": 0,
+      "infoReads": 0,
+      "blobReads": 0,
+      "blobBytes": 0,
+      "lowerOpens": 97651,
+      "lowerEnumerations": 22,
+      "lowerImportCommits": 903,
+      "objectMicros": 0,
+      "sqlPrepareMicros": 202768,
+      "sqlPrepares": 20909,
+      "sqlReadMicros": 631799,
+      "sqlWriteMicros": 10659097,
+      "sqlExecMicros": 2982816,
+      "sqlReads": 286481,
+      "sqlWrites": 14252,
+      "accessCleanups": 4252
+    },
+    "receiptReads": 2798,
+    "privateDisk": {
+      "files": 414,
+      "logicalBytes": 9430543,
+      "allocatedBytes": 10317920
+    },
+    "outputSummary": {
+      "files": 408,
+      "bytes": 2685020,
+      "matchingJavaScript": 204
+    },
+    "selectedSourceUnchanged": true,
+    "checks": [
+      "actual project compiles directly and in candidate",
+      "more than 100 native read dependencies verified",
+      "private marker and compiler outputs never published",
+      "successful candidate control removed"
+    ],
+    "limitations": [
+      "Sandbox duration includes Runtime startup/shutdown; direct baseline is host",
+      "single sequential run, uncontrolled OS cache",
+      "external compiler/package reads and directory/absence tracking incomplete",
+      "TypeScript backend only, not Vite/native build or execution of generated server; source maps have different relative source roots and only their presence/size was checked"
+    ]
+  },
+  "sandboxMerge": {
+    "timestamp": "2026-10-26T04:52:54.454Z",
+    "platform": "win32",
+    "node": "v26.10.0",
+    "backend": "Local WinFsp + installed dedicated-account Runtime",
+    "registration": "production LocalOverlayService internal Engine lifecycle; no registration overrides",
+    "parallelRuntimeCommands": "passed",
+    "commandIntervals": {
+      "A": [
+        1792990337415,
+        1792990339654
+      ],
+      "B": [
+        1792990337418,
+        1792990339654
+      ]
+    },
+    "sourceAbsoluteWrite": "denied",
+    "gitMetadataCreation": "denied",
+    "sourceGitWriteRootsGranted": 0,
+    "privateWrites": "independent",
+    "cancelRunningCommand": "candidate Runtime drained",
+    "remountAndContinue": "both sessions passed after Engine recreation",
+    "epochs": {
+      "A": 5,
+      "B": 2
+    },
+    "publication": "two batches each selected an independent file and shared.txt; all three source files published; cancelled selection retained",
+    "rejection": "candidate failure and source conflict preserved; both private results survived restart",
+    "selection": "model local_publish tool through authenticated Runtime IPC",
+    "validation": "production Engine command plan and candidate Runtime; ordered success, exit rejection and cancellation",
+    "sharedFileMerge": {
+      "baseline": "left\nmiddle\nright\n",
+      "candidates": [
+        "left-A\nmiddle\nright\n",
+        "left-A\nmiddle\nright-B\n"
+      ],
+      "published": "left-A\nmiddle\nright-B\n"
+    },
+    "fallback": false,
+    "activeLeasesAfterTasks": 0,
+    "cleanup": "engine drained; helpers cleanly stopped",
+    "limitations": [
+      "Not an OS security boundary between sessions",
+      "Public UI/API creation not exercised by this verifier; fixed provider, not a real model evaluation"
+    ]
+  },
+  "nativeVerification": {
+    "commands": "build-winfsp-overlay.ps1 -VerifyImport -VerifyReparse",
+    "passed": true,
+    "log": ".local/local-directory-native-final.log"
+  },
+  "limitations": [
+    "NoEmit ran alongside pnpm check; duration is not a directory-overhead comparison.",
+    "Emit ran separately; OS cache was not controlled. Host baseline excludes Sandbox startup/shutdown.",
+    "Directory identity and names/types only; directory-entry size/time and external dependencies are incomplete.",
+    "No startup traversal; only actually observed directories are rescanned. Existing unrecorded history cannot be reconstructed.",
+    "Existing private-layer recovery and POSIX limitations remain.",
+    "No Evaluation, Repair or user-service restart."
+  ],
+  "rawReports": [
+    ".local/local-overlay-directory-dependency-Yq0f7r/report.json",
+    "C:\\Users\\HARRYS~1\\AppData\\Local\\Temp\\codeatelier-overlay-build-JdEov7\\report.json",
+    "C:\\Users\\HARRYS~1\\AppData\\Local\\Temp\\codeatelier-overlay-build-BLXaGr\\report.json",
+    ".local/local-overlay-sandbox-leuc39/report.json"
+  ]
+}

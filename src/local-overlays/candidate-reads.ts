@@ -5,7 +5,7 @@
  * 2. candidateReads 在候选冻结租约内核对来源/格式、采集未选文件版本，再复核原生观察。
  * 3. 验证过程私有写入的其它文件仍保留其来源读依赖，不把测试生成物当作发布内容。
  * 4. CandidateCleanupUnknownError 标记进程或卷排空未知；Publisher 必须保留原会话而非普通拒绝续聊。
- * 不枚举来源、不执行命令；凭据包括已捕获的 lower 缺失前缀（missing），不覆盖目录列表/工作区外读取。
+ * 仅复核已观察的文件/缺失路径/目录成员，不全树扫描或执行命令；不覆盖工作区外读取与完整元数据。
  */
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -14,12 +14,16 @@ import {
   bytes,
   checkRelative,
   snapshot,
-  snapshotVersion,
   sourceIdentity,
   type Source,
 } from "./publication/files.js";
 import { PublishError } from "./publication/merge.js";
 import { MAX_READS, readSetSchema } from "./publication/read-set.js";
+import {
+  checkReadPath,
+  nativeReadPath,
+  readVersion,
+} from "./publication/read-version.js";
 
 const receiptSchema = z.object({
   reads: readSetSchema,
@@ -37,7 +41,7 @@ export function validateReceipt(input: unknown): ValidationReceipt {
   const result = receiptSchema.parse(input);
   const keys = new Set<string>();
   for (const read of result.reads) {
-    checkRelative(read.path);
+    checkReadPath(read);
     const key = read.path.toLowerCase();
     if (keys.has(key)) {
       throw new PublishError("DUPLICATE_PATH");
@@ -120,7 +124,7 @@ export async function candidateReads(
     }
 
     const observed = db
-      .prepare("SELECT path,name,epoch FROM observations LIMIT ?")
+      .prepare("SELECT path,name,stamp,epoch FROM observations LIMIT ?")
       .all(MAX_READS + 1);
     if (observed.length > MAX_READS) {
       throw new PublishError("READ_LIMIT");
@@ -132,6 +136,7 @@ export async function candidateReads(
       if (
         typeof row.path !== "string" ||
         typeof row.name !== "string" ||
+        typeof row.stamp !== "string" ||
         row.epoch !== 0 ||
         !row.name.startsWith("\\")
       ) {
@@ -142,10 +147,10 @@ export async function candidateReads(
         continue;
       }
 
-      const file = row.name.slice(1).replaceAll("\\", "/");
+      const read = nativeReadPath(row.name, row.stamp);
       reads.push({
-        path: file,
-        version: await snapshotVersion(source, file, signal),
+        ...read,
+        version: await readVersion(source, read, signal),
       });
       keys.push(row.path);
     }

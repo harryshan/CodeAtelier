@@ -25,7 +25,7 @@ export async function nativeFixture() {
     CREATE TABLE meta(version INTEGER,source TEXT,clean INTEGER);
     CREATE TABLE baselines(path TEXT,name TEXT,kind INTEGER,object TEXT,stamp TEXT,attributes INTEGER,flags INTEGER);
     CREATE TABLE sealed_changes(path TEXT,kind INTEGER,object TEXT);
-    CREATE TABLE observations(path TEXT,name TEXT,epoch INTEGER DEFAULT 0);
+    CREATE TABLE observations(path TEXT,name TEXT,epoch INTEGER DEFAULT 0,stamp TEXT DEFAULT 'fixture-file-version');
     CREATE TABLE checked_reads(path TEXT,valid INTEGER,epoch INTEGER DEFAULT 0);
     CREATE TABLE change_epochs(path TEXT,epoch INTEGER);
     CREATE TABLE epoch_links(epoch INTEGER,dependency INTEGER);

@@ -3,6 +3,7 @@
  * 1. MAX_READS 限制观察导出与序列化条目数；历史代次和选定修改仍使用各自限制。
  * 2. readSetSchema 校验字段形状和 JSON 编码后的累计 UTF-8 字节，计入转义以约束日志内存。
  * 3. 调用方继续负责路径语义、重复项、原生观察和读取版本复核，不凭 schema 推断数据仍有效。
+ *    kind=directory 是已枚举目录的成员依赖；省略时保持普通文件/缺失路径的旧语义。
  */
 import { z } from "zod";
 
@@ -14,6 +15,7 @@ export const readSetSchema = z
     z.object({
       path: z.string().min(1).max(1024),
       version: z.string().min(1).max(1024),
+      kind: z.literal("directory").optional(),
     }),
   )
   .max(MAX_READS)

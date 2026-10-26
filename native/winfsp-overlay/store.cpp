@@ -11,6 +11,7 @@
 //    changes.cpp 保存按需读版本和不可变基线；内容/命名空间修改在副作用前调用 capture。
 //    Local v6 按观察代次和对象来源保留跨轮依赖；旧实验格式不自动迁移。
 // 7. lookup/import 在 NtOpenFile 的真实缺失返回处记录负向依赖；内部复核不产生新观察。
+// 8. Local 枚举保存 lower 目录成员摘要，与导入共用一次枚举及事务；私有生成物不进入摘要。
 #include "store.hpp"
 
 #include <objbase.h>
@@ -808,36 +809,51 @@ std::vector<Entry> Store::list(const NodePtr& parent) {
       if (localMode) {
         transaction = std::make_unique<Transaction>(*this);
       }
-      alignas(8) BYTE buffer[65536];
-      bool first = true;
-      for (;;) {
-        if (!GetFileInformationByHandleEx(
-                handle.value, first ? FileIdBothDirectoryRestartInfo : FileIdBothDirectoryInfo,
-                buffer, sizeof(buffer))) {
-          if (GetLastError() == ERROR_NO_MORE_FILES) {
-            break;
-          }
-          require(false);
-        }
-        first = false;
-        auto entry = reinterpret_cast<FILE_ID_BOTH_DIR_INFO*>(buffer);
-        for (;;) {
-          std::wstring name(entry->FileName, entry->FileNameLength / sizeof(wchar_t));
-          if (name != L"." && name != L".." &&
-              !((localMode || parent->id == 1) && fold(name) == L".GIT")) {
-            try {
-              child(parent, name, localMode);
-            } catch (const Error& error) {
-              if (!missing(error.status)) {
-                throw;
-              }
+      if (localMode) {
+        auto observed = directorySnapshot(handle.value);
+        for (const auto& [name, attributes] : observed.entries) {
+          try {
+            child(parent, name, true);
+          } catch (const Error& error) {
+            if (!missing(error.status)) {
+              throw;
             }
           }
-          if (!entry->NextEntryOffset) {
-            break;
+        }
+        verifyDirectoryGuard(handle.value, observed.guard);
+        observeDirectory(parent->origin, observed.stamp);
+      } else {
+        alignas(8) BYTE buffer[65536];
+        bool first = true;
+        for (;;) {
+          if (!GetFileInformationByHandleEx(
+                  handle.value, first ? FileIdBothDirectoryRestartInfo : FileIdBothDirectoryInfo,
+                  buffer, sizeof(buffer))) {
+            if (GetLastError() == ERROR_NO_MORE_FILES) {
+              break;
+            }
+            require(false);
           }
-          entry = reinterpret_cast<FILE_ID_BOTH_DIR_INFO*>(reinterpret_cast<BYTE*>(entry) +
-                                                           entry->NextEntryOffset);
+          first = false;
+          auto entry = reinterpret_cast<FILE_ID_BOTH_DIR_INFO*>(buffer);
+          for (;;) {
+            std::wstring name(entry->FileName, entry->FileNameLength / sizeof(wchar_t));
+            if (name != L"." && name != L".." &&
+                !((localMode || parent->id == 1) && fold(name) == L".GIT")) {
+              try {
+                child(parent, name, localMode);
+              } catch (const Error& error) {
+                if (!missing(error.status)) {
+                  throw;
+                }
+              }
+            }
+            if (!entry->NextEntryOffset) {
+              break;
+            }
+            entry = reinterpret_cast<FILE_ID_BOTH_DIR_INFO*>(reinterpret_cast<BYTE*>(entry) +
+                                                             entry->NextEntryOffset);
+          }
         }
       }
       if (transaction) {

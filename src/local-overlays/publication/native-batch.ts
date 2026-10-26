@@ -2,7 +2,7 @@
  * 将已冻结的 Local WinFsp 结果转换为生产协调器和验证脚本使用的明确路径批次。
  * 1. 调用方必须位于 OverlayManager.withFrozen 回调内；校验 v6 来源与私有表，不挂载或自行获取租约。
  * 2. 仅查询选择的路径，读取不可变 B 和封存 O；普通文件有界读取，拒绝目录、重解析和显式属性变更。
- * 3. 对其它已读路径先取宿主内容/缺失版本，再经仍持租约的 helper 复核原生首次观察；拒绝失效依赖。
+ * 3. 对其它已读路径取宿主内容/缺失/目录成员版本，再经持租约 helper 复核原生首次观察；拒绝失效依赖。
  * 4. 按所选修改的历史代次及当前代次检查依赖，返回 Batch 与绑定的确认请求；不自行发布或确认。
  * 5. 对真正变化的选定路径保存私有检查点，供 complete 后的刷新恢复；额外复核仅限这些文件。
  * 6. 展开路径/对象代次与跨轮私有读依赖闭包；缺记录、向前/自环边和超限均拒绝，不清空旧依赖。
@@ -18,7 +18,6 @@ import {
   checkRelative,
   digest,
   snapshot,
-  snapshotVersion,
   sourceIdentity,
   type Source,
 } from "./files.js";
@@ -26,6 +25,7 @@ import { PublishError } from "./merge.js";
 import { validateBatch, type Batch } from "./session.js";
 import { nativeCheckpoint, type NativeCheckpoint } from "./native-refresh.js";
 import { MAX_READS } from "./read-set.js";
+import { nativeReadPath, readVersion } from "./read-version.js";
 
 const rowSchema = z.object({
   path: z.string(),
@@ -227,7 +227,7 @@ export async function nativeBatch(
 
     const observations = db
       .prepare(
-        `SELECT path,name,epoch FROM observations WHERE epoch IN (${[...epochs].map(() => "?").join(",")}) LIMIT ?`,
+        `SELECT path,name,stamp,epoch FROM observations WHERE epoch IN (${[...epochs].map(() => "?").join(",")}) LIMIT ?`,
       )
       .all(...epochs, MAX_READS + 1);
     if (observations.length > MAX_READS) {
@@ -239,17 +239,22 @@ export async function nativeBatch(
     const dependencyKeys: { path: string; epoch: number }[] = [];
     for (const raw of observations) {
       const observed = z
-        .object({ path: z.string(), name: z.string(), epoch: z.number().int() })
+        .object({
+          path: z.string(),
+          name: z.string(),
+          stamp: z.string(),
+          epoch: z.number().int(),
+        })
         .parse(raw);
       if (changedKeys.has(observed.path)) {
         continue;
       }
 
-      const file = relative(observed.name);
+      const read = nativeReadPath(observed.name, observed.stamp);
       if (!versions.has(observed.path)) {
-        const version = await snapshotVersion(source, file, signal);
+        const version = await readVersion(source, read, signal);
         versions.set(observed.path, version);
-        reads.push({ path: file, version });
+        reads.push({ ...read, version });
       }
 
       dependencyKeys.push(observed);

@@ -1,0 +1,125 @@
+/**
+ * 文件与目录读依赖的路径及版本分派，供原生导出、候选收据和 Publisher 使用。
+ * 1. checkReadPath 仅对 directory 类型允许根目录点号，写入路径仍由 checkRelative 严格限制。
+ * 2. nativeReadPath 将原生观察转换为受控路径/类型；不接受任意本机路径或未识别目录标签。
+ * 3. readVersion 对文件沿用流式快照；目录只枚举直接名称/类型并绑定身份，排除视图隐藏的 .git。
+ *    枚举前后复核身份/时间，持久版本不含时间，避免已清理临时项造成无关失效。
+ * 目录每次最多 100,000 项/16 MiB 编码；不递归、不读取成员正文、不声称涵盖条目的大小/时间元数据。
+ * 外部写入仍有检查后竞争窗口，按已观测目录验证不等于 OS 原子事务；日志由外层生命周期负责。
+ */
+import { lstat, opendir } from "node:fs/promises";
+import {
+  checkedPath,
+  checkRelative,
+  digest,
+  snapshotVersion,
+  sourceIdentity,
+  type Source,
+} from "./files.js";
+import { PublishError } from "./merge.js";
+
+export interface ReadPath {
+  path: string;
+  kind?: "directory";
+}
+
+export function checkReadPath(read: ReadPath) {
+  if (read.kind === "directory" && read.path === ".") {
+    return;
+  }
+
+  checkRelative(read.path);
+}
+
+export function nativeReadPath(name: string, stamp: string): ReadPath {
+  if (!name.startsWith("\\")) {
+    throw new PublishError("NATIVE_PATH_INVALID");
+  }
+
+  const kind = stamp.startsWith("directory-v1:") ? "directory" : undefined;
+  const relative = name.slice(1).replaceAll("\\", "/");
+  const read: ReadPath = {
+    path: kind === "directory" && !relative ? "." : relative,
+    ...(kind ? { kind } : {}),
+  };
+  checkReadPath(read);
+
+  return read;
+}
+
+export async function readVersion(
+  source: Source,
+  read: ReadPath,
+  signal?: AbortSignal,
+): Promise<string> {
+  checkReadPath(read);
+  if (read.kind !== "directory") {
+    return snapshotVersion(source, read.path, signal);
+  }
+
+  const checkedDirectory = async () => {
+    const current = await sourceIdentity(source.root);
+    if (current.root !== source.root || current.identity !== source.identity) {
+      throw new PublishError("SOURCE_REPLACED");
+    }
+
+    return read.path === "." ? source.root : checkedPath(source, read.path);
+  };
+
+  signal?.throwIfAborted();
+  const target = await checkedDirectory();
+  let before;
+  try {
+    before = await lstat(target, { bigint: true });
+  } catch (error: any) {
+    if (error.code === "ENOENT") {
+      return "missing";
+    }
+
+    throw error;
+  }
+
+  if (!before.isDirectory() || before.isSymbolicLink()) {
+    throw new PublishError("DIRECTORY_TYPE");
+  }
+
+  const names: string[] = [];
+  let size = 0;
+  for await (const entry of await opendir(target)) {
+    signal?.throwIfAborted();
+    if (entry.name.toLowerCase() === ".git") {
+      continue;
+    }
+
+    const type = entry.isSymbolicLink()
+      ? "l"
+      : entry.isDirectory()
+        ? "d"
+        : entry.isFile()
+          ? "f"
+          : "o";
+    const encoded = `${entry.name}\0${type}`;
+    size += Buffer.byteLength(encoded, "utf16le");
+    if (names.length >= 100_000 || size > 16 * 1024 * 1024) {
+      throw new PublishError("DIRECTORY_LIMIT");
+    }
+
+    names.push(encoded);
+  }
+
+  await checkedDirectory();
+  const after = await lstat(target, { bigint: true });
+  if (
+    before.dev !== after.dev ||
+    before.ino !== after.ino ||
+    before.mtimeNs !== after.mtimeNs ||
+    before.ctimeNs !== after.ctimeNs ||
+    before.mode !== after.mode ||
+    !after.isDirectory() ||
+    after.isSymbolicLink()
+  ) {
+    throw new PublishError("READ_CHANGED");
+  }
+
+  return `directory-v1:${digest(`${before.dev}:${before.ino}:${JSON.stringify(names.sort())}`)}`;
+}

@@ -11,6 +11,7 @@
 // 9. collect 只在冻结后回收无引用私有内容，保留基线/结果及 namespace 父链，不访问来源。
 // 10. v6 trackObject/observePrivate 保存跨轮私有读依赖；nextEpoch 只推进观察代次，不发布或丢弃修改。
 // 11. lookup/import 的真实 lower 缺失记录首个 missing 观察；不把策略隐藏/whiteout/访问拒绝当成缺失。
+// 12. Local 目录枚举记录来源身份及名称/类型摘要；冻结仅重新枚举已观察目录，不导入新节点。
 // 遮蔽来源的 .git 命名空间；Git PoC 从对象库取内容，不打开来源工作文件。
 // 来源文件打开禁止重解析与写访问，控制目录不暴露于挂载。
 #pragma once
@@ -104,6 +105,14 @@ struct Entry {
   NodePtr node;
 };
 
+struct DirectorySnapshot {
+  std::wstring stamp;
+  std::wstring guard;
+  std::vector<std::pair<std::wstring, DWORD>> entries;
+};
+DirectorySnapshot directorySnapshot(HANDLE handle);
+void verifyDirectoryGuard(HANDLE handle, const std::wstring& expected);
+
 struct Collection {
   UINT64 nodes = 0;
   UINT64 examined = 0;
@@ -163,6 +172,7 @@ class Store {
                    DWORD sharing = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                    bool observeAbsence = false);
   void observeMissing(const std::wstring& path);
+  void observeDirectory(const std::wstring& path, const std::wstring& stamp);
   std::wstring observeRead(const NodePtr& node, HANDLE handle,
                            const std::wstring& expected = L"");
   void capture(const std::wstring& path, int flags = 1);
