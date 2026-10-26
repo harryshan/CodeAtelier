@@ -1,5 +1,15 @@
 # 初版验证记录
 
+## Local 缺失路径读依赖（2026-10-26）
+
+- 先复现真实缺陷（`.local/local-missing-before.log`）：候选确认 `optional.json` 不存在后，来源创建该文件，原候选仍通过。新增 NtOpenFile 缺失观察后，首次缺失保留，后来读到新内容不会覆盖；非缺失错误/策略隐藏/私有删除不记作 lower 缺失，内部复核不记录，持久化失败 poison。
+- `pnpm overlay:verify-missing` 扩展验证通过（`.local/local-missing-expanded.log`）：编辑前保护、稳定缺失和父前缀、`.git`/whiteout、文件/目录后来出现、候选卸载后的来源新增与 nativeBatch 主任务导出后的新增均覆盖；拒绝发生在来源编辑前，候选正常回收。原生 `-VerifyImport -VerifyReparse` 通过（`.local/local-missing-native-final.log`），新增重挂载首版本保留、内部 probe/共享错误不记录及写观察失败 poison；初次构建的错误位置已修正后重跑。
+- 真实 `--sandbox` 工程 noEmit 通过（`.local/local-missing-sandbox-build.log`、[报告](local-overlay-missing-results.json)）：1,261 输入/110,857 行 TS，4,545 条依赖；编译器 37.65 s、含 Runtime 42.944 s，候选总计 47.782 s。控制层分配 7,397,376 字节，创建 lower 打开/枚举零，候选回收、租约排空。相较先前只记录正文的读集有额外开销，输入也增加验证脚本且未控缓存，不作为严格性能对照。
+- 安装态 `overlay:verify-sandbox --commands --merge` 通过（`.local/local-missing-sandbox.log`、`.local/local-overlay-sandbox-NlmoCM/report.json`）：双会话/同文件合并、真实候选命令、拒绝/取消/Engine 重建续聊保持正常，无 fallback、零活动租约。未改安装态或执行 Evaluation。
+- 限制：旧视图过去未捕获的不存在检查无法补录；仅覆盖经过实际路径打开的缺失，目录枚举推断和外部读取仍不完整。所选修改仍走 B/O/T，不以读依赖规则替代合并；v6 持久布局及 IPC 不变，旧 helper 不会把 missing 当作有效观察。
+- 自审补强：冻结复核也检查原生错误携带的真实 lower 缺失来源标记，策略隐藏的 NOT_FOUND 不能算有效缺失。最终原生 `-VerifyImport -VerifyReparse` 通过（`.local/local-missing-native-reviewed.log`），追加隐藏错误不能通过复核的断言；完整真实缺失专项再次通过（`.local/local-missing-reviewed.log`）。`pnpm check` 通过（`.local/local-missing-check.log`）：151 个文件、1212 项通过 / 1 项既有跳过，类型、Lint、格式与构建通过；该末次修改为原生错误来源区分，另经原生和实机回归覆盖。无 UI/HTTP 变化，未重复既有浏览器全量测试。
+- 最终构建的安装态 `--commands --merge` 再次通过（`.local/local-missing-sandbox-final.log`、`.local/local-overlay-sandbox-aKwWtK/report.json`），终态回执已纳入汇总报告；无 fallback、零活动租约及 helper 残留。
+
 ## Local 真实工程 Sandbox 编译与产物（2026-10-26）
 
 - `overlay:verify-build --sandbox` 通过真实 `runCandidateCommands`、SandboxBroker、已安装 IPC v18 Runtime 执行；无 transport/ACL/命令执行替身，无主目录额外写根和宿主 fallback。Node 来自受保护安装目录，编译器/项目依赖从虚拟目录读取，不连接模型 API、不安装或 Repair。

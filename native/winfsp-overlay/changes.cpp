@@ -7,6 +7,7 @@
 // 6. checkReads 在冻结期间复核观察版本，逐路径保存有效性，供宿主筛除已选择编辑后检查其余依赖。
 // 7. epoch 与 change_epochs 将旧修改和新一轮的读依赖区分；确认不清空未发布修改所依赖的观察。
 //    v6 私有内容读取交给 observePrivate 建立代次依赖边，不把旧结果冒充无依赖的新读取。
+// 8. observeMissing 只接收真实 lower 不存在结果，沿用首次观察；checkReads 将 missing 与仍缺失匹配。
 // 所有入口由 Store mutex 串行化；文件先 flush 后引用，失败不修改 lower，孤立对象留待受控清理。
 // 版本戳不是密码学摘要，也不提供跨文件快照；确认由 acknowledgement.cpp 处理，不支持任意目录发布。
 #include "store.hpp"
@@ -107,6 +108,20 @@ std::wstring Store::observeRead(const NodePtr& value, HANDLE handle,
       .number(4, epoch())
       .step();
   return stamp;
+}
+
+void Store::observeMissing(const std::wstring& path) {
+  if (!localMode) {
+    return;
+  }
+  try {
+    Query(*this, "INSERT OR IGNORE INTO observations(path,name,stamp,epoch) VALUES(?,?,?,?)")
+        .text(1, fold(path)).text(2, path).text(3, L"missing").number(4, epoch()).step();
+  } catch (...) {
+    // The caller cannot continue editing after an unrecorded negative read.
+    poisoned = true;
+    throw;
+  }
 }
 
 void Store::capture(const std::wstring& path, int flags) {
@@ -302,6 +317,7 @@ void Store::checkReads(const std::vector<sqlite3_int64>& requested) {
             error.status != STATUS_OBJECT_PATH_NOT_FOUND && error.status != STATUS_NO_SUCH_FILE) {
           throw;
         }
+        valid = error.lowerMissing && observed.text(2) == L"missing";
       }
       Query(*this, "INSERT INTO checked_reads VALUES(?,?,?)")
           .text(1, observed.text(0))

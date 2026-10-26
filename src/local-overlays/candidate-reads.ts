@@ -5,7 +5,7 @@
  * 2. candidateReads 在候选冻结租约内核对来源/格式、采集未选文件版本，再复核原生观察。
  * 3. 验证过程私有写入的其它文件仍保留其来源读依赖，不把测试生成物当作发布内容。
  * 4. CandidateCleanupUnknownError 标记进程或卷排空未知；Publisher 必须保留原会话而非普通拒绝续聊。
- * 不枚举来源、不执行命令；目录/缺失路径/工作区外读取不属于当前普通文件凭据。
+ * 不枚举来源、不执行命令；凭据包括已捕获的 lower 缺失前缀（missing），不覆盖目录列表/工作区外读取。
  */
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";

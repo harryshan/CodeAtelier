@@ -10,6 +10,7 @@
 // 8. acknowledge 在冻结租约内按批次幂等释放已发布路径，并切换观察代次；旧修改依赖保留。
 // 9. collect 只在冻结后回收无引用私有内容，保留基线/结果及 namespace 父链，不访问来源。
 // 10. v6 trackObject/observePrivate 保存跨轮私有读依赖；nextEpoch 只推进观察代次，不发布或丢弃修改。
+// 11. lookup/import 的真实 lower 缺失记录首个 missing 观察；不把策略隐藏/whiteout/访问拒绝当成缺失。
 // 遮蔽来源的 .git 命名空间；Git PoC 从对象库取内容，不打开来源工作文件。
 // 来源文件打开禁止重解析与写访问，控制目录不暴露于挂载。
 #pragma once
@@ -30,6 +31,8 @@ namespace overlay {
 namespace fs = std::filesystem;
 struct Error {
   NTSTATUS status;
+  // Only the actual lower NtOpenFile failure can prove a missing dependency.
+  bool lowerMissing = false;
 };
 void require(bool ok);
 void checked(NTSTATUS status);
@@ -157,7 +160,9 @@ class Store {
   HANDLE content(const NodePtr& node, bool write);
   DWORD read(const NodePtr& node, void* buffer, UINT64 offset, DWORD length);
   Handle openLower(const std::wstring& path,
-                   DWORD sharing = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE);
+                   DWORD sharing = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                   bool observeAbsence = false);
+  void observeMissing(const std::wstring& path);
   std::wstring observeRead(const NodePtr& node, HANDLE handle,
                            const std::wstring& expected = L"");
   void capture(const std::wstring& path, int flags = 1);

@@ -5,6 +5,8 @@
 //    poisoned state, failed clean shutdown and refused restore. No WinFsp mount or Sandbox.
 // 4. Exercise Local's bounded statement reuse: independent nested bindings, reset/clear,
 //    error disposal, schema changes and the 128-SQL limit without caching results.
+// 5. Negative reads persist across restore, retain their first epoch version and exclude
+//    hidden/internal/non-missing failures; a failed observation poisons further use.
 // Test files are retained for inspection; all handles and databases close through Store RAII.
 #include <fstream>
 #include <iostream>
@@ -154,6 +156,79 @@ static void verifyStatements(const fs::path& root) {
   store.finish();
 }
 
+static void verifyMissing(const fs::path& root) {
+  const auto source = root / L"missing-source";
+  const auto control = root / L"missing-control";
+  const auto workspace = root / L"missing-view";
+  fs::create_directory(source);
+  fs::create_directory(source / L".git");
+  put(source / L"busy");
+  {
+    Store store(source, control, workspace, true, {}, {}, L"", true);
+    try {
+      store.openLower(L"\\internal");
+    } catch (const Error&) {
+    }
+    check(scalar(store, "SELECT count(*) FROM observations") == 0, "Internal probe recorded dependency");
+    for (const auto path : {L"\\absent", L"\\missing-parent\\child", L"\\.git"}) {
+      bool missing = false;
+      try {
+        store.lookup(path);
+      } catch (const Error& error) {
+        missing = error.status == STATUS_OBJECT_NAME_NOT_FOUND;
+      }
+      check(missing, "Expected negative lookup");
+    }
+    check(scalar(store, "SELECT count(*) FROM observations WHERE stamp='missing'") == 2,
+          "Missing prefix or hidden policy recorded incorrectly");
+    bool hidden = false;
+    try {
+      store.openLower(L"\\.git");
+    } catch (const Error& error) {
+      hidden = error.status == STATUS_OBJECT_NAME_NOT_FOUND && !error.lowerMissing;
+    }
+    check(hidden, "Hidden policy impersonated a lower open failure");
+    store.sql("INSERT INTO observations VALUES('\\HIDDEN-PROBE','\\.git','missing',0)");
+    store.checkReads({0});
+    check(scalar(store, "SELECT valid FROM checked_reads WHERE path='\\HIDDEN-PROBE'") == 0,
+          "Frozen policy hiding accepted as actual absence");
+    store.sql("DELETE FROM observations WHERE path='\\HIDDEN-PROBE'");
+    Handle busy(CreateFileW((source / L"busy").c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING,
+                            FILE_ATTRIBUTE_NORMAL, nullptr));
+    require(busy.value != INVALID_HANDLE_VALUE);
+    bool rejected = false;
+    try {
+      store.lookup(L"\\busy");
+    } catch (const Error& error) {
+      rejected = error.status == STATUS_SHARING_VIOLATION;
+    }
+    check(rejected, "Expected sharing rejection");
+    check(scalar(store, "SELECT count(*) FROM observations") == 2, "Sharing failure recorded as missing");
+    store.finish();
+  }
+  put(source / L"absent");
+  {
+    Store store(source, control, workspace, false, {}, {}, L"", true);
+    store.lookup(L"\\absent");
+    store.checkReads({0});
+    check(scalar(store, "SELECT valid FROM checked_reads WHERE path='\\ABSENT'") == 0,
+          "Later addition erased earlier absence");
+    check(scalar(store, "SELECT valid FROM checked_reads WHERE path='\\MISSING-PARENT'") == 1,
+          "Stable missing prefix rejected");
+    store.finish();
+  }
+  {
+    Store store(source, root / L"missing-failure", workspace, true, {}, {}, L"", true);
+    store.sql("CREATE TEMP TRIGGER fail_observation BEFORE INSERT ON observations "
+              "BEGIN SELECT RAISE(ABORT,'injected missing read failure'); END");
+    try {
+      store.lookup(L"\\unrecorded");
+    } catch (const Error&) {
+    }
+    check(store.poisoned, "Unrecorded negative read allowed further edits");
+  }
+}
+
 int wmain(int argc, wchar_t** argv) {
   try {
     check(argc == 2, "Expected a fresh workspace fixture directory");
@@ -162,6 +237,7 @@ int wmain(int argc, wchar_t** argv) {
     verifyPersistence(root);
     verifyRollback(root);
     verifyStatements(root);
+    verifyMissing(root);
     std::cout << "LOCAL_IMPORT_TEST PASS\n";
     return 0;
   } catch (const std::exception& error) {

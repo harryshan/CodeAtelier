@@ -10,6 +10,7 @@
 // 6. Local 模式独立格式和保留名称校验避免旧私有 gitfile 路径混入无仓库视图。
 //    changes.cpp 保存按需读版本和不可变基线；内容/命名空间修改在副作用前调用 capture。
 //    Local v6 按观察代次和对象来源保留跨轮依赖；旧实验格式不自动迁移。
+// 7. lookup/import 在 NtOpenFile 的真实缺失返回处记录负向依赖；内部复核不产生新观察。
 #include "store.hpp"
 
 #include <objbase.h>
@@ -423,7 +424,7 @@ void Store::finish() {
   sql("UPDATE meta SET clean=1; PRAGMA wal_checkpoint(TRUNCATE)");
 }
 
-Handle Store::openLower(const std::wstring& origin, DWORD sharing) {
+Handle Store::openLower(const std::wstring& origin, DWORD sharing, bool observeAbsence) {
   ++lowerOpens;
   if (git) {
     // A Git lower must never silently fall back to a source working file.
@@ -450,8 +451,18 @@ Handle Store::openLower(const std::wstring& origin, DWORD sharing) {
       NTSTATUS(NTAPI*)(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, PIO_STATUS_BLOCK, ULONG, ULONG);
   static auto open =
       reinterpret_cast<NtOpen>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtOpenFile"));
-  checked(open(&raw, FILE_GENERIC_READ, &attributes, &io, sharing,
-               FILE_SYNCHRONOUS_IO_NONALERT | FILE_OPEN_REPARSE_POINT));
+  auto status = open(&raw, FILE_GENERIC_READ, &attributes, &io, sharing,
+                     FILE_SYNCHRONOUS_IO_NONALERT | FILE_OPEN_REPARSE_POINT);
+  if (status == STATUS_OBJECT_NAME_NOT_FOUND || status == STATUS_OBJECT_PATH_NOT_FOUND ||
+      status == STATUS_NO_SUCH_FILE) {
+    // Only the OS open failure is evidence. The normalized-path .git policy
+    // below also returns NOT_FOUND, but must never become a lower observation.
+    if (observeAbsence && localMode) {
+      observeMissing(origin);
+    }
+    throw Error{status, true};
+  }
+  checked(status);
   Handle handle(raw);
   fileInfo(handle.value, true);
   if (localMode) {
@@ -578,7 +589,7 @@ void Store::link(sqlite3_int64 parent, const std::wstring& name, sqlite3_int64 i
 
 NodePtr Store::import(const NodePtr& parent, const std::wstring& name, const std::wstring& origin,
                       bool batchedImport) {
-  auto handle = openLower(origin);
+  auto handle = openLower(origin, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, true);
   Node value;
   value.parent = parent->id;
   value.origin = origin;
@@ -632,7 +643,7 @@ NodePtr Store::child(const NodePtr& parent, const std::wstring& name, bool batch
     // Imported entries remain a live lower view until content is private or
     // renamed.
     if (!git && result->object.empty() && !result->origin.empty()) {
-      auto handle = openLower(result->origin);
+      auto handle = openLower(result->origin, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, true);
     }
     return result;
   }

@@ -1,0 +1,155 @@
+{
+  "regression": {
+    "passed": true,
+    "timestamp": "2026-10-26T04:25:21.791Z",
+    "checks": [
+      "missing then present rejects candidate and edit",
+      "later read preserves first absence",
+      "stable absence and absent parent prefix exported",
+      "policy hidden and whiteout are not lower absence",
+      "new source directory rejected",
+      "post-validation addition rejects publication",
+      "native main batch absence rejects publication",
+      "source edits preserved and candidates reclaimed"
+    ]
+  },
+  "sandboxTypecheck": {
+    "timestamp": "2026-10-26T04:16:37.979Z",
+    "platform": "win32",
+    "executionMode": "windows-sandbox-user",
+    "sandboxProof": {
+      "mode": "windows-sandbox-user",
+      "state": "completed",
+      "sandboxApplied": true
+    },
+    "passed": true,
+    "project": "CodeAtelier current working tree",
+    "command": "TypeScript --noEmit --incremental false --extendedDiagnostics",
+    "baseline": {
+      "elapsedMs": 6430.8592,
+      "diagnostics": {
+        "Files": "1261",
+        "Lines of TypeScript": "110857",
+        "Memory used": "821497K",
+        "I/O Read time": "0.12s",
+        "ResolveModule time": "0.27s",
+        "Emit time": "0.00s",
+        "Total time": "5.63s"
+      },
+      "exitCode": 0
+    },
+    "overlay": {
+      "elapsedMs": 42943.6796,
+      "diagnostics": {
+        "Files": "1261",
+        "Lines of TypeScript": "110857",
+        "Memory used": "801667K",
+        "I/O Read time": "5.55s",
+        "ResolveModule time": "25.11s",
+        "Emit time": "0.00s",
+        "Total time": "37.65s"
+      },
+      "exitCode": 0
+    },
+    "candidateTotalMs": 47781.9877,
+    "receiptAndCleanupMs": 4109.896000000001,
+    "observations": 4545,
+    "creationMetrics": {
+      "version": 1,
+      "state": "metrics",
+      "treeReads": 0,
+      "infoReads": 0,
+      "blobReads": 0,
+      "blobBytes": 0,
+      "lowerOpens": 0,
+      "lowerEnumerations": 0,
+      "lowerImportCommits": 0,
+      "objectMicros": 0,
+      "sqlPrepareMicros": 32,
+      "sqlPrepares": 4,
+      "sqlReadMicros": 43,
+      "sqlWriteMicros": 5565,
+      "sqlExecMicros": 42781,
+      "sqlReads": 1,
+      "sqlWrites": 3,
+      "accessCleanups": 0
+    },
+    "compiledMetrics": {
+      "version": 1,
+      "state": "metrics",
+      "treeReads": 0,
+      "infoReads": 0,
+      "blobReads": 0,
+      "blobBytes": 0,
+      "lowerOpens": 241471,
+      "lowerEnumerations": 35,
+      "lowerImportCommits": 1779,
+      "objectMicros": 0,
+      "sqlPrepareMicros": 309800,
+      "sqlPrepares": 38296,
+      "sqlReadMicros": 1155533,
+      "sqlWriteMicros": 10423212,
+      "sqlExecMicros": 4080858,
+      "sqlReads": 583558,
+      "sqlWrites": 13876,
+      "accessCleanups": 6053
+    },
+    "receiptReads": 4545,
+    "privateDisk": {
+      "files": 6,
+      "logicalBytes": 7339371,
+      "allocatedBytes": 7397376
+    },
+    "selectedSourceUnchanged": true,
+    "checks": [
+      "actual project compiles directly and in candidate",
+      "more than 100 native read dependencies verified",
+      "private marker and compiler outputs never published",
+      "successful candidate control removed"
+    ],
+    "limitations": [
+      "Sandbox duration includes Runtime startup/shutdown; direct baseline is host",
+      "single sequential run, uncontrolled OS cache",
+      "external compiler/package reads and directory/absence tracking incomplete",
+      "not a model evaluation or emitted production build"
+    ]
+  },
+  "sandboxRegression": {
+    "timestamp": "2026-10-26T04:26:13.587Z",
+    "platform": "win32",
+    "node": "v26.10.0",
+    "backend": "Local WinFsp + installed dedicated-account Runtime",
+    "registration": "production LocalOverlayService internal Engine lifecycle; no registration overrides",
+    "parallelRuntimeCommands": "passed",
+    "commandIntervals": {
+      "B": [1792988736690, 1792988738914],
+      "A": [1792988736689, 1792988738914]
+    },
+    "sourceAbsoluteWrite": "denied",
+    "gitMetadataCreation": "denied",
+    "sourceGitWriteRootsGranted": 0,
+    "privateWrites": "independent",
+    "cancelRunningCommand": "candidate Runtime drained",
+    "remountAndContinue": "both sessions passed after Engine recreation",
+    "epochs": {
+      "A": 5,
+      "B": 2
+    },
+    "publication": "two batches each selected an independent file and shared.txt; all three source files published; cancelled selection retained",
+    "rejection": "candidate failure and source conflict preserved; both private results survived restart",
+    "selection": "model local_publish tool through authenticated Runtime IPC",
+    "validation": "production Engine command plan and candidate Runtime; ordered success, exit rejection and cancellation",
+    "sharedFileMerge": {
+      "baseline": "left\nmiddle\nright\n",
+      "candidates": ["left-A\nmiddle\nright-B\n", "left\nmiddle\nright-B\n"],
+      "published": "left-A\nmiddle\nright-B\n"
+    },
+    "fallback": false,
+    "activeLeasesAfterTasks": 0,
+    "cleanup": "engine drained; helpers cleanly stopped",
+    "limitations": [
+      "Not an OS security boundary between sessions",
+      "Public UI/API creation not exercised by this verifier; fixed provider, not a real model evaluation"
+    ]
+  }
+}
