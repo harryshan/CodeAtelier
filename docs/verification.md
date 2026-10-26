@@ -1,5 +1,13 @@
 # 初版验证记录
 
+## POSIX 原生 OverlayFS 原语验证（2026-10-26）
+
+- 用户要求优先平台原生文件系统后，参照 Bubblewrap/Docker 与 Linux/Apple 官方接口核对方案；尚未开放 Local 的 POSIX 平台门禁。发现内核 OverlayFS 不支持 mounted lower 被修改，APFS 目录 clone 仍逐项克隆，均不能直接推导与 Windows live lower 等价。设计和来源见 [POSIX Local 方案](posix-local-overlay.md)。
+- `wsl --exec python3 /mnt/g/codeagent/experiments/native-local-overlay/probe.py --files 100000` 通过：[报告](posix-native-overlay-results.json)，原始证据 `.local/posix-native-overlay-report.json`，运行日志 `.local/native-overlay-probe-reviewed.log`。WSL Linux 6.18.33.2/ext4、Bubblewrap 0.11.1，非 root，不安装软件、不创建分区；脚本只生成自己的合成项目和私有目录。
+- 十万附加空文件挂载到 ready 为 172–180 ms，空 upper 分配 4 KiB；夹具目录未观测 OPEN/ACCESS，upper 无复制文件。双命名空间命令区间重叠，私有修改/产物隔离，来源写入拒绝且原文保留；正常重挂载和新候选 Python 执行通过。单机三次样本包含 Python/Bubblewrap 启动，不比较冷缓存，不覆盖内核全部元数据操作、总内存或真实大型构建。
+- 此次是原生隔离原语验收，不是 CodeAtelier Sandbox/发布接入：未自动记录编辑基线或依赖，candidate 内容由夹具给定，lower 全程保持不变，根 Git 遮罩不代表嵌套路径策略。Windows 路径未修改；POSIX 产品仍未完成。
+- 提交前 `pnpm check` 通过（`.local/posix-native-probe-check.log`，159 个测试文件，类型/Lint/格式/构建通过）。最终只读确认夹具位于 ext4，没有本探针 worker 或传播到宿主的 overlay 挂载；目录与报告保留供检查。本次未改 HTTP/UI，不重复运行 E2E；没有运行 Evaluation。
+
 ## 隔离 Local 主流程收敛验收（2026-10-26）
 
 - 按用户“先跑通、不继续扩大 corner case”的要求，用最新构建重跑 `pnpm overlay:verify-browser`，通过：[本次报告](local-parallel-delivery-results.json)，原始 `.local/local-overlay-browser-g8KzZ3/report.json`、日志 `.local/local-parallel-delivery.log`。两个真实专用账户命令的时间段有重叠，均验证 `.git` 隐藏及来源直接写入拒绝；明确选择各自一个文件，经独立候选 Runtime 发布，未选 `runtime.txt` 留在私有层。

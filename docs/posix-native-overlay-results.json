@@ -1,0 +1,127 @@
+{
+  "platform": "Linux-6.18.33.2-microsoft-standard-WSL2-x86_64-with-glibc2.43",
+  "samples": [
+    {
+      "additionalFiles": 0,
+      "mountAndReadyMs": 194.22150800000003,
+      "observedLowerEvents": {
+        "fileOpenOrAccess": 0,
+        "directoryOpenOrAccess": 0
+      },
+      "upper": {
+        "files": [],
+        "allocatedBytes": 4096
+      }
+    },
+    {
+      "additionalFiles": 0,
+      "mountAndReadyMs": 217.53647199999992,
+      "observedLowerEvents": {
+        "fileOpenOrAccess": 0,
+        "directoryOpenOrAccess": 0
+      },
+      "upper": {
+        "files": [],
+        "allocatedBytes": 4096
+      }
+    },
+    {
+      "additionalFiles": 0,
+      "mountAndReadyMs": 182.97214799999927,
+      "observedLowerEvents": {
+        "fileOpenOrAccess": 0,
+        "directoryOpenOrAccess": 0
+      },
+      "upper": {
+        "files": [],
+        "allocatedBytes": 4096
+      }
+    },
+    {
+      "additionalFiles": 100000,
+      "mountAndReadyMs": 173.05486500000012,
+      "observedLowerEvents": {
+        "fileOpenOrAccess": 0,
+        "directoryOpenOrAccess": 0
+      },
+      "upper": {
+        "files": [],
+        "allocatedBytes": 4096
+      }
+    },
+    {
+      "additionalFiles": 100000,
+      "mountAndReadyMs": 172.183113,
+      "observedLowerEvents": {
+        "fileOpenOrAccess": 0,
+        "directoryOpenOrAccess": 0
+      },
+      "upper": {
+        "files": [],
+        "allocatedBytes": 4096
+      }
+    },
+    {
+      "additionalFiles": 100000,
+      "mountAndReadyMs": 180.12765299999955,
+      "observedLowerEvents": {
+        "fileOpenOrAccess": 0,
+        "directoryOpenOrAccess": 0
+      },
+      "upper": {
+        "files": [],
+        "allocatedBytes": 4096
+      }
+    }
+  ],
+  "limitations": [
+    "Native Bubblewrap/OverlayFS primitives, not CodeAtelier Runtime or publication integration",
+    "Lower is unchanged during every supported mount; no live lower guarantee",
+    "Root .git metadata masked read-only; nested repository policy not implemented",
+    "No automatic baseline or read dependency capture; candidate bytes explicitly supplied",
+    "Allocation excludes filesystem metadata outside upper; timings include Python/Bubblewrap startup"
+  ],
+  "privateLayers": {
+    "session-A": {
+      "files": [
+        "artifact-A",
+        "module.py"
+      ],
+      "allocatedBytes": 12288
+    },
+    "session-B": {
+      "files": [
+        "artifact-B",
+        "module.py"
+      ],
+      "allocatedBytes": 12288
+    },
+    "candidate": {
+      "files": [
+        "module.py"
+      ],
+      "allocatedBytes": 8192
+    }
+  },
+  "parallelIntervals": [
+    [
+      7863316787,
+      8063942693
+    ],
+    [
+      7863331226,
+      8063943073
+    ]
+  ],
+  "checks": [
+    "parallel private writes",
+    "source write denied",
+    "root Git metadata masked",
+    "normal remount retained upper",
+    "fresh candidate validated supplied merged bytes"
+  ],
+  "passed": true,
+  "bubblewrap": "0.11.1",
+  "command": "python3 experiments/native-local-overlay/probe.py --files 100000",
+  "rawReport": ".local/posix-native-overlay-report.json"
+}

@@ -1,5 +1,7 @@
 # 测试约定与功能覆盖
 
+POSIX 原生文件层手动探针：`experiments/native-local-overlay/probe.py` 用非特权 Bubblewrap/OverlayFS、Linux 原生目录和固定 Python 动作检查 0/100,000 文件准备、inotify OPEN/ACCESS、空 upper 分配、双命名空间并行、来源只读、根 Git metadata 遮罩、正常重挂载和显式候选内容。只运行用户要求的原生方案实验，不接默认检查/CI/Evaluation，不代替产品 Runtime、自动基线/依赖或发布验收。执行和保留目录见该实验 README。
+
 候选根授权恢复：`local-candidate-access.test.ts` 覆盖记录持久化、目录/卷身份拒绝、记录限额、原生证明失败、撤销失败卸载及匹配删除；保留原私有证据。`pnpm overlay:verify-server-crash --candidate` 手动杀死独占夹具 App，实际候选 Sandbox 保持文件句柄，验证启动根 ACL 撤销、dirty/记录不变、无自动发布。普通 `pnpm overlay:verify-browser` 另核对正常候选目录和 `.access.json` 回收。均不安装/Repair、不重启用户服务，不进入默认 check/Evaluation。
 
 Local 私有刷新真实浏览器：手动 `pnpm overlay:verify-browser --refresh` 在生产 UI/HTTP/SSE、真实 WinFsp 和已安装 Sandbox 中覆盖确认前/后回执丢失。两个独立会话经模型工具选集、候选验证、Engine 排空与失败留存，再从页面明确恢复；无自动任务、草稿保留，后续真实 Runtime 读取当前来源和未选私有文件。来源内容/文件身份/mtime/ctime 不变，夹具服务重启后历史仍保留。固定 provider 与有意丢失回调响应不等于真实模型、断电或服务崩溃，不进入默认 check/Evaluation。界面回归另验证原任务匹配的恢复记录替换当前恢复引导，历史错误不改写。
