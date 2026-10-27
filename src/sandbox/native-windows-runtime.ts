@@ -12,6 +12,7 @@
  * 8. rootCapabilities 在宿主数据目录读取/原子创建逐根 SID；只向当前可写根发放，实例私有根仍用临时 SID；trace 不记录 SID/路径。
  * 9. 临时 HOME/TEMP 只在原生确认撤销后删除；启动失败仅记录白名单 station、Runtime pipe/身份阶段、入口固定阶段和数字错误码，日志与错误不包含命令、路径、SID、端口、密码或工具输出。
  * 10. Runtime 普通命令只向 stderr 输出固定阶段标记；启动后异常日志提取最后阶段，供区分 shell 选择、进程启动和进程关闭停滞，不记录命令内容。
+ * 11. 返回 transport 时明确标记 Windows 专用账户模式与 Runtime PID 类型，不依赖调用方按宿主平台猜测。
  *
  * 该实现启动常驻 Agent Runtime；独立 Push/Capability Runner 与 HTTPS relay 已移除。二进制请求 v4 携带逐根持久 capability SID，不携带代理或凭据字段，旧安装须显式更新。常驻 Runtime 承载完整 agent loop、文件工具和普通命令，Git CLI 使用通用命令路径，不提供专用 Git IPC 或隐式宿主转发。
  */
@@ -930,6 +931,8 @@ export class NativeWindowsSandboxRuntime implements SandboxRuntime {
       input: child.stdout,
       output: child.stdin,
       pid: runtimePid!,
+      mode: "windows-sandbox-user" as const,
+      pidKind: "runtime" as const,
       processCreationTime100ns: creationTime100ns,
       accountGenerationDigest: this.metadata?.generationId
         ? createHash("sha256")

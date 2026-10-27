@@ -12,6 +12,8 @@
 
 ## 存储和恢复
 
+D172 分支拆分后，Riftri/overlay 实验在 `codex/overlay-development` 继续保留；main 只运行下面的标准 Git worktree。旧实验模式清单、Windows `\\CodeAtelier\` 保留路径及本数据目录的 `local-overlays` 私有路径显示不可用并拒绝任务，不挂载或删除数据。需要处理旧实验会话时使用实验分支；main 不负责其挂载、发布或 ACL 虚拟根恢复。
+
 - 历史 sessions.workspace 始终保存实际执行目录；不改变 v11 历史格式。宿主数据目录的 `worktrees/<id>.json` 单独保存来源项目、创建基线、Git 公共目录、目录身份与创建状态。列表和 SSE 快照根据清单补充来源信息。
 - checkout 放在数据目录的同级 `<数据目录名>-worktrees/<id>`，与 Broker 私有数据分离，避免 POSIX Sandbox 的 deniedPaths 把 checkout 一起屏蔽。数据目录应位于项目之外；禁止 checkout 根位于来源仓库内。
 - 创建请求携带 UUID，重复请求返回已绑定对话；同一 ID 不允许改变来源/基线。Git 操作启动前持久化 preparing，成功后保存 ready。失败/中断保留现场，绝不自动重新执行未知 Git 写入或删除残留。Git 已成功且清单 ready、但对话绑定响应丢失时，可按实际 workspace 找回原对话。

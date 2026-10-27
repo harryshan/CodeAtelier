@@ -3,7 +3,7 @@
  * 1. fixture 在同一个测试根下放置来源、私有数据和 checkout，并登记服务关闭后再清理。
  * 2. 创建测试检查基线、独立文件/index、请求去重、重启与未知状态；替换和 gitfile 篡改必须拒绝。
  * 3. HTTP/Engine 测试检查项目分组元数据、调度、恢复和失效路径；记忆映射保留工具的实际工作区。
- * 4. 所有 Git 参数固定，清理仅针对 fixture 自己创建的临时根。
+ * 4. 分支拆分兼容测试拒绝旧实验清单和保留路径，历史与私有内容不变；所有 Git 参数固定，清理仅针对 fixture 自己创建的临时根。
  */
 
 import { randomUUID } from "node:crypto";
@@ -94,6 +94,61 @@ it("creates detached worktrees at committed bases without copying dirty or ignor
     path.join(f.source, ".git"),
   ]);
   expect(session.worktree?.projectWorkspace).toBe(f.source);
+});
+
+it.each([{ mode: "riftri" }, { executionWorkspace: "retired-view" }])(
+  "rejects retired manifests without changing files: %j",
+  async (legacy) => {
+    const f = await fixture();
+    const session = await f.service.create(f.input, f.bind);
+    const file = path.join(f.directory, "worktrees", `${f.input.id}.json`);
+    const record = JSON.parse(await readFile(file, "utf8"));
+    const original = JSON.stringify({ ...record, ...legacy });
+    await writeFile(file, original);
+    await writeFile(
+      path.join(session.workspace, "tracked.txt"),
+      "private edit",
+    );
+
+    expect((await f.service.describe(session)).worktree?.state).toBe(
+      "unavailable",
+    );
+    await expect(f.service.validate(session.workspace)).rejects.toThrow(
+      "不会回退",
+    );
+    await expect(f.service.create(f.input, f.bind)).rejects.toThrow();
+    expect(await readFile(file, "utf8")).toBe(original);
+    expect(
+      await readFile(path.join(session.workspace, "tracked.txt"), "utf8"),
+    ).toBe("private edit");
+  },
+);
+
+it("keeps retired reserved workspaces readable but rejects task admission", async () => {
+  const directory = await temp();
+  const app = await createApp(new Config(directory), log, () => ({
+    async run() {
+      throw new Error("retired workspace must not reach the model");
+    },
+  }));
+  currentTestResources().defer(() => app.app.close());
+  const workspaces = [
+    `\\\\CodeAtelier\\0123456789abcdef-${randomUUID()}\\`,
+    `//codeatelier/0123456789abcdef-${randomUUID()}/child`,
+    path.join(directory, "local-overlays", randomUUID(), "view"),
+  ];
+
+  for (const workspace of workspaces) {
+    const session = await app.store.createAsync(workspace);
+    expect(
+      (await app.engine.snapshot(session.id)).session?.worktree?.state,
+    ).toBe("unavailable");
+    await expect(
+      app.engine.startAsync(session.id, "must not execute"),
+    ).rejects.toThrow("实验分支");
+    expect((await app.store.get(session.id))?.workspace).toBe(workspace);
+    expect((await app.engine.snapshot(session.id)).tasks).toHaveLength(0);
+  }
 });
 
 it("deduplicates concurrent requests and rebinds after a service restart without resetting edits", async () => {
@@ -385,6 +440,26 @@ it("exposes stable metadata through HTTP/history and rejects execution after che
     cookie: `ca_session=${token}`,
     "x-codeatelier-token": token,
   };
+  const local = await app.app.inject({
+    method: "POST",
+    url: "/api/sessions",
+    headers,
+    payload: { workspace: f.source },
+  });
+  expect(local.statusCode).toBe(200);
+  expect(local.json().workspace).toBe(f.source);
+  expect(local.json().worktree).toBeUndefined();
+
+  for (const retiredMode of ["riftri", "localOverlay"]) {
+    const rejected = await app.app.inject({
+      method: "POST",
+      url: "/api/sessions",
+      headers,
+      payload: { workspace: f.source, [retiredMode]: { id: randomUUID() } },
+    });
+    expect(rejected.statusCode).toBe(400);
+  }
+
   const payload = {
     workspace: f.source,
     worktree: { id: f.input.id, baseRef: "refs/heads/main" },

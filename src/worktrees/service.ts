@@ -5,6 +5,7 @@
  * 2. 创建使用文件排他锁与 UUID 去重；未知结果保留现场，不删除、不重新 checkout；bind 按 workspace 找回已写历史。
  * 3. describe 装饰历史而不依赖目录存在；validate 在任务 admission/执行/Sandbox 启动前验证目录、gitfile 和共享元数据。
  * 4. projectWorkspace 只映射项目记忆，文件工具和调度仍使用实际路径；close 取消管理进程并排空队列。
+ * 5. 旧实验模式清单和保留私有路径仅显示不可用；不将它们重新分类为普通 Local，不挂载或删除历史私有数据。
  * 清单在 Broker 私有目录，checkout 在其同级目录；日志/trace 只包含关联 ID、状态和耗时。
  */
 
@@ -30,6 +31,9 @@ import { addWorktree, directoryIdentity, git, samePath } from "./git.js";
 const recordSchema = z.object({
   version: z.literal(1),
   id: z.uuid(),
+  // 旧普通 Git 清单没有 mode；实验模式不能因 Zod 丢弃未知字段而被重新接受。
+  mode: z.literal("worktree").optional(),
+  executionWorkspace: z.never().optional(),
   projectWorkspace: z.string(),
   baseRef: z.string(),
   baseCommit: z.string(),
@@ -75,6 +79,18 @@ export class WorktreeService {
 
   private file(id: string) {
     return path.join(this.metadata, `${z.uuid().parse(id)}.json`);
+  }
+
+  private retiredWorkspace(workspace: string) {
+    const normalized = workspace.replaceAll("/", "\\").toLowerCase();
+
+    return (
+      normalized.startsWith("\\\\codeatelier\\") ||
+      contains(
+        path.join(path.dirname(this.metadata), "local-overlays"),
+        workspace,
+      )
+    );
   }
 
   private idFor(workspace: string) {
@@ -155,6 +171,13 @@ export class WorktreeService {
   }
 
   async describe(session: Session): Promise<Session> {
+    if (this.retiredWorkspace(session.workspace)) {
+      return {
+        ...session,
+        worktree: { id: session.id, state: "unavailable" },
+      };
+    }
+
     const id = this.idFor(session.workspace);
     if (!id) {
       return session;
@@ -177,6 +200,12 @@ export class WorktreeService {
   }
 
   async validate(workspace: string) {
+    if (this.retiredWorkspace(workspace)) {
+      throw new Error(
+        "该私有工作区属于实验分支；main 仅保留历史，不执行或重新挂载。",
+      );
+    }
+
     const id = this.idFor(workspace);
     if (!id) {
       return undefined;

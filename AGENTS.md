@@ -4,6 +4,8 @@
 
 ## 项目定位与当前阶段
 
+- 2026-10-27 D172：所有 Riftri/CoW/Git 虚拟化/Local overlay 实验提交移至 `codex/overlay-development`；main 仅保留普通 Local、显式 Git worktree 和通用修复。用户本次明确授权重写 main 并使用指定旧 OID 的 force-with-lease 推送，其他工作仍遵守默认不改写共享历史。不要在 main 恢复挂载/发布功能；旧私有数据与历史不删除、不迁移。部署 main 须使用匹配的 Runtime IPC v17，已安装实验 v18 的机器需用户显式 Repair；本次不自动重启或修复安装。
+
 - 项目正式名称为 **CodeAtelier**，保持此拼写与大小写。
 - 创建用户自己的 coding agent，主要实现语言为 **TypeScript**。
 - 使用 GitHub 管理项目，开发本项目时生成合理、有意义的 Git commit；产品已移除专用 `git` 工具，Git CLI 通过通用命令工具按现有权限执行（D155），具体范围见 docs/requirements.md 与 docs/development.md。

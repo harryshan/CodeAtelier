@@ -1,5 +1,13 @@
 # 初版验证记录
 
+## 实验分支拆分（D172，2026-10-27）
+
+- 原 main `3a03a09` 的全部历史保存在 `codex/overlay-development`；新 main 从 `47ddf0d` 重建，基础 worktree `05e33c0` 对应 `c202099`，Node shim 修复 `35e2cb1` 对应 `920a71a`，慢 ACL 清理/关闭修复 `3a03a09` 对应 `2b438df`。另保留原生 transport 的明确执行模式/PID 类型标记，以及旧实验路径的拒绝执行检查。
+- 源码审查确认 main 不再包含 Riftri、WinFsp/原生 overlay 后端、挂载入口、发布工具、相关 UI 或专用测试/脚本。旧实验清单和 Windows 保留路径只用于拒绝任务；临时真实 Git 仓库测试确认私有文件与清单保持不变，普通 Local 仍直接使用来源目录，旧 API 模式返回 400。
+- 分支拆分专项：19 项 worktree 回归通过；Node shim、Sandbox 清理、关闭的 37 项回归通过。先验证旧实现无法拒绝实验清单/路径，再增加兼容检查；测试模型使用离线替身，未触达实际模型服务。
+- 完整 `pnpm check` 通过：130 个文件、961 项通过、1 项既有跳过，TypeScript、ESLint、Prettier 与 Web/server/Windows/POSIX Runtime 测试构建通过；`pnpm test:e2e` 71 项通过，包括真实临时 Git worktree 的 UI 创建、修改和历史刷新。日志为 `.local/main-split-check.log`、`.local/main-split-e2e.log`；保留既有依赖注释与前端 chunk 大小提示，未运行 Evaluation。
+- 本次不运行安装/Repair、不重启服务、不操作用户历史、私有层或系统 ACL。源码 Runtime 契约恢复 v17；已安装的实验 v18 不能混用，部署时须由用户显式更新。下列旧记录属于当时分支与安装态证据，不代表本次对真实 Sandbox 的重新验收。
+
 ## Windows 大工作区 ACL 清理超时（2026-10-27）
 
 - 故障会话 `dd8c2788-6338-455b-b69a-8d6a207a8232` 的首轮 `sandbox.native_launch` 持续约 162.47 秒；标题模型成功，主任务没有发出模型请求。取消后的共享 ACL 撤销约 20.81 秒失败，整代恢复再次超时，后续重载报 `AVV_ERR_READY_TIMEOUT`。重试检查点仍停在原生启动。
