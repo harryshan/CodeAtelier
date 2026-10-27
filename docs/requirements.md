@@ -2,7 +2,7 @@
 
 状态：初版功能边界已确认，进入实现与验证阶段。最后更新：2026-10-27。
 
-分支范围（D172）：工作区隔离实验及完整历史保存在 `codex/overlay-development`；main 恢复普通 Local 与显式 Git worktree，保留最新 Windows 安装与清理修复。main 不包含 Riftri、CoW、Git 虚拟化、WinFsp/原生 overlay 挂载、文件发布或对应 UI。旧实验清单和保留私有路径不能作为普通 Local 执行，实际历史与私有数据保持原样。原实验 v18 Runtime 不与 main 的 v17 协议混用；部署须显式更新安装，不自动维护系统。
+分支范围（D172）：工作区隔离实验及完整历史保存在 `overlay-development`；main 恢复普通 Local 与显式 Git worktree，保留最新 Windows 安装与清理修复。main 不包含 Riftri、CoW、Git 虚拟化、WinFsp/原生 overlay 挂载、文件发布或对应 UI。旧实验清单和保留私有路径不能作为普通 Local 执行，实际历史与私有数据保持原样。原实验 v18 Runtime 不与 main 的 v17 协议混用；部署须显式更新安装，不自动维护系统。
 
 本文区分用户已确认的要求与尚待讨论的建议。候选内容不能直接作为实施授权。
 

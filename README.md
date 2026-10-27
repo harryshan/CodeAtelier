@@ -6,7 +6,7 @@ CodeAtelier 是一个运行在本机的个人 AI 编程助手。连接模型服�
 
 Git 项目可以通过侧栏 `⑂` 显式创建 Worktree 对话，选择起始提交并在独立目录工作；原有 `＋` 仍直接使用项目目录。对话与目录持久绑定，项目记忆共享，不自动复制未提交文件或清理目录。使用方式、Sandbox 和恢复边界见 [Worktree 指南](docs/worktrees.md)。
 
-Riftri、CoW 和 overlay 文件隔离实验已移至 [codex/overlay-development](https://github.com/harryshan/CodeAtelier/tree/codex/overlay-development)，不属于 main 功能。分支切换与旧数据边界见 [D172](docs/decisions.md#d172将工作区隔离实验移出-main)。
+Riftri、CoW 和 overlay 文件隔离实验已移至 [overlay-development](https://github.com/harryshan/CodeAtelier/tree/overlay-development)，不属于 main 功能。分支切换与旧数据边界见 [D172](docs/decisions.md#d172将工作区隔离实验移出-main)。
 
 ## 项目亮点
 

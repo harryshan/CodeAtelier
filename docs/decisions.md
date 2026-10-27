@@ -5,7 +5,7 @@
 ## D172：将工作区隔离实验移出 main
 
 - 日期：2026-10-27。用户要求把全部 overlay 相关提交移到独立分支，main 还原并保留最新修复；随后明确授权重写并强推 main。
-- 完整实验提交及原 main 顶点 `3a03a09` 保存在 `codex/overlay-development`。main 从 `47ddf0d` 重建，保留 D165 基础 Git worktree，移植 Node shim 解析与慢 ACL 清理/服务关闭修复；Riftri、CoW、Git 虚拟化、WinFsp 和 Linux Local overlay 的实现、测试、脚本和实验文档不留在 main。D166～D171 的实验记录在该分支保留，编号不复用。
+- 完整实验提交及原 main 顶点 `3a03a09` 保存在 `overlay-development`。main 从 `47ddf0d` 重建，保留 D165 基础 Git worktree，移植 Node shim 解析与慢 ACL 清理/服务关闭修复；Riftri、CoW、Git 虚拟化、WinFsp 和 Linux Local overlay 的实现、测试、脚本和实验文档不留在 main。D166～D171 的实验记录在该分支保留，编号不复用。
 - 普通 Local 仍默认使用原目录，同目录串行；Git worktree 显式创建，不自动回写或清理。仅保留旧实验清单/保留路径的拒绝执行检查，历史和实际私有数据不删除、不迁移、不重新挂载。
 - Runtime 恢复原 v17 契约，不提供 v18 的发布工具。已安装实验 v18 Runtime 的机器在部署 main 时须显式重建和 Repair；本次只整理仓库，不重启服务、操作安装副本或修改真实历史/ACL。
 - 先保存并推送实验分支，再以明确旧 OID 的 force-with-lease 更新 main；远端出现新提交时停止覆盖。此次授权不改变以后默认不改写共享历史的约定。
