@@ -16,6 +16,10 @@ SID 来自 Node 系统随机数，不以路径哈希当作授权身份。Broker 
 
 ## 执行与清理
 
+Windows 可继承 ACL 的写入会向现有子目录传播。持久 root capability 不代表共享账户 ACE 也永久保留；大型工作区在启动授权和最后租约撤销时仍可能等待数十秒或数分钟。仓库内的依赖、构建缓存和测试产物也参与此成本，Git ignore 不会排除 ACL 传播。
+
+共享 ACL 撤销和 journal 对账各允许 600,000 ms；Broker 的 Windows 整代/启动恢复总期限为 660,000 ms，为进程排空和安装自检预留时间。原生自检与账户进程排空各保持 20,000 ms，POSIX 启动恢复保持 30,000 ms。达到期限仍保留 unknown/journal 并禁止宿主重放，不以延长期限替代成功撤权证明。服务关闭/重载先等待 Engine 清理，再进入 HTTP close hooks，避免 Fastify 插件关闭计时器提前报错；此变化不加快 ACL 传播。
+
 - `execution SID`：每次执行新建，绑定 IPC、默认对象 DACL 和执行身份。
 - 临时 capability：每实例新建，继续用于临时目录、station/desktop 与原有身份核验。
 - 持久 root capability：每个长期可写根独立；原生 v4 帧逐根传递，Supervisor 核对对象身份后安装 ACE，bootstrap 只把本次根的 SID 加入受限 token，Runtime 客户端核验也检查这些 SID。

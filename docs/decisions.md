@@ -1150,6 +1150,8 @@
 
 ## D163：按授权根持久化 Windows 文件 capability SID
 
+- 2026-10-27 故障修复：大工作区共享账户 ACE 传播仍需耗时，不能把持久 root capability 解释为零成本授权。ACL 撤销/journal 期限改为十分钟，Windows 外层恢复预留十一分钟，自检/进程排空和 POSIX 期限不变；关闭/重载先等待 Engine 再进入 Fastify hooks。不改 ACL 内容、unknown 判定或重放边界；沿用撤权/整代 trace，补充固定操作名、耗时和期限日志，不记录路径、SID 或输出。用户另明确授权备份后修复本次真实残留 ACL，见验证记录。
+
 - 日期：2026-10-21。用户明确选择每个工作区或授权根独立 SID，保存在应用数据目录，服务/电脑重启复用。
 - 原因：每实例随机文件 SID 与子对象 ACL 更新/清理缺口叠加，造成旧文件原地写入失败。替代文件根 capability 的逐实例生命周期，不将旧设计或已完成验收改写为新方案。
 - 决定：Broker 按 AccessManifest 的真实对象摘要持久注册随机 SID，只向本次长期可写根发放；不同根独立，实例 HOME/TEMP、execution/IPC 身份仍临时。原生请求 v4 携带逐根 SID；旧 v2/v3 执行请求拒绝，旧 ACL journal/revoke v2 不变。

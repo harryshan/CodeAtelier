@@ -1,5 +1,7 @@
 # 测试约定与功能覆盖
 
+Windows 慢 ACL 清理：`sandbox-native-windows-runtime.test.ts` 用虚拟时钟覆盖一分钟 journal 清理；`sandbox.test.ts` 验证 Windows 外层恢复不会在三十秒取消，POSIX 保持原期限；`shutdown.test.ts` 验证慢 Engine 清理不会触发 Fastify 插件关闭超时，以及原有鉴权、SSE、持久化和端口释放。单元夹具不修改真实 ACL，不代替安装态验证。
+
 所有功能开发均须配套合理的单元/回归测试，测试和文档属于功能交付的一部分。不要等全部开发结束后才首次运行测试。
 
 ## 开发流程

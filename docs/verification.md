@@ -1,5 +1,15 @@
 # 初版验证记录
 
+## Windows 大工作区 ACL 清理超时（2026-10-27）
+
+- 故障会话 `dd8c2788-6338-455b-b69a-8d6a207a8232` 的首轮 `sandbox.native_launch` 持续约 162.47 秒；标题模型成功，主任务没有发出模型请求。取消后的共享 ACL 撤销约 20.81 秒失败，整代恢复再次超时，后续重载报 `AVV_ERR_READY_TIMEOUT`。重试检查点仍停在原生启动。
+- 工作区 `.local` 当时包含 833,901 个文件。原生 `ObjectGrant::Install/Revoke` 对根可继承 DACL 使用 `SetSecurityInfo`；持久 root capability 不免除共享账户 ACE 的逐租约传播成本。未把已有追踪细分不到的原生启动时间全部宣称为精确 ACL 耗时。
+- 用户明确授权备份后恢复。根 SDDL 与遗留 journal 备份至 `.local/startup-acl-evidence/`，安装版原生 `--revoke-journal` 退出 0、撤销两条 journal，实际耗时 57,648 ms，证明原二十秒期限不足；没有清空用户历史或重放任务。
+- 恢复后，独立空工作区、独立历史库和无工具的本地模型替身经真实安装版 Runtime 在约 1.84 秒到达模型、2.02 秒完成，execution instance 为 `windows-sandbox-user/completed`，无 fallback/unknown。记录位于 `.local/startup-probe-1793079229593/`。这不是外部模型 API 或原大工作区的完整验证。
+- 修复为 ACL 单次十分钟、Windows 外层恢复十一分钟；保留原清理证明、未知状态和权限内容。关闭/重载先等待 Engine 再进入 Fastify 关闭 hooks，复用原撤权/整代 tracing，并增加固定恢复操作的期限和耗时日志。无需修改原生协议或重新安装 Sandbox。
+- 最终构建再次通过空目录安装态验证：约 3.56 秒到达本地模型、3.79 秒完成，任务及执行实例均 completed、Sandbox applied=true、无 fallback/unknown。记录为 `.local/startup-empty-final.log` 和 `.local/startup-probe-1793080154399/`。用户选择仅保留空目录与回归验证，未重新对真实大工作区授予 ACL；原工作区授权延迟和真实模型请求未作修复后复测。
+- `pnpm check` 最终 165 个测试文件、1330 个测试通过、2 个跳过，类型/风格/格式/构建通过；`pnpm test:e2e` 80 项通过。首次全量的既有 worktree filter 就绪等待曾超时，单独 19 项与随后全量复核均通过，未修改该用例或断言。未执行 Evaluation。日志为 `.local/startup-check-final.log`、`.local/startup-worktrees-recheck.log`、`.local/startup-e2e.log`。
+
 ## Sandbox Repair 的 Node shim 解析（2026-10-26）
 
 - 用户明确授权管理员 Repair 后，固定入口完成账户保留、ACL/WFP/安装自检；安装 entry 为 IPC v18，与构建 SHA-256 一致。随后真实 `overlay:verify-sandbox --commands` 在两个 Runtime 连接前失败，未执行任务或回退宿主。诊断仅用于该夹具的 Supervisor stderr，确认复制到 ProgramData 的 Node 实为 nvm 转发程序，专用账户报没有配置活动版本；成功的宿主 `--version` 探测不足以证明可独立运行。

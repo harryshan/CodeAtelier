@@ -7,7 +7,7 @@
  * 2. Broker 关闭时调用传入的既有宿主执行器，并记录可审计但不含命令内容的生命周期阶段。
  * 3. S1 WorkspaceView 以真实临时目录验证整个工作区（含 .git/.env）可访问，同时拒绝链接逃逸。
  * 4. 启用而没有 runtime 或自检失败时明确回退宿主，同一任务保持 fallback；runtime 执行已开始后的失败不重放。
- * 5. 共享 grant acquire 不越过进行中的 native revoke。
+ * 5. 共享 grant acquire 不越过进行中的 native revoke；Windows 慢恢复不被外层短期限截断，POSIX 期限保持原值。
  * 6. 旧 Runner 在活动 Agent Runtime 旁也必须拒绝，不触发新 provision、启动或宿主 fallback。
  * 7. 测试 runtime 必须声明并接收工作区保护契约；Windows 注册专用账户，Linux/macOS 请求 MXC 后端。
  *
@@ -169,6 +169,48 @@ it("runs generation recovery before an enabled service accepts work", async () =
   expect(recoverStartup).toHaveBeenCalledOnce();
   expect(recoverStartup).toHaveBeenCalledWith(expect.any(AbortSignal));
 });
+
+it.each([false, true])(
+  "keeps platform recovery deadlines aligned (POSIX=%s)",
+  async (posix) => {
+    vi.useFakeTimers();
+    const timeout = vi
+      .spyOn(AbortSignal, "timeout")
+      .mockImplementation((ms) => {
+        const controller = new AbortController();
+        setTimeout(() => controller.abort(), ms);
+
+        return controller.signal;
+      });
+    let recovered = false;
+    const runtime: SandboxRuntime = {
+      selfCheck: vi.fn(),
+      execute: vi.fn(),
+      ...(posix ? { launchTask: vi.fn() } : {}),
+      async recoverStartup(signal) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 60_000));
+        signal.throwIfAborted();
+        recovered = true;
+      },
+    };
+    const broker = new SandboxBroker(
+      sandboxConfiguration(
+        { CODEATELIER_SANDBOX_ENABLED: "true" },
+        posix ? "linux" : "win32",
+      ),
+      runtime,
+    );
+    try {
+      const recovery = broker.recoverAtStartup();
+      await vi.advanceTimersByTimeAsync(60_000);
+      await recovery;
+      expect(recovered).toBe(!posix);
+    } finally {
+      timeout.mockRestore();
+      vi.useRealTimers();
+    }
+  },
+);
 
 it("allows all workspace paths while rejecting links that escape the workspace", async () => {
   const root = await temp();

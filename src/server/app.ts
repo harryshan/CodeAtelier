@@ -6,7 +6,7 @@
  * 2. 先按监听范围注册来源与凭据检查、关闭/受监督重载接口和错误处理，再注册 bootstrap、设置接口。
  * 3. bootstrap 报告与 Engine 一致的 subagent 发布门禁；会话路由支持显式 Worktree 创建与幂等绑定、列表/分页快照补充来源；任务路由仍独立检查启动、恢复、取消和 trace/审批。
  * 4. 注册复用 Store 的只读任务阅读接口，接入 SSE，并提供构建后的网页；没有前端产物时显示开发提示。
- * 5. preClose 中断任务并结束 SSE，onClose 关闭数据库。
+ * 5. shutdown 在进入 HTTP close hooks 前等待任务与 Sandbox 清理，避免慢 ACL 撤权触发插件关闭超时；直接 app.close 仍由 preClose 清理，onClose 关闭数据库。
  *
  * 关闭时要先确认任务已经中断，再结束服务。页面从保存的会话快照读取状态，任务循环由 Engine 执行。
  * trace/live 在相同鉴权下返回 partial 内存快照或持久检查点，no-store；终态下载只读归档。
@@ -67,14 +67,18 @@ export async function createApp(
   // Web 请求和进程信号共用这一个关闭 Promise，避免重复释放资源。
   const shutdown = (reason: "shutdown" | "reload" = "shutdown") => {
     stopping = true;
-    shutdownPromise ??= app.close().then(() => {
+    shutdownPromise ??= (async () => {
+      // Windows 大目录撤权可能超过 Fastify 的插件期限；停止接单后先等待
+      // Engine 保存中断与完成清理，再进入短 HTTP 生命周期，保留原插件超时。
+      await engine.close();
+      await app.close();
       log.info({ event: "server.stopped", module: "server", reason });
       if (reason === "reload") {
         onReload?.();
       } else {
         onStopped?.();
       }
-    });
+    })();
 
     return shutdownPromise;
   };

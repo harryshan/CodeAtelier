@@ -8,7 +8,7 @@
  * 4. execute 启动单实例 supervisor，stdout 作为工具输出流，stderr 只解析 runtime PID/创建时间、完成和固定错误类别。
  * 5. runtime started 控制帧确认共享账户 ACE 已安装；并发 lease 在该确认前不会假定 grant 可用。
  * 6. 产品执行 timeoutMs=0 编码为 INFINITE，不创建 JS 总期限计时器；有限探测仍保留期限。逐工具进程取消、有限 JS 超时或管道失败时关闭继承 stdin 并等待退出；常驻 Agent Runtime 已启动后先让 Broker 经 IPC 取消并等待终态，close 才关闭 stdin。清理证明缺失优先于原错误或取消结果，绝不宿主重放。
- * 7. drainGeneration 终止该账户全部进程并按持久 journal 撤销 ACL，供在线 quarantine 与重启恢复共用。
+ * 7. drainGeneration 终止该账户全部进程并按持久 journal 撤销 ACL，供在线 quarantine 与重启恢复共用；ACL 传播使用独立的十分钟期限，自检和进程排空仍为二十秒。
  * 8. rootCapabilities 在宿主数据目录读取/原子创建逐根 SID；只向当前可写根发放，实例私有根仍用临时 SID；trace 不记录 SID/路径。
  * 9. 临时 HOME/TEMP 只在原生确认撤销后删除；启动失败仅记录白名单 station、Runtime pipe/身份阶段、入口固定阶段和数字错误码，日志与错误不包含命令、路径、SID、端口、密码或工具输出。
  * 10. Runtime 普通命令只向 stderr 输出固定阶段标记；启动后异常日志提取最后阶段，供区分 shell 选择、进程启动和进程关闭停滞，不记录命令内容。
@@ -34,6 +34,7 @@ import type { RuntimeExecutionIdentity } from "./runtime-capability-core.js";
 import type { TraceRecorder } from "../tracing/recorder.js";
 import { sandboxGitConfig } from "./sandbox-git-config.js";
 import { dataDirectory } from "../config/data-directory.js";
+import { WINDOWS_ACL_CLEANUP_TIMEOUT_MS } from "./windows-timeouts.js";
 import {
   resolveRootCapabilities,
   validRootCapabilitySid,
@@ -447,7 +448,7 @@ export class NativeWindowsSandboxRuntime implements SandboxRuntime {
 
   constructor(
     environment: NodeJS.ProcessEnv = process.env,
-    private runSelfCheck = executeProcess,
+    private runNativeProcess = executeProcess,
     private log?: Logger,
     private traces?: TraceRecorder,
     private brokerDataDirectory = dataDirectory(),
@@ -612,7 +613,7 @@ export class NativeWindowsSandboxRuntime implements SandboxRuntime {
     this.startupRecovery ??= this.drainGeneration(signal);
     await this.startupRecovery;
 
-    const result = await this.runSelfCheck(
+    const result = await this.runNativeProcess(
       this.paths.supervisor,
       ["--self-check", this.paths.state, this.paths.networkManager],
       process.cwd(),
@@ -959,12 +960,12 @@ export class NativeWindowsSandboxRuntime implements SandboxRuntime {
       return;
     }
 
-    const result = await executeProcess(
+    const result = await this.runNativeProcess(
       this.paths.supervisor,
       ["--revoke", this.paths.state, this.paths.networkManager],
       process.cwd(),
       signal,
-      20_000,
+      WINDOWS_ACL_CLEANUP_TIMEOUT_MS,
       4_096,
       () => {},
       {},
@@ -997,33 +998,55 @@ export class NativeWindowsSandboxRuntime implements SandboxRuntime {
       {
         argument: "--terminate-account-processes",
         marker: "CODEATELIER_ACCOUNT_PROCESSES_TERMINATED",
+        timeoutMs: 20_000,
       },
       {
         argument: "--revoke-journal",
         marker: "CODEATELIER_REVOKE_JOURNAL_OK",
+        timeoutMs: WINDOWS_ACL_CLEANUP_TIMEOUT_MS,
       },
     ];
 
     try {
       for (const operation of operations) {
-        const result = await this.runSelfCheck(
-          this.paths.supervisor,
-          [operation.argument, this.paths.state, this.paths.networkManager],
-          process.cwd(),
-          signal,
-          20_000,
-          4_096,
-          () => {},
-          {},
-        );
-        if (
-          result.exitCode !== 0 ||
-          !result.output.includes(operation.marker)
-        ) {
-          throw new NativeWindowsSandboxCleanupError(
-            "account generation 排空或 ACL journal 对账失败。",
+        const run = async () => {
+          const startedAt = performance.now();
+          this.log?.info({
+            event: "sandbox.recovery_operation.started",
+            module: "sandbox",
+            ...context,
+            operation: operation.argument,
+            timeoutMs: operation.timeoutMs,
+          });
+          const result = await this.runNativeProcess(
+            this.paths.supervisor,
+            [operation.argument, this.paths.state, this.paths.networkManager],
+            process.cwd(),
+            signal,
+            operation.timeoutMs,
+            4_096,
+            () => {},
+            {},
           );
-        }
+          if (
+            result.exitCode !== 0 ||
+            !result.output.includes(operation.marker)
+          ) {
+            throw new NativeWindowsSandboxCleanupError(
+              `account generation 恢复失败：${operation.argument} 未确认完成（期限 ${operation.timeoutMs} ms）。`,
+            );
+          }
+
+          this.log?.info({
+            event: "sandbox.recovery_operation.completed",
+            module: "sandbox",
+            ...context,
+            operation: operation.argument,
+            durationMs: performance.now() - startedAt,
+          });
+        };
+
+        await run();
       }
 
       if (span) {

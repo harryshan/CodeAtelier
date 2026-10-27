@@ -7,7 +7,7 @@
  * 2. executeCommand 记录策略、preflight、fallback、执行和收集阶段；Sandbox 关闭时完全沿用既有宿主执行器。
  * 3. 启用时先建立 WorkspaceView 并调用 runtime.selfCheck；缺后端或启动前检查失败时按任务固定转为宿主执行。
  * 4. runtime.execute 开始后的异常绝不自动重放到宿主；unknown/orphaned 会冻结 generation 并调用原生整代排空。
- * 5. 共享 ACL acquire 与 prepare/native revoke/commit 共用串行队列；provision waiter 可取消，安装者失败会拒绝全部等待者。launch 将 Engine 核验的 worktree Git 根交给 prepareAccess，不扩大整个来源目录。
+ * 5. 共享 ACL acquire 与 prepare/native revoke/commit 共用串行队列；Windows 撤权与整代恢复共用原生层的长期限，避免大目录传播被外层提前取消。provision waiter 可取消，安装者失败会拒绝全部等待者。launch 将 Engine 核验的 worktree Git 根交给 prepareAccess，不扩大整个来源目录。
  * 6. MXC launchTask 使用私有实例生命周期，不进入 Windows ACL/generation 分支；启用后失败关闭，禁止逐命令旁路。
  * 7. 旧 Runner kind 在策略分流前拒绝，不得触发宿主 fallback 或发放新租约。
  * 8. 独立 Sandbox logger 只接收类别、阶段、关联 ID、耗时和结果，不记录命令、路径、SID、端口或输出。
@@ -41,6 +41,10 @@ import type {
 } from "./agent-runtime-launcher.js";
 import { AgentRuntimeFallbackError } from "./agent-runtime-launcher.js";
 import type { RuntimeExecutionIdentity } from "./runtime-capability-core.js";
+import {
+  WINDOWS_ACL_CLEANUP_TIMEOUT_MS,
+  WINDOWS_RECOVERY_TIMEOUT_MS,
+} from "./windows-timeouts.js";
 
 export class SandboxBroker implements AgentRuntimeLauncher {
   private fallbackTasks = new Map<string, SandboxStatus>();
@@ -97,7 +101,11 @@ export class SandboxBroker implements AgentRuntimeLauncher {
     }
 
     try {
-      await this.runtime.recoverStartup(AbortSignal.timeout(30_000));
+      await this.runtime.recoverStartup(
+        AbortSignal.timeout(
+          this.runtime.launchTask ? 30_000 : WINDOWS_RECOVERY_TIMEOUT_MS,
+        ),
+      );
       this.log?.info({
         event: this.runtime.launchTask
           ? "sandbox.mxc.startup_recovery_completed"
@@ -238,7 +246,10 @@ export class SandboxBroker implements AgentRuntimeLauncher {
           }
 
           const revoke = () =>
-            this.runtime!.revokeAccess!(roots, AbortSignal.timeout(20_000));
+            this.runtime!.revokeAccess!(
+              roots,
+              AbortSignal.timeout(WINDOWS_ACL_CLEANUP_TIMEOUT_MS),
+            );
           if (this.traces) {
             await this.traces.measure(
               command.taskId,
@@ -339,7 +350,7 @@ export class SandboxBroker implements AgentRuntimeLauncher {
     }
 
     this.generationDrain ??= this.runtime
-      .drainGeneration(AbortSignal.timeout(30_000), {
+      .drainGeneration(AbortSignal.timeout(WINDOWS_RECOVERY_TIMEOUT_MS), {
         taskId: command.taskId,
         executionInstanceId: command.executionInstanceId,
       })

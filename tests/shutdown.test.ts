@@ -2,14 +2,15 @@
  * 检查关闭服务时的鉴权、任务保存、连接清理和进程退出。
  * 分别使用注入请求、真实 HTTP/SSE 连接和生产入口子进程验证。
  *
- * 1. 拒绝没有凭据、凭据伪造或缺少 confirm 的关闭请求。
- * 2. 按任务审批事件和持久化命令输出确认就绪，再连接 SSE；关闭后检查流结束、端口释放及 SQLite 中的中断记录。
- * 3. 启动 launcher.ts 父进程，确认它能在认证后的重载请求后替换后端子进程，并在关闭后正常退出。
+ * 1. 用虚拟时钟模拟一分钟 Sandbox 清理，确认关闭入口先等待 Engine，再进入 Fastify 的短关闭期限。
+ * 2. 拒绝没有凭据、凭据伪造或缺少 confirm 的关闭请求。
+ * 3. 按任务审批事件和持久化命令输出确认就绪，再连接 SSE；关闭后检查流结束、端口释放及 SQLite 中的中断记录。
+ * 4. 启动 launcher.ts 父进程，确认它能在认证后的重载请求后替换后端子进程，并在关闭后正常退出。
  *
  * 收到关闭响应还不够，必须确认资源确实释放；服务登记到测试作用域，launcher 超时也会终止并等待整个进程树。
  */
 
-import { it, expect } from "vitest";
+import { it, expect, vi } from "vitest";
 import pino from "pino";
 import { executeProcess } from "../src/tools/process.js";
 import { currentTestResources } from "./fixtures/test-resources.js";
@@ -22,6 +23,44 @@ import {
 } from "./fixtures/managed-runtime.js";
 import { Config } from "../src/config/config.js";
 import { temp, waitForApproval } from "./fixtures/helpers.js";
+
+it("waits for slow Sandbox cleanup before starting HTTP close hooks", async () => {
+  let stopped = false;
+  const fixture = await createApp(
+    new Config(await temp()),
+    pino({ enabled: false }),
+    undefined,
+    () => {
+      stopped = true;
+    },
+  );
+  await fixture.app.ready();
+  const close = fixture.engine.close.bind(fixture.engine);
+  let release!: () => void;
+  const cleanup = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const spy = vi.spyOn(fixture.engine, "close").mockImplementation(async () => {
+    await cleanup;
+    await close();
+  });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const shutdown = fixture.shutdown().catch((error: unknown) => error);
+  try {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(stopped).toBe(false);
+    release();
+    vi.useRealTimers();
+    expect(await shutdown).toBeUndefined();
+    expect(stopped).toBe(true);
+  } finally {
+    release();
+    vi.useRealTimers();
+    spy.mockRestore();
+    await fixture.app.close().catch(() => {});
+  }
+});
 
 it("rejects unauthenticated, forged and unconfirmed shutdown requests", async () => {
   const { app } = await createApp(
