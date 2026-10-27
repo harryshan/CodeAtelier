@@ -1,5 +1,13 @@
 # 初版验证记录
 
+## 跨 session 无上限并行（D173，2026-10-27）
+
+- Engine 和 Windows account generation 移除跨 session 目录互斥与主任务/实例总数限制；同 session 单活动任务、同任务单 Runtime lease、DAG 依赖/槽位、subagent Worker 配额与 quarantine 保留。旧 maxConcurrentTasks 归一为 0，不参与调度，设置 UI 移除入口并提示文件/Git/验证冲突与资源风险。
+- HTTP 夹具确认六个同目录/跨目录会话同时进入模拟模型；取消一个不影响其余任务。内存 generation 夹具确认六个同目录 lease 共用 grant、仅最后释放时撤销；worktree 保留并行、恢复和 admission 后目录消失拒绝。配置 PATCH/重开与浏览器无旧控件回归通过。
+- 初次全量发现 running 落盘前同任务重复领取，导致 Replay 唯一键冲突、重复模型执行和测试进程 OOM。以延迟 running 写回执的有界用例先复现两次领取，再按 active taskId 排除已领取项；未提高内存阈值或削弱断言。取消测试显式等待异步终态后才恢复。
+- 最终 `pnpm check` 通过：130 个测试文件、962 项通过、1 项既有跳过，TypeScript、ESLint、Prettier、Web/server/Windows/POSIX Runtime 测试构建通过。`pnpm test:e2e` 71 项通过；日志为 `.local/concurrency-check.log`、`.local/concurrency-e2e.log`，竞态及关联链路 75 项回归日志为 `.local/concurrency-race-check.log`。保留既有依赖注释和前端 chunk 大小警告。
+- Runtime 环境没有 pnpm，验证经批准在 Broker 宿主执行（host-process），不是 Sandbox 安装态验收；未运行真实多实例 Sandbox、Linux/macOS 实机或资源压力测试，未执行 Evaluation、Repair、真实配置迁移或当前服务重启。不承诺无限资源或同目录写入安全。下方旧记录中的串行/数量上限描述仅代表当时版本。
+
 ## 实验分支拆分（D172，2026-10-27）
 
 - 原 main `3a03a09` 的全部历史保存在 `overlay-development`；新 main 从 `47ddf0d` 重建，基础 worktree `05e33c0` 对应 `c202099`，Node shim 修复 `35e2cb1` 对应 `920a71a`，慢 ACL 清理/关闭修复 `3a03a09` 对应 `2b438df`。另保留原生 transport 的明确执行模式/PID 类型标记，以及旧实验路径的拒绝执行检查。

@@ -666,7 +666,7 @@ function runtimeToolSettings(settings: RuntimeTaskSettings) {
     baseUrl: "broker://model",
     model: settings.model,
     maxSteps: settings.maxSteps,
-    maxConcurrentTasks: 1,
+    maxConcurrentTasks: 0,
     commandTimeoutMs: settings.commandTimeoutMs,
     requestTimeoutMs: 300_000,
     idleTimeoutMs: 60_000,

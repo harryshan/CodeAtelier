@@ -44,7 +44,7 @@ Windows Runtime 使用安装程序预先创建的单一低权限本地账户 `Co
 - Git CLI 不另设 action、路径或推送目标校验；配置、hook/helper 按实际命令身份执行。获批宿主命令可读取宿主 system、global/include、local 和 worktree 配置，这些不可信配置及子进程拥有宿主权限。
 - Broker IPC 必须验证 execution instance；旧代理和凭据管道已删除，账户 SID 只是机器级隔离身份，不单独授权任务能力。
 
-Sandbox 模式沿用现有全局并发设置：不同真实工作区最多同时运行 1～4 个任务，同一真实工作区仍严格串行。每个 Sandbox execution instance 使用独立 execution/临时 capability SID、Job、private desktop、临时目录和 IPC nonce。Git CLI 按通用 DAG 依赖调度；同仓库写操作应显式串行，无依赖节点可并行。获批宿主命令不暂停其它工作区任务。
+D173 后 Sandbox 与宿主模式均允许跨 session 主任务不限数量并行，同目录不再互斥；同 session 单活动任务仍保留。每个 Sandbox execution instance 使用独立 execution/临时 capability SID、Job、private desktop、临时目录和 IPC nonce。Git CLI 按通用 DAG 依赖调度；同仓库写操作应显式串行，无依赖节点可并行。获批宿主命令不暂停其它工作区任务。
 
 本文仍只使用一个本地账户，不设计账户池，也不因 Sandbox 启用而把全部对话全局串行。
 
@@ -115,7 +115,7 @@ Runtime 只可通过 `run_with_permissions` 提交任意命令文本和理由；
 
 ### 3.2 实例租约、两段启动与清理
 
-Broker 为单一账户维护一个 account generation 和最多 1～4 个活动 instance lease；每项记录 SID 摘要、instance/task/workspace、创建时间、Job ID、execution/root capability SID 集合和 lease epoch。调度器在发放 lease 前复核不同工作区、全局并发上限及所有活动授权状态。
+Broker 为单一账户维护一个 account generation 和不限数量的跨任务活动 instance lease；每项记录 SID 摘要、instance/task/workspace、创建时间、Job ID、execution/root capability SID 集合和 lease epoch。发放 lease 前仍复核 generation 健康状态、instance/task 唯一性与共享 grant 状态，不再按目录重叠或实例数量拒绝。共享授权仍等待首个 provision 完成，最后一个引用才撤销；故障 quarantine 可影响全部实例。
 
 supervisor 以 `CreateProcessWithLogonW` 且不使用 `LOGON_WITH_PROFILE` 启动固定 runner；每次启动记录实际 logon SID/LUID，但不要求唯一，也不以其授权。
 

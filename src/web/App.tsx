@@ -629,7 +629,8 @@ export default function App() {
                 </article>
               </div>
               <div className={s.welcomeFoot}>
-                本地工作区 <i /> 跨目录并行 <i /> 同目录串行 <i /> 操作按需确认
+                本地工作区 <i /> 同目录多会话并行 <i /> 注意文件冲突 <i />{" "}
+                操作按需确认
               </div>
             </section>
           ) : loading ? (

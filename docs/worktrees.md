@@ -23,7 +23,7 @@ D172 分支拆分后，Riftri/overlay 实验在 `overlay-development` 继续保�
 ## 系统联动
 
 - 项目侧栏按来源分组；会话显示实际路径、初始基线和 Worktree 标记。选择分支只影响创建时的提交，不跟随后续分支移动。新工作区不含原目录的未提交改动、依赖、密钥或忽略文件。
-- 调度、工具路径、AGENTS/Skills、命令 cwd、MCP 工作目录、子任务与恢复全部使用实际 checkout；不同 checkout 沿用 1～4 并发，同目录串行。项目记忆通过来源路径共享；不会把文件工具重定向到来源目录。
+- 调度、工具路径、AGENTS/Skills、命令 cwd、MCP 工作目录、子任务与恢复全部使用实际 checkout；D173 允许不同 checkout 及同目录的多个会话不限主任务数并行；worktree 用于分离工作文件，不再是同项目并行的必要条件。项目记忆通过来源路径共享；不会把文件工具重定向到来源目录。
 - Sandbox 启动前由 Broker 核验清单，再把该仓库真实 Git common directory 纳入可写根，使 index/objects/refs 操作可工作；不额外授权整个来源 checkout。Windows 复用根 capability/ACL，POSIX 复用 MXC writeRoots。Git 对象与 refs 是共享的，worktree 不是安全隔离边界；仓库级 Git 管理和同一分支写入仍须协调。平台安装态验收不能由宿主测试代替。
 - 新建按钮是用户对固定宿主 Git 管理操作的明确授权；不是模型新工具，不扩大 run_command/run_with_permissions 的权限。查询超时 2 分钟，checkout 超时 10 分钟并复用进程树取消；使用参数数组、禁止交互及管理 hooks。正常 Git checkout 过滤器仍可能运行并使用宿主权限/网络，限于用户信任的本地仓库；不主动执行 fetch/pull。模型 Git CLI 仍沿用 D155/D162。
 - 生命周期日志记录 worktree/operation ID、状态与耗时；`src/tracing` 保存创建/恢复绑定的成功、失败及关闭取消，位于数据目录 `worktrees/traces/`，不保存源码、路径、Git 输出或用户 ref。任务启动的验证复用任务 trace。失败清单可供人工诊断，不自动恢复执行。

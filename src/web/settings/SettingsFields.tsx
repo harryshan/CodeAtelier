@@ -2,7 +2,7 @@
  * 设置页的具名字段组件，接收公开草稿和变更回调，不自行请求后端或持久化。
  * 1. SecretField 显式区分保留、替换与删除；原凭据从不进入控件。
  * 2. ModelFields 编辑主/辅助连接及继承关系，按协议标明能力并禁用不适用思考项。
- * 3. NumericFields 用统一标签、单位和范围渲染执行/上下文/诊断参数。
+ * 3. NumericFields 只渲染标签表中的执行/上下文/诊断参数，跳过已退役的兼容字段。
  * 所有新凭据仅留在父组件内存，关闭页面或成功保存后清空。
  */
 import { useId, useState } from "react";
@@ -188,7 +188,6 @@ export function ModelFields({
 
 export const numericFields = {
   maxSteps: ["任务最大轮次", 1, 100],
-  maxConcurrentTasks: ["并行任务上限（立即生效）", 1, 4],
   requestTimeoutMs: ["模型请求时限（毫秒）", 1000, 600000],
   idleTimeoutMs: ["模型空闲时限（毫秒）", 1000, 300000],
   outputChars: ["工具输出字符上限", 1000, 100000],
@@ -213,6 +212,9 @@ export function NumericFields({
     <>
       {Object.entries(value).map(([name, current]) => {
         const field = numericFields[name as keyof typeof numericFields];
+        if (!field) {
+          return null;
+        }
 
         return (
           <label key={name}>

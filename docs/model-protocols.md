@@ -59,7 +59,7 @@ Replay 保存实际请求选项；`llm.request` 和简洁 trace 保留 `promptCa
 
 已有历史不自动改写。新协议可以读取可表达的公共文字/工具历史，但任意跨协议历史切换不作保证：遇到 Responses reasoning、web_search 等无法安全转换的条目会提示使用原协议或新建会话，不静默删除。建议更换协议后新建对话。
 
-本批不增加自动模型 fallback、模型价格查询或 SDK agent 框架。已有权限、同工作区串行、恢复与 Sandbox 边界保持不变。
+本批不增加自动模型 fallback、模型价格查询或 SDK agent 框架。已有权限、恢复与 Sandbox 边界保持不变；跨会话并发按后续 D173 不限主任务数且允许同目录并行。
 
 ## 验证与诊断
 

@@ -22,7 +22,7 @@ type Response = {
 type JsonObject = Record<string, unknown>;
 const categories = [
   ["models", "模型连接", "协议 地址 名称 密钥 思考 辅助"],
-  ["execution", "任务与上下文", "并发 轮次 时限 输出 token 字符"],
+  ["execution", "任务与上下文", "轮次 时限 输出 token 字符"],
   ["sandbox", "Sandbox 与权限", "隔离 授权 安装 路径"],
   ["mcp", "MCP 服务", "命令 传输 凭据 用途"],
   ["server", "服务与访问", "监听 端口 密码 局域网"],
@@ -214,7 +214,7 @@ export function SettingsPage({
         setEpoch((value) => value + 1);
         onSaved(result);
         setNotice(
-          "已保存。日志/并发立即应用；连接与预算在下一任务生效；运行中的任务保持原配置。",
+          "已保存。日志立即应用；连接与预算在下一任务生效；运行中的任务保持原配置。",
         );
       }
     } catch (reason) {
@@ -404,7 +404,8 @@ export function SettingsPage({
                 <div hidden={category !== "execution"}>
                   <h2>任务与上下文</h2>
                   <p>
-                    排队任务在实际开始时采用最新配置。降低并发不取消当前任务；同工作区始终串行。工具执行没有固定总时限。
+                    任务在实际开始时采用最新配置。不同会话可在同目录并行，主任务数量无上限；请注意文件/Git
+                    冲突、测试干扰和资源耗尽风险。同一会话仍只允许一个活动任务。工具执行没有固定总时限。
                   </p>
                   <NumericFields
                     value={draft.execution}

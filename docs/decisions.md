@@ -2,6 +2,16 @@
 
 只记录已确认的方向；候选技术选择保留在需求说明中。后续修改需记录替代关系，避免历史决定被误当成当前要求。
 
+## D173：开放跨 session 主任务并行
+
+- 日期：2026-10-27。用户在了解同目录文件、Git、验证与资源竞争风险后，明确要求同时移除同目录互斥和全局主任务数量上限。
+- 决定：Engine 不再按工作区或容量阻塞不同 session 的任务；Windows account generation 同步移除对应拒绝条件。保留同 session 单个 queued/running/waiting 主任务、同任务单个 Runtime lease、工具 DAG 依赖与执行槽、subagent Worker 配额，以及 generation quarantine 和共享 ACL 引用计数。
+- 设置：移除 UI 并发控件；旧 `maxConcurrentTasks` 字段继续兼容读取/PATCH，归一为 0（无上限），不参与调度。不自动重写真实配置，不提高设置文档或 Runtime IPC 版本。
+- 风险与替代：不新增文件锁、跨 session Git 锁或冲突协调；多个任务可覆盖文件、混入暂存区、使验证结论过期或耗尽资源。需要独立工作副本时仍使用显式 worktree。同 session 上下文不能并发追加。
+- 替代 D068、D100、D111、D165、D172 及相关文档中的主任务总数/目录互斥要求，不更改权限、取消、恢复和未知操作不重放规则。queued 仍是持久化启动交接状态，不表示容量等待。
+- 观测：复用 task.queue（ready）、任务 started/finish、模型/工具与 Sandbox 生命周期 span，保留 sessionId/taskId/instanceId、耗时和错误/取消；不再为新任务标记 workspace/capacity 等待。不采集文件正文或增加权限。
+- 验证使用临时项目、模拟模型与内存 lease；不由该回归推导 Windows 安装态多实例或 Linux/macOS 实机验收。部署需用户自行重启服务，本次不自动 Repair 或操作真实配置。
+
 ## D172：将工作区隔离实验移出 main
 
 - 日期：2026-10-27。用户要求把全部 overlay 相关提交移到独立分支，main 还原并保留最新修复；随后明确授权重写并强推 main。
@@ -600,7 +610,7 @@
 ## D068：按真实工作目录隔离的跨会话并发
 
 - 日期：2026-09-17
-- 状态：用户确认并授权实现。
+- 状态：数量上限与目录互斥已由 D173 替代；同会话单活动任务和恢复边界保留。
 - 决定：保持单 agent，但允许不同真实工作目录的会话同时运行；默认全局上限为 2，可在无运行或排队任务时配置为 1～4。同一真实工作目录始终只有一个运行任务，后续任务以 `queued` 持久化排队；同一会话也只允许一个 queued/running/waiting 任务。
 - 原因：用户需要多个 session 同时运行，同时避免共享代码、命令、测试产物和 Git 索引互相干扰。
 - 安全与恢复边界：目录锁覆盖读取、编辑、`run_command` 和 Git，不以“只读”推断放宽；排队可取消，服务关闭、重载和重启将 queued/running/waiting 标为 interrupted，不自动重放或自动重新执行。任务以 startedAt 区分实际运行时间与排队等待；不同会话的审批、SSE、取消、模型用量和日志仍按 taskId/sessionId 隔离。

@@ -17,7 +17,7 @@
 
 - `models.main`：protocol、baseUrl、model、apiKey、reasoningEffort。
 - `models.auxiliary`：enabled、protocol、baseUrl、model、apiKey、reasoningEffort；显式展示继承关系。
-- `execution`：maxSteps、maxConcurrentTasks、requestTimeoutMs、idleTimeoutMs、outputChars。
+- `execution`：maxSteps、requestTimeoutMs、idleTimeoutMs、outputChars。D173 后 maxConcurrentTasks 仅保留为 v1 兼容字段，读取/PATCH 归一为 0（无主任务上限），UI 不显示，不参与调度；不会因加载文件自动改写真实配置。
 - `context`：maxOutputTokens、maxContextTokens、contextChars。
 - `sandbox`：enabled、POSIX readRoots/writeRoots、Windows 安装路径高级项。
 - `mcp.servers`：沿用现有 stdio/HTTP 字段和校验，最终合入此文件，不保留第二套可覆盖配置。
@@ -40,7 +40,7 @@
 
 UI 始终允许编辑、校验和保存；后端标明每项的生效时机：
 
-- **立即生效**：宿主日志级别、全局调度并发上限。降低并发不取消在途任务，只暂停新增启动；同工作区串行不变。已启动 Runtime 的日志级别可保留旧值，UI 不宣称全进程热更新。
+- **立即生效**：宿主日志级别。主任务并发数量和目录互斥限制已按 D173 移除，不再有可调并发参数。已启动 Runtime 的日志级别可保留旧值，UI 不宣称全进程热更新。
 - **下一任务生效**：模型连接及 key、思考与请求限制、上下文、输出限制、MCP、每任务 trace 容量。排队任务在实际开始时取最新配置，排队界面明确此规则。
 - **重启生效**：监听地址/端口、访问门禁、Sandbox 开关和授权根/安装路径、trace 检查点与归档保留。可先保存，不自动重启、不自动取消任务；涉及删除归档或扩大权限时单独确认。
 
@@ -68,7 +68,7 @@ UI 始终允许编辑、校验和保存；后端标明每项的生效时机：
 分类与内容：
 
 1. **模型连接**：主/辅助双卡片，协议、地址、完整模型名、密钥状态及替换/删除、思考选项；按协议展示能力，禁用不适用字段。未启用辅助时明确标题/摘要用主模型、审批转人工。
-2. **任务与上下文**：并发、轮次、请求/空闲时限、输出与 token/字符预算；显示单位、范围、默认值和生效标签。说明工具无总时限，不创造新研究配额。
+2. **任务与上下文**：轮次、请求/空闲时限、输出与 token/字符预算；显示单位、范围、默认值和生效标签。说明工具无总时限，不创造新研究配额。
 3. **Sandbox 与权限**：请求开关与实际执行状态分开；平台相关字段、安装状态、授权根列表和风险说明。保存不执行安装、不提升权限、不改变既有 fallback 和未知实例处理规则。
 4. **MCP 服务**：服务列表及编辑抽屉，名称、用途、开关、transport 和对应字段，凭据使用写入控件。保存不连接、不运行命令；本期不增加绕过审批的测试连接入口。
 5. **服务与访问**：监听范围、端口、门禁及密码修改；开放 LAN/关闭门禁二次确认，显示重启和重新登录提示。仍仅面向受信任网络，HTTP 不因密码而成为加密传输。
@@ -99,7 +99,7 @@ UI 始终允许编辑、校验和保存；后端标明每项的生效时机：
 4. 服务/Sandbox/tracing 配置接入、受控重启、Vite/launcher/维护脚本统一入口。
 5. 无 env 回归通过后更新操作文档和模板，用户另行执行真实迁移。
 
-沿现有 config、server、engine、auxiliary-model、MCP、Runtime 与 Playwright 夹具补测试：空配置启动、错误文件不覆盖、写失败不发布、多标签页冲突、运行中换模型/key 不串用、排队与降并发、辅助凭据隔离、协议不兼容恢复、密码轮换、待重启状态、关闭与端口释放、MCP 保存不连接、迁移重复执行和失败回退、启动及构建不读取真实 env。断言日志/trace/响应无秘密；测试使用临时数据目录和模拟模型，不触碰用户配置。
+沿现有 config、server、engine、auxiliary-model、MCP、Runtime 与 Playwright 夹具补测试：空配置启动、错误文件不覆盖、写失败不发布、多标签页冲突、运行中换模型/key 不串用、旧并发配置归一为 0、辅助凭据隔离、协议不兼容恢复、密码轮换、待重启状态、关闭与端口释放、MCP 保存不连接、迁移重复执行和失败回退、启动及构建不读取真实 env。断言日志/trace/响应无秘密；测试使用临时数据目录和模拟模型，不触碰用户配置。
 
 配置保存/加载/应用记录关联 ID、耗时、字段分类和终态，不记录值。任务 trace 增加安全的配置 revision 关联；无任务的设置 HTTP 操作使用服务日志，不强行归属某任务。跨版本密钥脱敏覆盖到清理结束。实现时同步更新 architecture、development、testing、verification 及平台指南；提交前运行 pnpm check，UI/HTTP 变更另跑 pnpm test:e2e。Evaluation 不自动运行，Windows 单机验证不代表跨平台验收。
 
@@ -110,7 +110,7 @@ UI 始终允许编辑、校验和保存；后端标明每项的生效时机：
 1. `pnpm build` 后运行 `pnpm start`，打开 `http://127.0.0.1:4142`。无需 `.env`，初始设置页引导填写主模型；缺少模型或密钥时禁止启动任务，但可查看历史。
 2. 从主页面打开设置模态框，包含模型、任务/上下文、Sandbox、MCP、服务/访问、日志/诊断、配置/数据七类。切换保留草稿；保存携带 revision，冲突保留输入而不自动覆盖。MCP 以服务 ID 更新，秘密明确保留、替换、删除。
 3. 默认平台数据目录不变；自定义示例 `pnpm start --data-dir "G:/CodeAtelierData"`。目录不能位于 agent 工作区或授予 Runtime 的根内；不要把凭据配置放进仓库。开发的 `pnpm dev` 与 `pnpm dev:web` 使用相同参数。
-4. 日志级别和并发立即调整；模型/key、请求和上下文限制、MCP、trace 容量下一任务生效；监听/门禁、Sandbox、trace 检查点和保留期需要重启。排队任务实际开始时取最新版本，不重新配置已有任务。
+4. 日志级别立即调整，主任务并发不再设上限；模型/key、请求和上下文限制、MCP、trace 容量下一任务生效；监听/门禁、Sandbox、trace 检查点和保留期需要重启。排队任务实际开始时取最新版本，不重新配置已有任务。
 5. 密钥、MCP args/env/headers 保存在私有 JSON，**不是加密保险库**。Windows 文件 ACL 仅授予当前宿主用户及 SYSTEM；POSIX 使用私有文件权限。访问密码只保存 scrypt 加盐验证材料。API、导出、日志和 trace 不回显秘密。
 
 Windows ACL 检查使用系统 Windows PowerShell，并在该子进程内将 `PSModulePath` 限定为自身 `$PSHOME/Modules`，避免从 PowerShell 7 启动时误加载不兼容的同名安全模块。此处理不修改宿主终端环境，也不放宽 ACL 或自动修复现有配置文件的权限；检查失败仍拒绝加载。它只修正启动前私有文件 I/O 的模块解析，沿用设置操作日志与固定安全错误，不新增任务执行阶段或 Perfetto 载荷。

@@ -584,7 +584,6 @@ export class SandboxBroker implements AgentRuntimeLauncher {
 
       this.accountGeneration ??= new AccountGenerationRegistry(
         checked.accountGenerationDigest,
-        4,
       );
       phase("acquire");
       acquired = await this.withGrantMutation(() =>
@@ -895,7 +894,6 @@ export class SandboxBroker implements AgentRuntimeLauncher {
 
         this.accountGeneration ??= new AccountGenerationRegistry(
           generationDigest,
-          4,
         );
       }
 

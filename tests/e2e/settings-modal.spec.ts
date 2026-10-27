@@ -1,7 +1,7 @@
 /**
  * 设置模态框的浏览器回归，通过临时测试服务验证展示与交互，不调用真实模型。
  * 1. 桌面检查居中留白、主页面主题、原生模态隔离、键盘循环及关闭后的焦点恢复。
- * 2. 窄屏检查边界、独立滚动和保存栏，验证分类草稿与 Escape 放弃确认。
+ * 2. 窄屏检查边界、独立滚动和保存栏，验证分类草稿、已移除并发上限控件与 Escape 放弃确认。
  * 仅修改浏览器内草稿，不保存设置、不重启服务；截图不包含真实凭据。
  */
 import { expect, test } from "@playwright/test";
@@ -67,6 +67,10 @@ test("settings modal fits narrow screens and protects unsaved drafts", async ({
   await modal
     .getByRole("button", { name: "任务与上下文", exact: true })
     .click();
+  await expect(modal.getByLabel("任务最大轮次", { exact: true })).toBeVisible();
+  await expect(
+    modal.getByLabel("并行任务上限（立即生效）", { exact: true }),
+  ).toHaveCount(0);
   await modal.getByRole("button", { name: "模型连接", exact: true }).click();
   await expect(model).toHaveValue("unsaved-modal-model");
 

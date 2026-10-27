@@ -2,7 +2,7 @@
  * 验证单账户 Windows Sandbox 的 generation、并发 lease 与共享 ACL grant 引用状态机。
  * 测试只操作内存账本，不创建账户、进程、ACL 或 WFP 规则。
  *
- * 1. 不同工作区在上限内可并发，同一工作区与超限请求拒绝；同任务嵌套 Runner 被拒绝，且不改变现有租约。
+ * 1. 同一或不同工作区均可超过旧上限并发，最后一个 lease 才撤销共享授权；同任务嵌套 Runner 被拒绝，且不改变现有租约。
  * 2. 相同对象跨 manifest、跨 read/write 用途只安装一次账户 ACE；后继 lease 等待首个原生 provision 完成。
  * 3. release 在原生撤销成功前保留 lease/grant，commit 后才减少引用并在最后一个 lease 撤销。
  * 4. 首个安装者失败会拒绝共享 waiter；等待可由任务 AbortSignal 取消，调用方随后可回滚自己的 lease。
@@ -36,8 +36,8 @@ function manifest(
   };
 }
 
-it("allows bounded different-workspace concurrency and reference-counts grants", async () => {
-  const registry = new AccountGenerationRegistry(digest("a"), 2);
+it("allows different-workspace concurrency and reference-counts grants", async () => {
+  const registry = new AccountGenerationRegistry(digest("a"));
   const firstManifest = manifest("workspace-a", "b");
   const secondManifest = manifest("workspace-b", "c");
   const first = registry.acquire({
@@ -70,14 +70,6 @@ it("allows bounded different-workspace concurrency and reference-counts grants",
     activeInstanceCount: 2,
     grantCount: 3,
   });
-  expect(() =>
-    registry.acquire({
-      executionInstanceId: "instance-c",
-      kind: "agent-runtime",
-      taskId: "task-c",
-      accessManifest: manifest("workspace-c", "d"),
-    }),
-  ).toThrow("并发上限");
 
   const firstRelease = registry.prepareReleaseWithManifest(
     "instance-a",
@@ -102,7 +94,7 @@ it("allows bounded different-workspace concurrency and reference-counts grants",
 });
 
 it("shares one account grant when the same object is read-only and writable", async () => {
-  const registry = new AccountGenerationRegistry(digest("a"), 2);
+  const registry = new AccountGenerationRegistry(digest("a"));
   const shared = root("shared-target", "f");
   const readManifest: AccessManifest = {
     manifestDigest: digest("b"),
@@ -161,30 +153,44 @@ it("shares one account grant when the same object is read-only and writable", as
   });
 });
 
-it("serializes the same workspace even when capacity remains", () => {
-  const registry = new AccountGenerationRegistry(digest("a"), 4);
+it("allows six same-workspace leases and revokes shared grants only after the last release", async () => {
+  const registry = new AccountGenerationRegistry(digest("a"));
   const accessManifest = manifest("workspace-a", "b");
-  registry.acquire({
-    executionInstanceId: "instance-a",
-    kind: "agent-runtime",
-    taskId: "task-a",
-    accessManifest,
-  });
-
-  expect(() =>
+  const leases = Array.from({ length: 6 }, (_, index) =>
     registry.acquire({
-      executionInstanceId: "instance-b",
+      executionInstanceId: `instance-${index}`,
       kind: "agent-runtime",
-      taskId: "task-b",
+      taskId: `task-${index}`,
       accessManifest,
     }),
-  ).toThrow("同一工作区");
+  );
+
+  expect(leases[0]!.install).toHaveLength(2);
+  expect(leases.slice(1).every((item) => item.install.length === 0)).toBe(true);
+  registry.markProvisioned("instance-0", leases[0]!.lease.epoch);
+  await Promise.all(leases.map((item) => item.waitForSharedProvision()));
+  expect(registry.snapshot().activeInstanceCount).toBe(6);
+
+  for (const [index, item] of leases.entries()) {
+    const release = registry.prepareReleaseWithManifest(
+      item.lease.executionInstanceId,
+      item.lease.epoch,
+      accessManifest,
+    );
+    expect(release.revoke).toHaveLength(index === 5 ? 2 : 0);
+    registry.commitRelease(release.releaseId, accessManifest);
+  }
+
+  expect(registry.snapshot()).toMatchObject({
+    activeInstanceCount: 0,
+    grantCount: 0,
+  });
 });
 
 it.each(["agent-runtime", "push-runner", "capability-runner"])(
   "rejects a nested %s lease without changing grants",
   (kind) => {
-    const registry = new AccountGenerationRegistry(digest("a"), 1);
+    const registry = new AccountGenerationRegistry(digest("a"));
     const accessManifest = manifest("workspace-a", "b");
     const runtime = registry.acquire({
       executionInstanceId: "runtime-a",
@@ -207,7 +213,7 @@ it.each(["agent-runtime", "push-runner", "capability-runner"])(
 );
 
 it("rejects stale release and quarantines inconsistent grant state", () => {
-  const registry = new AccountGenerationRegistry(digest("a"), 2);
+  const registry = new AccountGenerationRegistry(digest("a"));
   const accessManifest = manifest("workspace-a", "b");
   const acquired = registry.acquire({
     executionInstanceId: "instance-a",
@@ -243,7 +249,7 @@ it("rejects stale release and quarantines inconsistent grant state", () => {
 });
 
 it("keeps the lease and grants when native revocation is not committed", () => {
-  const registry = new AccountGenerationRegistry(digest("a"), 2);
+  const registry = new AccountGenerationRegistry(digest("a"));
   const accessManifest = manifest("workspace-a", "b");
   const acquired = registry.acquire({
     executionInstanceId: "instance-a",
@@ -270,7 +276,7 @@ it("keeps the lease and grants when native revocation is not committed", () => {
 });
 
 it("rejects failed shared grants without leaking a reference", () => {
-  const registry = new AccountGenerationRegistry(digest("a"), 2);
+  const registry = new AccountGenerationRegistry(digest("a"));
   const firstManifest = manifest("workspace-a", "b");
   const first = registry.acquire({
     executionInstanceId: "instance-a",
@@ -301,7 +307,7 @@ it("rejects failed shared grants without leaking a reference", () => {
 });
 
 it("rejects waiters when the first shared-grant installer fails", async () => {
-  const registry = new AccountGenerationRegistry(digest("a"), 2);
+  const registry = new AccountGenerationRegistry(digest("a"));
   const firstManifest = manifest("workspace-a", "b");
   const secondManifest = manifest("workspace-b", "c");
   const first = registry.acquire({
@@ -331,7 +337,7 @@ it("rejects waiters when the first shared-grant installer fails", async () => {
 });
 
 it("allows a shared-grant waiter to stop on task cancellation", async () => {
-  const registry = new AccountGenerationRegistry(digest("a"), 2);
+  const registry = new AccountGenerationRegistry(digest("a"));
   const first = registry.acquire({
     executionInstanceId: "instance-a",
     kind: "agent-runtime",

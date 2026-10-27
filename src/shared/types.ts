@@ -126,6 +126,7 @@ export interface Settings {
   auxiliaryModel?: string;
   auxiliaryReasoningEffort?: "none" | "low" | "medium" | "high";
   maxSteps: number;
+  /** 旧配置兼容字段；读取时归一为 0，不参与主任务调度。 */
   maxConcurrentTasks: number;
   commandTimeoutMs: number;
   requestTimeoutMs: number;

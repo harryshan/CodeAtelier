@@ -4,7 +4,7 @@
  *
  * 1. 测试夹具通过 bootstrap 获取合法 Cookie 和 token。
  * 2. 检查不同会话的数据隔离，以及资源不存在、subagent 任务级选择、工具可见性与请求体非法时的状态码。
- * 3. 检查不同工作区可并行、同工作区排队、全局上限与设置互斥，再检查取消与人工恢复。
+ * 3. 检查同目录与跨目录六个会话同时进入模型、同会话互斥，以及取消单任务不影响其余任务。
  * 4. 用伪造 token 和异常 Origin 检查写请求被拒绝。
  *
  * 模型只用来控制任务何时结束；鉴权和保存都走真实代码，清理时也要结束等待中的任务。
@@ -200,7 +200,7 @@ it("returns only events after the snapshot cursor while keeping current session 
   }
 });
 
-it("runs different workspaces in parallel while queueing the same workspace", async () => {
+it("runs six sessions concurrently regardless of workspace while keeping same-session exclusion", async () => {
   const fixture = await createFixture();
 
   try {
@@ -227,17 +227,28 @@ it("runs different workspaces in parallel while queueing the same workspace", as
       fixture.engine.start(firstSession.id, "same session"),
     ).rejects.toThrow("当前会话已有");
 
-    const queued = await start(sameWorkspaceSession.id, "same workspace task");
-    expect(queued.statusCode).toBe(200);
-    const queuedTaskId = queued.json().id;
-    expect(queued.json().status).toBe("queued");
+    const shared = await start(sameWorkspaceSession.id, "same workspace task");
+    expect(shared.statusCode).toBe(200);
+    const sharedTaskId = shared.json().id;
+    expect(shared.json().status).toBe("running");
 
     const other = await start(otherSession.id, "other workspace task");
     expect(other.statusCode).toBe(200);
     const otherTaskId = other.json().id;
     expect(other.json().status).toBe("running");
-    expect(fixture.engine.activeTasks).toHaveLength(2);
-    expect((await fixture.store.task(queuedTaskId))?.status).toBe("queued");
+    const remainingTaskIds = [sharedTaskId, otherTaskId];
+    for (let index = 0; index < 3; index++) {
+      const session = await fixture.store.create(
+        sharedWorkspace,
+        `extra-${index}`,
+      );
+      const response = await start(session.id, `extra task ${index}`);
+      expect(response.statusCode).toBe(200);
+      remainingTaskIds.push(response.json().id);
+    }
+
+    expect(fixture.engine.activeTasks).toHaveLength(6);
+    await expect.poll(() => fixture.toolSets.length).toBe(6);
 
     expect(
       (
@@ -257,10 +268,13 @@ it("runs different workspaces in parallel while queueing the same workspace", as
       payload: {},
     });
     await expect
-      .poll(async () => (await fixture.store.task(queuedTaskId))?.status)
-      .toBe("running");
+      .poll(async () => (await fixture.store.task(firstTaskId))?.status)
+      .toBe("cancelled");
+    for (const taskId of remainingTaskIds) {
+      expect((await fixture.store.task(taskId))?.status).toBe("running");
+    }
 
-    for (const taskId of [queuedTaskId, otherTaskId]) {
+    for (const taskId of remainingTaskIds) {
       await fixture.app.inject({
         method: "POST",
         url: `/api/tasks/${taskId}/cancel`,

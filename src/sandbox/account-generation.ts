@@ -2,7 +2,7 @@
  * 管理单一 Windows Sandbox 账户 generation 的并发实例租约与共享 ACL grant 引用。
  * SandboxBroker 在原生 provision 前取得 lease，在 Job 与 ACL 全部清理后释放；恢复代码读取快照判断能否继续复用账户。
  *
- * 1. acquire 强制 1～4 个不同任务工作区并发、同一规范工作区串行；不再允许独立 Runner 或同任务嵌套实例，并为每个实例分配单调 lease epoch。
+ * 1. acquire 不限制不同任务的实例数或工作区重叠；不再允许独立 Runner 或同任务嵌套实例，并为每个实例分配单调 lease epoch。
  * 2. 共享账户 ACE 按对象身份计数，不按各实例的 read/write 用途拆分；acquire 先完整预检再提交引用，首个引用进入 provisioning，后继 lease 必须等待原生安装完成。
  * 3. release 使用 prepare/commit 两阶段协议；原生撤销失败前不删除 lease 或 grant，防止 orphan 从账本消失。
  * 4. quarantine 在未知进程、ACL 或身份状态下冻结 generation，并返回所有仍需终止和对账的实例。
@@ -133,17 +133,9 @@ export class AccountGenerationRegistry {
   private pendingReleases = new Map<string, AccountGenerationRelease>();
   private quarantineCategory?: SandboxGenerationFailure;
 
-  constructor(
-    readonly generationDigest: string,
-    private maximumConcurrentInstances: number,
-  ) {
-    if (
-      !/^[a-f0-9]{64}$/.test(generationDigest) ||
-      !Number.isInteger(maximumConcurrentInstances) ||
-      maximumConcurrentInstances < 1 ||
-      maximumConcurrentInstances > 4
-    ) {
-      throw new AccountGenerationError("generation 摘要或并发上限无效。");
+  constructor(readonly generationDigest: string) {
+    if (!/^[a-f0-9]{64}$/.test(generationDigest)) {
+      throw new AccountGenerationError("generation 摘要无效。");
     }
   }
 
@@ -168,19 +160,6 @@ export class AccountGenerationRegistry {
     const active = [...this.active.values()];
     if (active.some((lease) => lease.taskId === input.taskId)) {
       throw new AccountGenerationError("同一任务已有活动 Sandbox 实例。");
-    }
-
-    if (active.length >= this.maximumConcurrentInstances) {
-      throw new AccountGenerationError("已达到 Sandbox 并发上限。");
-    }
-
-    if (
-      active.some(
-        (lease) =>
-          lease.workspaceRootId === input.accessManifest.workspaceRootId,
-      )
-    ) {
-      throw new AccountGenerationError("同一工作区已有活动 Sandbox 实例。");
     }
 
     const lease: SandboxInstanceLease = Object.freeze({

@@ -25,7 +25,7 @@ Sandbox 本身**不会**创建 worktree、暂存副本或自动回滚：可写�
 
 - 专用账户不继承宿主交互用户的私有 profile、凭据、SSH agent 或仅授予宿主用户的文件权限；但 `Everyone`、`Authenticated Users`、机器级安装目录等既有 ACL 仍可能允许额外读取。因此这**不是纯读取 allowlist**，任何可读内容都可能进入模型上下文、会话记录或获准网络请求。
 - `Everyone` 也在 Runtime 的 restricting SID 列表中。若某个文件或目录的既有 ACL 允许 Everyone 写入，Runtime 可能直接写入，即使它不在本实例的可写根内；同账户并发实例也可能写入彼此带这类 ACL 的根。不要将 root capability 视为完整的文件写入 allowlist。
-- 不同工作区可按全局设置并行运行 1～4 个任务，同一工作区仍串行；但它们共用一个 Sandbox 账户。活动授权根会形成读取并集，同账户 peer 可能读取、终止、注入或检查其他 Runtime。**不同对话不是彼此的 OS 安全边界。**
+- 同目录与不同目录的多个会话均可并行，主任务数量无上限（D173）；注意文件/Git 冲突和资源耗尽。它们共用一个 Sandbox 账户。活动授权根会形成读取并集，同账户 peer 可能读取、终止、注入或检查其他 Runtime。**不同对话不是彼此的 OS 安全边界。**
 - 这不抵抗管理员、SYSTEM、内核/驱动漏洞、弱/null DACL、重解析/复杂 ACL 缺陷、已泄露句柄或获准 HTTPS host 接收数据等风险。不要把 Sandbox 当作执行不可信恶意代码的完整隔离环境。
 
 ### 首次安装与验收

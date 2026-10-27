@@ -58,7 +58,7 @@ for (const kind of ["push-runner", "capability-runner"] as const) {
     const accessManifest = await buildAccessManifest({
       workspaceRoot: await temp(),
     });
-    const registry = new AccountGenerationRegistry("a".repeat(64), 4);
+    const registry = new AccountGenerationRegistry("a".repeat(64));
     const input = {
       executionInstanceId: "retired",
       taskId: "task",

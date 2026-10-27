@@ -13,7 +13,7 @@
 - 保持清晰的目录、模块与代码文件结构。
 - 保持完善且与开发同步更新的文档。
 - **初版功能边界已确认**，以 docs/requirements.md 第 2、5 节为范围与验收依据；用户已授权开始实现；当前按 Node.js 24/26、React/Vite、Fastify、SQLite、Pino 技术方案开发。
-- 第一版使用 Web UI 作为用户交互界面，支持 Windows、macOS 和 Linux，优先完成读代码、修改与验证闭环。Windows Sandbox 使用单一专用低权限本地账户、per-instance restricted token/Job/execution identity 与逐授权根持久 capability（D163）、显式文件 ACL 与按账户 SID 的 WFP；Git CLI 与普通命令同路；需要宿主文件、网络或凭据时显式使用获批的 `run_with_permissions`，不隐式转发。Sandbox 模式沿用 1～4 个不同工作区并发和同工作区串行。
+- 第一版使用 Web UI 作为用户交互界面，支持 Windows、macOS 和 Linux，优先完成读代码、修改与验证闭环。Windows Sandbox 使用单一专用低权限本地账户、per-instance restricted token/Job/execution identity 与逐授权根持久 capability（D163）、显式文件 ACL 与按账户 SID 的 WFP；Git CLI 与普通命令同路；需要宿主文件、网络或凭据时显式使用获批的 `run_with_permissions`，不隐式转发。D173 取消主任务总数上限与跨 session 目录互斥，Sandbox 同步开放；同 session 单活动任务、工具 DAG 依赖、subagent Worker 配额与故障隔离仍保留。
 
   Windows 专用账户 Runtime 已接入 C++ Supervisor launcher、任务专属 Named Pipe 字节代理和 PID/创建时间/Job/token/capability/映像联合检查。2026-10-03 用户确认持续使用一段时间功能正常，Windows Sandbox 按实际使用验证通过、可用于日常开发记录，不再笼统描述为尚不可用的预览。默认关闭及显式安装规则不变；该结论不扩展为跨平台实现、完整安全矩阵通过或 subagent 已开放。来源与专项证据边界见 docs/verification.md、D130。
 
@@ -26,7 +26,7 @@
 
 - 会话内上下文压缩已授权：保留用户原文、历史快照与未知执行状态，摘要不提升权限；细节见 docs/context-management.md。已接入服务模型容量与实际 usage，token 预算与备用字符模式见 docs/model-tokens.md。
 - 提供 Web UI“关闭服务”入口及终端 Ctrl+C 退出方式；关闭时停止任务并保存为可恢复中断，保留历史和已修改文件。服务关闭流程必须覆盖鉴权、清理与端口释放测试。
-- 初版默认单 agent；2026-09-23 用户追加授权可选只读 subagent，2026-10-17 进一步要求开放 UI 任务级开关（D158），默认关闭、仅本次提交生效、恢复继承原选择。入口开放不等于安装态或全平台专项验收通过，限制见 [多 agent 说明](docs/multi-agent-design.md)。2026-10-17 用户要求内置 `explorer`（获取并筛选信息）与 `reviewer`（干净上下文审查修改），两角色均可多实例、不同范围并行；沿用共享活动 Worker 调度与只读边界（D157）；D158 开放试用入口，不改变 Sandbox 权限。不同真实工作目录的会话最多可并行运行 2 个编码任务（可在设置中调为 1～4），同一工作目录始终串行排队。默认直接修改选定工作目录；2026-10-25 用户授权显式创建 Git worktree 对话（D165），固定实际执行目录并与来源项目共享记忆，不自动迁移、清理或提供一键回滚。详见 docs/worktrees.md。页面关闭后后端仍运行时任务可继续。
+- 初版默认单 agent；2026-09-23 用户追加授权可选只读 subagent，2026-10-17 进一步要求开放 UI 任务级开关（D158），默认关闭、仅本次提交生效、恢复继承原选择。入口开放不等于安装态或全平台专项验收通过，限制见 [多 agent 说明](docs/multi-agent-design.md)。2026-10-17 用户要求内置 `explorer`（获取并筛选信息）与 `reviewer`（干净上下文审查修改），两角色均可多实例、不同范围并行；沿用共享活动 Worker 调度与只读边界（D157）；D158 开放试用入口，不改变 Sandbox 权限。2026-10-27 用户确认 D173：同目录或不同目录的多个会话不限主任务数并行；同会话仍只允许一个活动任务。不提供跨会话文件/Git 冲突保护，需注意资源耗尽风险。默认直接修改选定工作目录；2026-10-25 用户授权显式创建 Git worktree 对话（D165），固定实际执行目录并与来源项目共享记忆，不自动迁移、清理或提供一键回滚。详见 docs/worktrees.md。页面关闭后后端仍运行时任务可继续。
 - 2026-10-17 用户追加要求向两种 subagent 暴露 Responses 内置 `web_search`（D159），按主任务协议能力提供，Chat Completions / Messages 不声明。搜索由模型服务执行，引用随报告保存；不开放子任务 shell、任意网络命令或写入权限。
 - 用户已追加授权 MCP 支持，并明确所有连接由本机后端建立：支持 stdio 和远程 Streamable HTTP，不使用模型服务商托管 MCP；连接配置及凭据留在 Broker，每主任务主动提供已启用服务的名称与配置用途摘要，不提前连接；模型按需发现 schema，操作经既有审批，执行不受 Runtime Sandbox 保护。实现与边界见 docs/mcp.md。
 - 用户已追加授权 Skill 系统：每任务从项目/宿主用户预设目录自动发现 SKILL.md，以 `skill` 工具按需加载参考正文；不自动执行脚本或授予权限，宿主/Runtime 均经后端读取。目录、冲突和安全边界见 docs/skills.md。
@@ -36,7 +36,7 @@
 
 Windows 专用用户 Runtime、独立 C++ supervisor 与 Broker 是当前 Windows Sandbox 架构：一次性提升安装创建 `CodeAtelierSandbox` 账户及按其 SID 的持久 WFP fence；每次任务向该账户投影工作区和显式 read/write roots，并用 `WRITE_RESTRICTED` token、根 capability、Job、desktop 与 IPC 限制目标写入和能力。专用 Git 工具及其 IPC 已移除；独立 Push/Capability Runner、旧 Git config graph、HTTPS relay 与 askpass 已移除（D162）；root capability SID 与 Runtime capability IPC 仍是现行基础设施。D163 将长期可写根 SID 保存在应用数据目录，按真实根身份跨任务/重启复用；execution/临时目录身份仍逐实例生成。长期根 ACE 不随任务撤销，账户租约/临时 ACE 清理不变；原生请求 v4、旧 ACL journal v2，升级须显式 Repair。详见 docs/windows-root-capabilities.md；不自动修复遗留 ACL。
 
-Sandbox 沿用 1～4 个不同工作区并发、同工作区串行；同账户实例会形成活动授权根的读取并集，不提供任务间 OS 级读取、进程或对象隔离。受限 token 的 restricting SID 包含 `Everyone` 以兼容 Windows 系统组件；已有 ACL 授予 Everyone 写入的对象可绕过本实例 root capability，因此不能保证实例之间或实例之外的完整文件写入隔离。不同对话不是彼此的安全边界；同账户 peer 也可能终止、注入或检查其它 Runtime。
+Sandbox 不限制跨任务实例数量或工作区重叠，保留同任务单 Runtime lease、共享 grant 引用计数及 quarantine；同账户实例会形成活动授权根的读取并集，不提供任务间 OS 级读取、进程或对象隔离。受限 token 的 restricting SID 包含 `Everyone` 以兼容 Windows 系统组件；已有 ACL 授予 Everyone 写入的对象可绕过本实例 root capability，因此不能保证实例之间或实例之外的完整文件写入隔离。不同对话不是彼此的安全边界；同账户 peer 也可能终止、注入或检查其它 Runtime。
 
 专用账户不继承宿主用户私有权限，`Everyone`/`Authenticated Users` 等既有 ACL 也可能允许额外读取，不能宣称纯读取 allowlist。工作区内不额外保护 `.git`/`.env`；Runtime 可按普通命令启动 Git CLI，但 Windows 安装态兼容性尚未重新验证；已有 NUL/所有权限制不能用宿主测试掩盖。
 
@@ -50,7 +50,7 @@ Agent Runtime 已有权限内的工具不再审批；越界命令通过 `run_wit
 
 ## 设置系统（D153）
 
-2026-10-16 用户要求将大部分配置迁入 `settings.json`，支持随时配置并完整重设 UI，最终移除 `.env`。产品已接入版本化文件、分类设置页与显式迁移器，不再加载 dotenv；数据目录由 `--data-dir` 指定或使用平台默认值。运行任务持有配置/密钥/MCP 快照；宿主日志和并发立即生效，模型等下一任务生效，服务/Sandbox 等重启生效。模型/MCP 凭据保存于私有 JSON（不是加密保险库），密码仅存派生验证材料。实现、迁移和验证边界见 [设置系统](docs/settings-system.md)。不自动迁移真实配置、删除旧 `.env` 或重启当前服务；实际部署迁移仍由用户明确操作。
+2026-10-16 用户要求将大部分配置迁入 `settings.json`，支持随时配置并完整重设 UI，最终移除 `.env`。产品已接入版本化文件、分类设置页与显式迁移器，不再加载 dotenv；数据目录由 `--data-dir` 指定或使用平台默认值。运行任务持有配置/密钥/MCP 快照；宿主日志立即生效，旧并发上限字段仅兼容读取并归一为 0，模型等下一任务生效，服务/Sandbox 等重启生效。模型/MCP 凭据保存于私有 JSON（不是加密保险库），密码仅存派生验证材料。实现、迁移和验证边界见 [设置系统](docs/settings-system.md)。不自动迁移真实配置、删除旧 `.env` 或重启当前服务；实际部署迁移仍由用户明确操作。
 
 ## 需求的权威来源
 

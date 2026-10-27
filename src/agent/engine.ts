@@ -4,7 +4,7 @@
  *
  * 0. toolReviewer/processReviewer 绑定主模型的独立状态检查，供进程与 MCP 每五分钟使用；usage/replay/trace 按 callId 关联，不追加主对话或重放执行。
  * 1. 构造器接好审批通知；手动评测可仅对宿主模型循环覆盖步数阈值，snapshot 读取会话状态，emit 脱敏并保存事件。
- * 2. start 原子保存用户消息和任务级 subagent 选择为 queued；多 agent 尚未就绪时拒绝开启。调度器在全局并发上限内启动不同工作区的任务，并对相同真实工作区保持互斥。
+ * 2. start 原子保存用户消息和任务级 subagent 选择为 queued；多 agent 尚未就绪时拒绝开启。调度器启动所有可领取任务，不限制主任务数量或互斥工作区；同会话单活动任务仍由存储 admission 保证。
  * 3. resume 继续最后一个可恢复任务；cancel 处理用户取消，close 处理服务关闭及 Worktree 管理取消。托管 checkout 在 admission/run/Runtime 启动前核验；快照补充来源清单，记忆映射来源而工具保留实际根。
  * 4. createModelProvider 按主/辅助协议和密钥创建客户端；主/子任务按协议裁剪搜索，Responses 由宿主/Broker 绑定稳定 cache key 后进入 tracing/Replay；子模型继承任务输出上限和已知容量约束，捕获同时保存可信 subagentId/subagentRequestId。
  *    摘要请求按服务容量独立预算，不受主任务手动窗口限制；首条 prompt 先用辅助模型生成标题；run 再读取历史和项目规则，准备工具及上下文预算；首次压缩检查前恢复会话 token 锚点，响应保存后更新锚点，Runtime 经 Broker 共用持久化。
@@ -705,7 +705,7 @@ export class Engine {
     }
   }
 
-  /** 在全局上限内领取不与已运行任务共享真实工作区的最早队列项；被工作区锁阻塞的项保持排队。 */
+  /** 串行领取所有待启动任务，执行本身并行；queued 仅用于持久化交接，不再按目录或容量等待。 */
   private schedule(): Promise<void> {
     this.schedulingRequested = true;
     this.schedulingWork ??= (async () => {
@@ -723,53 +723,24 @@ export class Engine {
   }
 
   private async schedulePass() {
-    try {
-      for (const candidate of await this.store.queuedTasks()) {
-        this.traceTasks.submitted(candidate.id, candidate.sessionId);
-        this.traceTasks.waiting(
-          candidate.id,
-          [...this.activeByTaskId.values()].some(
-            (active) => active.workspace === candidate.workspace,
-          )
-            ? "workspace"
-            : this.activeByTaskId.size >=
-                this.config.settings.maxConcurrentTasks
-              ? "capacity"
-              : "ready",
-        );
+    while (!this.closing) {
+      const next = (await this.store.queuedTasks()).find(
+        // running 写入尚未回执时，存储仍可能返回 queued；已领取任务不能再次启动。
+        (candidate) =>
+          !this.cancellingTasks.has(candidate.id) &&
+          !this.activeByTaskId.has(candidate.id),
+      );
+      if (!next || this.closing) {
+        return;
       }
 
-      while (
-        this.activeByTaskId.size < this.config.settings.maxConcurrentTasks
-      ) {
-        const next = (await this.store.queuedTasks()).find(
-          (candidate) =>
-            !this.cancellingTasks.has(candidate.id) &&
-            ![...this.activeByTaskId.values()].some(
-              (active) => active.workspace === candidate.workspace,
-            ),
-        );
-        if (!next || this.closing) {
-          return;
-        }
-
-        await this.launch(next);
-      }
-    } finally {
-      for (const candidate of await this.store.queuedTasks()) {
-        this.traceTasks.waiting(
-          candidate.id,
-          [...this.activeByTaskId.values()].some(
-            (active) => active.workspace === candidate.workspace,
-          )
-            ? "workspace"
-            : "capacity",
-        );
-      }
+      this.traceTasks.submitted(next.id, next.sessionId);
+      this.traceTasks.waiting(next.id, "ready");
+      await this.launch(next);
     }
   }
 
-  /** 将已领取任务转为 running 后再启动异步循环，确保同工作区的后续任务看见锁。 */
+  /** 先登记活动任务并持久化 running，再启动异步循环；取消和关闭仍按 taskId 管理。 */
   private async launch(queued: Task & { workspace: string }) {
     this.traceTasks.started(queued.id);
     const user = (await this.store.taskEvent(queued.id, "user")) as

@@ -35,7 +35,7 @@ Runtime stdio 集成夹具共用 `runtime-child-close.ts`：spawn 后立即监�
 
 ## 共享执行逻辑回归
 
-- Worktree（D165）：`worktrees.test.ts` 使用真实临时 Git 检查 committed 基线、独立文件/index、并发请求去重、会话落盘失败后找回、重启、清单/目录/Git 指针失效拒绝、未知创建不重放、共享记忆、HTTP 快照、跨 checkout 并行/同目录排队与恢复。`sandbox-agent-runtime-launcher.test.ts` 和 `mxc-runtime.test.ts` 检查共享 Git 根进入 manifest/MXC policy 且不授予来源 checkout；使用假后端，不构成安装态验收。`e2e/worktrees.spec.ts` 检查真实页面创建、项目分组、文件修改只落到 checkout 和历史刷新。
+- Worktree（D165）：`worktrees.test.ts` 使用真实临时 Git 检查 committed 基线、独立文件/index、并发请求去重、会话落盘失败后找回、重启、清单/目录/Git 指针失效拒绝、未知创建不重放、共享记忆、HTTP 快照、跨 checkout 与同目录并行、取消后恢复。`sandbox-agent-runtime-launcher.test.ts` 和 `mxc-runtime.test.ts` 检查共享 Git 根进入 manifest/MXC policy 且不授予来源 checkout；使用假后端，不构成安装态验收。`e2e/worktrees.spec.ts` 检查真实页面创建、项目分组、文件修改只落到 checkout 和历史刷新。
 
 - Responses prompt cache key（D160）：`prompt-cache.test.ts` 覆盖分组稳定性、交叉调用、子任务/会话隔离、错误/取消与非 Responses 原行为、trace 指纹及缺失 usage；`provider.test.ts` 通过本机 HTTP/SSE 验证实际发送/省略；`engine-subagent.test.ts` 验证宿主主/子任务、Replay 和续聊；`runtime-capability-core.test.ts` 验证 Broker 可信身份、实例变化和辅助用途排除；`agent-runtime-subagent.test.ts` 验证真实 Runtime 子进程跨 IPC 后实际收到的 key 和 Replay。测试不验证真实服务命中改善。
 
@@ -287,7 +287,7 @@ Responses 主任务请求包含 OpenAI 内置 `web_search`，Chat Completions / 
 
 主要测试：tool-graph.test.ts、tool-status.test.ts、engine.test.ts、core.test.ts、recovery.test.ts、server.test.ts。
 
-模拟模型返回计划摘要时，先前读取结果、摘要持久化与后续工具执行的事件顺序（不声称模型必然遵循计划指引）、工具往返、同轮 DAG 的稳定拓扑并发、审批准备与执行槽分离、单槽下独立节点越过审批等待、并发上限、重复/未知/环拒绝、失败后继阻断与反馈；跨会话不同工作目录并行、同目录排队、同会话互斥、取消/关闭队列、步骤/上下文预算、参数错误反馈、根规则、输出预算、跨任务重新读取、不重放副作用、工具耗时排除审批等待
+模拟模型返回计划摘要时，先前读取结果、摘要持久化与后续工具执行的事件顺序（不声称模型必然遵循计划指引）、工具往返、同轮 DAG 的稳定拓扑并发、审批准备与执行槽分离、单槽下独立节点越过审批等待、并发上限、重复/未知/环拒绝、失败后继阻断与反馈；跨会话不同工作目录和同目录不限主任务数并行、同会话互斥、取消/关闭队列、步骤/上下文预算、参数错误反馈、根规则、输出预算、跨任务重新读取、不重放副作用、工具耗时排除审批等待
 
 ### 可选 subagent（任务级试用入口与双执行路径）
 
@@ -357,7 +357,7 @@ D159 搜索覆盖：`engine-subagent.test.ts` 参数化两角色/三协议，确
 
 主要测试：access-password.test.ts、server.test.ts、listen-address.test.ts、core.test.ts。
 
-环境开关默认关闭、非法开关/启用时缺少密码拒绝启动、正确/错误密码、HttpOnly 门禁 cookie、未验证 API 拒绝；会话初始快照与按 event ID 游标读取的增量事件、任务接口和参数校验、跨工作区并行与同工作区排队、默认 IPv4/IPv6 回环、显式 IPv4/IPv6 局域网通配监听、Host/Origin/cookie/token、运行/排队任务时的配置更新互斥、取消与恢复
+环境开关默认关闭、非法开关/启用时缺少密码拒绝启动、正确/错误密码、HttpOnly 门禁 cookie、未验证 API 拒绝；会话初始快照与按 event ID 游标读取的增量事件、任务接口和参数校验、跨工作区与同工作区六会话同时执行、默认 IPv4/IPv6 回环、显式 IPv4/IPv6 局域网通配监听、Host/Origin/cookie/token、运行/排队任务时的配置更新互斥、取消与恢复
 
 ### 服务关闭
 
@@ -450,7 +450,9 @@ Sandbox 徽标浏览器回归以合成历史阶段验证：bootstrap 的待确�
 
 Git 配置图按两个 global 入口递归解析 `include` 与适用的 `gitdir/gitdir/i includeIf`，对循环、未知条件、链接和资源上限安全拒绝；
 
-account generation 状态机验证 1～4 个不同工作区并发、同工作区串行、共享 grant 引用计数、epoch 防重放和整代 quarantine；
+account generation 状态机验证不同工作区并发、六个同工作区 lease 同时存在、共享 grant 仅在最后释放时撤销、epoch 防重放和整代 quarantine（D173）；
+
+D173 的 `engine-storage-race.test.ts` 以延迟 running 回执先复现同任务重复领取，再验证按 taskId 去重且保留取消优先。HTTP/Engine 回归验证六个同目录/跨目录会话同时进入模拟模型、同会话重复提交拒绝、单任务取消不影响其余任务；worktree 回归验证共享 checkout 并行、原地恢复以及 admission 后目录消失仍拒绝执行。设置回归验证旧并发值归一为 0 且重开保持；浏览器回归验证不再展示并发上限控件。测试不启动真实 Sandbox 安装或真实模型，不代表不限实例的资源容量保证；
 
 当前 Git CLI 走通用命令权限，由 Git CLI、Agent Runtime tools/engine 及 IPC 回归覆盖；旧 ToolRunner→Sandbox Runtime 路由夹具已于 2026-10-10 审计移除，不再作为现行执行边界证据；
 

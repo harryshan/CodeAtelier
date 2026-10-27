@@ -640,7 +640,7 @@ export class Store {
       Omit<T, keyof TaskRow>;
   }
 
-  /** 同一会话的上下文不能并发追加；不同会话的任务由 Engine 依据工作区和全局上限调度。 */
+  /** 同一会话的上下文不能并发追加；不同会话的任务由 Engine 不限目录与数量地并行调度。 */
   hasUnfinishedTask(sessionId: string) {
     const shard = this.sessionShard(sessionId);
     if (!shard) {
@@ -656,7 +656,7 @@ export class Store {
     );
   }
 
-  /** 排队顺序按创建时间稳定；Engine 可跳过被相同工作区锁阻塞的项，避免空闲并发槽位闲置。 */
+  /** 待启动顺序按创建时间稳定；Engine 依次领取，跳过正在取消的项。 */
   queuedTasks() {
     return this.shards.all
       .flatMap((shard) =>

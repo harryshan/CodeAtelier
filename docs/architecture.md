@@ -1,12 +1,12 @@
 # 架构
 
-当前初版为本机后端、浏览器单页应用、默认单 agent 和可按任务开启的只读 subagent；不同真实工作目录的会话默认最多两个任务并行，同一目录严格串行。
+当前初版为本机后端、浏览器单页应用、默认单 agent 和可按任务开启的只读 subagent；D173 允许同目录与不同目录的会话不限主任务数并行，同 session 保留单活动任务，不提供文件/Git 冲突隔离。
 
 D165 增加显式 Git worktree 对话：`src/worktrees/service.ts` 管理宿主创建清单、幂等创建和目录/Git 关联验证，`git.ts` 执行固定管理命令。`sessions.workspace` 继续保存实际目录，API/SSE 补充清单元数据、侧栏按来源项目分组；记忆解析到来源，文件工具、Skills/MCP、调度与恢复仍绑定 checkout。Sandbox 启动仅追加已核验的 Git common directory 写根；checkout 位于 Broker 数据目录同级，清单位于私有数据目录。不修改历史 v11 schema、不新增模型工具、不复制脏文件或自动清理，详见 [worktree 设计](worktrees.md)。
 
 Windows Sandbox 已通过用户实际使用验证，可用于日常开发：启用时默认产品组装会由 C++ Sandbox Supervisor 启动常驻 Agent Runtime；Supervisor 创建任务专属 Named Pipe，联合核对 PID、创建时间、Job、账户、restricted SID、capability 与固定 Node 映像后代理 Broker IPC。
 
-该路径已有 native build、协议回归及本机固定账户安装态产品链路证据；2026-10-03 用户进一步确认持续使用一段时间功能正常（D130）。日常可用性确认不代表所有故障注入或安全专项矩阵均已通过。严格术语和完成判据见 [Windows 专用用户 Sandbox Runtime 与 Broker 架构](windows-integrity-sandbox.md#0-术语进程和完成条件)。Sandbox 模式沿用 1～4 个不同工作区并发和同工作区串行；macOS/Linux 明确不加载这套 Windows 后端。
+该路径已有 native build、协议回归及本机固定账户安装态产品链路证据；2026-10-03 用户进一步确认持续使用一段时间功能正常（D130）。日常可用性确认不代表所有故障注入或安全专项矩阵均已通过。严格术语和完成判据见 [Windows 专用用户 Sandbox Runtime 与 Broker 架构](windows-integrity-sandbox.md#0-术语进程和完成条件)。Sandbox 同步移除跨任务实例总数和目录互斥限制；macOS/Linux 明确不加载这套 Windows 后端。
 
 核心机制自行实现，没有引入 agent 编排框架。
 
@@ -51,7 +51,7 @@ Git CLI 复用普通命令或显式获批宿主命令路径，不提供 Git acti
 
 ### 任务与上下文
 
-`src/agent/engine.ts` 管理任务队列、全局并发上限、真实工作目录互斥、模型循环、停止条件与工具结果回传；同一会话也只允许一个运行中或排队任务。`context.ts` 负责上下文恢复，`instructions.ts` 负责根规则与模型指令构建。src/context/ 负责预算、摘要压缩、快照契约与历史原文读取，循环在完整工具批次完成后接入；压缩阶段之间让出事件循环。
+`src/agent/engine.ts` 管理持久化启动队列、不限主任务数的跨会话并行、模型循环、停止条件与工具结果回传；同一会话也只允许一个运行中或排队任务。`context.ts` 负责上下文恢复，`instructions.ts` 负责根规则与模型指令构建。src/context/ 负责预算、摘要压缩、快照契约与历史原文读取，循环在完整工具批次完成后接入；压缩阶段之间让出事件循环。
 
 ### 模型协议
 
@@ -127,7 +127,7 @@ Broker 先建立不可变 AccessManifest，supervisor 再以原对象 handle 和
 
 当前产品已把常驻 AgentRuntimeService、C++ Supervisor launcher、身份绑定 Named Pipe、model/session/approval/memory adapter、ACL journal 和 generation drain 接到同一生命周期；旧 HTTPS relay、Push Runner 和 Capability Runner 实现已移除；通用 Runtime capability IPC 与 root capability 保留。
 
-Sandbox 沿用 1～4 个不同工作区并发和同工作区串行；账户 SID 使所有并发实例可能读取活动 manifest 的授权根，同账户 peer 也可能终止、注入或检查其它 Runtime。不同对话不是彼此的 OS 安全边界。Runtime token 为系统组件兼容加入 `Everyone` restricting SID；已有 Everyone 可写 ACL 可绕过实例 root capability，故不承诺完整文件写入隔离。专用账户不继承宿主用户私有权限，但既有公共/机器 ACL 仍可能允许额外读取。
+Sandbox 允许同目录和不同目录跨任务并行且不设实例总数上限，保留同任务单实例；账户 SID 使所有并发实例可能读取活动 manifest 的授权根，同账户 peer 也可能终止、注入或检查其它 Runtime。不同对话不是彼此的 OS 安全边界。Runtime token 为系统组件兼容加入 `Everyone` restricting SID；已有 Everyone 可写 ACL 可绕过实例 root capability，故不承诺完整文件写入隔离。专用账户不继承宿主用户私有权限，但既有公共/机器 ACL 仍可能允许额外读取。
 
 共享账户 ACE 使用 provision 等待与 prepare/native revoke/commit 两阶段 grant table；任一实例 ACL、Job 或账户状态无法对账时隔离 account generation，原生终止整代账户进程并按持久 journal 撤销 ACL。
 

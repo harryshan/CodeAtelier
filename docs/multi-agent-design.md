@@ -1,15 +1,15 @@
 # 多 agent 协作设计草案
 
-状态：D111 授权实施；2026-10-17 按 D158 开放默认关闭的任务级 UI/API 试用入口。安装态及跨平台专项验收尚未全部完成，不以入口开放推导验收通过。本文针对用户提出的可选 subagent；当前单 agent 能力、同真实工作区串行规则及 Windows Sandbox 的验收限制仍以 [需求](requirements.md)、[架构](architecture.md) 和 [决策记录](decisions.md) 为准。
+状态：D111 授权实施；2026-10-17 按 D158 开放默认关闭的任务级 UI/API 试用入口。安装态及跨平台专项验收尚未全部完成，不以入口开放推导验收通过。本文针对用户提出的可选 subagent；当前单 agent 能力、D173 跨会话不限主任务数并行规则及 Windows Sandbox 的验收限制仍以 [需求](requirements.md)、[架构](architecture.md) 和 [决策记录](decisions.md) 为准。
 
 Windows Sandbox 的日常功能已于 2026-10-03 获用户实际使用验证确认（D130）；该确认不等于 subagent 已对外开放，也不替代子任务取消、恢复和失败路径的专项就绪评估。2026-10-17 按 D157 接入内置角色与审查材料，随后用户按 D158 要求开放 UI 选项，调整此前暂不开放入口的决定；不会自动修改 Sandbox 安装或权限。
 
 ## 目标和不可混淆的边界
 
-D165 的 Worktree 对话创建独立的主任务执行目录；同一来源项目的不同 checkout 可按现有全局上限并行，同一实际目录仍串行。subagent 继承所属主任务的实际 checkout，只读边界与开关不变，不为 subagent 创建额外 worktree 或开放写入。详见 [Worktree 指南](worktrees.md)。
+D165 的 Worktree 对话创建独立的主任务执行目录；D173 后不同 checkout 与同一实际目录的多个会话均可不限主任务数并行。subagent 继承所属主任务的实际 checkout，只读边界与开关不变，不为 subagent 创建额外 worktree 或开放写入。详见 [Worktree 指南](worktrees.md)。
 
 - 用户在**每个新任务提交前**决定是否启用 subagent；默认关闭。主 agent 始终对用户答复、计划、编辑、验证和最终结果负责。
-- subagent 是从属于当前任务的短生命周期研究者：可以阅读受控资料、整理结论和提出修改建议，不能执行写入。主 agent 可并行协调它们；不同会话的工作区锁与全局任务并发上限不因 subagent 增加。
+- subagent 是从属于当前任务的短生命周期研究者：可以阅读受控资料、整理结论和提出修改建议，不能执行写入。主 agent 可并行协调它们；D173 只移除跨会话主任务的数量与目录限制，不移除 subagent 活动 Worker 配额。
 - **用户已确认只要求 subagent prompt 与工具层禁止写入**：指令明确不允许修改文件，模型工具声明和执行入口采用只读白名单，写入提案交给主 agent。Node Worker thread 与主 loop 同进程、同 OS 身份；这不抵御恶意线程直接调用 Node `fs` 或启动子进程，也不提供线程级 ACL 隔离。此风险属于已确认方案的非目标，不再作为实施前待确认冲突；不得将工具层约束宣传为 OS 级只读 Sandbox。Windows 专用账户 Sandbox 仍保护整个 Runtime 与宿主之间的边界，而非主、子线程之间的边界。
 
 ## 1. 入口和任务级设置
@@ -45,7 +45,7 @@ reviewer 计划示例（与 explorer 一样放入 `subtasks`）：
 
 - 主 agent 沿用所在 execution instance 的现有 loop；每个活动 subagent 有**独立模型会话、上下文、AbortSignal 和状态机**，运行在该 execution instance 内专门创建的 Node.js `Worker` 中。Sandbox 启用时该进程是专用账户 Agent Runtime，而不是 Broker；启动前回退宿主后也须在 UI 和会话中保留 `host-process` 事实。Broker 不替 Runtime 执行 subagent loop。
 - 不复用“主任务的四个 Worker”。现有 `DEFAULT_TOOL_CONCURRENCY = 4` 是**单轮工具 DAG 的执行槽位**，不是四条 agent 线程；`read_file` 按 D147 在异步读取后直接计算，不再有读取线程池。subagent loop 是持续的异步对话，为每个活动 subagent 分配独立 Worker；完成或取消后释放（未来有性能证据才讨论复用独立的 subagent 池）。模型请求属于 I/O，并不会仅因使用 Worker 加速；线程隔离用于独立 loop 生命周期与故障归属，而不是吞吐保证。
-- 活动并发保持**每任务同时 2 个、全局同时 4 个 Worker**，不限制累计创建数量。按 D129 移除子任务独立运行时长、轮数、累计 token、输入字符与子任务固定输出 token 覆盖；子 loop 由正常答复、错误或取消结束，用量继续记录。主任务收尾保留 5 秒强制清理宽限，确认退出后才归还租约。并发值不是配置项；全局子模型请求和读取队列的更细配额仍待独立验收。宿主 Engine 可直接调用服务进程的全局资源调度器；每个 Windows Sandbox Runtime 是不同进程，须通过任务绑定的 Broker IPC 申请/释放全局 Worker 与模型请求 lease，不能把各 Runtime 的进程内计数误当全局限额。按任务公平排队；主任务正常结束或取消时，确认 Worker 退出后回收 lease；Runtime 断连或 Broker 关闭时先停止分配，待原 execution instance 清理完成或明确标记未知后再对账，不能提前把仍可能运行的 Worker 额度转借其它任务。现有全局 1～4 个主任务上限仍由 Engine 管理；四个 DAG 槽位仍归每个主任务工具批次使用，subagent 不得借此突破审批或任务超时。
+- 活动并发保持**每任务同时 2 个、全局同时 4 个 Worker**，不限制累计创建数量。按 D129 移除子任务独立运行时长、轮数、累计 token、输入字符与子任务固定输出 token 覆盖；子 loop 由正常答复、错误或取消结束，用量继续记录。主任务收尾保留 5 秒强制清理宽限，确认退出后才归还租约。并发值不是配置项；全局子模型请求和读取队列的更细配额仍待独立验收。宿主 Engine 可直接调用服务进程的全局资源调度器；每个 Windows Sandbox Runtime 是不同进程，须通过任务绑定的 Broker IPC 申请/释放全局 Worker 与模型请求 lease，不能把各 Runtime 的进程内计数误当全局限额。按任务公平排队；主任务正常结束或取消时，确认 Worker 退出后回收 lease；Runtime 断连或 Broker 关闭时先停止分配，待原 execution instance 清理完成或明确标记未知后再对账，不能提前把仍可能运行的 Worker 额度转借其它任务。D173 已移除 Engine 的全局主任务数量上限和目录互斥；四个 DAG 槽位仍归每个主任务工具批次使用，subagent 不得借此突破审批或任务超时。
 
 ### 2.1 已移除的专属阈值与保留边界
 
@@ -148,7 +148,7 @@ reviewer 计划示例（与 explorer 一样放入 `subtasks`）：
 以下是原分阶段实施顺序（每增量同步文件导读、架构、覆盖清单和测试）。原前四阶段不开放 checkbox/HTTP true；D158 现已开放试用入口，保留已有内部标记任务测试，并增加真实 HTTP/浏览器回归，不据此跳过安装态验收：
 
 1. **内部契约与存储**：Zod 默认 `false`、旧数据库逐分片迁移、子状态/检查点与模型请求账本、主任务恢复继承；旧客户端与原单 agent 行为不变，服务未就绪时请求 `true` 明确拒绝。覆盖多分片、持久化失败及未知结果。
-2. **主代理与全局配额**：按任务工具定义、图解析和两条 loop 的协调工具分派，Broker 子身份登记与跨进程 lease；用假 Worker/Provider 验证大计划、无效计划零启动、同工作区锁、公平排队、取消与重复消息。
+2. **主代理与全局配额**：按任务工具定义、图解析和两条 loop 的协调工具分派，Broker 子身份登记与跨进程 lease；用假 Worker/Provider 验证大计划、无效计划零启动、同会话互斥、subagent 公平排队、取消与重复消息。
 3. **真实子 loop 与只读工具**：独立 Worker、模型代理、受限 list/search/read、强制逐轮检查点与主任务全部终态收尾；宿主和 Runtime IPC harness 验证并发、版本变化、崩溃、超时及注入写入工具被拒（只证明工具层，不证明 OS 隔离）。
 4. **一致性与 Sandbox 集成**：`collect` 与主会话工具结果原子落盘、重启后报告可重读、未知模型请求不盲重试、tracing、协议版本和固定事件、Windows 安装 bundle/摘要/清理验收。固定账户提升环境和跨平台验证各记真实证据，不能把 harness 或静态通过描述为已完成。
 5. **UI 试用入口（D158 已开放）**：展示默认关闭的 checkbox 与历史进度，明确区分入口开放和平台验收；验证勾选但主 agent 合理跳过分工、单 agent 对照、刷新、排队、取消、人工恢复和实际创建/收集报告。涉及 UI/HTTP/SSE 运行 `pnpm test:e2e`；每个实现增量提交前运行 `pnpm check`。Evaluation 仅在用户明确要求时手动运行。

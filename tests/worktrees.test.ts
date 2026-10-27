@@ -19,7 +19,7 @@ import {
 } from "node:fs/promises";
 import path from "node:path";
 import pino from "pino";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { WorktreeService } from "../src/worktrees/service.js";
 import { git } from "../src/worktrees/git.js";
 import type { Session } from "../src/shared/types.js";
@@ -503,7 +503,7 @@ it("exposes stable metadata through HTTP/history and rejects execution after che
   ).toBe(200);
 });
 
-it("runs separate checkouts concurrently, queues the same checkout and resumes in place", async () => {
+it("runs separate and shared checkouts concurrently and resumes in place", async () => {
   const f = await fixture();
   await writeFile(path.join(f.source, "AGENTS.md"), "SOURCE_DIRTY_RULE\n");
   const instructions: string[] = [];
@@ -538,8 +538,8 @@ it("runs separate checkouts concurrently, queues the same checkout and resumes i
   const task1 = await app.engine.startAsync(first.id, "first");
   const task2 = await app.engine.startAsync(second.id, "second");
   const task3 = await app.engine.startAsync(shared.id, "shared");
-  expect(task3.status).toBe("queued");
-  await expect.poll(() => instructions.length).toBe(2);
+  expect(task3.status).toBe("running");
+  await expect.poll(() => instructions.length).toBe(3);
   expect(
     instructions.every(
       (value) =>
@@ -548,7 +548,10 @@ it("runs separate checkouts concurrently, queues the same checkout and resumes i
     ),
   ).toBe(true);
   await app.engine.cancelAsync(task1.id);
-  await expect.poll(() => instructions.length).toBe(3);
+  await expect
+    .poll(async () => (await app.store.task(task1.id))?.status)
+    .toBe("cancelled");
+  expect(instructions).toHaveLength(3);
   expect((await app.store.task(task2.id))?.status).toBe("running");
   await app.engine.cancelAsync(task3.id);
   const resumed = await app.engine.resumeAsync(task1.id);
@@ -557,10 +560,9 @@ it("runs separate checkouts concurrently, queues the same checkout and resumes i
   expect((await app.store.get(first.id))?.workspace).toBe(first.workspace);
 });
 
-it("revalidates a queued checkout before executing and refuses recovery after it disappears", async () => {
+it("revalidates a checkout between admission and execution and refuses recovery after it disappears", async () => {
   const f = await fixture();
   const config = new Config(f.directory);
-  config.settings.maxConcurrentTasks = 1;
   let calls = 0;
   const app = await createApp(config, log, () => ({
     async run(_input, _rules, tools, signal) {
@@ -582,19 +584,26 @@ it("revalidates a queued checkout before executing and refuses recovery after it
     },
   }));
   currentTestResources().defer(() => app.app.close());
-  const local = await app.store.createAsync(f.source);
   const worktree = await app.engine.worktrees.create(f.input, (workspace) =>
     app.store.createAsync(workspace),
   );
-  const running = await app.engine.startAsync(local.id, "hold");
-  await expect.poll(() => calls).toBe(1);
+  const validate = app.engine.worktrees.validate.bind(app.engine.worktrees);
+  const admission = vi
+    .spyOn(app.engine.worktrees, "validate")
+    .mockImplementationOnce(async (workspace) => {
+      const result = await validate(workspace);
+      // 模拟 admission 成功后、实际执行前 checkout 消失，不依赖已删除的并发队列限制。
+      await rename(worktree.workspace, worktree.workspace + "-moved");
+
+      return result;
+    });
+  currentTestResources().defer(() => {
+    admission.mockRestore();
+  });
   const queued = await app.engine.startAsync(worktree.id, "must not run");
-  expect(queued.status).toBe("queued");
-  await rename(worktree.workspace, worktree.workspace + "-moved");
-  await app.engine.cancelAsync(running.id);
   await expect
     .poll(async () => (await app.store.task(queued.id))?.status)
     .toBe("failed");
-  expect(calls).toBe(1);
+  expect(calls).toBe(0);
   await expect(app.engine.resumeAsync(queued.id)).rejects.toThrow("不会回退");
 });
