@@ -3,7 +3,7 @@
  * 测试使用临时伪二进制与注入的 self-check executor，不创建账户、ACL、Job、Named Pipe 或 WFP 规则。
  *
  * 1. v4 二进制帧固定 magic/version、UTF-8 字符串、逐根 capability、超时和 argv，拒绝相对路径及超限字段。
- * 2. selfCheck 只有 state 中原生二进制、Node 24 或 26、entry/三种 Worker 摘要、启动恢复排空与原生自检全部成功时才报告 sandbox level。
+ * 2. selfCheck 只有 state 中原生二进制、Node 24 或 26、entry/三种 Worker 摘要、启动恢复排空与原生自检全部成功时才报告 sandbox level；虚拟时钟覆盖超过旧二十秒期限的 ACL journal 恢复。
  * 3. prepareAccess 在 manifest 之前同时创建仅信任当前仓库的只读 Git 投影（仅继承宿主 name/email）和逐实例可写 HOME/TEMP，cleanup 删除两者。
  * 4. state 缺失、摘要篡改和原生拒绝都在 Runtime 启动前失败，允许 Broker 安全选择宿主 fallback。
  * 5. Agent Runtime 启动帧只携带 Broker 身份、nonce 和已安装 Node 路径，不允许选择 Runtime kind 或任意 entry argv；固定阶段诊断只提取白名单枚举。
@@ -32,6 +32,87 @@ describe.skipIf(process.platform !== "win32")(
     function digest(content: string) {
       return createHash("sha256").update(content).digest("hex");
     }
+
+    it.each(["journal", "release"])(
+      "allows one-minute ACL cleanup (%s)",
+      async (operation) => {
+        vi.useFakeTimers();
+        try {
+          const runtime = new NativeWindowsSandboxRuntime(
+            {},
+            async (_file, args, _cwd, _signal, timeoutMs) => {
+              if (args[0] === "--terminate-account-processes") {
+                return {
+                  output: "CODEATELIER_ACCOUNT_PROCESSES_TERMINATED",
+                  exitCode: 0,
+                  truncated: false,
+                };
+              }
+
+              await new Promise<void>((resolve, reject) => {
+                const deadline = setTimeout(
+                  () => reject(new Error("ACL timeout")),
+                  timeoutMs,
+                );
+                setTimeout(() => {
+                  clearTimeout(deadline);
+                  resolve();
+                }, 60_000);
+              });
+
+              return {
+                output:
+                  args[0] === "--revoke"
+                    ? "CODEATELIER_REVOKE_OK"
+                    : "CODEATELIER_REVOKE_JOURNAL_OK",
+                exitCode: 0,
+                truncated: false,
+              };
+            },
+          );
+          const signal = new AbortController().signal;
+          const pending =
+            operation === "journal"
+              ? runtime.drainGeneration(signal)
+              : runtime.revokeAccess(
+                  [
+                    {
+                      rootId: "workspace",
+                      path: "C:\\workspace",
+                      objectIdentityDigest: "a".repeat(64),
+                      deviceId: "1",
+                      fileId: "2",
+                      objectType: "directory",
+                    },
+                  ],
+                  signal,
+                );
+          const result = pending.catch((error: unknown) => error);
+          await vi.advanceTimersByTimeAsync(60_000);
+          expect(await result).toBeUndefined();
+        } finally {
+          vi.useRealTimers();
+        }
+      },
+    );
+
+    it("rejects journal recovery without native cleanup proof", async () => {
+      const runtime = new NativeWindowsSandboxRuntime(
+        {},
+        async (_file, args) => ({
+          output:
+            args[0] === "--terminate-account-processes"
+              ? "CODEATELIER_ACCOUNT_PROCESSES_TERMINATED"
+              : "",
+          exitCode: 0,
+          truncated: false,
+        }),
+      );
+
+      await expect(
+        runtime.drainGeneration(new AbortController().signal),
+      ).rejects.toThrow("--revoke-journal");
+    });
 
     it("prioritizes cleanup failure over an observed cancellation", () => {
       expect(

@@ -1,5 +1,7 @@
 # 测试约定与功能覆盖
 
+Windows 慢 ACL 清理：`sandbox-native-windows-runtime.test.ts` 用虚拟时钟覆盖一分钟 journal 清理；`sandbox.test.ts` 验证 Windows 外层恢复不会在三十秒取消，POSIX 保持原期限；`shutdown.test.ts` 验证慢 Engine 清理不会触发 Fastify 插件关闭超时，以及原有鉴权、SSE、持久化和端口释放。单元夹具不修改真实 ACL，不代替安装态验证。
+
 Riftri 清理（D171）：`worktrees.test.ts` 用磁盘/UNC 两类旧清单验证历史可读、任务与普通 Local 重分类拒绝、私有修改和清单保持；普通 Git worktree 继续覆盖提交基线、身份校验、并发/排队、恢复与记忆。`server.test.ts` 使用生产默认 Local 创建入口，并拒绝旧 `riftri` 请求字段；浏览器用例不再走测试专用 Local 路由。`e2e/worktrees.spec.ts` 覆盖退役历史提示、恢复/发送禁用和草稿保留。`overlay-manager.test.ts` 保留 Local 协议/冻结/清理回归，拒绝无策略的旧 helper。旧 Riftri/Git virtual 实验的脚本、测试和报告已删除，当前 WinFsp 后端仍可通过 `overlay:build-winfsp` 与 `overlay:verify-filesystem --native` 显式验证，产品开关不打开。
 
 Local overlay 默认关闭（D170）：`local-overlay-readiness.test.ts` 使用未替换的生产开关，验证开启 Sandbox/注入后端仍不能创建、执行、恢复、选择发布、检查或处理事故；直接 Engine 调用和坏清单同样拒绝，历史/私有内容/清单保留，普通 Local 仍可执行。已有 HTTP、生命周期、事故套件显式模拟开启，以保留后续重开时的回归覆盖；不提供产品运行时覆盖。`e2e/local-overlay.spec.ts` 的关闭用例使用真实 bootstrap，验证隐藏两处创建入口、禁用历史任务/键盘提交及保留草稿；其它用例明确模拟开启能力。此变更不推进 Linux 或运行 Evaluation。

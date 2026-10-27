@@ -7,7 +7,7 @@
  * 3. bootstrap 报告 subagent 和隔离 Local 入口能力；默认普通 Local、显式 Worktree/隔离 Local 严格互斥，固定 UUID 绑定目录。列表/快照/分页补充来源与私有发布状态；公开 Local 创建、启动和恢复均检查代码总开关、平台与 Sandbox 配置，历史读取不挂载。
  * 4. 注册复用 Store 的只读任务阅读接口，接入 SSE，并提供构建后的网页；没有前端产物时显示开发提示。
  *    Local 单文件检查复用既有鉴权及视图排他锁，不启动 Runtime 或发布文件。
- * 5. preClose 中断任务并结束 SSE，onClose 关闭数据库。
+ * 5. shutdown 在进入 HTTP close hooks 前等待任务与 Sandbox 清理，避免慢 ACL 撤权触发插件关闭超时；直接 app.close 仍由 preClose 清理，onClose 关闭数据库。
  *
  * 关闭时要先确认任务已经中断，再结束服务。页面从保存的会话快照读取状态，任务循环由 Engine 执行。
  * trace/live 在相同鉴权下返回 partial 内存快照或持久检查点，no-store；终态下载只读归档。
@@ -79,14 +79,18 @@ export async function createApp(
   // Web 请求和进程信号共用这一个关闭 Promise，避免重复释放资源。
   const shutdown = (reason: "shutdown" | "reload" = "shutdown") => {
     stopping = true;
-    shutdownPromise ??= app.close().then(() => {
+    shutdownPromise ??= (async () => {
+      // Windows 大目录撤权可能超过 Fastify 的插件期限；停止接单后先等待
+      // Engine 保存中断与完成清理，再进入短 HTTP 生命周期，保留原插件超时。
+      await engine.close();
+      await app.close();
       log.info({ event: "server.stopped", module: "server", reason });
       if (reason === "reload") {
         onReload?.();
       } else {
         onStopped?.();
       }
-    });
+    })();
 
     return shutdownPromise;
   };
